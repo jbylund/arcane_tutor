@@ -1,0 +1,65 @@
+services:
+    postgres:
+        cap_add:
+        - ALL
+        command:
+        - /usr/local/bin/docker-entrypoint.sh
+        - -c
+        - config_file=/postgresql.conf
+        container_name: postgres
+        environment:
+        - PGDATA=/data/pg
+        - POSTGRES_DB=${XPGDATABASE}
+        - POSTGRES_PASSWORD=${XPGPASSWORD}
+        - POSTGRES_USER=${XPGUSER}
+        image: registry.hub.docker.com/library/postgres:15
+        ports:
+        - 15432:5432
+        shm_size: 1024M
+        user: 1000:1000
+        volumes:
+        - ./configs/postgres/conf/pg_hba.conf:/pg_hba.conf
+        - ./configs/postgres/conf/postgresql.conf:/postgresql.conf
+        - ./configs/postgres/init/:/docker-entrypoint-initdb.d
+        - ./data/postgres:/data/pg
+    apiservice:
+        build:
+            context: ./api/
+            dockerfile: ./Dockerfile
+        cap_add:
+        - ALL
+        command:
+        - dumb-init
+        - --
+        - python
+        - -u
+        - ./entrypoint.py
+        container_name: apiservice
+        environment:
+        - PGDATABASE=${XPGDATABASE}
+        - PGHOST=${DOCKER_POSTGRES_HOST}
+        - PGPASSWORD=${XPGPASSWORD}
+        - PGUSER=${XPGUSER}
+        external_links:
+        - postgres:${DOCKER_POSTGRES_HOST}
+        ports:
+        - 18080:8080
+        user: 1000:1000
+        volumes:
+            - ./data/api:/data/api
+    clientservice:
+        build:
+            context: ./client/
+            dockerfile: ./Dockerfile
+        cap_add:
+        - ALL
+        command:
+        - dumb-init
+        - --
+        - python
+        - -u
+        - ./entrypoint.py
+        container_name: clientservice
+        external_links:
+        - apiservice
+version: '3.4'
