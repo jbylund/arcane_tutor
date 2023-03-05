@@ -55,7 +55,7 @@ class APIResource:
             resp.media = res
         except TypeError as oops:
             logger.error("Error handling request: %s", oops, exc_info=True)
-            raise falcon.errors.HTTPBadRequest(description=str(oops))
+            raise falcon.HTTPBadRequest(description=str(oops))
 
     @staticmethod
     def _get_pg_creds():
@@ -83,7 +83,7 @@ class APIResource:
                 time.sleep(3)
 
     def raise_not_found(self, **_):
-        raise falcon.errors.HTTPNotFound(description={"routes": {k: v.__doc__ for k, v in self.action_map.items()}})
+        raise falcon.HTTPNotFound(description={"routes": {k: v.__doc__ for k, v in self.action_map.items()}})
 
     def _run_query(self, query, params=None, explain=True):
         params = params or {}
@@ -165,10 +165,13 @@ class APIResource:
                 )
                 """
             )
-            cursor.execute(f"TRUNCATE TABLE magic.cards")
-            for row in response:
+            cursor.execute("TRUNCATE TABLE magic.cards")
+            cursor.execute("CREATE UNIQUE INDEX ON magic.cards (name)")
+            for idx, row in enumerate(response):
                 if row["legalities"]["vintage"] == "not_legal":
                     continue
+                if not idx % 10:
+                    logger.info("Importing row %d...", idx)
                 for intkey in ["power", "toughness"]:
                     val = row.pop(intkey, None)
                     if val:
@@ -214,7 +217,6 @@ class APIResource:
                     """,
                     row,
                 )
-                cursor.execute("""CREATE INDEX ON magic.cards (name)""")
         finally:
             self._conn_pool.putconn(conn)
 
