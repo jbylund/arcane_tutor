@@ -15,10 +15,11 @@ RUN python -m pip install --upgrade pip
 
 RUN apt-get install -y libpython3-dev libev-dev libpq-dev
 
-RUN python -m pip install --upgrade \
-    requests \
+RUN python -m pip install --quiet --upgrade \
     bjoern \
     falcon \
-    psycopg2
+    psycopg2 \
+    pyparsing \
+    requests
 
 COPY . .

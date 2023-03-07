@@ -15,6 +15,8 @@ import psycopg2.extras
 import psycopg2.pool
 from psycopg2.extensions import register_adapter
 
+from parsing import parse_search_query, generate_sql_query
+
 register_adapter(dict, psycopg2.extras.Json)
 
 logger = logging.getLogger("apiresource")
@@ -39,6 +41,7 @@ class APIResource:
             "get_cards": self.get_cards,
             "import": self.import_data,
             "pid": self.get_pid,
+            "search": self.search,
         }
 
     def handle(self, req: falcon.Request, resp: falcon.Response, **_kwargs):
@@ -183,10 +186,10 @@ class APIResource:
                             row[intkey] = None
                 for key in [
                     "mana_cost",
-                    "power_txt", 
-                    "power", 
+                    "power_txt",
+                    "power",
                     "toughness_txt",
-                    "toughness", 
+                    "toughness",
                 ]:
                     row.setdefault(key, None)
 
@@ -253,8 +256,10 @@ class APIResource:
                 "limit": limit,
             },
         )["result"]
-    
+
     def get_cards_to_csv(self, min_name=None, max_name=None, limit=2500, falcon_response=None, **_):
+        if falcon_response is None:
+            raise ValueError("falcon_response is required")
         raw_cards = self.get_cards(min_name=min_name, max_name=max_name, limit=limit)
         falcon_response.content_type = "text/csv"
 
@@ -265,3 +270,9 @@ class APIResource:
         str_buffer.seek(0)
         val = str_buffer.getvalue()
         falcon_response.body = val.encode("utf-8")
+
+    def search(self, *, query=None, **_):
+        """Run a query"""
+        parsed_query = parse_search_query(query)
+        compiled_query = generate_sql_query(parsed_query)
+        return compiled_query
