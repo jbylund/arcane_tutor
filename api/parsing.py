@@ -21,76 +21,7 @@ from pyparsing import (
 )
 
 
-def parse_search_query(query):
-    if query is None:
-        return []
-    # Define keywords and operators
-    keyword = Word(alphas)
-    operator_or = CaselessKeyword("OR")
-    operator_and = CaselessKeyword("AND")
-    operator_not = Literal("-")
-
-    operator = operator_or | operator_and | operator_not
-
-    # Define filters
-    filter_name = Word(alphas, alphanums + "_")
-    filter_value = QuotedString('"') | Word(alphanums)
-    filter_expr = Group(filter_name + Literal(":") + filter_value)
-
-    # Define search terms
-    term = filter_expr | QuotedString('"', escChar="\\") | keyword
-
-    # Define expression
-    expr = Forward()
-    group = Group(Suppress("(") + expr + Suppress(")"))
-    factor = Optional(operator_not) + (term | group)
-    expr <<= factor + OneOrMore((operator_and | operator_or) + factor)
-
-    try:
-        parsed = expr.parseString(query)
-    except ParseException as e:
-        print(f"Error: {e.msg}")
-        return None
-
-    return parsed.asList()
-
-
-def parser_2(query):
-    # Define some basic terms
-    attrname = Word(alphas)
-    colon = Literal(":")
-    dash = Literal("-")
-    dot = Literal(".")
-    comma = Literal(",")
-    lparen = Literal("(").suppress()
-    rparen = Literal(")").suppress()
-    integer = Word(nums).setParseAction(lambda t: int(t[0]))
-    float_number = Combine(Word(nums) + Optional(dot + Optional(Word(nums)))).setParseAction(lambda t: float(t[0]))
-    quoted_string = QuotedString('"', escChar="\\")
-
-    # Define some basic search terms
-    operator = oneOf(": > < >= <=")
-    identifier = oneOf("t o f q e c m cm ci is")
-    identifier_group = Group(attrname + Optional(colon + identifier))
-    search_term = identifier_group + operator + (integer | float_number | quoted_string)
-
-    # Define some more complex search terms
-    in_operator = CaselessLiteral("in")
-    set_literal = (lparen + Group(OneOrMore(search_term)) + rparen) | quoted_string
-    set_search_term = identifier_group + in_operator + set_literal
-    and_operator = CaselessLiteral("and")
-    or_operator = CaselessLiteral("or")
-    not_operator = CaselessLiteral("not")
-    boolean_operator = and_operator | or_operator | not_operator
-
-    grammar = OneOrMore(set_search_term | search_term + FollowedBy(set_search_term | boolean_operator)) + ZeroOrMore(
-        boolean_operator + OneOrMore(set_search_term | search_term + FollowedBy(set_search_term | boolean_operator))
-    )
-
-    return grammar.parseWithTabs().parseString(query)
-
-
-def parser_3(query):
+def parse(query):
     attrname = Word(alphas)
     attrop = oneOf(": > < >= <= = !=")
 
@@ -170,7 +101,7 @@ def generate_sql_query(parsed_query):
 
 def main():
     query = "cmc:2 (o:flying OR o:haste) AND (c:red OR c:green)"
-    print(parser_2(query))
+    print(parse(query))
 
 
 if __name__ == "__main__":

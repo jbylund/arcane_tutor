@@ -28,5 +28,5 @@ from api import parsing
     ],
 )
 def test_parse(test_input, expected):
-    observed = parsing.parser_3(test_input)
+    observed = parsing.parse(test_input)
     assert observed == expected
