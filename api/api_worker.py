@@ -1,6 +1,8 @@
 import multiprocessing
-import falcon
+
 import bjoern
+import falcon
+
 
 class ApiWorker(multiprocessing.Process):
     """Start a server process in a subprocess"""

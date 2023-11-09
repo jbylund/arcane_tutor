@@ -20,6 +20,7 @@ def get_args() -> Dict:
     parser.add_argument("--workers", type=int, default=10)
     return vars(parser.parse_args())
 
+
 def main():
     """Main entrypoint for the api container"""
     logging.basicConfig(level=logging.INFO)
@@ -51,6 +52,7 @@ def main():
     # terminate all the workers
     for iworker in workers:
         iworker.terminate()
+
 
 if "__main__" == __name__:
     main()

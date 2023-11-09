@@ -1,18 +1,18 @@
 from pyparsing import (
-    alphas,
     CaselessKeyword,
+    CaselessLiteral,
+    Combine,
     Forward,
     Group,
     Literal,
     Optional,
     ParseResults,
-    oneOf,
-    Combine,
     QuotedString,
     Word,
-    nums,
-    CaselessLiteral,
     ZeroOrMore,
+    alphas,
+    nums,
+    oneOf,
 )
 
 

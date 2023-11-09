@@ -1,4 +1,5 @@
 import pytest
+
 from api import parsing
 
 
@@ -17,12 +18,10 @@ from api import parsing
         ("a:b or c:d", [["a", ":", "b"], "OR", ["c", ":", "d"]]),
         ("a:b and c:d or e:f", [["a", ":", "b"], "AND", ["c", ":", "d"], "OR", ["e", ":", "f"]]),
         ("a b:c", [["a"], ["b", ":", "c"]]),
-
         # other operators
         ("a=b", [["a", "=", "b"]]),
         ("cmc=3", [["cmc", "=", 3]]),
         ("a!=b", [["a", "!=", "b"]]),
-        
         # more parens
         ("a:b and (c:d or e:f)", [["a", ":", "b"], "AND", [["c", ":", "d"], "OR", ["e", ":", "f"]]]),
     ],
