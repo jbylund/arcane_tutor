@@ -8,14 +8,13 @@ import os
 import time
 from urllib.parse import urlparse
 
-import requests
 import falcon
 import psycopg2
 import psycopg2.extras
 import psycopg2.pool
+import requests
+from parsing import generate_sql_query, parse_search_query
 from psycopg2.extensions import register_adapter
-
-from parsing import parse_search_query, generate_sql_query
 
 register_adapter(dict, psycopg2.extras.Json)
 
@@ -256,7 +255,7 @@ class APIResource:
                 "limit": limit,
             },
         )["result"]
-    
+
     def get_cards_to_csv(self, min_name=None, max_name=None, limit=2500, falcon_response=None, **_):
         if falcon_response is None:
             raise ValueError("falcon_response is required")
