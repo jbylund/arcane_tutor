@@ -11,9 +11,7 @@ class ApiWorker(multiprocessing.Process):
         self.port = port
 
     @staticmethod
-    def json_error_serializer(
-        _: object, response: falcon.Response, exception: falcon.HTTPError
-    ) -> None:
+    def json_error_serializer(_: object, response: falcon.Response, exception: falcon.HTTPError) -> None:
         """An error serializer that goes to json."""
         response.body = exception.to_json()
         response.content_type = "application/json"
