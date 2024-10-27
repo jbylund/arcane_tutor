@@ -8,7 +8,8 @@ from typing import Dict
 
 import bjoern
 import falcon
-from api_worker import ApiWorker
+
+from .api_worker import ApiWorker
 
 logger = logging.getLogger("api")
 

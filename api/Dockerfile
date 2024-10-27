@@ -9,9 +9,11 @@ RUN apt-get update && apt-get install -y \
 RUN python3 -V
 RUN ln -s $(python3 -c "import sys; print(sys.executable)") /usr/local/bin/python
 
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+
 RUN curl -sSL https://bootstrap.pypa.io/get-pip.py -o get-pip.py && python get-pip.py && rm get-pip.py
 
-RUN python -m pip install --upgrade pip 
+RUN python -m pip install --upgrade pip
 
 RUN apt-get install -y libpython3-dev libev-dev libpq-dev
 
@@ -22,4 +24,5 @@ RUN python -m pip install --quiet --upgrade \
     pyparsing \
     requests
 
-COPY . .
+RUN mkdir -p /app
+COPY . /app

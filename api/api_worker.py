@@ -15,7 +15,7 @@ class ApiWorker(multiprocessing.Process):
     @staticmethod
     def json_error_serializer(_: object, response: falcon.Response, exception: falcon.HTTPError) -> None:
         """An error serializer that goes to json."""
-        response.body = exception.to_json()
+        response.text = exception.to_json()
         response.content_type = "application/json"
 
     @staticmethod
@@ -25,7 +25,7 @@ class ApiWorker(multiprocessing.Process):
         # for which it matters, but for some servers or clients this is a little safer than
         # importing then forking
 
-        import api_resource  # pylint: disable=import-outside-toplevel
+        from . import api_resource  # pylint: disable=import-outside-toplevel
 
         api = falcon.App()
         api.set_error_serializer(ApiWorker.json_error_serializer)

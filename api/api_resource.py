@@ -1,4 +1,5 @@
 """Implementation of the routes of our simple api"""
+
 import collections
 import csv
 import io
@@ -13,8 +14,9 @@ import psycopg2
 import psycopg2.extras
 import psycopg2.pool
 import requests
-from parsing import generate_sql_query, parse_search_query
 from psycopg2.extensions import register_adapter
+
+from .parsing import generate_sql_query, parse_search_query
 
 register_adapter(dict, psycopg2.extras.Json)
 
@@ -124,7 +126,7 @@ class APIResource:
         return "migrations" in existing_tables
 
     def get_data(self):
-        cache_file = "/data/api/foo.json"
+        cache_file = "/mnt/scryfall_data.json"
         if os.path.exists(cache_file):
             with open(cache_file) as f:
                 response = json.load(f)
@@ -141,7 +143,7 @@ class APIResource:
 
     def import_data(self, **_):
         """Import data from scryfall"""
-        response = self.get_data()
+        all_cards = self.get_data()
 
         conn = self._conn_pool.getconn()
         conn.cursor_factory = psycopg2.extras.DictCursor
@@ -149,82 +151,22 @@ class APIResource:
         cursor = conn.cursor()
 
         try:
-            cursor.execute("CREATE SCHEMA IF NOT EXISTS magic")
-            cursor.execute("DROP TABLE IF EXISTS magic.cards")
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS magic.cards (
-                    cmc integer,
-                    mana_cost text,
-                    name text,
-                    other jsonb,
-                    power integer,
-                    power_txt text,
-                    prices jsonb,
-                    toughness integer,
-                    toughness_txt text,
-                    type_line text
-                )
-                """
-            )
-            cursor.execute("TRUNCATE TABLE magic.cards")
-            cursor.execute("CREATE UNIQUE INDEX ON magic.cards (name)")
-            for idx, row in enumerate(response):
-                if row["legalities"]["vintage"] == "not_legal":
-                    continue
-                if not idx % 10:
-                    logger.info("Importing row %d...", idx)
-                for intkey in ["power", "toughness"]:
-                    val = row.pop(intkey, None)
-                    if val:
-                        try:
-                            row[intkey] = int(val)
-                            row[f"{intkey}_txt"] = None
-                        except ValueError:
-                            row[f"{intkey}_txt"] = val
-                            row[intkey] = None
-                for key in [
-                    "mana_cost",
-                    "power_txt",
-                    "power",
-                    "toughness_txt",
-                    "toughness",
-                ]:
-                    row.setdefault(key, None)
-
+            cursor.execute("delete from magic.scryfall_raw_cards")
+            for idx, row in enumerate(all_cards):
                 cursor.execute(
                     """
-                    INSERT INTO magic.cards (
-                        cmc,
-                        mana_cost,
-                        name,
-                        power,
-                        power_txt,
-                        prices,
-                        toughness,
-                        toughness_txt,
-                        type_line
-                    )
-                    VALUES (
-                        %(cmc)s,
-                        %(mana_cost)s,
-                        %(name)s,
-                        %(power)s,
-                        %(power_txt)s,
-                        %(prices)s,
-                        %(toughness)s,
-                        %(toughness_txt)s,
-                        %(type_line)s
-                    )
+                    INSERT INTO magic.scryfall_raw_cards
+                    (raw_card) VALUES
+                    (%(raw_card)s)
                     """,
-                    row,
+                    {"raw_card": row},
                 )
         finally:
             self._conn_pool.putconn(conn)
 
         key_frequency = collections.Counter()
-        for card in response:
-            key_frequency.update(k for k, v in card.items() if v)
+        for card in all_cards:
+            key_frequency.update(card.keys())
         print(json.dumps(dict(key_frequency.most_common(100)), indent=4))
 
     def get_cards(self, min_name=None, max_name=None, limit=2500, **_):
@@ -239,7 +181,7 @@ class APIResource:
                 (prices->>'usd')::double precision AS price,
                 toughness,
                 type_line
-            FROM 
+            FROM
                 magic.cards
             WHERE
                 (%(min_name)s IS NULL OR %(min_name)s < name) AND

@@ -1,4 +1,5 @@
 services:
+
     postgres:
         cap_add:
         - ALL
@@ -12,16 +13,18 @@ services:
         - POSTGRES_DB=${XPGDATABASE}
         - POSTGRES_PASSWORD=${XPGPASSWORD}
         - POSTGRES_USER=${XPGUSER}
-        image: registry.hub.docker.com/library/postgres:15
+        image: registry.hub.docker.com/library/postgres:17
         ports:
         - 15432:5432
         shm_size: 1024M
-        user: 1000:1000
+        # user: 1000:1000
         volumes:
         - ./configs/postgres/conf/pg_hba.conf:/pg_hba.conf
         - ./configs/postgres/conf/postgresql.conf:/postgresql.conf
         - ./configs/postgres/init/:/docker-entrypoint-initdb.d
-        - ./data/postgres:/data/pg
+        # - ./data/postgres:/data/pg
+        - magic_pg:/data/pg
+
     apiservice:
         build:
             context: ./api/
@@ -33,7 +36,8 @@ services:
         - --
         - python
         - -u
-        - ./entrypoint.py
+        - -m
+        - app
         container_name: apiservice
         environment:
         - PGDATABASE=${XPGDATABASE}
@@ -47,6 +51,8 @@ services:
         user: 1000:1000
         volumes:
             - ./data/api:/data/api
+            - ./data/scryfall_data.json:/mnt/scryfall_data.json
+
     clientservice:
         build:
             context: ./client/
@@ -62,4 +68,6 @@ services:
         container_name: clientservice
         external_links:
         - apiservice
-version: '3.4'
+
+volumes:
+    magic_pg:

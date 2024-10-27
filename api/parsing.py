@@ -93,6 +93,9 @@ def generate_sql_query(parsed_query):
     # sql_query += ' AND '.join(' AND ' + convert_filter(f) for f in parsed_query if isinstance(f, list))
     # return sql_query
 
+def parse_search_query(query):
+    return None
+
 
 def main():
     query = "cmc:2 (o:flying OR o:haste) AND (c:red OR c:green)"
