@@ -1,21 +1,26 @@
+import logging
 import multiprocessing
+import os
 
 import bjoern
 import falcon
+
+logger = logging.getLogger(__name__)
 
 
 class ApiWorker(multiprocessing.Process):
     """Start a server process in a subprocess"""
 
-    def __init__(self, host="0.0.0.0", port=8080):
+    def __init__(self, *, host="0.0.0.0", port=8080, exit_flag: multiprocessing.Event = None):
         super().__init__()
         self.host = host
         self.port = port
+        self.exit_flag = exit_flag
 
     @staticmethod
     def json_error_serializer(_: object, response: falcon.Response, exception: falcon.HTTPError) -> None:
         """An error serializer that goes to json."""
-        response.body = exception.to_json()
+        response.media = exception.to_dict()
         response.content_type = "application/json"
 
     @staticmethod
@@ -35,5 +40,11 @@ class ApiWorker(multiprocessing.Process):
 
     def run(self):
         """Run the server indefinitely"""
-        app = self.get_api()
-        bjoern.run(app, self.host, self.port, reuse_port=True)
+        logging.basicConfig(level=logging.INFO)
+        logging.info("Starting worker with pid %d", os.getpid())
+        try:
+            app = self.get_api()
+            bjoern.run(app, self.host, self.port, reuse_port=True)
+        except Exception as e:
+            logger.error("Error running server: %s", e)
+            self.exit_flag.set()

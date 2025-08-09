@@ -12,7 +12,7 @@ services:
         - POSTGRES_DB=${XPGDATABASE}
         - POSTGRES_PASSWORD=${XPGPASSWORD}
         - POSTGRES_USER=${XPGUSER}
-        image: registry.hub.docker.com/library/postgres:15
+        image: registry.hub.docker.com/library/postgres:17.5
         ports:
         - 15432:5432
         shm_size: 1024M
@@ -24,22 +24,22 @@ services:
         - ./data/postgres:/data/pg
     apiservice:
         build:
-            context: ./api/
-            dockerfile: ./Dockerfile
+            context: ./
+            dockerfile: ./api/Dockerfile
         cap_add:
         - ALL
         command:
         - dumb-init
         - --
         - python
-        - -u
-        - ./entrypoint.py
+        - ./api/entrypoint.py
         container_name: apiservice
         environment:
         - PGDATABASE=${XPGDATABASE}
         - PGHOST=${DOCKER_POSTGRES_HOST}
         - PGPASSWORD=${XPGPASSWORD}
         - PGUSER=${XPGUSER}
+        - PYTHONUNBUFFERED=true
         external_links:
         - postgres:${DOCKER_POSTGRES_HOST}
         ports:
@@ -62,4 +62,3 @@ services:
         container_name: clientservice
         external_links:
         - apiservice
-version: '3.4'

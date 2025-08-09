@@ -29,9 +29,10 @@ def main():
 
     logger.info("Starting %d workers on port %d...", args["workers"], args["port"])
 
+    exit_flag = multiprocessing.Event()
     # start workers
     for _ in range(args["workers"]):
-        iworker = ApiWorker(host="0.0.0.0", port=args["port"])
+        iworker = ApiWorker(host="0.0.0.0", port=args["port"], exit_flag=exit_flag)
         workers.append(iworker)
         iworker.start()
 
@@ -45,7 +46,11 @@ def main():
 
     try:
         while all_workers_alive():
-            time.sleep(1)
+            # block for up to 1 second on exit flag being set
+            response = exit_flag.wait(1)
+            if response:
+                logger.info("Exit flag set, terminating workers")
+                break
     except KeyboardInterrupt:
         pass
 
