@@ -100,49 +100,55 @@ class Condition(QueryNode):
 class AndNode(QueryNode):
     """Represents AND operation between multiple conditions"""
     
-    def __init__(self, left: QueryNode, right: QueryNode):
-        self.left = left
-        self.right = right
+    def __init__(self, operands: List[QueryNode]):
+        self.operands = operands
     
     def to_sql(self) -> str:
-        left_sql = self.left.to_sql()
-        right_sql = self.right.to_sql()
-        return f"({left_sql} AND {right_sql})"
+        if not self.operands:
+            return "TRUE"
+        elif len(self.operands) == 1:
+            return self.operands[0].to_sql()
+        else:
+            sql_parts = [operand.to_sql() for operand in self.operands]
+            return f"({' AND '.join(sql_parts)})"
     
     def __repr__(self):
-        return f'And({self.left}, {self.right})'
+        return f'And({", ".join(repr(op) for op in self.operands)})'
     
     def __eq__(self, other):
         if not isinstance(other, AndNode):
             return False
-        return self.left == other.left and self.right == other.right
+        return self.operands == other.operands
     
     def __hash__(self):
-        return hash(('And', self.left, self.right))
+        return hash(('And', tuple(self.operands)))
 
 
 class OrNode(QueryNode):
     """Represents OR operation between multiple conditions"""
     
-    def __init__(self, left: QueryNode, right: QueryNode):
-        self.left = left
-        self.right = right
+    def __init__(self, operands: List[QueryNode]):
+        self.operands = operands
     
     def to_sql(self) -> str:
-        left_sql = self.left.to_sql()
-        right_sql = self.right.to_sql()
-        return f"({left_sql} OR {right_sql})"
+        if not self.operands:
+            return "FALSE"
+        elif len(self.operands) == 1:
+            return self.operands[0].to_sql()
+        else:
+            sql_parts = [operand.to_sql() for operand in self.operands]
+            return f"({' OR '.join(sql_parts)})"
     
     def __repr__(self):
-        return f'Or({self.left}, {self.right})'
+        return f'Or({", ".join(repr(op) for op in self.operands)})'
     
     def __eq__(self, other):
         if not isinstance(other, OrNode):
             return False
-        return self.left == other.left and self.right == other.right
+        return self.operands == other.operands
     
     def __hash__(self):
-        return hash(('Or', self.left, self.right))
+        return hash(('Or', tuple(self.operands)))
 
 
 class NotNode(QueryNode):
@@ -186,6 +192,47 @@ class Query(QueryNode):
     
     def __hash__(self):
         return hash(('Query', self.root))
+
+
+def flatten_nested_operations(node: QueryNode) -> QueryNode:
+    """Flatten nested operations of the same type to create canonical n-ary forms"""
+    if isinstance(node, AndNode):
+        # Collect all operands, recursively flattening nested AND operations
+        operands = []
+        for operand in node.operands:
+            if isinstance(operand, AndNode):
+                # Recursively flatten nested AND operations
+                flattened = flatten_nested_operations(operand)
+                operands.extend(flattened.operands)
+            else:
+                # Recursively flatten other types of nodes
+                operands.append(flatten_nested_operations(operand))
+        return AndNode(operands)
+    
+    elif isinstance(node, OrNode):
+        # Collect all operands, recursively flattening nested OR operations
+        operands = []
+        for operand in node.operands:
+            if isinstance(operand, OrNode):
+                # Recursively flatten nested OR operations
+                flattened = flatten_nested_operations(operand)
+                operands.extend(flattened.operands)
+            else:
+                # Recursively flatten other types of nodes
+                operands.append(flatten_nested_operations(operand))
+        return OrNode(operands)
+    
+    elif isinstance(node, NotNode):
+        # Recursively flatten the operand
+        return NotNode(flatten_nested_operations(node.operand))
+    
+    elif isinstance(node, Query):
+        # Recursively flatten the root
+        return Query(flatten_nested_operations(node.root))
+    
+    else:
+        # Condition and other leaf nodes don't need flattening
+        return node
 
 
 def parse_search_query(query: str) -> Query:
@@ -271,18 +318,43 @@ def parse_search_query(query: str) -> Query:
         if len(tokens) == 1:
             return tokens[0]
         
-        result = tokens[0]
+        # Group operands by operator type
+        current_operands = [tokens[0]]
+        current_operator = None
+        
         for i in range(1, len(tokens), 2):
             if i + 1 < len(tokens):
                 operator = tokens[i]
                 right = tokens[i + 1]
                 
-                if operator.upper() == "AND":
-                    result = AndNode(result, right)
-                elif operator.upper() == "OR":
-                    result = OrNode(result, right)
+                if current_operator is None:
+                    # First operator, start collecting
+                    current_operator = operator.upper()
+                    current_operands.append(right)
+                elif operator.upper() == current_operator:
+                    # Same operator, add to current group
+                    current_operands.append(right)
+                else:
+                    # Different operator, create node for current group and start new group
+                    if current_operator == "AND":
+                        result = AndNode(current_operands)
+                    elif current_operator == "OR":
+                        result = OrNode(current_operands)
+                    else:
+                        raise ValueError(f"Unknown operator: {current_operator}")
+                    
+                    # Start new group with the result as first operand
+                    current_operands = [result, right]
+                    current_operator = operator.upper()
         
-        return result
+        # Create final node for remaining operands
+        if current_operator == "AND":
+            return AndNode(current_operands)
+        elif current_operator == "OR":
+            return OrNode(current_operands)
+        else:
+            # No operators, just return the single operand
+            return current_operands[0]
     
     # The main expression: factors separated by AND/OR operators
     expr <<= factor + ZeroOrMore((operator_and | operator_or) + factor)
@@ -292,7 +364,9 @@ def parse_search_query(query: str) -> Query:
     try:
         parsed = expr.parseString(query)
         if parsed:
-            return Query(parsed[0])
+            # Flatten nested operations to create canonical n-ary forms
+            flattened = flatten_nested_operations(Query(parsed[0]))
+            return flattened
         else:
             return Query(Condition("name", ":", ""))
     except Exception as e:

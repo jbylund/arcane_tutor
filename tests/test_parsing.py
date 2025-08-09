@@ -7,43 +7,43 @@ from api import parsing
     "test_input, expected_ast",
     [
         ("a", parsing.Condition("name", ":", "a")),
-        ("a b", parsing.AndNode(
+        ("a b", parsing.AndNode([
             parsing.Condition("name", ":", "a"),
             parsing.Condition("name", ":", "b")
-        )),
-        ("a -b", parsing.AndNode(
+        ])),
+        ("a -b", parsing.AndNode([
             parsing.Condition("name", ":", "a"),
             parsing.NotNode(parsing.Condition("name", ":", "b"))
-        )),
+        ])),
         ("a:b", parsing.Condition("a", ":", "b")),
-        ("a:b c:d", parsing.AndNode(
+        ("a:b c:d", parsing.AndNode([
             parsing.Condition("a", ":", "b"),
             parsing.Condition("c", ":", "d")
-        )),
-        ("a:b and c:d", parsing.AndNode(
+        ])),
+        ("a:b and c:d", parsing.AndNode([
             parsing.Condition("a", ":", "b"),
             parsing.Condition("c", ":", "d")
-        )),
-        ("a:b or c:d", parsing.OrNode(
+        ])),
+        ("a:b or c:d", parsing.OrNode([
             parsing.Condition("a", ":", "b"),
             parsing.Condition("c", ":", "d")
-        )),
-        ("a b:c", parsing.AndNode(
+        ])),
+        ("a b:c", parsing.AndNode([
             parsing.Condition("name", ":", "a"),
             parsing.Condition("b", ":", "c")
-        )),
+        ])),
         # other operators
         ("a=b", parsing.Condition("a", "=", "b")),
         ("cmc=3", parsing.Condition("cmc", "=", 3)),
         ("a!=b", parsing.Condition("a", "!=", "b")),
         # more parens
-        ("a:b and (c:d or e:f)", parsing.AndNode(
+        ("a:b and (c:d or e:f)", parsing.AndNode([
             parsing.Condition("a", ":", "b"),
-            parsing.OrNode(
+            parsing.OrNode([
                 parsing.Condition("c", ":", "d"),
                 parsing.Condition("e", ":", "f")
-            )
-        )),
+            ])
+        ])),
     ],
 )
 def test_parse_basic_structure(test_input, expected_ast):
@@ -75,8 +75,9 @@ def test_parse_and_operation():
     
     assert isinstance(result, parsing.Query)
     assert isinstance(result.root, parsing.AndNode)
-    assert isinstance(result.root.left, parsing.Condition)
-    assert isinstance(result.root.right, parsing.Condition)
+    assert len(result.root.operands) == 2
+    assert isinstance(result.root.operands[0], parsing.Condition)
+    assert isinstance(result.root.operands[1], parsing.Condition)
 
 
 def test_parse_or_operation():
@@ -86,8 +87,9 @@ def test_parse_or_operation():
     
     assert isinstance(result, parsing.Query)
     assert isinstance(result.root, parsing.OrNode)
-    assert isinstance(result.root.left, parsing.Condition)
-    assert isinstance(result.root.right, parsing.Condition)
+    assert len(result.root.operands) == 2
+    assert isinstance(result.root.operands[0], parsing.Condition)
+    assert isinstance(result.root.operands[1], parsing.Condition)
 
 
 def test_parse_implicit_and():
@@ -97,8 +99,9 @@ def test_parse_implicit_and():
     
     assert isinstance(result, parsing.Query)
     assert isinstance(result.root, parsing.AndNode)
-    assert isinstance(result.root.left, parsing.Condition)
-    assert isinstance(result.root.right, parsing.Condition)
+    assert len(result.root.operands) == 2
+    assert isinstance(result.root.operands[0], parsing.Condition)
+    assert isinstance(result.root.operands[1], parsing.Condition)
 
 
 def test_parse_complex_nested():
@@ -108,8 +111,9 @@ def test_parse_complex_nested():
     
     assert isinstance(result, parsing.Query)
     assert isinstance(result.root, parsing.AndNode)
+    assert len(result.root.operands) == 2
     # The right side should be an OR operation
-    assert isinstance(result.root.right, parsing.OrNode)
+    assert isinstance(result.root.operands[1], parsing.OrNode)
 
 
 def test_parse_quoted_strings():
@@ -194,3 +198,59 @@ def test_name_vs_name_attribute():
     assert isinstance(result4.root, parsing.Condition)
     assert result4.root.attribute == "oracle"
     assert result4.root.value == "flying"
+
+
+def test_and_operator_associativity():
+    """Test that AND operator associativity now creates the same AST structure"""
+    # These should now create the same AST structure with n-ary operations
+    query1 = "a AND (b AND c)"
+    query2 = "(a AND b) AND c"
+    
+    result1 = parsing.parse_search_query(query1)
+    result2 = parsing.parse_search_query(query2)
+    
+    # With n-ary operations, both should now create the same AST structure
+    # Both should be: AndNode([a, b, c])
+    assert result1.root == result2.root, "These should now be identical with n-ary operations"
+    
+    # Verify the structure: AndNode([a, b, c])
+    assert isinstance(result1.root, parsing.AndNode)
+    assert len(result1.root.operands) == 3
+    assert isinstance(result1.root.operands[0], parsing.Condition)
+    assert isinstance(result1.root.operands[1], parsing.Condition)
+    assert isinstance(result1.root.operands[2], parsing.Condition)
+    
+    # Both should generate identical SQL
+    sql1 = parsing.generate_sql_query(result1)
+    sql2 = parsing.generate_sql_query(result2)
+    
+    assert sql1 == sql2, "SQL should be identical"
+    print(f"SQL: {sql1}")
+
+
+def test_or_operator_associativity():
+    """Test that OR operator associativity now creates the same AST structure"""
+    # These should now create the same AST structure with n-ary operations
+    query1 = "a OR (b OR c)"
+    query2 = "(a OR b) OR c"
+    
+    result1 = parsing.parse_search_query(query1)
+    result2 = parsing.parse_search_query(query2)
+    
+    # With n-ary operations, both should now create the same AST structure
+    # Both should be: OrNode([a, b, c])
+    assert result1.root == result2.root, "These should now be identical with n-ary operations"
+    
+    # Verify the structure: OrNode([a, b, c])
+    assert isinstance(result1.root, parsing.OrNode)
+    assert len(result1.root.operands) == 3
+    assert isinstance(result1.root.operands[0], parsing.Condition)
+    assert isinstance(result1.root.operands[1], parsing.Condition)
+    assert isinstance(result1.root.operands[2], parsing.Condition)
+    
+    # Both should generate identical SQL
+    sql1 = parsing.generate_sql_query(result1)
+    sql2 = parsing.generate_sql_query(result2)
+    
+    assert sql1 == sql2, "SQL should be identical"
+    print(f"SQL: {sql2}")
