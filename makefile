@@ -9,7 +9,7 @@ PROJECTNAME := scryfallos
 GIT_ROOT := $(shell git rev-parse --show-toplevel)
 MAYBENORUN := $(shell if echo | xargs --no-run-if-empty >/dev/null 2>/dev/null; then echo "--no-run-if-empty"; else echo ""; fi)
 BASE_COMPOSE := $(mkfile_dir)/docker-compose.yml
-LINTABLE_DIRS := api
+LINTABLE_DIRS := .
 
 DOCKER_POSTGRES_HOST=postgres
 XPGDATABASE=magic

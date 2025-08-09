@@ -1,4 +1,5 @@
 """Lift out "docstrings" from a specially constructed makefile"""
+
 # BEWARE: this script runs OUTSIDE containers, so pay special attention
 # to portability / avoid third party deps
 import argparse

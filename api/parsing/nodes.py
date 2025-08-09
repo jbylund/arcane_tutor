@@ -18,6 +18,8 @@ class LeafNode(QueryNode):
 class ValueNode(LeafNode):
     """These represent values, like strings and numbers"""
 
+    value: object
+
     def __repr__(self):
         return f"{self.__class__.__name__}({repr(self.value)})"
 
@@ -101,11 +103,7 @@ class BinaryOperatorNode(QueryNode):
     def __eq__(self, other):
         if not isinstance(other, self.__class__):
             return False
-        return (
-            self.lhs == other.lhs and 
-            self.operator == other.operator and 
-            self.rhs == other.rhs
-        )
+        return self.lhs == other.lhs and self.operator == other.operator and self.rhs == other.rhs
 
     def __hash__(self):
         return hash((self.__class__.__name__, self.lhs, self.operator, self.rhs))
