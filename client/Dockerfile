@@ -1,4 +1,4 @@
-FROM ubuntu:rolling
+FROM ubuntu:latest
 
 RUN apt-get update && apt-get install -y dumb-init python3
 RUN python3 -V

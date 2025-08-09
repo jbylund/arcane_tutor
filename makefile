@@ -2,14 +2,14 @@
 
 SHELL:=/bin/bash
 
-mkfile_path:=$(abspath $(lastword $(MAKEFILE_LIST)))
-mkfile_dir:=$(shell dirname $(mkfile_path) )
-PROJECTNAME:=arangorelay
+mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
+mkfile_dir := $(shell dirname $(mkfile_path) )
+PROJECTNAME := scryfallos
 
-GIT_ROOT:=$(shell git rev-parse --show-toplevel)
-MAYBENORUN:=$(shell if echo | xargs --no-run-if-empty >/dev/null 2>/dev/null; then echo "--no-run-if-empty"; else echo ""; fi)
-BASE_COMPOSE:=$(mkfile_dir)/docker-compose.yml
-LINTABLE_DIRS:=api
+GIT_ROOT := $(shell git rev-parse --show-toplevel)
+MAYBENORUN := $(shell if echo | xargs --no-run-if-empty >/dev/null 2>/dev/null; then echo "--no-run-if-empty"; else echo ""; fi)
+BASE_COMPOSE := $(mkfile_dir)/docker-compose.yml
+LINTABLE_DIRS := api
 
 DOCKER_POSTGRES_HOST=postgres
 XPGDATABASE=magic
@@ -44,7 +44,7 @@ hlep: help
 
 ###  Entry points
 
-up: datadir images down check_env # @doc start services for arango relay
+up: datadir images down check_env # @doc start services for scryfallos
 	cd $(GIT_ROOT) && docker compose --file $(BASE_COMPOSE) up --remove-orphans --abort-on-container-exit
 
 down: # @doc stop all services
@@ -54,10 +54,10 @@ images: build_images pull_images # @doc refresh images
 
 build_images: # @doc refresh locally built images
 	cd $(GIT_ROOT) && \
-	docker compose --file $(BASE_COMPOSE) build --progress plain
+	docker compose --progress=plain --file $(BASE_COMPOSE) build
 
-pull_images: $(PIPELINE_COMPOSE) $(CLOUD_CSV_COMPOSE) $(BASE_COMPOSE) # @doc pull images from remote repos
-	docker compose --file $(BASE_COMPOSE) pull
+pull_images: $(BASE_COMPOSE) # @doc pull images from remote repos
+	true || docker compose --file $(BASE_COMPOSE) pull
 
 ensure_black:
 	@python -m black --version > /dev/null || python -m pip install black
@@ -98,3 +98,5 @@ datadir:
 
 reset:
 	rm -rvf data
+
+test:

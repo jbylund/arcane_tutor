@@ -1,4 +1,4 @@
-FROM ubuntu:rolling
+FROM ubuntu:latest
 
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -8,6 +8,9 @@ RUN apt-get update && apt-get install -y \
 
 RUN python3 -V
 RUN ln -s $(python3 -c "import sys; print(sys.executable)") /usr/local/bin/python
+
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+ENV PIP_ROOT_USER_ACTION=ignore
 
 RUN curl -sSL https://bootstrap.pypa.io/get-pip.py -o get-pip.py && python get-pip.py && rm get-pip.py
 
@@ -22,4 +25,4 @@ RUN python -m pip install --quiet --upgrade \
     pyparsing \
     requests
 
-COPY . .
+COPY ./api /api
