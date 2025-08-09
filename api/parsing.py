@@ -28,9 +28,6 @@ class QueryNode(ABC):
         pass
 
 
-
-
-
 class Condition(QueryNode):
     """Represents a single condition like 'oracle:flying' or 'type:creature'"""
     
@@ -97,58 +94,59 @@ class Condition(QueryNode):
         return hash((self.attribute, self.operator, self.value))
 
 
-class AndNode(QueryNode):
+class NaryOperatorNode(QueryNode):
+    """Base class for n-ary operators (AND, OR) that take multiple operands"""
+    
+    def __init__(self, operands: List[QueryNode]):
+        self.operands = operands
+    
+    def to_sql(self) -> str:
+        if not self.operands:
+            return self._empty_result()
+        elif len(self.operands) == 1:
+            return self.operands[0].to_sql()
+        else:
+            inners = f" {self._operator()} ".join(operand.to_sql() for operand in self.operands)
+            return f"({inners})"
+    
+    def _operator(self) -> str:
+        """Return the SQL operator string - to be implemented by subclasses"""
+        raise NotImplementedError
+    
+    def _empty_result(self) -> str:
+        """Return the result for empty operands - to be implemented by subclasses"""
+        raise NotImplementedError
+    
+    def __repr__(self):
+        return f'{self.__class__.__name__}({", ".join(repr(op) for op in self.operands)})'
+    
+    def __eq__(self, other):
+        if not isinstance(other, self.__class__):
+            return False
+        return self.operands == other.operands
+    
+    def __hash__(self):
+        return hash((self.__class__.__name__, tuple(self.operands)))
+
+
+class AndNode(NaryOperatorNode):
     """Represents AND operation between multiple conditions"""
     
-    def __init__(self, operands: List[QueryNode]):
-        self.operands = operands
+    def _operator(self) -> str:
+        return "AND"
     
-    def to_sql(self) -> str:
-        if not self.operands:
-            return "TRUE"
-        elif len(self.operands) == 1:
-            return self.operands[0].to_sql()
-        else:
-            sql_parts = [operand.to_sql() for operand in self.operands]
-            return f"({' AND '.join(sql_parts)})"
-    
-    def __repr__(self):
-        return f'And({", ".join(repr(op) for op in self.operands)})'
-    
-    def __eq__(self, other):
-        if not isinstance(other, AndNode):
-            return False
-        return self.operands == other.operands
-    
-    def __hash__(self):
-        return hash(('And', tuple(self.operands)))
+    def _empty_result(self) -> str:
+        return "TRUE"
 
 
-class OrNode(QueryNode):
+class OrNode(NaryOperatorNode):
     """Represents OR operation between multiple conditions"""
     
-    def __init__(self, operands: List[QueryNode]):
-        self.operands = operands
+    def _operator(self) -> str:
+        return "OR"
     
-    def to_sql(self) -> str:
-        if not self.operands:
-            return "FALSE"
-        elif len(self.operands) == 1:
-            return self.operands[0].to_sql()
-        else:
-            sql_parts = [operand.to_sql() for operand in self.operands]
-            return f"({' OR '.join(sql_parts)})"
-    
-    def __repr__(self):
-        return f'Or({", ".join(repr(op) for op in self.operands)})'
-    
-    def __eq__(self, other):
-        if not isinstance(other, OrNode):
-            return False
-        return self.operands == other.operands
-    
-    def __hash__(self):
-        return hash(('Or', tuple(self.operands)))
+    def _empty_result(self) -> str:
+        return "FALSE"
 
 
 class NotNode(QueryNode):
