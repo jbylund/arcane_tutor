@@ -172,17 +172,16 @@ def parse_search_query(query: str) -> Query:
             """Create appropriate node type for a value"""
             if isinstance(value, (int, float)):
                 return NumericValueNode(value)
-            elif isinstance(value, str):
+            if isinstance(value, str):
                 # Check if it should be an attribute or a string value
                 if should_be_attribute(value):
                     return AttributeNode(value)
-                else:
-                    return StringValueNode(value)
-            elif isinstance(value, tuple) and value[0] == "quoted":
+                return StringValueNode(value)
+            if isinstance(value, tuple) and value[0] == "quoted":
                 # Quoted strings are always string values
                 return StringValueNode(value[1])
-            else:
-                return value  # Fallback for other types
+            # should this ever be hit?
+            return value  # Fallback for other types
 
         # Create left and right nodes
         left_node = create_value_node(left)
