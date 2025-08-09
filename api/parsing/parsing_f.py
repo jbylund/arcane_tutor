@@ -1,12 +1,10 @@
 from pyparsing import (
     CaselessKeyword,
-    CaselessLiteral,
     Combine,
     Forward,
     Group,
     Literal,
     Optional,
-    ParseResults,
     QuotedString,
     Word,
     ZeroOrMore,
@@ -14,182 +12,25 @@ from pyparsing import (
     nums,
     oneOf,
 )
-from abc import ABC, abstractmethod
-from typing import List, Union, Optional as OptionalType
 
+from .nodes import AndNode, AttributeNode, BinaryOperatorNode, NotNode, NumericValueNode, OrNode, Query, QueryNode, StringValueNode
 
-# AST Classes
-class QueryNode(ABC):
-    """Base class for all query nodes"""
-    
-    @abstractmethod
-    def to_sql(self) -> str:
-        """Convert this node to SQL WHERE clause"""
-        pass
-
-
-class Condition(QueryNode):
-    """Represents a single condition like 'oracle:flying' or 'type:creature'"""
-    
-    def __init__(self, attribute: str, operator: str, value: Union[str, int, float]):
-        self.attribute = attribute
-        self.operator = operator
-        self.value = value
-    
-    def to_sql(self) -> str:
-        # Map Scryfall attributes to database columns
-        column_map = {
-            "name": "name",
-            "cmc": "cmc",
-            "oracle": "oracle_text", 
-            "type": "type_line",
-            "set": "set_name",
-            "color": "colors",
-            "power": "power",
-            "toughness": "toughness",
-            "rarity": "rarity",
-            "artist": "artist",
-        }
-        
-        column = column_map.get(self.attribute, self.attribute)
-        
-        # Handle different operators
-        if self.operator == ":":
-            if isinstance(self.value, str):
-                return f'{column} LIKE "%{self.value}%"'
-            else:
-                return f'{column} = {self.value}'
-        elif self.operator == "=":
-            if isinstance(self.value, str):
-                return f'{column} = "{self.value}"'
-            else:
-                return f'{column} = {self.value}'
-        elif self.operator == "!=":
-            if isinstance(self.value, str):
-                return f'{column} != "{self.value}"'
-            else:
-                return f'{column} != {self.value}'
-        elif self.operator == ">":
-            return f'{column} > {self.value}'
-        elif self.operator == ">=":
-            return f'{column} >= {self.value}'
-        elif self.operator == "<":
-            return f'{column} < {self.value}'
-        elif self.operator == "<=":
-            return f'{column} <= {self.value}'
-        else:
-            raise ValueError(f"Unknown operator: {self.operator}")
-    
-    def __repr__(self):
-        return f'Condition({self.attribute}{self.operator}{self.value})'
-    
-    def __eq__(self, other):
-        if not isinstance(other, Condition):
-            return False
-        return (self.attribute == other.attribute and 
-                self.operator == other.operator and 
-                self.value == other.value)
-    
-    def __hash__(self):
-        return hash((self.attribute, self.operator, self.value))
-
-
-class NaryOperatorNode(QueryNode):
-    """Base class for n-ary operators (AND, OR) that take multiple operands"""
-    
-    def __init__(self, operands: List[QueryNode]):
-        self.operands = operands
-    
-    def to_sql(self) -> str:
-        if not self.operands:
-            return self._empty_result()
-        elif len(self.operands) == 1:
-            return self.operands[0].to_sql()
-        else:
-            inners = f" {self._operator()} ".join(operand.to_sql() for operand in self.operands)
-            return f"({inners})"
-    
-    def _operator(self) -> str:
-        """Return the SQL operator string - to be implemented by subclasses"""
-        raise NotImplementedError
-    
-    def _empty_result(self) -> str:
-        """Return the result for empty operands - to be implemented by subclasses"""
-        raise NotImplementedError
-    
-    def __repr__(self):
-        return f'{self.__class__.__name__}({", ".join(repr(op) for op in self.operands)})'
-    
-    def __eq__(self, other):
-        if not isinstance(other, self.__class__):
-            return False
-        return self.operands == other.operands
-    
-    def __hash__(self):
-        return hash((self.__class__.__name__, tuple(self.operands)))
-
-
-class AndNode(NaryOperatorNode):
-    """Represents AND operation between multiple conditions"""
-    
-    def _operator(self) -> str:
-        return "AND"
-    
-    def _empty_result(self) -> str:
-        return "TRUE"
-
-
-class OrNode(NaryOperatorNode):
-    """Represents OR operation between multiple conditions"""
-    
-    def _operator(self) -> str:
-        return "OR"
-    
-    def _empty_result(self) -> str:
-        return "FALSE"
-
-
-class NotNode(QueryNode):
-    """Represents NOT operation"""
-    
-    def __init__(self, operand: QueryNode):
-        self.operand = operand
-    
-    def to_sql(self) -> str:
-        operand_sql = self.operand.to_sql()
-        return f"NOT ({operand_sql})"
-    
-    def __repr__(self):
-        return f'Not({self.operand})'
-    
-    def __eq__(self, other):
-        if not isinstance(other, NotNode):
-            return False
-        return self.operand == other.operand
-    
-    def __hash__(self):
-        return hash(('Not', self.operand))
-
-
-class Query(QueryNode):
-    """Top-level query container"""
-    
-    def __init__(self, root: QueryNode):
-        self.root = root
-    
-    def to_sql(self) -> str:
-        return self.root.to_sql()
-    
-    def __repr__(self):
-        return f'Query({self.root})'
-    
-    def __eq__(self, other):
-        if not isinstance(other, Query):
-            return False
-        return self.root == other.root
-    
-    def __hash__(self):
-        return hash(('Query', self.root))
+# Known card attributes that should be wrapped in AttributeNode
+KNOWN_CARD_ATTRIBUTES = {
+    "cmc",
+    "power",
+    "toughness",
+    "name",
+    "type",
+    "oracle",
+    "mana_cost",
+    "card_types",
+    "card_subtypes",
+    "card_colors",
+    "creature_power",
+    "creature_toughness",
+    "mana_cost_text",
+}
 
 
 def flatten_nested_operations(node: QueryNode) -> QueryNode:
@@ -206,7 +47,7 @@ def flatten_nested_operations(node: QueryNode) -> QueryNode:
                 # Recursively flatten other types of nodes
                 operands.append(flatten_nested_operations(operand))
         return AndNode(operands)
-    
+
     elif isinstance(node, OrNode):
         # Collect all operands, recursively flattening nested OR operations
         operands = []
@@ -219,17 +60,17 @@ def flatten_nested_operations(node: QueryNode) -> QueryNode:
                 # Recursively flatten other types of nodes
                 operands.append(flatten_nested_operations(operand))
         return OrNode(operands)
-    
+
     elif isinstance(node, NotNode):
         # Recursively flatten the operand
         return NotNode(flatten_nested_operations(node.operand))
-    
+
     elif isinstance(node, Query):
         # Recursively flatten the root
         return Query(flatten_nested_operations(node.root))
-    
+
     else:
-        # Condition and other leaf nodes don't need flattening
+        # BinaryOperatorNode and other leaf nodes don't need flattening
         return node
 
 
@@ -237,94 +78,185 @@ def parse_search_query(query: str) -> Query:
     """Parse a Scryfall search query into an AST"""
     if query is None or not query.strip():
         # Return empty query
-        return Query(Condition("name", ":", ""))
-    
+        return Query(BinaryOperatorNode("name", ":", ""))
+
     # Pre-process the query to handle implicit AND operations
     # Convert "a b" to "a AND b" when b is not an operator
     query = preprocess_implicit_and(query)
-    
+
     # Define the grammar components
     attrname = Word(alphas)
     attrop = oneOf(": > < >= <= = !=")
-    
+    arithmetic_op = oneOf("+ - * /")
+
     integer = Word(nums).setParseAction(lambda t: int(t[0]))
     float_number = Combine(Word(nums) + Optional(Literal(".") + Optional(Word(nums)))).setParseAction(lambda t: float(t[0]))
-    
+
     lparen = Literal("(").suppress()
     rparen = Literal(")").suppress()
-    
+
     # Keywords must be recognized before regular words
     operator_and = CaselessKeyword("AND")
     operator_or = CaselessKeyword("OR")
     operator_not = Literal("-")
-    
+
     # Handle quoted strings and regular words (but not keywords)
-    quoted_string = QuotedString('"', escChar="\\")
+    def make_quoted_string(tokens):
+        """Mark quoted strings so they're always treated as string values"""
+        return ("quoted", tokens[0])
+    
+    quoted_string = (QuotedString('"', escChar="\\") | QuotedString("'", escChar="\\")).setParseAction(make_quoted_string)
+
     # Word that doesn't match keywords
     def make_word(tokens):
         word_str = tokens[0]
         if word_str.upper() in ["AND", "OR"]:
             raise ValueError(f"'{word_str}' is a reserved keyword")
         return word_str
-    
+
     word = Word(alphas).setParseAction(make_word)
-    
+
     # For attribute values, we want the raw string
     # Create a separate word parser for attribute values
     attr_word = Word(alphas).setParseAction(lambda t: t[0])
     attrval = quoted_string | attr_word | integer | float_number
-    
+
     # Build the grammar with proper precedence
     expr = Forward()
-    
+
     # Basic condition: attribute operator value
-    def make_condition(tokens):
-        return Condition(tokens[0], tokens[1], tokens[2])
-    
+    def make_binary_operator_node(tokens):
+        """Create a BinaryOperatorNode, properly wrapping attributes and values"""
+        left, operator, right = tokens
+
+        # Helper function to determine if a string should be an AttributeNode
+        def should_be_attribute(value):
+            """Check if a string value should be wrapped in AttributeNode"""
+            return isinstance(value, str) and value in KNOWN_CARD_ATTRIBUTES
+
+        # Helper function to create appropriate node for a value
+        def create_value_node(value):
+            """Create appropriate node type for a value"""
+            if isinstance(value, (int, float)):
+                return NumericValueNode(value)
+            elif isinstance(value, str):
+                # Check if it should be an attribute or a string value
+                if should_be_attribute(value):
+                    return AttributeNode(value)
+                else:
+                    return StringValueNode(value)
+            elif isinstance(value, tuple) and value[0] == "quoted":
+                # Quoted strings are always string values
+                return StringValueNode(value[1])
+            else:
+                return value  # Fallback for other types
+
+        # Create left and right nodes
+        left_node = create_value_node(left)
+        right_node = create_value_node(right)
+
+        return BinaryOperatorNode(left_node, operator, right_node)
+
+    # Arithmetic expression parser
+    def make_arithmetic_node(tokens):
+        """Create a BinaryOperatorNode for arithmetic operations"""
+        left, operator, right = tokens
+        
+        # Helper function to determine if a string should be an AttributeNode
+        def should_be_attribute(value):
+            """Check if a string value should be wrapped in AttributeNode"""
+            return isinstance(value, str) and value in KNOWN_CARD_ATTRIBUTES
+
+        # Helper function to create appropriate node for a value
+        def create_value_node(value):
+            """Create appropriate node type for a value"""
+            if isinstance(value, (int, float)):
+                return NumericValueNode(value)
+            elif isinstance(value, str):
+                # Check if it should be an attribute or a string value
+                if should_be_attribute(value):
+                    return AttributeNode(value)
+                else:
+                    return StringValueNode(value)
+            elif isinstance(value, tuple) and value[0] == "quoted":
+                # Quoted strings are always string values
+                return StringValueNode(value[1])
+            else:
+                return value  # Fallback for other types
+
+        # Create left and right nodes
+        left_node = create_value_node(left)
+        right_node = create_value_node(right)
+
+        return BinaryOperatorNode(left_node, operator, right_node)
+
+    # Arithmetic expression: attribute arithmetic_op attribute
+    arithmetic_expr = attrname + arithmetic_op + attrname
+    arithmetic_expr.setParseAction(make_arithmetic_node)
+
+    # Comparison between arithmetic expressions: arithmetic_expr attrop arithmetic_expr
+    arithmetic_comparison = arithmetic_expr + attrop + arithmetic_expr
+    arithmetic_comparison.setParseAction(make_binary_operator_node)
+
+    # Attribute-to-attribute comparison has higher precedence than regular conditions
+    attr_attr_condition = attrname + attrop + attrname
+    attr_attr_condition.setParseAction(make_binary_operator_node)
+
     condition = attrname + attrop + attrval
-    condition.setParseAction(make_condition)
-    
+    condition.setParseAction(make_binary_operator_node)
+
     # Single word (implicit name search)
     def make_single_word(tokens):
-        return Condition("name", ":", tokens[0])
-    
+        # For single words, we always search in the name field
+        return BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode(tokens[0]))
+
     single_word = word.setParseAction(make_single_word)
-    
+
     # Grouped expression
     def make_group(tokens):
         return tokens[0]
-    
+
     group = Group(lparen + expr + rparen).setParseAction(make_group)
-    
-    # Primary: condition, group, or single word
-    primary = condition | group | single_word
-    
-    # Factor: can be negated
+
+    # Primary: arithmetic comparison, attribute-to-attribute comparison, condition, group, or single word
+    # Note: arithmetic expressions are handled separately in factor to avoid negation conflicts
+    primary = arithmetic_comparison | attr_attr_condition | condition | group | single_word
+
+    # Factor: can be negated (but not arithmetic expressions)
     def handle_negation(tokens):
         if len(tokens) == 1:
             return tokens[0]
         elif len(tokens) == 2 and tokens[0] == "-":
+            # Don't allow negation of arithmetic expressions
+            if isinstance(tokens[1], BinaryOperatorNode) and tokens[1].operator in ["+", "-", "*", "/"]:
+                raise ValueError("Cannot negate arithmetic expressions")
             return NotNode(tokens[1])
         else:
             return tokens[0]
+
+    # For negation, we exclude arithmetic expressions from being negated
+    negatable_primary = attr_attr_condition | condition | group | single_word
+    negatable_factor = Optional(operator_not) + negatable_primary
+    negatable_factor.setParseAction(handle_negation)
     
-    factor = Optional(operator_not) + primary
-    factor.setParseAction(handle_negation)
-    
+    # Factor includes both negatable expressions and arithmetic expressions
+    # Order matters: arithmetic expressions must come before negatable expressions to avoid ambiguity
+    factor = arithmetic_comparison | arithmetic_expr | negatable_factor
+
     # Expression with explicit AND/OR operators (highest precedence)
     def handle_operators(tokens):
         if len(tokens) == 1:
             return tokens[0]
-        
+
         # Group operands by operator type
         current_operands = [tokens[0]]
         current_operator = None
-        
+
         for i in range(1, len(tokens), 2):
             if i + 1 < len(tokens):
                 operator = tokens[i]
                 right = tokens[i + 1]
-                
+
                 if current_operator is None:
                     # First operator, start collecting
                     current_operator = operator.upper()
@@ -340,11 +272,11 @@ def parse_search_query(query: str) -> Query:
                         result = OrNode(current_operands)
                     else:
                         raise ValueError(f"Unknown operator: {current_operator}")
-                    
+
                     # Start new group with the result as first operand
                     current_operands = [result, right]
                     current_operator = operator.upper()
-        
+
         # Create final node for remaining operands
         if current_operator == "AND":
             return AndNode(current_operands)
@@ -353,11 +285,11 @@ def parse_search_query(query: str) -> Query:
         else:
             # No operators, just return the single operand
             return current_operands[0]
-    
+
     # The main expression: factors separated by AND/OR operators
     expr <<= factor + ZeroOrMore((operator_and | operator_or) + factor)
     expr.setParseAction(handle_operators)
-    
+
     # Parse the query
     try:
         parsed = expr.parseString(query)
@@ -366,7 +298,7 @@ def parse_search_query(query: str) -> Query:
             flattened = flatten_nested_operations(Query(parsed[0]))
             return flattened
         else:
-            return Query(Condition("name", ":", ""))
+            return Query(BinaryOperatorNode("name", ":", ""))
     except Exception as e:
         raise ValueError(f"Failed to parse query '{query}': {e}")
 
@@ -374,62 +306,65 @@ def parse_search_query(query: str) -> Query:
 def preprocess_implicit_and(query: str) -> str:
     """Pre-process query to convert implicit AND operations to explicit ones"""
     import re
-    
+
     # Split the query into tokens while preserving quoted strings and operators
     tokens = []
     i = 0
     while i < len(query):
+        if len(tokens) > len(query):
+            raise AssertionError(f"tokens is longer than query, {tokens} vs {query}")
         char = query[i]
-        
-        if char == '"':
-            # Handle quoted string
-            end_quote = query.find('"', i + 1)
+
+        if char in ['"', "'"]:
+            # Handle quoted string (both double and single quotes)
+            quote_char = char
+            end_quote = query.find(quote_char, i + 1)
             if end_quote == -1:
-                raise ValueError("Unmatched quote in query")
-            tokens.append(query[i:end_quote + 1])
+                raise ValueError(f"Unmatched {quote_char} quote in query")
+            tokens.append(query[i : end_quote + 1])
             i = end_quote + 1
-        elif char in '()':
+        elif char in "()":
             # Handle parentheses
             tokens.append(char)
             i += 1
         elif char.isspace():
             # Skip whitespace
             i += 1
-        elif char in '><=!':
-            # Handle operators
-            if i + 1 < len(query) and query[i:i+2] in ['>=', '<=', '!=']:
-                tokens.append(query[i:i+2])
+        elif char in "><=!+-*/":
+            # Handle operators including arithmetic operators
+            if i + 1 < len(query) and query[i : i + 2] in [">=", "<=", "!="]:
+                tokens.append(query[i : i + 2])
                 i += 2
             else:
                 tokens.append(char)
                 i += 1
-        elif char == '-':
+        elif char == "-":
             # Handle negation as a separate token
             tokens.append(char)
             i += 1
-        elif char == ':':
+        elif char == ":":
             # Handle colon operator
             tokens.append(char)
             i += 1
         else:
             # Handle words
             word_end = i
-            while word_end < len(query) and (query[word_end].isalnum() or query[word_end] == '_'):
+            while word_end < len(query) and (query[word_end].isalnum() or query[word_end] == "_"):
                 word_end += 1
             tokens.append(query[i:word_end])
             i = word_end
-    
+
     # Convert implicit AND operations
     result = []
     i = 0
     while i < len(tokens):
         token = tokens[i]
         result.append(token)
-        
+
         # Check if we need to insert an implicit AND
         if i + 1 < len(tokens):
             next_token = tokens[i + 1]
-            
+
             # Insert AND if:
             # 1. Current token is not an operator
             # 2. Next token is not an operator (but allow negation)
@@ -437,62 +372,43 @@ def preprocess_implicit_and(query: str) -> str:
             # 4. Next token is not a right parenthesis
             # 5. Current token is not AND/OR
             # 6. Next token is not AND/OR
-            if (not is_operator(token) and 
-                not is_operator(next_token) and
-                token != '(' and 
-                next_token != ')' and
-                token.upper() not in ['AND', 'OR'] and
-                next_token.upper() not in ['AND', 'OR']):
-                result.append('AND')
+            if (
+                not is_operator(token)
+                and not is_operator(next_token)
+                and token != "("
+                and next_token != ")"
+                and token.upper() not in ["AND", "OR"]
+                and next_token.upper() not in ["AND", "OR"]
+            ):
+                result.append("AND")
             # Special case: if current token is not an operator and next token is negation,
             # we need to insert AND to separate them as factors
-            elif (not is_operator(token) and 
-                  next_token == '-' and
-                  token != '(' and
-                  token.upper() not in ['AND', 'OR']):
-                result.append('AND')
-        
+            # BUT: if the next token after the negation is a word, it might be arithmetic
+            elif not is_operator(token) and next_token == "-" and token != "(" and token.upper() not in ["AND", "OR"]:
+                # Check if this looks like arithmetic: word - word
+                if i + 2 < len(tokens) and not is_operator(tokens[i + 2]) and tokens[i + 2] not in ["AND", "OR"]:
+                    # Only treat as arithmetic if both sides are known card attributes
+                    if token in KNOWN_CARD_ATTRIBUTES and tokens[i + 2] in KNOWN_CARD_ATTRIBUTES:
+                        # This looks like arithmetic: attribute - attribute, so don't insert AND
+                        # The - will be treated as an arithmetic operator
+                        pass
+                    else:
+                        # This looks like negation: word - word (but not attributes), so insert AND
+                        result.append("AND")
+                else:
+                    # This looks like negation: word - (something else), so insert AND
+                    result.append("AND")
+
         i += 1
-    
-    return ' '.join(result)
+
+    return " ".join(result)
 
 
 def is_operator(token: str) -> bool:
     """Check if a token is an operator"""
-    return token in [':', '>', '<', '>=', '<=', '=', '!=', '-']
+    return token in [":", ">", "<", ">=", "<=", "=", "!=", "-", "+", "*", "/"]
 
 
 def generate_sql_query(parsed_query: Query) -> str:
     """Generate SQL WHERE clause from parsed query"""
     return parsed_query.to_sql()
-
-
-def main():
-    """Test the parser"""
-    test_queries = [
-        "cmc:2",
-        "name:\"Lightning Bolt\"",
-        "cmc:2 AND oracle:flying",
-        "oracle:flying OR oracle:haste",
-        "cmc:2 AND (oracle:flying OR oracle:haste)",
-        "color:red OR color:green",
-        "cmc>3",
-        "type:creature AND power>5",
-        "a b",  # implicit AND
-        "a AND b",  # explicit AND
-        "a OR b",  # explicit OR
-    ]
-    
-    for query in test_queries:
-        print(f"\nQuery: {query}")
-        try:
-            parsed = parse_search_query(query)
-            print(f"AST: {parsed}")
-            sql = generate_sql_query(parsed)
-            print(f"SQL: {sql}")
-        except Exception as e:
-            print(f"Error: {e}")
-
-
-if __name__ == "__main__":
-    main()

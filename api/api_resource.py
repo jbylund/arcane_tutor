@@ -301,7 +301,7 @@ class APIResource:
                     logger.info("Imported %d cards...", idx)
                     last_log = time.monotonic()
                 key_frequency.update(k for k, v in card.items() if v)
-                card_types, _, card_subtypes = [x.strip().split() for x in card.get("type_line","").title().partition("\u2014")]
+                card_types, _, card_subtypes = [x.strip().split() for x in card.get("type_line", "").title().partition("\u2014")]
                 card["card_types"] = card_types
                 card["card_subtypes"] = card_subtypes or None
                 for creature_field in ["power", "toughness"]:
@@ -312,7 +312,7 @@ class APIResource:
                         card[f"{creature_field}_numeric"] = None
                     else:
                         card[f"{creature_field}_numeric"] = numeric_val
-                
+
                 cursor.execute(
                     """
                     INSERT INTO magic.cards 

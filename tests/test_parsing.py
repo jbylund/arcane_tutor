@@ -1,71 +1,67 @@
 import pytest
 
 from api import parsing
+from api.parsing import AndNode, OrNode, BinaryOperatorNode, NotNode, AttributeNode, NumericValueNode, StringValueNode
 
 
 @pytest.mark.parametrize(
-    "test_input, expected_ast",
-    [
-        ("a", parsing.Condition("name", ":", "a")),
-        ("a b", parsing.AndNode([
-            parsing.Condition("name", ":", "a"),
-            parsing.Condition("name", ":", "b")
-        ])),
-        ("a -b", parsing.AndNode([
-            parsing.Condition("name", ":", "a"),
-            parsing.NotNode(parsing.Condition("name", ":", "b"))
-        ])),
-        ("a:b", parsing.Condition("a", ":", "b")),
-        ("a:b c:d", parsing.AndNode([
-            parsing.Condition("a", ":", "b"),
-            parsing.Condition("c", ":", "d")
-        ])),
-        ("a:b and c:d", parsing.AndNode([
-            parsing.Condition("a", ":", "b"),
-            parsing.Condition("c", ":", "d")
-        ])),
-        ("a:b or c:d", parsing.OrNode([
-            parsing.Condition("a", ":", "b"),
-            parsing.Condition("c", ":", "d")
-        ])),
-        ("a b:c", parsing.AndNode([
-            parsing.Condition("name", ":", "a"),
-            parsing.Condition("b", ":", "c")
-        ])),
-        # other operators
-        ("a=b", parsing.Condition("a", "=", "b")),
-        ("cmc=3", parsing.Condition("cmc", "=", 3)),
-        ("a!=b", parsing.Condition("a", "!=", "b")),
-        # more parens
-        ("a:b and (c:d or e:f)", parsing.AndNode([
-            parsing.Condition("a", ":", "b"),
-            parsing.OrNode([
-                parsing.Condition("c", ":", "d"),
-                parsing.Condition("e", ":", "f")
-            ])
-        ])),
+    argnames=["test_input", "expected_ast"],
+    argvalues=[
+        ("cmc=3", BinaryOperatorNode(AttributeNode("cmc"), "=", NumericValueNode(3))),
+        ("cmc=3 power=3", AndNode(
+            [
+                BinaryOperatorNode(AttributeNode("cmc"), "=", NumericValueNode(3)), 
+                BinaryOperatorNode(AttributeNode("power"), "=", NumericValueNode(3)),
+            ]
+        )),
+        (
+            "name:'power'", 
+            BinaryOperatorNode(
+                AttributeNode("name"),
+                ":",
+                StringValueNode("power")
+            )
+        ),
+        (
+            "name:\"power\"", 
+            BinaryOperatorNode(
+                AttributeNode("name"),
+                ":",
+                StringValueNode("power")
+            )
+        ),
+        (
+            "cmc+cmc<power+toughness",
+            BinaryOperatorNode(
+                BinaryOperatorNode(
+                    AttributeNode("cmc"),
+                    "+",
+                    AttributeNode("cmc")
+                ),
+                "<",
+                BinaryOperatorNode(
+                    AttributeNode("power"),
+                    "+",
+                    AttributeNode("toughness")
+                )
+            )
+        )
     ],
 )
-def test_parse_basic_structure(test_input, expected_ast):
+def test_parse_to_nodes(test_input, expected_ast):
     """Test that queries parse into the expected AST structure"""
-    observed = parsing.parse_search_query(test_input)
-    assert observed is not None
-    assert hasattr(observed, 'root')
+    observed = parsing.parse_search_query(test_input).root
     
     # Compare the full AST structure
-    assert observed.root == expected_ast, f"Expected {expected_ast}, got {observed.root}"
+    assert observed == expected_ast, f"\nExpected: {expected_ast}\nObserved: {observed}"
 
 
 def test_parse_simple_condition():
     """Test parsing a simple condition"""
     query = "cmc:2"
     result = parsing.parse_search_query(query)
-    
-    assert isinstance(result, parsing.Query)
-    assert isinstance(result.root, parsing.Condition)
-    assert result.root.attribute == "cmc"
-    assert result.root.operator == ":"
-    assert result.root.value == 2
+    expected = BinaryOperatorNode(AttributeNode("cmc"), ":", NumericValueNode(2))
+    assert result.root == expected
 
 
 def test_parse_and_operation():
@@ -74,10 +70,10 @@ def test_parse_and_operation():
     result = parsing.parse_search_query(query)
     
     assert isinstance(result, parsing.Query)
-    assert isinstance(result.root, parsing.AndNode)
+    assert isinstance(result.root, AndNode)
     assert len(result.root.operands) == 2
-    assert isinstance(result.root.operands[0], parsing.Condition)
-    assert isinstance(result.root.operands[1], parsing.Condition)
+    assert isinstance(result.root.operands[0], BinaryOperatorNode)
+    assert isinstance(result.root.operands[1], BinaryOperatorNode)
 
 
 def test_parse_or_operation():
@@ -86,10 +82,10 @@ def test_parse_or_operation():
     result = parsing.parse_search_query(query)
     
     assert isinstance(result, parsing.Query)
-    assert isinstance(result.root, parsing.OrNode)
+    assert isinstance(result.root, OrNode)
     assert len(result.root.operands) == 2
-    assert isinstance(result.root.operands[0], parsing.Condition)
-    assert isinstance(result.root.operands[1], parsing.Condition)
+    assert isinstance(result.root.operands[0], BinaryOperatorNode)
+    assert isinstance(result.root.operands[1], BinaryOperatorNode)
 
 
 def test_parse_implicit_and():
@@ -98,10 +94,10 @@ def test_parse_implicit_and():
     result = parsing.parse_search_query(query)
     
     assert isinstance(result, parsing.Query)
-    assert isinstance(result.root, parsing.AndNode)
+    assert isinstance(result.root, AndNode)
     assert len(result.root.operands) == 2
-    assert isinstance(result.root.operands[0], parsing.Condition)
-    assert isinstance(result.root.operands[1], parsing.Condition)
+    assert isinstance(result.root.operands[0], BinaryOperatorNode)
+    assert isinstance(result.root.operands[1], BinaryOperatorNode)
 
 
 def test_parse_complex_nested():
@@ -110,22 +106,19 @@ def test_parse_complex_nested():
     result = parsing.parse_search_query(query)
     
     assert isinstance(result, parsing.Query)
-    assert isinstance(result.root, parsing.AndNode)
+    assert isinstance(result.root, AndNode)
     assert len(result.root.operands) == 2
     # The right side should be an OR operation
-    assert isinstance(result.root.operands[1], parsing.OrNode)
+    assert isinstance(result.root.operands[1], OrNode)
 
 
 def test_parse_quoted_strings():
     """Test parsing quoted strings"""
     query = 'name:"Lightning Bolt"'
-    result = parsing.parse_search_query(query)
+    observed_ast = parsing.parse_search_query(query)
+    expected_ast = BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("Lightning Bolt"))
+    assert observed_ast.root == expected_ast
     
-    assert isinstance(result, parsing.Query)
-    assert isinstance(result.root, parsing.Condition)
-    assert result.root.attribute == "name"
-    assert result.root.operator == ":"
-    assert result.root.value == "Lightning Bolt"
 
 
 def test_parse_different_operators():
@@ -135,12 +128,9 @@ def test_parse_different_operators():
     for op in operators:
         query = f"cmc{op}3"
         result = parsing.parse_search_query(query)
+        expected = BinaryOperatorNode(AttributeNode("cmc"), op, NumericValueNode(3))
+        assert result.root == expected
         
-        assert isinstance(result, parsing.Query)
-        assert isinstance(result.root, parsing.Condition)
-        assert result.root.attribute == "cmc"
-        assert result.root.operator == op
-        assert result.root.value == 3
 
 
 def test_parse_empty_query():
@@ -156,101 +146,128 @@ def test_parse_empty_query():
 
 def test_sql_generation():
     """Test that AST can be converted to SQL"""
-    query = "cmc:2 AND type:creature"
+    query = "cmc=2 AND type=creature"
     result = parsing.parse_search_query(query)
     
     sql = parsing.generate_sql_query(result)
-    assert isinstance(sql, str)
-    assert "cmc = 2" in sql
-    assert "type_line LIKE" in sql
-    assert "AND" in sql
+    expected_sql = "((card.cmc = 2) AND (card.type = 'creature'))"
+    assert sql == expected_sql
 
 
 def test_name_vs_name_attribute():
     """Test that we can distinguish between the string 'name' and card names"""
-    # This should create a Condition for "name" (searching for cards with "name" in their name)
+    # This should create a BinaryOperatorNode for "name" (searching for cards with "name" in their name)
     query1 = "name"
     result1 = parsing.parse_search_query(query1)
-    assert isinstance(result1.root, parsing.Condition)
-    assert result1.root.attribute == "name"
-    assert result1.root.operator == ":"
-    assert result1.root.value == "name"
+    expected = BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("name"))
+    assert result1.root == expected
     
-    # This should create a Condition for name:value (same as bare word "value")
+    # This should create a BinaryOperatorNode for name:value (same as bare word "value")
     query2 = "name:value"
     result2 = parsing.parse_search_query(query2)
-    assert isinstance(result2.root, parsing.Condition)
-    assert result2.root.attribute == "name"
-    assert result2.root.operator == ":"
-    assert result2.root.value == "value"
+    expected = BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("value"))
+    assert result2.root == expected
     
-    # This should create a Condition for cmc operations
+    # This should create a BinaryOperatorNode for cmc operations
     query3 = "cmc:3"
     result3 = parsing.parse_search_query(query3)
-    assert isinstance(result3.root, parsing.Condition)
-    assert result3.root.attribute == "cmc"
-    assert result3.root.operator == ":"
-    assert result3.root.value == 3
+    expected = BinaryOperatorNode(AttributeNode("cmc"), ":", NumericValueNode(3))
+    assert result3.root == expected
     
-    # This should create a Condition for other attributes
+    # This should create a BinaryOperatorNode for other attributes
     query4 = "oracle:flying"
     result4 = parsing.parse_search_query(query4)
-    assert isinstance(result4.root, parsing.Condition)
-    assert result4.root.attribute == "oracle"
-    assert result4.root.value == "flying"
+    expected = BinaryOperatorNode(AttributeNode("oracle"), ":", StringValueNode("flying"))
+    assert result4.root == expected
 
-
-def test_and_operator_associativity():
+@pytest.mark.parametrize(
+    argnames=["operator"],
+    argvalues=[["AND"], ["OR"]],
+)
+def test_nary_operator_associativity(operator):
     """Test that AND operator associativity now creates the same AST structure"""
     # These should now create the same AST structure with n-ary operations
-    query1 = "a AND (b AND c)"
-    query2 = "(a AND b) AND c"
+    query1 = f"a {operator} (b {operator} c)"
+    query2 = f"(a {operator} b) {operator} c"
     
     result1 = parsing.parse_search_query(query1)
     result2 = parsing.parse_search_query(query2)
     
     # With n-ary operations, both should now create the same AST structure
     # Both should be: AndNode([a, b, c])
-    assert result1.root == result2.root, "These should now be identical with n-ary operations"
-    
-    # Verify the structure: AndNode([a, b, c])
-    assert isinstance(result1.root, parsing.AndNode)
-    assert len(result1.root.operands) == 3
-    assert isinstance(result1.root.operands[0], parsing.Condition)
-    assert isinstance(result1.root.operands[1], parsing.Condition)
-    assert isinstance(result1.root.operands[2], parsing.Condition)
-    
-    # Both should generate identical SQL
-    sql1 = parsing.generate_sql_query(result1)
-    sql2 = parsing.generate_sql_query(result2)
-    
-    assert sql1 == sql2, "SQL should be identical"
-    print(f"SQL: {sql1}")
+    assert result1 == result2
 
 
-def test_or_operator_associativity():
-    """Test that OR operator associativity now creates the same AST structure"""
-    # These should now create the same AST structure with n-ary operations
-    query1 = "a OR (b OR c)"
-    query2 = "(a OR b) OR c"
+@pytest.mark.parametrize(
+    argnames=["input_query", "expected_sql"],
+    argvalues=[
+        ["cmc=3", "(card.cmc = 3)"],
+        ["cmc=3 power=3", "((card.cmc = 3) AND (card.power = 3))"],
+        ["power=toughness", "(card.power = card.toughness)"],
+        ["power>toughness", "(card.power > card.toughness)"],
+    ]
+)
+def test_full_sql_translation(input_query, expected_sql):
+    parsed = parsing.parse_search_query(input_query)
+    observed_sql = parsed.to_sql()
+    assert observed_sql == expected_sql
+
+
+def test_parse_arithmetic_expressions():
+    """Test parsing arithmetic expressions"""
+    # Test simple arithmetic expression
+    query = "cmc+power"
+    result = parsing.parse_search_query(query)
+    expected = BinaryOperatorNode(AttributeNode("cmc"), "+", AttributeNode("power"))
+    assert result.root == expected
     
-    result1 = parsing.parse_search_query(query1)
-    result2 = parsing.parse_search_query(query2)
+    # Test arithmetic expression comparison
+    query = "cmc+cmc<power+toughness"
+    result = parsing.parse_search_query(query)
+    expected = BinaryOperatorNode(
+        BinaryOperatorNode(AttributeNode("cmc"), "+", AttributeNode("cmc")),
+        "<",
+        BinaryOperatorNode(AttributeNode("power"), "+", AttributeNode("toughness"))
+    )
+    assert result.root == expected
     
-    # With n-ary operations, both should now create the same AST structure
-    # Both should be: OrNode([a, b, c])
-    assert result1.root == result2.root, "These should now be identical with n-ary operations"
+    # Test with different arithmetic operators
+    query = "cmc-power"
+    result = parsing.parse_search_query(query)
+    expected = BinaryOperatorNode(AttributeNode("cmc"), "-", AttributeNode("power"))
+    assert result.root == expected
+
+
+class TestNodes:
+    def test_node_equality(self):
+        assert AttributeNode("name") == AttributeNode("name")
+
+
+def test_arithmetic_vs_negation_ambiguity():
+    """Test that the ambiguity between arithmetic and negation is resolved correctly"""
+    # These should be treated as arithmetic operations (both sides are known attributes)
+    arithmetic_cases = [
+        ("cmc-power", BinaryOperatorNode(AttributeNode("cmc"), "-", AttributeNode("power"))),
+        ("power-toughness", BinaryOperatorNode(AttributeNode("power"), "-", AttributeNode("toughness"))),
+        ("cmc+power", BinaryOperatorNode(AttributeNode("cmc"), "+", AttributeNode("power"))),
+    ]
     
-    # Verify the structure: OrNode([a, b, c])
-    assert isinstance(result1.root, parsing.OrNode)
-    assert len(result1.root.operands) == 3
-    assert isinstance(result1.root.operands[0], parsing.Condition)
-    assert isinstance(result1.root.operands[1], parsing.Condition)
-    assert isinstance(result1.root.operands[2], parsing.Condition)
+    for query, expected in arithmetic_cases:
+        result = parsing.parse_search_query(query)
+        assert result.root == expected, f"Failed for query: {query}"
     
-    # Both should generate identical SQL
-    sql1 = parsing.generate_sql_query(result1)
-    sql2 = parsing.generate_sql_query(result2)
+    # These should be treated as negation (one side is not a known attribute)
+    negation_cases = [
+        ("cmc -flying", AndNode([
+            BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("cmc")),
+            NotNode(BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("flying")))
+        ])),
+        ("power -goblin", AndNode([
+            BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("power")),
+            NotNode(BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("goblin")))
+        ])),
+    ]
     
-    assert sql1 == sql2, "SQL should be identical"
-    print(f"SQL: {sql2}")
+    for query, expected in negation_cases:
+        result = parsing.parse_search_query(query)
+        assert result.root == expected, f"Failed for query: {query}"
