@@ -104,7 +104,7 @@ def parse_search_query(query: str) -> Query:
     def make_quoted_string(tokens):
         """Mark quoted strings so they're always treated as string values"""
         return ("quoted", tokens[0])
-    
+
     quoted_string = (QuotedString('"', escChar="\\") | QuotedString("'", escChar="\\")).setParseAction(make_quoted_string)
 
     # Word that doesn't match keywords
@@ -161,7 +161,7 @@ def parse_search_query(query: str) -> Query:
     def make_arithmetic_node(tokens):
         """Create a BinaryOperatorNode for arithmetic operations"""
         left, operator, right = tokens
-        
+
         # Helper function to determine if a string should be an AttributeNode
         def should_be_attribute(value):
             """Check if a string value should be wrapped in AttributeNode"""
@@ -190,13 +190,17 @@ def parse_search_query(query: str) -> Query:
 
         return BinaryOperatorNode(left_node, operator, right_node)
 
-    # Arithmetic expression: attribute arithmetic_op attribute
-    arithmetic_expr = attrname + arithmetic_op + attrname
+    # Arithmetic expression: attribute arithmetic_op (attribute | numeric_value)
+    arithmetic_expr = attrname + arithmetic_op + (attrname | integer | float_number)
     arithmetic_expr.setParseAction(make_arithmetic_node)
 
-    # Comparison between arithmetic expressions: arithmetic_expr attrop arithmetic_expr
-    arithmetic_comparison = arithmetic_expr + attrop + arithmetic_expr
+    # Comparison between arithmetic expressions and attributes: arithmetic_expr attrop (arithmetic_expr | attrname)
+    arithmetic_comparison = arithmetic_expr + attrop + (arithmetic_expr | attrname)
     arithmetic_comparison.setParseAction(make_binary_operator_node)
+
+    # Comparison between attributes and arithmetic expressions: attrname attrop arithmetic_expr
+    attr_arithmetic_comparison = attrname + attrop + arithmetic_expr
+    attr_arithmetic_comparison.setParseAction(make_binary_operator_node)
 
     # Attribute-to-attribute comparison has higher precedence than regular conditions
     attr_attr_condition = attrname + attrop + attrname
@@ -218,9 +222,9 @@ def parse_search_query(query: str) -> Query:
 
     group = Group(lparen + expr + rparen).setParseAction(make_group)
 
-    # Primary: arithmetic comparison, attribute-to-attribute comparison, condition, group, or single word
+    # Primary: arithmetic comparison, attribute-arithmetic comparison, attribute-to-attribute comparison, condition, group, or single word
     # Note: arithmetic expressions are handled separately in factor to avoid negation conflicts
-    primary = arithmetic_comparison | attr_attr_condition | condition | group | single_word
+    primary = arithmetic_comparison | attr_arithmetic_comparison | attr_attr_condition | condition | group | single_word
 
     # Factor: can be negated (but not arithmetic expressions)
     def handle_negation(tokens):
@@ -238,10 +242,10 @@ def parse_search_query(query: str) -> Query:
     negatable_primary = attr_attr_condition | condition | group | single_word
     negatable_factor = Optional(operator_not) + negatable_primary
     negatable_factor.setParseAction(handle_negation)
-    
+
     # Factor includes both negatable expressions and arithmetic expressions
     # Order matters: arithmetic expressions must come before negatable expressions to avoid ambiguity
-    factor = arithmetic_comparison | arithmetic_expr | negatable_factor
+    factor = arithmetic_comparison | attr_arithmetic_comparison | arithmetic_expr | negatable_factor
 
     # Expression with explicit AND/OR operators (highest precedence)
     def handle_operators(tokens):
