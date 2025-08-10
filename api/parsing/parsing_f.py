@@ -74,6 +74,33 @@ def flatten_nested_operations(node: QueryNode) -> QueryNode:
         return node
 
 
+def create_value_node(value):
+    """Create appropriate node type for a value"""
+    if isinstance(value, (int, float)):
+        return NumericValueNode(value)
+    if isinstance(value, str):
+        # Check if it should be an attribute or a string value
+        if should_be_attribute(value):
+            return AttributeNode(value)
+        return StringValueNode(value)
+    if isinstance(value, tuple) and value[0] == "quoted":
+        # Quoted strings are always string values
+        return StringValueNode(value[1])
+    return value  # Fallback for other types
+
+
+# Helper function to determine if a string should be an AttributeNode
+def should_be_attribute(value):
+    """Check if a string value should be wrapped in AttributeNode"""
+    return isinstance(value, str) and value in KNOWN_CARD_ATTRIBUTES
+
+
+def make_binary_operator_node(tokens):
+    """Create a BinaryOperatorNode, properly wrapping attributes and values"""
+    left, operator, right = tokens
+    return BinaryOperatorNode(create_value_node(left), operator, create_value_node(right))
+
+
 def parse_search_query(query: str) -> Query:
     """Parse a Scryfall search query into an AST"""
     if query is None or not query.strip():
@@ -124,74 +151,9 @@ def parse_search_query(query: str) -> Query:
     # Build the grammar with proper precedence
     expr = Forward()
 
-    # Basic condition: attribute operator value
-    def make_binary_operator_node(tokens):
-        """Create a BinaryOperatorNode, properly wrapping attributes and values"""
-        left, operator, right = tokens
-
-        # Helper function to determine if a string should be an AttributeNode
-        def should_be_attribute(value):
-            """Check if a string value should be wrapped in AttributeNode"""
-            return isinstance(value, str) and value in KNOWN_CARD_ATTRIBUTES
-
-        # Helper function to create appropriate node for a value
-        def create_value_node(value):
-            """Create appropriate node type for a value"""
-            if isinstance(value, (int, float)):
-                return NumericValueNode(value)
-            elif isinstance(value, str):
-                # Check if it should be an attribute or a string value
-                if should_be_attribute(value):
-                    return AttributeNode(value)
-                else:
-                    return StringValueNode(value)
-            elif isinstance(value, tuple) and value[0] == "quoted":
-                # Quoted strings are always string values
-                return StringValueNode(value[1])
-            else:
-                return value  # Fallback for other types
-
-        # Create left and right nodes
-        left_node = create_value_node(left)
-        right_node = create_value_node(right)
-
-        return BinaryOperatorNode(left_node, operator, right_node)
-
-    # Arithmetic expression parser
-    def make_arithmetic_node(tokens):
-        """Create a BinaryOperatorNode for arithmetic operations"""
-        left, operator, right = tokens
-
-        # Helper function to determine if a string should be an AttributeNode
-        def should_be_attribute(value):
-            """Check if a string value should be wrapped in AttributeNode"""
-            return isinstance(value, str) and value in KNOWN_CARD_ATTRIBUTES
-
-        # Helper function to create appropriate node for a value
-        def create_value_node(value):
-            """Create appropriate node type for a value"""
-            if isinstance(value, (int, float)):
-                return NumericValueNode(value)
-            if isinstance(value, str):
-                # Check if it should be an attribute or a string value
-                if should_be_attribute(value):
-                    return AttributeNode(value)
-                return StringValueNode(value)
-            if isinstance(value, tuple) and value[0] == "quoted":
-                # Quoted strings are always string values
-                return StringValueNode(value[1])
-            # should this ever be hit?
-            return value  # Fallback for other types
-
-        # Create left and right nodes
-        left_node = create_value_node(left)
-        right_node = create_value_node(right)
-
-        return BinaryOperatorNode(left_node, operator, right_node)
-
     # Arithmetic expression: attribute arithmetic_op (attribute | numeric_value)
     arithmetic_expr = attrname + arithmetic_op + (attrname | integer | float_number)
-    arithmetic_expr.setParseAction(make_arithmetic_node)
+    arithmetic_expr.setParseAction(make_binary_operator_node)
 
     # Comparison between arithmetic expressions and attributes: arithmetic_expr attrop (arithmetic_expr | attrname)
     arithmetic_comparison = arithmetic_expr + attrop + (arithmetic_expr | attrname)
@@ -221,21 +183,18 @@ def parse_search_query(query: str) -> Query:
 
     group = Group(lparen + expr + rparen).setParseAction(make_group)
 
-    # Primary: arithmetic comparison, attribute-arithmetic comparison, attribute-to-attribute comparison, condition, group, or single word
-    # Note: arithmetic expressions are handled separately in factor to avoid negation conflicts
-    primary = arithmetic_comparison | attr_arithmetic_comparison | attr_attr_condition | condition | group | single_word
-
     # Factor: can be negated (but not arithmetic expressions)
     def handle_negation(tokens):
         if len(tokens) == 1:
             return tokens[0]
-        elif len(tokens) == 2 and tokens[0] == "-":
+
+        if len(tokens) == 2 and tokens[0] == "-":
             # Don't allow negation of arithmetic expressions
             if isinstance(tokens[1], BinaryOperatorNode) and tokens[1].operator in ["+", "-", "*", "/"]:
                 raise ValueError("Cannot negate arithmetic expressions")
             return NotNode(tokens[1])
-        else:
-            return tokens[0]
+
+        return tokens[0]
 
     # For negation, we exclude arithmetic expressions from being negated
     negatable_primary = attr_attr_condition | condition | group | single_word
@@ -283,11 +242,10 @@ def parse_search_query(query: str) -> Query:
         # Create final node for remaining operands
         if current_operator == "AND":
             return AndNode(current_operands)
-        elif current_operator == "OR":
+        if current_operator == "OR":
             return OrNode(current_operands)
-        else:
-            # No operators, just return the single operand
-            return current_operands[0]
+        # No operators, just return the single operand
+        return current_operands[0]
 
     # The main expression: factors separated by AND/OR operators
     expr <<= factor + ZeroOrMore((operator_and | operator_or) + factor)
@@ -298,17 +256,14 @@ def parse_search_query(query: str) -> Query:
         parsed = expr.parseString(query)
         if parsed:
             # Flatten nested operations to create canonical n-ary forms
-            flattened = flatten_nested_operations(Query(parsed[0]))
-            return flattened
-        else:
-            return Query(BinaryOperatorNode("name", ":", ""))
+            return flatten_nested_operations(Query(parsed[0]))
+        return Query(BinaryOperatorNode("name", ":", ""))
     except Exception as e:
         raise ValueError(f"Failed to parse query '{query}': {e}")
 
 
 def preprocess_implicit_and(query: str) -> str:
     """Pre-process query to convert implicit AND operations to explicit ones"""
-    import re
 
     # Split the query into tokens while preserving quoted strings and operators
     tokens = []

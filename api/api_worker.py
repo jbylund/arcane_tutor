@@ -1,3 +1,4 @@
+import json
 import logging
 import multiprocessing
 import os
@@ -6,6 +7,15 @@ import bjoern
 import falcon
 
 logger = logging.getLogger(__name__)
+
+
+def json_error_serializer(request: falcon.Request, response: falcon.Response, exception: falcon.HTTPError) -> None:
+    """An error serializer that goes to json."""
+    del request
+    exception_dict = exception.to_dict()
+    exception_dict = json.loads(json.dumps(exception_dict, default=str))
+    response.media = exception_dict
+    response.content_type = "application/json"
 
 
 class ApiWorker(multiprocessing.Process):
@@ -18,12 +28,6 @@ class ApiWorker(multiprocessing.Process):
         self.exit_flag = exit_flag
 
     @staticmethod
-    def json_error_serializer(_: object, response: falcon.Response, exception: falcon.HTTPError) -> None:
-        """An error serializer that goes to json."""
-        response.media = exception.to_dict()
-        response.content_type = "application/json"
-
-    @staticmethod
     def get_api() -> falcon.App:
         """Get a falcon api."""
         # we're doing this as a sort of post-fork load, I don't think there's anything in there
@@ -33,7 +37,7 @@ class ApiWorker(multiprocessing.Process):
         import api_resource  # pylint: disable=import-outside-toplevel
 
         api = falcon.App()
-        api.set_error_serializer(ApiWorker.json_error_serializer)
+        api.set_error_serializer(json_error_serializer)
         sink = api_resource.APIResource()
         api.add_sink(sink.handle, prefix="/")
         return api

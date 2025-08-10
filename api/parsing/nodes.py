@@ -12,6 +12,8 @@ class QueryNode(ABC):
 
 
 class LeafNode(QueryNode):
+    """Leaf node - not intended to be used directly"""
+
     pass
 
 
@@ -39,6 +41,7 @@ class StringValueNode(ValueNode):
         self.value = value
 
     def to_sql(self):
+        """Serialize this node to SQL"""
         return f"'{self.value}'"
 
 
@@ -47,7 +50,15 @@ class NumericValueNode(ValueNode):
         self.value = value
 
     def to_sql(self):
+        """Serialize this node to SQL"""
         return str(self.value)
+
+
+remapper = {
+    "name": "card_name",
+    "power": "creature_power",
+    "toughness": "creature_toughness",
+}
 
 
 class AttributeNode(LeafNode):
@@ -57,7 +68,9 @@ class AttributeNode(LeafNode):
         self.attribute_name = attribute_name
 
     def to_sql(self):
-        return f"card.{self.attribute_name}"
+        """Serialize this node to SQL"""
+        remapped_name = remapper.get(self.attribute_name, self.attribute_name)
+        return f"card.{remapped_name}"
 
     def __eq__(self, other):
         if not isinstance(other, self.__class__):
@@ -95,6 +108,7 @@ class BinaryOperatorNode(QueryNode):
             raise ValueError(f"Unknown operator: {operator}")
 
     def to_sql(self) -> str:
+        """Serialize this node to SQL"""
         return f"({self.lhs.to_sql()} {self.operator} {self.rhs.to_sql()})"
 
     def __repr__(self):
@@ -116,6 +130,7 @@ class NaryOperatorNode(QueryNode):
         self.operands = operands
 
     def to_sql(self) -> str:
+        """Serialize this node to SQL"""
         if not self.operands:
             return self._empty_result()
         elif len(self.operands) == 1:
@@ -171,6 +186,7 @@ class NotNode(QueryNode):
         self.operand = operand
 
     def to_sql(self) -> str:
+        """Serialize this node to SQL"""
         operand_sql = self.operand.to_sql()
         return f"NOT ({operand_sql})"
 
@@ -193,6 +209,7 @@ class Query(QueryNode):
         self.root = root
 
     def to_sql(self) -> str:
+        """Serialize this query to SQL"""
         return self.root.to_sql()
 
     def __repr__(self):
