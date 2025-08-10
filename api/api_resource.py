@@ -10,8 +10,6 @@ import logging
 import os
 import pathlib
 import time
-import traceback
-from sys import exception
 from urllib.parse import urlparse
 
 import falcon
@@ -31,6 +29,8 @@ logger = logging.getLogger("apiresource")
 
 
 class DBCtx:
+    """Context manager for borrowing a connection"""
+
     def __init__(self, conn_pool):
         self._conn_pool = conn_pool
 
@@ -53,9 +53,7 @@ class BorrowingPool:
         self.pool = pool
 
     def borrow(self):
-        # return a thing that has an enter and an exit...
-        # enter checks out of the pool
-        # exit puts it back
+        """Get a context manager for borrowing a connection from the pool"""
         return DBCtx(self.pool)
 
     def __repr__(self):
@@ -64,9 +62,11 @@ class BorrowingPool:
 
 def _make_pool() -> BorrowingPool:
     def _get_pg_creds():
+        """Get postgres credentials from the environment."""
         return {k[2:].lower(): v for k, v in os.environ.items() if k.startswith("PG")}
 
     def make_pool():
+        """Make a database connection pool."""
         creds = _get_pg_creds()
         max_connections = 1
         standby_connections = 1
@@ -92,11 +92,12 @@ def _make_pool() -> BorrowingPool:
 
 
 def get_migrations():
+    """Get the migrations from the filesystem."""
     # generate migrations + their hashes
     here = pathlib.Path(__file__).parent
     migrations_dir = here / "db"
     migrations = []
-    for dirname, child_dirs, child_files in migrations_dir.walk():
+    for dirname, _, child_files in migrations_dir.walk():
         for ichild in sorted(child_files):
             if not ichild.lower().endswith(".sql"):
                 continue
@@ -114,6 +115,7 @@ def get_migrations():
 
 
 def can_serialize(iobj):
+    """Is an object json serializable - without too much effort."""
     try:
         s = json.dumps(iobj)
         return len(s) < 16000
@@ -132,16 +134,8 @@ class APIResource:
         # make a connection pool
         self._conn_pool = _make_pool()
 
-        # set up routing
-        # self.action_map = {
-        #     "db_ready": self.db_ready,
-        #     "get_cards_to_csv": self.get_cards_to_csv,
-        #     "get_cards": self.get_cards,
-        #     "import": self.import_data,
-        #     "pid": self.get_pid,
-        #     "search": self.search,
-        # }
         self.action_map = {x: getattr(self, x) for x in dir(self) if not x.startswith("_")}
+        self.action_map["search.js"] = self.search_js
         logger.info("Worker with pid has conn pool %s", self._conn_pool)
 
     def handle(self, req: falcon.Request, resp: falcon.Response, **_kwargs):
@@ -222,10 +216,10 @@ class APIResource:
         try:
             with open(cache_file) as f:
                 response = json.load(f)
-        except FileNotFoundError as oops:
+        except FileNotFoundError:
             logger.info("Cache miss!")
             session = requests.Session()
-            response = session.get("https://api.scryfall.com/bulk-data").json()["data"]
+            response = session.get("https://api.scryfall.com/bulk-data", timeout=5).json()["data"]
             by_type = {r["type"]: r for r in response}
             oracle_cards_download_uri = by_type["oracle_cards"]["download_uri"]
             response = requests.get(oracle_cards_download_uri).json()
@@ -361,12 +355,43 @@ class APIResource:
         val = str_buffer.getvalue()
         falcon_response.body = val.encode("utf-8")
 
-    def search(self, *, query=None, **_):
+    def search(self, *, q=None, query=None, **_):
         """Run a query"""
+        query = query or q
         parsed_query = parse_search_query(query)
-        compiled_query = generate_sql_query(parsed_query)
+        where_clause = generate_sql_query(parsed_query)
+        full_query = f"""
+        SELECT 
+            card_name AS name, 
+            mana_cost_text AS mana_cost,
+            raw_card_blob->>'oracle_text' AS oracle_text,
+            raw_card_blob->>'set_name' AS set_name,
+            raw_card_blob->>'type_line' AS type_line
+        FROM 
+            magic.cards AS card 
+        WHERE 
+            {where_clause}"""
+        result_bag = self._run_query(full_query)
+        result = result_bag["result"]
         return {
+            "cards": result,
+            "compiled": full_query,
+            "parsed": str(parsed_query),
             "query": query,
-            "parsed": parsed_query,
-            "compiled": compiled_query,
+            "result": result_bag,
         }
+
+    def index(self, falcon_response=None, **_):
+        """Return the index page"""
+        self._serve_static_file(filename="index.html", falcon_response=falcon_response)
+        falcon_response.content_type = "text/html"
+
+    def search_js(self, falcon_response=None, **_):
+        """Return the search.js file"""
+        self._serve_static_file(filename="search.js", falcon_response=falcon_response)
+        falcon_response.content_type = "text/javascript"
+
+    def _serve_static_file(self, *, filename, falcon_response):
+        full_filename = pathlib.Path(__file__).parent / filename
+        with open(full_filename) as f:
+            falcon_response.text = f.read()

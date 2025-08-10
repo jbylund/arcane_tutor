@@ -100,3 +100,4 @@ reset:
 	rm -rvf data
 
 test:
+	python -m pytest -vvv
