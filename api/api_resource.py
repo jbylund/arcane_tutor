@@ -1,4 +1,6 @@
-"""Implementation of the routes of our simple api"""
+"""Implementation of the routes of our simple api."""
+
+from __future__ import annotations
 
 import collections
 import csv
@@ -10,6 +12,8 @@ import logging
 import os
 import pathlib
 import time
+import cProfile
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import falcon
@@ -17,11 +21,40 @@ import psycopg2
 import psycopg2.extras
 import psycopg2.pool
 import requests
+import orjson
 from parsing import generate_sql_query, parse_search_query
 from psycopg2.extensions import register_adapter
 
-register_adapter(dict, psycopg2.extras.Json)
-register_adapter(list, psycopg2.extras.Json)
+if TYPE_CHECKING:
+    from types import TracebackType
+
+# register_adapter(dict, psycopg2.extras.Json)
+# register_adapter(list, psycopg2.extras.Json)
+
+def orjson_loads(s):
+    return orjson.loads(s)
+
+def orjson_dumps(obj):
+    # orjson.dumps returns bytes, psycopg2 expects str
+    return orjson.dumps(obj).decode('utf-8')
+
+# Register for JSON
+psycopg2.extras.register_default_json(
+    loads=orjson_loads, 
+    globally=True
+)
+psycopg2.extras.register_default_jsonb(
+    loads=orjson_loads, 
+    globally=True
+)
+
+def jsonb_adapter(obj):
+    s = orjson_dumps(obj).replace("'", "''")
+    return psycopg2.extensions.AsIs(f"'{s}'::jsonb")
+
+# Register for dumping (adapting Python -> DB)
+psycopg2.extensions.register_adapter(dict, jsonb_adapter)
+psycopg2.extensions.register_adapter(list, jsonb_adapter)
 
 logger = logging.getLogger("apiresource")
 
@@ -29,18 +62,28 @@ logger = logging.getLogger("apiresource")
 
 
 class DBCtx:
-    """Context manager for borrowing a connection"""
+    """Context manager for borrowing a connection from a connection pool."""
 
-    def __init__(self, conn_pool):
+    def __init__(self: DBCtx, conn_pool: psycopg2.pool.ThreadedConnectionPool) -> None:
+        """Initialize a DBCtx object."""
         self._conn_pool = conn_pool
 
-    def __enter__(self):
+    def __enter__(self: DBCtx) -> psycopg2.extensions.cursor:
+        """Enter the context manager."""
         self.conn = conn = self._conn_pool.getconn()
         conn.cursor_factory = psycopg2.extras.DictCursor
         conn.autocommit = True
         return conn.cursor()
 
-    def __exit__(self, err_type, err_val, err_tb):
+    def __exit__(self: DBCtx, err_type: type[BaseException] | None, err_val: BaseException | None, err_tb: TracebackType | None) -> None:
+        """Release the connection back to the pool.
+
+        Args:
+        ----
+            err_type (type[BaseException] | None): The type of exception that occurred.
+            err_val (BaseException | None): The exception that occurred.
+            err_tb (Any): The traceback of the exception.
+        """
         if err_type:
             self.conn.rollback()
         else:
@@ -49,24 +92,55 @@ class DBCtx:
 
 
 class BorrowingPool:
-    def __init__(self, *, pool):
+    """Wrapper for a connection pool that provides a context manager for
+    borrowing connections.
+    """
+
+    def __init__(self: BorrowingPool, *, pool: psycopg2.pool.ThreadedConnectionPool) -> None:
+        """Initialize a BorrowingPool object."""
         self.pool = pool
 
-    def borrow(self):
-        """Get a context manager for borrowing a connection from the pool"""
+    def borrow(self: BorrowingPool) -> DBCtx:
+        """Get a context manager for borrowing a connection from the pool.
+
+        Returns:
+        -------
+            DBCtx: Context manager for a database connection.
+
+        """
         return DBCtx(self.pool)
 
-    def __repr__(self):
+    def __repr__(self: BorrowingPool) -> str:
+        """Return a string representation of the BorrowingPool object."""
         return f"<BorrowingPool({self.pool})>"
 
 
 def _make_pool() -> BorrowingPool:
-    def _get_pg_creds():
-        """Get postgres credentials from the environment."""
+    """Create and return a BorrowingPool for PostgreSQL connections.
+
+    Returns:
+    -------
+        BorrowingPool: The connection pool wrapper.
+
+    """
+    def _get_pg_creds() -> dict[str, str]:
+        """Get postgres credentials from the environment.
+
+        Returns:
+        -------
+            dict: Dictionary of credential key-value pairs.
+
+        """
         return {k[2:].lower(): v for k, v in os.environ.items() if k.startswith("PG")}
 
-    def make_pool():
-        """Make a database connection pool."""
+    def make_pool() -> BorrowingPool:
+        """Make a database connection pool.
+
+        Returns:
+        -------
+            BorrowingPool: The connection pool wrapper.
+
+        """
         creds = _get_pg_creds()
         max_connections = 1
         standby_connections = 1
@@ -91,8 +165,14 @@ def _make_pool() -> BorrowingPool:
     return make_pool()
 
 
-def get_migrations():
-    """Get the migrations from the filesystem."""
+def get_migrations() -> list[dict[str, str]]:
+    """Get the migrations from the filesystem.
+
+    Returns:
+    -------
+        List[Dict[str, str]]: List of migration metadata dictionaries.
+
+    """
     # generate migrations + their hashes
     here = pathlib.Path(__file__).parent
     migrations_dir = here / "db"
@@ -102,33 +182,58 @@ def get_migrations():
             if not ichild.lower().endswith(".sql"):
                 continue
             fullpath = dirname / ichild
-            with open(fullpath) as filehandle:
+            with pathlib.Path(fullpath).open() as filehandle:
                 contents = filehandle.read().strip()
             migrations.append(
                 {
                     "file_contents": contents,
-                    "file_md5": hashlib.md5(contents.encode()).hexdigest(),
+                    "file_sha256": hashlib.sha256(contents.encode()).hexdigest(),
                     "file_name": ichild,
-                }
+                },
             )
     return migrations
 
 
-def can_serialize(iobj):
-    """Is an object json serializable - without too much effort."""
+def can_serialize(iobj: object) -> bool:
+    """Check if an object is JSON serializable and not too large.
+
+    Args:
+    ----
+        iobj (object): The object to check.
+
+    Returns:
+    -------
+        bool: True if serializable and not too large, False otherwise.
+
+    """
+    max_json_object_length = 16_000
     try:
         s = json.dumps(iobj)
-        return len(s) < 16000
-    except:
+        return len(s) < max_json_object_length
+    except TypeError:
         return False
     return True
 
 
-class APIResource:
-    """Class implementing request handling for our simple api"""
+class ProfileContext:
+    def __init__(self: ProfileContext, *, filename: str) -> None:
+        self.filename = filename
 
-    def __init__(self):
-        """Initialize an APIResource object"""
+    def __enter__(self: ProfileContext) -> None:
+        self.profiler = cProfile.Profile()
+        self.profiler.enable()
+
+    def __exit__(self: ProfileContext, err_type: type[BaseException] | None, err_val: BaseException | None, err_tb: TracebackType | None) -> None:
+        self.profiler.disable()
+        self.profiler.dump_stats(self.filename)
+
+class APIResource:
+    """Class implementing request handling for our simple API."""
+
+    def __init__(self: APIResource) -> None:
+        """Initialize an APIResource object, set up connection pool and action
+        map.
+        """
         self._tablename = "staging_table"
 
         # make a connection pool
@@ -136,10 +241,18 @@ class APIResource:
 
         self.action_map = {x: getattr(self, x) for x in dir(self) if not x.startswith("_")}
         self.action_map["search.js"] = self.search_js
+        self.action_map["favicon.ico"] = self.favicon
         logger.info("Worker with pid has conn pool %s", self._conn_pool)
 
-    def handle(self, req: falcon.Request, resp: falcon.Response, **_kwargs):
-        """Handle a request"""
+    def handle(self: APIResource, req: falcon.Request, resp: falcon.Response) -> None:
+        """Handle a Falcon request and set the response.
+
+        Args:
+        ----
+            req (falcon.Request): The incoming request.
+            resp (falcon.Response): The outgoing response.
+
+        """
         parsed = urlparse(req.uri)
         path = parsed.path.strip("/")
 
@@ -147,15 +260,20 @@ class APIResource:
             logger.info("Handling request for %s", req.uri)
 
         action = self.action_map.get(path, self.raise_not_found)
+        before = time.monotonic()
         try:
-            res = action(falcon_response=resp, **req.params)
-            resp.media = res
+            datadir = pathlib.Path("/data/api/")
+            profile_id = int(time.time() * 1000)
+            with ProfileContext(filename=datadir / f"profile.{profile_id}.prof"):
+                res = action(falcon_response=resp, **req.params)
+                resp.media = res
         except TypeError as oops:
             logger.error("Error handling request: %s", oops, exc_info=True)
             raise falcon.HTTPBadRequest(description=str(oops))
-        except falcon.HTTPError as oops:
+        except falcon.HTTPError:
             raise
-        except Exception as oops:
+        except Exception as oops:  # noqa: BLE001
+            logger.error("Error handling request: %s", oops, exc_info=True)
             # walk back to the lowest frame...
             # file / function / locals (if possible)
             stack_info = []
@@ -166,7 +284,7 @@ class APIResource:
                         "function": iframe.function,
                         "line_no": iframe.lineno,
                         "locals": {k: v for k, v in iframe.frame.f_locals.items() if can_serialize(v)},
-                    }
+                    },
                 )
 
             raise falcon.HTTPInternalServerError(
@@ -176,155 +294,220 @@ class APIResource:
                     "stack_info": stack_info,
                 },
             )
+        finally:
+            duration = time.monotonic() - before
+            logger.info("Request duration: %f seconds", duration)
 
-    def raise_not_found(self, **_):
+    def raise_not_found(self: APIResource, **_: object) -> None:
+        """Raise a Falcon HTTPNotFound error with available routes."""
         raise falcon.HTTPNotFound(title="Not Found", description={"routes": {k: v.__doc__ for k, v in self.action_map.items()}})
 
-    def _run_query(self, query, params=None, explain=True):
+    def _run_query(self: APIResource, *, query: str, params: dict[str, Any] | None = None, explain: bool = True) -> dict[str, Any]:
+        """Run a SQL query with optional parameters and explanation.
+
+        Args:
+        ----
+            query (str): The SQL query to run.
+            params (Optional[Dict[str, Any]]): Query parameters.
+            explain (bool): Whether to run EXPLAIN on the query.
+
+        Returns:
+        -------
+            Dict[str, Any]: Query result and metadata.
+
+        """
         params = params or {}
         query = " ".join(query.strip().split())
         explain_query = f"EXPLAIN (FORMAT JSON) {query}"
 
-        result = {}
+        result: dict[str, Any] = {}
         with self._conn_pool.borrow() as cursor:
             cursor.execute("set statement_timeout = 10000")
 
             if explain:
                 cursor.execute(explain_query, params)
-                for row in cursor:
+                for row in cursor.fetchall():
                     result["plan"] = row
             before = time.time()
             cursor.execute(query, params)
             duration = time.time() - before
             result["duration"] = duration
             result["frequency"] = 1 / duration
-            result["result"] = [dict(r) for r in cursor]
+            result["result"] = [dict(r) for r in cursor.fetchall()]
         return result
 
-    def get_pid(self, **_):
-        """Just return the pid of the process which served this request"""
+    def get_pid(self: APIResource, **_: object) -> int:
+        """Just return the pid of the process which served this request.
+
+        Returns:
+        -------
+            int: The process ID.
+
+        """
         return os.getpid()
 
-    def db_ready(self, **_):
-        """Return true if the db is ready"""
-        records = self._run_query("SELECT relname FROM pg_stat_user_tables")["result"]
-        existing_tables = set(r["relname"] for r in records)
+    def db_ready(self: APIResource, **_: object) -> bool:
+        """Return true if the db is ready.
+
+        Returns:
+        -------
+            bool: True if the database is ready, False otherwise.
+
+        """
+        records = self._run_query(
+            query="SELECT relname FROM pg_stat_user_tables"
+        )["result"]
+        existing_tables = {r["relname"] for r in records}
         return "migrations" in existing_tables
 
-    def get_data(self):
+    def get_data(self: APIResource) -> Any:
+        """Retrieve card data from cache or Scryfall API.
+
+        Returns:
+        -------
+            Any: The card data (likely a list of dicts).
+
+        """
         cache_file = "/data/api/foo.json"
         try:
-            with open(cache_file) as f:
+            with pathlib.Path(cache_file).open() as f:
                 response = json.load(f)
         except FileNotFoundError:
             logger.info("Cache miss!")
             session = requests.Session()
-            response = session.get("https://api.scryfall.com/bulk-data", timeout=5).json()["data"]
+            response = session.get("https://api.scryfall.com/bulk-data", timeout=1).json()["data"]
             by_type = {r["type"]: r for r in response}
             oracle_cards_download_uri = by_type["oracle_cards"]["download_uri"]
-            response = requests.get(oracle_cards_download_uri).json()
-            with open(cache_file, "w") as f:
+            response = requests.get(oracle_cards_download_uri, timeout=30).json()
+            with pathlib.Path(cache_file).open("w") as f:
                 json.dump(response, f, indent=4, sort_keys=True)
         else:
             logger.info("Cache hit!")
-
         return response
 
-    def _setup_schema(self):
+    def _setup_schema(self: APIResource) -> None:
+        """Set up the database schema and apply migrations as needed."""
         # read migrations from the db dir...
         # if any already applied migrations differ from what we want
         # to apply then drop everything
         with self._conn_pool.borrow() as cursor:
             cursor.execute(
                 """CREATE TABLE IF NOT EXISTS migrations (
-                file_name text not null, 
-                file_md5 text not null, 
+                file_name text not null,
+                file_sha256 text not null,
                 date_applied timestamp default now(),
                 file_contents text not null
-            )"""
+            )""",
             )
             cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_migrations_filename ON migrations (file_name)")
-            cursor.execute("CREATE        INDEX IF NOT EXISTS idx_migrations_filemd5 ON migrations USING HASH (file_md5)")
+            cursor.execute("CREATE        INDEX IF NOT EXISTS idx_migrations_file_sha256 ON migrations USING HASH (file_sha256)")
 
-            cursor.execute("SELECT file_name, file_md5 FROM migrations ORDER BY date_applied")
+            cursor.execute("SELECT file_name, file_sha256 FROM migrations ORDER BY date_applied")
             applied_migrations = [dict(r) for r in cursor]
             filesystem_migrations = get_migrations()
 
             already_applied = set()
-            for applied_migration, fs_migration in zip(applied_migrations, filesystem_migrations):
+            for applied_migration, fs_migration in zip(applied_migrations, filesystem_migrations, strict=False):
                 if applied_migration.items() <= fs_migration.items():
-                    already_applied.add(applied_migration["file_md5"])
+                    already_applied.add(applied_migration["file_sha256"])
                 else:
                     already_applied.clear()
                     cursor.execute("DELETE FROM migrations")
                     cursor.execute("DROP SCHEMA IF EXISTS magic CASCADE")
 
             for imigration in filesystem_migrations:
-                file_md5 = imigration["file_md5"]
-                if file_md5 in already_applied:
+                file_sha256 = imigration["file_sha256"]
+                if file_sha256 in already_applied:
                     logger.info("%s was already applied...", imigration["file_name"])
                     continue
                 logger.info("Applying %s ...", imigration["file_name"])
                 cursor.execute(imigration["file_contents"])
                 cursor.execute(
                     """
-                    INSERT INTO migrations 
-                        (  file_name  ,   file_md5  ,   file_contents  ) VALUES 
-                        (%(file_name)s, %(file_md5)s, %(file_contents)s)""",
+                    INSERT INTO migrations
+                        (  file_name  ,   file_sha256  ,   file_contents  ) VALUES
+                        (%(file_name)s, %(file_sha256)s, %(file_contents)s)""",
                     imigration,
                 )
 
-    def import_data(self, **_):
-        """Import data from scryfall"""
+    def _get_cards_to_insert(self: APIResource, all_cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        to_insert = []
+        # key_frequency = collections.Counter()
+        for card in all_cards:
+            if set(card["legalities"].values()) == {"not_legal"}:
+                continue
+            if "card_faces" in card:
+                continue
+            if card.get("set_type") == "funny":
+                continue
+            # key_frequency.update(k for k, v in card.items() if v)
+            card_types, _, card_subtypes = (x.strip().split() for x in card.get("type_line", "").title().partition("\u2014"))
+            card["card_types"] = card_types
+            card["card_subtypes"] = card_subtypes or None
+            for creature_field in ["power", "toughness"]:
+                val = card.setdefault(creature_field, None)
+                try:
+                    numeric_val = int(val)
+                except (TypeError, ValueError):
+                    card[f"{creature_field}_numeric"] = None
+                else:
+                    card[f"{creature_field}_numeric"] = numeric_val
+            to_insert.append(card)
+        return to_insert
+
+    def import_data(self: APIResource, **_: object) -> None:
+        """Import data from Scryfall and insert into the database."""
         self._setup_schema()
-        response = self.get_data()
+        all_cards = self.get_data()
+        to_insert = self._get_cards_to_insert(all_cards)
 
         # card_name | cmc | mana_cost_text | mana_cost_jsonb | raw_card_blob | card_types | card_subtypes | card_colors | creature_power | creature_power_text | creature_toughness | creature_toughness_text
         # type_line	: "Legendary Creature — Elf Druid"
         last_log = 0
-        key_frequency = collections.Counter()
+        log_interval = 1
+        import_times = collections.deque(maxlen=1000)
         with self._conn_pool.borrow() as cursor:
-            for idx, card in enumerate(response):
-                if set(card["legalities"].values()) == {"not_legal"}:
-                    continue
-                if "card_faces" in card:
-                    continue
-                if card.get("set_type") == "funny":
-                    continue
-                if 1 < time.monotonic() - last_log:
-                    logger.info("Imported %d cards...", idx)
-                    last_log = time.monotonic()
-                key_frequency.update(k for k, v in card.items() if v)
-                card_types, _, card_subtypes = [x.strip().split() for x in card.get("type_line", "").title().partition("\u2014")]
-                card["card_types"] = card_types
-                card["card_subtypes"] = card_subtypes or None
-                for creature_field in ["power", "toughness"]:
-                    val = card.setdefault(creature_field, None)
+            for idx, card in enumerate(to_insert):
+
+                now = time.monotonic()
+                import_times.append(now)
+                if log_interval < now - last_log:
                     try:
-                        numeric_val = int(val)
-                    except:
-                        card[f"{creature_field}_numeric"] = None
-                    else:
-                        card[f"{creature_field}_numeric"] = numeric_val
+                        rate = len(import_times) / (now - import_times[0])
+                    except ZeroDivisionError:
+                        rate = 0
+                    logger.info("Imported %d cards, current rate: %d cards/s...", idx, rate)
+                    last_log = now
 
                 cursor.execute(
                     """
-                    INSERT INTO magic.cards 
+                    INSERT INTO magic.cards
                     ( card_name,   cmc  , mana_cost_text, mana_cost_jsonb, raw_card_blob,     card_types  ,   card_subtypes  , card_colors, creature_power, creature_power_text, creature_toughness, creature_toughness_text ) VALUES
                     ( %(name)s , %(cmc)s, %(mana_cost)s ,          null  ,    %(blob)s  ,    %(card_types)s, %(card_subtypes)s,     %(colors)s,     %(power_numeric)s,             %(power)s,             %(toughness_numeric)s   ,   %(toughness)s)
                     ON CONFLICT (card_name) DO NOTHING
                     """,
                     card | {"blob": card},
                 )
-        print(json.dumps(dict(key_frequency.most_common(100)), indent=4))
 
-    def get_cards(self, min_name=None, max_name=None, limit=2500, **_):
-        """Get cards by name"""
+    def get_cards(self: APIResource, *, min_name: str | None = None, max_name: str | None = None, limit: int = 2500, **_: object) -> list[dict[str, Any]]:
+        """Get cards by name range.
+
+        Args:
+        ----
+            min_name (Optional[str]): Minimum card name.
+            max_name (Optional[str]): Maximum card name.
+            limit (int): Maximum number of cards to return.
+
+        Returns:
+        -------
+            List[Dict[str, Any]]: List of card records.
+
+        """
         return self._run_query(
-            """
+            query="""
             SELECT
                 *
-            FROM 
+            FROM
                 magic.cards
             WHERE
                 (%(min_name)s IS NULL OR %(min_name)s < card_name) AND
@@ -334,16 +517,31 @@ class APIResource:
             LIMIT
                 %(limit)s
             """,
-            {
+            params={
                 "min_name": min_name,
                 "max_name": max_name,
                 "limit": limit,
             },
         )["result"]
 
-    def get_cards_to_csv(self, min_name=None, max_name=None, limit=2500, falcon_response=None, **_):
+    def get_cards_to_csv(self: APIResource, *, min_name: str | None = None, max_name: str | None = None, limit: int = 2500, falcon_response: falcon.Response | None = None) -> None:
+        """Write cards as CSV to the Falcon response.
+
+        Args:
+        ----
+            min_name (Optional[str]): Minimum card name.
+            max_name (Optional[str]): Maximum card name.
+            limit (int): Maximum number of cards to return.
+            falcon_response (falcon.Response): The Falcon response to write to.
+
+        Raises:
+        ------
+            ValueError: If falcon_response is not provided.
+
+        """
         if falcon_response is None:
-            raise ValueError("falcon_response is required")
+            msg = "falcon_response is required"
+            raise ValueError(msg)
         raw_cards = self.get_cards(min_name=min_name, max_name=max_name, limit=limit)
         falcon_response.content_type = "text/csv"
 
@@ -355,21 +553,32 @@ class APIResource:
         val = str_buffer.getvalue()
         falcon_response.body = val.encode("utf-8")
 
-    def search(self, *, q=None, query=None, **_):
-        """Run a query"""
+    def search(self: APIResource, *, q: str | None = None, query: str | None = None) -> dict[str, Any]:
+        """Run a search query and return results and metadata.
+
+        Args:
+        ----
+            q (Optional[str]): Query string.
+            query (Optional[str]): Query string.
+
+        Returns:
+        -------
+            Dict[str, Any]: Search results and metadata.
+
+        """
         query = query or q
         parsed_query = parse_search_query(query)
         where_clause = generate_sql_query(parsed_query)
         full_query = f"""
-        SELECT 
-            card_name AS name, 
+        SELECT
+            card_name AS name,
             mana_cost_text AS mana_cost,
             raw_card_blob->>'oracle_text' AS oracle_text,
             raw_card_blob->>'set_name' AS set_name,
             raw_card_blob->>'type_line' AS type_line
-        FROM 
-            magic.cards AS card 
-        WHERE 
+        FROM
+            magic.cards AS card
+        WHERE
             {where_clause}"""
         result_bag = self._run_query(full_query)
         result = result_bag["result"]
@@ -381,17 +590,52 @@ class APIResource:
             "result": result_bag,
         }
 
-    def index(self, falcon_response=None, **_):
-        """Return the index page"""
+    def index(self: APIResource, *, falcon_response: falcon.Response | None = None) -> None:
+        """Return the index page.
+
+        Args:
+        ----
+            falcon_response (falcon.Response): The Falcon response to write to.
+
+        """
         self._serve_static_file(filename="index.html", falcon_response=falcon_response)
         falcon_response.content_type = "text/html"
 
-    def search_js(self, falcon_response=None, **_):
-        """Return the search.js file"""
+    def search_js(self: APIResource, *, falcon_response: falcon.Response | None = None) -> None:
+        """Return the search.js file.
+
+        Args:
+        ----
+            falcon_response (falcon.Response): The Falcon response to write to.
+
+        """
         self._serve_static_file(filename="search.js", falcon_response=falcon_response)
         falcon_response.content_type = "text/javascript"
 
-    def _serve_static_file(self, *, filename, falcon_response):
+    def favicon(self: APIResource, *, falcon_response: falcon.Response | None = None) -> None:
+        """Return the favicon.ico file.
+
+        Args:
+        ----
+            falcon_response (falcon.Response): The Falcon response to write to.
+        """
+        full_filename = pathlib.Path(__file__).parent / "favicon.ico"
+        with pathlib.Path(full_filename).open(mode="rb") as f:
+            falcon_response.data = contents = f.read()
+        falcon_response.content_type = "image/vnd.microsoft.icon"
+        content_length = len(contents)
+        logger.info("Favicon content length: %d", content_length)
+        falcon_response.headers["content-length"] = content_length
+
+    def _serve_static_file(self: APIResource, *, filename: str, falcon_response: falcon.Response) -> None:
+        """Serve a static file to the Falcon response.
+
+        Args:
+        ----
+            filename (str): The file to serve.
+            falcon_response (falcon.Response): The Falcon response to write to.
+
+        """
         full_filename = pathlib.Path(__file__).parent / filename
-        with open(full_filename) as f:
+        with pathlib.Path(full_filename).open() as f:
             falcon_response.text = f.read()

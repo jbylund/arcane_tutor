@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""Main entrypoint for the api container"""
+"""Main entrypoint for the api container."""
 import argparse
 import logging
 import multiprocessing
-from typing import Dict
 
 from api_worker import ApiWorker
 
 logger = logging.getLogger("api")
 
 
-def get_args() -> Dict:
+def get_args() -> dict:
     """Argument parsing."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8080)
@@ -18,8 +17,8 @@ def get_args() -> Dict:
     return vars(parser.parse_args())
 
 
-def main():
-    """Main entrypoint for the api container"""
+def main() -> None:
+    """Main entrypoint for the api container."""
     logging.basicConfig(level=logging.INFO)
     args = get_args()
     workers = []
@@ -33,7 +32,7 @@ def main():
         workers.append(iworker)
         iworker.start()
 
-    def all_workers_alive():
+    def all_workers_alive() -> bool:
         for iworker in workers:
             if iworker.is_alive():
                 pass
@@ -56,5 +55,5 @@ def main():
         iworker.terminate()
 
 
-if "__main__" == __name__:
+if __name__ == "__main__":
     main()

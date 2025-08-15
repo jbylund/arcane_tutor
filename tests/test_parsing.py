@@ -1,7 +1,17 @@
+
 import pytest
 
 from api import parsing
-from api.parsing import AndNode, AttributeNode, BinaryOperatorNode, NotNode, NumericValueNode, OrNode, StringValueNode
+from api.parsing import (
+    AndNode,
+    AttributeNode,
+    BinaryOperatorNode,
+    NotNode,
+    NumericValueNode,
+    OrNode,
+    QueryNode,
+    StringValueNode,
+)
 
 
 @pytest.mark.parametrize(
@@ -14,7 +24,7 @@ from api.parsing import AndNode, AttributeNode, BinaryOperatorNode, NotNode, Num
                 [
                     BinaryOperatorNode(AttributeNode("cmc"), "=", NumericValueNode(3)),
                     BinaryOperatorNode(AttributeNode("power"), "=", NumericValueNode(3)),
-                ]
+                ],
             ),
         ),
         ("name:'power'", BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("power"))),
@@ -63,24 +73,24 @@ from api.parsing import AndNode, AttributeNode, BinaryOperatorNode, NotNode, Num
         ),
     ],
 )
-def test_parse_to_nodes(test_input, expected_ast):
-    """Test that queries parse into the expected AST structure"""
+def test_parse_to_nodes(test_input: str, expected_ast: QueryNode) -> None:
+    """Test that queries parse into the expected AST structure."""
     observed = parsing.parse_search_query(test_input).root
 
     # Compare the full AST structure
     assert observed == expected_ast, f"\nExpected: {expected_ast}\nObserved: {observed}"
 
 
-def test_parse_simple_condition():
-    """Test parsing a simple condition"""
+def test_parse_simple_condition() -> None:
+    """Test parsing a simple condition."""
     query = "cmc:2"
     result = parsing.parse_search_query(query)
     expected = BinaryOperatorNode(AttributeNode("cmc"), ":", NumericValueNode(2))
     assert result.root == expected
 
 
-def test_parse_and_operation():
-    """Test parsing AND operations"""
+def test_parse_and_operation() -> None:
+    """Test parsing AND operations."""
     query = "a AND b"
     result = parsing.parse_search_query(query).root
 
@@ -88,36 +98,36 @@ def test_parse_and_operation():
         [
             BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("a")),
             BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("b")),
-        ]
+        ],
     )
 
 
-def test_parse_or_operation():
-    """Test parsing OR operations"""
+def test_parse_or_operation() -> None:
+    """Test parsing OR operations."""
     query = "a OR b"
     result = parsing.parse_search_query(query).root
     assert result == OrNode(
         [
             BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("a")),
             BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("b")),
-        ]
+        ],
     )
 
 
-def test_parse_implicit_and():
-    """Test parsing implicit AND operations"""
+def test_parse_implicit_and() -> None:
+    """Test parsing implicit AND operations."""
     query = "a b"
     result = parsing.parse_search_query(query).root
     assert result == AndNode(
         [
             BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("a")),
             BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("b")),
-        ]
+        ],
     )
 
 
-def test_parse_complex_nested():
-    """Test parsing complex nested queries"""
+def test_parse_complex_nested() -> None:
+    """Test parsing complex nested queries."""
     query = "cmc:2 AND (oracle:flying OR oracle:haste)"
     result = parsing.parse_search_query(query)
 
@@ -128,16 +138,16 @@ def test_parse_complex_nested():
     assert isinstance(result.root.operands[1], OrNode)
 
 
-def test_parse_quoted_strings():
-    """Test parsing quoted strings"""
+def test_parse_quoted_strings() -> None:
+    """Test parsing quoted strings."""
     query = 'name:"Lightning Bolt"'
     observed_ast = parsing.parse_search_query(query)
     expected_ast = BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("Lightning Bolt"))
     assert observed_ast.root == expected_ast
 
 
-def test_parse_different_operators():
-    """Test parsing different comparison operators"""
+def test_parse_different_operators() -> None:
+    """Test parsing different comparison operators."""
     operators = [">", "<", ">=", "<=", "=", "!="]
 
     for op in operators:
@@ -147,8 +157,8 @@ def test_parse_different_operators():
         assert result.root == expected
 
 
-def test_parse_empty_query():
-    """Test parsing empty or None queries"""
+def test_parse_empty_query() -> None:
+    """Test parsing empty or None queries."""
     # Empty string
     result = parsing.parse_search_query("")
     assert isinstance(result, parsing.Query)
@@ -158,8 +168,8 @@ def test_parse_empty_query():
     assert isinstance(result, parsing.Query)
 
 
-def test_sql_generation():
-    """Test that AST can be converted to SQL"""
+def test_sql_generation() -> None:
+    """Test that AST can be converted to SQL."""
     query = "cmc=2 AND type=creature"
     result = parsing.parse_search_query(query)
 
@@ -168,8 +178,10 @@ def test_sql_generation():
     assert sql == expected_sql
 
 
-def test_name_vs_name_attribute():
-    """Test that we can distinguish between the string 'name' and card names"""
+def test_name_vs_name_attribute() -> None:
+    """Test that we can distinguish between the string 'name' and card
+    names.
+    """
     # This should create a BinaryOperatorNode for "name" (searching for cards with "name" in their name)
     query1 = "name"
     result1 = parsing.parse_search_query(query1)
@@ -199,8 +211,10 @@ def test_name_vs_name_attribute():
     argnames=["operator"],
     argvalues=[["AND"], ["OR"]],
 )
-def test_nary_operator_associativity(operator):
-    """Test that AND operator associativity now creates the same AST structure"""
+def test_nary_operator_associativity(operator: str) -> None:
+    """Test that AND operator associativity now creates the same AST
+    structure.
+    """
     # These should now create the same AST structure with n-ary operations
     query1 = f"a {operator} (b {operator} c)"
     query2 = f"(a {operator} b) {operator} c"
@@ -222,19 +236,21 @@ def test_nary_operator_associativity(operator):
         ["power>toughness", "(card.power > card.toughness)"],
     ],
 )
-def test_full_sql_translation(input_query, expected_sql):
+def test_full_sql_translation(input_query: str, expected_sql: str) -> None:
     parsed = parsing.parse_search_query(input_query)
     observed_sql = parsed.to_sql()
     assert observed_sql == expected_sql
 
 
 class TestNodes:
-    def test_node_equality(self):
+    def test_node_equality(self) -> None:
         assert AttributeNode("name") == AttributeNode("name")
 
 
-def test_arithmetic_vs_negation_ambiguity():
-    """Test that the ambiguity between arithmetic and negation is resolved correctly"""
+def test_arithmetic_vs_negation_ambiguity() -> None:
+    """Test that the ambiguity between arithmetic and negation is resolved
+    correctly.
+    """
     # These should be treated as arithmetic operations (both sides are known attributes)
     arithmetic_cases = [
         ("cmc-power", BinaryOperatorNode(AttributeNode("cmc"), "-", AttributeNode("power"))),
@@ -254,7 +270,7 @@ def test_arithmetic_vs_negation_ambiguity():
                 [
                     BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("cmc")),
                     NotNode(BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("flying"))),
-                ]
+                ],
             ),
         ),
         (
@@ -263,7 +279,7 @@ def test_arithmetic_vs_negation_ambiguity():
                 [
                     BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("power")),
                     NotNode(BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("goblin"))),
-                ]
+                ],
             ),
         ),
     ]
