@@ -68,7 +68,7 @@ class ApiWorker(multiprocessing.Process):
         )
         api.set_error_serializer(json_error_serializer)  # Use custom JSON error serializer
         sink = api_resource.APIResource()  # Create the main API resource
-        api.add_sink(sink.handle, prefix="/")  # Route all requests to the sink handler
+        api.add_sink(sink._handle, prefix="/")  # Route all requests to the sink handler
 
         json_handler = falcon.media.JSONHandler(
             dumps=orjson.dumps,
