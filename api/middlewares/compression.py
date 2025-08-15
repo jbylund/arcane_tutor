@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import time
 
@@ -5,12 +7,23 @@ from .brotli import BrotliCompressor
 from .gzip import GzipCompressor
 from .zstd import ZstdCompressor
 
-MIN_SIZE = 200
+MIN_SIZE: int = 200
 
 logger = logging.getLogger(__name__)
 
-def parse_q_list(accept_encoding: str, server_priorities: dict[str, int]) -> list[str]:
-    values = []
+def parse_q_list(
+    accept_encoding: str, server_priorities: dict[str, int],
+) -> list[str]:
+    """Parse the Accept-Encoding header and return a list of encodings sorted by client and server priority.
+
+    Args:
+        accept_encoding (str): The Accept-Encoding header value.
+        server_priorities (dict[str, int]): Mapping of encoding names to server priorities.
+
+    Returns:
+        list[str]: List of encoding names sorted by priority.
+    """
+    values: list[tuple[str, int, float]] = []
     for name in accept_encoding.split(","):
         encoding = name.strip().lower()
         server_prioritiy = server_priorities.get(encoding)
@@ -33,36 +46,53 @@ def parse_q_list(accept_encoding: str, server_priorities: dict[str, int]) -> lis
 
 
 class CompressionMiddleware:
-    def __init__(self) -> None:
-        self._compressors = {}
-        self._priorities = {}
+    """Middleware for handling response compression using various algorithms."""
+    def __init__(self: CompressionMiddleware) -> None:
+        """Initialize the CompressionMiddleware and register available compressors."""
+        self._compressors: dict[str, object] = {}
+        self._priorities: dict[str, int] = {}
         self._add_compressor(BrotliCompressor())
         self._add_compressor(GzipCompressor())
         self._add_compressor(ZstdCompressor())
 
-    def _add_compressor(self, compressor) -> None:
+    def _add_compressor(self: CompressionMiddleware, compressor: object) -> None:
+        """Register a compressor and its priority.
+
+        Args:
+            compressor: Compressor instance with 'encoding' and 'priority' attributes.
+        """
         self._priorities[compressor.encoding] = compressor.priority
         self._compressors[compressor.encoding] = compressor
 
-    def _get_compressor(self, accept_encoding):
+    def _get_compressor(self: CompressionMiddleware, accept_encoding: str) -> object | None:
+        """Select a compressor based on the Accept-Encoding header.
+
+        Args:
+            accept_encoding (str): The Accept-Encoding header value.
+
+        Returns:
+            object | None: The selected compressor or None if not found.
+        """
         for encoding in parse_q_list(accept_encoding, self._priorities):
             compressor = self._compressors.get(encoding)
             if compressor:
                 return compressor
         return None
 
-    def process_response(self, req, resp, resource, req_succeeded) -> None:
+    def process_response(
+        self: CompressionMiddleware,
+        req: object,
+        resp: object,
+        resource: object,
+        req_succeeded: bool,
+    ) -> None:
         """Post-processing of the response (after routing).
 
         Args:
             req: Request object.
             resp: Response object.
-            resource: Resource object to which the request was
-                routed. May be None if no route was found
-                for the request.
-            req_succeeded: True if no exceptions were raised while
-                the framework processed and routed the request;
-                otherwise False.
+            resource: Resource object to which the request was routed. May be None if no route was found for the request.
+            req_succeeded (bool): True if no exceptions were raised while the framework processed and routed the request; otherwise False.
         """
         accept_encoding = req.get_header("Accept-Encoding")
         if accept_encoding is None:

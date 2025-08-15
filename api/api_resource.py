@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import collections
-import cProfile
 import csv
 import hashlib
 import inspect
@@ -13,7 +12,7 @@ import logging
 import os
 import pathlib
 import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from urllib.parse import urlparse
 
 import falcon
@@ -25,11 +24,9 @@ import psycopg_pool
 import requests
 from parsing import generate_sql_query, parse_search_query
 
-if TYPE_CHECKING:
-    from types import TracebackType
 
-def orjson_dumps(obj: Any) -> str:
-    # orjson.dumps returns bytes, psycopg expects str
+def orjson_dumps(obj: object) -> str:
+    """Dump an object to a string using orjson."""
     return orjson.dumps(obj).decode("utf-8")
 
 # Register for dumping (adapting Python -> DB)
@@ -117,18 +114,6 @@ def can_serialize(iobj: object) -> bool:
     return True
 
 
-class ProfileContext:
-    def __init__(self: ProfileContext, *, filename: str) -> None:
-        self.filename = filename
-
-    def __enter__(self: ProfileContext) -> None:
-        self.profiler = cProfile.Profile()
-        self.profiler.enable()
-
-    def __exit__(self: ProfileContext, err_type: type[BaseException] | None, err_val: BaseException | None, err_tb: TracebackType | None) -> None:
-        self.profiler.disable()
-        self.profiler.dump_stats(self.filename)
-
 class APIResource:
     """Class implementing request handling for our simple API."""
 
@@ -163,11 +148,8 @@ class APIResource:
         action = self.action_map.get(path, self._raise_not_found)
         before = time.monotonic()
         try:
-            datadir = pathlib.Path("/data/api/")
-            profile_id = int(time.time() * 1000)
-            with ProfileContext(filename=datadir / f"profile.{profile_id}.prof"):
-                res = action(falcon_response=resp, **req.params)
-                resp.media = res
+            res = action(falcon_response=resp, **req.params)
+            resp.media = res
         except TypeError as oops:
             logger.error("Error handling request: %s", oops, exc_info=True)
             raise falcon.HTTPBadRequest(description=str(oops))
@@ -337,9 +319,10 @@ class APIResource:
                     imigration,
                 )
 
-    def _get_cards_to_insert(self: APIResource, all_cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _get_cards_to_insert(self: APIResource) -> list[dict[str, Any]]:
+        """Get the cards to insert into the database."""
+        all_cards = self.get_data()
         to_insert = []
-        # key_frequency = collections.Counter()
         for card in all_cards:
             if set(card["legalities"].values()) == {"not_legal"}:
                 continue
@@ -347,7 +330,6 @@ class APIResource:
                 continue
             if card.get("set_type") == "funny":
                 continue
-            # key_frequency.update(k for k, v in card.items() if v)
             card_types, _, card_subtypes = (x.strip().split() for x in card.get("type_line", "").title().partition("\u2014"))
             card["card_types"] = card_types
             card["card_subtypes"] = card_subtypes or None
@@ -361,6 +343,14 @@ class APIResource:
                     card[f"{creature_field}_numeric"] = numeric_val
             to_insert.append(card)
         return to_insert
+
+    def get_stats(self: APIResource, **_: object) -> dict[str, Any]:
+        """Get stats about the cards."""
+        to_insert = self._get_cards_to_insert()
+        key_frequency = collections.Counter()
+        for card in to_insert:
+            key_frequency.update(k for k, v in card.items() if v not in [None, [], {}])
+        return key_frequency.most_common()
 
     def import_data(self: APIResource, **_: object) -> None:
         """Import data from Scryfall and insert into the database."""
