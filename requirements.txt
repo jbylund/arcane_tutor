@@ -1,0 +1,8 @@
+bjoern
+brotli
+falcon
+orjson
+psycopg[binary,pool]
+pyparsing
+requests
+zstandard
