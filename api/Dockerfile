@@ -22,7 +22,7 @@ RUN python -m pip install --quiet --upgrade \
     bjoern \
     falcon \
     orjson \
-    psycopg2 \
+    psycopg[binary,pool] \
     pyparsing \
     requests
 

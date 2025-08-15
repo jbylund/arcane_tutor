@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import cProfile
 import csv
 import hashlib
 import inspect
@@ -12,157 +13,58 @@ import logging
 import os
 import pathlib
 import time
-import cProfile
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import falcon
-import psycopg2
-import psycopg2.extras
-import psycopg2.pool
-import requests
 import orjson
+import psycopg
+import psycopg.rows
+import psycopg.types.json
+import psycopg_pool
+import requests
 from parsing import generate_sql_query, parse_search_query
-from psycopg2.extensions import register_adapter
 
 if TYPE_CHECKING:
     from types import TracebackType
 
-# register_adapter(dict, psycopg2.extras.Json)
-# register_adapter(list, psycopg2.extras.Json)
-
-def orjson_loads(s):
-    return orjson.loads(s)
-
 def orjson_dumps(obj):
     # orjson.dumps returns bytes, psycopg2 expects str
-    return orjson.dumps(obj).decode('utf-8')
-
-# Register for JSON
-psycopg2.extras.register_default_json(
-    loads=orjson_loads, 
-    globally=True
-)
-psycopg2.extras.register_default_jsonb(
-    loads=orjson_loads, 
-    globally=True
-)
-
-def jsonb_adapter(obj):
-    s = orjson_dumps(obj).replace("'", "''")
-    return psycopg2.extensions.AsIs(f"'{s}'::jsonb")
+    return orjson.dumps(obj).decode("utf-8")
 
 # Register for dumping (adapting Python -> DB)
-psycopg2.extensions.register_adapter(dict, jsonb_adapter)
-psycopg2.extensions.register_adapter(list, jsonb_adapter)
+psycopg.types.json.set_json_dumps(dumps=orjson_dumps)
+psycopg.types.json.set_json_loads(loads=orjson.loads)
 
 logger = logging.getLogger("apiresource")
 
 # pylint: disable=c-extension-no-member
 
+def _get_pg_creds() -> dict[str, str]:
+    """Get postgres credentials from the environment."""
+    mapping = {
+        "database": "dbname",
+    }
+    unmapped = {k[2:].lower(): v for k, v in os.environ.items() if k.startswith("PG")}
+    return {mapping.get(k, k): v for k, v in unmapped.items()}
 
-class DBCtx:
-    """Context manager for borrowing a connection from a connection pool."""
+def _make_pool() -> psycopg_pool.ConnectionPool:
+    """Create and return a psycopg3 ConnectionPool for PostgreSQL connections."""
 
-    def __init__(self: DBCtx, conn_pool: psycopg2.pool.ThreadedConnectionPool) -> None:
-        """Initialize a DBCtx object."""
-        self._conn_pool = conn_pool
+    def configure_connection(conn: psycopg.Connection) -> None:
+        conn.row_factory = psycopg.rows.dict_row
 
-    def __enter__(self: DBCtx) -> psycopg2.extensions.cursor:
-        """Enter the context manager."""
-        self.conn = conn = self._conn_pool.getconn()
-        conn.cursor_factory = psycopg2.extras.DictCursor
-        conn.autocommit = True
-        return conn.cursor()
-
-    def __exit__(self: DBCtx, err_type: type[BaseException] | None, err_val: BaseException | None, err_tb: TracebackType | None) -> None:
-        """Release the connection back to the pool.
-
-        Args:
-        ----
-            err_type (type[BaseException] | None): The type of exception that occurred.
-            err_val (BaseException | None): The exception that occurred.
-            err_tb (Any): The traceback of the exception.
-        """
-        if err_type:
-            self.conn.rollback()
-        else:
-            self.conn.commit()
-        self._conn_pool.putconn(self.conn)
-
-
-class BorrowingPool:
-    """Wrapper for a connection pool that provides a context manager for
-    borrowing connections.
-    """
-
-    def __init__(self: BorrowingPool, *, pool: psycopg2.pool.ThreadedConnectionPool) -> None:
-        """Initialize a BorrowingPool object."""
-        self.pool = pool
-
-    def borrow(self: BorrowingPool) -> DBCtx:
-        """Get a context manager for borrowing a connection from the pool.
-
-        Returns:
-        -------
-            DBCtx: Context manager for a database connection.
-
-        """
-        return DBCtx(self.pool)
-
-    def __repr__(self: BorrowingPool) -> str:
-        """Return a string representation of the BorrowingPool object."""
-        return f"<BorrowingPool({self.pool})>"
-
-
-def _make_pool() -> BorrowingPool:
-    """Create and return a BorrowingPool for PostgreSQL connections.
-
-    Returns:
-    -------
-        BorrowingPool: The connection pool wrapper.
-
-    """
-    def _get_pg_creds() -> dict[str, str]:
-        """Get postgres credentials from the environment.
-
-        Returns:
-        -------
-            dict: Dictionary of credential key-value pairs.
-
-        """
-        return {k[2:].lower(): v for k, v in os.environ.items() if k.startswith("PG")}
-
-    def make_pool() -> BorrowingPool:
-        """Make a database connection pool.
-
-        Returns:
-        -------
-            BorrowingPool: The connection pool wrapper.
-
-        """
-        creds = _get_pg_creds()
-        max_connections = 1
-        standby_connections = 1
-
-        deadline = time.time() + 30
-        while True:
-            try:
-                pool = psycopg2.pool.ThreadedConnectionPool(
-                    standby_connections,
-                    max_connections,
-                    "application_name=api",
-                    **creds,
-                )
-                logger.info("Created pool in pid %d...", os.getpid())
-                return BorrowingPool(pool=pool)
-            except psycopg2.OperationalError as oops:
-                logger.warning("Failed to get connection %s", oops)
-                if deadline < time.time():
-                    raise
-                time.sleep(3)
-
-    return make_pool()
+    creds = _get_pg_creds()
+    conninfo = " ".join(f"{k}={v}" for k, v in creds.items())
+    pool_args = {
+        "configure": configure_connection,
+        "conninfo": conninfo,
+        "max_size": 2,
+        "min_size": 1,
+        "open": True,
+    }
+    logger.info("Pool args: %s", pool_args)
+    return psycopg_pool.ConnectionPool(**pool_args)
 
 
 def get_migrations() -> list[dict[str, str]]:
@@ -236,9 +138,8 @@ class APIResource:
         """
         self._tablename = "staging_table"
 
-        # make a connection pool
+        # make a psycopg3 connection pool
         self._conn_pool = _make_pool()
-
         self.action_map = {x: getattr(self, x) for x in dir(self) if not x.startswith("_")}
         self.action_map["search.js"] = self.search_js
         self.action_map["favicon.ico"] = self.favicon
@@ -272,7 +173,7 @@ class APIResource:
             raise falcon.HTTPBadRequest(description=str(oops))
         except falcon.HTTPError:
             raise
-        except Exception as oops:  # noqa: BLE001
+        except Exception as oops:
             logger.error("Error handling request: %s", oops, exc_info=True)
             # walk back to the lowest frame...
             # file / function / locals (if possible)
@@ -321,19 +222,24 @@ class APIResource:
         explain_query = f"EXPLAIN (FORMAT JSON) {query}"
 
         result: dict[str, Any] = {}
-        with self._conn_pool.borrow() as cursor:
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute("set statement_timeout = 10000")
-
             if explain:
                 cursor.execute(explain_query, params)
                 for row in cursor.fetchall():
                     result["plan"] = row
             before = time.time()
             cursor.execute(query, params)
-            duration = time.time() - before
-            result["duration"] = duration
-            result["frequency"] = 1 / duration
-            result["result"] = [dict(r) for r in cursor.fetchall()]
+            after_query = time.time()
+            result["query_duration"] = query_duratrion = after_query - before
+            result["query_frequency"] = 1 / query_duratrion
+            raw_rows = cursor.fetchall()
+            result["result"] = [dict(r) for r in raw_rows]
+            after_fetch = time.time()
+            result["fetch_duration"] = fetch_duration = after_fetch - after_query
+            result["fetch_frequency"] = 1 / fetch_duration
+            result["total_duration"] = total_duration = after_fetch - before
+            result["total_frequency"] = 1 / total_duration
         return result
 
     def get_pid(self: APIResource, **_: object) -> int:
@@ -355,7 +261,7 @@ class APIResource:
 
         """
         records = self._run_query(
-            query="SELECT relname FROM pg_stat_user_tables"
+            query="SELECT relname FROM pg_stat_user_tables",
         )["result"]
         existing_tables = {r["relname"] for r in records}
         return "migrations" in existing_tables
@@ -390,7 +296,8 @@ class APIResource:
         # read migrations from the db dir...
         # if any already applied migrations differ from what we want
         # to apply then drop everything
-        with self._conn_pool.borrow() as cursor:
+        with self._conn_pool.connection() as conn:
+            cursor = conn.cursor
             cursor.execute(
                 """CREATE TABLE IF NOT EXISTS migrations (
                 file_name text not null,
@@ -466,7 +373,8 @@ class APIResource:
         last_log = 0
         log_interval = 1
         import_times = collections.deque(maxlen=1000)
-        with self._conn_pool.borrow() as cursor:
+        with self._conn_pool.connection() as conn:
+            cursor = conn.cursor
             for idx, card in enumerate(to_insert):
 
                 now = time.monotonic()
@@ -510,8 +418,8 @@ class APIResource:
             FROM
                 magic.cards
             WHERE
-                (%(min_name)s IS NULL OR %(min_name)s < card_name) AND
-                (%(max_name)s IS NULL OR card_name < %(max_name)s)
+                (%(min_name)s::text IS NULL OR %(min_name)s::text < card_name) AND
+                (%(max_name)s::text IS NULL OR card_name < %(max_name)s::text)
             ORDER BY
                 card_name
             LIMIT
