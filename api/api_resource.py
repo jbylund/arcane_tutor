@@ -141,11 +141,10 @@ class APIResource:
         # make a psycopg3 connection pool
         self._conn_pool = _make_pool()
         self.action_map = {x: getattr(self, x) for x in dir(self) if not x.startswith("_")}
-        self.action_map["search.js"] = self.search_js
-        self.action_map["favicon.ico"] = self.favicon
+        self.action_map["index"] = self.index_html
         logger.info("Worker with pid has conn pool %s", self._conn_pool)
 
-    def handle(self: APIResource, req: falcon.Request, resp: falcon.Response) -> None:
+    def _handle(self: APIResource, req: falcon.Request, resp: falcon.Response) -> None:
         """Handle a Falcon request and set the response.
 
         Args:
@@ -160,7 +159,8 @@ class APIResource:
         if path not in ("db_ready", "pid"):
             logger.info("Handling request for %s", req.uri)
 
-        action = self.action_map.get(path, self.raise_not_found)
+        path = path.replace(".", "_")
+        action = self.action_map.get(path, self._raise_not_found)
         before = time.monotonic()
         try:
             datadir = pathlib.Path("/data/api/")
@@ -199,7 +199,7 @@ class APIResource:
             duration = time.monotonic() - before
             logger.info("Request duration: %f seconds", duration)
 
-    def raise_not_found(self: APIResource, **_: object) -> None:
+    def _raise_not_found(self: APIResource, **_: object) -> None:
         """Raise a Falcon HTTPNotFound error with available routes."""
         raise falcon.HTTPNotFound(title="Not Found", description={"routes": {k: v.__doc__ for k, v in self.action_map.items()}})
 
@@ -461,7 +461,7 @@ class APIResource:
         val = str_buffer.getvalue()
         falcon_response.body = val.encode("utf-8")
 
-    def search(self: APIResource, *, q: str | None = None, query: str | None = None) -> dict[str, Any]:
+    def search(self: APIResource, *, q: str | None = None, query: str | None = None, **_: object) -> dict[str, Any]:
         """Run a search query and return results and metadata.
 
         Args:
@@ -488,7 +488,7 @@ class APIResource:
             magic.cards AS card
         WHERE
             {where_clause}"""
-        result_bag = self._run_query(full_query)
+        result_bag = self._run_query(query=full_query)
         result = result_bag["result"]
         return {
             "cards": result,
@@ -498,7 +498,7 @@ class APIResource:
             "result": result_bag,
         }
 
-    def index(self: APIResource, *, falcon_response: falcon.Response | None = None) -> None:
+    def index_html(self: APIResource, *, falcon_response: falcon.Response | None = None) -> None:
         """Return the index page.
 
         Args:
@@ -520,7 +520,7 @@ class APIResource:
         self._serve_static_file(filename="search.js", falcon_response=falcon_response)
         falcon_response.content_type = "text/javascript"
 
-    def favicon(self: APIResource, *, falcon_response: falcon.Response | None = None) -> None:
+    def favicon_ico(self: APIResource, *, falcon_response: falcon.Response | None = None) -> None:
         """Return the favicon.ico file.
 
         Args:
