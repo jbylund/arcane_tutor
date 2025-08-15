@@ -59,8 +59,13 @@ class ApiWorker(multiprocessing.Process):
         """
         # Importing here (post-fork) is safer for some servers/clients than importing before forking.
         import api_resource  # pylint: disable=import-outside-toplevel
+        from middlewares import CompressionMiddleware
 
-        api = falcon.App()
+        api = falcon.App(
+            middleware=[
+                CompressionMiddleware(),
+            ],
+        )
         api.set_error_serializer(json_error_serializer)  # Use custom JSON error serializer
         sink = api_resource.APIResource()  # Create the main API resource
         api.add_sink(sink.handle, prefix="/")  # Route all requests to the sink handler

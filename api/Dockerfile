@@ -20,10 +20,12 @@ RUN apt-get install -y libpython3-dev libev-dev libpq-dev
 
 RUN python -m pip install --quiet --upgrade \
     bjoern \
+    brotli \
     falcon \
     orjson \
     psycopg[binary,pool] \
     pyparsing \
-    requests
+    requests \
+    zstandard
 
 COPY ./api /api
