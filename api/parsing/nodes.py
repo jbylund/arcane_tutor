@@ -1,58 +1,64 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
+from typing import Any
 
 
 # AST Classes
 class QueryNode(ABC):
-    """Base class for all query nodes"""
+    """Base class for all query nodes in the abstract syntax tree (AST)."""
 
     @abstractmethod
-    def to_sql(self) -> str:
-        """Convert this node to SQL WHERE clause"""
-        pass
-
+    def to_sql(self: QueryNode) -> str:
+        """Convert this node to a SQL WHERE clause string representation."""
 
 class LeafNode(QueryNode):
-    """Leaf node - not intended to be used directly"""
+    """Abstract base class for leaf nodes in the AST.
 
-    pass
+    Not intended to be used directly.
+    """
 
 
 class ValueNode(LeafNode):
-    """These represent values, like strings and numbers"""
+    """Represents a value node, such as a string or number, in the AST."""
 
-    value: object
+    value: Any
 
-    def __repr__(self):
-        return f"{self.__class__.__name__}({repr(self.value)})"
+    def __repr__(self: ValueNode) -> str:
+        """Return a string representation of the value node."""
+        return f"{self.__class__.__name__}({self.value!r})"
 
-    def __eq__(self, other):
+    def __eq__(self: ValueNode, other: object) -> bool:
+        """Check equality with another ValueNode based on value."""
         if not isinstance(other, self.__class__):
             return False
         return self.value == other.value
 
-    def __hash__(self):
+    def __hash__(self: ValueNode) -> int:
+        """Return a hash based on the class name and value."""
         return hash((self.__class__.__name__, self.value))
 
-
 class StringValueNode(ValueNode):
-    """These represent string values, like 'flying' or 'Lightning Bolt'"""
+    """Represents a string value node, such as 'flying' or 'Lightning Bolt'."""
 
-    def __init__(self, value):
+    def __init__(self: StringValueNode, value: str) -> None:
+        """Initialize a StringValueNode with a string value."""
         self.value = value
 
-    def to_sql(self):
-        """Serialize this node to SQL"""
+    def to_sql(self: StringValueNode) -> str:
+        """Serialize this string value node to a SQL string literal."""
         return f"'{self.value}'"
 
-
 class NumericValueNode(ValueNode):
-    def __init__(self, value):
+    """Represents a numeric value node in the AST."""
+
+    def __init__(self: NumericValueNode, value: float) -> None:
+        """Initialize a NumericValueNode with a numeric value."""
         self.value = value
 
-    def to_sql(self):
-        """Serialize this node to SQL"""
+    def to_sql(self: NumericValueNode) -> str:
+        """Serialize this numeric value node to a SQL number literal."""
         return str(self.value)
-
 
 remapper = {
     "name": "card_name",
@@ -60,34 +66,41 @@ remapper = {
     "toughness": "creature_toughness",
 }
 
-
 class AttributeNode(LeafNode):
-    """These represent attributes of a card, like 'cmc' or 'power'"""
+    """Represents an attribute of a card, such as 'cmc' or 'power'."""
 
-    def __init__(self, attribute_name):
+    def __init__(self: AttributeNode, attribute_name: str) -> None:
+        """Initialize an AttributeNode with the attribute name."""
         self.attribute_name = attribute_name
 
-    def to_sql(self):
-        """Serialize this node to SQL"""
+    def to_sql(self: AttributeNode) -> str:
+        """Serialize this attribute node to a SQL column reference."""
         remapped_name = remapper.get(self.attribute_name, self.attribute_name)
         return f"card.{remapped_name}"
 
-    def __eq__(self, other):
+    def __eq__(self: AttributeNode, other: object) -> bool:
+        """Check equality with another AttributeNode based on attribute
+        name.
+        """
         if not isinstance(other, self.__class__):
             return False
         return self.attribute_name == other.attribute_name
 
-    def __hash__(self):
+    def __hash__(self: AttributeNode) -> int:
+        """Return a hash based on the class name and attribute name."""
         return hash((self.__class__.__name__, self.attribute_name))
 
-    def __repr__(self):
+    def __repr__(self: AttributeNode) -> str:
+        """Return a string representation of the attribute node."""
         return f"{self.__class__.__name__}({self.attribute_name})"
 
-
 class BinaryOperatorNode(QueryNode):
-    """Represents a binary operator node"""
+    """Represents a binary operator node (e.g., '=', '!=', '<', '>', etc.)."""
 
-    def __init__(self, lhs: QueryNode, operator: str, rhs: QueryNode):
+    def __init__(self: BinaryOperatorNode, lhs: QueryNode, operator: str, rhs: QueryNode) -> None:
+        """Initialize a BinaryOperatorNode with left/right operands and an
+        operator.
+        """
         self.lhs = lhs
         self.operator = operator
         self.rhs = rhs
@@ -105,120 +118,144 @@ class BinaryOperatorNode(QueryNode):
             ":",  # special operator that depends on the types of the compared nodes
         }
         if operator not in bin_ops:
-            raise ValueError(f"Unknown operator: {operator}")
+            msg = f"Unknown operator: {operator}"
+            raise ValueError(msg)
 
-    def to_sql(self) -> str:
-        """Serialize this node to SQL"""
+    def to_sql(self: BinaryOperatorNode) -> str:
+        """Serialize this binary operator node to a SQL expression."""
         return f"({self.lhs.to_sql()} {self.operator} {self.rhs.to_sql()})"
 
-    def __repr__(self):
+    def __repr__(self: BinaryOperatorNode) -> str:
+        """Return a string representation of the binary operator node."""
         return f"{self.__class__.__name__}({self.lhs}, {self.operator}, {self.rhs})"
 
-    def __eq__(self, other):
+    def __eq__(self: BinaryOperatorNode, other: object) -> bool:
+        """Check equality with another BinaryOperatorNode based on operands and
+        operator.
+        """
         if not isinstance(other, self.__class__):
             return False
         return self.lhs == other.lhs and self.operator == other.operator and self.rhs == other.rhs
 
-    def __hash__(self):
+    def __hash__(self: BinaryOperatorNode) -> int:
+        """Return a hash based on the class name, operands, and operator."""
         return hash((self.__class__.__name__, self.lhs, self.operator, self.rhs))
 
-
 class NaryOperatorNode(QueryNode):
-    """Base class for n-ary operators (AND, OR) that take multiple operands"""
+    """Base class for n-ary operator nodes (e.g., AND, OR) that take multiple
+    operands.
+    """
 
-    def __init__(self, operands: list[QueryNode]):
+    def __init__(self: NaryOperatorNode, operands: list[QueryNode]) -> None:
+        """Initialize an NaryOperatorNode with a list of operand nodes."""
         self.operands = operands
 
-    def to_sql(self) -> str:
-        """Serialize this node to SQL"""
+    def to_sql(self: NaryOperatorNode) -> str:
+        """Serialize this n-ary operator node to a SQL expression."""
         if not self.operands:
             return self._empty_result()
-        elif len(self.operands) == 1:
+        if len(self.operands) == 1:
             return self.operands[0].to_sql()
-        else:
-            inners = f" {self._operator()} ".join(operand.to_sql() for operand in self.operands)
-            return f"({inners})"
+        inners = f" {self._operator()} ".join(operand.to_sql() for operand in self.operands)
+        return f"({inners})"
 
-    def _operator(self) -> str:
-        """Return the SQL operator string - to be implemented by subclasses"""
+    def _operator(self: NaryOperatorNode) -> str:
+        """Return the SQL operator string.
+
+        To be implemented by subclasses.
+        """
         raise NotImplementedError
 
-    def _empty_result(self) -> str:
-        """Return the result for empty operands - to be implemented by subclasses"""
+    def _empty_result(self: NaryOperatorNode) -> str:
+        """Return the SQL result for empty operands.
+
+        To be implemented by subclasses.
+        """
         raise NotImplementedError
 
-    def __repr__(self):
+    def __repr__(self: NaryOperatorNode) -> str:
+        """Return a string representation of the n-ary operator node."""
         return f'{self.__class__.__name__}({", ".join(repr(op) for op in self.operands)})'
 
-    def __eq__(self, other):
+    def __eq__(self: NaryOperatorNode, other: object) -> bool:
+        """Check equality with another NaryOperatorNode based on operands."""
         if not isinstance(other, self.__class__):
             return False
         return self.operands == other.operands
 
-    def __hash__(self):
+    def __hash__(self: NaryOperatorNode) -> int:
+        """Return a hash based on the class name and operands."""
         return hash((self.__class__.__name__, tuple(self.operands)))
 
-
 class AndNode(NaryOperatorNode):
-    """Represents AND operation between multiple conditions"""
+    """Represents an AND operation between multiple conditions."""
 
-    def _operator(self) -> str:
+    def _operator(self: AndNode) -> str:
+        """Return the SQL operator for AND."""
         return "AND"
 
-    def _empty_result(self) -> str:
+    def _empty_result(self: AndNode) -> str:
+        """Return the SQL result for an empty AND (always TRUE)."""
         return "TRUE"
 
-
 class OrNode(NaryOperatorNode):
-    """Represents OR operation between multiple conditions"""
+    """Represents an OR operation between multiple conditions."""
 
-    def _operator(self) -> str:
+    def _operator(self: OrNode) -> str:
+        """Return the SQL operator for OR."""
         return "OR"
 
-    def _empty_result(self) -> str:
+    def _empty_result(self: OrNode) -> str:
+        """Return the SQL result for an empty OR (always FALSE)."""
         return "FALSE"
 
-
 class NotNode(QueryNode):
-    """Represents NOT operation"""
+    """Represents a NOT operation on a single operand."""
 
-    def __init__(self, operand: QueryNode):
+    def __init__(self: NotNode, operand: QueryNode) -> None:
+        """Initialize a NotNode with a single operand node."""
         self.operand = operand
 
-    def to_sql(self) -> str:
-        """Serialize this node to SQL"""
+    def to_sql(self: NotNode) -> str:
+        """Serialize this NOT node to a SQL expression."""
         operand_sql = self.operand.to_sql()
         return f"NOT ({operand_sql})"
 
-    def __repr__(self):
+    def __repr__(self: NotNode) -> str:
+        """Return a string representation of the NOT node."""
         return f"Not({self.operand})"
 
-    def __eq__(self, other):
+    def __eq__(self: NotNode, other: object) -> bool:
+        """Check equality with another NotNode based on operand."""
         if not isinstance(other, NotNode):
             return False
         return self.operand == other.operand
 
-    def __hash__(self):
+    def __hash__(self: NotNode) -> int:
+        """Return a hash based on the operand."""
         return hash(("Not", self.operand))
 
-
 class Query(QueryNode):
-    """Top-level query container"""
+    """Top-level query container node for the AST."""
 
-    def __init__(self, root: QueryNode):
+    def __init__(self: Query, root: QueryNode) -> None:
+        """Initialize a Query with the root QueryNode."""
         self.root = root
 
-    def to_sql(self) -> str:
-        """Serialize this query to SQL"""
+    def to_sql(self: Query) -> str:
+        """Serialize this query to a SQL string."""
         return self.root.to_sql()
 
-    def __repr__(self):
+    def __repr__(self: Query) -> str:
+        """Return a string representation of the Query node."""
         return f"Query({self.root})"
 
-    def __eq__(self, other):
+    def __eq__(self: Query, other: object) -> bool:
+        """Check equality with another Query based on the root node."""
         if not isinstance(other, Query):
             return False
         return self.root == other.root
 
-    def __hash__(self):
+    def __hash__(self: Query) -> int:
+        """Return a hash based on the root node."""
         return hash(("Query", self.root))

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pyparsing import (
     CaselessKeyword,
     Combine,
@@ -13,10 +15,20 @@ from pyparsing import (
     oneOf,
 )
 
-from .nodes import AndNode, AttributeNode, BinaryOperatorNode, NotNode, NumericValueNode, OrNode, Query, QueryNode, StringValueNode
+from .nodes import (
+    AndNode,
+    AttributeNode,
+    BinaryOperatorNode,
+    NotNode,
+    NumericValueNode,
+    OrNode,
+    Query,
+    QueryNode,
+    StringValueNode,
+)
 
 # Known card attributes that should be wrapped in AttributeNode
-KNOWN_CARD_ATTRIBUTES = {
+KNOWN_CARD_ATTRIBUTES: set[str] = {
     "cmc",
     "power",
     "toughness",
@@ -32,77 +44,73 @@ KNOWN_CARD_ATTRIBUTES = {
     "mana_cost_text",
 }
 
-
 def flatten_nested_operations(node: QueryNode) -> QueryNode:
-    """Flatten nested operations of the same type to create canonical n-ary forms"""
+    """Flatten nested operations of the same type to create canonical n-ary
+    forms.
+
+    For example, (A AND (B AND C)) becomes (A AND B AND C).
+    """
+    # This function recursively flattens nested AND/OR nodes
     if isinstance(node, AndNode):
-        # Collect all operands, recursively flattening nested AND operations
-        operands = []
+        operands: list[QueryNode] = []
         for operand in node.operands:
             if isinstance(operand, AndNode):
-                # Recursively flatten nested AND operations
                 flattened = flatten_nested_operations(operand)
                 operands.extend(flattened.operands)
             else:
-                # Recursively flatten other types of nodes
                 operands.append(flatten_nested_operations(operand))
         return AndNode(operands)
-
-    elif isinstance(node, OrNode):
-        # Collect all operands, recursively flattening nested OR operations
-        operands = []
+    if isinstance(node, OrNode):
+        operands: list[QueryNode] = []
         for operand in node.operands:
             if isinstance(operand, OrNode):
-                # Recursively flatten nested OR operations
                 flattened = flatten_nested_operations(operand)
                 operands.extend(flattened.operands)
             else:
-                # Recursively flatten other types of nodes
                 operands.append(flatten_nested_operations(operand))
         return OrNode(operands)
-
-    elif isinstance(node, NotNode):
-        # Recursively flatten the operand
+    if isinstance(node, NotNode):
         return NotNode(flatten_nested_operations(node.operand))
-
-    elif isinstance(node, Query):
-        # Recursively flatten the root
+    if isinstance(node, Query):
         return Query(flatten_nested_operations(node.root))
+    return node
 
-    else:
-        # BinaryOperatorNode and other leaf nodes don't need flattening
-        return node
+def create_value_node(value: object) -> QueryNode:
+    """Create the appropriate QueryNode type for a value.
 
-
-def create_value_node(value):
-    """Create appropriate node type for a value"""
-    if isinstance(value, (int, float)):
+    Returns NumericValueNode, AttributeNode, or StringValueNode as
+    appropriate.
+    """
+    # This function determines the correct node type for a value
+    if isinstance(value, int | float):
         return NumericValueNode(value)
     if isinstance(value, str):
-        # Check if it should be an attribute or a string value
         if should_be_attribute(value):
             return AttributeNode(value)
         return StringValueNode(value)
     if isinstance(value, tuple) and value[0] == "quoted":
-        # Quoted strings are always string values
         return StringValueNode(value[1])
     return value  # Fallback for other types
 
+def should_be_attribute(value: object) -> bool:
+    """Check if a string value should be wrapped in AttributeNode.
 
-# Helper function to determine if a string should be an AttributeNode
-def should_be_attribute(value):
-    """Check if a string value should be wrapped in AttributeNode"""
+    Returns True if the value is a string and is a known card attribute.
+    """
+    # Helper function to determine if a string should be an AttributeNode
     return isinstance(value, str) and value in KNOWN_CARD_ATTRIBUTES
 
-
-def make_binary_operator_node(tokens):
-    """Create a BinaryOperatorNode, properly wrapping attributes and values"""
+def make_binary_operator_node(tokens: list[object]) -> BinaryOperatorNode:
+    """Create a BinaryOperatorNode, properly wrapping attributes and values."""
+    # Used as a parse action for binary operator expressions
     left, operator, right = tokens
     return BinaryOperatorNode(create_value_node(left), operator, create_value_node(right))
 
-
 def parse_search_query(query: str) -> Query:
-    """Parse a Scryfall search query into an AST"""
+    """Parse a Scryfall search query string into an AST Query object.
+
+    Raises ValueError if parsing fails.
+    """
     if query is None or not query.strip():
         # Return empty query
         return Query(BinaryOperatorNode("name", ":", ""))
@@ -115,10 +123,8 @@ def parse_search_query(query: str) -> Query:
     attrname = Word(alphas)
     attrop = oneOf(": > < >= <= = !=")
     arithmetic_op = oneOf("+ - * /")
-
     integer = Word(nums).setParseAction(lambda t: int(t[0]))
     float_number = Combine(Word(nums) + Optional(Literal(".") + Optional(Word(nums)))).setParseAction(lambda t: float(t[0]))
-
     lparen = Literal("(").suppress()
     rparen = Literal(")").suppress()
 
@@ -128,19 +134,19 @@ def parse_search_query(query: str) -> Query:
     operator_not = Literal("-")
 
     # Handle quoted strings and regular words (but not keywords)
-    def make_quoted_string(tokens):
-        """Mark quoted strings so they're always treated as string values"""
+    def make_quoted_string(tokens: list[str]) -> tuple[str, str]:
+        """Mark quoted strings so they're always treated as string values."""
         return ("quoted", tokens[0])
-
     quoted_string = (QuotedString('"', escChar="\\") | QuotedString("'", escChar="\\")).setParseAction(make_quoted_string)
 
     # Word that doesn't match keywords
-    def make_word(tokens):
+    def make_word(tokens: list[str]) -> str:
+        """Reject reserved keywords as words."""
         word_str = tokens[0]
         if word_str.upper() in ["AND", "OR"]:
-            raise ValueError(f"'{word_str}' is a reserved keyword")
+            msg = f"'{word_str}' is a reserved keyword"
+            raise ValueError(msg)
         return word_str
-
     word = Word(alphas).setParseAction(make_word)
 
     # For attribute values, we want the raw string
@@ -171,31 +177,31 @@ def parse_search_query(query: str) -> Query:
     condition.setParseAction(make_binary_operator_node)
 
     # Single word (implicit name search)
-    def make_single_word(tokens):
-        # For single words, we always search in the name field
+    def make_single_word(tokens: list[str]) -> BinaryOperatorNode:
+        """For single words, always search in the name field."""
         return BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode(tokens[0]))
-
     single_word = word.setParseAction(make_single_word)
 
     # Grouped expression
-    def make_group(tokens):
+    def make_group(tokens: list[object]) -> object:
+        """Return the grouped expression inside parentheses."""
         return tokens[0]
-
     group = Group(lparen + expr + rparen).setParseAction(make_group)
 
     # Factor: can be negated (but not arithmetic expressions)
-    def handle_negation(tokens):
+    def handle_negation(tokens: list[object]) -> object:
+        """Handle negation (NOT) for factors, disallowing arithmetic
+        negation.
+        """
         if len(tokens) == 1:
             return tokens[0]
-
         if len(tokens) == 2 and tokens[0] == "-":
             # Don't allow negation of arithmetic expressions
             if isinstance(tokens[1], BinaryOperatorNode) and tokens[1].operator in ["+", "-", "*", "/"]:
-                raise ValueError("Cannot negate arithmetic expressions")
+                msg = "Cannot negate arithmetic expressions"
+                raise ValueError(msg)
             return NotNode(tokens[1])
-
         return tokens[0]
-
     # For negation, we exclude arithmetic expressions from being negated
     negatable_primary = attr_attr_condition | condition | group | single_word
     negatable_factor = Optional(operator_not) + negatable_primary
@@ -206,19 +212,19 @@ def parse_search_query(query: str) -> Query:
     factor = arithmetic_comparison | attr_arithmetic_comparison | arithmetic_expr | negatable_factor
 
     # Expression with explicit AND/OR operators (highest precedence)
-    def handle_operators(tokens):
+    def handle_operators(tokens: list[object]) -> object:
+        """Handle AND/OR operators, grouping operands by operator type and
+        building n-ary nodes.
+        """
         if len(tokens) == 1:
             return tokens[0]
-
         # Group operands by operator type
         current_operands = [tokens[0]]
         current_operator = None
-
         for i in range(1, len(tokens), 2):
             if i + 1 < len(tokens):
                 operator = tokens[i]
                 right = tokens[i + 1]
-
                 if current_operator is None:
                     # First operator, start collecting
                     current_operator = operator.upper()
@@ -233,12 +239,11 @@ def parse_search_query(query: str) -> Query:
                     elif current_operator == "OR":
                         result = OrNode(current_operands)
                     else:
-                        raise ValueError(f"Unknown operator: {current_operator}")
-
+                        msg = f"Unknown operator: {current_operator}"
+                        raise ValueError(msg)
                     # Start new group with the result as first operand
                     current_operands = [result, right]
                     current_operator = operator.upper()
-
         # Create final node for remaining operands
         if current_operator == "AND":
             return AndNode(current_operands)
@@ -246,7 +251,6 @@ def parse_search_query(query: str) -> Query:
             return OrNode(current_operands)
         # No operators, just return the single operand
         return current_operands[0]
-
     # The main expression: factors separated by AND/OR operators
     expr <<= factor + ZeroOrMore((operator_and | operator_or) + factor)
     expr.setParseAction(handle_operators)
@@ -259,26 +263,29 @@ def parse_search_query(query: str) -> Query:
             return flatten_nested_operations(Query(parsed[0]))
         return Query(BinaryOperatorNode("name", ":", ""))
     except Exception as e:
-        raise ValueError(f"Failed to parse query '{query}': {e}")
-
+        msg = f"Failed to parse query '{query}': {e}"
+        raise ValueError(msg)
 
 def preprocess_implicit_and(query: str) -> str:
-    """Pre-process query to convert implicit AND operations to explicit ones"""
+    """Pre-process query to convert implicit AND operations to explicit ones.
 
+    For example, 'foo bar' becomes 'foo AND bar'.
+    """
     # Split the query into tokens while preserving quoted strings and operators
-    tokens = []
+    tokens: list[str] = []
     i = 0
     while i < len(query):
         if len(tokens) > len(query):
-            raise AssertionError(f"tokens is longer than query, {tokens} vs {query}")
+            msg = f"tokens is longer than query, {tokens} vs {query}"
+            raise AssertionError(msg)
         char = query[i]
-
         if char in ['"', "'"]:
             # Handle quoted string (both double and single quotes)
             quote_char = char
             end_quote = query.find(quote_char, i + 1)
             if end_quote == -1:
-                raise ValueError(f"Unmatched {quote_char} quote in query")
+                msg = f"Unmatched {quote_char} quote in query"
+                raise ValueError(msg)
             tokens.append(query[i : end_quote + 1])
             i = end_quote + 1
         elif char in "()":
@@ -311,18 +318,15 @@ def preprocess_implicit_and(query: str) -> str:
                 word_end += 1
             tokens.append(query[i:word_end])
             i = word_end
-
     # Convert implicit AND operations
-    result = []
+    result: list[str] = []
     i = 0
     while i < len(tokens):
         token = tokens[i]
         result.append(token)
-
         # Check if we need to insert an implicit AND
         if i + 1 < len(tokens):
             next_token = tokens[i + 1]
-
             # Insert AND if:
             # 1. Current token is not an operator
             # 2. Next token is not an operator (but allow negation)
@@ -356,17 +360,15 @@ def preprocess_implicit_and(query: str) -> str:
                 else:
                     # This looks like negation: word - (something else), so insert AND
                     result.append("AND")
-
         i += 1
-
     return " ".join(result)
 
-
 def is_operator(token: str) -> bool:
-    """Check if a token is an operator"""
+    """Check if a token is an operator (comparison, arithmetic, or
+    negation).
+    """
     return token in [":", ">", "<", ">=", "<=", "=", "!=", "-", "+", "*", "/"]
 
-
 def generate_sql_query(parsed_query: Query) -> str:
-    """Generate SQL WHERE clause from parsed query"""
+    """Generate a SQL WHERE clause string from a parsed Query AST."""
     return parsed_query.to_sql()

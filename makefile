@@ -71,9 +71,12 @@ ensure_pylint:
 ensure_pydocker:
 	@python -c "import docker" 2>/dev/null || python -m pip install docker
 
-lint: ensure_black ensure_isort ensure_pylint # @doc lint all python files
-	find $(LINTABLE_DIRS) -type f -name "*.py" | xargs python -m isort --profile=black --line-length=132
-	find $(LINTABLE_DIRS) -type f -name "*.py" | xargs python -m black --line-length=132
+ensure_ruff:
+	@python -m ruff --version > /dev/null || python -m pip install ruff
+
+lint: ensure_ruff ensure_pylint # @doc lint all python files
+	find $(LINTABLE_DIRS) -type f -name "*.py" | xargs python -m ruff check --fix --unsafe-fixes >/dev/null 2>/dev/null || true
+	find $(LINTABLE_DIRS) -type f -name "*.py" | xargs python -m ruff check --fix --unsafe-fixes
 	find $(LINTABLE_DIRS) -type f -name "*.py" | xargs python -m pylint --fail-under 7.0 --max-line-length=132
 
 
@@ -91,10 +94,11 @@ dbconn: # @doc connect to the local database
 	PGPASSWORD=$(XPGPASSWORD) \
 	PGPORT=15432 \
 	PGUSER=$(XPGUSER) \
-	psql
+	/bin/psql
 
 datadir:
-	mkdir -p data/pg data/api data/postgres
+	mkdir -p data/api data/postgres /tmp/pgdata
+	ln -f -s /tmp/pgdata data/pg
 
 reset:
 	rm -rvf data

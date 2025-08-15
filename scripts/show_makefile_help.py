@@ -1,12 +1,15 @@
-"""Lift out "docstrings" from a specially constructed makefile"""
+"""Lift out "docstrings" from a specially constructed makefile."""
 
 # BEWARE: this script runs OUTSIDE containers, so pay special attention
 # to portability / avoid third party deps
 import argparse
+from pathlib import Path
 
 
-def get_targets_to_docs(filename):
-    """Get a mapping of {target: doc} for documented targets in the makefile"""
+def get_targets_to_docs(filename: str) -> dict[str, str]:
+    """Get a mapping of {target: doc} for documented targets in the
+    makefile.
+    """
     needle = "@doc"  # but not the first one
 
     def linefilter(line: str) -> bool:
@@ -17,7 +20,7 @@ def get_targets_to_docs(filename):
         )
 
     targets_to_docs = {}
-    with open(filename) as mkfilefh:
+    with Path(filename).open() as mkfilefh:
         for line in list(filter(linefilter, mkfilefh)):
             targets, _, rest = line.partition(":")
             docstring = rest.partition(needle)[-1].strip()
@@ -26,29 +29,28 @@ def get_targets_to_docs(filename):
     return targets_to_docs
 
 
-def pretty_output(targets_to_docs):
-    """Output target info to stdout"""
+def pretty_output(targets_to_docs: dict[str, str]) -> None:
+    """Output target info to stdout."""
     if not targets_to_docs:
-        print("There are no documented targets!")
         return
-    maxlen = len(max(targets_to_docs, key=len))
-    for targetname, targetdoc in sorted(targets_to_docs.items()):
-        print(f"{targetname:{maxlen}}:\t{targetdoc}")
+    len(max(targets_to_docs, key=len))
+    for _targetname, _targetdoc in sorted(targets_to_docs.items()):
+        pass
 
 
-def get_args():
-    """Argument parsing"""
+def get_args() -> dict[str, str]:
+    """Argument parsing."""
     parser = argparse.ArgumentParser()
     parser.add_argument("makefile")
     return vars(parser.parse_args())
 
 
-def main():
-    """Main entry point"""
+def main() -> None:
+    """Main entry point."""
     args = get_args()
     targets_to_docs = get_targets_to_docs(args["makefile"])
     pretty_output(targets_to_docs)
 
 
-if "__main__" == __name__:
+if __name__ == "__main__":
     main()
