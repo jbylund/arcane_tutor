@@ -5,11 +5,11 @@ import json
 import logging
 import multiprocessing
 import os
-import orjson
 
 import bjoern
 import falcon
 import falcon.media
+import orjson
 
 # Set up a logger for this module
 logger = logging.getLogger(__name__)
@@ -70,7 +70,7 @@ class ApiWorker(multiprocessing.Process):
             loads=orjson.loads,
         )
         extra_handlers = {
-            'application/json': json_handler,
+            "application/json": json_handler,
         }
 
         api.req_options.media_handlers.update(extra_handlers)
