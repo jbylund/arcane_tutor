@@ -112,7 +112,7 @@ def parse_search_query(query: str) -> Query:
     query = preprocess_implicit_and(query)
 
     # Define the grammar components
-    attrname = Word(alphas)
+    attrname = Word(alphas + "_")
     attrop = oneOf(": > < >= <= = !=")
     arithmetic_op = oneOf("+ - * /")
 
@@ -141,11 +141,11 @@ def parse_search_query(query: str) -> Query:
             raise ValueError(f"'{word_str}' is a reserved keyword")
         return word_str
 
-    word = Word(alphas).setParseAction(make_word)
+    word = Word(alphas + "_").setParseAction(make_word)
 
     # For attribute values, we want the raw string
     # Create a separate word parser for attribute values
-    attr_word = Word(alphas).setParseAction(lambda t: t[0])
+    attr_word = Word(alphas + "_").setParseAction(lambda t: t[0])
     attrval = quoted_string | attr_word | integer | float_number
 
     # Build the grammar with proper precedence

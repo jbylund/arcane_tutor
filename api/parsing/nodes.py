@@ -54,10 +54,27 @@ class NumericValueNode(ValueNode):
         return str(self.value)
 
 
-remapper = {
+SEARCH_FIELD_TO_DB_FIELD = {
     "name": "card_name",
     "power": "creature_power",
     "toughness": "creature_toughness",
+}
+
+# Field type definitions for query translation
+FIELD_TYPES = {
+    "name": "text_search",  # Use ILIKE for partial text matching
+    "card_name": "text_search",  # Use ILIKE for partial text matching
+    "oracle": "text_search",  # Use ILIKE for partial text matching
+    "type": "text_search",  # Use ILIKE for partial text matching
+    "card_types": "jsonb_array",  # Use JSONB containment operators
+    "card_subtypes": "jsonb_array",  # Use JSONB containment operators
+    "card_colors": "jsonb_array",  # Use JSONB containment operators
+    "cmc": "numeric",  # Use exact equality
+    "power": "numeric",  # Use exact equality
+    "toughness": "numeric",  # Use exact equality
+    "creature_power": "numeric",  # Use exact equality
+    "creature_toughness": "numeric",  # Use exact equality
+    "mana_cost_text": "text_search",  # Use ILIKE for partial text matching
 }
 
 
@@ -69,7 +86,7 @@ class AttributeNode(LeafNode):
 
     def to_sql(self):
         """Serialize this node to SQL"""
-        remapped_name = remapper.get(self.attribute_name, self.attribute_name)
+        remapped_name = SEARCH_FIELD_TO_DB_FIELD.get(self.attribute_name, self.attribute_name)
         return f"card.{remapped_name}"
 
     def __eq__(self, other):
@@ -109,7 +126,53 @@ class BinaryOperatorNode(QueryNode):
 
     def to_sql(self) -> str:
         """Serialize this node to SQL"""
+        # Special handling for the : operator based on field type
+        if self.operator == ":":
+            return self._handle_colon_operator()
+
+        # Default behavior for other operators
         return f"({self.lhs.to_sql()} {self.operator} {self.rhs.to_sql()})"
+
+    def _handle_colon_operator(self) -> str:
+        """Handle the : operator based on field type and value type"""
+        if not isinstance(self.lhs, AttributeNode):
+            # If LHS is not an attribute, fall back to default behavior
+            return f"({self.lhs.to_sql()} = {self.rhs.to_sql()})"
+
+        field_name = self.lhs.attribute_name
+        field_type = FIELD_TYPES.get(field_name, "text_search")  # Default to text_search
+
+        if field_type == "text_search" and isinstance(self.rhs, StringValueNode):
+            # Text search: use ILIKE with wildcards
+            search_terms = self.rhs.value.split()
+            if len(search_terms) == 1:
+                # Single word: wrap with % for partial matching
+                ilike_pattern = f"%{search_terms[0]}%"
+            else:
+                # Multiple words: join with % for word boundary matching and wrap with %
+                ilike_pattern = f"%{'%'.join(search_terms)}%"
+
+            return f"({self.lhs.to_sql()} ILIKE '{ilike_pattern}')"
+
+        elif field_type == "jsonb_array" and isinstance(self.rhs, StringValueNode):
+            # JSONB array: use containment operator @>
+            # Convert the string value to a JSONB array
+            jsonb_value = f'["{self.rhs.value}"]'
+            return f"({self.lhs.to_sql()} @> '{jsonb_value}'::jsonb)"
+
+        elif field_type == "jsonb_array" and self.operator in ["<=", "<"]:
+            # For JSONB arrays with subset operators, check if card colors are subset of specified colors
+            # Convert the string value to a JSONB array and use @< (is contained by) operator
+            jsonb_value = f'["{self.rhs.value}"]'
+            return f"({self.lhs.to_sql()} <@ '{jsonb_value}'::jsonb)"
+
+        elif field_type == "numeric":
+            # Numeric fields: use exact equality
+            return f"({self.lhs.to_sql()} = {self.rhs.to_sql()})"
+
+        else:
+            # Default fallback: use exact equality
+            return f"({self.lhs.to_sql()} = {self.rhs.to_sql()})"
 
     def __repr__(self):
         return f"{self.__class__.__name__}({self.lhs}, {self.operator}, {self.rhs})"

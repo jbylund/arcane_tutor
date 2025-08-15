@@ -136,6 +136,30 @@ def test_parse_quoted_strings():
     assert observed_ast.root == expected_ast
 
 
+def test_colon_operator_text_search():
+    """Test that the : operator generates ILIKE queries for text search"""
+    # Test single word search
+    query1 = "name:lightning"
+    result1 = parsing.parse_search_query(query1)
+    sql1 = parsing.generate_sql_query(result1)
+    expected_sql1 = "(card.card_name ILIKE '%lightning%')"
+    assert sql1 == expected_sql1
+
+    # Test multi-word search
+    query2 = 'name:"lightning bolt"'
+    result2 = parsing.parse_search_query(query2)
+    sql2 = parsing.generate_sql_query(result2)
+    expected_sql2 = r"(card.card_name ILIKE '%lightning%bolt%')"
+    assert sql2 == expected_sql2
+
+    # Test that numeric values still use equality
+    query3 = "cmc:3"
+    result3 = parsing.parse_search_query(query3)
+    sql3 = parsing.generate_sql_query(result3)
+    expected_sql3 = "(card.cmc = 3)"
+    assert sql3 == expected_sql3
+
+
 def test_parse_different_operators():
     """Test parsing different comparison operators"""
     operators = [">", "<", ">=", "<=", "=", "!="]
@@ -217,9 +241,16 @@ def test_nary_operator_associativity(operator):
     argnames=["input_query", "expected_sql"],
     argvalues=[
         ["cmc=3", "(card.cmc = 3)"],
-        ["cmc=3 power=3", "((card.cmc = 3) AND (card.power = 3))"],
-        ["power=toughness", "(card.power = card.toughness)"],
-        ["power>toughness", "(card.power > card.toughness)"],
+        ["cmc=3 power=3", "((card.cmc = 3) AND (card.creature_power = 3))"],
+        ["power=toughness", "(card.creature_power = card.creature_toughness)"],
+        ["power>toughness", "(card.creature_power > card.creature_toughness)"],
+        # Test field-specific : operator behavior
+        ["name:lightning", r"(card.card_name ILIKE '%lightning%')"],
+        ["name:'lightning bolt'", r"(card.card_name ILIKE '%lightning%bolt%')"],
+        ["cmc:3", "(card.cmc = 3)"],  # Numeric field uses exact equality
+        ["power:5", "(card.creature_power = 5)"],  # Numeric field uses exact equality
+        ["card_types:creature", "(card.card_types @> '[\"creature\"]'::jsonb)"],  # JSONB array uses containment
+        ["card_colors:red", "(card.card_colors @> '[\"red\"]'::jsonb)"],  # JSONB array uses containment
     ],
 )
 def test_full_sql_translation(input_query, expected_sql):
