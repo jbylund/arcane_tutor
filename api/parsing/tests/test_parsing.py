@@ -234,6 +234,16 @@ def test_nary_operator_associativity(operator: str) -> None:
         ["cmc=3 power=3", "((card.cmc = 3) AND (card.power = 3))"],
         ["power=toughness", "(card.power = card.toughness)"],
         ["power>toughness", "(card.power > card.toughness)"],
+        ["cmc=3 power=3", "((card.cmc = 3) AND (card.creature_power = 3))"],
+        ["power=toughness", "(card.creature_power = card.creature_toughness)"],
+        ["power>toughness", "(card.creature_power > card.creature_toughness)"],
+        # Test field-specific : operator behavior
+        ["name:lightning", r"(card.card_name ILIKE '%lightning%')"],
+        ["name:'lightning bolt'", r"(card.card_name ILIKE '%lightning%bolt%')"],
+        ["cmc:3", "(card.cmc = 3)"],  # Numeric field uses exact equality
+        ["power:5", "(card.creature_power = 5)"],  # Numeric field uses exact equality
+        ["card_types:creature", "(card.card_types @> '[\"creature\"]'::jsonb)"],  # JSONB array uses containment
+        ["card_colors:red", "(card.card_colors @> '[\"red\"]'::jsonb)"],  # JSONB array uses containment
     ],
 )
 def test_full_sql_translation(input_query: str, expected_sql: str) -> None:
