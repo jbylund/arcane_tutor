@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Main entrypoint for the api container."""
 import argparse
 import logging

@@ -28,8 +28,8 @@ from parsing import generate_sql_query, parse_search_query
 if TYPE_CHECKING:
     from types import TracebackType
 
-def orjson_dumps(obj):
-    # orjson.dumps returns bytes, psycopg2 expects str
+def orjson_dumps(obj: Any) -> str:
+    # orjson.dumps returns bytes, psycopg expects str
     return orjson.dumps(obj).decode("utf-8")
 
 # Register for dumping (adapting Python -> DB)
