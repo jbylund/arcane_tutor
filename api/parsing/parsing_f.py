@@ -26,22 +26,24 @@ from .nodes import (
     QueryNode,
     StringValueNode,
 )
+from .scryfall_nodes import to_scryfall_ast
 
 # Known card attributes that should be wrapped in AttributeNode
 KNOWN_CARD_ATTRIBUTES: set[str] = {
-    "cmc",
-    "power",
-    "toughness",
-    "name",
-    "type",
-    "oracle",
-    "mana_cost",
-    "card_types",
-    "card_subtypes",
     "card_colors",
+    "card_subtypes",
+    "card_types",
+    "cmc",
+    "colors",
     "creature_power",
     "creature_toughness",
     "mana_cost_text",
+    "mana_cost",
+    "name",
+    "oracle",
+    "power",
+    "toughness",
+    "type",
 }
 
 def flatten_nested_operations(node: QueryNode) -> QueryNode:
@@ -106,6 +108,10 @@ def make_binary_operator_node(tokens: list[object]) -> BinaryOperatorNode:
     left, operator, right = tokens
     return BinaryOperatorNode(create_value_node(left), operator, create_value_node(right))
 
+def parse_scryfall_query(query: str) -> Query:
+    generic_query = parse_search_query(query)
+    return to_scryfall_ast(generic_query)
+
 def parse_search_query(query: str) -> Query:
     """Parse a Scryfall search query string into an AST Query object.
 
@@ -113,7 +119,7 @@ def parse_search_query(query: str) -> Query:
     """
     if query is None or not query.strip():
         # Return empty query
-        return Query(BinaryOperatorNode("name", ":", ""))
+        return Query(BinaryOperatorNode(AttributeNode("name"), ":", ""))
 
     # Pre-process the query to handle implicit AND operations
     # Convert "a b" to "a AND b" when b is not an operator
@@ -346,7 +352,7 @@ def preprocess_implicit_and(query: str) -> str:
             # Special case: if current token is not an operator and next token is negation,
             # we need to insert AND to separate them as factors
             # BUT: if the next token after the negation is a word, it might be arithmetic
-            elif not is_operator(token) and next_token == "-" and token != "(" and token.upper() not in ["AND", "OR"]:
+            elif not is_operator(token) and next_token == "-" and token.upper() not in ["AND", "OR", "("]:
                 # Check if this looks like arithmetic: word - word
                 if i + 2 < len(tokens) and not is_operator(tokens[i + 2]) and tokens[i + 2] not in ["AND", "OR"]:
                     # Only treat as arithmetic if both sides are known card attributes
@@ -371,4 +377,5 @@ def is_operator(token: str) -> bool:
 
 def generate_sql_query(parsed_query: Query) -> str:
     """Generate a SQL WHERE clause string from a parsed Query AST."""
-    return parsed_query.to_sql()
+    scryfall_ast = to_scryfall_ast(parsed_query)
+    return scryfall_ast.to_sql()

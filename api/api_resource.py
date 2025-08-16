@@ -279,45 +279,45 @@ class APIResource:
         # if any already applied migrations differ from what we want
         # to apply then drop everything
         with self._conn_pool.connection() as conn:
-            cursor = conn.cursor
-            cursor.execute(
-                """CREATE TABLE IF NOT EXISTS migrations (
-                file_name text not null,
-                file_sha256 text not null,
-                date_applied timestamp default now(),
-                file_contents text not null
-            )""",
-            )
-            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_migrations_filename ON migrations (file_name)")
-            cursor.execute("CREATE        INDEX IF NOT EXISTS idx_migrations_file_sha256 ON migrations USING HASH (file_sha256)")
-
-            cursor.execute("SELECT file_name, file_sha256 FROM migrations ORDER BY date_applied")
-            applied_migrations = [dict(r) for r in cursor]
-            filesystem_migrations = get_migrations()
-
-            already_applied = set()
-            for applied_migration, fs_migration in zip(applied_migrations, filesystem_migrations, strict=False):
-                if applied_migration.items() <= fs_migration.items():
-                    already_applied.add(applied_migration["file_sha256"])
-                else:
-                    already_applied.clear()
-                    cursor.execute("DELETE FROM migrations")
-                    cursor.execute("DROP SCHEMA IF EXISTS magic CASCADE")
-
-            for imigration in filesystem_migrations:
-                file_sha256 = imigration["file_sha256"]
-                if file_sha256 in already_applied:
-                    logger.info("%s was already applied...", imigration["file_name"])
-                    continue
-                logger.info("Applying %s ...", imigration["file_name"])
-                cursor.execute(imigration["file_contents"])
+            with conn.cursor() as cursor:
                 cursor.execute(
-                    """
-                    INSERT INTO migrations
-                        (  file_name  ,   file_sha256  ,   file_contents  ) VALUES
-                        (%(file_name)s, %(file_sha256)s, %(file_contents)s)""",
-                    imigration,
+                    """CREATE TABLE IF NOT EXISTS migrations (
+                    file_name text not null,
+                    file_sha256 text not null,
+                    date_applied timestamp default now(),
+                    file_contents text not null
+                )""",
                 )
+                cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_migrations_filename ON migrations (file_name)")
+                cursor.execute("CREATE        INDEX IF NOT EXISTS idx_migrations_file_sha256 ON migrations USING HASH (file_sha256)")
+
+                cursor.execute("SELECT file_name, file_sha256 FROM migrations ORDER BY date_applied")
+                applied_migrations = [dict(r) for r in cursor]
+                filesystem_migrations = get_migrations()
+
+                already_applied = set()
+                for applied_migration, fs_migration in zip(applied_migrations, filesystem_migrations, strict=False):
+                    if applied_migration.items() <= fs_migration.items():
+                        already_applied.add(applied_migration["file_sha256"])
+                    else:
+                        already_applied.clear()
+                        cursor.execute("DELETE FROM migrations")
+                        cursor.execute("DROP SCHEMA IF EXISTS magic CASCADE")
+
+                for imigration in filesystem_migrations:
+                    file_sha256 = imigration["file_sha256"]
+                    if file_sha256 in already_applied:
+                        logger.info("%s was already applied...", imigration["file_name"])
+                        continue
+                    logger.info("Applying %s ...", imigration["file_name"])
+                    cursor.execute(imigration["file_contents"])
+                    cursor.execute(
+                        """
+                        INSERT INTO migrations
+                            (  file_name  ,   file_sha256  ,   file_contents  ) VALUES
+                            (%(file_name)s, %(file_sha256)s, %(file_contents)s)""",
+                        imigration,
+                    )
 
     def _get_cards_to_insert(self: APIResource) -> list[dict[str, Any]]:
         """Get the cards to insert into the database."""
@@ -341,6 +341,7 @@ class APIResource:
                     card[f"{creature_field}_numeric"] = None
                 else:
                     card[f"{creature_field}_numeric"] = numeric_val
+            card["card_colors"] = {c: True for c in card["colors"]}
             to_insert.append(card)
         return to_insert
 
@@ -355,37 +356,45 @@ class APIResource:
     def import_data(self: APIResource, **_: object) -> None:
         """Import data from Scryfall and insert into the database."""
         self._setup_schema()
-        all_cards = self.get_data()
-        to_insert = self._get_cards_to_insert(all_cards)
+        to_insert = self._get_cards_to_insert()
 
         # card_name | cmc | mana_cost_text | mana_cost_jsonb | raw_card_blob | card_types | card_subtypes | card_colors | creature_power | creature_power_text | creature_toughness | creature_toughness_text
         # type_line	: "Legendary Creature — Elf Druid"
         last_log = 0
         log_interval = 1
         import_times = collections.deque(maxlen=1000)
+
+        from psycopg.types.json import Jsonb
+        def maybe_json(v: Any) -> Any:
+            if isinstance(v, (list, dict)):
+                return Jsonb(v)
+            return v
+
         with self._conn_pool.connection() as conn:
-            cursor = conn.cursor
-            for idx, card in enumerate(to_insert):
+            with conn.cursor() as cursor:
+                for idx, card in enumerate(to_insert):
+                    now = time.monotonic()
+                    import_times.append(now)
+                    if log_interval < now - last_log:
+                        try:
+                            rate = len(import_times) / (now - import_times[0])
+                        except ZeroDivisionError:
+                            rate = 0
+                        logger.info("Imported %d cards, current rate: %d cards/s...", idx, rate)
+                        last_log = now
 
-                now = time.monotonic()
-                import_times.append(now)
-                if log_interval < now - last_log:
-                    try:
-                        rate = len(import_times) / (now - import_times[0])
-                    except ZeroDivisionError:
-                        rate = 0
-                    logger.info("Imported %d cards, current rate: %d cards/s...", idx, rate)
-                    last_log = now
-
-                cursor.execute(
-                    """
-                    INSERT INTO magic.cards
-                    ( card_name,   cmc  , mana_cost_text, mana_cost_jsonb, raw_card_blob,     card_types  ,   card_subtypes  , card_colors, creature_power, creature_power_text, creature_toughness, creature_toughness_text ) VALUES
-                    ( %(name)s , %(cmc)s, %(mana_cost)s ,          null  ,    %(blob)s  ,    %(card_types)s, %(card_subtypes)s,     %(colors)s,     %(power_numeric)s,             %(power)s,             %(toughness_numeric)s   ,   %(toughness)s)
-                    ON CONFLICT (card_name) DO NOTHING
-                    """,
-                    card | {"blob": card},
-                )
+                    card_with_json = {
+                        k: maybe_json(v) for k, v in card.items()
+                    }
+                    cursor.execute(
+                        """
+                        INSERT INTO magic.cards
+                        ( card_name,   cmc  , mana_cost_text, mana_cost_jsonb, raw_card_blob,     card_types,   card_subtypes  , card_colors, creature_power, creature_power_text, creature_toughness, creature_toughness_text ) VALUES
+                        ( %(name)s , %(cmc)s, %(mana_cost)s ,            null,      %(blob)s, %(card_types)s, %(card_subtypes)s,     %(card_colors)s,     %(power_numeric)s,             %(power)s,             %(toughness_numeric)s   ,   %(toughness)s)
+                        ON CONFLICT (card_name) DO NOTHING
+                        """,
+                        card_with_json | {"blob": Jsonb(card)},
+                    )
 
     def get_cards(self: APIResource, *, min_name: str | None = None, max_name: str | None = None, limit: int = 2500, **_: object) -> list[dict[str, Any]]:
         """Get cards by name range.
