@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import TYPE_CHECKING
 
 from .brotli import BrotliCompressor
 from .gzip import GzipCompressor
 from .zstd import ZstdCompressor
+
+if TYPE_CHECKING:
+    import falcon
 
 MIN_SIZE: int = 200
 
@@ -81,8 +85,8 @@ class CompressionMiddleware:
 
     def process_response(
         self: CompressionMiddleware,
-        req: object,
-        resp: object,
+        req: falcon.Request,
+        resp: falcon.Response,
         resource: object,
         req_succeeded: bool,
     ) -> None:
@@ -125,7 +129,8 @@ class CompressionMiddleware:
             resp.text = None
             size_after_compression = len(compressed)
             logger.info(
-                "Compressed %s bytes to %s bytes (%.2f x compression) in %.2f ms",
+                "%s: Compressed %s bytes to %s bytes (%.2f x compression) in %.2f ms",
+                req.url,
                 f"{size_before_compression:,}",
                 f"{size_after_compression:,}",
                 size_before_compression / size_after_compression,

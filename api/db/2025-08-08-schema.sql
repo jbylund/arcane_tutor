@@ -54,7 +54,6 @@ CREATE TABLE IF NOT EXISTS magic.cards (
     CONSTRAINT card_colors_valid_colors CHECK (
         card_colors <@ '{"W": true, "U": true, "B": true, "R": true, "G": true, "C": true}'::jsonb
     ),
-    -- Remove card_colors_alphabetical and card_colors_initcap constraints as they are not needed for objects
     
     -- Creature-only attribute constraints
     CONSTRAINT creature_attributes_null_for_non_creatures CHECK (

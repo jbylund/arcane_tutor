@@ -22,7 +22,7 @@ import psycopg.rows
 import psycopg.types.json
 import psycopg_pool
 import requests
-from parsing import generate_sql_query, parse_search_query
+from parsing import generate_sql_query, parse_scryfall_query
 
 
 def orjson_dumps(obj: object) -> str:
@@ -36,6 +36,9 @@ psycopg.types.json.set_json_loads(loads=orjson.loads)
 logger = logging.getLogger("apiresource")
 
 # pylint: disable=c-extension-no-member
+
+def rewrap(query: str) -> str:
+    return " ".join(query.strip().split())
 
 def _get_pg_creds() -> dict[str, str]:
     """Get postgres credentials from the environment."""
@@ -366,7 +369,7 @@ class APIResource:
 
         from psycopg.types.json import Jsonb
         def maybe_json(v: Any) -> Any:
-            if isinstance(v, (list, dict)):
+            if isinstance(v, list | dict):
                 return Jsonb(v)
             return v
 
@@ -460,7 +463,7 @@ class APIResource:
         val = str_buffer.getvalue()
         falcon_response.body = val.encode("utf-8")
 
-    def search(self: APIResource, *, q: str | None = None, query: str | None = None, **_: object) -> dict[str, Any]:
+    def search(self: APIResource, *, q: str | None = None, query: str | None = None, limit: int = 100, **_: object) -> dict[str, Any]:
         """Run a search query and return results and metadata.
 
         Args:
@@ -474,7 +477,7 @@ class APIResource:
 
         """
         query = query or q
-        parsed_query = parse_search_query(query)
+        parsed_query = parse_scryfall_query(query)
         where_clause = generate_sql_query(parsed_query)
         full_query = f"""
         SELECT
@@ -486,7 +489,12 @@ class APIResource:
         FROM
             magic.cards AS card
         WHERE
-            {where_clause}"""
+            {where_clause}
+        LIMIT
+            {limit}
+        """
+        full_query = rewrap(full_query)
+        logger.info("Full query: %s", full_query)
         result_bag = self._run_query(query=full_query)
         result = result_bag["result"]
         return {

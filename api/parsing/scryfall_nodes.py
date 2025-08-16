@@ -13,12 +13,37 @@ from .nodes import (
     StringValueNode,
 )
 
+"""
+
+# equality is the one where order not mattering is nice
+# because otherwise it's all of a in b and all of b in a
+color = query
+color = query # as object
+color ?& query and query ?& color # as array
+
+color >= query
+color @> query # as object
+color ?& query # as array
+
+color <= query
+color <@ query # as object
+query ?& color # as array
+
+color > query
+color @> query AND color <> query # as object
+color ?& query AND not(query ?& color) # as array
+
+color < query
+color @> query AND color <> query # as object
+query ?& color AND not(color ?& query) # as array
+"""
+
 # Field type mapping for Scryfall
 FIELD_TYPE_MAP = {
-    "card_subtypes": "array",
-    "card_types": "array",
+    "card_subtypes": "jsonb_array",
+    "card_types": "jsonb_array",
     "cmc": "numeric",
-    "colors": "array",
+    "colors": "jsonb_object",
     "creature_power": "numeric",
     "creature_toughness": "numeric",
     "mana_cost_text": "text",
@@ -86,37 +111,91 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
                     self.operator = "="
                 return super().to_sql()
 
-            if field_type == "array" and isinstance(self.rhs, StringValueNode):
-                if attr == "colors":
-                    rhs = get_colors_comparison_object(self.rhs.value.strip().lower())
-                    rhs_json = json.dumps(rhs, sort_keys=True)
-                    if self.operator in (":", ">="):
-                        return f"({lhs_sql} @> '{rhs_json}'::jsonb)"
-                    elif self.operator == "<=":
-                        return f"({lhs_sql} <@ '{rhs_json}'::jsonb)"
-                    elif self.operator == "=":
-                        return f"({lhs_sql} = '{rhs_json}'::jsonb)"
-                    elif self.operator == ">":
-                        return f"({lhs_sql} @> '{rhs_json}'::jsonb AND {lhs_sql} <> '{rhs_json}'::jsonb)"
-                    elif self.operator == "<":
-                        return f"({lhs_sql} <@ '{rhs_json}'::jsonb AND {lhs_sql} <> '{rhs_json}'::jsonb)"
-                    else:
-                        msg = f"Unknown operator: {self.operator}"
-                        raise ValueError(msg)
-                # fallback for other array fields (still as array)
-                return f"({lhs_sql} @> '[\"{self.rhs.value}\"]'::jsonb)"
+            if field_type == "jsonb_object":
+                return self._handle_jsonb_object()
+
+            if field_type == "jsonb_array":
+                return self._handle_jsonb_array()
 
             if self.operator == ":":
-                if field_type == "text" and isinstance(self.rhs, StringValueNode):
-                    words = ["", *self.rhs.value.strip().split(), ""]
-                    pattern = "%".join(words)
+                if field_type == "text":
+                    if isinstance(self.rhs, StringValueNode):
+                        txt_val = self.rhs.value.strip()
+                    elif isinstance(self.rhs, str):
+                        txt_val = self.rhs.strip()
+                    words = ["", *txt_val.split(), ""]
+                    pattern = "%%".join(words)
                     return f"({lhs_sql} ILIKE '{pattern}')"
                 # Fallback: treat as string search
                 value = self.rhs.to_sql().strip("'")
-                return f"({lhs_sql} ILIKE '%{value}%')"
+                return f"({lhs_sql} ILIKE '%%{value}%%')"
 
         # Fallback: use default logic
         return super().to_sql()
+
+    """
+    col = query
+    col = query # as object
+    col ?& query and query ?& col # as array
+
+    col >= query
+    col @> query # as object
+    col ?& query # as array
+
+    col <= query
+    col <@ query # as object
+    query ?& col # as array
+
+    col > query
+    col @> query AND col <> query # as object
+    col ?& query AND not(query ?& col) # as array
+
+    col < query
+    col @> query AND col <> query # as object
+    query ?& col AND not(col ?& query) # as array
+    """
+
+    def _handle_jsonb_object(self: ScryfallBinaryOperatorNode) -> str:
+        # Produce the query as a jsonb object
+        lhs_sql = self.lhs.to_sql()
+        attr = self.lhs.attribute_name
+        if attr == "colors":
+            rhs = get_colors_comparison_object(self.rhs.value.strip().lower())
+            query = json.dumps(rhs, sort_keys=True) + "::jsonb"
+        if self.operator == "=":
+            return f"({lhs_sql} = {query})"
+        if self.operator in (">=", ":"):
+            return f"({lhs_sql} @> {query})"
+        if self.operator == "<=":
+            return f"({lhs_sql} <@ {query})"
+        if self.operator == ">":
+            return f"({lhs_sql} @> {query} AND {lhs_sql} <> {query})"
+        if self.operator == "<":
+            return f"({lhs_sql} <@ {query} AND {lhs_sql} <> {query})"
+        if self.operator == "!=":
+            return f"({lhs_sql} <> {query})"
+        if self.operator == "<>":
+            return f"({lhs_sql} <> {query})"
+        msg = f"Unknown operator: {self.operator}"
+        raise ValueError(msg)
+
+    def _handle_jsonb_array(self: ScryfallBinaryOperatorNode) -> str:
+        # TODO: this should produce the query as an array, not jsonb
+        col = self.lhs.to_sql()
+        inners = json.dumps([self.rhs.value.strip().title()])
+        query = f"'{inners}'::jsonb"
+        if self.operator == "=":
+            return f"({col} ?& {query}) AND ({query} ?& {col})"
+        if self.operator in (">=", ":"):
+            return f"({col} ?& {query})"
+        if self.operator == "<=":
+            return f"({query} ?& {col})"
+        if self.operator == ">":
+            return f"({col} ?& {query}) AND NOT({query} ?& {col})"
+        if self.operator == "<":
+            return f"({query} ?& {col}) AND NOT({col} ?& {query})"
+        msg = f"Unknown operator: {self.operator}"
+        raise ValueError(msg)
 
 def to_scryfall_ast(node: QueryNode) -> QueryNode:
     if isinstance(node, BinaryOperatorNode):
