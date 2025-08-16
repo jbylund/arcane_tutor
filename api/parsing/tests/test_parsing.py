@@ -231,9 +231,10 @@ def test_nary_operator_associativity(operator: str) -> None:
     argnames=["input_query", "expected_sql"],
     argvalues=[
         ["cmc=3", "(card.cmc = 3)"],
-        ["cmc=3 power=3", "((card.cmc = 3) AND (card.power = 3))"],
-        ["power=toughness", "(card.power = card.toughness)"],
-        ["power>toughness", "(card.power > card.toughness)"],
+        ["power=3", "(card.creature_power = 3)"],
+        ["cmc=3 power=3", "((card.cmc = 3) AND (card.creature_power = 3))"],
+        ["power=toughness", "(card.creature_power = card.creature_toughness)"],
+        ["power>toughness", "(card.creature_power > card.creature_toughness)"],
         ["cmc=3 power=3", "((card.cmc = 3) AND (card.creature_power = 3))"],
         ["power=toughness", "(card.creature_power = card.creature_toughness)"],
         ["power>toughness", "(card.creature_power > card.creature_toughness)"],
@@ -243,11 +244,22 @@ def test_nary_operator_associativity(operator: str) -> None:
         ["cmc:3", "(card.cmc = 3)"],  # Numeric field uses exact equality
         ["power:5", "(card.creature_power = 5)"],  # Numeric field uses exact equality
         ["card_types:creature", "(card.card_types @> '[\"creature\"]'::jsonb)"],  # JSONB array uses containment
-        ["card_colors:red", "(card.card_colors @> '[\"red\"]'::jsonb)"],  # JSONB array uses containment
+        ["colors:red", "(card.colors @> '{\"R\": true}'::jsonb)"],  # JSONB object uses containment
+        ["colors:rg", "(card.colors @> '{\"G\": true, \"R\": true}'::jsonb)"],  # JSONB object uses containment
+        # test exact equality of colors
+        ["colors=rg", "(card.colors = '{\"G\": true, \"R\": true}'::jsonb)"],
+        # test colors greater than
+        ["colors>=rg", "(card.colors @> '{\"G\": true, \"R\": true}'::jsonb)"],
+        # test colors less than
+        ["colors<=rg", "(card.colors <@ '{\"G\": true, \"R\": true}'::jsonb)"],
+        # test colors strictly greater than
+        ["colors>rg", "(card.colors @> '{\"G\": true, \"R\": true}'::jsonb AND card.colors <> '{\"G\": true, \"R\": true}'::jsonb)"],
+        # test colors strictly less than
+        ["colors<rg", "(card.colors <@ '{\"G\": true, \"R\": true}'::jsonb AND card.colors <> '{\"G\": true, \"R\": true}'::jsonb)"],
     ],
 )
 def test_full_sql_translation(input_query: str, expected_sql: str) -> None:
-    parsed = parsing.parse_search_query(input_query)
+    parsed = parsing.parse_scryfall_query(input_query)
     observed_sql = parsed.to_sql()
     assert observed_sql == expected_sql
 

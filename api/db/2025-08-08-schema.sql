@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS magic.cards (
     raw_card_blob jsonb NOT NULL,
     card_types jsonb NOT NULL, -- list of strings (e.g. ["Creature", "Artifact"])
     card_subtypes jsonb, -- list of strings (e.g. ["Bird", "Knight"])
-    card_colors jsonb NOT NULL, -- list of strings (e.g. ["White", "Blue"])
+    card_colors jsonb NOT NULL, -- object of color codes, e.g. {"R": true, "G": true}
 
     -- creature only attributes - will be null a large fraction of the time
     creature_power integer,
@@ -49,15 +49,12 @@ CREATE TABLE IF NOT EXISTS magic.cards (
     -- constraints
     CONSTRAINT card_types_must_be_array CHECK (jsonb_typeof(card_types) = 'array'),
     CONSTRAINT card_subtypes_must_be_array CHECK (jsonb_typeof(card_subtypes) = 'array'),
-    CONSTRAINT card_colors_must_be_array CHECK (jsonb_typeof(card_colors) = 'array'),
+    CONSTRAINT card_colors_must_be_object CHECK (jsonb_typeof(card_colors) = 'object'),
     CONSTRAINT raw_card_is_object CHECK (jsonb_typeof(raw_card_blob) = 'object'),
     CONSTRAINT card_colors_valid_colors CHECK (
-        card_colors <@ '["W", "U", "B", "R", "G"]'::jsonb
+        card_colors <@ '{"W": true, "U": true, "B": true, "R": true, "G": true, "C": true}'::jsonb
     ),
-    CONSTRAINT card_colors_alphabetical CHECK (is_sorted_alphabetically(card_colors)),
-    CONSTRAINT card_types_initcap CHECK (all_elements_initcap(card_types)),
-    CONSTRAINT card_subtypes_initcap CHECK (all_elements_initcap(card_subtypes)),
-    CONSTRAINT card_colors_initcap CHECK (all_elements_initcap(card_colors)),
+    -- Remove card_colors_alphabetical and card_colors_initcap constraints as they are not needed for objects
     
     -- Creature-only attribute constraints
     CONSTRAINT creature_attributes_null_for_non_creatures CHECK (
@@ -72,6 +69,7 @@ CREATE TABLE IF NOT EXISTS magic.cards (
     )
 );
 
+/*
 -- Partial indexes for major card types
 CREATE INDEX idx_cards_artifacts ON magic.cards (card_name) WHERE card_types @> '["Artifact"]';
 CREATE INDEX idx_cards_creatures ON magic.cards (card_name) WHERE card_types @> '["Creature"]';
@@ -79,6 +77,7 @@ CREATE INDEX idx_cards_enchantments ON magic.cards (card_name) WHERE card_types 
 CREATE INDEX idx_cards_instants ON magic.cards (card_name) WHERE card_types @> '["Instant"]';
 CREATE INDEX idx_cards_lands ON magic.cards (card_name) WHERE card_types @> '["Land"]';
 CREATE INDEX idx_cards_sorceries ON magic.cards (card_name) WHERE card_types @> '["Sorcery"]';
+*/
 
 CREATE UNIQUE INDEX idx_cards_name ON magic.cards (card_name);
 

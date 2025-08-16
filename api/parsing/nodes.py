@@ -60,12 +60,6 @@ class NumericValueNode(ValueNode):
         """Serialize this numeric value node to a SQL number literal."""
         return str(self.value)
 
-remapper = {
-    "name": "card_name",
-    "power": "creature_power",
-    "toughness": "creature_toughness",
-}
-
 class AttributeNode(LeafNode):
     """Represents an attribute of a card, such as 'cmc' or 'power'."""
 
@@ -75,8 +69,7 @@ class AttributeNode(LeafNode):
 
     def to_sql(self: AttributeNode) -> str:
         """Serialize this attribute node to a SQL column reference."""
-        remapped_name = remapper.get(self.attribute_name, self.attribute_name)
-        return f"card.{remapped_name}"
+        return f"card.{self.attribute_name}"
 
     def __eq__(self: AttributeNode, other: object) -> bool:
         """Check equality with another AttributeNode based on attribute
