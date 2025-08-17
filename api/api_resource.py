@@ -515,7 +515,7 @@ class APIResource:
             raw_card_blob->>'set_name' AS set_name,
             raw_card_blob->>'type_line' AS type_line,
             raw_card_blob->'image_uris'->>'normal' AS image,
-            COUNT(*) OVER() AS total_cards
+            COUNT(1) OVER() AS total_cards
         FROM
             magic.cards AS card
         WHERE
