@@ -270,33 +270,40 @@ class CardSearch {
         
         // Create new AbortController for this request
         this.currentController = new AbortController();
-        const startTime = performance.now();
-        
+        // Generate a unique URL for this request to match in PerformanceResourceTiming
+        const url = `/search?q=${encodeURIComponent(query)}`;
         try {
-            const response = await fetch(`/search?q=${encodeURIComponent(query)}`, {
+            // Clear any previous resource timing entries for this URL
+            performance.clearResourceTimings && performance.clearResourceTimings();
+            const response = await fetch(url, {
                 method: 'GET',
                 headers: {
                     'Content-Type': 'application/json',
                 },
                 signal: this.currentController.signal
             });
-            
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
-            const afterFetch = performance.now();
-            
             const data = await response.json();
-            const afterParse = performance.now();
-            const elapsed = Math.round(afterFetch - startTime);
+
+            // Use PerformanceResourceTiming to get the network time
+            let elapsed = null;
+            const resources = performance.getEntriesByType('resource');
+            // Find the most recent entry for this URL
+            // (If there are multiple, pick the last one)
+            const matching = resources.filter(e => e.name.includes(url));
+            if (matching.length > 0) {
+                const entry = matching[matching.length - 1];
+                // responseEnd - startTime is the total time as shown in dev tools
+                elapsed = Math.round(entry.responseEnd - entry.startTime);
+            }
             this.displayResults(data, query, elapsed);
-            
         } catch (error) {
             if (error.name === 'AbortError') {
                 // Request was cancelled, ignore
                 return;
             }
-            
             console.error('Search error:', error);
             this.showError(`Failed to search: ${error.message}`);
         } finally {
