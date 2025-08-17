@@ -22,6 +22,7 @@ import psycopg.rows
 import psycopg.types.json
 import psycopg_pool
 import requests
+from cachetools import LRUCache, cached
 from parsing import generate_sql_query, parse_scryfall_query
 
 
@@ -36,6 +37,11 @@ psycopg.types.json.set_json_loads(loads=orjson.loads)
 logger = logging.getLogger("apiresource")
 
 # pylint: disable=c-extension-no-member
+
+@cached(cache=LRUCache(maxsize=10_000))
+def get_where_clause(query: str) -> str:
+    parsed_query = parse_scryfall_query(query)
+    return generate_sql_query(parsed_query)
 
 def rewrap(query: str) -> str:
     return " ".join(query.strip().split())
@@ -182,7 +188,7 @@ class APIResource:
             )
         finally:
             duration = time.monotonic() - before
-            logger.info("Request duration: %f seconds", duration)
+            logger.info("Request duration: %f seconds / %s", duration, resp.status)
 
     def _raise_not_found(self: APIResource, **_: object) -> None:
         """Raise a Falcon HTTPNotFound error with available routes."""
@@ -213,18 +219,23 @@ class APIResource:
                 cursor.execute(explain_query, params)
                 for row in cursor.fetchall():
                     result["plan"] = row
+
+            result["timings"] = timings = {}
             before = time.time()
             cursor.execute(query, params)
             after_query = time.time()
-            result["query_duration"] = query_duratrion = after_query - before
-            result["query_frequency"] = 1 / query_duratrion
+            timings["query_duration"] = query_duratrion = after_query - before
+            timings["query_duration_ms"] = query_duratrion * 1000
+            timings["query_frequency"] = 1 / query_duratrion
             raw_rows = cursor.fetchall()
             result["result"] = [dict(r) for r in raw_rows]
             after_fetch = time.time()
-            result["fetch_duration"] = fetch_duration = after_fetch - after_query
-            result["fetch_frequency"] = 1 / fetch_duration
-            result["total_duration"] = total_duration = after_fetch - before
-            result["total_frequency"] = 1 / total_duration
+            timings["fetch_duration"] = fetch_duration = after_fetch - after_query
+            timings["fetch_duration_ms"] = fetch_duration * 1000
+            timings["fetch_frequency"] = 1 / fetch_duration
+            timings["total_duration"] = total_duration = after_fetch - before
+            timings["total_duration_ms"] = total_duration * 1000
+            timings["total_frequency"] = 1 / total_duration
         return result
 
     def get_pid(self: APIResource, **_: object) -> int:
@@ -477,35 +488,36 @@ class APIResource:
 
         """
         query = query or q
-        parsed_query = parse_scryfall_query(query)
-        where_clause = generate_sql_query(parsed_query)
+        where_clause = get_where_clause(query)
         full_query = f"""
         SELECT
             card_name AS name,
             mana_cost_text AS mana_cost,
             raw_card_blob->>'oracle_text' AS oracle_text,
             raw_card_blob->>'set_name' AS set_name,
-            raw_card_blob->>'type_line' AS type_line
+            raw_card_blob->>'type_line' AS type_line,
+            raw_card_blob->'image_uris'->>'normal' AS image
         FROM
             magic.cards AS card
         WHERE
             {where_clause}
-        LIMIT
-            {limit}
+        ORDER BY
+            raw_card_blob->>'edhrec_rank' ASC
         """
         full_query = rewrap(full_query)
         logger.info("Full query: %s", full_query)
         result_bag = self._run_query(query=full_query)
-        result = result_bag["result"]
+        cards = result_bag.pop("result", [])
         return {
-            "cards": result,
+            "cards": cards[:limit],
             "compiled": full_query,
-            "parsed": str(parsed_query),
+            # "parsed": str(parsed_query),
             "query": query,
             "result": result_bag,
+            "total_cards": len(cards),
         }
 
-    def index_html(self: APIResource, *, falcon_response: falcon.Response | None = None) -> None:
+    def index_html(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
         """Return the index page.
 
         Args:

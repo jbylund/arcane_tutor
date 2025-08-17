@@ -49,8 +49,10 @@ CREATE TABLE IF NOT EXISTS magic.cards (
     -- constraints
     CONSTRAINT card_types_must_be_array CHECK (jsonb_typeof(card_types) = 'array'),
     CONSTRAINT card_subtypes_must_be_array CHECK (jsonb_typeof(card_subtypes) = 'array'),
-    CONSTRAINT card_colors_must_be_object CHECK (jsonb_typeof(card_colors) = 'object'),
+    
     CONSTRAINT raw_card_is_object CHECK (jsonb_typeof(raw_card_blob) = 'object'),
+    
+    CONSTRAINT card_colors_must_be_object CHECK (jsonb_typeof(card_colors) = 'object'),
     CONSTRAINT card_colors_valid_colors CHECK (
         card_colors <@ '{"W": true, "U": true, "B": true, "R": true, "G": true, "C": true}'::jsonb
     ),
@@ -79,21 +81,3 @@ CREATE INDEX idx_cards_sorceries ON magic.cards (card_name) WHERE card_types @> 
 */
 
 CREATE UNIQUE INDEX idx_cards_name ON magic.cards (card_name);
-
-/*
-INSERT INTO magic.cards (
-    card_name, 
-    cmc, 
-    mana_cost_text, 
-    raw_card_blob, 
-    card_types, 
-    card_colors
-) VALUES (
-    'Boros Charm',
-    2,
-    '{R}{W}',
-    '{"name": "Boros Charm"}'::jsonb,
-    '["Instant"]'::jsonb,
-    '["white", "red"]'::jsonb  -- This should FAIL - should be ["red", "white"]
-);
-*/
