@@ -552,17 +552,6 @@ class APIResource:
         self._serve_static_file(filename="index.html", falcon_response=falcon_response)
         falcon_response.content_type = "text/html"
 
-    def search_js(self: APIResource, *, falcon_response: falcon.Response | None = None) -> None:
-        """Return the search.js file.
-
-        Args:
-        ----
-            falcon_response (falcon.Response): The Falcon response to write to.
-
-        """
-        self._serve_static_file(filename="search.js", falcon_response=falcon_response)
-        falcon_response.content_type = "text/javascript"
-
     def favicon_ico(self: APIResource, *, falcon_response: falcon.Response | None = None) -> None:
         """Return the favicon.ico file.
 
