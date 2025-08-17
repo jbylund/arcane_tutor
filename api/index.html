@@ -284,9 +284,11 @@ class CardSearch {
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
+            const afterFetch = performance.now();
             
             const data = await response.json();
-            const elapsed = Math.round(performance.now() - startTime);
+            const afterParse = performance.now();
+            const elapsed = Math.round(afterFetch - startTime);
             this.displayResults(data, query, elapsed);
             
         } catch (error) {
