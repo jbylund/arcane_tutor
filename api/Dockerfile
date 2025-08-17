@@ -21,6 +21,7 @@ RUN apt-get install -y libpython3-dev libev-dev libpq-dev
 RUN python -m pip install --quiet --upgrade \
     bjoern \
     brotli \
+    cachetools \
     falcon \
     orjson \
     psycopg[binary,pool] \

@@ -28,6 +28,8 @@ def parse_q_list(
         list[str]: List of encoding names sorted by priority.
     """
     values: list[tuple[str, int, float]] = []
+    logger.info("Server priorities: %s", server_priorities)
+    logger.info("Accept encoding: %s", accept_encoding)
     for name in accept_encoding.split(","):
         encoding = name.strip().lower()
         server_prioritiy = server_priorities.get(encoding)
@@ -129,12 +131,13 @@ class CompressionMiddleware:
             resp.text = None
             size_after_compression = len(compressed)
             logger.info(
-                "%s: Compressed %s bytes to %s bytes (%.2f x compression) in %.2f ms",
+                "%s: Compressed %s bytes to %s bytes (%.2f x compression) in %.2f ms - %s",
                 req.url,
                 f"{size_before_compression:,}",
                 f"{size_after_compression:,}",
                 size_before_compression / size_after_compression,
                 1000 * (after_compression - before_compression),
+                req.get_header("User-Agent"),
             )
 
         resp.set_header("Content-Encoding", compressor.encoding)

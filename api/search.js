@@ -15,8 +15,24 @@ class CardSearch {
     }
     
     init() {
+        // On page load, check for query param and perform search if present
+        const params = new URLSearchParams(window.location.search);
+        const initialQuery = params.get('q') || '';
+        if (initialQuery) {
+            this.searchInput.value = initialQuery;
+            this.performSearch(initialQuery);
+        }
         this.searchInput.addEventListener('input', (e) => {
-            this.handleSearch(e.target.value);
+            const query = e.target.value;
+            this.handleSearch(query);
+            // Update the URL as the user types
+            const url = new URL(window.location);
+            if (query.trim()) {
+                url.searchParams.set('q', query);
+            } else {
+                url.searchParams.delete('q');
+            }
+            window.history.replaceState({}, '', url);
         });
         
         // Handle enter key for immediate search
@@ -58,9 +74,10 @@ class CardSearch {
         
         // Create new AbortController for this request
         this.currentController = new AbortController();
+        const startTime = performance.now();
         
         try {
-            const response = await fetch(`http://localhost:18080/search?q=${encodeURIComponent(query)}`, {
+            const response = await fetch(`/search?q=${encodeURIComponent(query)}`, {
                 method: 'GET',
                 headers: {
                     'Content-Type': 'application/json',
@@ -73,7 +90,8 @@ class CardSearch {
             }
             
             const data = await response.json();
-            this.displayResults(data, query);
+            const elapsed = Math.round(performance.now() - startTime);
+            this.displayResults(data, query, elapsed);
             
         } catch (error) {
             if (error.name === 'AbortError') {
@@ -89,17 +107,18 @@ class CardSearch {
         }
     }
     
-    displayResults(data, query) {
+    displayResults(data, query, elapsed) {
         // Assume the API returns an array of cards or an object with a cards array
         const cards = Array.isArray(data) ? data : data.cards || [];
-        
+        const totalCards = data.total_cards || cards.length;
+
         if (cards.length === 0) {
             this.showNoResults();
             return;
         }
-        
-        this.showResultsCount(cards.length, query);
-        
+
+        this.showResultsCount(totalCards, query, elapsed);
+
         this.resultsContainer.innerHTML = cards.map(card => 
             this.createCardHTML(card)
         ).join('');
@@ -108,6 +127,7 @@ class CardSearch {
     createCardHTML(card) {
         return `
             <div class="card-item" onclick="cardSearch.selectCard('${card.id || card.name}')">
+                ${card.image ? `<img class="card-image" src="${this.escapeHtml(card.image)}" alt="${this.escapeHtml(card.name || 'Card image')}" />` : ''}
                 <div class="card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
                 ${card.mana_cost ? `<div class="card-mana">${this.escapeHtml(card.mana_cost)}</div>` : ''}
                 ${card.type_line ? `<div class="card-type">${this.escapeHtml(card.type_line)}</div>` : ''}
@@ -144,8 +164,12 @@ class CardSearch {
         this.resultsCount.style.display = 'none';
     }
     
-    showResultsCount(count, query) {
-        this.resultsCount.textContent = `Found ${count} card${count !== 1 ? 's' : ''} matching "${query}"`;
+    showResultsCount(count, query, elapsed) {
+        let msg = `Found ${count} card${count !== 1 ? 's' : ''} matching "${query}"`;
+        if (typeof elapsed === 'number') {
+            msg += ` (completed in ${elapsed}ms)`;
+        }
+        this.resultsCount.textContent = msg;
         this.resultsCount.style.display = 'block';
     }
     
