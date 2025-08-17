@@ -579,3 +579,13 @@ class APIResource:
         full_filename = pathlib.Path(__file__).parent / filename
         with pathlib.Path(full_filename).open() as f:
             falcon_response.text = f.read()
+
+    def get_migrations(self: APIResource, **_: object) -> list[dict[str, str]]:
+        """Get the migrations from the filesystem.
+
+        Returns:
+        -------
+            List[Dict[str, str]]: List of migration metadata dictionaries.
+
+        """
+        return get_migrations()
