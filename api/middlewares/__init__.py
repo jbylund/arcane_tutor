@@ -7,5 +7,10 @@ Exports:
     CompressionMiddleware: Main middleware class for handling response compression.
 """
 from .compression import CompressionMiddleware
+from .timing import ProfilingMiddleware, TimingMiddleware
 
-__all__ = ["CompressionMiddleware"]
+__all__ = [
+    "CompressionMiddleware",
+    "ProfilingMiddleware",
+    "TimingMiddleware",
+]

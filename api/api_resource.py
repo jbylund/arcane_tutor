@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import copy
 import csv
 import hashlib
 import inspect
@@ -136,6 +137,7 @@ class APIResource:
         self._conn_pool = _make_pool()
         self.action_map = {x: getattr(self, x) for x in dir(self) if not x.startswith("_")}
         self.action_map["index"] = self.index_html
+        self._query_cache = LRUCache(maxsize=1_000)
         logger.info("Worker with pid has conn pool %s", self._conn_pool)
 
     def _handle(self: APIResource, req: falcon.Request, resp: falcon.Response) -> None:
@@ -194,7 +196,13 @@ class APIResource:
         """Raise a Falcon HTTPNotFound error with available routes."""
         raise falcon.HTTPNotFound(title="Not Found", description={"routes": {k: v.__doc__ for k, v in self.action_map.items()}})
 
-    def _run_query(self: APIResource, *, query: str, params: dict[str, Any] | None = None, explain: bool = True) -> dict[str, Any]:
+    def _run_query(
+        self: APIResource,
+        *,
+        query: str,
+        params: dict[str, Any] | None = None,
+        explain: bool = True,
+    ) -> dict[str, Any]:
         """Run a SQL query with optional parameters and explanation.
 
         Args:
@@ -208,6 +216,15 @@ class APIResource:
             Dict[str, Any]: Query result and metadata.
 
         """
+        cachekey = (
+            query,
+            frozenset((params or {}).items()),
+            explain,
+        )
+        cached_val = self._query_cache.get(cachekey)
+        if cached_val is not None:
+            return copy.deepcopy(cached_val)
+
         params = params or {}
         query = " ".join(query.strip().split())
         explain_query = f"EXPLAIN (FORMAT JSON) {query}"
@@ -236,7 +253,8 @@ class APIResource:
             timings["total_duration"] = total_duration = after_fetch - before
             timings["total_duration_ms"] = total_duration * 1000
             timings["total_frequency"] = 1 / total_duration
-        return result
+        self._query_cache[cachekey] = result
+        return copy.deepcopy(result)
 
     def get_pid(self: APIResource, **_: object) -> int:
         """Just return the pid of the process which served this request.
@@ -496,25 +514,31 @@ class APIResource:
             raw_card_blob->>'oracle_text' AS oracle_text,
             raw_card_blob->>'set_name' AS set_name,
             raw_card_blob->>'type_line' AS type_line,
-            raw_card_blob->'image_uris'->>'normal' AS image
+            raw_card_blob->'image_uris'->>'normal' AS image,
+            COUNT(*) OVER() AS total_cards
         FROM
             magic.cards AS card
         WHERE
             {where_clause}
         ORDER BY
             raw_card_blob->>'edhrec_rank' ASC
+        LIMIT
+            {limit}
         """
         full_query = rewrap(full_query)
         logger.info("Full query: %s", full_query)
         result_bag = self._run_query(query=full_query)
         cards = result_bag.pop("result", [])
+        total_cards = 0
+        for icard in cards:
+            total_cards = icard.pop("total_cards")
         return {
-            "cards": cards[:limit],
+            "cards": cards,
             "compiled": full_query,
             # "parsed": str(parsed_query),
             "query": query,
             "result": result_bag,
-            "total_cards": len(cards),
+            "total_cards": total_cards,
         }
 
     def index_html(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
