@@ -60,9 +60,12 @@ class ApiWorker(multiprocessing.Process):
         # Importing here (post-fork) is safer for some servers/clients than importing before forking.
         import api_resource  # pylint: disable=import-outside-toplevel
         from middlewares import CompressionMiddleware
+        # from middlewares import ProfilingMiddleware, TimingMiddleware
 
         api = falcon.App(
             middleware=[
+                # TimingMiddleware(),
+                # ProfilingMiddleware(),
                 CompressionMiddleware(),
             ],
         )

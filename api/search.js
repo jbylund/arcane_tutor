@@ -8,7 +8,7 @@ class CardSearch {
         this.resultsCount = document.getElementById('resultsCount');
         
         this.debounceTimeout = null;
-        this.debounceDelay = 300; // milliseconds
+        this.debounceDelay = 140; // milliseconds
         this.currentController = null;
         
         this.init();
