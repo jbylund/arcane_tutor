@@ -210,6 +210,7 @@
           this.debounceTimeout = null;
           this.debounceDelay = 140; // milliseconds
           this.currentController = null;
+          this.imageObserver = null;
 
           this.init();
         }
@@ -242,6 +243,9 @@
               this.performSearch(e.target.value);
             }
           });
+
+          // Initialize intersection observer for lazy image loading
+          this.initImageObserver();
         }
 
         handleSearch(query) {
@@ -329,6 +333,9 @@
           this.showResultsCount(totalCards, query, elapsed);
 
           this.resultsContainer.innerHTML = cards.map(card => this.createCardHTML(card)).join('');
+
+          // Observe all images for viewport-based loading
+          this.observeImages();
         }
 
         createCardHTML(card) {
@@ -336,18 +343,19 @@
           const imageSmall = card.image_small;
           const imageNormal = card.image_normal;
 
-          const imageHtml = `<img class="card-image" src="${this.escapeHtml(imageSmall)}" data-normal="${this.escapeHtml(imageNormal)}" alt="${this.escapeHtml(card.name || 'Card image')}" onload="cardSearch.upgradeImage(this)" />`;
+          // Create placeholder image that will be replaced when in viewport
+          const imageHtml = `<img class="card-image" data-small="${this.escapeHtml(imageSmall)}" data-normal="${this.escapeHtml(imageNormal)}" alt="${this.escapeHtml(card.name || 'Card image')}" />`;
 
           return `
-            <div class="card-item" onclick="cardSearch.selectCard('${cardId}')">
-                ${imageHtml}
-                <div class="card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
-                ${card.mana_cost ? `<div class="card-mana">${this.escapeHtml(card.mana_cost)}</div>` : ''}
-                ${card.type_line ? `<div class="card-type">${this.escapeHtml(card.type_line)}</div>` : ''}
-                ${card.oracle_text ? `<div class="card-text">${this.escapeHtml(card.oracle_text).substring(0, 200)}${card.oracle_text.length > 200 ? '...' : ''}</div>` : ''}
-                ${card.set_name ? `<div class="card-set">${this.escapeHtml(card.set_name)}</div>` : ''}
-            </div>
-        `;
+             <div class="card-item" onclick="cardSearch.selectCard('${cardId}')">
+                 ${imageHtml}
+                 <div class="card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
+                 ${card.mana_cost ? `<div class="card-mana">${this.escapeHtml(card.mana_cost)}</div>` : ''}
+                 ${card.type_line ? `<div class="card-type">${this.escapeHtml(card.type_line)}</div>` : ''}
+                 ${card.oracle_text ? `<div class="card-text">${this.escapeHtml(card.oracle_text).substring(0, 200)}${card.oracle_text.length > 200 ? '...' : ''}</div>` : ''}
+                 ${card.set_name ? `<div class="card-set">${this.escapeHtml(card.set_name)}</div>` : ''}
+             </div>
+         `;
         }
 
         selectCard(cardId) {
@@ -356,23 +364,69 @@
           // For example, you could open a modal, navigate to a detail page, etc.
         }
 
-        upgradeImage(imgElement) {
-          const normalImageUrl = imgElement.getAttribute('data-normal');
-          if (!normalImageUrl) return;
+        initImageObserver() {
+          // Create intersection observer to watch for images entering viewport
+          this.imageObserver = new IntersectionObserver(
+            entries => {
+              entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                  const img = entry.target;
+                  this.loadImage(img);
+                  // Stop observing once image is loaded
+                  this.imageObserver.unobserve(img);
+                }
+              });
+            },
+            {
+              rootMargin: '150px', // Start loading 150px before entering viewport
+              threshold: 0.1,
+            }
+          );
+        }
 
+        loadImage(imgElement) {
+          const smallImageUrl = imgElement.getAttribute('data-small');
+          const normalImageUrl = imgElement.getAttribute('data-normal');
+
+          if (!smallImageUrl) return;
+
+          // Start with small image
+          imgElement.src = smallImageUrl;
+
+          // If normal image is available, upgrade after small image loads
+          if (normalImageUrl) {
+            imgElement.onload = () => {
+              this.upgradeToNormalImage(imgElement, normalImageUrl);
+            };
+          }
+        }
+
+        upgradeToNormalImage(imgElement, normalImageUrl) {
           // Create a new image to preload the normal version
           const normalImg = new Image();
           normalImg.onload = () => {
             // Once the normal image is loaded, replace the src
             imgElement.src = normalImageUrl;
             imgElement.removeAttribute('data-normal');
-            imgElement.removeAttribute('onload');
+            imgElement.removeAttribute('data-small');
+            imgElement.onload = null;
           };
           normalImg.onerror = () => {
             // If normal image fails to load, keep the small image
             console.warn('Failed to load normal image:', normalImageUrl);
+            imgElement.removeAttribute('data-normal');
+            imgElement.removeAttribute('data-small');
+            imgElement.onload = null;
           };
           normalImg.src = normalImageUrl;
+        }
+
+        observeImages() {
+          // Find all images that haven't been loaded yet
+          const images = this.resultsContainer.querySelectorAll('img.card-image:not([src])');
+          images.forEach(img => {
+            this.imageObserver.observe(img);
+          });
         }
 
         showLoading() {
@@ -406,6 +460,10 @@
         }
 
         clearResults() {
+          // Disconnect observer to clean up
+          if (this.imageObserver) {
+            this.imageObserver.disconnect();
+          }
           this.resultsContainer.innerHTML = '';
           this.clearMessages();
         }
