@@ -246,7 +246,7 @@ def test_nary_operator_associativity(operator: str) -> None:
         ["power>toughness", "(card.creature_power > card.creature_toughness)", {}],
         ["power<toughness", "(card.creature_power < card.creature_toughness)", {}],
         ["power>cmc+1", r"(card.creature_power > (card.cmc + %(p_int_MQ)s))", {"p_int_MQ": 1}],
-        ["power-cmc>1", r"(card.creature_power - card.cmc > %(p_int_MQ)s)", {"p_int_MQ": 1}],
+        ["power-cmc>1", r"((card.creature_power - card.cmc) > %(p_int_MQ)s)", {"p_int_MQ": 1}],
         ["1<power-cmc", r"(%(p_int_MQ)s < (card.creature_power - card.cmc))", {"p_int_MQ": 1}],
         # Test field-specific : operator behavior
         ["name:lightning", r"(card.card_name ILIKE %(p_str_JWxpZ2h0bmluZyU)s)", {"p_str_JWxpZ2h0bmluZyU": r"%lightning%"}],

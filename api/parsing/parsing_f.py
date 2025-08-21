@@ -167,13 +167,13 @@ def parse_search_query(query: str) -> Query:
     arithmetic_expr = attrname + arithmetic_op + (attrname | integer | float_number)
     arithmetic_expr.setParseAction(make_binary_operator_node)
 
-    # Comparison between arithmetic expressions and attributes: arithmetic_expr attrop (arithmetic_expr | attrname)
-    arithmetic_comparison = arithmetic_expr + attrop + (arithmetic_expr | attrname)
+    # Comparison between arithmetic expressions and values: arithmetic_expr attrop (arithmetic_expr | attrname | numeric_value)
+    arithmetic_comparison = arithmetic_expr + attrop + (arithmetic_expr | attrname | integer | float_number)
     arithmetic_comparison.setParseAction(make_binary_operator_node)
 
-    # Comparison between attributes and arithmetic expressions: attrname attrop arithmetic_expr
-    attr_arithmetic_comparison = attrname + attrop + arithmetic_expr
-    attr_arithmetic_comparison.setParseAction(make_binary_operator_node)
+    # Comparison between values and arithmetic expressions: (attrname | numeric_value) attrop arithmetic_expr
+    value_arithmetic_comparison = (attrname | integer | float_number) + attrop + arithmetic_expr
+    value_arithmetic_comparison.setParseAction(make_binary_operator_node)
 
     # Attribute-to-attribute comparison has higher precedence than regular conditions
     attr_attr_condition = attrname + attrop + attrname
@@ -215,7 +215,7 @@ def parse_search_query(query: str) -> Query:
 
     # Factor includes both negatable expressions and arithmetic expressions
     # Order matters: arithmetic expressions must come before negatable expressions to avoid ambiguity
-    factor = arithmetic_comparison | attr_arithmetic_comparison | arithmetic_expr | negatable_factor
+    factor = arithmetic_comparison | value_arithmetic_comparison | arithmetic_expr | negatable_factor
 
     # Expression with explicit AND/OR operators (highest precedence)
     def handle_operators(tokens: list[object]) -> object:
