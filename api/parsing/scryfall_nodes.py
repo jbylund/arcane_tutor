@@ -11,6 +11,7 @@ from .nodes import (
     Query,
     QueryNode,
     StringValueNode,
+    param_name,
 )
 
 """
@@ -81,7 +82,7 @@ def get_sql_column(attr: str) -> str:
     return f"card.{remapped_name}"
 
 class ScryfallAttributeNode(AttributeNode):
-    def to_sql(self: ScryfallAttributeNode) -> str:
+    def to_sql(self: ScryfallAttributeNode, context: dict) -> str:
         remapped = REMAPPER.get(self.attribute_name, self.attribute_name)
         return f"card.{remapped}"
 
@@ -99,9 +100,9 @@ def get_colors_comparison_object(val: str) -> dict[str, bool]:
         raise ValueError(msg)
 
 class ScryfallBinaryOperatorNode(BinaryOperatorNode):
-    def to_sql(self: ScryfallBinaryOperatorNode) -> str:
+    def to_sql(self: ScryfallBinaryOperatorNode, context: dict) -> str:
         if isinstance(self.lhs, ScryfallAttributeNode):
-            lhs_sql = self.lhs.to_sql()
+            lhs_sql = self.lhs.to_sql(context)
             attr = self.lhs.attribute_name
             field_type = get_field_type(attr)
 
@@ -109,13 +110,13 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             if field_type == "numeric":
                 if self.operator == ":":
                     self.operator = "="
-                return super().to_sql()
+                return super().to_sql(context)
 
             if field_type == "jsonb_object":
-                return self._handle_jsonb_object()
+                return self._handle_jsonb_object(context)
 
             if field_type == "jsonb_array":
-                return self._handle_jsonb_array()
+                return self._handle_jsonb_array(context)
 
             if self.operator == ":":
                 if field_type == "text":
@@ -124,14 +125,18 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
                     elif isinstance(self.rhs, str):
                         txt_val = self.rhs.strip()
                     words = ["", *txt_val.split(), ""]
-                    pattern = "%%".join(words)
-                    return f"({lhs_sql} ILIKE '{pattern}')"
-                # Fallback: treat as string search
-                value = self.rhs.to_sql().strip("'")
-                return f"({lhs_sql} ILIKE '%%{value}%%')"
+                    pattern = "%".join(words)
+                    _param_name = param_name(pattern)
+                    context[_param_name] = pattern
+                    return f"({lhs_sql} ILIKE %({_param_name})s)"
+                msg = f"Unknown field type: {field_type}"
+                raise NotImplementedError(msg)
+                # # Fallback: treat as string search
+                # value = self.rhs.to_sql(context).strip("'")
+                # return f"({lhs_sql} ILIKE '%%{value}%%')"
 
         # Fallback: use default logic
-        return super().to_sql()
+        return super().to_sql(context)
 
     """
     col = query
@@ -155,9 +160,9 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
     query ?& col AND not(col ?& query) # as array
     """
 
-    def _handle_jsonb_object(self: ScryfallBinaryOperatorNode) -> str:
+    def _handle_jsonb_object(self: ScryfallBinaryOperatorNode, context: dict) -> str:
         # Produce the query as a jsonb object
-        lhs_sql = self.lhs.to_sql()
+        lhs_sql = self.lhs.to_sql(context)
         attr = self.lhs.attribute_name
         if attr == "colors":
             rhs = get_colors_comparison_object(self.rhs.value.strip().lower())
@@ -179,9 +184,9 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         msg = f"Unknown operator: {self.operator}"
         raise ValueError(msg)
 
-    def _handle_jsonb_array(self: ScryfallBinaryOperatorNode) -> str:
+    def _handle_jsonb_array(self: ScryfallBinaryOperatorNode, context: dict) -> str:
         # TODO: this should produce the query as an array, not jsonb
-        col = self.lhs.to_sql()
+        col = self.lhs.to_sql(context)
         inners = json.dumps([self.rhs.value.strip().title()])
         query = f"'{inners}'::jsonb"
         if self.operator == "=":
