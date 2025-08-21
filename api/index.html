@@ -1,289 +1,293 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Card Search</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
 
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(to bottom, #1d1c25, #431e3f);
-            min-height: 100vh;
-            padding: 20px;
-        }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: linear-gradient(to bottom, #1d1c25, #431e3f);
+        min-height: 100vh;
+        padding: 20px;
+      }
 
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+      }
 
-        .header {
-            text-align: center;
-            margin-bottom: 40px;
-            color: white;
-        }
+      .header {
+        text-align: center;
+        margin-bottom: 40px;
+        color: white;
+      }
 
+      .header h1 {
+        font-size: 3rem;
+        margin-bottom: 10px;
+        text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+      }
+
+      .header p {
+        font-size: 1.2rem;
+        opacity: 0.9;
+      }
+
+      .search-container {
+        margin-bottom: 40px;
+        display: flex;
+        justify-content: center;
+      }
+
+      .search-box {
+        position: relative;
+        width: 100%;
+        max-width: 600px;
+      }
+
+      .search-input {
+        width: 100%;
+        padding: 15px 20px;
+        font-size: 1.1rem;
+        border: none;
+        border-radius: 25px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        outline: none;
+        transition: all 0.3s ease;
+      }
+
+      .search-input:focus {
+        transform: translateY(-2px);
+        box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
+      }
+
+      .loading {
+        position: absolute;
+        right: 20px;
+        top: 50%;
+        transform: translateY(-50%);
+        display: none;
+      }
+
+      .spinner {
+        width: 20px;
+        height: 20px;
+        border: 2px solid #e3e3e3;
+        border-top: 2px solid #667eea;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      .results-container {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 20px;
+        margin-top: 30px;
+      }
+
+      .card-item {
+        background: #989898;
+        border-radius: 15px;
+        padding: 20px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        transition: all 0.3s ease;
+        cursor: pointer;
+      }
+
+      .card-item:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
+      }
+
+      .card-name {
+        font-size: 1.3rem;
+        font-weight: bold;
+        color: #222;
+        margin-bottom: 8px;
+      }
+
+      .card-mana {
+        font-size: 0.9rem;
+        color: #222;
+        margin-bottom: 8px;
+        font-family: monospace;
+      }
+
+      .card-type {
+        font-size: 1rem;
+        color: #222;
+        margin-bottom: 12px;
+        font-style: italic;
+      }
+
+      .card-text {
+        font-size: 0.9rem;
+        color: #222;
+        line-height: 1.4;
+        margin-bottom: 10px;
+      }
+
+      .card-set {
+        font-size: 0.8rem;
+        color: #444;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+      }
+
+      .error-message {
+        background: #ff6b6b;
+        color: white;
+        padding: 15px;
+        border-radius: 10px;
+        text-align: center;
+        margin-top: 20px;
+      }
+
+      .no-results {
+        text-align: center;
+        color: white;
+        font-size: 1.2rem;
+        margin-top: 40px;
+        opacity: 0.8;
+      }
+
+      .results-count {
+        color: white;
+        text-align: center;
+        margin-bottom: 20px;
+        font-size: 1.1rem;
+      }
+
+      .card-image {
+        display: block;
+        width: 100%;
+        max-width: 220px;
+        margin: 0 auto 12px auto;
+        border-radius: 10px;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+      }
+
+      @media (max-width: 768px) {
         .header h1 {
-            font-size: 3rem;
-            margin-bottom: 10px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-        }
-
-        .header p {
-            font-size: 1.2rem;
-            opacity: 0.9;
-        }
-
-        .search-container {
-            margin-bottom: 40px;
-            display: flex;
-            justify-content: center;
-        }
-
-        .search-box {
-            position: relative;
-            width: 100%;
-            max-width: 600px;
-        }
-
-        .search-input {
-            width: 100%;
-            padding: 15px 20px;
-            font-size: 1.1rem;
-            border: none;
-            border-radius: 25px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-            outline: none;
-            transition: all 0.3s ease;
-        }
-
-        .search-input:focus {
-            transform: translateY(-2px);
-            box-shadow: 0 15px 40px rgba(0,0,0,0.3);
-        }
-
-        .loading {
-            position: absolute;
-            right: 20px;
-            top: 50%;
-            transform: translateY(-50%);
-            display: none;
-        }
-
-        .spinner {
-            width: 20px;
-            height: 20px;
-            border: 2px solid #e3e3e3;
-            border-top: 2px solid #667eea;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+          font-size: 2rem;
         }
 
         .results-container {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-            gap: 20px;
-            margin-top: 30px;
+          grid-template-columns: 1fr;
         }
 
-        .card-item {
-            background: #989898;
-            border-radius: 15px;
-            padding: 20px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-            transition: all 0.3s ease;
-            cursor: pointer;
+        body {
+          padding: 15px;
         }
-
-        .card-item:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 20px 40px rgba(0,0,0,0.2);
-        }
-
-        .card-name {
-            font-size: 1.3rem;
-            font-weight: bold;
-            color: #222;
-            margin-bottom: 8px;
-        }
-
-        .card-mana {
-            font-size: 0.9rem;
-            color: #222;
-            margin-bottom: 8px;
-            font-family: monospace;
-        }
-
-        .card-type {
-            font-size: 1rem;
-            color: #222;
-            margin-bottom: 12px;
-            font-style: italic;
-        }
-
-        .card-text {
-            font-size: 0.9rem;
-            color: #222;
-            line-height: 1.4;
-            margin-bottom: 10px;
-        }
-
-        .card-set {
-            font-size: 0.8rem;
-            color: #444;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-
-        .error-message {
-            background: #ff6b6b;
-            color: white;
-            padding: 15px;
-            border-radius: 10px;
-            text-align: center;
-            margin-top: 20px;
-        }
-
-        .no-results {
-            text-align: center;
-            color: white;
-            font-size: 1.2rem;
-            margin-top: 40px;
-            opacity: 0.8;
-        }
-
-        .results-count {
-            color: white;
-            text-align: center;
-            margin-bottom: 20px;
-            font-size: 1.1rem;
-        }
-
-        .card-image {
-            display: block;
-            width: 100%;
-            max-width: 220px;
-            margin: 0 auto 12px auto;
-            border-radius: 10px;
-            box-shadow: 0 4px 16px rgba(0,0,0,0.10);
-        }
-
-        @media (max-width: 768px) {
-            .header h1 {
-                font-size: 2rem;
-            }
-            
-            .results-container {
-                grid-template-columns: 1fr;
-            }
-            
-            body {
-                padding: 15px;
-            }
-        }
+      }
     </style>
     <script>
-class CardSearch {
-    constructor() {
-        this.searchInput = document.getElementById('searchInput');
-        this.resultsContainer = document.getElementById('results');
-        this.loadingIndicator = document.getElementById('loading');
-        this.errorMessage = document.getElementById('error');
-        this.noResultsMessage = document.getElementById('noResults');
-        this.resultsCount = document.getElementById('resultsCount');
-        
-        this.debounceTimeout = null;
-        this.debounceDelay = 140; // milliseconds
-        this.currentController = null;
-        
-        this.init();
-    }
-    
-    init() {
-        // On page load, check for query param and perform search if present
-        const params = new URLSearchParams(window.location.search);
-        const initialQuery = params.get('q') || '';
-        if (initialQuery) {
+      class CardSearch {
+        constructor() {
+          this.searchInput = document.getElementById('searchInput');
+          this.resultsContainer = document.getElementById('results');
+          this.loadingIndicator = document.getElementById('loading');
+          this.errorMessage = document.getElementById('error');
+          this.noResultsMessage = document.getElementById('noResults');
+          this.resultsCount = document.getElementById('resultsCount');
+
+          this.debounceTimeout = null;
+          this.debounceDelay = 140; // milliseconds
+          this.currentController = null;
+
+          this.init();
+        }
+
+        init() {
+          // On page load, check for query param and perform search if present
+          const params = new URLSearchParams(window.location.search);
+          const initialQuery = params.get('q') || '';
+          if (initialQuery) {
             this.searchInput.value = initialQuery;
             this.performSearch(initialQuery);
-        }
-        this.searchInput.addEventListener('input', (e) => {
+          }
+          this.searchInput.addEventListener('input', e => {
             const query = e.target.value;
             this.handleSearch(query);
             // Update the URL as the user types
             const url = new URL(window.location);
             if (query.trim()) {
-                url.searchParams.set('q', query);
+              url.searchParams.set('q', query);
             } else {
-                url.searchParams.delete('q');
+              url.searchParams.delete('q');
             }
             window.history.replaceState({}, '', url);
-        });
-        
-        // Handle enter key for immediate search
-        this.searchInput.addEventListener('keypress', (e) => {
+          });
+
+          // Handle enter key for immediate search
+          this.searchInput.addEventListener('keypress', e => {
             if (e.key === 'Enter') {
-                clearTimeout(this.debounceTimeout);
-                this.performSearch(e.target.value);
+              clearTimeout(this.debounceTimeout);
+              this.performSearch(e.target.value);
             }
-        });
-    }
-    
-    handleSearch(query) {
-        // Clear previous timeout
-        clearTimeout(this.debounceTimeout);
-        
-        // Cancel previous request if still pending
-        if (this.currentController) {
-            this.currentController.abort();
+          });
         }
-        
-        // Clear results if query is empty
-        if (!query.trim()) {
+
+        handleSearch(query) {
+          // Clear previous timeout
+          clearTimeout(this.debounceTimeout);
+
+          // Cancel previous request if still pending
+          if (this.currentController) {
+            this.currentController.abort();
+          }
+
+          // Clear results if query is empty
+          if (!query.trim()) {
             this.clearResults();
             return;
-        }
-        
-        // Set up debounced search
-        this.debounceTimeout = setTimeout(() => {
+          }
+
+          // Set up debounced search
+          this.debounceTimeout = setTimeout(() => {
             this.performSearch(query);
-        }, this.debounceDelay);
-    }
-    
-    async performSearch(query) {
-        if (!query.trim()) return;
-        
-        // Show loading state
-        this.showLoading();
-        this.clearMessages();
-        
-        // Create new AbortController for this request
-        this.currentController = new AbortController();
-        // Generate a unique URL for this request to match in PerformanceResourceTiming
-        const url = `/search?q=${encodeURIComponent(query)}`;
-        try {
+          }, this.debounceDelay);
+        }
+
+        async performSearch(query) {
+          if (!query.trim()) return;
+
+          // Show loading state
+          this.showLoading();
+          this.clearMessages();
+
+          // Create new AbortController for this request
+          this.currentController = new AbortController();
+          // Generate a unique URL for this request to match in PerformanceResourceTiming
+          const url = `/search?q=${encodeURIComponent(query)}`;
+          try {
             // Clear any previous resource timing entries for this URL
             performance.clearResourceTimings && performance.clearResourceTimings();
             const response = await fetch(url, {
-                method: 'GET',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                signal: this.currentController.signal
+              method: 'GET',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              signal: this.currentController.signal,
             });
             if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+              throw new Error(`HTTP error! status: ${response.status}`);
             }
             const data = await response.json();
 
@@ -294,45 +298,49 @@ class CardSearch {
             // (If there are multiple, pick the last one)
             const matching = resources.filter(e => e.name.includes(url));
             if (matching.length > 0) {
-                const entry = matching[matching.length - 1];
-                // responseEnd - startTime is the total time as shown in dev tools
-                elapsed = Math.round(entry.responseEnd - entry.startTime);
+              const entry = matching[matching.length - 1];
+              // responseEnd - startTime is the total time as shown in dev tools
+              elapsed = Math.round(entry.responseEnd - entry.startTime);
             }
             this.displayResults(data, query, elapsed);
-        } catch (error) {
+          } catch (error) {
             if (error.name === 'AbortError') {
-                // Request was cancelled, ignore
-                return;
+              // Request was cancelled, ignore
+              return;
             }
             console.error('Search error:', error);
             this.showError(`Failed to search: ${error.message}`);
-        } finally {
+          } finally {
             this.hideLoading();
             this.currentController = null;
+          }
         }
-    }
-    
-    displayResults(data, query, elapsed) {
-        // Assume the API returns an array of cards or an object with a cards array
-        const cards = Array.isArray(data) ? data : data.cards || [];
-        const totalCards = data.total_cards || cards.length;
 
-        if (cards.length === 0) {
+        displayResults(data, query, elapsed) {
+          // Assume the API returns an array of cards or an object with a cards array
+          const cards = Array.isArray(data) ? data : data.cards || [];
+          const totalCards = data.total_cards || cards.length;
+
+          if (cards.length === 0) {
             this.showNoResults();
             return;
+          }
+
+          this.showResultsCount(totalCards, query, elapsed);
+
+          this.resultsContainer.innerHTML = cards.map(card => this.createCardHTML(card)).join('');
         }
 
-        this.showResultsCount(totalCards, query, elapsed);
+        createCardHTML(card) {
+          const cardId = card.id || card.name;
+          const imageSmall = card.image_small;
+          const imageNormal = card.image_normal;
 
-        this.resultsContainer.innerHTML = cards.map(card => 
-            this.createCardHTML(card)
-        ).join('');
-    }
-    
-    createCardHTML(card) {
-        return `
-            <div class="card-item" onclick="cardSearch.selectCard('${card.id || card.name}')">
-                ${card.image ? `<img class="card-image" src="${this.escapeHtml(card.image)}" alt="${this.escapeHtml(card.name || 'Card image')}" />` : ''}
+          const imageHtml = `<img class="card-image" src="${this.escapeHtml(imageSmall)}" data-normal="${this.escapeHtml(imageNormal)}" alt="${this.escapeHtml(card.name || 'Card image')}" onload="cardSearch.upgradeImage(this)" />`;
+
+          return `
+            <div class="card-item" onclick="cardSearch.selectCard('${cardId}')">
+                ${imageHtml}
                 <div class="card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
                 ${card.mana_cost ? `<div class="card-mana">${this.escapeHtml(card.mana_cost)}</div>` : ''}
                 ${card.type_line ? `<div class="card-type">${this.escapeHtml(card.type_line)}</div>` : ''}
@@ -340,94 +348,113 @@ class CardSearch {
                 ${card.set_name ? `<div class="card-set">${this.escapeHtml(card.set_name)}</div>` : ''}
             </div>
         `;
-    }
-    
-    selectCard(cardId) {
-        console.log('Selected card:', cardId);
-        // Add your card selection logic here
-        // For example, you could open a modal, navigate to a detail page, etc.
-    }
-    
-    showLoading() {
-        this.loadingIndicator.style.display = 'block';
-    }
-    
-    hideLoading() {
-        this.loadingIndicator.style.display = 'none';
-    }
-    
-    showError(message) {
-        this.errorMessage.textContent = message;
-        this.errorMessage.style.display = 'block';
-        this.resultsContainer.innerHTML = '';
-        this.resultsCount.style.display = 'none';
-    }
-    
-    showNoResults() {
-        this.noResultsMessage.style.display = 'block';
-        this.resultsContainer.innerHTML = '';
-        this.resultsCount.style.display = 'none';
-    }
-    
-    showResultsCount(count, query, elapsed) {
-        let msg = `Found ${count} card${count !== 1 ? 's' : ''} matching "${query}"`;
-        if (typeof elapsed === 'number') {
-            msg += ` (completed in ${elapsed}ms)`;
         }
-        this.resultsCount.textContent = msg;
-        this.resultsCount.style.display = 'block';
-    }
-    
-    clearResults() {
-        this.resultsContainer.innerHTML = '';
-        this.clearMessages();
-    }
-    
-    clearMessages() {
-        this.errorMessage.style.display = 'none';
-        this.noResultsMessage.style.display = 'none';
-        this.resultsCount.style.display = 'none';
-    }
-    
-    escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-}
-window.cardSearchMain = function() {
-    window.cardSearch = new CardSearch();
-};
+
+        selectCard(cardId) {
+          console.log('Selected card:', cardId);
+          // Add your card selection logic here
+          // For example, you could open a modal, navigate to a detail page, etc.
+        }
+
+        upgradeImage(imgElement) {
+          const normalImageUrl = imgElement.getAttribute('data-normal');
+          if (!normalImageUrl) return;
+
+          // Create a new image to preload the normal version
+          const normalImg = new Image();
+          normalImg.onload = () => {
+            // Once the normal image is loaded, replace the src
+            imgElement.src = normalImageUrl;
+            imgElement.removeAttribute('data-normal');
+            imgElement.removeAttribute('onload');
+          };
+          normalImg.onerror = () => {
+            // If normal image fails to load, keep the small image
+            console.warn('Failed to load normal image:', normalImageUrl);
+          };
+          normalImg.src = normalImageUrl;
+        }
+
+        showLoading() {
+          this.loadingIndicator.style.display = 'block';
+        }
+
+        hideLoading() {
+          this.loadingIndicator.style.display = 'none';
+        }
+
+        showError(message) {
+          this.errorMessage.textContent = message;
+          this.errorMessage.style.display = 'block';
+          this.resultsContainer.innerHTML = '';
+          this.resultsCount.style.display = 'none';
+        }
+
+        showNoResults() {
+          this.noResultsMessage.style.display = 'block';
+          this.resultsContainer.innerHTML = '';
+          this.resultsCount.style.display = 'none';
+        }
+
+        showResultsCount(count, query, elapsed) {
+          let msg = `Found ${count} card${count !== 1 ? 's' : ''} matching "${query}"`;
+          if (typeof elapsed === 'number') {
+            msg += ` (completed in ${elapsed}ms)`;
+          }
+          this.resultsCount.textContent = msg;
+          this.resultsCount.style.display = 'block';
+        }
+
+        clearResults() {
+          this.resultsContainer.innerHTML = '';
+          this.clearMessages();
+        }
+
+        clearMessages() {
+          this.errorMessage.style.display = 'none';
+          this.noResultsMessage.style.display = 'none';
+          this.resultsCount.style.display = 'none';
+        }
+
+        escapeHtml(text) {
+          const div = document.createElement('div');
+          div.textContent = text;
+          return div.innerHTML;
+        }
+      }
+      window.cardSearchMain = function () {
+        window.cardSearch = new CardSearch();
+      };
     </script>
-</head>
-<body>
+  </head>
+  <body>
     <div class="container">
-        <div class="header">
-            <h1>Card Search</h1>
-            <p>Search for Magic: The Gathering cards</p>
-        </div>
+      <div class="header">
+        <h1>Card Search</h1>
+        <p>Search for Magic: The Gathering cards</p>
+      </div>
 
-        <div class="search-container">
-            <div class="search-box">
-                <input 
-                    type="text" 
-                    class="search-input" 
-                    placeholder="Search for cards by name, type, or text..."
-                    id="searchInput"
-                >
-                <div class="loading" id="loading">
-                    <div class="spinner"></div>
-                </div>
-            </div>
+      <div class="search-container">
+        <div class="search-box">
+          <input
+            type="text"
+            class="search-input"
+            placeholder="Search for cards by name, type, or text..."
+            id="searchInput"
+          />
+          <div class="loading" id="loading">
+            <div class="spinner"></div>
+          </div>
         </div>
+      </div>
 
-        <div id="resultsCount" class="results-count" style="display: none;"></div>
-        <div id="results" class="results-container"></div>
-        <div id="error" class="error-message" style="display: none;"></div>
-        <div id="noResults" class="no-results" style="display: none;">No cards found matching your search.</div>
+      <div id="resultsCount" class="results-count" style="display: none"></div>
+      <div id="results" class="results-container"></div>
+      <div id="error" class="error-message" style="display: none"></div>
+      <div id="noResults" class="no-results" style="display: none">No cards found matching your search.</div>
     </div>
-<script>
-  window.cardSearchMain && window.cardSearchMain();
-</script>
-</body>
+    <script>
+      window.cardSearchMain && window.cardSearchMain();
+    </script>
+  </body>
 </html>
