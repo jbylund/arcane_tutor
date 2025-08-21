@@ -75,9 +75,10 @@ ensure_ruff:
 	@python -m ruff --version > /dev/null || python -m pip install ruff
 
 lint: ensure_ruff ensure_pylint # @doc lint all python files
-	find $(LINTABLE_DIRS) -type f -name "*.py" | xargs python -m ruff check --fix --unsafe-fixes >/dev/null 2>/dev/null || true
-	find $(LINTABLE_DIRS) -type f -name "*.py" | xargs python -m ruff check --fix --unsafe-fixes
-	find $(LINTABLE_DIRS) -type f -name "*.py" | xargs python -m pylint --fail-under 7.0 --max-line-length=132
+	find . -type f -name "*.py" | xargs python -m ruff check --fix --unsafe-fixes >/dev/null 2>/dev/null || true
+	find . -type f -name "*.py" | xargs python -m ruff check --fix --unsafe-fixes
+	find . -type f -name "*.py" | xargs python -m pylint --fail-under 7.0 --max-line-length=132
+	npx prettier --write api/index.html
 
 
 check_env: ensure_pydocker
