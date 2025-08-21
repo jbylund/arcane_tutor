@@ -40,7 +40,7 @@ logger = logging.getLogger("apiresource")
 # pylint: disable=c-extension-no-member
 
 @cached(cache=LRUCache(maxsize=10_000))
-def get_where_clause(query: str) -> str:
+def get_where_clause(query: str) -> tuple[str, dict]:
     parsed_query = parse_scryfall_query(query)
     return generate_sql_query(parsed_query)
 
@@ -494,6 +494,7 @@ class APIResource:
 
     def search(self: APIResource, *, q: str | None = None, query: str | None = None, limit: int = 100, **_: object) -> dict[str, Any]:
         """Run a search query and return results and metadata.
+        /search.
 
         Args:
         ----
@@ -506,7 +507,7 @@ class APIResource:
 
         """
         query = query or q
-        where_clause = get_where_clause(query)
+        where_clause, params = get_where_clause(query)
         full_query = f"""
         SELECT
             card_name AS name,
@@ -528,7 +529,8 @@ class APIResource:
         """
         full_query = rewrap(full_query)
         logger.info("Full query: %s", full_query)
-        result_bag = self._run_query(query=full_query)
+        logger.info("Params: %s", params)
+        result_bag = self._run_query(query=full_query, params=params)
         cards = result_bag.pop("result", [])
         total_cards = 0
         for icard in cards:

@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from base64 import b64encode
 from typing import Any
 
+
+def param_name(ival: object) -> str:
+    b64d = b64encode(str(ival).encode()).decode().rstrip("=")
+    val_type = type(ival).__name__
+    return f"p_{val_type}_{b64d}"
 
 # AST Classes
 class QueryNode(ABC):
     """Base class for all query nodes in the abstract syntax tree (AST)."""
 
     @abstractmethod
-    def to_sql(self: QueryNode) -> str:
+    def to_sql(self: QueryNode, context: dict) -> str:
         """Convert this node to a SQL WHERE clause string representation."""
 
 class LeafNode(QueryNode):
@@ -45,9 +51,11 @@ class StringValueNode(ValueNode):
         """Initialize a StringValueNode with a string value."""
         self.value = value
 
-    def to_sql(self: StringValueNode) -> str:
+    def to_sql(self: StringValueNode, context: dict) -> str:
         """Serialize this string value node to a SQL string literal."""
-        return f"'{self.value}'"
+        _param_name = param_name(self.value)
+        context[_param_name] = self.value
+        return f"%({_param_name})s"
 
 class NumericValueNode(ValueNode):
     """Represents a numeric value node in the AST."""
@@ -56,9 +64,11 @@ class NumericValueNode(ValueNode):
         """Initialize a NumericValueNode with a numeric value."""
         self.value = value
 
-    def to_sql(self: NumericValueNode) -> str:
+    def to_sql(self: NumericValueNode, context: dict) -> str:
         """Serialize this numeric value node to a SQL number literal."""
-        return str(self.value)
+        _param_name = param_name(self.value)
+        context[_param_name] = self.value
+        return f"%({_param_name})s"
 
 class AttributeNode(LeafNode):
     """Represents an attribute of a card, such as 'cmc' or 'power'."""
@@ -67,7 +77,7 @@ class AttributeNode(LeafNode):
         """Initialize an AttributeNode with the attribute name."""
         self.attribute_name = attribute_name
 
-    def to_sql(self: AttributeNode) -> str:
+    def to_sql(self: AttributeNode, context: dict) -> str:
         """Serialize this attribute node to a SQL column reference."""
         return f"card.{self.attribute_name}"
 
@@ -114,9 +124,9 @@ class BinaryOperatorNode(QueryNode):
             msg = f"Unknown operator: {operator}"
             raise ValueError(msg)
 
-    def to_sql(self: BinaryOperatorNode) -> str:
+    def to_sql(self: BinaryOperatorNode, context: dict) -> str:
         """Serialize this binary operator node to a SQL expression."""
-        return f"({self.lhs.to_sql()} {self.operator} {self.rhs.to_sql()})"
+        return f"({self.lhs.to_sql(context)} {self.operator} {self.rhs.to_sql(context)})"
 
     def __repr__(self: BinaryOperatorNode) -> str:
         """Return a string representation of the binary operator node."""
@@ -143,13 +153,13 @@ class NaryOperatorNode(QueryNode):
         """Initialize an NaryOperatorNode with a list of operand nodes."""
         self.operands = operands
 
-    def to_sql(self: NaryOperatorNode) -> str:
+    def to_sql(self: NaryOperatorNode, context: dict) -> str:
         """Serialize this n-ary operator node to a SQL expression."""
         if not self.operands:
             return self._empty_result()
         if len(self.operands) == 1:
-            return self.operands[0].to_sql()
-        inners = f" {self._operator()} ".join(operand.to_sql() for operand in self.operands)
+            return self.operands[0].to_sql(context)
+        inners = f" {self._operator()} ".join(operand.to_sql(context) for operand in self.operands)
         return f"({inners})"
 
     def _operator(self: NaryOperatorNode) -> str:
@@ -209,9 +219,9 @@ class NotNode(QueryNode):
         """Initialize a NotNode with a single operand node."""
         self.operand = operand
 
-    def to_sql(self: NotNode) -> str:
+    def to_sql(self: NotNode, context: dict) -> str:
         """Serialize this NOT node to a SQL expression."""
-        operand_sql = self.operand.to_sql()
+        operand_sql = self.operand.to_sql(context)
         return f"NOT ({operand_sql})"
 
     def __repr__(self: NotNode) -> str:
@@ -235,9 +245,9 @@ class Query(QueryNode):
         """Initialize a Query with the root QueryNode."""
         self.root = root
 
-    def to_sql(self: Query) -> str:
+    def to_sql(self: Query, context: dict) -> str:
         """Serialize this query to a SQL string."""
-        return self.root.to_sql()
+        return self.root.to_sql(context)
 
     def __repr__(self: Query) -> str:
         """Return a string representation of the Query node."""

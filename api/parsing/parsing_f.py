@@ -375,7 +375,8 @@ def is_operator(token: str) -> bool:
     """
     return token in [":", ">", "<", ">=", "<=", "=", "!=", "-", "+", "*", "/"]
 
-def generate_sql_query(parsed_query: Query) -> str:
+def generate_sql_query(parsed_query: Query) -> tuple[str, dict]:
     """Generate a SQL WHERE clause string from a parsed Query AST."""
     scryfall_ast = to_scryfall_ast(parsed_query)
-    return scryfall_ast.to_sql()
+    query_context = {}
+    return scryfall_ast.to_sql(query_context), query_context
