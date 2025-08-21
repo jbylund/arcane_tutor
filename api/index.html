@@ -343,8 +343,20 @@
           const imageSmall = card.image_small;
           const imageNormal = card.image_normal;
 
+          // Create descriptive alt text with card name, mana cost, and oracle text
+          let altText = this.escapeHtml(card.name || 'Unknown Card');
+          if (card.mana_cost) {
+            altText += ` / ${this.escapeHtml(card.mana_cost)}`;
+          }
+          altText += '\n\n';
+          if (card.oracle_text) {
+            const maxLength = 300;
+            const truncatedText = card.oracle_text.length > maxLength ? card.oracle_text.substring(0, maxLength) + '...' : card.oracle_text;
+            altText += this.escapeHtml(truncatedText);
+          }
+
           // Create placeholder image that will be replaced when in viewport
-          const imageHtml = `<img class="card-image" data-small="${this.escapeHtml(imageSmall)}" data-normal="${this.escapeHtml(imageNormal)}" alt="${this.escapeHtml(card.name || 'Card image')}" />`;
+          const imageHtml = `<img class="card-image" data-small="${this.escapeHtml(imageSmall)}" data-normal="${this.escapeHtml(imageNormal)}" alt="${altText}" title="${altText}" />`;
 
           return `
              <div class="card-item" onclick="cardSearch.selectCard('${cardId}')">
