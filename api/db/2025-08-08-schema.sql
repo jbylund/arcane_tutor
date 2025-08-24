@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS magic.cards (
     card_subtypes jsonb, -- list of strings (e.g. ["Bird", "Knight"])
     card_colors jsonb NOT NULL, -- object of color codes, e.g. {"R": true, "G": true}
 
+    edhrec_rank integer,
+
     -- creature only attributes - will be null a large fraction of the time
     creature_power integer,
     creature_power_text text,
