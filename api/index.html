@@ -463,7 +463,8 @@
         }
 
         showResultsCount(count, query, elapsed) {
-          let msg = `Found ${count} card${count !== 1 ? 's' : ''} matching "${query}"`;
+          const formattedCount = count.toLocaleString();
+          let msg = `Found ${formattedCount} card${count !== 1 ? 's' : ''} matching "${query}"`;
           if (typeof elapsed === 'number') {
             msg += ` (completed in ${elapsed}ms)`;
           }

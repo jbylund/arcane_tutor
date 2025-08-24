@@ -23,7 +23,7 @@ import psycopg.rows
 import psycopg.types.json
 import psycopg_pool
 import requests
-from cachetools import LRUCache, cached
+from cachetools import LRUCache, TTLCache, cached
 from parsing import generate_sql_query, parse_scryfall_query
 
 
@@ -521,7 +521,8 @@ class APIResource:
         val = str_buffer.getvalue()
         falcon_response.body = val.encode("utf-8")
 
-    def search(self: APIResource, *, q: str | None = None, query: str | None = None, limit: int = 100, **_: object) -> dict[str, Any]:
+
+    def search(self: APIResource, *, falcon_response: falcon.Response | None = None, q: str | None = None, query: str | None = None, limit: int = 100) -> dict[str, Any]:
         """Run a search query and return results and metadata.
         /search.
 
@@ -535,7 +536,13 @@ class APIResource:
             Dict[str, Any]: Search results and metadata.
 
         """
-        query = query or q
+        return self._search(query=query or q, limit=limit)
+
+    @cached(
+        cache=TTLCache(maxsize=1000, ttl=60),
+        key=lambda self, *args, **kwargs: (args, tuple(sorted(kwargs.items()))),
+    )
+    def _search(self: APIResource, *, query: str | None = None, limit: int = 100) -> dict[str, Any]:
         where_clause, params = get_where_clause(query)
         full_query = f"""
         SELECT
