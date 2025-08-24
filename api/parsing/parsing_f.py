@@ -34,6 +34,7 @@ KNOWN_CARD_ATTRIBUTES: set[str] = {
     "card_subtypes",
     "card_types",
     "cmc",
+    "color",
     "colors",
     "creature_power",
     "creature_toughness",
@@ -108,6 +109,26 @@ def make_binary_operator_node(tokens: list[object]) -> BinaryOperatorNode:
     left, operator, right = tokens
     return BinaryOperatorNode(create_value_node(left), operator, create_value_node(right))
 
+def make_chained_arithmetic(tokens: list[object]) -> QueryNode:
+    """Create a chained arithmetic expression with left associativity.
+
+    For example, [a, +, b, +, c] becomes ((a + b) + c)
+    """
+    if len(tokens) == 1:
+        return create_value_node(tokens[0])
+
+    # Start with the first term
+    result = create_value_node(tokens[0])
+
+    # Process the remaining operator-term pairs
+    for i in range(1, len(tokens), 2):
+        if i + 1 < len(tokens):
+            operator = tokens[i]
+            right_term = create_value_node(tokens[i + 1])
+            result = BinaryOperatorNode(result, operator, right_term)
+
+    return result
+
 def parse_scryfall_query(query: str) -> Query:
     generic_query = parse_search_query(query)
     return to_scryfall_ast(generic_query)
@@ -163,9 +184,16 @@ def parse_search_query(query: str) -> Query:
     # Build the grammar with proper precedence
     expr = Forward()
 
-    # Arithmetic expression: attribute arithmetic_op (attribute | numeric_value)
-    arithmetic_expr = attrname + arithmetic_op + (attrname | integer | float_number)
-    arithmetic_expr.setParseAction(make_binary_operator_node)
+    # Define arithmetic expressions with proper precedence
+    # Start with the most basic arithmetic terms
+    # Only known card attributes can be used in arithmetic expressions
+    arithmetic_term = attrname | integer | float_number | Group(lparen + expr + rparen)
+
+    # Define arithmetic expressions that can be chained
+    # Only match if there's at least one arithmetic operator
+    arithmetic_expr = Forward()
+    arithmetic_expr <<= arithmetic_term + arithmetic_op + arithmetic_term + ZeroOrMore(arithmetic_op + arithmetic_term)
+    arithmetic_expr.setParseAction(make_chained_arithmetic)
 
     # Comparison between arithmetic expressions and values: arithmetic_expr attrop (arithmetic_expr | attrname | numeric_value)
     arithmetic_comparison = arithmetic_expr + attrop + (arithmetic_expr | attrname | integer | float_number)

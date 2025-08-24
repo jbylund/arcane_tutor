@@ -44,6 +44,7 @@ FIELD_TYPE_MAP = {
     "card_subtypes": "jsonb_array",
     "card_types": "jsonb_array",
     "cmc": "numeric",
+    "color": "jsonb_object",
     "colors": "jsonb_object",
     "creature_power": "numeric",
     "creature_toughness": "numeric",
@@ -57,6 +58,7 @@ FIELD_TYPE_MAP = {
 }
 
 REMAPPER = {
+    "color": "card_colors",
     "name": "card_name",
     "power": "creature_power",
     "toughness": "creature_toughness",
@@ -164,23 +166,25 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         # Produce the query as a jsonb object
         lhs_sql = self.lhs.to_sql(context)
         attr = self.lhs.attribute_name
-        if attr == "colors":
+        if attr in ("color", "colors"):
             rhs = get_colors_comparison_object(self.rhs.value.strip().lower())
-            query = json.dumps(rhs, sort_keys=True) + "::jsonb"
+            pname = param_name(rhs)
+            context[pname] = rhs
+            # query = json.dumps(rhs, sort_keys=True) + "::jsonb"
         if self.operator == "=":
-            return f"({lhs_sql} = {query})"
+            return f"({lhs_sql} = %({pname})s)"
         if self.operator in (">=", ":"):
-            return f"({lhs_sql} @> {query})"
+            return f"({lhs_sql} @> %({pname})s)"
         if self.operator == "<=":
-            return f"({lhs_sql} <@ {query})"
+            return f"({lhs_sql} <@ %({pname})s)"
         if self.operator == ">":
-            return f"({lhs_sql} @> {query} AND {lhs_sql} <> {query})"
+            return f"({lhs_sql} @> %({pname})s AND {lhs_sql} <> %({pname})s)"
         if self.operator == "<":
-            return f"({lhs_sql} <@ {query} AND {lhs_sql} <> {query})"
+            return f"({lhs_sql} <@ %({pname})s AND {lhs_sql} <> %({pname})s)"
         if self.operator == "!=":
-            return f"({lhs_sql} <> {query})"
+            return f"({lhs_sql} <> %({pname})s)"
         if self.operator == "<>":
-            return f"({lhs_sql} <> {query})"
+            return f"({lhs_sql} <> %({pname})s)"
         msg = f"Unknown operator: {self.operator}"
         raise ValueError(msg)
 

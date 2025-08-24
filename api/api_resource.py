@@ -216,16 +216,37 @@ class APIResource:
             Dict[str, Any]: Query result and metadata.
 
         """
+        params = params or {}
+
+
+        def maybe_json_dump(v: Any) -> Any:
+            if isinstance(v, list | dict):
+                return json.dumps(v, sort_keys=True)
+            return v
+        # need to make params hashable... but it might contain dicts/lists/...
+        hashable_params = {
+            k: maybe_json_dump(v)
+            for k, v in params.items()
+        }
         cachekey = (
             query,
-            frozenset((params or {}).items()),
+            frozenset(hashable_params.items()),
             explain,
         )
         cached_val = self._query_cache.get(cachekey)
         if cached_val is not None:
             return copy.deepcopy(cached_val)
 
-        params = params or {}
+        # wrap params in json
+        def maybe_json(v: Any) -> Any:
+            if isinstance(v, list | dict):
+                return psycopg.types.json.Jsonb(v)
+            return v
+
+        params = {
+            k: maybe_json(v)
+            for k, v in params.items()
+        }
         query = " ".join(query.strip().split())
         explain_query = f"EXPLAIN (FORMAT JSON) {query}"
 
