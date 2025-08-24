@@ -134,7 +134,7 @@ class APIResource:
         self._tablename = "staging_table"
 
         # make a psycopg3 connection pool
-        self._conn_pool = _make_pool()
+        self._conn_pool: psycopg_pool.ConnectionPool = _make_pool()
         self.action_map = {x: getattr(self, x) for x in dir(self) if not x.startswith("_")}
         self.action_map["index"] = self.index_html
         self._query_cache = LRUCache(maxsize=1_000)
@@ -218,24 +218,25 @@ class APIResource:
         """
         params = params or {}
 
-
-        def maybe_json_dump(v: Any) -> Any:
-            if isinstance(v, list | dict):
-                return json.dumps(v, sort_keys=True)
-            return v
-        # need to make params hashable... but it might contain dicts/lists/...
-        hashable_params = {
-            k: maybe_json_dump(v)
-            for k, v in params.items()
-        }
-        cachekey = (
-            query,
-            frozenset(hashable_params.items()),
-            explain,
-        )
-        cached_val = self._query_cache.get(cachekey)
-        if cached_val is not None:
-            return copy.deepcopy(cached_val)
+        use_cache = False
+        if use_cache:
+            def maybe_json_dump(v: Any) -> Any:
+                if isinstance(v, list | dict):
+                    return json.dumps(v, sort_keys=True)
+                return v
+            # need to make params hashable... but it might contain dicts/lists/...
+            hashable_params = {
+                k: maybe_json_dump(v)
+                for k, v in params.items()
+            }
+            cachekey = (
+                query,
+                frozenset(hashable_params.items()),
+                explain,
+            )
+            cached_val = self._query_cache.get(cachekey)
+            if cached_val is not None:
+                return copy.deepcopy(cached_val)
 
         # wrap params in json
         def maybe_json(v: Any) -> Any:
@@ -274,7 +275,10 @@ class APIResource:
             timings["total_duration"] = total_duration = after_fetch - before
             timings["total_duration_ms"] = total_duration * 1000
             timings["total_frequency"] = 1 / total_duration
-        self._query_cache[cachekey] = result
+
+        if use_cache:
+            self._query_cache[cachekey] = result
+
         return copy.deepcopy(result)
 
     def get_pid(self: APIResource, **_: object) -> int:
@@ -375,8 +379,11 @@ class APIResource:
     def _get_cards_to_insert(self: APIResource) -> list[dict[str, Any]]:
         """Get the cards to insert into the database."""
         all_cards = self.get_data()
-        to_insert = []
+        to_insert = {}
         for card in all_cards:
+            card_name = card["name"]
+            if card_name in to_insert:
+                continue
             if set(card["legalities"].values()) == {"not_legal"}:
                 continue
             if "card_faces" in card:
@@ -394,9 +401,10 @@ class APIResource:
                     card[f"{creature_field}_numeric"] = None
                 else:
                     card[f"{creature_field}_numeric"] = numeric_val
-            card["card_colors"] = {c: True for c in card["colors"]}
-            to_insert.append(card)
-        return to_insert
+            card["card_colors"] = dict.fromkeys(card["colors"], True)
+            card["edhrec_rank"] = card.get("edhrec_rank", None)
+            to_insert[card_name] = card
+        return list(to_insert.values())
 
     def get_stats(self: APIResource, **_: object) -> dict[str, Any]:
         """Get stats about the cards."""
@@ -442,8 +450,8 @@ class APIResource:
                     cursor.execute(
                         """
                         INSERT INTO magic.cards
-                        ( card_name,   cmc  , mana_cost_text, mana_cost_jsonb, raw_card_blob,     card_types,   card_subtypes  , card_colors, creature_power, creature_power_text, creature_toughness, creature_toughness_text ) VALUES
-                        ( %(name)s , %(cmc)s, %(mana_cost)s ,            null,      %(blob)s, %(card_types)s, %(card_subtypes)s,     %(card_colors)s,     %(power_numeric)s,             %(power)s,             %(toughness_numeric)s   ,   %(toughness)s)
+                        ( card_name,   cmc  , mana_cost_text, mana_cost_jsonb, raw_card_blob,     card_types,   card_subtypes  , card_colors, creature_power, creature_power_text, creature_toughness, creature_toughness_text, edhrec_rank ) VALUES
+                        ( %(name)s , %(cmc)s, %(mana_cost)s ,            null,      %(blob)s, %(card_types)s, %(card_subtypes)s,     %(card_colors)s,     %(power_numeric)s,             %(power)s,             %(toughness_numeric)s   ,   %(toughness)s, %(edhrec_rank)s)
                         ON CONFLICT (card_name) DO NOTHING
                         """,
                         card_with_json | {"blob": Jsonb(card)},
@@ -537,25 +545,53 @@ class APIResource:
             raw_card_blob->>'set_name' AS set_name,
             raw_card_blob->>'type_line' AS type_line,
             raw_card_blob->'image_uris'->>'normal' AS image_normal,
-            raw_card_blob->'image_uris'->>'small' AS image_small,
-            COUNT(1) OVER() AS total_cards
+            raw_card_blob->'image_uris'->>'small' AS image_small
         FROM
             magic.cards AS card
         WHERE
             {where_clause}
         ORDER BY
-            raw_card_blob->>'edhrec_rank' ASC
+            edhrec_rank ASC NULLS LAST
         LIMIT
             {limit}
         """
         full_query = rewrap(full_query)
         logger.info("Full query: %s", full_query)
         logger.info("Params: %s", params)
-        result_bag = self._run_query(query=full_query, params=params)
+        result_bag = self._run_query(query=full_query, params=params, explain=False)
         cards = result_bag.pop("result", [])
-        total_cards = 0
-        for icard in cards:
-            total_cards = icard.pop("total_cards")
+        total_cards = len(cards)
+        if total_cards == limit:
+            use_estimate = False
+            if use_estimate:
+                full_query = f"""
+                EXPLAIN (FORMAT JSON)
+                SELECT
+                    card_name
+                FROM
+                    magic.cards AS card
+                WHERE
+                    {where_clause}
+                """
+                full_query = rewrap(full_query)
+                logger.info("Full query: %s", full_query)
+                logger.info("Params: %s", params)
+                ptr = self._run_query(query=full_query, params=params, explain=False)["result"][0]["QUERY PLAN"][0]["Plan"]
+                total_cards = ptr["Plan Rows"]
+            else:
+                full_query = f"""
+                SELECT
+                    COUNT(1) AS total_cards
+                FROM
+                    magic.cards AS card
+                WHERE
+                    {where_clause}
+                """
+                full_query = rewrap(full_query)
+                logger.info("Full query: %s", full_query)
+                logger.info("Params: %s", params)
+                result_bag = self._run_query(query=full_query, params=params, explain=False)
+                total_cards = result_bag["result"][0]["total_cards"]
         return {
             "cards": cards,
             "compiled": full_query,
