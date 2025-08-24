@@ -150,6 +150,126 @@
         letter-spacing: 1px;
       }
 
+      /* Modal styles */
+      .modal-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.8);
+        display: none;
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+        backdrop-filter: blur(5px);
+      }
+
+      .modal-content {
+        background: white;
+        border-radius: 15px;
+        padding: 30px;
+        max-width: 95vw;
+        max-height: 90vh;
+        overflow: hidden;
+        position: relative;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        animation: modalFadeIn 0.3s ease-out;
+        display: flex;
+        flex-direction: row;
+        gap: 30px;
+        align-items: flex-start;
+      }
+
+      @keyframes modalFadeIn {
+        from {
+          opacity: 0;
+          transform: scale(0.9) translateY(-20px);
+        }
+        to {
+          opacity: 1;
+          transform: scale(1) translateY(0);
+        }
+      }
+
+      .modal-close {
+        position: absolute;
+        top: 15px;
+        right: 20px;
+        background: none;
+        border: none;
+        font-size: 24px;
+        cursor: pointer;
+        color: #666;
+        width: 30px;
+        height: 30px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        transition: all 0.2s ease;
+      }
+
+      .modal-close:hover {
+        background: #f0f0f0;
+        color: #333;
+      }
+
+      .modal-image {
+        max-width: 50vw;
+        max-height: 85vh;
+        width: auto;
+        height: auto;
+        border-radius: 10px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        object-fit: contain;
+        flex-shrink: 0;
+      }
+
+      .modal-card-info {
+        text-align: left;
+        flex: 1;
+        overflow-y: auto;
+        padding-right: 10px;
+        min-width: 0;
+      }
+
+      .modal-card-name {
+        font-size: 1.5rem;
+        font-weight: bold;
+        color: #333;
+        margin-bottom: 8px;
+      }
+
+      .modal-card-mana {
+        font-size: 1.1rem;
+        color: #666;
+        margin-bottom: 8px;
+        font-family: monospace;
+      }
+
+      .modal-card-type {
+        font-size: 1.1rem;
+        color: #666;
+        margin-bottom: 12px;
+        font-style: italic;
+      }
+
+      .modal-card-text {
+        font-size: 1rem;
+        color: #333;
+        line-height: 1.6;
+        margin-bottom: 10px;
+        text-align: left;
+      }
+
+      .modal-card-set {
+        font-size: 0.9rem;
+        color: #888;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+      }
+
       .error-message {
         background: #ff6b6b;
         color: white;
@@ -195,6 +315,37 @@
         body {
           padding: 15px;
         }
+
+        .modal-content {
+          padding: 20px;
+          max-width: 95vw;
+          max-height: 95vh;
+          flex-direction: column;
+          gap: 20px;
+        }
+
+        .modal-image {
+          max-width: 100%;
+          max-height: 50vh;
+          margin-bottom: 0;
+        }
+
+        .modal-card-name {
+          font-size: 1.3rem;
+        }
+
+        .modal-card-mana,
+        .modal-card-type {
+          font-size: 1rem;
+        }
+
+        .modal-card-text {
+          font-size: 0.9rem;
+        }
+
+        .modal-card-info {
+          text-align: center;
+        }
       }
     </style>
     <script>
@@ -211,6 +362,7 @@
           this.debounceDelay = 140; // milliseconds
           this.currentController = null;
           this.imageObserver = null;
+          this.cardsData = new Map(); // Store card data by ID
 
           this.init();
         }
@@ -246,6 +398,14 @@
 
           // Initialize intersection observer for lazy image loading
           this.initImageObserver();
+          
+          // Add event delegation for card clicks
+          this.resultsContainer.addEventListener('click', (e) => {
+            const cardItem = e.target.closest('.card-item');
+            if (cardItem) {
+              this.handleCardClick(cardItem);
+            }
+          });
         }
 
         handleSearch(query) {
@@ -330,6 +490,13 @@
             return;
           }
 
+          // Clear previous card data and store new cards
+          this.cardsData.clear();
+          cards.forEach(card => {
+            const cardId = card.id || card.name;
+            this.cardsData.set(cardId, card);
+          });
+
           this.showResultsCount(totalCards, query, elapsed);
 
           this.resultsContainer.innerHTML = cards.map(card => this.createCardHTML(card)).join('');
@@ -342,6 +509,7 @@
           const cardId = card.id || card.name;
           const imageSmall = card.image_small;
           const imageNormal = card.image_normal;
+          const imageLarge = card.image_large;
 
           // Create descriptive alt text with card name, mana cost, and oracle text
           let altText = this.escapeHtml(card.name || 'Unknown Card');
@@ -356,10 +524,10 @@
           }
 
           // Create placeholder image that will be replaced when in viewport
-          const imageHtml = `<img class="card-image" data-small="${this.escapeHtml(imageSmall)}" data-normal="${this.escapeHtml(imageNormal)}" alt="${altText}" title="${altText}" />`;
+          const imageHtml = `<img class="card-image" data-small="${this.escapeHtml(imageSmall)}" data-normal="${this.escapeHtml(imageNormal)}" data-large="${this.escapeHtml(imageLarge)}" alt="${altText}" title="${altText}" />`;
 
           return `
-             <div class="card-item" onclick="cardSearch.selectCard('${cardId}')">
+             <div class="card-item" data-card-id="${this.escapeHtml(card.id || card.name)}">
                  ${imageHtml}
                  <div class="card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
                  ${card.mana_cost ? `<div class="card-mana">${this.escapeHtml(card.mana_cost)}</div>` : ''}
@@ -370,10 +538,68 @@
          `;
         }
 
-        selectCard(cardId) {
-          console.log('Selected card:', cardId);
-          // Add your card selection logic here
-          // For example, you could open a modal, navigate to a detail page, etc.
+        handleCardClick(cardItem) {
+          try {
+            const cardId = cardItem.getAttribute('data-card-id');
+            const cardData = this.cardsData.get(cardId);
+            
+            if (cardData) {
+              console.log('Selected card:', cardData.name);
+              this.showCardModal(cardData);
+            } else {
+              console.error('Card data not found for ID:', cardId);
+            }
+          } catch (e) {
+            console.error('Error handling card click:', e);
+          }
+        }
+
+        showCardModal(card) {
+          const modalOverlay = document.getElementById('modalOverlay');
+          const modalContent = document.getElementById('modalContent');
+          
+          // Create modal content
+          const imageLarge = card.image_large || card.image_normal || card.image_small;
+          const imageHtml = imageLarge ? `<img class="modal-image" src="${this.escapeHtml(imageLarge)}" alt="${this.escapeHtml(card.name || 'Card Image')}" />` : '';
+          
+          modalContent.innerHTML = `
+            <button class="modal-close" onclick="cardSearch.closeModal()">&times;</button>
+            ${imageHtml}
+            <div class="modal-card-info">
+              <div class="modal-card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
+              ${card.mana_cost ? `<div class="modal-card-mana">${this.escapeHtml(card.mana_cost)}</div>` : ''}
+              ${card.type_line ? `<div class="modal-card-type">${this.escapeHtml(card.type_line)}</div>` : ''}
+              ${card.oracle_text ? `<div class="modal-card-text">${this.escapeHtml(card.oracle_text)}</div>` : ''}
+              ${card.set_name ? `<div class="modal-card-set">${this.escapeHtml(card.set_name)}</div>` : ''}
+            </div>
+          `;
+          
+          // Show modal
+          modalOverlay.style.display = 'flex';
+          document.body.style.overflow = 'hidden'; // Prevent background scrolling
+          
+          // Add click outside to close
+          modalOverlay.onclick = (e) => {
+            if (e.target === modalOverlay) {
+              this.closeModal();
+            }
+          };
+          
+          // Add escape key to close
+          document.addEventListener('keydown', this.handleEscapeKey);
+        }
+
+        closeModal() {
+          const modalOverlay = document.getElementById('modalOverlay');
+          modalOverlay.style.display = 'none';
+          document.body.style.overflow = ''; // Restore scrolling
+          document.removeEventListener('keydown', this.handleEscapeKey);
+        }
+
+        handleEscapeKey = (e) => {
+          if (e.key === 'Escape') {
+            this.closeModal();
+          }
         }
 
         initImageObserver() {
@@ -523,6 +749,13 @@
       <div id="results" class="results-container"></div>
       <div id="error" class="error-message" style="display: none"></div>
       <div id="noResults" class="no-results" style="display: none">No cards found matching your search.</div>
+    </div>
+
+    <!-- Modal for card details -->
+    <div id="modalOverlay" class="modal-overlay">
+      <div id="modalContent" class="modal-content">
+        <!-- Modal content will be dynamically inserted here -->
+      </div>
     </div>
     <script>
       window.cardSearchMain && window.cardSearchMain();

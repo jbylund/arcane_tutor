@@ -551,8 +551,9 @@ class APIResource:
             raw_card_blob->>'oracle_text' AS oracle_text,
             raw_card_blob->>'set_name' AS set_name,
             raw_card_blob->>'type_line' AS type_line,
+            raw_card_blob->'image_uris'->>'small' AS image_small,
             raw_card_blob->'image_uris'->>'normal' AS image_normal,
-            raw_card_blob->'image_uris'->>'small' AS image_small
+            raw_card_blob->'image_uris'->>'large' AS image_large
         FROM
             magic.cards AS card
         WHERE
