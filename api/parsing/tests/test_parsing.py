@@ -248,12 +248,19 @@ def test_nary_operator_associativity(operator: str) -> None:
         ["power>cmc+1", r"(card.creature_power > (card.cmc + %(p_int_MQ)s))", {"p_int_MQ": 1}],
         ["power-cmc>1", r"((card.creature_power - card.cmc) > %(p_int_MQ)s)", {"p_int_MQ": 1}],
         ["1<power-cmc", r"(%(p_int_MQ)s < (card.creature_power - card.cmc))", {"p_int_MQ": 1}],
-        ["cmc+cmc+2<power+toughness", r"((card.cmc + card.cmc + %(p_int_Mg)s) < (card.creature_power + card.creature_toughness))", {"p_int_Mg": 2}],
+        ["cmc+cmc+2<power+toughness", r"(((card.cmc + card.cmc) + %(p_int_Mg)s) < (card.creature_power + card.creature_toughness))", {"p_int_Mg": 2}],
         # Test field-specific : operator behavior
         ["name:lightning", r"(card.card_name ILIKE %(p_str_JWxpZ2h0bmluZyU)s)", {"p_str_JWxpZ2h0bmluZyU": r"%lightning%"}],
         ["name:'lightning bolt'", r"(card.card_name ILIKE %(p_str_JWxpZ2h0bmluZyVib2x0JQ)s)", {"p_str_JWxpZ2h0bmluZyVib2x0JQ": r"%lightning%bolt%"}],
         ["cmc:3", "(card.cmc = %(p_int_Mw)s)", {"p_int_Mw": 3}],  # Numeric field uses exact equality
         ["power:5", "(card.creature_power = %(p_int_NQ)s)", {"p_int_NQ": 5}],  # Numeric field uses exact equality
+        # color
+        ["color:g", "(card.card_colors @> %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}], # >=
+        ["color=g", "(card.card_colors = %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}], # =
+        ["color<=g", "(card.card_colors <@ %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}], # <=
+        ["color>=g", "(card.card_colors @> %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}], # >=
+        ["color>g", "(card.card_colors @> %(p_dict_eydHJzogVHJ1ZX0)s AND card.card_colors <> %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}], # >
+        ["color<g", "(card.card_colors <@ %(p_dict_eydHJzogVHJ1ZX0)s AND card.card_colors <> %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}], # <
     ],
 )
 def test_full_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
