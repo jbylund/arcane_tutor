@@ -258,31 +258,45 @@ def test_full_sql_translation(input_query: str, expected_sql: str, expected_para
     assert observed_sql == expected_sql
     assert context == expected_parameters
 
-@pytest.mark.xfail(reason="JSONB queries are not supported yet")
+# @pytest.mark.xfail(reason="JSONB queries are not supported yet")
 @pytest.mark.parametrize(
     argnames=("input_query", "expected_sql", "expected_parameters"),
     argvalues=[
-        ("card_types:creature", "(card.card_types @> '[\"creature\"]'::jsonb)", {}),  # JSONB array uses containment
-        ("colors:red", "(card.colors @> '{\"R\": true}'::jsonb)", {}),  # JSONB object uses containment
-        ("colors:rg", "(card.colors @> '{\"G\": true, \"R\": true}'::jsonb)", {}),  # JSONB object uses containment
+        ("colors:red", r"(card.colors @> %(p_dict_eydSJzogVHJ1ZX0)s)", {"p_dict_eydSJzogVHJ1ZX0": {"R": True}}),  # JSONB object uses containment
+        ("colors:rg", r"(card.colors @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)", {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}}),  # JSONB object uses containment
         # test exact equality of colors
-        ("colors=rg", "(card.colors = '{\"G\": true, \"R\": true}'::jsonb)", {}),
+        ("colors=rg", r"(card.colors = %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)", {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}}),
         # test colors greater than
-        ("colors>=rg", "(card.colors @> '{\"G\": true, \"R\": true}'::jsonb)", {}),
+        ("colors>=rg", r"(card.colors @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)", {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}}),
         # test colors less than
-        ("colors<=rg", "(card.colors <@ '{\"G\": true, \"R\": true}'::jsonb)", {}),
+        ("colors<=rg", r"(card.colors <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)", {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}}),
         # test colors strictly greater than
-        ("colors>rg", "(card.colors @> '{\"G\": true, \"R\": true}'::jsonb AND card.colors <> '{\"G\": true, \"R\": true}'::jsonb)", {}),
+        ("colors>rg", r"(card.colors @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s AND card.colors <> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)", {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}}),
         # test colors strictly less than
-        ("colors<rg", "(card.colors <@ '{\"G\": true, \"R\": true}'::jsonb AND card.colors <> '{\"G\": true, \"R\": true}'::jsonb)", {}),
+        ("colors<rg", r"(card.colors <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s AND card.colors <> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)", {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}}),
     ],
 )
-def test_full_sql_translation_jsonb(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
+def test_full_sql_translation_jsonb_colors(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
     parsed = parsing.parse_scryfall_query(input_query)
-    context = {}
-    observed_sql = parsed.to_sql(context)
-    assert observed_sql == expected_sql
-    assert context == expected_parameters
+    observed_params = {}
+    observed_sql = parsed.to_sql(observed_params)
+    assert (observed_sql, observed_params) == (expected_sql, expected_parameters), f"\nExpected: {expected_sql}\t{expected_parameters}\nObserved: {observed_sql}\t{observed_params}"
+
+
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_sql", "expected_parameters"),
+    argvalues=[
+        # card type containment
+        ("card_types:creature", r"(card.card_types ?& %(p_list_WydDcmVhdHVyZSdd)s)", {"p_list_WydDcmVhdHVyZSdd": ["Creature"]}),  # JSONB array uses containment
+        ("t:elf t:archer", r"(card.card_types ?& %(p_list_WydDcmVhdHVyZSdd)s)", {"p_list_WydDcmVhdHVyZSdd": ["Creature"]}),  # JSONB array uses containment
+    ],
+)
+def test_full_sql_translation_jsonb_card_types(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
+    parsed = parsing.parse_scryfall_query(input_query)
+    observed_params = {}
+    observed_sql = parsed.to_sql(observed_params)
+    assert (observed_sql, observed_params) == (expected_sql, expected_parameters), f"\nExpected: {expected_sql}\t{expected_parameters}\nObserved: {observed_sql}\t{observed_params}"
+
 
 class TestNodes:
     def test_node_equality(self) -> None:

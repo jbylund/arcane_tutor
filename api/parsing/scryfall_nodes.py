@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-
 from .nodes import (
     AndNode,
     AttributeNode,
@@ -71,6 +69,26 @@ COLOR_CODE_TO_NAME = {
     "r": "red",
     "u": "blue",
     "w": "white",
+}
+
+CARD_SUPERTYPES = {
+    "Basic",
+    "Legendary",
+    "Snow",
+    "World",
+}
+
+CARD_TYPES = {
+    "Artifact",
+    "Conspiracy",
+    "Creature",
+    "Enchantment",
+    "Instant",
+    "Kindred", # new name for tribal
+    "Land",
+    "Planeswalker",
+    "Sorcery",
+    "Tribal",
 }
 
 COLOR_NAME_TO_CODE = {v: k for k, v in COLOR_CODE_TO_NAME.items()}
@@ -190,9 +208,18 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
 
     def _handle_jsonb_array(self: ScryfallBinaryOperatorNode, context: dict) -> str:
         # TODO: this should produce the query as an array, not jsonb
+        rhs_val = self.rhs.value.strip().title()
+        if self.lhs.attribute_name.lower() in ("card_types", "card_subtypes", "type"):
+            if rhs_val in CARD_SUPERTYPES | CARD_TYPES:
+                self.lhs.attribute_name = "card_types"
+            else:
+                self.lhs.attribute_name = "card_subtypes"
         col = self.lhs.to_sql(context)
-        inners = json.dumps([self.rhs.value.strip().title()])
-        query = f"'{inners}'::jsonb"
+
+        inners = [rhs_val]
+        pname = param_name(inners)
+        context[pname] = inners
+        query = f"%({pname})s"
         if self.operator == "=":
             return f"({col} ?& {query}) AND ({query} ?& {col})"
         if self.operator in (">=", ":"):

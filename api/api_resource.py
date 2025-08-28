@@ -393,6 +393,7 @@ class APIResource:
             card_types, _, card_subtypes = (x.strip().split() for x in card.get("type_line", "").title().partition("\u2014"))
             card["card_types"] = card_types
             card["card_subtypes"] = card_subtypes or None
+            # card["all_types"] = {t: True for t in card_types + card_subtypes}
             for creature_field in ["power", "toughness"]:
                 val = card.setdefault(creature_field, None)
                 try:
@@ -419,8 +420,6 @@ class APIResource:
         self._setup_schema()
         to_insert = self._get_cards_to_insert()
 
-        # card_name | cmc | mana_cost_text | mana_cost_jsonb | raw_card_blob | card_types | card_subtypes | card_colors | creature_power | creature_power_text | creature_toughness | creature_toughness_text
-        # type_line	: "Legendary Creature — Elf Druid"
         last_log = 0
         log_interval = 1
         import_times = collections.deque(maxlen=1000)

@@ -105,4 +105,4 @@ reset:
 	rm -rvf data
 
 test:
-	python -m pytest -vvv --exitfirst
+	python -m pytest -vvv
