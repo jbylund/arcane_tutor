@@ -4,13 +4,14 @@ from typing import TYPE_CHECKING
 
 import zstandard as zstd
 
+from .base_compressor import BaseCompressor
 from .util import StreamingBuffer, wrap_file
 
 if TYPE_CHECKING:
     from collections.abc import Generator
 
 
-class ZstdCompressor:
+class ZstdCompressor(BaseCompressor):
     """Compressor class for Zstandard encoding.
 
     Attributes:

@@ -4,13 +4,14 @@ from typing import TYPE_CHECKING
 
 import brotli
 
+from .base_compressor import BaseCompressor
 from .util import wrap_file
 
 if TYPE_CHECKING:
     from collections.abc import Generator
 
 
-class BrotliCompressor:
+class BrotliCompressor(BaseCompressor):
     """Compressor class for Brotli encoding.
 
     Attributes:

@@ -3,13 +3,14 @@ from __future__ import annotations
 import gzip
 from typing import TYPE_CHECKING
 
+from .base_compressor import BaseCompressor
 from .util import StreamingBuffer, wrap_file
 
 if TYPE_CHECKING:
     from collections.abc import Generator
 
 
-class GzipCompressor:
+class GzipCompressor(BaseCompressor):
     """Compressor class for gzip encoding.
 
     Attributes:
