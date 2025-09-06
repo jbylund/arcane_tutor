@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+from .db_info import (
+    CARD_SUPERTYPES,
+    CARD_TYPES,
+    COLOR_CODE_TO_NAME,
+    COLOR_NAME_TO_CODE,
+    DB_NAME_TO_FIELD_TYPE,
+    SEARCH_NAME_TO_DB_NAME,
+    FieldType,
+)
 from .nodes import (
     AndNode,
     AttributeNode,
@@ -37,78 +46,24 @@ color @> query AND color <> query # as object
 query ?& color AND not(color ?& query) # as array
 """
 
-# Field type mapping for Scryfall
-FIELD_TYPE_MAP = {
-    "card_subtypes": "jsonb_array",
-    "card_types": "jsonb_array",
-    "cmc": "numeric",
-    "color": "jsonb_object",
-    "colors": "jsonb_object",
-    "creature_power": "numeric",
-    "creature_toughness": "numeric",
-    "mana_cost_text": "text",
-    "mana_cost": "text",
-    "name": "text",
-    "oracle": "text",
-    "power": "numeric",
-    "toughness": "numeric",
-    "type": "text",
-}
-
-REMAPPER = {
-    "color": "card_colors",
-    "name": "card_name",
-    "power": "creature_power",
-    "toughness": "creature_toughness",
-}
-
-COLOR_CODE_TO_NAME = {
-    "b": "black",
-    "c": "colorless",
-    "g": "green",
-    "r": "red",
-    "u": "blue",
-    "w": "white",
-}
-
-CARD_SUPERTYPES = {
-    "Basic",
-    "Legendary",
-    "Snow",
-    "World",
-}
-
-CARD_TYPES = {
-    "Artifact",
-    "Conspiracy",
-    "Creature",
-    "Enchantment",
-    "Instant",
-    "Kindred", # new name for tribal
-    "Land",
-    "Planeswalker",
-    "Sorcery",
-    "Tribal",
-}
-
-COLOR_NAME_TO_CODE = {v: k for k, v in COLOR_CODE_TO_NAME.items()}
-
 
 def get_field_type(attr: str) -> str:
-    return FIELD_TYPE_MAP.get(attr, "text")
+    return DB_NAME_TO_FIELD_TYPE.get(attr, FieldType.TEXT)
 
-def get_sql_column(attr: str) -> str:
-    remapped_name = REMAPPER.get(attr, attr)
-    return f"card.{remapped_name}"
 
 class ScryfallAttributeNode(AttributeNode):
+    def __init__(self: ScryfallAttributeNode, attribute_name: str) -> None:
+        db_column_name = SEARCH_NAME_TO_DB_NAME.get(attribute_name, attribute_name)
+        super().__init__(db_column_name)
+
     def to_sql(self: ScryfallAttributeNode, context: dict) -> str:
-        remapped = REMAPPER.get(self.attribute_name, self.attribute_name)
+        remapped = SEARCH_NAME_TO_DB_NAME.get(self.attribute_name, self.attribute_name)
         return f"card.{remapped}"
+
 
 def get_colors_comparison_object(val: str) -> dict[str, bool]:
     # If all chars are color codes
-    color_code_set = set(COLOR_CODE_TO_NAME.keys())
+    color_code_set = set(COLOR_CODE_TO_NAME)
     if val and set(val) <= color_code_set:
         return {c.upper(): True for c in val}
     # If it's a color name (e.g. 'red', 'blue', etc.)
@@ -119,6 +74,7 @@ def get_colors_comparison_object(val: str) -> dict[str, bool]:
         msg = f"Invalid color string: {val}"
         raise ValueError(msg)
 
+
 class ScryfallBinaryOperatorNode(BinaryOperatorNode):
     def to_sql(self: ScryfallBinaryOperatorNode, context: dict) -> str:
         if isinstance(self.lhs, ScryfallAttributeNode):
@@ -127,23 +83,26 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             field_type = get_field_type(attr)
 
             # handle numeric
-            if field_type == "numeric":
+            if field_type == FieldType.NUMERIC:
                 if self.operator == ":":
                     self.operator = "="
                 return super().to_sql(context)
 
-            if field_type == "jsonb_object":
+            if field_type == FieldType.JSONB_OBJECT:
                 return self._handle_jsonb_object(context)
 
-            if field_type == "jsonb_array":
+            if field_type == FieldType.JSONB_ARRAY:
                 return self._handle_jsonb_array(context)
 
             if self.operator == ":":
-                if field_type == "text":
+                if field_type == FieldType.TEXT:
                     if isinstance(self.rhs, StringValueNode):
                         txt_val = self.rhs.value.strip()
                     elif isinstance(self.rhs, str):
                         txt_val = self.rhs.strip()
+                    else:
+                        msg = f"Unknown type: {type(self.rhs)}, {locals()}"
+                        raise TypeError(msg)
                     words = ["", *txt_val.split(), ""]
                     pattern = "%".join(words)
                     _param_name = param_name(pattern)
@@ -184,7 +143,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         # Produce the query as a jsonb object
         lhs_sql = self.lhs.to_sql(context)
         attr = self.lhs.attribute_name
-        if attr in ("color", "colors"):
+        if attr == "card_colors":
             rhs = get_colors_comparison_object(self.rhs.value.strip().lower())
             pname = param_name(rhs)
             context[pname] = rhs
@@ -221,17 +180,18 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         context[pname] = inners
         query = f"%({pname})s"
         if self.operator == "=":
-            return f"({col} ?& {query}) AND ({query} ?& {col})"
+            return f"({col} <@ {query}) AND ({query} <@ {col})"
         if self.operator in (">=", ":"):
-            return f"({col} ?& {query})"
+            return f"({query} <@ {col})"
         if self.operator == "<=":
-            return f"({query} ?& {col})"
+            return f"({col} <@ {query})"
         if self.operator == ">":
-            return f"({col} ?& {query}) AND NOT({query} ?& {col})"
-        if self.operator == "<":
-            return f"({query} ?& {col}) AND NOT({col} ?& {query})"
+            return f"({query} <@ {col}) AND NOT({col} <@ {query})"
+        # if self.operator == "<":
+        #     return f"({query} <@ {col}) AND NOT({col} @> {query})"
         msg = f"Unknown operator: {self.operator}"
         raise ValueError(msg)
+
 
 def to_scryfall_ast(node: QueryNode) -> QueryNode:
     if isinstance(node, BinaryOperatorNode):

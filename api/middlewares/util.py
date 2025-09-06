@@ -9,6 +9,7 @@ if TYPE_CHECKING:
 
 class StreamingBuffer(BytesIO):
     """A BytesIO buffer that clears itself after each read."""
+
     def read(self: StreamingBuffer) -> bytes:
         """Read and clear the buffer, returning its contents as bytes.
 

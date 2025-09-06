@@ -15,6 +15,7 @@ from pyparsing import (
     oneOf,
 )
 
+from .db_info import KNOWN_CARD_ATTRIBUTES
 from .nodes import (
     AndNode,
     AttributeNode,
@@ -28,24 +29,6 @@ from .nodes import (
 )
 from .scryfall_nodes import to_scryfall_ast
 
-# Known card attributes that should be wrapped in AttributeNode
-KNOWN_CARD_ATTRIBUTES: set[str] = {
-    "card_colors",
-    "card_subtypes",
-    "card_types",
-    "cmc",
-    "color",
-    "colors",
-    "creature_power",
-    "creature_toughness",
-    "mana_cost_text",
-    "mana_cost",
-    "name",
-    "oracle",
-    "power",
-    "toughness",
-    "type",
-}
 
 def flatten_nested_operations(node: QueryNode) -> QueryNode:
     """Flatten nested operations of the same type to create canonical n-ary
@@ -78,6 +61,7 @@ def flatten_nested_operations(node: QueryNode) -> QueryNode:
         return Query(flatten_nested_operations(node.root))
     return node
 
+
 def create_value_node(value: object) -> QueryNode:
     """Create the appropriate QueryNode type for a value.
 
@@ -95,6 +79,7 @@ def create_value_node(value: object) -> QueryNode:
         return StringValueNode(value[1])
     return value  # Fallback for other types
 
+
 def should_be_attribute(value: object) -> bool:
     """Check if a string value should be wrapped in AttributeNode.
 
@@ -103,11 +88,13 @@ def should_be_attribute(value: object) -> bool:
     # Helper function to determine if a string should be an AttributeNode
     return isinstance(value, str) and value in KNOWN_CARD_ATTRIBUTES
 
+
 def make_binary_operator_node(tokens: list[object]) -> BinaryOperatorNode:
     """Create a BinaryOperatorNode, properly wrapping attributes and values."""
     # Used as a parse action for binary operator expressions
     left, operator, right = tokens
     return BinaryOperatorNode(create_value_node(left), operator, create_value_node(right))
+
 
 def make_chained_arithmetic(tokens: list[object]) -> QueryNode:
     """Create a chained arithmetic expression with left associativity.
@@ -129,9 +116,11 @@ def make_chained_arithmetic(tokens: list[object]) -> QueryNode:
 
     return result
 
+
 def parse_scryfall_query(query: str) -> Query:
     generic_query = parse_search_query(query)
     return to_scryfall_ast(generic_query)
+
 
 def parse_search_query(query: str) -> Query:
     """Parse a Scryfall search query string into an AST Query object.
@@ -164,6 +153,7 @@ def parse_search_query(query: str) -> Query:
     def make_quoted_string(tokens: list[str]) -> tuple[str, str]:
         """Mark quoted strings so they're always treated as string values."""
         return ("quoted", tokens[0])
+
     quoted_string = (QuotedString('"', escChar="\\") | QuotedString("'", escChar="\\")).setParseAction(make_quoted_string)
 
     # Word that doesn't match keywords
@@ -174,6 +164,7 @@ def parse_search_query(query: str) -> Query:
             msg = f"'{word_str}' is a reserved keyword"
             raise ValueError(msg)
         return word_str
+
     word = Word(alphas + "_").setParseAction(make_word)
 
     # For attribute values, we want the raw string
@@ -214,12 +205,14 @@ def parse_search_query(query: str) -> Query:
     def make_single_word(tokens: list[str]) -> BinaryOperatorNode:
         """For single words, always search in the name field."""
         return BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode(tokens[0]))
+
     single_word = word.setParseAction(make_single_word)
 
     # Grouped expression
     def make_group(tokens: list[object]) -> object:
         """Return the grouped expression inside parentheses."""
         return tokens[0]
+
     group = Group(lparen + expr + rparen).setParseAction(make_group)
 
     # Factor: can be negated (but not arithmetic expressions)
@@ -236,6 +229,7 @@ def parse_search_query(query: str) -> Query:
                 raise ValueError(msg)
             return NotNode(tokens[1])
         return tokens[0]
+
     # For negation, we exclude arithmetic expressions from being negated
     negatable_primary = attr_attr_condition | condition | group | single_word
     negatable_factor = Optional(operator_not) + negatable_primary
@@ -285,6 +279,7 @@ def parse_search_query(query: str) -> Query:
             return OrNode(current_operands)
         # No operators, just return the single operand
         return current_operands[0]
+
     # The main expression: factors separated by AND/OR operators
     expr <<= factor + ZeroOrMore((operator_and | operator_or) + factor)
     expr.setParseAction(handle_operators)
@@ -299,6 +294,7 @@ def parse_search_query(query: str) -> Query:
     except Exception as e:
         msg = f"Failed to parse query '{query}': {e}"
         raise ValueError(msg)
+
 
 def preprocess_implicit_and(query: str) -> str:
     """Pre-process query to convert implicit AND operations to explicit ones.
@@ -397,11 +393,13 @@ def preprocess_implicit_and(query: str) -> str:
         i += 1
     return " ".join(result)
 
+
 def is_operator(token: str) -> bool:
     """Check if a token is an operator (comparison, arithmetic, or
     negation).
     """
     return token in [":", ">", "<", ">=", "<=", "=", "!=", "-", "+", "*", "/"]
+
 
 def generate_sql_query(parsed_query: Query) -> tuple[str, dict]:
     """Generate a SQL WHERE clause string from a parsed Query AST."""

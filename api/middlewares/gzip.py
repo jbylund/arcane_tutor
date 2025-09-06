@@ -17,6 +17,7 @@ class GzipCompressor:
         priority (int): Priority for compressor selection (lower is preferred).
         compression_level (int): Compression level for gzip (default: 6).
     """
+
     encoding: str = "gzip"
     priority: int = 30  # lower priority is preferred
     compression_level: int = 6
@@ -46,7 +47,10 @@ class GzipCompressor:
             stream = wrap_file(stream)
         buf = StreamingBuffer()
         with gzip.GzipFile(
-            mode="wb", compresslevel=self.compression_level, fileobj=buf, mtime=0,
+            mode="wb",
+            compresslevel=self.compression_level,
+            fileobj=buf,
+            mtime=0,
         ) as zfile:
             yield buf.read()
             for item in stream:
