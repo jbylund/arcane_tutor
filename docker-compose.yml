@@ -32,7 +32,7 @@ services:
         - dumb-init
         - --
         - python
-        - ./api/entrypoint.py
+        - /scryfallos/api/entrypoint.py
         container_name: apiservice
         environment:
         - PGDATABASE=${XPGDATABASE}
