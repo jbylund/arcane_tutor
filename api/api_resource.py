@@ -154,6 +154,10 @@ class APIResource:
             resp (falcon.Response): The outgoing response.
 
         """
+        if resp.complete:
+            logger.info("Request already handled: %s", req.uri)
+            return
+        logger.info("Handling request for %s / response id: %d", req.uri, id(resp))
         parsed = urlparse(req.uri)
         path = parsed.path.strip("/")
 
