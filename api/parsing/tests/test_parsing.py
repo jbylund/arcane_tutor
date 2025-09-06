@@ -337,12 +337,12 @@ def test_full_sql_translation_jsonb_colors(input_query: str, expected_sql: str, 
         # card type containment
         (
             "card_types:creature",
-            r"(card.card_types ?& %(p_list_WydDcmVhdHVyZSdd)s)",
+            r"(%(p_list_WydDcmVhdHVyZSdd)s <@ card.card_types)",
             {"p_list_WydDcmVhdHVyZSdd": ["Creature"]},
         ),  # JSONB array uses containment
         (
             "t:elf t:archer",
-            r"((card.card_subtypes ?& %(p_list_WydFbGYnXQ)s) AND (card.card_subtypes ?& %(p_list_WydBcmNoZXInXQ)s))",
+            r"((%(p_list_WydFbGYnXQ)s <@ card.card_subtypes) AND (%(p_list_WydBcmNoZXInXQ)s <@ card.card_subtypes))",
             {"p_list_WydFbGYnXQ": ["Elf"], "p_list_WydBcmNoZXInXQ": ["Archer"]},
         ),  # JSONB array uses containment
     ],

@@ -187,7 +187,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             return f"({col} <@ {query})"
         if self.operator == ">":
             return f"({query} <@ {col}) AND NOT({col} <@ {query})"
-        # if self.operator == "<":
+        # if self.operator == "<": - this type of search doesn't make sense
         #     return f"({query} <@ {col}) AND NOT({col} @> {query})"
         msg = f"Unknown operator: {self.operator}"
         raise ValueError(msg)
