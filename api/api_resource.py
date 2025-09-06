@@ -23,7 +23,7 @@ import psycopg.rows
 import psycopg.types.json
 import psycopg_pool
 import requests
-from cachetools import LRUCache, cached
+from cachetools import LRUCache, TTLCache, cached
 from parsing import generate_sql_query, parse_scryfall_query
 
 
@@ -223,7 +223,7 @@ class APIResource:
         """
         params = params or {}
 
-        use_cache = False
+        use_cache = True
         if use_cache:
 
             def maybe_json_dump(v: Any) -> Any:
@@ -336,48 +336,47 @@ class APIResource:
         # read migrations from the db dir...
         # if any already applied migrations differ from what we want
         # to apply then drop everything
-        with self._conn_pool.connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    """CREATE TABLE IF NOT EXISTS migrations (
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            cursor.execute(
+                """CREATE TABLE IF NOT EXISTS migrations (
                     file_name text not null,
                     file_sha256 text not null,
                     date_applied timestamp default now(),
                     file_contents text not null
                 )""",
-                )
-                cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_migrations_filename ON migrations (file_name)")
+            )
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_migrations_filename ON migrations (file_name)")
+            cursor.execute(
+                "CREATE        INDEX IF NOT EXISTS idx_migrations_file_sha256 ON migrations USING HASH (file_sha256)",
+            )
+
+            cursor.execute("SELECT file_name, file_sha256 FROM migrations ORDER BY date_applied")
+            applied_migrations = [dict(r) for r in cursor]
+            filesystem_migrations = get_migrations()
+
+            already_applied = set()
+            for applied_migration, fs_migration in zip(applied_migrations, filesystem_migrations, strict=False):
+                if applied_migration.items() <= fs_migration.items():
+                    already_applied.add(applied_migration["file_sha256"])
+                else:
+                    already_applied.clear()
+                    cursor.execute("DELETE FROM migrations")
+                    cursor.execute("DROP SCHEMA IF EXISTS magic CASCADE")
+
+            for imigration in filesystem_migrations:
+                file_sha256 = imigration["file_sha256"]
+                if file_sha256 in already_applied:
+                    logger.info("%s was already applied...", imigration["file_name"])
+                    continue
+                logger.info("Applying %s ...", imigration["file_name"])
+                cursor.execute(imigration["file_contents"])
                 cursor.execute(
-                    "CREATE        INDEX IF NOT EXISTS idx_migrations_file_sha256 ON migrations USING HASH (file_sha256)",
-                )
-
-                cursor.execute("SELECT file_name, file_sha256 FROM migrations ORDER BY date_applied")
-                applied_migrations = [dict(r) for r in cursor]
-                filesystem_migrations = get_migrations()
-
-                already_applied = set()
-                for applied_migration, fs_migration in zip(applied_migrations, filesystem_migrations, strict=False):
-                    if applied_migration.items() <= fs_migration.items():
-                        already_applied.add(applied_migration["file_sha256"])
-                    else:
-                        already_applied.clear()
-                        cursor.execute("DELETE FROM migrations")
-                        cursor.execute("DROP SCHEMA IF EXISTS magic CASCADE")
-
-                for imigration in filesystem_migrations:
-                    file_sha256 = imigration["file_sha256"]
-                    if file_sha256 in already_applied:
-                        logger.info("%s was already applied...", imigration["file_name"])
-                        continue
-                    logger.info("Applying %s ...", imigration["file_name"])
-                    cursor.execute(imigration["file_contents"])
-                    cursor.execute(
-                        """
+                    """
                         INSERT INTO migrations
                             (  file_name  ,   file_sha256  ,   file_contents  ) VALUES
                             (%(file_name)s, %(file_sha256)s, %(file_contents)s)""",
-                        imigration,
-                    )
+                    imigration,
+                )
 
     def _get_cards_to_insert(self: APIResource) -> list[dict[str, Any]]:
         """Get the cards to insert into the database."""
@@ -554,10 +553,10 @@ class APIResource:
         """
         return self._search(query=query or q, limit=limit)
 
-    # @cached(
-    #     cache=TTLCache(maxsize=1000, ttl=60),
-    #     key=lambda self, *args, **kwargs: (args, tuple(sorted(kwargs.items()))),
-    # )
+    @cached(
+        cache=TTLCache(maxsize=1000, ttl=60),
+        key=lambda self, *args, **kwargs: (args, tuple(sorted(kwargs.items()))),
+    )
     def _search(self: APIResource, *, query: str | None = None, limit: int = 100) -> dict[str, Any]:
         where_clause, params = get_where_clause(query)
         full_query = f"""
