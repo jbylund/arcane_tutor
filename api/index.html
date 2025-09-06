@@ -429,8 +429,48 @@
           }, this.debounceDelay);
         }
 
+        balanceQuery(query) {
+          // Balance quotes and parentheses for typeahead searches using a stack
+          const charToMirror = {
+            '(': ')',
+            "'": "'", // single quote is own mirror
+            '"': '"', // double quote is own mirror
+            ')': '(',
+          };
+
+          const stack = [];
+
+          // Process each character in the query
+          for (let i = 0; i < query.length; i++) {
+            const char = query[i];
+            const mirroredChar = charToMirror[char];
+
+            if (!mirroredChar) {
+              continue;
+            }
+
+            if (stack.length > 0 && stack[stack.length - 1] === mirroredChar) {
+              stack.pop();
+            } else {
+              stack.push(char);
+            }
+          }
+
+          // Build the closing characters from the stack in reverse order
+          let closing = '';
+          while (stack.length > 0) {
+            const char = stack.pop();
+            closing += charToMirror[char];
+          }
+
+          return query + closing;
+        }
+
         async performSearch(query) {
           if (!query.trim()) return;
+
+          // Balance the query for better typeahead results
+          const balancedQuery = this.balanceQuery(query);
 
           // Show loading state
           this.showLoading();
@@ -439,7 +479,7 @@
           // Create new AbortController for this request
           this.currentController = new AbortController();
           // Generate a unique URL for this request to match in PerformanceResourceTiming
-          const url = `/search?q=${encodeURIComponent(query)}`;
+          const url = `/search?q=${encodeURIComponent(balancedQuery)}`;
           try {
             // Clear any previous resource timing entries for this URL
             performance.clearResourceTimings && performance.clearResourceTimings();
