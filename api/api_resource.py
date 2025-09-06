@@ -268,16 +268,16 @@ class APIResource:
             before = time.time()
             cursor.execute(query, params)
             after_query = time.time()
-            timings["query_duration"] = query_duratrion = after_query - before
+            query_duratrion = after_query - before
             timings["query_duration_ms"] = query_duratrion * 1000
             timings["query_frequency"] = 1 / query_duratrion
             raw_rows = cursor.fetchall()
             result["result"] = [dict(r) for r in raw_rows]
             after_fetch = time.time()
-            timings["fetch_duration"] = fetch_duration = after_fetch - after_query
+            fetch_duration = after_fetch - after_query
             timings["fetch_duration_ms"] = fetch_duration * 1000
             timings["fetch_frequency"] = 1 / fetch_duration
-            timings["total_duration"] = total_duration = after_fetch - before
+            total_duration = after_fetch - before
             timings["total_duration_ms"] = total_duration * 1000
             timings["total_frequency"] = 1 / total_duration
 
@@ -617,8 +617,8 @@ class APIResource:
                 full_query = rewrap(full_query)
                 logger.info("Full query: %s", full_query)
                 logger.info("Params: %s", params)
-                result_bag = self._run_query(query=full_query, params=params, explain=False)
-                total_cards = result_bag["result"][0]["total_cards"]
+                count_result_bag = self._run_query(query=full_query, params=params, explain=False)
+                total_cards = count_result_bag["result"][0]["total_cards"]
         return {
             "cards": cards,
             "compiled": full_query,
