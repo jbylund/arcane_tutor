@@ -398,9 +398,9 @@
 
           // Initialize intersection observer for lazy image loading
           this.initImageObserver();
-          
+
           // Add event delegation for card clicks
-          this.resultsContainer.addEventListener('click', (e) => {
+          this.resultsContainer.addEventListener('click', e => {
             const cardItem = e.target.closest('.card-item');
             if (cardItem) {
               this.handleCardClick(cardItem);
@@ -519,7 +519,8 @@
           altText += '\n\n';
           if (card.oracle_text) {
             const maxLength = 300;
-            const truncatedText = card.oracle_text.length > maxLength ? card.oracle_text.substring(0, maxLength) + '...' : card.oracle_text;
+            const truncatedText =
+              card.oracle_text.length > maxLength ? card.oracle_text.substring(0, maxLength) + '...' : card.oracle_text;
             altText += this.escapeHtml(truncatedText);
           }
 
@@ -542,7 +543,7 @@
           try {
             const cardId = cardItem.getAttribute('data-card-id');
             const cardData = this.cardsData.get(cardId);
-            
+
             if (cardData) {
               console.log('Selected card:', cardData.name);
               this.showCardModal(cardData);
@@ -557,11 +558,13 @@
         showCardModal(card) {
           const modalOverlay = document.getElementById('modalOverlay');
           const modalContent = document.getElementById('modalContent');
-          
+
           // Create modal content
           const imageLarge = card.image_large || card.image_normal || card.image_small;
-          const imageHtml = imageLarge ? `<img class="modal-image" src="${this.escapeHtml(imageLarge)}" alt="${this.escapeHtml(card.name || 'Card Image')}" />` : '';
-          
+          const imageHtml = imageLarge
+            ? `<img class="modal-image" src="${this.escapeHtml(imageLarge)}" alt="${this.escapeHtml(card.name || 'Card Image')}" />`
+            : '';
+
           modalContent.innerHTML = `
             <button class="modal-close" onclick="cardSearch.closeModal()">&times;</button>
             ${imageHtml}
@@ -573,18 +576,18 @@
               ${card.set_name ? `<div class="modal-card-set">${this.escapeHtml(card.set_name)}</div>` : ''}
             </div>
           `;
-          
+
           // Show modal
           modalOverlay.style.display = 'flex';
           document.body.style.overflow = 'hidden'; // Prevent background scrolling
-          
+
           // Add click outside to close
-          modalOverlay.onclick = (e) => {
+          modalOverlay.onclick = e => {
             if (e.target === modalOverlay) {
               this.closeModal();
             }
           };
-          
+
           // Add escape key to close
           document.addEventListener('keydown', this.handleEscapeKey);
         }
@@ -596,11 +599,11 @@
           document.removeEventListener('keydown', this.handleEscapeKey);
         }
 
-        handleEscapeKey = (e) => {
+        handleEscapeKey = e => {
           if (e.key === 'Escape') {
             this.closeModal();
           }
-        }
+        };
 
         initImageObserver() {
           // Create intersection observer to watch for images entering viewport

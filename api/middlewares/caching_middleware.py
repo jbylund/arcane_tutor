@@ -39,7 +39,7 @@ class CachingMiddleware:
         cached_value: falcon.Response | None = self.cache.get(cache_key)
         if cached_value is not None:
             if TYPE_CHECKING:
-                cached_value = typecast(falcon.Response, cached_value)
+                cached_value = typecast("falcon.Response", cached_value)
             resp.complete = True
             resp.data = cached_value.data
             resp._headers.update(cached_value._headers)
