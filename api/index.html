@@ -483,6 +483,8 @@
           try {
             // Clear any previous resource timing entries for this URL
             performance.clearResourceTimings && performance.clearResourceTimings();
+            // Take a timestamp just before sending the request
+            const startTimestampMs = performance.now();
             const response = await fetch(url, {
               method: 'GET',
               headers: {
@@ -495,6 +497,9 @@
             }
             const data = await response.json();
 
+            // Compute round-trip duration from our own timestamps
+            const computedRoundTripMs = Math.round(performance.now() - startTimestampMs);
+
             // Use PerformanceResourceTiming to get the network time
             let elapsed = null;
             const resources = performance.getEntriesByType('resource');
@@ -505,6 +510,12 @@
               const entry = matching[matching.length - 1];
               // responseEnd - startTime is the total time as shown in dev tools
               elapsed = Math.round(entry.responseEnd - entry.startTime);
+            }
+            // Use the minimum of PerformanceResourceTiming and our computed duration
+            if (typeof elapsed === 'number') {
+              elapsed = Math.min(elapsed, computedRoundTripMs);
+            } else {
+              elapsed = computedRoundTripMs;
             }
             this.displayResults(data, query, elapsed);
           } catch (error) {
