@@ -66,6 +66,11 @@ def format_literal_query(query: str, parameters: dict) -> str:
             "cmc + 1 < power",
             BinaryOperatorNode(BinaryOperatorNode(AttributeNode("cmc"), "+", NumericValueNode(1)), "<", AttributeNode("power")),
         ),
+        # Test cases for the numeric < attribute bug
+        ("0<power", BinaryOperatorNode(NumericValueNode(0), "<", AttributeNode("power"))),
+        ("1<power", BinaryOperatorNode(NumericValueNode(1), "<", AttributeNode("power"))),
+        ("3>cmc", BinaryOperatorNode(NumericValueNode(3), ">", AttributeNode("cmc"))),
+        ("0<=toughness", BinaryOperatorNode(NumericValueNode(0), "<=", AttributeNode("toughness"))),
     ],
 )
 def test_parse_to_nodes(test_input: str, expected_ast: QueryNode) -> None:
