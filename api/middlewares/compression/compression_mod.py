@@ -4,9 +4,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from .compressors.brotli import BrotliCompressor
-from .compressors.gzip import GzipCompressor
-from .compressors.zstd import ZstdCompressor
+from .compressors import BrotliCompressor, GzipCompressor, ZstdCompressor
 
 if TYPE_CHECKING:
     import falcon
@@ -103,6 +101,9 @@ class CompressionMiddleware:
             resource: Resource object to which the request was routed. May be None if no route was found for the request.
             req_succeeded (bool): True if no exceptions were raised while the framework processed and routed the request; otherwise False.
         """
+        if resp.complete:
+            logger.info("Will serve response from cache...")
+            return
         accept_encoding = req.get_header("Accept-Encoding")
         if accept_encoding is None:
             return

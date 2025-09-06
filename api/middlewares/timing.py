@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import cProfile
 import logging
+import os
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -28,8 +29,9 @@ class TimingMiddleware:
         start = req.context.get("_start_time")
         duration = time.monotonic() - start if start is not None else -1.0
         logger.info(
-            "[timing] %.2f ms | %s | %s | %s",
+            "[timing] %.2f ms | %d | %s | %s | %s",
             duration * 1000,
+            os.getpid(),
             resp.status,
             req.url,
             req.get_header("User-Agent", "-"),
