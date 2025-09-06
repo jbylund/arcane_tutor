@@ -1,39 +1,44 @@
 import pytest
+from api.parsing import parse_scryfall_query
 
 
 def balance_query(query):
-    """Balance quotes and parentheses for typeahead searches."""
-    balanced = query
+    """Balance quotes and parentheses for typeahead searches using a stack."""
+    stack = []
     
-    # Count unmatched quotes (both single and double)
-    double_quote_count = 0
-    single_quote_count = 0
-    paren_count = 0
+    # Process each character in the query
+    for char in query:
+        # Only process quote and parenthesis characters
+        if char in '()\'"':
+            if char == ')':
+                # Closing parenthesis - check if it matches an opening parenthesis
+                if stack and stack[-1] == '(':
+                    stack.pop()
+                else:
+                    stack.append(char)
+            elif char in '"\'':
+                # Quote character - check if it closes an existing quote of the same type
+                if stack and stack[-1] == char:
+                    stack.pop()
+                else:
+                    stack.append(char)
+            elif char == '(':
+                # Opening parenthesis - always push to stack
+                stack.append(char)
     
-    for char in balanced:
-        if char == '"':
-            double_quote_count += 1
+    # Build the closing characters from the stack in reverse order
+    closing = ''
+    while stack:
+        char = stack.pop()
+        if char == '(':
+            closing += ')'
+        elif char == '"':
+            closing += '"'
         elif char == "'":
-            single_quote_count += 1
-        elif char == '(':
-            paren_count += 1
-        elif char == ')':
-            paren_count -= 1
+            closing += "'"
+        # Note: We don't need to handle ')' because it would never be left unmatched in the stack
     
-    # Close unmatched double quotes
-    if double_quote_count % 2 == 1:
-        balanced += '"'
-    
-    # Close unmatched single quotes
-    if single_quote_count % 2 == 1:
-        balanced += "'"
-    
-    # Close unmatched parentheses
-    while paren_count > 0:
-        balanced += ')'
-        paren_count -= 1
-    
-    return balanced
+    return query + closing
 
 
 @pytest.mark.parametrize(
@@ -69,27 +74,22 @@ def test_balance_query(input_query: str, expected_balanced: str) -> None:
     assert result == expected_balanced, f"Input: '{input_query}' -> Expected: '{expected_balanced}', Got: '{result}'"
 
 
-def test_balance_query_integration_with_parsing() -> None:
+@pytest.mark.parametrize(
+    argnames=("original_query",),
+    argvalues=[
+        ('name:"hydr',),
+        ('(name:"lightning',),
+    ],
+)
+def test_balance_query_integration_with_parsing(original_query: str) -> None:
     """Test that balanced queries can be successfully parsed."""
-    from api.parsing import parse_scryfall_query
+    balanced_query = balance_query(original_query)
     
-    # Test cases that would fail without balancing but succeed with balancing
-    unbalanced_queries = [
-        'name:"hydr',
-        '(name:"lightning',
-    ]
+    # Original should fail (at least for quote cases)
+    if '"' in original_query and original_query.count('"') % 2 == 1:
+        with pytest.raises(ValueError, match="Unmatched"):
+            parse_scryfall_query(original_query)
     
-    for original_query in unbalanced_queries:
-        balanced_query = balance_query(original_query)
-        
-        # Original should fail (at least for quote cases)
-        if '"' in original_query and original_query.count('"') % 2 == 1:
-            with pytest.raises(ValueError, match="Unmatched"):
-                parse_scryfall_query(original_query)
-        
-        # Balanced should succeed
-        try:
-            result = parse_scryfall_query(balanced_query)
-            assert result is not None, f"Failed to parse balanced query: {balanced_query}"
-        except Exception as e:
-            pytest.fail(f"Balanced query '{balanced_query}' should parse successfully, but got: {e}")
+    # Balanced should succeed
+    result = parse_scryfall_query(balanced_query)
+    assert result is not None, f"Failed to parse balanced query: {balanced_query}"

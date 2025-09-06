@@ -430,44 +430,51 @@
         }
 
         balanceQuery(query) {
-          // Balance quotes and parentheses for typeahead searches
-          let balanced = query;
+          // Balance quotes and parentheses for typeahead searches using a stack
+          const stack = [];
           
-          // Count unmatched quotes (both single and double)
-          let doubleQuoteCount = 0;
-          let singleQuoteCount = 0;
-          let parenCount = 0;
-          
-          for (let i = 0; i < balanced.length; i++) {
-            const char = balanced[i];
-            if (char === '"') {
-              doubleQuoteCount++;
-            } else if (char === "'") {
-              singleQuoteCount++;
-            } else if (char === '(') {
-              parenCount++;
-            } else if (char === ')') {
-              parenCount--;
+          // Process each character in the query
+          for (let i = 0; i < query.length; i++) {
+            const char = query[i];
+            
+            // Only process quote and parenthesis characters
+            if (char === '(' || char === ')' || char === '"' || char === "'") {
+              if (char === ')') {
+                // Closing parenthesis - check if it matches an opening parenthesis
+                if (stack.length > 0 && stack[stack.length - 1] === '(') {
+                  stack.pop();
+                } else {
+                  stack.push(char);
+                }
+              } else if (char === '"' || char === "'") {
+                // Quote character - check if it closes an existing quote of the same type
+                if (stack.length > 0 && stack[stack.length - 1] === char) {
+                  stack.pop();
+                } else {
+                  stack.push(char);
+                }
+              } else if (char === '(') {
+                // Opening parenthesis - always push to stack
+                stack.push(char);
+              }
             }
           }
           
-          // Close unmatched double quotes
-          if (doubleQuoteCount % 2 === 1) {
-            balanced += '"';
+          // Build the closing characters from the stack in reverse order
+          let closing = '';
+          while (stack.length > 0) {
+            const char = stack.pop();
+            if (char === '(') {
+              closing += ')';
+            } else if (char === '"') {
+              closing += '"';
+            } else if (char === "'") {
+              closing += "'";
+            }
+            // Note: We don't need to handle ')' because it would never be left unmatched in the stack
           }
           
-          // Close unmatched single quotes
-          if (singleQuoteCount % 2 === 1) {
-            balanced += "'";
-          }
-          
-          // Close unmatched parentheses
-          while (parenCount > 0) {
-            balanced += ')';
-            parenCount--;
-          }
-          
-          return balanced;
+          return query + closing;
         }
 
         async performSearch(query) {
