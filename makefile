@@ -95,7 +95,7 @@ dbconn: # @doc connect to the local database
 	PGPASSWORD=$(XPGPASSWORD) \
 	PGPORT=15432 \
 	PGUSER=$(XPGUSER) \
-	psql
+	/bin/psql
 
 datadir:
 	mkdir -p data/api data/postgres /tmp/pgdata
@@ -105,4 +105,4 @@ reset:
 	rm -rvf data
 
 test:
-	python -m pytest -vvv
+	python -m pytest -vvv --exitfirst

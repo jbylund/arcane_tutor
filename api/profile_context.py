@@ -13,6 +13,7 @@ class ProfileContext:
     Args:
         filename (str): The file to which the profile stats will be written.
     """
+
     def __init__(self: ProfileContext, *, filename: str) -> None:
         """Initialize a ProfileContext object."""
         self.filename = filename

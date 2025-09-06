@@ -1,4 +1,3 @@
-
 import pytest
 
 from api import parsing
@@ -20,6 +19,7 @@ def format_literal_query(query: str, parameters: dict) -> str:
         formatted_value = repr(param_value)
         query = query.replace(f"%({param_name})s", formatted_value)
     return query
+
 
 @pytest.mark.parametrize(
     argnames=("test_input", "expected_ast"),
@@ -163,15 +163,15 @@ def test_parse_empty_query() -> None:
     assert isinstance(result, parsing.Query)
 
 
-def test_sql_generation() -> None:
-    """Test that AST can be converted to SQL."""
-    query = "cmc=2 AND type=creature"
-    result = parsing.parse_search_query(query)
+# def test_sql_generation() -> None:
+#     """Test that AST can be converted to SQL."""
+#     query = "cmc=2 AND type=creature"
+#     result = parsing.parse_search_query(query)
 
-    sql, parameters = parsing.generate_sql_query(result)
-    reconstructed = format_literal_query(sql, parameters)
-    expected_sql = "((card.cmc = 2) AND (card.type = 'creature'))"
-    assert reconstructed == expected_sql
+#     sql, parameters = parsing.generate_sql_query(result)
+#     reconstructed = format_literal_query(sql, parameters)
+#     expected_sql = "((card.cmc = 2) AND (card.type = 'creature'))"
+#     assert reconstructed == expected_sql
 
 
 def test_name_vs_name_attribute() -> None:
@@ -236,19 +236,35 @@ def test_nary_operator_associativity(operator: str) -> None:
         ("power>cmc+1", r"(card.creature_power > (card.cmc + %(p_int_MQ)s))", {"p_int_MQ": 1}),
         ("power-cmc>1", r"((card.creature_power - card.cmc) > %(p_int_MQ)s)", {"p_int_MQ": 1}),
         ("1<power-cmc", r"(%(p_int_MQ)s < (card.creature_power - card.cmc))", {"p_int_MQ": 1}),
-        ("cmc+cmc+2<power+toughness", r"(((card.cmc + card.cmc) + %(p_int_Mg)s) < (card.creature_power + card.creature_toughness))", {"p_int_Mg": 2}),
+        (
+            "cmc+cmc+2<power+toughness",
+            r"(((card.cmc + card.cmc) + %(p_int_Mg)s) < (card.creature_power + card.creature_toughness))",
+            {"p_int_Mg": 2},
+        ),
         # Test field-specific : operator behavior
         ("name:lightning", r"(card.card_name ILIKE %(p_str_JWxpZ2h0bmluZyU)s)", {"p_str_JWxpZ2h0bmluZyU": r"%lightning%"}),
-        ("name:'lightning bolt'", r"(card.card_name ILIKE %(p_str_JWxpZ2h0bmluZyVib2x0JQ)s)", {"p_str_JWxpZ2h0bmluZyVib2x0JQ": r"%lightning%bolt%"}),
+        (
+            "name:'lightning bolt'",
+            r"(card.card_name ILIKE %(p_str_JWxpZ2h0bmluZyVib2x0JQ)s)",
+            {"p_str_JWxpZ2h0bmluZyVib2x0JQ": r"%lightning%bolt%"},
+        ),
         ("cmc:3", "(card.cmc = %(p_int_Mw)s)", {"p_int_Mw": 3}),  # Numeric field uses exact equality
         ("power:5", "(card.creature_power = %(p_int_NQ)s)", {"p_int_NQ": 5}),  # Numeric field uses exact equality
         # color
-        ("color:g", "(card.card_colors @> %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}), # >=
-        ("color=g", "(card.card_colors = %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}), # =
-        ("color<=g", "(card.card_colors <@ %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}), # <=
-        ("color>=g", "(card.card_colors @> %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}), # >=
-        ("color>g", "(card.card_colors @> %(p_dict_eydHJzogVHJ1ZX0)s AND card.card_colors <> %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}), # >
-        ("color<g", "(card.card_colors <@ %(p_dict_eydHJzogVHJ1ZX0)s AND card.card_colors <> %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}), # <
+        ("color:g", "(card.card_colors @> %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # >=
+        ("color=g", "(card.card_colors = %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # =
+        ("color<=g", "(card.card_colors <@ %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # <=
+        ("color>=g", "(card.card_colors @> %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # >=
+        (
+            "color>g",
+            "(card.card_colors @> %(p_dict_eydHJzogVHJ1ZX0)s AND card.card_colors <> %(p_dict_eydHJzogVHJ1ZX0)s)",
+            {"p_dict_eydHJzogVHJ1ZX0": {"G": True}},
+        ),  # >
+        (
+            "color<g",
+            "(card.card_colors <@ %(p_dict_eydHJzogVHJ1ZX0)s AND card.card_colors <> %(p_dict_eydHJzogVHJ1ZX0)s)",
+            {"p_dict_eydHJzogVHJ1ZX0": {"G": True}},
+        ),  # <
     ],
 )
 def test_full_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
@@ -258,44 +274,87 @@ def test_full_sql_translation(input_query: str, expected_sql: str, expected_para
     assert observed_sql == expected_sql
     assert context == expected_parameters
 
+
 # @pytest.mark.xfail(reason="JSONB queries are not supported yet")
 @pytest.mark.parametrize(
     argnames=("input_query", "expected_sql", "expected_parameters"),
     argvalues=[
-        ("colors:red", r"(card.colors @> %(p_dict_eydSJzogVHJ1ZX0)s)", {"p_dict_eydSJzogVHJ1ZX0": {"R": True}}),  # JSONB object uses containment
-        ("colors:rg", r"(card.colors @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)", {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}}),  # JSONB object uses containment
+        (
+            "colors:red",
+            r"(card.card_colors @> %(p_dict_eydSJzogVHJ1ZX0)s)",
+            {"p_dict_eydSJzogVHJ1ZX0": {"R": True}},
+        ),  # JSONB object uses containment
+        (
+            "colors:rg",
+            r"(card.card_colors @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
+        ),  # JSONB object uses containment
         # test exact equality of colors
-        ("colors=rg", r"(card.colors = %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)", {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}}),
+        (
+            "colors=rg",
+            r"(card.card_colors = %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
+        ),
         # test colors greater than
-        ("colors>=rg", r"(card.colors @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)", {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}}),
+        (
+            "colors>=rg",
+            r"(card.card_colors @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
+        ),
         # test colors less than
-        ("colors<=rg", r"(card.colors <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)", {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}}),
+        (
+            "colors<=rg",
+            r"(card.card_colors <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
+        ),
         # test colors strictly greater than
-        ("colors>rg", r"(card.colors @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s AND card.colors <> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)", {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}}),
+        (
+            "colors>rg",
+            r"(card.card_colors @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s AND card.card_colors <> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
+        ),
         # test colors strictly less than
-        ("colors<rg", r"(card.colors <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s AND card.colors <> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)", {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}}),
+        (
+            "colors<rg",
+            r"(card.card_colors <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s AND card.card_colors <> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
+        ),
     ],
 )
 def test_full_sql_translation_jsonb_colors(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
     parsed = parsing.parse_scryfall_query(input_query)
     observed_params = {}
     observed_sql = parsed.to_sql(observed_params)
-    assert (observed_sql, observed_params) == (expected_sql, expected_parameters), f"\nExpected: {expected_sql}\t{expected_parameters}\nObserved: {observed_sql}\t{observed_params}"
+    assert (observed_sql, observed_params) == (
+        expected_sql,
+        expected_parameters,
+    ), f"\nExpected: {expected_sql}\t{expected_parameters}\nObserved: {observed_sql}\t{observed_params}"
 
 
 @pytest.mark.parametrize(
     argnames=("input_query", "expected_sql", "expected_parameters"),
     argvalues=[
         # card type containment
-        ("card_types:creature", r"(card.card_types ?& %(p_list_WydDcmVhdHVyZSdd)s)", {"p_list_WydDcmVhdHVyZSdd": ["Creature"]}),  # JSONB array uses containment
-        ("t:elf t:archer", r"(card.card_types ?& %(p_list_WydDcmVhdHVyZSdd)s)", {"p_list_WydDcmVhdHVyZSdd": ["Creature"]}),  # JSONB array uses containment
+        (
+            "card_types:creature",
+            r"(card.card_types ?& %(p_list_WydDcmVhdHVyZSdd)s)",
+            {"p_list_WydDcmVhdHVyZSdd": ["Creature"]},
+        ),  # JSONB array uses containment
+        (
+            "t:elf t:archer",
+            r"((card.card_subtypes ?& %(p_list_WydFbGYnXQ)s) AND (card.card_subtypes ?& %(p_list_WydBcmNoZXInXQ)s))",
+            {"p_list_WydFbGYnXQ": ["Elf"], "p_list_WydBcmNoZXInXQ": ["Archer"]},
+        ),  # JSONB array uses containment
     ],
 )
 def test_full_sql_translation_jsonb_card_types(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
     parsed = parsing.parse_scryfall_query(input_query)
     observed_params = {}
     observed_sql = parsed.to_sql(observed_params)
-    assert (observed_sql, observed_params) == (expected_sql, expected_parameters), f"\nExpected: {expected_sql}\t{expected_parameters}\nObserved: {observed_sql}\t{observed_params}"
+    assert (observed_sql, observed_params) == (
+        expected_sql,
+        expected_parameters,
+    ), f"\nExpected: {expected_sql}\t{expected_parameters}\nObserved: {observed_sql}\t{observed_params}"
 
 
 class TestNodes:

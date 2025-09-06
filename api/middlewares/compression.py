@@ -15,8 +15,10 @@ MIN_SIZE: int = 200
 
 logger = logging.getLogger(__name__)
 
+
 def parse_q_list(
-    accept_encoding: str, server_priorities: dict[str, int],
+    accept_encoding: str,
+    server_priorities: dict[str, int],
 ) -> list[str]:
     """Parse the Accept-Encoding header and return a list of encodings sorted by client and server priority.
 
@@ -53,6 +55,7 @@ def parse_q_list(
 
 class CompressionMiddleware:
     """Middleware for handling response compression using various algorithms."""
+
     def __init__(self: CompressionMiddleware) -> None:
         """Initialize the CompressionMiddleware and register available compressors."""
         self._compressors: dict[str, object] = {}

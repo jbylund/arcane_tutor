@@ -10,6 +10,7 @@ def param_name(ival: object) -> str:
     val_type = type(ival).__name__
     return f"p_{val_type}_{b64d}"
 
+
 # AST Classes
 class QueryNode(ABC):
     """Base class for all query nodes in the abstract syntax tree (AST)."""
@@ -17,6 +18,7 @@ class QueryNode(ABC):
     @abstractmethod
     def to_sql(self: QueryNode, context: dict) -> str:
         """Convert this node to a SQL WHERE clause string representation."""
+
 
 class LeafNode(QueryNode):
     """Abstract base class for leaf nodes in the AST.
@@ -44,6 +46,7 @@ class ValueNode(LeafNode):
         """Return a hash based on the class name and value."""
         return hash((self.__class__.__name__, self.value))
 
+
 class StringValueNode(ValueNode):
     """Represents a string value node, such as 'flying' or 'Lightning Bolt'."""
 
@@ -57,6 +60,7 @@ class StringValueNode(ValueNode):
         context[_param_name] = self.value
         return f"%({_param_name})s"
 
+
 class NumericValueNode(ValueNode):
     """Represents a numeric value node in the AST."""
 
@@ -69,6 +73,7 @@ class NumericValueNode(ValueNode):
         _param_name = param_name(self.value)
         context[_param_name] = self.value
         return f"%({_param_name})s"
+
 
 class AttributeNode(LeafNode):
     """Represents an attribute of a card, such as 'cmc' or 'power'."""
@@ -96,6 +101,7 @@ class AttributeNode(LeafNode):
     def __repr__(self: AttributeNode) -> str:
         """Return a string representation of the attribute node."""
         return f"{self.__class__.__name__}({self.attribute_name})"
+
 
 class BinaryOperatorNode(QueryNode):
     """Represents a binary operator node (e.g., '=', '!=', '<', '>', etc.)."""
@@ -144,6 +150,7 @@ class BinaryOperatorNode(QueryNode):
         """Return a hash based on the class name, operands, and operator."""
         return hash((self.__class__.__name__, self.lhs, self.operator, self.rhs))
 
+
 class NaryOperatorNode(QueryNode):
     """Base class for n-ary operator nodes (e.g., AND, OR) that take multiple
     operands.
@@ -190,6 +197,7 @@ class NaryOperatorNode(QueryNode):
         """Return a hash based on the class name and operands."""
         return hash((self.__class__.__name__, tuple(self.operands)))
 
+
 class AndNode(NaryOperatorNode):
     """Represents an AND operation between multiple conditions."""
 
@@ -201,6 +209,7 @@ class AndNode(NaryOperatorNode):
         """Return the SQL result for an empty AND (always TRUE)."""
         return "TRUE"
 
+
 class OrNode(NaryOperatorNode):
     """Represents an OR operation between multiple conditions."""
 
@@ -211,6 +220,7 @@ class OrNode(NaryOperatorNode):
     def _empty_result(self: OrNode) -> str:
         """Return the SQL result for an empty OR (always FALSE)."""
         return "FALSE"
+
 
 class NotNode(QueryNode):
     """Represents a NOT operation on a single operand."""
@@ -237,6 +247,7 @@ class NotNode(QueryNode):
     def __hash__(self: NotNode) -> int:
         """Return a hash based on the operand."""
         return hash(("Not", self.operand))
+
 
 class Query(QueryNode):
     """Top-level query container node for the AST."""

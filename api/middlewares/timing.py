@@ -11,8 +11,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
 class TimingMiddleware:
     """Middleware to log the duration, status, URL, and user agent for each request."""
+
     def process_request(self: TimingMiddleware, req: falcon.Request, resp: falcon.Response) -> None:
         req.context["_start_time"] = time.monotonic()
 
@@ -36,6 +38,7 @@ class TimingMiddleware:
 
 class ProfilingMiddleware:
     """Middleware to profile the request and response."""
+
     def __init__(self: ProfilingMiddleware) -> None:
         self.datadir = Path("/data/api/")
 

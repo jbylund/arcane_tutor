@@ -18,6 +18,7 @@ class ZstdCompressor:
         priority (int): Priority for compressor selection (lower is preferred).
         compression_level (int): Compression level for Zstandard (default: 4).
     """
+
     encoding: str = "zstd"
     priority: int = 10  # lower priority is preferred
     compression_level: int = 4

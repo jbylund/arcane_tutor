@@ -18,6 +18,7 @@ class BrotliCompressor:
         priority (int): Priority for compressor selection (lower is preferred).
         compression_level (int): Compression level for Brotli (default: 4).
     """
+
     encoding: str = "br"
     priority: int = 20  # lower priority is preferred
     compression_level: int = 4

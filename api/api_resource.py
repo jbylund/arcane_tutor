@@ -23,13 +23,14 @@ import psycopg.rows
 import psycopg.types.json
 import psycopg_pool
 import requests
-from cachetools import LRUCache, TTLCache, cached
+from cachetools import LRUCache, cached
 from parsing import generate_sql_query, parse_scryfall_query
 
 
 def orjson_dumps(obj: object) -> str:
     """Dump an object to a string using orjson."""
     return orjson.dumps(obj).decode("utf-8")
+
 
 # Register for dumping (adapting Python -> DB)
 psycopg.types.json.set_json_dumps(dumps=orjson_dumps)
@@ -39,13 +40,16 @@ logger = logging.getLogger("apiresource")
 
 # pylint: disable=c-extension-no-member
 
+
 @cached(cache=LRUCache(maxsize=10_000))
 def get_where_clause(query: str) -> tuple[str, dict]:
     parsed_query = parse_scryfall_query(query)
     return generate_sql_query(parsed_query)
 
+
 def rewrap(query: str) -> str:
     return " ".join(query.strip().split())
+
 
 def _get_pg_creds() -> dict[str, str]:
     """Get postgres credentials from the environment."""
@@ -54,6 +58,7 @@ def _get_pg_creds() -> dict[str, str]:
     }
     unmapped = {k[2:].lower(): v for k, v in os.environ.items() if k.startswith("PG")}
     return {mapping.get(k, k): v for k, v in unmapped.items()}
+
 
 def _make_pool() -> psycopg_pool.ConnectionPool:
     """Create and return a psycopg3 ConnectionPool for PostgreSQL connections."""
@@ -220,15 +225,14 @@ class APIResource:
 
         use_cache = False
         if use_cache:
+
             def maybe_json_dump(v: Any) -> Any:
                 if isinstance(v, list | dict):
                     return json.dumps(v, sort_keys=True)
                 return v
+
             # need to make params hashable... but it might contain dicts/lists/...
-            hashable_params = {
-                k: maybe_json_dump(v)
-                for k, v in params.items()
-            }
+            hashable_params = {k: maybe_json_dump(v) for k, v in params.items()}
             cachekey = (
                 query,
                 frozenset(hashable_params.items()),
@@ -244,10 +248,7 @@ class APIResource:
                 return psycopg.types.json.Jsonb(v)
             return v
 
-        params = {
-            k: maybe_json(v)
-            for k, v in params.items()
-        }
+        params = {k: maybe_json(v) for k, v in params.items()}
         query = " ".join(query.strip().split())
         explain_query = f"EXPLAIN (FORMAT JSON) {query}"
 
@@ -346,7 +347,9 @@ class APIResource:
                 )""",
                 )
                 cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_migrations_filename ON migrations (file_name)")
-                cursor.execute("CREATE        INDEX IF NOT EXISTS idx_migrations_file_sha256 ON migrations USING HASH (file_sha256)")
+                cursor.execute(
+                    "CREATE        INDEX IF NOT EXISTS idx_migrations_file_sha256 ON migrations USING HASH (file_sha256)",
+                )
 
                 cursor.execute("SELECT file_name, file_sha256 FROM migrations ORDER BY date_applied")
                 applied_migrations = [dict(r) for r in cursor]
@@ -425,6 +428,7 @@ class APIResource:
         import_times = collections.deque(maxlen=1000)
 
         from psycopg.types.json import Jsonb
+
         def maybe_json(v: Any) -> Any:
             if isinstance(v, list | dict):
                 return Jsonb(v)
@@ -443,9 +447,7 @@ class APIResource:
                         logger.info("Imported %d cards, current rate: %d cards/s...", idx, rate)
                         last_log = now
 
-                    card_with_json = {
-                        k: maybe_json(v) for k, v in card.items()
-                    }
+                    card_with_json = {k: maybe_json(v) for k, v in card.items()}
                     cursor.execute(
                         """
                         INSERT INTO magic.cards
@@ -456,7 +458,9 @@ class APIResource:
                         card_with_json | {"blob": Jsonb(card)},
                     )
 
-    def get_cards(self: APIResource, *, min_name: str | None = None, max_name: str | None = None, limit: int = 2500, **_: object) -> list[dict[str, Any]]:
+    def get_cards(
+        self: APIResource, *, min_name: str | None = None, max_name: str | None = None, limit: int = 2500, **_: object,
+    ) -> list[dict[str, Any]]:
         """Get cards by name range.
 
         Args:
@@ -491,7 +495,14 @@ class APIResource:
             },
         )["result"]
 
-    def get_cards_to_csv(self: APIResource, *, min_name: str | None = None, max_name: str | None = None, limit: int = 2500, falcon_response: falcon.Response | None = None) -> None:
+    def get_cards_to_csv(
+        self: APIResource,
+        *,
+        min_name: str | None = None,
+        max_name: str | None = None,
+        limit: int = 2500,
+        falcon_response: falcon.Response | None = None,
+    ) -> None:
         """Write cards as CSV to the Falcon response.
 
         Args:
@@ -520,8 +531,14 @@ class APIResource:
         val = str_buffer.getvalue()
         falcon_response.body = val.encode("utf-8")
 
-
-    def search(self: APIResource, *, falcon_response: falcon.Response | None = None, q: str | None = None, query: str | None = None, limit: int = 100) -> dict[str, Any]:
+    def search(
+        self: APIResource,
+        *,
+        falcon_response: falcon.Response | None = None,
+        q: str | None = None,
+        query: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
         """Run a search query and return results and metadata.
         /search.
 
@@ -537,10 +554,10 @@ class APIResource:
         """
         return self._search(query=query or q, limit=limit)
 
-    @cached(
-        cache=TTLCache(maxsize=1000, ttl=60),
-        key=lambda self, *args, **kwargs: (args, tuple(sorted(kwargs.items()))),
-    )
+    # @cached(
+    #     cache=TTLCache(maxsize=1000, ttl=60),
+    #     key=lambda self, *args, **kwargs: (args, tuple(sorted(kwargs.items()))),
+    # )
     def _search(self: APIResource, *, query: str | None = None, limit: int = 100) -> dict[str, Any]:
         where_clause, params = get_where_clause(query)
         full_query = f"""
