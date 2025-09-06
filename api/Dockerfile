@@ -23,6 +23,7 @@ RUN python -m pip install --quiet --upgrade \
     brotli \
     cachetools \
     falcon \
+    honeybadger \
     orjson \
     psycopg[binary,pool] \
     pyparsing \

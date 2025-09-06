@@ -24,7 +24,28 @@ import psycopg.types.json
 import psycopg_pool
 import requests
 from cachetools import LRUCache, TTLCache, cached
+from honeybadger import honeybadger
 from parsing import generate_sql_query, parse_scryfall_query
+
+honeybadger.configure(
+    api_key="hbp_mHbJs4KJAOeUhK17Ixr0AzDC0gx8Zt2WG6kH",
+    project_root=str(pathlib.Path(__file__).parent),
+)
+
+def honeybadger_error_handler(req: falcon.Request, oops: Exception) -> None:
+    """Handle an error with Honeybadger."""
+    logger.error("Error handling request: %s", oops, exc_info=True)
+    honeybadger.notify(
+        exception=oops,
+        context={
+            "headers": req.headers,
+            "method": req.method,
+            "params": req.params,
+            "path": req.path,
+            "query_string": req.query_string,
+            "uri": req.uri,
+        },
+    )
 
 
 def orjson_dumps(obj: object) -> str:
@@ -177,6 +198,7 @@ class APIResource:
             raise
         except Exception as oops:
             logger.error("Error handling request: %s", oops, exc_info=True)
+            honeybadger_error_handler(req, oops)
             # walk back to the lowest frame...
             # file / function / locals (if possible)
             stack_info = []
