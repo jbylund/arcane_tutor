@@ -431,49 +431,38 @@
 
         balanceQuery(query) {
           // Balance quotes and parentheses for typeahead searches using a stack
+          const charToMirror = {
+            '(': ')',
+            "'": "'", // single quote is own mirror
+            '"': '"', // double quote is own mirror
+            ')': '(',
+          };
+
           const stack = [];
-          
+
           // Process each character in the query
           for (let i = 0; i < query.length; i++) {
             const char = query[i];
-            
-            // Only process quote and parenthesis characters
-            if (char === '(' || char === ')' || char === '"' || char === "'") {
-              if (char === ')') {
-                // Closing parenthesis - check if it matches an opening parenthesis
-                if (stack.length > 0 && stack[stack.length - 1] === '(') {
-                  stack.pop();
-                } else {
-                  stack.push(char);
-                }
-              } else if (char === '"' || char === "'") {
-                // Quote character - check if it closes an existing quote of the same type
-                if (stack.length > 0 && stack[stack.length - 1] === char) {
-                  stack.pop();
-                } else {
-                  stack.push(char);
-                }
-              } else if (char === '(') {
-                // Opening parenthesis - always push to stack
-                stack.push(char);
-              }
+            const mirroredChar = charToMirror[char];
+
+            if (!mirroredChar) {
+              continue;
+            }
+
+            if (stack.length > 0 && stack[stack.length - 1] === mirroredChar) {
+              stack.pop();
+            } else {
+              stack.push(char);
             }
           }
-          
+
           // Build the closing characters from the stack in reverse order
           let closing = '';
           while (stack.length > 0) {
             const char = stack.pop();
-            if (char === '(') {
-              closing += ')';
-            } else if (char === '"') {
-              closing += '"';
-            } else if (char === "'") {
-              closing += "'";
-            }
-            // Note: We don't need to handle ')' because it would never be left unmatched in the stack
+            closing += charToMirror[char];
           }
-          
+
           return query + closing;
         }
 
