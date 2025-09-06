@@ -7,16 +7,16 @@ import logging
 import multiprocessing
 import os
 
-import bjoern
-import falcon
+import falcon.asgi
 import falcon.media
 import orjson
+import uvicorn
 
 # Set up a logger for this module
 logger = logging.getLogger(__name__)
 
 
-def json_error_serializer(request: falcon.Request, response: falcon.Response, exception: falcon.HTTPError) -> None:
+def json_error_serializer(request: falcon.asgi.Request, response: falcon.asgi.Response, exception: falcon.HTTPError) -> None:
     """An error serializer that formats Falcon HTTP errors as JSON responses.
 
     Args:
@@ -52,17 +52,17 @@ class ApiWorker(multiprocessing.Process):
         self.exit_flag = exit_flag
 
     @classmethod
-    def get_api(cls: type[ApiWorker]) -> falcon.App:
-        """Create and configure the Falcon API application.
+    def get_api(cls: type[ApiWorker]) -> falcon.asgi.App:
+        """Create and configure the Falcon ASGI application.
 
         Returns:
-            falcon.App: The configured Falcon application instance.
+            falcon.asgi.App: The configured Falcon ASGI application instance.
         """
         # Importing here (post-fork) is safer for some servers/clients than importing before forking.
         import api_resource  # pylint: disable=import-outside-toplevel
         from middlewares import CachingMiddleware, CompressionMiddleware, TimingMiddleware
 
-        api = falcon.App(
+        api = falcon.asgi.App(
             middleware=[
                 TimingMiddleware(),
                 # ProfilingMiddleware(),
@@ -96,8 +96,8 @@ class ApiWorker(multiprocessing.Process):
         logging.basicConfig(level=logging.INFO)
         logging.info("Starting worker with pid %d", os.getpid())
         try:
-            app = self.get_api()  # Get the Falcon app
-            bjoern.run(app, self.host, self.port, reuse_port=True)  # Start the Bjoern server
+            app = self.get_api()  # Get the Falcon ASGI app
+            uvicorn.run(app, host=self.host, port=self.port, log_level="info")  # Start uvicorn server
         except Exception as e:
             logger.error("Error running server: %s", e)
             if self.exit_flag:

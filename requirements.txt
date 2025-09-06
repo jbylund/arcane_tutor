@@ -1,8 +1,9 @@
-bjoern
 brotli
-falcon
+cachetools
+falcon[asgi]
 orjson
 psycopg[binary,pool]
 pyparsing
-requests
+aiohttp
+uvicorn
 zstandard

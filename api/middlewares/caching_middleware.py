@@ -24,7 +24,7 @@ class CachingMiddleware:
             cache = LRUCache(maxsize=10_000)
         self.cache: MutableMapping[CacheKey, falcon.Response] = cache
 
-    def _cache_key(self: CachingMiddleware, req: falcon.Request) -> CacheKey:
+    def _cache_key(self: CachingMiddleware, req: falcon.Request | falcon.asgi.Request) -> CacheKey:
         cached_headers = [
             "ACCEPT-ENCODING",
         ]
@@ -47,10 +47,37 @@ class CachingMiddleware:
             return
         logger.info("Cache miss: %s / %s", req.url, cache_key)
 
+    async def process_request_async(self: CachingMiddleware, req: falcon.asgi.Request, resp: falcon.asgi.Response) -> None:
+        cache_key = self._cache_key(req)
+        cached_value: falcon.asgi.Response | None = self.cache.get(cache_key)
+        if cached_value is not None:
+            if TYPE_CHECKING:
+                cached_value = typecast(falcon.asgi.Response, cached_value)
+            resp.complete = True
+            resp.data = cached_value.data
+            resp._headers.update(cached_value._headers)
+            logger.info("Cache hit: %s / response_id: %d", req.url, id(resp))
+            return
+        logger.info("Cache miss: %s / %s", req.url, cache_key)
+
     def process_response(
         self: CachingMiddleware,
         req: falcon.Request,
         resp: falcon.Response,
+        resource: object,
+        req_succeeded: bool,
+    ) -> None:
+        cache_key = self._cache_key(req)
+        cached_val = self.cache.get(cache_key)
+        if cached_val is None:
+            resp.complete = True
+            self.cache[cache_key] = resp
+            logger.info("Cache updated: %s / %s", req.url, cache_key)
+
+    async def process_response_async(
+        self: CachingMiddleware,
+        req: falcon.asgi.Request,
+        resp: falcon.asgi.Response,
         resource: object,
         req_succeeded: bool,
     ) -> None:

@@ -101,6 +101,33 @@ class CompressionMiddleware:
             resource: Resource object to which the request was routed. May be None if no route was found for the request.
             req_succeeded (bool): True if no exceptions were raised while the framework processed and routed the request; otherwise False.
         """
+        self._process_response_internal(req, resp, resource, req_succeeded)
+
+    async def process_response_async(
+        self: CompressionMiddleware,
+        req: falcon.asgi.Request,
+        resp: falcon.asgi.Response,
+        resource: object,
+        req_succeeded: bool,
+    ) -> None:
+        """Post-processing of the response (after routing) - async version.
+
+        Args:
+            req: Request object.
+            resp: Response object.
+            resource: Resource object to which the request was routed. May be None if no route was found for the request.
+            req_succeeded (bool): True if no exceptions were raised while the framework processed and routed the request; otherwise False.
+        """
+        self._process_response_internal(req, resp, resource, req_succeeded)
+
+    def _process_response_internal(
+        self: CompressionMiddleware,
+        req: falcon.Request | falcon.asgi.Request,
+        resp: falcon.Response | falcon.asgi.Response,
+        resource: object,
+        req_succeeded: bool,
+    ) -> None:
+        """Internal method for processing response compression."""
         if resp.complete:
             logger.info("Will serve response from cache...")
             return

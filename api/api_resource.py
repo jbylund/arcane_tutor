@@ -16,13 +16,13 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 
-import falcon
+import falcon.asgi
 import orjson
 import psycopg
 import psycopg.rows
 import psycopg.types.json
 import psycopg_pool
-import requests
+import aiohttp
 from cachetools import LRUCache, TTLCache, cached
 from parsing import generate_sql_query, parse_scryfall_query
 
@@ -60,10 +60,10 @@ def _get_pg_creds() -> dict[str, str]:
     return {mapping.get(k, k): v for k, v in unmapped.items()}
 
 
-def _make_pool() -> psycopg_pool.ConnectionPool:
-    """Create and return a psycopg3 ConnectionPool for PostgreSQL connections."""
+def _make_pool() -> psycopg_pool.AsyncConnectionPool:
+    """Create and return a psycopg3 AsyncConnectionPool for PostgreSQL connections."""
 
-    def configure_connection(conn: psycopg.Connection) -> None:
+    async def configure_connection(conn: psycopg.AsyncConnection) -> None:
         conn.row_factory = psycopg.rows.dict_row
 
     creds = _get_pg_creds()
@@ -73,10 +73,10 @@ def _make_pool() -> psycopg_pool.ConnectionPool:
         "conninfo": conninfo,
         "max_size": 2,
         "min_size": 1,
-        "open": True,
+        "open": False,  # Don't open immediately
     }
     logger.info("Pool args: %s", pool_args)
-    return psycopg_pool.ConnectionPool(**pool_args)
+    return psycopg_pool.AsyncConnectionPool(**pool_args)
 
 
 def get_migrations() -> list[dict[str, str]]:
@@ -138,14 +138,21 @@ class APIResource:
         """
         self._tablename = "staging_table"
 
-        # make a psycopg3 connection pool
-        self._conn_pool: psycopg_pool.ConnectionPool = _make_pool()
+        # make a psycopg3 async connection pool
+        self._conn_pool: psycopg_pool.AsyncConnectionPool = _make_pool()
+        self._pool_opened = False
         self.action_map = {x: getattr(self, x) for x in dir(self) if not x.startswith("_")}
         self.action_map["index"] = self.index_html
         self._query_cache = LRUCache(maxsize=1_000)
         logger.info("Worker with pid has conn pool %s", self._conn_pool)
 
-    def _handle(self: APIResource, req: falcon.Request, resp: falcon.Response) -> None:
+    async def _ensure_pool_open(self: APIResource) -> None:
+        """Ensure the connection pool is open."""
+        if not self._pool_opened:
+            await self._conn_pool.open()
+            self._pool_opened = True
+
+    async def _handle(self: APIResource, req: falcon.asgi.Request, resp: falcon.asgi.Response) -> None:
         """Handle a Falcon request and set the response.
 
         Args:
@@ -168,7 +175,7 @@ class APIResource:
         action = self.action_map.get(path, self._raise_not_found)
         before = time.monotonic()
         try:
-            res = action(falcon_response=resp, **req.params)
+            res = await action(falcon_response=resp, **req.params)
             resp.media = res
         except TypeError as oops:
             logger.error("Error handling request: %s", oops, exc_info=True)
@@ -205,7 +212,7 @@ class APIResource:
         """Raise a Falcon HTTPNotFound error with available routes."""
         raise falcon.HTTPNotFound(title="Not Found", description={"routes": {k: v.__doc__ for k, v in self.action_map.items()}})
 
-    def _run_query(
+    async def _run_query(
         self: APIResource,
         *,
         query: str,
@@ -257,21 +264,22 @@ class APIResource:
         explain_query = f"EXPLAIN (FORMAT JSON) {query}"
 
         result: dict[str, Any] = {}
-        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
-            cursor.execute("set statement_timeout = 10000")
+        await self._ensure_pool_open()
+        async with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            await cursor.execute("set statement_timeout = 10000")
             if explain:
-                cursor.execute(explain_query, params)
-                for row in cursor.fetchall():
+                await cursor.execute(explain_query, params)
+                async for row in cursor:
                     result["plan"] = row
 
             result["timings"] = timings = {}
             before = time.time()
-            cursor.execute(query, params)
+            await cursor.execute(query, params)
             after_query = time.time()
             timings["query_duration"] = query_duratrion = after_query - before
             timings["query_duration_ms"] = query_duratrion * 1000
             timings["query_frequency"] = 1 / query_duratrion
-            raw_rows = cursor.fetchall()
+            raw_rows = await cursor.fetchall()
             result["result"] = [dict(r) for r in raw_rows]
             after_fetch = time.time()
             timings["fetch_duration"] = fetch_duration = after_fetch - after_query
@@ -286,7 +294,7 @@ class APIResource:
 
         return copy.deepcopy(result)
 
-    def get_pid(self: APIResource, **_: object) -> int:
+    async def get_pid(self: APIResource, **_: object) -> int:
         """Just return the pid of the process which served this request.
 
         Returns:
@@ -296,7 +304,7 @@ class APIResource:
         """
         return os.getpid()
 
-    def db_ready(self: APIResource, **_: object) -> bool:
+    async def db_ready(self: APIResource, **_: object) -> bool:
         """Return true if the db is ready.
 
         Returns:
@@ -304,13 +312,13 @@ class APIResource:
             bool: True if the database is ready, False otherwise.
 
         """
-        records = self._run_query(
+        records = (await self._run_query(
             query="SELECT relname FROM pg_stat_user_tables",
-        )["result"]
+        ))["result"]
         existing_tables = {r["relname"] for r in records}
         return "migrations" in existing_tables
 
-    def get_data(self: APIResource) -> Any:
+    async def get_data(self: APIResource) -> Any:
         """Retrieve card data from cache or Scryfall API.
 
         Returns:
@@ -324,24 +332,28 @@ class APIResource:
                 response = json.load(f)
         except FileNotFoundError:
             logger.info("Cache miss!")
-            session = requests.Session()
-            response = session.get("https://api.scryfall.com/bulk-data", timeout=1).json()["data"]
-            by_type = {r["type"]: r for r in response}
-            oracle_cards_download_uri = by_type["oracle_cards"]["download_uri"]
-            response = requests.get(oracle_cards_download_uri, timeout=30).json()
+            async with aiohttp.ClientSession() as session:
+                async with session.get("https://api.scryfall.com/bulk-data", timeout=aiohttp.ClientTimeout(total=1)) as resp:
+                    data = await resp.json()
+                response = data["data"]
+                by_type = {r["type"]: r for r in response}
+                oracle_cards_download_uri = by_type["oracle_cards"]["download_uri"]
+                async with session.get(oracle_cards_download_uri, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    response = await resp.json()
             with pathlib.Path(cache_file).open("w") as f:
                 json.dump(response, f, indent=4, sort_keys=True)
         else:
             logger.info("Cache hit!")
         return response
 
-    def _setup_schema(self: APIResource) -> None:
+    async def _setup_schema(self: APIResource) -> None:
         """Set up the database schema and apply migrations as needed."""
         # read migrations from the db dir...
         # if any already applied migrations differ from what we want
         # to apply then drop everything
-        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
-            cursor.execute(
+        await self._ensure_pool_open()
+        async with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            await cursor.execute(
                 """CREATE TABLE IF NOT EXISTS migrations (
                     file_name text not null,
                     file_sha256 text not null,
@@ -349,13 +361,13 @@ class APIResource:
                     file_contents text not null
                 )""",
             )
-            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_migrations_filename ON migrations (file_name)")
-            cursor.execute(
+            await cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_migrations_filename ON migrations (file_name)")
+            await cursor.execute(
                 "CREATE        INDEX IF NOT EXISTS idx_migrations_file_sha256 ON migrations USING HASH (file_sha256)",
             )
 
-            cursor.execute("SELECT file_name, file_sha256 FROM migrations ORDER BY date_applied")
-            applied_migrations = [dict(r) for r in cursor]
+            await cursor.execute("SELECT file_name, file_sha256 FROM migrations ORDER BY date_applied")
+            applied_migrations = [dict(r) async for r in cursor]
             filesystem_migrations = get_migrations()
 
             already_applied = set()
@@ -364,8 +376,8 @@ class APIResource:
                     already_applied.add(applied_migration["file_sha256"])
                 else:
                     already_applied.clear()
-                    cursor.execute("DELETE FROM migrations")
-                    cursor.execute("DROP SCHEMA IF EXISTS magic CASCADE")
+                    await cursor.execute("DELETE FROM migrations")
+                    await cursor.execute("DROP SCHEMA IF EXISTS magic CASCADE")
 
             for imigration in filesystem_migrations:
                 file_sha256 = imigration["file_sha256"]
@@ -373,8 +385,8 @@ class APIResource:
                     logger.info("%s was already applied...", imigration["file_name"])
                     continue
                 logger.info("Applying %s ...", imigration["file_name"])
-                cursor.execute(imigration["file_contents"])
-                cursor.execute(
+                await cursor.execute(imigration["file_contents"])
+                await cursor.execute(
                     """
                         INSERT INTO migrations
                             (  file_name  ,   file_sha256  ,   file_contents  ) VALUES
@@ -382,9 +394,9 @@ class APIResource:
                     imigration,
                 )
 
-    def _get_cards_to_insert(self: APIResource) -> list[dict[str, Any]]:
+    async def _get_cards_to_insert(self: APIResource) -> list[dict[str, Any]]:
         """Get the cards to insert into the database."""
-        all_cards = self.get_data()
+        all_cards = await self.get_data()
         to_insert = {}
         for card in all_cards:
             card_name = card["name"]
@@ -413,18 +425,18 @@ class APIResource:
             to_insert[card_name] = card
         return list(to_insert.values())
 
-    def get_stats(self: APIResource, **_: object) -> dict[str, Any]:
+    async def get_stats(self: APIResource, **_: object) -> dict[str, Any]:
         """Get stats about the cards."""
-        to_insert = self._get_cards_to_insert()
+        to_insert = await self._get_cards_to_insert()
         key_frequency = collections.Counter()
         for card in to_insert:
             key_frequency.update(k for k, v in card.items() if v not in [None, [], {}])
         return key_frequency.most_common()
 
-    def import_data(self: APIResource, **_: object) -> None:
+    async def import_data(self: APIResource, **_: object) -> None:
         """Import data from Scryfall and insert into the database."""
-        self._setup_schema()
-        to_insert = self._get_cards_to_insert()
+        await self._setup_schema()
+        to_insert = await self._get_cards_to_insert()
 
         last_log = 0
         log_interval = 1
@@ -437,8 +449,9 @@ class APIResource:
                 return Jsonb(v)
             return v
 
-        with self._conn_pool.connection() as conn:
-            with conn.cursor() as cursor:
+        await self._ensure_pool_open()
+        async with self._conn_pool.connection() as conn:
+            async with conn.cursor() as cursor:
                 for idx, card in enumerate(to_insert):
                     now = time.monotonic()
                     import_times.append(now)
@@ -451,7 +464,7 @@ class APIResource:
                         last_log = now
 
                     card_with_json = {k: maybe_json(v) for k, v in card.items()}
-                    cursor.execute(
+                    await cursor.execute(
                         """
                         INSERT INTO magic.cards
                         ( card_name,   cmc  , mana_cost_text, mana_cost_jsonb, raw_card_blob,     card_types,   card_subtypes  , card_colors, creature_power, creature_power_text, creature_toughness, creature_toughness_text, edhrec_rank ) VALUES
@@ -461,7 +474,7 @@ class APIResource:
                         card_with_json | {"blob": Jsonb(card)},
                     )
 
-    def get_cards(
+    async def get_cards(
         self: APIResource, *, min_name: str | None = None, max_name: str | None = None, limit: int = 2500, **_: object,
     ) -> list[dict[str, Any]]:
         """Get cards by name range.
@@ -477,7 +490,7 @@ class APIResource:
             List[Dict[str, Any]]: List of card records.
 
         """
-        return self._run_query(
+        return (await self._run_query(
             query="""
             SELECT
                 *
@@ -496,15 +509,15 @@ class APIResource:
                 "max_name": max_name,
                 "limit": limit,
             },
-        )["result"]
+        ))["result"]
 
-    def get_cards_to_csv(
+    async def get_cards_to_csv(
         self: APIResource,
         *,
         min_name: str | None = None,
         max_name: str | None = None,
         limit: int = 2500,
-        falcon_response: falcon.Response | None = None,
+        falcon_response: falcon.asgi.Response | None = None,
     ) -> None:
         """Write cards as CSV to the Falcon response.
 
@@ -513,7 +526,7 @@ class APIResource:
             min_name (Optional[str]): Minimum card name.
             max_name (Optional[str]): Maximum card name.
             limit (int): Maximum number of cards to return.
-            falcon_response (falcon.Response): The Falcon response to write to.
+            falcon_response (falcon.asgi.Response): The Falcon response to write to.
 
         Raises:
         ------
@@ -523,7 +536,7 @@ class APIResource:
         if falcon_response is None:
             msg = "falcon_response is required"
             raise ValueError(msg)
-        raw_cards = self.get_cards(min_name=min_name, max_name=max_name, limit=limit)
+        raw_cards = await self.get_cards(min_name=min_name, max_name=max_name, limit=limit)
         falcon_response.content_type = "text/csv"
 
         str_buffer = io.StringIO()
@@ -534,10 +547,10 @@ class APIResource:
         val = str_buffer.getvalue()
         falcon_response.body = val.encode("utf-8")
 
-    def search(
+    async def search(
         self: APIResource,
         *,
-        falcon_response: falcon.Response | None = None,
+        falcon_response: falcon.asgi.Response | None = None,
         q: str | None = None,
         query: str | None = None,
         limit: int = 100,
@@ -555,13 +568,13 @@ class APIResource:
             Dict[str, Any]: Search results and metadata.
 
         """
-        return self._search(query=query or q, limit=limit)
+        return await self._search(query=query or q, limit=limit)
 
     @cached(
         cache=TTLCache(maxsize=1000, ttl=60),
         key=lambda self, *args, **kwargs: (args, tuple(sorted(kwargs.items()))),
     )
-    def _search(self: APIResource, *, query: str | None = None, limit: int = 100) -> dict[str, Any]:
+    async def _search(self: APIResource, *, query: str | None = None, limit: int = 100) -> dict[str, Any]:
         where_clause, params = get_where_clause(query)
         full_query = f"""
         SELECT
@@ -585,7 +598,7 @@ class APIResource:
         full_query = rewrap(full_query)
         logger.info("Full query: %s", full_query)
         logger.info("Params: %s", params)
-        result_bag = self._run_query(query=full_query, params=params, explain=False)
+        result_bag = await self._run_query(query=full_query, params=params, explain=False)
         cards = result_bag.pop("result", [])
         total_cards = len(cards)
         if total_cards == limit:
@@ -603,7 +616,7 @@ class APIResource:
                 full_query = rewrap(full_query)
                 logger.info("Full query: %s", full_query)
                 logger.info("Params: %s", params)
-                ptr = self._run_query(query=full_query, params=params, explain=False)["result"][0]["QUERY PLAN"][0]["Plan"]
+                ptr = (await self._run_query(query=full_query, params=params, explain=False))["result"][0]["QUERY PLAN"][0]["Plan"]
                 total_cards = ptr["Plan Rows"]
             else:
                 full_query = f"""
@@ -617,7 +630,7 @@ class APIResource:
                 full_query = rewrap(full_query)
                 logger.info("Full query: %s", full_query)
                 logger.info("Params: %s", params)
-                result_bag = self._run_query(query=full_query, params=params, explain=False)
+                result_bag = await self._run_query(query=full_query, params=params, explain=False)
                 total_cards = result_bag["result"][0]["total_cards"]
         return {
             "cards": cards,
@@ -628,23 +641,23 @@ class APIResource:
             "total_cards": total_cards,
         }
 
-    def index_html(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
+    async def index_html(self: APIResource, *, falcon_response: falcon.asgi.Response | None = None, **_: object) -> None:
         """Return the index page.
 
         Args:
         ----
-            falcon_response (falcon.Response): The Falcon response to write to.
+            falcon_response (falcon.asgi.Response): The Falcon response to write to.
 
         """
-        self._serve_static_file(filename="index.html", falcon_response=falcon_response)
+        await self._serve_static_file(filename="index.html", falcon_response=falcon_response)
         falcon_response.content_type = "text/html"
 
-    def favicon_ico(self: APIResource, *, falcon_response: falcon.Response | None = None) -> None:
+    async def favicon_ico(self: APIResource, *, falcon_response: falcon.asgi.Response | None = None) -> None:
         """Return the favicon.ico file.
 
         Args:
         ----
-            falcon_response (falcon.Response): The Falcon response to write to.
+            falcon_response (falcon.asgi.Response): The Falcon response to write to.
         """
         full_filename = pathlib.Path(__file__).parent / "favicon.ico"
         with pathlib.Path(full_filename).open(mode="rb") as f:
@@ -654,20 +667,20 @@ class APIResource:
         logger.info("Favicon content length: %d", content_length)
         falcon_response.headers["content-length"] = content_length
 
-    def _serve_static_file(self: APIResource, *, filename: str, falcon_response: falcon.Response) -> None:
+    async def _serve_static_file(self: APIResource, *, filename: str, falcon_response: falcon.asgi.Response) -> None:
         """Serve a static file to the Falcon response.
 
         Args:
         ----
             filename (str): The file to serve.
-            falcon_response (falcon.Response): The Falcon response to write to.
+            falcon_response (falcon.asgi.Response): The Falcon response to write to.
 
         """
         full_filename = pathlib.Path(__file__).parent / filename
         with pathlib.Path(full_filename).open() as f:
             falcon_response.text = f.read()
 
-    def get_migrations(self: APIResource, **_: object) -> list[dict[str, str]]:
+    async def get_migrations(self: APIResource, **_: object) -> list[dict[str, str]]:
         """Get the migrations from the filesystem.
 
         Returns:

@@ -19,10 +19,31 @@ class TimingMiddleware:
     def process_request(self: TimingMiddleware, req: falcon.Request, resp: falcon.Response) -> None:
         req.context["_start_time"] = time.monotonic()
 
+    async def process_request_async(self: TimingMiddleware, req: falcon.asgi.Request, resp: falcon.asgi.Response) -> None:
+        req.context["_start_time"] = time.monotonic()
+
     def process_response(
         self: TimingMiddleware,
         req: falcon.Request,
         resp: falcon.Response,
+        resource: object,
+        req_succeeded: bool,
+    ) -> None:
+        start = req.context.get("_start_time")
+        duration = time.monotonic() - start if start is not None else -1.0
+        logger.info(
+            "[timing] %.2f ms | %d | %s | %s | %s",
+            duration * 1000,
+            os.getpid(),
+            resp.status,
+            req.url,
+            req.get_header("User-Agent", "-"),
+        )
+
+    async def process_response_async(
+        self: TimingMiddleware,
+        req: falcon.asgi.Request,
+        resp: falcon.asgi.Response,
         resource: object,
         req_succeeded: bool,
     ) -> None:
