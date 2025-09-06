@@ -30,4 +30,5 @@ RUN python -m pip install --quiet --upgrade \
     requests \
     zstandard
 
-COPY ./api /api
+RUN mkdir -p /scryfallos
+COPY ./api /scryfallos/api

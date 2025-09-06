@@ -29,7 +29,7 @@ from parsing import generate_sql_query, parse_scryfall_query
 
 honeybadger.configure(
     api_key="hbp_mHbJs4KJAOeUhK17Ixr0AzDC0gx8Zt2WG6kH",
-    project_root=str(pathlib.Path(__file__).parent),
+    project_root=str(pathlib.Path(__file__).parent.parent),
 )
 
 def honeybadger_error_handler(req: falcon.Request, oops: Exception) -> None:
