@@ -4,21 +4,24 @@ from api.parsing import parse_scryfall_query
 
 def balance_query(query):
     """Balance quotes and parentheses for typeahead searches using a stack."""
+    # Balance quotes and parentheses for typeahead searches using a stack
     stack = []
     
     # Process each character in the query
-    for char in query:
+    for i in range(len(query)):
+        char = query[i]
+        
         # Only process quote and parenthesis characters
-        if char in '()\'"':
+        if char == '(' or char == ')' or char == '"' or char == "'":
             if char == ')':
                 # Closing parenthesis - check if it matches an opening parenthesis
-                if stack and stack[-1] == '(':
+                if len(stack) > 0 and stack[len(stack) - 1] == '(':
                     stack.pop()
                 else:
                     stack.append(char)
-            elif char in '"\'':
+            elif char == '"' or char == "'":
                 # Quote character - check if it closes an existing quote of the same type
-                if stack and stack[-1] == char:
+                if len(stack) > 0 and stack[len(stack) - 1] == char:
                     stack.pop()
                 else:
                     stack.append(char)
@@ -28,7 +31,7 @@ def balance_query(query):
     
     # Build the closing characters from the stack in reverse order
     closing = ''
-    while stack:
+    while len(stack) > 0:
         char = stack.pop()
         if char == '(':
             closing += ')'
