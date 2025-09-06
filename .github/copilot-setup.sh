@@ -15,6 +15,5 @@ sudo apt-get install -y libev-dev
 echo "Installing Python dependencies..."
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt -r test-requirements.txt
-python -m pip install bjoern
 
 echo "Setup complete! Environment ready for Scryfall OS development."
