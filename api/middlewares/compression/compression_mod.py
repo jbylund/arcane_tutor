@@ -118,7 +118,7 @@ class CompressionMiddleware:
             resource: Resource object to which the request was routed. May be None if no route was found for the request.
             req_succeeded (bool): True if no exceptions were raised while the framework processed and routed the request; otherwise False.
         """
-        self._process_response_internal(req, resp, resource, req_succeeded)
+        await self._process_response_internal_async(req, resp, resource, req_succeeded)
 
     def _process_response_internal(
         self: CompressionMiddleware,
@@ -151,6 +151,60 @@ class CompressionMiddleware:
             resp.content_length = None
         else:
             data = resp.render_body()
+            # If there is no content or it is very short then don't compress.
+            if data is None or len(data) < MIN_SIZE:
+                logger.info("Skipping compression for short response")
+                return
+            size_before_compression = len(data)
+            before_compression = time.monotonic()
+            resp.data = compressed = compressor.compress(data)
+            after_compression = time.monotonic()
+            resp.text = None
+            size_after_compression = len(compressed)
+            logger.info(
+                "%s: Compressed %s bytes to %s bytes (%.2f x compression) in %.2f ms - %s",
+                req.url,
+                f"{size_before_compression:,}",
+                f"{size_after_compression:,}",
+                size_before_compression / size_after_compression,
+                1000 * (after_compression - before_compression),
+                req.get_header("User-Agent"),
+            )
+
+        resp.set_header("Content-Encoding", compressor.encoding)
+        resp.append_header("Vary", "Accept-Encoding")
+
+    async def _process_response_internal_async(
+        self: CompressionMiddleware,
+        req: falcon.asgi.Request,
+        resp: falcon.asgi.Response,
+        resource: object,
+        req_succeeded: bool,
+    ) -> None:
+        """Internal async method for processing response compression."""
+        if resp.complete:
+            logger.info("Will serve response from cache...")
+            return
+        accept_encoding = req.get_header("Accept-Encoding")
+        if accept_encoding is None:
+            return
+
+        # If content-encoding is already set don't compress.
+        if resp.get_header("Content-Encoding"):
+            return
+
+        # my accept encoding is "gzip, deflate, br, zstd"
+        compressor = self._get_compressor(accept_encoding)
+        if compressor is None:
+            return
+        logger.info("Using compressor: %s", compressor.encoding)
+
+        if resp.stream:
+            logger.info("Compressing stream")
+            resp.stream = compressor.compress_stream(resp.stream)
+            resp.content_length = None
+        else:
+            data = await resp.render_body()  # This is async in ASGI
             # If there is no content or it is very short then don't compress.
             if data is None or len(data) < MIN_SIZE:
                 logger.info("Skipping compression for short response")
