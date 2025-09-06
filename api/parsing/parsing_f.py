@@ -30,6 +30,38 @@ from .nodes import (
 from .scryfall_nodes import to_scryfall_ast
 
 
+def balance_partial_query(query: str) -> str:
+    """Balance quotes and parentheses for typeahead searches using a stack."""
+    char_to_mirror = {
+        "(": ")",
+        "'": "'",  # single quote is own mirror
+        '"': '"',  # double quote is own mirror
+        ")": "(",
+    }
+    cannot_start = {")"}
+    
+    current_stack = []
+    for i, char in enumerate(query):
+        mirrored_char = char_to_mirror.get(char)
+        if not mirrored_char:
+            continue
+        if current_stack and current_stack[-1] == mirrored_char:
+            current_stack.pop()
+        else:
+            # Only check cannot_start for characters at the beginning of the query
+            if char in cannot_start and i == 0:
+                raise ValueError(f"Cannot start query with {char}")
+            current_stack.append(char)
+    # add mirrored chars to the end of the query
+    while current_stack:
+        char = current_stack.pop()
+        mirrored_char = char_to_mirror[char]
+        # Don't add mirrors for unmatched closing characters like ')'
+        if char != ')':
+            query += mirrored_char
+    return query
+
+
 def flatten_nested_operations(node: QueryNode) -> QueryNode:
     """Flatten nested operations of the same type to create canonical n-ary
     forms.

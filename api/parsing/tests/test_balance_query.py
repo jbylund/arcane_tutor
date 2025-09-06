@@ -1,47 +1,5 @@
 import pytest
-from api.parsing import parse_scryfall_query
-
-
-def balance_query(query):
-    """Balance quotes and parentheses for typeahead searches using a stack."""
-    # Balance quotes and parentheses for typeahead searches using a stack
-    stack = []
-    
-    # Process each character in the query
-    for i in range(len(query)):
-        char = query[i]
-        
-        # Only process quote and parenthesis characters
-        if char == '(' or char == ')' or char == '"' or char == "'":
-            if char == ')':
-                # Closing parenthesis - check if it matches an opening parenthesis
-                if len(stack) > 0 and stack[len(stack) - 1] == '(':
-                    stack.pop()
-                else:
-                    stack.append(char)
-            elif char == '"' or char == "'":
-                # Quote character - check if it closes an existing quote of the same type
-                if len(stack) > 0 and stack[len(stack) - 1] == char:
-                    stack.pop()
-                else:
-                    stack.append(char)
-            elif char == '(':
-                # Opening parenthesis - always push to stack
-                stack.append(char)
-    
-    # Build the closing characters from the stack in reverse order
-    closing = ''
-    while len(stack) > 0:
-        char = stack.pop()
-        if char == '(':
-            closing += ')'
-        elif char == '"':
-            closing += '"'
-        elif char == "'":
-            closing += "'"
-        # Note: We don't need to handle ')' because it would never be left unmatched in the stack
-    
-    return query + closing
+from api.parsing import parse_scryfall_query, balance_partial_query
 
 
 @pytest.mark.parametrize(
@@ -72,8 +30,8 @@ def balance_query(query):
     ],
 )
 def test_balance_query(input_query: str, expected_balanced: str) -> None:
-    """Test that the balanceQuery function correctly balances quotes and parentheses."""
-    result = balance_query(input_query)
+    """Test that the balance_partial_query function correctly balances quotes and parentheses."""
+    result = balance_partial_query(input_query)
     assert result == expected_balanced, f"Input: '{input_query}' -> Expected: '{expected_balanced}', Got: '{result}'"
 
 
@@ -86,7 +44,7 @@ def test_balance_query(input_query: str, expected_balanced: str) -> None:
 )
 def test_balance_query_integration_with_parsing(original_query: str) -> None:
     """Test that balanced queries can be successfully parsed."""
-    balanced_query = balance_query(original_query)
+    balanced_query = balance_partial_query(original_query)
     
     # Original should fail (at least for quote cases)
     if '"' in original_query and original_query.count('"') % 2 == 1:
