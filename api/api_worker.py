@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import multiprocessing
@@ -10,7 +11,8 @@ import os
 import falcon.asgi
 import falcon.media
 import orjson
-import uvicorn
+from granian.constants import Interfaces
+from granian.server.embed import Server as GranianServer
 
 # Set up a logger for this module
 logger = logging.getLogger(__name__)
@@ -91,13 +93,28 @@ class ApiWorker(multiprocessing.Process):
         """Run the API server indefinitely in this process.
 
         This method is called when the process starts. It sets up logging, creates the API,
+        and starts the server. If an error occurs, it logs the error and sets the exit flag.
+        """
+        asyncio.run(self._run_async())
+
+    async def _run_async(self) -> None:
+        """Run the API server indefinitely in this process.
+
+        This method is called when the process starts. It sets up logging, creates the API,
         and starts the Bjoern server. If an error occurs, it logs the error and sets the exit flag.
         """
         logging.basicConfig(level=logging.INFO)
         logging.info("Starting worker with pid %d", os.getpid())
         try:
             app = self.get_api()  # Get the Falcon ASGI app
-            uvicorn.run(app, host=self.host, port=self.port, log_level="info")  # Start uvicorn server
+            server_instance = GranianServer(
+                target=app,
+                address=self.host,
+                port=self.port,
+                log_level="info",
+                interface=Interfaces.ASGI,
+            )
+            await server_instance.serve()
         except Exception as e:
             logger.error("Error running server: %s", e)
             if self.exit_flag:

@@ -16,13 +16,13 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 
+import aiohttp
 import falcon.asgi
 import orjson
 import psycopg
 import psycopg.rows
 import psycopg.types.json
 import psycopg_pool
-import aiohttp
 from cachetools import LRUCache, TTLCache, cached
 from parsing import generate_sql_query, parse_scryfall_query
 
@@ -630,8 +630,8 @@ class APIResource:
                 full_query = rewrap(full_query)
                 logger.info("Full query: %s", full_query)
                 logger.info("Params: %s", params)
-                result_bag = await self._run_query(query=full_query, params=params, explain=False)
-                total_cards = result_bag["result"][0]["total_cards"]
+                count_result_bag = await self._run_query(query=full_query, params=params, explain=False)
+                total_cards = count_result_bag["result"][0]["total_cards"]
         return {
             "cards": cards,
             "compiled": full_query,

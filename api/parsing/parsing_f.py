@@ -39,7 +39,7 @@ def balance_partial_query(query: str) -> str:
         ")": "(",
     }
     unbalanced_closing_chars = {")"}
-    
+
     current_stack = []
     for char in query:
         mirrored_char = char_to_mirror.get(char)
@@ -49,7 +49,8 @@ def balance_partial_query(query: str) -> str:
             current_stack.pop()
         else:
             if char in unbalanced_closing_chars:
-                raise ValueError(f"Unbalanced closing character '{char}' cannot be balanced")
+                msg = f"Unbalanced closing character '{char}' cannot be balanced"
+                raise ValueError(msg)
             current_stack.append(char)
     # add mirrored chars to the end of the query
     while current_stack:

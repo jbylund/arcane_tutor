@@ -19,10 +19,12 @@ RUN python -m pip install --upgrade pip
 RUN apt-get install -y libpython3-dev libev-dev libpq-dev
 
 RUN python -m pip install --quiet --upgrade \
+    aiohttp \
     bjoern \
     brotli \
     cachetools \
     falcon \
+    granian[dotenv,pname,reload,uvloop] \
     orjson \
     psycopg[binary,pool] \
     pyparsing \
