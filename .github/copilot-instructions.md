@@ -32,10 +32,19 @@ Always reference these instructions first and fallback to search or bash command
 ## Validation
 
 ### Manual Testing Scenarios
-- **ALWAYS run the complete test suite** after making changes: `python -m pytest -vvv`
-- Test parsing functionality by importing and using the parsing library: `python -c "from api.parsing import parse_scryfall_query; print(parse_scryfall_query('cmc=3'))"`
+- **ALWAYS run the complete test suite** after making changes: `python -m pytest -vvv` -- should show "54 passed"
+- **Test parsing functionality**: `python -c "from api.parsing import parse_scryfall_query; print(parse_scryfall_query('cmc=3'))"` -- should output Query AST structure
+- **Test API entry point**: `python api/entrypoint.py --help` -- should show command line options
 - **BEFORE committing**: Run `make lint` but expect it to fail until code style violations are fixed.
 - **BEFORE committing**: Run `npx prettier --write api/index.html` to format the HTML frontend.
+
+### Quick Validation Workflow
+```bash
+# Complete validation in under 30 seconds
+python -m pip install -r requirements.txt -r test-requirements.txt
+python -m pytest -vvv
+python -c "from api.parsing import parse_scryfall_query; print(parse_scryfall_query('cmc=3'))"
+```
 
 ### Current Limitations
 - **Docker development workflow is broken** due to SSL certificate issues in containerized environment.
