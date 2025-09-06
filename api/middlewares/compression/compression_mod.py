@@ -4,9 +4,9 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from .brotli import BrotliCompressor
-from .gzip import GzipCompressor
-from .zstd import ZstdCompressor
+from .compressors.brotli import BrotliCompressor
+from .compressors.gzip import GzipCompressor
+from .compressors.zstd import ZstdCompressor
 
 if TYPE_CHECKING:
     import falcon
