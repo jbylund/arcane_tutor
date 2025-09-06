@@ -429,8 +429,52 @@
           }, this.debounceDelay);
         }
 
+        balanceQuery(query) {
+          // Balance quotes and parentheses for typeahead searches
+          let balanced = query;
+          
+          // Count unmatched quotes (both single and double)
+          let doubleQuoteCount = 0;
+          let singleQuoteCount = 0;
+          let parenCount = 0;
+          
+          for (let i = 0; i < balanced.length; i++) {
+            const char = balanced[i];
+            if (char === '"') {
+              doubleQuoteCount++;
+            } else if (char === "'") {
+              singleQuoteCount++;
+            } else if (char === '(') {
+              parenCount++;
+            } else if (char === ')') {
+              parenCount--;
+            }
+          }
+          
+          // Close unmatched double quotes
+          if (doubleQuoteCount % 2 === 1) {
+            balanced += '"';
+          }
+          
+          // Close unmatched single quotes
+          if (singleQuoteCount % 2 === 1) {
+            balanced += "'";
+          }
+          
+          // Close unmatched parentheses
+          while (parenCount > 0) {
+            balanced += ')';
+            parenCount--;
+          }
+          
+          return balanced;
+        }
+
         async performSearch(query) {
           if (!query.trim()) return;
+
+          // Balance the query for better typeahead results
+          const balancedQuery = this.balanceQuery(query);
 
           // Show loading state
           this.showLoading();
@@ -439,7 +483,7 @@
           // Create new AbortController for this request
           this.currentController = new AbortController();
           // Generate a unique URL for this request to match in PerformanceResourceTiming
-          const url = `/search?q=${encodeURIComponent(query)}`;
+          const url = `/search?q=${encodeURIComponent(balancedQuery)}`;
           try {
             // Clear any previous resource timing entries for this URL
             performance.clearResourceTimings && performance.clearResourceTimings();
