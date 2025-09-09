@@ -12,7 +12,7 @@ services:
         - POSTGRES_DB=${XPGDATABASE}
         - POSTGRES_PASSWORD=${XPGPASSWORD}
         - POSTGRES_USER=${XPGUSER}
-        image: registry.hub.docker.com/library/postgres:17.5
+        image: registry.hub.docker.com/library/postgres:18rc1
         ports:
         - 15432:5432
         shm_size: 1024M
@@ -21,7 +21,7 @@ services:
         - ./configs/postgres/conf/pg_hba.conf:/pg_hba.conf
         - ./configs/postgres/conf/postgresql.conf:/postgresql.conf
         - ./configs/postgres/init/:/docker-entrypoint-initdb.d
-        - /tmp/pgdata:/data/pg
+        - /tmp/pgdata/:/data/pg
     apiservice:
         build:
             context: ./
