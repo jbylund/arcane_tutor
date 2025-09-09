@@ -99,7 +99,6 @@ dbconn: # @doc connect to the local database
 
 datadir:
 	mkdir -p data/api data/postgres /tmp/pgdata
-	ln -f -s /tmp/pgdata data/pg
 
 reset:
 	rm -rvf data
