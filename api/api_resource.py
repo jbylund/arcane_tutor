@@ -13,6 +13,10 @@ import logging
 import os
 import pathlib
 import time
+from typing import cast as typecast
+import itertools
+from psycopg import Connection
+from psycopg.types.json import Jsonb
 from typing import Any
 from urllib.parse import urlparse
 
@@ -446,42 +450,43 @@ class APIResource:
     def import_data(self: APIResource, **_: object) -> None:
         """Import data from Scryfall and insert into the database."""
         self._setup_schema()
-        to_insert = self._get_cards_to_insert()
-
-        last_log = 0
-        log_interval = 1
-        import_times = collections.deque(maxlen=1000)
-
-        from psycopg.types.json import Jsonb
 
         def maybe_json(v: Any) -> Any:
             if isinstance(v, list | dict):
                 return Jsonb(v)
             return v
 
-        with self._conn_pool.connection() as conn:
-            with conn.cursor() as cursor:
-                for idx, card in enumerate(to_insert):
-                    now = time.monotonic()
-                    import_times.append(now)
-                    if log_interval < now - last_log:
-                        try:
-                            rate = len(import_times) / (now - import_times[0])
-                        except ZeroDivisionError:
-                            rate = 0
-                        logger.info("Imported %d cards, current rate: %d cards/s...", idx, rate)
-                        last_log = now
+        to_insert = self._get_cards_to_insert()
+        for idx, icard in enumerate(to_insert):
+            card_with_json = {k: maybe_json(v) for k, v in icard.items()}
+            card_with_json["blob"] = Jsonb(icard)
+            to_insert[idx] = card_with_json
 
-                    card_with_json = {k: maybe_json(v) for k, v in card.items()}
-                    cursor.execute(
-                        """
+        batch_size = 1000
+        batches = list(itertools.batched(to_insert, batch_size))
+
+        import_times = collections.deque(maxlen=10)
+        imported = 0
+        import_times.append(time.monotonic()) # time zero
+        with self._conn_pool.connection() as conn:
+            conn = typecast(Connection, conn)
+            with conn.cursor() as cursor:
+                for batch in batches:
+                    cursor.executemany(
+                        query="""
                         INSERT INTO magic.cards
                         ( card_name,   cmc  , mana_cost_text, mana_cost_jsonb, raw_card_blob,     card_types,   card_subtypes  , card_colors, creature_power, creature_power_text, creature_toughness, creature_toughness_text, edhrec_rank ) VALUES
                         ( %(name)s , %(cmc)s, %(mana_cost)s ,            null,      %(blob)s, %(card_types)s, %(card_subtypes)s,     %(card_colors)s,     %(power_numeric)s,             %(power)s,             %(toughness_numeric)s   ,   %(toughness)s, %(edhrec_rank)s)
                         ON CONFLICT (card_name) DO NOTHING
                         """,
-                        card_with_json | {"blob": Jsonb(card)},
+                        params_seq=batch,
                     )
+                    conn.commit()
+                    imported += len(batch)
+                    import_times.append(time.monotonic())
+                    rate = imported / (import_times[-1] - import_times[0])
+                    logger.info("Imported %d cards, current rate: %d cards/s...", imported, rate)
+
 
     def get_cards(
         self: APIResource, *, min_name: str | None = None, max_name: str | None = None, limit: int = 2500, **_: object,
