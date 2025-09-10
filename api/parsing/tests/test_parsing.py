@@ -340,6 +340,56 @@ def test_full_sql_translation_jsonb_colors(input_query: str, expected_sql: str, 
     argnames=("input_query", "expected_sql", "expected_parameters"),
     argvalues=[
         (
+            "color_identity:g",
+            r"(card.card_color_identity <@ %(p_dict_eydHJzogVHJ1ZX0)s)",
+            {"p_dict_eydHJzogVHJ1ZX0": {"G": True}},
+        ),  # : maps to <= for color identity
+        (
+            "id:rg",
+            r"(card.card_color_identity <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
+        ),  # id is an alias for color_identity
+        (
+            "identity=rg",
+            r"(card.card_color_identity = %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
+        ),  # = still means equality
+        (
+            "coloridentity>=rg",
+            r"(card.card_color_identity @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
+        ),  # >= maps to >= (no inversion for >=)
+        (
+            "color_identity<=rg",
+            r"(card.card_color_identity <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
+        ),  # <= maps to <= (no inversion for <=)
+        (
+            "identity>g",
+            r"(card.card_color_identity @> %(p_dict_eydHJzogVHJ1ZX0)s AND card.card_color_identity <> %(p_dict_eydHJzogVHJ1ZX0)s)",
+            {"p_dict_eydHJzogVHJ1ZX0": {"G": True}},
+        ),  # > maps to > (no inversion for >)
+        (
+            "id<rg",
+            r"(card.card_color_identity <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s AND card.card_color_identity <> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
+        ),  # < maps to < (no inversion for <)
+    ],
+)
+def test_color_identity_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
+    parsed = parsing.parse_scryfall_query(input_query)
+    observed_params = {}
+    observed_sql = parsed.to_sql(observed_params)
+    assert (observed_sql, observed_params) == (
+        expected_sql,
+        expected_parameters,
+    ), f"\nExpected: {expected_sql}\t{expected_parameters}\nObserved: {observed_sql}\t{observed_params}"
+
+
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_sql", "expected_parameters"),
+    argvalues=[
+        (
             "card_types:creature",
             r"(%(p_list_WydDcmVhdHVyZSdd)s <@ card.card_types)",
             {"p_list_WydDcmVhdHVyZSdd": ["Creature"]},

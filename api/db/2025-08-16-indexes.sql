@@ -18,6 +18,10 @@ CREATE INDEX IF NOT EXISTS idx_cards_colors_gin
    ON magic.cards
    USING gin (card_colors);
 
+CREATE INDEX IF NOT EXISTS idx_cards_color_identity_gin
+   ON magic.cards
+   USING gin (card_color_identity);
+
 CREATE INDEX IF NOT EXISTS idx_cards_edhrec_rank_btree
    ON magic.cards
    USING btree (edhrec_rank);

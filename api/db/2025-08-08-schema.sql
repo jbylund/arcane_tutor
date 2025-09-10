@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS magic.cards (
     card_types jsonb NOT NULL, -- list of strings (e.g. ["Creature", "Artifact"])
     card_subtypes jsonb, -- list of strings (e.g. ["Bird", "Knight"])
     card_colors jsonb NOT NULL, -- object of color codes, e.g. {"R": true, "G": true}
+    card_color_identity jsonb NOT NULL, -- object of color identity codes, e.g. {"R": true, "G": true}
 
     edhrec_rank integer,
 
@@ -57,6 +58,10 @@ CREATE TABLE IF NOT EXISTS magic.cards (
     CONSTRAINT card_colors_must_be_object CHECK (jsonb_typeof(card_colors) = 'object'),
     CONSTRAINT card_colors_valid_colors CHECK (
         card_colors <@ '{"W": true, "U": true, "B": true, "R": true, "G": true, "C": true}'::jsonb
+    ),
+    CONSTRAINT card_color_identity_must_be_object CHECK (jsonb_typeof(card_color_identity) = 'object'),
+    CONSTRAINT card_color_identity_valid_colors CHECK (
+        card_color_identity <@ '{"W": true, "U": true, "B": true, "R": true, "G": true, "C": true}'::jsonb
     ),
 
     -- Creature-only attribute constraints
