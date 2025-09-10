@@ -14,9 +14,7 @@ import os
 import pathlib
 import time
 from typing import cast as typecast
-import itertools
 from psycopg import Connection
-from psycopg.types.json import Jsonb
 from typing import Any
 from urllib.parse import urlparse
 
@@ -425,6 +423,8 @@ class APIResource:
             card_types, _, card_subtypes = (x.strip().split() for x in card.get("type_line", "").title().partition("\u2014"))
             card["card_types"] = card_types
             card["card_subtypes"] = card_subtypes or None
+            if not card["card_subtypes"]:
+                card.pop("card_subtypes")
             # card["all_types"] = {t: True for t in card_types + card_subtypes}
             for creature_field in ["power", "toughness"]:
                 val = card.setdefault(creature_field, None)
@@ -470,25 +470,9 @@ class APIResource:
                 del card, json_str
 
                 conn.commit()
-                after = time.monotonic()
-                rate = len(to_insert) / (after - before)
-                logger.info("Imported %d cards in %f seconds, rate: %f cards/s...", len(to_insert), after - before, rate)
-
-                cursor.execute(
-                    """
-                    SELECT
-                        jsonb_typeof(card_blob->'card_subtypes'),
-                        SUM(1) AS num_rows
-                    FROM
-                        import_staging
-                    GROUP BY
-                        1
-                    ORDER BY
-                        2 DESC
-                    """
-                )
-                res = cursor.fetchall()
-                raise AssertionError(res)
+                after_staging = time.monotonic()
+                rate = len(to_insert) / (after_staging - before)
+                logger.info("Imported %d cards into staging table in %.2f seconds, rate: %.2f cards/s...", len(to_insert), after_staging - before, rate)
 
                 cursor.execute(
                     query="""
@@ -528,6 +512,11 @@ class APIResource:
                     """,
                 )
                 conn.commit()
+
+                after_transfer = time.monotonic()
+                rate = len(to_insert) / (after_transfer - after_staging)
+                logger.info("Transferred %d cards from staging table to main table in %.2f seconds, rate: %.2f cards/s...", len(to_insert), after_transfer - after_staging, rate)
+                logger.info("Total time: %.2f seconds, rate: %.2f cards/s...", after_transfer - before, len(to_insert) / (after_transfer - before))
 
 
     def get_cards(
