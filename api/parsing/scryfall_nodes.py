@@ -143,15 +143,23 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         # Produce the query as a jsonb object
         lhs_sql = self.lhs.to_sql(context)
         attr = self.lhs.attribute_name
-        if attr == "card_colors":
+        if attr in ("card_colors", "card_color_identity"):
             rhs = get_colors_comparison_object(self.rhs.value.strip().lower())
             pname = param_name(rhs)
             context[pname] = rhs
             # query = json.dumps(rhs, sort_keys=True) + "::jsonb"
+        
+        # Color identity has inverted semantics for the : operator only
+        is_color_identity = attr == "card_color_identity"
+        
         if self.operator == "=":
             return f"({lhs_sql} = %({pname})s)"
         if self.operator in (">=", ":"):
-            return f"({lhs_sql} @> %({pname})s)"
+            # For color identity, : should behave like <=, but >= should still be >=
+            if is_color_identity and self.operator == ":":
+                return f"({lhs_sql} <@ %({pname})s)"
+            else:
+                return f"({lhs_sql} @> %({pname})s)"
         if self.operator == "<=":
             return f"({lhs_sql} <@ %({pname})s)"
         if self.operator == ">":
