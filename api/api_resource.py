@@ -451,41 +451,83 @@ class APIResource:
         """Import data from Scryfall and insert into the database."""
         self._setup_schema()
 
-        def maybe_json(v: Any) -> Any:
-            if isinstance(v, list | dict):
-                return Jsonb(v)
-            return v
-
         to_insert = self._get_cards_to_insert()
-        for idx, icard in enumerate(to_insert):
-            card_with_json = {k: maybe_json(v) for k, v in icard.items()}
-            card_with_json["blob"] = Jsonb(icard)
-            to_insert[idx] = card_with_json
 
-        batch_size = 1000
-        batches = list(itertools.batched(to_insert, batch_size))
-
-        import_times = collections.deque(maxlen=10)
-        imported = 0
-        import_times.append(time.monotonic()) # time zero
         with self._conn_pool.connection() as conn:
             conn = typecast(Connection, conn)
             with conn.cursor() as cursor:
-                for batch in batches:
-                    cursor.executemany(
-                        query="""
-                        INSERT INTO magic.cards
-                        ( card_name,   cmc  , mana_cost_text, mana_cost_jsonb, raw_card_blob,     card_types,   card_subtypes  , card_colors, creature_power, creature_power_text, creature_toughness, creature_toughness_text, edhrec_rank ) VALUES
-                        ( %(name)s , %(cmc)s, %(mana_cost)s ,            null,      %(blob)s, %(card_types)s, %(card_subtypes)s,     %(card_colors)s,     %(power_numeric)s,             %(power)s,             %(toughness_numeric)s   ,   %(toughness)s, %(edhrec_rank)s)
-                        ON CONFLICT (card_name) DO NOTHING
-                        """,
-                        params_seq=batch,
+                # create a temporary table to hold the cards
+                cursor.execute("CREATE TEMPORARY TABLE import_staging (card_blob jsonb)")
+
+                before = time.monotonic()
+                # copy load the cards into the staging table
+                with cursor.copy("COPY import_staging (card_blob) FROM STDIN WITH (FORMAT csv, HEADER false)") as copy_filehandle:
+                    writer = csv.writer(copy_filehandle, quoting=csv.QUOTE_ALL)
+                    for card in to_insert:
+                        json_str = orjson.dumps(card).decode('utf-8')
+                        writer.writerow([json_str])
+
+                del card, json_str
+
+                conn.commit()
+                after = time.monotonic()
+                rate = len(to_insert) / (after - before)
+                logger.info("Imported %d cards in %f seconds, rate: %f cards/s...", len(to_insert), after - before, rate)
+
+                cursor.execute(
+                    """
+                    SELECT
+                        jsonb_typeof(card_blob->'card_subtypes'),
+                        SUM(1) AS num_rows
+                    FROM
+                        import_staging
+                    GROUP BY
+                        1
+                    ORDER BY
+                        2 DESC
+                    """
+                )
+                res = cursor.fetchall()
+                raise AssertionError(res)
+
+                cursor.execute(
+                    query="""
+                    INSERT INTO magic.cards
+                    (
+                        card_name,               -- 1
+                        cmc,                     -- 2
+                        mana_cost_text,          -- 3
+                        mana_cost_jsonb,         -- 4
+                        card_types,              -- 5
+                        card_subtypes,           -- 6
+                        card_colors,             -- 7
+                        creature_power,          -- 8
+                        creature_power_text,     -- 9
+                        creature_toughness,      -- 10
+                        creature_toughness_text, -- 11
+                        edhrec_rank,             -- 12
+                        raw_card_blob            -- 13
                     )
-                    conn.commit()
-                    imported += len(batch)
-                    import_times.append(time.monotonic())
-                    rate = imported / (import_times[-1] - import_times[0])
-                    logger.info("Imported %d cards, current rate: %d cards/s...", imported, rate)
+                    SELECT
+                        card_blob->'name' AS card_name, -- 1
+                        (card_blob->>'cmc')::float::integer AS cmc, -- 2
+                        card_blob->'mana_cost' AS mana_cost_text, -- 3
+                        card_blob->'mana_cost' AS mana_cost_jsonb, -- 4
+                        card_blob->'card_types' AS card_types, -- 5
+                        card_blob->'card_subtypes' AS card_subtypes, -- 6
+                        card_blob->'card_colors' AS card_colors, -- 7
+                        (card_blob->>'creature_power')::integer AS creature_power, -- 8
+                        card_blob->'creature_power_text' AS creature_power_text, -- 9
+                        (card_blob->>'creature_toughness')::integer AS creature_toughness, -- 10
+                        card_blob->'creature_toughness_text' AS creature_toughness_text, -- 11
+                        (card_blob->>'edhrec_rank')::integer AS edhrec_rank, -- 12
+                        card_blob AS raw_card_blob -- 13
+                    FROM
+                        import_staging
+                    ON CONFLICT (card_name) DO NOTHING
+                    """,
+                )
+                conn.commit()
 
 
     def get_cards(
