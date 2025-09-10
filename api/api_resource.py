@@ -13,6 +13,8 @@ import logging
 import os
 import pathlib
 import time
+from typing import cast as typecast
+from psycopg import Connection
 from typing import Any
 from urllib.parse import urlparse
 
@@ -421,6 +423,8 @@ class APIResource:
             card_types, _, card_subtypes = (x.strip().split() for x in card.get("type_line", "").title().partition("\u2014"))
             card["card_types"] = card_types
             card["card_subtypes"] = card_subtypes or None
+            if not card["card_subtypes"]:
+                card.pop("card_subtypes")
             # card["all_types"] = {t: True for t in card_types + card_subtypes}
             for creature_field in ["power", "toughness"]:
                 val = card.setdefault(creature_field, None)
@@ -446,42 +450,74 @@ class APIResource:
     def import_data(self: APIResource, **_: object) -> None:
         """Import data from Scryfall and insert into the database."""
         self._setup_schema()
+
         to_insert = self._get_cards_to_insert()
 
-        last_log = 0
-        log_interval = 1
-        import_times = collections.deque(maxlen=1000)
-
-        from psycopg.types.json import Jsonb
-
-        def maybe_json(v: Any) -> Any:
-            if isinstance(v, list | dict):
-                return Jsonb(v)
-            return v
-
         with self._conn_pool.connection() as conn:
+            conn = typecast(Connection, conn)
             with conn.cursor() as cursor:
-                for idx, card in enumerate(to_insert):
-                    now = time.monotonic()
-                    import_times.append(now)
-                    if log_interval < now - last_log:
-                        try:
-                            rate = len(import_times) / (now - import_times[0])
-                        except ZeroDivisionError:
-                            rate = 0
-                        logger.info("Imported %d cards, current rate: %d cards/s...", idx, rate)
-                        last_log = now
+                # create a temporary table to hold the cards
+                cursor.execute("CREATE TEMPORARY TABLE import_staging (card_blob jsonb)")
 
-                    card_with_json = {k: maybe_json(v) for k, v in card.items()}
-                    cursor.execute(
-                        """
-                        INSERT INTO magic.cards
-                        ( card_name,   cmc  , mana_cost_text, mana_cost_jsonb, raw_card_blob,     card_types,   card_subtypes  , card_colors, creature_power, creature_power_text, creature_toughness, creature_toughness_text, edhrec_rank ) VALUES
-                        ( %(name)s , %(cmc)s, %(mana_cost)s ,            null,      %(blob)s, %(card_types)s, %(card_subtypes)s,     %(card_colors)s,     %(power_numeric)s,             %(power)s,             %(toughness_numeric)s   ,   %(toughness)s, %(edhrec_rank)s)
-                        ON CONFLICT (card_name) DO NOTHING
-                        """,
-                        card_with_json | {"blob": Jsonb(card)},
+                before = time.monotonic()
+                # copy load the cards into the staging table
+                with cursor.copy("COPY import_staging (card_blob) FROM STDIN WITH (FORMAT csv, HEADER false)") as copy_filehandle:
+                    writer = csv.writer(copy_filehandle, quoting=csv.QUOTE_ALL)
+                    for card in to_insert:
+                        json_str = orjson.dumps(card).decode('utf-8')
+                        writer.writerow([json_str])
+
+                del card, json_str
+
+                conn.commit()
+                after_staging = time.monotonic()
+                rate = len(to_insert) / (after_staging - before)
+                logger.info("Imported %d cards into staging table in %.2f seconds, rate: %.2f cards/s...", len(to_insert), after_staging - before, rate)
+
+                cursor.execute(
+                    query="""
+                    INSERT INTO magic.cards
+                    (
+                        card_name,               -- 1
+                        cmc,                     -- 2
+                        mana_cost_text,          -- 3
+                        mana_cost_jsonb,         -- 4
+                        card_types,              -- 5
+                        card_subtypes,           -- 6
+                        card_colors,             -- 7
+                        creature_power,          -- 8
+                        creature_power_text,     -- 9
+                        creature_toughness,      -- 10
+                        creature_toughness_text, -- 11
+                        edhrec_rank,             -- 12
+                        raw_card_blob            -- 13
                     )
+                    SELECT
+                        card_blob->'name' AS card_name, -- 1
+                        (card_blob->>'cmc')::float::integer AS cmc, -- 2
+                        card_blob->'mana_cost' AS mana_cost_text, -- 3
+                        card_blob->'mana_cost' AS mana_cost_jsonb, -- 4
+                        card_blob->'card_types' AS card_types, -- 5
+                        card_blob->'card_subtypes' AS card_subtypes, -- 6
+                        card_blob->'card_colors' AS card_colors, -- 7
+                        (card_blob->>'creature_power')::integer AS creature_power, -- 8
+                        card_blob->'creature_power_text' AS creature_power_text, -- 9
+                        (card_blob->>'creature_toughness')::integer AS creature_toughness, -- 10
+                        card_blob->'creature_toughness_text' AS creature_toughness_text, -- 11
+                        (card_blob->>'edhrec_rank')::integer AS edhrec_rank, -- 12
+                        card_blob AS raw_card_blob -- 13
+                    FROM
+                        import_staging
+                    ON CONFLICT (card_name) DO NOTHING
+                    """,
+                )
+                conn.commit()
+
+                after_transfer = time.monotonic()
+                rate = len(to_insert) / (after_transfer - after_staging)
+                logger.info("Transferred %d cards from staging table to main table in %.2f seconds, rate: %.2f cards/s...", len(to_insert), after_transfer - after_staging, rate)
+                logger.info("Total time: %.2f seconds, rate: %.2f cards/s...", after_transfer - before, len(to_insert) / (after_transfer - before))
+
 
     def get_cards(
         self: APIResource, *, min_name: str | None = None, max_name: str | None = None, limit: int = 2500, **_: object,
