@@ -60,7 +60,6 @@
         max-width: 600px;
       }
 
-
       .search-input {
         width: 100%;
         padding: 15px 20px;
@@ -420,7 +419,6 @@
             window.history.replaceState({}, '', url);
           });
 
-
           // Handle enter key for immediate search
           this.searchInput.addEventListener('keypress', e => {
             if (e.key === 'Enter') {
@@ -428,7 +426,6 @@
               this.performSearch(e.target.value);
             }
           });
-
 
           // Initialize intersection observer for lazy image loading
           this.initImageObserver();
@@ -491,7 +488,8 @@
           }
 
           const prefix = typeMatch[1].toLowerCase();
-          if (prefix.length < 2) { // Only autocomplete if at least 2 characters
+          if (prefix.length < 2) {
+            // Only autocomplete if at least 2 characters
             return query;
           }
 
@@ -525,7 +523,7 @@
           }
 
           // Auto-complete the query
-          const completedQuery = query.replace(/(?:^|\s)(?:t|type):[a-zA-Z]*$/i, (match) => {
+          const completedQuery = query.replace(/(?:^|\s)(?:t|type):[a-zA-Z]*$/i, match => {
             return match.replace(/[a-zA-Z]+$/, completedType);
           });
 
@@ -963,7 +961,7 @@
             '{S}': 'ms ms-snow ms-cost',
             '{CHAOS}': 'ms ms-chaos',
             '{PW}': 'ms ms-pw',
-            '{∞}': 'ms ms-infinity'
+            '{∞}': 'ms ms-infinity',
           };
 
           // Hybrid mana symbols with casting cost circles
@@ -982,7 +980,7 @@
             '{2/U}': 'ms ms-2u ms-cost',
             '{2/B}': 'ms ms-2b ms-cost',
             '{2/R}': 'ms ms-2r ms-cost',
-            '{2/G}': 'ms ms-2g ms-cost'
+            '{2/G}': 'ms ms-2g ms-cost',
           };
 
           // Replace mana symbols with Mana font spans
