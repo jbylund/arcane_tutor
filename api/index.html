@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Card Search</title>
+    <link href="https://cdn.jsdelivr.net/npm/mana-font@latest/css/mana.min.css" rel="stylesheet" type="text/css" />
     <style>
       * {
         margin: 0;
@@ -129,6 +130,13 @@
         font-family: monospace;
       }
 
+      .mana-symbol {
+        font-family: 'Mana';
+        font-size: 1.2em;
+        margin: 0 1px;
+        display: inline-block;
+      }
+
       .card-type {
         font-size: 1rem;
         color: #222;
@@ -220,7 +228,7 @@
         max-height: 85vh;
         width: auto;
         height: auto;
-        border-radius: 10px;
+        border-radius: 4%;
         box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
         object-fit: contain;
         flex-shrink: 0;
@@ -246,6 +254,13 @@
         color: #666;
         margin-bottom: 8px;
         font-family: monospace;
+      }
+
+      .modal-mana-symbol {
+        font-family: 'Mana';
+        font-size: 1.3em;
+        margin: 0 1px;
+        display: inline-block;
       }
 
       .modal-card-type {
@@ -590,7 +605,7 @@
              <div class="card-item" data-card-id="${this.escapeHtml(cardId)}">
                  ${imageHtml}
                  <div class="card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
-                 ${card.mana_cost ? `<div class="card-mana">${this.escapeHtml(card.mana_cost)}</div>` : ''}
+                 ${card.mana_cost ? `<div class="card-mana">${this.convertManaSymbols(card.mana_cost, false)}</div>` : ''}
                  ${card.type_line ? `<div class="card-type">${this.escapeHtml(card.type_line)}</div>` : ''}
                  ${card.oracle_text ? `<div class="card-text">${this.escapeHtml(card.oracle_text).substring(0, 200)}${card.oracle_text.length > 200 ? '...' : ''}</div>` : ''}
                  ${card.set_name ? `<div class="card-set">${this.escapeHtml(card.set_name)}</div>` : ''}
@@ -634,7 +649,7 @@
             ${imageHtml}
             <div class="modal-card-info">
               <div class="modal-card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
-              ${card.mana_cost ? `<div class="modal-card-mana">${this.escapeHtml(card.mana_cost)}</div>` : ''}
+              ${card.mana_cost ? `<div class="modal-card-mana">${this.convertManaSymbols(card.mana_cost, true)}</div>` : ''}
               ${card.type_line ? `<div class="modal-card-type">${this.escapeHtml(card.type_line)}</div>` : ''}
               ${card.oracle_text ? `<div class="modal-card-text">${this.escapeHtml(card.oracle_text)}</div>` : ''}
               ${card.set_name ? `<div class="modal-card-set">${this.escapeHtml(card.set_name)}</div>` : ''}
@@ -784,6 +799,89 @@
           const div = document.createElement('div');
           div.textContent = text;
           return div.innerHTML;
+        }
+
+        convertManaSymbols(manaCost, isModal = false) {
+          if (!manaCost) return '';
+
+          // Map of mana symbols to Mana font classes with casting cost circles
+          const manaMap = {
+            '{R}': 'ms ms-r ms-cost',
+            '{G}': 'ms ms-g ms-cost',
+            '{W}': 'ms ms-w ms-cost',
+            '{U}': 'ms ms-u ms-cost',
+            '{B}': 'ms ms-b ms-cost',
+            '{C}': 'ms ms-c ms-cost',
+            '{0}': 'ms ms-0 ms-cost',
+            '{1}': 'ms ms-1 ms-cost',
+            '{2}': 'ms ms-2 ms-cost',
+            '{3}': 'ms ms-3 ms-cost',
+            '{4}': 'ms ms-4 ms-cost',
+            '{5}': 'ms ms-5 ms-cost',
+            '{6}': 'ms ms-6 ms-cost',
+            '{7}': 'ms ms-7 ms-cost',
+            '{8}': 'ms ms-8 ms-cost',
+            '{9}': 'ms ms-9 ms-cost',
+            '{10}': 'ms ms-10 ms-cost',
+            '{11}': 'ms ms-11 ms-cost',
+            '{12}': 'ms ms-12 ms-cost',
+            '{13}': 'ms ms-13 ms-cost',
+            '{14}': 'ms ms-14 ms-cost',
+            '{15}': 'ms ms-15 ms-cost',
+            '{16}': 'ms ms-16 ms-cost',
+            '{17}': 'ms ms-17 ms-cost',
+            '{18}': 'ms ms-18 ms-cost',
+            '{19}': 'ms ms-19 ms-cost',
+            '{20}': 'ms ms-20 ms-cost',
+            '{X}': 'ms ms-x ms-cost',
+            '{Y}': 'ms ms-y ms-cost',
+            '{Z}': 'ms ms-z ms-cost',
+            '{T}': 'ms ms-tap',
+            '{Q}': 'ms ms-untap',
+            '{E}': 'ms ms-energy',
+            '{P}': 'ms ms-phyrexian ms-cost',
+            '{S}': 'ms ms-snow ms-cost',
+            '{CHAOS}': 'ms ms-chaos',
+            '{PW}': 'ms ms-pw',
+            '{∞}': 'ms ms-infinity'
+          };
+
+          // Hybrid mana symbols with casting cost circles
+          const hybridMap = {
+            '{W/U}': 'ms ms-wu ms-cost',
+            '{U/B}': 'ms ms-ub ms-cost',
+            '{B/R}': 'ms ms-br ms-cost',
+            '{R/G}': 'ms ms-rg ms-cost',
+            '{G/W}': 'ms ms-gw ms-cost',
+            '{W/B}': 'ms ms-wb ms-cost',
+            '{U/R}': 'ms ms-ur ms-cost',
+            '{B/G}': 'ms ms-bg ms-cost',
+            '{R/W}': 'ms ms-rw ms-cost',
+            '{G/U}': 'ms ms-gu ms-cost',
+            '{2/W}': 'ms ms-2w ms-cost',
+            '{2/U}': 'ms ms-2u ms-cost',
+            '{2/B}': 'ms ms-2b ms-cost',
+            '{2/R}': 'ms ms-2r ms-cost',
+            '{2/G}': 'ms ms-2g ms-cost'
+          };
+
+          // Replace mana symbols with Mana font spans
+          let converted = manaCost;
+          const symbolClass = isModal ? 'modal-mana-symbol' : 'mana-symbol';
+
+          // Process hybrid symbols first (they need to be processed before single symbols)
+          Object.keys(hybridMap).forEach(symbol => {
+            const regex = new RegExp(symbol.replace(/[{}]/g, '\\$&'), 'g');
+            converted = converted.replace(regex, `<span class="${symbolClass} ${hybridMap[symbol]}"></span>`);
+          });
+
+          // Process regular mana symbols
+          Object.keys(manaMap).forEach(symbol => {
+            const regex = new RegExp(symbol.replace(/[{}]/g, '\\$&'), 'g');
+            converted = converted.replace(regex, `<span class="${symbolClass} ${manaMap[symbol]}"></span>`);
+          });
+
+          return converted;
         }
       }
       window.cardSearchMain = function () {
