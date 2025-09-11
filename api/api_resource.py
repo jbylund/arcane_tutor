@@ -505,10 +505,10 @@ class APIResource:
                         card_blob->'card_subtypes' AS card_subtypes, -- 6
                         card_blob->'card_colors' AS card_colors, -- 7
                         card_blob->'card_color_identity' AS card_color_identity, -- 8
-                        (card_blob->>'creature_power')::integer AS creature_power, -- 9
-                        card_blob->>'creature_power_text' AS creature_power_text, -- 10
-                        (card_blob->>'creature_toughness')::integer AS creature_toughness, -- 10
-                        card_blob->>'creature_toughness_text' AS creature_toughness_text, -- 12
+                        (card_blob->>'power_numeric')::integer AS creature_power, -- 9
+                        card_blob->>'power' AS creature_power_text, -- 10
+                        (card_blob->>'toughness_numeric')::integer AS creature_toughness, -- 10
+                        card_blob->>'toughness' AS creature_toughness_text, -- 12
                         (card_blob->>'edhrec_rank')::integer AS edhrec_rank, -- 13
                         card_blob AS raw_card_blob -- 14
                     FROM
@@ -739,3 +739,49 @@ class APIResource:
 
         """
         return get_migrations()
+
+    def get_common_card_types(self: APIResource, **_: object) -> list[dict[str, Any]]:
+        """Get the common card types from the database."""
+        return self._run_query(
+            query="""
+WITH card_types AS (
+    SELECT
+        jsonb_array_elements_text(card_types) as type_name
+    FROM
+        magic.cards
+    WHERE
+        card_types IS NOT NULL
+),
+card_subtypes AS (
+    SELECT
+        jsonb_array_elements_text(card_subtypes) as subtype_name
+    FROM
+        magic.cards
+    WHERE
+        card_subtypes IS NOT NULL
+),
+card_types_and_subtypes AS (
+    SELECT
+        type_name
+    FROM card_types
+    UNION ALL
+    SELECT
+        subtype_name
+    FROM card_subtypes
+),
+with_min_count AS (
+    SELECT
+        type_name,
+        count(1) as num_occurrences
+    FROM card_types_and_subtypes
+    GROUP BY type_name
+    HAVING count(1) >= 5
+)
+SELECT
+    type_name AS t,
+    num_occurrences AS n
+FROM
+    with_min_count
+ORDER BY
+    type_name""",
+        )["result"]
