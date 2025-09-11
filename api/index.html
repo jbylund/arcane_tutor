@@ -379,7 +379,6 @@
           this.errorMessage = document.getElementById('error');
           this.noResultsMessage = document.getElementById('noResults');
           this.resultsCount = document.getElementById('resultsCount');
-          this.suggestionsContainer = document.getElementById('suggestions');
 
           this.debounceTimeout = null;
           this.debounceDelay = 140; // milliseconds
@@ -1024,9 +1023,6 @@
           />
           <div class="loading" id="loading">
             <div class="spinner"></div>
-          </div>
-          <div class="suggestions-container" id="suggestions">
-            <!-- Suggestions will be populated here -->
           </div>
         </div>
       </div>
