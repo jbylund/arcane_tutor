@@ -34,6 +34,13 @@
         font-size: 3rem;
         margin-bottom: 10px;
         text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+        cursor: pointer;
+        transition: all 0.3s ease;
+      }
+
+      .header h1:hover {
+        transform: scale(1.05);
+        text-shadow: 2px 2px 8px rgba(0, 0, 0, 0.5);
       }
 
       .header p {
@@ -432,6 +439,11 @@
             if (cardItem) {
               this.handleCardClick(cardItem);
             }
+          });
+
+          // Add click handler for header to clear search
+          document.querySelector('.header h1').addEventListener('click', () => {
+            this.clearSearch();
           });
         }
 
@@ -879,6 +891,22 @@
           }
           this.resultsContainer.innerHTML = '';
           this.clearMessages();
+        }
+
+        clearSearch() {
+          // Clear the search input
+          this.searchInput.value = '';
+
+          // Clear results
+          this.clearResults();
+
+          // Clear URL parameters
+          const url = new URL(window.location);
+          url.searchParams.delete('q');
+          window.history.replaceState({}, '', url);
+
+          // Focus back on search input
+          this.searchInput.focus();
         }
 
         clearMessages() {
