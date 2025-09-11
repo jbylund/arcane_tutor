@@ -378,6 +378,7 @@
           this.currentController = null;
           this.imageObserver = null;
           this.cardsData = new Map(); // Store card data by ID
+          this.lastRequestedUrl = null; // Track the last requested URL to prevent duplicate requests
 
           this.init();
         }
@@ -435,6 +436,7 @@
           // Clear results if query is empty
           if (!query.trim()) {
             this.clearResults();
+            this.lastRequestedUrl = null; // Reset URL tracking when clearing
             return;
           }
 
@@ -487,14 +489,24 @@
           // Balance the query for better typeahead results
           const balancedQuery = this.balanceQuery(query);
 
+          // Generate the URL for this request
+          const url = `/search?q=${encodeURIComponent(balancedQuery)}`;
+
+          // Check if this is the same URL as the last request - if so, skip the request
+          if (this.lastRequestedUrl === url) {
+            console.log('Skipping duplicate request for URL:', url);
+            return;
+          }
+
           // Show loading state
           this.showLoading();
           this.clearMessages();
 
           // Create new AbortController for this request
           this.currentController = new AbortController();
-          // Generate a unique URL for this request to match in PerformanceResourceTiming
-          const url = `/search?q=${encodeURIComponent(balancedQuery)}`;
+          // Update the last requested URL
+          this.lastRequestedUrl = url;
+
           try {
             // Clear any previous resource timing entries for this URL
             performance.clearResourceTimings && performance.clearResourceTimings();
