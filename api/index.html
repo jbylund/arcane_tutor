@@ -566,8 +566,11 @@
           // Balance the query for better typeahead results
           const balancedQuery = this.balanceQuery(completedQuery);
 
+          // Normalize whitespace to prevent duplicate requests for queries that differ only in whitespace
+          const normalizedQuery = balancedQuery.trim().replace(/\s+/g, ' ');
+
           // Generate the URL for this request
-          const url = `/search?q=${encodeURIComponent(balancedQuery)}`;
+          const url = `/search?q=${encodeURIComponent(normalizedQuery)}`;
 
           // Check if this is the same URL as the last request - if so, skip the request
           if (this.lastRequestedUrl === url) {
