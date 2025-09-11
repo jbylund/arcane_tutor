@@ -494,7 +494,8 @@ class APIResource:
                         creature_toughness,      -- 11
                         creature_toughness_text, -- 12
                         edhrec_rank,             -- 13
-                        raw_card_blob            -- 14
+                        oracle_text,             -- 14
+                        raw_card_blob            -- 15
                     )
                     SELECT
                         card_blob->>'name' AS card_name, -- 1
@@ -510,7 +511,8 @@ class APIResource:
                         (card_blob->>'toughness_numeric')::integer AS creature_toughness, -- 10
                         card_blob->>'toughness' AS creature_toughness_text, -- 12
                         (card_blob->>'edhrec_rank')::integer AS edhrec_rank, -- 13
-                        card_blob AS raw_card_blob -- 14
+                        card_blob->>'oracle_text' AS oracle_text, -- 14
+                        card_blob AS raw_card_blob -- 15
                     FROM
                         import_staging
                     ON CONFLICT (card_name) DO NOTHING
@@ -522,6 +524,10 @@ class APIResource:
                 rate = len(to_insert) / (after_transfer - after_staging)
                 logger.info("Transferred %d cards from staging table to main table in %.2f seconds, rate: %.2f cards/s...", len(to_insert), after_transfer - after_staging, rate)
                 logger.info("Total time: %.2f seconds, rate: %.2f cards/s...", after_transfer - before, len(to_insert) / (after_transfer - before))
+
+                cursor.execute("SELECT * FROM import_staging LIMIT 10")
+                return cursor.fetchall()
+
 
 
     def get_cards(
