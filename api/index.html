@@ -543,24 +543,32 @@
 
           // Clear previous card data and store new cards
           this.cardsData.clear();
-          cards.forEach(card => {
-            const cardId = card.id || card.name;
+          cards.forEach((card, index) => {
+            const cardId = index.toString();
+            console.log('Storing card with ID:', cardId, 'Card data:', card);
             this.cardsData.set(cardId, card);
           });
 
+          console.log('Total cards stored in cardsData:', this.cardsData.size);
+          console.log('CardsData keys:', Array.from(this.cardsData.keys()));
+
           this.showResultsCount(totalCards, query, elapsed);
 
-          this.resultsContainer.innerHTML = cards.map(card => this.createCardHTML(card)).join('');
+          this.resultsContainer.innerHTML = cards.map((card, index) => this.createCardHTML(card, index)).join('');
 
           // Observe all images for viewport-based loading
           this.observeImages();
         }
 
-        createCardHTML(card) {
-          const cardId = card.id || card.name;
+        createCardHTML(card, index) {
+          const cardId = index.toString();
           const imageSmall = card.image_small;
           const imageNormal = card.image_normal;
           const imageLarge = card.image_large;
+
+          // Debug logging
+          console.log('Creating card HTML for:', card);
+          console.log('Card ID will be:', cardId);
 
           // Create descriptive alt text with card name, mana cost, and oracle text
           let altText = this.escapeHtml(card.name || 'Unknown Card');
@@ -579,7 +587,7 @@
           const imageHtml = `<img class="card-image" data-small="${this.escapeHtml(imageSmall)}" data-normal="${this.escapeHtml(imageNormal)}" data-large="${this.escapeHtml(imageLarge)}" alt="${altText}" title="${altText}" />`;
 
           return `
-             <div class="card-item" data-card-id="${this.escapeHtml(card.id || card.name)}">
+             <div class="card-item" data-card-id="${this.escapeHtml(cardId)}">
                  ${imageHtml}
                  <div class="card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
                  ${card.mana_cost ? `<div class="card-mana">${this.escapeHtml(card.mana_cost)}</div>` : ''}
@@ -593,6 +601,10 @@
         handleCardClick(cardItem) {
           try {
             const cardId = cardItem.getAttribute('data-card-id');
+            console.log('Clicked card with ID:', cardId);
+            console.log('Available cards in cardsData:', Array.from(this.cardsData.keys()));
+            console.log('Looking for card with ID:', cardId);
+
             const cardData = this.cardsData.get(cardId);
 
             if (cardData) {
@@ -600,6 +612,7 @@
               this.showCardModal(cardData);
             } else {
               console.error('Card data not found for ID:', cardId);
+              console.error('Available card IDs:', Array.from(this.cardsData.keys()));
             }
           } catch (e) {
             console.error('Error handling card click:', e);
