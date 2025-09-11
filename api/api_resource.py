@@ -416,6 +416,8 @@ class APIResource:
                 continue
             if set(card["legalities"].values()) == {"not_legal"}:
                 continue
+            if "paper" not in card["games"]:
+                continue
             if "card_faces" in card:
                 continue
             if card.get("set_type") == "funny":
@@ -495,18 +497,18 @@ class APIResource:
                         raw_card_blob            -- 14
                     )
                     SELECT
-                        card_blob->'name' AS card_name, -- 1
+                        card_blob->>'name' AS card_name, -- 1
                         (card_blob->>'cmc')::float::integer AS cmc, -- 2
-                        card_blob->'mana_cost' AS mana_cost_text, -- 3
+                        card_blob->>'mana_cost' AS mana_cost_text, -- 3
                         card_blob->'mana_cost' AS mana_cost_jsonb, -- 4
                         card_blob->'card_types' AS card_types, -- 5
                         card_blob->'card_subtypes' AS card_subtypes, -- 6
                         card_blob->'card_colors' AS card_colors, -- 7
                         card_blob->'card_color_identity' AS card_color_identity, -- 8
                         (card_blob->>'creature_power')::integer AS creature_power, -- 9
-                        card_blob->'creature_power_text' AS creature_power_text, -- 10
+                        card_blob->>'creature_power_text' AS creature_power_text, -- 10
                         (card_blob->>'creature_toughness')::integer AS creature_toughness, -- 10
-                        card_blob->'creature_toughness_text' AS creature_toughness_text, -- 12
+                        card_blob->>'creature_toughness_text' AS creature_toughness_text, -- 12
                         (card_blob->>'edhrec_rank')::integer AS edhrec_rank, -- 13
                         card_blob AS raw_card_blob -- 14
                     FROM
