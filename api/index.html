@@ -384,7 +384,6 @@
 
           // Autocomplete properties
           this.commonCardTypes = []; // Will store the common card types
-          this.autocompleteTimeout = null;
 
           this.init();
         }
@@ -404,7 +403,6 @@
           this.searchInput.addEventListener('input', e => {
             const query = e.target.value;
             this.handleSearch(query);
-            this.handleAutocomplete(query);
             // Update the URL as the user types
             const url = new URL(window.location);
             if (query.trim()) {
@@ -473,32 +471,16 @@
           }
         }
 
-        handleAutocomplete(query) {
-          // Clear previous autocomplete timeout
-          clearTimeout(this.autocompleteTimeout);
-
-          // Don't autocomplete empty queries
-          if (!query.trim()) {
-            this.hideSuggestions();
-            return;
-          }
-
-          // Debounce autocomplete
-          this.autocompleteTimeout = setTimeout(() => {
-            this.autoCompleteAndSearch(query);
-          }, 300); // Slightly longer delay to avoid interrupting typing
-        }
-
-        autoCompleteAndSearch(query) {
+        autoCompleteQuery(query) {
           // Look for type queries like "t:hydr" or "type:hydr"
           const typeMatch = query.match(/(?:^|\s)(?:t|type):([a-zA-Z]*)$/i);
           if (!typeMatch) {
-            return;
+            return query; // No type query found, return original
           }
 
           const prefix = typeMatch[1].toLowerCase();
           if (prefix.length < 2) { // Only autocomplete if at least 2 characters
-            return;
+            return query;
           }
 
           // Find the most common type that starts with this prefix
@@ -506,18 +488,36 @@
             .filter(type => type.t.toLowerCase().startsWith(prefix))
             .sort((a, b) => b.n - a.n)[0]; // Get the most frequent match
 
-          if (bestMatch) {
-            // Auto-complete the query (but don't update the search box)
-            const completedQuery = query.replace(/(?:^|\s)(?:t|type):[a-zA-Z]*$/i, (match, prefix) => {
-              return match.replace(/[a-zA-Z]+$/, bestMatch.t);
-            });
+          if (!bestMatch) {
+            return query; // No match found, return original
+          }
 
-            // Only search if the completion is different from current input
-            if (completedQuery !== query) {
-              // Perform the search with the completed query (but keep original in search box)
-              this.performSearch(completedQuery);
+          // Get the original prefix to preserve capitalization
+          const originalPrefix = typeMatch[1];
+
+          // Create completion that matches the user's capitalization pattern
+          let completedType = bestMatch.t;
+          if (originalPrefix.length > 0) {
+            // Preserve the capitalization pattern of the user's input
+            if (originalPrefix === originalPrefix.toUpperCase()) {
+              // All caps -> all caps
+              completedType = bestMatch.t.toUpperCase();
+            } else if (originalPrefix === originalPrefix.toLowerCase()) {
+              // All lowercase -> all lowercase
+              completedType = bestMatch.t.toLowerCase();
+            } else {
+              // Mixed case -> take whatever they've typed so far
+              // and append the rest of the completion
+              completedType = originalPrefix + bestMatch.t.slice(originalPrefix.length);
             }
           }
+
+          // Auto-complete the query
+          const completedQuery = query.replace(/(?:^|\s)(?:t|type):[a-zA-Z]*$/i, (match) => {
+            return match.replace(/[a-zA-Z]+$/, completedType);
+          });
+
+          return completedQuery;
         }
 
         balanceQuery(query) {
@@ -560,8 +560,11 @@
         async performSearch(query) {
           if (!query.trim()) return;
 
+          // First, try to autocomplete the query
+          const completedQuery = this.autoCompleteQuery(query);
+
           // Balance the query for better typeahead results
-          const balancedQuery = this.balanceQuery(query);
+          const balancedQuery = this.balanceQuery(completedQuery);
 
           // Generate the URL for this request
           const url = `/search?q=${encodeURIComponent(balancedQuery)}`;
