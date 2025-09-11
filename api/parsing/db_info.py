@@ -19,6 +19,7 @@ class FieldInfo:
 
 DB_COLUMNS = [
     FieldInfo("card_colors", FieldType.JSONB_OBJECT, ["color", "colors", "c"]),
+    FieldInfo("card_color_identity", FieldType.JSONB_OBJECT, ["color_identity", "coloridentity", "id", "identity"]),
     FieldInfo("card_name", FieldType.TEXT, ["name"]),
     FieldInfo("card_subtypes", FieldType.JSONB_ARRAY, ["subtype", "subtypes"]),
     FieldInfo("card_types", FieldType.JSONB_ARRAY, ["type", "types", "t"]),
