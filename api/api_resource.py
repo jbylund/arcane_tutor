@@ -13,9 +13,8 @@ import logging
 import os
 import pathlib
 import time
-from typing import cast as typecast
-from psycopg import Connection
 from typing import Any
+from typing import cast as typecast
 from urllib.parse import urlparse
 
 import falcon
@@ -28,6 +27,7 @@ import requests
 from cachetools import LRUCache, TTLCache, cached
 from honeybadger import honeybadger
 from parsing import generate_sql_query, parse_scryfall_query
+from psycopg import Connection
 
 honeybadger.configure(
     api_key="hbp_mHbJs4KJAOeUhK17Ixr0AzDC0gx8Zt2WG6kH",
@@ -464,7 +464,7 @@ class APIResource:
                 with cursor.copy("COPY import_staging (card_blob) FROM STDIN WITH (FORMAT csv, HEADER false)") as copy_filehandle:
                     writer = csv.writer(copy_filehandle, quoting=csv.QUOTE_ALL)
                     for card in to_insert:
-                        json_str = orjson.dumps(card).decode('utf-8')
+                        json_str = orjson.dumps(card).decode("utf-8")
                         writer.writerow([json_str])
 
                 del card, json_str
