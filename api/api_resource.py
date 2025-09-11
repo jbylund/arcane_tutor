@@ -685,10 +685,11 @@ class APIResource:
         return {
             "cards": cards,
             "compiled": full_query,
-            # "parsed": str(parsed_query),
+            "params": params,
             "query": query,
             "result": result_bag,
             "total_cards": total_cards,
+            # "parsed": str(parsed_query),
         }
 
     def index_html(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:

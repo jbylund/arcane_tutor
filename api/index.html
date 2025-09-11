@@ -34,6 +34,13 @@
         font-size: 3rem;
         margin-bottom: 10px;
         text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+        cursor: pointer;
+        transition: all 0.3s ease;
+      }
+
+      .header h1:hover {
+        transform: scale(1.05);
+        text-shadow: 2px 2px 8px rgba(0, 0, 0, 0.5);
       }
 
       .header p {
@@ -380,10 +387,16 @@
           this.cardsData = new Map(); // Store card data by ID
           this.lastRequestedUrl = null; // Track the last requested URL to prevent duplicate requests
 
+          // Autocomplete properties
+          this.commonCardTypes = []; // Will store the common card types
+
           this.init();
         }
 
-        init() {
+        async init() {
+          // Fetch common card types first
+          await this.fetchCommonCardTypes();
+
           // On page load, check for query param and perform search if present
           const params = new URLSearchParams(window.location.search);
           const initialQuery = params.get('q') || '';
@@ -391,6 +404,7 @@
             this.searchInput.value = initialQuery;
             this.performSearch(initialQuery);
           }
+
           this.searchInput.addEventListener('input', e => {
             const query = e.target.value;
             this.handleSearch(query);
@@ -422,6 +436,11 @@
               this.handleCardClick(cardItem);
             }
           });
+
+          // Add click handler for header to clear search
+          document.querySelector('.header h1').addEventListener('click', () => {
+            this.clearSearch();
+          });
         }
 
         handleSearch(query) {
@@ -444,6 +463,70 @@
           this.debounceTimeout = setTimeout(() => {
             this.performSearch(query);
           }, this.debounceDelay);
+        }
+
+        async fetchCommonCardTypes() {
+          try {
+            const response = await fetch('/get_common_card_types');
+            if (!response.ok) {
+              throw new Error('Failed to fetch common card types');
+            }
+            this.commonCardTypes = await response.json();
+            console.log('Loaded', this.commonCardTypes.length, 'common card types');
+          } catch (error) {
+            console.error('Error fetching common card types:', error);
+            this.commonCardTypes = [];
+          }
+        }
+
+        autoCompleteQuery(query) {
+          // Look for type queries like "t:hydr" or "type:hydr"
+          const typeMatch = query.match(/(?:^|\s)(?:t|type):([a-zA-Z]*)$/i);
+          if (!typeMatch) {
+            return query; // No type query found, return original
+          }
+
+          const prefix = typeMatch[1].toLowerCase();
+          if (prefix.length < 2) {
+            // Only autocomplete if at least 2 characters
+            return query;
+          }
+
+          // Find the most common type that starts with this prefix
+          const bestMatch = this.commonCardTypes
+            .filter(type => type.t.toLowerCase().startsWith(prefix))
+            .sort((a, b) => b.n - a.n)[0]; // Get the most frequent match
+
+          if (!bestMatch) {
+            return query; // No match found, return original
+          }
+
+          // Get the original prefix to preserve capitalization
+          const originalPrefix = typeMatch[1];
+
+          // Create completion that matches the user's capitalization pattern
+          let completedType = bestMatch.t;
+          if (originalPrefix.length > 0) {
+            // Preserve the capitalization pattern of the user's input
+            if (originalPrefix === originalPrefix.toUpperCase()) {
+              // All caps -> all caps
+              completedType = bestMatch.t.toUpperCase();
+            } else if (originalPrefix === originalPrefix.toLowerCase()) {
+              // All lowercase -> all lowercase
+              completedType = bestMatch.t.toLowerCase();
+            } else {
+              // Mixed case -> take whatever they've typed so far
+              // and append the rest of the completion
+              completedType = originalPrefix + bestMatch.t.slice(originalPrefix.length);
+            }
+          }
+
+          // Auto-complete the query
+          const completedQuery = query.replace(/(?:^|\s)(?:t|type):[a-zA-Z]*$/i, match => {
+            return match.replace(/[a-zA-Z]+$/, completedType);
+          });
+
+          return completedQuery;
         }
 
         balanceQuery(query) {
@@ -486,11 +569,17 @@
         async performSearch(query) {
           if (!query.trim()) return;
 
+          // First, try to autocomplete the query
+          const completedQuery = this.autoCompleteQuery(query);
+
           // Balance the query for better typeahead results
-          const balancedQuery = this.balanceQuery(query);
+          const balancedQuery = this.balanceQuery(completedQuery);
+
+          // Normalize whitespace to prevent duplicate requests for queries that differ only in whitespace
+          const normalizedQuery = balancedQuery.trim().replace(/\s+/g, ' ');
 
           // Generate the URL for this request
-          const url = `/search?q=${encodeURIComponent(balancedQuery)}`;
+          const url = `/search?q=${encodeURIComponent(normalizedQuery)}`;
 
           // Check if this is the same URL as the last request - if so, skip the request
           if (this.lastRequestedUrl === url) {
@@ -544,7 +633,7 @@
             } else {
               elapsed = computedRoundTripMs;
             }
-            this.displayResults(data, query, elapsed);
+            this.displayResults(data, normalizedQuery, elapsed);
           } catch (error) {
             if (error.name === 'AbortError') {
               // Request was cancelled, ignore
@@ -801,6 +890,22 @@
           this.clearMessages();
         }
 
+        clearSearch() {
+          // Clear the search input
+          this.searchInput.value = '';
+
+          // Clear results
+          this.clearResults();
+
+          // Clear URL parameters
+          const url = new URL(window.location);
+          url.searchParams.delete('q');
+          window.history.replaceState({}, '', url);
+
+          // Focus back on search input
+          this.searchInput.focus();
+        }
+
         clearMessages() {
           this.errorMessage.style.display = 'none';
           this.noResultsMessage.style.display = 'none';
@@ -855,7 +960,7 @@
             '{S}': 'ms ms-snow ms-cost',
             '{CHAOS}': 'ms ms-chaos',
             '{PW}': 'ms ms-pw',
-            '{∞}': 'ms ms-infinity'
+            '{∞}': 'ms ms-infinity',
           };
 
           // Hybrid mana symbols with casting cost circles
@@ -874,7 +979,7 @@
             '{2/U}': 'ms ms-2u ms-cost',
             '{2/B}': 'ms ms-2b ms-cost',
             '{2/R}': 'ms ms-2r ms-cost',
-            '{2/G}': 'ms ms-2g ms-cost'
+            '{2/G}': 'ms ms-2g ms-cost',
           };
 
           // Replace mana symbols with Mana font spans
