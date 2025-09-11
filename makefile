@@ -95,7 +95,7 @@ dbconn: # @doc connect to the local database
 	PGPASSWORD=$(XPGPASSWORD) \
 	PGPORT=15432 \
 	PGUSER=$(XPGUSER) \
-	/bin/psql
+	psql
 
 datadir:
 	mkdir -p data/api data/postgres /tmp/pgdata
