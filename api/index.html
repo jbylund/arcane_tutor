@@ -53,51 +53,6 @@
         max-width: 600px;
       }
 
-      .suggestions-container {
-        position: absolute;
-        top: 100%;
-        left: 0;
-        right: 0;
-        background: white;
-        border-radius: 0 0 15px 15px;
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
-        max-height: 300px;
-        overflow-y: auto;
-        z-index: 1000;
-        display: none;
-      }
-
-      .suggestion-item {
-        padding: 12px 20px;
-        cursor: pointer;
-        border-bottom: 1px solid #f0f0f0;
-        transition: background-color 0.2s ease;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-      }
-
-      .suggestion-item:last-child {
-        border-bottom: none;
-      }
-
-      .suggestion-item:hover,
-      .suggestion-item.selected {
-        background-color: #f8f9fa;
-      }
-
-      .suggestion-text {
-        font-size: 1rem;
-        color: #333;
-      }
-
-      .suggestion-count {
-        font-size: 0.9rem;
-        color: #666;
-        background: #e9ecef;
-        padding: 2px 8px;
-        border-radius: 12px;
-      }
 
       .search-input {
         width: 100%;
@@ -429,8 +384,6 @@
 
           // Autocomplete properties
           this.commonCardTypes = []; // Will store the common card types
-          this.currentSuggestions = [];
-          this.selectedSuggestionIndex = -1;
           this.autocompleteTimeout = null;
 
           this.init();
@@ -462,26 +415,15 @@
             window.history.replaceState({}, '', url);
           });
 
-          // Handle keyboard navigation for autocomplete
-          this.searchInput.addEventListener('keydown', e => {
-            this.handleAutocompleteKeydown(e);
-          });
 
           // Handle enter key for immediate search
           this.searchInput.addEventListener('keypress', e => {
             if (e.key === 'Enter') {
               clearTimeout(this.debounceTimeout);
               this.performSearch(e.target.value);
-              this.hideSuggestions();
             }
           });
 
-          // Hide suggestions when clicking outside
-          document.addEventListener('click', e => {
-            if (!e.target.closest('.search-box')) {
-              this.hideSuggestions();
-            }
-          });
 
           // Initialize intersection observer for lazy image loading
           this.initImageObserver();
@@ -535,7 +477,7 @@
           // Clear previous autocomplete timeout
           clearTimeout(this.autocompleteTimeout);
 
-          // Don't show suggestions for empty queries
+          // Don't autocomplete empty queries
           if (!query.trim()) {
             this.hideSuggestions();
             return;
@@ -543,112 +485,39 @@
 
           // Debounce autocomplete
           this.autocompleteTimeout = setTimeout(() => {
-            this.showSuggestions(query);
-          }, 100);
+            this.autoCompleteAndSearch(query);
+          }, 300); // Slightly longer delay to avoid interrupting typing
         }
 
-        showSuggestions(query) {
-          const suggestions = this.findSuggestions(query);
-          this.currentSuggestions = suggestions;
-          this.selectedSuggestionIndex = -1;
-
-          if (suggestions.length === 0) {
-            this.hideSuggestions();
-            return;
-          }
-
-          this.renderSuggestions(suggestions);
-          this.suggestionsContainer.style.display = 'block';
-        }
-
-        findSuggestions(query) {
+        autoCompleteAndSearch(query) {
           // Look for type queries like "t:hydr" or "type:hydr"
           const typeMatch = query.match(/(?:^|\s)(?:t|type):([a-zA-Z]*)$/i);
           if (!typeMatch) {
-            return [];
-          }
-
-          const prefix = typeMatch[1].toLowerCase();
-          if (prefix.length < 1) {
-            return [];
-          }
-
-          // Find all types that start with this prefix
-          const matches = this.commonCardTypes
-            .filter(type => type.t.toLowerCase().startsWith(prefix))
-            .sort((a, b) => b.n - a.n) // Sort by frequency descending
-            .slice(0, 10); // Limit to 10 suggestions
-
-          return matches.map(match => ({
-            text: match.t,
-            count: match.n,
-            fullQuery: query.replace(/(?:^|\s)(?:t|type):[a-zA-Z]*$/i, `$1t:${match.t}`)
-          }));
-        }
-
-        renderSuggestions(suggestions) {
-          this.suggestionsContainer.innerHTML = suggestions.map((suggestion, index) => `
-            <div class="suggestion-item" data-index="${index}">
-              <span class="suggestion-text">${suggestion.text}</span>
-              <span class="suggestion-count">${suggestion.count}</span>
-            </div>
-          `).join('');
-
-          // Add click handlers
-          this.suggestionsContainer.querySelectorAll('.suggestion-item').forEach((item, index) => {
-            item.addEventListener('click', () => {
-              this.selectSuggestion(suggestions[index]);
-            });
-          });
-        }
-
-        selectSuggestion(suggestion) {
-          this.searchInput.value = suggestion.fullQuery;
-          this.hideSuggestions();
-          this.performSearch(suggestion.fullQuery);
-        }
-
-        handleAutocompleteKeydown(e) {
-          if (this.suggestionsContainer.style.display === 'none') {
             return;
           }
 
-          switch (e.key) {
-            case 'ArrowDown':
-              e.preventDefault();
-              this.selectedSuggestionIndex = Math.min(
-                this.selectedSuggestionIndex + 1,
-                this.currentSuggestions.length - 1
-              );
-              this.updateSelectedSuggestion();
-              break;
-            case 'ArrowUp':
-              e.preventDefault();
-              this.selectedSuggestionIndex = Math.max(this.selectedSuggestionIndex - 1, -1);
-              this.updateSelectedSuggestion();
-              break;
-            case 'Escape':
-              this.hideSuggestions();
-              break;
-            case 'Tab':
-              if (this.selectedSuggestionIndex >= 0) {
-                e.preventDefault();
-                this.selectSuggestion(this.currentSuggestions[this.selectedSuggestionIndex]);
-              }
-              break;
+          const prefix = typeMatch[1].toLowerCase();
+          if (prefix.length < 2) { // Only autocomplete if at least 2 characters
+            return;
           }
-        }
 
-        updateSelectedSuggestion() {
-          const items = this.suggestionsContainer.querySelectorAll('.suggestion-item');
-          items.forEach((item, index) => {
-            item.classList.toggle('selected', index === this.selectedSuggestionIndex);
-          });
-        }
+          // Find the most common type that starts with this prefix
+          const bestMatch = this.commonCardTypes
+            .filter(type => type.t.toLowerCase().startsWith(prefix))
+            .sort((a, b) => b.n - a.n)[0]; // Get the most frequent match
 
-        hideSuggestions() {
-          this.suggestionsContainer.style.display = 'none';
-          this.selectedSuggestionIndex = -1;
+          if (bestMatch) {
+            // Auto-complete the query (but don't update the search box)
+            const completedQuery = query.replace(/(?:^|\s)(?:t|type):[a-zA-Z]*$/i, (match, prefix) => {
+              return match.replace(/[a-zA-Z]+$/, bestMatch.t);
+            });
+
+            // Only search if the completion is different from current input
+            if (completedQuery !== query) {
+              // Perform the search with the completed query (but keep original in search box)
+              this.performSearch(completedQuery);
+            }
+          }
         }
 
         balanceQuery(query) {
