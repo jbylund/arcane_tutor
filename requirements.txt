@@ -1,6 +1,7 @@
-bjoern
 brotli
+cachetools
 falcon
+honeybadger
 orjson
 psycopg[binary,pool]
 pyparsing

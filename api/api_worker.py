@@ -7,7 +7,6 @@ import logging
 import multiprocessing
 import os
 
-import bjoern
 import falcon
 import falcon.media
 import orjson
@@ -96,6 +95,7 @@ class ApiWorker(multiprocessing.Process):
         logging.basicConfig(level=logging.INFO)
         logging.info("Starting worker with pid %d", os.getpid())
         try:
+            import bjoern
             app = self.get_api()  # Get the Falcon app
             bjoern.run(app, self.host, self.port, reuse_port=True)  # Start the Bjoern server
         except Exception as e:
