@@ -4,6 +4,10 @@ CREATE INDEX IF NOT EXISTS idx_cards_card_name_trgm
    ON magic.cards
    USING gin (card_name gin_trgm_ops);
 
+CREATE INDEX IF NOT EXISTS idx_cards_oracle_text_trgm
+   ON magic.cards
+   USING gin (oracle_text gin_trgm_ops);
+
 CREATE INDEX IF NOT EXISTS idx_cards_creature_power_btree
    ON magic.cards
    USING btree (creature_power)

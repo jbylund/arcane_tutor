@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS magic.cards (
     card_subtypes jsonb, -- list of strings (e.g. ["Bird", "Knight"])
     card_colors jsonb NOT NULL, -- object of color codes, e.g. {"R": true, "G": true}
     card_color_identity jsonb NOT NULL, -- object of color identity codes, e.g. {"R": true, "G": true}
+    oracle_text text, -- card oracle text for searching
 
     edhrec_rank integer,
 

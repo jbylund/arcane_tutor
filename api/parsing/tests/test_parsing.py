@@ -411,6 +411,27 @@ def test_full_sql_translation_jsonb_card_types(input_query: str, expected_sql: s
     ), f"\nExpected: {expected_sql}\t{expected_parameters}\nObserved: {observed_sql}\t{observed_params}"
 
 
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_sql", "expected_parameters"),
+    argvalues=[
+        # Oracle text search tests
+        ("oracle:flying", "(card.oracle_text ILIKE %(p_str_JWZseWluZyU)s)", {"p_str_JWZseWluZyU": "%flying%"}),
+        ("oracle:'gain life'", "(card.oracle_text ILIKE %(p_str_JWdhaW4lbGlmZSU)s)", {"p_str_JWdhaW4lbGlmZSU": "%gain%life%"}),
+        ('oracle:"gain life"', "(card.oracle_text ILIKE %(p_str_JWdhaW4lbGlmZSU)s)", {"p_str_JWdhaW4lbGlmZSU": "%gain%life%"}),
+        ("oracle:haste", "(card.oracle_text ILIKE %(p_str_JWhhc3RlJQ)s)", {"p_str_JWhhc3RlJQ": "%haste%"}),
+        # Test oracle search with complex phrases
+        ("oracle:'tap target creature'", "(card.oracle_text ILIKE %(p_str_JXRhcCV0YXJnZXQlY3JlYXR1cmUl)s)", {"p_str_JXRhcCV0YXJnZXQlY3JlYXR1cmUl": "%tap%target%creature%"}),
+    ],
+)
+def test_oracle_text_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
+    """Test that oracle text search generates correct SQL with ILIKE patterns."""
+    parsed = parsing.parse_scryfall_query(input_query)
+    context = {}
+    observed_sql = parsed.to_sql(context)
+    assert observed_sql == expected_sql
+    assert context == expected_parameters
+
+
 class TestNodes:
     def test_node_equality(self) -> None:
         assert AttributeNode("name") == AttributeNode("name")
