@@ -1,3 +1,5 @@
+"""AST node classes for query parsing."""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -6,6 +8,14 @@ from typing import Any
 
 
 def param_name(ival: object) -> str:
+    """Generate a unique parameter name for SQL queries.
+
+    Args:
+        ival: The value to generate a parameter name for.
+
+    Returns:
+        A unique parameter name based on the value and its type.
+    """
     b64d = b64encode(str(ival).encode()).decode().rstrip("=")
     val_type = type(ival).__name__
     return f"p_{val_type}_{b64d}"
@@ -84,11 +94,17 @@ class AttributeNode(LeafNode):
 
     def to_sql(self: AttributeNode, context: dict) -> str:
         """Serialize this attribute node to a SQL column reference."""
+        del context
         return f"card.{self.attribute_name}"
 
     def __eq__(self: AttributeNode, other: object) -> bool:
-        """Check equality with another AttributeNode based on attribute
-        name.
+        """Check equality with another AttributeNode based on attribute name.
+
+        Args:
+            other: The object to compare with.
+
+        Returns:
+            True if the objects are equal, False otherwise.
         """
         if not isinstance(other, self.__class__):
             return False
@@ -107,8 +123,12 @@ class BinaryOperatorNode(QueryNode):
     """Represents a binary operator node (e.g., '=', '!=', '<', '>', etc.)."""
 
     def __init__(self: BinaryOperatorNode, lhs: QueryNode, operator: str, rhs: QueryNode) -> None:
-        """Initialize a BinaryOperatorNode with left/right operands and an
-        operator.
+        """Initialize a BinaryOperatorNode with left/right operands and an operator.
+
+        Args:
+            lhs: The left-hand side operand.
+            operator: The binary operator.
+            rhs: The right-hand side operand.
         """
         self.lhs = lhs
         self.operator = operator
@@ -142,8 +162,13 @@ class BinaryOperatorNode(QueryNode):
         return f"{self.__class__.__name__}({self.lhs}, {self.operator}, {self.rhs})"
 
     def __eq__(self: BinaryOperatorNode, other: object) -> bool:
-        """Check equality with another BinaryOperatorNode based on operands and
-        operator.
+        """Check equality with another BinaryOperatorNode based on operands and operator.
+
+        Args:
+            other: The object to compare with.
+
+        Returns:
+            True if the objects are equal, False otherwise.
         """
         if not isinstance(other, self.__class__):
             return False
@@ -155,9 +180,7 @@ class BinaryOperatorNode(QueryNode):
 
 
 class NaryOperatorNode(QueryNode):
-    """Base class for n-ary operator nodes (e.g., AND, OR) that take multiple
-    operands.
-    """
+    """Base class for n-ary operator nodes (e.g., AND, OR) that take multiple operands."""
 
     def __init__(self: NaryOperatorNode, operands: list[QueryNode]) -> None:
         """Initialize an NaryOperatorNode with a list of operand nodes."""

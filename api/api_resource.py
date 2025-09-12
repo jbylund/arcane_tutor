@@ -67,11 +67,27 @@ logger = logging.getLogger("apiresource")
 
 @cached(cache=LRUCache(maxsize=10_000))
 def get_where_clause(query: str) -> tuple[str, dict]:
+    """Generate SQL WHERE clause and parameters from a search query.
+
+    Args:
+        query: The search query string to parse.
+
+    Returns:
+        Tuple of (SQL WHERE clause, parameter dictionary).
+    """
     parsed_query = parse_scryfall_query(query)
     return generate_sql_query(parsed_query)
 
 
 def rewrap(query: str) -> str:
+    """Normalize whitespace in a SQL query string.
+
+    Args:
+        query: The SQL query string to normalize.
+
+    Returns:
+        The query with normalized whitespace.
+    """
     return " ".join(query.strip().split())
 
 
@@ -157,8 +173,9 @@ class APIResource:
     """Class implementing request handling for our simple API."""
 
     def __init__(self: APIResource) -> None:
-        """Initialize an APIResource object, set up connection pool and action
-        map.
+        """Initialize an APIResource object, set up connection pool and action map.
+
+        Sets up the database connection pool and action mapping for the API.
         """
         self._tablename = "staging_table"
 
@@ -202,7 +219,7 @@ class APIResource:
             resp.media = res
         except TypeError as oops:
             logger.error("Error handling request: %s", oops, exc_info=True)
-            raise falcon.HTTPBadRequest(description=str(oops))
+            raise falcon.HTTPBadRequest(description=str(oops)) from oops
         except falcon.HTTPError:
             raise
         except Exception as oops:
@@ -227,7 +244,7 @@ class APIResource:
                     "exception": str(oops),
                     "stack_info": stack_info,
                 },
-            )
+            ) from oops
         finally:
             duration = time.monotonic() - before
             logger.info("Request duration: %f seconds / %s", duration, resp.status)
@@ -261,7 +278,7 @@ class APIResource:
         use_cache = True
         if use_cache:
 
-            def maybe_json_dump(v: Any) -> Any:
+            def maybe_json_dump(v: object) -> object:
                 if isinstance(v, list | dict):
                     return json.dumps(v, sort_keys=True)
                 return v
@@ -278,7 +295,7 @@ class APIResource:
                 return copy.deepcopy(cached_val)
 
         # wrap params in json
-        def maybe_json(v: Any) -> Any:
+        def maybe_json(v: object) -> object:
             if isinstance(v, list | dict):
                 return psycopg.types.json.Jsonb(v)
             return v
@@ -341,7 +358,7 @@ class APIResource:
         existing_tables = {r["relname"] for r in records}
         return "migrations" in existing_tables
 
-    def get_data(self: APIResource) -> Any:
+    def get_data(self: APIResource) -> list[dict]:
         """Retrieve card data from cache or Scryfall API.
 
         Returns:
@@ -421,34 +438,40 @@ class APIResource:
             card_name = card["name"]
             if card_name in to_insert:
                 continue
-            if set(card["legalities"].values()) == {"not_legal"}:
+            processed_card = self._preprocess_card(card)
+            if processed_card is None:
                 continue
-            if "paper" not in card["games"]:
-                continue
-            if "card_faces" in card:
-                continue
-            if card.get("set_type") == "funny":
-                continue
-            card_types, _, card_subtypes = (x.strip().split() for x in card.get("type_line", "").title().partition("\u2014"))
-            card["card_types"] = card_types
-            card["card_subtypes"] = card_subtypes or None
-            if not card["card_subtypes"]:
-                card.pop("card_subtypes")
-            # card["all_types"] = {t: True for t in card_types + card_subtypes}
-            for creature_field in ["power", "toughness"]:
-                val = card.setdefault(creature_field, None)
-                try:
-                    numeric_val = int(val)
-                except (TypeError, ValueError):
-                    card[f"{creature_field}_numeric"] = None
-                else:
-                    card[f"{creature_field}_numeric"] = numeric_val
-            card["card_colors"] = dict.fromkeys(card["colors"], True)
-            card["card_color_identity"] = dict.fromkeys(card["color_identity"], True)
-            card["card_keywords"] = dict.fromkeys(card.get("keywords", []), True)
-            card["edhrec_rank"] = card.get("edhrec_rank", None)
-            to_insert[card_name] = card
+            to_insert[card_name] = processed_card
         return list(to_insert.values())
+
+    def _preprocess_card(self: APIResource, card: dict[str, Any]) -> None | dict[str, Any]:
+        """Preprocess a card to remove invalid cards and add necessary fields."""
+        if set(card["legalities"].values()) == {"not_legal"}:
+            return None
+        if "paper" not in card["games"]:
+            return None
+        if "card_faces" in card:
+            return None
+        if card.get("set_type") == "funny":
+            return None
+        card_types, _, card_subtypes = (x.strip().split() for x in card.get("type_line", "").title().partition("\u2014"))
+        card["card_types"] = card_types
+        card["card_subtypes"] = card_subtypes or None
+        if not card["card_subtypes"]:
+            card.pop("card_subtypes")
+        for creature_field in ["power", "toughness"]:
+            val = card.setdefault(creature_field, None)
+            try:
+                numeric_val = int(val)
+            except (TypeError, ValueError):
+                card[f"{creature_field}_numeric"] = None
+            else:
+                card[f"{creature_field}_numeric"] = numeric_val
+        card["card_colors"] = dict.fromkeys(card["colors"], True)
+        card["card_color_identity"] = dict.fromkeys(card["color_identity"], True)
+        card["card_keywords"] = dict.fromkeys(card.get("keywords", []), True)
+        card["edhrec_rank"] = card.get("edhrec_rank")
+        return card
 
     def get_stats(self: APIResource, **_: object) -> dict[str, Any]:
         """Get stats about the cards."""
@@ -465,7 +488,7 @@ class APIResource:
         to_insert = self._get_cards_to_insert()
 
         with self._conn_pool.connection() as conn:
-            conn = typecast(Connection, conn)
+            conn = typecast("Connection", conn)
             with conn.cursor() as cursor:
                 # create a temporary table to hold the cards
                 cursor.execute("CREATE TEMPORARY TABLE import_staging (card_blob jsonb)")
@@ -630,7 +653,7 @@ class APIResource:
         val = str_buffer.getvalue()
         falcon_response.body = val.encode("utf-8")
 
-    def search(
+    def search(  # noqa: PLR0913
         self: APIResource,
         *,
         falcon_response: falcon.Response | None = None,
@@ -641,18 +664,19 @@ class APIResource:
         limit: int = 100,
     ) -> dict[str, Any]:
         """Run a search query and return results and metadata.
-        /search.
 
         Args:
-        ----
-            q (Optional[str]): Query string.
-            query (Optional[str]): Query string.
+            falcon_response: The Falcon response object (unused).
+            q: Query string (alternative to query parameter).
+            query: Query string (alternative to q parameter).
+            direction: Sort direction ('asc' or 'desc').
+            limit: Maximum number of results to return.
+            orderby: Field to sort by.
 
         Returns:
-        -------
-            Dict[str, Any]: Search results and metadata.
-
+            Dict containing search results and metadata.
         """
+        del falcon_response
         return self._search(
             query=query or q,
             orderby=orderby,
@@ -662,7 +686,7 @@ class APIResource:
 
     @cached(
         cache=TTLCache(maxsize=1000, ttl=60),
-        key=lambda self, *args, **kwargs: (args, tuple(sorted(kwargs.items()))),
+        key=lambda _self, *args, **kwargs: (args, tuple(sorted(kwargs.items()))),
     )
     def _search(
         self: APIResource,
@@ -748,7 +772,6 @@ class APIResource:
             "query": query,
             "result": result_bag,
             "total_cards": total_cards,
-            # "parsed": str(parsed_query),
         }
 
     def index_html(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:

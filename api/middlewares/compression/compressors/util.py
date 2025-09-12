@@ -1,3 +1,5 @@
+"""Utility classes and functions for compression."""
+
 from __future__ import annotations
 
 from io import BytesIO

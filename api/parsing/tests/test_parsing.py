@@ -1,3 +1,5 @@
+"""Tests for query parsing functionality."""
+
 import pytest
 
 from api import parsing
@@ -11,14 +13,6 @@ from api.parsing import (
     QueryNode,
     StringValueNode,
 )
-
-
-def format_literal_query(query: str, parameters: dict) -> str:
-    """Format a query with parameters into a literal query."""
-    for param_name, param_value in parameters.items():
-        formatted_value = repr(param_value)
-        query = query.replace(f"%({param_name})s", formatted_value)
-    return query
 
 
 @pytest.mark.parametrize(
@@ -168,21 +162,8 @@ def test_parse_empty_query() -> None:
     assert isinstance(result, parsing.Query)
 
 
-# def test_sql_generation() -> None:
-#     """Test that AST can be converted to SQL."""
-#     query = "cmc=2 AND type=creature"
-#     result = parsing.parse_search_query(query)
-
-#     sql, parameters = parsing.generate_sql_query(result)
-#     reconstructed = format_literal_query(sql, parameters)
-#     expected_sql = "((card.cmc = 2) AND (card.type = 'creature'))"
-#     assert reconstructed == expected_sql
-
-
 def test_name_vs_name_attribute() -> None:
-    """Test that we can distinguish between the string 'name' and card
-    names.
-    """
+    """Test that we can distinguish between the string 'name' and card names."""
     # This should create a BinaryOperatorNode for "name" (searching for cards with "name" in their name)
     query1 = "name"
     result1 = parsing.parse_search_query(query1)
@@ -213,9 +194,7 @@ def test_name_vs_name_attribute() -> None:
     argvalues=["AND", "OR"],
 )
 def test_nary_operator_associativity(operator: str) -> None:
-    """Test that AND operator associativity now creates the same AST
-    structure.
-    """
+    """Test that AND operator associativity now creates the same AST structure."""
     # These should now create the same AST structure with n-ary operations
     query1 = f"a {operator} (b {operator} c)"
     query2 = f"(a {operator} b) {operator} c"
@@ -442,9 +421,7 @@ class TestNodes:
 
 
 def test_arithmetic_vs_negation_ambiguity() -> None:
-    """Test that the ambiguity between arithmetic and negation is resolved
-    correctly.
-    """
+    """Test that the ambiguity between arithmetic and negation is resolved correctly."""
     # These should be treated as arithmetic operations (both sides are known attributes)
     arithmetic_cases = [
         ("cmc-power", BinaryOperatorNode(AttributeNode("cmc"), "-", AttributeNode("power"))),
@@ -551,6 +528,3 @@ def test_keyword_sql_translation(input_query: str, expected_sql: str, expected_p
     observed_sql = parsed.to_sql(context)
     assert observed_sql == expected_sql, f"\nExpected: {expected_sql}\nObserved: {observed_sql}"
     assert context == expected_parameters, f"\nExpected params: {expected_parameters}\nObserved params: {context}"
-
-
-

@@ -1,3 +1,5 @@
+"""Scryfall-specific AST nodes and query processing."""
+
 from __future__ import annotations
 
 from .db_info import (
@@ -48,20 +50,55 @@ query ?& color AND not(color ?& query) # as array
 
 
 def get_field_type(attr: str) -> str:
+    """Get the field type for a given attribute name.
+
+    Args:
+        attr: The attribute name to look up.
+
+    Returns:
+        The field type for the attribute, or TEXT if not found.
+    """
     return DB_NAME_TO_FIELD_TYPE.get(attr, FieldType.TEXT)
 
 
 class ScryfallAttributeNode(AttributeNode):
+    """Scryfall-specific attribute node with field mapping."""
+
     def __init__(self: ScryfallAttributeNode, attribute_name: str) -> None:
+        """Initialize a Scryfall attribute node.
+
+        Args:
+            attribute_name: The search attribute name to map to database column.
+        """
         db_column_name = SEARCH_NAME_TO_DB_NAME.get(attribute_name, attribute_name)
         super().__init__(db_column_name)
 
     def to_sql(self: ScryfallAttributeNode, context: dict) -> str:
+        """Generate SQL for Scryfall attribute node.
+
+        Args:
+            context: SQL parameter context.
+
+        Returns:
+            SQL string for the attribute reference.
+        """
+        del context
         remapped = SEARCH_NAME_TO_DB_NAME.get(self.attribute_name, self.attribute_name)
         return f"card.{remapped}"
 
 
 def get_colors_comparison_object(val: str) -> dict[str, bool]:
+    """Convert color string to comparison object for database queries.
+
+    Args:
+        val: Color string (either color codes like 'WUBRG' or color name like 'red').
+
+    Returns:
+        Dictionary mapping color codes to True for matching colors.
+
+    Raises:
+        ValueError: If the color string is invalid.
+    """
     # If all chars are color codes
     color_code_set = set(COLOR_CODE_TO_NAME)
     if val and set(val) <= color_code_set:
@@ -70,19 +107,37 @@ def get_colors_comparison_object(val: str) -> dict[str, bool]:
     try:
         letter_code = COLOR_NAME_TO_CODE[val]
         return {letter_code.upper(): True}
-    except KeyError:
+    except KeyError as e:
         msg = f"Invalid color string: {val}"
-        raise ValueError(msg)
+        raise ValueError(msg) from e
 
 
 def get_keywords_comparison_object(val: str) -> dict[str, bool]:
+    """Convert keyword string to comparison object for database queries.
+
+    Args:
+        val: Keyword string to normalize.
+
+    Returns:
+        Dictionary mapping normalized keyword to True.
+    """
     # Normalize the input keyword
     normalized_keyword = val.strip().title()
     return {normalized_keyword: True}
 
 
 class ScryfallBinaryOperatorNode(BinaryOperatorNode):
+    """Scryfall-specific binary operator node with custom SQL generation."""
+
     def to_sql(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+        """Generate SQL for Scryfall-specific binary operations.
+
+        Args:
+            context: SQL parameter context (unused).
+
+        Returns:
+            SQL string for the binary operation.
+        """
         if isinstance(self.lhs, ScryfallAttributeNode):
             lhs_sql = self.lhs.to_sql(context)
             attr = self.lhs.attribute_name
@@ -116,9 +171,6 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
                     return f"({lhs_sql} ILIKE %({_param_name})s)"
                 msg = f"Unknown field type: {field_type}"
                 raise NotImplementedError(msg)
-                # # Fallback: treat as string search
-                # value = self.rhs.to_sql(context).strip("'")
-                # return f"({lhs_sql} ILIKE '%%{value}%%')"
 
         # Fallback: use default logic
         return super().to_sql(context)
@@ -145,7 +197,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
     query ?& col AND not(col ?& query) # as array
     """
 
-    def _handle_jsonb_object(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+    def _handle_jsonb_object(self: ScryfallBinaryOperatorNode, context: dict) -> str:  # noqa: PLR0911
         # Produce the query as a jsonb object
         lhs_sql = self.lhs.to_sql(context)
         attr = self.lhs.attribute_name
@@ -153,7 +205,6 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             rhs = get_colors_comparison_object(self.rhs.value.strip().lower())
             pname = param_name(rhs)
             context[pname] = rhs
-            # query = json.dumps(rhs, sort_keys=True) + "::jsonb"
         elif attr == "card_keywords":
             rhs = get_keywords_comparison_object(self.rhs.value.strip())
             pname = param_name(rhs)
@@ -175,9 +226,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             return f"({lhs_sql} @> %({pname})s AND {lhs_sql} <> %({pname})s)"
         if self.operator == "<":
             return f"({lhs_sql} <@ %({pname})s AND {lhs_sql} <> %({pname})s)"
-        if self.operator == "!=":
-            return f"({lhs_sql} <> %({pname})s)"
-        if self.operator == "<>":
+        if self.operator in ("!=", "<>"):
             return f"({lhs_sql} <> %({pname})s)"
         msg = f"Unknown operator: {self.operator}"
         raise ValueError(msg)
@@ -204,13 +253,19 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             return f"({col} <@ {query})"
         if self.operator == ">":
             return f"({query} <@ {col}) AND NOT({col} <@ {query})"
-        # if self.operator == "<": - this type of search doesn't make sense
-        #     return f"({query} <@ {col}) AND NOT({col} @> {query})"
         msg = f"Unknown operator: {self.operator}"
         raise ValueError(msg)
 
 
-def to_scryfall_ast(node: QueryNode) -> QueryNode:
+def to_scryfall_ast(node: QueryNode) -> QueryNode:  # noqa: PLR0911
+    """Convert a generic query node to a Scryfall-specific AST node.
+
+    Args:
+        node: The query node to convert.
+
+    Returns:
+        The corresponding Scryfall-specific node.
+    """
     if isinstance(node, BinaryOperatorNode):
         return ScryfallBinaryOperatorNode(
             to_scryfall_ast(node.lhs),

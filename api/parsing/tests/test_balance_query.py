@@ -1,3 +1,5 @@
+"""Tests for query balancing functionality."""
+
 import pytest
 
 from api.parsing import balance_partial_query, parse_scryfall_query
@@ -34,10 +36,10 @@ def test_balance_query(input_query: str, expected_balanced: str) -> None:
 
 
 @pytest.mark.parametrize(
-    argnames=("original_query",),
+    argnames="original_query",
     argvalues=[
-        ('name:"hydr',),
-        ('(name:"lightning',),
+        'name:"hydr',
+        '(name:"lightning',
     ],
 )
 def test_balance_query_integration_with_parsing(original_query: str) -> None:
@@ -55,14 +57,14 @@ def test_balance_query_integration_with_parsing(original_query: str) -> None:
 
 
 @pytest.mark.parametrize(
-    argnames=("input_query",),
+    argnames="input_query",
     argvalues=[
-        ("hello)",),
-        ("test)more",),
-        (")start",),
+        "hello)",
+        "test)more",
+        ")start",
     ],
 )
 def test_balance_query_unbalanced_closing_chars(input_query: str) -> None:
     """Test that unbalanced closing characters raise ValueError."""
-    with pytest.raises(ValueError, match="Unbalanced closing character.*cannot be balanced"):
+    with pytest.raises(ValueError, match=r"Unbalanced closing character.*cannot be balanced"):
         balance_partial_query(input_query)

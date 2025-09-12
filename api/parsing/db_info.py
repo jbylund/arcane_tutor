@@ -1,9 +1,12 @@
+"""Database field information and mappings for Scryfall queries."""
+
 from __future__ import annotations
 
 from enum import StrEnum
 
 
 class FieldType(StrEnum):
+    """Enumeration of supported database field types."""
     JSONB_ARRAY = "jsonb_array"
     JSONB_OBJECT = "jsonb_object"
     NUMERIC = "numeric"
@@ -11,7 +14,16 @@ class FieldType(StrEnum):
 
 
 class FieldInfo:
+    """Information about a database field and its search aliases."""
+
     def __init__(self, db_column_name: str, field_type: FieldType, search_aliases: list[str]) -> None:
+        """Initialize field information.
+
+        Args:
+            db_column_name: The actual database column name.
+            field_type: The type of the field.
+            search_aliases: List of search aliases for this field.
+        """
         self.db_column_name = db_column_name
         self.field_type = field_type
         self.search_aliases = search_aliases
@@ -26,9 +38,7 @@ DB_COLUMNS = [
     FieldInfo("card_types", FieldType.JSONB_ARRAY, ["type", "types", "t"]),
     FieldInfo("cmc", FieldType.NUMERIC, ["cmc"]),
     FieldInfo("creature_power", FieldType.NUMERIC, ["power", "pow"]),
-    # FieldInfo("creature_power_text", FieldType.TEXT, ["power", "pow"]),
     FieldInfo("creature_toughness", FieldType.NUMERIC, ["toughness", "tou"]),
-    # FieldInfo("creature_toughness_text", FieldType.TEXT, ["toughness", "tou"]),
     FieldInfo("edhrec_rank", FieldType.NUMERIC, []),
     FieldInfo("mana_cost_jsonb", FieldType.JSONB_OBJECT, ["mana"]),
     FieldInfo("mana_cost_text", FieldType.TEXT, ["mana"]),
@@ -78,6 +88,3 @@ COLOR_CODE_TO_NAME = {
 }
 
 COLOR_NAME_TO_CODE = {v: k for k, v in COLOR_CODE_TO_NAME.items()}
-
-
-

@@ -1,3 +1,5 @@
+"""Compression middleware for Falcon API responses."""
+
 from __future__ import annotations
 
 import logging
@@ -27,7 +29,8 @@ def parse_q_list(
     Returns:
         list[str]: List of encoding names sorted by priority.
     """
-    values: list[tuple[str, int, float]] = []
+    # TODO: add client priority
+    values: list[tuple[str, int]] = []
     logger.info("Server priorities: %s", server_priorities)
     logger.info("Accept encoding: %s", accept_encoding)
     for name in accept_encoding.split(","):
@@ -35,19 +38,8 @@ def parse_q_list(
         server_prioritiy = server_priorities.get(encoding)
         if server_prioritiy is None:
             continue
-        q = 1.0
-        if ";q=" in name:
-            name, q = name.split(";q=")[:2]
-            try:
-                q = float(q)
-            except ValueError:
-                q = 0.0
-            if q == 0.0:
-                continue
-        client_priority = q
-        values.append((encoding, server_prioritiy, client_priority))
+        values.append((encoding, server_prioritiy))
     values.sort(key=lambda v: v[1])
-    values.sort(key=lambda v: v[2], reverse=True)
     return [v[0] for v in values]
 
 
@@ -101,6 +93,7 @@ class CompressionMiddleware:
             resource: Resource object to which the request was routed. May be None if no route was found for the request.
             req_succeeded (bool): True if no exceptions were raised while the framework processed and routed the request; otherwise False.
         """
+        del resource, req_succeeded
         if resp.complete:
             logger.info("Will serve response from cache...")
             return
