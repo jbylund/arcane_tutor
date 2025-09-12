@@ -27,7 +27,6 @@ import requests
 from cachetools import LRUCache, TTLCache, cached
 from honeybadger import honeybadger
 from parsing import generate_sql_query, parse_scryfall_query
-from parsing.db_info import set_magic_keywords
 from psycopg import Connection
 
 honeybadger.configure(
@@ -169,23 +168,6 @@ class APIResource:
         self.action_map["index"] = self.index_html
         self._query_cache = LRUCache(maxsize=1_000)
         logger.info("Worker with pid has conn pool %s", self._conn_pool)
-        
-        # Initialize keywords cache from database
-        self._initialize_keywords_cache()
-
-    def _initialize_keywords_cache(self: APIResource) -> None:
-        """Initialize the keywords cache from database."""
-        try:
-            # Try to get keywords from database
-            keywords_data = self.get_common_keywords()
-            keywords_set = {item['k'] for item in keywords_data}
-            if keywords_set:
-                set_magic_keywords(keywords_set)
-                logger.info("Loaded %d keywords from database", len(keywords_set))
-            else:
-                logger.info("No keywords found in database, using fallback set")
-        except Exception as e:
-            logger.warning("Failed to load keywords from database, using fallback: %s", e)
 
     def _handle(self: APIResource, req: falcon.Request, resp: falcon.Response) -> None:
         """Handle a Falcon request and set the response.
