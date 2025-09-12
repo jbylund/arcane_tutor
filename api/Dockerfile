@@ -23,7 +23,7 @@ RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python && \
 
 COPY ./requirements.txt /tmp/requirements.txt
 RUN python -m uv pip install --quiet --system --upgrade --break-system-packages \
-    -r /tmp/requirements.txt
+    -r /tmp/requirements.txt bjoern
 
 RUN mkdir -p /scryfallos
 COPY ./api /scryfallos/api

@@ -22,7 +22,8 @@ jobs:
           python-version: '3.11'
 
       - name: Install system dependencies
-        run: sudo apt-get update -qqq && sudo apt-get install -qqq -y libev-dev
+        run: |
+          true || sudo apt-get update -qqq && sudo apt-get install -qqq -y libev-dev
 
       - name: Install uv dependencies
         run: |
