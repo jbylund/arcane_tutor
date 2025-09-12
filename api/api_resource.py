@@ -374,11 +374,10 @@ class APIResource:
                 response = json.load(f)
         except FileNotFoundError:
             logger.info("Cache miss!")
-            session = requests.Session()
-            response = session.get("https://api.scryfall.com/bulk-data", timeout=1).json()["data"]
+            response = self._session.get("https://api.scryfall.com/bulk-data", timeout=1).json()["data"]
             by_type = {r["type"]: r for r in response}
             oracle_cards_download_uri = by_type["oracle_cards"]["download_uri"]
-            response = requests.get(oracle_cards_download_uri, timeout=30).json()
+            response = self._session.get(oracle_cards_download_uri, timeout=30).json()
             with pathlib.Path(cache_file).open("w") as f:
                 json.dump(response, f, indent=4, sort_keys=True)
         else:

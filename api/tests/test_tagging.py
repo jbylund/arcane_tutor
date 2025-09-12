@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 # Add the api directory to sys.path so we can import api_resource
-sys.path.insert(0, str(Path(__file__).parent / ".."))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from api_resource import APIResource
 
@@ -32,14 +32,3 @@ class TestTagging:
         # Test that the method signature includes the required tag parameter
         sig = inspect.signature(APIResource._fetch_cards_from_scryfall)
         assert "tag" in sig.parameters
-
-    def test_scryfall_tag_url_format(self) -> None:
-        """Test that we construct the correct Scryfall API URL format."""
-        # Test URL construction logic
-        tag = "cast-trigger-self"
-        expected_url = f"https://api.scryfall.com/cards/search?q=oracletag:{tag}&format=json"
-
-        # The URL should be constructed as expected
-        assert "oracletag:" in expected_url
-        assert tag in expected_url
-        assert "format=json" in expected_url
