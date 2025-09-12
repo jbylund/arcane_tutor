@@ -1,13 +1,8 @@
 """Tests for card tagging functionality."""
 
 import inspect
-import sys
-from pathlib import Path
 
-# Add the api directory to sys.path so we can import api_resource
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from api_resource import APIResource
+from api.api_resource import APIResource
 
 
 class TestTagging:
