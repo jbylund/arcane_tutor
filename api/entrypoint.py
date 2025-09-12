@@ -4,7 +4,7 @@ import argparse
 import logging
 import multiprocessing
 
-from api_worker import ApiWorker
+from .api_worker import ApiWorker
 
 logger = logging.getLogger("api")
 
