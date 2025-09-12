@@ -11,6 +11,11 @@ Always reference these instructions first and fallback to search or bash command
   - `python -m pip install --upgrade pip` -- takes ~2 seconds.
   - `python -m pip install -r requirements.txt -r test-requirements.txt` -- takes ~4 seconds.
 
+### Modular Dependency Structure
+- **requirements.txt**: Core application dependencies for testing and development
+- **test-requirements.txt**: Testing and linting dependencies
+- **webserver-requirements.txt**: Web server dependencies (bjoern) only needed for local API server
+
 ### For Web Server Development (Optional)
 **Only needed if you plan to run the local API server**:
 - Install system dependencies:
@@ -27,8 +32,8 @@ Always reference these instructions first and fallback to search or bash command
 
 ### Docker Environment (Working)
 - **Create data directories**: `make datadir` -- takes <1 second.
-- **Build images**: `make build_images` -- takes ~30 seconds. NEVER CANCEL.
-- **Start services**: `make up` -- will start PostgreSQL and API services. May have permission issues with uv package manager.
+- **Build images**: `make build_images` -- takes ~30-60 seconds. NEVER CANCEL.
+- **Start services**: `make up` -- will start PostgreSQL and API services.
 
 ### Local Development (Recommended)
 - **Run API locally**: `python api/entrypoint.py --port 8080 --workers 4` -- starts the API. Requires bjoern installation.
@@ -55,11 +60,11 @@ python -m ruff check
 
 # Additional setup for web server testing (adds ~15 seconds)
 sudo apt-get update && sudo apt-get install -y libev-dev
-python -m pip install bjoern  # Required for local API testing
+python -m pip install -r webserver-requirements.txt  # Required for local API testing
 ```
 
 ### Current Limitations
-- **bjoern dependency**: Missing from requirements.txt but needed for local API testing
+- **bjoern dependency**: Separated into webserver-requirements.txt for modular installation
 - **Database integration testing**: Requires running PostgreSQL or Docker compose setup
 - The project builds and tests successfully for both local Python development and containerized deployment.
 
@@ -79,7 +84,7 @@ python api/entrypoint.py --help          # Test API entrypoint (shows help)
 
 # Additional setup for web server (optional)
 sudo apt-get update && sudo apt-get install -y libev-dev
-python -m pip install bjoern  # Required for local API testing
+python -m pip install -r webserver-requirements.txt  # Required for local API testing
 
 # Docker workflow (works)
 make datadir                             # Create data directories (<1 second)
