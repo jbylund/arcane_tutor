@@ -20,11 +20,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Install system dependencies
-        run: |
-          true || { sudo apt-get update -qqq && sudo apt-get install -qqq -y libev-dev ; }
-
+          
       - name: Install uv dependencies
         run: |
           # Try the official installer first, fallback to pip if needed
