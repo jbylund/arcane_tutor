@@ -12,7 +12,9 @@ import json
 import logging
 import os
 import pathlib
+import re
 import time
+import urllib.parse
 from typing import Any
 from typing import cast as typecast
 from urllib.parse import urlparse
@@ -1016,3 +1018,227 @@ ORDER BY
             "total_cards_found": len(card_names),
             "message": f"Successfully updated {updated_count} cards with tag '{tag}'",
         }
+
+    def _discover_tags_from_scryfall(self: APIResource) -> list[str]:
+        """Discover all available tags from Scryfall tagger documentation.
+
+        Returns:
+        -------
+            List[str]: List of all available tag names.
+
+        Raises:
+        ------
+            ValueError: If API request fails or returns invalid data.
+
+        """
+        try:
+            response = self._session.get("https://scryfall.com/docs/tagger-tags", timeout=30)
+            response.raise_for_status()
+
+            # Extract tag names from oracletag search links
+            oracletag_pattern = r'/search\?q=oracletag%3A([^"&]+)'
+            matches = re.findall(oracletag_pattern, response.text)
+
+            # URL decode the tag names
+            tag_names = [urllib.parse.unquote(match) for match in matches]
+
+            # Remove duplicates and sort
+            unique_tags = sorted(set(tag_names))
+
+            logger.info("Discovered %d unique tags from Scryfall", len(unique_tags))
+            return unique_tags
+
+        except requests.RequestException as e:
+            msg = f"Failed to fetch tag list from Scryfall: {e}"
+            raise ValueError(msg) from e
+
+    def _fetch_tag_hierarchy(self: APIResource, *, tag: str) -> str | None:
+        """Fetch parent tag for a specific tag from Scryfall tagger.
+
+        Args:
+        ----
+            tag (str): The tag to get hierarchy information for.
+
+        Returns:
+        -------
+            Optional[str]: Parent tag name if found, None if no parent.
+
+        """
+        try:
+            url = f"https://tagger.scryfall.com/tags/card/{tag}"
+            response = self._session.get(url, timeout=30)
+            response.raise_for_status()
+
+            # Look for breadcrumb navigation or hierarchy indicators
+            # This is a simple pattern match - in a real implementation we might want
+            # to use BeautifulSoup for more robust HTML parsing
+            content = response.text
+
+            # Look for patterns that might indicate parent tags
+            # This is based on the issue description mentioning hierarchies like:
+            # triggered-ability > cast-trigger > cast-trigger-self
+            breadcrumb_patterns = [
+                r'<a[^>]+href="[^"]*tags/card/([^"]+)"[^>]*>[^<]*</a>[^<]*<[^>]*>[^<]*' + re.escape(tag),
+                r"parent[^>]*>([^<]+)</[^>]*>" + re.escape(tag),
+            ]
+
+            for pattern in breadcrumb_patterns:
+                matches = re.findall(pattern, content, re.IGNORECASE)
+                if matches:
+                    parent_tag = matches[0].strip()
+                    # URL decode if needed
+                    parent_tag = urllib.parse.unquote(parent_tag)
+                    logger.info("Found parent tag '%s' for tag '%s'", parent_tag, tag)
+                    return parent_tag
+
+            # If no parent found, return None
+            logger.info("No parent tag found for '%s'", tag)
+            return None
+
+        except requests.RequestException as e:
+            logger.warning("Failed to fetch hierarchy for tag '%s': %s", tag, e)
+            return None
+
+    def _populate_tag_hierarchy(self: APIResource, *, tags: list[str]) -> dict[str, Any]:
+        """Populate the tag hierarchy table with discovered tags.
+
+        Args:
+        ----
+            tags (List[str]): List of tag names to process.
+
+        Returns:
+        -------
+            Dict[str, Any]: Summary of the operation.
+
+        """
+        processed_tags = 0
+        hierarchy_found = 0
+
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            for tag in tags:
+                # Insert the tag first (with no parent)
+                cursor.execute(
+                    """
+                    INSERT INTO magic.card_tags (tag, parent_tag)
+                    VALUES (%(tag)s, NULL)
+                    ON CONFLICT (tag) DO NOTHING
+                    """,
+                    {"tag": tag},
+                )
+
+                # Try to find parent tag
+                parent_tag = self._fetch_tag_hierarchy(tag=tag)
+                if parent_tag and parent_tag in tags:
+                    cursor.execute(
+                        """
+                        UPDATE magic.card_tags
+                        SET parent_tag = %(parent_tag)s
+                        WHERE tag = %(tag)s
+                        """,
+                        {"tag": tag, "parent_tag": parent_tag},
+                    )
+                    hierarchy_found += 1
+
+                processed_tags += 1
+
+                # Basic rate limiting - wait between requests
+                time.sleep(0.5)  # 500ms delay between requests
+
+                if processed_tags % 100 == 0:
+                    logger.info("Processed %d/%d tags for hierarchy", processed_tags, len(tags))
+                    conn.commit()  # Commit periodically
+
+            conn.commit()  # Final commit
+
+        return {
+            "processed_tags": processed_tags,
+            "hierarchy_relationships_found": hierarchy_found,
+            "message": f"Processed {processed_tags} tags, found {hierarchy_found} parent-child relationships",
+        }
+
+    def discover_and_import_all_tags(
+        self: APIResource,
+        *,
+        import_cards: bool = True,
+        import_hierarchy: bool = False,
+        **_: object,
+    ) -> dict[str, Any]:
+        """Discover all Scryfall tags and optionally import their card associations.
+
+        Args:
+        ----
+            import_cards (bool): Whether to import card associations for each tag.
+            import_hierarchy (bool): Whether to discover and import tag hierarchy.
+
+        Returns:
+        -------
+            Dict[str, Any]: Summary of the bulk import operation.
+
+        """
+        start_time = time.monotonic()
+
+        # Step 1: Discover all available tags
+        logger.info("Starting bulk tag discovery and import")
+        try:
+            all_tags = self._discover_tags_from_scryfall()
+        except ValueError as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "message": "Failed to discover tags from Scryfall",
+            }
+
+        if not all_tags:
+            return {
+                "success": False,
+                "message": "No tags discovered from Scryfall",
+            }
+
+        results = {
+            "success": True,
+            "total_tags_discovered": len(all_tags),
+            "tags_processed": 0,
+            "cards_updated": 0,
+            "hierarchy_populated": False,
+            "hierarchy_relationships": 0,
+            "errors": [],
+        }
+
+        # Step 2: Import tag hierarchy if requested
+        if import_hierarchy:
+            logger.info("Populating tag hierarchy")
+            try:
+                hierarchy_result = self._populate_tag_hierarchy(tags=all_tags)
+                results["hierarchy_populated"] = True
+                results["hierarchy_relationships"] = hierarchy_result["hierarchy_relationships_found"]
+            except (requests.RequestException, ValueError) as e:
+                logger.error("Failed to populate tag hierarchy: %s", e)
+                results["errors"].append(f"Hierarchy import failed: {e}")
+
+        # Step 3: Import card associations for each tag if requested
+        if import_cards:
+            logger.info("Starting card import for %d tags", len(all_tags))
+            for i, tag in enumerate(all_tags):
+                try:
+                    # Use existing update_tagged_cards method
+                    tag_result = self.update_tagged_cards(tag=tag)
+                    results["tags_processed"] += 1
+                    results["cards_updated"] += tag_result.get("cards_updated", 0)
+
+                    # Basic rate limiting
+                    time.sleep(0.2)  # 200ms delay between tag imports
+
+                    if (i + 1) % 50 == 0:
+                        logger.info("Processed %d/%d tags", i + 1, len(all_tags))
+
+                except (requests.RequestException, ValueError, TypeError) as e:
+                    error_msg = f"Failed to import cards for tag '{tag}': {e}"
+                    logger.error(error_msg)
+                    results["errors"].append(error_msg)
+                    continue
+
+        duration = time.monotonic() - start_time
+        results["duration_seconds"] = duration
+        results["message"] = f"Bulk import completed in {duration:.1f}s: {results['tags_processed']} tags processed, {results['cards_updated']} cards updated"
+
+        return results
