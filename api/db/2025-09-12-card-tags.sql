@@ -16,5 +16,6 @@ CREATE TABLE IF NOT EXISTS magic.card_tags (
     CONSTRAINT card_tags_parent_fkey FOREIGN KEY (parent_tag) REFERENCES magic.card_tags(tag) ON DELETE SET NULL
 );
 
--- Create index for efficient parent tag lookups
-CREATE INDEX idx_card_tags_parent ON magic.card_tags (parent_tag);
+-- hash indexes for tags - probably overkill
+CREATE INDEX idx_card_tags_parent ON magic.card_tags USING HASH (parent_tag);
+CREATE INDEX idx_card_tags_parent ON magic.card_tags USING HASH (tag);
