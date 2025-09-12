@@ -481,3 +481,76 @@ def test_arithmetic_vs_negation_ambiguity() -> None:
     for query, expected in negation_cases:
         result = parsing.parse_search_query(query)
         assert result.root == expected, f"Failed for query: {query}"
+
+
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_sql", "expected_parameters"),
+    argvalues=[
+        # Basic keyword search
+        (
+            "keyword:flying",
+            r"(card.card_keywords @> %(p_dict_eydGbHlpbmcnOiBUcnVlfQ)s)",
+            {"p_dict_eydGbHlpbmcnOiBUcnVlfQ": {"Flying": True}},
+        ),
+        # Keyword search with colon operator (should behave like @>)
+        (
+            "keywords:trample",
+            r"(card.card_keywords @> %(p_dict_eydUcmFtcGxlJzogVHJ1ZX0)s)",
+            {"p_dict_eydUcmFtcGxlJzogVHJ1ZX0": {"Trample": True}},
+        ),
+        # Keyword search with alias 'k'
+        (
+            "k:haste",
+            r"(card.card_keywords @> %(p_dict_eydIYXN0ZSc6IFRydWV9)s)",
+            {"p_dict_eydIYXN0ZSc6IFRydWV9": {"Haste": True}},
+        ),
+        # Keyword equality
+        (
+            "keyword=vigilance",
+            r"(card.card_keywords = %(p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ)s)",
+            {"p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ": {"Vigilance": True}},
+        ),
+        # Custom keyword (not in the predefined list)
+        (
+            "keyword:customability",
+            r"(card.card_keywords @> %(p_dict_eydDdXN0b21hYmlsaXR5JzogVHJ1ZX0)s)",
+            {"p_dict_eydDdXN0b21hYmlsaXR5JzogVHJ1ZX0": {"Customability": True}},
+        ),
+        # Test different operators
+        (
+            "keywords>=flying",
+            r"(card.card_keywords @> %(p_dict_eydGbHlpbmcnOiBUcnVlfQ)s)",
+            {"p_dict_eydGbHlpbmcnOiBUcnVlfQ": {"Flying": True}},
+        ),
+        (
+            "keywords<=haste",
+            r"(card.card_keywords <@ %(p_dict_eydIYXN0ZSc6IFRydWV9)s)",
+            {"p_dict_eydIYXN0ZSc6IFRydWV9": {"Haste": True}},
+        ),
+        (
+            "keywords>trample",
+            r"(card.card_keywords @> %(p_dict_eydUcmFtcGxlJzogVHJ1ZX0)s AND card.card_keywords <> %(p_dict_eydUcmFtcGxlJzogVHJ1ZX0)s)",
+            {"p_dict_eydUcmFtcGxlJzogVHJ1ZX0": {"Trample": True}},
+        ),
+        (
+            "keywords<vigilance",
+            r"(card.card_keywords <@ %(p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ)s AND card.card_keywords <> %(p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ)s)",
+            {"p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ": {"Vigilance": True}},
+        ),
+        (
+            "keywords!=flying",
+            r"(card.card_keywords <> %(p_dict_eydGbHlpbmcnOiBUcnVlfQ)s)",
+            {"p_dict_eydGbHlpbmcnOiBUcnVlfQ": {"Flying": True}},
+        ),
+    ],
+)
+def test_keyword_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
+    """Test that keyword search generates correct SQL with JSONB operators."""
+    parsed = parsing.parse_scryfall_query(input_query)
+    context = {}
+    observed_sql = parsed.to_sql(context)
+    assert observed_sql == expected_sql, f"\nExpected: {expected_sql}\nObserved: {observed_sql}"
+    assert context == expected_parameters, f"\nExpected params: {expected_parameters}\nObserved params: {context}"
+
+
+
