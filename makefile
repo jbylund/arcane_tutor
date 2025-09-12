@@ -59,27 +59,35 @@ build_images: # @doc refresh locally built images
 pull_images: $(BASE_COMPOSE) # @doc pull images from remote repos
 	true || docker compose --file $(BASE_COMPOSE) pull
 
-ensure_black:
-	@python -m black --version > /dev/null || uv pip install --system --break-system-packages black
+ensure_black: ensure_uv
+	@python -m black --version > /dev/null || \
+	python -m uv pip install black
 
-ensure_isort:
-	@python -m isort --version > /dev/null || uv pip install --system --break-system-packages isort
+ensure_isort: ensure_uv
+	@python -m isort --version > /dev/null || \
+	python -m uv pip install isort
 
-ensure_pylint:
-	@python -m pylint /dev/null || uv pip install --system --break-system-packages pylint
+ensure_pylint: ensure_uv
+	@python -m pylint /dev/null || \
+	python -m uv pip install pylint
 
-ensure_pydocker:
-	@python -c "import docker" 2>/dev/null || uv pip install --system --break-system-packages docker
+ensure_pydocker: ensure_uv
+	@python -c "import docker" 2>/dev/null || \
+	python -m uv pip install docker
 
-ensure_ruff:
-	@python -m ruff --version > /dev/null || uv pip install --system --break-system-packages ruff
+ensure_ruff: ensure_uv
+	@python -m ruff --version > /dev/null || \
+	python -m uv pip install ruff
+
+ensure_uv:
+	@python -m uv --version > /dev/null || \
+	python -m pip install uv
 
 lint: ensure_ruff ensure_pylint # @doc lint all python files
 	find . -type f -name "*.py" | xargs python -m ruff check --fix --unsafe-fixes >/dev/null 2>/dev/null || true
 	find . -type f -name "*.py" | xargs python -m ruff check --fix --unsafe-fixes
 	find . -type f -name "*.py" | xargs python -m pylint --fail-under 7.0 --max-line-length=132
 	npx prettier --write api/index.html
-
 
 check_env: ensure_pydocker
 	true
