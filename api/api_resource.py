@@ -636,7 +636,7 @@ class APIResource:
         SELECT
             card_name AS name,
             mana_cost_text AS mana_cost,
-            raw_card_blob->>'oracle_text' AS oracle_text,
+            oracle_text AS oracle_text,
             raw_card_blob->>'set_name' AS set_name,
             raw_card_blob->>'type_line' AS type_line,
             raw_card_blob->'image_uris'->>'small' AS image_small,
