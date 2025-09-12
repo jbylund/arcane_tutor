@@ -13,17 +13,14 @@ from api.parsing import balance_partial_query, parse_scryfall_query
         ("name:'hydra'", "name:'hydra'"),  # already balanced
         ('name:"hydr" power:3', 'name:"hydr" power:3'),  # mixed balanced
         ('name:"hydr power:3', 'name:"hydr power:3"'),  # quote spans multiple terms
-
         # Parentheses balancing tests
         ("(t:goblin c:r) or (t:beast c:g", "(t:goblin c:r) or (t:beast c:g)"),
         ("(t:goblin c:r) or (t:beast c:g)", "(t:goblin c:r) or (t:beast c:g)"),  # already balanced
         ("((cmc=3) and (power>2", "((cmc=3) and (power>2))"),
         ("(((nested", "(((nested)))"),
-
         # Combined quote and parentheses tests
         ('(name:"lightning', '(name:"lightning")'),
         ('(name:"lightning bolt" and (power>2', '(name:"lightning bolt" and (power>2))'),
-
         # Edge cases
         ("", ""),
         ("simple", "simple"),

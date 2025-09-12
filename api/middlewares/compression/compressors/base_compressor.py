@@ -19,7 +19,6 @@ class BaseCompressor:
     priority: int = 20  # lower priority is preferred
     compression_level: int = 4
 
-
     def compress(self: BaseCompressor, data: bytes) -> bytes:
         """Compress a bytes object using the compressor.
 
