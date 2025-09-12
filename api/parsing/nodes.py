@@ -132,7 +132,10 @@ class BinaryOperatorNode(QueryNode):
 
     def to_sql(self: BinaryOperatorNode, context: dict) -> str:
         """Serialize this binary operator node to a SQL expression."""
-        return f"({self.lhs.to_sql(context)} {self.operator} {self.rhs.to_sql(context)})"
+        sql_operator = self.operator
+        if sql_operator == ":":
+            sql_operator = "="
+        return f"({self.lhs.to_sql(context)} {sql_operator} {self.rhs.to_sql(context)})"
 
     def __repr__(self: BinaryOperatorNode) -> str:
         """Return a string representation of the binary operator node."""
