@@ -80,105 +80,39 @@ COLOR_CODE_TO_NAME = {
 COLOR_NAME_TO_CODE = {v: k for k, v in COLOR_CODE_TO_NAME.items()}
 
 
-# Common Magic: The Gathering keywords for intelligent completion
-MAGIC_KEYWORDS = {
-    "Adapt",
-    "Addendum", 
-    "Affinity",
-    "Afterlife",
-    "Aftermath",
-    "Ascend",
-    "Assist",
-    "Awaken",
-    "Battalion",
-    "Bestow",
-    "Bloodthirst",
-    "Boast",
-    "Buyback",
-    "Cascade",
-    "Channel",
-    "Cipher",
-    "Cleave",
-    "Conspire",
-    "Convoke",
-    "Crew",
-    "Cumulative upkeep",
-    "Cycling",
-    "Dash",
-    "Deathtouch",
-    "Defender",
-    "Delve",
-    "Disturb",
-    "Double strike", 
-    "Dredge",
-    "Echo",
-    "Embalm",
-    "Emerge",
-    "Entwine",
-    "Epic",
-    "Escape",
-    "Eternalize",
-    "Evoke",
-    "Exploit",
-    "Explorer",
-    "Fading",
-    "Fear",
-    "First strike",
-    "Flanking",
-    "Flash",
-    "Flashback",
-    "Flying",
-    "Foretell",
-    "Haste",
-    "Hexproof",
-    "Hideaway",
-    "Horsemanship",
-    "Indestructible",
-    "Infect",
-    "Intimidate",
-    "Jump-start",
-    "Kicker",
-    "Landfall",
-    "Lifelink",
-    "Madness",
-    "Menace",
-    "Miracle",
-    "Morph",
-    "Multikicker",
-    "Myriad",
-    "Overload",
-    "Partner",
-    "Persist",
-    "Phasing",
-    "Plainswalk",
-    "Poisonous",
-    "Protection",
-    "Prowess",
-    "Prowl",
-    "Reach",
-    "Rebound",
-    "Regenerate",
-    "Reinforce",
-    "Renown",
-    "Replicate",
-    "Retrace",
-    "Riot",
-    "Scavenge",
-    "Shadow",
-    "Shroud",
-    "Skulk",
-    "Storm",
-    "Sunburst",
-    "Suspend",
-    "Totem armor",
-    "Trample",
-    "Transform",
-    "Transmute",
-    "Tribute",
-    "Undying",
-    "Unearth",
-    "Unleash",
-    "Vanishing",
-    "Vigilance",
-    "Wither",
-}
+# Keywords will be fetched dynamically from the database
+# This reduces maintenance and ensures the keyword list is always up to date
+_CACHED_KEYWORDS = None
+
+
+def get_magic_keywords():
+    """Get magic keywords from cache or database.
+    
+    This function will be called by the API resource to populate keywords
+    from the database and cache them for performance.
+    """
+    global _CACHED_KEYWORDS
+    if _CACHED_KEYWORDS is None:
+        # Fallback keywords for development/testing when database is not available
+        _CACHED_KEYWORDS = {
+            "Adapt", "Addendum", "Affinity", "Afterlife", "Aftermath", "Ascend", "Assist", "Awaken",
+            "Battalion", "Bestow", "Bloodthirst", "Boast", "Buyback", "Cascade", "Channel", "Cipher",
+            "Cleave", "Conspire", "Convoke", "Crew", "Cumulative upkeep", "Cycling", "Dash", "Deathtouch",
+            "Defender", "Delve", "Disturb", "Double strike", "Dredge", "Echo", "Embalm", "Emerge",
+            "Entwine", "Epic", "Escape", "Eternalize", "Evoke", "Exploit", "Explorer", "Fading",
+            "Fear", "First strike", "Flanking", "Flash", "Flashback", "Flying", "Foretell", "Haste",
+            "Hexproof", "Hideaway", "Horsemanship", "Indestructible", "Infect", "Intimidate", "Jump-start",
+            "Kicker", "Landfall", "Lifelink", "Madness", "Menace", "Miracle", "Morph", "Multikicker",
+            "Myriad", "Overload", "Partner", "Persist", "Phasing", "Plainswalk", "Poisonous", "Protection",
+            "Prowess", "Prowl", "Reach", "Rebound", "Regenerate", "Reinforce", "Renown", "Replicate",
+            "Retrace", "Riot", "Scavenge", "Shadow", "Shroud", "Skulk", "Storm", "Sunburst", "Suspend",
+            "Totem armor", "Trample", "Transform", "Transmute", "Tribute", "Undying", "Unearth", "Unleash",
+            "Vanishing", "Vigilance", "Wither"
+        }
+    return _CACHED_KEYWORDS
+
+
+def set_magic_keywords(keywords):
+    """Set the cached keywords from database results."""
+    global _CACHED_KEYWORDS
+    _CACHED_KEYWORDS = keywords

@@ -6,9 +6,9 @@ from .db_info import (
     COLOR_CODE_TO_NAME,
     COLOR_NAME_TO_CODE,
     DB_NAME_TO_FIELD_TYPE,
-    MAGIC_KEYWORDS,
     SEARCH_NAME_TO_DB_NAME,
     FieldType,
+    get_magic_keywords,
 )
 from .nodes import (
     AndNode,
@@ -80,13 +80,16 @@ def get_keywords_comparison_object(val: str) -> dict[str, bool]:
     # Normalize the input keyword
     normalized_keyword = val.strip().title()
     
+    # Get current keywords (from cache or fallback)
+    magic_keywords = get_magic_keywords()
+    
     # Check for exact match first
-    if normalized_keyword in MAGIC_KEYWORDS:
+    if normalized_keyword in magic_keywords:
         return {normalized_keyword: True}
     
     # Check for partial matches (intelligent completion)
     # Find keywords that start with the input (case insensitive)
-    matches = [kw for kw in MAGIC_KEYWORDS if kw.lower().startswith(val.lower())]
+    matches = [kw for kw in magic_keywords if kw.lower().startswith(val.lower())]
     
     if len(matches) == 1:
         # Single match - use it
