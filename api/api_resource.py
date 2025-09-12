@@ -1034,23 +1034,19 @@ ORDER BY
         try:
             response = self._session.get("https://scryfall.com/docs/tagger-tags", timeout=30)
             response.raise_for_status()
-
-            # Extract tag names from oracletag search links
-            oracletag_pattern = r'/search\?q=oracletag%3A([^"&]+)'
-            matches = re.findall(oracletag_pattern, response.text)
-
-            # URL decode the tag names
-            tag_names = [urllib.parse.unquote(match) for match in matches]
-
-            # Remove duplicates and sort
-            unique_tags = sorted(set(tag_names))
-
-            logger.info("Discovered %d unique tags from Scryfall", len(unique_tags))
-            return unique_tags
-
         except requests.RequestException as e:
             msg = f"Failed to fetch tag list from Scryfall: {e}"
             raise ValueError(msg) from e
+
+        # Extract tag names from oracletag search links
+        oracletag_pattern = r'/search\?q=oracletag%3A([^"&]+)'
+        matches = re.findall(oracletag_pattern, response.text)
+
+        # URL decode the tag names and remove duplicates
+        unique_tags = sorted({urllib.parse.unquote(match) for match in matches})
+
+        logger.info("Discovered %d unique tags from Scryfall", len(unique_tags))
+        return unique_tags
 
     def _fetch_tag_hierarchy(self: APIResource, *, tag: str) -> str | None:
         """Fetch parent tag for a specific tag from Scryfall tagger.
