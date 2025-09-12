@@ -445,6 +445,7 @@ class APIResource:
                     card[f"{creature_field}_numeric"] = numeric_val
             card["card_colors"] = dict.fromkeys(card["colors"], True)
             card["card_color_identity"] = dict.fromkeys(card["color_identity"], True)
+            card["card_keywords"] = dict.fromkeys(card.get("keywords", []), True)
             card["edhrec_rank"] = card.get("edhrec_rank", None)
             to_insert[card_name] = card
         return list(to_insert.values())
@@ -501,13 +502,14 @@ class APIResource:
                         card_subtypes,           -- 6
                         card_colors,             -- 7
                         card_color_identity,     -- 8
-                        creature_power,          -- 9
-                        creature_power_text,     -- 10
-                        creature_toughness,      -- 11
-                        creature_toughness_text, -- 12
-                        edhrec_rank,             -- 13
-                        oracle_text,             -- 14
-                        raw_card_blob            -- 15
+                        card_keywords,           -- 9
+                        creature_power,          -- 10
+                        creature_power_text,     -- 11
+                        creature_toughness,      -- 12
+                        creature_toughness_text, -- 13
+                        edhrec_rank,             -- 14
+                        oracle_text,             -- 15
+                        raw_card_blob            -- 16
                     )
                     SELECT
                         card_blob->>'name' AS card_name, -- 1
@@ -518,13 +520,14 @@ class APIResource:
                         card_blob->'card_subtypes' AS card_subtypes, -- 6
                         card_blob->'card_colors' AS card_colors, -- 7
                         card_blob->'card_color_identity' AS card_color_identity, -- 8
-                        (card_blob->>'power_numeric')::integer AS creature_power, -- 9
-                        card_blob->>'power' AS creature_power_text, -- 10
-                        (card_blob->>'toughness_numeric')::integer AS creature_toughness, -- 10
-                        card_blob->>'toughness' AS creature_toughness_text, -- 12
-                        (card_blob->>'edhrec_rank')::integer AS edhrec_rank, -- 13
-                        card_blob->>'oracle_text' AS oracle_text, -- 14
-                        card_blob AS raw_card_blob -- 15
+                        card_blob->'card_keywords' AS card_keywords, -- 9
+                        (card_blob->>'power_numeric')::integer AS creature_power, -- 10
+                        card_blob->>'power' AS creature_power_text, -- 11
+                        (card_blob->>'toughness_numeric')::integer AS creature_toughness, -- 12
+                        card_blob->>'toughness' AS creature_toughness_text, -- 13
+                        (card_blob->>'edhrec_rank')::integer AS edhrec_rank, -- 14
+                        card_blob->>'oracle_text' AS oracle_text, -- 15
+                        card_blob AS raw_card_blob -- 16
                     FROM
                         import_staging
                     ON CONFLICT (card_name) DO NOTHING
