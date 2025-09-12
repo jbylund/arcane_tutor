@@ -6,6 +6,7 @@ from .db_info import (
     COLOR_CODE_TO_NAME,
     COLOR_NAME_TO_CODE,
     DB_NAME_TO_FIELD_TYPE,
+    MAGIC_KEYWORDS,
     SEARCH_NAME_TO_DB_NAME,
     FieldType,
 )
@@ -73,6 +74,29 @@ def get_colors_comparison_object(val: str) -> dict[str, bool]:
     except KeyError:
         msg = f"Invalid color string: {val}"
         raise ValueError(msg)
+
+
+def get_keywords_comparison_object(val: str) -> dict[str, bool]:
+    # Normalize the input keyword
+    normalized_keyword = val.strip().title()
+    
+    # Check for exact match first
+    if normalized_keyword in MAGIC_KEYWORDS:
+        return {normalized_keyword: True}
+    
+    # Check for partial matches (intelligent completion)
+    # Find keywords that start with the input (case insensitive)
+    matches = [kw for kw in MAGIC_KEYWORDS if kw.lower().startswith(val.lower())]
+    
+    if len(matches) == 1:
+        # Single match - use it
+        return {matches[0]: True}
+    elif len(matches) > 1:
+        # Multiple matches - use the first alphabetically for consistency
+        return {sorted(matches)[0]: True}
+    else:
+        # No matches - still return the normalized input to allow for custom keywords
+        return {normalized_keyword: True}
 
 
 class ScryfallBinaryOperatorNode(BinaryOperatorNode):
@@ -148,6 +172,10 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             pname = param_name(rhs)
             context[pname] = rhs
             # query = json.dumps(rhs, sort_keys=True) + "::jsonb"
+        elif attr == "card_keywords":
+            rhs = get_keywords_comparison_object(self.rhs.value.strip())
+            pname = param_name(rhs)
+            context[pname] = rhs
 
         # Color identity has inverted semantics for the : operator only
         is_color_identity = attr == "card_color_identity"
