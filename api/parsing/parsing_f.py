@@ -221,7 +221,9 @@ def parse_search_query(query: str) -> Query:
     arithmetic_comparison.setParseAction(make_binary_operator_node)
 
     # Comparison between values and arithmetic expressions: (attrname | numeric_value) attrop (arithmetic_expr | attrname | numeric_value)
-    value_arithmetic_comparison = (attrname | integer | float_number) + attrop + (arithmetic_expr | attrname | integer | float_number)
+    value_arithmetic_comparison = (
+        (attrname | integer | float_number) + attrop + (arithmetic_expr | attrname | integer | float_number)
+    )
     value_arithmetic_comparison.setParseAction(make_binary_operator_node)
 
     # Attribute-to-attribute comparison has higher precedence than regular conditions

@@ -66,7 +66,7 @@ class ApiWorker(multiprocessing.Process):
             middleware=[
                 TimingMiddleware(),
                 # ProfilingMiddleware(),
-                CachingMiddleware(), # important that this is first
+                CachingMiddleware(),  # important that this is first
                 CompressionMiddleware(),
             ],
         )

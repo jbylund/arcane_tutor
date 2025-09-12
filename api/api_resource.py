@@ -34,6 +34,7 @@ honeybadger.configure(
     project_root=str(pathlib.Path(__file__).parent.parent),
 )
 
+
 def honeybadger_error_handler(req: falcon.Request, oops: Exception) -> None:
     """Handle an error with Honeybadger."""
     logger.error("Error handling request: %s", oops, exc_info=True)
@@ -191,7 +192,7 @@ class APIResource:
             "Handling request for %s / |%s| / response id: %d",
             req.uri,
             path,
-            id(resp)
+            id(resp),
         )
         path = path.replace(".", "_")
         action = self.action_map.get(path, self._raise_not_found)
@@ -481,7 +482,12 @@ class APIResource:
                 conn.commit()
                 after_staging = time.monotonic()
                 rate = len(to_insert) / (after_staging - before)
-                logger.info("Imported %d cards into staging table in %.2f seconds, rate: %.2f cards/s...", len(to_insert), after_staging - before, rate)
+                logger.info(
+                    "Imported %d cards into staging table in %.2f seconds, rate: %.2f cards/s...",
+                    len(to_insert),
+                    after_staging - before,
+                    rate,
+                )
 
                 cursor.execute(
                     query="""
@@ -528,16 +534,28 @@ class APIResource:
 
                 after_transfer = time.monotonic()
                 rate = len(to_insert) / (after_transfer - after_staging)
-                logger.info("Transferred %d cards from staging table to main table in %.2f seconds, rate: %.2f cards/s...", len(to_insert), after_transfer - after_staging, rate)
-                logger.info("Total time: %.2f seconds, rate: %.2f cards/s...", after_transfer - before, len(to_insert) / (after_transfer - before))
+                logger.info(
+                    "Transferred %d cards from staging table to main table in %.2f seconds, rate: %.2f cards/s...",
+                    len(to_insert),
+                    after_transfer - after_staging,
+                    rate,
+                )
+                logger.info(
+                    "Total time: %.2f seconds, rate: %.2f cards/s...",
+                    after_transfer - before,
+                    len(to_insert) / (after_transfer - before),
+                )
 
                 cursor.execute("SELECT * FROM import_staging LIMIT 10")
                 return cursor.fetchall()
 
-
-
     def get_cards(
-        self: APIResource, *, min_name: str | None = None, max_name: str | None = None, limit: int = 2500, **_: object,
+        self: APIResource,
+        *,
+        min_name: str | None = None,
+        max_name: str | None = None,
+        limit: int = 2500,
+        **_: object,
     ) -> list[dict[str, Any]]:
         """Get cards by name range.
 

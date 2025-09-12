@@ -8,6 +8,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
 class LoggingMiddleware:
     """Middleware to add some simple logging the request and response."""
 
