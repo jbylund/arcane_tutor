@@ -510,24 +510,6 @@ def test_arithmetic_vs_negation_ambiguity() -> None:
             r"(card.card_keywords = %(p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ)s)",
             {"p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ": {"Vigilance": True}},
         ),
-        # Keyword partial matching - "tram" should match "Trample"
-        (
-            "keyword:tram",
-            r"(card.card_keywords @> %(p_dict_eydUcmFtcGxlJzogVHJ1ZX0)s)",
-            {"p_dict_eydUcmFtcGxlJzogVHJ1ZX0": {"Trample": True}},
-        ),
-        # Keyword partial matching - "fly" should match "Flying"
-        (
-            "keyword:fly",
-            r"(card.card_keywords @> %(p_dict_eydGbHlpbmcnOiBUcnVlfQ)s)",
-            {"p_dict_eydGbHlpbmcnOiBUcnVlfQ": {"Flying": True}},
-        ),
-        # Keyword partial matching - "deat" should match "Deathtouch"
-        (
-            "keyword:deat",
-            r"(card.card_keywords @> %(p_dict_eydEZWF0aHRvdWNoJzogVHJ1ZX0)s)",
-            {"p_dict_eydEZWF0aHRvdWNoJzogVHJ1ZX0": {"Deathtouch": True}},
-        ),
         # Custom keyword (not in the predefined list)
         (
             "keyword:customability",
@@ -571,30 +553,4 @@ def test_keyword_sql_translation(input_query: str, expected_sql: str, expected_p
     assert context == expected_parameters, f"\nExpected params: {expected_parameters}\nObserved params: {context}"
 
 
-def test_keyword_intelligent_completion() -> None:
-    """Test that keyword partial matching works correctly."""
-    from api.parsing.scryfall_nodes import get_keywords_comparison_object
-    
-    # Test exact matches
-    assert get_keywords_comparison_object("Flying") == {"Flying": True}
-    assert get_keywords_comparison_object("flying") == {"Flying": True}
-    assert get_keywords_comparison_object("FLYING") == {"Flying": True}
-    
-    # Test partial matches
-    assert get_keywords_comparison_object("tram") == {"Trample": True}
-    assert get_keywords_comparison_object("fly") == {"Flying": True}
-    assert get_keywords_comparison_object("deat") == {"Deathtouch": True}
-    assert get_keywords_comparison_object("hast") == {"Haste": True}
-    assert get_keywords_comparison_object("vigil") == {"Vigilance": True}
-    
-    # Test case insensitive partial matches
-    assert get_keywords_comparison_object("TRAM") == {"Trample": True}
-    assert get_keywords_comparison_object("FLY") == {"Flying": True}
-    
-    # Test custom keywords (not in predefined list)
-    assert get_keywords_comparison_object("customability") == {"Customability": True}
-    assert get_keywords_comparison_object("myspecialkeyword") == {"Myspecialkeyword": True}
-    
-    # Test when multiple keywords start with the same prefix (should pick first alphabetically)
-    # Both "Dash" and "Deathtouch" start with "da" - should pick "Dash" (alphabetically first)
-    assert get_keywords_comparison_object("da") == {"Dash": True}
+

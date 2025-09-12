@@ -8,7 +8,6 @@ from .db_info import (
     DB_NAME_TO_FIELD_TYPE,
     SEARCH_NAME_TO_DB_NAME,
     FieldType,
-    get_magic_keywords,
 )
 from .nodes import (
     AndNode,
@@ -79,27 +78,7 @@ def get_colors_comparison_object(val: str) -> dict[str, bool]:
 def get_keywords_comparison_object(val: str) -> dict[str, bool]:
     # Normalize the input keyword
     normalized_keyword = val.strip().title()
-    
-    # Get current keywords (from cache or fallback)
-    magic_keywords = get_magic_keywords()
-    
-    # Check for exact match first
-    if normalized_keyword in magic_keywords:
-        return {normalized_keyword: True}
-    
-    # Check for partial matches (intelligent completion)
-    # Find keywords that start with the input (case insensitive)
-    matches = [kw for kw in magic_keywords if kw.lower().startswith(val.lower())]
-    
-    if len(matches) == 1:
-        # Single match - use it
-        return {matches[0]: True}
-    elif len(matches) > 1:
-        # Multiple matches - use the first alphabetically for consistency
-        return {sorted(matches)[0]: True}
-    else:
-        # No matches - still return the normalized input to allow for custom keywords
-        return {normalized_keyword: True}
+    return {normalized_keyword: True}
 
 
 class ScryfallBinaryOperatorNode(BinaryOperatorNode):
