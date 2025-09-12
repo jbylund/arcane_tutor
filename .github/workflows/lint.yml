@@ -1,0 +1,42 @@
+name: Lint
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          true || { sudo apt-get update -qqq && sudo apt-get install -qqq -y libev-dev ; }
+
+      - name: Install uv dependencies
+        run: |
+          # Try the official installer first, fallback to pip if needed
+          if curl -LsSf https://astral.sh/uv/install.sh | sh; then
+            source $HOME/.cargo/env
+          else
+            echo "Installing uv via pip as fallback..."
+            python -m pip install --upgrade pip
+            python -m pip install uv
+          fi
+          uv pip install --system --break-system-packages -r requirements.txt -r test-requirements.txt
+
+      - name: Run ruff linting
+        run: |
+          python -m ruff check
