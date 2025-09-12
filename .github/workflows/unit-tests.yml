@@ -23,7 +23,7 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          true || sudo apt-get update -qqq && sudo apt-get install -qqq -y libev-dev
+          true || { sudo apt-get update -qqq && sudo apt-get install -qqq -y libev-dev ; }
 
       - name: Install uv dependencies
         run: |
