@@ -184,6 +184,8 @@ class APIResource:
         self.action_map = {x: getattr(self, x) for x in dir(self) if not x.startswith("_")}
         self.action_map["index"] = self.index_html
         self._query_cache = LRUCache(maxsize=1_000)
+        # Create reusable requests session
+        self._session = requests.Session()
         logger.info("Worker with pid has conn pool %s", self._conn_pool)
 
     def _handle(self: APIResource, req: falcon.Request, resp: falcon.Response) -> None:
@@ -899,6 +901,60 @@ ORDER BY
     keyword_name""",
         )["result"]
 
+    def _fetch_cards_from_scryfall(self: APIResource, *, tag: str) -> list[str]:
+        """Fetch all card names with a specific tag from Scryfall API.
+
+        This method handles pagination to get the complete list of cards.
+
+        Args:
+        ----
+            tag (str): The Scryfall tag to search for.
+
+        Returns:
+        -------
+            List[str]: List of card names that have the specified tag.
+
+        Raises:
+        ------
+            ValueError: If API request fails or returns invalid data.
+
+        """
+        base_url = "https://api.scryfall.com/cards/search"
+        params = {"q": f"oracletag:{tag}", "format": "json"}
+        all_cards = []
+
+        try:
+            while True:
+                response = self._session.get(base_url, params=params, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+
+                if "data" not in data:
+                    break
+
+                # Extract card names from current page
+                page_card_names = [card.get("name") for card in data["data"] if card.get("name")]
+                all_cards.extend(page_card_names)
+
+                # Check if there are more pages
+                if not data.get("has_more", False):
+                    break
+
+                # Get next page URL
+                next_page = data.get("next_page")
+                if not next_page:
+                    break
+
+                # Update base_url and clear params for next page (since next_page is a complete URL)
+                base_url = next_page
+                params = {}
+
+        except requests.RequestException as e:
+            msg = f"Failed to fetch data from Scryfall API: {e}"
+            raise ValueError(msg) from e
+
+        return all_cards
+
     def update_tagged_cards(
         self: APIResource,
         *,
@@ -920,32 +976,14 @@ ORDER BY
             msg = "Tag parameter is required"
             raise ValueError(msg)
 
-        # Fetch cards with this tag from Scryfall API
-        scryfall_api_url = f"https://api.scryfall.com/cards/search?q=oracletag:{tag}&format=json"
-
-        try:
-            response = requests.get(scryfall_api_url, timeout=30)
-            response.raise_for_status()
-            scryfall_data = response.json()
-        except requests.RequestException as e:
-            msg = f"Failed to fetch data from Scryfall API: {e}"
-            raise ValueError(msg) from e
-
-        if "data" not in scryfall_data:
-            return {
-                "tag": tag,
-                "cards_updated": 0,
-                "message": f"No cards found with tag '{tag}' in Scryfall API",
-            }
-
-        # Extract card names from the response
-        card_names = [card.get("name") for card in scryfall_data["data"] if card.get("name")]
+        # Fetch cards with this tag from Scryfall API (handles pagination)
+        card_names = self._fetch_cards_from_scryfall(tag=tag)
 
         if not card_names:
             return {
                 "tag": tag,
                 "cards_updated": 0,
-                "message": f"No valid card names found for tag '{tag}'",
+                "message": f"No cards found with tag '{tag}' in Scryfall API",
             }
 
         # Update cards in database with the new tag
