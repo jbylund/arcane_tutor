@@ -7,12 +7,15 @@ Always reference these instructions first and fallback to search or bash command
 ## Working Effectively
 
 ### Prerequisites and Environment Setup
-- Install system dependencies:
-  - `sudo apt-get update` -- takes ~7 seconds. NEVER CANCEL.
-  - `sudo apt-get install -y libev-dev` -- takes ~5 seconds. NEVER CANCEL.
 - Install Python dependencies:
   - `python -m pip install --upgrade pip` -- takes ~2 seconds.
   - `python -m pip install -r requirements.txt -r test-requirements.txt` -- takes ~4 seconds.
+
+### For Web Server Development (Optional)
+**Only needed if you plan to run the local API server**:
+- Install system dependencies:
+  - `sudo apt-get update` -- takes ~7 seconds. NEVER CANCEL.
+  - `sudo apt-get install -y libev-dev` -- takes ~5 seconds. NEVER CANCEL.
 - **IMPORTANT**: For local API testing, also install: `python -m pip install bjoern` -- takes ~3 seconds. Includes compilation of bjoern C extension.
 
 ### Build and Test Workflow
@@ -44,12 +47,15 @@ Always reference these instructions first and fallback to search or bash command
 
 ### Quick Validation Workflow
 ```bash
-# Complete validation in under 30 seconds
+# Complete validation in under 15 seconds (no web server)
 python -m pip install -r requirements.txt -r test-requirements.txt
-python -m pip install bjoern  # Required for local API testing
 python -m pytest -vvv
 python -c "from api.parsing import parse_scryfall_query; print(parse_scryfall_query('cmc=3'))"
 python -m ruff check
+
+# Additional setup for web server testing (adds ~15 seconds)
+sudo apt-get update && sudo apt-get install -y libev-dev
+python -m pip install bjoern  # Required for local API testing
 ```
 
 ### Current Limitations
@@ -61,17 +67,19 @@ python -m ruff check
 
 ### Development Commands That Work
 ```bash
-# Install dependencies (run once)
-sudo apt-get update && sudo apt-get install -y libev-dev
+# Install dependencies (run once) - minimal setup
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt -r test-requirements.txt
-python -m pip install bjoern  # Required for local API testing
 
-# Test and validate changes
+# Test and validate changes (works without system dependencies)
 python -m pytest -vvv                    # Run tests (~1 second)
 python -m ruff check --fix --unsafe-fixes # Fix style issues (<1 second)
 npx prettier --write api/index.html      # Format HTML (~2 seconds)
-python api/entrypoint.py --help          # Test API entrypoint
+python api/entrypoint.py --help          # Test API entrypoint (shows help)
+
+# Additional setup for web server (optional)
+sudo apt-get update && sudo apt-get install -y libev-dev
+python -m pip install bjoern  # Required for local API testing
 
 # Docker workflow (works)
 make datadir                             # Create data directories (<1 second)
