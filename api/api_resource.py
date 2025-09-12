@@ -898,3 +898,77 @@ FROM
 ORDER BY
     keyword_name""",
         )["result"]
+
+    def update_tagged_cards(
+        self: APIResource,
+        *,
+        tag: str,
+        **_: object,
+    ) -> dict[str, Any]:
+        """Update cards with a specific Scryfall tag.
+
+        Args:
+        ----
+            tag (str): The Scryfall tag to fetch and apply to cards.
+
+        Returns:
+        -------
+            Dict[str, Any]: Result summary with updated card count and tag info.
+
+        """
+        if not tag:
+            msg = "Tag parameter is required"
+            raise ValueError(msg)
+
+        # Fetch cards with this tag from Scryfall API
+        scryfall_api_url = f"https://api.scryfall.com/cards/search?q=oracletag:{tag}&format=json"
+
+        try:
+            response = requests.get(scryfall_api_url, timeout=30)
+            response.raise_for_status()
+            scryfall_data = response.json()
+        except requests.RequestException as e:
+            msg = f"Failed to fetch data from Scryfall API: {e}"
+            raise ValueError(msg) from e
+
+        if "data" not in scryfall_data:
+            return {
+                "tag": tag,
+                "cards_updated": 0,
+                "message": f"No cards found with tag '{tag}' in Scryfall API",
+            }
+
+        # Extract card names from the response
+        card_names = [card.get("name") for card in scryfall_data["data"] if card.get("name")]
+
+        if not card_names:
+            return {
+                "tag": tag,
+                "cards_updated": 0,
+                "message": f"No valid card names found for tag '{tag}'",
+            }
+
+        # Update cards in database with the new tag
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            # Use SQL update with jsonb concatenation to add the tag
+            cursor.execute(
+                """
+                UPDATE magic.cards
+                SET card_tags = card_tags || %(new_tag)s::jsonb
+                WHERE card_name = ANY(%(card_names)s)
+                """,
+                {
+                    "new_tag": json.dumps({tag: True}),
+                    "card_names": card_names,
+                },
+            )
+
+            updated_count = cursor.rowcount
+            conn.commit()
+
+        return {
+            "tag": tag,
+            "cards_updated": updated_count,
+            "total_cards_found": len(card_names),
+            "message": f"Successfully updated {updated_count} cards with tag '{tag}'",
+        }
