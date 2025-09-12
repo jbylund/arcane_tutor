@@ -180,13 +180,19 @@ class APIResource:
         if resp.complete:
             logger.info("Request already handled: %s", req.uri)
             return
-        logger.info("Handling request for %s / response id: %d", req.uri, id(resp))
+
         parsed = urlparse(req.uri)
-        path = parsed.path.strip("/")
+        path = parsed.path.strip("/") or "index"
 
-        if path not in ("db_ready", "pid"):
-            logger.info("Handling request for %s", req.uri)
+        if path in ("db_ready", "pid"):
+            return
 
+        logger.info(
+            "Handling request for %s / |%s| / response id: %d",
+            req.uri,
+            path,
+            id(resp)
+        )
         path = path.replace(".", "_")
         action = self.action_map.get(path, self._raise_not_found)
         before = time.monotonic()
