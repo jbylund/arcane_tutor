@@ -75,6 +75,12 @@ def get_colors_comparison_object(val: str) -> dict[str, bool]:
         raise ValueError(msg)
 
 
+def get_keywords_comparison_object(val: str) -> dict[str, bool]:
+    # Normalize the input keyword
+    normalized_keyword = val.strip().title()
+    return {normalized_keyword: True}
+
+
 class ScryfallBinaryOperatorNode(BinaryOperatorNode):
     def to_sql(self: ScryfallBinaryOperatorNode, context: dict) -> str:
         if isinstance(self.lhs, ScryfallAttributeNode):
@@ -148,6 +154,10 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             pname = param_name(rhs)
             context[pname] = rhs
             # query = json.dumps(rhs, sort_keys=True) + "::jsonb"
+        elif attr == "card_keywords":
+            rhs = get_keywords_comparison_object(self.rhs.value.strip())
+            pname = param_name(rhs)
+            context[pname] = rhs
 
         # Color identity has inverted semantics for the : operator only
         is_color_identity = attr == "card_color_identity"
