@@ -60,8 +60,8 @@ class ApiWorker(multiprocessing.Process):
             falcon.App: The configured Falcon application instance.
         """
         # Importing here (post-fork) is safer for some servers/clients than importing before forking.
-        import api_resource  # pylint: disable=import-outside-toplevel  # noqa: PLC0415
-        from middlewares import CachingMiddleware, CompressionMiddleware, TimingMiddleware  # noqa: PLC0415
+        from .api_resource import APIResource  # pylint: disable=import-outside-toplevel  # noqa: PLC0415
+        from .middlewares import CachingMiddleware, CompressionMiddleware, TimingMiddleware  # noqa: PLC0415
 
         api = falcon.App(
             middleware=[
@@ -71,7 +71,7 @@ class ApiWorker(multiprocessing.Process):
             ],
         )
         api.set_error_serializer(json_error_serializer)  # Use custom JSON error serializer
-        sink = api_resource.APIResource()  # Create the main API resource
+        sink = APIResource()  # Create the main API resource
         api.add_sink(sink._handle, prefix="/")  # Route all requests to the sink handler
 
         json_handler = falcon.media.JSONHandler(
@@ -99,7 +99,7 @@ class ApiWorker(multiprocessing.Process):
             import bjoern  # noqa: PLC0415
             app = self.get_api()  # Get the Falcon app
             bjoern.run(app, self.host, self.port, reuse_port=True)  # Start the Bjoern server
-        except Exception as e:  # noqa: BLE001
-            logger.error("Error running server: %s", e)
+        except Exception as oops:
+            logger.error("Error running server: %s", oops, exc_info=True)
             if self.exit_flag:
                 self.exit_flag.set()  # Signal exit if an exit flag is provided

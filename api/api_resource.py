@@ -25,30 +25,37 @@ import psycopg.types.json
 import psycopg_pool
 import requests
 from cachetools import LRUCache, TTLCache, cached
-from honeybadger import honeybadger
-from parsing import generate_sql_query, parse_scryfall_query
 from psycopg import Connection
 
-honeybadger.configure(
-    api_key="hbp_mHbJs4KJAOeUhK17Ixr0AzDC0gx8Zt2WG6kH",
-    project_root=str(pathlib.Path(__file__).parent.parent),
-)
+from .parsing import generate_sql_query, parse_scryfall_query
 
-
-def honeybadger_error_handler(req: falcon.Request, oops: Exception) -> None:
-    """Handle an error with Honeybadger."""
-    logger.error("Error handling request: %s", oops, exc_info=True)
-    honeybadger.notify(
-        exception=oops,
-        context={
-            "headers": req.headers,
-            "method": req.method,
-            "params": req.params,
-            "path": req.path,
-            "query_string": req.query_string,
-            "uri": req.uri,
-        },
+try:
+    from honeybadger import honeybadger
+except ImportError:
+    def honeybadger_error_handler(req: falcon.Request, oops: Exception) -> None:
+        """Handle an error with Honeybadger."""
+        del req
+        logger.error("Error handling request: %s", oops, exc_info=True)
+else:
+    honeybadger.configure(
+        api_key="hbp_mHbJs4KJAOeUhK17Ixr0AzDC0gx8Zt2WG6kH",
+        project_root=str(pathlib.Path(__file__).parent.parent),
     )
+
+    def honeybadger_error_handler(req: falcon.Request, oops: Exception) -> None:
+        """Handle an error with Honeybadger."""
+        logger.error("Error handling request: %s", oops, exc_info=True)
+        honeybadger.notify(
+            exception=oops,
+            context={
+                "headers": req.headers,
+                "method": req.method,
+                "params": req.params,
+                "path": req.path,
+                "query_string": req.query_string,
+                "uri": req.uri,
+            },
+        )
 
 
 def orjson_dumps(obj: object) -> str:
@@ -184,6 +191,8 @@ class APIResource:
         self.action_map = {x: getattr(self, x) for x in dir(self) if not x.startswith("_")}
         self.action_map["index"] = self.index_html
         self._query_cache = LRUCache(maxsize=1_000)
+        # Create reusable requests session
+        self._session = requests.Session()
         logger.info("Worker with pid has conn pool %s", self._conn_pool)
 
     def _handle(self: APIResource, req: falcon.Request, resp: falcon.Response) -> None:
@@ -372,11 +381,10 @@ class APIResource:
                 response = json.load(f)
         except FileNotFoundError:
             logger.info("Cache miss!")
-            session = requests.Session()
-            response = session.get("https://api.scryfall.com/bulk-data", timeout=1).json()["data"]
+            response = self._session.get("https://api.scryfall.com/bulk-data", timeout=1).json()["data"]
             by_type = {r["type"]: r for r in response}
             oracle_cards_download_uri = by_type["oracle_cards"]["download_uri"]
-            response = requests.get(oracle_cards_download_uri, timeout=30).json()
+            response = self._session.get(oracle_cards_download_uri, timeout=30).json()
             with pathlib.Path(cache_file).open("w") as f:
                 json.dump(response, f, indent=4, sort_keys=True)
         else:
@@ -898,3 +906,113 @@ FROM
 ORDER BY
     keyword_name""",
         )["result"]
+
+    def _fetch_cards_from_scryfall(self: APIResource, *, tag: str) -> list[str]:
+        """Fetch all card names with a specific tag from Scryfall API.
+
+        This method handles pagination to get the complete list of cards.
+
+        Args:
+        ----
+            tag (str): The Scryfall tag to search for.
+
+        Returns:
+        -------
+            List[str]: List of card names that have the specified tag.
+
+        Raises:
+        ------
+            ValueError: If API request fails or returns invalid data.
+
+        """
+        base_url = "https://api.scryfall.com/cards/search"
+        params = {"q": f"oracletag:{tag}", "format": "json"}
+        all_cards = []
+
+        try:
+            while True:
+                response = self._session.get(base_url, params=params, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+
+                if "data" not in data:
+                    break
+
+                # Extract card names from current page
+                page_card_names = [card.get("name") for card in data["data"] if card.get("name")]
+                all_cards.extend(page_card_names)
+
+                # Check if there are more pages
+                if not data.get("has_more", False):
+                    break
+
+                # Get next page URL
+                next_page = data.get("next_page")
+                if not next_page:
+                    break
+
+                # Update base_url and clear params for next page (since next_page is a complete URL)
+                base_url = next_page
+                params = {}
+
+        except requests.RequestException as e:
+            msg = f"Failed to fetch data from Scryfall API: {e}"
+            raise ValueError(msg) from e
+
+        return all_cards
+
+    def update_tagged_cards(
+        self: APIResource,
+        *,
+        tag: str,
+        **_: object,
+    ) -> dict[str, Any]:
+        """Update cards with a specific Scryfall tag.
+
+        Args:
+        ----
+            tag (str): The Scryfall tag to fetch and apply to cards.
+
+        Returns:
+        -------
+            Dict[str, Any]: Result summary with updated card count and tag info.
+
+        """
+        if not tag:
+            msg = "Tag parameter is required"
+            raise ValueError(msg)
+
+        # Fetch cards with this tag from Scryfall API (handles pagination)
+        card_names = self._fetch_cards_from_scryfall(tag=tag)
+
+        if not card_names:
+            return {
+                "tag": tag,
+                "cards_updated": 0,
+                "message": f"No cards found with tag '{tag}' in Scryfall API",
+            }
+
+        # Update cards in database with the new tag
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            # Use SQL update with jsonb concatenation to add the tag
+            cursor.execute(
+                """
+                UPDATE magic.cards
+                SET card_tags = card_tags || %(new_tag)s::jsonb
+                WHERE card_name = ANY(%(card_names)s)
+                """,
+                {
+                    "new_tag": json.dumps({tag: True}),
+                    "card_names": card_names,
+                },
+            )
+
+            updated_count = cursor.rowcount
+            conn.commit()
+
+        return {
+            "tag": tag,
+            "cards_updated": updated_count,
+            "total_cards_found": len(card_names),
+            "message": f"Successfully updated {updated_count} cards with tag '{tag}'",
+        }
