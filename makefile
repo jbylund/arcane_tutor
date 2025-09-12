@@ -60,19 +60,19 @@ pull_images: $(BASE_COMPOSE) # @doc pull images from remote repos
 	true || docker compose --file $(BASE_COMPOSE) pull
 
 ensure_black:
-	@python -m black --version > /dev/null || python -m pip install black
+	@python -m black --version > /dev/null || uv pip install --system --break-system-packages black
 
 ensure_isort:
-	@python -m isort --version > /dev/null || python -m pip install isort
+	@python -m isort --version > /dev/null || uv pip install --system --break-system-packages isort
 
 ensure_pylint:
-	@python -m pylint /dev/null || python -m pip install pylint
+	@python -m pylint /dev/null || uv pip install --system --break-system-packages pylint
 
 ensure_pydocker:
-	@python -c "import docker" 2>/dev/null || python -m pip install docker
+	@python -c "import docker" 2>/dev/null || uv pip install --system --break-system-packages docker
 
 ensure_ruff:
-	@python -m ruff --version > /dev/null || python -m pip install ruff
+	@python -m ruff --version > /dev/null || uv pip install --system --break-system-packages ruff
 
 lint: ensure_ruff ensure_pylint # @doc lint all python files
 	find . -type f -name "*.py" | xargs python -m ruff check --fix --unsafe-fixes >/dev/null 2>/dev/null || true

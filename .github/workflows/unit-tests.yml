@@ -24,10 +24,17 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libev-dev
 
-      - name: Install pip dependencies
+      - name: Install uv dependencies
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt -r test-requirements.txt
+          # Try the official installer first, fallback to pip if needed
+          if curl -LsSf https://astral.sh/uv/install.sh | sh; then
+            source $HOME/.cargo/env
+          else
+            echo "Installing uv via pip as fallback..."
+            python -m pip install --upgrade pip
+            python -m pip install uv
+          fi
+          uv pip install --system --break-system-packages -r requirements.txt -r test-requirements.txt
 
       - name: Run tests
         run: |
