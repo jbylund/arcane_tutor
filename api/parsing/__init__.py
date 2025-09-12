@@ -1,3 +1,5 @@
+"""Query parsing and AST generation for Scryfall search queries."""
+
 from .nodes import (
     AndNode,
     AttributeNode,

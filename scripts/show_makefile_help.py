@@ -7,9 +7,7 @@ from pathlib import Path
 
 
 def get_targets_to_docs(filename: str) -> dict[str, str]:
-    """Get a mapping of {target: doc} for documented targets in the
-    makefile.
-    """
+    """Get a mapping of {target: doc} for documented targets in the makefile."""
     needle = "@doc"  # but not the first one
 
     def linefilter(line: str) -> bool:

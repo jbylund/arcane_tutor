@@ -8,6 +8,7 @@ from api_worker import ApiWorker
 
 logger = logging.getLogger("api")
 
+ALL_INTERFACES = "0.0.0.0"  # noqa: S104
 
 def get_args() -> dict:
     """Argument parsing."""
@@ -28,7 +29,7 @@ def main() -> None:
     exit_flag = multiprocessing.Event()
     # start workers
     for _ in range(args["workers"]):
-        iworker = ApiWorker(host="0.0.0.0", port=args["port"], exit_flag=exit_flag)
+        iworker = ApiWorker(host=ALL_INTERFACES, port=args["port"], exit_flag=exit_flag)
         workers.append(iworker)
         iworker.start()
 

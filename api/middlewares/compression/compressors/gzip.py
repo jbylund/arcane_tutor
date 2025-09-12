@@ -1,3 +1,5 @@
+"""Gzip compression implementation."""
+
 from __future__ import annotations
 
 import gzip

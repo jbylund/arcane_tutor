@@ -1,3 +1,5 @@
+"""Query parsing functions for Scryfall search syntax."""
+
 from __future__ import annotations
 
 from pyparsing import (
@@ -28,6 +30,9 @@ from .nodes import (
     StringValueNode,
 )
 from .scryfall_nodes import to_scryfall_ast
+
+# Constants
+NEGATION_TOKEN_COUNT = 2
 
 
 def balance_partial_query(query: str) -> str:
@@ -61,8 +66,7 @@ def balance_partial_query(query: str) -> str:
 
 
 def flatten_nested_operations(node: QueryNode) -> QueryNode:
-    """Flatten nested operations of the same type to create canonical n-ary
-    forms.
+    """Flatten nested operations of the same type to create canonical n-ary forms.
 
     For example, (A AND (B AND C)) becomes (A AND B AND C).
     """
@@ -148,11 +152,19 @@ def make_chained_arithmetic(tokens: list[object]) -> QueryNode:
 
 
 def parse_scryfall_query(query: str) -> Query:
+    """Parse a Scryfall search query and convert to Scryfall-specific AST.
+
+    Args:
+        query: The search query string to parse.
+
+    Returns:
+        A Scryfall-specific Query AST.
+    """
     generic_query = parse_search_query(query)
     return to_scryfall_ast(generic_query)
 
 
-def parse_search_query(query: str) -> Query:
+def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     """Parse a Scryfall search query string into an AST Query object.
 
     Raises ValueError if parsing fails.
@@ -249,12 +261,17 @@ def parse_search_query(query: str) -> Query:
 
     # Factor: can be negated (but not arithmetic expressions)
     def handle_negation(tokens: list[object]) -> object:
-        """Handle negation (NOT) for factors, disallowing arithmetic
-        negation.
+        """Handle negation (NOT) for factors, disallowing arithmetic negation.
+
+        Args:
+            tokens: List of tokens to process.
+
+        Returns:
+            The processed token(s).
         """
         if len(tokens) == 1:
             return tokens[0]
-        if len(tokens) == 2 and tokens[0] == "-":
+        if len(tokens) == NEGATION_TOKEN_COUNT and tokens[0] == "-":
             # Don't allow negation of arithmetic expressions
             if isinstance(tokens[1], BinaryOperatorNode) and tokens[1].operator in ["+", "-", "*", "/"]:
                 msg = "Cannot negate arithmetic expressions"
@@ -273,8 +290,13 @@ def parse_search_query(query: str) -> Query:
 
     # Expression with explicit AND/OR operators (highest precedence)
     def handle_operators(tokens: list[object]) -> object:
-        """Handle AND/OR operators, grouping operands by operator type and
-        building n-ary nodes.
+        """Handle AND/OR operators, grouping operands by operator type and building n-ary nodes.
+
+        Args:
+            tokens: List of tokens to process.
+
+        Returns:
+            The processed token(s).
         """
         if len(tokens) == 1:
             return tokens[0]
@@ -323,12 +345,12 @@ def parse_search_query(query: str) -> Query:
             # Flatten nested operations to create canonical n-ary forms
             return flatten_nested_operations(Query(parsed[0]))
         return Query(BinaryOperatorNode("name", ":", ""))
-    except Exception as e:
+    except (ValueError, TypeError, IndexError) as e:
         msg = f"Failed to parse query '{query}': {e}"
-        raise ValueError(msg)
+        raise ValueError(msg) from e
 
 
-def preprocess_implicit_and(query: str) -> str:
+def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
     """Pre-process query to convert implicit AND operations to explicit ones.
 
     For example, 'foo bar' becomes 'foo AND bar'.
@@ -427,8 +449,13 @@ def preprocess_implicit_and(query: str) -> str:
 
 
 def is_operator(token: str) -> bool:
-    """Check if a token is an operator (comparison, arithmetic, or
-    negation).
+    """Check if a token is an operator (comparison, arithmetic, or negation).
+
+    Args:
+        token: The token to check.
+
+    Returns:
+        True if the token is an operator, False otherwise.
     """
     return token in [":", ">", "<", ">=", "<=", "=", "!=", "-", "+", "*", "/"]
 

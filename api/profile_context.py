@@ -1,3 +1,5 @@
+"""Profile context manager for performance profiling."""
+
 from __future__ import annotations
 
 import cProfile

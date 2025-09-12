@@ -1,3 +1,5 @@
+"""Client entry point for ScryfallOS."""
+
 import argparse
 import logging
 import time
