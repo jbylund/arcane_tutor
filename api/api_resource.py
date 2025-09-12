@@ -609,6 +609,8 @@ class APIResource:
         falcon_response: falcon.Response | None = None,
         q: str | None = None,
         query: str | None = None,
+        orderby: str | None = None,
+        direction: str | None = None,
         limit: int = 100,
     ) -> dict[str, Any]:
         """Run a search query and return results and metadata.
@@ -624,14 +626,37 @@ class APIResource:
             Dict[str, Any]: Search results and metadata.
 
         """
-        return self._search(query=query or q, limit=limit)
+        return self._search(
+            query=query or q,
+            orderby=orderby,
+            direction=direction,
+            limit=limit,
+        )
 
     @cached(
         cache=TTLCache(maxsize=1000, ttl=60),
         key=lambda self, *args, **kwargs: (args, tuple(sorted(kwargs.items()))),
     )
-    def _search(self: APIResource, *, query: str | None = None, limit: int = 100) -> dict[str, Any]:
+    def _search(
+        self: APIResource,
+        *,
+        query: str | None = None,
+        orderby: str | None = None,
+        direction: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
         where_clause, params = get_where_clause(query)
+        sql_orderby = {
+            "cmc": "cmc",
+            "edhrec": "edhrec_rank",
+            "power": "creature_power",
+            "toughness": "creature_toughness",
+            "usd": "usd",
+        }.get(orderby, "edhrec_rank")
+        sql_direction = {
+            "asc": "ASC",
+            "desc": "DESC",
+        }.get(direction, "ASC")
         full_query = f"""
         SELECT
             card_name AS name,
@@ -647,6 +672,7 @@ class APIResource:
         WHERE
             {where_clause}
         ORDER BY
+            {sql_orderby} {sql_direction} NULLS LAST,
             edhrec_rank ASC NULLS LAST
         LIMIT
             {limit}
