@@ -12,7 +12,9 @@ import json
 import logging
 import os
 import pathlib
+import re
 import time
+import urllib.parse
 from typing import Any
 from typing import cast as typecast
 from urllib.parse import urlparse
@@ -28,6 +30,7 @@ from cachetools import LRUCache, TTLCache, cached
 from psycopg import Connection
 
 from .parsing import generate_sql_query, parse_scryfall_query
+from .tagger_client import TaggerClient
 
 try:
     from honeybadger import honeybadger
@@ -176,6 +179,7 @@ def can_serialize(iobj: object) -> bool:
     return True
 
 
+
 class APIResource:
     """Class implementing request handling for our simple API."""
 
@@ -193,6 +197,8 @@ class APIResource:
         self._query_cache = LRUCache(maxsize=1_000)
         # Create reusable requests session
         self._session = requests.Session()
+        # Initialize Tagger client for GraphQL API access
+        self._tagger_client = TaggerClient()
         logger.info("Worker with pid has conn pool %s", self._conn_pool)
 
     def _handle(self: APIResource, req: falcon.Request, resp: falcon.Response) -> None:
@@ -1016,3 +1022,270 @@ ORDER BY
             "total_cards_found": len(card_names),
             "message": f"Successfully updated {updated_count} cards with tag '{tag}'",
         }
+
+    def discover_tags_from_scryfall(self: APIResource, **_: object) -> list[str]:
+        """Discover all available tags from Scryfall tagger documentation.
+
+        Returns:
+        -------
+            List[str]: List of all available tag names.
+
+        Raises:
+        ------
+            ValueError: If API request fails or returns invalid data.
+
+        """
+        try:
+            response = self._session.get("https://scryfall.com/docs/tagger-tags", timeout=30)
+            response.raise_for_status()
+        except requests.RequestException as e:
+            msg = f"Failed to fetch tag list from Scryfall: {e}"
+            raise ValueError(msg) from e
+
+        # Extract tag names from oracletag search links
+        oracletag_pattern = r'/search\?q=oracletag%3A([^"&]+)'
+        matches = re.findall(oracletag_pattern, response.text)
+
+        # URL decode the tag names and remove duplicates
+        unique_tags = sorted({urllib.parse.unquote(match) for match in matches})
+
+        logger.info("Discovered %d unique tags from Scryfall", len(unique_tags))
+        return unique_tags
+
+    def discover_tags_from_graphql(self: APIResource, **_: object) -> list[str]:
+        """Discover all available tags from Scryfall tagger using GraphQL API.
+
+        This method uses the SearchTags GraphQL query to fetch all available tags.
+        It paginates through all pages to get the complete list.
+
+        Returns:
+        -------
+            List[str]: List of all available tag slugs.
+
+        Raises:
+        ------
+            ValueError: If GraphQL request fails or returns invalid data.
+
+        """
+        tags = set()
+        page = 1
+
+        try:
+            while True:
+                # Fetch tags for current page
+                result = self._tagger_client.search_tags(page=page)
+                results = result["results"]
+                if not results:
+                    break
+
+                # Extract tag slugs from results
+                ignored_namespaces = ["artwork", "print"]
+                tags.update(
+                    tag["slug"] for tag in results
+                    if tag["namespace"] not in ignored_namespaces
+                )
+                non_artwork_tags = [
+                    tag
+                    for tag in results
+                    if tag["namespace"] not in ignored_namespaces
+                ]
+                logger.info("Discovered %d tags from GraphQL: %s", len(tags), non_artwork_tags)
+                page += 1
+        except (KeyError, TypeError, ValueError) as e:
+            msg = f"Failed to parse GraphQL tag search response: {e}"
+            raise ValueError(msg) from e
+
+        # Remove duplicates and sort
+        unique_tags = sorted(tags)
+        logger.info("Discovered %d unique tags from GraphQL", len(unique_tags))
+        return unique_tags
+
+    def _get_tag_relationships(self: APIResource, *, tag: str) -> str | None:
+        """Fetch list of relationships for a specific tag using Scryfall tagger GraphQL API.
+
+        Args:
+        ----
+            tag (str): The tag to get relationships information for.
+
+        Returns:
+        -------
+            list[dict]: List of relationships for the tag.
+        """
+        logger.info("Fetching relationships for %s", tag)
+        def clean_tag(itag: dict) -> dict:
+            return {
+                "name": itag["name"],
+                "namespace": itag["namespace"],
+                "slug": itag["slug"],
+            }
+
+        # Use GraphQL API to get tag metadata including hierarchy
+        relationships = []
+        try:
+            tag_data = self._tagger_client.fetch_tag(tag, include_taggings=False)
+        except ValueError:
+            return relationships
+        ancestry = [
+            clean_tag(parent["tag"])
+            for parent in tag_data.pop("ancestry")
+            if parent.get("tag")
+        ]
+        children = [clean_tag(tag) for tag in tag_data.pop("childTags")]
+        tag_data = clean_tag(tag_data)
+
+        for parent in ancestry:
+            relationships.append(
+                {
+                    "parent": parent,
+                    "child": tag_data,
+                },
+            )
+        for child in children:
+            relationships.append(
+                {
+                    "parent": tag_data,
+                    "child": child,
+                },
+            )
+        # remove the relationships where the parent and child are the same
+        return [
+            relationship
+            for relationship in relationships
+            if relationship["parent"]["slug"] != relationship["child"]["slug"]
+        ]
+
+    def _populate_tag_hierarchy(self: APIResource, *, tags: list[str]) -> dict[str, Any]:
+        """Populate the tag hierarchy table with discovered tags.
+
+        Args:
+        ----
+            tags (List[str]): List of tag names to process.
+
+        Returns:
+        -------
+            Dict[str, Any]: Summary of the operation.
+
+        """
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            for tag in tags:
+                relationships = self._get_tag_relationships(tag=tag)
+
+                parent_tags = {r["parent"]["slug"] for r in relationships}
+                # ensure parent tags are present
+                cursor.executemany(
+                    """
+                    INSERT INTO magic.card_tags
+                        (tag)
+                    VALUES
+                        (%(tag)s)
+                    ON CONFLICT (tag) DO NOTHING
+                    """,
+                    [{"tag": slug} for slug in parent_tags],
+                )
+
+                cursor.executemany(
+                    """
+                    INSERT INTO magic.card_tags
+                        (tag, parent_tag)
+                    VALUES
+                        (%(tag)s, %(parent_tag)s)
+                    ON CONFLICT (tag)
+                    DO UPDATE SET parent_tag = %(parent_tag)s
+                    """,
+                    [
+                        {
+                            "parent_tag": r["parent"]["slug"],
+                            "tag": r["child"]["slug"],
+                        } for r in relationships
+                    ],
+                )
+                conn.commit()
+
+        return {}
+
+    def discover_and_import_all_tags(
+        self: APIResource,
+        *,
+        import_cards: bool = False,
+        import_hierarchy: bool = True,
+        **_: object,
+    ) -> dict[str, Any]:
+        """Discover all Scryfall tags and optionally import their card associations.
+
+        Args:
+        ----
+            import_cards (bool): Whether to import card associations for each tag.
+            import_hierarchy (bool): Whether to discover and import tag hierarchy.
+
+        Returns:
+        -------
+            Dict[str, Any]: Summary of the bulk import operation.
+
+        """
+        start_time = time.monotonic()
+
+        # Step 1: Discover all available tags
+        logger.info("Starting bulk tag discovery and import")
+        try:
+            all_tags = self.discover_tags_from_scryfall()
+        except ValueError as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "message": "Failed to discover tags from Scryfall",
+            }
+
+        if not all_tags:
+            return {
+                "success": False,
+                "message": "No tags discovered from Scryfall",
+            }
+
+        results = {
+            "success": True,
+            "total_tags_discovered": len(all_tags),
+            "tags_processed": 0,
+            "cards_updated": 0,
+            "hierarchy_populated": False,
+            "hierarchy_relationships": 0,
+            "errors": [],
+        }
+
+        # Step 2: Import tag hierarchy if requested
+        if import_hierarchy:
+            logger.info("Populating tag hierarchy")
+            try:
+                hierarchy_result = self._populate_tag_hierarchy(tags=all_tags)
+                results["hierarchy_populated"] = True
+                results["hierarchy_relationships"] = hierarchy_result["hierarchy_relationships_found"]
+            except (requests.RequestException, ValueError) as e:
+                logger.error("Failed to populate tag hierarchy: %s", e)
+                results["errors"].append(f"Hierarchy import failed: {e}")
+
+        # Step 3: Import card associations for each tag if requested
+        if import_cards:
+            logger.info("Starting card import for %d tags", len(all_tags))
+            for i, tag in enumerate(all_tags):
+                try:
+                    # Use existing update_tagged_cards method
+                    tag_result = self.update_tagged_cards(tag=tag)
+                    results["tags_processed"] += 1
+                    results["cards_updated"] += tag_result.get("cards_updated", 0)
+
+                    # Basic rate limiting
+                    time.sleep(0.2)  # 200ms delay between tag imports
+
+                    if (i + 1) % 50 == 0:
+                        logger.info("Processed %d/%d tags", i + 1, len(all_tags))
+
+                except (requests.RequestException, ValueError, TypeError) as e:
+                    error_msg = f"Failed to import cards for tag '{tag}': {e}"
+                    logger.error(error_msg)
+                    results["errors"].append(error_msg)
+                    continue
+
+        duration = time.monotonic() - start_time
+        results["duration_seconds"] = duration
+        results["message"] = f"Bulk import completed in {duration:.1f}s: {results['tags_processed']} tags processed, {results['cards_updated']} cards updated"
+
+        return results

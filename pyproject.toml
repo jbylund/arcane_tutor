@@ -7,7 +7,7 @@ target-version = "py311"
 select = ["E", "F", "W", "C90", "I", "N", "D", "UP", "YTT", "ANN", "S", "BLE", "B", "A", "COM", "C4", "DTZ", "EM", "EXE", "FBT", "ICN", "INP", "PIE", "PT", "Q", "RET", "SIM", "T20", "TID", "TCH", "ARG", "PTH", "ERA", "PL", "RUF"]
 # E501: Ignore line too long
 # S105: Ignore hardcoded password string
-ignore = ["E501", "S105", "FBT001", "S608"]
+ignore = ["E501", "S105", "FBT001", "FBT002", "S608"]
 # S101: Ignore use of assert statements in tests
 # D101: Ignore missing docstring in public class in tests
 # D102: Ignore missing docstring in public method in tests
