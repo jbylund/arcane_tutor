@@ -42,25 +42,28 @@ class TestTaggingIntegration:
             timeout=30,
         )
 
-    @patch("requests.Session")
-    def test_fetch_tag_hierarchy_returns_none_when_no_parent(self, mock_session_class: MagicMock) -> None:
+    @patch("api.api_resource.TaggerClient")
+    def test_fetch_tag_hierarchy_returns_none_when_no_parent(self, mock_tagger_client_class: MagicMock) -> None:
         """Test that hierarchy extraction returns None when no parent found."""
-        # Mock the session and response
-        mock_session = MagicMock()
-        mock_session_class.return_value = mock_session
+        # Mock the TaggerClient and its response
+        mock_tagger_client = MagicMock()
+        mock_tagger_client_class.return_value = mock_tagger_client
 
-        mock_response = MagicMock()
-        mock_response.raise_for_status.return_value = None
-        mock_response.text = "<html><body>Some page without hierarchy info</body></html>"
-        mock_session.get.return_value = mock_response
+        # Mock GraphQL response with no ancestry (no parent)
+        mock_tagger_client.fetch_tag.return_value = {
+            "name": "flying",
+            "slug": "flying",
+            "ancestry": [],  # No parent tags
+            "childTags": [],
+        }
 
         api = APIResource()
         parent = api._fetch_tag_hierarchy(tag="flying")
 
         assert parent is None
-        mock_session.get.assert_called_once_with(
-            "https://tagger.scryfall.com/tags/card/flying",
-            timeout=30,
+        mock_tagger_client.fetch_tag.assert_called_once_with(
+            "flying",
+            include_taggings=False,
         )
 
     @patch("api.api_resource.APIResource._discover_tags_from_scryfall")

@@ -14,6 +14,7 @@ import os
 import pathlib
 import re
 import time
+import urllib.parse
 from typing import Any
 from typing import cast as typecast
 from urllib.parse import urlparse
@@ -29,6 +30,7 @@ from cachetools import LRUCache, TTLCache, cached
 from psycopg import Connection
 
 from .parsing import generate_sql_query, parse_scryfall_query
+from .tagger_client import TaggerClient
 
 try:
     from honeybadger import honeybadger
@@ -176,201 +178,6 @@ def can_serialize(iobj: object) -> bool:
         return False
     return True
 
-
-class TaggerClient:
-    """Client for interacting with Scryfall Tagger GraphQL API."""
-
-    def __init__(self) -> None:
-        """Initialize the TaggerClient."""
-        self.session = requests.Session()
-        self.csrf_token: str | None = None
-        self.base_url = "https://tagger.scryfall.com"
-
-        # Set up default headers
-        self.session.headers.update({
-            "Accept": "*/*",
-            "Accept-Encoding": "gzip, deflate, br, zstd",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "DNT": "1",
-            "Origin": self.base_url,
-            "Pragma": "no-cache",
-            "Priority": "u=4",
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-GPC": "1",
-            "TE": "trailers",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:142.0) Gecko/20100101 Firefox/142.0",
-        })
-
-    def _get_csrf_token_from_meta(self, html_content: str) -> str | None:
-        """Extract CSRF token from HTML meta tags."""
-        pattern = r'<meta name="csrf-token" content="([^"]+)"'
-        match = re.search(pattern, html_content)
-        return match.group(1) if match else None
-
-    def authenticate(self) -> bool:
-        """Authenticate with Scryfall tagger by fetching CSRF token and session cookie.
-
-        Returns:
-            bool: True if authentication successful, False otherwise.
-        """
-        try:
-            # First, visit the main tagger page to get session cookie and CSRF token
-            response = self.session.get(f"{self.base_url}/", timeout=30)
-            response.raise_for_status()
-        except requests.RequestException as e:
-            logger.error("Authentication failed: %s", e)
-            return False
-
-        # Try to extract CSRF token from meta tags
-        self.csrf_token = self._get_csrf_token_from_meta(response.text)
-
-        if self.csrf_token:
-            # Add CSRF token to headers
-            self.session.headers["X-CSRF-Token"] = self.csrf_token
-            logger.info("Successfully authenticated. CSRF token: %s...", self.csrf_token[:20])
-            return True
-        msg = "Could not extract CSRF token. Requests may fail."
-        raise ValueError(msg)
-
-    def fetch_tag(self, tag: str, *, page: int = 1, descendants: bool = True, include_taggings: bool = True) -> dict:
-        """Fetch tag information from Scryfall tagger GraphQL API.
-
-        Args:
-            tag: The tag slug to fetch
-            page: Page number for pagination (default: 1)
-            descendants: Whether to include descendant tags (default: True)
-            include_taggings: Whether to include taggings (card associations) (default: True)
-
-        Returns:
-            dict: GraphQL response data
-
-        Raises:
-            requests.RequestException: If the request fails
-            ValueError: If authentication is required but not performed
-        """
-        self.authenticate()
-
-        # Set referer to the specific tag page
-        self.session.headers["Referer"] = f"{self.base_url}/tags/card/{tag}"
-
-        variables = {
-            "slug": tag,
-            "type": "ORACLE_CARD_TAG",
-        }
-
-        tag_attrs = """
-            fragment TagAttrs on Tag {
-                description
-                name
-                namespace
-                slug
-            }
-        """
-
-        # Build query dynamically based on whether we want taggings
-        if include_taggings:
-            query = """
-                query FetchTag(
-                    $type: TagType!
-                    $slug: String!
-                    $page: Int = 1
-                    $descendants: Boolean = false
-                ) {
-                    tag: tagBySlug(type: $type, slug: $slug, aliasing: true) {
-                        ...TagAttrs
-                        scryfallUrl
-                        description
-                        ancestry {
-                            tag {
-                                ...TagAttrs
-                            }
-                        }
-                        childTags {
-                            ...TagAttrs
-                        }
-                        taggings(page: $page, descendants: $descendants) {
-                            page
-                            perPage
-                            total
-                            results {
-                                relatedId
-                                ...TaggingAttrs
-                                card {
-                                    ...CardAttrs
-                                }
-                            }
-                        }
-                    }
-                }
-
-                fragment CardAttrs on Card {
-                    name
-                }
-                fragment TaggingAttrs on Tagging {
-                    id
-                    name
-                }
-                """ + tag_attrs
-            variables.update({
-                "descendants": descendants,
-                "page": page,
-            })
-        else:
-            query = """
-                query FetchTag(
-                    $type: TagType!
-                    $slug: String!
-                ) {
-                    tag: tagBySlug(type: $type, slug: $slug, aliasing: true) {
-                        ...TagAttrs
-                        scryfallUrl
-                        description
-                        ancestry {
-                            tag {
-                                ...TagAttrs
-                            }
-                        }
-                        childTags {
-                            ...TagAttrs
-                        }
-                    }
-                }
-
-                """ + tag_attrs
-
-        response = self.session.post(
-            f"{self.base_url}/graphql",
-            json={
-                "query": query,
-                "variables": variables,
-                "operationName": "FetchTag",
-            },
-            timeout=30,
-        )
-
-        response.raise_for_status()
-        parsed = response.json()
-
-        # Check for GraphQL errors
-        if "errors" in parsed:
-            msg = f"GraphQL errors: {parsed['errors']}"
-            raise ValueError(msg)
-
-        # Check for data field
-        if "data" not in parsed:
-            msg = f"No data field in response: {parsed}"
-            raise ValueError(msg)
-
-        data = parsed["data"]
-        if "tag" not in data:
-            msg = f"No tag field in data: {data}"
-            raise ValueError(msg)
-
-        return data["tag"]
 
 
 class APIResource:
@@ -1217,126 +1024,34 @@ ORDER BY
         }
 
     def _discover_tags_from_scryfall(self: APIResource) -> list[str]:
-        """Discover available tags using Scryfall tagger GraphQL API.
-
-        This method starts with a seed list of known popular tags and expands
-        discovery using parent/child relationships from the GraphQL API.
+        """Discover all available tags from Scryfall tagger documentation.
 
         Returns:
         -------
-            List[str]: List of all discovered tag names.
+            List[str]: List of all available tag names.
 
         Raises:
         ------
             ValueError: If API request fails or returns invalid data.
 
         """
-        # Start with a seed list of popular/known tags to bootstrap discovery
-        # These are some commonly used tags that we know exist
-        seed_tags = [
-            "triggered-ability", "cast-trigger", "etb", "ltb", "dies-trigger",
-            "activated-ability", "mana-ability", "combat-trick", "removal",
-            "counterspell", "draw", "ramp", "board-wipe", "token-generator",
-            "creature", "artifact", "enchantment", "instant", "sorcery",
-            "planeswalker", "land", "legendary",
-        ]
+        try:
+            response = self._session.get("https://scryfall.com/docs/tagger-tags", timeout=30)
+            response.raise_for_status()
+        except requests.RequestException as e:
+            msg = f"Failed to fetch tag list from Scryfall: {e}"
+            raise ValueError(msg) from e
 
-        # Constants for discovery limits
-        max_discovered_tags = 500  # Reasonable limit to prevent infinite discovery
-        progress_log_interval = 50  # Log progress every N tags
-        rate_limit_delay = 0.2  # Seconds between requests
+        # Extract tag names from oracletag search links
+        oracletag_pattern = r'/search\?q=oracletag%3A([^"&]+)'
+        matches = re.findall(oracletag_pattern, response.text)
 
-        discovered_tags = set()
-        tags_to_process = set(seed_tags)
-        processed_tags = set()
+        # URL decode the tag names and remove duplicates
+        unique_tags = sorted({urllib.parse.unquote(match) for match in matches})
 
-        logger.info("Starting GraphQL-based tag discovery with %d seed tags", len(seed_tags))
-
-        while tags_to_process and len(discovered_tags) < max_discovered_tags:
-            current_tag = tags_to_process.pop()
-            if current_tag in processed_tags:
-                continue
-
-            if self._process_tag_for_discovery(current_tag, discovered_tags, tags_to_process, processed_tags):
-                # Rate limiting and progress logging
-                time.sleep(rate_limit_delay)
-                if len(discovered_tags) % progress_log_interval == 0:
-                    logger.info("Discovered %d tags so far...", len(discovered_tags))
-
-        unique_tags = sorted(discovered_tags)
-        logger.info("Discovered %d unique tags via GraphQL", len(unique_tags))
+        logger.info("Discovered %d unique tags from Scryfall", len(unique_tags))
         return unique_tags
 
-    def _process_tag_for_discovery(
-        self: APIResource,
-        current_tag: str,
-        discovered_tags: set[str],
-        tags_to_process: set[str],
-        processed_tags: set[str],
-    ) -> bool:
-        """Process a single tag for discovery and update the sets.
-
-        Args:
-        ----
-            current_tag: Tag to process
-            discovered_tags: Set of successfully discovered tags
-            tags_to_process: Set of tags to process
-            processed_tags: Set of already processed tags
-
-        Returns:
-        -------
-            bool: True if successful, False if failed
-
-        """
-        try:
-            # Fetch tag metadata including hierarchy (no taggings to save time)
-            tag_data = self._tagger_client.fetch_tag(
-                current_tag,
-                include_taggings=False,
-            )
-
-            discovered_tags.add(current_tag)
-            processed_tags.add(current_tag)
-
-            # Add parent and child tags to discovery queue
-            self._add_related_tags_to_discovery(tag_data, tags_to_process, processed_tags)
-            return True
-
-        except (ValueError, requests.RequestException) as e:
-            logger.warning("Failed to fetch tag '%s': %s", current_tag, e)
-            processed_tags.add(current_tag)  # Don't retry failed tags
-            return False
-
-    def _add_related_tags_to_discovery(
-        self: APIResource,
-        tag_data: dict,
-        tags_to_process: set[str],
-        processed_tags: set[str],
-    ) -> None:
-        """Add parent and child tags from tag_data to the processing queue.
-
-        Args:
-        ----
-            tag_data: GraphQL response data for a tag
-            tags_to_process: Set of tags to process
-            processed_tags: Set of already processed tags
-
-        """
-        # Add parent tags to discovery queue
-        if tag_data.get("ancestry"):
-            for ancestor in tag_data["ancestry"]:
-                if "tag" in ancestor and "slug" in ancestor["tag"]:
-                    parent_slug = ancestor["tag"]["slug"]
-                    if parent_slug not in processed_tags:
-                        tags_to_process.add(parent_slug)
-
-        # Add child tags to discovery queue
-        if tag_data.get("childTags"):
-            for child in tag_data["childTags"]:
-                if "slug" in child:
-                    child_slug = child["slug"]
-                    if child_slug not in processed_tags:
-                        tags_to_process.add(child_slug)
 
     def _fetch_tag_hierarchy(self: APIResource, *, tag: str) -> str | None:
         """Fetch parent tag for a specific tag using Scryfall tagger GraphQL API.
