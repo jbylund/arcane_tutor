@@ -1052,6 +1052,49 @@ ORDER BY
         logger.info("Discovered %d unique tags from Scryfall", len(unique_tags))
         return unique_tags
 
+    def _discover_tags_from_graphql(self: APIResource) -> list[str]:
+        """Discover all available tags from Scryfall tagger using GraphQL API.
+
+        This method uses the SearchTags GraphQL query to fetch all available tags.
+        It paginates through all pages to get the complete list.
+
+        Returns:
+        -------
+            List[str]: List of all available tag slugs.
+
+        Raises:
+        ------
+            ValueError: If GraphQL request fails or returns invalid data.
+
+        """
+        all_tags = []
+        page = 1
+
+        try:
+            while True:
+                # Fetch tags for current page
+                result = self._tagger_client.search_tags(page=page)
+
+                # Extract tag slugs from results
+                tags_on_page = [tag["slug"] for tag in result["results"]]
+                all_tags.extend(tags_on_page)
+
+                # Check if we have more pages
+                total_pages = (result["total"] + result["perPage"] - 1) // result["perPage"]
+                if page >= total_pages:
+                    break
+
+                page += 1
+
+        except (KeyError, TypeError, ValueError) as e:
+            msg = f"Failed to parse GraphQL tag search response: {e}"
+            raise ValueError(msg) from e
+
+        # Remove duplicates and sort
+        unique_tags = sorted(set(all_tags))
+
+        logger.info("Discovered %d unique tags from GraphQL", len(unique_tags))
+        return unique_tags
 
     def _fetch_tag_hierarchy(self: APIResource, *, tag: str) -> str | None:
         """Fetch parent tag for a specific tag using Scryfall tagger GraphQL API.

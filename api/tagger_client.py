@@ -202,3 +202,88 @@ class TaggerClient:
             raise ValueError(msg)
 
         return data["tag"]
+
+    def search_tags(self, *, name: str | None = None, page: int = 1) -> dict:
+        """Search for tags using Scryfall tagger GraphQL API.
+
+        Args:
+            name: Optional tag name filter (default: None for all tags)
+            page: Page number for pagination (default: 1)
+
+        Returns:
+            dict: GraphQL response data containing tags list
+
+        Raises:
+            requests.RequestException: If the request fails
+            ValueError: If authentication is required but not performed
+        """
+        self.authenticate()
+
+        # Set referer to the tags page
+        self.session.headers["Referer"] = f"{self.base_url}/tags"
+
+        query = """
+            query SearchTags($input: TagSearchInput!) {
+                tags(input: $input) {
+                    page
+                    perPage
+                    results {
+                        ...TagAttrs
+                        taggingCount
+                    }
+                    total
+                }
+            }
+
+            fragment TagAttrs on Tag {
+                category
+                createdAt
+                creatorId
+                id
+                name
+                namespace
+                pendingRevisions
+                slug
+                status
+                type
+                hasExemplaryTagging
+                description
+            }
+        """
+
+        variables = {
+            "input": {
+                "name": name,
+                "page": page,
+            },
+        }
+
+        response = self.session.post(
+            f"{self.base_url}/graphql",
+            json={
+                "query": query,
+                "variables": variables,
+                "operationName": "SearchTags",
+            },
+            timeout=30,
+        )
+
+        response.raise_for_status()
+        parsed = response.json()
+
+        # Check for GraphQL errors
+        if "errors" in parsed:
+            msg = f"GraphQL errors: {parsed['errors']}"
+            raise ValueError(msg)
+
+        # Check for data field
+        if "data" not in parsed:
+            msg = f"No data field in response: {parsed}"
+            raise ValueError(msg)
+
+        data = parsed["data"]
+        if "tags" not in data:
+            msg = f"No tags field in data: {data}"
+            raise ValueError(msg)
+
+        return data["tags"]

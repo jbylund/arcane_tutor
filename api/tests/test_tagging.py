@@ -38,6 +38,16 @@ class TestTagging:
         required_params = [p for p in sig.parameters.values() if p.default == inspect.Parameter.empty and p.name != "self"]
         assert len(required_params) == 0
 
+    def test_discover_tags_from_graphql_function_exists(self) -> None:
+        """Test that _discover_tags_from_graphql method exists and is callable."""
+        assert hasattr(APIResource, "_discover_tags_from_graphql")
+        assert callable(APIResource._discover_tags_from_graphql)
+
+        # Method should have no required parameters (uses self only)
+        sig = inspect.signature(APIResource._discover_tags_from_graphql)
+        required_params = [p for p in sig.parameters.values() if p.default == inspect.Parameter.empty and p.name != "self"]
+        assert len(required_params) == 0
+
     def test_fetch_tag_hierarchy_function_exists(self) -> None:
         """Test that _fetch_tag_hierarchy method exists and is callable."""
         assert hasattr(APIResource, "_fetch_tag_hierarchy")
