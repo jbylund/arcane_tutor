@@ -1,10 +1,23 @@
 """Integration tests for tagging functionality."""
 
+from collections.abc import Generator
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from api.api_resource import APIResource
 
 
+@pytest.fixture(scope="class")
+def mock_db_pool() -> Generator[MagicMock, None, None]:
+    """Mock database connection pool for the entire test class."""
+    with patch("api.api_resource._make_pool") as mock_make_pool:
+        mock_pool = MagicMock()
+        mock_make_pool.return_value = mock_pool
+        yield mock_pool
+
+
+@pytest.mark.usefixtures("mock_db_pool")
 class TestTaggingIntegration:
     """Integration test cases for tag discovery and import."""
 
@@ -111,3 +124,9 @@ class TestTaggingIntegration:
         # Endpoints should be callable
         assert callable(api.action_map["discover_and_import_all_tags"])
         assert callable(api.action_map["update_tagged_cards"])
+
+    def test_fetch_tag_hierarchy_live(self) -> None:
+        """Test that fetch_tag_hierarchy works with a live tag."""
+        api = APIResource()
+        res = api._fetch_tag_hierarchy(tag="cast-trigger")
+        raise AssertionError(res)

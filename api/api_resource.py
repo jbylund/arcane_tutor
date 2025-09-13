@@ -1100,41 +1100,58 @@ ORDER BY
         logger.info("Discovered %d unique tags from GraphQL", len(unique_tags))
         return unique_tags
 
-    def _fetch_tag_hierarchy(self: APIResource, *, tag: str) -> str | None:
-        """Fetch parent tag for a specific tag using Scryfall tagger GraphQL API.
+    def _get_tag_relationships(self: APIResource, *, tag: str) -> str | None:
+        """Fetch list of relationships for a specific tag using Scryfall tagger GraphQL API.
 
         Args:
         ----
-            tag (str): The tag to get hierarchy information for.
+            tag (str): The tag to get relationships information for.
 
         Returns:
         -------
-            Optional[str]: Parent tag name if found, None if no parent.
-
+            list[dict]: List of relationships for the tag.
         """
+        def clean_tag(itag: dict) -> dict:
+            return {
+                "name": itag["name"],
+                "namespace": itag["namespace"],
+                "slug": itag["slug"],
+            }
+
+        # Use GraphQL API to get tag metadata including hierarchy
+        relationships = []
         try:
-            # Use GraphQL API to get tag metadata including hierarchy
             tag_data = self._tagger_client.fetch_tag(tag, include_taggings=False)
+        except ValueError:
+            return relationships
+        ancestry = [
+            clean_tag(parent["tag"])
+            for parent in tag_data.pop("ancestry")
+            if parent.get("tag")
+        ]
+        children = [clean_tag(tag) for tag in tag_data.pop("childTags")]
+        tag_data = clean_tag(tag_data)
 
-            # Look for parent tags in the ancestry information
-            if tag_data.get("ancestry"):
-                # Get the immediate parent (last item in ancestry path)
-                ancestry = tag_data["ancestry"]
-                if ancestry and len(ancestry) > 0:
-                    # The last ancestor should be the immediate parent
-                    immediate_parent = ancestry[-1]
-                    if "tag" in immediate_parent and "slug" in immediate_parent["tag"]:
-                        parent_slug = immediate_parent["tag"]["slug"]
-                        logger.info("Found parent tag '%s' for tag '%s'", parent_slug, tag)
-                        return parent_slug
-
-            # If no parent found, return None
-            logger.info("No parent tag found for '%s'", tag)
-            return None
-
-        except (requests.RequestException, ValueError) as e:
-            logger.warning("Failed to fetch hierarchy for tag '%s' via GraphQL: %s", tag, e)
-            return None
+        for parent in ancestry:
+            relationships.append(
+                {
+                    "parent": parent,
+                    "child": tag_data,
+                },
+            )
+        for child in children:
+            relationships.append(
+                {
+                    "parent": tag_data,
+                    "child": child,
+                },
+            )
+        # remove the relationships where the parent and child are the same
+        return [
+            relationship
+            for relationship in relationships
+            if relationship["parent"]["slug"] != relationship["child"]["slug"]
+        ]
 
     def _populate_tag_hierarchy(self: APIResource, *, tags: list[str]) -> dict[str, Any]:
         """Populate the tag hierarchy table with discovered tags.
@@ -1148,56 +1165,49 @@ ORDER BY
             Dict[str, Any]: Summary of the operation.
 
         """
-        processed_tags = 0
-        hierarchy_found = 0
-
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             for tag in tags:
-                # Insert the tag first (with no parent)
-                cursor.execute(
+                logger.info("Fetching relationships for %s", tag)
+                relationships = self._get_tag_relationships(tag=tag)
+
+                parent_tags = {r["parent"]["slug"] for r in relationships}
+                # ensure parent tags are present
+                cursor.executemany(
                     """
-                    INSERT INTO magic.card_tags (tag, parent_tag)
-                    VALUES (%(tag)s, NULL)
+                    INSERT INTO magic.card_tags
+                        (tag)
+                    VALUES
+                        (%(tag)s)
                     ON CONFLICT (tag) DO NOTHING
                     """,
-                    {"tag": tag},
+                    [{"tag": slug} for slug in parent_tags],
                 )
 
-                # Try to find parent tag
-                parent_tag = self._fetch_tag_hierarchy(tag=tag)
-                if parent_tag and parent_tag in tags:
-                    cursor.execute(
-                        """
-                        UPDATE magic.card_tags
-                        SET parent_tag = %(parent_tag)s
-                        WHERE tag = %(tag)s
-                        """,
-                        {"tag": tag, "parent_tag": parent_tag},
-                    )
-                    hierarchy_found += 1
+                cursor.executemany(
+                    """
+                    INSERT INTO magic.card_tags
+                        (tag, parent_tag)
+                    VALUES
+                        (%(tag)s, %(parent_tag)s)
+                    ON CONFLICT (tag)
+                    DO UPDATE SET parent_tag = %(parent_tag)s
+                    """,
+                    [
+                        {
+                            "parent_tag": r["parent"]["slug"],
+                            "tag": r["child"]["slug"],
+                        } for r in relationships
+                    ],
+                )
+                conn.commit()
 
-                processed_tags += 1
-
-                # Basic rate limiting - wait between requests
-                time.sleep(0.5)  # 500ms delay between requests
-
-                if processed_tags % 100 == 0:
-                    logger.info("Processed %d/%d tags for hierarchy", processed_tags, len(tags))
-                    conn.commit()  # Commit periodically
-
-            conn.commit()  # Final commit
-
-        return {
-            "processed_tags": processed_tags,
-            "hierarchy_relationships_found": hierarchy_found,
-            "message": f"Processed {processed_tags} tags, found {hierarchy_found} parent-child relationships",
-        }
+        return {}
 
     def discover_and_import_all_tags(
         self: APIResource,
         *,
-        import_cards: bool = True,
-        import_hierarchy: bool = False,
+        import_cards: bool = False,
+        import_hierarchy: bool = True,
         **_: object,
     ) -> dict[str, Any]:
         """Discover all Scryfall tags and optionally import their card associations.

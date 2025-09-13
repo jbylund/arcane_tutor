@@ -2,6 +2,7 @@
 
 import logging
 import re
+import time
 
 import requests
 from cachetools import TTLCache, cachedmethod
@@ -178,6 +179,7 @@ class TaggerClient:
 
                 """ + tag_attrs
 
+        time.sleep(0.5)
         response = self.session.post(
             f"{self.base_url}/graphql",
             json={
