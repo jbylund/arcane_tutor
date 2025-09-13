@@ -1111,6 +1111,7 @@ ORDER BY
         -------
             list[dict]: List of relationships for the tag.
         """
+        logger.info("Fetching relationships for %s", tag)
         def clean_tag(itag: dict) -> dict:
             return {
                 "name": itag["name"],
@@ -1167,7 +1168,6 @@ ORDER BY
         """
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             for tag in tags:
-                logger.info("Fetching relationships for %s", tag)
                 relationships = self._get_tag_relationships(tag=tag)
 
                 parent_tags = {r["parent"]["slug"] for r in relationships}

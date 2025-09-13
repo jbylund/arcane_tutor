@@ -54,13 +54,13 @@ class TestTagging:
                           and p.kind != inspect.Parameter.VAR_KEYWORD]
         assert len(required_params) == 0
 
-    def test_fetch_tag_hierarchy_function_exists(self) -> None:
-        """Test that _fetch_tag_hierarchy method exists and is callable."""
-        assert hasattr(APIResource, "_fetch_tag_hierarchy")
-        assert callable(APIResource._fetch_tag_hierarchy)
+    def test_get_tag_relationships_function_exists(self) -> None:
+        """Test that _get_tag_relationships method exists and is callable."""
+        assert hasattr(APIResource, "_get_tag_relationships")
+        assert callable(APIResource._get_tag_relationships)
 
         # Test that the method signature includes the required tag parameter
-        sig = inspect.signature(APIResource._fetch_tag_hierarchy)
+        sig = inspect.signature(APIResource._get_tag_relationships)
         assert "tag" in sig.parameters
 
     def test_populate_tag_hierarchy_function_exists(self) -> None:

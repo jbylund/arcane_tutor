@@ -55,29 +55,6 @@ class TestTaggingIntegration:
             timeout=30,
         )
 
-    @patch("api.api_resource.TaggerClient")
-    def test_fetch_tag_hierarchy_returns_none_when_no_parent(self, mock_tagger_client_class: MagicMock) -> None:
-        """Test that hierarchy extraction returns None when no parent found."""
-        # Mock the TaggerClient and its response
-        mock_tagger_client = MagicMock()
-        mock_tagger_client_class.return_value = mock_tagger_client
-
-        # Mock GraphQL response with no ancestry (no parent)
-        mock_tagger_client.fetch_tag.return_value = {
-            "name": "flying",
-            "slug": "flying",
-            "ancestry": [],  # No parent tags
-            "childTags": [],
-        }
-
-        api = APIResource()
-        parent = api._fetch_tag_hierarchy(tag="flying")
-
-        assert parent is None
-        mock_tagger_client.fetch_tag.assert_called_once_with(
-            "flying",
-            include_taggings=False,
-        )
 
     @patch("api.api_resource.APIResource.discover_tags_from_scryfall")
     @patch("api.api_resource.APIResource.update_tagged_cards")
@@ -125,8 +102,18 @@ class TestTaggingIntegration:
         assert callable(api.action_map["discover_and_import_all_tags"])
         assert callable(api.action_map["update_tagged_cards"])
 
-    def test_fetch_tag_hierarchy_live(self) -> None:
-        """Test that fetch_tag_hierarchy works with a live tag."""
+    def test_get_tag_relationships_live(self) -> None:
+        """Test that get_tag_relationships works with a live tag."""
         api = APIResource()
-        res = api._fetch_tag_hierarchy(tag="cast-trigger")
-        raise AssertionError(res)
+        res = api._get_tag_relationships(tag="cast-trigger")
+        pairs = {
+            (r["parent"]["slug"], r["child"]["slug"])
+            for r in res
+        }
+        assert pairs == {
+            ("cast-trigger", "cast-trigger-other"),
+            ("cast-trigger", "cast-trigger-self"),
+            ("cast-trigger", "cast-trigger-you"),
+            ("cast-trigger", "mana-gorger"),
+            ("triggered-ability", "cast-trigger"),
+        }
