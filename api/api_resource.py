@@ -1189,8 +1189,7 @@ ORDER BY
                         (tag, parent_tag)
                     VALUES
                         (%(tag)s, %(parent_tag)s)
-                    ON CONFLICT (tag)
-                    DO UPDATE SET parent_tag = %(parent_tag)s
+                    ON CONFLICT (tag, parent_tag) DO NOTHING
                     """,
                     [
                         {
