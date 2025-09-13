@@ -29,23 +29,29 @@ class TestTagging:
         assert "tag" in sig.parameters
 
     def test_discover_tags_from_scryfall_function_exists(self) -> None:
-        """Test that _discover_tags_from_scryfall method exists and is callable."""
-        assert hasattr(APIResource, "_discover_tags_from_scryfall")
-        assert callable(APIResource._discover_tags_from_scryfall)
+        """Test that discover_tags_from_scryfall method exists and is callable."""
+        assert hasattr(APIResource, "discover_tags_from_scryfall")
+        assert callable(APIResource.discover_tags_from_scryfall)
 
-        # Method should have no required parameters (uses self only)
-        sig = inspect.signature(APIResource._discover_tags_from_scryfall)
-        required_params = [p for p in sig.parameters.values() if p.default == inspect.Parameter.empty and p.name != "self"]
+        # Method should have no required parameters (uses self and **kwargs only)
+        sig = inspect.signature(APIResource.discover_tags_from_scryfall)
+        required_params = [p for p in sig.parameters.values()
+                          if p.default == inspect.Parameter.empty
+                          and p.name != "self"
+                          and p.kind != inspect.Parameter.VAR_KEYWORD]
         assert len(required_params) == 0
 
     def test_discover_tags_from_graphql_function_exists(self) -> None:
-        """Test that _discover_tags_from_graphql method exists and is callable."""
-        assert hasattr(APIResource, "_discover_tags_from_graphql")
-        assert callable(APIResource._discover_tags_from_graphql)
+        """Test that discover_tags_from_graphql method exists and is callable."""
+        assert hasattr(APIResource, "discover_tags_from_graphql")
+        assert callable(APIResource.discover_tags_from_graphql)
 
-        # Method should have no required parameters (uses self only)
-        sig = inspect.signature(APIResource._discover_tags_from_graphql)
-        required_params = [p for p in sig.parameters.values() if p.default == inspect.Parameter.empty and p.name != "self"]
+        # Method should have no required parameters (uses self and **kwargs only)
+        sig = inspect.signature(APIResource.discover_tags_from_graphql)
+        required_params = [p for p in sig.parameters.values()
+                          if p.default == inspect.Parameter.empty
+                          and p.name != "self"
+                          and p.kind != inspect.Parameter.VAR_KEYWORD]
         assert len(required_params) == 0
 
     def test_fetch_tag_hierarchy_function_exists(self) -> None:

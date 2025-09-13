@@ -30,7 +30,7 @@ class TestTaggingIntegration:
         mock_session.get.return_value = mock_response
 
         api = APIResource()
-        tags = api._discover_tags_from_scryfall()
+        tags = api.discover_tags_from_scryfall()
 
         # Should extract tag names from the URLs
         expected_tags = ["flying", "haste", "trample", "vigilance"]
@@ -66,7 +66,7 @@ class TestTaggingIntegration:
             include_taggings=False,
         )
 
-    @patch("api.api_resource.APIResource._discover_tags_from_scryfall")
+    @patch("api.api_resource.APIResource.discover_tags_from_scryfall")
     @patch("api.api_resource.APIResource.update_tagged_cards")
     def test_discover_and_import_all_tags_with_mocked_data(
         self,

@@ -1023,7 +1023,7 @@ ORDER BY
             "message": f"Successfully updated {updated_count} cards with tag '{tag}'",
         }
 
-    def _discover_tags_from_scryfall(self: APIResource) -> list[str]:
+    def discover_tags_from_scryfall(self: APIResource, **_: object) -> list[str]:
         """Discover all available tags from Scryfall tagger documentation.
 
         Returns:
@@ -1052,7 +1052,7 @@ ORDER BY
         logger.info("Discovered %d unique tags from Scryfall", len(unique_tags))
         return unique_tags
 
-    def _discover_tags_from_graphql(self: APIResource) -> list[str]:
+    def discover_tags_from_graphql(self: APIResource, **_: object) -> list[str]:
         """Discover all available tags from Scryfall tagger using GraphQL API.
 
         This method uses the SearchTags GraphQL query to fetch all available tags.
@@ -1067,32 +1067,36 @@ ORDER BY
             ValueError: If GraphQL request fails or returns invalid data.
 
         """
-        all_tags = []
+        tags = set()
         page = 1
 
         try:
             while True:
                 # Fetch tags for current page
                 result = self._tagger_client.search_tags(page=page)
-
-                # Extract tag slugs from results
-                tags_on_page = [tag["slug"] for tag in result["results"]]
-                all_tags.extend(tags_on_page)
-
-                # Check if we have more pages
-                total_pages = (result["total"] + result["perPage"] - 1) // result["perPage"]
-                if page >= total_pages:
+                results = result["results"]
+                if not results:
                     break
 
+                # Extract tag slugs from results
+                ignored_namespaces = ["artwork", "print"]
+                tags.update(
+                    tag["slug"] for tag in results
+                    if tag["namespace"] not in ignored_namespaces
+                )
+                non_artwork_tags = [
+                    tag
+                    for tag in results
+                    if tag["namespace"] not in ignored_namespaces
+                ]
+                logger.info("Discovered %d tags from GraphQL: %s", len(tags), non_artwork_tags)
                 page += 1
-
         except (KeyError, TypeError, ValueError) as e:
             msg = f"Failed to parse GraphQL tag search response: {e}"
             raise ValueError(msg) from e
 
         # Remove duplicates and sort
-        unique_tags = sorted(set(all_tags))
-
+        unique_tags = sorted(tags)
         logger.info("Discovered %d unique tags from GraphQL", len(unique_tags))
         return unique_tags
 
@@ -1213,7 +1217,7 @@ ORDER BY
         # Step 1: Discover all available tags
         logger.info("Starting bulk tag discovery and import")
         try:
-            all_tags = self._discover_tags_from_scryfall()
+            all_tags = self.discover_tags_from_scryfall()
         except ValueError as e:
             return {
                 "success": False,

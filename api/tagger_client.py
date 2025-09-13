@@ -4,6 +4,7 @@ import logging
 import re
 
 import requests
+from cachetools import TTLCache, cachedmethod
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class TaggerClient:
             "TE": "trailers",
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:142.0) Gecko/20100101 Firefox/142.0",
         })
+        self._auth_cache = TTLCache(maxsize=2**10, ttl=10*60)
 
     def _get_csrf_token_from_meta(self, html_content: str) -> str | None:
         """Extract CSRF token from HTML meta tags."""
@@ -42,6 +44,9 @@ class TaggerClient:
         match = re.search(pattern, html_content)
         return match.group(1) if match else None
 
+    @cachedmethod(
+        cache=lambda self: self._auth_cache,
+    )
     def authenticate(self) -> bool:
         """Authenticate with Scryfall tagger by fetching CSRF token and session cookie.
 
