@@ -1233,7 +1233,13 @@ ORDER BY
                 )
                 conn.commit()
 
-        return {}
+        return {
+            "duration": time.monotonic() - start_time,
+            "message": "Tag hierarchy populated successfully",
+            "success": True,
+            "tags_processed": len(tags_in_random_order),
+        }
+
 
     def discover_and_import_all_tags(
         self: APIResource,
@@ -1255,15 +1261,19 @@ ORDER BY
 
         """
         # Step 1: Discover all available tags
+        result = {
+            "success": True,
+        }
         logger.info("Starting bulk tag discovery and import")
         try:
             all_tags = self.discover_tags_from_scryfall()
         except ValueError as e:
-            return {
+            result.update({
                 "success": False,
                 "error": str(e),
                 "message": "Failed to discover tags from Scryfall",
-            }
+            })
+            return result
 
         if not all_tags:
             return {
@@ -1273,20 +1283,18 @@ ORDER BY
 
         # Step 2: Import tag hierarchy if requested
         if import_hierarchy:
-            self._populate_tag_hierarchy(tags=all_tags)
+            result["hierarchy"] = self._populate_tag_hierarchy(tags=all_tags)
 
         # Step 3: Import card associations for each tag if requested
         if import_cards:
-            self._update_all_card_taggings()
+            result["card_taggings"] = self._update_all_card_taggings()
 
-        return {}
+        return result
 
     def _update_all_card_taggings(self: APIResource) -> None:
         """Update all card taggings."""
         logger.info("Updating all card taggings")
-        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
-            cursor.execute("SELECT tag FROM magic.tags")
-            tags = {r["tag"] for r in cursor.fetchall()}
+        tags = self._get_all_tags()
         start_time = time.monotonic()
         for idx, tag in enumerate(tags):
             if idx:
@@ -1296,3 +1304,14 @@ ORDER BY
                 estimated_duration = datetime.timedelta(seconds=round(estimated_time_remaining, 1))
                 logger.info("Updating tag %d of %d: %20s (ETA: %s)", idx + 1, len(tags), tag, estimated_duration)
             self.update_tagged_cards(tag=tag)
+        return {
+            "duration": time.monotonic() - start_time,
+            "message": "All card taggings updated successfully",
+            "success": True,
+            "tags_processed": len(tags),
+        }
+
+    def _get_all_tags(self: APIResource) -> set[str]:
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            cursor.execute("SELECT tag FROM magic.tags")
+            return {r["tag"] for r in cursor.fetchall()}
