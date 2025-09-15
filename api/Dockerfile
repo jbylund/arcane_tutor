@@ -28,6 +28,9 @@ RUN python -m pip install --quiet --upgrade \
     psycopg[binary,pool] \
     pyparsing \
     requests \
+    opentelemetry-api \
+    opentelemetry-sdk \
+    opentelemetry-exporter-otlp \
     zstandard
 
 RUN mkdir -p /scryfallos

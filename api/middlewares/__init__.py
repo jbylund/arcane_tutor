@@ -10,6 +10,7 @@ from .caching_middleware import CachingMiddleware
 from .compression import CompressionMiddleware
 from .logging_middleware import LoggingMiddleware
 from .timing import ProfilingMiddleware, TimingMiddleware
+from .tracing import TracingMiddleware
 
 __all__ = [
     "CachingMiddleware",
@@ -17,4 +18,5 @@ __all__ = [
     "LoggingMiddleware",
     "ProfilingMiddleware",
     "TimingMiddleware",
+    "TracingMiddleware",
 ]

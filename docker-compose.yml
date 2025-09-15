@@ -40,8 +40,15 @@ services:
         - PGPASSWORD=${XPGPASSWORD}
         - PGUSER=${XPGUSER}
         - PYTHONUNBUFFERED=true
+        - OTEL_SERVICE_NAME=apiservice
+        - OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=grpc
+        - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+        - OTEL_ENABLE_FUNCTION_SPANS=true
+        - OTEL_SPAN_LIMIT_PER_REQUEST=500
         external_links:
         - postgres:${DOCKER_POSTGRES_HOST}
+        depends_on:
+        - jaeger
         ports:
         - 18080:8080
         user: 1000:1000
@@ -62,3 +69,15 @@ services:
         container_name: clientservice
         external_links:
         - apiservice
+    jaeger:
+        image: registry.hub.docker.com/jaegertracing/all-in-one:1.57
+        container_name: jaeger
+        environment:
+        - COLLECTOR_OTLP_ENABLED=true
+        ports:
+        - 4317:4317
+        - 4318:4318
+        - 9411:9411
+        - 14250:14250
+        - 14268:14268
+        - 16686:16686

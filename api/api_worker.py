@@ -60,10 +60,15 @@ class ApiWorker(multiprocessing.Process):
         """
         # Importing here (post-fork) is safer for some servers/clients than importing before forking.
         import api_resource  # pylint: disable=import-outside-toplevel
-        from middlewares import CachingMiddleware, CompressionMiddleware, TimingMiddleware
+        from middlewares import CachingMiddleware, CompressionMiddleware, TimingMiddleware, TracingMiddleware
+        from telemetry import setup_tracing
+
+        # Initialize tracing early so spans are exported
+        setup_tracing(service_name="apiservice")
 
         api = falcon.App(
             middleware=[
+                TracingMiddleware(),
                 TimingMiddleware(),
                 # ProfilingMiddleware(),
                 CachingMiddleware(), # important that this is first
