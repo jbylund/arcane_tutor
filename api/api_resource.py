@@ -5,6 +5,7 @@ from __future__ import annotations
 import collections
 import copy
 import csv
+import datetime
 import hashlib
 import inspect
 import io
@@ -12,6 +13,7 @@ import json
 import logging
 import os
 import pathlib
+import random
 import re
 import time
 import urllib.parse
@@ -74,6 +76,7 @@ logger = logging.getLogger("apiresource")
 
 # pylint: disable=c-extension-no-member
 
+NOT_FOUND = 404
 
 @cached(cache=LRUCache(maxsize=10_000))
 def get_where_clause(query: str) -> tuple[str, dict]:
@@ -197,6 +200,9 @@ class APIResource:
         self._query_cache = LRUCache(maxsize=1_000)
         # Create reusable requests session
         self._session = requests.Session()
+        version = datetime.datetime.now(tz=datetime.UTC).strftime("%Y%m%d")
+        version = f"magic-api/{version}"
+        self._session.headers.update({"User-Agent": version})
         # Initialize Tagger client for GraphQL API access
         self._tagger_client = TaggerClient()
         logger.info("Worker with pid has conn pool %s", self._conn_pool)
@@ -328,15 +334,15 @@ class APIResource:
                     result["plan"] = row
 
             result["timings"] = timings = {}
-            before = time.time()
+            before = time.monotonic()
             cursor.execute(query, params)
-            after_query = time.time()
+            after_query = time.monotonic()
             query_duratrion = after_query - before
             timings["query_duration_ms"] = query_duratrion * 1000
             timings["query_frequency"] = 1 / query_duratrion
             raw_rows = cursor.fetchall()
             result["result"] = [dict(r) for r in raw_rows]
-            after_fetch = time.time()
+            after_fetch = time.monotonic()
             fetch_duration = after_fetch - after_query
             timings["fetch_duration_ms"] = fetch_duration * 1000
             timings["fetch_frequency"] = 1 / fetch_duration
@@ -413,7 +419,7 @@ class APIResource:
             )
             cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_migrations_filename ON migrations (file_name)")
             cursor.execute(
-                "CREATE        INDEX IF NOT EXISTS idx_migrations_file_sha256 ON migrations USING HASH (file_sha256)",
+                "CREATE INDEX IF NOT EXISTS idx_migrations_file_sha256 ON migrations USING HASH (file_sha256)",
             )
 
             cursor.execute("SELECT file_name, file_sha256 FROM migrations ORDER BY date_applied")
@@ -428,6 +434,7 @@ class APIResource:
                     already_applied.clear()
                     cursor.execute("DELETE FROM migrations")
                     cursor.execute("DROP SCHEMA IF EXISTS magic CASCADE")
+                    conn.commit()
 
             for imigration in filesystem_migrations:
                 file_sha256 = imigration["file_sha256"]
@@ -443,6 +450,7 @@ class APIResource:
                             (%(file_name)s, %(file_sha256)s, %(file_contents)s)""",
                     imigration,
                 )
+                conn.commit()
 
     def _get_cards_to_insert(self: APIResource) -> list[dict[str, Any]]:
         """Get the cards to insert into the database."""
@@ -937,6 +945,7 @@ ORDER BY
 
         try:
             while True:
+                time.sleep(1 / 10)
                 response = self._session.get(base_url, params=params, timeout=30)
                 response.raise_for_status()
                 data = response.json()
@@ -961,9 +970,11 @@ ORDER BY
                 base_url = next_page
                 params = {}
 
-        except requests.RequestException as e:
-            msg = f"Failed to fetch data from Scryfall API: {e}"
-            raise ValueError(msg) from e
+        except requests.RequestException as oops:
+            if oops.response.status_code == NOT_FOUND:
+                return all_cards
+            msg = f"Failed to fetch data from Scryfall API: {oops}"
+            raise ValueError(msg) from oops
 
         return all_cards
 
@@ -998,21 +1009,21 @@ ORDER BY
                 "message": f"No cards found with tag '{tag}' in Scryfall API",
             }
 
+        logger.info("Updating %d cards with tag '%s'", len(card_names), tag)
         # Update cards in database with the new tag
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             # Use SQL update with jsonb concatenation to add the tag
             cursor.execute(
                 """
                 UPDATE magic.cards
-                SET card_tags = card_tags || %(new_tag)s::jsonb
+                SET card_oracle_tags = card_oracle_tags || %(new_tag)s::jsonb
                 WHERE card_name = ANY(%(card_names)s)
                 """,
                 {
-                    "new_tag": json.dumps({tag: True}),
                     "card_names": card_names,
+                    "new_tag": json.dumps({tag: True}),
                 },
             )
-
             updated_count = cursor.rowcount
             conn.commit()
 
@@ -1166,36 +1177,57 @@ ORDER BY
             Dict[str, Any]: Summary of the operation.
 
         """
+        logger.info("Populating tag hierarchy")
+        start_time = time.monotonic()
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
-            for tag in tags:
+            tags_in_random_order = list(tags)
+            random.shuffle(tags_in_random_order)
+
+            for idx, tag in enumerate(tags_in_random_order):
+                if idx:
+                    elapsed_time = time.monotonic() - start_time
+                    fraction_complete = idx / len(tags_in_random_order)
+                    estimated_time_remaining = (elapsed_time / fraction_complete) - elapsed_time
+                    estimated_duration = datetime.timedelta(seconds=round(estimated_time_remaining, 1))
+                else:
+                    estimated_duration = "N/A"
+                logger.info(
+                    "Processing tag %d of %d: %20s (ETA: %s)",
+                    idx + 1,
+                    len(tags_in_random_order),
+                    tag,
+                    estimated_duration,
+                )
+
                 relationships = self._get_tag_relationships(tag=tag)
 
                 parent_tags = {r["parent"]["slug"] for r in relationships}
-                # ensure parent tags are present
+                child_tags = {r["child"]["slug"] for r in relationships}
+                all_tags = parent_tags | child_tags
+
+                # record existence of all tags
                 cursor.executemany(
                     """
-                    INSERT INTO magic.card_tags
-                        (tag)
-                    VALUES
-                        (%(tag)s)
+                    INSERT INTO magic.tags (tag)
+                    VALUES (%(tag)s)
                     ON CONFLICT (tag) DO NOTHING
                     """,
-                    [{"tag": slug} for slug in parent_tags],
+                    [{"tag": slug} for slug in all_tags],
                 )
 
                 cursor.executemany(
                     """
-                    INSERT INTO magic.card_tags
-                        (tag, parent_tag)
+                    INSERT INTO magic.tag_relationships
+                        (child_tag, parent_tag)
                     VALUES
-                        (%(tag)s, %(parent_tag)s)
-                    ON CONFLICT (tag)
-                    DO UPDATE SET parent_tag = %(parent_tag)s
+                        (%(child_tag)s, %(parent_tag)s)
+                    ON CONFLICT (child_tag, parent_tag)
+                    DO NOTHING
                     """,
                     [
                         {
+                            "child_tag": r["child"]["slug"],
                             "parent_tag": r["parent"]["slug"],
-                            "tag": r["child"]["slug"],
                         } for r in relationships
                     ],
                 )
@@ -1206,8 +1238,8 @@ ORDER BY
     def discover_and_import_all_tags(
         self: APIResource,
         *,
-        import_cards: bool = False,
-        import_hierarchy: bool = True,
+        import_cards: bool = True,
+        import_hierarchy: bool = False,
         **_: object,
     ) -> dict[str, Any]:
         """Discover all Scryfall tags and optionally import their card associations.
@@ -1222,8 +1254,6 @@ ORDER BY
             Dict[str, Any]: Summary of the bulk import operation.
 
         """
-        start_time = time.monotonic()
-
         # Step 1: Discover all available tags
         logger.info("Starting bulk tag discovery and import")
         try:
@@ -1241,51 +1271,28 @@ ORDER BY
                 "message": "No tags discovered from Scryfall",
             }
 
-        results = {
-            "success": True,
-            "total_tags_discovered": len(all_tags),
-            "tags_processed": 0,
-            "cards_updated": 0,
-            "hierarchy_populated": False,
-            "hierarchy_relationships": 0,
-            "errors": [],
-        }
-
         # Step 2: Import tag hierarchy if requested
         if import_hierarchy:
-            logger.info("Populating tag hierarchy")
-            try:
-                hierarchy_result = self._populate_tag_hierarchy(tags=all_tags)
-                results["hierarchy_populated"] = True
-                results["hierarchy_relationships"] = hierarchy_result["hierarchy_relationships_found"]
-            except (requests.RequestException, ValueError) as e:
-                logger.error("Failed to populate tag hierarchy: %s", e)
-                results["errors"].append(f"Hierarchy import failed: {e}")
+            self._populate_tag_hierarchy(tags=all_tags)
 
         # Step 3: Import card associations for each tag if requested
         if import_cards:
-            logger.info("Starting card import for %d tags", len(all_tags))
-            for i, tag in enumerate(all_tags):
-                try:
-                    # Use existing update_tagged_cards method
-                    tag_result = self.update_tagged_cards(tag=tag)
-                    results["tags_processed"] += 1
-                    results["cards_updated"] += tag_result.get("cards_updated", 0)
+            self._update_all_card_taggings()
 
-                    # Basic rate limiting
-                    time.sleep(0.2)  # 200ms delay between tag imports
+        return {}
 
-                    if (i + 1) % 50 == 0:
-                        logger.info("Processed %d/%d tags", i + 1, len(all_tags))
-
-                except (requests.RequestException, ValueError, TypeError) as e:
-                    error_msg = f"Failed to import cards for tag '{tag}': {e}"
-                    logger.error(error_msg)
-                    results["errors"].append(error_msg)
-                    continue
-
-        duration = time.monotonic() - start_time
-        results["duration_seconds"] = duration
-        results["message"] = f"Bulk import completed in {duration:.1f}s: {results['tags_processed']} tags processed, {results['cards_updated']} cards updated"
-
-        return results
+    def _update_all_card_taggings(self: APIResource) -> None:
+        """Update all card taggings."""
+        logger.info("Updating all card taggings")
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            cursor.execute("SELECT tag FROM magic.tags")
+            tags = {r["tag"] for r in cursor.fetchall()}
+        start_time = time.monotonic()
+        for idx, tag in enumerate(tags):
+            if idx:
+                elapsed_time = time.monotonic() - start_time
+                fraction_complete = idx / len(tags)
+                estimated_time_remaining = (elapsed_time / fraction_complete) - elapsed_time
+                estimated_duration = datetime.timedelta(seconds=round(estimated_time_remaining, 1))
+                logger.info("Updating tag %d of %d: %20s (ETA: %s)", idx + 1, len(tags), tag, estimated_duration)
+            self.update_tagged_cards(tag=tag)
