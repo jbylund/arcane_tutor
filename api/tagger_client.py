@@ -179,7 +179,9 @@ class TaggerClient:
 
                 """ + tag_attrs
 
-        time.sleep(0.5)
+        # per https://scryfall.com/docs/api
+        # limit to 10 requests/second
+        time.sleep(1 / 10)
         response = self.session.post(
             f"{self.base_url}/graphql",
             json={

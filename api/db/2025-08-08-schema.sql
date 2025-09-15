@@ -51,6 +51,9 @@ CREATE TABLE IF NOT EXISTS magic.cards (
     creature_toughness integer,
     creature_toughness_text text,
 
+    card_oracle_tags jsonb NOT NULL DEFAULT '{}'::jsonb,
+
+
     -- constraints
     CONSTRAINT card_types_must_be_array CHECK (jsonb_typeof(card_types) = 'array'),
     CONSTRAINT card_subtypes_must_be_array CHECK (jsonb_typeof(card_subtypes) = 'array'),
@@ -66,6 +69,8 @@ CREATE TABLE IF NOT EXISTS magic.cards (
         card_color_identity <@ '{"W": true, "U": true, "B": true, "R": true, "G": true, "C": true}'::jsonb
     ),
     CONSTRAINT card_keywords_must_be_object CHECK (jsonb_typeof(card_keywords) = 'object'),
+
+    CONSTRAINT card_oracle_tags_must_be_object CHECK (jsonb_typeof(card_oracle_tags) = 'object'),
 
     -- Creature-only attribute constraints
     CONSTRAINT creature_attributes_null_for_non_creatures CHECK (
