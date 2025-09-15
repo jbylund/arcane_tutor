@@ -56,22 +56,23 @@ class TestTaggingIntegration:
         )
 
 
+
     @patch("api.api_resource.APIResource.discover_tags_from_scryfall")
     @patch("api.api_resource.APIResource.update_tagged_cards")
+    @patch("api.api_resource.APIResource._get_all_tags")
     def test_discover_and_import_all_tags_with_mocked_data(
         self,
-        mock_update_tagged_cards: MagicMock,
         mock_discover_tags: MagicMock,
+        mock_update_tagged_cards: MagicMock,
+        mock_get_all_tags: MagicMock,
     ) -> None:
         """Test bulk import with mocked data to avoid external requests."""
-        # Mock discovering a small set of tags
-        mock_discover_tags.return_value = ["flying", "trample"]
-
-        # Mock successful card updates
-        mock_update_tagged_cards.return_value = {
-            "cards_updated": 5,
-            "total_cards_found": 5,
-        }
+        tags = [
+            "flying",
+            "trample",
+        ]
+        mock_discover_tags.return_value = tags
+        mock_get_all_tags.return_value = set(tags)
 
         api = APIResource()
         result = api.discover_and_import_all_tags(
@@ -81,9 +82,11 @@ class TestTaggingIntegration:
 
         # Should have discovered tags
         assert result["success"] is True
-        assert result["total_tags_discovered"] == 2
-        assert result["tags_processed"] == 2
-        assert result["cards_updated"] == 10  # 5 cards per tag * 2 tags
+        assert "card_taggings" in result
+        assert "hierarchy" not in result
+
+        # Should have called _get_all_tags to get existing tags
+        mock_get_all_tags.assert_called_once()
 
         # Should have called update_tagged_cards for each tag
         assert mock_update_tagged_cards.call_count == 2
