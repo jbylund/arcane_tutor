@@ -221,9 +221,6 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     # For attribute values, we want the raw string
     # Use Regex to match words that may contain hyphens for string values
     string_value_word = Regex(r"[a-zA-Z_][a-zA-Z0-9_-]*")
-    
-    # Attribute values can be quoted strings, string values, or literal numbers
-    attrval = quoted_string | string_value_word | literal_number
 
     # Build the grammar with proper precedence
     expr = Forward()
