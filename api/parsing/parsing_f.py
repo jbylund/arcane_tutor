@@ -19,7 +19,7 @@ from pyparsing import (
     oneOf,
 )
 
-from .db_info import KNOWN_CARD_ATTRIBUTES
+from .db_info import KNOWN_CARD_ATTRIBUTES, NON_NUMERIC_ATTRIBUTES, NUMERIC_ATTRIBUTES
 from .nodes import (
     AndNode,
     AttributeNode,
@@ -211,9 +211,33 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
 
     word = Word(alphas + "_").setParseAction(make_word)
 
+    # Define different types of attribute words based on their types
+    def validate_numeric_attr(tokens: list) -> str:
+        """Validate that a token is a numeric attribute."""
+        attr = tokens[0]
+        if attr not in NUMERIC_ATTRIBUTES:
+            msg = f"'{attr}' is not a numeric attribute"
+            raise ParseException(msg)
+        return attr
+
+    def validate_non_numeric_attr(tokens: list) -> str:
+        """Validate that a token is a non-numeric attribute."""
+        attr = tokens[0]
+        if attr not in NON_NUMERIC_ATTRIBUTES:
+            msg = f"'{attr}' is not a non-numeric attribute"
+            raise ParseException(msg)
+        return attr
+
+    # Create specific parsers for different attribute types
+    numeric_attr_word = attrname.copy().setParseAction(validate_numeric_attr)
+    non_numeric_attr_word = attrname.copy().setParseAction(validate_non_numeric_attr)
+
     # For attribute values, we want the raw string
-    # Use Regex to match words that may contain hyphens
-    attr_word = Regex(r"[a-zA-Z_][a-zA-Z0-9_-]*").setParseAction(lambda t: t[0])
+    # Use Regex to match words that may contain hyphens for string values
+    string_value_word = Regex(r"[a-zA-Z_][a-zA-Z0-9_-]*").setParseAction(lambda t: t[0])
+
+    # attr_word is now numeric_attr_word | non_numeric_attr_word | string_value_word
+    attr_word = numeric_attr_word | non_numeric_attr_word | string_value_word
     attrval = quoted_string | attr_word | integer | float_number
 
     # Build the grammar with proper precedence
@@ -221,17 +245,8 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
 
     # Define arithmetic expressions with proper precedence
     # Start with the most basic arithmetic terms
-    # Only known card attributes can be used in arithmetic expressions
-    def validate_known_attr(tokens: list) -> str:
-        """Validate that a token is a known card attribute for arithmetic."""
-        attr = tokens[0]
-        if attr not in KNOWN_CARD_ATTRIBUTES:
-            msg = f"'{attr}' is not a known card attribute for arithmetic"
-            raise ParseException(msg)
-        return attr
-
-    known_attr = attrname.copy().setParseAction(validate_known_attr)
-    arithmetic_term = known_attr | integer | float_number | Group(lparen + expr + rparen)
+    # Only numeric attributes can be used in arithmetic expressions
+    arithmetic_term = numeric_attr_word | integer | float_number | Group(lparen + expr + rparen)
 
     # Define arithmetic expressions that can be chained
     # Only match if there's at least one arithmetic operator
@@ -239,25 +254,26 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     arithmetic_expr <<= arithmetic_term + arithmetic_op + arithmetic_term + ZeroOrMore(arithmetic_op + arithmetic_term)
     arithmetic_expr.setParseAction(make_chained_arithmetic)
 
-    # Comparison between arithmetic expressions and values: arithmetic_expr attrop (arithmetic_expr | attrname | numeric_value)
-    arithmetic_comparison = arithmetic_expr + attrop + (arithmetic_expr | attrname | integer | float_number)
+    # Comparison between arithmetic expressions and values: arithmetic_expr attrop (arithmetic_expr | numeric_attr | numeric_value)
+    arithmetic_comparison = arithmetic_expr + attrop + (arithmetic_expr | numeric_attr_word | integer | float_number)
     arithmetic_comparison.setParseAction(make_binary_operator_node)
 
-    # Comparison between values and arithmetic expressions: (attrname | numeric_value) attrop (arithmetic_expr | attrname | numeric_value)
+    # Comparison between values and arithmetic expressions: (numeric_attr | numeric_value) attrop (arithmetic_expr | numeric_attr | numeric_value)
     value_arithmetic_comparison = (
-        (attrname | integer | float_number) + attrop + (arithmetic_expr | attrname | integer | float_number)
+        (numeric_attr_word | integer | float_number) + attrop + (arithmetic_expr | numeric_attr_word | integer | float_number)
     )
     value_arithmetic_comparison.setParseAction(make_binary_operator_node)
 
-    # Attribute-to-attribute comparison has higher precedence than regular conditions
-    attr_attr_condition = attrname + attrop + attrname
+    # Attribute-to-attribute comparison can be between any attributes
+    attr_attr_condition = (numeric_attr_word | non_numeric_attr_word) + attrop + (numeric_attr_word | non_numeric_attr_word)
     attr_attr_condition.setParseAction(make_binary_operator_node)
 
-    condition = attrname + attrop + attrval
+    condition = (numeric_attr_word | non_numeric_attr_word) + attrop + attrval
     condition.setParseAction(make_binary_operator_node)
 
-    # Special rule for attribute-colon-hyphenated-value to handle cases like "otag:dual-land"
-    hyphenated_condition = attrname + Literal(":") + Regex(r"[a-zA-Z_][a-zA-Z0-9_-]+")
+    # Special rule for non-numeric attribute-colon-hyphenated-value to handle cases like "otag:dual-land"
+    # Only non-numeric attributes should have hyphenated string values
+    hyphenated_condition = non_numeric_attr_word + Literal(":") + Regex(r"[a-zA-Z_][a-zA-Z0-9_-]+")
     hyphenated_condition.setParseAction(make_binary_operator_node)
 
     # Single word (implicit name search)
