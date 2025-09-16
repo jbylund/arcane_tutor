@@ -566,3 +566,25 @@ def test_oracle_tag_sql_translation(input_query: str, expected_sql: str, expecte
     observed_sql = parsed.to_sql(context)
     assert observed_sql == expected_sql, f"\nExpected: {expected_sql}\nObserved: {observed_sql}"
     assert context == expected_parameters, f"\nExpected params: {expected_parameters}\nObserved params: {context}"
+
+
+def test_arithmetic_parser_consolidation() -> None:
+    """Test that the consolidated arithmetic parser rules handle all cases correctly.
+    
+    This test verifies that after removing the redundant value_arithmetic_comparison rule
+    and extending numeric_condition, all arithmetic parsing still works correctly.
+    """
+    # Test cases that were previously handled by the removed value_arithmetic_comparison rule
+    test_cases = [
+        # literal < numeric_attr (now handled by extended numeric_condition)
+        ("1<power", BinaryOperatorNode(NumericValueNode(1), "<", AttributeNode("power"))),
+        # literal < arithmetic_expr (now handled by extended numeric_condition) 
+        ("5<cmc+power", BinaryOperatorNode(NumericValueNode(5), "<", BinaryOperatorNode(AttributeNode("cmc"), "+", AttributeNode("power")))),
+        # Cases that should still be handled by existing rules
+        ("cmc+1<power", BinaryOperatorNode(BinaryOperatorNode(AttributeNode("cmc"), "+", NumericValueNode(1)), "<", AttributeNode("power"))),
+        ("cmc<power+1", BinaryOperatorNode(AttributeNode("cmc"), "<", BinaryOperatorNode(AttributeNode("power"), "+", NumericValueNode(1)))),
+    ]
+    
+    for query, expected_ast in test_cases:
+        observed = parsing.parse_search_query(query).root
+        assert observed == expected_ast, f"Query '{query}' failed\nExpected: {expected_ast}\nObserved: {observed}"

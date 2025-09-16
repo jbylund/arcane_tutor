@@ -239,12 +239,6 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     arithmetic_comparison = arithmetic_expr + attrop + (arithmetic_expr | numeric_attr_word | literal_number)
     arithmetic_comparison.setParseAction(make_binary_operator_node)
 
-    # Comparison between values and arithmetic expressions: (numeric_attr | literal_number) attrop (arithmetic_expr | numeric_attr | literal_number)
-    value_arithmetic_comparison = (
-        (numeric_attr_word | literal_number) + attrop + (arithmetic_expr | numeric_attr_word | literal_number)
-    )
-    value_arithmetic_comparison.setParseAction(make_binary_operator_node)
-
     # Attribute-to-attribute comparison should be between same types
     # Numeric to numeric or non-numeric to non-numeric
     numeric_attr_attr_condition = numeric_attr_word + attrop + numeric_attr_word
@@ -256,8 +250,9 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     attr_attr_condition = numeric_attr_attr_condition | non_numeric_attr_attr_condition
 
     # Conditions should be type-specific:
-    # Numeric attributes compared with numeric values (literal numbers, arithmetic expressions, numeric attributes)
-    numeric_condition = numeric_attr_word + attrop + (literal_number | arithmetic_expr | numeric_attr_word)
+    # Numeric attributes or literals compared with numeric values (literal numbers, arithmetic expressions, numeric attributes)
+    # Note: This rule was extended to include literal_number on LHS to consolidate the redundant value_arithmetic_comparison rule
+    numeric_condition = (numeric_attr_word | literal_number) + attrop + (literal_number | arithmetic_expr | numeric_attr_word)
     numeric_condition.setParseAction(make_binary_operator_node)
 
     # Non-numeric attributes compared with string values
@@ -313,7 +308,7 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
 
     # Factor includes both negatable expressions and arithmetic expressions
     # SPECIAL: hyphenated_condition first to handle "otag:dual-land", then arithmetic for "cmc<power+1"
-    factor = hyphenated_condition | arithmetic_comparison | value_arithmetic_comparison | arithmetic_expr | condition | negatable_factor
+    factor = hyphenated_condition | arithmetic_comparison | arithmetic_expr | condition | negatable_factor
 
     # Expression with explicit AND/OR operators (highest precedence)
     def handle_operators(tokens: list[object]) -> object:
