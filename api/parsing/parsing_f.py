@@ -249,7 +249,9 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     value_arithmetic_comparison.setParseAction(make_binary_operator_node)
 
     # Attribute-to-attribute comparison has higher precedence than regular conditions
-    attr_attr_condition = attrname + attrop + attrname
+    # Use a custom parser that only matches known attributes
+    known_attr = Word(alphas + "_").setParseAction(lambda t: t[0]).addCondition(lambda t: t[0] in KNOWN_CARD_ATTRIBUTES)
+    attr_attr_condition = known_attr + attrop + known_attr
     attr_attr_condition.setParseAction(make_binary_operator_node)
 
     condition = attrname + attrop + attrval
@@ -291,13 +293,14 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
 
     # For negation, we exclude arithmetic expressions from being negated  
     # Order matters: conditions with complex values should come before attr-attr conditions
-    negatable_primary = condition | attr_attr_condition | group | single_word
+    # Temporarily disable attr_attr_condition to debug
+    negatable_primary = condition | group | single_word  # removed attr_attr_condition
     negatable_factor = Optional(operator_not) + negatable_primary
     negatable_factor.setParseAction(handle_negation)
 
     # Factor includes both negatable expressions and arithmetic expressions
-    # Order matters: arithmetic operations should be recognized first, then conditions with complex values, then attr-attr conditions
-    factor = arithmetic_comparison | value_arithmetic_comparison | arithmetic_expr | negatable_factor
+    # DEBUGGING: Test with only condition to see if something else is interfering
+    factor = condition
 
     # Expression with explicit AND/OR operators (highest precedence)
     def handle_operators(tokens: list[object]) -> object:
@@ -398,16 +401,29 @@ def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
             else:
                 tokens.append(char)
                 i += 1
-        elif char == "-":
-            # Handle negation as a separate token
-            tokens.append(char)
-            i += 1
         elif char == ":":
             # Handle colon operator
             tokens.append(char)
             i += 1
+        elif char == "-":
+            # Check if this hyphen is part of an attribute value
+            in_attr_value_context = tokens and tokens[-1] == ":"
+            if in_attr_value_context:
+                # In attribute value context, treat hyphen as part of the word
+                word_end = i
+                # Go back to find the start of this word (should be right after the colon)
+                word_start = i
+                # Continue reading the full hyphenated word
+                while word_end < len(query) and (query[word_end].isalnum() or query[word_end] in "_-"):
+                    word_end += 1
+                tokens.append(query[i:word_end])
+                i = word_end
+            else:
+                # Handle negation as a separate token
+                tokens.append(char)
+                i += 1
         else:
-            # Handle words - may contain hyphens if preceded by a colon (attribute value context)
+            # Handle words (alphanumeric starting)
             word_end = i
             # Check if we're in an attribute value context (previous token was a colon)
             in_attr_value_context = tokens and tokens[-1] == ":"
