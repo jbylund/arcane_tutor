@@ -235,36 +235,21 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     arithmetic_expr <<= arithmetic_term + arithmetic_op + arithmetic_term + ZeroOrMore(arithmetic_op + arithmetic_term)
     arithmetic_expr.setParseAction(make_chained_arithmetic)
 
-    # Comparison between arithmetic expressions and values: arithmetic_expr attrop (arithmetic_expr | numeric_attr | literal_number)
-    arithmetic_comparison = arithmetic_expr + attrop + (arithmetic_expr | numeric_attr_word | literal_number)
-    arithmetic_comparison.setParseAction(make_binary_operator_node)
-
-    # Comparison between values and arithmetic expressions: (numeric_attr | literal_number) attrop (arithmetic_expr | numeric_attr | literal_number)
-    value_arithmetic_comparison = (
-        (numeric_attr_word | literal_number) + attrop + (arithmetic_expr | numeric_attr_word | literal_number)
-    )
-    value_arithmetic_comparison.setParseAction(make_binary_operator_node)
+    # Unified numeric comparison rule: handles all combinations of arithmetic expressions, numeric attributes, and literals
+    # This consolidates the previous arithmetic_comparison and numeric_condition rules
+    unified_numeric_comparison = (arithmetic_expr | numeric_attr_word | literal_number) + attrop + (arithmetic_expr | numeric_attr_word | literal_number)
+    unified_numeric_comparison.setParseAction(make_binary_operator_node)
 
     # Attribute-to-attribute comparison should be between same types
-    # Numeric to numeric or non-numeric to non-numeric
-    numeric_attr_attr_condition = numeric_attr_word + attrop + numeric_attr_word
-    numeric_attr_attr_condition.setParseAction(make_binary_operator_node)
-
+    # Non-numeric to non-numeric (numeric comparisons are now handled by unified_numeric_comparison)
     non_numeric_attr_attr_condition = non_numeric_attr_word + attrop + non_numeric_attr_word
     non_numeric_attr_attr_condition.setParseAction(make_binary_operator_node)
-
-    attr_attr_condition = numeric_attr_attr_condition | non_numeric_attr_attr_condition
-
-    # Conditions should be type-specific:
-    # Numeric attributes compared with numeric values (literal numbers, arithmetic expressions, numeric attributes)
-    numeric_condition = numeric_attr_word + attrop + (literal_number | arithmetic_expr | numeric_attr_word)
-    numeric_condition.setParseAction(make_binary_operator_node)
 
     # Non-numeric attributes compared with string values
     non_numeric_condition = non_numeric_attr_word + attrop + (quoted_string | string_value_word)
     non_numeric_condition.setParseAction(make_binary_operator_node)
 
-    condition = numeric_condition | non_numeric_condition
+    condition = unified_numeric_comparison | non_numeric_condition
 
     # Special rule for non-numeric attribute-colon-hyphenated-value to handle cases like "otag:dual-land"
     # Only non-numeric attributes should have hyphenated string values
@@ -307,13 +292,14 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
 
     # For negation, we exclude arithmetic expressions from being negated
     # Test: revert to original order to confirm this breaks it
-    negatable_primary = attr_attr_condition | condition | group | single_word
+    negatable_primary = non_numeric_attr_attr_condition | condition | group | single_word
     negatable_factor = Optional(operator_not) + negatable_primary
     negatable_factor.setParseAction(handle_negation)
 
     # Factor includes both negatable expressions and arithmetic expressions
-    # SPECIAL: hyphenated_condition first to handle "otag:dual-land", then arithmetic for "cmc<power+1"
-    factor = hyphenated_condition | arithmetic_comparison | value_arithmetic_comparison | arithmetic_expr | condition | negatable_factor
+    # SPECIAL: hyphenated_condition first to handle "otag:dual-land", then condition (includes comparisons) before standalone arithmetic
+    # Note: arithmetic_comparison is now consolidated into unified_numeric_comparison within condition
+    factor = hyphenated_condition | condition | arithmetic_expr | negatable_factor
 
     # Expression with explicit AND/OR operators (highest precedence)
     def handle_operators(tokens: list[object]) -> object:
