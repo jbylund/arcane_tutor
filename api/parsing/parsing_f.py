@@ -9,7 +9,9 @@ from pyparsing import (
     Group,
     Literal,
     Optional,
+    ParseException,
     QuotedString,
+    Regex,
     Word,
     ZeroOrMore,
     alphas,
@@ -210,8 +212,8 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     word = Word(alphas + "_").setParseAction(make_word)
 
     # For attribute values, we want the raw string
-    # Create a separate word parser for attribute values
-    attr_word = Word(alphas + "_").setParseAction(lambda t: t[0])
+    # Use Regex to match words that may contain hyphens
+    attr_word = Regex(r'[a-zA-Z_][a-zA-Z0-9_-]*').setParseAction(lambda t: t[0])
     attrval = quoted_string | attr_word | integer | float_number
 
     # Build the grammar with proper precedence
@@ -220,7 +222,15 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     # Define arithmetic expressions with proper precedence
     # Start with the most basic arithmetic terms
     # Only known card attributes can be used in arithmetic expressions
-    arithmetic_term = attrname | integer | float_number | Group(lparen + expr + rparen)
+    def validate_known_attr(tokens):
+        """Validate that a token is a known card attribute for arithmetic."""
+        attr = tokens[0]
+        if attr not in KNOWN_CARD_ATTRIBUTES:
+            raise ParseException(f"'{attr}' is not a known card attribute for arithmetic")
+        return attr
+    
+    known_attr = attrname.copy().setParseAction(validate_known_attr)
+    arithmetic_term = known_attr | integer | float_number | Group(lparen + expr + rparen)
 
     # Define arithmetic expressions that can be chained
     # Only match if there's at least one arithmetic operator
@@ -279,13 +289,14 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
             return NotNode(tokens[1])
         return tokens[0]
 
-    # For negation, we exclude arithmetic expressions from being negated
-    negatable_primary = attr_attr_condition | condition | group | single_word
+    # For negation, we exclude arithmetic expressions from being negated  
+    # Order matters: conditions with complex values should come before attr-attr conditions
+    negatable_primary = condition | attr_attr_condition | group | single_word
     negatable_factor = Optional(operator_not) + negatable_primary
     negatable_factor.setParseAction(handle_negation)
 
     # Factor includes both negatable expressions and arithmetic expressions
-    # Order matters: arithmetic expressions must come before negatable expressions to avoid ambiguity
+    # Order matters: arithmetic operations should be recognized first, then conditions with complex values, then attr-attr conditions
     factor = arithmetic_comparison | value_arithmetic_comparison | arithmetic_expr | negatable_factor
 
     # Expression with explicit AND/OR operators (highest precedence)
@@ -396,10 +407,20 @@ def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
             tokens.append(char)
             i += 1
         else:
-            # Handle words
+            # Handle words - may contain hyphens if preceded by a colon (attribute value context)
             word_end = i
-            while word_end < len(query) and (query[word_end].isalnum() or query[word_end] == "_"):
-                word_end += 1
+            # Check if we're in an attribute value context (previous token was a colon)
+            in_attr_value_context = tokens and tokens[-1] == ":"
+            
+            if in_attr_value_context:
+                # In attribute value context, allow alphanumeric, underscore, and hyphens
+                while word_end < len(query) and (query[word_end].isalnum() or query[word_end] in "_-"):
+                    word_end += 1
+            else:
+                # Regular word context, only alphanumeric and underscore
+                while word_end < len(query) and (query[word_end].isalnum() or query[word_end] == "_"):
+                    word_end += 1
+            
             tokens.append(query[i:word_end])
             i = word_end
     # Convert implicit AND operations

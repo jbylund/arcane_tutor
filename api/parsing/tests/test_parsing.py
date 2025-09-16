@@ -528,3 +528,41 @@ def test_keyword_sql_translation(input_query: str, expected_sql: str, expected_p
     observed_sql = parsed.to_sql(context)
     assert observed_sql == expected_sql, f"\nExpected: {expected_sql}\nObserved: {observed_sql}"
     assert context == expected_parameters, f"\nExpected params: {expected_parameters}\nObserved params: {context}"
+
+
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_sql", "expected_parameters"),
+    argvalues=[
+        # Basic oracle tag search (should be lowercase)
+        (
+            "otag:flying",
+            r"(card.card_oracle_tags @> %(p_dict_eydmbHlpbmcnOiBUcnVlfQ)s)",
+            {"p_dict_eydmbHlpbmcnOiBUcnVlfQ": {"flying": True}},
+        ),
+        # Oracle tag search with hyphenated term - this currently fails but should work
+        (
+            "otag:dual-land",
+            r"(card.card_oracle_tags @> %(p_dict_eydkdWFsLWxhbmQnOiBUcnVlfQ)s)",
+            {"p_dict_eydkdWFsLWxhbmQnOiBUcnVlfQ": {"dual-land": True}},
+        ),
+        # Oracle tag with quoted hyphenated term should also work (and currently does)
+        (
+            'otag:"dual-land"',
+            r"(card.card_oracle_tags @> %(p_dict_eydkdWFsLWxhbmQnOiBUcnVlfQ)s)",
+            {"p_dict_eydkdWFsLWxhbmQnOiBUcnVlfQ": {"dual-land": True}},
+        ),
+        # Oracle tag with alias 'ot'
+        (
+            "ot:haste",
+            r"(card.card_oracle_tags @> %(p_dict_eydoYXN0ZSc6IFRydWV9)s)",
+            {"p_dict_eydoYXN0ZSc6IFRydWV9": {"haste": True}},
+        ),
+    ],
+)
+def test_oracle_tag_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
+    """Test that oracle tag search generates correct SQL with lowercase tags."""
+    parsed = parsing.parse_scryfall_query(input_query)
+    context = {}
+    observed_sql = parsed.to_sql(context)
+    assert observed_sql == expected_sql, f"\nExpected: {expected_sql}\nObserved: {observed_sql}"
+    assert context == expected_parameters, f"\nExpected params: {expected_parameters}\nObserved params: {context}"
