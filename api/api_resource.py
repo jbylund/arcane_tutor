@@ -503,8 +503,25 @@ class APIResource:
             key_frequency.update(k for k, v in card.items() if v not in [None, [], {}])
         return key_frequency.most_common()
 
+
+    def _setup_complete(self: APIResource) -> True:
+        """Return True if the setup is complete."""
+        try:
+            with self._conn_pool.connection() as conn:
+                conn = typecast("Connection", conn)
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT COUNT(*) AS num_cards FROM magic.cards")
+                    return cursor.fetchall()[0]["num_cards"] > 0
+        except Exception as oops:
+            logger.error("Error checking if setup is complete: %s", oops, exc_info=True)
+            return False
+
+    @cached(cache={}, key=lambda _self: None)
     def import_data(self: APIResource, **_: object) -> None:
         """Import data from Scryfall and insert into the database."""
+        if self._setup_complete():
+            return None
+
         self._setup_schema()
 
         to_insert = self._get_cards_to_insert()
@@ -675,6 +692,7 @@ class APIResource:
         val = str_buffer.getvalue()
         falcon_response.body = val.encode("utf-8")
 
+
     def search(  # noqa: PLR0913
         self: APIResource,
         *,
@@ -699,6 +717,7 @@ class APIResource:
             Dict containing search results and metadata.
         """
         del falcon_response
+        self.import_data()  # ensures that database is setup
         return self._search(
             query=query or q,
             orderby=orderby,
