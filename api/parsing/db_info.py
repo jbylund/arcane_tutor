@@ -44,6 +44,7 @@ DB_COLUMNS = [
     FieldInfo("mana_cost_text", FieldType.TEXT, ["mana"]),
     FieldInfo("raw_card_blob", FieldType.JSONB_OBJECT, []),
     FieldInfo("oracle_text", FieldType.TEXT, ["oracle", "o"]),
+    FieldInfo("card_oracle_tags", FieldType.JSONB_OBJECT, ["oracle_tags", "ot", "otag"]),
 ]
 
 KNOWN_CARD_ATTRIBUTES = set()
