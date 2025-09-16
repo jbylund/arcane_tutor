@@ -179,7 +179,7 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     query = preprocess_implicit_and(query)
 
     # Define the grammar components
-    Word(alphas + "_")
+    attrname = Word(alphas + "_")
     attrop = oneOf(": > < >= <= = !=")
     arithmetic_op = oneOf("+ - * /")
     integer = Word(nums).setParseAction(lambda t: int(t[0]))
@@ -221,9 +221,9 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     # For attribute values, we want the raw string
     # Use Regex to match words that may contain hyphens for string values
     string_value_word = Regex(r"[a-zA-Z_][a-zA-Z0-9_-]*")
-
-    # We don't need a generic attr_word anymore - everything is specific
-    quoted_string | string_value_word | literal_number
+    
+    # Attribute values can be quoted strings, string values, or literal numbers
+    attrval = quoted_string | string_value_word | literal_number
 
     # Build the grammar with proper precedence
     expr = Forward()
