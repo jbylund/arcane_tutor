@@ -568,24 +568,32 @@ def test_oracle_tag_sql_translation(input_query: str, expected_sql: str, expecte
     assert context == expected_parameters, f"\nExpected params: {expected_parameters}\nObserved params: {context}"
 
 
-# Generate all 25 combinations using cross product for parametrized testing
-expression_types = [
-    ("1", NumericValueNode(1)),
-    ("1+1", BinaryOperatorNode(NumericValueNode(1), "+", NumericValueNode(1))),
-    ("cmc+1", BinaryOperatorNode(AttributeNode("cmc"), "+", NumericValueNode(1))),
-    ("cmc+power", BinaryOperatorNode(AttributeNode("cmc"), "+", AttributeNode("power"))),
-    ("power", AttributeNode("power")),
-]
+def generate_arithmetic_parser_testcases() -> list[tuple[str, BinaryOperatorNode]]:
+    """Generate all 25 combinations using cross product for parametrized testing.
 
-query_ast_pairs = []
-for lhs_query, lhs_ast in expression_types:
-    for rhs_query, rhs_ast in expression_types:
-        query = f"{lhs_query}<{rhs_query}"
-        expected_ast = BinaryOperatorNode(lhs_ast, "<", rhs_ast)
-        query_ast_pairs.append((query, expected_ast))
+    Returns a list of (query, expected_ast) tuples covering all combinations of
+    5 expression types: literal, literal arithmetic, mixed arithmetic,
+    attribute arithmetic, and attribute.
+    """
+    expression_types = [
+        ("1", NumericValueNode(1)),
+        ("1+1", BinaryOperatorNode(NumericValueNode(1), "+", NumericValueNode(1))),
+        ("cmc+1", BinaryOperatorNode(AttributeNode("cmc"), "+", NumericValueNode(1))),
+        ("cmc+power", BinaryOperatorNode(AttributeNode("cmc"), "+", AttributeNode("power"))),
+        ("power", AttributeNode("power")),
+    ]
+
+    query_ast_pairs = []
+    for lhs_query, lhs_ast in expression_types:
+        for rhs_query, rhs_ast in expression_types:
+            query = f"{lhs_query}<{rhs_query}"
+            expected_ast = BinaryOperatorNode(lhs_ast, "<", rhs_ast)
+            query_ast_pairs.append((query, expected_ast))
+
+    return query_ast_pairs
 
 
-@pytest.mark.parametrize(argnames=("query", "expected_ast"), argvalues=query_ast_pairs)
+@pytest.mark.parametrize(argnames=("query", "expected_ast"), argvalues=generate_arithmetic_parser_testcases())
 def test_arithmetic_parser_consolidation(query: str, expected_ast: BinaryOperatorNode) -> None:
     """Test that the fully consolidated arithmetic parser rules handle all cases correctly.
 
