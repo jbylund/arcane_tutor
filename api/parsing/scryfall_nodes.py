@@ -232,7 +232,8 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             pname = param_name(rhs)
             context[pname] = rhs
         else:
-            raise ValueError(f"Unknown attribute: {attr}")
+            msg = f"Unknown attribute: {attr}"
+            raise ValueError(msg)
 
         if self.operator == "=":
             return f"({lhs_sql} = %({pname})s)"

@@ -213,7 +213,7 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
 
     # For attribute values, we want the raw string
     # Use Regex to match words that may contain hyphens
-    attr_word = Regex(r'[a-zA-Z_][a-zA-Z0-9_-]*').setParseAction(lambda t: t[0])
+    attr_word = Regex(r"[a-zA-Z_][a-zA-Z0-9_-]*").setParseAction(lambda t: t[0])
     attrval = quoted_string | attr_word | integer | float_number
 
     # Build the grammar with proper precedence
@@ -222,13 +222,14 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     # Define arithmetic expressions with proper precedence
     # Start with the most basic arithmetic terms
     # Only known card attributes can be used in arithmetic expressions
-    def validate_known_attr(tokens):
+    def validate_known_attr(tokens: list) -> str:
         """Validate that a token is a known card attribute for arithmetic."""
         attr = tokens[0]
         if attr not in KNOWN_CARD_ATTRIBUTES:
-            raise ParseException(f"'{attr}' is not a known card attribute for arithmetic")
+            msg = f"'{attr}' is not a known card attribute for arithmetic"
+            raise ParseException(msg)
         return attr
-    
+
     known_attr = attrname.copy().setParseAction(validate_known_attr)
     arithmetic_term = known_attr | integer | float_number | Group(lparen + expr + rparen)
 
@@ -249,13 +250,15 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     value_arithmetic_comparison.setParseAction(make_binary_operator_node)
 
     # Attribute-to-attribute comparison has higher precedence than regular conditions
-    # Use a custom parser that only matches known attributes
-    known_attr = Word(alphas + "_").setParseAction(lambda t: t[0]).addCondition(lambda t: t[0] in KNOWN_CARD_ATTRIBUTES)
-    attr_attr_condition = known_attr + attrop + known_attr
+    attr_attr_condition = attrname + attrop + attrname
     attr_attr_condition.setParseAction(make_binary_operator_node)
 
     condition = attrname + attrop + attrval
     condition.setParseAction(make_binary_operator_node)
+
+    # Special rule for attribute-colon-hyphenated-value to handle cases like "otag:dual-land"
+    hyphenated_condition = attrname + Literal(":") + Regex(r"[a-zA-Z_][a-zA-Z0-9_-]+")
+    hyphenated_condition.setParseAction(make_binary_operator_node)
 
     # Single word (implicit name search)
     def make_single_word(tokens: list[str]) -> BinaryOperatorNode:
@@ -291,16 +294,15 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
             return NotNode(tokens[1])
         return tokens[0]
 
-    # For negation, we exclude arithmetic expressions from being negated  
-    # Order matters: conditions with complex values should come before attr-attr conditions
-    # Temporarily disable attr_attr_condition to debug
-    negatable_primary = condition | group | single_word  # removed attr_attr_condition
+    # For negation, we exclude arithmetic expressions from being negated
+    # Test: revert to original order to confirm this breaks it
+    negatable_primary = attr_attr_condition | condition | group | single_word
     negatable_factor = Optional(operator_not) + negatable_primary
     negatable_factor.setParseAction(handle_negation)
 
     # Factor includes both negatable expressions and arithmetic expressions
-    # DEBUGGING: Test with only condition to see if something else is interfering
-    factor = condition
+    # SPECIAL: hyphenated_condition first to handle "otag:dual-land", then arithmetic for "cmc<power+1"
+    factor = hyphenated_condition | arithmetic_comparison | value_arithmetic_comparison | arithmetic_expr | condition | negatable_factor
 
     # Expression with explicit AND/OR operators (highest precedence)
     def handle_operators(tokens: list[object]) -> object:
@@ -412,7 +414,6 @@ def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
                 # In attribute value context, treat hyphen as part of the word
                 word_end = i
                 # Go back to find the start of this word (should be right after the colon)
-                word_start = i
                 # Continue reading the full hyphenated word
                 while word_end < len(query) and (query[word_end].isalnum() or query[word_end] in "_-"):
                     word_end += 1
@@ -427,7 +428,7 @@ def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
             word_end = i
             # Check if we're in an attribute value context (previous token was a colon)
             in_attr_value_context = tokens and tokens[-1] == ":"
-            
+
             if in_attr_value_context:
                 # In attribute value context, allow alphanumeric, underscore, and hyphens
                 while word_end < len(query) and (query[word_end].isalnum() or query[word_end] in "_-"):
@@ -436,7 +437,7 @@ def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
                 # Regular word context, only alphanumeric and underscore
                 while word_end < len(query) and (query[word_end].isalnum() or query[word_end] == "_"):
                     word_end += 1
-            
+
             tokens.append(query[i:word_end])
             i = word_end
     # Convert implicit AND operations
