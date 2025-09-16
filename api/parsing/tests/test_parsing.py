@@ -568,29 +568,39 @@ def test_oracle_tag_sql_translation(input_query: str, expected_sql: str, expecte
     assert context == expected_parameters, f"\nExpected params: {expected_parameters}\nObserved params: {context}"
 
 
-def test_arithmetic_parser_consolidation() -> None:
+# Generate all 25 combinations using cross product for parametrized testing
+expression_types = [
+    ("1", NumericValueNode(1)),
+    ("1+1", BinaryOperatorNode(NumericValueNode(1), "+", NumericValueNode(1))),
+    ("cmc+1", BinaryOperatorNode(AttributeNode("cmc"), "+", NumericValueNode(1))),
+    ("cmc+power", BinaryOperatorNode(AttributeNode("cmc"), "+", AttributeNode("power"))),
+    ("power", AttributeNode("power")),
+]
+
+query_ast_pairs = []
+for lhs_query, lhs_ast in expression_types:
+    for rhs_query, rhs_ast in expression_types:
+        query = f"{lhs_query}<{rhs_query}"
+        expected_ast = BinaryOperatorNode(lhs_ast, "<", rhs_ast)
+        query_ast_pairs.append((query, expected_ast))
+
+
+@pytest.mark.parametrize(argnames=("query", "expected_ast"), argvalues=query_ast_pairs)
+def test_arithmetic_parser_consolidation(query: str, expected_ast: BinaryOperatorNode) -> None:
     """Test that the fully consolidated arithmetic parser rules handle all cases correctly.
 
-    This test verifies that after removing redundant rules and consolidating into a single
+    This parametrized test runs each of the 25 combinations as separate test cases,
+    making it easier to identify specific failures and providing better test reporting.
+
+    Tests all combinations of 5 expression types:
+    1. literal number
+    2. arithmetic with just literal numbers
+    3. arithmetic with numbers and numeric attributes
+    4. arithmetic with numeric attributes
+    5. only numeric attribute
+
+    This verifies that after removing redundant rules and consolidating into a single
     unified_numeric_comparison rule, all arithmetic parsing still works correctly.
-
-    Uses a systematic cross product approach to test all 25 combinations of the 5
-    expression types: literal, literal arithmetic, mixed arithmetic, attribute arithmetic, and attribute.
     """
-    # Define the 5 different expression types with their expected AST representations
-    expression_types = [
-        ("1", NumericValueNode(1)),
-        ("1+1", BinaryOperatorNode(NumericValueNode(1), "+", NumericValueNode(1))),
-        ("cmc+1", BinaryOperatorNode(AttributeNode("cmc"), "+", NumericValueNode(1))),
-        ("cmc+power", BinaryOperatorNode(AttributeNode("cmc"), "+", AttributeNode("power"))),
-        ("power", AttributeNode("power")),
-    ]
-
-    # Generate all 25 combinations using cross product
-    for lhs_query, lhs_ast in expression_types:
-        for rhs_query, rhs_ast in expression_types:
-            query = f"{lhs_query}<{rhs_query}"
-            expected_ast = BinaryOperatorNode(lhs_ast, "<", rhs_ast)
-
-            observed = parsing.parse_search_query(query).root
-            assert observed == expected_ast, f"Query '{query}' failed\nExpected: {expected_ast}\nObserved: {observed}"
+    observed = parsing.parse_search_query(query).root
+    assert observed == expected_ast, f"Query '{query}' failed\nExpected: {expected_ast}\nObserved: {observed}"
