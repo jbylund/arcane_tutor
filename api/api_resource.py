@@ -194,12 +194,12 @@ class AcceptLocalCertSession(requests.Session):
         parsed_url = urlparse(url)
         is_internal = parsed_url.netloc.endswith("scryfall.com")
         if is_internal:
-            kwargs['verify'] = self.ssl_cert_path
+            kwargs["verify"] = self.ssl_cert_path
         logger.info(
             "Requesting %s / %s with verify %s / %s",
             url,
             parsed_url.netloc,
-            kwargs.get('verify'),
+            kwargs.get("verify"),
             kwargs,
         )
         return super().request(method, url, **kwargs)

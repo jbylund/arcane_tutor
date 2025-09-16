@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import falcon
 import logging
+
+import falcon
 
 from .cache_resource import CacheResource
 from .middlewares import LoggingMiddleware

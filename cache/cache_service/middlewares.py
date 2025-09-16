@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-import falcon
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import falcon
 
 logger = logging.getLogger(__name__)
 

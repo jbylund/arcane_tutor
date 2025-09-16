@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
-import falcon
-import logging
-import pathlib
-import requests
-import json
-import cachetools
-import math
 import base64
+import json
+import logging
+import math
+import pathlib
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-from collections.abc import Callable, Iterator
-
+import cachetools
+import falcon
+import requests
 
 from .dns_utils import custom_dns
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
 
 logger = logging.getLogger("cache_service")
 
@@ -55,6 +57,7 @@ class FilesystemCache(cachetools.Cache):
         try:
             with encoded_key.open() as fh:
                 logger.info("Getting item from cache: %s -> %s", key, encoded_key)
+                # TODO: load headers into a CaseInsensitiveDict
                 return json.load(fh)
         except FileNotFoundError:
             logger.info("Cache miss: %s -> %s", key, encoded_key)

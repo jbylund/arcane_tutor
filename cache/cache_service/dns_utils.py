@@ -2,7 +2,6 @@
 
 import contextlib
 import socket
-from typing import List
 
 import cachetools
 import dns.resolver
@@ -12,7 +11,7 @@ dns_cache = cachetools.TTLCache(maxsize=1000, ttl=60)
 
 
 @contextlib.contextmanager
-def custom_dns(nameservers: List[str], timeout: float = 2.0):
+def custom_dns(nameservers: list[str], timeout: float = 2.0):
     """Temporarily override socket.getaddrinfo to use dnspython with external DNS servers.
 
     Args:
@@ -54,7 +53,8 @@ def custom_dns(nameservers: List[str], timeout: float = 2.0):
                 except Exception:
                     pass
             if not addrs:
-                raise socket.gaierror(f"custom resolver failed: {host}")
+                msg = f"custom resolver failed: {host}"
+                raise socket.gaierror(msg)
             dns_cache[host] = addrs
 
         results = []
