@@ -1,0 +1,25 @@
+{
+  "name": "scryfallos",
+  "version": "1.0.0",
+  "description": "An open source implementation of scryfall. This project contains a few pieces:",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "format": "prettier --write api/index.html",
+    "format:check": "prettier --check api/index.html"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jbylund/scryfallos.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/jbylund/scryfallos/issues"
+  },
+  "homepage": "https://github.com/jbylund/scryfallos#readme",
+  "devDependencies": {
+    "prettier": "^3.6.2"
+  }
+}

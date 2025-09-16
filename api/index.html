@@ -1,0 +1,1220 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Card Search</title>
+    <link href="https://cdn.jsdelivr.net/npm/mana-font@latest/css/mana.min.css" rel="stylesheet" type="text/css" />
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: linear-gradient(to bottom, #1d1c25, #431e3f);
+        min-height: 100vh;
+        padding: 20px;
+      }
+
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+
+      .header {
+        text-align: center;
+        margin-bottom: 40px;
+        color: white;
+      }
+
+      .header h1 {
+        font-size: 3rem;
+        margin-bottom: 10px;
+        text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+        cursor: pointer;
+        transition: all 0.3s ease;
+      }
+
+      .header h1:hover {
+        transform: scale(1.05);
+        text-shadow: 2px 2px 8px rgba(0, 0, 0, 0.5);
+      }
+
+      .header p {
+        font-size: 1.2rem;
+        opacity: 0.9;
+      }
+
+      .search-container {
+        margin-bottom: 40px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 15px;
+      }
+
+      .search-box {
+        position: relative;
+        width: 100%;
+        max-width: 600px;
+      }
+
+      .order-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .order-dropdown {
+        padding: 15px 20px;
+        font-size: 1.1rem;
+        border: none;
+        border-radius: 25px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        outline: none;
+        background: white;
+        color: #333;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        min-width: 120px;
+      }
+
+      .order-dropdown:focus {
+        transform: translateY(-2px);
+        box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
+      }
+
+      .order-toggle {
+        padding: 15px 20px;
+        font-size: 1.2rem;
+        border: none;
+        border-radius: 25px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        background: white;
+        color: #333;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 60px;
+        height: 54px;
+      }
+
+      .order-toggle:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
+        background: #f8f9fa;
+      }
+
+      .order-toggle.descending .arrow-up {
+        transform: rotate(180deg);
+      }
+
+      .arrow-up {
+        display: inline-block;
+        transition: transform 0.3s ease;
+        font-weight: bold;
+      }
+
+      .search-input {
+        width: 100%;
+        padding: 15px 20px;
+        font-size: 1.1rem;
+        border: none;
+        border-radius: 25px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        outline: none;
+        transition: all 0.3s ease;
+      }
+
+      .search-input:focus {
+        transform: translateY(-2px);
+        box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
+      }
+
+      .loading {
+        position: absolute;
+        right: 20px;
+        top: 50%;
+        transform: translateY(-50%);
+        display: none;
+      }
+
+      .spinner {
+        width: 20px;
+        height: 20px;
+        border: 2px solid #e3e3e3;
+        border-top: 2px solid #667eea;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      .results-container {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 20px;
+        margin-top: 30px;
+      }
+
+      .card-item {
+        background: #989898;
+        border-radius: 15px;
+        padding: 20px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        transition: all 0.3s ease;
+        cursor: pointer;
+      }
+
+      .card-item:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
+      }
+
+      .card-name {
+        font-size: 1.3rem;
+        font-weight: bold;
+        color: #222;
+        margin-bottom: 8px;
+      }
+
+      .card-mana {
+        font-size: 0.9rem;
+        color: #222;
+        margin-bottom: 8px;
+        font-family: monospace;
+      }
+
+      .mana-symbol {
+        font-family: 'Mana';
+        font-size: 1.2em;
+        margin: 0 1px;
+        display: inline-block;
+      }
+
+      .card-type {
+        font-size: 1rem;
+        color: #222;
+        margin-bottom: 12px;
+        font-style: italic;
+      }
+
+      .card-text {
+        font-size: 0.9rem;
+        color: #222;
+        line-height: 1.4;
+        margin-bottom: 10px;
+      }
+
+      .card-set {
+        font-size: 0.8rem;
+        color: #444;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+      }
+
+      /* Modal styles */
+      .modal-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.8);
+        display: none;
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+        backdrop-filter: blur(5px);
+      }
+
+      .modal-content {
+        background: rgb(58, 58, 58);
+        border-radius: 15px;
+        padding: 30px;
+        max-width: 95vw;
+        max-height: 90vh;
+        overflow: hidden;
+        position: relative;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        animation: modalFadeIn 0.3s ease-out;
+        display: flex;
+        flex-direction: row;
+        gap: 30px;
+        align-items: flex-start;
+      }
+
+      @keyframes modalFadeIn {
+        from {
+          opacity: 0;
+          transform: scale(0.9) translateY(-20px);
+        }
+        to {
+          opacity: 1;
+          transform: scale(1) translateY(0);
+        }
+      }
+
+      .modal-close {
+        position: absolute;
+        top: 15px;
+        right: 20px;
+        background: none;
+        border: none;
+        font-size: 24px;
+        cursor: pointer;
+        color: #666;
+        width: 30px;
+        height: 30px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        transition: all 0.2s ease;
+      }
+
+      .modal-close:hover {
+        background: #f0f0f0;
+        color: #333;
+      }
+
+      .modal-image {
+        max-width: 50vw;
+        max-height: 85vh;
+        width: auto;
+        height: auto;
+        border-radius: 4%;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        object-fit: contain;
+        flex-shrink: 0;
+      }
+
+      .modal-card-info {
+        text-align: left;
+        flex: 1;
+        overflow-y: auto;
+        padding-right: 10px;
+        min-width: 0;
+      }
+
+      .modal-card-name {
+        font-size: 1.5rem;
+        font-weight: bold;
+        color: #a8a8a8;
+        margin-bottom: 8px;
+      }
+
+      .modal-card-mana {
+        font-size: 1.1rem;
+        color: #b0b0b0;
+        margin-bottom: 8px;
+        font-family: monospace;
+      }
+
+      .modal-mana-symbol {
+        font-family: 'Mana';
+        font-size: 1.3em;
+        margin: 0 1px;
+        display: inline-block;
+      }
+
+      .modal-card-type {
+        font-size: 1.1rem;
+        color: #a5a5a5;
+        margin-bottom: 12px;
+        font-style: italic;
+      }
+
+      .modal-card-text {
+        font-size: 1rem;
+        color: #ababab;
+        line-height: 1.6;
+        margin-bottom: 10px;
+        text-align: left;
+      }
+
+      .modal-card-set {
+        font-size: 0.9rem;
+        color: #cecece;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+      }
+
+      .error-message {
+        background: #ff6b6b;
+        color: white;
+        padding: 15px;
+        border-radius: 10px;
+        text-align: center;
+        margin-top: 20px;
+      }
+
+      .no-results {
+        text-align: center;
+        color: white;
+        font-size: 1.2rem;
+        margin-top: 40px;
+        opacity: 0.8;
+      }
+
+      .results-count {
+        color: white;
+        text-align: center;
+        margin-bottom: 20px;
+        font-size: 1.1rem;
+      }
+
+      .card-image {
+        display: block;
+        width: 100%;
+        max-width: 220px;
+        margin: 0 auto 12px auto;
+        border-radius: 10px;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+      }
+
+      @media (max-width: 768px) {
+        .header h1 {
+          font-size: 2rem;
+        }
+
+        .search-container {
+          flex-direction: column;
+          gap: 10px;
+        }
+
+        .order-controls {
+          width: 100%;
+          justify-content: center;
+        }
+
+        .order-dropdown {
+          flex: 1;
+          max-width: 200px;
+        }
+
+        .results-container {
+          grid-template-columns: 1fr;
+        }
+
+        body {
+          padding: 15px;
+        }
+
+        .modal-content {
+          padding: 20px;
+          max-width: 95vw;
+          max-height: 95vh;
+          flex-direction: column;
+          gap: 20px;
+        }
+
+        .modal-image {
+          max-width: 100%;
+          max-height: 50vh;
+          margin-bottom: 0;
+        }
+
+        .modal-card-name {
+          font-size: 1.3rem;
+        }
+
+        .modal-card-mana,
+        .modal-card-type {
+          font-size: 1rem;
+        }
+
+        .modal-card-text {
+          font-size: 0.9rem;
+        }
+
+        .modal-card-info {
+          text-align: center;
+        }
+      }
+    </style>
+    <script>
+      class CardSearch {
+        constructor() {
+          this.searchInput = document.getElementById('searchInput');
+          this.resultsContainer = document.getElementById('results');
+          this.loadingIndicator = document.getElementById('loading');
+          this.errorMessage = document.getElementById('error');
+          this.noResultsMessage = document.getElementById('noResults');
+          this.resultsCount = document.getElementById('resultsCount');
+          this.orderDropdown = document.getElementById('orderDropdown');
+          this.orderToggle = document.getElementById('orderToggle');
+
+          this.debounceTimeout = null;
+          this.debounceDelay = 140; // milliseconds
+          this.currentController = null;
+          this.imageObserver = null;
+          this.cardsData = new Map(); // Store card data by ID
+          this.lastRequestedUrl = null; // Track the last requested URL to prevent duplicate requests
+          this.isAscending = true; // Track order direction
+
+          // Autocomplete properties
+          this.commonCardTypes = []; // Will store the common card types
+
+          this.init();
+        }
+
+        async init() {
+          // Fetch common card types first
+          await this.fetchCommonCardTypes();
+
+          // On page load, check for query params and restore state
+          const params = new URLSearchParams(window.location.search);
+          const initialQuery = params.get('q') || '';
+          const initialOrder = params.get('orderby') || 'edhrec';
+          const initialDirection = params.get('direction') || 'asc';
+
+          // Set the order controls to match URL params
+          this.orderDropdown.value = initialOrder;
+          this.isAscending = initialDirection === 'asc';
+          this.updateOrderToggleAppearance();
+
+          if (initialQuery) {
+            this.searchInput.value = initialQuery;
+            this.performSearch(initialQuery);
+          }
+
+          this.searchInput.addEventListener('input', e => {
+            const query = e.target.value;
+            this.handleSearch(query);
+            // Update the URL as the user types
+            const order = this.orderDropdown.value;
+            const direction = this.isAscending ? 'asc' : 'desc';
+            this.updateURL(query, order, direction);
+          });
+
+          // Handle enter key for immediate search
+          this.searchInput.addEventListener('keypress', e => {
+            if (e.key === 'Enter') {
+              clearTimeout(this.debounceTimeout);
+              this.performSearch(e.target.value);
+            }
+          });
+
+          // Initialize intersection observer for lazy image loading
+          this.initImageObserver();
+
+          // Add event delegation for card clicks
+          this.resultsContainer.addEventListener('click', e => {
+            const cardItem = e.target.closest('.card-item');
+            if (cardItem) {
+              this.handleCardClick(cardItem);
+            }
+          });
+
+          // Add click handler for header to clear search
+          document.querySelector('.header h1').addEventListener('click', () => {
+            this.clearSearch();
+          });
+
+          // Add event listeners for order controls
+          this.orderDropdown.addEventListener('change', () => {
+            this.handleOrderChange();
+          });
+
+          this.orderToggle.addEventListener('click', () => {
+            this.toggleOrderDirection();
+          });
+        }
+
+        handleSearch(query) {
+          // Clear previous timeout
+          clearTimeout(this.debounceTimeout);
+
+          // Cancel previous request if still pending
+          if (this.currentController) {
+            this.currentController.abort();
+          }
+
+          // Clear results if query is empty
+          if (!query.trim()) {
+            this.clearResults();
+            this.lastRequestedUrl = null; // Reset URL tracking when clearing
+            return;
+          }
+
+          // Set up debounced search
+          this.debounceTimeout = setTimeout(() => {
+            this.performSearch(query);
+          }, this.debounceDelay);
+        }
+
+        async fetchCommonCardTypes() {
+          try {
+            const response = await fetch('/get_common_card_types');
+            if (!response.ok) {
+              throw new Error('Failed to fetch common card types');
+            }
+            this.commonCardTypes = await response.json();
+            console.log('Loaded', this.commonCardTypes.length, 'common card types');
+          } catch (error) {
+            console.error('Error fetching common card types:', error);
+            this.commonCardTypes = [];
+          }
+        }
+
+        autoCompleteQuery(query) {
+          // Look for type queries like "t:hydr" or "type:hydr"
+          const typeMatch = query.match(/(?:^|\s)(?:t|type):([a-zA-Z]*)$/i);
+          if (!typeMatch) {
+            return query; // No type query found, return original
+          }
+
+          const prefix = typeMatch[1].toLowerCase();
+          if (prefix.length < 2) {
+            // Only autocomplete if at least 2 characters
+            return query;
+          }
+
+          // Find the most common type that starts with this prefix
+          const bestMatch = this.commonCardTypes
+            .filter(type => type.t.toLowerCase().startsWith(prefix))
+            .sort((a, b) => b.n - a.n)[0]; // Get the most frequent match
+
+          if (!bestMatch) {
+            return query; // No match found, return original
+          }
+
+          // Get the original prefix to preserve capitalization
+          const originalPrefix = typeMatch[1];
+
+          // Create completion that matches the user's capitalization pattern
+          let completedType = bestMatch.t;
+          if (originalPrefix.length > 0) {
+            // Preserve the capitalization pattern of the user's input
+            if (originalPrefix === originalPrefix.toUpperCase()) {
+              // All caps -> all caps
+              completedType = bestMatch.t.toUpperCase();
+            } else if (originalPrefix === originalPrefix.toLowerCase()) {
+              // All lowercase -> all lowercase
+              completedType = bestMatch.t.toLowerCase();
+            } else {
+              // Mixed case -> take whatever they've typed so far
+              // and append the rest of the completion
+              completedType = originalPrefix + bestMatch.t.slice(originalPrefix.length);
+            }
+          }
+
+          // Auto-complete the query
+          const completedQuery = query.replace(/(?:^|\s)(?:t|type):[a-zA-Z]*$/i, match => {
+            return match.replace(/[a-zA-Z]+$/, completedType);
+          });
+
+          return completedQuery;
+        }
+
+        balanceQuery(query) {
+          // Balance quotes and parentheses for typeahead searches using a stack
+          const charToMirror = {
+            '(': ')',
+            "'": "'", // single quote is own mirror
+            '"': '"', // double quote is own mirror
+            ')': '(',
+          };
+
+          const stack = [];
+
+          // Process each character in the query
+          for (let i = 0; i < query.length; i++) {
+            const char = query[i];
+            const mirroredChar = charToMirror[char];
+
+            if (!mirroredChar) {
+              continue;
+            }
+
+            if (stack.length > 0 && stack[stack.length - 1] === mirroredChar) {
+              stack.pop();
+            } else {
+              stack.push(char);
+            }
+          }
+
+          // Build the closing characters from the stack in reverse order
+          let closing = '';
+          while (stack.length > 0) {
+            const char = stack.pop();
+            closing += charToMirror[char];
+          }
+
+          return query + closing;
+        }
+
+        async performSearch(query) {
+          if (!query.trim()) return;
+
+          // First, try to autocomplete the query
+          const completedQuery = this.autoCompleteQuery(query);
+
+          // Balance the query for better typeahead results
+          const balancedQuery = this.balanceQuery(completedQuery);
+
+          // Normalize whitespace to prevent duplicate requests for queries that differ only in whitespace
+          const normalizedQuery = balancedQuery.trim().replace(/\s+/g, ' ');
+
+          // Get current order settings
+          const order = this.orderDropdown.value;
+          const orderDirection = this.isAscending ? 'asc' : 'desc';
+
+          // Generate the URL for this request
+          const url = `/search?q=${encodeURIComponent(normalizedQuery)}&orderby=${order}&direction=${orderDirection}`;
+
+          // Check if this is the same URL as the last request - if so, skip the request
+          if (this.lastRequestedUrl === url) {
+            console.log('Skipping duplicate request for URL:', url);
+            return;
+          }
+
+          // Show loading state
+          this.showLoading();
+          this.clearMessages();
+
+          // Create new AbortController for this request
+          this.currentController = new AbortController();
+          // Update the last requested URL
+          this.lastRequestedUrl = url;
+
+          try {
+            // Clear any previous resource timing entries for this URL
+            performance.clearResourceTimings && performance.clearResourceTimings();
+            // Take a timestamp just before sending the request
+            const startTimestampMs = performance.now();
+            const response = await fetch(url, {
+              method: 'GET',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              signal: this.currentController.signal,
+            });
+            if (!response.ok) {
+              throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const data = await response.json();
+
+            // Compute round-trip duration from our own timestamps
+            const computedRoundTripMs = Math.round(performance.now() - startTimestampMs);
+
+            // Use PerformanceResourceTiming to get the network time
+            let elapsed = null;
+            const resources = performance.getEntriesByType('resource');
+            // Find the most recent entry for this URL
+            // (If there are multiple, pick the last one)
+            const matching = resources.filter(e => e.name.includes(url));
+            if (matching.length > 0) {
+              const entry = matching[matching.length - 1];
+              // responseEnd - startTime is the total time as shown in dev tools
+              elapsed = Math.round(entry.responseEnd - entry.startTime);
+            }
+            // Use the minimum of PerformanceResourceTiming and our computed duration
+            if (typeof elapsed === 'number') {
+              elapsed = Math.min(elapsed, computedRoundTripMs);
+            } else {
+              elapsed = computedRoundTripMs;
+            }
+            this.displayResults(data, normalizedQuery, elapsed);
+          } catch (error) {
+            if (error.name === 'AbortError') {
+              // Request was cancelled, ignore
+              return;
+            }
+            console.error('Search error:', error);
+            this.showError(`Failed to search: ${error.message}`);
+          } finally {
+            this.hideLoading();
+            this.currentController = null;
+          }
+        }
+
+        displayResults(data, query, elapsed) {
+          // Assume the API returns an array of cards or an object with a cards array
+          const cards = Array.isArray(data) ? data : data.cards || [];
+          const totalCards = data.total_cards || cards.length;
+
+          if (cards.length === 0) {
+            this.showNoResults();
+            return;
+          }
+
+          // Clear previous card data and store new cards
+          this.cardsData.clear();
+          cards.forEach((card, index) => {
+            const cardId = index.toString();
+            console.log('Storing card with ID:', cardId, 'Card data:', card);
+            this.cardsData.set(cardId, card);
+          });
+
+          console.log('Total cards stored in cardsData:', this.cardsData.size);
+          console.log('CardsData keys:', Array.from(this.cardsData.keys()));
+
+          this.showResultsCount(totalCards, query, elapsed);
+
+          this.resultsContainer.innerHTML = cards.map((card, index) => this.createCardHTML(card, index)).join('');
+
+          // Observe all images for viewport-based loading
+          this.observeImages();
+        }
+
+        createCardHTML(card, index) {
+          const cardId = index.toString();
+          const imageSmall = card.image_small;
+          const imageNormal = card.image_normal;
+          const imageLarge = card.image_large;
+
+          // Debug logging
+          console.log('Creating card HTML for:', card);
+          console.log('Card ID will be:', cardId);
+
+          // Create descriptive alt text with card name, mana cost, and oracle text
+          let altText = this.escapeHtml(card.name || 'Unknown Card');
+          if (card.mana_cost) {
+            altText += ` / ${this.escapeHtml(card.mana_cost)}`;
+          }
+          altText += '\n\n';
+          if (card.oracle_text) {
+            const maxLength = 300;
+            const truncatedText =
+              card.oracle_text.length > maxLength ? card.oracle_text.substring(0, maxLength) + '...' : card.oracle_text;
+            altText += this.escapeHtml(truncatedText);
+          }
+
+          // Create placeholder image that will be replaced when in viewport
+          const imageHtml = `<img class="card-image" data-small="${this.escapeHtml(imageSmall)}" data-normal="${this.escapeHtml(imageNormal)}" data-large="${this.escapeHtml(imageLarge)}" alt="${altText}" title="${altText}" />`;
+
+          return `
+             <div class="card-item" data-card-id="${this.escapeHtml(cardId)}">
+                 ${imageHtml}
+                 <div class="card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
+                 ${card.mana_cost ? `<div class="card-mana">${this.convertManaSymbols(card.mana_cost, false)}</div>` : ''}
+                 ${card.type_line ? `<div class="card-type">${this.escapeHtml(card.type_line)}</div>` : ''}
+                 ${card.oracle_text ? `<div class="card-text">${this.formatOracleText(card.oracle_text.substring(0, 200), false)}${card.oracle_text.length > 200 ? '...' : ''}</div>` : ''}
+                 ${card.set_name ? `<div class="card-set">${this.escapeHtml(card.set_name)}</div>` : ''}
+             </div>
+         `;
+        }
+
+        handleCardClick(cardItem) {
+          try {
+            const cardId = cardItem.getAttribute('data-card-id');
+            console.log('Clicked card with ID:', cardId);
+            console.log('Available cards in cardsData:', Array.from(this.cardsData.keys()));
+            console.log('Looking for card with ID:', cardId);
+
+            const cardData = this.cardsData.get(cardId);
+
+            if (cardData) {
+              console.log('Selected card:', cardData.name);
+              this.showCardModal(cardData);
+            } else {
+              console.error('Card data not found for ID:', cardId);
+              console.error('Available card IDs:', Array.from(this.cardsData.keys()));
+            }
+          } catch (e) {
+            console.error('Error handling card click:', e);
+          }
+        }
+
+        showCardModal(card) {
+          const modalOverlay = document.getElementById('modalOverlay');
+          const modalContent = document.getElementById('modalContent');
+
+          // Create modal content
+          const imageLarge = card.image_large || card.image_normal || card.image_small;
+          const imageHtml = imageLarge
+            ? `<img class="modal-image" src="${this.escapeHtml(imageLarge)}" alt="${this.escapeHtml(card.name || 'Card Image')}" />`
+            : '';
+
+          modalContent.innerHTML = `
+            <button class="modal-close" onclick="cardSearch.closeModal()">&times;</button>
+            ${imageHtml}
+            <div class="modal-card-info">
+              <div class="modal-card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
+              ${card.mana_cost ? `<div class="modal-card-mana">${this.convertManaSymbols(card.mana_cost, true)}</div>` : ''}
+              ${card.type_line ? `<div class="modal-card-type">${this.escapeHtml(card.type_line)}</div>` : ''}
+              ${card.oracle_text ? `<div class="modal-card-text">${this.formatOracleText(card.oracle_text, true)}</div>` : ''}
+              ${card.set_name ? `<div class="modal-card-set">${this.escapeHtml(card.set_name)}</div>` : ''}
+            </div>
+          `;
+
+          // Show modal
+          modalOverlay.style.display = 'flex';
+          document.body.style.overflow = 'hidden'; // Prevent background scrolling
+
+          // Add click outside to close
+          modalOverlay.onclick = e => {
+            if (e.target === modalOverlay) {
+              this.closeModal();
+            }
+          };
+
+          // Add escape key to close
+          document.addEventListener('keydown', this.handleEscapeKey);
+        }
+
+        closeModal() {
+          const modalOverlay = document.getElementById('modalOverlay');
+          modalOverlay.style.display = 'none';
+          document.body.style.overflow = ''; // Restore scrolling
+          document.removeEventListener('keydown', this.handleEscapeKey);
+        }
+
+        handleEscapeKey = e => {
+          if (e.key === 'Escape') {
+            this.closeModal();
+          }
+        };
+
+        initImageObserver() {
+          // Create intersection observer to watch for images entering viewport
+          this.imageObserver = new IntersectionObserver(
+            entries => {
+              entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                  const img = entry.target;
+                  this.loadImage(img);
+                  // Stop observing once image is loaded
+                  this.imageObserver.unobserve(img);
+                }
+              });
+            },
+            {
+              rootMargin: '150px', // Start loading 150px before entering viewport
+              threshold: 0.1,
+            }
+          );
+        }
+
+        loadImage(imgElement) {
+          const smallImageUrl = imgElement.getAttribute('data-small');
+          const normalImageUrl = imgElement.getAttribute('data-normal');
+
+          if (!smallImageUrl) return;
+
+          // Start with small image
+          imgElement.src = smallImageUrl;
+
+          // If normal image is available, upgrade after small image loads
+          if (normalImageUrl) {
+            imgElement.onload = () => {
+              this.upgradeToNormalImage(imgElement, normalImageUrl);
+            };
+          }
+        }
+
+        upgradeToNormalImage(imgElement, normalImageUrl) {
+          // Create a new image to preload the normal version
+          const normalImg = new Image();
+          normalImg.onload = () => {
+            // Once the normal image is loaded, replace the src
+            imgElement.src = normalImageUrl;
+            imgElement.removeAttribute('data-normal');
+            imgElement.removeAttribute('data-small');
+            imgElement.onload = null;
+          };
+          normalImg.onerror = () => {
+            // If normal image fails to load, keep the small image
+            console.warn('Failed to load normal image:', normalImageUrl);
+            imgElement.removeAttribute('data-normal');
+            imgElement.removeAttribute('data-small');
+            imgElement.onload = null;
+          };
+          normalImg.src = normalImageUrl;
+        }
+
+        observeImages() {
+          // Find all images that haven't been loaded yet
+          const images = this.resultsContainer.querySelectorAll('img.card-image:not([src])');
+          images.forEach(img => {
+            this.imageObserver.observe(img);
+          });
+        }
+
+        showLoading() {
+          this.loadingIndicator.style.display = 'block';
+        }
+
+        hideLoading() {
+          this.loadingIndicator.style.display = 'none';
+        }
+
+        showError(message) {
+          this.errorMessage.textContent = message;
+          this.errorMessage.style.display = 'block';
+          this.resultsContainer.innerHTML = '';
+          this.resultsCount.style.display = 'none';
+        }
+
+        showNoResults() {
+          this.noResultsMessage.style.display = 'block';
+          this.resultsContainer.innerHTML = '';
+          this.resultsCount.style.display = 'none';
+        }
+
+        showResultsCount(count, query, elapsed) {
+          const formattedCount = count.toLocaleString();
+          let msg = `Found ${formattedCount} card${count !== 1 ? 's' : ''} matching "${query}"`;
+          if (typeof elapsed === 'number') {
+            msg += ` (completed in ${elapsed}ms)`;
+          }
+          this.resultsCount.textContent = msg;
+          this.resultsCount.style.display = 'block';
+        }
+
+        clearResults() {
+          // Disconnect observer to clean up
+          if (this.imageObserver) {
+            this.imageObserver.disconnect();
+          }
+          this.resultsContainer.innerHTML = '';
+          this.clearMessages();
+        }
+
+        clearSearch() {
+          // Clear the search input
+          this.searchInput.value = '';
+
+          // Clear results
+          this.clearResults();
+
+          // Clear URL parameters
+          this.updateURL('', this.orderDropdown.value, this.isAscending ? 'asc' : 'desc');
+
+          // Focus back on search input
+          this.searchInput.focus();
+        }
+
+        clearMessages() {
+          this.errorMessage.style.display = 'none';
+          this.noResultsMessage.style.display = 'none';
+          this.resultsCount.style.display = 'none';
+        }
+
+        escapeHtml(text) {
+          const div = document.createElement('div');
+          div.textContent = text;
+          return div.innerHTML;
+        }
+
+        convertManaSymbols(manaCost, isModal = false) {
+          if (!manaCost) return '';
+
+          // Map of mana symbols to Mana font classes with casting cost circles
+          const manaMap = {
+            '{R}': 'ms ms-r ms-cost',
+            '{G}': 'ms ms-g ms-cost',
+            '{W}': 'ms ms-w ms-cost',
+            '{U}': 'ms ms-u ms-cost',
+            '{B}': 'ms ms-b ms-cost',
+            '{C}': 'ms ms-c ms-cost',
+            '{0}': 'ms ms-0 ms-cost',
+            '{1}': 'ms ms-1 ms-cost',
+            '{2}': 'ms ms-2 ms-cost',
+            '{3}': 'ms ms-3 ms-cost',
+            '{4}': 'ms ms-4 ms-cost',
+            '{5}': 'ms ms-5 ms-cost',
+            '{6}': 'ms ms-6 ms-cost',
+            '{7}': 'ms ms-7 ms-cost',
+            '{8}': 'ms ms-8 ms-cost',
+            '{9}': 'ms ms-9 ms-cost',
+            '{10}': 'ms ms-10 ms-cost',
+            '{11}': 'ms ms-11 ms-cost',
+            '{12}': 'ms ms-12 ms-cost',
+            '{13}': 'ms ms-13 ms-cost',
+            '{14}': 'ms ms-14 ms-cost',
+            '{15}': 'ms ms-15 ms-cost',
+            '{16}': 'ms ms-16 ms-cost',
+            '{17}': 'ms ms-17 ms-cost',
+            '{18}': 'ms ms-18 ms-cost',
+            '{19}': 'ms ms-19 ms-cost',
+            '{20}': 'ms ms-20 ms-cost',
+            '{X}': 'ms ms-x ms-cost',
+            '{Y}': 'ms ms-y ms-cost',
+            '{Z}': 'ms ms-z ms-cost',
+            '{T}': 'ms ms-tap',
+            '{Q}': 'ms ms-untap',
+            '{E}': 'ms ms-energy',
+            '{P}': 'ms ms-phyrexian ms-cost',
+            '{S}': 'ms ms-snow ms-cost',
+            '{CHAOS}': 'ms ms-chaos',
+            '{PW}': 'ms ms-pw',
+            '{∞}': 'ms ms-infinity',
+          };
+
+          // Hybrid mana symbols with casting cost circles
+          const hybridMap = {
+            '{W/U}': 'ms ms-wu ms-cost',
+            '{U/B}': 'ms ms-ub ms-cost',
+            '{B/R}': 'ms ms-br ms-cost',
+            '{R/G}': 'ms ms-rg ms-cost',
+            '{G/W}': 'ms ms-gw ms-cost',
+            '{W/B}': 'ms ms-wb ms-cost',
+            '{U/R}': 'ms ms-ur ms-cost',
+            '{B/G}': 'ms ms-bg ms-cost',
+            '{R/W}': 'ms ms-rw ms-cost',
+            '{G/U}': 'ms ms-gu ms-cost',
+            '{2/W}': 'ms ms-2w ms-cost',
+            '{2/U}': 'ms ms-2u ms-cost',
+            '{2/B}': 'ms ms-2b ms-cost',
+            '{2/R}': 'ms ms-2r ms-cost',
+            '{2/G}': 'ms ms-2g ms-cost',
+            // Phyrexian hybrid mana symbols
+            '{W/P}': 'ms ms-wp ms-cost',
+            '{U/P}': 'ms ms-up ms-cost',
+            '{B/P}': 'ms ms-bp ms-cost',
+            '{R/P}': 'ms ms-rp ms-cost',
+            '{G/P}': 'ms ms-gp ms-cost',
+          };
+
+          // Replace mana symbols with Mana font spans
+          let converted = manaCost;
+          const symbolClass = isModal ? 'modal-mana-symbol' : 'mana-symbol';
+
+          // Process hybrid symbols first (they need to be processed before single symbols)
+          Object.keys(hybridMap).forEach(symbol => {
+            const regex = new RegExp(symbol.replace(/[{}]/g, '\\$&'), 'g');
+            converted = converted.replace(regex, `<span class="${symbolClass} ${hybridMap[symbol]}"></span>`);
+          });
+
+          // Process regular mana symbols
+          Object.keys(manaMap).forEach(symbol => {
+            const regex = new RegExp(symbol.replace(/[{}]/g, '\\$&'), 'g');
+            converted = converted.replace(regex, `<span class="${symbolClass} ${manaMap[symbol]}"></span>`);
+          });
+
+          return converted;
+        }
+
+        formatOracleText(oracleText, isModal = false) {
+          if (!oracleText) return '';
+
+          // First convert mana symbols
+          let formatted = this.convertManaSymbols(oracleText, isModal);
+
+          // Then convert newlines to HTML line breaks
+          formatted = formatted.replace(/\n/g, '<br>');
+
+          return formatted;
+        }
+
+        updateOrderToggleAppearance() {
+          if (this.isAscending) {
+            this.orderToggle.classList.remove('descending');
+          } else {
+            this.orderToggle.classList.add('descending');
+          }
+        }
+
+        updateURL(query, order, direction) {
+          const url = new URL(window.location);
+          if (query.trim()) {
+            url.searchParams.set('q', query);
+            url.searchParams.set('orderby', order);
+            url.searchParams.set('direction', direction);
+          } else {
+            url.searchParams.delete('q');
+            url.searchParams.delete('orderby');
+            url.searchParams.delete('direction');
+          }
+          window.history.replaceState({}, '', url);
+        }
+
+        handleOrderChange() {
+          // Update URL with current state
+          const query = this.searchInput.value.trim();
+          const order = this.orderDropdown.value;
+          const direction = this.isAscending ? 'asc' : 'desc';
+          this.updateURL(query, order, direction);
+
+          // Trigger a new search with the current query and new order
+          if (query) {
+            this.performSearch(query);
+          }
+        }
+
+        toggleOrderDirection() {
+          this.isAscending = !this.isAscending;
+          this.updateOrderToggleAppearance();
+
+          // Update URL with current state
+          const query = this.searchInput.value.trim();
+          const order = this.orderDropdown.value;
+          const direction = this.isAscending ? 'asc' : 'desc';
+          this.updateURL(query, order, direction);
+
+          // Trigger a new search with the current query and new order direction
+          if (query) {
+            this.performSearch(query);
+          }
+        }
+      }
+      window.cardSearchMain = function () {
+        window.cardSearch = new CardSearch();
+      };
+    </script>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>Card Search</h1>
+        <p>Search for Magic: The Gathering cards</p>
+      </div>
+
+      <div class="search-container">
+        <div class="search-box">
+          <input
+            type="text"
+            class="search-input"
+            placeholder="Search for cards by name, type, or text..."
+            id="searchInput"
+          />
+          <div class="loading" id="loading">
+            <div class="spinner"></div>
+          </div>
+        </div>
+        <div class="order-controls">
+          <select class="order-dropdown" id="orderDropdown">
+            <option value="edhrec">EDHREC</option>
+            <option value="cmc">CMC</option>
+            <option value="power">Power</option>
+            <option value="toughness">Toughness</option>
+            <option value="usd">USD</option>
+          </select>
+          <button class="order-toggle" id="orderToggle" title="Toggle ascending/descending">
+            <span class="arrow-up">↑</span>
+          </button>
+        </div>
+      </div>
+
+      <div id="resultsCount" class="results-count" style="display: none"></div>
+      <div id="results" class="results-container"></div>
+      <div id="error" class="error-message" style="display: none"></div>
+      <div id="noResults" class="no-results" style="display: none">No cards found matching your search.</div>
+    </div>
+
+    <!-- Modal for card details -->
+    <div id="modalOverlay" class="modal-overlay">
+      <div id="modalContent" class="modal-content">
+        <!-- Modal content will be dynamically inserted here -->
+      </div>
+    </div>
+    <script>
+      window.cardSearchMain && window.cardSearchMain();
+    </script>
+  </body>
+</html>

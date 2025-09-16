@@ -1,0 +1,33 @@
+[tool.ruff]
+line-length = 120
+exclude = [".venv", "venv", "build", "dist", "migrations"]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "C90", "I", "N", "D", "UP", "YTT", "ANN", "S", "BLE", "B", "A", "COM", "C4", "DTZ", "EM", "EXE", "FBT", "ICN", "INP", "PIE", "PT", "Q", "RET", "SIM", "T20", "TID", "TCH", "ARG", "PTH", "ERA", "PL", "RUF"]
+# E501: Ignore line too long
+# S105: Ignore hardcoded password string
+ignore = ["E501", "S105", "FBT001", "FBT002", "S608"]
+# S101: Ignore use of assert statements in tests
+# D101: Ignore missing docstring in public class in tests
+# D102: Ignore missing docstring in public method in tests
+# D103: Ignore missing docstring in public function in tests
+per-file-ignores = {"**/tests/**/*.py" = ["S101", "D101", "D102", "D103", "PLR2004"]}
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.pylint]
+max-line-length = 120
+disable = []
+ignore = [".venv", "venv", "build", "dist", "migrations"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+strict = true
+# exclude = "(\.venv|venv|build|dist|migrations)"
+show_error_codes = true
+warn_unused_ignores = true
+warn_return_any = true
+warn_unused_configs = true

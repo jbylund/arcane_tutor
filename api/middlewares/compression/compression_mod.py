@@ -1,0 +1,141 @@
+"""Compression middleware for Falcon API responses."""
+
+from __future__ import annotations
+
+import logging
+import time
+from typing import TYPE_CHECKING
+
+from .compressors import BrotliCompressor, GzipCompressor, ZstdCompressor
+
+if TYPE_CHECKING:
+    import falcon
+
+MIN_SIZE: int = 200
+
+logger = logging.getLogger(__name__)
+
+
+def parse_q_list(
+    accept_encoding: str,
+    server_priorities: dict[str, int],
+) -> list[str]:
+    """Parse the Accept-Encoding header and return a list of encodings sorted by client and server priority.
+
+    Args:
+        accept_encoding (str): The Accept-Encoding header value.
+        server_priorities (dict[str, int]): Mapping of encoding names to server priorities.
+
+    Returns:
+        list[str]: List of encoding names sorted by priority.
+    """
+    # TODO: add client priority
+    values: list[tuple[str, int]] = []
+    logger.info("Server priorities: %s", server_priorities)
+    logger.info("Accept encoding: %s", accept_encoding)
+    for name in accept_encoding.split(","):
+        encoding = name.strip().lower()
+        server_prioritiy = server_priorities.get(encoding)
+        if server_prioritiy is None:
+            continue
+        values.append((encoding, server_prioritiy))
+    values.sort(key=lambda v: v[1])
+    return [v[0] for v in values]
+
+
+class CompressionMiddleware:
+    """Middleware for handling response compression using various algorithms."""
+
+    def __init__(self: CompressionMiddleware) -> None:
+        """Initialize the CompressionMiddleware and register available compressors."""
+        self._compressors: dict[str, object] = {}
+        self._priorities: dict[str, int] = {}
+        self._add_compressor(BrotliCompressor())
+        self._add_compressor(GzipCompressor())
+        self._add_compressor(ZstdCompressor())
+
+    def _add_compressor(self: CompressionMiddleware, compressor: object) -> None:
+        """Register a compressor and its priority.
+
+        Args:
+            compressor: Compressor instance with 'encoding' and 'priority' attributes.
+        """
+        self._priorities[compressor.encoding] = compressor.priority
+        self._compressors[compressor.encoding] = compressor
+
+    def _get_compressor(self: CompressionMiddleware, accept_encoding: str) -> object | None:
+        """Select a compressor based on the Accept-Encoding header.
+
+        Args:
+            accept_encoding (str): The Accept-Encoding header value.
+
+        Returns:
+            object | None: The selected compressor or None if not found.
+        """
+        for encoding in parse_q_list(accept_encoding, self._priorities):
+            compressor = self._compressors.get(encoding)
+            if compressor:
+                return compressor
+        return None
+
+    def process_response(
+        self: CompressionMiddleware,
+        req: falcon.Request,
+        resp: falcon.Response,
+        resource: object,
+        req_succeeded: bool,
+    ) -> None:
+        """Post-processing of the response (after routing).
+
+        Args:
+            req: Request object.
+            resp: Response object.
+            resource: Resource object to which the request was routed. May be None if no route was found for the request.
+            req_succeeded (bool): True if no exceptions were raised while the framework processed and routed the request; otherwise False.
+        """
+        del resource, req_succeeded
+        if resp.complete:
+            logger.info("Will serve response from cache...")
+            return
+        accept_encoding = req.get_header("Accept-Encoding")
+        if accept_encoding is None:
+            return
+
+        # If content-encoding is already set don't compress.
+        if resp.get_header("Content-Encoding"):
+            return
+
+        # my accept encoding is "gzip, deflate, br, zstd"
+        compressor = self._get_compressor(accept_encoding)
+        if compressor is None:
+            return
+        logger.info("Using compressor: %s", compressor.encoding)
+
+        if resp.stream:
+            logger.info("Compressing stream")
+            resp.stream = compressor.compress_stream(resp.stream)
+            resp.content_length = None
+        else:
+            data = resp.render_body()
+            # If there is no content or it is very short then don't compress.
+            if data is None or len(data) < MIN_SIZE:
+                logger.info("Skipping compression for short response")
+                return
+            size_before_compression = len(data)
+            before_compression = time.monotonic()
+            resp.data = compressed = compressor.compress(data)
+            after_compression = time.monotonic()
+            resp.text = None
+            size_after_compression = len(compressed)
+            logger.info(
+                "%s: Compressed %s bytes to %s bytes (%.2f x compression) in %.2f ms - %s",
+                req.url,
+                f"{size_before_compression:,}",
+                f"{size_after_compression:,}",
+                size_before_compression / size_after_compression,
+                1000 * (after_compression - before_compression),
+                req.get_header("User-Agent"),
+            )
+
+        resp.set_header("Content-Encoding", compressor.encoding)
+        resp.append_header("Vary", "Accept-Encoding")
