@@ -14,6 +14,6 @@ logger = logging.getLogger(__name__)
 class LoggingMiddleware:
     """Middleware to log the request and response."""
 
-    def process_request(self, req: falcon.Request, resp: falcon.Response) -> None:
+    def process_request(self, req: falcon.Request, _: falcon.Response) -> None:
         """Log the request."""
         logger.info("Request: %s", req.uri)

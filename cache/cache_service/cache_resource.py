@@ -27,7 +27,7 @@ RATE_LIMIT_PERIOD = 1  # second
 
 DO_NOT_CACHE = object()
 
-def default_getsizeof(x: object) -> int:
+def default_getsizeof(_: object) -> int:
     """Default getsizeof function."""
     return 0
 
@@ -35,6 +35,9 @@ class FilesystemCache(cachetools.Cache):
     """Filesystem cache."""
     def __init__(self, maxsize: float = math.inf, getsizeof: Callable[[object], int] = default_getsizeof, cache_dir: str = "/data/cache") -> None:
         """Initialize the filesystem cache."""
+        # Store parameters for potential future use
+        self._maxsize = maxsize
+        self._getsizeof = getsizeof
         self.cache_dir = pathlib.Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         logger.info("FilesystemCache initialized with cache_dir: %s", self.cache_dir)
@@ -95,7 +98,7 @@ class FilesystemCache(cachetools.Cache):
         return iter(self.cache_dir.glob("**/*.json"))
 
 
-def _cache_key_for_handle_request(_ignored, method: str, uri: str) -> tuple[str, str]:
+def _cache_key_for_handle_request(_ignored: object, method: str, uri: str) -> tuple[str, str]:
     """Get the cache key for the handle_request method."""
     if method == "GET":
         parsed = urlparse(uri)

@@ -184,12 +184,13 @@ def can_serialize(iobj: object) -> bool:
 
 class AcceptLocalCertSession(requests.Session):
     """Session that accepts local certificates."""
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        """Initialize the session with SSL certificate settings."""
         super().__init__(*args, **kwargs)
         self.internal_hosts = {"api.scryfall.com", "scryfall.com", "tagger.scryfall.com"}
         self.ssl_cert_path = "/data/ssl/certs/nginx-selfsigned.crt"
 
-    def request(self, method: str, url: str, **kwargs) -> requests.Response:
+    def request(self, method: str, url: str, **kwargs: object) -> requests.Response:
         """Request with appropriate SSL verification settings."""
         parsed_url = urlparse(url)
         is_internal = parsed_url.netloc.endswith("scryfall.com")
