@@ -106,7 +106,7 @@ dbconn: # @doc connect to the local database
 	psql
 
 datadir:
-	mkdir -p data/api data/postgres /tmp/pgdata
+	mkdir -p data/api data/postgres data/cache /tmp/pgdata
 
 reset:
 	rm -rvf data

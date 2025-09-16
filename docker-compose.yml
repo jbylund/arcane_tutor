@@ -48,6 +48,18 @@ services:
         user: 1000:1000
         volumes:
             - ./data/api:/data/api
+    cacheservice:
+        build:
+            context: ./cache/
+            dockerfile: ./Dockerfile
+        cap_add:
+        - ALL
+        container_name: cacheservice
+        ports:
+        - 18081:8081
+        user: 1000:1000
+        volumes:
+        - ./data/cache:/data/cache
     clientservice:
         build:
             context: ./client/
