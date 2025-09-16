@@ -179,7 +179,6 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     query = preprocess_implicit_and(query)
 
     # Define the grammar components
-    attrname = Word(alphas + "_")
     attrop = oneOf(": > < >= <= = !=")
     arithmetic_op = oneOf("+ - * /")
     integer = Word(nums).setParseAction(lambda t: int(t[0]))
