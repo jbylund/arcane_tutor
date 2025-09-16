@@ -201,17 +201,25 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         # Produce the query as a jsonb object
         lhs_sql = self.lhs.to_sql(context)
         attr = self.lhs.attribute_name
+        is_color_identity = False
         if attr in ("card_colors", "card_color_identity"):
             rhs = get_colors_comparison_object(self.rhs.value.strip().lower())
             pname = param_name(rhs)
             context[pname] = rhs
+            # Color identity has inverted semantics for the : operator only
+            is_color_identity = attr == "card_color_identity"
         elif attr == "card_keywords":
             rhs = get_keywords_comparison_object(self.rhs.value.strip())
             pname = param_name(rhs)
             context[pname] = rhs
-
-        # Color identity has inverted semantics for the : operator only
-        is_color_identity = attr == "card_color_identity"
+        elif attr == "card_oracle_tags":
+            # TODO: rename get_keywords_comparison_object - but they behave the same
+            # or do they? maybe they differ by capitalization?
+            rhs = get_keywords_comparison_object(self.rhs.value.strip())
+            pname = param_name(rhs)
+            context[pname] = rhs
+        else:
+            raise ValueError(f"Unknown attribute: {attr}")
 
         if self.operator == "=":
             return f"({lhs_sql} = %({pname})s)"
