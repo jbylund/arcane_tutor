@@ -48,6 +48,8 @@ DB_COLUMNS = [
 ]
 
 KNOWN_CARD_ATTRIBUTES = set()
+NUMERIC_ATTRIBUTES = set()
+NON_NUMERIC_ATTRIBUTES = set()
 SEARCH_NAME_TO_DB_NAME = {}
 DB_NAME_TO_FIELD_TYPE = {}
 for col in DB_COLUMNS:
@@ -55,6 +57,15 @@ for col in DB_COLUMNS:
     KNOWN_CARD_ATTRIBUTES.update(col.search_aliases)
     SEARCH_NAME_TO_DB_NAME[col.db_column_name] = col.db_column_name
     DB_NAME_TO_FIELD_TYPE[col.db_column_name] = col.field_type
+
+    # Separate numeric and non-numeric attributes
+    if col.field_type == FieldType.NUMERIC:
+        NUMERIC_ATTRIBUTES.add(col.db_column_name)
+        NUMERIC_ATTRIBUTES.update(col.search_aliases)
+    else:
+        NON_NUMERIC_ATTRIBUTES.add(col.db_column_name)
+        NON_NUMERIC_ATTRIBUTES.update(col.search_aliases)
+
     for ialias in col.search_aliases:
         SEARCH_NAME_TO_DB_NAME[ialias] = col.db_column_name
 
