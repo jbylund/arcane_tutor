@@ -126,6 +126,20 @@ def get_keywords_comparison_object(val: str) -> dict[str, bool]:
     return {normalized_keyword: True}
 
 
+def get_oracle_tags_comparison_object(val: str) -> dict[str, bool]:
+    """Convert oracle tag string to comparison object for database queries.
+
+    Args:
+        val: Oracle tag string to normalize.
+
+    Returns:
+        Dictionary mapping normalized oracle tag to True.
+    """
+    # Oracle tags are stored in lowercase
+    normalized_tag = val.strip().lower()
+    return {normalized_tag: True}
+
+
 class ScryfallBinaryOperatorNode(BinaryOperatorNode):
     """Scryfall-specific binary operator node with custom SQL generation."""
 
@@ -213,13 +227,13 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             pname = param_name(rhs)
             context[pname] = rhs
         elif attr == "card_oracle_tags":
-            # TODO: rename get_keywords_comparison_object - but they behave the same
-            # or do they? maybe they differ by capitalization?
-            rhs = get_keywords_comparison_object(self.rhs.value.strip())
+            # Oracle tags are stored in lowercase, unlike keywords
+            rhs = get_oracle_tags_comparison_object(self.rhs.value.strip())
             pname = param_name(rhs)
             context[pname] = rhs
         else:
-            raise ValueError(f"Unknown attribute: {attr}")
+            msg = f"Unknown attribute: {attr}"
+            raise ValueError(msg)
 
         if self.operator == "=":
             return f"({lhs_sql} = %({pname})s)"

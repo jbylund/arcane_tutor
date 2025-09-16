@@ -10,6 +10,7 @@ from pyparsing import (
     Literal,
     Optional,
     QuotedString,
+    Regex,
     Word,
     ZeroOrMore,
     alphas,
@@ -17,7 +18,7 @@ from pyparsing import (
     oneOf,
 )
 
-from .db_info import KNOWN_CARD_ATTRIBUTES
+from .db_info import KNOWN_CARD_ATTRIBUTES, NON_NUMERIC_ATTRIBUTES, NUMERIC_ATTRIBUTES
 from .nodes import (
     AndNode,
     AttributeNode,
@@ -178,7 +179,6 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     query = preprocess_implicit_and(query)
 
     # Define the grammar components
-    attrname = Word(alphas + "_")
     attrop = oneOf(": > < >= <= = !=")
     arithmetic_op = oneOf("+ - * /")
     integer = Word(nums).setParseAction(lambda t: int(t[0]))
@@ -209,18 +209,25 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
 
     word = Word(alphas + "_").setParseAction(make_word)
 
+    # Define different types of attribute words based on their types using Regex
+    # Sort by length (longest first) to avoid partial matches
+    numeric_attr_word = Regex("|".join(sorted(NUMERIC_ATTRIBUTES, key=len, reverse=True)))
+    non_numeric_attr_word = Regex("|".join(sorted(NON_NUMERIC_ATTRIBUTES, key=len, reverse=True)))
+
+    # Create a literal number parser for numeric constants
+    literal_number = integer | float_number
+
     # For attribute values, we want the raw string
-    # Create a separate word parser for attribute values
-    attr_word = Word(alphas + "_").setParseAction(lambda t: t[0])
-    attrval = quoted_string | attr_word | integer | float_number
+    # Use Regex to match words that may contain hyphens for string values
+    string_value_word = Regex(r"[a-zA-Z_][a-zA-Z0-9_-]*")
 
     # Build the grammar with proper precedence
     expr = Forward()
 
     # Define arithmetic expressions with proper precedence
     # Start with the most basic arithmetic terms
-    # Only known card attributes can be used in arithmetic expressions
-    arithmetic_term = attrname | integer | float_number | Group(lparen + expr + rparen)
+    # Only numeric attributes can be used in arithmetic expressions
+    arithmetic_term = numeric_attr_word | literal_number | Group(lparen + expr + rparen)
 
     # Define arithmetic expressions that can be chained
     # Only match if there's at least one arithmetic operator
@@ -228,22 +235,41 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     arithmetic_expr <<= arithmetic_term + arithmetic_op + arithmetic_term + ZeroOrMore(arithmetic_op + arithmetic_term)
     arithmetic_expr.setParseAction(make_chained_arithmetic)
 
-    # Comparison between arithmetic expressions and values: arithmetic_expr attrop (arithmetic_expr | attrname | numeric_value)
-    arithmetic_comparison = arithmetic_expr + attrop + (arithmetic_expr | attrname | integer | float_number)
+    # Comparison between arithmetic expressions and values: arithmetic_expr attrop (arithmetic_expr | numeric_attr | literal_number)
+    arithmetic_comparison = arithmetic_expr + attrop + (arithmetic_expr | numeric_attr_word | literal_number)
     arithmetic_comparison.setParseAction(make_binary_operator_node)
 
-    # Comparison between values and arithmetic expressions: (attrname | numeric_value) attrop (arithmetic_expr | attrname | numeric_value)
+    # Comparison between values and arithmetic expressions: (numeric_attr | literal_number) attrop (arithmetic_expr | numeric_attr | literal_number)
     value_arithmetic_comparison = (
-        (attrname | integer | float_number) + attrop + (arithmetic_expr | attrname | integer | float_number)
+        (numeric_attr_word | literal_number) + attrop + (arithmetic_expr | numeric_attr_word | literal_number)
     )
     value_arithmetic_comparison.setParseAction(make_binary_operator_node)
 
-    # Attribute-to-attribute comparison has higher precedence than regular conditions
-    attr_attr_condition = attrname + attrop + attrname
-    attr_attr_condition.setParseAction(make_binary_operator_node)
+    # Attribute-to-attribute comparison should be between same types
+    # Numeric to numeric or non-numeric to non-numeric
+    numeric_attr_attr_condition = numeric_attr_word + attrop + numeric_attr_word
+    numeric_attr_attr_condition.setParseAction(make_binary_operator_node)
 
-    condition = attrname + attrop + attrval
-    condition.setParseAction(make_binary_operator_node)
+    non_numeric_attr_attr_condition = non_numeric_attr_word + attrop + non_numeric_attr_word
+    non_numeric_attr_attr_condition.setParseAction(make_binary_operator_node)
+
+    attr_attr_condition = numeric_attr_attr_condition | non_numeric_attr_attr_condition
+
+    # Conditions should be type-specific:
+    # Numeric attributes compared with numeric values (literal numbers, arithmetic expressions, numeric attributes)
+    numeric_condition = numeric_attr_word + attrop + (literal_number | arithmetic_expr | numeric_attr_word)
+    numeric_condition.setParseAction(make_binary_operator_node)
+
+    # Non-numeric attributes compared with string values
+    non_numeric_condition = non_numeric_attr_word + attrop + (quoted_string | string_value_word)
+    non_numeric_condition.setParseAction(make_binary_operator_node)
+
+    condition = numeric_condition | non_numeric_condition
+
+    # Special rule for non-numeric attribute-colon-hyphenated-value to handle cases like "otag:dual-land"
+    # Only non-numeric attributes should have hyphenated string values
+    hyphenated_condition = non_numeric_attr_word + Literal(":") + Regex(r"[a-zA-Z_][a-zA-Z0-9_-]+")
+    hyphenated_condition.setParseAction(make_binary_operator_node)
 
     # Single word (implicit name search)
     def make_single_word(tokens: list[str]) -> BinaryOperatorNode:
@@ -280,13 +306,14 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
         return tokens[0]
 
     # For negation, we exclude arithmetic expressions from being negated
+    # Test: revert to original order to confirm this breaks it
     negatable_primary = attr_attr_condition | condition | group | single_word
     negatable_factor = Optional(operator_not) + negatable_primary
     negatable_factor.setParseAction(handle_negation)
 
     # Factor includes both negatable expressions and arithmetic expressions
-    # Order matters: arithmetic expressions must come before negatable expressions to avoid ambiguity
-    factor = arithmetic_comparison | value_arithmetic_comparison | arithmetic_expr | negatable_factor
+    # SPECIAL: hyphenated_condition first to handle "otag:dual-land", then arithmetic for "cmc<power+1"
+    factor = hyphenated_condition | arithmetic_comparison | value_arithmetic_comparison | arithmetic_expr | condition | negatable_factor
 
     # Expression with explicit AND/OR operators (highest precedence)
     def handle_operators(tokens: list[object]) -> object:
@@ -387,19 +414,41 @@ def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
             else:
                 tokens.append(char)
                 i += 1
-        elif char == "-":
-            # Handle negation as a separate token
-            tokens.append(char)
-            i += 1
         elif char == ":":
             # Handle colon operator
             tokens.append(char)
             i += 1
+        elif char == "-":
+            # Check if this hyphen is part of an attribute value
+            in_attr_value_context = tokens and tokens[-1] == ":"
+            if in_attr_value_context:
+                # In attribute value context, treat hyphen as part of the word
+                word_end = i
+                # Go back to find the start of this word (should be right after the colon)
+                # Continue reading the full hyphenated word
+                while word_end < len(query) and (query[word_end].isalnum() or query[word_end] in "_-"):
+                    word_end += 1
+                tokens.append(query[i:word_end])
+                i = word_end
+            else:
+                # Handle negation as a separate token
+                tokens.append(char)
+                i += 1
         else:
-            # Handle words
+            # Handle words (alphanumeric starting)
             word_end = i
-            while word_end < len(query) and (query[word_end].isalnum() or query[word_end] == "_"):
-                word_end += 1
+            # Check if we're in an attribute value context (previous token was a colon)
+            in_attr_value_context = tokens and tokens[-1] == ":"
+
+            if in_attr_value_context:
+                # In attribute value context, allow alphanumeric, underscore, and hyphens
+                while word_end < len(query) and (query[word_end].isalnum() or query[word_end] in "_-"):
+                    word_end += 1
+            else:
+                # Regular word context, only alphanumeric and underscore
+                while word_end < len(query) and (query[word_end].isalnum() or query[word_end] == "_"):
+                    word_end += 1
+
             tokens.append(query[i:word_end])
             i = word_end
     # Convert implicit AND operations
