@@ -21,13 +21,8 @@ def mock_db_pool() -> Generator[MagicMock, None, None]:
 class TestTaggingIntegration:
     """Integration test cases for tag discovery and import."""
 
-    @patch("requests.Session")
-    def test_discover_tags_from_scryfall_parses_response(self, mock_session_class: MagicMock) -> None:
+    def test_discover_tags_from_scryfall_parses_response(self) -> None:
         """Test that tag discovery correctly parses Scryfall documentation."""
-        # Mock the session and response
-        mock_session = MagicMock()
-        mock_session_class.return_value = mock_session
-
         mock_response = MagicMock()
         mock_response.raise_for_status.return_value = None
         mock_response.text = """
@@ -40,10 +35,11 @@ class TestTaggingIntegration:
             </body>
         </html>
         """
-        mock_session.get.return_value = mock_response
 
         api = APIResource()
-        tags = api.discover_tags_from_scryfall()
+        with patch.object(api, "_session") as mock_session:
+            mock_session.get.return_value = mock_response
+            tags = api.discover_tags_from_scryfall()
 
         # Should extract tag names from the URLs
         expected_tags = ["flying", "haste", "trample", "vigilance"]

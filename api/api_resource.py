@@ -187,15 +187,19 @@ class AcceptLocalCertSession(requests.Session):
     def __init__(self, *args: object, **kwargs: object) -> None:
         """Initialize the session with SSL certificate settings."""
         super().__init__(*args, **kwargs)
-        self.internal_hosts = {"api.scryfall.com", "scryfall.com", "tagger.scryfall.com"}
         self.ssl_cert_path = "/data/ssl/certs/nginx-selfsigned.crt"
+        cert_path = pathlib.Path(self.ssl_cert_path)
+        if not cert_path.exists():
+            self.verify = True
+        else:
+            self.verify = self.ssl_cert_path
 
     def request(self, method: str, url: str, **kwargs: object) -> requests.Response:
         """Request with appropriate SSL verification settings."""
         parsed_url = urlparse(url)
         is_internal = parsed_url.netloc.endswith("scryfall.com")
         if is_internal:
-            kwargs["verify"] = self.ssl_cert_path
+            kwargs["verify"] = self.verify
         logger.info(
             "Requesting %s / %s with verify %s / %s",
             url,
