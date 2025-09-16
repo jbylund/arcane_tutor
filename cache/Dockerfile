@@ -1,26 +1,39 @@
-FROM python:3.12-slim
+FROM ubuntu:latest
 
-# Set working directory
-WORKDIR /app
+RUN apt-get update -qqq && apt-get install -qqq -y \
+    build-essential \
+    curl \
+    dumb-init \
+    libev-dev \
+    libpq-dev \
+    libpython3-dev \
+    nginx \
+    openssl \
+    python3 > /dev/null
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
+RUN ln -s $(python3 -c "import sys; print(sys.executable)") /usr/local/bin/python
+
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python && \
+    python -m pip install --upgrade pip && \
+    python -m pip install --upgrade uv
 
 # Copy requirements and install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt /app/requirements.txt
+RUN python -m uv pip install --no-cache-dir --quiet --system --upgrade --break-system-packages -r /app/requirements.txt
 
 # Copy application code
-COPY cache_service.py .
-COPY entrypoint.py .
+COPY . /app/
 
-# Create cache directory
-RUN mkdir -p /data/cache
+# Create cache directory and SSL directories
+RUN mkdir -p /data/cache /etc/ssl/certs /etc/ssl/private /app/ssl/certs /app/ssl/private
 
-# Expose port
-EXPOSE 8081
+# Copy nginx configuration
+RUN cp /app/nginx.conf /etc/nginx/nginx.conf
 
-# Run the application
-CMD ["gunicorn", "--bind", "0.0.0.0:8081", "--workers", "2", "--timeout", "60", "cache_service:create_app()"]
+# Expose ports 80 and 443
+EXPOSE 80 443
+
+# Run the application with dumb-init for proper signal handling
+CMD ["dumb-init", "--", "/bin/bash", "/app/start.sh"]

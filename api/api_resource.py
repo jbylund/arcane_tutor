@@ -32,7 +32,6 @@ from cachetools import LRUCache, TTLCache, cached
 from psycopg import Connection
 
 from .parsing import generate_sql_query, parse_scryfall_query
-from .scryfall_cache_client import ScryfallCacheClient
 from .tagger_client import TaggerClient
 
 try:
@@ -183,6 +182,27 @@ def can_serialize(iobj: object) -> bool:
     return True
 
 
+class AcceptLocalCertSession(requests.Session):
+    """Session that accepts local certificates."""
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.internal_hosts = {"api.scryfall.com", "scryfall.com", "tagger.scryfall.com"}
+        self.ssl_cert_path = "/data/ssl/certs/nginx-selfsigned.crt"
+
+    def request(self, method: str, url: str, **kwargs) -> requests.Response:
+        """Request with appropriate SSL verification settings."""
+        parsed_url = urlparse(url)
+        is_internal = parsed_url.netloc.endswith("scryfall.com")
+        if is_internal:
+            kwargs['verify'] = self.ssl_cert_path
+        logger.info(
+            "Requesting %s / %s with verify %s / %s",
+            url,
+            parsed_url.netloc,
+            kwargs.get('verify'),
+            kwargs,
+        )
+        return super().request(method, url, **kwargs)
 
 class APIResource:
     """Class implementing request handling for our simple API."""
@@ -200,12 +220,11 @@ class APIResource:
         self.action_map["index"] = self.index_html
         self._query_cache = LRUCache(maxsize=1_000)
         # Create reusable requests session
-        self._session = requests.Session()
+        self._session = AcceptLocalCertSession()
         version = datetime.datetime.now(tz=datetime.UTC).strftime("%Y%m%d")
         version = f"magic-api/{version}"
         self._session.headers.update({"User-Agent": version})
-        # Initialize Scryfall cache client
-        self._scryfall_cache = ScryfallCacheClient()
+
         # Initialize Tagger client for GraphQL API access
         self._tagger_client = TaggerClient()
         logger.info("Worker with pid has conn pool %s", self._conn_pool)
@@ -396,12 +415,10 @@ class APIResource:
                 response = json.load(f)
         except FileNotFoundError:
             logger.info("Cache miss!")
-            # Use cache service for bulk-data request
-            response = self._scryfall_cache.get("https://api.scryfall.com/bulk-data", max_age_seconds=3600)["data"]
+            response = self._session.get("https://api.scryfall.com/bulk-data", timeout=1).json()["data"]
             by_type = {r["type"]: r for r in response}
             oracle_cards_download_uri = by_type["oracle_cards"]["download_uri"]
-            # Use cache service for the actual card data download
-            response = self._scryfall_cache.get(oracle_cards_download_uri, max_age_seconds=86400)  # Cache for 24 hours
+            response = self._session.get(oracle_cards_download_uri, timeout=30).json()
             with pathlib.Path(cache_file).open("w") as f:
                 json.dump(response, f, indent=4, sort_keys=True)
         else:
@@ -970,15 +987,9 @@ ORDER BY
         try:
             while True:
                 time.sleep(1 / 10)
-                # Construct full URL with parameters for cache service
-                if params:
-                    param_str = "&".join(f"{k}={v}" for k, v in params.items())
-                    full_url = f"{base_url}?{param_str}"
-                else:
-                    full_url = base_url
-
-                # Use cache service instead of direct request
-                data = self._scryfall_cache.get(full_url, max_age_seconds=1800)  # Cache for 30 minutes
+                response = self._session.get(base_url, params=params, timeout=30)
+                response.raise_for_status()
+                data = response.json()
 
                 if "data" not in data:
                     break
@@ -1001,7 +1012,7 @@ ORDER BY
                 params = {}
 
         except requests.RequestException as oops:
-            if hasattr(oops, "response") and oops.response and oops.response.status_code == NOT_FOUND:
+            if oops.response.status_code == NOT_FOUND:
                 return all_cards
             msg = f"Failed to fetch data from Scryfall API: {oops}"
             raise ValueError(msg) from oops
@@ -1077,8 +1088,6 @@ ORDER BY
 
         """
         try:
-            # This endpoint returns HTML, not JSON, so we make a direct request
-            # since our cache service is designed for JSON responses
             response = self._session.get("https://scryfall.com/docs/tagger-tags", timeout=30)
             response.raise_for_status()
         except requests.RequestException as e:
@@ -1347,30 +1356,3 @@ ORDER BY
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute("SELECT tag FROM magic.tags")
             return {r["tag"] for r in cursor.fetchall()}
-
-    def get_cache_stats(self: APIResource, **_: object) -> dict[str, Any]:
-        """Get Scryfall cache statistics.
-
-        Returns:
-            Cache statistics from the cache service
-        """
-        try:
-            return self._scryfall_cache.get_cache_stats()
-        except requests.RequestException as e:
-            logger.error("Failed to get cache stats: %s", e)
-            return {"error": str(e), "cache_available": False}
-
-    def clear_cache(self: APIResource, *, url: str | None = None, **_: object) -> dict[str, Any]:
-        """Clear Scryfall cache entries.
-
-        Args:
-            url: Specific URL to clear, or None to clear all cache
-
-        Returns:
-            Response from cache service
-        """
-        try:
-            return self._scryfall_cache.clear_cache(url)
-        except requests.RequestException as e:
-            logger.error("Failed to clear cache: %s", e)
-            return {"error": str(e), "cache_available": False}

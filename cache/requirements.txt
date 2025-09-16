@@ -1,4 +1,6 @@
-falcon==4.1.0
-gunicorn==22.0.0
-ratelimit==2.2.1
-requests==2.31.0
+cachetools
+dnspython
+falcon
+gunicorn
+ratelimit
+requests

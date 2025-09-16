@@ -48,6 +48,7 @@ services:
         user: 1000:1000
         volumes:
             - ./data/api:/data/api
+            - ./data/ssl:/data/ssl:ro
     cacheservice:
         build:
             context: ./cache/
@@ -55,11 +56,22 @@ services:
         cap_add:
         - ALL
         container_name: cacheservice
+        dns:
+        - 8.8.8.8
+        - 1.1.1.1
         ports:
-        - 18081:8081
-        user: 1000:1000
+        - 18081:80
+        - 18443:443
+        stop_grace_period: 10s
         volumes:
         - ./data/cache:/data/cache
+        - ./data/ssl:/app/ssl:ro
+        networks:
+            default:
+                aliases:
+                - api.scryfall.com
+                - scryfall.com
+                - tagger.scryfall.com
     clientservice:
         build:
             context: ./client/
@@ -75,3 +87,8 @@ services:
         container_name: clientservice
         external_links:
         - apiservice
+
+
+networks:
+    default:
+        driver: bridge

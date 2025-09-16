@@ -105,8 +105,20 @@ dbconn: # @doc connect to the local database
 	PGUSER=$(XPGUSER) \
 	psql
 
-datadir:
-	mkdir -p data/api data/postgres data/cache /tmp/pgdata
+datadir: ssl_certs
+	mkdir -p data/api data/postgres data/cache data/ssl/certs data/ssl/private /tmp/pgdata
+
+data/ssl/certs/nginx-selfsigned.crt: # @doc generate SSL certificates for cache service
+	mkdir -p data/ssl/certs data/ssl/private
+	openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+		-keyout data/ssl/private/nginx-selfsigned.key \
+		-out data/ssl/certs/nginx-selfsigned.crt \
+		-subj "/C=US/ST=State/L=City/O=Organization/CN=localhost" \
+		-addext "subjectAltName=DNS:localhost,DNS:scryfall.com,DNS:*.scryfall.com"
+	chmod 600 data/ssl/private/nginx-selfsigned.key
+	chmod 644 data/ssl/certs/nginx-selfsigned.crt
+
+ssl_certs: data/ssl/certs/nginx-selfsigned.crt # @doc generate SSL certificates for cache service
 
 reset:
 	rm -rvf data
