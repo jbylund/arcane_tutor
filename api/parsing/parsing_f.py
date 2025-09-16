@@ -9,7 +9,6 @@ from pyparsing import (
     Group,
     Literal,
     Optional,
-    ParseException,
     QuotedString,
     Regex,
     Word,
@@ -180,7 +179,7 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     query = preprocess_implicit_and(query)
 
     # Define the grammar components
-    attrname = Word(alphas + "_")
+    Word(alphas + "_")
     attrop = oneOf(": > < >= <= = !=")
     arithmetic_op = oneOf("+ - * /")
     integer = Word(nums).setParseAction(lambda t: int(t[0]))
@@ -211,34 +210,20 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
 
     word = Word(alphas + "_").setParseAction(make_word)
 
-    # Define different types of attribute words based on their types
-    def validate_numeric_attr(tokens: list) -> str:
-        """Validate that a token is a numeric attribute."""
-        attr = tokens[0]
-        if attr not in NUMERIC_ATTRIBUTES:
-            msg = f"'{attr}' is not a numeric attribute"
-            raise ParseException(msg)
-        return attr
+    # Define different types of attribute words based on their types using Regex
+    # Sort by length (longest first) to avoid partial matches
+    numeric_attr_word = Regex("|".join(sorted(NUMERIC_ATTRIBUTES, key=len, reverse=True)))
+    non_numeric_attr_word = Regex("|".join(sorted(NON_NUMERIC_ATTRIBUTES, key=len, reverse=True)))
 
-    def validate_non_numeric_attr(tokens: list) -> str:
-        """Validate that a token is a non-numeric attribute."""
-        attr = tokens[0]
-        if attr not in NON_NUMERIC_ATTRIBUTES:
-            msg = f"'{attr}' is not a non-numeric attribute"
-            raise ParseException(msg)
-        return attr
-
-    # Create specific parsers for different attribute types
-    numeric_attr_word = attrname.copy().setParseAction(validate_numeric_attr)
-    non_numeric_attr_word = attrname.copy().setParseAction(validate_non_numeric_attr)
+    # Create a literal number parser for numeric constants
+    literal_number = integer | float_number
 
     # For attribute values, we want the raw string
     # Use Regex to match words that may contain hyphens for string values
-    string_value_word = Regex(r"[a-zA-Z_][a-zA-Z0-9_-]*").setParseAction(lambda t: t[0])
+    string_value_word = Regex(r"[a-zA-Z_][a-zA-Z0-9_-]*")
 
-    # attr_word is now numeric_attr_word | non_numeric_attr_word | string_value_word
-    attr_word = numeric_attr_word | non_numeric_attr_word | string_value_word
-    attrval = quoted_string | attr_word | integer | float_number
+    # We don't need a generic attr_word anymore - everything is specific
+    quoted_string | string_value_word | literal_number
 
     # Build the grammar with proper precedence
     expr = Forward()
@@ -246,7 +231,7 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     # Define arithmetic expressions with proper precedence
     # Start with the most basic arithmetic terms
     # Only numeric attributes can be used in arithmetic expressions
-    arithmetic_term = numeric_attr_word | integer | float_number | Group(lparen + expr + rparen)
+    arithmetic_term = numeric_attr_word | literal_number | Group(lparen + expr + rparen)
 
     # Define arithmetic expressions that can be chained
     # Only match if there's at least one arithmetic operator
@@ -254,22 +239,36 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     arithmetic_expr <<= arithmetic_term + arithmetic_op + arithmetic_term + ZeroOrMore(arithmetic_op + arithmetic_term)
     arithmetic_expr.setParseAction(make_chained_arithmetic)
 
-    # Comparison between arithmetic expressions and values: arithmetic_expr attrop (arithmetic_expr | numeric_attr | numeric_value)
-    arithmetic_comparison = arithmetic_expr + attrop + (arithmetic_expr | numeric_attr_word | integer | float_number)
+    # Comparison between arithmetic expressions and values: arithmetic_expr attrop (arithmetic_expr | numeric_attr | literal_number)
+    arithmetic_comparison = arithmetic_expr + attrop + (arithmetic_expr | numeric_attr_word | literal_number)
     arithmetic_comparison.setParseAction(make_binary_operator_node)
 
-    # Comparison between values and arithmetic expressions: (numeric_attr | numeric_value) attrop (arithmetic_expr | numeric_attr | numeric_value)
+    # Comparison between values and arithmetic expressions: (numeric_attr | literal_number) attrop (arithmetic_expr | numeric_attr | literal_number)
     value_arithmetic_comparison = (
-        (numeric_attr_word | integer | float_number) + attrop + (arithmetic_expr | numeric_attr_word | integer | float_number)
+        (numeric_attr_word | literal_number) + attrop + (arithmetic_expr | numeric_attr_word | literal_number)
     )
     value_arithmetic_comparison.setParseAction(make_binary_operator_node)
 
-    # Attribute-to-attribute comparison can be between any attributes
-    attr_attr_condition = (numeric_attr_word | non_numeric_attr_word) + attrop + (numeric_attr_word | non_numeric_attr_word)
-    attr_attr_condition.setParseAction(make_binary_operator_node)
+    # Attribute-to-attribute comparison should be between same types
+    # Numeric to numeric or non-numeric to non-numeric
+    numeric_attr_attr_condition = numeric_attr_word + attrop + numeric_attr_word
+    numeric_attr_attr_condition.setParseAction(make_binary_operator_node)
 
-    condition = (numeric_attr_word | non_numeric_attr_word) + attrop + attrval
-    condition.setParseAction(make_binary_operator_node)
+    non_numeric_attr_attr_condition = non_numeric_attr_word + attrop + non_numeric_attr_word
+    non_numeric_attr_attr_condition.setParseAction(make_binary_operator_node)
+
+    attr_attr_condition = numeric_attr_attr_condition | non_numeric_attr_attr_condition
+
+    # Conditions should be type-specific:
+    # Numeric attributes compared with numeric values (literal numbers, arithmetic expressions, numeric attributes)
+    numeric_condition = numeric_attr_word + attrop + (literal_number | arithmetic_expr | numeric_attr_word)
+    numeric_condition.setParseAction(make_binary_operator_node)
+
+    # Non-numeric attributes compared with string values
+    non_numeric_condition = non_numeric_attr_word + attrop + (quoted_string | string_value_word)
+    non_numeric_condition.setParseAction(make_binary_operator_node)
+
+    condition = numeric_condition | non_numeric_condition
 
     # Special rule for non-numeric attribute-colon-hyphenated-value to handle cases like "otag:dual-land"
     # Only non-numeric attributes should have hyphenated string values
