@@ -55,24 +55,28 @@ The `value_arithmetic_comparison` and `numeric_condition` rules had significant 
 ### Changes Made
 
 1. **Removed** `value_arithmetic_comparison` rule entirely (lines 242-246)
-2. **Extended** `numeric_condition` to include `literal_number` on the left-hand side:
+2. **Further Consolidated** `arithmetic_comparison` and `numeric_condition` into a single `unified_numeric_comparison` rule:
    ```python
-   # Before:
-   numeric_condition = numeric_attr_word + attrop + (literal_number | arithmetic_expr | numeric_attr_word)
-   
-   # After:
+   # Before (2 separate rules):
+   arithmetic_comparison = arithmetic_expr + attrop + (arithmetic_expr | numeric_attr_word | literal_number)
    numeric_condition = (numeric_attr_word | literal_number) + attrop + (literal_number | arithmetic_expr | numeric_attr_word)
+   
+   # After (1 unified rule):
+   unified_numeric_comparison = (arithmetic_expr | numeric_attr_word | literal_number) + attrop + (arithmetic_expr | numeric_attr_word | literal_number)
    ```
-3. **Updated** the `factor` rule to remove reference to `value_arithmetic_comparison`
-4. **Added** documentation comment explaining the consolidation
+3. **Updated** parser precedence to ensure comparisons are matched before standalone arithmetic expressions
+4. **Added** comprehensive documentation explaining the consolidation
 
-### Rule Coverage After Consolidation
+### Rule Coverage After Final Consolidation
 
 | Pattern | Handler | Example |
 |---------|---------|---------|
-| `arithmetic_expr < *` | `arithmetic_comparison` | `cmc+1<power` |
-| `literal < *` | `numeric_condition` | `1<power`, `5<cmc+power` |
-| `numeric_attr < *` | `numeric_condition` | `cmc<5`, `power>toughness` |
+| **ALL numeric comparisons** | `unified_numeric_comparison` | `cmc+1<power`, `1<power`, `cmc<5`, `power>toughness` |
+
+The single `unified_numeric_comparison` rule now handles all 9 possible combinations:
+- `arithmetic_expr <op> arithmetic_expr`, `arithmetic_expr <op> numeric_attr`, `arithmetic_expr <op> literal`
+- `numeric_attr <op> arithmetic_expr`, `numeric_attr <op> numeric_attr`, `numeric_attr <op> literal`  
+- `literal <op> arithmetic_expr`, `literal <op> numeric_attr`, `literal <op> literal`
 
 ## Verification
 
@@ -101,12 +105,11 @@ The `value_arithmetic_comparison` and `numeric_condition` rules had significant 
 
 ## Essential Rules Summary
 
-After consolidation, the essential arithmetic rules are:
+After complete consolidation, the essential arithmetic rules are:
 
 1. **`arithmetic_expr`** - Parses arithmetic expressions (`cmc+power`)
-2. **`arithmetic_comparison`** - Handles arithmetic expressions on LHS (`cmc+1<power`) 
-3. **`numeric_condition`** - Handles all other numeric comparisons (now includes literals on LHS)
+2. **`unified_numeric_comparison`** - Handles ALL numeric comparisons with any combination of arithmetic expressions, numeric attributes, and literals
 
 ## Conclusion
 
-The consolidation successfully eliminates redundancy while maintaining full functionality. The `value_arithmetic_comparison` rule was indeed redundant and has been safely removed by extending the existing `numeric_condition` rule.
+The consolidation successfully eliminates ALL redundancy while maintaining full functionality. We reduced three overlapping rules (`arithmetic_comparison`, `value_arithmetic_comparison`, and `numeric_condition`) down to a single, comprehensive `unified_numeric_comparison` rule that handles every possible numeric comparison pattern. This represents the maximum possible consolidation while preserving all parsing capabilities.
