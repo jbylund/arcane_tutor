@@ -573,29 +573,24 @@ def test_arithmetic_parser_consolidation() -> None:
 
     This test verifies that after removing redundant rules and consolidating into a single
     unified_numeric_comparison rule, all arithmetic parsing still works correctly.
+
+    Uses a systematic cross product approach to test all 25 combinations of the 5
+    expression types: literal, literal arithmetic, mixed arithmetic, attribute arithmetic, and attribute.
     """
-    # Test cases covering all 9 combinations handled by unified_numeric_comparison
-    test_cases = [
-        # arithmetic_expr <op> numeric_attr
-        ("cmc+1<power", BinaryOperatorNode(BinaryOperatorNode(AttributeNode("cmc"), "+", NumericValueNode(1)), "<", AttributeNode("power"))),
-        # arithmetic_expr <op> literal
-        ("cmc+power<5", BinaryOperatorNode(BinaryOperatorNode(AttributeNode("cmc"), "+", AttributeNode("power")), "<", NumericValueNode(5))),
-        # arithmetic_expr <op> arithmetic_expr
-        ("cmc+1<power+2", BinaryOperatorNode(BinaryOperatorNode(AttributeNode("cmc"), "+", NumericValueNode(1)), "<", BinaryOperatorNode(AttributeNode("power"), "+", NumericValueNode(2)))),
-        # numeric_attr <op> arithmetic_expr
-        ("cmc<power+1", BinaryOperatorNode(AttributeNode("cmc"), "<", BinaryOperatorNode(AttributeNode("power"), "+", NumericValueNode(1)))),
-        # numeric_attr <op> numeric_attr
-        ("power>toughness", BinaryOperatorNode(AttributeNode("power"), ">", AttributeNode("toughness"))),
-        # numeric_attr <op> literal
-        ("cmc<5", BinaryOperatorNode(AttributeNode("cmc"), "<", NumericValueNode(5))),
-        # literal <op> arithmetic_expr
-        ("5<cmc+power", BinaryOperatorNode(NumericValueNode(5), "<", BinaryOperatorNode(AttributeNode("cmc"), "+", AttributeNode("power")))),
-        # literal <op> numeric_attr
-        ("1<power", BinaryOperatorNode(NumericValueNode(1), "<", AttributeNode("power"))),
-        # literal <op> literal (though less common in practice)
-        ("3>2", BinaryOperatorNode(NumericValueNode(3), ">", NumericValueNode(2))),
+    # Define the 5 different expression types with their expected AST representations
+    expression_types = [
+        ("1", NumericValueNode(1)),
+        ("1+1", BinaryOperatorNode(NumericValueNode(1), "+", NumericValueNode(1))),
+        ("cmc+1", BinaryOperatorNode(AttributeNode("cmc"), "+", NumericValueNode(1))),
+        ("cmc+power", BinaryOperatorNode(AttributeNode("cmc"), "+", AttributeNode("power"))),
+        ("power", AttributeNode("power")),
     ]
 
-    for query, expected_ast in test_cases:
-        observed = parsing.parse_search_query(query).root
-        assert observed == expected_ast, f"Query '{query}' failed\nExpected: {expected_ast}\nObserved: {observed}"
+    # Generate all 25 combinations using cross product
+    for lhs_query, lhs_ast in expression_types:
+        for rhs_query, rhs_ast in expression_types:
+            query = f"{lhs_query}<{rhs_query}"
+            expected_ast = BinaryOperatorNode(lhs_ast, "<", rhs_ast)
+
+            observed = parsing.parse_search_query(query).root
+            assert observed == expected_ast, f"Query '{query}' failed\nExpected: {expected_ast}\nObserved: {observed}"
