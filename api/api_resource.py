@@ -773,7 +773,21 @@ class APIResource:
         full_query = rewrap(full_query)
         logger.info("Full query: %s", full_query)
         logger.info("Params: %s", params)
-        result_bag = self._run_query(query=full_query, params=params, explain=False)
+        try:
+            result_bag = self._run_query(query=full_query, params=params, explain=False)
+        except psycopg.errors.DatatypeMismatch:
+            # Return empty result when query generates non-boolean WHERE clause
+            # This happens with standalone arithmetic expressions like "cmc+1"
+            logger.info("DatatypeMismatch caught for query '%s', returning empty result", query)
+            return {
+                "cards": [],
+                "compiled": full_query,
+                "params": params,
+                "query": query,
+                "result": {"result": [], "timings": {}},
+                "total_cards": 0,
+            }
+
         cards = result_bag.pop("result", [])
         total_cards = len(cards)
         if total_cards == limit:
@@ -791,8 +805,13 @@ class APIResource:
                 full_query = rewrap(full_query)
                 logger.info("Full query: %s", full_query)
                 logger.info("Params: %s", params)
-                ptr = self._run_query(query=full_query, params=params, explain=False)["result"][0]["QUERY PLAN"][0]["Plan"]
-                total_cards = ptr["Plan Rows"]
+                try:
+                    ptr = self._run_query(query=full_query, params=params, explain=False)["result"][0]["QUERY PLAN"][0]["Plan"]
+                    total_cards = ptr["Plan Rows"]
+                except psycopg.errors.DatatypeMismatch:
+                    # Fallback to 0 if explain also fails
+                    logger.info("DatatypeMismatch in EXPLAIN query, using count 0")
+                    total_cards = 0
             else:
                 full_query = f"""
                 SELECT
@@ -805,8 +824,13 @@ class APIResource:
                 full_query = rewrap(full_query)
                 logger.info("Full query: %s", full_query)
                 logger.info("Params: %s", params)
-                count_result_bag = self._run_query(query=full_query, params=params, explain=False)
-                total_cards = count_result_bag["result"][0]["total_cards"]
+                try:
+                    count_result_bag = self._run_query(query=full_query, params=params, explain=False)
+                    total_cards = count_result_bag["result"][0]["total_cards"]
+                except psycopg.errors.DatatypeMismatch:
+                    # Fallback to 0 if count also fails
+                    logger.info("DatatypeMismatch in COUNT query, using count 0")
+                    total_cards = 0
         return {
             "cards": cards,
             "compiled": full_query,
