@@ -34,6 +34,9 @@ XPGUSER=foouser
 	lint \
 	pull_images \
 	reset \
+	test \
+	test-integration \
+	test-unit \
 	up
 
 help: # @doc show this help and exit
@@ -113,3 +116,9 @@ reset:
 
 test:
 	python -m pytest -vvv --exitfirst
+
+test-integration:
+	python -m pytest api/tests/test_integration_testcontainers.py -vvv --exitfirst
+
+test-unit:
+	python -m pytest -vvv --exitfirst --ignore=api/tests/test_integration_testcontainers.py
