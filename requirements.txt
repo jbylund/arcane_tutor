@@ -6,4 +6,5 @@ orjson
 psycopg[binary,pool]
 pyparsing
 requests
+tenacity
 zstandard
