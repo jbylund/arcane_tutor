@@ -1,0 +1,158 @@
+name: CI Monitor
+
+on:
+  schedule:
+    # Run every 3 hours
+    - cron: '0 */3 * * *'
+  workflow_dispatch: # Allow manual triggering for testing
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check-ci-status:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check CI status on main branch
+        id: ci-check
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // Get the latest commit on main branch
+            const { data: mainBranch } = await github.rest.repos.getBranch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              branch: 'main'
+            });
+            
+            const latestCommitSha = mainBranch.commit.sha;
+            console.log(`Latest commit on main: ${latestCommitSha}`);
+            
+            // Get all check runs for this commit
+            const { data: checkRuns } = await github.rest.checks.listForRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: latestCommitSha
+            });
+            
+            console.log(`Found ${checkRuns.check_runs.length} check runs`);
+            
+            // Also get status checks (for older GitHub Actions)
+            const { data: statuses } = await github.rest.repos.listCommitStatusesForRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: latestCommitSha
+            });
+            
+            console.log(`Found ${statuses.length} status checks`);
+            
+            // Check if any CI checks failed
+            let hasFailed = false;
+            let failedChecks = [];
+            
+            // Check check runs (newer format)
+            for (const checkRun of checkRuns.check_runs) {
+              console.log(`Check run: ${checkRun.name} - ${checkRun.conclusion}`);
+              if (checkRun.conclusion === 'failure') {
+                hasFailed = true;
+                failedChecks.push({
+                  name: checkRun.name,
+                  type: 'check_run',
+                  url: checkRun.html_url
+                });
+              }
+            }
+            
+            // Check status checks (older format)
+            for (const status of statuses) {
+              console.log(`Status check: ${status.context} - ${status.state}`);
+              if (status.state === 'failure' || status.state === 'error') {
+                hasFailed = true;
+                failedChecks.push({
+                  name: status.context,
+                  type: 'status',
+                  url: status.target_url
+                });
+              }
+            }
+            
+            core.setOutput('has_failed', hasFailed);
+            core.setOutput('failed_checks', JSON.stringify(failedChecks));
+            core.setOutput('commit_sha', latestCommitSha);
+            
+            return { hasFailed, failedChecks, commitSha: latestCommitSha };
+
+      - name: Create issue if CI failed
+        if: steps.ci-check.outputs.has_failed == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const failedChecks = JSON.parse('${{ steps.ci-check.outputs.failed_checks }}');
+            const commitSha = '${{ steps.ci-check.outputs.commit_sha }}';
+            
+            // Check if there's already an open issue for CI failures
+            const { data: existingIssues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'ci-failure',
+              creator: 'github-actions[bot]'
+            });
+            
+            // If there's already an open CI failure issue, don't create another one
+            if (existingIssues.length > 0) {
+              console.log('CI failure issue already exists, skipping creation');
+              return;
+            }
+            
+            // Format the failed checks for the issue body
+            let checksMarkdown = '';
+            for (const check of failedChecks) {
+              checksMarkdown += `- **${check.name}** (${check.type})\n`;
+              if (check.url) {
+                checksMarkdown += `  - [View details](${check.url})\n`;
+              }
+            }
+            
+            const issueTitle = `CI Checks Failing on Main Branch (${commitSha.substring(0, 7)})`;
+            const issueBody = `## CI Failure Detected
+            
+The automated CI monitor has detected failing checks on the main branch.
+
+**Commit:** ${commitSha}
+**Failed Checks:**
+
+${checksMarkdown}
+
+**What to do:**
+1. Review the failing checks above
+2. Fix any linting errors by running: \`python -m ruff check --fix --unsafe-fixes\`
+3. Fix any failing tests by running: \`python -m pytest -vvv\`
+4. Commit and push the fixes to main branch
+5. Close this issue once CI passes
+
+This issue was automatically created by the CI monitoring workflow.`;
+
+            // Create the issue
+            const { data: issue } = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: issueTitle,
+              body: issueBody,
+              labels: ['ci-failure', 'bug'],
+              assignees: ['copilot']
+            });
+            
+            console.log(`Created issue #${issue.number}: ${issueTitle}`);
+
+      - name: Log CI status
+        run: |
+          echo "CI Status Check Complete"
+          echo "Has Failed: ${{ steps.ci-check.outputs.has_failed }}"
+          echo "Commit SHA: ${{ steps.ci-check.outputs.commit_sha }}"
