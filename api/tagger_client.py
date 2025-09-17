@@ -188,7 +188,7 @@ class TaggerClient:
                 + tag_attrs
             )
 
-        def before_sleep_fn(*args, **kwargs) -> None:
+        def before_sleep_fn(*args: object, **kwargs: object) -> None:
             logger.warning("Had failure talking to tagger api %s %s", args, kwargs)
 
         retryer = tenacity.retry(
@@ -198,7 +198,7 @@ class TaggerClient:
             before_sleep=before_sleep_fn,
         )
 
-        def get_response():
+        def get_response() -> requests.Response:
             time.sleep(0.43)
             response = retryer(self.session.post)(
                 f"{self.base_url}/graphql",
