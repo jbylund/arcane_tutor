@@ -568,6 +568,70 @@ def test_oracle_tag_sql_translation(input_query: str, expected_sql: str, expecte
     assert context == expected_parameters, f"\nExpected params: {expected_parameters}\nObserved params: {context}"
 
 
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_sql", "expected_parameters"),
+    argvalues=[
+        # Case-insensitive oracle tag search
+        (
+            "Otag:flying",
+            r"(card.card_oracle_tags @> %(p_dict_eydmbHlpbmcnOiBUcnVlfQ)s)",
+            {"p_dict_eydmbHlpbmcnOiBUcnVlfQ": {"flying": True}},
+        ),
+        (
+            "OTAG:flying",
+            r"(card.card_oracle_tags @> %(p_dict_eydmbHlpbmcnOiBUcnVlfQ)s)",
+            {"p_dict_eydmbHlpbmcnOiBUcnVlfQ": {"flying": True}},
+        ),
+        (
+            "oTaG:flying",
+            r"(card.card_oracle_tags @> %(p_dict_eydmbHlpbmcnOiBUcnVlfQ)s)",
+            {"p_dict_eydmbHlpbmcnOiBUcnVlfQ": {"flying": True}},
+        ),
+        # Case-insensitive color attribute search
+        (
+            "Color:red",
+            r"(card.card_colors @> %(p_dict_eydSJzogVHJ1ZX0)s)",
+            {"p_dict_eydSJzogVHJ1ZX0": {"R": True}},
+        ),
+        (
+            "COLOR:red",
+            r"(card.card_colors @> %(p_dict_eydSJzogVHJ1ZX0)s)",
+            {"p_dict_eydSJzogVHJ1ZX0": {"R": True}},
+        ),
+        # Case-insensitive single-letter alias
+        (
+            "C:red",
+            r"(card.card_colors @> %(p_dict_eydSJzogVHJ1ZX0)s)",
+            {"p_dict_eydSJzogVHJ1ZX0": {"R": True}},
+        ),
+        # Case-insensitive type attribute search
+        (
+            "Type:creature",
+            r"(%(p_list_WydDcmVhdHVyZSdd)s <@ card.card_types)",
+            {"p_list_WydDcmVhdHVyZSdd": ["Creature"]},
+        ),
+        (
+            "TYPE:creature",
+            r"(%(p_list_WydDcmVhdHVyZSdd)s <@ card.card_types)",
+            {"p_list_WydDcmVhdHVyZSdd": ["Creature"]},
+        ),
+        # Case-insensitive alias 't'
+        (
+            "T:creature",
+            r"(%(p_list_WydDcmVhdHVyZSdd)s <@ card.card_types)",
+            {"p_list_WydDcmVhdHVyZSdd": ["Creature"]},
+        ),
+    ],
+)
+def test_case_insensitive_attributes(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
+    """Test that attribute names are case-insensitive."""
+    parsed = parsing.parse_scryfall_query(input_query)
+    context = {}
+    observed_sql = parsed.to_sql(context)
+    assert observed_sql == expected_sql, f"\nExpected: {expected_sql}\nObserved: {observed_sql}"
+    assert context == expected_parameters, f"\nExpected params: {expected_parameters}\nObserved params: {context}"
+
+
 def generate_arithmetic_parser_testcases() -> list[tuple[str, BinaryOperatorNode]]:
     """Generate all 25 combinations using cross product for parametrized testing.
 
