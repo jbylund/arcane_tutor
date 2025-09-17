@@ -517,7 +517,7 @@ class APIResource:
             logger.error("Error checking if setup is complete: %s", oops, exc_info=True)
             return False
 
-    @cached(cache={}, key=lambda _self: None)
+    @cached(cache={}, key=lambda _self, *args, **kwargs: None)
     def import_data(self: APIResource, **_: object) -> None:
         """Import data from Scryfall and insert into the database."""
         if self._setup_complete():
@@ -1043,7 +1043,7 @@ ORDER BY
                     WHERE card_name = ANY(%(card_names)s)
                     """,
                     {
-                        "card_names": card_name_batch,
+                        "card_names": list(card_name_batch),
                         "new_tag": json.dumps({tag: True}),
                     },
                 )
