@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import falcon
 import psycopg.errors
 import pytest
 
@@ -23,20 +24,21 @@ class TestDatatypeMismatchHandling:
         self.api_resource = APIResource()
 
     def test_search_handles_datatype_mismatch(self) -> None:
-        """Test that DatatypeMismatch in search returns empty result."""
+        """Test that DatatypeMismatch in search raises HTTPBadRequest."""
         # Mock the _run_query method to raise DatatypeMismatch
         with patch.object(self.api_resource, "_run_query") as mock_run_query:
-            mock_run_query.side_effect = psycopg.errors.DatatypeMismatch('column "cmc" must appear in the GROUP BY clause or be used in an aggregate function')
+            mock_run_query.side_effect = psycopg.errors.DatatypeMismatch(
+                'column "cmc" must appear in the GROUP BY clause or be used in an aggregate function',
+            )
 
-            # Call _search with a problematic query
-            result = self.api_resource._search(query="cmc+1")
+            # Call _search with a problematic query and expect HTTPBadRequest
+            with pytest.raises(falcon.HTTPBadRequest) as exc_info:
+                self.api_resource._search(query="cmc+1")
 
-            # Verify we get an empty result instead of an exception
-            assert result["cards"] == []
-            assert result["total_cards"] == 0
-            assert result["query"] == "cmc+1"
-            assert "result" in result
-            assert result["result"]["result"] == []
+            # Verify the error details
+            assert exc_info.value.title == "Invalid Search Query"
+            assert "cmc+1" in exc_info.value.description
+            assert "invalid syntax" in exc_info.value.description.lower()
 
     def test_search_handles_datatype_mismatch_main_query_only(self) -> None:
         """Test that DatatypeMismatch is only caught on the main query."""
@@ -46,15 +48,13 @@ class TestDatatypeMismatchHandling:
                 "WHERE clause must be type boolean, not type integer",
             )
 
-            # Call _search with a problematic query
-            result = self.api_resource._search(query="cmc+1", limit=100)
+            # Call _search with a problematic query and expect HTTPBadRequest
+            with pytest.raises(falcon.HTTPBadRequest) as exc_info:
+                self.api_resource._search(query="cmc+1", limit=100)
 
-            # Verify we get an empty result and the function returns early
-            assert result["cards"] == []
-            assert result["total_cards"] == 0
-            assert result["query"] == "cmc+1"
-
-            # Verify the main query was called only once (early return on error)
+            # Verify the error details and that only one query was attempted
+            assert exc_info.value.title == "Invalid Search Query"
+            assert "cmc+1" in exc_info.value.description
             assert mock_run_query.call_count == 1
 
     def test_search_normal_operation_unaffected(self) -> None:
