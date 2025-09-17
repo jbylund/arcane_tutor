@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-from functools import reduce
+import re
 
 from pyparsing import (
     CaselessKeyword,
-    CaselessLiteral,
     Combine,
     Forward,
     Group,
     Literal,
     Optional,
-    ParserElement,
     QuotedString,
     Regex,
     Word,
@@ -125,7 +123,10 @@ def should_be_attribute(value: object) -> bool:
     Returns True if the value is a string and is a known card attribute.
     """
     # Helper function to determine if a string should be an AttributeNode
-    return isinstance(value, str) and value in KNOWN_CARD_ATTRIBUTES
+    # Use case-insensitive matching
+    if not isinstance(value, str):
+        return False
+    return any(attr.lower() == value.lower() for attr in KNOWN_CARD_ATTRIBUTES)
 
 
 def make_binary_operator_node(tokens: list[object]) -> BinaryOperatorNode:
@@ -213,17 +214,11 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
 
     word = Word(alphas + "_").setParseAction(make_word)
 
-    # Define different types of attribute words based on their types using case-insensitive matching
+    # Define different types of attribute words based on their types using Regex
     # Sort by length (longest first) to avoid partial matches
-    # Create case-insensitive attribute matching
-    def create_case_insensitive_attr_matcher(attributes: set[str]) -> ParserElement:
-        """Create a case-insensitive matcher for attributes."""
-        # Sort by length (longest first) to avoid partial matches
-        sorted_attrs = sorted(attributes, key=len, reverse=True)
-        return reduce(lambda x, y: x | y, [CaselessLiteral(attr) for attr in sorted_attrs])
-
-    numeric_attr_word = create_case_insensitive_attr_matcher(NUMERIC_ATTRIBUTES)
-    non_numeric_attr_word = create_case_insensitive_attr_matcher(NON_NUMERIC_ATTRIBUTES)
+    # Use case-insensitive regex patterns for attribute matching
+    numeric_attr_word = Regex("|".join(sorted(NUMERIC_ATTRIBUTES, key=len, reverse=True)), flags=re.IGNORECASE)
+    non_numeric_attr_word = Regex("|".join(sorted(NON_NUMERIC_ATTRIBUTES, key=len, reverse=True)), flags=re.IGNORECASE)
 
     # Create a literal number parser for numeric constants
     literal_number = integer | float_number
