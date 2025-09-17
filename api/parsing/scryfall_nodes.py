@@ -70,7 +70,16 @@ class ScryfallAttributeNode(AttributeNode):
         Args:
             attribute_name: The search attribute name to map to database column.
         """
-        db_column_name = SEARCH_NAME_TO_DB_NAME.get(attribute_name, attribute_name)
+        # Case-insensitive lookup in SEARCH_NAME_TO_DB_NAME
+        db_column_name = None
+        for key, value in SEARCH_NAME_TO_DB_NAME.items():
+            if key.lower() == attribute_name.lower():
+                db_column_name = value
+                break
+
+        if db_column_name is None:
+            db_column_name = attribute_name
+
         super().__init__(db_column_name)
 
     def to_sql(self: ScryfallAttributeNode, context: dict) -> str:

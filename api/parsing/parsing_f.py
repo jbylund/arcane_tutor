@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from functools import reduce
+
 from pyparsing import (
     CaselessKeyword,
+    CaselessLiteral,
     Combine,
     Forward,
     Group,
     Literal,
     Optional,
+    ParserElement,
     QuotedString,
     Regex,
     Word,
@@ -209,10 +213,17 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
 
     word = Word(alphas + "_").setParseAction(make_word)
 
-    # Define different types of attribute words based on their types using Regex
+    # Define different types of attribute words based on their types using case-insensitive matching
     # Sort by length (longest first) to avoid partial matches
-    numeric_attr_word = Regex("|".join(sorted(NUMERIC_ATTRIBUTES, key=len, reverse=True)))
-    non_numeric_attr_word = Regex("|".join(sorted(NON_NUMERIC_ATTRIBUTES, key=len, reverse=True)))
+    # Create case-insensitive attribute matching
+    def create_case_insensitive_attr_matcher(attributes: set[str]) -> ParserElement:
+        """Create a case-insensitive matcher for attributes."""
+        # Sort by length (longest first) to avoid partial matches
+        sorted_attrs = sorted(attributes, key=len, reverse=True)
+        return reduce(lambda x, y: x | y, [CaselessLiteral(attr) for attr in sorted_attrs])
+
+    numeric_attr_word = create_case_insensitive_attr_matcher(NUMERIC_ATTRIBUTES)
+    non_numeric_attr_word = create_case_insensitive_attr_matcher(NON_NUMERIC_ATTRIBUTES)
 
     # Create a literal number parser for numeric constants
     literal_number = integer | float_number
