@@ -1,5 +1,7 @@
 """Tests for pyparsing packrat caching functionality."""
 
+import inspect
+
 import pyparsing as pp
 
 from api.parsing import parse_scryfall_query
@@ -12,10 +14,9 @@ def test_packrat_caching_enabled() -> None:
     # In newer versions of pyparsing, _packratEnabled might be accessed differently
     # but we can at least verify the method exists and was called
     assert hasattr(pp.ParserElement, "enable_packrat")
-    
+
     # Verify that the cache size was increased from default (128) to 2^13 (8192)
     # This is checked by confirming the enable_packrat method accepts cache_size_limit parameter
-    import inspect
     sig = inspect.signature(pp.ParserElement.enable_packrat)
     assert "cache_size_limit" in sig.parameters
 
