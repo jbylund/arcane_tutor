@@ -98,7 +98,13 @@ class ApiWorker(multiprocessing.Process):
         try:
             import bjoern  # noqa: PLC0415
             app = self.get_api()  # Get the Falcon app
-            bjoern.run(app, self.host, self.port, reuse_port=True)  # Start the Bjoern server
+            bjoern.run(
+                wsgi_app=app,
+                host=self.host,
+                port=self.port,
+                reuse_port=True,
+                listen_backlog=1024 * 4,
+            )  # Start the Bjoern server
         except Exception as oops:
             logger.error("Error running server: %s", oops, exc_info=True)
             if self.exit_flag:
