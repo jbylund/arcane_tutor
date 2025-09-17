@@ -9,6 +9,7 @@ import datetime
 import hashlib
 import inspect
 import io
+import itertools
 import json
 import logging
 import os
@@ -1030,21 +1031,24 @@ ORDER BY
 
         logger.info("Updating %d cards with tag '%s'", len(card_names), tag)
         # Update cards in database with the new tag
+        updated_count = 0
+        card_names.sort()
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             # Use SQL update with jsonb concatenation to add the tag
-            cursor.execute(
-                """
-                UPDATE magic.cards
-                SET card_oracle_tags = card_oracle_tags || %(new_tag)s::jsonb
-                WHERE card_name = ANY(%(card_names)s)
-                """,
-                {
-                    "card_names": card_names,
-                    "new_tag": json.dumps({tag: True}),
-                },
-            )
-            updated_count = cursor.rowcount
-            conn.commit()
+            for card_name_batch in itertools.batched(card_names, 200):
+                cursor.execute(
+                    """
+                    UPDATE magic.cards
+                    SET card_oracle_tags = card_oracle_tags || %(new_tag)s::jsonb
+                    WHERE card_name = ANY(%(card_names)s)
+                    """,
+                    {
+                        "card_names": card_name_batch,
+                        "new_tag": json.dumps({tag: True}),
+                    },
+                )
+                updated_count += cursor.rowcount
+                conn.commit()
 
         return {
             "tag": tag,
