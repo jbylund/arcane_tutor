@@ -7,7 +7,6 @@ instead of throwing DatatypeMismatch exceptions.
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import patch
 
 import psycopg.errors
@@ -39,29 +38,24 @@ class TestDatatypeMismatchHandling:
             assert "result" in result
             assert result["result"]["result"] == []
 
-    def test_search_handles_datatype_mismatch_in_count_query(self) -> None:
-        """Test that DatatypeMismatch in count query also returns empty result."""
-
-        # Mock _run_query to succeed on first call (main query) but fail on count
-        def mock_run_query_side_effect(*args: Any, **kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
-            query = kwargs.get("query", args[0] if args else "")
-            if "COUNT(1)" in query:
-                msg = "datatype mismatch in count query"
-                raise psycopg.errors.DatatypeMismatch(msg)
-            return {
-                "result": [{"name": f"card_{i}"} for i in range(100)],  # Simulate hitting limit
-                "timings": {},
-            }
-
+    def test_search_handles_datatype_mismatch_main_query_only(self) -> None:
+        """Test that DatatypeMismatch is only caught on the main query."""
+        # Mock _run_query to fail on first call (main query)
         with patch.object(self.api_resource, "_run_query") as mock_run_query:
-            mock_run_query.side_effect = mock_run_query_side_effect
+            mock_run_query.side_effect = psycopg.errors.DatatypeMismatch(
+                "WHERE clause must be type boolean, not type integer",
+            )
 
-            # Call _search - this should trigger the count query due to hitting limit
+            # Call _search with a problematic query
             result = self.api_resource._search(query="cmc+1", limit=100)
 
-            # Verify the count fallback worked
-            assert len(result["cards"]) == 100  # Got the main results
-            assert result["total_cards"] == 0   # Count query failed, defaulted to 0
+            # Verify we get an empty result and the function returns early
+            assert result["cards"] == []
+            assert result["total_cards"] == 0
+            assert result["query"] == "cmc+1"
+
+            # Verify the main query was called only once (early return on error)
+            assert mock_run_query.call_count == 1
 
     def test_search_normal_operation_unaffected(self) -> None:
         """Test that normal queries still work correctly."""
