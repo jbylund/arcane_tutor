@@ -33,54 +33,52 @@ jobs:
             const latestCommitSha = mainBranch.commit.sha;
             console.log(`Latest commit on main: ${latestCommitSha}`);
             
-            // Get all check runs for this commit
-            const { data: checkRuns } = await github.rest.checks.listForRef({
+            // Get recent workflow runs for main branch to check their status
+            const { data: workflows } = await github.rest.actions.listRepoWorkflows({
               owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: latestCommitSha
+              repo: context.repo.repo
             });
             
-            console.log(`Found ${checkRuns.check_runs.length} check runs`);
-            
-            // Also get status checks (for older GitHub Actions)
-            const { data: statuses } = await github.rest.repos.listCommitStatusesForRef({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: latestCommitSha
-            });
-            
-            console.log(`Found ${statuses.length} status checks`);
-            
-            // Check if any CI checks failed
             let hasFailed = false;
             let failedChecks = [];
             
-            // Check check runs (newer format)
-            for (const checkRun of checkRuns.check_runs) {
-              console.log(`Check run: ${checkRun.name} - ${checkRun.conclusion}`);
-              if (checkRun.conclusion === 'failure') {
-                hasFailed = true;
-                failedChecks.push({
-                  name: checkRun.name,
-                  type: 'check_run',
-                  url: checkRun.html_url
+            // Check each workflow's recent runs on main branch
+            for (const workflow of workflows.workflows) {
+              // Skip the CI Monitor workflow itself
+              if (workflow.name === 'CI Monitor' || workflow.path.includes('ci-monitor')) {
+                continue;
+              }
+              
+              try {
+                const { data: runs } = await github.rest.actions.listWorkflowRuns({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  workflow_id: workflow.id,
+                  branch: 'main',
+                  per_page: 1
                 });
+                
+                if (runs.workflow_runs.length > 0) {
+                  const latestRun = runs.workflow_runs[0];
+                  console.log(`Workflow: ${workflow.name} - Latest run: ${latestRun.conclusion} (${latestRun.head_sha})`);
+                  
+                  // Check if this run is for the latest commit and failed
+                  if (latestRun.head_sha === latestCommitSha && latestRun.conclusion === 'failure') {
+                    hasFailed = true;
+                    failedChecks.push({
+                      name: workflow.name,
+                      type: 'workflow',
+                      url: latestRun.html_url,
+                      conclusion: latestRun.conclusion
+                    });
+                  }
+                }
+              } catch (error) {
+                console.log(`Error checking workflow ${workflow.name}: ${error.message}`);
               }
             }
             
-            // Check status checks (older format)
-            for (const status of statuses) {
-              console.log(`Status check: ${status.context} - ${status.state}`);
-              if (status.state === 'failure' || status.state === 'error') {
-                hasFailed = true;
-                failedChecks.push({
-                  name: status.context,
-                  type: 'status',
-                  url: status.target_url
-                });
-              }
-            }
-            
+            console.log(`Total failed checks: ${failedChecks.length}`);
             core.setOutput('has_failed', hasFailed);
             core.setOutput('failed_checks', JSON.stringify(failedChecks));
             core.setOutput('commit_sha', latestCommitSha);
