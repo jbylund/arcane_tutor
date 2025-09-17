@@ -1,10 +1,12 @@
 """Client for interacting with Scryfall Tagger GraphQL API."""
 
+import collections
 import logging
 import re
 import time
 
 import requests
+import tenacity
 from cachetools import TTLCache, cachedmethod
 
 logger = logging.getLogger(__name__)
@@ -20,24 +22,27 @@ class TaggerClient:
         self.base_url = "https://tagger.scryfall.com"
 
         # Set up default headers
-        self.session.headers.update({
-            "Accept": "*/*",
-            "Accept-Encoding": "gzip, deflate, br, zstd",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "DNT": "1",
-            "Origin": self.base_url,
-            "Pragma": "no-cache",
-            "Priority": "u=4",
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-GPC": "1",
-            "TE": "trailers",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:142.0) Gecko/20100101 Firefox/142.0",
-        })
-        self._auth_cache = TTLCache(maxsize=2**10, ttl=10*60)
+        self.session.headers.update(
+            {
+                "Accept": "*/*",
+                "Accept-Encoding": "gzip, deflate, br, zstd",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "DNT": "1",
+                "Origin": self.base_url,
+                "Pragma": "no-cache",
+                "Priority": "u=4",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+                "Sec-GPC": "1",
+                "TE": "trailers",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:142.0) Gecko/20100101 Firefox/142.0",
+            },
+        )
+        self._auth_cache = TTLCache(maxsize=2**10, ttl=10 * 60)
+        self._request_timestamps = collections.deque(maxlen=500)
 
     def _get_csrf_token_from_meta(self, html_content: str) -> str | None:
         """Extract CSRF token from HTML meta tags."""
@@ -54,13 +59,9 @@ class TaggerClient:
         Returns:
             bool: True if authentication successful, False otherwise.
         """
-        try:
-            # First, visit the main tagger page to get session cookie and CSRF token
-            response = self.session.get(f"{self.base_url}/", timeout=30)
-            response.raise_for_status()
-        except requests.RequestException as e:
-            logger.error("Authentication failed: %s", e)
-            return False
+        # First, visit the main tagger page to get session cookie and CSRF token
+        response = self.session.get(f"{self.base_url}/", timeout=30)
+        response.raise_for_status()
 
         # Try to extract CSRF token from meta tags
         self.csrf_token = self._get_csrf_token_from_meta(response.text)
@@ -110,7 +111,8 @@ class TaggerClient:
 
         # Build query dynamically based on whether we want taggings
         if include_taggings:
-            query = """
+            query = (
+                """
                 query FetchTag(
                     $type: TagType!
                     $slug: String!
@@ -151,13 +153,18 @@ class TaggerClient:
                     id
                     name
                 }
-                """ + tag_attrs
-            variables.update({
-                "descendants": descendants,
-                "page": page,
-            })
+                """
+                + tag_attrs
+            )
+            variables.update(
+                {
+                    "descendants": descendants,
+                    "page": page,
+                },
+            )
         else:
-            query = """
+            query = (
+                """
                 query FetchTag(
                     $type: TagType!
                     $slug: String!
@@ -177,22 +184,45 @@ class TaggerClient:
                     }
                 }
 
-                """ + tag_attrs
+                """
+                + tag_attrs
+            )
 
-        # per https://scryfall.com/docs/api
-        # limit to 10 requests/second
-        time.sleep(1 / 10)
-        response = self.session.post(
-            f"{self.base_url}/graphql",
-            json={
-                "query": query,
-                "variables": variables,
-                "operationName": "FetchTag",
-            },
-            timeout=30,
+        def before_sleep_fn(*args, **kwargs) -> None:
+            logger.warning("Had failure talking to tagger api %s %s", args, kwargs)
+
+        retryer = tenacity.retry(
+            wait=tenacity.wait_exponential(multiplier=0.1, min=0.1, max=2) + tenacity.wait_random(0, 0.1),
+            reraise=True,
+            stop=tenacity.stop_after_attempt(7),
+            before_sleep=before_sleep_fn,
         )
 
-        response.raise_for_status()
+        def get_response():
+            time.sleep(0.43)
+            response = retryer(self.session.post)(
+                f"{self.base_url}/graphql",
+                json={
+                    "query": query,
+                    "variables": variables,
+                    "operationName": "FetchTag",
+                },
+                timeout=30,
+            )
+
+            response.raise_for_status()
+            self._request_timestamps.append(time.monotonic())
+            return response
+
+        response = retryer(get_response)()
+
+        num_requests = len(self._request_timestamps)
+        if num_requests > 1:
+            oldest_request = self._request_timestamps[0]
+            newest_request = self._request_timestamps[-1]
+            duration = newest_request - oldest_request
+            rate = num_requests / duration
+            logger.info("Request rate is %.2f (inverse rate: %.3f)", rate, 1 / rate)
         parsed = response.json()
 
         # Check for GraphQL errors
