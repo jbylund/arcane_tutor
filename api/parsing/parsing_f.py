@@ -123,10 +123,7 @@ def should_be_attribute(value: object) -> bool:
     Returns True if the value is a string and is a known card attribute.
     """
     # Helper function to determine if a string should be an AttributeNode
-    # Use case-insensitive matching
-    if not isinstance(value, str):
-        return False
-    return any(attr.lower() == value.lower() for attr in KNOWN_CARD_ATTRIBUTES)
+    return isinstance(value, str) and value.lower() in KNOWN_CARD_ATTRIBUTES
 
 
 def make_binary_operator_node(tokens: list[object]) -> BinaryOperatorNode:
