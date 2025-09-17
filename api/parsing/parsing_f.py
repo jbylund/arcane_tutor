@@ -11,6 +11,7 @@ from pyparsing import (
     Group,
     Literal,
     Optional,
+    ParserElement,
     QuotedString,
     Regex,
     Word,
@@ -33,6 +34,9 @@ from .nodes import (
     StringValueNode,
 )
 from .scryfall_nodes import to_scryfall_ast
+
+# Enable pyparsing packrat caching for improved performance with increased cache size
+ParserElement.enable_packrat(cache_size_limit=2**13)  # 8192 cache entries
 
 # Constants
 NEGATION_TOKEN_COUNT = 2
