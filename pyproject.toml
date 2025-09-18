@@ -12,7 +12,7 @@ ignore = ["E501", "S105", "FBT001", "FBT002", "S608"]
 # D101: Ignore missing docstring in public class in tests
 # D102: Ignore missing docstring in public method in tests
 # D103: Ignore missing docstring in public function in tests
-per-file-ignores = {"**/tests/**/*.py" = ["S101", "D101", "D102", "D103", "PLR2004"]}
+per-file-ignores = {"**/tests/**/*.py" = ["S101", "D101", "D102", "D103", "PLR2004"], "**/test_*.py" = ["S101", "D101", "D102", "D103", "PLR2004"]}
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
