@@ -28,21 +28,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install requests
 
-      - name: Check CI status on main branch
+      - name: Check CI status and create issue if needed
         id: ci-check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          python scripts/check_ci_status.py
-
-      - name: Create issue if CI failed
-        if: steps.ci-check.outputs.has_failed == 'true'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          python scripts/create_ci_issue.py '${{ steps.ci-check.outputs.failed_checks }}' '${{ steps.ci-check.outputs.commit_sha }}'
+          python scripts/ci_monitor.py --check-and-create-issue
 
       - name: Log CI status
         run: |
