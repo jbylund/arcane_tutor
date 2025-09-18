@@ -13,6 +13,7 @@ from api.parsing import (
     QueryNode,
     StringValueNode,
 )
+from api.parsing.parsing_f import generate_sql_query
 
 
 @pytest.mark.parametrize(
@@ -681,9 +682,6 @@ def test_arithmetic_parser_consolidation(query: str, expected_ast: BinaryOperato
 @pytest.mark.parametrize(
     argnames="invalid_query",
     argvalues=[
-        "name:bolt and 1",    # Issue #86: The specific case reported - should fail because "1" is not a valid boolean expression
-        "cmc=3 and 2",        # Similar case with different operator
-        "power>1 or 5",       # Another similar case with different operator
         "name:test and",      # Trailing AND with no right operand
         "power>1 or",         # Trailing OR with no right operand
         "cmc=3 and ()",       # Empty parentheses after AND
@@ -692,11 +690,64 @@ def test_arithmetic_parser_consolidation(query: str, expected_ast: BinaryOperato
 def test_invalid_queries_with_trailing_content_fail(invalid_query: str) -> None:
     """Test that queries with invalid trailing content properly fail to parse.
 
-    This addresses issue #86 where 'name:bolt and 1' was incorrectly parsed as
-    just 'name:bolt', silently ignoring the invalid 'and 1' portion.
+    This addresses issue #86 where invalid trailing content was being silently ignored.
 
-    With parseAll=True, these queries should now properly fail to parse because
-    they contain invalid trailing content that cannot be consumed by the grammar.
+    Note: Since issue #90, standalone numeric literals like "1" are now valid parse targets,
+    so queries like "name:bolt and 1" now parse successfully (though they fail at DB level
+    with datatype mismatch errors).
     """
     with pytest.raises(ValueError, match="Failed to parse query"):
         parsing.parse_scryfall_query(invalid_query)
+
+
+@pytest.mark.parametrize(
+    argnames="semantically_invalid_query",
+    argvalues=[
+        "name:bolt and 1",    # Valid parse but semantically invalid: AND between boolean and integer
+        "cmc=3 and 2",        # Valid parse but semantically invalid: AND between boolean and integer
+        "power>1 or 5",       # Valid parse but semantically invalid: OR between boolean and integer
+    ],
+)
+def test_semantically_invalid_queries_parse_but_fail_at_db_level(semantically_invalid_query: str) -> None:
+    """Test that queries with standalone numeric literals parse but would fail at DB level.
+
+    These queries are syntactically valid after issue #90 (allowing standalone numeric literals),
+    but they're semantically invalid because they combine boolean expressions with bare integers.
+    They should parse successfully but would fail at the database level with datatype mismatch errors.
+    """
+    # These should parse without errors
+    parsed_query = parsing.parse_scryfall_query(semantically_invalid_query)
+
+    # Should be able to generate SQL (though it would fail at execution)
+    sql, context = generate_sql_query(parsed_query)
+
+    # SQL should be generated successfully (it's the execution that would fail)
+    assert isinstance(sql, str)
+    assert isinstance(context, dict)
+
+
+def test_standalone_numeric_query_parses() -> None:
+    """Test that standalone numeric queries like '1' parse to NumericValueNode.
+
+    Per issue #90, queries like '1' should parse successfully to a NumericValueNode,
+    but then fail at the database level with a datatype mismatch error since
+    PostgreSQL expects boolean values in WHERE clauses, not integers.
+    """
+    # Test integer
+    parsed_query = parsing.parse_scryfall_query("1")
+    assert isinstance(parsed_query.root, NumericValueNode)
+    assert parsed_query.root.value == 1
+
+    # Test float
+    parsed_query_float = parsing.parse_scryfall_query("2.5")
+    assert isinstance(parsed_query_float.root, NumericValueNode)
+    assert parsed_query_float.root.value == 2.5
+
+    # Test SQL generation - this should produce a parameterized query
+    sql, context = generate_sql_query(parsed_query)
+
+    # Should be a parameterized value
+    assert sql.startswith("%(")
+    assert sql.endswith(")s")
+    # Context should contain the numeric value
+    assert 1 in context.values()
