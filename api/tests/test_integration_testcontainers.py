@@ -19,16 +19,45 @@ class TestContainerIntegration:
     @pytest.fixture(scope="class")
     def postgres_container(self) -> Generator[PostgresContainer, None, None]:
         """Create and manage PostgreSQL test container."""
-        with PostgresContainer(
-            image="postgres:15-alpine",
+        container = PostgresContainer(
+            image="postgres:18rc1",
             username="testuser",
             password="testpass",  # noqa: S106
             dbname="testdb",
-            port=5432,
-        ) as postgres:
-            # Wait for container to be ready
-            time.sleep(2)
+        ).with_bind_ports(5432, 5433)  # Bind internal 5432 to host 5433
+
+        with container as postgres:
+            # Wait for database to be ready with proper health check
+            self._wait_for_database_ready(postgres)
             yield postgres
+
+    def _wait_for_database_ready(self, postgres_container: PostgresContainer, timeout: int = 30) -> None:
+        """Wait for the database to be ready by running a simple query."""
+        host = postgres_container.get_container_host_ip()
+        port = postgres_container.get_exposed_port(5432)  # This should return 5433 due to bind_ports
+
+        connection_params = {
+            "host": host,
+            "port": port,
+            "dbname": "testdb",
+            "user": "testuser",
+            "password": "testpass",
+        }
+
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                with psycopg.connect(**connection_params) as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("SELECT 1")
+                        cursor.fetchone()
+                    return  # Database is ready
+            except (psycopg.Error, OSError):  # Catch specific database and connection errors
+                time.sleep(0.5)  # Wait before retrying
+                continue
+
+        msg = f"Database not ready within {timeout} seconds"
+        raise RuntimeError(msg)
 
     @pytest.fixture(scope="class")
     def db_connection(self, postgres_container: PostgresContainer) -> Generator[psycopg.Connection, None, None]:
@@ -50,19 +79,51 @@ class TestContainerIntegration:
             yield conn
 
     @pytest.fixture(scope="class")
-    def setup_test_database(self, db_connection: psycopg.Connection) -> None:
-        """Set up test database schema and data."""
-        # Load test schema
-        test_dir = pathlib.Path(__file__).parent
-        schema_file = test_dir / "fixtures" / "test_schema.sql"
-        data_file = test_dir / "fixtures" / "test_data.sql"
+    def setup_test_database(self, postgres_container: PostgresContainer) -> None:
+        """Set up test database schema using APIResource migrations and load test data."""
+        # Set up environment for APIResource to use test database
+        host = postgres_container.get_container_host_ip()
+        port = postgres_container.get_exposed_port(5432)
 
-        with db_connection.cursor() as cursor:
-            # Execute schema
-            cursor.execute(schema_file.read_text())
-            # Execute test data
-            cursor.execute(data_file.read_text())
-            db_connection.commit()
+        # Store original environment variables
+        original_env = {
+            key: os.environ.get(key)
+            for key in ["PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD"]
+        }
+
+        try:
+            os.environ.update({
+                "PGHOST": host,
+                "PGPORT": str(port),
+                "PGDATABASE": "testdb",
+                "PGUSER": "testuser",
+                "PGPASSWORD": "testpass",
+            })
+
+            # Create APIResource instance to run migrations
+            api = APIResource()
+            # This will set up the schema using real migrations
+            api._setup_schema()
+
+            # Load test data only
+            test_dir = pathlib.Path(__file__).parent
+            data_file = test_dir / "fixtures" / "test_data.sql"
+
+            with api._conn_pool.connection() as conn, conn.cursor() as cursor:
+                cursor.execute(data_file.read_text())
+                conn.commit()
+
+            # Clean up connection pool
+            if hasattr(api, "_conn_pool"):
+                api._conn_pool.close()
+
+        finally:
+            # Restore original environment variables
+            for key, value in original_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     @pytest.fixture
     def api_resource_with_test_db(

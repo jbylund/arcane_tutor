@@ -4,7 +4,7 @@
 INSERT INTO magic.cards (
     card_name, cmc, mana_cost_text, mana_cost_jsonb, raw_card_blob,
     card_types, card_subtypes, card_colors, card_color_identity, card_keywords,
-    oracle_text, creature_power, creature_toughness
+    oracle_text, creature_power, creature_toughness, card_oracle_tags
 ) VALUES 
 (
     'Lightning Bolt', 
@@ -19,7 +19,8 @@ INSERT INTO magic.cards (
     '{}',
     'Lightning Bolt deals 3 damage to any target.',
     NULL,
-    NULL
+    NULL,
+    '{"burn": true}'
 ),
 (
     'Serra Angel',
@@ -34,7 +35,8 @@ INSERT INTO magic.cards (
     '{"Flying": true, "Vigilance": true}',
     'Flying, vigilance',
     4,
-    4
+    4,
+    '{"flying": true, "vigilance": true}'
 ),
 (
     'Black Lotus',
@@ -49,21 +51,14 @@ INSERT INTO magic.cards (
     '{}',
     '{T}, Sacrifice Black Lotus: Add three mana of any one color.',
     NULL,
-    NULL
+    NULL,
+    '{"mana-acceleration": true}'
 ) ON CONFLICT (card_name) DO NOTHING;
 
 -- Insert test tags
-INSERT INTO magic.tags (tag, description) VALUES 
-('flying', 'Creature has flying ability'),
-('vigilance', 'Creature has vigilance ability'),
-('burn', 'Direct damage spell'),
-('mana-acceleration', 'Provides extra mana')
+INSERT INTO magic.tags (tag) VALUES 
+('flying'),
+('vigilance'),
+('burn'),
+('mana-acceleration')
 ON CONFLICT (tag) DO NOTHING;
-
--- Insert card-tag relationships
-INSERT INTO magic.card_tags (card_name, tag) VALUES 
-('Serra Angel', 'flying'),
-('Serra Angel', 'vigilance'),
-('Lightning Bolt', 'burn'),
-('Black Lotus', 'mana-acceleration')
-ON CONFLICT (card_name, tag) DO NOTHING;
