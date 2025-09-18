@@ -189,7 +189,8 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     attrop = oneOf(": > < >= <= = !=")
     arithmetic_op = oneOf("+ - * /")
     integer = Word(nums).setParseAction(lambda t: int(t[0]))
-    float_number = Combine(Word(nums) + Optional(Literal(".") + Optional(Word(nums)))).setParseAction(lambda t: float(t[0]))
+    # Float must have a decimal point to distinguish from integer
+    float_number = Combine(Word(nums) + Literal(".") + Optional(Word(nums))).setParseAction(lambda t: float(t[0]))
     lparen = Literal("(").suppress()
     rparen = Literal(")").suppress()
 
@@ -223,7 +224,9 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     non_numeric_attr_word = Regex("|".join(sorted(NON_NUMERIC_ATTRIBUTES, key=len, reverse=True)), flags=re.IGNORECASE)
 
     # Create a literal number parser for numeric constants
-    literal_number = integer | float_number
+    # Note: float_number must come before integer to match decimal numbers
+    # but only matches when there's actually a decimal point
+    literal_number = float_number | integer
 
     # For attribute values, we want the raw string
     # Use Regex to match words that may contain hyphens for string values
@@ -271,6 +274,13 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
 
     single_word = word.setParseAction(make_single_word)
 
+    # Standalone numeric literal
+    def make_numeric_literal(tokens: list[object]) -> NumericValueNode:
+        """Create a NumericValueNode for standalone numeric literals."""
+        return NumericValueNode(tokens[0])
+
+    standalone_numeric = literal_number.setParseAction(make_numeric_literal)
+
     # Grouped expression
     def make_group(tokens: list[object]) -> object:
         """Return the grouped expression inside parentheses."""
@@ -307,7 +317,8 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     # Factor includes both negatable expressions and arithmetic expressions
     # SPECIAL: hyphenated_condition first to handle "otag:dual-land", then condition (includes comparisons) before standalone arithmetic
     # Note: arithmetic_comparison is now consolidated into unified_numeric_comparison within condition
-    factor = hyphenated_condition | condition | arithmetic_expr | negatable_factor
+    # Add standalone_numeric at the end to handle cases like "1" without operators
+    factor = hyphenated_condition | condition | arithmetic_expr | negatable_factor | standalone_numeric
 
     # Expression with explicit AND/OR operators (highest precedence)
     def handle_operators(tokens: list[object]) -> object:
@@ -429,12 +440,17 @@ def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
                 tokens.append(char)
                 i += 1
         else:
-            # Handle words (alphanumeric starting)
+            # Handle words (alphanumeric starting) and numeric literals
             word_end = i
             # Check if we're in an attribute value context (previous token was a colon)
             in_attr_value_context = tokens and tokens[-1] == ":"
 
-            if in_attr_value_context:
+            # Check if this looks like a numeric literal (starts with digit)
+            if query[i].isdigit():
+                # Handle numeric literal (integer or float)
+                while word_end < len(query) and (query[word_end].isdigit() or query[word_end] == "."):
+                    word_end += 1
+            elif in_attr_value_context:
                 # In attribute value context, allow alphanumeric, underscore, and hyphens
                 while word_end < len(query) and (query[word_end].isalnum() or query[word_end] in "_-"):
                     word_end += 1
