@@ -715,9 +715,17 @@
               try {
                 const errorData = await response.json();
                 if (errorData.title && errorData.description) {
-                  errorMessage = `${errorData.title}: ${errorData.description}`;
+                  // If description is an object (like with 500 errors), just use the title
+                  if (typeof errorData.description === 'object') {
+                    errorMessage = errorData.title;
+                  } else {
+                    errorMessage = `${errorData.title}: ${errorData.description}`;
+                  }
                 } else if (errorData.description) {
-                  errorMessage = errorData.description;
+                  // Only use description if it's a string, not an object
+                  if (typeof errorData.description === 'string') {
+                    errorMessage = errorData.description;
+                  }
                 }
               } catch {
                 // If we can't parse the error response, use the generic message
