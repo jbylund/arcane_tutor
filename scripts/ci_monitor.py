@@ -15,6 +15,10 @@ from typing import Any
 
 import requests
 
+"""
+Repository ID: R_kgDOJFq5kw
+Copilot ID: U_kgDODB1VSw
+"""
 
 def get_github_headers() -> dict[str, str]:
     """Get headers for GitHub API requests."""
@@ -77,9 +81,8 @@ def check_existing_issues(owner: str, repo: str) -> list[dict[str, Any]]:
     headers = get_github_headers()
 
     params = {
-        "state": "open",
         "labels": "ci-failure",
-        "creator": "github-actions[bot]",
+        "state": "open",
     }
 
     response = requests.get(url, headers=headers, params=params, timeout=30)
@@ -109,9 +112,97 @@ def create_issue(  # noqa: PLR0913
     }
 
     response = requests.post(url, headers=headers, json=payload, timeout=30)
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except requests.RequestException:
+        raise
 
     return response.json()
+
+
+def assign_issue_to_copilot_via_graphql(owner: str, repo: str, issue_number: int) -> bool:
+    """Assign an issue to copilot-swe-agent using GraphQL API."""
+    url = "https://api.github.com/graphql"
+    headers = get_github_headers()
+
+    # First, get the repository ID, issue ID, and copilot-swe-agent user ID
+    query = """
+    query($owner: String!, $repo: String!, $issueNumber: Int!) {
+      repository(owner: $owner, name: $repo) {
+        id
+        issue(number: $issueNumber) {
+          id
+          title
+        }
+      }
+      user(login: "copilot-swe-agent") {
+        id
+      }
+    }
+    """
+
+    variables = {
+        "owner": owner,
+        "repo": repo,
+        "issueNumber": issue_number,
+    }
+
+    response = requests.post(
+        url,
+        headers=headers,
+        json={"query": query, "variables": variables},
+        timeout=30,
+    )
+
+    try:
+        response.raise_for_status()
+        data = response.json()
+
+        if "errors" in data:
+            return False
+
+        data["data"]["repository"]["id"]
+        issue_id = data["data"]["repository"]["issue"]["id"]
+        copilot_id = data["data"]["user"]["id"]
+
+
+        # Now assign the issue to copilot-swe-agent
+        mutation = """
+        mutation($issueId: ID!, $assigneeIds: [ID!]!) {
+          addAssigneesToAssignable(input: {assignableId: $issueId, assigneeIds: $assigneeIds}) {
+            assignable {
+              ... on Issue {
+                number
+                assignees(first: 10) {
+                  nodes {
+                    login
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+
+        mutation_variables = {
+            "issueId": issue_id,
+            "assigneeIds": [copilot_id],
+        }
+
+        response = requests.post(
+            url,
+            headers=headers,
+            json={"query": mutation, "variables": mutation_variables},
+            timeout=30,
+        )
+
+        response.raise_for_status()
+        data = response.json()
+
+        return "errors" not in data
+
+    except requests.RequestException:
+        return False
 
 
 def format_issue_body(commit_sha: str, failed_checks: list[dict[str, Any]]) -> str:
@@ -197,23 +288,31 @@ def create_ci_issue_if_needed(owner: str, repo: str, failed_checks: list[dict[st
 
     if existing_issues:
         print("CI failure issue already exists, skipping creation")  # noqa: T201
-        return False
+        issue = existing_issues[0]
+    else:
+        print(f"No existing issues found for {owner}/{repo}")  # noqa: T201
+        issue_title = f"CI Checks Failing on Main Branch ({commit_sha[:7]})"
+        issue_body = format_issue_body(commit_sha, failed_checks)
 
-    # Create issue title and body
-    issue_title = f"CI Checks Failing on Main Branch ({commit_sha[:7]})"
-    issue_body = format_issue_body(commit_sha, failed_checks)
+        # Create the issue without assignees first (REST API limitation)
+        issue = create_issue(
+            assignees=[],  # Start with no assignees due to REST API limitation
+            body=issue_body,
+            labels=["ci-failure", "bug"],
+            owner=owner,
+            repo=repo,
+            title=issue_title,
+        )
+        print(f"Created CI failure issue: {issue['html_url']}")  # noqa: T201
 
-    # Create the issue
-    issue = create_issue(
-        assignees=["copilot-swe-agent"],
-        body=issue_body,
-        labels=["ci-failure", "bug"],
-        owner=owner,
-        repo=repo,
-        title=issue_title,
-    )
+    # Now assign to copilot-swe-agent via GraphQL
+    issue_number = issue["number"]
+    assignment_success = assign_issue_to_copilot_via_graphql(owner, repo, issue_number)
 
-    print(f"Created CI failure issue: {issue['html_url']}")  # noqa: T201
+    if not assignment_success:
+        print("Warning: Failed to assign issue to copilot-swe-agent via GraphQL")  # noqa: T201
+        print("Issue was created but may need manual assignment")  # noqa: T201
+
     return True
 
 
@@ -224,58 +323,7 @@ def get_repository_info() -> tuple[str, str]:
         msg = "GITHUB_REPOSITORY environment variable is required"
         raise ValueError(msg)
 
-    owner, repo = github_repository.split("/", 1)
-    return owner, repo
-
-
-def get_args() -> argparse.Namespace:
-    """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(
-        description="Monitor CI status and optionally create issues for failures",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  %(prog)s --check-only               # Just check CI status and set outputs
-  %(prog)s --check-and-create-issue   # Check CI status and create issue if needed
-  %(prog)s --create-issue --failed-checks='[...]' --commit-sha=abc123  # Create issue directly
-
-Environment Variables:
-  GITHUB_TOKEN      - Required GitHub token for API access
-  GITHUB_REPOSITORY - Required repository in format 'owner/repo'
-  GITHUB_OUTPUT     - GitHub Actions output file (optional, for CI integration)
-        """,
-    )
-
-    action_group = parser.add_mutually_exclusive_group(required=True)
-    action_group.add_argument(
-        "--check-only",
-        action="store_true",
-        help="Only check CI status and set GitHub Actions outputs (equivalent to old check_ci_status.py)",
-    )
-    action_group.add_argument(
-        "--check-and-create-issue",
-        action="store_true",
-        help="Check CI status and create issue if failures detected (combined functionality)",
-    )
-    action_group.add_argument(
-        "--create-issue",
-        action="store_true",
-        help="Create issue directly using provided failed checks (equivalent to old create_ci_issue.py)",
-    )
-
-    # Arguments for direct issue creation
-    parser.add_argument(
-        "--failed-checks",
-        type=str,
-        help="JSON string of failed checks (required when using --create-issue)",
-    )
-    parser.add_argument(
-        "--commit-sha",
-        type=str,
-        help="Commit SHA for the failure (required when using --create-issue)",
-    )
-
-    return parser.parse_args()
+    return github_repository.split("/", 1)
 
 
 def handle_check_only(owner: str, repo: str) -> None:
@@ -330,6 +378,53 @@ def handle_create_issue_direct(owner: str, repo: str, args: argparse.Namespace) 
 
     create_ci_issue_if_needed(owner, repo, failed_checks, args.commit_sha)
 
+
+def get_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Monitor CI status and optionally create issues for failures",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s --check-only               # Just check CI status and set outputs
+  %(prog)s --check-and-create-issue   # Check CI status and create issue if needed
+  %(prog)s --create-issue --failed-checks='[...]' --commit-sha=abc123  # Create issue directly
+
+Environment Variables:
+  GITHUB_TOKEN      - Required GitHub token for API access
+  GITHUB_REPOSITORY - Required repository in format 'owner/repo'
+  GITHUB_OUTPUT     - GitHub Actions output file (optional, for CI integration)
+        """,
+    )
+
+    action_group = parser.add_mutually_exclusive_group(required=True)
+    action_group.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Only check CI status and set GitHub Actions outputs (equivalent to old check_ci_status.py)",
+    )
+    action_group.add_argument(
+        "--check-and-create-issue",
+        action="store_true",
+        help="Check CI status and create issue if failures detected (combined functionality)",
+    )
+    action_group.add_argument(
+        "--create-issue",
+        action="store_true",
+        help="Create issue directly using provided failed checks (equivalent to old create_ci_issue.py)",
+    )
+
+    # Arguments for direct issue creation
+    parser.add_argument(
+        "--failed-checks",
+        help="JSON string of failed checks (required when using --create-issue)",
+    )
+    parser.add_argument(
+        "--commit-sha",
+        help="Commit SHA for the failure (required when using --create-issue)",
+    )
+
+    return parser.parse_args()
 
 def main() -> None:
     """Main function to monitor CI status and manage issues."""
