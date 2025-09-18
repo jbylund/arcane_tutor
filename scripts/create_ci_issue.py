@@ -133,7 +133,7 @@ def main() -> None:
             title=issue_title,
             body=issue_body,
             labels=["ci-failure", "bug"],
-            assignees=[owner],  # Assign to repository owner instead of non-existent "copilot" user
+            assignees=["Copilot"],  # Assign to Copilot bot (capital C, not lowercase "copilot")
         )
 
 
