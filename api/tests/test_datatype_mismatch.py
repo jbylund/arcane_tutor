@@ -23,6 +23,12 @@ class TestDatatypeMismatchHandling:
         """Set up test fixtures."""
         self.api_resource = APIResource()
 
+    def teardown_method(self) -> None:
+        """Clean up test fixtures."""
+        if hasattr(self, "api_resource") and self.api_resource:
+            # Close the connection pool to prevent thread pool warnings
+            self.api_resource._conn_pool.close()
+
     def test_search_handles_datatype_mismatch(self) -> None:
         """Test that DatatypeMismatch in search raises HTTPBadRequest."""
         # Mock the _run_query method to raise DatatypeMismatch
