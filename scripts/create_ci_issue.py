@@ -45,7 +45,13 @@ def check_existing_issues(owner: str, repo: str) -> list[dict[str, Any]]:
 
 
 def create_issue(  # noqa: PLR0913
-    owner: str, repo: str, title: str, body: str, labels: list[str], assignees: list[str],
+    *,
+    assignees: list[str],
+    body: str,
+    labels: list[str],
+    owner: str,
+    repo: str,
+    title: str,
 ) -> dict[str, Any]:
     """Create a new GitHub issue."""
     url = f"https://api.github.com/repos/{owner}/{repo}/issues"
@@ -128,12 +134,12 @@ def main() -> None:
 
         # Create the issue
         create_issue(
+            assignees=["copilot-swe-agent"],
+            body=issue_body,
+            labels=["ci-failure", "bug"],
             owner=owner,
             repo=repo,
             title=issue_title,
-            body=issue_body,
-            labels=["ci-failure", "bug"],
-            assignees=["Copilot"],  # Assign to Copilot bot (capital C, not lowercase "copilot")
         )
 
 
