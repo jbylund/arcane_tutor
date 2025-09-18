@@ -11,6 +11,7 @@ from pyparsing import (
     Group,
     Literal,
     Optional,
+    ParseException,
     ParserElement,
     QuotedString,
     Regex,
@@ -360,12 +361,12 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
 
     # Parse the query
     try:
-        parsed = expr.parseString(query)
+        parsed = expr.parseString(query, parseAll=True)
         if parsed:
             # Flatten nested operations to create canonical n-ary forms
             return flatten_nested_operations(Query(parsed[0]))
         return Query(BinaryOperatorNode("name", ":", ""))
-    except (ValueError, TypeError, IndexError) as e:
+    except (ValueError, TypeError, IndexError, ParseException) as e:
         msg = f"Failed to parse query '{query}': {e}"
         raise ValueError(msg) from e
 
