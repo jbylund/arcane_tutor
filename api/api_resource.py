@@ -773,7 +773,18 @@ class APIResource:
         full_query = rewrap(full_query)
         logger.info("Full query: %s", full_query)
         logger.info("Params: %s", params)
-        result_bag = self._run_query(query=full_query, params=params, explain=False)
+        try:
+            result_bag = self._run_query(query=full_query, params=params, explain=False)
+        except psycopg.errors.DatatypeMismatch as err:
+            # Raise BadRequest error for invalid query syntax
+            # This happens with standalone arithmetic expressions like "cmc+1"
+            logger.info("DatatypeMismatch caught for query '%s', raising BadRequest", query)
+            raise falcon.HTTPBadRequest(
+                title="Invalid Search Query",
+                description=f"The search query '{query}' contains invalid syntax. "
+                           "Arithmetic expressions like 'cmc+1' need to be part of a comparison (e.g., 'cmc+1>3').",
+            ) from err
+
         cards = result_bag.pop("result", [])
         total_cards = len(cards)
         if total_cards == limit:
