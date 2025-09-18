@@ -1,9 +1,11 @@
 """Integration tests using testcontainers with real PostgreSQL database."""
 
+from __future__ import annotations
+
 import os
 import pathlib
 import time
-from collections.abc import Generator
+from typing import TYPE_CHECKING
 
 import psycopg
 import psycopg.rows
@@ -12,12 +14,15 @@ from testcontainers.postgres import PostgresContainer
 
 from api.api_resource import APIResource
 
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
 
 class TestContainerIntegration:
     """Integration tests using testcontainers with real PostgreSQL."""
 
     @pytest.fixture(scope="class")
-    def postgres_container(self) -> Generator[PostgresContainer, None, None]:
+    def postgres_container(self: TestContainerIntegration) -> Generator[PostgresContainer]:
         """Create and manage PostgreSQL test container."""
         container = PostgresContainer(
             image="postgres:18rc1",
@@ -31,7 +36,7 @@ class TestContainerIntegration:
             self._wait_for_database_ready(postgres)
             yield postgres
 
-    def _wait_for_database_ready(self, postgres_container: PostgresContainer, timeout: int = 30) -> None:
+    def _wait_for_database_ready(self: TestContainerIntegration, postgres_container: PostgresContainer, timeout: int = 30) -> None:
         """Wait for the database to be ready by running a simple query."""
         host = postgres_container.get_container_host_ip()
         port = postgres_container.get_exposed_port(5432)  # This should return 5433 due to bind_ports
@@ -60,7 +65,7 @@ class TestContainerIntegration:
         raise RuntimeError(msg)
 
     @pytest.fixture(scope="class")
-    def db_connection(self, postgres_container: PostgresContainer) -> Generator[psycopg.Connection, None, None]:
+    def db_connection(self: TestContainerIntegration, postgres_container: PostgresContainer) -> Generator[psycopg.Connection]:
         """Create database connection to test container."""
         # Get connection parameters from container
         host = postgres_container.get_container_host_ip()
@@ -79,7 +84,7 @@ class TestContainerIntegration:
             yield conn
 
     @pytest.fixture(scope="class")
-    def setup_test_database(self, postgres_container: PostgresContainer) -> None:
+    def setup_test_database(self: TestContainerIntegration, postgres_container: PostgresContainer) -> None:
         """Set up test database schema using APIResource migrations and load test data."""
         # Set up environment for APIResource to use test database
         host = postgres_container.get_container_host_ip()
@@ -127,10 +132,10 @@ class TestContainerIntegration:
 
     @pytest.fixture
     def api_resource_with_test_db(
-        self,
+        self: TestContainerIntegration,
         postgres_container: PostgresContainer,
         setup_test_database: None,  # noqa: ARG002
-    ) -> Generator[APIResource, None, None]:
+    ) -> Generator[APIResource]:
         """Create APIResource configured to use test database."""
         # Store original environment variables
         original_env = {
@@ -167,12 +172,12 @@ class TestContainerIntegration:
                 else:
                     os.environ[key] = value
 
-    def test_database_ready(self, api_resource_with_test_db: APIResource) -> None:
+    def test_database_ready(self: TestContainerIntegration, api_resource_with_test_db: APIResource) -> None:
         """Test that database is ready and migrations table exists."""
         result = api_resource_with_test_db.db_ready()
         assert result is True
 
-    def test_query_parsing_with_database(self, api_resource_with_test_db: APIResource) -> None:
+    def test_query_parsing_with_database(self: TestContainerIntegration, api_resource_with_test_db: APIResource) -> None:
         """Test query parsing and execution against real database."""
         # Test a simple search query
         result = api_resource_with_test_db.search(
@@ -188,7 +193,7 @@ class TestContainerIntegration:
         assert len(cards) == 1
         assert cards[0]["name"] == "Serra Angel"
 
-    def test_card_search_by_name(self, api_resource_with_test_db: APIResource) -> None:
+    def test_card_search_by_name(self: TestContainerIntegration, api_resource_with_test_db: APIResource) -> None:
         """Test searching for cards by name."""
         result = api_resource_with_test_db.search(
             q='name:"Lightning Bolt"',
@@ -204,7 +209,7 @@ class TestContainerIntegration:
         card = cards[0]
         assert card["name"] == "Lightning Bolt"
 
-    def test_color_search(self, api_resource_with_test_db: APIResource) -> None:
+    def test_color_search(self: TestContainerIntegration, api_resource_with_test_db: APIResource) -> None:
         """Test searching for cards by color."""
         result = api_resource_with_test_db.search(
             q="c:red",
@@ -219,7 +224,7 @@ class TestContainerIntegration:
         assert len(cards) == 1
         assert cards[0]["name"] == "Lightning Bolt"
 
-    def test_cmc_search(self, api_resource_with_test_db: APIResource) -> None:
+    def test_cmc_search(self: TestContainerIntegration, api_resource_with_test_db: APIResource) -> None:
         """Test searching for cards by converted mana cost."""
         result = api_resource_with_test_db.search(
             q="cmc=0",
@@ -234,7 +239,7 @@ class TestContainerIntegration:
         assert len(cards) == 1
         assert cards[0]["name"] == "Black Lotus"
 
-    def test_power_toughness_search(self, api_resource_with_test_db: APIResource) -> None:
+    def test_power_toughness_search(self: TestContainerIntegration, api_resource_with_test_db: APIResource) -> None:
         """Test searching for creatures by power and toughness."""
         result = api_resource_with_test_db.search(
             q="power=4 toughness=4",
@@ -249,14 +254,14 @@ class TestContainerIntegration:
         assert len(cards) == 1
         assert cards[0]["name"] == "Serra Angel"
 
-    def test_get_all_tags_with_real_db(self, api_resource_with_test_db: APIResource) -> None:
+    def test_get_all_tags_with_real_db(self: TestContainerIntegration, api_resource_with_test_db: APIResource) -> None:
         """Test getting all tags from real database."""
         tags = api_resource_with_test_db._get_all_tags()
 
         expected_tags = {"flying", "vigilance", "burn", "mana-acceleration"}
         assert tags == expected_tags
 
-    def test_database_operations_isolation(self, api_resource_with_test_db: APIResource) -> None:
+    def test_database_operations_isolation(self: TestContainerIntegration, api_resource_with_test_db: APIResource) -> None:
         """Test that database operations are properly isolated."""
         # This test verifies that we're working with the test database
         # and not affecting the main application database
@@ -271,7 +276,7 @@ class TestContainerIntegration:
         expected_names = {"Lightning Bolt", "Serra Angel", "Black Lotus"}
         assert card_names == expected_names
 
-    def test_get_pid(self, api_resource_with_test_db: APIResource) -> None:
+    def test_get_pid(self: TestContainerIntegration, api_resource_with_test_db: APIResource) -> None:
         """Test basic API functionality with real database."""
         pid = api_resource_with_test_db.get_pid()
         assert isinstance(pid, int)
