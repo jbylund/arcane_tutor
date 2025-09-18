@@ -17,6 +17,31 @@ def mock_db_pool() -> Generator[MagicMock, None, None]:
         yield mock_pool
 
 
+@pytest.fixture(autouse=True)
+def cleanup_api_resources() -> Generator[None, None, None]:
+    """Automatically clean up any APIResource instances created during tests."""
+    created_resources = []
+
+    # Monkey patch APIResource.__init__ to track instances
+    original_init = APIResource.__init__
+
+    def tracking_init(self, *args, **kwargs) -> None:
+        original_init(self, *args, **kwargs)
+        created_resources.append(self)
+
+    APIResource.__init__ = tracking_init
+
+    yield
+
+    # Clean up all created resources
+    for resource in created_resources:
+        if hasattr(resource, "_conn_pool"):
+            resource._conn_pool.close()
+
+    # Restore original __init__
+    APIResource.__init__ = original_init
+
+
 @pytest.mark.usefixtures("mock_db_pool")
 class TestTaggingIntegration:
     """Integration test cases for tag discovery and import."""
