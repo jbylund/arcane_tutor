@@ -25,7 +25,7 @@ def cleanup_api_resources() -> Generator[None, None, None]:
     # Monkey patch APIResource.__init__ to track instances
     original_init = APIResource.__init__
 
-    def tracking_init(self, *args, **kwargs) -> None:
+    def tracking_init(self: APIResource, *args: object, **kwargs: object) -> None:
         original_init(self, *args, **kwargs)
         created_resources.append(self)
 

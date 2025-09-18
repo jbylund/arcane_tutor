@@ -7,8 +7,8 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
 from unittest import mock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -133,9 +133,9 @@ class TestCIMonitor:
     @mock.patch("ci_monitor.set_github_output")
     def test_main_check_only(
         self,
-        mock_set_output: Any,
-        mock_check_ci: Any,
-        mock_get_repo: Any,
+        mock_set_output: MagicMock,
+        mock_check_ci: MagicMock,
+        mock_get_repo: MagicMock,
     ) -> None:
         """Test main function with --check-only option."""
         mock_get_repo.return_value = ("owner", "repo")
@@ -157,10 +157,10 @@ class TestCIMonitor:
     @mock.patch("ci_monitor.set_github_output")
     def test_main_check_and_create_issue_with_failure(
         self,
-        mock_set_output: Any,  # noqa: ARG002
-        mock_check_ci: Any,
-        mock_create_issue: Any,
-        mock_get_repo: Any,
+        mock_set_output: MagicMock,  # noqa: ARG002
+        mock_check_ci: MagicMock,
+        mock_create_issue: MagicMock,
+        mock_get_repo: MagicMock,
     ) -> None:
         """Test main function with --check-and-create-issue when CI fails."""
         mock_get_repo.return_value = ("owner", "repo")
@@ -179,8 +179,8 @@ class TestCIMonitor:
     @mock.patch("ci_monitor.create_ci_issue_if_needed")
     def test_main_create_issue_direct(
         self,
-        mock_create_issue: Any,
-        mock_get_repo: Any,
+        mock_create_issue: MagicMock,
+        mock_get_repo: MagicMock,
     ) -> None:
         """Test main function with --create-issue option."""
         mock_get_repo.return_value = ("owner", "repo")
