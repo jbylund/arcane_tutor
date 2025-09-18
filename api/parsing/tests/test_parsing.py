@@ -676,3 +676,27 @@ def test_arithmetic_parser_consolidation(query: str, expected_ast: BinaryOperato
     """
     observed = parsing.parse_search_query(query).root
     assert observed == expected_ast, f"Query '{query}' failed\nExpected: {expected_ast}\nObserved: {observed}"
+
+
+@pytest.mark.parametrize(
+    argnames="invalid_query",
+    argvalues=[
+        "name:bolt and 1",    # Issue #86: The specific case reported - should fail because "1" is not a valid boolean expression
+        "cmc=3 and 2",        # Similar case with different operator
+        "power>1 or 5",       # Another similar case with different operator
+        "name:test and",      # Trailing AND with no right operand
+        "power>1 or",         # Trailing OR with no right operand
+        "cmc=3 and ()",       # Empty parentheses after AND
+    ],
+)
+def test_invalid_queries_with_trailing_content_fail(invalid_query: str) -> None:
+    """Test that queries with invalid trailing content properly fail to parse.
+
+    This addresses issue #86 where 'name:bolt and 1' was incorrectly parsed as
+    just 'name:bolt', silently ignoring the invalid 'and 1' portion.
+
+    With parseAll=True, these queries should now properly fail to parse because
+    they contain invalid trailing content that cannot be consumed by the grammar.
+    """
+    with pytest.raises(ValueError, match="Failed to parse query"):
+        parsing.parse_scryfall_query(invalid_query)
