@@ -107,28 +107,22 @@ def flatten_nested_operations(node: QueryNode) -> QueryNode:
 def create_value_node(value: object) -> QueryNode:
     """Create the appropriate QueryNode type for a value.
 
-    Returns NumericValueNode, AttributeNode, or StringValueNode as
-    appropriate.
+    Returns the appropriate QueryNode type based on the input value.
+    If the value is already a QueryNode, returns it directly.
+    Note: AttributeNode instances are created directly by parse actions.
     """
+    # If it's already a QueryNode, return it directly
+    if isinstance(value, QueryNode):
+        return value
+
     # This function determines the correct node type for a value
     if isinstance(value, int | float):
         return NumericValueNode(value)
     if isinstance(value, str):
-        if should_be_attribute(value):
-            return AttributeNode(value)
         return StringValueNode(value)
     if isinstance(value, tuple) and value[0] == "quoted":
         return StringValueNode(value[1])
     return value  # Fallback for other types
-
-
-def should_be_attribute(value: object) -> bool:
-    """Check if a string value should be wrapped in AttributeNode.
-
-    Returns True if the value is a string and is a known card attribute.
-    """
-    # Helper function to determine if a string should be an AttributeNode
-    return isinstance(value, str) and value.lower() in KNOWN_CARD_ATTRIBUTES
 
 
 def make_binary_operator_node(tokens: list[object]) -> BinaryOperatorNode:
@@ -220,8 +214,15 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     # Define different types of attribute words based on their types using Regex
     # Sort by length (longest first) to avoid partial matches
     # Use case-insensitive regex patterns for attribute matching
+    def make_attribute_node(tokens: list[str]) -> AttributeNode:
+        """Create an AttributeNode for any attribute."""
+        return AttributeNode(tokens[0])
+
     numeric_attr_word = Regex("|".join(sorted(NUMERIC_ATTRIBUTES, key=len, reverse=True)), flags=re.IGNORECASE)
+    numeric_attr_word.setParseAction(make_attribute_node)
+
     non_numeric_attr_word = Regex("|".join(sorted(NON_NUMERIC_ATTRIBUTES, key=len, reverse=True)), flags=re.IGNORECASE)
+    non_numeric_attr_word.setParseAction(make_attribute_node)
 
     # Create a literal number parser for numeric constants
     # Note: float_number must come before integer to match decimal numbers
