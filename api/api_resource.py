@@ -738,7 +738,15 @@ class APIResource:
         direction: str | None = None,
         limit: int = 100,
     ) -> dict[str, Any]:
-        where_clause, params = get_where_clause(query)
+        try:
+            where_clause, params = get_where_clause(query)
+        except ValueError as err:
+            # Handle parsing errors from parse_scryfall_query
+            logger.info("ValueError caught for query '%s', raising BadRequest", query)
+            raise falcon.HTTPBadRequest(
+                title="Invalid Search Query",
+                description=f"The search query '{query}' contains invalid syntax. {err}",
+            ) from err
         sql_orderby = {
             "cmc": "cmc",
             "edhrec": "edhrec_rank",
