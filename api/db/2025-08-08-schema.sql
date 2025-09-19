@@ -45,6 +45,11 @@ CREATE TABLE IF NOT EXISTS magic.cards (
 
     edhrec_rank integer,
 
+    -- pricing data - will be null for cards without pricing information
+    price_usd real,
+    price_eur real,
+    price_tix real,
+
     -- creature only attributes - will be null a large fraction of the time
     creature_power integer,
     creature_power_text text,
@@ -96,3 +101,8 @@ CREATE INDEX idx_cards_sorceries ON magic.cards (card_name) WHERE card_types @> 
 */
 
 CREATE UNIQUE INDEX idx_cards_name ON magic.cards (card_name);
+
+-- Indexes for pricing data performance
+CREATE INDEX idx_cards_price_usd ON magic.cards (price_usd) WHERE price_usd IS NOT NULL;
+CREATE INDEX idx_cards_price_eur ON magic.cards (price_eur) WHERE price_eur IS NOT NULL;
+CREATE INDEX idx_cards_price_tix ON magic.cards (price_tix) WHERE price_tix IS NOT NULL;

@@ -494,6 +494,13 @@ class APIResource:
         card["card_color_identity"] = dict.fromkeys(card["color_identity"], True)
         card["card_keywords"] = dict.fromkeys(card.get("keywords", []), True)
         card["edhrec_rank"] = card.get("edhrec_rank")
+
+        # Extract pricing data if available
+        prices = card.get("prices", {})
+        card["price_usd"] = prices.get("usd")
+        card["price_eur"] = prices.get("eur")
+        card["price_tix"] = prices.get("tix")
+
         return card
 
     def get_stats(self: APIResource, **_: object) -> dict[str, Any]:
@@ -571,8 +578,11 @@ class APIResource:
                         creature_toughness,      -- 12
                         creature_toughness_text, -- 13
                         edhrec_rank,             -- 14
-                        oracle_text,             -- 15
-                        raw_card_blob            -- 16
+                        price_usd,               -- 15
+                        price_eur,               -- 16
+                        price_tix,               -- 17
+                        oracle_text,             -- 18
+                        raw_card_blob            -- 19
                     )
                     SELECT
                         card_blob->>'name' AS card_name, -- 1
@@ -589,8 +599,11 @@ class APIResource:
                         (card_blob->>'toughness_numeric')::integer AS creature_toughness, -- 12
                         card_blob->>'toughness' AS creature_toughness_text, -- 13
                         (card_blob->>'edhrec_rank')::integer AS edhrec_rank, -- 14
-                        card_blob->>'oracle_text' AS oracle_text, -- 15
-                        card_blob AS raw_card_blob -- 16
+                        (card_blob->>'price_usd')::real AS price_usd, -- 15
+                        (card_blob->>'price_eur')::real AS price_eur, -- 16
+                        (card_blob->>'price_tix')::real AS price_tix, -- 17
+                        card_blob->>'oracle_text' AS oracle_text, -- 18
+                        card_blob AS raw_card_blob -- 19
                     FROM
                         import_staging
                     ON CONFLICT (card_name) DO NOTHING

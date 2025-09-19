@@ -66,6 +66,13 @@ from api.parsing.parsing_f import generate_sql_query
         ("1<power", BinaryOperatorNode(NumericValueNode(1), "<", AttributeNode("power"))),
         ("3>cmc", BinaryOperatorNode(NumericValueNode(3), ">", AttributeNode("cmc"))),
         ("0<=toughness", BinaryOperatorNode(NumericValueNode(0), "<=", AttributeNode("toughness"))),
+        # Test cases for pricing attributes
+        ("usd>10", BinaryOperatorNode(AttributeNode("usd"), ">", NumericValueNode(10))),
+        ("eur<=5", BinaryOperatorNode(AttributeNode("eur"), "<=", NumericValueNode(5))),
+        ("tix<1", BinaryOperatorNode(AttributeNode("tix"), "<", NumericValueNode(1))),
+        ("usd=2.5", BinaryOperatorNode(AttributeNode("usd"), "=", NumericValueNode(2.5))),
+        ("eur!=10", BinaryOperatorNode(AttributeNode("eur"), "!=", NumericValueNode(10))),
+        ("tix>=0.5", BinaryOperatorNode(AttributeNode("tix"), ">=", NumericValueNode(0.5))),
     ],
 )
 def test_parse_to_nodes(test_input: str, expected_ast: QueryNode) -> None:
@@ -150,6 +157,40 @@ def test_parse_different_operators() -> None:
         result = parsing.parse_search_query(query)
         expected = BinaryOperatorNode(AttributeNode("cmc"), op, NumericValueNode(3))
         assert result.root == expected
+
+
+def test_parse_pricing_operators() -> None:
+    """Test parsing different comparison operators with pricing attributes."""
+    operators = [">", "<", ">=", "<=", "=", "!="]
+    pricing_attrs = ["usd", "eur", "tix"]
+
+    for attr in pricing_attrs:
+        for op in operators:
+            query = f"{attr}{op}5"
+            result = parsing.parse_search_query(query)
+            expected = BinaryOperatorNode(AttributeNode(attr), op, NumericValueNode(5))
+            assert result.root == expected, f"Failed for {attr}{op}5"
+
+
+def test_parse_combined_pricing_queries() -> None:
+    """Test parsing combined queries with pricing attributes."""
+    # Test combining pricing with other attributes
+    query1 = "cmc<=3 usd<5"
+    result1 = parsing.parse_search_query(query1)
+    expected1 = AndNode([
+        BinaryOperatorNode(AttributeNode("cmc"), "<=", NumericValueNode(3)),
+        BinaryOperatorNode(AttributeNode("usd"), "<", NumericValueNode(5)),
+    ])
+    assert result1.root == expected1
+
+    # Test combining multiple pricing attributes
+    query2 = "usd>10 OR eur<5"
+    result2 = parsing.parse_search_query(query2)
+    expected2 = OrNode([
+        BinaryOperatorNode(AttributeNode("usd"), ">", NumericValueNode(10)),
+        BinaryOperatorNode(AttributeNode("eur"), "<", NumericValueNode(5)),
+    ])
+    assert result2.root == expected2
 
 
 def test_parse_empty_query() -> None:
