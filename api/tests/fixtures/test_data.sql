@@ -4,7 +4,8 @@
 INSERT INTO magic.cards (
     card_name, cmc, mana_cost_text, mana_cost_jsonb, raw_card_blob,
     card_types, card_subtypes, card_colors, card_color_identity, card_keywords,
-    oracle_text, creature_power, creature_toughness, card_oracle_tags
+    oracle_text, creature_power, creature_toughness, card_oracle_tags,
+    card_set, collector_number, scryfall_id
 ) VALUES 
 (
     'Lightning Bolt', 
@@ -20,7 +21,10 @@ INSERT INTO magic.cards (
     'Lightning Bolt deals 3 damage to any target.',
     NULL,
     NULL,
-    '{"burn": true}'
+    '{"burn": true}',
+    'tst',
+    '001',
+    'test-lightning-bolt-id'
 ),
 (
     'Serra Angel',
@@ -36,7 +40,10 @@ INSERT INTO magic.cards (
     'Flying, vigilance',
     4,
     4,
-    '{"flying": true, "vigilance": true}'
+    '{"flying": true, "vigilance": true}',
+    'tst',
+    '002',
+    'test-serra-angel-id'
 ),
 (
     'Black Lotus',
@@ -52,8 +59,11 @@ INSERT INTO magic.cards (
     '{T}, Sacrifice Black Lotus: Add three mana of any one color.',
     NULL,
     NULL,
-    '{"mana-acceleration": true}'
-) ON CONFLICT (card_name) DO NOTHING;
+    '{"mana-acceleration": true}',
+    'tst',
+    '003',
+    'test-black-lotus-id'
+) ON CONFLICT (card_set, collector_number) DO NOTHING;
 
 -- Insert test tags
 INSERT INTO magic.tags (tag) VALUES 

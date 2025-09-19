@@ -396,8 +396,8 @@ class APIResource:
             logger.info("Cache miss!")
             response = self._session.get("https://api.scryfall.com/bulk-data", timeout=1).json()["data"]
             by_type = {r["type"]: r for r in response}
-            oracle_cards_download_uri = by_type["oracle_cards"]["download_uri"]
-            response = self._session.get(oracle_cards_download_uri, timeout=30).json()
+            default_cards_download_uri = by_type["default_cards"]["download_uri"]
+            response = self._session.get(default_cards_download_uri, timeout=30).json()
             with pathlib.Path(cache_file).open("w") as f:
                 json.dump(response, f, indent=4, sort_keys=True)
         else:
@@ -572,7 +572,10 @@ class APIResource:
                         creature_toughness_text, -- 13
                         edhrec_rank,             -- 14
                         oracle_text,             -- 15
-                        raw_card_blob            -- 16
+                        raw_card_blob,           -- 16
+                        card_set,                -- 17
+                        collector_number,        -- 18
+                        scryfall_id              -- 19
                     )
                     SELECT
                         card_blob->>'name' AS card_name, -- 1
@@ -590,10 +593,13 @@ class APIResource:
                         card_blob->>'toughness' AS creature_toughness_text, -- 13
                         (card_blob->>'edhrec_rank')::integer AS edhrec_rank, -- 14
                         card_blob->>'oracle_text' AS oracle_text, -- 15
-                        card_blob AS raw_card_blob -- 16
+                        card_blob AS raw_card_blob, -- 16
+                        card_blob->>'set' AS card_set, -- 17
+                        card_blob->>'collector_number' AS collector_number, -- 18
+                        card_blob->>'id' AS scryfall_id -- 19
                     FROM
                         import_staging
-                    ON CONFLICT (card_name) DO NOTHING
+                    ON CONFLICT (card_set, collector_number) DO NOTHING
                     """,
                 )
                 conn.commit()
