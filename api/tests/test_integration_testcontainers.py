@@ -84,59 +84,8 @@ class TestContainerIntegration:
             yield conn
 
     @pytest.fixture(scope="class")
-    def setup_test_database(self: TestContainerIntegration, postgres_container: PostgresContainer) -> None:
-        """Set up test database schema using APIResource migrations and load test data."""
-        # Set up environment for APIResource to use test database
-        host = postgres_container.get_container_host_ip()
-        port = postgres_container.get_exposed_port(5432)
-
-        # Store original environment variables
-        original_env = {
-            key: os.environ.get(key)
-            for key in ["PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD"]
-        }
-
-        try:
-            os.environ.update({
-                "PGHOST": host,
-                "PGPORT": str(port),
-                "PGDATABASE": "testdb",
-                "PGUSER": "testuser",
-                "PGPASSWORD": "testpass",
-            })
-
-            # Create APIResource instance to run migrations
-            api = APIResource()
-            # This will set up the schema using real migrations
-            api._setup_schema()
-
-            # Load test data only
-            test_dir = pathlib.Path(__file__).parent
-            data_file = test_dir / "fixtures" / "test_data.sql"
-
-            with api._conn_pool.connection() as conn, conn.cursor() as cursor:
-                cursor.execute(data_file.read_text())
-                conn.commit()
-
-            # Clean up connection pool
-            if hasattr(api, "_conn_pool"):
-                api._conn_pool.close()
-
-        finally:
-            # Restore original environment variables
-            for key, value in original_env.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
-    @pytest.fixture
-    def api_resource_with_test_db(
-        self: TestContainerIntegration,
-        postgres_container: PostgresContainer,
-        setup_test_database: None,  # noqa: ARG002
-    ) -> Generator[APIResource]:
-        """Create APIResource configured to use test database."""
+    def test_db_environment(self: TestContainerIntegration, postgres_container: PostgresContainer) -> Generator[None]:
+        """Set up and restore environment variables for test database connection."""
         # Store original environment variables
         original_env = {
             key: os.environ.get(key)
@@ -156,13 +105,7 @@ class TestContainerIntegration:
                 "PGPASSWORD": "testpass",
             })
 
-            # Create APIResource instance
-            api = APIResource()
-            yield api
-
-            # Clean up connection pool
-            if hasattr(api, "_conn_pool"):
-                api._conn_pool.close()
+            yield  # Test runs here with environment configured
 
         finally:
             # Restore original environment variables
@@ -171,6 +114,40 @@ class TestContainerIntegration:
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+
+    @pytest.fixture(scope="class")
+    def api_resource(self: TestContainerIntegration, test_db_environment: None) -> Generator[APIResource]:  # noqa: ARG002
+        """Create and yield an APIResource instance configured for test database."""
+        # Create APIResource instance
+        api = APIResource()
+        yield api
+
+        # Clean up connection pool
+        if hasattr(api, "_conn_pool"):
+            api._conn_pool.close()
+
+    @pytest.fixture(scope="class")
+    def setup_test_database(self: TestContainerIntegration, api_resource: APIResource) -> None:
+        """Set up database schema using real migrations and load test data."""
+        # Set up the schema using real migrations
+        api_resource._setup_schema()
+
+        # Load test data only
+        test_dir = pathlib.Path(__file__).parent
+        data_file = test_dir / "fixtures" / "test_data.sql"
+
+        with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
+            cursor.execute(data_file.read_text())
+            conn.commit()
+
+    @pytest.fixture
+    def api_resource_with_test_db(
+        self: TestContainerIntegration,
+        api_resource: APIResource,
+        setup_test_database: None,  # noqa: ARG002
+    ) -> APIResource:
+        """Return the APIResource instance configured with test database and data."""
+        return api_resource
 
     def test_database_ready(self: TestContainerIntegration, api_resource_with_test_db: APIResource) -> None:
         """Test that database is ready and migrations table exists."""
