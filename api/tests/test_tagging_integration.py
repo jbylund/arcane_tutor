@@ -9,7 +9,7 @@ from api.api_resource import APIResource
 
 
 @pytest.fixture(scope="class")
-def mock_db_pool() -> Generator[MagicMock, None, None]:
+def mock_db_pool() -> Generator[MagicMock]:
     """Mock database connection pool for the entire test class."""
     with patch("api.api_resource._make_pool") as mock_make_pool:
         mock_pool = MagicMock()
@@ -18,7 +18,7 @@ def mock_db_pool() -> Generator[MagicMock, None, None]:
 
 
 @pytest.fixture(autouse=True)
-def cleanup_api_resources() -> Generator[None, None, None]:
+def cleanup_api_resources() -> Generator[None]:
     """Automatically clean up any APIResource instances created during tests."""
     created_resources = []
 

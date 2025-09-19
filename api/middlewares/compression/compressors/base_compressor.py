@@ -33,7 +33,7 @@ class BaseCompressor:
         msg = "Subclasses must implement this method"
         raise NotImplementedError(msg)
 
-    def compress_stream(self: BaseCompressor, stream: object) -> Generator[bytes, None, None]:
+    def compress_stream(self: BaseCompressor, stream: object) -> Generator[bytes]:
         """Compress a stream of bytes using the compressor, yielding compressed chunks.
 
         Args:

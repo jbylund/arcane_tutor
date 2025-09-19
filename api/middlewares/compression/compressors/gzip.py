@@ -36,7 +36,7 @@ class GzipCompressor(BaseCompressor):
         """
         return gzip.compress(data, compresslevel=self.compression_level, mtime=0)
 
-    def compress_stream(self: GzipCompressor, stream: object) -> Generator[bytes, None, None]:
+    def compress_stream(self: GzipCompressor, stream: object) -> Generator[bytes]:
         """Compress a stream of bytes using gzip, yielding compressed chunks.
 
         Args:

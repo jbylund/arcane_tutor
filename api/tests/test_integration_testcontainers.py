@@ -1,0 +1,234 @@
+"""Integration tests using testcontainers with real PostgreSQL database."""
+
+from __future__ import annotations
+
+import os
+import pathlib
+import time
+from typing import TYPE_CHECKING
+
+import psycopg
+import psycopg.rows
+import pytest
+from testcontainers.postgres import PostgresContainer
+
+from api.api_resource import APIResource
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
+
+class TestContainerIntegration:
+    """Integration tests using testcontainers with real PostgreSQL."""
+
+    @pytest.fixture(scope="class")
+    def postgres_container(self: TestContainerIntegration) -> Generator[PostgresContainer]:
+        """Create and manage PostgreSQL test container."""
+        container = PostgresContainer(
+            image="postgres:18rc1",
+            username="testuser",
+            password="testpass",  # noqa: S106
+            dbname="testdb",
+        ).with_bind_ports(5432, 5433)  # Bind internal 5432 to host 5433
+
+        with container as postgres:
+            # Wait for database to be ready with proper health check
+            self._wait_for_database_ready(postgres)
+            yield postgres
+
+    def _wait_for_database_ready(self: TestContainerIntegration, postgres_container: PostgresContainer, timeout: int = 30) -> None:
+        """Wait for the database to be ready by running a simple query."""
+        host = postgres_container.get_container_host_ip()
+        port = postgres_container.get_exposed_port(5432)  # This should return 5433 due to bind_ports
+
+        connection_params = {
+            "host": host,
+            "port": port,
+            "dbname": "testdb",
+            "user": "testuser",
+            "password": "testpass",
+        }
+
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                with psycopg.connect(**connection_params) as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("SELECT 1")
+                        cursor.fetchone()
+                    return  # Database is ready
+            except (psycopg.Error, OSError):  # Catch specific database and connection errors
+                time.sleep(0.5)  # Wait before retrying
+                continue
+
+        msg = f"Database not ready within {timeout} seconds"
+        raise RuntimeError(msg)
+
+
+    @pytest.fixture(scope="class")
+    def test_db_environment(self: TestContainerIntegration, postgres_container: PostgresContainer) -> Generator[None]:
+        """Set up and restore environment variables for test database connection."""
+        # Store original environment variables
+        original_env = {
+            key: os.environ.get(key)
+            for key in ["PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD"]
+        }
+
+        try:
+            # Set environment variables for test database
+            host = postgres_container.get_container_host_ip()
+            port = postgres_container.get_exposed_port(5432)
+
+            os.environ.update({
+                "PGHOST": host,
+                "PGPORT": str(port),
+                "PGDATABASE": "testdb",
+                "PGUSER": "testuser",
+                "PGPASSWORD": "testpass",
+            })
+
+            yield  # Test runs here with environment configured
+
+        finally:
+            # Restore original environment variables
+            for key, value in original_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    @pytest.fixture(scope="class")
+    def api_resource(self: TestContainerIntegration, test_db_environment: None) -> Generator[APIResource]:  # noqa: ARG002
+        """Create APIResource instance, set up database schema and test data, then yield the configured instance."""
+        # Create APIResource instance
+        api = APIResource()
+
+        # Set up the schema using real migrations
+        api._setup_schema()
+
+        # Load test data
+        test_dir = pathlib.Path(__file__).parent
+        data_file = test_dir / "fixtures" / "test_data.sql"
+
+        with api._conn_pool.connection() as conn, conn.cursor() as cursor:
+            cursor.execute(data_file.read_text())
+            conn.commit()
+
+        # Yield the fully configured APIResource for tests to use
+        yield api
+
+        # Clean up connection pool
+        if hasattr(api, "_conn_pool"):
+            api._conn_pool.close()
+
+
+
+    def test_database_ready(self: TestContainerIntegration, api_resource: APIResource) -> None:
+        """Test that database is ready and migrations table exists."""
+        result = api_resource.db_ready()
+        assert result is True
+
+    def test_query_parsing_with_database(self: TestContainerIntegration, api_resource: APIResource) -> None:
+        """Test query parsing and execution against real database."""
+        # Test a simple search query
+        result = api_resource.search(
+            q="type:creature",
+            limit=10,
+        )
+
+        assert isinstance(result, dict)
+        assert "cards" in result
+
+        # Should find Serra Angel (the only creature in test data)
+        cards = result["cards"]
+        assert len(cards) == 1
+        assert cards[0]["name"] == "Serra Angel"
+
+    def test_card_search_by_name(self: TestContainerIntegration, api_resource: APIResource) -> None:
+        """Test searching for cards by name."""
+        result = api_resource.search(
+            q='name:"Lightning Bolt"',
+            limit=10,
+        )
+
+        assert isinstance(result, dict)
+        assert "cards" in result
+
+        cards = result["cards"]
+        assert len(cards) == 1
+
+        card = cards[0]
+        assert card["name"] == "Lightning Bolt"
+
+    def test_color_search(self: TestContainerIntegration, api_resource: APIResource) -> None:
+        """Test searching for cards by color."""
+        result = api_resource.search(
+            q="c:red",
+            limit=10,
+        )
+
+        assert isinstance(result, dict)
+        assert "cards" in result
+
+        # Should find Lightning Bolt (red card)
+        cards = result["cards"]
+        assert len(cards) == 1
+        assert cards[0]["name"] == "Lightning Bolt"
+
+    def test_cmc_search(self: TestContainerIntegration, api_resource: APIResource) -> None:
+        """Test searching for cards by converted mana cost."""
+        result = api_resource.search(
+            q="cmc=0",
+            limit=10,
+        )
+
+        assert isinstance(result, dict)
+        assert "cards" in result
+
+        # Should find Black Lotus (CMC 0)
+        cards = result["cards"]
+        assert len(cards) == 1
+        assert cards[0]["name"] == "Black Lotus"
+
+    def test_power_toughness_search(self: TestContainerIntegration, api_resource: APIResource) -> None:
+        """Test searching for creatures by power and toughness."""
+        result = api_resource.search(
+            q="power=4 toughness=4",
+            limit=10,
+        )
+
+        assert isinstance(result, dict)
+        assert "cards" in result
+
+        # Should find Serra Angel (4/4 creature)
+        cards = result["cards"]
+        assert len(cards) == 1
+        assert cards[0]["name"] == "Serra Angel"
+
+    def test_get_all_tags_with_real_db(self: TestContainerIntegration, api_resource: APIResource) -> None:
+        """Test getting all tags from real database."""
+        tags = api_resource._get_all_tags()
+
+        expected_tags = {"flying", "vigilance", "burn", "mana-acceleration"}
+        assert tags == expected_tags
+
+    def test_database_operations_isolation(self: TestContainerIntegration, api_resource: APIResource) -> None:
+        """Test that database operations are properly isolated."""
+        # This test verifies that we're working with the test database
+        # and not affecting the main application database
+
+        # Count cards in test database using a query that matches all cards
+        result = api_resource.search(q="cmc>=0", limit=100)
+
+        # Should only have our test cards
+        cards = result["cards"]
+        assert len(cards) == 3
+        card_names = {card["name"] for card in cards}
+        expected_names = {"Lightning Bolt", "Serra Angel", "Black Lotus"}
+        assert card_names == expected_names
+
+    def test_get_pid(self: TestContainerIntegration, api_resource: APIResource) -> None:
+        """Test basic API functionality with real database."""
+        pid = api_resource.get_pid()
+        assert isinstance(pid, int)
+        assert pid > 0

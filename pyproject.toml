@@ -1,7 +1,7 @@
 [tool.ruff]
 line-length = 120
 exclude = [".venv", "venv", "build", "dist", "migrations"]
-target-version = "py311"
+target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "C90", "I", "N", "D", "UP", "YTT", "ANN", "S", "BLE", "B", "A", "COM", "C4", "DTZ", "EM", "EXE", "FBT", "ICN", "INP", "PIE", "PT", "Q", "RET", "SIM", "T20", "TID", "TCH", "ARG", "PTH", "ERA", "PL", "RUF"]
@@ -23,7 +23,7 @@ disable = []
 ignore = [".venv", "venv", "build", "dist", "migrations"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.13"
 ignore_missing_imports = true
 strict = true
 # exclude = "(\.venv|venv|build|dist|migrations)"

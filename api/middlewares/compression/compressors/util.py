@@ -24,7 +24,7 @@ class StreamingBuffer(BytesIO):
         return ret
 
 
-def wrap_file(file_stream: object, block_size: int = 8192) -> Generator[bytes, None, None]:
+def wrap_file(file_stream: object, block_size: int = 8192) -> Generator[bytes]:
     """Wrap a file-like object to yield blocks of bytes.
 
     Args:

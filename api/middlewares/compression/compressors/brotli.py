@@ -37,7 +37,7 @@ class BrotliCompressor(BaseCompressor):
         """
         return brotli.compress(data, quality=self.compression_level)
 
-    def compress_stream(self: BrotliCompressor, stream: object) -> Generator[bytes, None, None]:
+    def compress_stream(self: BrotliCompressor, stream: object) -> Generator[bytes]:
         """Compress a stream of bytes using Brotli, yielding compressed chunks.
 
         Args:
