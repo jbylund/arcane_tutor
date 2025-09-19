@@ -342,7 +342,7 @@ class APIResource:
 
         result: dict[str, Any] = {}
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
-            cursor.execute(self.read_sql("set_statement_timeout"))
+            cursor.execute("set statement_timeout = 10000")
             if explain:
                 cursor.execute(explain_query, params)
                 for row in cursor.fetchall():
@@ -389,7 +389,7 @@ class APIResource:
 
         """
         records = self._run_query(
-            query=self.read_sql("db_ready"),
+            query="SELECT relname FROM pg_stat_user_tables",
         )["result"]
         existing_tables = {r["relname"] for r in records}
         return "migrations" in existing_tables
@@ -427,7 +427,7 @@ class APIResource:
             cursor.execute(self.read_sql("setup_migrations_table"))
             cursor.execute(self.read_sql("setup_migrations_indexes"))
 
-            cursor.execute(self.read_sql("get_applied_migrations"))
+            cursor.execute("SELECT file_name, file_sha256 FROM migrations ORDER BY date_applied")
             applied_migrations = [dict(r) for r in cursor]
             filesystem_migrations = get_migrations()
 
@@ -437,8 +437,8 @@ class APIResource:
                     already_applied.add(applied_migration["file_sha256"])
                 else:
                     already_applied.clear()
-                    cursor.execute(self.read_sql("clear_migrations"))
-                    cursor.execute(self.read_sql("drop_magic_schema"))
+                    cursor.execute("DELETE FROM migrations")
+                    cursor.execute("DROP SCHEMA IF EXISTS magic CASCADE")
                     conn.commit()
 
             for imigration in filesystem_migrations:
@@ -509,7 +509,7 @@ class APIResource:
             with self._conn_pool.connection() as conn:
                 conn = typecast("Connection", conn)
                 with conn.cursor() as cursor:
-                    cursor.execute(self.read_sql("_setup_complete"))
+                    cursor.execute("SELECT COUNT(*) AS num_cards FROM magic.cards")
                     return cursor.fetchall()[0]["num_cards"] > 0
         except Exception as oops:
             logger.error("Error checking if setup is complete: %s", oops, exc_info=True)
@@ -529,7 +529,7 @@ class APIResource:
             conn = typecast("Connection", conn)
             with conn.cursor() as cursor:
                 # create a temporary table to hold the cards
-                cursor.execute(self.read_sql("create_import_staging"))
+                cursor.execute("CREATE TEMPORARY TABLE import_staging (card_blob jsonb)")
 
                 before = time.monotonic()
                 # copy load the cards into the staging table
@@ -568,7 +568,7 @@ class APIResource:
                     len(to_insert) / (after_transfer - before),
                 )
 
-                cursor.execute(self.read_sql("select_import_staging_sample"))
+                cursor.execute("SELECT * FROM import_staging LIMIT 10")
                 return cursor.fetchall()
 
     def get_cards(
@@ -702,12 +702,26 @@ class APIResource:
             "asc": "ASC",
             "desc": "DESC",
         }.get(direction, "ASC")
-        full_query = self.read_sql("_search").format(
-            where_clause=where_clause,
-            sql_orderby=sql_orderby,
-            sql_direction=sql_direction,
-            limit=limit,
-        )
+        full_query = f"""
+        SELECT
+            card_name AS name,
+            mana_cost_text AS mana_cost,
+            oracle_text AS oracle_text,
+            raw_card_blob->>'set_name' AS set_name,
+            raw_card_blob->>'type_line' AS type_line,
+            raw_card_blob->'image_uris'->>'small' AS image_small,
+            raw_card_blob->'image_uris'->>'normal' AS image_normal,
+            raw_card_blob->'image_uris'->>'large' AS image_large
+        FROM
+            magic.cards AS card
+        WHERE
+            {where_clause}
+        ORDER BY
+            {sql_orderby} {sql_direction} NULLS LAST,
+            edhrec_rank ASC NULLS LAST
+        LIMIT
+            {limit}
+        """
         full_query = rewrap(full_query)
         logger.info("Full query: %s", full_query)
         logger.info("Params: %s", params)
@@ -743,7 +757,14 @@ class APIResource:
                 ptr = self._run_query(query=full_query, params=params, explain=False)["result"][0]["QUERY PLAN"][0]["Plan"]
                 total_cards = ptr["Plan Rows"]
             else:
-                full_query = self.read_sql("_search_count").format(where_clause=where_clause)
+                full_query = f"""
+                SELECT
+                    COUNT(1) AS total_cards
+                FROM
+                    magic.cards AS card
+                WHERE
+                    {where_clause}
+                """
                 full_query = rewrap(full_query)
                 logger.info("Full query: %s", full_query)
                 logger.info("Params: %s", params)
@@ -915,7 +936,11 @@ class APIResource:
             # Use SQL update with jsonb concatenation to add the tag
             for card_name_batch in itertools.batched(card_names, 200, strict=False):
                 cursor.execute(
-                    self.read_sql("update_tagged_cards"),
+                    """
+                    UPDATE magic.cards
+                    SET card_oracle_tags = card_oracle_tags || %(new_tag)s::jsonb
+                    WHERE card_name = ANY(%(card_names)s)
+                    """,
                     {
                         "card_names": list(card_name_batch),
                         "new_tag": json.dumps({tag: True}),
@@ -1104,12 +1129,23 @@ class APIResource:
 
                 # record existence of all tags
                 cursor.executemany(
-                    self.read_sql("insert_tags"),
+                    """
+                    INSERT INTO magic.tags (tag)
+                    VALUES (%(tag)s)
+                    ON CONFLICT (tag) DO NOTHING
+                    """,
                     [{"tag": slug} for slug in all_tags],
                 )
 
                 cursor.executemany(
-                    self.read_sql("insert_tag_relationships"),
+                    """
+                    INSERT INTO magic.tag_relationships
+                        (child_tag, parent_tag)
+                    VALUES
+                        (%(child_tag)s, %(parent_tag)s)
+                    ON CONFLICT (child_tag, parent_tag)
+                    DO NOTHING
+                    """,
                     [
                         {
                             "child_tag": r["child"]["slug"],
@@ -1199,5 +1235,5 @@ class APIResource:
 
     def _get_all_tags(self: APIResource) -> set[str]:
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
-            cursor.execute(self.read_sql("_get_all_tags"))
+            cursor.execute("SELECT tag FROM magic.tags")
             return {r["tag"] for r in cursor.fetchall()}

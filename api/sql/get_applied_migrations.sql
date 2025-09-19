@@ -1,1 +1,0 @@
-SELECT file_name, file_sha256 FROM migrations ORDER BY date_applied

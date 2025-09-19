@@ -1,1 +1,0 @@
-set statement_timeout = 10000

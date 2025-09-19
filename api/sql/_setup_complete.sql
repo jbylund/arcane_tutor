@@ -1,1 +1,0 @@
-SELECT COUNT(*) AS num_cards FROM magic.cards
