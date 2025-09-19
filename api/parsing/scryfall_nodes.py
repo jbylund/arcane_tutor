@@ -153,48 +153,64 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             SQL string for the binary operation.
         """
         if isinstance(self.lhs, ScryfallAttributeNode):
-            lhs_sql = self.lhs.to_sql(context)
-            attr = self.lhs.attribute_name
-            field_type = get_field_type(attr)
+            return self._handle_scryfall_attribute(context)
 
-            # handle numeric
-            if field_type == FieldType.NUMERIC:
+        # Fallback: use default logic
+        return super().to_sql(context)
+
+    def _handle_scryfall_attribute(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+        """Handle Scryfall attribute-specific SQL generation."""
+        lhs_sql = self.lhs.to_sql(context)
+        attr = self.lhs.attribute_name
+        field_type = get_field_type(attr)
+
+        # handle numeric
+        if field_type == FieldType.NUMERIC:
+            if self.operator == ":":
+                self.operator = "="
+            return super().to_sql(context)
+
+        if field_type == FieldType.JSONB_OBJECT:
+            return self._handle_jsonb_object(context)
+
+        if field_type == FieldType.JSONB_ARRAY:
+            return self._handle_jsonb_array(context)
+
+        if self.operator == ":":
+            return self._handle_colon_operator(context, field_type, lhs_sql, attr)
+
+        msg = f"Unknown field type: {field_type}"
+        raise NotImplementedError(msg)
+
+    def _handle_colon_operator(self: ScryfallBinaryOperatorNode, context: dict, field_type: str, lhs_sql: str, attr: str) -> str:
+        """Handle colon operator for different field types."""
+        if field_type == FieldType.TEXT:
+            # Handle set codes specially - use exact matching instead of pattern matching
+            if attr == "card_set_code":
                 if self.operator == ":":
                     self.operator = "="
                 return super().to_sql(context)
 
-            if field_type == FieldType.JSONB_OBJECT:
-                return self._handle_jsonb_object(context)
+            # Regular text field handling with pattern matching
+            return self._handle_text_field_pattern_matching(context, lhs_sql)
 
-            if field_type == FieldType.JSONB_ARRAY:
-                return self._handle_jsonb_array(context)
+        msg = f"Unknown field type: {field_type}"
+        raise NotImplementedError(msg)
 
-            if self.operator == ":":
-                if field_type == FieldType.TEXT:
-                    # Handle set codes specially - use exact matching instead of pattern matching
-                    if attr == "card_set_code":
-                        if self.operator == ":":
-                            self.operator = "="
-                        return super().to_sql(context)
-
-                    # Regular text field handling with pattern matching
-                    if isinstance(self.rhs, StringValueNode):
-                        txt_val = self.rhs.value.strip()
-                    elif isinstance(self.rhs, str):
-                        txt_val = self.rhs.strip()
-                    else:
-                        msg = f"Unknown type: {type(self.rhs)}, {locals()}"
-                        raise TypeError(msg)
-                    words = ["", *txt_val.split(), ""]
-                    pattern = "%".join(words)
-                    _param_name = param_name(pattern)
-                    context[_param_name] = pattern
-                    return f"({lhs_sql} ILIKE %({_param_name})s)"
-                msg = f"Unknown field type: {field_type}"
-                raise NotImplementedError(msg)
-
-        # Fallback: use default logic
-        return super().to_sql(context)
+    def _handle_text_field_pattern_matching(self: ScryfallBinaryOperatorNode, context: dict, lhs_sql: str) -> str:
+        """Handle pattern matching for regular text fields."""
+        if isinstance(self.rhs, StringValueNode):
+            txt_val = self.rhs.value.strip()
+        elif isinstance(self.rhs, str):
+            txt_val = self.rhs.strip()
+        else:
+            msg = f"Unknown type: {type(self.rhs)}, {locals()}"
+            raise TypeError(msg)
+        words = ["", *txt_val.split(), ""]
+        pattern = "%".join(words)
+        _param_name = param_name(pattern)
+        context[_param_name] = pattern
+        return f"({lhs_sql} ILIKE %({_param_name})s)"
 
     """
     col = query
