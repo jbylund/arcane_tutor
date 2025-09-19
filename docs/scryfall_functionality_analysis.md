@@ -116,38 +116,40 @@ Based on API comparison failures and official Scryfall documentation:
 
 ## API Comparison Results
 
-### Test Results Summary (23 queries tested)
-- **Official API success rate**: 69.6% (16/23)
-- **Local API success rate**: 78.3% (18/23) 
-- **Major discrepancies**: 100% (23/23)
+### Test Results Summary (21 queries tested)
+- **Official API success rate**: 100% (21/21)
+- **Local API success rate**: 100% (21/21) 
+- **Major discrepancies**: 4.8% (1/21)
 
 ### Key Findings
 
-1. **Server Availability Issues**
-   - Local API (scryfall.crestcourt.com) frequently returns 502 Bad Gateway
-   - Affects reliability of comparison testing
+1. **Server Stability Resolved**
+   - Local API (scryfall.crestcourt.com) now running reliably
+   - No more 502 Bad Gateway errors during testing
 
-2. **Functionality Gaps**
-   - Official Scryfall doesn't support `k:` or `keywords:` syntax (returns 400 errors)
-   - Local implementation has `ot:` (oracle tags) extension not in official API
-   - Significant result count differences suggest data or indexing issues
+2. **Significant Improvement in Results**
+   - Both APIs now achieving 100% success rates
+   - Major discrepancies reduced from 100% to 4.8% of queries
+   - Position correlation dramatically improved (0.98-1.00 for most queries)
 
-3. **Result Quality Issues**
-   - Position correlation consistently 0.00, indicating different sorting/ranking
-   - Large result count differences (e.g., 7,483 vs 0 for `cmc=3`)
-   - Suggests either data availability or query parsing differences
+3. **Remaining Data Quality Issues**
+   - Small result count differences (typically 1-15 cards)
+   - One major discrepancy with `keyword:flying` query (295 vs 0 results)
+   - Minor variations in card ordering and availability
 
 ## Recommendations
 
-### Immediate Priorities (Fix Core Functionality)
+### Immediate Priorities (Address Remaining Issues)
 
-1. **Fix Server Stability**
-   - Address 502 Bad Gateway errors on scryfall.crestcourt.com
-   - Implement proper error handling and failover
+1. **Investigate Data Discrepancies**
+   - Analyze small result count differences (1-15 cards typically)
+   - Investigate the `keyword:flying` major discrepancy (295 vs 0 results)
+   - Ensure card database completeness and currency
 
-2. **Data Completeness Audit**
-   - Investigate large result count discrepancies
-   - Ensure card database is complete and current
+2. **Data Source Analysis**
+   - Consider migrating from `oracle_cards` to `default_cards` bulk data
+   - Evaluate impact on data completeness and search accuracy
+   - Plan for handling non-unique card names in new data model
 
 3. **Query Parsing Alignment**
    - Review official Scryfall syntax for `k:`/`keywords:` support
