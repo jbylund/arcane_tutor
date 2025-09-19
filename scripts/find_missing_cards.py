@@ -135,7 +135,7 @@ def search_local_database(query: str, api_base_url: str, session: requests.Sessi
         cards = data["cards"]
         return {card.get("name") for card in cards if card.get("name")}
 
-    except Exception:
+    except Exception as e:
         logging.error(f"Error searching local database for query '{query}': {e}", exc_info=True)
         return set()
 
