@@ -14,9 +14,9 @@ Usage: python scryfall_comparison_script.py
 """
 
 import logging
+import tempfile
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 import requests
 import tenacity
@@ -380,12 +380,21 @@ def main() -> None:
     # Generate and save report
     report = comparator.generate_report(results)
 
-    # Use secure temporary file and backward-compatible path
-    report_path = Path("/tmp/scryfall_comparison_report.md")
-    report_path.write_text(report, encoding="utf-8")
+    # Save report to temporary file (secure)
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix="_scryfall_comparison_report.md",
+            delete=False,
+            prefix="scryfall_",
+        ) as temp_file:
+            temp_file.write(report)
+            temp_file.flush()
+            logger.info(f"Report saved to: {temp_file.name}")
+    except (OSError, PermissionError) as e:
+        logger.warning(f"Could not save report to file: {e}")
 
-    logger.info(f"Report saved to: {report_path}")
-    logger.info("Report content printed above")
+    logger.info("Report content available in logs above")
 
     # Print summary
     major_discrepancies = [r for r in results if r.major_discrepancy]
