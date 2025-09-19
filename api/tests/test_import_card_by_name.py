@@ -42,10 +42,10 @@ class TestImportCardByName(unittest.TestCase):
         assert hasattr(self.api_resource, "_scryfall_search")
         assert callable(self.api_resource._scryfall_search)
 
-    def test_insert_cards_to_database_function_exists(self) -> None:
-        """Test that _insert_cards_to_database method exists."""
-        assert hasattr(self.api_resource, "_insert_cards_to_database")
-        assert callable(self.api_resource._insert_cards_to_database)
+    def test_load_cards_with_staging_function_exists(self) -> None:
+        """Test that _load_cards_with_staging method exists."""
+        assert hasattr(self.api_resource, "_load_cards_with_staging")
+        assert callable(self.api_resource._load_cards_with_staging)
 
     @patch("requests.Session.get")
     def test_scryfall_search_returns_empty_for_404(self, mock_get: MagicMock) -> None:
@@ -148,10 +148,7 @@ class TestImportCardByName(unittest.TestCase):
         mock_preprocess.return_value = None
 
         result = self.api_resource.import_card_by_name(card_name="TestCard")
-
-        assert result["status"] == "filtered_out"
-        assert result["card_name"] == "TestCard"
-        assert "were filtered out during preprocessing" in result["message"]
+        assert result == {"status": "no_cards_after_preprocessing", "cards_loaded": 0, "sample_cards": [], "message": "No cards remaining after preprocessing"}
 
 
 if __name__ == "__main__":

@@ -241,11 +241,9 @@ class TestContainerIntegration:
         import_result = api_resource.import_card_by_name(card_name=card_name)
 
         # Check that the import was successful
-        assert import_result["status"] in ("success", "already_exists"), f"Import failed: {import_result}"
-        assert import_result["card_name"] == card_name
-
-        # Give it a moment and then check the database directly
-        time.sleep(0.1)  # Small delay to ensure consistency
+        assert import_result["status"] == "success"
+        assert import_result["cards_loaded"] == 1
+        assert card_name == import_result["sample_cards"][0]["name"]
 
         with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute("SELECT COUNT(*) as count FROM magic.cards WHERE card_name = %s", (card_name,))
