@@ -472,13 +472,13 @@ def test_arithmetic_vs_negation_ambiguity() -> None:
         ),
         # Keyword search with colon operator (should behave like @>)
         (
-            "keywords:trample",
+            "keyword:trample",
             r"(card.card_keywords @> %(p_dict_eydUcmFtcGxlJzogVHJ1ZX0)s)",
             {"p_dict_eydUcmFtcGxlJzogVHJ1ZX0": {"Trample": True}},
         ),
-        # Keyword search with alias 'k'
+        # Keyword search (updated from alias 'k')
         (
-            "k:haste",
+            "keyword:haste",
             r"(card.card_keywords @> %(p_dict_eydIYXN0ZSc6IFRydWV9)s)",
             {"p_dict_eydIYXN0ZSc6IFRydWV9": {"Haste": True}},
         ),
@@ -496,27 +496,27 @@ def test_arithmetic_vs_negation_ambiguity() -> None:
         ),
         # Test different operators
         (
-            "keywords>=flying",
+            "keyword>=flying",
             r"(card.card_keywords @> %(p_dict_eydGbHlpbmcnOiBUcnVlfQ)s)",
             {"p_dict_eydGbHlpbmcnOiBUcnVlfQ": {"Flying": True}},
         ),
         (
-            "keywords<=haste",
+            "keyword<=haste",
             r"(card.card_keywords <@ %(p_dict_eydIYXN0ZSc6IFRydWV9)s)",
             {"p_dict_eydIYXN0ZSc6IFRydWV9": {"Haste": True}},
         ),
         (
-            "keywords>trample",
+            "keyword>trample",
             r"(card.card_keywords @> %(p_dict_eydUcmFtcGxlJzogVHJ1ZX0)s AND card.card_keywords <> %(p_dict_eydUcmFtcGxlJzogVHJ1ZX0)s)",
             {"p_dict_eydUcmFtcGxlJzogVHJ1ZX0": {"Trample": True}},
         ),
         (
-            "keywords<vigilance",
+            "keyword<vigilance",
             r"(card.card_keywords <@ %(p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ)s AND card.card_keywords <> %(p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ)s)",
             {"p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ": {"Vigilance": True}},
         ),
         (
-            "keywords!=flying",
+            "keyword!=flying",
             r"(card.card_keywords <> %(p_dict_eydGbHlpbmcnOiBUcnVlfQ)s)",
             {"p_dict_eydGbHlpbmcnOiBUcnVlfQ": {"Flying": True}},
         ),
@@ -552,9 +552,9 @@ def test_keyword_sql_translation(input_query: str, expected_sql: str, expected_p
             r"(card.card_oracle_tags @> %(p_dict_eydkdWFsLWxhbmQnOiBUcnVlfQ)s)",
             {"p_dict_eydkdWFsLWxhbmQnOiBUcnVlfQ": {"dual-land": True}},
         ),
-        # Oracle tag with alias 'ot'
+        # Oracle tag with alias 'otag'
         (
-            "ot:haste",
+            "otag:haste",
             r"(card.card_oracle_tags @> %(p_dict_eydoYXN0ZSc6IFRydWV9)s)",
             {"p_dict_eydoYXN0ZSc6IFRydWV9": {"haste": True}},
         ),
