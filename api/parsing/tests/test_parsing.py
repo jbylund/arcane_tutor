@@ -148,6 +148,27 @@ def test_parse_quoted_strings() -> None:
     assert observed_ast.root == expected_ast
 
 
+def test_parse_set_searches() -> None:
+    """Test parsing set search queries."""
+    # Test full 'set:' syntax
+    query = "set:iko"
+    result = parsing.parse_search_query(query)
+    expected = BinaryOperatorNode(AttributeNode("set"), ":", StringValueNode("iko"))
+    assert result.root == expected
+
+    # Test 's:' shorthand
+    query = "s:thb"
+    result = parsing.parse_search_query(query)
+    expected = BinaryOperatorNode(AttributeNode("s"), ":", StringValueNode("thb"))
+    assert result.root == expected
+
+    # Test case insensitivity
+    query = "SET:m21"
+    result = parsing.parse_search_query(query)
+    expected = BinaryOperatorNode(AttributeNode("SET"), ":", StringValueNode("m21"))
+    assert result.root == expected
+
+
 def test_parse_different_operators() -> None:
     """Test parsing different comparison operators."""
     operators = [">", "<", ">=", "<=", "=", "!="]
@@ -691,6 +712,50 @@ def test_oracle_tag_sql_translation(input_query: str, expected_sql: str, expecte
 )
 def test_case_insensitive_attributes(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
     """Test that attribute names are case-insensitive."""
+    parsed = parsing.parse_scryfall_query(input_query)
+    context = {}
+    observed_sql = parsed.to_sql(context)
+    assert observed_sql == expected_sql, f"\nExpected: {expected_sql}\nObserved: {observed_sql}"
+    assert context == expected_parameters, f"\nExpected params: {expected_parameters}\nObserved params: {context}"
+
+
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_sql", "expected_parameters"),
+    argvalues=[
+        # Basic set search with full 'set:' syntax
+        (
+            "set:iko",
+            r"(card.raw_card_blob->>'set' = %(p_str_aWtv)s)",
+            {"p_str_aWtv": "iko"},
+        ),
+        # Set search with 's:' shorthand
+        (
+            "s:iko",
+            r"(card.raw_card_blob->>'set' = %(p_str_aWtv)s)",
+            {"p_str_aWtv": "iko"},
+        ),
+        # Case-insensitive set attribute search
+        (
+            "SET:iko",
+            r"(card.raw_card_blob->>'set' = %(p_str_aWtv)s)",
+            {"p_str_aWtv": "iko"},
+        ),
+        # Set search with different set codes
+        (
+            "set:thb",
+            r"(card.raw_card_blob->>'set' = %(p_str_dGhi)s)",
+            {"p_str_dGhi": "thb"},
+        ),
+        # Set search with multiple characters
+        (
+            "s:m21",
+            r"(card.raw_card_blob->>'set' = %(p_str_bTIx)s)",
+            {"p_str_bTIx": "m21"},
+        ),
+    ],
+)
+def test_set_search_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
+    """Test that set searches generate correct SQL."""
     parsed = parsing.parse_scryfall_query(input_query)
     context = {}
     observed_sql = parsed.to_sql(context)

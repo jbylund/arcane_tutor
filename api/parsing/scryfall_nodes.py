@@ -84,6 +84,12 @@ class ScryfallAttributeNode(AttributeNode):
         """
         del context
         remapped = SEARCH_NAME_TO_DB_NAME.get(self.attribute_name, self.attribute_name)
+        field_type = get_field_type(remapped)
+
+        # Handle JSONB_TEXT fields (e.g., set information from raw_card_blob)
+        if field_type == FieldType.JSONB_TEXT and remapped == "card_set":
+            return "card.raw_card_blob->>'set'"
+
         return f"card.{remapped}"
 
 
@@ -168,6 +174,12 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
 
             if field_type == FieldType.JSONB_ARRAY:
                 return self._handle_jsonb_array(context)
+
+            if field_type == FieldType.JSONB_TEXT:
+                # Handle JSONB_TEXT fields like set codes - treat : as = for exact matching
+                if self.operator == ":":
+                    self.operator = "="
+                return super().to_sql(context)
 
             if self.operator == ":":
                 if field_type == FieldType.TEXT:

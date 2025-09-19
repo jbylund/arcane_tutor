@@ -9,6 +9,7 @@ class FieldType(StrEnum):
     """Enumeration of supported database field types."""
     JSONB_ARRAY = "jsonb_array"
     JSONB_OBJECT = "jsonb_object"
+    JSONB_TEXT = "jsonb_text"  # For accessing text fields within JSONB
     NUMERIC = "numeric"
     TEXT = "text"
 
@@ -48,6 +49,7 @@ DB_COLUMNS = [
     FieldInfo("raw_card_blob", FieldType.JSONB_OBJECT, []),
     FieldInfo("oracle_text", FieldType.TEXT, ["oracle", "o"]),
     FieldInfo("card_oracle_tags", FieldType.JSONB_OBJECT, ["oracle_tags", "otag"]),
+    FieldInfo("card_set", FieldType.JSONB_TEXT, ["set", "s"]),
 ]
 
 KNOWN_CARD_ATTRIBUTES = set()
