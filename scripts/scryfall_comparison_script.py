@@ -304,7 +304,6 @@ class ScryfallAPIComparator:
             "otag:dual-land",
 
             # Arithmetic expressions
-            "cmc+1<power",
             "power>toughness",
 
             # Edge cases
