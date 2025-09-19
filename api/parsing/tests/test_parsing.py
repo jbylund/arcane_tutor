@@ -611,6 +611,12 @@ def test_keyword_sql_translation(input_query: str, expected_sql: str, expected_p
             r"(card.card_oracle_tags @> %(p_dict_eydoYXN0ZSc6IFRydWV9)s)",
             {"p_dict_eydoYXN0ZSc6IFRydWV9": {"haste": True}},
         ),
+        # Oracle tag with numeric prefix like "40k-model" - issue #110
+        (
+            "otag:40k-model",
+            r"(card.card_oracle_tags @> %(p_dict_eyc0MGstbW9kZWwnOiBUcnVlfQ)s)",
+            {"p_dict_eyc0MGstbW9kZWwnOiBUcnVlfQ": {"40k-model": True}},
+        ),
     ],
 )
 def test_oracle_tag_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
