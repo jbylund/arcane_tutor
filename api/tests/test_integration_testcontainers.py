@@ -104,7 +104,7 @@ class TestContainerIntegration:
         api = APIResource()
 
         # Set up the schema using real migrations
-        api._setup_schema()
+        api.setup_schema()
 
         # Load test data
         test_dir = pathlib.Path(__file__).parent
