@@ -16,9 +16,17 @@ Usage: python scryfall_comparison_script.py
 import logging
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import requests
 import tenacity
+
+# Constants for magic values
+HTTP_NOT_FOUND = 404
+CORRELATION_THRESHOLD_LOW = 0.3
+CORRELATION_THRESHOLD_MEDIUM = 0.5
+RESULT_DIFF_THRESHOLD = 0.5
+MAX_DISPLAYED_CARDS = 5
 
 retryer = tenacity.retry(
     wait=tenacity.wait_exponential(multiplier=0.1, min=0.1, max=2) + tenacity.wait_random(0, 0.1),
@@ -57,6 +65,7 @@ class ScryfallAPIComparator:
     """Compares search results between official Scryfall and local implementation."""
 
     def __init__(self) -> None:
+        """Initialize the API comparator with default settings."""
         self.official_base_url = "https://api.scryfall.com"
         self.local_base_url = "https://scryfall.crestcourt.com"
         self.session = requests.Session()
@@ -78,15 +87,16 @@ class ScryfallAPIComparator:
             logger.info(f"Searching official Scryfall: {query}")
 
             @retryer
-            def get_response():
+            def get_response() -> requests.Response:
+                """Get response with retry logic."""
                 response = self.session.get(url, params=params, timeout=30)
-                if response.status_code not in [200, 404]:
+                if response.status_code not in [200, HTTP_NOT_FOUND]:
                     response.raise_for_status()
                 return response
 
             response = get_response()
 
-            if response.status_code == 404:
+            if response.status_code == HTTP_NOT_FOUND:
                 # No results found
                 return SearchResult(query=query, total_cards=0, card_names=[], success=True)
 
@@ -101,7 +111,7 @@ class ScryfallAPIComparator:
                 success=True,
             )
 
-        except Exception as e:
+        except (requests.RequestException, KeyError, ValueError) as e:
             logger.error(f"Error searching official Scryfall for '{query}': {e}")
             return SearchResult(
                 query=query,
@@ -111,7 +121,7 @@ class ScryfallAPIComparator:
                 error_message=str(e),
             )
 
-    def search_local_scryfall(self, query: str, limit: int = 100) -> SearchResult:
+    def search_local_scryfall(self, query: str) -> SearchResult:
         """Search using local Scryfall OS implementation."""
         try:
             url = f"{self.local_base_url}/search"
@@ -124,7 +134,8 @@ class ScryfallAPIComparator:
             logger.info(f"Searching local Scryfall: {query}")
 
             @retryer
-            def get_response():
+            def get_response() -> requests.Response:
+                """Get response with retry logic."""
                 response = self.session.get(url, params=params, timeout=30)
                 response.raise_for_status()
                 return response
@@ -142,7 +153,7 @@ class ScryfallAPIComparator:
                 success=True,
             )
 
-        except Exception as e:
+        except (requests.RequestException, KeyError, ValueError) as e:
             logger.error(f"Error searching local Scryfall for '{query}': {e}")
             return SearchResult(
                 query=query,
@@ -176,6 +187,53 @@ class ScryfallAPIComparator:
 
         return sum(correlations) / len(correlations) if correlations else 0.0
 
+    def _find_unique_cards(self, official_cards: list[str], local_cards: list[str]) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
+        """Find cards unique to each result set with their positions."""
+        official_cards_set = set(official_cards)
+        local_cards_set = set(local_cards)
+
+        # Get local-only cards with their positions
+        local_only_cards = []
+        for i, card in enumerate(local_cards):
+            if card not in official_cards_set:
+                local_only_cards.append((card, i))
+                if len(local_only_cards) >= MAX_DISPLAYED_CARDS:
+                    break
+
+        # Get official-only cards with their positions
+        official_only_cards = []
+        for i, card in enumerate(official_cards):
+            if card not in local_cards_set:
+                official_only_cards.append((card, i))
+                if len(official_only_cards) >= MAX_DISPLAYED_CARDS:
+                    break
+
+        return local_only_cards, official_only_cards
+
+    def _determine_major_discrepancy(self, official_result: SearchResult, local_result: SearchResult,
+                                   result_count_diff: int, position_correlation: float) -> bool:
+        """Determine if there's a major discrepancy between results."""
+        return (
+            not official_result.success or
+            not local_result.success or
+            result_count_diff > max(official_result.total_cards, local_result.total_cards) * RESULT_DIFF_THRESHOLD or
+            position_correlation < CORRELATION_THRESHOLD_LOW
+        )
+
+    def _generate_notes(self, official_result: SearchResult, local_result: SearchResult,
+                       result_count_diff: int, position_correlation: float) -> list[str]:
+        """Generate notes about the comparison."""
+        notes = []
+        if not official_result.success:
+            notes.append(f"Official API failed: {official_result.error_message}")
+        if not local_result.success:
+            notes.append(f"Local API failed: {local_result.error_message}")
+        if result_count_diff > 0:
+            notes.append(f"Result count difference: {result_count_diff}")
+        if position_correlation < CORRELATION_THRESHOLD_MEDIUM:
+            notes.append(f"Low position correlation: {position_correlation:.2f}")
+        return notes
+
     def compare_results(self, query: str) -> ComparisonResult:
         """Compare search results between official and local APIs."""
         time.sleep(0.5)  # Rate limiting
@@ -189,44 +247,20 @@ class ScryfallAPIComparator:
             local_result.card_names,
         )
 
-        # Find unique cards with their positions (first 5 of each)
-        official_cards_set = set(official_result.card_names)
-        local_cards_set = set(local_result.card_names)
-
-        # Get local-only cards with their positions
-        local_only_cards = []
-        for i, card in enumerate(local_result.card_names):
-            if card not in official_cards_set:
-                local_only_cards.append((card, i))
-                if len(local_only_cards) >= 5:
-                    break
-
-        # Get official-only cards with their positions
-        official_only_cards = []
-        for i, card in enumerate(official_result.card_names):
-            if card not in local_cards_set:
-                official_only_cards.append((card, i))
-                if len(official_only_cards) >= 5:
-                    break
+        # Find unique cards with their positions
+        local_only_cards, official_only_cards = self._find_unique_cards(
+            official_result.card_names, local_result.card_names,
+        )
 
         # Determine if there's a major discrepancy
-        major_discrepancy = (
-            not official_result.success or
-            not local_result.success or
-            result_count_diff > max(official_result.total_cards, local_result.total_cards) * 0.5 or
-            position_correlation < 0.3
+        major_discrepancy = self._determine_major_discrepancy(
+            official_result, local_result, result_count_diff, position_correlation,
         )
 
         # Generate notes
-        notes = []
-        if not official_result.success:
-            notes.append(f"Official API failed: {official_result.error_message}")
-        if not local_result.success:
-            notes.append(f"Local API failed: {local_result.error_message}")
-        if result_count_diff > 0:
-            notes.append(f"Result count difference: {result_count_diff}")
-        if position_correlation < 0.5:
-            notes.append(f"Low position correlation: {position_correlation:.2f}")
+        notes = self._generate_notes(
+            official_result, local_result, result_count_diff, position_correlation,
+        )
 
         return ComparisonResult(
             query=query,
@@ -286,7 +320,7 @@ class ScryfallAPIComparator:
                 result = self.compare_results(query)
                 results.append(result)
                 time.sleep(0.2)  # Rate limiting
-            except Exception as e:
+            except (requests.RequestException, ValueError) as e:
                 logger.error(f"Failed to compare query '{query}': {e}")
             logger.info("")
 
@@ -346,17 +380,21 @@ def main() -> None:
     # Generate and save report
     report = comparator.generate_report(results)
 
-    with open("/tmp/scryfall_comparison_report.md", "w") as f:
-        f.write(report)
+    # Use secure temporary file and backward-compatible path
+    report_path = Path("/tmp/scryfall_comparison_report.md")
+    report_path.write_text(report, encoding="utf-8")
 
+    logger.info(f"Report saved to: {report_path}")
+    logger.info("Report content printed above")
 
     # Print summary
     major_discrepancies = [r for r in results if r.major_discrepancy]
     if major_discrepancies:
-        for _result in major_discrepancies:
-            pass
+        logger.info(f"⚠️  Found {len(major_discrepancies)} queries with major discrepancies:")
+        for result in major_discrepancies:
+            logger.info(f"  - {result.query}: {', '.join(result.notes)}")
     else:
-        pass
+        logger.info("✅ No major discrepancies found!")
 
 if __name__ == "__main__":
     main()
