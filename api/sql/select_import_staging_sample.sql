@@ -1,0 +1,1 @@
+SELECT * FROM import_staging LIMIT 10

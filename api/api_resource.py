@@ -208,6 +208,20 @@ class APIResource:
         self._tagger_client = TaggerClient()
         logger.info("Worker with pid has conn pool %s", self._conn_pool)
 
+    @cached(cache={})
+    def read_sql(self: APIResource, filename: str) -> str:
+        """Read SQL from a file with caching.
+
+        Args:
+            filename: Name of the SQL file to read (without .sql extension).
+
+        Returns:
+            The SQL content as a string.
+        """
+        sql_path = pathlib.Path(__file__).parent / "sql" / f"{filename}.sql"
+        with sql_path.open() as f:
+            return f.read().strip()
+
     def _handle(self: APIResource, req: falcon.Request, resp: falcon.Response) -> None:
         """Handle a Falcon request and set the response.
 
@@ -328,7 +342,7 @@ class APIResource:
 
         result: dict[str, Any] = {}
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
-            cursor.execute("set statement_timeout = 10000")
+            cursor.execute(self.read_sql("set_statement_timeout"))
             if explain:
                 cursor.execute(explain_query, params)
                 for row in cursor.fetchall():
@@ -375,7 +389,7 @@ class APIResource:
 
         """
         records = self._run_query(
-            query="SELECT relname FROM pg_stat_user_tables",
+            query=self.read_sql("db_ready"),
         )["result"]
         existing_tables = {r["relname"] for r in records}
         return "migrations" in existing_tables
@@ -410,20 +424,10 @@ class APIResource:
         # if any already applied migrations differ from what we want
         # to apply then drop everything
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
-            cursor.execute(
-                """CREATE TABLE IF NOT EXISTS migrations (
-                    file_name text not null,
-                    file_sha256 text not null,
-                    date_applied timestamp default now(),
-                    file_contents text not null
-                )""",
-            )
-            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_migrations_filename ON migrations (file_name)")
-            cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_migrations_file_sha256 ON migrations USING HASH (file_sha256)",
-            )
+            cursor.execute(self.read_sql("setup_migrations_table"))
+            cursor.execute(self.read_sql("setup_migrations_indexes"))
 
-            cursor.execute("SELECT file_name, file_sha256 FROM migrations ORDER BY date_applied")
+            cursor.execute(self.read_sql("get_applied_migrations"))
             applied_migrations = [dict(r) for r in cursor]
             filesystem_migrations = get_migrations()
 
@@ -433,8 +437,8 @@ class APIResource:
                     already_applied.add(applied_migration["file_sha256"])
                 else:
                     already_applied.clear()
-                    cursor.execute("DELETE FROM migrations")
-                    cursor.execute("DROP SCHEMA IF EXISTS magic CASCADE")
+                    cursor.execute(self.read_sql("clear_migrations"))
+                    cursor.execute(self.read_sql("drop_magic_schema"))
                     conn.commit()
 
             for imigration in filesystem_migrations:
@@ -444,13 +448,7 @@ class APIResource:
                     continue
                 logger.info("Applying %s ...", imigration["file_name"])
                 cursor.execute(imigration["file_contents"])
-                cursor.execute(
-                    """
-                        INSERT INTO migrations
-                            (  file_name  ,   file_sha256  ,   file_contents  ) VALUES
-                            (%(file_name)s, %(file_sha256)s, %(file_contents)s)""",
-                    imigration,
-                )
+                cursor.execute(self.read_sql("insert_migration"), imigration)
                 conn.commit()
 
     def _get_cards_to_insert(self: APIResource) -> list[dict[str, Any]]:
@@ -511,7 +509,7 @@ class APIResource:
             with self._conn_pool.connection() as conn:
                 conn = typecast("Connection", conn)
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT COUNT(*) AS num_cards FROM magic.cards")
+                    cursor.execute(self.read_sql("_setup_complete"))
                     return cursor.fetchall()[0]["num_cards"] > 0
         except Exception as oops:
             logger.error("Error checking if setup is complete: %s", oops, exc_info=True)
@@ -531,7 +529,7 @@ class APIResource:
             conn = typecast("Connection", conn)
             with conn.cursor() as cursor:
                 # create a temporary table to hold the cards
-                cursor.execute("CREATE TEMPORARY TABLE import_staging (card_blob jsonb)")
+                cursor.execute(self.read_sql("create_import_staging"))
 
                 before = time.monotonic()
                 # copy load the cards into the staging table
@@ -553,49 +551,7 @@ class APIResource:
                     rate,
                 )
 
-                cursor.execute(
-                    query="""
-                    INSERT INTO magic.cards
-                    (
-                        card_name,               -- 1
-                        cmc,                     -- 2
-                        mana_cost_text,          -- 3
-                        mana_cost_jsonb,         -- 4
-                        card_types,              -- 5
-                        card_subtypes,           -- 6
-                        card_colors,             -- 7
-                        card_color_identity,     -- 8
-                        card_keywords,           -- 9
-                        creature_power,          -- 10
-                        creature_power_text,     -- 11
-                        creature_toughness,      -- 12
-                        creature_toughness_text, -- 13
-                        edhrec_rank,             -- 14
-                        oracle_text,             -- 15
-                        raw_card_blob            -- 16
-                    )
-                    SELECT
-                        card_blob->>'name' AS card_name, -- 1
-                        (card_blob->>'cmc')::float::integer AS cmc, -- 2
-                        card_blob->>'mana_cost' AS mana_cost_text, -- 3
-                        card_blob->'mana_cost' AS mana_cost_jsonb, -- 4
-                        card_blob->'card_types' AS card_types, -- 5
-                        card_blob->'card_subtypes' AS card_subtypes, -- 6
-                        card_blob->'card_colors' AS card_colors, -- 7
-                        card_blob->'card_color_identity' AS card_color_identity, -- 8
-                        card_blob->'card_keywords' AS card_keywords, -- 9
-                        (card_blob->>'power_numeric')::integer AS creature_power, -- 10
-                        card_blob->>'power' AS creature_power_text, -- 11
-                        (card_blob->>'toughness_numeric')::integer AS creature_toughness, -- 12
-                        card_blob->>'toughness' AS creature_toughness_text, -- 13
-                        (card_blob->>'edhrec_rank')::integer AS edhrec_rank, -- 14
-                        card_blob->>'oracle_text' AS oracle_text, -- 15
-                        card_blob AS raw_card_blob -- 16
-                    FROM
-                        import_staging
-                    ON CONFLICT (card_name) DO NOTHING
-                    """,
-                )
+                cursor.execute(query=self.read_sql("import_data"))
                 conn.commit()
 
                 after_transfer = time.monotonic()
@@ -612,7 +568,7 @@ class APIResource:
                     len(to_insert) / (after_transfer - before),
                 )
 
-                cursor.execute("SELECT * FROM import_staging LIMIT 10")
+                cursor.execute(self.read_sql("select_import_staging_sample"))
                 return cursor.fetchall()
 
     def get_cards(
@@ -637,19 +593,7 @@ class APIResource:
 
         """
         return self._run_query(
-            query="""
-            SELECT
-                *
-            FROM
-                magic.cards
-            WHERE
-                (%(min_name)s::text IS NULL OR %(min_name)s::text < card_name) AND
-                (%(max_name)s::text IS NULL OR card_name < %(max_name)s::text)
-            ORDER BY
-                card_name
-            LIMIT
-                %(limit)s
-            """,
+            query=self.read_sql("get_cards"),
             params={
                 "min_name": min_name,
                 "max_name": max_name,
@@ -758,26 +702,12 @@ class APIResource:
             "asc": "ASC",
             "desc": "DESC",
         }.get(direction, "ASC")
-        full_query = f"""
-        SELECT
-            card_name AS name,
-            mana_cost_text AS mana_cost,
-            oracle_text AS oracle_text,
-            raw_card_blob->>'set_name' AS set_name,
-            raw_card_blob->>'type_line' AS type_line,
-            raw_card_blob->'image_uris'->>'small' AS image_small,
-            raw_card_blob->'image_uris'->>'normal' AS image_normal,
-            raw_card_blob->'image_uris'->>'large' AS image_large
-        FROM
-            magic.cards AS card
-        WHERE
-            {where_clause}
-        ORDER BY
-            {sql_orderby} {sql_direction} NULLS LAST,
-            edhrec_rank ASC NULLS LAST
-        LIMIT
-            {limit}
-        """
+        full_query = self.read_sql("_search").format(
+            where_clause=where_clause,
+            sql_orderby=sql_orderby,
+            sql_direction=sql_direction,
+            limit=limit,
+        )
         full_query = rewrap(full_query)
         logger.info("Full query: %s", full_query)
         logger.info("Params: %s", params)
@@ -813,14 +743,7 @@ class APIResource:
                 ptr = self._run_query(query=full_query, params=params, explain=False)["result"][0]["QUERY PLAN"][0]["Plan"]
                 total_cards = ptr["Plan Rows"]
             else:
-                full_query = f"""
-                SELECT
-                    COUNT(1) AS total_cards
-                FROM
-                    magic.cards AS card
-                WHERE
-                    {where_clause}
-                """
+                full_query = self.read_sql("_search_count").format(where_clause=where_clause)
                 full_query = rewrap(full_query)
                 logger.info("Full query: %s", full_query)
                 logger.info("Params: %s", params)
@@ -887,77 +810,13 @@ class APIResource:
     def get_common_card_types(self: APIResource, **_: object) -> list[dict[str, Any]]:
         """Get the common card types from the database."""
         return self._run_query(
-            query="""
-WITH card_types AS (
-    SELECT
-        jsonb_array_elements_text(card_types) as type_name
-    FROM
-        magic.cards
-    WHERE
-        card_types IS NOT NULL
-),
-card_subtypes AS (
-    SELECT
-        jsonb_array_elements_text(card_subtypes) as subtype_name
-    FROM
-        magic.cards
-    WHERE
-        card_subtypes IS NOT NULL
-),
-card_types_and_subtypes AS (
-    SELECT
-        type_name
-    FROM card_types
-    UNION ALL
-    SELECT
-        subtype_name
-    FROM card_subtypes
-),
-with_min_count AS (
-    SELECT
-        type_name,
-        count(1) as num_occurrences
-    FROM card_types_and_subtypes
-    GROUP BY type_name
-    HAVING count(1) >= 5
-)
-SELECT
-    type_name AS t,
-    num_occurrences AS n
-FROM
-    with_min_count
-ORDER BY
-    type_name""",
+            query=self.read_sql("get_common_card_types"),
         )["result"]
 
     def get_common_keywords(self: APIResource, **_: object) -> list[dict[str, Any]]:
         """Get the common keywords from the database."""
         return self._run_query(
-            query="""
-WITH card_keywords AS (
-    SELECT
-        jsonb_object_keys(card_keywords) as keyword_name
-    FROM
-        magic.cards
-    WHERE
-        card_keywords IS NOT NULL
-        AND jsonb_typeof(card_keywords) = 'object'
-),
-with_min_count AS (
-    SELECT
-        keyword_name,
-        count(1) as num_occurrences
-    FROM card_keywords
-    GROUP BY keyword_name
-    HAVING count(1) >= 5
-)
-SELECT
-    keyword_name AS k,
-    num_occurrences AS n
-FROM
-    with_min_count
-ORDER BY
-    keyword_name""",
+            query=self.read_sql("get_common_keywords"),
         )["result"]
 
     def _fetch_cards_from_scryfall(self: APIResource, *, tag: str) -> list[str]:
@@ -1056,11 +915,7 @@ ORDER BY
             # Use SQL update with jsonb concatenation to add the tag
             for card_name_batch in itertools.batched(card_names, 200, strict=False):
                 cursor.execute(
-                    """
-                    UPDATE magic.cards
-                    SET card_oracle_tags = card_oracle_tags || %(new_tag)s::jsonb
-                    WHERE card_name = ANY(%(card_names)s)
-                    """,
+                    self.read_sql("update_tagged_cards"),
                     {
                         "card_names": list(card_name_batch),
                         "new_tag": json.dumps({tag: True}),
@@ -1249,23 +1104,12 @@ ORDER BY
 
                 # record existence of all tags
                 cursor.executemany(
-                    """
-                    INSERT INTO magic.tags (tag)
-                    VALUES (%(tag)s)
-                    ON CONFLICT (tag) DO NOTHING
-                    """,
+                    self.read_sql("insert_tags"),
                     [{"tag": slug} for slug in all_tags],
                 )
 
                 cursor.executemany(
-                    """
-                    INSERT INTO magic.tag_relationships
-                        (child_tag, parent_tag)
-                    VALUES
-                        (%(child_tag)s, %(parent_tag)s)
-                    ON CONFLICT (child_tag, parent_tag)
-                    DO NOTHING
-                    """,
+                    self.read_sql("insert_tag_relationships"),
                     [
                         {
                             "child_tag": r["child"]["slug"],
@@ -1355,5 +1199,5 @@ ORDER BY
 
     def _get_all_tags(self: APIResource) -> set[str]:
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
-            cursor.execute("SELECT tag FROM magic.tags")
+            cursor.execute(self.read_sql("_get_all_tags"))
             return {r["tag"] for r in cursor.fetchall()}

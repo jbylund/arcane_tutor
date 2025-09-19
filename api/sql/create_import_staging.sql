@@ -1,0 +1,1 @@
+CREATE TEMPORARY TABLE import_staging (card_blob jsonb)
