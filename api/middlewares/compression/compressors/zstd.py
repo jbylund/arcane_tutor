@@ -38,7 +38,7 @@ class ZstdCompressor(BaseCompressor):
         cctx = zstd.ZstdCompressor(level=self.compression_level)
         return cctx.compress(data)
 
-    def compress_stream(self: ZstdCompressor, stream: object) -> Generator[bytes, None, None]:
+    def compress_stream(self: ZstdCompressor, stream: object) -> Generator[bytes]:
         """Compress a stream of bytes using Zstandard, yielding compressed chunks.
 
         Args:
