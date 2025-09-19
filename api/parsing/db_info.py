@@ -32,7 +32,7 @@ class FieldInfo:
 DB_COLUMNS = [
     FieldInfo("card_colors", FieldType.JSONB_OBJECT, ["color", "colors", "c"]),
     FieldInfo("card_color_identity", FieldType.JSONB_OBJECT, ["color_identity", "coloridentity", "id", "identity"]),
-    FieldInfo("card_keywords", FieldType.JSONB_OBJECT, ["keyword", "keywords", "k"]),
+    FieldInfo("card_keywords", FieldType.JSONB_OBJECT, ["keyword"]),
     FieldInfo("card_name", FieldType.TEXT, ["name"]),
     FieldInfo("card_subtypes", FieldType.JSONB_ARRAY, ["subtype", "subtypes"]),
     FieldInfo("card_types", FieldType.JSONB_ARRAY, ["type", "types", "t"]),
@@ -42,9 +42,12 @@ DB_COLUMNS = [
     FieldInfo("edhrec_rank", FieldType.NUMERIC, []),
     FieldInfo("mana_cost_jsonb", FieldType.JSONB_OBJECT, ["mana"]),
     FieldInfo("mana_cost_text", FieldType.TEXT, ["mana"]),
+    FieldInfo("price_usd", FieldType.NUMERIC, ["usd"]),
+    FieldInfo("price_eur", FieldType.NUMERIC, ["eur"]),
+    FieldInfo("price_tix", FieldType.NUMERIC, ["tix"]),
     FieldInfo("raw_card_blob", FieldType.JSONB_OBJECT, []),
     FieldInfo("oracle_text", FieldType.TEXT, ["oracle", "o"]),
-    FieldInfo("card_oracle_tags", FieldType.JSONB_OBJECT, ["oracle_tags", "ot", "otag"]),
+    FieldInfo("card_oracle_tags", FieldType.JSONB_OBJECT, ["oracle_tags", "otag"]),
 ]
 
 KNOWN_CARD_ATTRIBUTES = set()

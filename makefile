@@ -50,6 +50,9 @@ hlep: help
 up: datadir images down check_env # @doc start services for scryfallos
 	cd $(GIT_ROOT) && docker compose --file $(BASE_COMPOSE) up --remove-orphans --abort-on-container-exit
 
+up-detach: datadir images down check_env
+	cd $(GIT_ROOT) && docker compose --file $(BASE_COMPOSE) up --remove-orphans --detach
+
 down: # @doc stop all services
 	docker compose --file $(BASE_COMPOSE) down --remove-orphans > /dev/null
 

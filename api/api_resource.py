@@ -404,7 +404,7 @@ class APIResource:
             logger.info("Cache hit!")
         return response
 
-    def _setup_schema(self: APIResource) -> None:
+    def setup_schema(self: APIResource, *_: object, **__: object) -> None:
         """Set up the database schema and apply migrations as needed."""
         # read migrations from the db dir...
         # if any already applied migrations differ from what we want
@@ -494,6 +494,13 @@ class APIResource:
         card["card_color_identity"] = dict.fromkeys(card["color_identity"], True)
         card["card_keywords"] = dict.fromkeys(card.get("keywords", []), True)
         card["edhrec_rank"] = card.get("edhrec_rank")
+
+        # Extract pricing data if available
+        prices = card.get("prices", {})
+        card["price_usd"] = prices.get("usd")
+        card["price_eur"] = prices.get("eur")
+        card["price_tix"] = prices.get("tix")
+
         return card
 
     def get_stats(self: APIResource, **_: object) -> dict[str, Any]:
@@ -523,7 +530,7 @@ class APIResource:
         if self._setup_complete():
             return None
 
-        self._setup_schema()
+        self.setup_schema()
 
         to_insert = self._get_cards_to_insert()
 
@@ -571,8 +578,11 @@ class APIResource:
                         creature_toughness,      -- 12
                         creature_toughness_text, -- 13
                         edhrec_rank,             -- 14
-                        oracle_text,             -- 15
-                        raw_card_blob            -- 16
+                        price_usd,               -- 15
+                        price_eur,               -- 16
+                        price_tix,               -- 17
+                        oracle_text,             -- 18
+                        raw_card_blob            -- 19
                     )
                     SELECT
                         card_blob->>'name' AS card_name, -- 1
@@ -589,8 +599,11 @@ class APIResource:
                         (card_blob->>'toughness_numeric')::integer AS creature_toughness, -- 12
                         card_blob->>'toughness' AS creature_toughness_text, -- 13
                         (card_blob->>'edhrec_rank')::integer AS edhrec_rank, -- 14
-                        card_blob->>'oracle_text' AS oracle_text, -- 15
-                        card_blob AS raw_card_blob -- 16
+                        (card_blob->>'price_usd')::real AS price_usd, -- 15
+                        (card_blob->>'price_eur')::real AS price_eur, -- 16
+                        (card_blob->>'price_tix')::real AS price_tix, -- 17
+                        card_blob->>'oracle_text' AS oracle_text, -- 18
+                        card_blob AS raw_card_blob -- 19
                     FROM
                         import_staging
                     ON CONFLICT (card_name) DO NOTHING
@@ -1054,7 +1067,7 @@ ORDER BY
         card_names.sort()
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             # Use SQL update with jsonb concatenation to add the tag
-            for card_name_batch in itertools.batched(card_names, 200, strict=False):
+            for card_name_batch in itertools.batched(card_names, 200):  # noqa: B911
                 cursor.execute(
                     """
                     UPDATE magic.cards
@@ -1357,3 +1370,267 @@ ORDER BY
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute("SELECT tag FROM magic.tags")
             return {r["tag"] for r in cursor.fetchall()}
+
+    def import_card_by_name(  # noqa: PLR0911, C901
+        self: APIResource,
+        *,
+        card_name: str,
+        **_: object,
+    ) -> dict[str, Any]:
+        """Import a single card by name from Scryfall API.
+
+        Args:
+        ----
+            card_name (str): The exact name of the card to import.
+
+        Returns:
+        -------
+            Dict[str, Any]: Result summary with import status and card info.
+
+        """
+        if not card_name:
+            msg = "card_name parameter is required"
+            raise ValueError(msg)
+
+        logger.info("Importing card by name: '%s'", card_name)
+
+        # Check if card already exists in database
+        existing_check = self._run_query(
+            query="SELECT card_name FROM magic.cards WHERE card_name = %(card_name)s",
+            params={"card_name": card_name},
+            explain=False,
+        )
+
+        if existing_check["result"]:
+            return {
+                "card_name": card_name,
+                "status": "already_exists",
+                "message": f"Card '{card_name}' already exists in database",
+            }
+
+        # Fetch card data from Scryfall API using exact name search
+        try:
+            cards = self._scryfall_search(query=f'!"{card_name}"')
+            if not cards:
+                return {
+                    "card_name": card_name,
+                    "status": "not_found",
+                    "message": f"Card '{card_name}' not found in Scryfall API",
+                }
+
+            # Filter results to only cards with exact matching name
+            exact_matches = [card for card in cards if card.get("name") == card_name]
+            if not exact_matches:
+                return {
+                    "card_name": card_name,
+                    "status": "not_found",
+                    "message": f"No exact match found for card '{card_name}' in Scryfall API",
+                }
+
+        except (requests.RequestException, ValueError, KeyError) as e:
+            logger.error("Error fetching card '%s' from Scryfall: %s", card_name, e)
+            return {
+                "card_name": card_name,
+                "status": "error",
+                "message": f"Error fetching card from Scryfall: {e}",
+            }
+
+        # Preprocess each card (some may pass the filter, others may not)
+        processed_cards = []
+        for card_data in exact_matches:
+            processed_card = self._preprocess_card(card_data)
+            if processed_card is not None:
+                processed_cards.append(processed_card)
+
+        if not processed_cards:
+            return {
+                "card_name": card_name,
+                "status": "filtered_out",
+                "message": f"All cards named '{card_name}' were filtered out during preprocessing (not legal in supported formats or not paper)",
+            }
+
+        # Insert the cards into the database using the new method
+        insert_result = self._insert_cards_to_database(processed_cards)
+
+        if insert_result["status"] == "success" and insert_result["cards_inserted"] > 0:
+            # Clear caches to ensure search can find the newly imported card
+            self._query_cache.clear()
+            # Clear the search cache by accessing its cache attribute
+            if hasattr(self._search, "cache"):
+                self._search.cache.clear()
+
+            logger.info("Successfully imported card: '%s'", card_name)
+            return {
+                "card_name": card_name,
+                "status": "success",
+                "message": f"Card '{card_name}' successfully imported",
+            }
+        if insert_result["status"] == "success" and insert_result["cards_inserted"] == 0:
+            return {
+                "card_name": card_name,
+                "status": "conflict",
+                "message": f"Card '{card_name}' was not inserted (possibly due to conflict)",
+            }
+        return {
+            "card_name": card_name,
+            "status": "database_error",
+            "message": insert_result["message"],
+        }
+
+    def _scryfall_search(self: APIResource, *, query: str) -> list[dict[str, Any]]:
+        """Search Scryfall API for cards matching the given query.
+
+        This method handles pagination to get the complete list of cards and
+        automatically applies filters for paper format and format legality.
+
+        Args:
+        ----
+            query (str): The search query string for Scryfall.
+
+        Returns:
+        -------
+            List[Dict[str, Any]]: List of card data from Scryfall API.
+
+        Raises:
+        ------
+            ValueError: If API request fails or returns invalid data.
+
+        """
+        # Add standard filters for paper format and format legality
+        # Wrap original query in parentheses to ensure proper filter application
+        filters = ["game:paper", "(f:m or f:l or f:c or f:v)"]
+        full_query = f"({query}) {' '.join(filters)}"
+
+        base_url = "https://api.scryfall.com/cards/search"
+        params = {"q": full_query, "format": "json"}
+        all_cards = []
+
+        try:
+            while True:
+                time.sleep(1 / 10)  # Rate limiting - 10 requests per second max
+                response = self._session.get(base_url, params=params, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+
+                if "data" not in data:
+                    break
+
+                # Extract card data from current page
+                page_cards = [card for card in data["data"] if card]
+                all_cards.extend(page_cards)
+
+                # Check if there are more pages
+                if not data.get("has_more", False):
+                    break
+
+                # Get next page URL
+                next_page = data.get("next_page")
+                if not next_page:
+                    break
+
+                # Update base_url and clear params for next page
+                base_url = next_page
+                params = {}
+
+        except requests.RequestException as oops:
+            # Check if it's a 404 error - return empty list
+            if (hasattr(oops, "response") and oops.response and oops.response.status_code == NOT_FOUND) or "404" in str(oops):
+                return all_cards
+            msg = f"Failed to fetch data from Scryfall API: {oops}"
+            raise ValueError(msg) from oops
+
+        return all_cards
+
+    def _insert_cards_to_database(self: APIResource, cards: list[dict[str, Any]]) -> dict[str, Any]:
+        """Insert processed cards into the database.
+
+        Args:
+        ----
+            cards (List[Dict[str, Any]]): List of processed card data to insert.
+
+        Returns:
+        -------
+            Dict[str, Any]: Result summary with insertion status and count.
+
+        """
+        if not cards:
+            return {
+                "status": "no_cards",
+                "cards_inserted": 0,
+                "message": "No cards provided for insertion",
+            }
+
+        try:
+            with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+                # Create temporary table for staging
+                cursor.execute("CREATE TEMPORARY TABLE IF NOT EXISTS import_staging (card_blob jsonb)")
+
+                # Insert cards into staging
+                for card in cards:
+                    json_str = orjson.dumps(card).decode("utf-8")
+                    cursor.execute(
+                        "INSERT INTO import_staging (card_blob) VALUES (%s)",
+                        (json_str,),
+                    )
+
+                # Transfer from staging to main table
+                cursor.execute(
+                    """
+                    INSERT INTO magic.cards
+                    (
+                        card_name,               -- 1
+                        cmc,                     -- 2
+                        mana_cost_text,          -- 3
+                        mana_cost_jsonb,         -- 4
+                        card_types,              -- 5
+                        card_subtypes,           -- 6
+                        card_colors,             -- 7
+                        card_color_identity,     -- 8
+                        card_keywords,           -- 9
+                        creature_power,          -- 10
+                        creature_power_text,     -- 11
+                        creature_toughness,      -- 12
+                        creature_toughness_text, -- 13
+                        edhrec_rank,             -- 14
+                        oracle_text,             -- 15
+                        raw_card_blob            -- 16
+                    )
+                    SELECT
+                        card_blob->>'name' AS card_name, -- 1
+                        (card_blob->>'cmc')::float::integer AS cmc, -- 2
+                        card_blob->>'mana_cost' AS mana_cost_text, -- 3
+                        card_blob->'mana_cost' AS mana_cost_jsonb, -- 4
+                        card_blob->'card_types' AS card_types, -- 5
+                        card_blob->'card_subtypes' AS card_subtypes, -- 6
+                        card_blob->'card_colors' AS card_colors, -- 7
+                        card_blob->'card_color_identity' AS card_color_identity, -- 8
+                        card_blob->'card_keywords' AS card_keywords, -- 9
+                        (card_blob->>'power_numeric')::integer AS creature_power, -- 10
+                        card_blob->>'power' AS creature_power_text, -- 11
+                        (card_blob->>'toughness_numeric')::integer AS creature_toughness, -- 12
+                        card_blob->>'toughness' AS creature_toughness_text, -- 13
+                        (card_blob->>'edhrec_rank')::integer AS edhrec_rank, -- 14
+                        card_blob->>'oracle_text' AS oracle_text, -- 15
+                        card_blob AS raw_card_blob -- 16
+                    FROM
+                        import_staging
+                    ON CONFLICT (card_name) DO NOTHING
+                    """,
+                )
+
+                conn.commit()
+                inserted_count = cursor.rowcount
+
+                return {
+                    "status": "success",
+                    "cards_inserted": inserted_count,
+                    "message": f"Successfully inserted {inserted_count} cards",
+                }
+
+        except (psycopg.Error, ValueError, KeyError) as e:
+            logger.error("Error inserting cards into database: %s", e)
+            return {
+                "status": "database_error",
+                "cards_inserted": 0,
+                "message": f"Error inserting cards into database: {e}",
+            }

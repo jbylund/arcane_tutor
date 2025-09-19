@@ -66,6 +66,13 @@ from api.parsing.parsing_f import generate_sql_query
         ("1<power", BinaryOperatorNode(NumericValueNode(1), "<", AttributeNode("power"))),
         ("3>cmc", BinaryOperatorNode(NumericValueNode(3), ">", AttributeNode("cmc"))),
         ("0<=toughness", BinaryOperatorNode(NumericValueNode(0), "<=", AttributeNode("toughness"))),
+        # Test cases for pricing attributes
+        ("usd>10", BinaryOperatorNode(AttributeNode("usd"), ">", NumericValueNode(10))),
+        ("eur<=5", BinaryOperatorNode(AttributeNode("eur"), "<=", NumericValueNode(5))),
+        ("tix<1", BinaryOperatorNode(AttributeNode("tix"), "<", NumericValueNode(1))),
+        ("usd=2.5", BinaryOperatorNode(AttributeNode("usd"), "=", NumericValueNode(2.5))),
+        ("eur!=10", BinaryOperatorNode(AttributeNode("eur"), "!=", NumericValueNode(10))),
+        ("tix>=0.5", BinaryOperatorNode(AttributeNode("tix"), ">=", NumericValueNode(0.5))),
     ],
 )
 def test_parse_to_nodes(test_input: str, expected_ast: QueryNode) -> None:
@@ -150,6 +157,52 @@ def test_parse_different_operators() -> None:
         result = parsing.parse_search_query(query)
         expected = BinaryOperatorNode(AttributeNode("cmc"), op, NumericValueNode(3))
         assert result.root == expected
+
+
+def _generate_pricing_operator_test_cases() -> list[tuple[str, BinaryOperatorNode]]:
+    """Generate test cases for pricing operators."""
+    operators = [">", "<", ">=", "<=", "=", "!="]
+    pricing_attrs = ["usd", "eur", "tix"]
+
+    test_cases = []
+    for attr in pricing_attrs:
+        for op in operators:
+            query = f"{attr}{op}5"
+            expected = BinaryOperatorNode(AttributeNode(attr), op, NumericValueNode(5))
+            test_cases.append((query, expected))
+
+    return test_cases
+
+
+@pytest.mark.parametrize(
+    argnames=("test_input", "expected_ast"),
+    argvalues=_generate_pricing_operator_test_cases(),
+)
+def test_parse_pricing_operators(test_input: str, expected_ast: BinaryOperatorNode) -> None:
+    """Test parsing different comparison operators with pricing attributes."""
+    result = parsing.parse_search_query(test_input)
+    assert result.root == expected_ast, f"Failed for {test_input}"
+
+
+def test_parse_combined_pricing_queries() -> None:
+    """Test parsing combined queries with pricing attributes."""
+    # Test combining pricing with other attributes
+    query1 = "cmc<=3 usd<5"
+    result1 = parsing.parse_search_query(query1)
+    expected1 = AndNode([
+        BinaryOperatorNode(AttributeNode("cmc"), "<=", NumericValueNode(3)),
+        BinaryOperatorNode(AttributeNode("usd"), "<", NumericValueNode(5)),
+    ])
+    assert result1.root == expected1
+
+    # Test combining multiple pricing attributes
+    query2 = "usd>10 OR eur<5"
+    result2 = parsing.parse_search_query(query2)
+    expected2 = OrNode([
+        BinaryOperatorNode(AttributeNode("usd"), ">", NumericValueNode(10)),
+        BinaryOperatorNode(AttributeNode("eur"), "<", NumericValueNode(5)),
+    ])
+    assert result2.root == expected2
 
 
 def test_parse_empty_query() -> None:
@@ -472,13 +525,13 @@ def test_arithmetic_vs_negation_ambiguity() -> None:
         ),
         # Keyword search with colon operator (should behave like @>)
         (
-            "keywords:trample",
+            "keyword:trample",
             r"(card.card_keywords @> %(p_dict_eydUcmFtcGxlJzogVHJ1ZX0)s)",
             {"p_dict_eydUcmFtcGxlJzogVHJ1ZX0": {"Trample": True}},
         ),
-        # Keyword search with alias 'k'
+        # Keyword search (updated from alias 'k')
         (
-            "k:haste",
+            "keyword:haste",
             r"(card.card_keywords @> %(p_dict_eydIYXN0ZSc6IFRydWV9)s)",
             {"p_dict_eydIYXN0ZSc6IFRydWV9": {"Haste": True}},
         ),
@@ -496,27 +549,27 @@ def test_arithmetic_vs_negation_ambiguity() -> None:
         ),
         # Test different operators
         (
-            "keywords>=flying",
+            "keyword>=flying",
             r"(card.card_keywords @> %(p_dict_eydGbHlpbmcnOiBUcnVlfQ)s)",
             {"p_dict_eydGbHlpbmcnOiBUcnVlfQ": {"Flying": True}},
         ),
         (
-            "keywords<=haste",
+            "keyword<=haste",
             r"(card.card_keywords <@ %(p_dict_eydIYXN0ZSc6IFRydWV9)s)",
             {"p_dict_eydIYXN0ZSc6IFRydWV9": {"Haste": True}},
         ),
         (
-            "keywords>trample",
+            "keyword>trample",
             r"(card.card_keywords @> %(p_dict_eydUcmFtcGxlJzogVHJ1ZX0)s AND card.card_keywords <> %(p_dict_eydUcmFtcGxlJzogVHJ1ZX0)s)",
             {"p_dict_eydUcmFtcGxlJzogVHJ1ZX0": {"Trample": True}},
         ),
         (
-            "keywords<vigilance",
+            "keyword<vigilance",
             r"(card.card_keywords <@ %(p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ)s AND card.card_keywords <> %(p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ)s)",
             {"p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ": {"Vigilance": True}},
         ),
         (
-            "keywords!=flying",
+            "keyword!=flying",
             r"(card.card_keywords <> %(p_dict_eydGbHlpbmcnOiBUcnVlfQ)s)",
             {"p_dict_eydGbHlpbmcnOiBUcnVlfQ": {"Flying": True}},
         ),
@@ -552,9 +605,9 @@ def test_keyword_sql_translation(input_query: str, expected_sql: str, expected_p
             r"(card.card_oracle_tags @> %(p_dict_eydkdWFsLWxhbmQnOiBUcnVlfQ)s)",
             {"p_dict_eydkdWFsLWxhbmQnOiBUcnVlfQ": {"dual-land": True}},
         ),
-        # Oracle tag with alias 'ot'
+        # Oracle tag with alias 'otag'
         (
-            "ot:haste",
+            "otag:haste",
             r"(card.card_oracle_tags @> %(p_dict_eydoYXN0ZSc6IFRydWV9)s)",
             {"p_dict_eydoYXN0ZSc6IFRydWV9": {"haste": True}},
         ),

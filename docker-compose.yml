@@ -6,7 +6,7 @@ services:
         - /usr/local/bin/docker-entrypoint.sh
         - -c
         - config_file=/postgresql.conf
-        container_name: postgres
+        container_name: scryfallpostgres
         environment:
         - PGDATA=/data/pg
         - POSTGRES_DB=${XPGDATABASE}
@@ -42,7 +42,7 @@ services:
         - PGUSER=${XPGUSER}
         - PYTHONUNBUFFERED=true
         external_links:
-        - postgres:${DOCKER_POSTGRES_HOST}
+        - scryfallpostgres:${DOCKER_POSTGRES_HOST}
         ports:
         - 18080:8080
         user: 1000:1000

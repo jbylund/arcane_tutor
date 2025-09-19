@@ -104,7 +104,7 @@ class TestContainerIntegration:
         api = APIResource()
 
         # Set up the schema using real migrations
-        api._setup_schema()
+        api.setup_schema()
 
         # Load test data
         test_dir = pathlib.Path(__file__).parent
@@ -232,3 +232,39 @@ class TestContainerIntegration:
         pid = api_resource.get_pid()
         assert isinstance(pid, int)
         assert pid > 0
+
+    def test_import_card_by_name_integration(self: TestContainerIntegration, api_resource: APIResource) -> None:
+        """Test importing a card by name using the real Scryfall API and database."""
+        card_name = "Beast Within"
+
+        # Import the card using the import_card_by_name method
+        import_result = api_resource.import_card_by_name(card_name=card_name)
+
+        # Check that the import was successful
+        assert import_result["status"] in ("success", "already_exists"), f"Import failed: {import_result}"
+        assert import_result["card_name"] == card_name
+
+        # Give it a moment and then check the database directly
+        time.sleep(0.1)  # Small delay to ensure consistency
+
+        with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) as count FROM magic.cards WHERE card_name = %s", (card_name,))
+            count_result = cursor.fetchone()
+            card_count = count_result["count"] if count_result else 0
+            assert card_count >= 1, f"Card '{card_name}' should exist in database after import (count: {card_count})"
+
+        # Now test that we can search for it by name
+        search_result = api_resource.search(q=f"name:{card_name}", limit=10)
+        found_cards = search_result["cards"]
+
+        assert len(found_cards) >= 1, f"Card '{card_name}' should be findable after import"
+
+        # Find the exact match
+        imported_card = found_cards[0]
+
+        # Verify key properties of the imported card
+        assert imported_card["name"] == card_name
+
+        # Check that it has mana cost information (this should be present from Scryfall data)
+        assert "mana_cost" in imported_card, "Card should have mana cost information"
+        assert imported_card["mana_cost"] == "{2}{G}", f"Beast Within should cost {{2}}{{G}}, got: {imported_card.get('mana_cost')}"
