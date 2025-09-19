@@ -1358,7 +1358,7 @@ ORDER BY
             cursor.execute("SELECT tag FROM magic.tags")
             return {r["tag"] for r in cursor.fetchall()}
 
-    def import_card_by_name(  # noqa: PLR0911
+    def import_card_by_name(  # noqa: PLR0911, C901
         self: APIResource,
         *,
         card_name: str,
@@ -1382,23 +1382,22 @@ ORDER BY
         logger.info("Importing card by name: '%s'", card_name)
 
         # Check if card already exists in database
-        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
-            cursor.execute(
-                "SELECT card_name FROM magic.cards WHERE card_name = %s",
-                (card_name,),
-            )
-            existing_card = cursor.fetchone()
+        existing_check = self._run_query(
+            query="SELECT card_name FROM magic.cards WHERE card_name = %(card_name)s",
+            params={"card_name": card_name},
+            explain=False,
+        )
 
-            if existing_card:
-                return {
-                    "card_name": card_name,
-                    "status": "already_exists",
-                    "message": f"Card '{card_name}' already exists in database",
-                }
+        if existing_check["result"]:
+            return {
+                "card_name": card_name,
+                "status": "already_exists",
+                "message": f"Card '{card_name}' already exists in database",
+            }
 
-        # Fetch card data from Scryfall API using the new search method
+        # Fetch card data from Scryfall API using exact name search
         try:
-            cards = self._scryfall_search(query=f"name:'{card_name}'")
+            cards = self._scryfall_search(query=f'!"={card_name}"')
             if not cards:
                 return {
                     "card_name": card_name,
@@ -1406,8 +1405,14 @@ ORDER BY
                     "message": f"Card '{card_name}' not found in Scryfall API",
                 }
 
-            # Get the first card (should be exact match)
-            card_data = cards[0]
+            # Filter results to only cards with exact matching name
+            exact_matches = [card for card in cards if card.get("name") == card_name]
+            if not exact_matches:
+                return {
+                    "card_name": card_name,
+                    "status": "not_found",
+                    "message": f"No exact match found for card '{card_name}' in Scryfall API",
+                }
 
         except (requests.RequestException, ValueError, KeyError) as e:
             logger.error("Error fetching card '%s' from Scryfall: %s", card_name, e)
@@ -1417,17 +1422,22 @@ ORDER BY
                 "message": f"Error fetching card from Scryfall: {e}",
             }
 
-        # Preprocess the card data
-        processed_card = self._preprocess_card(card_data)
-        if processed_card is None:
+        # Preprocess each card (some may pass the filter, others may not)
+        processed_cards = []
+        for card_data in exact_matches:
+            processed_card = self._preprocess_card(card_data)
+            if processed_card is not None:
+                processed_cards.append(processed_card)
+
+        if not processed_cards:
             return {
                 "card_name": card_name,
                 "status": "filtered_out",
-                "message": f"Card '{card_name}' was filtered out during preprocessing (not legal in supported formats or not paper)",
+                "message": f"All cards named '{card_name}' were filtered out during preprocessing (not legal in supported formats or not paper)",
             }
 
-        # Insert the card into the database using the new method
-        insert_result = self._insert_cards_to_database([processed_card])
+        # Insert the cards into the database using the new method
+        insert_result = self._insert_cards_to_database(processed_cards)
 
         if insert_result["status"] == "success" and insert_result["cards_inserted"] > 0:
             logger.info("Successfully imported card: '%s'", card_name)
@@ -1468,8 +1478,9 @@ ORDER BY
 
         """
         # Add standard filters for paper format and format legality
+        # Wrap original query in parentheses to ensure proper filter application
         filters = ["game:paper", "(f:m or f:l or f:c or f:v)"]
-        full_query = f"{query} {' '.join(filters)}"
+        full_query = f"({query}) {' '.join(filters)}"
 
         base_url = "https://api.scryfall.com/cards/search"
         params = {"q": full_query, "format": "json"}
