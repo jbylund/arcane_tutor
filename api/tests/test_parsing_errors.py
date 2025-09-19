@@ -42,23 +42,21 @@ class TestParsingErrorHandling:
         assert query in exc_info.value.description
         assert "invalid syntax" in exc_info.value.description.lower()
 
-    def test_search_handles_parsing_error_various_cases(self) -> None:
+    @pytest.mark.parametrize("query", [
+        "cmc=2 and id=",  # The original issue case
+        "name:test and",  # Trailing AND
+        "power>1 or",     # Trailing OR
+        "cmc=3 and ()",   # Empty parentheses
+    ])
+    def test_search_handles_parsing_error_various_cases(self, query: str) -> None:
         """Test that various parsing errors raise HTTPBadRequest."""
-        invalid_queries = [
-            "cmc=2 and id=",  # The original issue case
-            "name:test and",  # Trailing AND
-            "power>1 or",     # Trailing OR
-            "cmc=3 and ()",   # Empty parentheses
-        ]
+        with pytest.raises(falcon.HTTPBadRequest) as exc_info:
+            self.api_resource._search(query=query)
 
-        for query in invalid_queries:
-            with pytest.raises(falcon.HTTPBadRequest) as exc_info:
-                self.api_resource._search(query=query)
-
-            # Verify the error details
-            assert exc_info.value.title == "Invalid Search Query"
-            assert query in exc_info.value.description
-            assert "invalid syntax" in exc_info.value.description.lower()
+        # Verify the error details
+        assert exc_info.value.title == "Invalid Search Query"
+        assert query in exc_info.value.description
+        assert "invalid syntax" in exc_info.value.description.lower()
 
     def test_search_normal_parsing_unaffected(self) -> None:
         """Test that normal queries still work correctly."""
