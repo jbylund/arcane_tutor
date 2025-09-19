@@ -1396,15 +1396,18 @@ ORDER BY
                     "message": f"Card '{card_name}' already exists in database",
                 }
 
-        # Fetch card data from Scryfall API
+        # Fetch card data from Scryfall API using the new search method
         try:
-            card_data = self._fetch_card_by_name_from_scryfall(card_name)
-            if not card_data:
+            cards = self._scryfall_search(query=f"name:'{card_name}'")
+            if not cards:
                 return {
                     "card_name": card_name,
                     "status": "not_found",
                     "message": f"Card '{card_name}' not found in Scryfall API",
                 }
+
+            # Get the first card (should be exact match)
+            card_data = cards[0]
 
         except (requests.RequestException, ValueError, KeyError) as e:
             logger.error("Error fetching card '%s' from Scryfall: %s", card_name, e)
@@ -1423,18 +1426,122 @@ ORDER BY
                 "message": f"Card '{card_name}' was filtered out during preprocessing (not legal in supported formats or not paper)",
             }
 
-        # Insert the card into the database
+        # Insert the card into the database using the new method
+        insert_result = self._insert_cards_to_database([processed_card])
+
+        if insert_result["status"] == "success" and insert_result["cards_inserted"] > 0:
+            logger.info("Successfully imported card: '%s'", card_name)
+            return {
+                "card_name": card_name,
+                "status": "success",
+                "message": f"Card '{card_name}' successfully imported",
+            }
+        if insert_result["status"] == "success" and insert_result["cards_inserted"] == 0:
+            return {
+                "card_name": card_name,
+                "status": "conflict",
+                "message": f"Card '{card_name}' was not inserted (possibly due to conflict)",
+            }
+        return {
+            "card_name": card_name,
+            "status": "database_error",
+            "message": insert_result["message"],
+        }
+
+    def _scryfall_search(self: APIResource, *, query: str) -> list[dict[str, Any]]:
+        """Search Scryfall API for cards matching the given query.
+
+        This method handles pagination to get the complete list of cards and
+        automatically applies filters for paper format and format legality.
+
+        Args:
+        ----
+            query (str): The search query string for Scryfall.
+
+        Returns:
+        -------
+            List[Dict[str, Any]]: List of card data from Scryfall API.
+
+        Raises:
+        ------
+            ValueError: If API request fails or returns invalid data.
+
+        """
+        # Add standard filters for paper format and format legality
+        filters = ["game:paper", "(f:m or f:l or f:c or f:v)"]
+        full_query = f"{query} {' '.join(filters)}"
+
+        base_url = "https://api.scryfall.com/cards/search"
+        params = {"q": full_query, "format": "json"}
+        all_cards = []
+
+        try:
+            while True:
+                time.sleep(1 / 10)  # Rate limiting - 10 requests per second max
+                response = self._session.get(base_url, params=params, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+
+                if "data" not in data:
+                    break
+
+                # Extract card data from current page
+                page_cards = [card for card in data["data"] if card]
+                all_cards.extend(page_cards)
+
+                # Check if there are more pages
+                if not data.get("has_more", False):
+                    break
+
+                # Get next page URL
+                next_page = data.get("next_page")
+                if not next_page:
+                    break
+
+                # Update base_url and clear params for next page
+                base_url = next_page
+                params = {}
+
+        except requests.RequestException as oops:
+            # Check if it's a 404 error - return empty list
+            if (hasattr(oops, "response") and oops.response and oops.response.status_code == NOT_FOUND) or "404" in str(oops):
+                return all_cards
+            msg = f"Failed to fetch data from Scryfall API: {oops}"
+            raise ValueError(msg) from oops
+
+        return all_cards
+
+    def _insert_cards_to_database(self: APIResource, cards: list[dict[str, Any]]) -> dict[str, Any]:
+        """Insert processed cards into the database.
+
+        Args:
+        ----
+            cards (List[Dict[str, Any]]): List of processed card data to insert.
+
+        Returns:
+        -------
+            Dict[str, Any]: Result summary with insertion status and count.
+
+        """
+        if not cards:
+            return {
+                "status": "no_cards",
+                "cards_inserted": 0,
+                "message": "No cards provided for insertion",
+            }
+
         try:
             with self._conn_pool.connection() as conn, conn.cursor() as cursor:
                 # Create temporary table for staging
                 cursor.execute("CREATE TEMPORARY TABLE import_staging (card_blob jsonb)")
 
-                # Insert card into staging
-                json_str = orjson.dumps(processed_card).decode("utf-8")
-                cursor.execute(
-                    "INSERT INTO import_staging (card_blob) VALUES (%s)",
-                    (json_str,),
-                )
+                # Insert cards into staging
+                for card in cards:
+                    json_str = orjson.dumps(card).decode("utf-8")
+                    cursor.execute(
+                        "INSERT INTO import_staging (card_blob) VALUES (%s)",
+                        (json_str,),
+                    )
 
                 # Transfer from staging to main table
                 cursor.execute(
@@ -1482,61 +1589,18 @@ ORDER BY
                 )
 
                 conn.commit()
+                inserted_count = cursor.rowcount
 
-                # Check if the card was actually inserted
-                cursor.execute(
-                    "SELECT card_name FROM magic.cards WHERE card_name = %s",
-                    (card_name,),
-                )
-                inserted_card = cursor.fetchone()
-
-                if inserted_card:
-                    logger.info("Successfully imported card: '%s'", card_name)
-                    return {
-                        "card_name": card_name,
-                        "status": "success",
-                        "message": f"Card '{card_name}' successfully imported",
-                    }
                 return {
-                    "card_name": card_name,
-                    "status": "conflict",
-                    "message": f"Card '{card_name}' was not inserted (possibly due to conflict)",
+                    "status": "success",
+                    "cards_inserted": inserted_count,
+                    "message": f"Successfully inserted {inserted_count} cards",
                 }
 
         except (psycopg.Error, ValueError, KeyError) as e:
-            logger.error("Error inserting card '%s' into database: %s", card_name, e)
+            logger.error("Error inserting cards into database: %s", e)
             return {
-                "card_name": card_name,
                 "status": "database_error",
-                "message": f"Error inserting card into database: {e}",
+                "cards_inserted": 0,
+                "message": f"Error inserting cards into database: {e}",
             }
-
-    def _fetch_card_by_name_from_scryfall(self: APIResource, card_name: str) -> dict[str, Any] | None:
-        """Fetch a single card by exact name from Scryfall API.
-
-        Args:
-        ----
-            card_name (str): The exact name of the card to fetch.
-
-        Returns:
-        -------
-            Optional[Dict[str, Any]]: Card data from Scryfall API, or None if not found.
-
-        """
-        try:
-            # Use the "named" endpoint for exact card name lookup
-            response = self._session.get(
-                "https://api.scryfall.com/cards/named",
-                params={"exact": card_name},
-                timeout=30,
-            )
-
-            if response.status_code == NOT_FOUND:
-                return None
-
-            response.raise_for_status()
-            return response.json()
-
-        except requests.RequestException as e:
-            logger.error("Error fetching card '%s' from Scryfall: %s", card_name, e)
-            raise
