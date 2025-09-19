@@ -231,7 +231,8 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
 
     # For attribute values, we want the raw string
     # Use Regex to match words that may contain hyphens for string values
-    string_value_word = Regex(r"[a-zA-Z_][a-zA-Z0-9_-]*")
+    # Allow values starting with digits, letters, or underscores to handle cases like "40k-model"
+    string_value_word = Regex(r"[a-zA-Z0-9_][a-zA-Z0-9_-]*")
 
     # Build the grammar with proper precedence
     expr = Forward()
@@ -263,9 +264,10 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
 
     condition = unified_numeric_comparison | non_numeric_condition
 
-    # Special rule for non-numeric attribute-colon-hyphenated-value to handle cases like "otag:dual-land"
+    # Special rule for non-numeric attribute-colon-hyphenated-value to handle cases like "otag:dual-land" and "otag:40k-model"
     # Only non-numeric attributes should have hyphenated string values
-    hyphenated_condition = non_numeric_attr_word + Literal(":") + Regex(r"[a-zA-Z_][a-zA-Z0-9_-]+")
+    # Allow values starting with digits, letters, or underscores
+    hyphenated_condition = non_numeric_attr_word + Literal(":") + Regex(r"[a-zA-Z0-9_][a-zA-Z0-9_-]*")
     hyphenated_condition.setParseAction(make_binary_operator_node)
 
     # Single word (implicit name search)
@@ -446,14 +448,14 @@ def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
             # Check if we're in an attribute value context (previous token was a colon)
             in_attr_value_context = tokens and tokens[-1] == ":"
 
-            # Check if this looks like a numeric literal (starts with digit)
-            if query[i].isdigit():
-                # Handle numeric literal (integer or float)
-                while word_end < len(query) and (query[word_end].isdigit() or query[word_end] == "."):
-                    word_end += 1
-            elif in_attr_value_context:
+            if in_attr_value_context:
                 # In attribute value context, allow alphanumeric, underscore, and hyphens
+                # This handles cases like "40k-model" as a single token
                 while word_end < len(query) and (query[word_end].isalnum() or query[word_end] in "_-"):
+                    word_end += 1
+            elif query[i].isdigit():
+                # Handle numeric literal (integer or float) only when not in attribute value context
+                while word_end < len(query) and (query[word_end].isdigit() or query[word_end] == "."):
                     word_end += 1
             else:
                 # Regular word context, only alphanumeric and underscore
