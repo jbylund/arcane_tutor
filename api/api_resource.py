@@ -1397,7 +1397,7 @@ ORDER BY
 
         # Fetch card data from Scryfall API using exact name search
         try:
-            cards = self._scryfall_search(query=f'!"={card_name}"')
+            cards = self._scryfall_search(query=f'!"{card_name}"')
             if not cards:
                 return {
                     "card_name": card_name,
