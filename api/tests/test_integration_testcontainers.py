@@ -64,24 +64,6 @@ class TestContainerIntegration:
         msg = f"Database not ready within {timeout} seconds"
         raise RuntimeError(msg)
 
-    @pytest.fixture(scope="class")
-    def db_connection(self: TestContainerIntegration, postgres_container: PostgresContainer) -> Generator[psycopg.Connection]:
-        """Create database connection to test container."""
-        # Get connection parameters from container
-        host = postgres_container.get_container_host_ip()
-        port = postgres_container.get_exposed_port(5432)
-
-        connection_params = {
-            "host": host,
-            "port": port,
-            "dbname": "testdb",
-            "user": "testuser",
-            "password": "testpass",
-        }
-
-        with psycopg.connect(**connection_params) as conn:
-            conn.row_factory = psycopg.rows.dict_row
-            yield conn
 
     @pytest.fixture(scope="class")
     def test_db_environment(self: TestContainerIntegration, postgres_container: PostgresContainer) -> Generator[None]:
@@ -127,8 +109,8 @@ class TestContainerIntegration:
             api._conn_pool.close()
 
     @pytest.fixture(scope="class")
-    def setup_test_database(self: TestContainerIntegration, api_resource: APIResource) -> None:
-        """Set up database schema using real migrations and load test data."""
+    def setup_test_database(self: TestContainerIntegration, api_resource: APIResource) -> APIResource:
+        """Set up database schema using real migrations and load test data, then return the APIResource."""
         # Set up the schema using real migrations
         api_resource._setup_schema()
 
@@ -140,24 +122,20 @@ class TestContainerIntegration:
             cursor.execute(data_file.read_text())
             conn.commit()
 
-    @pytest.fixture
-    def api_resource_with_test_db(
-        self: TestContainerIntegration,
-        api_resource: APIResource,
-        setup_test_database: None,  # noqa: ARG002
-    ) -> APIResource:
-        """Return the APIResource instance configured with test database and data."""
+        # Return the configured APIResource for tests to use
         return api_resource
 
-    def test_database_ready(self: TestContainerIntegration, api_resource_with_test_db: APIResource) -> None:
+
+
+    def test_database_ready(self: TestContainerIntegration, setup_test_database: APIResource) -> None:
         """Test that database is ready and migrations table exists."""
-        result = api_resource_with_test_db.db_ready()
+        result = setup_test_database.db_ready()
         assert result is True
 
-    def test_query_parsing_with_database(self: TestContainerIntegration, api_resource_with_test_db: APIResource) -> None:
+    def test_query_parsing_with_database(self: TestContainerIntegration, setup_test_database: APIResource) -> None:
         """Test query parsing and execution against real database."""
         # Test a simple search query
-        result = api_resource_with_test_db.search(
+        result = setup_test_database.search(
             q="type:creature",
             limit=10,
         )
@@ -170,9 +148,9 @@ class TestContainerIntegration:
         assert len(cards) == 1
         assert cards[0]["name"] == "Serra Angel"
 
-    def test_card_search_by_name(self: TestContainerIntegration, api_resource_with_test_db: APIResource) -> None:
+    def test_card_search_by_name(self: TestContainerIntegration, setup_test_database: APIResource) -> None:
         """Test searching for cards by name."""
-        result = api_resource_with_test_db.search(
+        result = setup_test_database.search(
             q='name:"Lightning Bolt"',
             limit=10,
         )
@@ -186,9 +164,9 @@ class TestContainerIntegration:
         card = cards[0]
         assert card["name"] == "Lightning Bolt"
 
-    def test_color_search(self: TestContainerIntegration, api_resource_with_test_db: APIResource) -> None:
+    def test_color_search(self: TestContainerIntegration, setup_test_database: APIResource) -> None:
         """Test searching for cards by color."""
-        result = api_resource_with_test_db.search(
+        result = setup_test_database.search(
             q="c:red",
             limit=10,
         )
@@ -201,9 +179,9 @@ class TestContainerIntegration:
         assert len(cards) == 1
         assert cards[0]["name"] == "Lightning Bolt"
 
-    def test_cmc_search(self: TestContainerIntegration, api_resource_with_test_db: APIResource) -> None:
+    def test_cmc_search(self: TestContainerIntegration, setup_test_database: APIResource) -> None:
         """Test searching for cards by converted mana cost."""
-        result = api_resource_with_test_db.search(
+        result = setup_test_database.search(
             q="cmc=0",
             limit=10,
         )
@@ -216,9 +194,9 @@ class TestContainerIntegration:
         assert len(cards) == 1
         assert cards[0]["name"] == "Black Lotus"
 
-    def test_power_toughness_search(self: TestContainerIntegration, api_resource_with_test_db: APIResource) -> None:
+    def test_power_toughness_search(self: TestContainerIntegration, setup_test_database: APIResource) -> None:
         """Test searching for creatures by power and toughness."""
-        result = api_resource_with_test_db.search(
+        result = setup_test_database.search(
             q="power=4 toughness=4",
             limit=10,
         )
@@ -231,20 +209,20 @@ class TestContainerIntegration:
         assert len(cards) == 1
         assert cards[0]["name"] == "Serra Angel"
 
-    def test_get_all_tags_with_real_db(self: TestContainerIntegration, api_resource_with_test_db: APIResource) -> None:
+    def test_get_all_tags_with_real_db(self: TestContainerIntegration, setup_test_database: APIResource) -> None:
         """Test getting all tags from real database."""
-        tags = api_resource_with_test_db._get_all_tags()
+        tags = setup_test_database._get_all_tags()
 
         expected_tags = {"flying", "vigilance", "burn", "mana-acceleration"}
         assert tags == expected_tags
 
-    def test_database_operations_isolation(self: TestContainerIntegration, api_resource_with_test_db: APIResource) -> None:
+    def test_database_operations_isolation(self: TestContainerIntegration, setup_test_database: APIResource) -> None:
         """Test that database operations are properly isolated."""
         # This test verifies that we're working with the test database
         # and not affecting the main application database
 
         # Count cards in test database using a query that matches all cards
-        result = api_resource_with_test_db.search(q="cmc>=0", limit=100)
+        result = setup_test_database.search(q="cmc>=0", limit=100)
 
         # Should only have our test cards
         cards = result["cards"]
@@ -253,8 +231,8 @@ class TestContainerIntegration:
         expected_names = {"Lightning Bolt", "Serra Angel", "Black Lotus"}
         assert card_names == expected_names
 
-    def test_get_pid(self: TestContainerIntegration, api_resource_with_test_db: APIResource) -> None:
+    def test_get_pid(self: TestContainerIntegration, setup_test_database: APIResource) -> None:
         """Test basic API functionality with real database."""
-        pid = api_resource_with_test_db.get_pid()
+        pid = setup_test_database.get_pid()
         assert isinstance(pid, int)
         assert pid > 0
