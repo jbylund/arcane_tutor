@@ -8,6 +8,8 @@ from .db_info import (
     COLOR_CODE_TO_NAME,
     COLOR_NAME_TO_CODE,
     DB_NAME_TO_FIELD_TYPE,
+    RARITY_FIELDS,
+    RARITY_TEXT_TO_NUMERIC,
     SEARCH_NAME_TO_DB_NAME,
     FieldType,
 )
@@ -153,7 +155,6 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             SQL string for the binary operation.
         """
         if isinstance(self.lhs, ScryfallAttributeNode):
-            lhs_sql = self.lhs.to_sql(context)
             attr = self.lhs.attribute_name
             field_type = get_field_type(attr)
 
@@ -163,6 +164,10 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
                     self.operator = "="
                 return super().to_sql(context)
 
+            # Special handling for rarity fields
+            if attr in RARITY_FIELDS or attr.lower() in RARITY_FIELDS:
+                return self._handle_rarity_field(context)
+
             if field_type == FieldType.JSONB_OBJECT:
                 return self._handle_jsonb_object(context)
 
@@ -171,23 +176,30 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
 
             if self.operator == ":":
                 if field_type == FieldType.TEXT:
-                    if isinstance(self.rhs, StringValueNode):
-                        txt_val = self.rhs.value.strip()
-                    elif isinstance(self.rhs, str):
-                        txt_val = self.rhs.strip()
-                    else:
-                        msg = f"Unknown type: {type(self.rhs)}, {locals()}"
-                        raise TypeError(msg)
-                    words = ["", *txt_val.split(), ""]
-                    pattern = "%".join(words)
-                    _param_name = param_name(pattern)
-                    context[_param_name] = pattern
-                    return f"({lhs_sql} ILIKE %({_param_name})s)"
+                    return self._handle_text_field(context)
                 msg = f"Unknown field type: {field_type}"
                 raise NotImplementedError(msg)
 
         # Fallback: use default logic
         return super().to_sql(context)
+
+    def _handle_text_field(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+        """Handle text field queries with ILIKE pattern matching."""
+        lhs_sql = self.lhs.to_sql(context)
+
+        if isinstance(self.rhs, StringValueNode):
+            txt_val = self.rhs.value.strip()
+        elif isinstance(self.rhs, str):
+            txt_val = self.rhs.strip()
+        else:
+            msg = f"Unknown type: {type(self.rhs)}, {locals()}"
+            raise TypeError(msg)
+
+        words = ["", *txt_val.split(), ""]
+        pattern = "%".join(words)
+        _param_name = param_name(pattern)
+        context[_param_name] = pattern
+        return f"({lhs_sql} ILIKE %({_param_name})s)"
 
     """
     col = query
@@ -276,6 +288,62 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         if self.operator == ">":
             return f"({query} <@ {col}) AND NOT({col} <@ {query})"
         msg = f"Unknown operator: {self.operator}"
+        raise ValueError(msg)
+
+    def _handle_rarity_field(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+        """Handle rarity field queries with special text/numeric handling.
+
+        For ':' operator: use text column with exact match
+        For comparison operators (>, <, >=, <=): use numeric column
+        For = and !=: use text column with exact match
+
+        Args:
+            context: SQL parameter context
+
+        Returns:
+            SQL string for the rarity query
+        """
+        if isinstance(self.rhs, StringValueNode):
+            rhs_val = self.rhs.value.strip().lower()
+        elif isinstance(self.rhs, str):
+            rhs_val = self.rhs.strip().lower()
+        else:
+            msg = f"Rarity value must be string, got {type(self.rhs)}"
+            raise TypeError(msg)
+
+        # Validate rarity value
+        if rhs_val not in RARITY_TEXT_TO_NUMERIC:
+            # For unknown rarity values, still allow the query but it may return no results
+            pass
+
+        # For text-based operations (:, =, !=), use text column
+        if self.operator in (":", "=", "!=", "<>"):
+            text_col = "card.card_rarity_text"
+            param_name_str = param_name(rhs_val)
+            context[param_name_str] = rhs_val
+
+            if self.operator == ":":
+                # For : operator, use exact match (case-insensitive)
+                return f"(LOWER({text_col}) = %({param_name_str})s)"
+            if self.operator == "=":
+                return f"(LOWER({text_col}) = %({param_name_str})s)"
+            if self.operator in ("!=", "<>"):
+                return f"(LOWER({text_col}) != %({param_name_str})s)"
+
+        # For comparison operations (>, <, >=, <=), use numeric column
+        elif self.operator in (">", "<", ">=", "<="):
+            numeric_col = "card.card_rarity_numeric"
+            if rhs_val not in RARITY_TEXT_TO_NUMERIC:
+                # If rarity is not recognized, return a condition that won't match
+                return "(FALSE)"
+
+            numeric_val = RARITY_TEXT_TO_NUMERIC[rhs_val]
+            param_name_num = param_name(numeric_val)
+            context[param_name_num] = numeric_val
+
+            return f"({numeric_col} {self.operator} %({param_name_num})s)"
+
+        msg = f"Unknown operator for rarity field: {self.operator}"
         raise ValueError(msg)
 
 

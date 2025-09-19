@@ -301,6 +301,13 @@ class ScryfallAPIComparator:
             "keyword:trample",
             "keyword:vigilance",
 
+            # Rarity searches
+            "r:common",
+            "r:rare",
+            "rarity:mythic",
+            "rarity>=uncommon",
+            "rarity>common",
+
             "otag:dual-land",
 
             # Arithmetic expressions

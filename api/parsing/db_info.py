@@ -34,6 +34,8 @@ DB_COLUMNS = [
     FieldInfo("card_color_identity", FieldType.JSONB_OBJECT, ["color_identity", "coloridentity", "id", "identity"]),
     FieldInfo("card_keywords", FieldType.JSONB_OBJECT, ["keyword"]),
     FieldInfo("card_name", FieldType.TEXT, ["name"]),
+    FieldInfo("card_rarity_text", FieldType.TEXT, ["rarity", "r"]),
+    FieldInfo("card_rarity_numeric", FieldType.NUMERIC, []),
     FieldInfo("card_subtypes", FieldType.JSONB_ARRAY, ["subtype", "subtypes"]),
     FieldInfo("card_types", FieldType.JSONB_ARRAY, ["type", "types", "t"]),
     FieldInfo("cmc", FieldType.NUMERIC, ["cmc"]),
@@ -103,3 +105,29 @@ COLOR_CODE_TO_NAME = {
 }
 
 COLOR_NAME_TO_CODE = {v: k for k, v in COLOR_CODE_TO_NAME.items()}
+
+# Rarity mappings for Scryfall search compatibility
+RARITY_TEXT_TO_NUMERIC = {
+    "common": 1,
+    "uncommon": 2,
+    "rare": 3,
+    "mythic": 4,
+    "mythic rare": 4,  # Handle both variants
+    "special": 5,      # Handle special rarities
+    "bonus": 6,        # Handle bonus rarities
+}
+
+RARITY_NUMERIC_TO_TEXT = {
+    1: "common",
+    2: "uncommon",
+    3: "rare",
+    4: "mythic",
+    5: "special",
+    6: "bonus",
+}
+
+# Standard rarity values for validation
+STANDARD_RARITIES = {"common", "uncommon", "rare", "mythic"}
+
+# Special field handler info
+RARITY_FIELDS = {"card_rarity_text", "rarity", "r"}
