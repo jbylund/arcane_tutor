@@ -209,6 +209,22 @@ class APIResource:
         self._tagger_client = TaggerClient()
         logger.info("Worker with pid has conn pool %s", self._conn_pool)
 
+    @cached(cache={}, key=lambda _self, filename: filename)
+    def read_sql(self: APIResource, filename: str) -> str:
+        """Read SQL content from a file with caching.
+
+        Args:
+            filename: The name of the SQL file (without .sql extension)
+
+        Returns:
+            The SQL content as a string
+        """
+        sql_dir = pathlib.Path(__file__).parent / "sql"
+        sql_file = sql_dir / f"{filename}.sql"
+
+        with sql_file.open(encoding="utf-8") as f:
+            return f.read().strip()
+
     def _handle(self: APIResource, req: falcon.Request, resp: falcon.Response) -> None:
         """Handle a Falcon request and set the response.
 
@@ -579,19 +595,7 @@ class APIResource:
 
         """
         return self._run_query(
-            query="""
-            SELECT
-                *
-            FROM
-                magic.cards
-            WHERE
-                (%(min_name)s::text IS NULL OR %(min_name)s::text < card_name) AND
-                (%(max_name)s::text IS NULL OR card_name < %(max_name)s::text)
-            ORDER BY
-                card_name
-            LIMIT
-                %(limit)s
-            """,
+            query=self.read_sql("get_cards"),
             params={
                 "min_name": min_name,
                 "max_name": max_name,
@@ -829,77 +833,13 @@ class APIResource:
     def get_common_card_types(self: APIResource, **_: object) -> list[dict[str, Any]]:
         """Get the common card types from the database."""
         return self._run_query(
-            query="""
-WITH card_types AS (
-    SELECT
-        jsonb_array_elements_text(card_types) as type_name
-    FROM
-        magic.cards
-    WHERE
-        card_types IS NOT NULL
-),
-card_subtypes AS (
-    SELECT
-        jsonb_array_elements_text(card_subtypes) as subtype_name
-    FROM
-        magic.cards
-    WHERE
-        card_subtypes IS NOT NULL
-),
-card_types_and_subtypes AS (
-    SELECT
-        type_name
-    FROM card_types
-    UNION ALL
-    SELECT
-        subtype_name
-    FROM card_subtypes
-),
-with_min_count AS (
-    SELECT
-        type_name,
-        count(1) as num_occurrences
-    FROM card_types_and_subtypes
-    GROUP BY type_name
-    HAVING count(1) >= 5
-)
-SELECT
-    type_name AS t,
-    num_occurrences AS n
-FROM
-    with_min_count
-ORDER BY
-    type_name""",
+            query=self.read_sql("get_common_card_types"),
         )["result"]
 
     def get_common_keywords(self: APIResource, **_: object) -> list[dict[str, Any]]:
         """Get the common keywords from the database."""
         return self._run_query(
-            query="""
-WITH card_keywords AS (
-    SELECT
-        jsonb_object_keys(card_keywords) as keyword_name
-    FROM
-        magic.cards
-    WHERE
-        card_keywords IS NOT NULL
-        AND jsonb_typeof(card_keywords) = 'object'
-),
-with_min_count AS (
-    SELECT
-        keyword_name,
-        count(1) as num_occurrences
-    FROM card_keywords
-    GROUP BY keyword_name
-    HAVING count(1) >= 5
-)
-SELECT
-    keyword_name AS k,
-    num_occurrences AS n
-FROM
-    with_min_count
-ORDER BY
-    keyword_name""",
+            query=self.read_sql("get_common_keywords"),
         )["result"]
 
     def _fetch_cards_from_scryfall(self: APIResource, *, tag: str) -> list[str]:
