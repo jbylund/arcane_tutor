@@ -16,6 +16,7 @@ import os
 import pathlib
 import random
 import re
+import secrets
 import time
 import urllib.parse
 from typing import Any
@@ -534,99 +535,27 @@ class APIResource:
 
         to_insert = self._get_cards_to_insert()
 
-        with self._conn_pool.connection() as conn:
-            conn = typecast("Connection", conn)
-            with conn.cursor() as cursor:
-                # create a temporary table to hold the cards
-                cursor.execute("CREATE TEMPORARY TABLE import_staging (card_blob jsonb)")
+        before = time.monotonic()
 
-                before = time.monotonic()
-                # copy load the cards into the staging table
-                with cursor.copy("COPY import_staging (card_blob) FROM STDIN WITH (FORMAT csv, HEADER false)") as copy_filehandle:
-                    writer = csv.writer(copy_filehandle, quoting=csv.QUOTE_ALL)
-                    for card in to_insert:
-                        json_str = orjson.dumps(card).decode("utf-8")
-                        writer.writerow([json_str])
+        # Use the consolidated loading method with price fields
+        result = self._load_cards_with_staging(to_insert, include_price_fields=True)
 
-                del card, json_str
+        after_transfer = time.monotonic()
 
-                conn.commit()
-                after_staging = time.monotonic()
-                rate = len(to_insert) / (after_staging - before)
-                logger.info(
-                    "Imported %d cards into staging table in %.2f seconds, rate: %.2f cards/s...",
-                    len(to_insert),
-                    after_staging - before,
-                    rate,
-                )
+        if result["status"] == "success":
+            total_time = after_transfer - before
+            rate = len(to_insert) / total_time if total_time > 0 else 0
+            logger.info(
+                "Loaded %d cards in %.2f seconds, rate: %.2f cards/s...",
+                result["cards_loaded"],
+                total_time,
+                rate,
+            )
 
-                cursor.execute(
-                    query="""
-                    INSERT INTO magic.cards
-                    (
-                        card_name,               -- 1
-                        cmc,                     -- 2
-                        mana_cost_text,          -- 3
-                        mana_cost_jsonb,         -- 4
-                        card_types,              -- 5
-                        card_subtypes,           -- 6
-                        card_colors,             -- 7
-                        card_color_identity,     -- 8
-                        card_keywords,           -- 9
-                        creature_power,          -- 10
-                        creature_power_text,     -- 11
-                        creature_toughness,      -- 12
-                        creature_toughness_text, -- 13
-                        edhrec_rank,             -- 14
-                        price_usd,               -- 15
-                        price_eur,               -- 16
-                        price_tix,               -- 17
-                        oracle_text,             -- 18
-                        raw_card_blob            -- 19
-                    )
-                    SELECT
-                        card_blob->>'name' AS card_name, -- 1
-                        (card_blob->>'cmc')::float::integer AS cmc, -- 2
-                        card_blob->>'mana_cost' AS mana_cost_text, -- 3
-                        card_blob->'mana_cost' AS mana_cost_jsonb, -- 4
-                        card_blob->'card_types' AS card_types, -- 5
-                        card_blob->'card_subtypes' AS card_subtypes, -- 6
-                        card_blob->'card_colors' AS card_colors, -- 7
-                        card_blob->'card_color_identity' AS card_color_identity, -- 8
-                        card_blob->'card_keywords' AS card_keywords, -- 9
-                        (card_blob->>'power_numeric')::integer AS creature_power, -- 10
-                        card_blob->>'power' AS creature_power_text, -- 11
-                        (card_blob->>'toughness_numeric')::integer AS creature_toughness, -- 12
-                        card_blob->>'toughness' AS creature_toughness_text, -- 13
-                        (card_blob->>'edhrec_rank')::integer AS edhrec_rank, -- 14
-                        (card_blob->>'price_usd')::real AS price_usd, -- 15
-                        (card_blob->>'price_eur')::real AS price_eur, -- 16
-                        (card_blob->>'price_tix')::real AS price_tix, -- 17
-                        card_blob->>'oracle_text' AS oracle_text, -- 18
-                        card_blob AS raw_card_blob -- 19
-                    FROM
-                        import_staging
-                    ON CONFLICT (card_name) DO NOTHING
-                    """,
-                )
-                conn.commit()
-
-                after_transfer = time.monotonic()
-                rate = len(to_insert) / (after_transfer - after_staging)
-                logger.info(
-                    "Transferred %d cards from staging table to main table in %.2f seconds, rate: %.2f cards/s...",
-                    len(to_insert),
-                    after_transfer - after_staging,
-                    rate,
-                )
-                logger.info(
-                    "Total time: %.2f seconds, rate: %.2f cards/s...",
-                    after_transfer - before,
-                    len(to_insert) / (after_transfer - before),
-                )
-
-                cursor.execute("SELECT * FROM import_staging LIMIT 10")
-                return cursor.fetchall()
+            # Return the sample cards as before
+            return result["sample_cards"]
+        logger.error("Failed to import data: %s", result["message"])
+        return None
 
     def get_cards(
         self: APIResource,
@@ -1541,6 +1470,201 @@ ORDER BY
 
         return all_cards
 
+    def _load_cards_with_staging(
+        self: APIResource,
+        cards: list[dict[str, Any]],
+        *,
+        include_price_fields: bool = True,
+    ) -> dict[str, Any]:
+        """Load cards into the database using a randomly-named staging table.
+
+        This method consolidates card loading functionality by:
+        1. Creating a staging table with a randomly generated suffix
+        2. Loading card data into the staging table (using COPY for efficiency when possible)
+        3. Transferring data from staging to the main magic.cards table
+        4. Returning random sample cards from staging before cleanup
+        5. Dropping the staging table
+
+        Args:
+        ----
+            cards (List[Dict[str, Any]]): List of card data to load.
+            include_price_fields (bool): Whether to include price fields in the INSERT.
+
+        Returns:
+        -------
+            Dict[str, Any]: Result with:
+                - cards_loaded: number of cards successfully loaded
+                - sample_cards: list of up to 10 random cards from staging
+                - status: "success", "no_cards", or "database_error"
+                - message: descriptive message
+
+        """
+        if not cards:
+            return {
+                "status": "no_cards",
+                "cards_loaded": 0,
+                "sample_cards": [],
+                "message": "No cards provided for loading",
+            }
+
+        # Generate random staging table name
+        staging_suffix = secrets.token_hex(8)
+        staging_table_name = f"import_staging_{staging_suffix}"
+
+        # Threshold for deciding between COPY and individual inserts
+        copy_threshold = 10
+
+        try:
+            with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+                # Create staging table with unique name
+                cursor.execute(f"CREATE TEMPORARY TABLE {staging_table_name} (card_blob jsonb)")
+
+                # Load cards into staging table
+                # Use COPY for efficiency when we have many cards, individual inserts for few
+                if len(cards) > copy_threshold:
+                    # Use COPY for better performance with many cards
+                    with cursor.copy(f"COPY {staging_table_name} (card_blob) FROM STDIN WITH (FORMAT csv, HEADER false)") as copy_filehandle:
+                        writer = csv.writer(copy_filehandle, quoting=csv.QUOTE_ALL)
+                        for card in cards:
+                            json_str = orjson.dumps(card).decode("utf-8")
+                            writer.writerow([json_str])
+                else:
+                    # Use individual inserts for few cards
+                    for card in cards:
+                        json_str = orjson.dumps(card).decode("utf-8")
+                        cursor.execute(
+                            f"INSERT INTO {staging_table_name} (card_blob) VALUES (%s)",
+                            (json_str,),
+                        )
+
+                # Get random sample before transfer (up to 10 cards)
+                cursor.execute(f"SELECT card_blob FROM {staging_table_name} ORDER BY RANDOM() LIMIT 10")
+                sample_cards = cursor.fetchall()
+
+                # Transfer from staging to main table
+                if include_price_fields:
+                    insert_query = f"""
+                        INSERT INTO magic.cards
+                        (
+                            card_name,               -- 1
+                            cmc,                     -- 2
+                            mana_cost_text,          -- 3
+                            mana_cost_jsonb,         -- 4
+                            card_types,              -- 5
+                            card_subtypes,           -- 6
+                            card_colors,             -- 7
+                            card_color_identity,     -- 8
+                            card_keywords,           -- 9
+                            creature_power,          -- 10
+                            creature_power_text,     -- 11
+                            creature_toughness,      -- 12
+                            creature_toughness_text, -- 13
+                            edhrec_rank,             -- 14
+                            price_usd,               -- 15
+                            price_eur,               -- 16
+                            price_tix,               -- 17
+                            oracle_text,             -- 18
+                            raw_card_blob            -- 19
+                        )
+                        SELECT
+                            card_blob->>'name' AS card_name, -- 1
+                            (card_blob->>'cmc')::float::integer AS cmc, -- 2
+                            card_blob->>'mana_cost' AS mana_cost_text, -- 3
+                            card_blob->'mana_cost' AS mana_cost_jsonb, -- 4
+                            card_blob->'card_types' AS card_types, -- 5
+                            card_blob->'card_subtypes' AS card_subtypes, -- 6
+                            card_blob->'card_colors' AS card_colors, -- 7
+                            card_blob->'card_color_identity' AS card_color_identity, -- 8
+                            card_blob->'card_keywords' AS card_keywords, -- 9
+                            (card_blob->>'power_numeric')::integer AS creature_power, -- 10
+                            card_blob->>'power' AS creature_power_text, -- 11
+                            (card_blob->>'toughness_numeric')::integer AS creature_toughness, -- 12
+                            card_blob->>'toughness' AS creature_toughness_text, -- 13
+                            (card_blob->>'edhrec_rank')::integer AS edhrec_rank, -- 14
+                            (card_blob->>'price_usd')::real AS price_usd, -- 15
+                            (card_blob->>'price_eur')::real AS price_eur, -- 16
+                            (card_blob->>'price_tix')::real AS price_tix, -- 17
+                            card_blob->>'oracle_text' AS oracle_text, -- 18
+                            card_blob AS raw_card_blob -- 19
+                        FROM
+                            {staging_table_name}
+                        ON CONFLICT (card_name) DO NOTHING
+                    """
+                else:
+                    insert_query = f"""
+                        INSERT INTO magic.cards
+                        (
+                            card_name,               -- 1
+                            cmc,                     -- 2
+                            mana_cost_text,          -- 3
+                            mana_cost_jsonb,         -- 4
+                            card_types,              -- 5
+                            card_subtypes,           -- 6
+                            card_colors,             -- 7
+                            card_color_identity,     -- 8
+                            card_keywords,           -- 9
+                            creature_power,          -- 10
+                            creature_power_text,     -- 11
+                            creature_toughness,      -- 12
+                            creature_toughness_text, -- 13
+                            edhrec_rank,             -- 14
+                            oracle_text,             -- 15
+                            raw_card_blob            -- 16
+                        )
+                        SELECT
+                            card_blob->>'name' AS card_name, -- 1
+                            (card_blob->>'cmc')::float::integer AS cmc, -- 2
+                            card_blob->>'mana_cost' AS mana_cost_text, -- 3
+                            card_blob->'mana_cost' AS mana_cost_jsonb, -- 4
+                            card_blob->'card_types' AS card_types, -- 5
+                            card_blob->'card_subtypes' AS card_subtypes, -- 6
+                            card_blob->'card_colors' AS card_colors, -- 7
+                            card_blob->'card_color_identity' AS card_color_identity, -- 8
+                            card_blob->'card_keywords' AS card_keywords, -- 9
+                            (card_blob->>'power_numeric')::integer AS creature_power, -- 10
+                            card_blob->>'power' AS creature_power_text, -- 11
+                            (card_blob->>'toughness_numeric')::integer AS creature_toughness, -- 12
+                            card_blob->>'toughness' AS creature_toughness_text, -- 13
+                            (card_blob->>'edhrec_rank')::integer AS edhrec_rank, -- 14
+                            card_blob->>'oracle_text' AS oracle_text, -- 15
+                            card_blob AS raw_card_blob -- 16
+                        FROM
+                            {staging_table_name}
+                        ON CONFLICT (card_name) DO NOTHING
+                    """
+
+                cursor.execute(insert_query)
+                cards_loaded = cursor.rowcount
+
+                # Drop the staging table
+                cursor.execute(f"DROP TABLE {staging_table_name}")
+
+                conn.commit()
+
+                return {
+                    "status": "success",
+                    "cards_loaded": cards_loaded,
+                    "sample_cards": sample_cards,
+                    "message": f"Successfully loaded {cards_loaded} cards",
+                }
+
+        except (psycopg.Error, ValueError, KeyError) as e:
+            logger.error("Error loading cards with staging table %s: %s", staging_table_name, e)
+            # Try to clean up staging table on error
+            try:
+                with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+                    cursor.execute(f"DROP TABLE IF EXISTS {staging_table_name}")
+                    conn.commit()
+            except (psycopg.Error, ValueError) as cleanup_error:
+                logger.warning("Failed to cleanup staging table %s: %s", staging_table_name, cleanup_error)
+
+            return {
+                "status": "database_error",
+                "cards_loaded": 0,
+                "sample_cards": [],
+                "message": f"Error loading cards: {e}",
+            }
+
     def _insert_cards_to_database(self: APIResource, cards: list[dict[str, Any]]) -> dict[str, Any]:
         """Insert processed cards into the database.
 
@@ -1553,84 +1677,24 @@ ORDER BY
             Dict[str, Any]: Result summary with insertion status and count.
 
         """
-        if not cards:
+        # Use the consolidated loading method without price fields to maintain backward compatibility
+        result = self._load_cards_with_staging(cards, include_price_fields=False)
+
+        # Convert the result format to match the old API
+        if result["status"] == "success":
+            return {
+                "status": "success",
+                "cards_inserted": result["cards_loaded"],
+                "message": result["message"],
+            }
+        if result["status"] == "no_cards":
             return {
                 "status": "no_cards",
                 "cards_inserted": 0,
                 "message": "No cards provided for insertion",
             }
-
-        try:
-            with self._conn_pool.connection() as conn, conn.cursor() as cursor:
-                # Create temporary table for staging
-                cursor.execute("CREATE TEMPORARY TABLE IF NOT EXISTS import_staging (card_blob jsonb)")
-
-                # Insert cards into staging
-                for card in cards:
-                    json_str = orjson.dumps(card).decode("utf-8")
-                    cursor.execute(
-                        "INSERT INTO import_staging (card_blob) VALUES (%s)",
-                        (json_str,),
-                    )
-
-                # Transfer from staging to main table
-                cursor.execute(
-                    """
-                    INSERT INTO magic.cards
-                    (
-                        card_name,               -- 1
-                        cmc,                     -- 2
-                        mana_cost_text,          -- 3
-                        mana_cost_jsonb,         -- 4
-                        card_types,              -- 5
-                        card_subtypes,           -- 6
-                        card_colors,             -- 7
-                        card_color_identity,     -- 8
-                        card_keywords,           -- 9
-                        creature_power,          -- 10
-                        creature_power_text,     -- 11
-                        creature_toughness,      -- 12
-                        creature_toughness_text, -- 13
-                        edhrec_rank,             -- 14
-                        oracle_text,             -- 15
-                        raw_card_blob            -- 16
-                    )
-                    SELECT
-                        card_blob->>'name' AS card_name, -- 1
-                        (card_blob->>'cmc')::float::integer AS cmc, -- 2
-                        card_blob->>'mana_cost' AS mana_cost_text, -- 3
-                        card_blob->'mana_cost' AS mana_cost_jsonb, -- 4
-                        card_blob->'card_types' AS card_types, -- 5
-                        card_blob->'card_subtypes' AS card_subtypes, -- 6
-                        card_blob->'card_colors' AS card_colors, -- 7
-                        card_blob->'card_color_identity' AS card_color_identity, -- 8
-                        card_blob->'card_keywords' AS card_keywords, -- 9
-                        (card_blob->>'power_numeric')::integer AS creature_power, -- 10
-                        card_blob->>'power' AS creature_power_text, -- 11
-                        (card_blob->>'toughness_numeric')::integer AS creature_toughness, -- 12
-                        card_blob->>'toughness' AS creature_toughness_text, -- 13
-                        (card_blob->>'edhrec_rank')::integer AS edhrec_rank, -- 14
-                        card_blob->>'oracle_text' AS oracle_text, -- 15
-                        card_blob AS raw_card_blob -- 16
-                    FROM
-                        import_staging
-                    ON CONFLICT (card_name) DO NOTHING
-                    """,
-                )
-
-                conn.commit()
-                inserted_count = cursor.rowcount
-
-                return {
-                    "status": "success",
-                    "cards_inserted": inserted_count,
-                    "message": f"Successfully inserted {inserted_count} cards",
-                }
-
-        except (psycopg.Error, ValueError, KeyError) as e:
-            logger.error("Error inserting cards into database: %s", e)
-            return {
-                "status": "database_error",
-                "cards_inserted": 0,
-                "message": f"Error inserting cards into database: {e}",
-            }
+        return {
+            "status": "database_error",
+            "cards_inserted": 0,
+            "message": result["message"],
+        }
