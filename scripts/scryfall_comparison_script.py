@@ -18,6 +18,13 @@ import time
 from dataclasses import dataclass
 
 import requests
+import tenacity
+
+retryer = tenacity.retry(
+    wait=tenacity.wait_exponential(multiplier=0.1, min=0.1, max=2) + tenacity.wait_random(0, 0.1),
+    reraise=True,
+    stop=tenacity.stop_after_attempt(7),
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -42,6 +49,9 @@ class ComparisonResult:
     position_correlation: float
     major_discrepancy: bool
     notes: list[str]
+    local_only_cards: list[tuple[str, int]]  # (card_name, position)
+    official_only_cards: list[tuple[str, int]]  # (card_name, position)
+    local_total_cards: int
 
 class ScryfallAPIComparator:
     """Compares search results between official Scryfall and local implementation."""
@@ -59,26 +69,26 @@ class ScryfallAPIComparator:
         try:
             url = f"{self.official_base_url}/cards/search"
             params = {
-                "q": query,
+                "q": f"({query}) -is:dfc -is:adventure -is:split game:paper (f:m or f:l or f:c or f:v)",
                 "order": "edhrec",
                 "dir": "asc",
                 "page": 1,
             }
 
             logger.info(f"Searching official Scryfall: {query}")
-            response = self.session.get(url, params=params, timeout=30)
+
+            @retryer
+            def get_response():
+                response = self.session.get(url, params=params, timeout=30)
+                if response.status_code not in [200, 404]:
+                    response.raise_for_status()
+                return response
+
+            response = get_response()
 
             if response.status_code == 404:
                 # No results found
                 return SearchResult(query=query, total_cards=0, card_names=[], success=True)
-            if response.status_code != 200:
-                return SearchResult(
-                    query=query,
-                    total_cards=0,
-                    card_names=[],
-                    success=False,
-                    error_message=f"HTTP {response.status_code}: {response.text}",
-                )
 
             data = response.json()
             total_cards = data.get("total_cards", 0)
@@ -109,34 +119,21 @@ class ScryfallAPIComparator:
                 "q": query,
                 "orderby": "edhrec",
                 "direction": "asc",
-                "limit": limit,
             }
 
             logger.info(f"Searching local Scryfall: {query}")
-            response = self.session.get(url, params=params, timeout=30)
 
-            if response.status_code == 502:
-                # Server is down, mark as failed
-                return SearchResult(
-                    query=query,
-                    total_cards=0,
-                    card_names=[],
-                    success=False,
-                    error_message="Local API server unavailable (HTTP 502)",
-                )
-            if response.status_code != 200:
-                return SearchResult(
-                    query=query,
-                    total_cards=0,
-                    card_names=[],
-                    success=False,
-                    error_message=f"HTTP {response.status_code}: {response.text[:200]}",
-                )
+            @retryer
+            def get_response():
+                response = self.session.get(url, params=params, timeout=30)
+                response.raise_for_status()
+                return response
 
+            response = get_response()
             data = response.json()
-            cards = data.get("data", [])
-            total_cards = data.get("total_cards", len(cards))
-            card_names = [card.get("name", "") for card in cards]
+            cards = data.pop("cards")
+            total_cards = data["total_cards"]
+            card_names = [card["name"] for card in cards]
 
             return SearchResult(
                 query=query,
@@ -181,8 +178,8 @@ class ScryfallAPIComparator:
 
     def compare_results(self, query: str) -> ComparisonResult:
         """Compare search results between official and local APIs."""
+        time.sleep(0.5)  # Rate limiting
         official_result = self.search_official_scryfall(query)
-        time.sleep(0.1)  # Rate limiting
         local_result = self.search_local_scryfall(query)
 
         # Calculate metrics
@@ -191,6 +188,26 @@ class ScryfallAPIComparator:
             official_result.card_names,
             local_result.card_names,
         )
+
+        # Find unique cards with their positions (first 5 of each)
+        official_cards_set = set(official_result.card_names)
+        local_cards_set = set(local_result.card_names)
+
+        # Get local-only cards with their positions
+        local_only_cards = []
+        for i, card in enumerate(local_result.card_names):
+            if card not in official_cards_set:
+                local_only_cards.append((card, i))
+                if len(local_only_cards) >= 5:
+                    break
+
+        # Get official-only cards with their positions
+        official_only_cards = []
+        for i, card in enumerate(official_result.card_names):
+            if card not in local_cards_set:
+                official_only_cards.append((card, i))
+                if len(official_only_cards) >= 5:
+                    break
 
         # Determine if there's a major discrepancy
         major_discrepancy = (
@@ -219,6 +236,9 @@ class ScryfallAPIComparator:
             position_correlation=position_correlation,
             major_discrepancy=major_discrepancy,
             notes=notes,
+            local_only_cards=local_only_cards,
+            official_only_cards=official_only_cards,
+            local_total_cards=local_result.total_cards,
         )
 
     def run_comparison_suite(self) -> list[ComparisonResult]:
@@ -226,6 +246,7 @@ class ScryfallAPIComparator:
         test_queries = [
             # Basic searches
             "lightning",
+            "llanowar",
             "t:beast",
             "c:g",
             "cmc=3",
@@ -242,13 +263,11 @@ class ScryfallAPIComparator:
             "o:flying t:angel",
 
             # Keyword searches
-            "k:flying",
-            "k:trample",
-            "keywords:vigilance",
+            "keyword:flying",
+            "keyword:trample",
+            "keyword:vigilance",
 
-            # Oracle tags (local extension)
-            "ot:haste",
-            "oracle_tags:dual-land",
+            "otag:dual-land",
 
             # Arithmetic expressions
             "cmc+1<power",
@@ -273,6 +292,7 @@ class ScryfallAPIComparator:
                 time.sleep(0.2)  # Rate limiting
             except Exception as e:
                 logger.error(f"Failed to compare query '{query}': {e}")
+            logger.info("")
 
         return results
 
@@ -299,6 +319,7 @@ class ScryfallAPIComparator:
             report += f"\n### Query: `{result.query}`\n"
             report += f"- Official results: {result.official_result.total_cards} cards\n"
             report += f"- Local results: {result.local_result.total_cards} cards\n"
+            report += f"- Local total_cards: {result.local_total_cards} cards\n"
             report += f"- Position correlation: {result.position_correlation:.2f}\n"
             report += f"- Major discrepancy: {'Yes' if result.major_discrepancy else 'No'}\n"
 
@@ -306,6 +327,16 @@ class ScryfallAPIComparator:
                 report += "- Notes:\n"
                 for note in result.notes:
                     report += f"  - {note}\n"
+
+            # Add unique cards information with positions
+            if result.local_only_cards:
+                report += "- Cards only in local results (first 5):\n"
+                for card_name, position in result.local_only_cards:
+                    report += f"  - {card_name} / {position}\n"
+            if result.official_only_cards:
+                report += "- Cards only in official results (first 5):\n"
+                for card_name, position in result.official_only_cards:
+                    report += f"  - {card_name} / {position}\n"
 
         return report
 
