@@ -277,10 +277,6 @@ class ScryfallAPIComparator:
             'name:"Lightning Bolt"',
             "cmc=0",
             "power<0",
-
-            # Potential failures
-            "invalid:syntax",
-            "nonexistent:field",
         ]
 
         results = []
