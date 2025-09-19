@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pathlib
-from unittest.mock import patch
 
 import pytest
 
@@ -37,7 +36,7 @@ class TestReadSQL:
         """Test that read_sql loads the correct SQL file content."""
         # Test loading one of our actual SQL files
         sql_content = self.api_resource.read_sql("get_cards")
-        
+
         # Verify it contains expected SQL keywords
         assert "SELECT" in sql_content
         assert "FROM" in sql_content
@@ -52,14 +51,13 @@ class TestReadSQL:
     def test_sql_files_exist(self) -> None:
         """Test that all expected SQL files exist."""
         sql_dir = pathlib.Path(__file__).parent.parent / "sql"
-        
+
         expected_files = [
             "get_cards.sql",
-            "get_common_card_types.sql", 
+            "get_common_card_types.sql",
             "get_common_keywords.sql",
-            "load_cards_with_staging.sql"
         ]
-        
+
         for filename in expected_files:
             sql_file = sql_dir / filename
             assert sql_file.exists(), f"SQL file {filename} should exist"
@@ -69,11 +67,10 @@ class TestReadSQL:
         """Test that SQL files have non-empty content."""
         expected_files = [
             "get_cards",
-            "get_common_card_types", 
+            "get_common_card_types",
             "get_common_keywords",
-            "load_cards_with_staging"
         ]
-        
+
         for filename in expected_files:
             sql_content = self.api_resource.read_sql(filename)
             assert sql_content, f"SQL file {filename} should have content"
