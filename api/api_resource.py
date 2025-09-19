@@ -404,7 +404,7 @@ class APIResource:
             logger.info("Cache hit!")
         return response
 
-    def setup_schema(self: APIResource, *args, **kwargs) -> None:
+    def setup_schema(self: APIResource) -> None:
         """Set up the database schema and apply migrations as needed."""
         # read migrations from the db dir...
         # if any already applied migrations differ from what we want
