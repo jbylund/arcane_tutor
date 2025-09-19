@@ -725,31 +725,31 @@ def test_case_insensitive_attributes(input_query: str, expected_sql: str, expect
         # Basic set search with full 'set:' syntax
         (
             "set:iko",
-            r"(card.raw_card_blob->>'set' = %(p_str_aWtv)s)",
+            r"(card.card_set_code = %(p_str_aWtv)s)",
             {"p_str_aWtv": "iko"},
         ),
         # Set search with 's:' shorthand
         (
             "s:iko",
-            r"(card.raw_card_blob->>'set' = %(p_str_aWtv)s)",
+            r"(card.card_set_code = %(p_str_aWtv)s)",
             {"p_str_aWtv": "iko"},
         ),
         # Case-insensitive set attribute search
         (
             "SET:iko",
-            r"(card.raw_card_blob->>'set' = %(p_str_aWtv)s)",
+            r"(card.card_set_code = %(p_str_aWtv)s)",
             {"p_str_aWtv": "iko"},
         ),
         # Set search with different set codes
         (
             "set:thb",
-            r"(card.raw_card_blob->>'set' = %(p_str_dGhi)s)",
+            r"(card.card_set_code = %(p_str_dGhi)s)",
             {"p_str_dGhi": "thb"},
         ),
         # Set search with multiple characters
         (
             "s:m21",
-            r"(card.raw_card_blob->>'set' = %(p_str_bTIx)s)",
+            r"(card.card_set_code = %(p_str_bTIx)s)",
             {"p_str_bTIx": "m21"},
         ),
     ],
