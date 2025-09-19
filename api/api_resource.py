@@ -404,7 +404,7 @@ class APIResource:
             logger.info("Cache hit!")
         return response
 
-    def _setup_schema(self: APIResource) -> None:
+    def setup_schema(self: APIResource, *args, **kwargs) -> None:
         """Set up the database schema and apply migrations as needed."""
         # read migrations from the db dir...
         # if any already applied migrations differ from what we want
@@ -530,7 +530,7 @@ class APIResource:
         if self._setup_complete():
             return None
 
-        self._setup_schema()
+        self.setup_schema()
 
         to_insert = self._get_cards_to_insert()
 
