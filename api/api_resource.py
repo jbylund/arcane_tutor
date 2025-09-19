@@ -1378,10 +1378,10 @@ ORDER BY
                 "message": f"All cards named '{card_name}' were filtered out during preprocessing (not legal in supported formats or not paper)",
             }
 
-        # Insert the cards into the database using the new method
-        insert_result = self._insert_cards_to_database(processed_cards)
+        # Insert the cards into the database using the consolidated method
+        load_result = self._load_cards_with_staging(processed_cards)
 
-        if insert_result["status"] == "success" and insert_result["cards_inserted"] > 0:
+        if load_result["status"] == "success" and load_result["cards_loaded"] > 0:
             # Clear caches to ensure search can find the newly imported card
             self._query_cache.clear()
             # Clear the search cache by accessing its cache attribute
@@ -1394,7 +1394,7 @@ ORDER BY
                 "status": "success",
                 "message": f"Card '{card_name}' successfully imported",
             }
-        if insert_result["status"] == "success" and insert_result["cards_inserted"] == 0:
+        if load_result["status"] == "success" and load_result["cards_loaded"] == 0:
             return {
                 "card_name": card_name,
                 "status": "conflict",
@@ -1403,7 +1403,7 @@ ORDER BY
         return {
             "card_name": card_name,
             "status": "database_error",
-            "message": insert_result["message"],
+            "message": load_result["message"],
         }
 
     def _scryfall_search(self: APIResource, *, query: str) -> list[dict[str, Any]]:
@@ -1605,36 +1605,3 @@ ORDER BY
                 "message": f"Error loading cards: {e}",
             }
 
-    def _insert_cards_to_database(self: APIResource, cards: list[dict[str, Any]]) -> dict[str, Any]:
-        """Insert processed cards into the database.
-
-        Args:
-        ----
-            cards (List[Dict[str, Any]]): List of processed card data to insert.
-
-        Returns:
-        -------
-            Dict[str, Any]: Result summary with insertion status and count.
-
-        """
-        # Use the consolidated loading method
-        result = self._load_cards_with_staging(cards)
-
-        # Convert the result format to match the old API
-        if result["status"] == "success":
-            return {
-                "status": "success",
-                "cards_inserted": result["cards_loaded"],
-                "message": result["message"],
-            }
-        if result["status"] == "no_cards":
-            return {
-                "status": "no_cards",
-                "cards_inserted": 0,
-                "message": "No cards provided for insertion",
-            }
-        return {
-            "status": "database_error",
-            "cards_inserted": 0,
-            "message": result["message"],
-        }
