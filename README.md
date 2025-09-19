@@ -48,6 +48,29 @@ The bulk import includes built-in rate limiting:
 - 500ms delay between hierarchy relationship requests
 - Progress logging every 50 tags processed
 
+## Tag Management Scripts
+
+### Compare Tag Counts Script
+
+The `scripts/compare_tag_counts.py` script helps maintain tag coverage by comparing card counts between Scryfall and the local database:
+
+```bash
+# Compare tag counts without importing (dry run)
+python scripts/compare_tag_counts.py --dry-run --verbose
+
+# Import cards for the top 10 tags with most missing cards
+python scripts/compare_tag_counts.py --top-n 10
+
+# Use custom API URL
+python scripts/compare_tag_counts.py --top-n 5 --api-url http://localhost:8080
+```
+
+The script:
+1. Fetches all available tags from Scryfall
+2. Compares card counts between Scryfall.com and local database
+3. Identifies tags with the most missing cards
+4. Optionally imports cards for the top N priority tags
+
 Need to consolidate:
 1. database column names
 1. interface column names
