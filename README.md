@@ -161,7 +161,7 @@ npx prettier --write api/index.html        # Format frontend code
 | **Colors & Identity** | `color:`, `identity:`, `c:`, `id:` | JSONB-based with complex color logic |
 | **Advanced Logic** | `AND`, `OR`, `NOT`, `()` | Full boolean logic support |
 | **Arithmetic** | `cmc+1<power`, `power-toughness=0` | Advanced mathematical expressions |
-| **Keywords** | `keywords:`, `k:` | JSONB object storage |
+| **Keywords** | `keyword:` | JSONB object storage |
 | **Oracle Tags** | `oracle_tags:`, `ot:` | Scryfall OS unique extension |
 
 #### Partially Supported Features ⚠️
@@ -175,15 +175,15 @@ npx prettier --write api/index.html        # Format frontend code
 
 Based on [comprehensive functionality analysis](docs/scryfall_functionality_analysis.md), here's the priority matrix:
 
-| **Complexity** | **High Impact** | **Medium Impact** | **Low Impact** |
-|----------------|-----------------|-------------------|----------------|
-| **Low** | **Set Data** (`set:`, `s:`)<br/>**Rarity** (`rarity:`, `r:`)<br/>**Artist** (`artist:`, `a:`) | **Layout** (`layout:`)<br/>**Border** (`border:`)<br/>**Frame** (`frame:`) | **Watermark** (`watermark:`)<br/>**Flavor Text** (`flavor:`) |
-| **Medium** | **Format Legality** (`format:`, `legal:`, `banned:`)<br/>**Collector Numbers** (`number:`, `cn:`) | **Release Dates** (`year:`, `date:`)<br/>**Planeswalker Loyalty** (`loyalty:`) | **Cube Inclusion** (`cube:`)<br/>**Commander Features** (`cmd:`) |
-| **High** | **Pricing Data** (`usd:`, `eur:`, `tix:`)<br/>**Special Properties** (`is:`, `produces:`) | **Advanced Mechanics** (`spellpower:`, `spellresistance:`)<br/>**Paper Sets** (`papersets:`) | **Regular Expressions** (`/pattern/`)<br/>**Wildcards** (`*`) |
+| **Complexity** | **Low Impact** | **Medium Impact** | **High Impact** |
+|----------------|----------------|-------------------|-----------------|
+| **Low** | **Watermark** (`watermark:`)<br/>**Flavor Text** (`flavor:`) | **Layout** (`layout:`)<br/>**Border** (`border:`)<br/>**Frame** (`frame:`) | **Set Data** (`set:`, `s:`)<br/>**Rarity** (`rarity:`, `r:`)<br/>**Artist** (`artist:`, `a:`) |
+| **Medium** | **Cube Inclusion** (`cube:`)<br/>**Commander Features** (`cmd:`) | **Release Dates** (`year:`, `date:`)<br/>**Planeswalker Loyalty** (`loyalty:`) | **Format Legality** (`format:`, `legal:`, `banned:`)<br/>**Collector Numbers** (`number:`, `cn:`) |
+| **High** | **Regular Expressions** (`/pattern/`)<br/>**Wildcards** (`*`) | **Advanced Mechanics** (`spellpower:`, `spellresistance:`)<br/>**Paper Sets** (`papersets:`) | **Pricing Data** (`usd:`, `eur:`, `tix:`)<br/>**Special Properties** (`is:`, `produces:`) |
 
 ### Recommended Development Priorities
 
-1. **High Impact, Low Complexity** - Implement set data, rarity, and artist search first for maximum user benefit
+1. **High Impact, Low Complexity** - Implement set data, rarity, and artist search first for maximum user benefit (top right)
 2. **High Impact, Medium Complexity** - Add format legality system and collector numbers for competitive play support  
 3. **High Impact, High Complexity** - Pricing integration and special properties for advanced users
 4. **Medium/Low Impact** - Layout, dates, and advanced features as enhancement goals
