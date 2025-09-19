@@ -1054,7 +1054,7 @@ ORDER BY
         card_names.sort()
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             # Use SQL update with jsonb concatenation to add the tag
-            for card_name_batch in itertools.batched(card_names, 200):
+            for card_name_batch in itertools.batched(card_names, 200, strict=False):
                 cursor.execute(
                     """
                     UPDATE magic.cards
