@@ -253,29 +253,9 @@ class TestContainerIntegration:
             card_count = count_result["count"] if count_result else 0
             assert card_count >= 1, f"Card '{card_name}' should exist in database after import (count: {card_count})"
 
-        # Now test that we can search for it by different methods
+        # Now test that we can search for it by name
         search_result = api_resource.search(q=f"name:{card_name}", limit=10)
         found_cards = search_result["cards"]
-
-        # If the name search doesn't work, try searching by CMC or type which should work
-        if not found_cards:
-            # Try searching by properties we know the card has
-            cmc_search = api_resource.search(q="cmc=3", limit=10)
-            instant_search = api_resource.search(q="type:instant", limit=10)
-
-            # Check if Beast Within appears in these searches
-            cmc_names = [card["name"] for card in cmc_search["cards"]]
-            instant_names = [card["name"] for card in instant_search["cards"]]
-
-            # It should appear in both since Beast Within is a 3-mana instant
-            assert card_name in cmc_names, f"Card should be found in CMC search. Found: {cmc_names}"
-            assert card_name in instant_names, f"Card should be found in instant search. Found: {instant_names}"
-
-            # Use the card from one of these successful searches
-            for card in instant_search["cards"]:
-                if card["name"] == card_name:
-                    found_cards = [card]
-                    break
 
         assert len(found_cards) >= 1, f"Card '{card_name}' should be findable after import"
 

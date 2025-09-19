@@ -1440,6 +1440,12 @@ ORDER BY
         insert_result = self._insert_cards_to_database(processed_cards)
 
         if insert_result["status"] == "success" and insert_result["cards_inserted"] > 0:
+            # Clear caches to ensure search can find the newly imported card
+            self._query_cache.clear()
+            # Clear the search cache by accessing its cache attribute
+            if hasattr(self._search, "cache"):
+                self._search.cache.clear()
+
             logger.info("Successfully imported card: '%s'", card_name)
             return {
                 "card_name": card_name,
