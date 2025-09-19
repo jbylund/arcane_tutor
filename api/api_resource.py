@@ -709,6 +709,7 @@ class APIResource:
         orderby: str | None = None,
         direction: str | None = None,
         limit: int = 100,
+        unique: str | None = None,
     ) -> dict[str, Any]:
         """Run a search query and return results and metadata.
 
@@ -719,6 +720,9 @@ class APIResource:
             direction: Sort direction ('asc' or 'desc').
             limit: Maximum number of results to return.
             orderby: Field to sort by.
+            unique: Search mode - 'cards' for unique cards (oracle-style),
+                   'prints' for all printings, 'art' for unique artwork.
+                   Defaults to 'prints' (all printings).
 
         Returns:
             Dict containing search results and metadata.
@@ -730,6 +734,7 @@ class APIResource:
             orderby=orderby,
             direction=direction,
             limit=limit,
+            unique=unique,
         )
 
     @cached(
@@ -743,6 +748,7 @@ class APIResource:
         orderby: str | None = None,
         direction: str | None = None,
         limit: int = 100,
+        unique: str | None = None,
     ) -> dict[str, Any]:
         try:
             where_clause, params = get_where_clause(query)
@@ -764,8 +770,36 @@ class APIResource:
             "asc": "ASC",
             "desc": "DESC",
         }.get(direction, "ASC")
+        # Handle different unique modes
+        unique_mode = unique or "prints"  # Default to all printings
+
+        if unique_mode == "cards":
+            # Oracle-style: one result per Oracle ID (unique cards)
+            # Use DISTINCT ON to get one row per oracle_id
+            from_clause = f"""
+            magic.cards AS card
+            WHERE
+                card.raw_card_blob->>'oracle_id' IN (
+                    SELECT DISTINCT raw_card_blob->>'oracle_id'
+                    FROM magic.cards
+                    WHERE {where_clause}
+                    ORDER BY raw_card_blob->>'oracle_id', edhrec_rank ASC NULLS LAST
+                )
+            """
+            distinct_clause = "DISTINCT ON (card.raw_card_blob->>'oracle_id')"
+        elif unique_mode == "art":
+            # Unique artwork mode: one result per unique image
+            from_clause = f"magic.cards AS card WHERE {where_clause}"
+            distinct_clause = "DISTINCT ON (card.raw_card_blob->'image_uris'->>'art_crop')"
+        else:
+            # Default: all printings mode
+            from_clause = f"magic.cards AS card WHERE {where_clause}"
+            distinct_clause = ""
+
+        select_distinct = f"SELECT {distinct_clause}" if distinct_clause else "SELECT"
+
         full_query = f"""
-        SELECT
+        {select_distinct}
             card_name AS name,
             mana_cost_text AS mana_cost,
             oracle_text AS oracle_text,
@@ -773,11 +807,13 @@ class APIResource:
             raw_card_blob->>'type_line' AS type_line,
             raw_card_blob->'image_uris'->>'small' AS image_small,
             raw_card_blob->'image_uris'->>'normal' AS image_normal,
-            raw_card_blob->'image_uris'->>'large' AS image_large
+            raw_card_blob->'image_uris'->>'large' AS image_large,
+            card_set AS set_code,
+            collector_number,
+            scryfall_id,
+            raw_card_blob->>'oracle_id' AS oracle_id
         FROM
-            magic.cards AS card
-        WHERE
-            {where_clause}
+            {from_clause}
         ORDER BY
             {sql_orderby} {sql_direction} NULLS LAST,
             edhrec_rank ASC NULLS LAST
@@ -819,18 +855,38 @@ class APIResource:
                 ptr = self._run_query(query=full_query, params=params, explain=False)["result"][0]["QUERY PLAN"][0]["Plan"]
                 total_cards = ptr["Plan Rows"]
             else:
-                full_query = f"""
-                SELECT
-                    COUNT(1) AS total_cards
-                FROM
-                    magic.cards AS card
-                WHERE
-                    {where_clause}
-                """
-                full_query = rewrap(full_query)
-                logger.info("Full query: %s", full_query)
+                # Use appropriate counting logic based on unique mode
+                if unique_mode == "cards":
+                    count_query = f"""
+                    SELECT
+                        COUNT(DISTINCT raw_card_blob->>'oracle_id') AS total_cards
+                    FROM
+                        magic.cards AS card
+                    WHERE
+                        {where_clause}
+                    """
+                elif unique_mode == "art":
+                    count_query = f"""
+                    SELECT
+                        COUNT(DISTINCT raw_card_blob->'image_uris'->>'art_crop') AS total_cards
+                    FROM
+                        magic.cards AS card
+                    WHERE
+                        {where_clause}
+                    """
+                else:
+                    count_query = f"""
+                    SELECT
+                        COUNT(1) AS total_cards
+                    FROM
+                        magic.cards AS card
+                    WHERE
+                        {where_clause}
+                    """
+                count_query = rewrap(count_query)
+                logger.info("Count query: %s", count_query)
                 logger.info("Params: %s", params)
-                count_result_bag = self._run_query(query=full_query, params=params, explain=False)
+                count_result_bag = self._run_query(query=count_query, params=params, explain=False)
                 total_cards = count_result_bag["result"][0]["total_cards"]
         return {
             "cards": cards,
@@ -839,6 +895,12 @@ class APIResource:
             "query": query,
             "result": result_bag,
             "total_cards": total_cards,
+            "search_mode": unique_mode,
+            "search_mode_description": {
+                "prints": "All printings (default_cards style)",
+                "cards": "Unique cards (oracle_cards style)",
+                "art": "Unique artwork",
+            }[unique_mode],
         }
 
     def index_html(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:

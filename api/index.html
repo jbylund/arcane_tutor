@@ -74,7 +74,8 @@
         gap: 8px;
       }
 
-      .order-dropdown {
+      .order-dropdown,
+      .search-mode-dropdown {
         padding: 15px 20px;
         font-size: 1.1rem;
         border: none;
@@ -88,7 +89,8 @@
         min-width: 120px;
       }
 
-      .order-dropdown:focus {
+      .order-dropdown:focus,
+      .search-mode-dropdown:focus {
         transform: translateY(-2px);
         box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
       }
@@ -406,7 +408,8 @@
           justify-content: center;
         }
 
-        .order-dropdown {
+        .order-dropdown,
+        .search-mode-dropdown {
           flex: 1;
           max-width: 200px;
         }
@@ -462,6 +465,7 @@
           this.resultsCount = document.getElementById('resultsCount');
           this.orderDropdown = document.getElementById('orderDropdown');
           this.orderToggle = document.getElementById('orderToggle');
+          this.searchModeDropdown = document.getElementById('searchModeDropdown');
 
           this.debounceTimeout = null;
           this.debounceDelay = 140; // milliseconds
@@ -486,9 +490,11 @@
           const initialQuery = params.get('q') || '';
           const initialOrder = params.get('orderby') || 'edhrec';
           const initialDirection = params.get('direction') || 'asc';
+          const initialSearchMode = params.get('unique') || 'prints';
 
           // Set the order controls to match URL params
           this.orderDropdown.value = initialOrder;
+          this.searchModeDropdown.value = initialSearchMode;
           this.isAscending = initialDirection === 'asc';
           this.updateOrderToggleAppearance();
 
@@ -503,7 +509,8 @@
             // Update the URL as the user types
             const order = this.orderDropdown.value;
             const direction = this.isAscending ? 'asc' : 'desc';
-            this.updateURL(query, order, direction);
+            const searchMode = this.searchModeDropdown.value;
+            this.updateURL(query, order, direction, searchMode);
           });
 
           // Handle enter key for immediate search
@@ -537,6 +544,10 @@
 
           this.orderToggle.addEventListener('click', () => {
             this.toggleOrderDirection();
+          });
+
+          this.searchModeDropdown.addEventListener('change', () => {
+            this.handleSearchModeChange();
           });
         }
 
@@ -678,9 +689,10 @@
           // Get current order settings
           const order = this.orderDropdown.value;
           const orderDirection = this.isAscending ? 'asc' : 'desc';
+          const searchMode = this.searchModeDropdown.value;
 
           // Generate the URL for this request
-          const url = `/search?q=${encodeURIComponent(normalizedQuery)}&orderby=${order}&direction=${orderDirection}`;
+          const url = `/search?q=${encodeURIComponent(normalizedQuery)}&orderby=${order}&direction=${orderDirection}&unique=${searchMode}`;
 
           // Check if this is the same URL as the last request - if so, skip the request
           if (this.lastRequestedUrl === url) {
@@ -772,6 +784,8 @@
           // Assume the API returns an array of cards or an object with a cards array
           const cards = Array.isArray(data) ? data : data.cards || [];
           const totalCards = data.total_cards || cards.length;
+          const searchMode = data.search_mode || 'prints';
+          const searchModeDescription = data.search_mode_description || '';
 
           if (cards.length === 0) {
             this.showNoResults();
@@ -789,7 +803,7 @@
           console.log('Total cards stored in cardsData:', this.cardsData.size);
           console.log('CardsData keys:', Array.from(this.cardsData.keys()));
 
-          this.showResultsCount(totalCards, query, elapsed);
+          this.showResultsCount(totalCards, query, elapsed, searchModeDescription);
 
           this.resultsContainer.innerHTML = cards.map((card, index) => this.createCardHTML(card, index)).join('');
 
@@ -992,9 +1006,12 @@
           this.resultsCount.style.display = 'none';
         }
 
-        showResultsCount(count, query, elapsed) {
+        showResultsCount(count, query, elapsed, searchModeDescription = '') {
           const formattedCount = count.toLocaleString();
           let msg = `Found ${formattedCount} card${count !== 1 ? 's' : ''} matching "${query}"`;
+          if (searchModeDescription) {
+            msg += ` (${searchModeDescription})`;
+          }
           if (typeof elapsed === 'number') {
             msg += ` (completed in ${elapsed}ms)`;
           }
@@ -1019,7 +1036,12 @@
           this.clearResults();
 
           // Clear URL parameters
-          this.updateURL('', this.orderDropdown.value, this.isAscending ? 'asc' : 'desc');
+          this.updateURL(
+            '',
+            this.orderDropdown.value,
+            this.isAscending ? 'asc' : 'desc',
+            this.searchModeDropdown.value
+          );
 
           // Focus back on search input
           this.searchInput.focus();
@@ -1157,16 +1179,18 @@
           }
         }
 
-        updateURL(query, order, direction) {
+        updateURL(query, order, direction, searchMode = 'prints') {
           const url = new URL(window.location);
           if (query.trim()) {
             url.searchParams.set('q', query);
             url.searchParams.set('orderby', order);
             url.searchParams.set('direction', direction);
+            url.searchParams.set('unique', searchMode);
           } else {
             url.searchParams.delete('q');
             url.searchParams.delete('orderby');
             url.searchParams.delete('direction');
+            url.searchParams.delete('unique');
           }
           window.history.replaceState({}, '', url);
         }
@@ -1176,9 +1200,24 @@
           const query = this.searchInput.value.trim();
           const order = this.orderDropdown.value;
           const direction = this.isAscending ? 'asc' : 'desc';
-          this.updateURL(query, order, direction);
+          const searchMode = this.searchModeDropdown.value;
+          this.updateURL(query, order, direction, searchMode);
 
           // Trigger a new search with the current query and new order
+          if (query) {
+            this.performSearch(query);
+          }
+        }
+
+        handleSearchModeChange() {
+          // Update URL with current state
+          const query = this.searchInput.value.trim();
+          const order = this.orderDropdown.value;
+          const direction = this.isAscending ? 'asc' : 'desc';
+          const searchMode = this.searchModeDropdown.value;
+          this.updateURL(query, order, direction, searchMode);
+
+          // Trigger a new search with the current query and new search mode
           if (query) {
             this.performSearch(query);
           }
@@ -1192,7 +1231,8 @@
           const query = this.searchInput.value.trim();
           const order = this.orderDropdown.value;
           const direction = this.isAscending ? 'asc' : 'desc';
-          this.updateURL(query, order, direction);
+          const searchMode = this.searchModeDropdown.value;
+          this.updateURL(query, order, direction, searchMode);
 
           // Trigger a new search with the current query and new order direction
           if (query) {
@@ -1225,6 +1265,11 @@
           </div>
         </div>
         <div class="order-controls">
+          <select class="search-mode-dropdown" id="searchModeDropdown" title="Select search mode">
+            <option value="prints">All Printings</option>
+            <option value="cards">Unique Cards</option>
+            <option value="art">Unique Art</option>
+          </select>
           <select class="order-dropdown" id="orderDropdown">
             <option value="edhrec">EDHREC</option>
             <option value="cmc">CMC</option>
