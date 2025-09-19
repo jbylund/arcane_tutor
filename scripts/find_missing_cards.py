@@ -32,21 +32,14 @@ def generate_search_queries() -> list[str]:
     """
     colors = "wubrg"
     cmcs = list(range(10))
-    creature_modifiers = ["t:creature", "-t:creature"]
 
     queries = []
 
-    for color, cmc, creature_modifier in itertools.product(colors, cmcs, creature_modifiers):
+    for color, cmc in itertools.product(colors, cmcs):
         # Base query with filters
         query_parts = [
             f"color:{color}",
             f"cmc={cmc}",
-            creature_modifier,
-            "-is:dfc",
-            "-is:adventure",
-            "-is:split",
-            "game:paper",
-            "(f:m or f:l or f:c or f:v)",
         ]
 
         query = " ".join(query_parts)
@@ -66,13 +59,24 @@ def search_scryfall(query: str, session: requests.Session) -> set[str]:
         Set of card names found in Scryfall.
     """
     base_url = "https://api.scryfall.com/cards/search"
-    params = {"q": query, "format": "json"}
+    # x
+    extra_params = [
+            "-is:dfc",
+            "-is:adventure",
+            "-is:split",
+            "game:paper",
+            "(f:m or f:l or f:c or f:v)",
+    ]
+    extra_params_str = " ".join(extra_params)
+    full_query = f"({query}) {extra_params_str}"
+
+    params = {"q": full_query, "format": "json"}
     card_names = set()
 
     try:
         while True:
             # Rate limiting - Scryfall allows 10 requests per second
-            time.sleep(0.1)
+            time.sleep(0.2)
 
             response = session.get(base_url, params=params, timeout=30)
             response.raise_for_status()
@@ -119,22 +123,20 @@ def search_local_database(query: str, api_base_url: str, session: requests.Sessi
     Returns:
         Set of card names found in local database.
     """
+    api_base_url = api_base_url.rstrip("/")
     try:
         response = session.get(
             f"{api_base_url}/search",
-            params={"q": query},
+            params={"q": query, "limit": 2000},
             timeout=30,
         )
         response.raise_for_status()
         data = response.json()
+        cards = data["cards"]
+        return {card.get("name") for card in cards if card.get("name")}
 
-        if "data" in data:
-            return {card.get("name") for card in data["data"] if card.get("name")}
-
-        return set()
-
-    except requests.RequestException as e:
-        logging.error(f"Error searching local database for query '{query}': {e}")
+    except Exception:
+        logging.error(f"Error searching local database for query '{query}': {e}", exc_info=True)
         return set()
 
 
@@ -168,7 +170,7 @@ def main() -> None:
     setup_logging()
 
     # Configuration
-    local_api_base = "http://crestcourt.scryfall.com"  # Could be localhost:8080 for local testing
+    local_api_base = "http://127.0.0.1:18080/"  # Could be localhost:8080 for local testing
 
     # Create a session for HTTP requests
     session = requests.Session()
@@ -190,8 +192,11 @@ def main() -> None:
 
         try:
             # Search both APIs
-            scryfall_cards = search_scryfall(query, session)
             local_cards = search_local_database(query, local_api_base, session)
+            if not local_cards:
+                logging.warning("Got back an empty response for: %s", query)
+                continue
+            scryfall_cards = search_scryfall(query, session)
 
             # Find missing cards
             missing_cards = scryfall_cards - local_cards
@@ -214,7 +219,7 @@ def main() -> None:
 
         except (requests.RequestException, ValueError, KeyError) as e:
             logging.error(f"Error processing query '{query}': {e}")
-            continue
+            break
 
     logging.info(f"Process complete. Total missing cards found: {total_missing}")
     logging.info(f"Total cards successfully imported: {total_imported}")

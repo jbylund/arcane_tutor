@@ -1054,7 +1054,7 @@ ORDER BY
         card_names.sort()
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             # Use SQL update with jsonb concatenation to add the tag
-            for card_name_batch in itertools.batched(card_names, 200, strict=False):
+            for card_name_batch in itertools.batched(card_names, 200):
                 cursor.execute(
                     """
                     UPDATE magic.cards
@@ -1550,7 +1550,7 @@ ORDER BY
         try:
             with self._conn_pool.connection() as conn, conn.cursor() as cursor:
                 # Create temporary table for staging
-                cursor.execute("CREATE TEMPORARY TABLE import_staging (card_blob jsonb)")
+                cursor.execute("CREATE TEMPORARY TABLE IF NOT EXISTS import_staging (card_blob jsonb)")
 
                 # Insert cards into staging
                 for card in cards:
