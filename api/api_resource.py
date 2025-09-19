@@ -1300,7 +1300,7 @@ ORDER BY
             cursor.execute("SELECT tag FROM magic.tags")
             return {r["tag"] for r in cursor.fetchall()}
 
-    def import_card_by_name(  # noqa: PLR0911, C901
+    def import_card_by_name(
         self: APIResource,
         *,
         card_name: str,
@@ -1364,47 +1364,17 @@ ORDER BY
                 "message": f"Error fetching card from Scryfall: {e}",
             }
 
-        # Preprocess each card (some may pass the filter, others may not)
-        processed_cards = []
-        for card_data in exact_matches:
-            processed_card = self._preprocess_card(card_data)
-            if processed_card is not None:
-                processed_cards.append(processed_card)
-
-        if not processed_cards:
-            return {
-                "card_name": card_name,
-                "status": "filtered_out",
-                "message": f"All cards named '{card_name}' were filtered out during preprocessing (not legal in supported formats or not paper)",
-            }
-
         # Insert the cards into the database using the consolidated method
-        load_result = self._load_cards_with_staging(processed_cards)
+        load_result = self._load_cards_with_staging(exact_matches)
 
-        if load_result["status"] == "success" and load_result["cards_loaded"] > 0:
+        if load_result["cards_loaded"] > 0:
             # Clear caches to ensure search can find the newly imported card
             self._query_cache.clear()
             # Clear the search cache by accessing its cache attribute
             if hasattr(self._search, "cache"):
                 self._search.cache.clear()
+        return load_result
 
-            logger.info("Successfully imported card: '%s'", card_name)
-            return {
-                "card_name": card_name,
-                "status": "success",
-                "message": f"Card '{card_name}' successfully imported",
-            }
-        if load_result["status"] == "success" and load_result["cards_loaded"] == 0:
-            return {
-                "card_name": card_name,
-                "status": "conflict",
-                "message": f"Card '{card_name}' was not inserted (possibly due to conflict)",
-            }
-        return {
-            "card_name": card_name,
-            "status": "database_error",
-            "message": load_result["message"],
-        }
 
     def _scryfall_search(self: APIResource, *, query: str) -> list[dict[str, Any]]:
         """Search Scryfall API for cards matching the given query.
@@ -1498,10 +1468,20 @@ ORDER BY
         """
         if not cards:
             return {
-                "status": "no_cards",
+                "status": "no_cards_before_preprocessing",
                 "cards_loaded": 0,
                 "sample_cards": [],
                 "message": "No cards provided for loading",
+            }
+
+        cards = list(filter(None, (self._preprocess_card(icard) for icard in cards)))
+
+        if not cards:
+            return {
+                "status": "no_cards_after_preprocessing",
+                "cards_loaded": 0,
+                "sample_cards": [],
+                "message": "No cards remaining after preprocessing",
             }
 
         # Generate random staging table name
@@ -1516,13 +1496,11 @@ ORDER BY
                 # Load cards into staging table using COPY for efficiency
                 with cursor.copy(f"COPY {staging_table_name} (card_blob) FROM STDIN WITH (FORMAT csv, HEADER false)") as copy_filehandle:
                     writer = csv.writer(copy_filehandle, quoting=csv.QUOTE_ALL)
-                    for card in cards:
-                        json_str = orjson.dumps(card).decode("utf-8")
-                        writer.writerow([json_str])
+                    writer.writerows([orjson.dumps(card).decode("utf-8")] for card in cards)
 
                 # Get random sample before transfer (up to 10 cards)
                 cursor.execute(f"SELECT card_blob FROM {staging_table_name} ORDER BY RANDOM() LIMIT 10")
-                sample_cards = cursor.fetchall()
+                sample_cards = [r["card_blob"] for r in cursor.fetchall()]
 
                 # Transfer from staging to main table (always with price fields)
                 insert_query = f"""
@@ -1604,4 +1582,3 @@ ORDER BY
                 "sample_cards": [],
                 "message": f"Error loading cards: {e}",
             }
-

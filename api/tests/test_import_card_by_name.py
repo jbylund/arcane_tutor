@@ -148,10 +148,7 @@ class TestImportCardByName(unittest.TestCase):
         mock_preprocess.return_value = None
 
         result = self.api_resource.import_card_by_name(card_name="TestCard")
-
-        assert result["status"] == "filtered_out"
-        assert result["card_name"] == "TestCard"
-        assert "were filtered out during preprocessing" in result["message"]
+        assert result == {"status": "no_cards_after_preprocessing", "cards_loaded": 0, "sample_cards": [], "message": "No cards remaining after preprocessing"}
 
 
 if __name__ == "__main__":
