@@ -159,17 +159,29 @@ def test_parse_different_operators() -> None:
         assert result.root == expected
 
 
-def test_parse_pricing_operators() -> None:
-    """Test parsing different comparison operators with pricing attributes."""
+def _generate_pricing_operator_test_cases() -> list[tuple[str, BinaryOperatorNode]]:
+    """Generate test cases for pricing operators."""
     operators = [">", "<", ">=", "<=", "=", "!="]
     pricing_attrs = ["usd", "eur", "tix"]
 
+    test_cases = []
     for attr in pricing_attrs:
         for op in operators:
             query = f"{attr}{op}5"
-            result = parsing.parse_search_query(query)
             expected = BinaryOperatorNode(AttributeNode(attr), op, NumericValueNode(5))
-            assert result.root == expected, f"Failed for {attr}{op}5"
+            test_cases.append((query, expected))
+
+    return test_cases
+
+
+@pytest.mark.parametrize(
+    argnames=("test_input", "expected_ast"),
+    argvalues=_generate_pricing_operator_test_cases(),
+)
+def test_parse_pricing_operators(test_input: str, expected_ast: BinaryOperatorNode) -> None:
+    """Test parsing different comparison operators with pricing attributes."""
+    result = parsing.parse_search_query(test_input)
+    assert result.root == expected_ast, f"Failed for {test_input}"
 
 
 def test_parse_combined_pricing_queries() -> None:
