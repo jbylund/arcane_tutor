@@ -537,8 +537,8 @@ class APIResource:
 
         before = time.monotonic()
 
-        # Use the consolidated loading method with price fields
-        result = self._load_cards_with_staging(to_insert, include_price_fields=True)
+        # Use the consolidated loading method
+        result = self._load_cards_with_staging(to_insert)
 
         after_transfer = time.monotonic()
 
@@ -1473,14 +1473,12 @@ ORDER BY
     def _load_cards_with_staging(
         self: APIResource,
         cards: list[dict[str, Any]],
-        *,
-        include_price_fields: bool = True,
     ) -> dict[str, Any]:
         """Load cards into the database using a randomly-named staging table.
 
         This method consolidates card loading functionality by:
         1. Creating a staging table with a randomly generated suffix
-        2. Loading card data into the staging table (using COPY for efficiency when possible)
+        2. Loading card data into the staging table using COPY for efficiency
         3. Transferring data from staging to the main magic.cards table
         4. Returning random sample cards from staging before cleanup
         5. Dropping the staging table
@@ -1488,7 +1486,6 @@ ORDER BY
         Args:
         ----
             cards (List[Dict[str, Any]]): List of card data to load.
-            include_price_fields (bool): Whether to include price fields in the INSERT.
 
         Returns:
         -------
@@ -1511,127 +1508,70 @@ ORDER BY
         staging_suffix = secrets.token_hex(8)
         staging_table_name = f"import_staging_{staging_suffix}"
 
-        # Threshold for deciding between COPY and individual inserts
-        copy_threshold = 10
-
         try:
             with self._conn_pool.connection() as conn, conn.cursor() as cursor:
                 # Create staging table with unique name
                 cursor.execute(f"CREATE TEMPORARY TABLE {staging_table_name} (card_blob jsonb)")
 
-                # Load cards into staging table
-                # Use COPY for efficiency when we have many cards, individual inserts for few
-                if len(cards) > copy_threshold:
-                    # Use COPY for better performance with many cards
-                    with cursor.copy(f"COPY {staging_table_name} (card_blob) FROM STDIN WITH (FORMAT csv, HEADER false)") as copy_filehandle:
-                        writer = csv.writer(copy_filehandle, quoting=csv.QUOTE_ALL)
-                        for card in cards:
-                            json_str = orjson.dumps(card).decode("utf-8")
-                            writer.writerow([json_str])
-                else:
-                    # Use individual inserts for few cards
+                # Load cards into staging table using COPY for efficiency
+                with cursor.copy(f"COPY {staging_table_name} (card_blob) FROM STDIN WITH (FORMAT csv, HEADER false)") as copy_filehandle:
+                    writer = csv.writer(copy_filehandle, quoting=csv.QUOTE_ALL)
                     for card in cards:
                         json_str = orjson.dumps(card).decode("utf-8")
-                        cursor.execute(
-                            f"INSERT INTO {staging_table_name} (card_blob) VALUES (%s)",
-                            (json_str,),
-                        )
+                        writer.writerow([json_str])
 
                 # Get random sample before transfer (up to 10 cards)
                 cursor.execute(f"SELECT card_blob FROM {staging_table_name} ORDER BY RANDOM() LIMIT 10")
                 sample_cards = cursor.fetchall()
 
-                # Transfer from staging to main table
-                if include_price_fields:
-                    insert_query = f"""
-                        INSERT INTO magic.cards
-                        (
-                            card_name,               -- 1
-                            cmc,                     -- 2
-                            mana_cost_text,          -- 3
-                            mana_cost_jsonb,         -- 4
-                            card_types,              -- 5
-                            card_subtypes,           -- 6
-                            card_colors,             -- 7
-                            card_color_identity,     -- 8
-                            card_keywords,           -- 9
-                            creature_power,          -- 10
-                            creature_power_text,     -- 11
-                            creature_toughness,      -- 12
-                            creature_toughness_text, -- 13
-                            edhrec_rank,             -- 14
-                            price_usd,               -- 15
-                            price_eur,               -- 16
-                            price_tix,               -- 17
-                            oracle_text,             -- 18
-                            raw_card_blob            -- 19
-                        )
-                        SELECT
-                            card_blob->>'name' AS card_name, -- 1
-                            (card_blob->>'cmc')::float::integer AS cmc, -- 2
-                            card_blob->>'mana_cost' AS mana_cost_text, -- 3
-                            card_blob->'mana_cost' AS mana_cost_jsonb, -- 4
-                            card_blob->'card_types' AS card_types, -- 5
-                            card_blob->'card_subtypes' AS card_subtypes, -- 6
-                            card_blob->'card_colors' AS card_colors, -- 7
-                            card_blob->'card_color_identity' AS card_color_identity, -- 8
-                            card_blob->'card_keywords' AS card_keywords, -- 9
-                            (card_blob->>'power_numeric')::integer AS creature_power, -- 10
-                            card_blob->>'power' AS creature_power_text, -- 11
-                            (card_blob->>'toughness_numeric')::integer AS creature_toughness, -- 12
-                            card_blob->>'toughness' AS creature_toughness_text, -- 13
-                            (card_blob->>'edhrec_rank')::integer AS edhrec_rank, -- 14
-                            (card_blob->>'price_usd')::real AS price_usd, -- 15
-                            (card_blob->>'price_eur')::real AS price_eur, -- 16
-                            (card_blob->>'price_tix')::real AS price_tix, -- 17
-                            card_blob->>'oracle_text' AS oracle_text, -- 18
-                            card_blob AS raw_card_blob -- 19
-                        FROM
-                            {staging_table_name}
-                        ON CONFLICT (card_name) DO NOTHING
-                    """
-                else:
-                    insert_query = f"""
-                        INSERT INTO magic.cards
-                        (
-                            card_name,               -- 1
-                            cmc,                     -- 2
-                            mana_cost_text,          -- 3
-                            mana_cost_jsonb,         -- 4
-                            card_types,              -- 5
-                            card_subtypes,           -- 6
-                            card_colors,             -- 7
-                            card_color_identity,     -- 8
-                            card_keywords,           -- 9
-                            creature_power,          -- 10
-                            creature_power_text,     -- 11
-                            creature_toughness,      -- 12
-                            creature_toughness_text, -- 13
-                            edhrec_rank,             -- 14
-                            oracle_text,             -- 15
-                            raw_card_blob            -- 16
-                        )
-                        SELECT
-                            card_blob->>'name' AS card_name, -- 1
-                            (card_blob->>'cmc')::float::integer AS cmc, -- 2
-                            card_blob->>'mana_cost' AS mana_cost_text, -- 3
-                            card_blob->'mana_cost' AS mana_cost_jsonb, -- 4
-                            card_blob->'card_types' AS card_types, -- 5
-                            card_blob->'card_subtypes' AS card_subtypes, -- 6
-                            card_blob->'card_colors' AS card_colors, -- 7
-                            card_blob->'card_color_identity' AS card_color_identity, -- 8
-                            card_blob->'card_keywords' AS card_keywords, -- 9
-                            (card_blob->>'power_numeric')::integer AS creature_power, -- 10
-                            card_blob->>'power' AS creature_power_text, -- 11
-                            (card_blob->>'toughness_numeric')::integer AS creature_toughness, -- 12
-                            card_blob->>'toughness' AS creature_toughness_text, -- 13
-                            (card_blob->>'edhrec_rank')::integer AS edhrec_rank, -- 14
-                            card_blob->>'oracle_text' AS oracle_text, -- 15
-                            card_blob AS raw_card_blob -- 16
-                        FROM
-                            {staging_table_name}
-                        ON CONFLICT (card_name) DO NOTHING
-                    """
+                # Transfer from staging to main table (always with price fields)
+                insert_query = f"""
+                    INSERT INTO magic.cards
+                    (
+                        card_name,               -- 1
+                        cmc,                     -- 2
+                        mana_cost_text,          -- 3
+                        mana_cost_jsonb,         -- 4
+                        card_types,              -- 5
+                        card_subtypes,           -- 6
+                        card_colors,             -- 7
+                        card_color_identity,     -- 8
+                        card_keywords,           -- 9
+                        creature_power,          -- 10
+                        creature_power_text,     -- 11
+                        creature_toughness,      -- 12
+                        creature_toughness_text, -- 13
+                        edhrec_rank,             -- 14
+                        price_usd,               -- 15
+                        price_eur,               -- 16
+                        price_tix,               -- 17
+                        oracle_text,             -- 18
+                        raw_card_blob            -- 19
+                    )
+                    SELECT
+                        card_blob->>'name' AS card_name, -- 1
+                        (card_blob->>'cmc')::float::integer AS cmc, -- 2
+                        card_blob->>'mana_cost' AS mana_cost_text, -- 3
+                        card_blob->'mana_cost' AS mana_cost_jsonb, -- 4
+                        card_blob->'card_types' AS card_types, -- 5
+                        card_blob->'card_subtypes' AS card_subtypes, -- 6
+                        card_blob->'card_colors' AS card_colors, -- 7
+                        card_blob->'card_color_identity' AS card_color_identity, -- 8
+                        card_blob->'card_keywords' AS card_keywords, -- 9
+                        (card_blob->>'power_numeric')::integer AS creature_power, -- 10
+                        card_blob->>'power' AS creature_power_text, -- 11
+                        (card_blob->>'toughness_numeric')::integer AS creature_toughness, -- 12
+                        card_blob->>'toughness' AS creature_toughness_text, -- 13
+                        (card_blob->>'edhrec_rank')::integer AS edhrec_rank, -- 14
+                        (card_blob->>'price_usd')::real AS price_usd, -- 15
+                        (card_blob->>'price_eur')::real AS price_eur, -- 16
+                        (card_blob->>'price_tix')::real AS price_tix, -- 17
+                        card_blob->>'oracle_text' AS oracle_text, -- 18
+                        card_blob AS raw_card_blob -- 19
+                    FROM
+                        {staging_table_name}
+                    ON CONFLICT (card_name) DO NOTHING
+                """
 
                 cursor.execute(insert_query)
                 cards_loaded = cursor.rowcount
@@ -1677,8 +1617,8 @@ ORDER BY
             Dict[str, Any]: Result summary with insertion status and count.
 
         """
-        # Use the consolidated loading method without price fields to maintain backward compatibility
-        result = self._load_cards_with_staging(cards, include_price_fields=False)
+        # Use the consolidated loading method
+        result = self._load_cards_with_staging(cards)
 
         # Convert the result format to match the old API
         if result["status"] == "success":
