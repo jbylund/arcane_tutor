@@ -1357,3 +1357,186 @@ ORDER BY
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute("SELECT tag FROM magic.tags")
             return {r["tag"] for r in cursor.fetchall()}
+
+    def import_card_by_name(  # noqa: PLR0911
+        self: APIResource,
+        *,
+        card_name: str,
+        **_: object,
+    ) -> dict[str, Any]:
+        """Import a single card by name from Scryfall API.
+
+        Args:
+        ----
+            card_name (str): The exact name of the card to import.
+
+        Returns:
+        -------
+            Dict[str, Any]: Result summary with import status and card info.
+
+        """
+        if not card_name:
+            msg = "card_name parameter is required"
+            raise ValueError(msg)
+
+        logger.info("Importing card by name: '%s'", card_name)
+
+        # Check if card already exists in database
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT card_name FROM magic.cards WHERE card_name = %s",
+                (card_name,),
+            )
+            existing_card = cursor.fetchone()
+
+            if existing_card:
+                return {
+                    "card_name": card_name,
+                    "status": "already_exists",
+                    "message": f"Card '{card_name}' already exists in database",
+                }
+
+        # Fetch card data from Scryfall API
+        try:
+            card_data = self._fetch_card_by_name_from_scryfall(card_name)
+            if not card_data:
+                return {
+                    "card_name": card_name,
+                    "status": "not_found",
+                    "message": f"Card '{card_name}' not found in Scryfall API",
+                }
+
+        except (requests.RequestException, ValueError, KeyError) as e:
+            logger.error("Error fetching card '%s' from Scryfall: %s", card_name, e)
+            return {
+                "card_name": card_name,
+                "status": "error",
+                "message": f"Error fetching card from Scryfall: {e}",
+            }
+
+        # Preprocess the card data
+        processed_card = self._preprocess_card(card_data)
+        if processed_card is None:
+            return {
+                "card_name": card_name,
+                "status": "filtered_out",
+                "message": f"Card '{card_name}' was filtered out during preprocessing (not legal in supported formats or not paper)",
+            }
+
+        # Insert the card into the database
+        try:
+            with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+                # Create temporary table for staging
+                cursor.execute("CREATE TEMPORARY TABLE import_staging (card_blob jsonb)")
+
+                # Insert card into staging
+                json_str = orjson.dumps(processed_card).decode("utf-8")
+                cursor.execute(
+                    "INSERT INTO import_staging (card_blob) VALUES (%s)",
+                    (json_str,),
+                )
+
+                # Transfer from staging to main table
+                cursor.execute(
+                    """
+                    INSERT INTO magic.cards
+                    (
+                        card_name,               -- 1
+                        cmc,                     -- 2
+                        mana_cost_text,          -- 3
+                        mana_cost_jsonb,         -- 4
+                        card_types,              -- 5
+                        card_subtypes,           -- 6
+                        card_colors,             -- 7
+                        card_color_identity,     -- 8
+                        card_keywords,           -- 9
+                        creature_power,          -- 10
+                        creature_power_text,     -- 11
+                        creature_toughness,      -- 12
+                        creature_toughness_text, -- 13
+                        edhrec_rank,             -- 14
+                        oracle_text,             -- 15
+                        raw_card_blob            -- 16
+                    )
+                    SELECT
+                        card_blob->>'name' AS card_name, -- 1
+                        (card_blob->>'cmc')::float::integer AS cmc, -- 2
+                        card_blob->>'mana_cost' AS mana_cost_text, -- 3
+                        card_blob->'mana_cost' AS mana_cost_jsonb, -- 4
+                        card_blob->'card_types' AS card_types, -- 5
+                        card_blob->'card_subtypes' AS card_subtypes, -- 6
+                        card_blob->'card_colors' AS card_colors, -- 7
+                        card_blob->'card_color_identity' AS card_color_identity, -- 8
+                        card_blob->'card_keywords' AS card_keywords, -- 9
+                        (card_blob->>'power_numeric')::integer AS creature_power, -- 10
+                        card_blob->>'power' AS creature_power_text, -- 11
+                        (card_blob->>'toughness_numeric')::integer AS creature_toughness, -- 12
+                        card_blob->>'toughness' AS creature_toughness_text, -- 13
+                        (card_blob->>'edhrec_rank')::integer AS edhrec_rank, -- 14
+                        card_blob->>'oracle_text' AS oracle_text, -- 15
+                        card_blob AS raw_card_blob -- 16
+                    FROM
+                        import_staging
+                    ON CONFLICT (card_name) DO NOTHING
+                    """,
+                )
+
+                conn.commit()
+
+                # Check if the card was actually inserted
+                cursor.execute(
+                    "SELECT card_name FROM magic.cards WHERE card_name = %s",
+                    (card_name,),
+                )
+                inserted_card = cursor.fetchone()
+
+                if inserted_card:
+                    logger.info("Successfully imported card: '%s'", card_name)
+                    return {
+                        "card_name": card_name,
+                        "status": "success",
+                        "message": f"Card '{card_name}' successfully imported",
+                    }
+                return {
+                    "card_name": card_name,
+                    "status": "conflict",
+                    "message": f"Card '{card_name}' was not inserted (possibly due to conflict)",
+                }
+
+        except (psycopg.Error, ValueError, KeyError) as e:
+            logger.error("Error inserting card '%s' into database: %s", card_name, e)
+            return {
+                "card_name": card_name,
+                "status": "database_error",
+                "message": f"Error inserting card into database: {e}",
+            }
+
+    def _fetch_card_by_name_from_scryfall(self: APIResource, card_name: str) -> dict[str, Any] | None:
+        """Fetch a single card by exact name from Scryfall API.
+
+        Args:
+        ----
+            card_name (str): The exact name of the card to fetch.
+
+        Returns:
+        -------
+            Optional[Dict[str, Any]]: Card data from Scryfall API, or None if not found.
+
+        """
+        try:
+            # Use the "named" endpoint for exact card name lookup
+            response = self._session.get(
+                "https://api.scryfall.com/cards/named",
+                params={"exact": card_name},
+                timeout=30,
+            )
+
+            if response.status_code == NOT_FOUND:
+                return None
+
+            response.raise_for_status()
+            return response.json()
+
+        except requests.RequestException as e:
+            logger.error("Error fetching card '%s' from Scryfall: %s", card_name, e)
+            raise
