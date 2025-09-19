@@ -27,7 +27,7 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 
 - **Full Scryfall Syntax Support**: Implements core search functionality including `name:`, `oracle:`, `type:`, `cmc:`, `power:`, `color:`, `identity:`, and arithmetic operations
 - **Advanced Search Operations**: Supports complex queries with `AND`, `OR`, `NOT` logic, parenthetical grouping, and arithmetic expressions like `cmc+1<power`
-- **Oracle Tags Extension**: Unique feature allowing custom tagging system beyond standard Scryfall functionality
+- **Oracle Tags Extension**: Enhanced tagging system with hierarchy support and bulk import capabilities
 - **Performance Optimized**: PostgreSQL backend with proper indexing and query optimization for fast search results
 - **Docker Ready**: Complete containerization with Docker Compose for easy deployment and development
 
@@ -46,20 +46,11 @@ scryfallos/
 │   │   ├── scryfall_nodes.py    # Scryfall-specific node types
 │   │   └── tests/               # Parser unit tests (100+ tests)
 │   ├── db/                      # Database schema and migrations
-│   │   ├── 2025-08-08-schema.sql      # Core database schema
-│   │   ├── 2025-08-16-indexes.sql     # Performance indexes
-│   │   ├── 2025-09-12-card-tags.sql   # Card tagging schema
-│   │   └── 2025-09-19-pricing-columns.sql # Pricing data schema
 │   ├── sql/                     # SQL query templates
 │   ├── middlewares/             # HTTP middleware components
 │   └── tests/                   # Integration and API tests
 ├── scripts/                     # Utility and maintenance scripts
-│   ├── scryfall_comparison_script.py # API comparison testing
-│   └── README.md               # Scripts documentation
-├── docs/                        # Project documentation
-│   ├── scryfall_functionality_analysis.md # Feature comparison analysis
-│   ├── scryfall_syntax_analysis.md       # Search syntax documentation
-│   └── workflows/              # CI/CD documentation
+├── docs/                        # Project documentation and analysis
 ├── client/                      # Client-side assets (minimal)
 ├── configs/                     # Configuration files
 ├── requirements.txt             # Core Python dependencies
@@ -79,8 +70,8 @@ scryfallos/
 
 ### Prerequisites
 
-- Python 3.11+ (tested with 3.12)
-- PostgreSQL 13+ (for full functionality)
+- Python 3.13+ (tested with 3.13)
+- PostgreSQL 17+ (for full functionality)
 - Docker and Docker Compose (for containerized development)
 - Node.js (for HTML formatting tools)
 
@@ -88,7 +79,7 @@ scryfallos/
 
 1. **Clone and Install Dependencies**
    ```bash
-   git clone https://github.com/jbylund/scryfallos.git
+   git clone git@github.com:jbylund/scryfallos.git
    cd scryfallos
    
    # Install core dependencies
@@ -117,21 +108,24 @@ scryfallos/
 
 ### Development Workflows
 
-#### Local Development (Recommended)
+#### Docker Development (Recommended)
+```bash
+# Quick start - just run this!
+make up              # Creates directories, builds images, starts all services
+
+# Or step by step:
+make datadir          # Create data directories
+make build_images     # Build Docker images (~30-60 seconds)
+make up              # Start PostgreSQL and API services
+```
+
+#### Local Development
 ```bash
 # Start API server locally  
 python -m api.entrypoint --port 8080 --workers 2
 
 # Visit web interface
 open http://localhost:8080/
-```
-
-#### Docker Development
-```bash
-# Setup and start all services
-make datadir          # Create data directories
-make build_images     # Build Docker images (~30-60 seconds)
-make up              # Start PostgreSQL and API services
 ```
 
 #### Testing and Quality Assurance
@@ -264,13 +258,11 @@ The search endpoint supports comprehensive Scryfall syntax. See [syntax analysis
 
 - **Missing Features**: See functionality grid above for complete list
 - **Data Source**: Currently uses `oracle_cards` bulk data; may migrate to `default_cards`
-- **Keywords Issue**: `keyword:flying` shows discrepancy (295 vs 0 results) requiring investigation
 
 ### Future Enhancements
 
 1. **Database Migration**: Evaluate `default_cards` vs `oracle_cards` for improved completeness
-2. **Performance**: Add query result caching and response compression
-3. **Features**: Implement highest-priority missing functionality from grid above
-4. **Testing**: Expand API comparison coverage and add performance benchmarks
+2. **Features**: Implement highest-priority missing functionality from grid above
+3. **Testing**: Expand API comparison coverage and add performance benchmarks
 
 For detailed technical analysis, see [functionality analysis documentation](docs/scryfall_functionality_analysis.md).
