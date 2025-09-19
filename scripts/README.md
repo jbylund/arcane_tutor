@@ -48,8 +48,8 @@ The script tests various functionality including:
 - Color searches (`c:g`, `id:g`)
 - Numeric comparisons (`cmc=3`, `power>3`)
 - Complex queries (`t:beast id:g`)
-- Keywords (`k:flying`)
-- Oracle tags (`ot:haste`) - Scryfall OS extension
+- Keywords (`keyword:flying`)
+- Oracle tags (`otag:haste`) - Scryfall OS extension
 - Arithmetic (`cmc+1<power`)
 - Edge cases and error conditions
 
