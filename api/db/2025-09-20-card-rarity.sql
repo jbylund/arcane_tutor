@@ -1,11 +1,32 @@
--- Migration to add card rarity columns and conversion function
+-- Migration to add card rarity columns with lookup table approach
 -- Date: 2025-09-20
 
--- Add card rarity columns
+-- Create valid_rarities lookup table
+CREATE TABLE magic.valid_rarities (
+    card_rarity_int integer PRIMARY KEY,
+    card_rarity_text text NOT NULL UNIQUE
+);
+
+-- Insert valid rarity values
+INSERT INTO magic.valid_rarities (card_rarity_int, card_rarity_text) VALUES
+    (0, 'common'),
+    (1, 'uncommon'),
+    (2, 'rare'),
+    (3, 'mythic'),
+    (4, 'special'),
+    (5, 'bonus');
+
+-- Add card rarity columns to cards table
 ALTER TABLE magic.cards ADD COLUMN card_rarity_text text;
 ALTER TABLE magic.cards ADD COLUMN card_rarity_int integer;
 
--- Create function to convert rarity text to integer
+-- Add foreign key constraint to ensure data integrity
+ALTER TABLE magic.cards 
+ADD CONSTRAINT fk_cards_rarity 
+FOREIGN KEY (card_rarity_int, card_rarity_text) 
+REFERENCES magic.valid_rarities (card_rarity_int, card_rarity_text);
+
+-- Create function to convert rarity text to integer (for application use)
 CREATE OR REPLACE FUNCTION magic.rarity_text_to_int(rarity_text text)
 RETURNS integer AS $$
 BEGIN
@@ -21,7 +42,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
--- Create function to convert rarity integer to text
+-- Create function to convert rarity integer to text (for application use)
 CREATE OR REPLACE FUNCTION magic.rarity_int_to_text(rarity_int integer)
 RETURNS text AS $$
 BEGIN
@@ -37,21 +58,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
--- Create trigger to automatically sync card_rarity_int when card_rarity_text is updated
-CREATE OR REPLACE FUNCTION magic.sync_card_rarity_int()
-RETURNS trigger AS $$
-BEGIN
-    NEW.card_rarity_int = magic.rarity_text_to_int(NEW.card_rarity_text);
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER sync_card_rarity_int_trigger
-    BEFORE INSERT OR UPDATE OF card_rarity_text ON magic.cards
-    FOR EACH ROW
-    EXECUTE FUNCTION magic.sync_card_rarity_int();
-
 -- Add comments for documentation
+COMMENT ON TABLE magic.valid_rarities IS 'Lookup table for valid card rarities with integer and text representations';
 COMMENT ON COLUMN magic.cards.card_rarity_text IS 'Card rarity as text: common, uncommon, rare, mythic, special, bonus';
 COMMENT ON COLUMN magic.cards.card_rarity_int IS 'Card rarity as integer for efficient ordering and comparison: common=0, uncommon=1, rare=2, mythic=3, special=4, bonus=5';
 COMMENT ON FUNCTION magic.rarity_text_to_int(text) IS 'Convert rarity text to integer for ordering and comparison';
