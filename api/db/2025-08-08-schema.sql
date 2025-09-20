@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS magic.cards (
     creature_toughness_text text,
 
     card_oracle_tags jsonb NOT NULL DEFAULT '{}'::jsonb,
-    card_rarity text, -- card rarity: common, uncommon, rare, mythic, special, bonus
+
 
     -- constraints
     CONSTRAINT card_types_must_be_array CHECK (jsonb_typeof(card_types) = 'array'),

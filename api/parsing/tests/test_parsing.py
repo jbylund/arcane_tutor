@@ -889,84 +889,84 @@ def test_standalone_numeric_query_parses() -> None:
         # Basic rarity equality searches
         (
             "rarity:common",
-            "(LOWER(card.card_rarity) = %(p_str_Y29tbW9u)s)",
-            {"p_str_Y29tbW9u": "common"},
+            "(card.card_rarity_int = %(p_int_MA)s)",
+            {"p_int_MA": 0},
         ),
         (
             "rarity:uncommon",
-            "(LOWER(card.card_rarity) = %(p_str_dW5jb21tb24)s)",
-            {"p_str_dW5jb21tb24": "uncommon"},
+            "(card.card_rarity_int = %(p_int_MQ)s)",
+            {"p_int_MQ": 1},
         ),
         (
             "rarity:rare",
-            "(LOWER(card.card_rarity) = %(p_str_cmFyZQ)s)",
-            {"p_str_cmFyZQ": "rare"},
+            "(card.card_rarity_int = %(p_int_Mg)s)",
+            {"p_int_Mg": 2},
         ),
         (
             "rarity:mythic",
-            "(LOWER(card.card_rarity) = %(p_str_bXl0aGlj)s)",
-            {"p_str_bXl0aGlj": "mythic"},
+            "(card.card_rarity_int = %(p_int_Mw)s)",
+            {"p_int_Mw": 3},
         ),
         (
             "rarity:special",
-            "(LOWER(card.card_rarity) = %(p_str_c3BlY2lhbA)s)",
-            {"p_str_c3BlY2lhbA": "special"},
+            "(card.card_rarity_int = %(p_int_NA)s)",
+            {"p_int_NA": 4},
         ),
         (
             "rarity:bonus",
-            "(LOWER(card.card_rarity) = %(p_str_Ym9udXM)s)",
-            {"p_str_Ym9udXM": "bonus"},
+            "(card.card_rarity_int = %(p_int_NQ)s)",
+            {"p_int_NQ": 5},
         ),
         # Short alias tests
         (
             "r:common",
-            "(LOWER(card.card_rarity) = %(p_str_Y29tbW9u)s)",
-            {"p_str_Y29tbW9u": "common"},
+            "(card.card_rarity_int = %(p_int_MA)s)",
+            {"p_int_MA": 0},
         ),
         (
             "r:mythic",
-            "(LOWER(card.card_rarity) = %(p_str_bXl0aGlj)s)",
-            {"p_str_bXl0aGlj": "mythic"},
+            "(card.card_rarity_int = %(p_int_Mw)s)",
+            {"p_int_Mw": 3},
         ),
         # Comparison operators - greater than
         (
             "rarity>common",
-            "((CASE LOWER(card.card_rarity)\n            WHEN 'common' THEN 0\n            WHEN 'uncommon' THEN 1\n            WHEN 'rare' THEN 2\n            WHEN 'mythic' THEN 3\n            WHEN 'special' THEN 4\n            WHEN 'bonus' THEN 5\n            ELSE -1\n        END) > %(p_int_MA)s)",
+            "(card.card_rarity_int > %(p_int_MA)s)",
             {"p_int_MA": 0},
         ),
         (
             "rarity>uncommon",
-            "((CASE LOWER(card.card_rarity)\n            WHEN 'common' THEN 0\n            WHEN 'uncommon' THEN 1\n            WHEN 'rare' THEN 2\n            WHEN 'mythic' THEN 3\n            WHEN 'special' THEN 4\n            WHEN 'bonus' THEN 5\n            ELSE -1\n        END) > %(p_int_MQ)s)",
+            "(card.card_rarity_int > %(p_int_MQ)s)",
             {"p_int_MQ": 1},
         ),
         # Comparison operators - greater than or equal
         (
             "rarity>=rare",
-            "((CASE LOWER(card.card_rarity)\n            WHEN 'common' THEN 0\n            WHEN 'uncommon' THEN 1\n            WHEN 'rare' THEN 2\n            WHEN 'mythic' THEN 3\n            WHEN 'special' THEN 4\n            WHEN 'bonus' THEN 5\n            ELSE -1\n        END) >= %(p_int_Mg)s)",
+            "(card.card_rarity_int >= %(p_int_Mg)s)",
             {"p_int_Mg": 2},
         ),
         # Comparison operators - less than
         (
             "rarity<rare",
-            "((CASE LOWER(card.card_rarity)\n            WHEN 'common' THEN 0\n            WHEN 'uncommon' THEN 1\n            WHEN 'rare' THEN 2\n            WHEN 'mythic' THEN 3\n            WHEN 'special' THEN 4\n            WHEN 'bonus' THEN 5\n            ELSE -1\n        END) < %(p_int_Mg)s)",
+            "(card.card_rarity_int < %(p_int_Mg)s)",
             {"p_int_Mg": 2},
         ),
         # Comparison operators - less than or equal
         (
             "rarity<=uncommon",
-            "((CASE LOWER(card.card_rarity)\n            WHEN 'common' THEN 0\n            WHEN 'uncommon' THEN 1\n            WHEN 'rare' THEN 2\n            WHEN 'mythic' THEN 3\n            WHEN 'special' THEN 4\n            WHEN 'bonus' THEN 5\n            ELSE -1\n        END) <= %(p_int_MQ)s)",
+            "(card.card_rarity_int <= %(p_int_MQ)s)",
             {"p_int_MQ": 1},
         ),
         # Comparison operators - not equal
         (
             "rarity!=common",
-            "((CASE LOWER(card.card_rarity)\n            WHEN 'common' THEN 0\n            WHEN 'uncommon' THEN 1\n            WHEN 'rare' THEN 2\n            WHEN 'mythic' THEN 3\n            WHEN 'special' THEN 4\n            WHEN 'bonus' THEN 5\n            ELSE -1\n        END) != %(p_int_MA)s)",
+            "(card.card_rarity_int != %(p_int_MA)s)",
             {"p_int_MA": 0},
         ),
         # Short alias with comparison
         (
             "r>common",
-            "((CASE LOWER(card.card_rarity)\n            WHEN 'common' THEN 0\n            WHEN 'uncommon' THEN 1\n            WHEN 'rare' THEN 2\n            WHEN 'mythic' THEN 3\n            WHEN 'special' THEN 4\n            WHEN 'bonus' THEN 5\n            ELSE -1\n        END) > %(p_int_MA)s)",
+            "(card.card_rarity_int > %(p_int_MA)s)",
             {"p_int_MA": 0},
         ),
     ],
@@ -1007,13 +1007,13 @@ def test_rarity_case_insensitive() -> None:
         sql, params = generate_sql_query(parsed)
 
         # Should not raise errors and should generate valid SQL
-        assert sql.startswith("(LOWER(card.card_rarity)")
+        assert sql.startswith("(card.card_rarity_int")
         assert len(params) == 1
 
     # Test different cases for comparisons
     parsed_comparison = parsing.parse_scryfall_query("rarity>Common")
     sql, params = generate_sql_query(parsed_comparison)
 
-    # Should contain the CASE statement and not raise errors
-    assert "CASE LOWER(card.card_rarity)" in sql
+    # Should contain simple numeric comparison and not raise errors
+    assert "card.card_rarity_int >" in sql
     assert params[next(iter(params.keys()))] == 0  # common = 0

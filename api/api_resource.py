@@ -702,15 +702,7 @@ class APIResource:
             "power": "creature_power",
             "toughness": "creature_toughness",
             "usd": "usd",
-            "rarity": """(CASE LOWER(card_rarity)
-                WHEN 'common' THEN 0
-                WHEN 'uncommon' THEN 1
-                WHEN 'rare' THEN 2
-                WHEN 'mythic' THEN 3
-                WHEN 'special' THEN 4
-                WHEN 'bonus' THEN 5
-                ELSE -1
-            END)""",
+            "rarity": "card_rarity_int",
         }.get(orderby, "edhrec_rank")
         sql_direction = {
             "asc": "ASC",

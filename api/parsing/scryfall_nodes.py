@@ -16,6 +16,7 @@ from .nodes import (
     AttributeNode,
     BinaryOperatorNode,
     NotNode,
+    NumericValueNode,
     OrNode,
     Query,
     QueryNode,
@@ -85,10 +86,12 @@ def get_rarity_number(rarity: str) -> int:
         ValueError: If the rarity is not recognized.
     """
     rarity_lower = rarity.lower().strip()
-    if rarity_lower not in RARITY_TO_NUMBER:
-        msg = f"Unknown rarity: {rarity}. Valid rarities are: {', '.join(RARITY_TO_NUMBER.keys())}"
+    int_val = RARITY_TO_NUMBER.get(rarity_lower)
+    if int_val is None:
+        valid_rarities = str(tuple(RARITY_TO_NUMBER.keys()))
+        msg = f"Unknown rarity: {rarity}. Valid rarities are: {valid_rarities}"
         raise ValueError(msg)
-    return RARITY_TO_NUMBER[rarity_lower]
+    return int_val
 
 
 class ScryfallAttributeNode(AttributeNode):
@@ -198,6 +201,18 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         if field_type == FieldType.NUMERIC:
             if self.operator == ":":
                 self.operator = "="
+
+            # Special handling for rarity - convert text values to numeric
+            if attr == "card_rarity_int" and isinstance(self.rhs, StringValueNode):
+                try:
+                    rarity_number = get_rarity_number(self.rhs.value)
+                    # Replace the string value with the numeric value
+                    self.rhs = NumericValueNode(rarity_number)
+                except ValueError as e:
+                    # Re-raise with more context
+                    msg = f"Invalid rarity in comparison: {e}"
+                    raise ValueError(msg) from e
+
             return super().to_sql(context)
 
         if field_type == FieldType.JSONB_OBJECT:
@@ -205,10 +220,6 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
 
         if field_type == FieldType.JSONB_ARRAY:
             return self._handle_jsonb_array(context)
-
-        # Handle rarity with special numeric comparison logic
-        if attr == "card_rarity":
-            return self._handle_rarity_comparison(context)
 
         if self.operator == ":":
             return self._handle_colon_operator(context, field_type, lhs_sql, attr)
@@ -221,12 +232,6 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         if field_type == FieldType.TEXT:
             # Handle set codes specially - use exact matching instead of pattern matching
             if attr == "card_set_code":
-                if self.operator == ":":
-                    self.operator = "="
-                return super().to_sql(context)
-
-            # Handle rarity specially - use exact matching for colon operator
-            if attr == "card_rarity":
                 if self.operator == ":":
                     self.operator = "="
                 return super().to_sql(context)
@@ -339,63 +344,6 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         if self.operator == ">":
             return f"({query} <@ {col}) AND NOT({col} <@ {query})"
         msg = f"Unknown operator: {self.operator}"
-        raise ValueError(msg)
-
-    def _handle_rarity_comparison(self: ScryfallBinaryOperatorNode, context: dict) -> str:
-        """Handle rarity comparisons with proper ordering."""
-        lhs_sql = self.lhs.to_sql(context)
-
-        # Get the rarity string from the right-hand side
-        if isinstance(self.rhs, StringValueNode):
-            rarity_str = self.rhs.value.strip()
-        elif isinstance(self.rhs, str):
-            rarity_str = self.rhs.strip()
-        else:
-            msg = f"Rarity comparison requires string value, got {type(self.rhs)}"
-            raise TypeError(msg)
-
-        # For equality and colon operators, use direct string comparison
-        if self.operator in ("=", ":"):
-            rarity_param = param_name(rarity_str.lower())
-            context[rarity_param] = rarity_str.lower()
-            return f"(LOWER({lhs_sql}) = %({rarity_param})s)"
-
-        # For comparison operators, convert to numeric comparison
-        try:
-            rarity_number = get_rarity_number(rarity_str)
-        except ValueError as e:
-            # Re-raise with more context
-            msg = f"Invalid rarity in comparison: {e}"
-            raise ValueError(msg) from e
-
-        # Generate CASE statement to convert rarity text to numbers
-        rarity_case_sql = f"""
-        (CASE LOWER({lhs_sql})
-            WHEN 'common' THEN 0
-            WHEN 'uncommon' THEN 1
-            WHEN 'rare' THEN 2
-            WHEN 'mythic' THEN 3
-            WHEN 'special' THEN 4
-            WHEN 'bonus' THEN 5
-            ELSE -1
-        END)
-        """.strip()
-
-        rarity_param = param_name(rarity_number)
-        context[rarity_param] = rarity_number
-
-        if self.operator == "!=":
-            return f"({rarity_case_sql} != %({rarity_param})s)"
-        if self.operator == "<":
-            return f"({rarity_case_sql} < %({rarity_param})s)"
-        if self.operator == "<=":
-            return f"({rarity_case_sql} <= %({rarity_param})s)"
-        if self.operator == ">":
-            return f"({rarity_case_sql} > %({rarity_param})s)"
-        if self.operator == ">=":
-            return f"({rarity_case_sql} >= %({rarity_param})s)"
-
-        msg = f"Unsupported operator for rarity comparison: {self.operator}"
         raise ValueError(msg)
 
 
