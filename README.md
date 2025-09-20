@@ -17,7 +17,7 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 ### Core Components
 
 1. **Search DSL Parser** - A comprehensive parsing library for Scryfall's query syntax supporting text search, numeric comparisons, color identity, and advanced operators
-2. **Database Query Engine** - Converts parsed queries into optimized PostgreSQL queries with support for complex joins and filtering
+2. **Database Query Engine** - Converts parsed queries into optimized PostgreSQL queries with support for complex filtering
 3. **Data Import Tools** - Bulk data loading from Scryfall exports with incremental updates and card tagging integration
 4. **Web Interface** - A responsive HTML/JavaScript application providing search functionality with card display similar to Scryfall
 5. **Card Tagging System** - Extended functionality for importing and managing Scryfall's card tags with hierarchy support
