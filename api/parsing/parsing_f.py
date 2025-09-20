@@ -232,7 +232,8 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     # For attribute values, we want the raw string
     # Use Regex to match words that may contain hyphens for string values
     # Allow values starting with digits, letters, or underscores to handle cases like "40k-model"
-    string_value_word = Regex(r"[a-zA-Z0-9_][a-zA-Z0-9_-]*")
+    # Also allow mana cost syntax like "{2}{G}", "{W/U}", "{R/P}" with braces and slashes
+    string_value_word = Regex(r"[a-zA-Z0-9_{][a-zA-Z0-9_\-{}/]*")
 
     # Build the grammar with proper precedence
     expr = Forward()
@@ -271,9 +272,10 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     condition = rarity_condition | unified_numeric_comparison | non_numeric_condition
 
     # Special rule for non-numeric attribute-colon-hyphenated-value to handle cases like "otag:dual-land" and "otag:40k-model"
+    # Also handle mana cost syntax like "mana:{2}{G}" with braces and slashes
     # Only non-numeric attributes should have hyphenated string values
-    # Allow values starting with digits, letters, or underscores
-    hyphenated_condition = non_numeric_attr_word + Literal(":") + Regex(r"[a-zA-Z0-9_][a-zA-Z0-9_-]*")
+    # Allow values starting with digits, letters, underscores, or braces
+    hyphenated_condition = non_numeric_attr_word + Literal(":") + Regex(r"[a-zA-Z0-9_{][a-zA-Z0-9_\-{}/]*")
     hyphenated_condition.setParseAction(make_binary_operator_node)
 
     # Single word (implicit name search)
@@ -451,16 +453,26 @@ def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
         else:
             # Handle words (alphanumeric starting) and numeric literals
             word_end = i
-            # Check if we're in an attribute value context (previous token was a colon)
-            in_attr_value_context = tokens and tokens[-1] == ":"
+            # Check if we're in an attribute value context
+            # For colon: always allow extended characters
+            # For comparison operators: only if previous token looks like a mana attribute
+            in_attr_value_context = False
+            if tokens:
+                if tokens[-1] == ":":
+                    in_attr_value_context = True
+                elif tokens[-1] in ("=", ">", "<", ">=", "<=", "!=") and len(tokens) >= 2:
+                    # Check if the token before the operator is a mana-related attribute
+                    attr_token = tokens[-2].lower()
+                    if attr_token in ("mana", "m"):
+                        in_attr_value_context = True
 
             if in_attr_value_context:
-                # In attribute value context, allow alphanumeric, underscore, and hyphens
-                # This handles cases like "40k-model" as a single token
-                while word_end < len(query) and (query[word_end].isalnum() or query[word_end] in "_-"):
+                # In attribute value context, allow alphanumeric, underscore, hyphens, and mana cost braces/slashes
+                # This handles cases like "40k-model" as a single token and mana costs like "{2}{G}", "{W/U}", "{G/P}"
+                while word_end < len(query) and (query[word_end].isalnum() or query[word_end] in "_-{}/"):
                     word_end += 1
             elif query[i].isdigit():
-                # Handle numeric literal (integer or float) only when not in attribute value context
+                # Handle numeric literal (integer or float) - this works for all numeric contexts
                 while word_end < len(query) and (query[word_end].isdigit() or query[word_end] == "."):
                     word_end += 1
             else:
@@ -468,7 +480,12 @@ def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
                 while word_end < len(query) and (query[word_end].isalnum() or query[word_end] == "_"):
                     word_end += 1
 
-            tokens.append(query[i:word_end])
+            if word_end > i:  # Only add non-empty tokens
+                tokens.append(query[i:word_end])
+            else:
+                # If we can't advance, skip this character (handle unexpected characters)
+                i += 1
+                continue
             i = word_end
     # Convert implicit AND operations
     result: list[str] = []

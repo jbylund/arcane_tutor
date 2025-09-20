@@ -1,6 +1,6 @@
 """Scryfall-specific AST nodes and query processing."""
 
-from __future__ import annotations
+import re
 
 from .db_info import (
     CARD_SUPERTYPES,
@@ -97,7 +97,7 @@ def get_rarity_number(rarity: str) -> int:
 class ScryfallAttributeNode(AttributeNode):
     """Scryfall-specific attribute node with field mapping."""
 
-    def __init__(self: ScryfallAttributeNode, attribute_name: str) -> None:
+    def __init__(self, attribute_name: str) -> None:
         """Initialize a Scryfall attribute node.
 
         Args:
@@ -108,7 +108,7 @@ class ScryfallAttributeNode(AttributeNode):
         db_column_name = SEARCH_NAME_TO_DB_NAME.get(attribute_name.lower(), attribute_name)
         super().__init__(db_column_name)
 
-    def to_sql(self: ScryfallAttributeNode, context: dict) -> str:
+    def to_sql(self, context: dict) -> str:
         """Generate SQL for Scryfall attribute node.
 
         Args:
@@ -202,10 +202,109 @@ def get_legality_comparison_object(val: str, attr: str) -> dict[str, str]:
     return {format_name: status}
 
 
+def parse_mana_cost_string(mana_cost: str) -> dict[str, list[int]]:
+    """Parse a mana cost string into JSONB representation for database queries.
+    
+    Args:
+        mana_cost: Mana cost string like "{2}{G}", "{W/U}", "G", etc.
+    
+    Returns:
+        Dictionary mapping mana symbols to lists of valid counts.
+        
+    Examples:
+        "{2}{G}" -> {"{1}": [1, 2], "{G}": [1]}
+        "{W/U}" -> {"{W}": [1], "{U}": [1]} (hybrid mana can be paid with either)
+        "G" -> {"{G}": [1]} (shorthand for {G})
+        "{2/G}" -> {"{1}": [1, 2], "{G}": [1]} (can be paid with 2 generic or 1 green)
+    """
+    result = {}
+    
+    # First, normalize shorthand mana symbols (e.g., "G" -> "{G}")
+    # But preserve complex symbols like "{W/U}" that are already in braces
+    normalized_cost = mana_cost
+    
+    # Find all mana symbols (both braced and shorthand)
+    # Pattern matches: {anything} or single letters WUBRG/C/X/Y/Z/etc outside braces
+    symbol_pattern = r'(\{[^}]+\})|([WUBRGCXYZ])'
+    
+    symbols = []
+    for match in re.finditer(symbol_pattern, normalized_cost):
+        if match.group(1):  # Braced symbol like {2}, {G}, {W/U}
+            symbols.append(match.group(1))
+        elif match.group(2):  # Shorthand symbol like G, W, U
+            symbols.append(f"{{{match.group(2)}}}")
+    
+    # Process each symbol
+    symbol_counts = {}
+    for symbol in symbols:
+        if symbol not in symbol_counts:
+            symbol_counts[symbol] = 0
+        symbol_counts[symbol] += 1
+    
+    # Convert counts to the JSONB format
+    for symbol, count in symbol_counts.items():
+        if '/' in symbol:
+            # Hybrid mana symbol like {W/U}, {2/G}, {G/P}
+            parts = symbol[1:-1].split('/')  # Remove braces and split
+            for part in parts:
+                if part.isdigit():
+                    # Handle {2/G} style - the number becomes generic mana requirement
+                    num = int(part)
+                    key = "{1}"
+                    if key not in result:
+                        result[key] = []
+                    for i in range(1, num + 1):
+                        if i not in result[key]:
+                            result[key].append(i)
+                else:
+                    # Regular color part like W, U, G, P
+                    key = f"{{{part}}}"
+                    if key not in result:
+                        result[key] = []
+                    for i in range(1, count + 1):
+                        if i not in result[key]:
+                            result[key].append(i)
+        elif symbol[1:-1].isdigit():
+            # Generic mana cost like {2}, {5}
+            num = int(symbol[1:-1])
+            # This represents needing 'num' generic mana, so {1} can be 1, 2, ..., num
+            key = "{1}"
+            if key not in result:
+                result[key] = []
+            for i in range(1, num + 1):
+                if i not in result[key]:
+                    result[key].append(i)
+        else:
+            # Colored mana symbol like {G}, {W}, {P}
+            if symbol not in result:
+                result[symbol] = []
+            for i in range(1, count + 1):
+                if i not in result[symbol]:
+                    result[symbol].append(i)
+    
+    # Sort the lists for consistent representation
+    for key in result:
+        result[key].sort()
+    
+    return result
+
+
+def get_mana_cost_comparison_object(val: str) -> dict[str, list[int]]:
+    """Convert mana cost string to comparison object for database queries.
+
+    Args:
+        val: Mana cost string to parse.
+
+    Returns:
+        Dictionary mapping mana symbols to valid count lists.
+    """
+    return parse_mana_cost_string(val.strip())
+
+
 class ScryfallBinaryOperatorNode(BinaryOperatorNode):
     """Scryfall-specific binary operator node with custom SQL generation."""
 
-    def to_sql(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+    def to_sql(self, context: dict) -> str:
         """Generate SQL for Scryfall-specific binary operations.
 
         Args:
@@ -220,7 +319,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         # Fallback: use default logic
         return super().to_sql(context)
 
-    def _handle_scryfall_attribute(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+    def _handle_scryfall_attribute(self, context: dict) -> str:
         """Handle Scryfall attribute-specific SQL generation."""
         attr = self.lhs.attribute_name
 
@@ -261,7 +360,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         msg = f"Unknown field type: {field_type}"
         raise NotImplementedError(msg)
 
-    def _handle_colon_operator(self: ScryfallBinaryOperatorNode, context: dict, field_type: str, lhs_sql: str, attr: str) -> str:
+    def _handle_colon_operator(self, context: dict, field_type: str, lhs_sql: str, attr: str) -> str:
         """Handle colon operator for different field types."""
         if field_type == FieldType.TEXT:
             # Handle set codes specially - use exact matching instead of pattern matching
@@ -276,7 +375,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         msg = f"Unknown field type: {field_type}"
         raise NotImplementedError(msg)
 
-    def _handle_collector_number(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+    def _handle_collector_number(self, context: dict) -> str:
         """Handle collector number routing based on operator type.
 
         Routes to appropriate column based on operator:
@@ -312,7 +411,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             self.operator = "="
         return super().to_sql(context)
 
-    def _handle_text_field_pattern_matching(self: ScryfallBinaryOperatorNode, context: dict, lhs_sql: str) -> str:
+    def _handle_text_field_pattern_matching(self, context: dict, lhs_sql: str) -> str:
         """Handle pattern matching for regular text fields."""
         if isinstance(self.rhs, StringValueNode):
             txt_val = self.rhs.value.strip()
@@ -349,7 +448,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
     query ?& col AND not(col ?& query) # as array
     """
 
-    def _handle_jsonb_object(self: ScryfallBinaryOperatorNode, context: dict) -> str:  # noqa: PLR0911, C901
+    def _handle_jsonb_object(self, context: dict) -> str:  # noqa: PLR0911, C901
         # Produce the query as a jsonb object
         lhs_sql = self.lhs.to_sql(context)
         attr = self.lhs.attribute_name
@@ -375,6 +474,11 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             rhs = get_legality_comparison_object(self.rhs.value.strip(), original_attr)
             pname = param_name(rhs)
             context[pname] = rhs
+        elif attr == "mana_cost_jsonb":
+            # Handle mana cost searches with special comparison logic
+            rhs = get_mana_cost_comparison_object(self.rhs.value.strip())
+            pname = param_name(rhs)
+            context[pname] = rhs
         else:
             msg = f"Unknown attribute: {attr}"
             raise ValueError(msg)
@@ -397,7 +501,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         msg = f"Unknown operator: {self.operator}"
         raise ValueError(msg)
 
-    def _handle_jsonb_array(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+    def _handle_jsonb_array(self, context: dict) -> str:
         # TODO: this should produce the query as an array, not jsonb
         rhs_val = self.rhs.value.strip().title()
         if self.lhs.attribute_name.lower() in ("card_types", "card_subtypes", "type"):
