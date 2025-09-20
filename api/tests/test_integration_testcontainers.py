@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import time
@@ -391,3 +392,99 @@ class TestContainerIntegration:
                 break
 
         assert brainstorm_in_combined, "Brainstorm should be found by combined search"
+
+    def test_collector_number_search_integration(self: TestContainerIntegration, api_resource: APIResource) -> None:
+        """Test end-to-end collector number search functionality with real database."""
+        # First, manually insert a test card with collector number data to ensure we have something to test
+        with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
+            # Insert a test card with collector number in both raw_card_blob and collector_number column
+            test_card_data = {
+                "name": "Test Card with Collector Number",
+                "collector_number": "123",
+                "set": "test",
+            }
+
+            cursor.execute("""
+                INSERT INTO magic.cards (
+                    card_name, cmc, mana_cost_text, raw_card_blob,
+                    card_types, card_colors, card_color_identity, card_keywords,
+                    collector_number, card_set_code, card_oracle_tags
+                ) VALUES (
+                    %s, 1, '{R}', %s,
+                    '["Instant"]', '{"R": true}', '{"R": true}', '{}',
+                    %s, %s, '{}'
+                ) ON CONFLICT (card_name) DO NOTHING
+            """, (
+                test_card_data["name"],
+                json.dumps(test_card_data),  # raw_card_blob with collector_number
+                test_card_data["collector_number"],
+                test_card_data["set"],
+            ))
+            conn.commit()
+
+        # Test basic collector number search using number: syntax
+        number_search_result = api_resource.search(q="number:123", limit=100)
+        found_cards = number_search_result["cards"]
+        assert len(found_cards) >= 1, "Should find at least one card with number:123"
+
+        # Find our test card in the results
+        test_card_found_number = False
+        for card in found_cards:
+            if card["name"] == test_card_data["name"]:
+                test_card_found_number = True
+                break
+
+        assert test_card_found_number, "Test card should be findable by collector number search 'number:123'"
+
+        # Test shorthand cn: syntax
+        shorthand_search_result = api_resource.search(q="cn:123", limit=100)
+        shorthand_found_cards = shorthand_search_result["cards"]
+        assert len(shorthand_found_cards) >= 1, "Should find at least one card with cn:123"
+
+        # Find our test card in the shorthand results
+        shorthand_card_found = False
+        for card in shorthand_found_cards:
+            if card["name"] == test_card_data["name"]:
+                shorthand_card_found = True
+                break
+
+        assert shorthand_card_found, "Test card should be findable by shorthand collector number search 'cn:123'"
+
+        # Verify both searches return the same results
+        found_names = {card["name"] for card in found_cards}
+        shorthand_names = {card["name"] for card in shorthand_found_cards}
+        assert found_names == shorthand_names, "number: and cn: searches should return identical results"
+
+        # Test partial collector number search (using ILIKE %pattern%)
+        partial_search_result = api_resource.search(q="number:12", limit=100)
+        partial_found_cards = partial_search_result["cards"]
+
+        # The test card should be found in partial search (since "123" contains "12")
+        partial_card_found = any(card["name"] == test_card_data["name"] for card in partial_found_cards)
+        assert partial_card_found, "Test card should be findable by partial collector number search 'number:12'"
+
+        # Test combined collector number search with other attributes
+        combined_search_result = api_resource.search(q="number:123 set:test", limit=100)
+        combined_found_cards = combined_search_result["cards"]
+        assert len(combined_found_cards) >= 1, "Should find cards matching both collector number and set criteria"
+
+        # Verify our test card is found in combined search
+        combined_card_found = False
+        for card in combined_found_cards:
+            if card["name"] == test_card_data["name"]:
+                combined_card_found = True
+                break
+
+        assert combined_card_found, "Test card should be found by combined collector number and set search"
+
+        # Test case-insensitive collector number attribute search
+        case_search_result = api_resource.search(q="NUMBER:123", limit=100)
+        case_found_cards = case_search_result["cards"]
+
+        case_card_found = any(card["name"] == test_card_data["name"] for card in case_found_cards)
+        assert case_card_found, "Test card should be findable by case-insensitive collector number search 'NUMBER:123'"
+
+        # Clean up - remove the test card
+        with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
+            cursor.execute("DELETE FROM magic.cards WHERE card_name = %s", (test_card_data["name"],))
+            conn.commit()
