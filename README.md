@@ -25,7 +25,7 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 
 ### Key Features
 
-- **Full Scryfall Syntax Support**: Implements core search functionality including `name:`, `oracle:`, `type:`, `set:`, `s:`, `artist:`, `rarity:`, `r:`, `number:`, `cn:`, `cmc:`, `power:`, `color:`, `identity:`, and arithmetic operations
+- **Full Scryfall Syntax Support**: Implements core search functionality including `name:`, `oracle:`, `type:`, `set:`, `s:`, `artist:`, `rarity:`, `r:`, `cmc:`, `power:`, `color:`, `identity:`, and arithmetic operations
 - **Advanced Search Operations**: Supports complex queries with `AND`, `OR`, `NOT` logic, parenthetical grouping, and arithmetic expressions like `cmc+1<power`
 - **Oracle Tags Extension**: Enhanced tagging system with hierarchy support and bulk import capabilities
 - **Performance Optimized**: PostgreSQL backend with proper indexing and query optimization for fast search results
@@ -96,14 +96,14 @@ scryfallos/
 
 3. **Validate Installation**
    ```bash
-   # Run test suite (should pass all 284 tests)
+   # Run test suite (should pass all 271 tests)
    python -m pytest -vvv
    
    # Verify linting
    python -m ruff check
    
-   # Test parser functionality including collector number search
-   python -c "from api.parsing import parse_scryfall_query; print(parse_scryfall_query('number:123 rarity>uncommon'))"
+   # Test parser functionality including rarity search
+   python -c "from api.parsing import parse_scryfall_query; print(parse_scryfall_query('rarity>uncommon'))"
    ```
 
 ### Development Workflows
@@ -159,7 +159,6 @@ npx prettier --write api/index.html        # Format frontend code
 | **Basic Search** | `name:`, `oracle:`, `type:` | Full support with exact matching |
 | **Artist Search** | `artist:`, `a:` | Full text search with trigram indexing |
 | **Set Search** | `set:`, `s:` | Dedicated indexed column with exact matching |
-| **Collector Numbers** | `number:`, `cn:` | Full text pattern matching with dedicated indexed column |
 | **Rarity Search** | `rarity:`, `r:` | Integer-based ordering with all comparison operators |
 | **Numeric Attributes** | `cmc:`, `power:`, `toughness:` | Complete with all comparison operators |
 | **Colors & Identity** | `color:`, `identity:`, `c:`, `id:` | JSONB-based with complex color logic |
@@ -181,13 +180,13 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 
 | **Complexity** | **Low Impact** | **Medium Impact** | **High Impact** |
 |----------------|----------------|-------------------|-----------------|
-| **Low** | **Watermark** (`watermark:`)<br/>**Flavor Text** (`flavor:`) | **Layout** (`layout:`)<br/>**Border** (`border:`)<br/>**Frame** (`frame:`) | **Format Legality** (`format:`, `legal:`, `banned:`) |
+| **Low** | **Watermark** (`watermark:`)<br/>**Flavor Text** (`flavor:`) | **Layout** (`layout:`)<br/>**Border** (`border:`)<br/>**Frame** (`frame:`) | **Format Legality** (`format:`, `legal:`, `banned:`)<br/>**Collector Numbers** (`number:`, `cn:`) |
 | **Medium** | **Cube Inclusion** (`cube:`)<br/>**Commander Features** (`cmd:`) | **Release Dates** (`year:`, `date:`)<br/>**Planeswalker Loyalty** (`loyalty:`) | **Pricing Data** (`usd:`, `eur:`, `tix:`)<br/>**Special Properties** (`is:`, `produces:`) |
 | **High** | **Regular Expressions** (`/pattern/`)<br/>**Wildcards** (`*`) | **Advanced Mechanics** (`spellpower:`, `spellresistance:`)<br/>**Paper Sets** (`papersets:`) | **Game Rules** (`is:split`, `is:modal`)<br/>**Complex Properties** (`produces:`, `reserved:`) |
 
 ### Recommended Development Priorities
 
-1. **High Impact, Low Complexity** - Format legality support for competitive play
+1. **High Impact, Low Complexity** - Implement format legality and collector numbers for competitive play support
 2. **High Impact, Medium Complexity** - Add pricing integration and special properties for advanced users  
 3. **Medium Impact Features** - Layout, dates, and planeswalker loyalty for specialized searches
 4. **Low Impact Features** - Watermarks, flavor text, and advanced pattern matching
@@ -195,7 +194,7 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 ### Implementation Status
 
 - **Current API Success Rate**: 100% for supported features (enhanced coverage with rarity search)
-- **Test Coverage**: 284 total tests including 222 parser tests with comprehensive collector number and rarity validation
+- **Test Coverage**: 271 total tests including 209 parser tests with comprehensive rarity validation
 - **Performance**: Optimized PostgreSQL with proper indexing including integer-based rarity comparisons
 - **Data Quality**: Regular comparison testing against official Scryfall API
 
