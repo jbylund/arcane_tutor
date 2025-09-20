@@ -16,6 +16,7 @@ from .nodes import (
     AttributeNode,
     BinaryOperatorNode,
     NotNode,
+    NumericValueNode,
     OrNode,
     Query,
     QueryNode,
@@ -59,6 +60,38 @@ def get_field_type(attr: str) -> str:
         The field type for the attribute, or TEXT if not found.
     """
     return DB_NAME_TO_FIELD_TYPE.get(attr, FieldType.TEXT)
+
+
+# Rarity ordering for comparison operations
+RARITY_TO_NUMBER = {
+    "common": 0,
+    "uncommon": 1,
+    "rare": 2,
+    "mythic": 3,
+    "special": 4,
+    "bonus": 5,
+}
+
+
+def get_rarity_number(rarity: str) -> int:
+    """Convert rarity string to numeric value for comparison.
+
+    Args:
+        rarity: The rarity string (case-insensitive).
+
+    Returns:
+        Numeric value for the rarity.
+
+    Raises:
+        ValueError: If the rarity is not recognized.
+    """
+    rarity_lower = rarity.lower().strip()
+    int_val = RARITY_TO_NUMBER.get(rarity_lower)
+    if int_val is None:
+        valid_rarities = str(tuple(RARITY_TO_NUMBER.keys()))
+        msg = f"Unknown rarity: {rarity}. Valid rarities are: {valid_rarities}"
+        raise ValueError(msg)
+    return int_val
 
 
 class ScryfallAttributeNode(AttributeNode):
@@ -168,6 +201,18 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         if field_type == FieldType.NUMERIC:
             if self.operator == ":":
                 self.operator = "="
+
+            # Special handling for rarity - convert text values to numeric
+            if attr == "card_rarity_int" and isinstance(self.rhs, StringValueNode):
+                try:
+                    rarity_number = get_rarity_number(self.rhs.value)
+                    # Replace the string value with the numeric value
+                    self.rhs = NumericValueNode(rarity_number)
+                except ValueError as e:
+                    # Re-raise with more context
+                    msg = f"Invalid rarity in comparison: {e}"
+                    raise ValueError(msg) from e
+
             return super().to_sql(context)
 
         if field_type == FieldType.JSONB_OBJECT:
