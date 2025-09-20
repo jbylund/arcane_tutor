@@ -112,8 +112,8 @@ class TestImportCardByName(unittest.TestCase):
         result = self.api_resource.import_card_by_name(card_name="NonexistentCard")
 
         assert result["status"] == "not_found"
-        assert result["card_name"] == "NonexistentCard"
-        assert "not found in Scryfall API" in result["message"]
+        assert result["search_query"] == '!"NonexistentCard"'
+        assert "No cards found for search query" in result["message"]
 
     @patch.object(APIResource, "_run_query")
     @patch.object(APIResource, "_scryfall_search")
@@ -128,8 +128,8 @@ class TestImportCardByName(unittest.TestCase):
         result = self.api_resource.import_card_by_name(card_name="TestCard")
 
         assert result["status"] == "error"
-        assert result["card_name"] == "TestCard"
-        assert "Error fetching card from Scryfall" in result["message"]
+        assert result["search_query"] == '!"TestCard"'
+        assert "Error fetching cards from Scryfall" in result["message"]
 
     @patch.object(APIResource, "_run_query")
     @patch.object(APIResource, "_scryfall_search")
@@ -148,7 +148,7 @@ class TestImportCardByName(unittest.TestCase):
         mock_preprocess.return_value = None
 
         result = self.api_resource.import_card_by_name(card_name="TestCard")
-        assert result == {"status": "no_cards_after_preprocessing", "cards_loaded": 0, "sample_cards": [], "message": "No cards remaining after preprocessing"}
+        assert result == {"status": "no_cards_after_preprocessing", "cards_loaded": 0, "sample_cards": [], "message": "No cards remaining after preprocessing", "search_query": '!"TestCard"'}
 
 
 if __name__ == "__main__":
