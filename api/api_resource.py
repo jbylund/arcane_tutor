@@ -1269,7 +1269,7 @@ class APIResource:
 
         logger.info("Importing card by name: '%s'", card_name)
 
-        # Check if card already exists in database
+        # Check if card already exists in database for backward compatibility
         existing_check = self._run_query(
             query="SELECT card_name FROM magic.cards WHERE card_name = %(card_name)s",
             params={"card_name": card_name},
@@ -1283,42 +1283,60 @@ class APIResource:
                 "message": f"Card '{card_name}' already exists in database",
             }
 
-        # Fetch card data from Scryfall API using exact name search
+        # Use import_cards_by_search with exact name query
+        return self.import_cards_by_search(search_query=f'!"{card_name}"')
+
+    def import_cards_by_search(
+        self: APIResource,
+        *,
+        search_query: str,
+        **_: object,
+    ) -> dict[str, Any]:
+        """Import cards from Scryfall API using any search query.
+
+        Args:
+        ----
+            search_query (str): The Scryfall search query to execute.
+
+        Returns:
+        -------
+            Dict[str, Any]: Result summary with import status and card info.
+
+        """
+        if not search_query:
+            msg = "search_query parameter is required"
+            raise ValueError(msg)
+
+        logger.info("Importing cards by search: '%s'", search_query)
+
+        # Fetch card data from Scryfall API using the provided search query
         try:
-            cards = self._scryfall_search(query=f'!"{card_name}"')
+            cards = self._scryfall_search(query=search_query)
             if not cards:
                 return {
-                    "card_name": card_name,
+                    "search_query": search_query,
                     "status": "not_found",
-                    "message": f"Card '{card_name}' not found in Scryfall API",
-                }
-
-            # Filter results to only cards with exact matching name
-            exact_matches = [card for card in cards if card.get("name") == card_name]
-            if not exact_matches:
-                return {
-                    "card_name": card_name,
-                    "status": "not_found",
-                    "message": f"No exact match found for card '{card_name}' in Scryfall API",
+                    "message": f"No cards found for search query '{search_query}' in Scryfall API",
+                    "cards_loaded": 0,
+                    "sample_cards": [],
                 }
 
         except (requests.RequestException, ValueError, KeyError) as e:
-            logger.error("Error fetching card '%s' from Scryfall: %s", card_name, e)
+            logger.error("Error fetching cards for search '%s' from Scryfall: %s", search_query, e)
             return {
-                "card_name": card_name,
+                "search_query": search_query,
                 "status": "error",
-                "message": f"Error fetching card from Scryfall: {e}",
+                "message": f"Error fetching cards from Scryfall: {e}",
+                "cards_loaded": 0,
+                "sample_cards": [],
             }
 
         # Insert the cards into the database using the consolidated method
-        load_result = self._load_cards_with_staging(exact_matches)
+        load_result = self._load_cards_with_staging(cards)
 
-        if load_result["cards_loaded"] > 0:
-            # Clear caches to ensure search can find the newly imported card
-            self._query_cache.clear()
-            # Clear the search cache by accessing its cache attribute
-            if hasattr(self._search, "cache"):
-                self._search.cache.clear()
+        # Add search_query to the result for consistency
+        load_result["search_query"] = search_query
+
         return load_result
 
 
@@ -1515,12 +1533,21 @@ class APIResource:
 
                 conn.commit()
 
-                return {
+                result = {
                     "status": "success",
                     "cards_loaded": cards_loaded,
                     "sample_cards": sample_cards,
                     "message": f"Successfully loaded {cards_loaded} cards",
                 }
+
+                # Clear caches when cards are successfully loaded
+                if cards_loaded > 0:
+                    self._query_cache.clear()
+                    # Clear the search cache by accessing its cache attribute
+                    if hasattr(self._search, "cache"):
+                        self._search.cache.clear()
+
+                return result
 
         except (psycopg.Error, ValueError, KeyError) as e:
             logger.error("Error loading cards with staging table %s: %s", staging_table_name, e)
