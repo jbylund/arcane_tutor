@@ -1017,3 +1017,59 @@ def test_rarity_case_insensitive() -> None:
     # Should contain simple numeric comparison and not raise errors
     assert "card.card_rarity_int >" in sql
     assert params[next(iter(params.keys()))] == 0  # common = 0
+
+    
+@pytest.mark.parametrize(    
+    argnames=("input_query", "expected_ast"),
+    argvalues=[
+        ("artist:moeller", BinaryOperatorNode(AttributeNode("artist"), ":", StringValueNode("moeller"))),
+        ("a:moeller", BinaryOperatorNode(AttributeNode("a"), ":", StringValueNode("moeller"))),
+        ('artist:"Christopher Moeller"', BinaryOperatorNode(AttributeNode("artist"), ":", StringValueNode("Christopher Moeller"))),
+        ("artist:nielsen", BinaryOperatorNode(AttributeNode("artist"), ":", StringValueNode("nielsen"))),
+        ("ARTIST:moeller", BinaryOperatorNode(AttributeNode("ARTIST"), ":", StringValueNode("moeller"))),
+    ],
+)
+def test_parse_artist_searches(input_query: str, expected_ast: BinaryOperatorNode) -> None:
+    """Test parsing artist search queries."""
+    result = parsing.parse_search_query(input_query)
+    assert result.root == expected_ast
+
+
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_sql", "expected_parameters"),
+    argvalues=[
+        ("artist:moeller", r"(card.card_artist ILIKE %(p_str_JW1vZWxsZXIl)s)", {"p_str_JW1vZWxsZXIl": r"%moeller%"}),
+        ("a:moeller", r"(card.card_artist ILIKE %(p_str_JW1vZWxsZXIl)s)", {"p_str_JW1vZWxsZXIl": r"%moeller%"}),
+        ('artist:"Christopher Moeller"', r"(card.card_artist ILIKE %(p_str_JUNocmlzdG9waGVyJU1vZWxsZXIl)s)", {"p_str_JUNocmlzdG9waGVyJU1vZWxsZXIl": r"%Christopher%Moeller%"}),
+        ("artist:nielsen", r"(card.card_artist ILIKE %(p_str_JW5pZWxzZW4l)s)", {"p_str_JW5pZWxzZW4l": r"%nielsen%"}),
+        ("ARTIST:moeller", r"(card.card_artist ILIKE %(p_str_JW1vZWxsZXIl)s)", {"p_str_JW1vZWxsZXIl": r"%moeller%"}),
+    ],
+)
+def test_artist_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
+    """Test SQL generation for artist search queries."""
+    parsed = parsing.parse_scryfall_query(input_query)
+    context = {}
+    observed_sql = parsed.to_sql(context)
+    assert observed_sql == expected_sql
+    assert context == expected_parameters
+
+
+def test_parse_combined_artist_queries() -> None:
+    """Test parsing combined queries with artist attributes."""
+    # Test combining artist with other attributes
+    query1 = "cmc<=3 artist:moeller"
+    result1 = parsing.parse_search_query(query1)
+    expected1 = AndNode([
+        BinaryOperatorNode(AttributeNode("cmc"), "<=", NumericValueNode(3)),
+        BinaryOperatorNode(AttributeNode("artist"), ":", StringValueNode("moeller")),
+    ])
+    assert result1.root == expected1
+
+    # Test combining multiple text attributes including artist
+    query2 = "name:lightning OR artist:moeller"
+    result2 = parsing.parse_search_query(query2)
+    expected2 = OrNode([
+        BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("lightning")),
+        BinaryOperatorNode(AttributeNode("artist"), ":", StringValueNode("moeller")),
+    ])
+    assert result2.root == expected2

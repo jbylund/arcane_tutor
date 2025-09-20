@@ -713,6 +713,8 @@ class APIResource:
             card_name AS name,
             mana_cost_text AS mana_cost,
             oracle_text AS oracle_text,
+            card_artist AS artist,
+            cmc,
             raw_card_blob->>'set_name' AS set_name,
             raw_card_blob->>'type_line' AS type_line,
             raw_card_blob->'image_uris'->>'small' AS image_small,
@@ -1469,7 +1471,8 @@ class APIResource:
                         price_tix,               -- 17
                         oracle_text,             -- 18
                         card_set_code,           -- 19
-                        raw_card_blob            -- 20
+                        card_artist,             -- 20
+                        raw_card_blob            -- 21
                     )
                     SELECT
                         card_blob->>'name' AS card_name, -- 1
@@ -1491,7 +1494,8 @@ class APIResource:
                         (card_blob->>'price_tix')::real AS price_tix, -- 17
                         card_blob->>'oracle_text' AS oracle_text, -- 18
                         card_blob->>'card_set_code' AS card_set_code, -- 19
-                        card_blob AS raw_card_blob -- 20
+                        card_blob->>'artist' AS card_artist, -- 20
+                        card_blob AS raw_card_blob -- 21
                     FROM
                         {staging_table_name}
                     ON CONFLICT (card_name) DO NOTHING
