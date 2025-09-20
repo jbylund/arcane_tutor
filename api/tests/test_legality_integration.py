@@ -33,9 +33,9 @@ class TestLegalityIntegration:
         assert "card.card_legalities @>" in sql
         assert len(params) == 1
 
-        # Parameter should contain format -> not_legal mapping
+        # Parameter should contain format -> banned mapping
         param_value = next(iter(params.values()))
-        assert param_value == {"modern": "not_legal"}
+        assert param_value == {"modern": "banned"}
 
     def test_restricted_search_integration(self) -> None:
         """Test that restricted search generates correct SQL end-to-end."""
@@ -96,14 +96,14 @@ class TestLegalityIntegration:
 
         # Parameters should contain the expected mappings
         param_values = list(params.values())
-        expected_values = [{"standard": "legal"}, {"modern": "not_legal"}]
+        expected_values = [{"standard": "legal"}, {"modern": "banned"}]
         assert all(val in param_values for val in expected_values)
 
     def test_case_insensitive_format_integration(self) -> None:
         """Test that format names are case-insensitive."""
         queries = ["format:Standard", "format:MODERN", "banned:Legacy"]
         expected_formats = ["standard", "modern", "legacy"]
-        expected_statuses = ["legal", "legal", "not_legal"]
+        expected_statuses = ["legal", "legal", "banned"]
 
         for query, expected_format, expected_status in zip(queries, expected_formats, expected_statuses, strict=False):
             parsed = parse_scryfall_query(query)
@@ -137,7 +137,7 @@ class TestLegalityIntegration:
             ("format:pioneer", "pioneer", "legal"),
             ("f:modern", "modern", "legal"),
             ("legal:pauper", "pauper", "legal"),
-            ("banned:extended", "extended", "not_legal"),
+            ("banned:extended", "extended", "banned"),
             ("restricted:vintage", "vintage", "restricted"),
         ],
     )

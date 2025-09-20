@@ -17,7 +17,7 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 ### Core Components
 
 1. **Search DSL Parser** - A comprehensive parsing library for Scryfall's query syntax supporting text search, numeric comparisons, color identity, and advanced operators
-2. **Database Query Engine** - Converts parsed queries into optimized PostgreSQL queries with support for complex joins and filtering
+2. **Database Query Engine** - Converts parsed queries into optimized PostgreSQL queries with support for complex joins and filtering  
 3. **Data Import Tools** - Bulk data loading from Scryfall exports with incremental updates and card tagging integration
 4. **Web Interface** - A responsive HTML/JavaScript application providing search functionality with card display similar to Scryfall
 5. **Card Tagging System** - Extended functionality for importing and managing Scryfall's card tags with hierarchy support
@@ -37,7 +37,7 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 scryfallos/
 ├── api/                          # Python API service (main application)
 │   ├── entrypoint.py            # API server entry point and CLI
-│   ├── api_resource.py          # Falcon web framework resources
+│   ├── api_resource.py          # Falcon web framework resources  
 │   ├── api_worker.py            # Multi-process worker implementation
 │   ├── index.html               # Web frontend (single-file app)
 │   ├── parsing/                 # Query parser implementation
@@ -54,7 +54,7 @@ scryfallos/
 ├── client/                      # Client-side assets (minimal)
 ├── configs/                     # Configuration files
 ├── requirements.txt             # Core Python dependencies
-├── test-requirements.txt        # Testing dependencies
+├── test-requirements.txt        # Testing dependencies  
 ├── webserver-requirements.txt   # Optional web server dependencies
 ├── docker-compose.yml           # Container orchestration
 └── makefile                     # Build automation
@@ -78,18 +78,16 @@ scryfallos/
 ### Setup Instructions
 
 1. **Clone and Install Dependencies**
-
    ```bash
    git clone git@github.com:jbylund/scryfallos.git
    cd scryfallos
-
+   
    # Install core dependencies
    python -m pip install --upgrade pip
    python -m pip install -r requirements.txt -r test-requirements.txt
    ```
 
 2. **Optional: Web Server Dependencies**
-
    ```bash
    # Only needed for local API server (includes bjoern compilation)
    sudo apt-get update && sudo apt-get install -y libev-dev
@@ -97,14 +95,13 @@ scryfallos/
    ```
 
 3. **Validate Installation**
-
    ```bash
    # Run test suite (should pass all 271 tests)
    python -m pytest -vvv
-
+   
    # Verify linting
    python -m ruff check
-
+   
    # Test parser functionality including rarity search
    python -c "from api.parsing import parse_scryfall_query; print(parse_scryfall_query('rarity>uncommon'))"
    ```
@@ -112,7 +109,6 @@ scryfallos/
 ### Development Workflows
 
 #### Docker Development (Recommended)
-
 ```bash
 # Quick start - just run this!
 make up              # Creates directories, builds images, starts all services
@@ -124,9 +120,8 @@ make up              # Start PostgreSQL and API services
 ```
 
 #### Local Development
-
 ```bash
-# Start API server locally
+# Start API server locally  
 python -m api.entrypoint --port 8080 --workers 2
 
 # Visit web interface
@@ -134,7 +129,6 @@ open http://localhost:8080/
 ```
 
 #### Testing and Quality Assurance
-
 ```bash
 # Run specific test suites
 make test            # All tests
@@ -160,57 +154,48 @@ npx prettier --write api/index.html        # Format frontend code
 
 #### Fully Supported Features ✅
 
-| Feature                | Syntax                                              | Status                                               |
-| ---------------------- | --------------------------------------------------- | ---------------------------------------------------- |
-| **Basic Search**       | `name:`, `oracle:`, `type:`                         | Full support with exact matching                     |
-| **Artist Search**      | `artist:`, `a:`                                     | Full text search with trigram indexing               |
-| **Set Search**         | `set:`, `s:`                                        | Dedicated indexed column with exact matching         |
-| **Rarity Search**      | `rarity:`, `r:`                                     | Integer-based ordering with all comparison operators |
-| **Numeric Attributes** | `cmc:`, `power:`, `toughness:`                      | Complete with all comparison operators               |
-| **Colors & Identity**  | `color:`, `identity:`, `c:`, `id:`                  | JSONB-based with complex color logic                 |
-| **Advanced Logic**     | `AND`, `OR`, `NOT`, `()`                            | Full boolean logic support                           |
-| **Arithmetic**         | `cmc+1<power`, `power-toughness=0`                  | Advanced mathematical expressions                    |
-| **Keywords**           | `keyword:`                                          | JSONB object storage                                 |
-| **Oracle Tags**        | `oracle_tags:`, `ot:`                               | Scryfall OS unique extension                         |
-| **Format Legality**    | `format:`, `f:`, `legal:`, `banned:`, `restricted:` | JSONB-based legality tracking for all Magic formats  |
-
-**Format Legality Examples:**
-
-- `format:standard` - Cards legal in Standard format
-- `banned:modern` - Cards banned in Modern format
-- `restricted:vintage` - Cards restricted in Vintage format
-- `f:commander` - Cards legal in Commander format (using alias)
-- `format:standard and banned:modern` - Cards legal in Standard but banned in Modern
+| Feature | Syntax | Status |
+|---------|---------|---------|
+| **Basic Search** | `name:`, `oracle:`, `type:` | Full support with exact matching |
+| **Artist Search** | `artist:`, `a:` | Full text search with trigram indexing |
+| **Set Search** | `set:`, `s:` | Dedicated indexed column with exact matching |
+| **Rarity Search** | `rarity:`, `r:` | Integer-based ordering with all comparison operators |
+| **Numeric Attributes** | `cmc:`, `power:`, `toughness:` | Complete with all comparison operators |
+| **Colors & Identity** | `color:`, `identity:`, `c:`, `id:` | JSONB-based with complex color logic |
+| **Advanced Logic** | `AND`, `OR`, `NOT`, `()` | Full boolean logic support |
+| **Arithmetic** | `cmc+1<power`, `power-toughness=0` | Advanced mathematical expressions |
+| **Keywords** | `keyword:` | JSONB object storage |
+| **Oracle Tags** | `oracle_tags:`, `ot:` | Scryfall OS unique extension |
 
 #### Partially Supported Features ⚠️
 
-| Feature        | Syntax      | Status      | Notes                               |
-| -------------- | ----------- | ----------- | ----------------------------------- |
-| **Card Types** | `subtypes:` | JSONB array | May have data completeness issues   |
-| **Mana Costs** | `mana:`     | Dual format | Both JSONB and text representations |
+| Feature | Syntax | Status | Notes |
+|---------|---------|---------|-------|
+| **Card Types** | `subtypes:` | JSONB array | May have data completeness issues |
+| **Mana Costs** | `mana:` | Dual format | Both JSONB and text representations |
 
 ### Missing Functionality - Complexity vs Impact Grid
 
 Based on [comprehensive functionality analysis](docs/scryfall_functionality_analysis.md), here's the priority matrix:
 
-| **Complexity** | **Low Impact**                                                   | **Medium Impact**                                                                            | **High Impact**                                                                               |
-| -------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| **Low**        | **Watermark** (`watermark:`)<br/>**Flavor Text** (`flavor:`)     | **Layout** (`layout:`)<br/>**Border** (`border:`)<br/>**Frame** (`frame:`)                   | **Collector Numbers** (`number:`, `cn:`)<br/>**Pricing Data** (`usd:`, `eur:`, `tix:`)        |
-| **Medium**     | **Cube Inclusion** (`cube:`)<br/>**Commander Features** (`cmd:`) | **Release Dates** (`year:`, `date:`)<br/>**Planeswalker Loyalty** (`loyalty:`)               | **Special Properties** (`is:`, `produces:`)<br/>**Game Rules** (`is:split`, `is:modal`)       |
-| **High**       | **Regular Expressions** (`/pattern/`)<br/>**Wildcards** (`*`)    | **Advanced Mechanics** (`spellpower:`, `spellresistance:`)<br/>**Paper Sets** (`papersets:`) | **Complex Properties** (`produces:`, `reserved:`)<br/>**Advanced Functions** (`max:`, `min:`) |
+| **Complexity** | **Low Impact** | **Medium Impact** | **High Impact** |
+|----------------|----------------|-------------------|-----------------|
+| **Low** | **Watermark** (`watermark:`)<br/>**Flavor Text** (`flavor:`) | **Layout** (`layout:`)<br/>**Border** (`border:`)<br/>**Frame** (`frame:`) | **Format Legality** (`format:`, `legal:`, `banned:`)<br/>**Collector Numbers** (`number:`, `cn:`) |
+| **Medium** | **Cube Inclusion** (`cube:`)<br/>**Commander Features** (`cmd:`) | **Release Dates** (`year:`, `date:`)<br/>**Planeswalker Loyalty** (`loyalty:`) | **Pricing Data** (`usd:`, `eur:`, `tix:`)<br/>**Special Properties** (`is:`, `produces:`) |
+| **High** | **Regular Expressions** (`/pattern/`)<br/>**Wildcards** (`*`) | **Advanced Mechanics** (`spellpower:`, `spellresistance:`)<br/>**Paper Sets** (`papersets:`) | **Game Rules** (`is:split`, `is:modal`)<br/>**Complex Properties** (`produces:`, `reserved:`) |
 
 ### Recommended Development Priorities
 
-1. **High Impact, Low Complexity** - Implement collector numbers and pricing data for competitive play and trading support
-2. **High Impact, Medium Complexity** - Add special properties and game rules for advanced query capabilities
+1. **High Impact, Low Complexity** - Implement format legality and collector numbers for competitive play support
+2. **High Impact, Medium Complexity** - Add pricing integration and special properties for advanced users  
 3. **Medium Impact Features** - Layout, dates, and planeswalker loyalty for specialized searches
 4. **Low Impact Features** - Watermarks, flavor text, and advanced pattern matching
 
 ### Implementation Status
 
-- **Current API Success Rate**: 100% for supported features (enhanced coverage with format legality)
-- **Test Coverage**: 307 total tests including 226 parser tests with comprehensive legality validation
-- **Performance**: Optimized PostgreSQL with proper indexing including JSONB GIN indices for legality searches
+- **Current API Success Rate**: 100% for supported features (enhanced coverage with rarity search)
+- **Test Coverage**: 271 total tests including 209 parser tests with comprehensive rarity validation
+- **Performance**: Optimized PostgreSQL with proper indexing including integer-based rarity comparisons
 - **Data Quality**: Regular comparison testing against official Scryfall API
 
 ## Card Tagging System
@@ -248,7 +233,6 @@ The tagging system uses two main database components:
 ### Rate Limiting
 
 The bulk import includes built-in rate limiting:
-
 - 200ms delay between individual tag imports
 - 500ms delay between hierarchy relationship requests
 - Progress logging every 50 tags processed

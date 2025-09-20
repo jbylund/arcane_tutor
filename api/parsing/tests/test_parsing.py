@@ -1116,7 +1116,7 @@ def test_parse_legality_searches(test_input: str, expected_ast: QueryNode) -> No
         # Banned search
         (
             "banned:standard",
-            {"standard": "not_legal"},
+            {"standard": "banned"},
         ),
         # Restricted search
         (

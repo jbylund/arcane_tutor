@@ -192,7 +192,7 @@ def get_legality_comparison_object(val: str, attr: str) -> dict[str, str]:
     if attr in ("format", "f", "legal"):
         status = "legal"
     elif attr == "banned":
-        status = "not_legal"  # Scryfall uses "not_legal" for banned cards
+        status = "banned"  # Scryfall uses "banned" for banned cards
     elif attr == "restricted":
         status = "restricted"
     else:
