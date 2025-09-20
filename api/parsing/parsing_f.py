@@ -262,7 +262,13 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     non_numeric_condition = non_numeric_attr_word + attrop + (quoted_string | string_value_word)
     non_numeric_condition.setParseAction(make_binary_operator_node)
 
-    condition = unified_numeric_comparison | non_numeric_condition
+    # Special case for rarity attributes with string values (rarity:rare, r:common, etc.)
+    rarity_attr = Regex(r"\b(rarity|r)\b", flags=re.IGNORECASE)
+    rarity_attr.setParseAction(make_attribute_node)
+    rarity_condition = rarity_attr + attrop + (quoted_string | string_value_word)
+    rarity_condition.setParseAction(make_binary_operator_node)
+
+    condition = rarity_condition | unified_numeric_comparison | non_numeric_condition
 
     # Special rule for non-numeric attribute-colon-hyphenated-value to handle cases like "otag:dual-land" and "otag:40k-model"
     # Only non-numeric attributes should have hyphenated string values
