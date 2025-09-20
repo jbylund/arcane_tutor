@@ -6,7 +6,6 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import pytest
-import requests
 
 from api.api_resource import APIResource
 
@@ -72,7 +71,7 @@ class TestImportCardsBySearch(unittest.TestCase):
         # Mock Scryfall API to return card data
         mock_search.return_value = [
             {"name": "Lightning Bolt", "cmc": 1},
-            {"name": "Counterspell", "cmc": 2}
+            {"name": "Counterspell", "cmc": 2},
         ]
 
         # Mock _load_cards_with_staging to return success
@@ -153,23 +152,23 @@ class TestImportCardsBySearch(unittest.TestCase):
         """Test the example artist search mentioned in the issue."""
         with patch.object(self.api_resource, "_scryfall_search") as mock_search, \
              patch.object(self.api_resource, "_load_cards_with_staging") as mock_load:
-            
+
             # Mock Scryfall API to return Sun Titan cards by Todd Lockwood
             mock_search.return_value = [
                 {
-                    "name": "Sun Titan", 
+                    "name": "Sun Titan",
                     "artist": "Todd Lockwood",
                     "set": "m12",
-                    "cmc": 6
-                }
+                    "cmc": 6,
+                },
             ]
 
             # Mock successful loading
             mock_load.return_value = {
-                "status": "success", 
+                "status": "success",
                 "cards_loaded": 1,
                 "sample_cards": [{"name": "Sun Titan", "artist": "Todd Lockwood"}],
-                "message": "Successfully loaded 1 cards"
+                "message": "Successfully loaded 1 cards",
             }
 
             result = self.api_resource.import_cards_by_search(search_query="artist:lockwood game:paper sun titan")
