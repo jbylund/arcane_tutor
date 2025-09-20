@@ -4,7 +4,9 @@
 -- Create valid_rarities lookup table
 CREATE TABLE magic.valid_rarities (
     card_rarity_int integer PRIMARY KEY,
-    card_rarity_text text NOT NULL UNIQUE
+    card_rarity_text text NOT NULL UNIQUE,
+    -- Add unique constraint on both columns for foreign key reference
+    UNIQUE (card_rarity_int, card_rarity_text)
 );
 
 -- Insert valid rarity values
