@@ -417,15 +417,6 @@ class TestContainerIntegration:
         assert load_result["status"] == "success", f"Card loading failed: {load_result.get('message')}"
         assert load_result["cards_loaded"] == 1, "Should have loaded exactly 1 card"
 
-        # The migration should populate collector_number from raw_card_blob
-        # Let's manually update it to ensure it's populated for this test
-        with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
-            cursor.execute(
-                "UPDATE magic.cards SET collector_number = raw_card_blob->>'collector_number' WHERE card_name = %s",
-                (test_card["name"],),
-            )
-            conn.commit()
-
         # Test basic collector number search using number: syntax
         number_search_result = api_resource.search(q="number:123", limit=100)
         found_cards = number_search_result["cards"]
