@@ -303,6 +303,11 @@ class ScryfallAPIComparator:
 
             "otag:dual-land",
 
+            # Artist searches
+            "artist:moeller",
+            "a:nielsen",
+            "artist:guay",
+
             # Arithmetic expressions
             "power>toughness",
 
