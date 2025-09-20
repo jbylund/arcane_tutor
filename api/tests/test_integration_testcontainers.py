@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import pathlib
 import time
@@ -395,31 +394,36 @@ class TestContainerIntegration:
 
     def test_collector_number_search_integration(self: TestContainerIntegration, api_resource: APIResource) -> None:
         """Test end-to-end collector number search functionality with real database."""
-        # First, manually insert a test card with collector number data to ensure we have something to test
-        with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
-            # Insert a test card with collector number in both raw_card_blob and collector_number column
-            test_card_data = {
-                "name": "Test Card with Collector Number",
-                "collector_number": "123",
-                "set": "test",
-            }
+        # Create a card dictionary that mimics Scryfall API format
+        test_card = {
+            "name": "Test Card with Collector Number",
+            "collector_number": "123",
+            "set": "test",
+            "type_line": "Instant",
+            "mana_cost": "{R}",
+            "cmc": 1,
+            "colors": ["R"],
+            "color_identity": ["R"],
+            "keywords": [],
+            "legalities": {"standard": "legal"},
+            "games": ["paper"],
+            "oracle_text": "Test card text",
+            "artist": "Test Artist",
+            "rarity": "common",
+        }
 
-            cursor.execute("""
-                INSERT INTO magic.cards (
-                    card_name, cmc, mana_cost_text, raw_card_blob,
-                    card_types, card_colors, card_color_identity, card_keywords,
-                    collector_number, card_set_code, card_oracle_tags
-                ) VALUES (
-                    %s, 1, '{R}', %s,
-                    '["Instant"]', '{"R": true}', '{"R": true}', '{}',
-                    %s, %s, '{}'
-                ) ON CONFLICT (card_name) DO NOTHING
-            """, (
-                test_card_data["name"],
-                json.dumps(test_card_data),  # raw_card_blob with collector_number
-                test_card_data["collector_number"],
-                test_card_data["set"],
-            ))
+        # Use the proper _load_cards_with_staging method to insert the card
+        load_result = api_resource._load_cards_with_staging([test_card])
+        assert load_result["status"] == "success", f"Card loading failed: {load_result.get('message')}"
+        assert load_result["cards_loaded"] == 1, "Should have loaded exactly 1 card"
+
+        # The migration should populate collector_number from raw_card_blob
+        # Let's manually update it to ensure it's populated for this test
+        with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE magic.cards SET collector_number = raw_card_blob->>'collector_number' WHERE card_name = %s",
+                (test_card["name"],),
+            )
             conn.commit()
 
         # Test basic collector number search using number: syntax
@@ -430,7 +434,7 @@ class TestContainerIntegration:
         # Find our test card in the results
         test_card_found_number = False
         for card in found_cards:
-            if card["name"] == test_card_data["name"]:
+            if card["name"] == test_card["name"]:
                 test_card_found_number = True
                 break
 
@@ -444,7 +448,7 @@ class TestContainerIntegration:
         # Find our test card in the shorthand results
         shorthand_card_found = False
         for card in shorthand_found_cards:
-            if card["name"] == test_card_data["name"]:
+            if card["name"] == test_card["name"]:
                 shorthand_card_found = True
                 break
 
@@ -463,7 +467,7 @@ class TestContainerIntegration:
         # Verify our test card is found in combined search
         combined_card_found = False
         for card in combined_found_cards:
-            if card["name"] == test_card_data["name"]:
+            if card["name"] == test_card["name"]:
                 combined_card_found = True
                 break
 
@@ -473,10 +477,10 @@ class TestContainerIntegration:
         case_search_result = api_resource.search(q="NUMBER:123", limit=100)
         case_found_cards = case_search_result["cards"]
 
-        case_card_found = any(card["name"] == test_card_data["name"] for card in case_found_cards)
+        case_card_found = any(card["name"] == test_card["name"] for card in case_found_cards)
         assert case_card_found, "Test card should be findable by case-insensitive collector number search 'NUMBER:123'"
 
         # Clean up - remove the test card
         with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
-            cursor.execute("DELETE FROM magic.cards WHERE card_name = %s", (test_card_data["name"],))
+            cursor.execute("DELETE FROM magic.cards WHERE card_name = %s", (test_card["name"],))
             conn.commit()
