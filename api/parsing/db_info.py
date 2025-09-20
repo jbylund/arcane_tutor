@@ -51,6 +51,7 @@ DB_COLUMNS = [
     FieldInfo("card_oracle_tags", FieldType.JSONB_OBJECT, ["oracle_tags", "otag"]),
     FieldInfo("card_rarity_int", FieldType.NUMERIC, ["rarity", "r"]),
     FieldInfo("card_set_code", FieldType.TEXT, ["set", "s"]),
+    FieldInfo("collector_number", FieldType.TEXT, ["number", "cn"]),
     FieldInfo("card_legalities", FieldType.JSONB_OBJECT, ["format", "f", "legal", "banned", "restricted"]),
 ]
 
