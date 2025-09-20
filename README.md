@@ -3,8 +3,8 @@
 ## Table of Contents
 
 1. [Project Overview](#project-overview)
-2. [Code Organization](#code-organization)
-3. [Functionality Comparison](#functionality-comparison)
+2. [Functionality Comparison](#functionality-comparison)
+3. [Code Organization](#code-organization)
 4. [Developer Quick Start](#developer-quick-start)
 5. [Card Tagging System](#card-tagging-system)
 6. [API Documentation](#api-documentation)
@@ -30,41 +30,6 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 - **Oracle Tags Extension**: Enhanced tagging system with hierarchy support and bulk import capabilities
 - **Performance Optimized**: PostgreSQL backend with proper indexing and query optimization for fast search results
 - **Docker Ready**: Complete containerization with Docker Compose for easy deployment and development
-
-## Code Organization
-
-```
-scryfallos/
-├── api/                          # Python API service (main application)
-│   ├── entrypoint.py            # API server entry point and CLI
-│   ├── api_resource.py          # Falcon web framework resources
-│   ├── api_worker.py            # Multi-process worker implementation
-│   ├── index.html               # Web frontend (single-file app)
-│   ├── parsing/                 # Query parser implementation
-│   │   ├── parsing_f.py         # Main parser with pyparsing
-│   │   ├── nodes.py             # AST node definitions
-│   │   ├── scryfall_nodes.py    # Scryfall-specific node types
-│   │   └── tests/               # Parser unit tests (100+ tests)
-│   ├── db/                      # Database schema and migrations
-│   ├── sql/                     # SQL query templates
-│   ├── middlewares/             # HTTP middleware components
-│   └── tests/                   # Integration and API tests
-├── scripts/                     # Utility and maintenance scripts
-├── docs/                        # Project documentation and analysis
-├── client/                      # Client-side assets (minimal)
-├── configs/                     # Configuration files
-├── requirements.txt             # Core Python dependencies
-├── test-requirements.txt        # Testing dependencies
-├── webserver-requirements.txt   # Optional web server dependencies
-├── docker-compose.yml           # Container orchestration
-└── makefile                     # Build automation
-```
-
-### Specialized Documentation
-
-- **[Scripts Documentation](scripts/README.md)** - Detailed information about utility scripts including the Scryfall comparison tool
-- **[API Tests Documentation](api/tests/README.md)** - Testing framework and integration test information
-- **[CI/CD Workflows](docs/workflows/README_CI_MONITOR.md)** - Continuous integration and monitoring documentation
 
 ## Functionality Comparison
 
@@ -122,6 +87,41 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 | -------------- | ----------- | ----------- | ----------------------------------- |
 | **Card Types** | `subtypes:` | JSONB array | May have data completeness issues   |
 | **Mana Costs** | `mana:`     | Dual format | Both JSONB and text representations |
+
+## Code Organization
+
+```
+scryfallos/
+├── api/                          # Python API service (main application)
+│   ├── entrypoint.py            # API server entry point and CLI
+│   ├── api_resource.py          # Falcon web framework resources
+│   ├── api_worker.py            # Multi-process worker implementation
+│   ├── index.html               # Web frontend (single-file app)
+│   ├── parsing/                 # Query parser implementation
+│   │   ├── parsing_f.py         # Main parser with pyparsing
+│   │   ├── nodes.py             # AST node definitions
+│   │   ├── scryfall_nodes.py    # Scryfall-specific node types
+│   │   └── tests/               # Parser unit tests (100+ tests)
+│   ├── db/                      # Database schema and migrations
+│   ├── sql/                     # SQL query templates
+│   ├── middlewares/             # HTTP middleware components
+│   └── tests/                   # Integration and API tests
+├── scripts/                     # Utility and maintenance scripts
+├── docs/                        # Project documentation and analysis
+├── client/                      # Client-side assets (minimal)
+├── configs/                     # Configuration files
+├── requirements.txt             # Core Python dependencies
+├── test-requirements.txt        # Testing dependencies
+├── webserver-requirements.txt   # Optional web server dependencies
+├── docker-compose.yml           # Container orchestration
+└── makefile                     # Build automation
+```
+
+### Specialized Documentation
+
+- **[Scripts Documentation](scripts/README.md)** - Detailed information about utility scripts including the Scryfall comparison tool
+- **[API Tests Documentation](api/tests/README.md)** - Testing framework and integration test information
+- **[CI/CD Workflows](docs/workflows/README_CI_MONITOR.md)** - Continuous integration and monitoring documentation
 
 ## Developer Quick Start
 
