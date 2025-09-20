@@ -1283,50 +1283,7 @@ class APIResource:
             }
 
         # Use import_cards_by_search with exact name query
-        search_result = self.import_cards_by_search(search_query=f'!"{card_name}"')
-
-        # Transform result to maintain backward compatibility with import_card_by_name
-        # For filtering cases, we return the original format without card_name for strict compatibility
-        if search_result["status"] in ["no_cards_after_preprocessing", "no_cards_before_preprocessing"]:
-            # Return the original format for filtering cases
-            return {
-                "status": search_result["status"],
-                "cards_loaded": search_result.get("cards_loaded", 0),
-                "sample_cards": search_result.get("sample_cards", []),
-                "message": search_result["message"],
-            }
-
-        result = {
-            "card_name": card_name,
-            "status": search_result["status"],
-            "message": search_result["message"],
-        }
-
-        # Handle the specific case where we need to verify exact name match
-        if search_result["status"] == "success" and search_result["cards_loaded"] > 0:
-            # Check if any of the loaded cards actually match the requested name
-            # This maintains the exact matching behavior from the original implementation
-            sample_cards = search_result.get("sample_cards", [])
-            if sample_cards:
-                exact_matches = [card for card in sample_cards if card.get("name") == card_name]
-                if not exact_matches:
-                    # If no exact matches were found in the sample,
-                    # we still report success since cards were loaded, but adjust the message
-                    result["message"] = f"Cards imported for query '!{card_name}' but may not include exact match for '{card_name}'"
-
-            # Add additional fields from load result for compatibility
-            result["cards_loaded"] = search_result.get("cards_loaded", 0)
-            result["sample_cards"] = search_result.get("sample_cards", [])
-
-        # Handle not_found case with card-specific message
-        elif search_result["status"] == "not_found":
-            result["message"] = f"Card '{card_name}' not found in Scryfall API"
-
-        # Handle error case with card-specific message
-        elif search_result["status"] == "error":
-            result["message"] = f"Error fetching card from Scryfall: {search_result['message']}"
-
-        return result
+        return self.import_cards_by_search(search_query=f'!"{card_name}"')
 
     def import_cards_by_search(
         self: APIResource,
@@ -1378,13 +1335,6 @@ class APIResource:
 
         # Add search_query to the result for consistency
         load_result["search_query"] = search_query
-
-        if load_result["cards_loaded"] > 0:
-            # Clear caches to ensure search can find the newly imported cards
-            self._query_cache.clear()
-            # Clear the search cache by accessing its cache attribute
-            if hasattr(self._search, "cache"):
-                self._search.cache.clear()
 
         return load_result
 
@@ -1576,12 +1526,21 @@ class APIResource:
 
                 conn.commit()
 
-                return {
+                result = {
                     "status": "success",
                     "cards_loaded": cards_loaded,
                     "sample_cards": sample_cards,
                     "message": f"Successfully loaded {cards_loaded} cards",
                 }
+
+                # Clear caches when cards are successfully loaded
+                if cards_loaded > 0:
+                    self._query_cache.clear()
+                    # Clear the search cache by accessing its cache attribute
+                    if hasattr(self._search, "cache"):
+                        self._search.cache.clear()
+
+                return result
 
         except (psycopg.Error, ValueError, KeyError) as e:
             logger.error("Error loading cards with staging table %s: %s", staging_table_name, e)

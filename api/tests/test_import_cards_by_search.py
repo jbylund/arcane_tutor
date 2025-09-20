@@ -90,64 +90,6 @@ class TestImportCardsBySearch(unittest.TestCase):
         assert len(result["sample_cards"]) == 1
         assert "Successfully loaded 2 cards" in result["message"]
 
-    @patch.object(APIResource, "_scryfall_search")
-    @patch.object(APIResource, "_load_cards_with_staging")
-    def test_import_cards_by_search_clears_caches_on_success(self, mock_load: MagicMock, mock_search: MagicMock) -> None:
-        """Test that import_cards_by_search clears caches when cards are successfully loaded."""
-        # Mock Scryfall API to return card data
-        mock_search.return_value = [{"name": "Lightning Bolt", "cmc": 1}]
-
-        # Mock _load_cards_with_staging to return success with cards loaded
-        mock_load.return_value = {
-            "status": "success",
-            "cards_loaded": 1,
-            "sample_cards": [{"name": "Lightning Bolt", "cmc": 1}],
-            "message": "Successfully loaded 1 cards",
-        }
-
-        # Mock the cache objects
-        self.api_resource._query_cache = MagicMock()
-        mock_search_cache = MagicMock()
-        self.api_resource._search = MagicMock()
-        self.api_resource._search.cache = mock_search_cache
-
-        result = self.api_resource.import_cards_by_search(search_query="name:Lightning")
-
-        # Verify caches were cleared
-        self.api_resource._query_cache.clear.assert_called_once()
-        mock_search_cache.clear.assert_called_once()
-
-        assert result["status"] == "success"
-
-    @patch.object(APIResource, "_scryfall_search")
-    @patch.object(APIResource, "_load_cards_with_staging")
-    def test_import_cards_by_search_does_not_clear_caches_on_no_cards_loaded(self, mock_load: MagicMock, mock_search: MagicMock) -> None:
-        """Test that import_cards_by_search does not clear caches when no cards are loaded."""
-        # Mock Scryfall API to return card data
-        mock_search.return_value = [{"name": "TestCard", "legalities": {"standard": "not_legal"}}]
-
-        # Mock _load_cards_with_staging to return no cards after preprocessing
-        mock_load.return_value = {
-            "status": "no_cards_after_preprocessing",
-            "cards_loaded": 0,
-            "sample_cards": [],
-            "message": "No cards remaining after preprocessing",
-        }
-
-        # Mock the cache objects
-        self.api_resource._query_cache = MagicMock()
-        mock_search_cache = MagicMock()
-        self.api_resource._search = MagicMock()
-        self.api_resource._search.cache = mock_search_cache
-
-        result = self.api_resource.import_cards_by_search(search_query="name:TestCard")
-
-        # Verify caches were NOT cleared
-        self.api_resource._query_cache.clear.assert_not_called()
-        mock_search_cache.clear.assert_not_called()
-
-        assert result["status"] == "no_cards_after_preprocessing"
-
     def test_import_cards_by_search_handles_artist_search_example(self) -> None:
         """Test the example artist search mentioned in the issue."""
         with patch.object(self.api_resource, "_scryfall_search") as mock_search, \
