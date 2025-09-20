@@ -1018,8 +1018,8 @@ def test_rarity_case_insensitive() -> None:
     assert "card.card_rarity_int >" in sql
     assert params[next(iter(params.keys()))] == 0  # common = 0
 
-    
-@pytest.mark.parametrize(    
+
+@pytest.mark.parametrize(
     argnames=("input_query", "expected_ast"),
     argvalues=[
         ("artist:moeller", BinaryOperatorNode(AttributeNode("artist"), ":", StringValueNode("moeller"))),
