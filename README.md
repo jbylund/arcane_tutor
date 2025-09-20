@@ -25,7 +25,7 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 
 ### Key Features
 
-- **Full Scryfall Syntax Support**: Implements core search functionality including `name:`, `oracle:`, `type:`, `cmc:`, `power:`, `color:`, `identity:`, and arithmetic operations
+- **Full Scryfall Syntax Support**: Implements core search functionality including `name:`, `oracle:`, `type:`, `set:`, `s:`, `cmc:`, `power:`, `color:`, `identity:`, and arithmetic operations
 - **Advanced Search Operations**: Supports complex queries with `AND`, `OR`, `NOT` logic, parenthetical grouping, and arithmetic expressions like `cmc+1<power`
 - **Oracle Tags Extension**: Enhanced tagging system with hierarchy support and bulk import capabilities
 - **Performance Optimized**: PostgreSQL backend with proper indexing and query optimization for fast search results
@@ -157,6 +157,7 @@ npx prettier --write api/index.html        # Format frontend code
 | Feature | Syntax | Status |
 |---------|---------|---------|
 | **Basic Search** | `name:`, `oracle:`, `type:` | Full support with exact matching |
+| **Set Search** | `set:`, `s:` | Dedicated indexed column with exact matching |
 | **Numeric Attributes** | `cmc:`, `power:`, `toughness:` | Complete with all comparison operators |
 | **Colors & Identity** | `color:`, `identity:`, `c:`, `id:` | JSONB-based with complex color logic |
 | **Advanced Logic** | `AND`, `OR`, `NOT`, `()` | Full boolean logic support |
@@ -177,7 +178,7 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 
 | **Complexity** | **Low Impact** | **Medium Impact** | **High Impact** |
 |----------------|----------------|-------------------|-----------------|
-| **Low** | **Watermark** (`watermark:`)<br/>**Flavor Text** (`flavor:`) | **Layout** (`layout:`)<br/>**Border** (`border:`)<br/>**Frame** (`frame:`) | **Set Data** (`set:`, `s:`)<br/>**Rarity** (`rarity:`, `r:`)<br/>**Artist** (`artist:`, `a:`) |
+| **Low** | **Watermark** (`watermark:`)<br/>**Flavor Text** (`flavor:`) | **Layout** (`layout:`)<br/>**Border** (`border:`)<br/>**Frame** (`frame:`) | **Rarity** (`rarity:`, `r:`)<br/>**Artist** (`artist:`, `a:`) |
 | **Medium** | **Cube Inclusion** (`cube:`)<br/>**Commander Features** (`cmd:`) | **Release Dates** (`year:`, `date:`)<br/>**Planeswalker Loyalty** (`loyalty:`) | **Format Legality** (`format:`, `legal:`, `banned:`)<br/>**Collector Numbers** (`number:`, `cn:`) |
 | **High** | **Regular Expressions** (`/pattern/`)<br/>**Wildcards** (`*`) | **Advanced Mechanics** (`spellpower:`, `spellresistance:`)<br/>**Paper Sets** (`papersets:`) | **Pricing Data** (`usd:`, `eur:`, `tix:`)<br/>**Special Properties** (`is:`, `produces:`) |
 
