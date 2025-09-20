@@ -1472,7 +1472,9 @@ class APIResource:
                         oracle_text,             -- 18
                         card_set_code,           -- 19
                         card_artist,             -- 20
-                        raw_card_blob            -- 21
+                        card_rarity_text,        -- 21
+                        card_rarity_int,         -- 22
+                        raw_card_blob            -- 23
                     )
                     SELECT
                         card_blob->>'name' AS card_name, -- 1
@@ -1495,7 +1497,9 @@ class APIResource:
                         card_blob->>'oracle_text' AS oracle_text, -- 18
                         card_blob->>'card_set_code' AS card_set_code, -- 19
                         card_blob->>'artist' AS card_artist, -- 20
-                        card_blob AS raw_card_blob -- 21
+                        LOWER(card_blob->>'rarity') AS card_rarity_text, -- 21
+                        magic.rarity_text_to_int(LOWER(card_blob->>'rarity')) AS card_rarity_int, -- 22
+                        card_blob AS raw_card_blob -- 23
                     FROM
                         {staging_table_name}
                     ON CONFLICT (card_name) DO NOTHING

@@ -65,15 +65,15 @@ UPDATE magic.cards
 SET card_rarity_int = magic.rarity_text_to_int(card_rarity_text)
 WHERE card_rarity_text IS NOT NULL;
 
--- Add foreign key constraint to ensure data integrity
-ALTER TABLE magic.cards 
-ADD CONSTRAINT fk_cards_rarity 
-FOREIGN KEY (card_rarity_int, card_rarity_text) 
-REFERENCES magic.valid_rarities (card_rarity_int, card_rarity_text);
-
 -- Add comments for documentation
 COMMENT ON TABLE magic.valid_rarities IS 'Lookup table for valid card rarities with integer and text representations';
 COMMENT ON COLUMN magic.cards.card_rarity_text IS 'Card rarity as text: common, uncommon, rare, mythic, special, bonus';
 COMMENT ON COLUMN magic.cards.card_rarity_int IS 'Card rarity as integer for efficient ordering and comparison: common=0, uncommon=1, rare=2, mythic=3, special=4, bonus=5';
 COMMENT ON FUNCTION magic.rarity_text_to_int(text) IS 'Convert rarity text to integer for ordering and comparison';
 COMMENT ON FUNCTION magic.rarity_int_to_text(integer) IS 'Convert rarity integer back to text';
+
+-- Add foreign key constraint to ensure data integrity (moved to end of migration)
+ALTER TABLE magic.cards 
+ADD CONSTRAINT fk_cards_rarity 
+FOREIGN KEY (card_rarity_int, card_rarity_text) 
+REFERENCES magic.valid_rarities (card_rarity_int, card_rarity_text);
