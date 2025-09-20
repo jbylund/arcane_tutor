@@ -202,15 +202,15 @@ def get_legality_comparison_object(val: str, attr: str) -> dict[str, str]:
     return {format_name: status}
 
 
-def parse_mana_cost_string(mana_cost: str) -> dict[str, list[int]]:
+def parse_mana_cost_string(mana_cost: str) -> dict[str, list[int]]:  # noqa: C901, PLR0912
     """Parse a mana cost string into JSONB representation for database queries.
-    
+
     Args:
         mana_cost: Mana cost string like "{2}{G}", "{W/U}", "G", etc.
-    
+
     Returns:
         Dictionary mapping mana symbols to lists of valid counts.
-        
+
     Examples:
         "{2}{G}" -> {"{1}": [1, 2], "{G}": [1]}
         "{W/U}" -> {"{W}": [1], "{U}": [1]} (hybrid mana can be paid with either)
@@ -218,34 +218,34 @@ def parse_mana_cost_string(mana_cost: str) -> dict[str, list[int]]:
         "{2/G}" -> {"{1}": [1, 2], "{G}": [1]} (can be paid with 2 generic or 1 green)
     """
     result = {}
-    
+
     # First, normalize shorthand mana symbols (e.g., "G" -> "{G}")
     # But preserve complex symbols like "{W/U}" that are already in braces
     normalized_cost = mana_cost
-    
+
     # Find all mana symbols (both braced and shorthand)
     # Pattern matches: {anything} or single letters WUBRG/C/X/Y/Z/etc outside braces
-    symbol_pattern = r'(\{[^}]+\})|([WUBRGCXYZ])'
-    
+    symbol_pattern = r"(\{[^}]+\})|([WUBRGCXYZ])"
+
     symbols = []
     for match in re.finditer(symbol_pattern, normalized_cost):
         if match.group(1):  # Braced symbol like {2}, {G}, {W/U}
             symbols.append(match.group(1))
         elif match.group(2):  # Shorthand symbol like G, W, U
             symbols.append(f"{{{match.group(2)}}}")
-    
+
     # Process each symbol
     symbol_counts = {}
     for symbol in symbols:
         if symbol not in symbol_counts:
             symbol_counts[symbol] = 0
         symbol_counts[symbol] += 1
-    
+
     # Convert counts to the JSONB format
     for symbol, count in symbol_counts.items():
-        if '/' in symbol:
+        if "/" in symbol:
             # Hybrid mana symbol like {W/U}, {2/G}, {G/P}
-            parts = symbol[1:-1].split('/')  # Remove braces and split
+            parts = symbol[1:-1].split("/")  # Remove braces and split
             for part in parts:
                 if part.isdigit():
                     # Handle {2/G} style - the number becomes generic mana requirement
@@ -281,11 +281,11 @@ def parse_mana_cost_string(mana_cost: str) -> dict[str, list[int]]:
             for i in range(1, count + 1):
                 if i not in result[symbol]:
                     result[symbol].append(i)
-    
+
     # Sort the lists for consistent representation
-    for key in result:
-        result[key].sort()
-    
+    for _key, value in result.items():
+        value.sort()
+
     return result
 
 
@@ -448,7 +448,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
     query ?& col AND not(col ?& query) # as array
     """
 
-    def _handle_jsonb_object(self, context: dict) -> str:  # noqa: PLR0911, C901
+    def _handle_jsonb_object(self, context: dict) -> str:  # noqa: PLR0911, C901, PLR0912
         # Produce the query as a jsonb object
         lhs_sql = self.lhs.to_sql(context)
         attr = self.lhs.attribute_name

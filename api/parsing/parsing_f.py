@@ -460,7 +460,7 @@ def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
             if tokens:
                 if tokens[-1] == ":":
                     in_attr_value_context = True
-                elif tokens[-1] in ("=", ">", "<", ">=", "<=", "!=") and len(tokens) >= 2:
+                elif tokens[-1] in ("=", ">", "<", ">=", "<=", "!=") and len(tokens) >= 2:  # noqa: PLR2004
                     # Check if the token before the operator is a mana-related attribute
                     attr_token = tokens[-2].lower()
                     if attr_token in ("mana", "m"):
