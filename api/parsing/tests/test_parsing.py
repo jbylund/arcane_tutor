@@ -1175,3 +1175,124 @@ def test_parse_combined_legality_queries() -> None:
         BinaryOperatorNode(AttributeNode("restricted"), ":", StringValueNode("vintage")),
     ])
     assert result2.root == expected2
+
+
+@pytest.mark.parametrize(
+    argnames=("test_input", "expected_ast"),
+    argvalues=[
+        ("number:123", BinaryOperatorNode(AttributeNode("number"), ":", StringValueNode("123"))),
+        ("cn:45", BinaryOperatorNode(AttributeNode("cn"), ":", StringValueNode("45"))),
+        ("number:1a", BinaryOperatorNode(AttributeNode("number"), ":", StringValueNode("1a"))),
+        ("cn:100b", BinaryOperatorNode(AttributeNode("cn"), ":", StringValueNode("100b"))),
+        ('number:"123"', BinaryOperatorNode(AttributeNode("number"), ":", StringValueNode("123"))),
+        ("cn:'45a'", BinaryOperatorNode(AttributeNode("cn"), ":", StringValueNode("45a"))),
+        ("NUMBER:123", BinaryOperatorNode(AttributeNode("NUMBER"), ":", StringValueNode("123"))),
+        ("CN:45", BinaryOperatorNode(AttributeNode("CN"), ":", StringValueNode("45"))),
+    ],
+)
+def test_parse_collector_number_searches(test_input: str, expected_ast: BinaryOperatorNode) -> None:
+    """Test parsing of collector number searches with various aliases and formats."""
+    observed = parsing.parse_search_query(test_input)
+    assert observed.root == expected_ast
+
+
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_sql_fragment", "expected_parameters"),
+    argvalues=[
+        (
+            "number:123",
+            "(card.collector_number = %(p_str_",
+            {"123"},
+        ),
+        (
+            "cn:45",
+            "(card.collector_number = %(p_str_",
+            {"45"},
+        ),
+        (
+            "number:1a",
+            "(card.collector_number = %(p_str_",
+            {"1a"},
+        ),
+        (
+            "cn:100b",
+            "(card.collector_number = %(p_str_",
+            {"100b"},
+        ),
+        (
+            'number:"123"',
+            "(card.collector_number = %(p_str_",
+            {"123"},
+        ),
+    ],
+)
+def test_collector_number_sql_translation(input_query: str, expected_sql_fragment: str, expected_parameters: set) -> None:
+    """Test that collector number searches generate correct SQL with exact matching for colon operator."""
+    parsed = parsing.parse_scryfall_query(input_query)
+    context = {}
+    observed_sql = parsed.to_sql(context)
+    assert expected_sql_fragment in observed_sql, f"Expected SQL fragment in: {observed_sql}"
+    # Check that we have exactly one parameter
+    assert len(context) == 1, f"Expected exactly one parameter in context: {context}"
+    # Verify the parameter value is in expected set
+    param_value = next(iter(context.values()))
+    assert param_value in expected_parameters, f"Expected parameter value in {expected_parameters}, got: {param_value}"
+
+
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_sql_fragment", "expected_parameters"),
+    argvalues=[
+        (
+            "number>50",
+            "(card.collector_number_int > %(p_int_",
+            {50},
+        ),
+        (
+            "cn<100",
+            "(card.collector_number_int < %(p_int_",
+            {100},
+        ),
+        (
+            "number>=25",
+            "(card.collector_number_int >= %(p_int_",
+            {25},
+        ),
+        (
+            "cn<=75",
+            "(card.collector_number_int <= %(p_int_",
+            {75},
+        ),
+    ],
+)
+def test_collector_number_numeric_comparison_sql_translation(input_query: str, expected_sql_fragment: str, expected_parameters: set) -> None:
+    """Test that collector number numeric comparisons generate correct SQL using the integer column."""
+    parsed = parsing.parse_scryfall_query(input_query)
+    context = {}
+    observed_sql = parsed.to_sql(context)
+    assert expected_sql_fragment in observed_sql, f"Expected SQL fragment in: {observed_sql}"
+    # Check that we have exactly one parameter
+    assert len(context) == 1, f"Expected exactly one parameter in context: {context}"
+    # Verify the parameter value is in expected set
+    param_value = next(iter(context.values()))
+    assert param_value in expected_parameters, f"Expected parameter value in {expected_parameters}, got: {param_value}"
+
+
+def test_parse_combined_collector_number_queries() -> None:
+    """Test parsing of complex queries combining collector number searches."""
+    # Test AND combination
+    query1 = "number:123 set:dom"
+    result1 = parsing.parse_search_query(query1)
+    expected1 = AndNode([
+        BinaryOperatorNode(AttributeNode("number"), ":", StringValueNode("123")),
+        BinaryOperatorNode(AttributeNode("set"), ":", StringValueNode("dom")),
+    ])
+    assert result1.root == expected1
+
+    # Test OR combination
+    query2 = "cn:1 or cn:2"
+    result2 = parsing.parse_search_query(query2)
+    expected2 = OrNode([
+        BinaryOperatorNode(AttributeNode("cn"), ":", StringValueNode("1")),
+        BinaryOperatorNode(AttributeNode("cn"), ":", StringValueNode("2")),
+    ])
+    assert result2.root == expected2

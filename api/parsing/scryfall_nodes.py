@@ -222,8 +222,13 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
 
     def _handle_scryfall_attribute(self: ScryfallBinaryOperatorNode, context: dict) -> str:
         """Handle Scryfall attribute-specific SQL generation."""
-        lhs_sql = self.lhs.to_sql(context)
         attr = self.lhs.attribute_name
+
+        # Special routing for collector numbers based on operator
+        if attr == "collector_number":
+            return self._handle_collector_number(context)
+
+        lhs_sql = self.lhs.to_sql(context)
         field_type = get_field_type(attr)
 
         # handle numeric
@@ -270,6 +275,42 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
 
         msg = f"Unknown field type: {field_type}"
         raise NotImplementedError(msg)
+
+    def _handle_collector_number(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+        """Handle collector number routing based on operator type.
+
+        Routes to appropriate column based on operator:
+        - ':' and '!=' operators use collector_number (text) with exact matching
+        - Comparison operators ('>', '>=', '<', '<=') use collector_number_int (numeric)
+        """
+        if self.operator in (":", "!=", "<>"):
+            # Use text column with exact matching
+            if self.operator == ":":
+                self.operator = "="
+            return super().to_sql(context)
+        if self.operator in (">", ">=", "<", "<="):
+            # Use numeric column for comparisons
+            # But first we need to update the lhs to point to the int column
+            original_attr = self.lhs.attribute_name
+            self.lhs.attribute_name = "collector_number_int"
+
+            # Convert string value to numeric if needed
+            if isinstance(self.rhs, StringValueNode):
+                try:
+                    numeric_value = int(self.rhs.value)
+                    self.rhs = NumericValueNode(numeric_value)
+                except ValueError as e:
+                    msg = f"Invalid collector number for numeric comparison: {self.rhs.value}"
+                    raise ValueError(msg) from e
+
+            result = super().to_sql(context)
+            # Restore original attribute name for potential reuse
+            self.lhs.attribute_name = original_attr
+            return result
+        # Default to text column for any other operators
+        if self.operator == ":":
+            self.operator = "="
+        return super().to_sql(context)
 
     def _handle_text_field_pattern_matching(self: ScryfallBinaryOperatorNode, context: dict, lhs_sql: str) -> str:
         """Handle pattern matching for regular text fields."""

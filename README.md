@@ -25,7 +25,7 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 
 ### Key Features
 
-- **Full Scryfall Syntax Support**: Implements core search functionality including `name:`, `oracle:`, `type:`, `set:`, `s:`, `artist:`, `rarity:`, `r:`, `cmc:`, `power:`, `color:`, `identity:`, pricing data (`usd:`, `eur:`, `tix:`), and arithmetic operations
+- **Full Scryfall Syntax Support**: Implements core search functionality including `name:`, `oracle:`, `type:`, `set:`, `s:`, `artist:`, `rarity:`, `r:`, `cmc:`, `power:`, `color:`, `identity:`, `number:`, `cn:`, pricing data (`usd:`, `eur:`, `tix:`), and arithmetic operations
 - **Advanced Search Operations**: Supports complex queries with `AND`, `OR`, `NOT` logic, parenthetical grouping, and arithmetic expressions like `cmc+1<power`
 - **Oracle Tags Extension**: Enhanced tagging system with hierarchy support and bulk import capabilities
 - **Performance Optimized**: PostgreSQL backend with proper indexing and query optimization for fast search results
@@ -193,7 +193,7 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 
 ### Recommended Development Priorities
 
-1. **High Impact, Low Complexity** - Implement format legality and collector numbers for competitive play support
+1. **High Impact, Low Complexity** - ✅ Implemented: format legality and collector numbers for competitive play support
 2. **High Impact, Medium Complexity** - Add special properties for advanced users
 3. **Medium Impact Features** - Layout, dates, and planeswalker loyalty for specialized searches
 4. **Low Impact Features** - Watermarks, flavor text, and advanced pattern matching
