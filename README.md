@@ -25,7 +25,7 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 
 ### Key Features
 
-- **Full Scryfall Syntax Support**: Implements core search functionality including `name:`, `oracle:`, `type:`, `set:`, `s:`, `cmc:`, `power:`, `color:`, `identity:`, and arithmetic operations
+- **Full Scryfall Syntax Support**: Implements core search functionality including `name:`, `oracle:`, `type:`, `set:`, `s:`, `artist:`, `cmc:`, `power:`, `color:`, `identity:`, and arithmetic operations
 - **Advanced Search Operations**: Supports complex queries with `AND`, `OR`, `NOT` logic, parenthetical grouping, and arithmetic expressions like `cmc+1<power`
 - **Oracle Tags Extension**: Enhanced tagging system with hierarchy support and bulk import capabilities
 - **Performance Optimized**: PostgreSQL backend with proper indexing and query optimization for fast search results
@@ -157,6 +157,7 @@ npx prettier --write api/index.html        # Format frontend code
 | Feature | Syntax | Status |
 |---------|---------|---------|
 | **Basic Search** | `name:`, `oracle:`, `type:` | Full support with exact matching |
+| **Artist Search** | `artist:`, `a:` | Full text search with trigram indexing |
 | **Set Search** | `set:`, `s:` | Dedicated indexed column with exact matching |
 | **Numeric Attributes** | `cmc:`, `power:`, `toughness:` | Complete with all comparison operators |
 | **Colors & Identity** | `color:`, `identity:`, `c:`, `id:` | JSONB-based with complex color logic |

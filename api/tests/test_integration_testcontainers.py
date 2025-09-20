@@ -333,3 +333,51 @@ class TestContainerIntegration:
         found_names = {card["name"] for card in found_cards}
         shorthand_names = {card["name"] for card in shorthand_found_cards}
         assert found_names == shorthand_names, "set: and s: searches should return identical results"
+
+    def test_artist_search_integration(self: TestContainerIntegration, api_resource: APIResource) -> None:
+        """Test end-to-end artist search functionality with real database."""
+        # Test card with known artist - using Lightning Bolt which has Christopher Moeller
+        api_resource.import_card_by_name(card_name="Lightning Bolt")
+
+        # Test artist search by full name
+        result = api_resource.search(q='artist:"Christopher Moeller"')
+        cards = result["cards"]
+        assert len(cards) >= 1, "Should find at least one card by Christopher Moeller"
+
+        # Find Lightning Bolt specifically
+        lightning_bolt_found = False
+        for card in cards:
+            if card["name"] == "Lightning Bolt":
+                lightning_bolt_found = True
+                # Verify the artist field is populated correctly
+                assert "artist" in card or card.get("raw_card_blob", {}).get("artist"), "Card should have artist information"
+                break
+
+        assert lightning_bolt_found, "Lightning Bolt should be found by artist search"
+
+        # Test artist search by partial name (case insensitive)
+        result_partial = api_resource.search(q="artist:moeller")
+        cards_partial = result_partial["cards"]
+        assert len(cards_partial) >= 1, "Should find cards by partial artist name search"
+
+        # Test shorthand artist search
+        result_shorthand = api_resource.search(q="a:moeller")
+        cards_shorthand = result_shorthand["cards"]
+        assert len(cards_shorthand) >= 1, "Should find cards using shorthand 'a:' for artist"
+
+        # Verify both artist searches return the same results
+        found_names = {card["name"] for card in cards_partial}
+        shorthand_names = {card["name"] for card in cards_shorthand}
+        assert found_names == shorthand_names, "artist: and a: searches should return identical results"
+
+        # Test combined artist search with other attributes
+        result_combined = api_resource.search(q="cmc=1 artist:moeller")
+        cards_combined = result_combined["cards"]
+        assert len(cards_combined) >= 1, "Should find cards matching both CMC and artist criteria"
+
+        # Verify all returned cards match both criteria
+        for card in cards_combined:
+            assert card.get("cmc") == 1, "All cards should have CMC = 1"
+            # Artist info should be available in raw card data or extracted field
+            artist_info = card.get("artist") or card.get("raw_card_blob", {}).get("artist", "")
+            assert "moeller" in artist_info.lower(), f"All cards should have Moeller as artist, got: {artist_info}"
