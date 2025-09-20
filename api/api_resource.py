@@ -518,6 +518,9 @@ class APIResource:
         card["price_eur"] = prices.get("eur")
         card["price_tix"] = prices.get("tix")
 
+        # Extract set code for dedicated column
+        card["card_set_code"] = card.get("set")
+
         return card
 
     def get_stats(self: APIResource, **_: object) -> dict[str, Any]:
@@ -1464,7 +1467,8 @@ class APIResource:
                         price_eur,               -- 16
                         price_tix,               -- 17
                         oracle_text,             -- 18
-                        raw_card_blob            -- 19
+                        card_set_code,           -- 19
+                        raw_card_blob            -- 20
                     )
                     SELECT
                         card_blob->>'name' AS card_name, -- 1
@@ -1485,7 +1489,8 @@ class APIResource:
                         (card_blob->>'price_eur')::real AS price_eur, -- 16
                         (card_blob->>'price_tix')::real AS price_tix, -- 17
                         card_blob->>'oracle_text' AS oracle_text, -- 18
-                        card_blob AS raw_card_blob -- 19
+                        card_blob->>'card_set_code' AS card_set_code, -- 19
+                        card_blob AS raw_card_blob -- 20
                     FROM
                         {staging_table_name}
                     ON CONFLICT (card_name) DO NOTHING

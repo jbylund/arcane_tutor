@@ -48,6 +48,7 @@ DB_COLUMNS = [
     FieldInfo("raw_card_blob", FieldType.JSONB_OBJECT, []),
     FieldInfo("oracle_text", FieldType.TEXT, ["oracle", "o"]),
     FieldInfo("card_oracle_tags", FieldType.JSONB_OBJECT, ["oracle_tags", "otag"]),
+    FieldInfo("card_set_code", FieldType.TEXT, ["set", "s"]),
 ]
 
 KNOWN_CARD_ATTRIBUTES = set()

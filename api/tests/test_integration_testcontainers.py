@@ -266,3 +266,70 @@ class TestContainerIntegration:
         # Check that it has mana cost information (this should be present from Scryfall data)
         assert "mana_cost" in imported_card, "Card should have mana cost information"
         assert imported_card["mana_cost"] == "{2}{G}", f"Beast Within should cost {{2}}{{G}}, got: {imported_card.get('mana_cost')}"
+
+    def test_import_card_and_search_by_set(self: TestContainerIntegration, api_resource: APIResource) -> None:
+        """Test importing a card from Scryfall and then searching by set code to verify set is populated."""
+        # Choose a card that shouldn't already exist in the test database
+        card_name = "Mox Ruby"  # A well-known card from Alpha/Beta
+
+        # Import the card using the import_card_by_name method
+        import_result = api_resource.import_card_by_name(card_name=card_name)
+
+        # Check that the import was successful (or already exists, which is also fine for this test)
+        assert import_result["status"] in ["success", "already_exists"], f"Import failed: {import_result}"
+
+        if import_result["status"] == "success":
+            assert import_result["cards_loaded"] == 1, f"Expected 1 card loaded, got {import_result['cards_loaded']}"
+            assert card_name == import_result["sample_cards"][0]["name"], "Imported card name mismatch"
+
+        # Verify the card exists in database and has set information
+        with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT card_name, card_set_code FROM magic.cards WHERE card_name = %s",
+                (card_name,),
+            )
+            result = cursor.fetchone()
+            assert result is not None, f"Card '{card_name}' should exist in database"
+
+            # Check that the set code was populated
+            db_set_code = result["card_set_code"]
+            assert db_set_code is not None, f"Set code should be populated for '{card_name}'"
+            assert len(db_set_code) >= 3, f"Set code should be at least 3 characters, got '{db_set_code}'"
+
+            # Store the actual set code for searching
+            actual_set_code = db_set_code
+
+        # Now test that we can search for the card using set search
+        set_search_result = api_resource.search(q=f"set:{actual_set_code}", limit=100)
+        found_cards = set_search_result["cards"]
+
+        assert len(found_cards) >= 1, f"Should find at least one card with set:{actual_set_code}"
+
+        # Find the imported card in the results
+        imported_card_found = False
+        for card in found_cards:
+            if card["name"] == card_name:
+                imported_card_found = True
+                break
+
+        assert imported_card_found, f"Card '{card_name}' should be findable by set search 'set:{actual_set_code}'"
+
+        # Also test the shorthand 's:' syntax
+        shorthand_search_result = api_resource.search(q=f"s:{actual_set_code}", limit=100)
+        shorthand_found_cards = shorthand_search_result["cards"]
+
+        assert len(shorthand_found_cards) >= 1, f"Should find at least one card with s:{actual_set_code}"
+
+        # Find the imported card in the shorthand results
+        shorthand_card_found = False
+        for card in shorthand_found_cards:
+            if card["name"] == card_name:
+                shorthand_card_found = True
+                break
+
+        assert shorthand_card_found, f"Card '{card_name}' should be findable by shorthand set search 's:{actual_set_code}'"
+
+        # Verify both searches return the same results
+        found_names = {card["name"] for card in found_cards}
+        shorthand_names = {card["name"] for card in shorthand_found_cards}
+        assert found_names == shorthand_names, "set: and s: searches should return identical results"
