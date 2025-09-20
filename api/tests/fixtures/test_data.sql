@@ -40,7 +40,7 @@ INSERT INTO magic.cards (
     4,
     '{"flying": true, "vigilance": true}',
     '45a',
-    NULL
+    45
 ),
 (
     'Black Lotus',

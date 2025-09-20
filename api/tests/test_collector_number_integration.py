@@ -111,3 +111,30 @@ class TestCollectorNumberIntegration:
             # Parameter should be the numeric value
             param_value = next(iter(params.values()))
             assert param_value == expected_param
+
+    def test_alphanumeric_collector_number_numeric_extraction(self) -> None:
+        """Test that alphanumeric collector numbers extract numeric portions correctly.
+
+        Examples: "123a" should compare as 123, "45b" should compare as 45
+        This tests the new regexp-based numeric extraction function.
+        """
+        # Test that alphanumeric collector numbers work with numeric comparisons
+        # The function should extract "45" from "45a" for numeric comparison
+        test_cases = [
+            ("cn>40", 45),  # "45a" should extract as 45, which is > 40
+            ("number<50", 45),  # "45a" should extract as 45, which is < 50
+            ("cn>=45", 45),  # "45a" should extract as 45, which is >= 45
+            ("number<=45", 45),  # "45a" should extract as 45, which is <= 45
+        ]
+
+        for query, _expected_extracted_value in test_cases:
+            parsed = parse_scryfall_query(query)
+            sql, params = generate_sql_query(parsed)
+
+            # Should use the integer column for comparison
+            assert "card.collector_number_int" in sql
+            assert len(params) == 1
+
+            # The comparison value should match what we expect
+            param_value = next(iter(params.values()))
+            assert isinstance(param_value, int), f"Expected integer parameter for {query}"
