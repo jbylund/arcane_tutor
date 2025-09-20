@@ -103,6 +103,8 @@ class ScryfallAttributeNode(AttributeNode):
         Args:
             attribute_name: The search attribute name to map to database column.
         """
+        # Preserve original attribute name BEFORE mapping for specialized handling
+        self.original_attribute = attribute_name.lower()
         db_column_name = SEARCH_NAME_TO_DB_NAME.get(attribute_name.lower(), attribute_name)
         super().__init__(db_column_name)
 
@@ -171,6 +173,33 @@ def get_oracle_tags_comparison_object(val: str) -> dict[str, bool]:
     # Oracle tags are stored in lowercase
     normalized_tag = val.strip().lower()
     return {normalized_tag: True}
+
+
+def get_legality_comparison_object(val: str, attr: str) -> dict[str, str]:
+    """Convert legality search to comparison object for database queries.
+
+    Args:
+        val: Format name to search for.
+        attr: The search attribute name (format, legal, banned, restricted).
+
+    Returns:
+        Dictionary mapping format to legality status.
+    """
+    # Normalize format name to lowercase
+    format_name = val.strip().lower()
+
+    # Map search attribute to legality status
+    if attr in ("format", "f", "legal"):
+        status = "legal"
+    elif attr == "banned":
+        status = "not_legal"  # Scryfall uses "not_legal" for banned cards
+    elif attr == "restricted":
+        status = "restricted"
+    else:
+        msg = f"Unknown legality attribute: {attr}"
+        raise ValueError(msg)
+
+    return {format_name: status}
 
 
 class ScryfallBinaryOperatorNode(BinaryOperatorNode):
@@ -299,6 +328,12 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             rhs = get_oracle_tags_comparison_object(self.rhs.value.strip())
             pname = param_name(rhs)
             context[pname] = rhs
+        elif attr == "card_legalities":
+            # Handle legality searches - need original search attribute for status mapping
+            original_attr = getattr(self.lhs, "original_attribute", attr)
+            rhs = get_legality_comparison_object(self.rhs.value.strip(), original_attr)
+            pname = param_name(rhs)
+            context[pname] = rhs
         else:
             msg = f"Unknown attribute: {attr}"
             raise ValueError(msg)
@@ -356,6 +391,12 @@ def to_scryfall_ast(node: QueryNode) -> QueryNode:  # noqa: PLR0911
     Returns:
         The corresponding Scryfall-specific node.
     """
+    # If already a Scryfall AST node, return as-is
+    if isinstance(node, ScryfallBinaryOperatorNode):
+        return node
+    if isinstance(node, ScryfallAttributeNode):
+        return node
+
     if isinstance(node, BinaryOperatorNode):
         return ScryfallBinaryOperatorNode(
             to_scryfall_ast(node.lhs),
