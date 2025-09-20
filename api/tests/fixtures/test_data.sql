@@ -4,7 +4,7 @@
 INSERT INTO magic.cards (
     card_name, cmc, mana_cost_text, mana_cost_jsonb, raw_card_blob,
     card_types, card_subtypes, card_colors, card_color_identity, card_keywords,
-    oracle_text, creature_power, creature_toughness, card_oracle_tags, collector_number
+    oracle_text, creature_power, creature_toughness, card_oracle_tags, collector_number, collector_number_int
 ) VALUES 
 (
     'Lightning Bolt', 
@@ -21,7 +21,8 @@ INSERT INTO magic.cards (
     NULL,
     NULL,
     '{"burn": true}',
-    '123'
+    '123',
+    123
 ),
 (
     'Serra Angel',
@@ -38,7 +39,8 @@ INSERT INTO magic.cards (
     4,
     4,
     '{"flying": true, "vigilance": true}',
-    '45a'
+    '45a',
+    NULL
 ),
 (
     'Black Lotus',
@@ -55,7 +57,8 @@ INSERT INTO magic.cards (
     NULL,
     NULL,
     '{"mana-acceleration": true}',
-    '1'
+    '1',
+    1
 ) ON CONFLICT (card_name) DO NOTHING;
 
 -- Insert test tags

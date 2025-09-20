@@ -1201,33 +1201,71 @@ def test_parse_collector_number_searches(test_input: str, expected_ast: BinaryOp
     argvalues=[
         (
             "number:123",
-            "(card.collector_number ILIKE %(p_str_",
-            {"%123%"},
+            "(card.collector_number = %(p_str_",
+            {"123"},
         ),
         (
             "cn:45",
-            "(card.collector_number ILIKE %(p_str_",
-            {"%45%"},
+            "(card.collector_number = %(p_str_",
+            {"45"},
         ),
         (
             "number:1a",
-            "(card.collector_number ILIKE %(p_str_",
-            {"%1a%"},
+            "(card.collector_number = %(p_str_",
+            {"1a"},
         ),
         (
             "cn:100b",
-            "(card.collector_number ILIKE %(p_str_",
-            {"%100b%"},
+            "(card.collector_number = %(p_str_",
+            {"100b"},
         ),
         (
             'number:"123"',
-            "(card.collector_number ILIKE %(p_str_",
-            {"%123%"},
+            "(card.collector_number = %(p_str_",
+            {"123"},
         ),
     ],
 )
 def test_collector_number_sql_translation(input_query: str, expected_sql_fragment: str, expected_parameters: set) -> None:
-    """Test that collector number searches generate correct SQL with ILIKE for text matching."""
+    """Test that collector number searches generate correct SQL with exact matching for colon operator."""
+    parsed = parsing.parse_scryfall_query(input_query)
+    context = {}
+    observed_sql = parsed.to_sql(context)
+    assert expected_sql_fragment in observed_sql, f"Expected SQL fragment in: {observed_sql}"
+    # Check that we have exactly one parameter
+    assert len(context) == 1, f"Expected exactly one parameter in context: {context}"
+    # Verify the parameter value is in expected set
+    param_value = next(iter(context.values()))
+    assert param_value in expected_parameters, f"Expected parameter value in {expected_parameters}, got: {param_value}"
+
+
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_sql_fragment", "expected_parameters"),
+    argvalues=[
+        (
+            "number>50",
+            "(card.collector_number_int > %(p_int_",
+            {50},
+        ),
+        (
+            "cn<100",
+            "(card.collector_number_int < %(p_int_",
+            {100},
+        ),
+        (
+            "number>=25",
+            "(card.collector_number_int >= %(p_int_",
+            {25},
+        ),
+        (
+            "cn<=75",
+            "(card.collector_number_int <= %(p_int_",
+            {75},
+        ),
+    ],
+)
+def test_collector_number_numeric_comparison_sql_translation(input_query: str, expected_sql_fragment: str, expected_parameters: set) -> None:
+    """Test that collector number numeric comparisons generate correct SQL using the integer column."""
     parsed = parsing.parse_scryfall_query(input_query)
     context = {}
     observed_sql = parsed.to_sql(context)

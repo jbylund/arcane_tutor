@@ -1493,8 +1493,9 @@ class APIResource:
                         card_rarity_text,        -- 21
                         card_rarity_int,         -- 22
                         collector_number,        -- 23
-                        raw_card_blob,           -- 24
-                        card_legalities          -- 25
+                        collector_number_int,    -- 24
+                        raw_card_blob,           -- 25
+                        card_legalities          -- 26
                     )
                     SELECT
                         card_blob->>'name' AS card_name, -- 1
@@ -1520,8 +1521,13 @@ class APIResource:
                         LOWER(card_blob->>'rarity') AS card_rarity_text, -- 21
                         magic.rarity_text_to_int(LOWER(card_blob->>'rarity')) AS card_rarity_int, -- 22
                         card_blob->>'collector_number' AS collector_number, -- 23
-                        card_blob AS raw_card_blob, -- 24
-                        COALESCE(card_blob->'legalities', '{{}}'::jsonb) AS card_legalities -- 25
+                        CASE
+                            WHEN card_blob->>'collector_number' ~ '^[0-9]+$'
+                            THEN (card_blob->>'collector_number')::integer
+                            ELSE NULL
+                        END AS collector_number_int, -- 24
+                        card_blob AS raw_card_blob, -- 25
+                        COALESCE(card_blob->'legalities', '{{}}'::jsonb) AS card_legalities -- 26
                     FROM
                         {staging_table_name}
                     ON CONFLICT (card_name) DO NOTHING

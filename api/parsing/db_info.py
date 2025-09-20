@@ -52,6 +52,7 @@ DB_COLUMNS = [
     FieldInfo("card_rarity_int", FieldType.NUMERIC, ["rarity", "r"]),
     FieldInfo("card_set_code", FieldType.TEXT, ["set", "s"]),
     FieldInfo("collector_number", FieldType.TEXT, ["number", "cn"]),
+    FieldInfo("collector_number_int", FieldType.NUMERIC, []),  # No direct aliases - will be routed
     FieldInfo("card_legalities", FieldType.JSONB_OBJECT, ["format", "f", "legal", "banned", "restricted"]),
 ]
 
