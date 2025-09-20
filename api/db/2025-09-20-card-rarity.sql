@@ -18,16 +18,6 @@ INSERT INTO magic.valid_rarities (card_rarity_int, card_rarity_text) VALUES
     (4, 'special'),
     (5, 'bonus');
 
--- Add card rarity columns to cards table
-ALTER TABLE magic.cards ADD COLUMN card_rarity_text text;
-ALTER TABLE magic.cards ADD COLUMN card_rarity_int integer;
-
--- Add foreign key constraint to ensure data integrity
-ALTER TABLE magic.cards 
-ADD CONSTRAINT fk_cards_rarity 
-FOREIGN KEY (card_rarity_int, card_rarity_text) 
-REFERENCES magic.valid_rarities (card_rarity_int, card_rarity_text);
-
 -- Create function to convert rarity text to integer (for application use)
 CREATE OR REPLACE FUNCTION magic.rarity_text_to_int(rarity_text text)
 RETURNS integer AS $$
@@ -59,6 +49,27 @@ BEGIN
     END;
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
+
+-- Add card rarity columns to cards table
+ALTER TABLE magic.cards ADD COLUMN card_rarity_text text;
+ALTER TABLE magic.cards ADD COLUMN card_rarity_int integer;
+
+-- Populate card_rarity_text from raw_card_blob data
+UPDATE magic.cards 
+SET card_rarity_text = LOWER(raw_card_blob->>'rarity')
+WHERE raw_card_blob ? 'rarity' 
+AND raw_card_blob->>'rarity' IS NOT NULL;
+
+-- Populate card_rarity_int using the conversion function
+UPDATE magic.cards 
+SET card_rarity_int = magic.rarity_text_to_int(card_rarity_text)
+WHERE card_rarity_text IS NOT NULL;
+
+-- Add foreign key constraint to ensure data integrity
+ALTER TABLE magic.cards 
+ADD CONSTRAINT fk_cards_rarity 
+FOREIGN KEY (card_rarity_int, card_rarity_text) 
+REFERENCES magic.valid_rarities (card_rarity_int, card_rarity_text);
 
 -- Add comments for documentation
 COMMENT ON TABLE magic.valid_rarities IS 'Lookup table for valid card rarities with integer and text representations';
