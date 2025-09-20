@@ -714,8 +714,6 @@ class APIResource:
             oracle_text AS oracle_text,
             card_artist AS artist,
             cmc,
-            creature_power AS power,
-            creature_toughness AS toughness,
             raw_card_blob->>'set_name' AS set_name,
             raw_card_blob->>'type_line' AS type_line,
             raw_card_blob->'image_uris'->>'small' AS image_small,

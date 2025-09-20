@@ -336,20 +336,58 @@ class TestContainerIntegration:
 
     def test_artist_search_integration(self: TestContainerIntegration, api_resource: APIResource) -> None:
         """Test end-to-end artist search functionality with real database."""
-        import pytest
-        
-        # Test that artist search parsing works correctly
-        from api.parsing import parse_scryfall_query, generate_sql_query
-        
-        # Verify artist queries parse and generate correct SQL
-        test_query = 'artist:moeller'
-        parsed = parse_scryfall_query(test_query)
-        sql, params = generate_sql_query(parsed)
-        
-        assert "card.card_artist" in sql, "SQL should reference artist column"
-        assert "ILIKE" in sql, "SQL should use ILIKE for text search"
-        assert "%moeller%" in list(params.values()), "Should have correct parameter"
-        
-        # Skip full integration test in sandboxed environments
-        # Full test requires card data import which may fail without network access
-        pytest.skip("Full artist integration test requires card data - core parsing functionality verified")
+        # Import Brainstorm card which has "Willian Murai" as artist
+        import_result = api_resource.import_card_by_name(card_name="Brainstorm")
+
+        # Check if import was successful
+        if import_result.get("status") != "success":
+            pytest.skip(f"Card import failed: {import_result.get('message', 'Unknown error')}")
+
+        # Test artist search by full name
+        result = api_resource.search(q='artist:"Willian Murai"')
+        cards = result["cards"]
+        assert len(cards) >= 1, "Should find at least one card by Willian Murai"
+
+        # Find Brainstorm specifically and verify artist field
+        brainstorm_found = False
+        for card in cards:
+            if card["name"] == "Brainstorm":
+                brainstorm_found = True
+                assert card.get("artist") == "Willian Murai", f"Brainstorm should have 'Willian Murai' as artist, got: {card.get('artist')}"
+                break
+
+        assert brainstorm_found, "Brainstorm should be found by artist search"
+
+        # Test artist search by partial name (case insensitive)
+        result_partial = api_resource.search(q="artist:murai")
+        cards_partial = result_partial["cards"]
+        assert len(cards_partial) >= 1, "Should find cards by partial artist name search"
+
+        # Verify Brainstorm is found in partial search
+        brainstorm_in_partial = any(card["name"] == "Brainstorm" for card in cards_partial)
+        assert brainstorm_in_partial, "Brainstorm should be found by partial artist search"
+
+        # Test shorthand artist search
+        result_shorthand = api_resource.search(q="a:murai")
+        cards_shorthand = result_shorthand["cards"]
+        assert len(cards_shorthand) >= 1, "Should find cards using shorthand 'a:' for artist"
+
+        # Verify Brainstorm is found in shorthand search
+        brainstorm_in_shorthand = any(card["name"] == "Brainstorm" for card in cards_shorthand)
+        assert brainstorm_in_shorthand, "Brainstorm should be found by shorthand artist search"
+
+        # Test combined artist search with other attributes (Brainstorm has cmc=1)
+        result_combined = api_resource.search(q="cmc=1 artist:murai")
+        cards_combined = result_combined["cards"]
+        assert len(cards_combined) >= 1, "Should find cards matching both CMC and artist criteria"
+
+        # Verify Brainstorm is found in combined search and matches both criteria
+        brainstorm_in_combined = False
+        for card in cards_combined:
+            if card["name"] == "Brainstorm":
+                brainstorm_in_combined = True
+                assert card.get("cmc") == 1, "Brainstorm should have CMC = 1"
+                assert card.get("artist") == "Willian Murai", "Brainstorm should have correct artist"
+                break
+
+        assert brainstorm_in_combined, "Brainstorm should be found by combined search"
