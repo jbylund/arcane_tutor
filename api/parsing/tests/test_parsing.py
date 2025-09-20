@@ -881,3 +881,139 @@ def test_standalone_numeric_query_parses() -> None:
     assert sql.endswith(")s")
     # Context should contain the numeric value
     assert 1 in context.values()
+
+
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_sql", "expected_parameters"),
+    argvalues=[
+        # Basic rarity equality searches
+        (
+            "rarity:common",
+            "(LOWER(card.card_rarity) = %(p_str_Y29tbW9u)s)",
+            {"p_str_Y29tbW9u": "common"},
+        ),
+        (
+            "rarity:uncommon",
+            "(LOWER(card.card_rarity) = %(p_str_dW5jb21tb24)s)",
+            {"p_str_dW5jb21tb24": "uncommon"},
+        ),
+        (
+            "rarity:rare",
+            "(LOWER(card.card_rarity) = %(p_str_cmFyZQ)s)",
+            {"p_str_cmFyZQ": "rare"},
+        ),
+        (
+            "rarity:mythic",
+            "(LOWER(card.card_rarity) = %(p_str_bXl0aGlj)s)",
+            {"p_str_bXl0aGlj": "mythic"},
+        ),
+        (
+            "rarity:special",
+            "(LOWER(card.card_rarity) = %(p_str_c3BlY2lhbA)s)",
+            {"p_str_c3BlY2lhbA": "special"},
+        ),
+        (
+            "rarity:bonus",
+            "(LOWER(card.card_rarity) = %(p_str_Ym9udXM)s)",
+            {"p_str_Ym9udXM": "bonus"},
+        ),
+        # Short alias tests
+        (
+            "r:common",
+            "(LOWER(card.card_rarity) = %(p_str_Y29tbW9u)s)",
+            {"p_str_Y29tbW9u": "common"},
+        ),
+        (
+            "r:mythic",
+            "(LOWER(card.card_rarity) = %(p_str_bXl0aGlj)s)",
+            {"p_str_bXl0aGlj": "mythic"},
+        ),
+        # Comparison operators - greater than
+        (
+            "rarity>common",
+            "((CASE LOWER(card.card_rarity)\n            WHEN 'common' THEN 0\n            WHEN 'uncommon' THEN 1\n            WHEN 'rare' THEN 2\n            WHEN 'mythic' THEN 3\n            WHEN 'special' THEN 4\n            WHEN 'bonus' THEN 5\n            ELSE -1\n        END) > %(p_int_MA)s)",
+            {"p_int_MA": 0},
+        ),
+        (
+            "rarity>uncommon",
+            "((CASE LOWER(card.card_rarity)\n            WHEN 'common' THEN 0\n            WHEN 'uncommon' THEN 1\n            WHEN 'rare' THEN 2\n            WHEN 'mythic' THEN 3\n            WHEN 'special' THEN 4\n            WHEN 'bonus' THEN 5\n            ELSE -1\n        END) > %(p_int_MQ)s)",
+            {"p_int_MQ": 1},
+        ),
+        # Comparison operators - greater than or equal
+        (
+            "rarity>=rare",
+            "((CASE LOWER(card.card_rarity)\n            WHEN 'common' THEN 0\n            WHEN 'uncommon' THEN 1\n            WHEN 'rare' THEN 2\n            WHEN 'mythic' THEN 3\n            WHEN 'special' THEN 4\n            WHEN 'bonus' THEN 5\n            ELSE -1\n        END) >= %(p_int_Mg)s)",
+            {"p_int_Mg": 2},
+        ),
+        # Comparison operators - less than
+        (
+            "rarity<rare",
+            "((CASE LOWER(card.card_rarity)\n            WHEN 'common' THEN 0\n            WHEN 'uncommon' THEN 1\n            WHEN 'rare' THEN 2\n            WHEN 'mythic' THEN 3\n            WHEN 'special' THEN 4\n            WHEN 'bonus' THEN 5\n            ELSE -1\n        END) < %(p_int_Mg)s)",
+            {"p_int_Mg": 2},
+        ),
+        # Comparison operators - less than or equal
+        (
+            "rarity<=uncommon",
+            "((CASE LOWER(card.card_rarity)\n            WHEN 'common' THEN 0\n            WHEN 'uncommon' THEN 1\n            WHEN 'rare' THEN 2\n            WHEN 'mythic' THEN 3\n            WHEN 'special' THEN 4\n            WHEN 'bonus' THEN 5\n            ELSE -1\n        END) <= %(p_int_MQ)s)",
+            {"p_int_MQ": 1},
+        ),
+        # Comparison operators - not equal
+        (
+            "rarity!=common",
+            "((CASE LOWER(card.card_rarity)\n            WHEN 'common' THEN 0\n            WHEN 'uncommon' THEN 1\n            WHEN 'rare' THEN 2\n            WHEN 'mythic' THEN 3\n            WHEN 'special' THEN 4\n            WHEN 'bonus' THEN 5\n            ELSE -1\n        END) != %(p_int_MA)s)",
+            {"p_int_MA": 0},
+        ),
+        # Short alias with comparison
+        (
+            "r>common",
+            "((CASE LOWER(card.card_rarity)\n            WHEN 'common' THEN 0\n            WHEN 'uncommon' THEN 1\n            WHEN 'rare' THEN 2\n            WHEN 'mythic' THEN 3\n            WHEN 'special' THEN 4\n            WHEN 'bonus' THEN 5\n            ELSE -1\n        END) > %(p_int_MA)s)",
+            {"p_int_MA": 0},
+        ),
+    ],
+)
+def test_rarity_search_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
+    """Test that rarity search generates correct SQL with proper ordering."""
+    parsed = parsing.parse_scryfall_query(input_query)
+    context = {}
+    observed_sql = parsed.to_sql(context)
+    assert observed_sql == expected_sql, f"\nExpected: {expected_sql}\nObserved: {observed_sql}"
+    assert context == expected_parameters, f"\nExpected params: {expected_parameters}\nObserved params: {context}"
+
+
+def test_rarity_invalid_values() -> None:
+    """Test that invalid rarity values raise appropriate errors."""
+    # This should parse successfully but fail during SQL generation
+
+    parsed = parsing.parse_scryfall_query("rarity>invalid")
+
+    # Should raise ValueError when generating SQL due to invalid rarity
+    with pytest.raises(ValueError, match="Invalid rarity in comparison"):
+        generate_sql_query(parsed)
+
+    # Test with another invalid rarity
+    parsed2 = parsing.parse_scryfall_query("r<unknown")
+
+    with pytest.raises(ValueError, match="Invalid rarity in comparison"):
+        generate_sql_query(parsed2)
+
+
+def test_rarity_case_insensitive() -> None:
+    """Test that rarity values are case-insensitive."""
+    # Test different cases for equality
+    queries = ["rarity:Common", "rarity:RARE", "r:Mythic", "rarity:UnComMoN"]
+
+    for query_str in queries:
+        parsed = parsing.parse_scryfall_query(query_str)
+        sql, params = generate_sql_query(parsed)
+
+        # Should not raise errors and should generate valid SQL
+        assert sql.startswith("(LOWER(card.card_rarity)")
+        assert len(params) == 1
+
+    # Test different cases for comparisons
+    parsed_comparison = parsing.parse_scryfall_query("rarity>Common")
+    sql, params = generate_sql_query(parsed_comparison)
+
+    # Should contain the CASE statement and not raise errors
+    assert "CASE LOWER(card.card_rarity)" in sql
+    assert params[next(iter(params.keys()))] == 0  # common = 0
