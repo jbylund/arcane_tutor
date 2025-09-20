@@ -1098,42 +1098,42 @@ def test_parse_collector_number_searches(input_query: str, expected_ast: QueryNo
         # Basic collector number search with full 'number:' syntax
         (
             "number:123",
-            r"(card.collector_number ILIKE %(p_str_JTEyMyU)s)",
-            {"p_str_JTEyMyU": "%123%"},
+            r"(card.collector_number = %(p_str_MTIz)s)",
+            {"p_str_MTIz": "123"},
         ),
         # Collector number search with 'cn:' shorthand
         (
             "cn:123",
-            r"(card.collector_number ILIKE %(p_str_JTEyMyU)s)",
-            {"p_str_JTEyMyU": "%123%"},
+            r"(card.collector_number = %(p_str_MTIz)s)",
+            {"p_str_MTIz": "123"},
         ),
         # Collector number with letters (like "123a")
         (
             "number:123a",
-            r"(card.collector_number ILIKE %(p_str_JTEyM2El)s)",
-            {"p_str_JTEyM2El": "%123a%"},
+            r"(card.collector_number = %(p_str_MTIzYQ)s)",
+            {"p_str_MTIzYQ": "123a"},
         ),
         # Collector number with hyphen
         (
             "cn:123-b",
-            r"(card.collector_number ILIKE %(p_str_JTEyMy1iJQ)s)",
-            {"p_str_JTEyMy1iJQ": "%123-b%"},
+            r"(card.collector_number = %(p_str_MTIzLWI)s)",
+            {"p_str_MTIzLWI": "123-b"},
         ),
         # Case-insensitive collector number attribute search
         (
             "NUMBER:123",
-            r"(card.collector_number ILIKE %(p_str_JTEyMyU)s)",
-            {"p_str_JTEyMyU": "%123%"},
+            r"(card.collector_number = %(p_str_MTIz)s)",
+            {"p_str_MTIz": "123"},
         ),
         (
             "CN:456",
-            r"(card.collector_number ILIKE %(p_str_JTQ1NiU)s)",
-            {"p_str_JTQ1NiU": "%456%"},
+            r"(card.collector_number = %(p_str_NDU2)s)",
+            {"p_str_NDU2": "456"},
         ),
     ],
 )
 def test_collector_number_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
-    """Test that collector number search generates correct SQL with ILIKE pattern matching."""
+    """Test that collector number search generates correct SQL with exact matching like set codes."""
     parsed = parsing.parse_scryfall_query(input_query)
     context = {}
     observed_sql = parsed.to_sql(context)

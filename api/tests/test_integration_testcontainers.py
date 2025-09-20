@@ -455,14 +455,6 @@ class TestContainerIntegration:
         shorthand_names = {card["name"] for card in shorthand_found_cards}
         assert found_names == shorthand_names, "number: and cn: searches should return identical results"
 
-        # Test partial collector number search (using ILIKE %pattern%)
-        partial_search_result = api_resource.search(q="number:12", limit=100)
-        partial_found_cards = partial_search_result["cards"]
-
-        # The test card should be found in partial search (since "123" contains "12")
-        partial_card_found = any(card["name"] == test_card_data["name"] for card in partial_found_cards)
-        assert partial_card_found, "Test card should be findable by partial collector number search 'number:12'"
-
         # Test combined collector number search with other attributes
         combined_search_result = api_resource.search(q="number:123 set:test", limit=100)
         combined_found_cards = combined_search_result["cards"]
