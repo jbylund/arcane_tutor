@@ -14,6 +14,7 @@ from api.parsing import (
     StringValueNode,
 )
 from api.parsing.parsing_f import generate_sql_query
+from api.parsing.scryfall_nodes import get_legality_comparison_object
 
 
 @pytest.mark.parametrize(
@@ -1071,5 +1072,106 @@ def test_parse_combined_artist_queries() -> None:
     expected2 = OrNode([
         BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("lightning")),
         BinaryOperatorNode(AttributeNode("artist"), ":", StringValueNode("moeller")),
+    ])
+    assert result2.root == expected2
+
+
+@pytest.mark.parametrize(
+    argnames=("test_input", "expected_ast"),
+    argvalues=[
+        ("format:standard", BinaryOperatorNode(AttributeNode("format"), ":", StringValueNode("standard"))),
+        ("f:modern", BinaryOperatorNode(AttributeNode("f"), ":", StringValueNode("modern"))),
+        ("legal:legacy", BinaryOperatorNode(AttributeNode("legal"), ":", StringValueNode("legacy"))),
+        ("banned:standard", BinaryOperatorNode(AttributeNode("banned"), ":", StringValueNode("standard"))),
+        ("restricted:vintage", BinaryOperatorNode(AttributeNode("restricted"), ":", StringValueNode("vintage"))),
+        ('format:"Commander"', BinaryOperatorNode(AttributeNode("format"), ":", StringValueNode("Commander"))),
+        ("FORMAT:standard", BinaryOperatorNode(AttributeNode("FORMAT"), ":", StringValueNode("standard"))),
+        ("LEGAL:modern", BinaryOperatorNode(AttributeNode("LEGAL"), ":", StringValueNode("modern"))),
+    ],
+)
+def test_parse_legality_searches(test_input: str, expected_ast: QueryNode) -> None:
+    """Test that legality search queries parse to expected AST nodes."""
+    result = parsing.parse_search_query(test_input)
+    assert result.root == expected_ast
+
+
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_parameters"),
+    argvalues=[
+        # Basic format search (format: means legal in format)
+        (
+            "format:standard",
+            {"standard": "legal"},
+        ),
+        # Format alias 'f:'
+        (
+            "f:modern",
+            {"modern": "legal"},
+        ),
+        # Legal search (explicit legal status)
+        (
+            "legal:legacy",
+            {"legacy": "legal"},
+        ),
+        # Banned search
+        (
+            "banned:standard",
+            {"standard": "banned"},
+        ),
+        # Restricted search
+        (
+            "restricted:vintage",
+            {"vintage": "restricted"},
+        ),
+        # Case insensitive format names
+        (
+            "format:Standard",
+            {"standard": "legal"},
+        ),
+        # Format with spaces in quotes
+        (
+            'format:"Historic Brawl"',
+            {"historic brawl": "legal"},
+        ),
+    ],
+)
+def test_legality_search_sql_translation(input_query: str, expected_parameters: dict) -> None:
+    """Test that legality search generates correct SQL with JSONB operators."""
+    parsed = parsing.parse_scryfall_query(input_query)
+    context = {}
+    observed_sql = parsed.to_sql(context)
+    # Note: The parameter names will be auto-generated hashes, so we need a more flexible comparison
+    assert "card.card_legalities @>" in observed_sql, f"Expected JSONB containment in SQL: {observed_sql}"
+    # Check that we have exactly one parameter
+    assert len(context) == 1, f"Expected exactly one parameter in context: {context}"
+
+    # Verify the parameter value matches expected format and status
+    param_value = next(iter(context.values()))
+    assert param_value == expected_parameters, f"Expected parameter value: {expected_parameters}, got: {param_value}"
+
+
+def test_legality_invalid_attribute() -> None:
+    """Test that invalid legality attributes raise appropriate errors."""
+    with pytest.raises(ValueError, match="Unknown legality attribute"):
+        get_legality_comparison_object("standard", "invalid_attr")
+
+
+def test_parse_combined_legality_queries() -> None:
+    """Test parsing of complex queries combining legality searches."""
+    # Test AND combination
+    query1 = "format:standard banned:modern"
+    result1 = parsing.parse_search_query(query1)
+    expected1 = AndNode([
+        BinaryOperatorNode(AttributeNode("format"), ":", StringValueNode("standard")),
+        BinaryOperatorNode(AttributeNode("banned"), ":", StringValueNode("modern")),
+    ])
+    assert result1.root == expected1
+
+    # Test OR combination
+    query2 = "legal:legacy or restricted:vintage"
+    result2 = parsing.parse_search_query(query2)
+    expected2 = OrNode([
+        BinaryOperatorNode(AttributeNode("legal"), ":", StringValueNode("legacy")),
+        BinaryOperatorNode(AttributeNode("restricted"), ":", StringValueNode("vintage")),
     ])
     assert result2.root == expected2
