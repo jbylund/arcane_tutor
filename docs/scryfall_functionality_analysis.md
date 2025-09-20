@@ -32,11 +32,15 @@ Based on the codebase analysis in `api/parsing/db_info.py` and successful API co
    - `color:` or `c:` - Card colors (JSONB object)
    - `identity:` or `id:` - Color identity (JSONB object)
 
-4. **Advanced Features**
+4. **Set and Collection Data**
+   - `set:` or `s:` - Set codes
+   - `number:` or `cn:` - Collector numbers (TEXT field with pattern matching)
+
+5. **Advanced Features**
    - `keywords:` or `k:` - Keyword abilities (JSONB object)
    - `oracle_tags:` or `ot:` - Oracle tags (Scryfall OS extension)
 
-5. **Operators**
+6. **Operators**
    - Comparison: `=`, `<`, `>`, `<=`, `>=`, `!=`, `<>`
    - Logic: `AND`, `OR`, `NOT`, `-` (negation)
    - Arithmetic: `+`, `-`, `*`, `/` (e.g., `cmc+1<power`)
@@ -59,10 +63,8 @@ Based on API comparison failures and official Scryfall documentation:
 #### High Priority Missing Features
 
 1. **Set and Collection Data**
-   - `set:` or `s:` - Set codes
    - `edition:` or `e:` - Set names
-   - `number:` or `cn:` - Collector numbers
-   - `rarity:` or `r:` - Card rarity
+   - `rarity:` or `r:` - Card rarity (✅ **Now Supported** - Integer-based with all comparison operators)
 
 2. **Format Legality**
    - `format:` or `f:` - Format legality
