@@ -1073,3 +1073,90 @@ def test_parse_combined_artist_queries() -> None:
         BinaryOperatorNode(AttributeNode("artist"), ":", StringValueNode("moeller")),
     ])
     assert result2.root == expected2
+
+
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_ast"),
+    argvalues=[
+        ("number:123", BinaryOperatorNode(AttributeNode("number"), ":", StringValueNode("123"))),
+        ("cn:456", BinaryOperatorNode(AttributeNode("cn"), ":", StringValueNode("456"))),
+        ("number:123a", BinaryOperatorNode(AttributeNode("number"), ":", StringValueNode("123a"))),
+        ("cn:123-b", BinaryOperatorNode(AttributeNode("cn"), ":", StringValueNode("123-b"))),
+        ("NUMBER:123", BinaryOperatorNode(AttributeNode("NUMBER"), ":", StringValueNode("123"))),
+        ("CN:456", BinaryOperatorNode(AttributeNode("CN"), ":", StringValueNode("456"))),
+    ],
+)
+def test_parse_collector_number_searches(input_query: str, expected_ast: QueryNode) -> None:
+    """Test parsing collector number search queries."""
+    result = parsing.parse_search_query(input_query)
+    assert result.root == expected_ast
+
+
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_sql", "expected_parameters"),
+    argvalues=[
+        # Basic collector number search with full 'number:' syntax
+        (
+            "number:123",
+            r"(card.collector_number ILIKE %(p_str_JTEyMyU)s)",
+            {"p_str_JTEyMyU": "%123%"},
+        ),
+        # Collector number search with 'cn:' shorthand
+        (
+            "cn:123",
+            r"(card.collector_number ILIKE %(p_str_JTEyMyU)s)",
+            {"p_str_JTEyMyU": "%123%"},
+        ),
+        # Collector number with letters (like "123a")
+        (
+            "number:123a",
+            r"(card.collector_number ILIKE %(p_str_JTEyM2El)s)",
+            {"p_str_JTEyM2El": "%123a%"},
+        ),
+        # Collector number with hyphen
+        (
+            "cn:123-b",
+            r"(card.collector_number ILIKE %(p_str_JTEyMy1iJQ)s)",
+            {"p_str_JTEyMy1iJQ": "%123-b%"},
+        ),
+        # Case-insensitive collector number attribute search
+        (
+            "NUMBER:123",
+            r"(card.collector_number ILIKE %(p_str_JTEyMyU)s)",
+            {"p_str_JTEyMyU": "%123%"},
+        ),
+        (
+            "CN:456",
+            r"(card.collector_number ILIKE %(p_str_JTQ1NiU)s)",
+            {"p_str_JTQ1NiU": "%456%"},
+        ),
+    ],
+)
+def test_collector_number_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
+    """Test that collector number search generates correct SQL with ILIKE pattern matching."""
+    parsed = parsing.parse_scryfall_query(input_query)
+    context = {}
+    observed_sql = parsed.to_sql(context)
+    assert observed_sql == expected_sql, f"\nExpected: {expected_sql}\nObserved: {observed_sql}"
+    assert context == expected_parameters, f"\nExpected params: {expected_parameters}\nObserved params: {context}"
+
+
+def test_parse_combined_collector_number_queries() -> None:
+    """Test parsing combined queries with collector number attributes."""
+    # Test combining collector number with other attributes
+    query1 = "set:iko number:123"
+    result1 = parsing.parse_search_query(query1)
+    expected1 = AndNode([
+        BinaryOperatorNode(AttributeNode("set"), ":", StringValueNode("iko")),
+        BinaryOperatorNode(AttributeNode("number"), ":", StringValueNode("123")),
+    ])
+    assert result1.root == expected1
+
+    # Test combining collector number with multiple attributes
+    query2 = "cmc<=3 OR cn:456"
+    result2 = parsing.parse_search_query(query2)
+    expected2 = OrNode([
+        BinaryOperatorNode(AttributeNode("cmc"), "<=", NumericValueNode(3)),
+        BinaryOperatorNode(AttributeNode("cn"), ":", StringValueNode("456")),
+    ])
+    assert result2.root == expected2

@@ -38,6 +38,7 @@ DB_COLUMNS = [
     FieldInfo("card_subtypes", FieldType.JSONB_ARRAY, ["subtype", "subtypes"]),
     FieldInfo("card_types", FieldType.JSONB_ARRAY, ["type", "types", "t"]),
     FieldInfo("cmc", FieldType.NUMERIC, ["cmc"]),
+    FieldInfo("collector_number", FieldType.TEXT, ["number", "cn"]),
     FieldInfo("creature_power", FieldType.NUMERIC, ["power", "pow"]),
     FieldInfo("creature_toughness", FieldType.NUMERIC, ["toughness", "tou"]),
     FieldInfo("edhrec_rank", FieldType.NUMERIC, []),
