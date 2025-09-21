@@ -642,6 +642,95 @@ class APIResource:
         val = str_buffer.getvalue()
         falcon_response.body = val.encode("utf-8")
 
+    def get_tags(self: APIResource, **_: object) -> list[dict[str, Any]]:
+        """Get all tags from the database.
+
+        Returns:
+        -------
+            List[Dict[str, Any]]: List of tag records.
+
+        """
+        return self._run_query(query=self.read_sql("get_tags"))["result"]
+
+    def get_tags_to_csv(
+        self: APIResource,
+        *,
+        falcon_response: falcon.Response | None = None,
+    ) -> None:
+        """Write tags as CSV to the Falcon response.
+
+        Args:
+        ----
+            falcon_response (falcon.Response): The Falcon response to write to.
+
+        Raises:
+        ------
+            ValueError: If falcon_response is not provided.
+
+        """
+        if falcon_response is None:
+            msg = "falcon_response is required"
+            raise ValueError(msg)
+        raw_tags = self.get_tags()
+        falcon_response.content_type = "text/csv"
+
+        if not raw_tags:
+            # Handle empty result case
+            falcon_response.body = b""
+            return
+
+        str_buffer = io.StringIO()
+        writer = csv.DictWriter(str_buffer, fieldnames=raw_tags[0].keys())
+        writer.writeheader()
+        writer.writerows(raw_tags)
+        str_buffer.seek(0)
+        val = str_buffer.getvalue()
+        falcon_response.body = val.encode("utf-8")
+
+    def get_tag_relationships(self: APIResource, **_: object) -> list[dict[str, Any]]:
+        """Get all tag relationships from the database.
+
+        Returns:
+        -------
+            List[Dict[str, Any]]: List of tag relationship records.
+
+        """
+        return self._run_query(query=self.read_sql("get_tag_relationships"))["result"]
+
+    def get_tag_relationships_to_csv(
+        self: APIResource,
+        *,
+        falcon_response: falcon.Response | None = None,
+    ) -> None:
+        """Write tag relationships as CSV to the Falcon response.
+
+        Args:
+        ----
+            falcon_response (falcon.Response): The Falcon response to write to.
+
+        Raises:
+        ------
+            ValueError: If falcon_response is not provided.
+
+        """
+        if falcon_response is None:
+            msg = "falcon_response is required"
+            raise ValueError(msg)
+        raw_relationships = self.get_tag_relationships()
+        falcon_response.content_type = "text/csv"
+
+        if not raw_relationships:
+            # Handle empty result case
+            falcon_response.body = b""
+            return
+
+        str_buffer = io.StringIO()
+        writer = csv.DictWriter(str_buffer, fieldnames=raw_relationships[0].keys())
+        writer.writeheader()
+        writer.writerows(raw_relationships)
+        str_buffer.seek(0)
+        val = str_buffer.getvalue()
+        falcon_response.body = val.encode("utf-8")
 
     def search(  # noqa: PLR0913
         self: APIResource,
