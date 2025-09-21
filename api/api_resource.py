@@ -732,6 +732,265 @@ class APIResource:
         val = str_buffer.getvalue()
         falcon_response.body = val.encode("utf-8")
 
+    def export_cards(self: APIResource, **kwargs: object) -> list[dict[str, Any]]:
+        """Export cards data as JSON.
+
+        Args:
+        ----
+            **kwargs: Additional arguments passed to get_cards.
+
+        Returns:
+        -------
+            List[Dict[str, Any]]: List of card records.
+
+        """
+        return self.get_cards(**kwargs)
+
+    def export_tags(self: APIResource, **_: object) -> list[dict[str, Any]]:
+        """Export tags data as JSON.
+
+        Returns:
+        -------
+            List[Dict[str, Any]]: List of tag records.
+
+        """
+        return self.get_tags()
+
+    def export_tag_hierarchy(self: APIResource, **_: object) -> list[dict[str, Any]]:
+        """Export tag relationships data as JSON.
+
+        Returns:
+        -------
+            List[Dict[str, Any]]: List of tag relationship records.
+
+        """
+        return self.get_tag_relationships()
+
+    def export_all(
+        self: APIResource,
+        *,
+        cards_min_name: str | None = None,
+        cards_max_name: str | None = None,
+        cards_limit: int = 2500,
+        **_: object,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Export all data (cards, tags, tag_hierarchy) as JSON.
+
+        Args:
+        ----
+            cards_min_name: Minimum card name filter.
+            cards_max_name: Maximum card name filter.
+            cards_limit: Maximum number of cards to export.
+
+        Returns:
+        -------
+            Dict containing all exported data.
+
+        """
+        return {
+            "cards": self.export_cards(
+                min_name=cards_min_name,
+                max_name=cards_max_name,
+                limit=cards_limit,
+            ),
+            "tags": self.export_tags(),
+            "tag_hierarchy": self.export_tag_hierarchy(),
+        }
+
+    def import_cards(
+        self: APIResource,
+        *,
+        cards_data: list[dict[str, Any]],
+        **_: object,
+    ) -> dict[str, Any]:
+        """Import cards data from JSON.
+
+        Args:
+        ----
+            cards_data: List of card records to import.
+
+        Returns:
+        -------
+            Dict with import results.
+
+        """
+        if not cards_data:
+            return {"imported": 0, "message": "No cards data provided"}
+
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            imported_count = 0
+            for card in cards_data:
+                try:
+                    # Use INSERT ... ON CONFLICT to handle duplicates
+                    cursor.execute(
+                        """
+                            INSERT INTO magic.cards (
+                                card_name, cmc, mana_cost_text, mana_cost_jsonb,
+                                raw_card_blob, card_types, card_subtypes,
+                                card_colors, card_color_identity, card_keywords,
+                                oracle_text, edhrec_rank, creature_power,
+                                creature_power_text, creature_toughness,
+                                creature_toughness_text
+                            ) VALUES (
+                                %(card_name)s, %(cmc)s, %(mana_cost_text)s, %(mana_cost_jsonb)s,
+                                %(raw_card_blob)s, %(card_types)s, %(card_subtypes)s,
+                                %(card_colors)s, %(card_color_identity)s, %(card_keywords)s,
+                                %(oracle_text)s, %(edhrec_rank)s, %(creature_power)s,
+                                %(creature_power_text)s, %(creature_toughness)s,
+                                %(creature_toughness_text)s
+                            ) ON CONFLICT (card_name) DO UPDATE SET
+                                cmc = EXCLUDED.cmc,
+                                mana_cost_text = EXCLUDED.mana_cost_text,
+                                mana_cost_jsonb = EXCLUDED.mana_cost_jsonb,
+                                raw_card_blob = EXCLUDED.raw_card_blob,
+                                card_types = EXCLUDED.card_types,
+                                card_subtypes = EXCLUDED.card_subtypes,
+                                card_colors = EXCLUDED.card_colors,
+                                card_color_identity = EXCLUDED.card_color_identity,
+                                card_keywords = EXCLUDED.card_keywords,
+                                oracle_text = EXCLUDED.oracle_text,
+                                edhrec_rank = EXCLUDED.edhrec_rank,
+                                creature_power = EXCLUDED.creature_power,
+                                creature_power_text = EXCLUDED.creature_power_text,
+                                creature_toughness = EXCLUDED.creature_toughness,
+                                creature_toughness_text = EXCLUDED.creature_toughness_text
+                            """,
+                        card,
+                    )
+                    imported_count += 1
+                except (psycopg.Error, ValueError, KeyError) as e:
+                    logger.error("Error importing card %s: %s", card.get("card_name", "unknown"), e)
+                    continue
+
+            conn.commit()
+
+        return {"imported": imported_count, "message": f"Imported {imported_count} cards"}
+
+    def import_tags(
+        self: APIResource,
+        *,
+        tags_data: list[dict[str, Any]],
+        **_: object,
+    ) -> dict[str, Any]:
+        """Import tags data from JSON.
+
+        Args:
+        ----
+            tags_data: List of tag records to import.
+
+        Returns:
+        -------
+            Dict with import results.
+
+        """
+        if not tags_data:
+            return {"imported": 0, "message": "No tags data provided"}
+
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            imported_count = 0
+            for tag in tags_data:
+                try:
+                    cursor.execute(
+                        "INSERT INTO magic.tags (tag) VALUES (%(tag)s) ON CONFLICT (tag) DO NOTHING",
+                        tag,
+                    )
+                    if cursor.rowcount > 0:
+                        imported_count += 1
+                except (psycopg.Error, ValueError, KeyError) as e:
+                    logger.error("Error importing tag %s: %s", tag.get("tag", "unknown"), e)
+                    continue
+
+            conn.commit()
+
+        return {"imported": imported_count, "message": f"Imported {imported_count} tags"}
+
+    def import_tag_hierarchy(
+        self: APIResource,
+        *,
+        tag_hierarchy_data: list[dict[str, Any]],
+        **_: object,
+    ) -> dict[str, Any]:
+        """Import tag relationships data from JSON.
+
+        Args:
+        ----
+            tag_hierarchy_data: List of tag relationship records to import.
+
+        Returns:
+        -------
+            Dict with import results.
+
+        """
+        if not tag_hierarchy_data:
+            return {"imported": 0, "message": "No tag hierarchy data provided"}
+
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            imported_count = 0
+            for relationship in tag_hierarchy_data:
+                try:
+                    cursor.execute(
+                        """
+                            INSERT INTO magic.tag_relationships (child_tag, parent_tag)
+                            VALUES (%(child_tag)s, %(parent_tag)s)
+                            ON CONFLICT (child_tag, parent_tag) DO NOTHING
+                            """,
+                        relationship,
+                    )
+                    if cursor.rowcount > 0:
+                        imported_count += 1
+                except (psycopg.Error, ValueError, KeyError) as e:
+                    logger.error(
+                        "Error importing tag relationship %s -> %s: %s",
+                        relationship.get("child_tag", "unknown"),
+                        relationship.get("parent_tag", "unknown"),
+                        e,
+                    )
+                    continue
+
+            conn.commit()
+
+        return {"imported": imported_count, "message": f"Imported {imported_count} tag relationships"}
+
+    def import_all(
+        self: APIResource,
+        *,
+        cards: list[dict[str, Any]] | None = None,
+        tags: list[dict[str, Any]] | None = None,
+        tag_hierarchy: list[dict[str, Any]] | None = None,
+        **_: object,
+    ) -> dict[str, Any]:
+        """Import all data (cards, tags, tag_hierarchy) from JSON.
+
+        Args:
+        ----
+            cards: List of card records to import.
+            tags: List of tag records to import.
+            tag_hierarchy: List of tag relationship records to import.
+
+        Returns:
+        -------
+            Dict with import results for all data types.
+
+        """
+        results = {}
+
+        if cards:
+            results["cards"] = self.import_cards(cards_data=cards)
+        else:
+            results["cards"] = {"imported": 0, "message": "No cards data provided"}
+
+        if tags:
+            results["tags"] = self.import_tags(tags_data=tags)
+        else:
+            results["tags"] = {"imported": 0, "message": "No tags data provided"}
+
+        if tag_hierarchy:
+            results["tag_hierarchy"] = self.import_tag_hierarchy(tag_hierarchy_data=tag_hierarchy)
+        else:
+            results["tag_hierarchy"] = {"imported": 0, "message": "No tag hierarchy data provided"}
+
+        return results
+
     def search(  # noqa: PLR0913
         self: APIResource,
         *,
