@@ -11,7 +11,7 @@ from api.api_resource import APIResource
 @pytest.fixture(scope="class")
 def mock_db_pool() -> Generator[MagicMock]:
     """Mock database connection pool for the entire test class."""
-    with patch("api.api_resource._make_pool") as mock_make_pool:
+    with patch("api.utils.db_utils.make_pool") as mock_make_pool:
         mock_pool = MagicMock()
         mock_make_pool.return_value = mock_pool
         yield mock_pool
