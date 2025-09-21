@@ -1369,7 +1369,13 @@
 
       // Apply initial theme immediately to prevent flash
       (function() {
-        const savedTheme = localStorage.getItem('theme') || 'light';
+        let savedTheme = 'light';
+        try {
+          const theme = localStorage.getItem('theme');
+          if (theme) savedTheme = theme;
+        } catch (e) {
+          // localStorage may be unavailable; fallback to default theme
+        }
         document.documentElement.setAttribute('data-theme', savedTheme);
       })();
 
