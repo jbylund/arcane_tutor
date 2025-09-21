@@ -6,7 +6,6 @@ import collections
 import copy
 import csv
 import datetime
-import hashlib
 import inspect
 import io
 import itertools
@@ -19,62 +18,26 @@ import re
 import secrets
 import time
 import urllib.parse
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from typing import cast as typecast
 from urllib.parse import urlparse
 
 import falcon
 import orjson
 import psycopg
-import psycopg.rows
-import psycopg.types.json
-import psycopg_pool
 import requests
 from cachetools import LRUCache, TTLCache, cached
 from psycopg import Connection
 
 from .parsing import generate_sql_query, parse_scryfall_query
 from .tagger_client import TaggerClient
+from .utils import db_utils, error_monitoring
 
-try:
-    from honeybadger import honeybadger
-except ImportError:
-    def honeybadger_error_handler(req: falcon.Request, oops: Exception) -> None:
-        """Handle an error with Honeybadger."""
-        del req
-        logger.error("Error handling request: %s", oops, exc_info=True)
-else:
-    honeybadger.configure(
-        api_key="hbp_mHbJs4KJAOeUhK17Ixr0AzDC0gx8Zt2WG6kH",
-        project_root=str(pathlib.Path(__file__).parent.parent),
-    )
-
-    def honeybadger_error_handler(req: falcon.Request, oops: Exception) -> None:
-        """Handle an error with Honeybadger."""
-        logger.error("Error handling request: %s", oops, exc_info=True)
-        honeybadger.notify(
-            exception=oops,
-            context={
-                "headers": req.headers,
-                "method": req.method,
-                "params": req.params,
-                "path": req.path,
-                "query_string": req.query_string,
-                "uri": req.uri,
-            },
-        )
+if TYPE_CHECKING:
+    import psycopg_pool
 
 
-def orjson_dumps(obj: object) -> str:
-    """Dump an object to a string using orjson."""
-    return orjson.dumps(obj).decode("utf-8")
-
-
-# Register for dumping (adapting Python -> DB)
-psycopg.types.json.set_json_dumps(dumps=orjson_dumps)
-psycopg.types.json.set_json_loads(loads=orjson.loads)
-
-logger = logging.getLogger("apiresource")
+logger = logging.getLogger(__name__)
 
 # pylint: disable=c-extension-no-member
 
@@ -106,63 +69,6 @@ def rewrap(query: str) -> str:
     return " ".join(query.strip().split())
 
 
-def _get_pg_creds() -> dict[str, str]:
-    """Get postgres credentials from the environment."""
-    mapping = {
-        "database": "dbname",
-    }
-    unmapped = {k[2:].lower(): v for k, v in os.environ.items() if k.startswith("PG")}
-    return {mapping.get(k, k): v for k, v in unmapped.items()}
-
-
-def _make_pool() -> psycopg_pool.ConnectionPool:
-    """Create and return a psycopg3 ConnectionPool for PostgreSQL connections."""
-
-    def configure_connection(conn: psycopg.Connection) -> None:
-        conn.row_factory = psycopg.rows.dict_row
-
-    creds = _get_pg_creds()
-    conninfo = " ".join(f"{k}={v}" for k, v in creds.items())
-    pool_args = {
-        "configure": configure_connection,
-        "conninfo": conninfo,
-        "max_size": 2,
-        "min_size": 1,
-        "open": True,
-    }
-    logger.info("Pool args: %s", pool_args)
-    return psycopg_pool.ConnectionPool(**pool_args)
-
-
-def get_migrations() -> list[dict[str, str]]:
-    """Get the migrations from the filesystem.
-
-    Returns:
-    -------
-        List[Dict[str, str]]: List of migration metadata dictionaries.
-
-    """
-    # generate migrations + their hashes
-    here = pathlib.Path(__file__).parent
-    migrations_dir = here / "db"
-    migrations = []
-    for dirname, _, child_files in migrations_dir.walk():
-        for ichild in sorted(child_files):
-            if not ichild.lower().endswith(".sql"):
-                continue
-            fullpath = dirname / ichild
-            with pathlib.Path(fullpath).open() as filehandle:
-                contents = filehandle.read().strip()
-            migrations.append(
-                {
-                    "file_contents": contents,
-                    "file_sha256": hashlib.sha256(contents.encode()).hexdigest(),
-                    "file_name": ichild,
-                },
-            )
-    return migrations
-
-
 def can_serialize(iobj: object) -> bool:
     """Check if an object is JSON serializable and not too large.
 
@@ -177,7 +83,7 @@ def can_serialize(iobj: object) -> bool:
     """
     max_json_object_length = 16_000
     try:
-        s = json.dumps(iobj)
+        s = orjson.dumps(iobj)
         return len(s) < max_json_object_length
     except TypeError:
         return False
@@ -193,7 +99,7 @@ class APIResource:
 
         Sets up the database connection pool and action mapping for the API.
         """
-        self._conn_pool: psycopg_pool.ConnectionPool = _make_pool()
+        self._conn_pool: psycopg_pool.ConnectionPool = db_utils.make_pool()
         self.action_map = {x: getattr(self, x) for x in dir(self) if not x.startswith("_")}
         self.action_map["index"] = self.index_html
         self._query_cache = LRUCache(maxsize=1_000)
@@ -260,7 +166,7 @@ class APIResource:
             raise
         except Exception as oops:
             logger.error("Error handling request: %s", oops, exc_info=True)
-            honeybadger_error_handler(req, oops)
+            error_monitoring.error_handler(req, oops)
             # walk back to the lowest frame...
             # file / function / locals (if possible)
             stack_info = []
@@ -316,7 +222,7 @@ class APIResource:
 
             def maybe_json_dump(v: object) -> object:
                 if isinstance(v, list | dict):
-                    return json.dumps(v, sort_keys=True)
+                    return orjson.dumps(v, option=orjson.OPT_SORT_KEYS).decode()
                 return v
 
             # need to make params hashable... but it might contain dicts/lists/...
@@ -330,13 +236,7 @@ class APIResource:
             if cached_val is not None:
                 return copy.deepcopy(cached_val)
 
-        # wrap params in json
-        def maybe_json(v: object) -> object:
-            if isinstance(v, list | dict):
-                return psycopg.types.json.Jsonb(v)
-            return v
-
-        params = {k: maybe_json(v) for k, v in params.items()}
+        params = {k: db_utils.maybe_json(v) for k, v in params.items()}
         query = " ".join(query.strip().split())
         explain_query = f"EXPLAIN (FORMAT JSON) {query}"
 
@@ -405,7 +305,7 @@ class APIResource:
         cache_file = "/data/api/foo.json"
         try:
             with pathlib.Path(cache_file).open() as f:
-                response = json.load(f)
+                response = orjson.load(f)
         except FileNotFoundError:
             logger.info("Cache miss!")
             response = self._session.get("https://api.scryfall.com/bulk-data", timeout=1).json()["data"]
@@ -413,7 +313,7 @@ class APIResource:
             oracle_cards_download_uri = by_type["oracle_cards"]["download_uri"]
             response = self._session.get(oracle_cards_download_uri, timeout=30).json()
             with pathlib.Path(cache_file).open("w") as f:
-                json.dump(response, f, indent=4, sort_keys=True)
+                orjson.dump(response, f, indent=4, option=orjson.OPT_SORT_KEYS).encode("utf-8")
         else:
             logger.info("Cache hit!")
         return response
@@ -439,7 +339,7 @@ class APIResource:
 
             cursor.execute("SELECT file_name, file_sha256 FROM migrations ORDER BY date_applied")
             applied_migrations = [dict(r) for r in cursor]
-            filesystem_migrations = get_migrations()
+            filesystem_migrations = db_utils.get_migrations()
 
             already_applied = set()
             for applied_migration, fs_migration in zip(applied_migrations, filesystem_migrations, strict=False):
@@ -831,7 +731,7 @@ class APIResource:
             List[Dict[str, str]]: List of migration metadata dictionaries.
 
         """
-        return get_migrations()
+        return db_utils.get_migrations()
 
     def get_common_card_types(self: APIResource, **_: object) -> list[dict[str, Any]]:
         """Get the common card types from the database."""
