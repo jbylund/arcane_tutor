@@ -18,16 +18,6 @@ class TestTagging:
         sig = inspect.signature(APIResource.update_tagged_cards)
         assert "tag" in sig.parameters
 
-    def test_fetch_cards_from_scryfall_function_exists(self) -> None:
-        """Test that _fetch_cards_from_scryfall method exists and is callable."""
-        # Test that the method exists and is callable
-        assert hasattr(APIResource, "_fetch_cards_from_scryfall")
-        assert callable(APIResource._fetch_cards_from_scryfall)
-
-        # Test that the method signature includes the required tag parameter
-        sig = inspect.signature(APIResource._fetch_cards_from_scryfall)
-        assert "tag" in sig.parameters
-
     def test_discover_tags_from_scryfall_function_exists(self) -> None:
         """Test that discover_tags_from_scryfall method exists and is callable."""
         assert hasattr(APIResource, "discover_tags_from_scryfall")
