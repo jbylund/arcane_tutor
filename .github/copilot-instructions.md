@@ -188,6 +188,11 @@ api/
 - **Test coverage**: Write tests for new functionality following existing test patterns in `api/tests/` and `api/parsing/tests/`
 - **Code formatting**: Always run `python -m ruff check --fix --unsafe-fixes` before committing
 - **Performance**: Use uv for dependency management when possible for faster builds
+- **Database migrations**: Never change a migration file `api/db/*.sql` that already exists on main
+- **Migration naming**: All migration files should be prefixed with YYYY-MM-DD-## (year, month, day, integer number) where the number is a sequence starting at 01 - this allows the addition of more than one migration per day
+- **Scryfall syntax**: Check the [Scryfall syntax guide](https://scryfall.com/docs/syntax) when unsure of what behavior should be
+- **Feature documentation**: For larger features add a document in `docs/changelog/` again prefixed with YYYY-MM-DD
+- **Test structure**: Prefer parameterized tests rather than looping over test cases within a test - this gives better developer visibility into where the issue is
 
 ### Development Workflow with Copilot
 1. **Setup environment**: Run `./.github/copilot-setup.sh` for automated setup
