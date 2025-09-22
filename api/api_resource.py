@@ -13,9 +13,7 @@ if True:  # imports
     import csv
     import datetime
     import inspect
-    import io
     import itertools
-    import json
     import logging
     import multiprocessing
     import os
@@ -317,10 +315,10 @@ class APIResource:
                 response = orjson.loads(f.read())
         except FileNotFoundError:
             logger.info("Cache miss!")
-            response = self._session.get("https://api.scryfall.com/bulk-data", timeout=1).json()["data"]
+            response = orjson.loads(self._session.get("https://api.scryfall.com/bulk-data", timeout=1).content)["data"]
             by_type = {r["type"]: r for r in response}
             oracle_cards_download_uri = by_type["oracle_cards"]["download_uri"]
-            response = self._session.get(oracle_cards_download_uri, timeout=30).json()
+            response = orjson.loads(self._session.get(oracle_cards_download_uri, timeout=30).content)
             with pathlib.Path(cache_file).open("w") as f:
                 f.write(
                     orjson.dumps(
@@ -493,73 +491,6 @@ class APIResource:
                 return result["sample_cards"]
             logger.error("Failed to import data: %s", result["message"])
             return None
-
-    def get_cards(
-        self: APIResource,
-        *,
-        min_name: str | None = None,
-        max_name: str | None = None,
-        limit: int = 2500,
-        **_: object,
-    ) -> list[dict[str, Any]]:
-        """Get cards by name range.
-
-        Args:
-        ----
-            min_name (Optional[str]): Minimum card name.
-            max_name (Optional[str]): Maximum card name.
-            limit (int): Maximum number of cards to return.
-
-        Returns:
-        -------
-            List[Dict[str, Any]]: List of card records.
-
-        """
-        return self._run_query(
-            query=self.read_sql("get_cards"),
-            params={
-                "min_name": min_name,
-                "max_name": max_name,
-                "limit": limit,
-            },
-        )["result"]
-
-    def get_cards_to_csv(
-        self: APIResource,
-        *,
-        min_name: str | None = None,
-        max_name: str | None = None,
-        limit: int = 2500,
-        falcon_response: falcon.Response | None = None,
-    ) -> None:
-        """Write cards as CSV to the Falcon response.
-
-        Args:
-        ----
-            min_name (Optional[str]): Minimum card name.
-            max_name (Optional[str]): Maximum card name.
-            limit (int): Maximum number of cards to return.
-            falcon_response (falcon.Response): The Falcon response to write to.
-
-        Raises:
-        ------
-            ValueError: If falcon_response is not provided.
-
-        """
-        if falcon_response is None:
-            msg = "falcon_response is required"
-            raise ValueError(msg)
-        raw_cards = self.get_cards(min_name=min_name, max_name=max_name, limit=limit)
-        falcon_response.content_type = "text/csv"
-
-        str_buffer = io.StringIO()
-        writer = csv.DictWriter(str_buffer, fieldnames=raw_cards[0].keys())
-        writer.writeheader()
-        writer.writerows(raw_cards)
-        str_buffer.seek(0)
-        val = str_buffer.getvalue()
-        falcon_response.body = val.encode("utf-8")
-
 
     def search(  # noqa: PLR0913
         self: APIResource,
@@ -812,7 +743,7 @@ class APIResource:
                     """,
                     {
                         "card_names": list(card_name_batch),
-                        "new_tag": json.dumps({tag: True}),
+                        "new_tag": orjson.dumps({tag: True}).decode("utf-8"),
                     },
                 )
                 updated_count += cursor.rowcount
@@ -1238,7 +1169,7 @@ class APIResource:
                 time.sleep(1 / 10)  # Rate limiting - 10 requests per second max
                 response = self._session.get(base_url, params=params, timeout=30)
                 response.raise_for_status()
-                data = response.json()
+                data = orjson.loads(response.content)
 
                 if "data" not in data:
                     break
