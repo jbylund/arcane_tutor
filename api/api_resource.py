@@ -49,6 +49,85 @@ DEFAULT_IMPORT_GUARD = multiprocessing.RLock()
 NOT_FOUND = 404
 
 
+def _convert_string_to_type(str_value: str, param_type: Any) -> Any:
+    """Convert a string value to the specified type.
+    
+    Args:
+        str_value: The string value to convert
+        param_type: The target type annotation
+        
+    Returns:
+        The converted value, or the original string if conversion fails/unsupported
+    """
+    # Handle special cases for no type annotation
+    if param_type in {inspect.Parameter.empty, Any, "object"}:
+        return str_value
+    
+    # Convert to boolean
+    if param_type is bool or str(param_type) == "<class 'bool'>" or param_type == "bool":
+        return str_value.lower() in ("true", "1", "yes", "on")
+    
+    # Convert to integer
+    if param_type is int or str(param_type) == "<class 'int'>" or param_type == "int":
+        try:
+            return int(str_value)
+        except ValueError:
+            return str_value  # Keep as string if conversion fails
+    
+    # Convert to float
+    if param_type is float or str(param_type) == "<class 'float'>" or param_type == "float":
+        try:
+            return float(str_value)
+        except ValueError:
+            return str_value  # Keep as string if conversion fails
+    
+    # For all other types (including str), keep as string
+    return str_value
+
+
+def make_type_converting_wrapper(func: callable) -> callable:
+    """Create a wrapper that converts string arguments to the types expected by the function.
+
+    Args:
+        func: The function to wrap with type conversion
+
+    Returns:
+        A new function that converts string arguments to match the function's signature
+    """
+    sig = inspect.signature(func)
+
+    def convert_args(**str_kwargs: str) -> dict[str, Any]:
+        """Convert string keyword arguments to match function signature types."""
+        converted_kwargs = {}
+
+        for param_name, param in sig.parameters.items():
+            if param_name in str_kwargs:
+                str_value = str_kwargs[param_name]
+                converted_kwargs[param_name] = _convert_string_to_type(str_value, param.annotation)
+            elif param_name not in ("self", "_"):
+                # Parameter not provided, use default if available
+                if param.default != inspect.Parameter.empty:
+                    converted_kwargs[param_name] = param.default
+
+        return converted_kwargs
+
+    def wrapper(**raw_kwargs: Any) -> Any:  # noqa: ANN401
+        """Wrapper function that converts arguments and calls the original function."""
+        # Filter out string parameters that need conversion
+        str_params = {k: v for k, v in raw_kwargs.items() if isinstance(v, str)}
+        non_str_params = {k: v for k, v in raw_kwargs.items() if not isinstance(v, str)}
+
+        # Convert string parameters
+        converted_params = convert_args(**str_params)
+
+        # Merge with non-string parameters (non-string params take precedence)
+        final_params = {**converted_params, **non_str_params}
+
+        return func(**final_params)
+
+    return wrapper
+
+
 @cached(cache=LRUCache(maxsize=10_000))
 def get_where_clause(query: str) -> tuple[str, dict]:
     """Generate SQL WHERE clause and parameters from a search query.
@@ -106,8 +185,14 @@ class APIResource:
         Sets up the database connection pool and action mapping for the API.
         """
         self._conn_pool: psycopg_pool.ConnectionPool = db_utils.make_pool()
-        self.action_map = {x: getattr(self, x) for x in dir(self) if not x.startswith("_")}
-        self.action_map["index"] = self.index_html
+        # Create action map with type-converting wrappers for all public methods
+        self.action_map = {}
+        for method_name in dir(self):
+            if not method_name.startswith("_"):
+                method = getattr(self, method_name)
+                if callable(method):
+                    self.action_map[method_name] = make_type_converting_wrapper(method)
+        self.action_map["index"] = make_type_converting_wrapper(self.index_html)
         self._query_cache = LRUCache(maxsize=1_000)
         self._session = requests.Session()
         self._import_guard: LockType = import_guard
