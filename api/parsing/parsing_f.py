@@ -25,6 +25,8 @@ from pyparsing import (
 )
 
 from .db_info import (
+    COLOR_ATTRIBUTES,
+    COLOR_NAME_TO_CODE,
     KNOWN_CARD_ATTRIBUTES,
     LEGALITY_ATTRIBUTES,
     MANA_ATTRIBUTES,
@@ -285,6 +287,16 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
 
     mana_value = mixed_mana_pattern.setParseAction(make_mana_value_node)
 
+    # Color value patterns - support both color names and letter combinations
+    # Color names: white, blue, black, red, green, colorless (case-insensitive)
+    color_word = make_regex_pattern(COLOR_NAME_TO_CODE.keys())
+
+    # Color letter pattern: any combination of w, u, b, r, g, c (case-insensitive)
+    color_letter_pattern = Regex(r"[wubrgcWUBRGC]+")
+
+    # Combined color value pattern
+    color_value = color_word | color_letter_pattern
+
     # Build the grammar with proper precedence
     expr = Forward()
 
@@ -309,6 +321,9 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     legality_attr_word = make_regex_pattern(LEGALITY_ATTRIBUTES)
     legality_attr_word.setParseAction(make_attribute_node)
 
+    color_attr_word = make_regex_pattern(COLOR_ATTRIBUTES)
+    color_attr_word.setParseAction(make_attribute_node)
+
     text_attr_word = make_regex_pattern(TEXT_ATTRIBUTES)
     text_attr_word.setParseAction(make_attribute_node)
 
@@ -331,6 +346,10 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     legality_condition = legality_attr_word + attrop + (quoted_string | string_value_word)
     legality_condition.setParseAction(make_binary_operator_node)
 
+    # Color condition: color attributes with color values (color:red, c:rg, id:wubr, etc.)
+    color_condition = color_attr_word + attrop + (color_value | quoted_string)
+    color_condition.setParseAction(make_binary_operator_node)
+
     # Text condition: text attributes compared with string values
     text_condition = text_attr_word + attrop + (quoted_string | string_value_word)
     text_condition.setParseAction(make_binary_operator_node)
@@ -341,12 +360,13 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
         (mana_attr_word + attrop + mana_attr_word) |
         (rarity_attr_word + attrop + rarity_attr_word) |
         (legality_attr_word + attrop + legality_attr_word) |
+        (color_attr_word + attrop + color_attr_word) |
         (text_attr_word + attrop + text_attr_word)
     )
     attr_attr_condition.setParseAction(make_binary_operator_node)
 
     # Combine all conditions with clear precedence - no more special cases needed
-    condition = mana_condition | rarity_condition | legality_condition | unified_numeric_comparison | text_condition | attr_attr_condition
+    condition = mana_condition | rarity_condition | legality_condition | color_condition | unified_numeric_comparison | text_condition | attr_attr_condition
 
     # Special rule for text attribute-colon-hyphenated-value to handle cases like "otag:dual-land" and "otag:40k-model"
     # Only text attributes should have hyphenated string values (not numeric, mana, rarity, or legality)

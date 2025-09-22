@@ -19,6 +19,7 @@ class ParserClass(StrEnum):
     MANA = "mana"           # Mana cost fields with special mana value parsing
     RARITY = "rarity"       # Rarity fields with string-to-numeric conversion
     LEGALITY = "legality"   # Format/legal fields with JSON handling
+    COLOR = "color"         # Color fields (card colors and color identity)
     TEXT = "text"           # Simple text fields (name, artist, oracle text)
 
 
@@ -45,8 +46,8 @@ class FieldInfo:
 
 DB_COLUMNS = [
     FieldInfo("card_artist", FieldType.TEXT, ["artist", "a"], ParserClass.TEXT),
-    FieldInfo("card_colors", FieldType.JSONB_OBJECT, ["color", "colors", "c"], ParserClass.TEXT),
-    FieldInfo("card_color_identity", FieldType.JSONB_OBJECT, ["color_identity", "coloridentity", "id", "identity"], ParserClass.TEXT),
+    FieldInfo("card_colors", FieldType.JSONB_OBJECT, ["color", "colors", "c"], ParserClass.COLOR),
+    FieldInfo("card_color_identity", FieldType.JSONB_OBJECT, ["color_identity", "coloridentity", "id", "identity"], ParserClass.COLOR),
     FieldInfo("card_keywords", FieldType.JSONB_OBJECT, ["keyword"], ParserClass.TEXT),
     FieldInfo("card_name", FieldType.TEXT, ["name"], ParserClass.TEXT),
     FieldInfo("card_subtypes", FieldType.JSONB_ARRAY, ["subtype", "subtypes"], ParserClass.TEXT),
@@ -80,6 +81,7 @@ DB_NAME_TO_FIELD_TYPE = {}
 MANA_ATTRIBUTES = set()
 RARITY_ATTRIBUTES = set()
 LEGALITY_ATTRIBUTES = set()
+COLOR_ATTRIBUTES = set()
 TEXT_ATTRIBUTES = set()
 
 for col in DB_COLUMNS:
@@ -106,6 +108,9 @@ for col in DB_COLUMNS:
     elif col.parser_class == ParserClass.LEGALITY:
         LEGALITY_ATTRIBUTES.add(col.db_column_name)
         LEGALITY_ATTRIBUTES.update(col.search_aliases)
+    elif col.parser_class == ParserClass.COLOR:
+        COLOR_ATTRIBUTES.add(col.db_column_name)
+        COLOR_ATTRIBUTES.update(col.search_aliases)
     elif col.parser_class == ParserClass.TEXT:
         TEXT_ATTRIBUTES.add(col.db_column_name)
         TEXT_ATTRIBUTES.update(col.search_aliases)
