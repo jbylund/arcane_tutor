@@ -248,16 +248,12 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     # Examples: {1}{G}, 1{G}, 2RR, W{U/R}, {2/W}G, etc.
     mixed_mana_pattern = Combine(OneOrMore(curly_mana_symbol | simple_mana_symbol))
 
-    # Legacy patterns for backwards compatibility
-    full_mana_pattern = Combine(OneOrMore(curly_mana_symbol))  # Pure braced notation
-    shorthand_mana_pattern = Regex(r"[0-9]*[WUBRGCXYZ]+[0-9WUBRGCXYZ]*")  # Pure shorthand
-
-    # Combined mana pattern - mixed notation takes precedence, then full, then shorthand
+    # Create ManaValueNode for mana cost strings
     def make_mana_value_node(tokens: list[str]) -> ManaValueNode:
         """Create a ManaValueNode for mana cost strings."""
         return ManaValueNode(tokens[0])
 
-    mana_value = (mixed_mana_pattern | full_mana_pattern | shorthand_mana_pattern).setParseAction(make_mana_value_node)
+    mana_value = mixed_mana_pattern.setParseAction(make_mana_value_node)
 
     # Build the grammar with proper precedence
     expr = Forward()
