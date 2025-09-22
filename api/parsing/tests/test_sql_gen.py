@@ -791,3 +791,54 @@ def test_semantically_invalid_queries_parse_but_fail_at_db_level(semantically_in
     # SQL should be generated successfully (it's the execution that would fail)
     assert isinstance(sql, str)
     assert isinstance(context, dict)
+
+
+@pytest.mark.parametrize(
+    argnames=("input_query", "should_parse"),
+    argvalues=[
+        # Test color word patterns
+        ("color:white", True),
+        ("color:blue", True),
+        ("color:black", True),
+        ("color:red", True),
+        ("color:green", True),
+        ("color:colorless", True),
+        # Test color letter patterns
+        ("color:w", True),
+        ("color:u", True),
+        ("color:b", True),
+        ("color:r", True),
+        ("color:g", True),
+        ("color:c", True),
+        ("color:wubr", True),
+        ("color:rg", True),
+        ("color:WUBRG", True),
+        # Test color identity aliases
+        ("id:red", True),
+        ("identity:wubr", True),
+        ("coloridentity:rg", True),
+        # Test mixed case color names
+        ("color:White", True),
+        ("color:BLUE", True),
+        ("color:Red", True),
+        # Test invalid color combinations should fail to parse (validation enforced by color parser)
+        ("color:invalid", False),  # Invalid color name should fail to parse
+        ("color:xyz", False),  # Invalid color name should fail to parse
+    ],
+)
+def test_color_parser_patterns(input_query: str, should_parse: bool) -> None:
+    """Test that color parser patterns work correctly."""
+    if should_parse:
+        # Should parse without raising an exception
+        parsed = parsing.parse_scryfall_query(input_query)
+        assert parsed is not None
+
+        # Should be able to generate SQL
+        context = {}
+        sql = parsed.to_sql(context)
+        assert isinstance(sql, str)
+        assert context  # Should have some parameters
+    else:
+        # Should raise a ValueError (which wraps ParseException)
+        with pytest.raises(ValueError, match="Failed to parse query"):
+            parsing.parse_scryfall_query(input_query)
