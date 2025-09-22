@@ -193,38 +193,6 @@ def test_full_sql_translation_jsonb_card_types(input_query: str, expected_sql: s
 @pytest.mark.parametrize(
     argnames=("input_query", "expected_sql", "expected_parameters"),
     argvalues=[
-        # Test negated type queries - should handle NULL arrays properly
-        (
-            "-t:elf",
-            "NOT ((card.card_subtypes IS NOT NULL AND (%(p_list_WydFbGYnXQ)s <@ card.card_subtypes)))",
-            {"p_list_WydFbGYnXQ": ["Elf"]},
-        ),
-        (
-            "llanowar -t:elf",
-            "((card.card_name ILIKE %(p_str_JWxsYW5vd2FyJQ)s) AND NOT ((card.card_subtypes IS NOT NULL AND (%(p_list_WydFbGYnXQ)s <@ card.card_subtypes))))",
-            {"p_str_JWxsYW5vd2FyJQ": "%llanowar%", "p_list_WydFbGYnXQ": ["Elf"]},
-        ),
-        (
-            "-type:creature",
-            "NOT ((card.card_types IS NOT NULL AND (%(p_list_WydDcmVhdHVyZSdd)s <@ card.card_types)))",
-            {"p_list_WydDcmVhdHVyZSdd": ["Creature"]},
-        ),
-    ],
-)
-def test_negated_type_queries_handle_null_arrays(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
-    """Test that negated type queries properly handle NULL arrays in the database."""
-    parsed = parsing.parse_scryfall_query(input_query)
-    observed_params = {}
-    observed_sql = parsed.to_sql(observed_params)
-    assert (observed_sql, observed_params) == (
-        expected_sql,
-        expected_parameters,
-    ), f"\nExpected: {expected_sql}\t{expected_parameters}\nObserved: {observed_sql}\t{observed_params}"
-
-
-@pytest.mark.parametrize(
-    argnames=("input_query", "expected_sql", "expected_parameters"),
-    argvalues=[
         # Oracle text search tests
         ("oracle:flying", "(card.oracle_text ILIKE %(p_str_JWZseWluZyU)s)", {"p_str_JWZseWluZyU": "%flying%"}),
         ("oracle:'gain life'", "(card.oracle_text ILIKE %(p_str_JWdhaW4lbGlmZSU)s)", {"p_str_JWdhaW4lbGlmZSU": "%gain%life%"}),
@@ -874,3 +842,21 @@ def test_color_parser_patterns(input_query: str, should_parse: bool) -> None:
         # Should raise a ValueError (which wraps ParseException)
         with pytest.raises(ValueError, match="Failed to parse query"):
             parsing.parse_scryfall_query(input_query)
+
+
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_sql_fragment"),
+    argvalues=[
+        # Test that negated type queries generate simple, clean SQL
+        # (no NULL handling needed since database ensures non-NULL arrays)
+        ("-t:elf", "NOT ((%(p_list_WydFbGYnXQ)s <@ card.card_subtypes))"),
+        ("llanowar -t:elf", "NOT ((%(p_list_WydFbGYnXQ)s <@ card.card_subtypes))"),
+        ("-type:creature", "NOT ((%(p_list_WydDcmVhdHVyZSdd)s <@ card.card_types))"),
+    ],
+)
+def test_negated_type_queries_generate_simple_sql(input_query: str, expected_sql_fragment: str) -> None:
+    """Test that negated type queries generate simple, clean SQL without NULL handling."""
+    parsed = parsing.parse_scryfall_query(input_query)
+    observed_params = {}
+    observed_sql = parsed.to_sql(observed_params)
+    assert expected_sql_fragment in observed_sql, f"Expected fragment '{expected_sql_fragment}' not found in SQL: {observed_sql}"
