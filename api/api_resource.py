@@ -49,40 +49,39 @@ DEFAULT_IMPORT_GUARD = multiprocessing.RLock()
 NOT_FOUND = 404
 
 
-def _convert_string_to_type(str_value: str, param_type: Any) -> Any:
+def _convert_string_to_type(str_value: str, param_type: Any) -> Any:  # noqa: ANN401
     """Convert a string value to the specified type.
-    
+
     Args:
         str_value: The string value to convert
         param_type: The target type annotation
-        
+
     Returns:
         The converted value, or the original string if conversion fails/unsupported
     """
     # Handle special cases for no type annotation
     if param_type in {inspect.Parameter.empty, Any, "object"}:
-        return str_value
-    
+        result = str_value
     # Convert to boolean
-    if param_type is bool or str(param_type) == "<class 'bool'>" or param_type == "bool":
-        return str_value.lower() in ("true", "1", "yes", "on")
-    
+    elif param_type is bool or str(param_type) == "<class 'bool'>" or param_type == "bool":
+        result = str_value.lower() in ("true", "1", "yes", "on")
     # Convert to integer
-    if param_type is int or str(param_type) == "<class 'int'>" or param_type == "int":
+    elif param_type is int or str(param_type) == "<class 'int'>" or param_type == "int":
         try:
-            return int(str_value)
+            result = int(str_value)
         except ValueError:
-            return str_value  # Keep as string if conversion fails
-    
+            result = str_value  # Keep as string if conversion fails
     # Convert to float
-    if param_type is float or str(param_type) == "<class 'float'>" or param_type == "float":
+    elif param_type is float or str(param_type) == "<class 'float'>" or param_type == "float":
         try:
-            return float(str_value)
+            result = float(str_value)
         except ValueError:
-            return str_value  # Keep as string if conversion fails
-    
-    # For all other types (including str), keep as string
-    return str_value
+            result = str_value  # Keep as string if conversion fails
+    else:
+        # For all other types (including str), keep as string
+        result = str_value
+
+    return result
 
 
 def make_type_converting_wrapper(func: callable) -> callable:
