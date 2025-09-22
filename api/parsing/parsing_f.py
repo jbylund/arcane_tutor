@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+import cachetools
 from pyparsing import (
     CaselessKeyword,
     Combine,
@@ -464,20 +465,38 @@ def parse_scryfall_query(query: str) -> Query:
     generic_query = parse_search_query(query)
     return to_scryfall_ast(generic_query)
 
+@cachetools.cached(cache={})
+def get_parse_expr() -> ParserElement:  # noqa: C901, PLR0915
+    """Create and return the main parser expression for Scryfall search queries.
 
-def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
-    """Parse a Scryfall search query string into an AST Query object.
+    This function builds a comprehensive parsing grammar that supports the full
+    Scryfall search syntax, including:
 
-    Raises ValueError if parsing fails.
+    - Attribute-value conditions (e.g., "cmc:3", "color:red", "type:creature")
+    - Comparison operators (>, <, >=, <=, =, !=, :)
+    - Boolean operators (AND, OR, NOT/-)
+    - Arithmetic expressions (e.g., "cmc+1", "power*2")
+    - Quoted strings and regular words
+    - Mana cost patterns (e.g., "{1}{G}", "WU", "{W/U}")
+    - Color values (names like "red" or letters like "rg")
+    - Grouped expressions with parentheses
+    - Negation of conditions and factors
+
+    The parser handles complex precedence rules where:
+    - Parentheses have highest precedence
+    - NOT/- negation applies to individual factors
+    - AND/OR operators group operands by type for n-ary operations
+    - Arithmetic expressions support chaining with left associativity
+    - Different attribute types have specialized value parsers
+
+    Returns:
+        ParserElement: The main expression parser that can parse complete
+            Scryfall search queries into an Abstract Syntax Tree (AST).
+
+    Note:
+        This function is cached to avoid rebuilding the complex grammar
+        on every call, improving performance for repeated parsing operations.
     """
-    if query is None or not query.strip():
-        # Return empty query
-        return Query(BinaryOperatorNode(AttributeNode("name"), ":", ""))
-
-    # Pre-process the query to handle implicit AND operations
-    # Convert "a b" to "a AND b" when b is not an operator
-    query = preprocess_implicit_and(query)
-
     # Create basic parsing elements using helper functions
     basic_parsers = create_basic_parsers()
     mana_parsers = create_mana_parsers()
@@ -604,6 +623,55 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     # The main expression: factors separated by AND/OR operators
     expr <<= factor + ZeroOrMore((operator_and | operator_or) + factor)
     expr.setParseAction(handle_operators)
+    return expr
+
+
+def parse_search_query(query: str) -> Query:
+    """Parse a search query string into a Query AST.
+
+    This function is the main entry point for parsing Scryfall-style search queries.
+    It handles the complete parsing pipeline including preprocessing, parsing, and
+    AST normalization.
+
+    The function performs the following steps:
+    1. Validates input and handles empty queries
+    2. Preprocesses the query to convert implicit AND operations to explicit ones
+    3. Uses the main parser expression to parse the query into tokens
+    4. Flattens nested operations to create canonical n-ary forms
+    5. Wraps the result in a Query AST node
+
+    Args:
+        query: The search query string to parse. Can be None or empty.
+
+    Returns:
+        Query: A Query AST node containing the parsed query structure.
+            For empty queries, returns a default query that searches for
+            empty name values.
+
+    Raises:
+        ValueError: If parsing fails due to syntax errors, invalid operators,
+            or other semantic issues. The error message includes context
+            about what was being parsed and where the error occurred.
+
+    Examples:
+        >>> parse_search_query("cmc:3")
+        Query(BinaryOperatorNode(AttributeNode("cmc"), ":", NumericValueNode(3)))
+
+        >>> parse_search_query("red AND creature")
+        Query(AndNode([BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("red")),
+                       BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("creature"))]))
+
+        >>> parse_search_query("")
+        Query(BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("")))
+    """
+    if query is None or not query.strip():
+        # Return empty query
+        return Query(BinaryOperatorNode(AttributeNode("name"), ":", ""))
+
+    # Pre-process the query to handle implicit AND operations
+    # Convert "a b" to "a AND b" when b is not an operator
+    query = preprocess_implicit_and(query)
+    expr = get_parse_expr()
 
     # Parse the query
     try:
