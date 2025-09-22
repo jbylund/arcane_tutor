@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS magic.cards (
     mana_cost_jsonb jsonb,
     raw_card_blob jsonb NOT NULL,
     card_types jsonb NOT NULL, -- list of strings (e.g. ["Creature", "Artifact"])
-    card_subtypes jsonb NOT NULL DEFAULT '[]'::jsonb, -- list of strings (e.g. ["Bird", "Knight"])
+    card_subtypes jsonb, -- list of strings (e.g. ["Bird", "Knight"])
     card_colors jsonb NOT NULL, -- object of color codes, e.g. {"R": true, "G": true}
     card_color_identity jsonb NOT NULL, -- object of color identity codes, e.g. {"R": true, "G": true}
     card_keywords jsonb NOT NULL, -- object of keywords, e.g. {"Trample": true, "Flying": true}
