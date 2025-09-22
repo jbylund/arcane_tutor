@@ -842,3 +842,21 @@ def test_color_parser_patterns(input_query: str, should_parse: bool) -> None:
         # Should raise a ValueError (which wraps ParseException)
         with pytest.raises(ValueError, match="Failed to parse query"):
             parsing.parse_scryfall_query(input_query)
+
+
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_sql_fragment"),
+    argvalues=[
+        # Test that negated type queries generate simple, clean SQL
+        # (no NULL handling needed since database ensures non-NULL arrays)
+        ("-t:elf", "NOT ((%(p_list_WydFbGYnXQ)s <@ card.card_subtypes))"),
+        ("llanowar -t:elf", "NOT ((%(p_list_WydFbGYnXQ)s <@ card.card_subtypes))"),
+        ("-type:creature", "NOT ((%(p_list_WydDcmVhdHVyZSdd)s <@ card.card_types))"),
+    ],
+)
+def test_negated_type_queries_generate_simple_sql(input_query: str, expected_sql_fragment: str) -> None:
+    """Test that negated type queries generate simple, clean SQL without NULL handling."""
+    parsed = parsing.parse_scryfall_query(input_query)
+    observed_params = {}
+    observed_sql = parsed.to_sql(observed_params)
+    assert expected_sql_fragment in observed_sql, f"Expected fragment '{expected_sql_fragment}' not found in SQL: {observed_sql}"

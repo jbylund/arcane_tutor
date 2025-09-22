@@ -396,8 +396,8 @@ class TestAPIResourceDataProcessing(unittest.TestCase):
 
         assert result is not None
         assert result["card_types"] == ["Instant"]
-        # card_subtypes key is removed when None, so it shouldn't be in the result
-        assert "card_subtypes" not in result
+        # card_subtypes is now always present, set to empty array when no subtypes
+        assert result["card_subtypes"] == []
         assert result["card_colors"] == {"R": True}
         assert result["card_color_identity"] == {"R": True}
         assert result["card_keywords"] == {"haste": True}
