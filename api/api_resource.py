@@ -305,7 +305,7 @@ class APIResource:
         cache_file = "/data/api/foo.json"
         try:
             with pathlib.Path(cache_file).open() as f:
-                response = orjson.load(f)
+                response = orjson.loads(f.read())
         except FileNotFoundError:
             logger.info("Cache miss!")
             response = self._session.get("https://api.scryfall.com/bulk-data", timeout=1).json()["data"]
@@ -313,7 +313,12 @@ class APIResource:
             oracle_cards_download_uri = by_type["oracle_cards"]["download_uri"]
             response = self._session.get(oracle_cards_download_uri, timeout=30).json()
             with pathlib.Path(cache_file).open("w") as f:
-                orjson.dump(response, f, indent=4, option=orjson.OPT_SORT_KEYS).encode("utf-8")
+                f.write(
+                    orjson.dumps(
+                        response,
+                        option=orjson.OPT_SORT_KEYS | orjson.OPT_INDENT_2,
+                    ).decode("utf-8"),
+                )
         else:
             logger.info("Cache hit!")
         return response
@@ -1300,7 +1305,7 @@ class APIResource:
                 # Load cards into staging table using COPY for efficiency
                 with cursor.copy(f"COPY {staging_table_name} (card_blob) FROM STDIN WITH (FORMAT csv, HEADER false)") as copy_filehandle:
                     writer = csv.writer(copy_filehandle, quoting=csv.QUOTE_ALL)
-                    writer.writerows([orjson.dumps(card).decode("utf-8")] for card in cards)
+                    writer.writerows([orjson.dumps(card, option=orjson.OPT_SORT_KEYS).decode("utf-8")] for card in cards)
 
                 # Get random sample before transfer (up to 10 cards)
                 cursor.execute(f"SELECT card_blob FROM {staging_table_name} ORDER BY RANDOM() LIMIT 10")
