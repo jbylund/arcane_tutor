@@ -1303,6 +1303,12 @@ class APIResource:
                 "message": "No cards provided for loading",
             }
 
+        # TODO:
+        # this is a little bit of a spray and pray method
+        # what I want to do is implement a priority ordering
+        # for cards, so that we import only one card of each name
+        # but we use frame, printing time, etc. to get the best instance
+        # of that card (likely the one with the highest quality artwork)
         cards = list(filter(None, (self._preprocess_card(icard) for icard in cards)))
 
         if not cards:
