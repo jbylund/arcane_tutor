@@ -12,6 +12,7 @@ if True:  # imports
     import copy
     import csv
     import datetime
+    import functools
     import inspect
     import itertools
     import logging
@@ -47,6 +48,91 @@ logger = logging.getLogger(__name__)
 # pylint: disable=c-extension-no-member
 DEFAULT_IMPORT_GUARD = multiprocessing.RLock()
 NOT_FOUND = 404
+
+
+def _convert_string_to_type(str_value: str, param_type: Any) -> Any:  # noqa: ANN401
+    """Convert a string value to the specified type.
+
+    Args:
+        str_value: The string value to convert
+        param_type: The target type annotation
+
+    Returns:
+        The converted value, or the original string if conversion fails/unsupported
+    """
+    # Handle special cases for no type annotation
+    if param_type in {inspect.Parameter.empty, Any, "object"}:
+        result = str_value
+    # Convert to boolean
+    elif param_type is bool or str(param_type) == "<class 'bool'>" or param_type == "bool":
+        result = str_value.lower() in ("true", "1", "yes", "on")
+    # Convert to integer
+    elif param_type is int or str(param_type) == "<class 'int'>" or param_type == "int":
+        try:
+            result = int(str_value)
+        except ValueError:
+            result = str_value  # Keep as string if conversion fails
+    # Convert to float
+    elif param_type is float or str(param_type) == "<class 'float'>" or param_type == "float":
+        try:
+            result = float(str_value)
+        except ValueError:
+            result = str_value  # Keep as string if conversion fails
+    else:
+        # For all other types (including str), keep as string
+        result = str_value
+
+    return result
+
+
+def make_type_converting_wrapper(func: callable) -> callable:
+    """Create a wrapper that converts string arguments to the types expected by the function.
+
+    Args:
+        func: The function to wrap with type conversion
+
+    Returns:
+        A new function that converts string arguments to match the function's signature
+    """
+    sig = inspect.signature(func)
+
+    # Check if function needs type conversion wrapper
+    # If signature has no parameters or only has 'self', return function as-is
+    params = [p for name, p in sig.parameters.items() if name not in ("self", "_")]
+    if not params:
+        return func
+
+    def convert_args(**str_kwargs: str) -> dict[str, Any]:
+        """Convert string keyword arguments to match function signature types."""
+        converted_kwargs = {}
+
+        for param_name, param in sig.parameters.items():
+            if param_name in str_kwargs:
+                str_value = str_kwargs[param_name]
+                converted_kwargs[param_name] = _convert_string_to_type(str_value, param.annotation)
+            elif param_name not in ("self", "_"):
+                # Parameter not provided, use default if available
+                if param.default != inspect.Parameter.empty:
+                    converted_kwargs[param_name] = param.default
+
+        return converted_kwargs
+
+    def wrapper(**raw_kwargs: Any) -> Any:  # noqa: ANN401
+        """Wrapper function that converts arguments and calls the original function."""
+        # Filter out string parameters that need conversion
+        str_params = {k: v for k, v in raw_kwargs.items() if isinstance(v, str)}
+        non_str_params = {k: v for k, v in raw_kwargs.items() if not isinstance(v, str)}
+
+        # Convert string parameters
+        converted_params = convert_args(**str_params)
+
+        # Merge with non-string parameters (non-string params take precedence)
+        final_params = {**converted_params, **non_str_params}
+
+        return func(**final_params)
+
+    # Use functools.update_wrapper to preserve original function metadata
+    return functools.update_wrapper(wrapper, func)
 
 
 @cached(cache=LRUCache(maxsize=10_000))
@@ -106,8 +192,15 @@ class APIResource:
         Sets up the database connection pool and action mapping for the API.
         """
         self._conn_pool: psycopg_pool.ConnectionPool = db_utils.make_pool()
-        self.action_map = {x: getattr(self, x) for x in dir(self) if not x.startswith("_")}
-        self.action_map["index"] = self.index_html
+        # Create action map with type-converting wrappers for all public methods
+        self.action_map = {}
+        for method_name in dir(self):
+            if method_name.startswith("_"):
+                continue
+            method = getattr(self, method_name)
+            if callable(method):
+                self.action_map[method_name] = make_type_converting_wrapper(method)
+        self.action_map["index"] = make_type_converting_wrapper(self.index_html)
         self._query_cache = LRUCache(maxsize=1_000)
         self._session = requests.Session()
         self._import_guard: LockType = import_guard
@@ -200,7 +293,82 @@ class APIResource:
 
     def _raise_not_found(self: APIResource, **_: object) -> None:
         """Raise a Falcon HTTPNotFound error with available routes."""
-        raise falcon.HTTPNotFound(title="Not Found", description={"routes": {k: v.__doc__ for k, v in self.action_map.items()}})
+        routes = {}
+
+        for endpoint_name, wrapped_func in self.action_map.items():
+            # Get the original function from the wrapper
+            original_func = wrapped_func.__wrapped__ if hasattr(wrapped_func, "__wrapped__") else wrapped_func
+
+            # Get function signature
+            sig = inspect.signature(original_func)
+
+            # Extract docstring
+            doc = original_func.__doc__ or ""
+
+            # Parse arguments
+            args = []
+            kwargs = {}
+
+            for param_name, param in sig.parameters.items():
+                if param_name.startswith("_"):
+                    continue
+                if param_name in ("self", "falcon_response"):
+                    continue
+
+                param_info = {
+                    "name": param_name,
+                    "type": self._get_type_name(param.annotation),
+                }
+
+                if param.default != inspect.Parameter.empty:
+                    # It's a keyword argument with default
+                    kwargs[param_name] = {
+                        "type": self._get_type_name(param.annotation),
+                        "default": param.default,
+                    }
+                else:
+                    # It's a positional argument
+                    args.append(param_info)
+
+            routes[endpoint_name] = {
+                "doc": doc,
+                "args": args,
+                "kwargs": kwargs,
+            }
+
+        raise falcon.HTTPNotFound(
+            title="Not Found",
+            description={
+                "routes": routes,
+            },
+        )
+
+    def _get_type_name(self: APIResource, annotation: Any) -> str:  # noqa: ANN401
+        """Convert a type annotation to a readable string.
+
+        Args:
+            annotation: The type annotation to convert
+
+        Returns:
+            A string representation of the type
+        """
+        if annotation == inspect.Parameter.empty:
+            return "Any"
+
+        # Handle generic types and complex annotations
+        if hasattr(annotation, "__name__"):
+            return annotation.__name__
+        if annotation is None:
+            return "None"
+        if hasattr(annotation, "__origin__"):
+            # Handle generic types like List[str], Dict[str, int], etc.
+            origin = annotation.__origin__
+            if hasattr(origin, "__name__"):
+                return origin.__name__
+            return str(origin)
+
+        # Fallback to string representation
+        return str(annotation)
 
     def _run_query(
         self: APIResource,

@@ -258,8 +258,15 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
         mock_resp = MagicMock()
         mock_resp.complete = False
 
-        # Mock search method to raise TypeError
-        with patch.object(self.api_resource, "search", side_effect=TypeError("Invalid parameter")):
+        # Create a mock function that will raise TypeError when called with wrong args
+        def mock_action_that_raises_type_error(**kwargs: Any) -> Never:
+            # This simulates a function that expects specific argument types
+            # and fails even after our type conversion
+            msg = "Invalid parameter type after conversion"
+            raise TypeError(msg)
+
+        # Patch the action_map directly to include our mock
+        with patch.object(self.api_resource, "action_map", {"search": mock_action_that_raises_type_error}):
             with pytest.raises(falcon.HTTPBadRequest):
                 self.api_resource._handle(mock_req, mock_resp)
 
