@@ -297,7 +297,7 @@ class APIResource:
 
         for endpoint_name, wrapped_func in self.action_map.items():
             # Get the original function from the wrapper
-            original_func = wrapped_func.__wrapped__ if hasattr(wrapped_func, '__wrapped__') else wrapped_func
+            original_func = wrapped_func.__wrapped__ if hasattr(wrapped_func, "__wrapped__") else wrapped_func
 
             # Get function signature
             sig = inspect.signature(original_func)
@@ -317,14 +317,14 @@ class APIResource:
 
                 param_info = {
                     "name": param_name,
-                    "type": self._get_type_name(param.annotation)
+                    "type": self._get_type_name(param.annotation),
                 }
 
                 if param.default != inspect.Parameter.empty:
                     # It's a keyword argument with default
                     kwargs[param_name] = {
                         "type": self._get_type_name(param.annotation),
-                        "default": param.default
+                        "default": param.default,
                     }
                 else:
                     # It's a positional argument
@@ -333,7 +333,7 @@ class APIResource:
             routes[endpoint_name] = {
                 "doc": doc,
                 "args": args,
-                "kwargs": kwargs
+                "kwargs": kwargs,
             }
 
         raise falcon.HTTPNotFound(
@@ -343,7 +343,7 @@ class APIResource:
             },
         )
 
-    def _get_type_name(self: APIResource, annotation: Any) -> str:
+    def _get_type_name(self: APIResource, annotation: Any) -> str:  # noqa: ANN401
         """Convert a type annotation to a readable string.
 
         Args:
@@ -356,14 +356,14 @@ class APIResource:
             return "Any"
 
         # Handle generic types and complex annotations
-        if hasattr(annotation, '__name__'):
+        if hasattr(annotation, "__name__"):
             return annotation.__name__
-        elif annotation is None:
+        if annotation is None:
             return "None"
-        elif hasattr(annotation, '__origin__'):
+        if hasattr(annotation, "__origin__"):
             # Handle generic types like List[str], Dict[str, int], etc.
             origin = annotation.__origin__
-            if hasattr(origin, '__name__'):
+            if hasattr(origin, "__name__"):
                 return origin.__name__
             return str(origin)
 
