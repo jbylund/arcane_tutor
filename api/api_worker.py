@@ -14,8 +14,9 @@ import orjson
 # Set up a logger for this module
 logger = logging.getLogger(__name__)
 
-
+DEFAULT_IMPORT_GUARD = multiprocessing.RLock()
 ALL_INTERFACES = "0.0.0.0"  # noqa: S104
+
 
 def json_error_serializer(request: falcon.Request, response: falcon.Response, exception: falcon.HTTPError) -> None:
     """An error serializer that formats Falcon HTTP errors as JSON responses.
@@ -39,21 +40,33 @@ class ApiWorker(multiprocessing.Process):
     the API server in its own process, allowing for parallelism and isolation.
     """
 
-    def __init__(self, *, host: str = ALL_INTERFACES, port: int = 8080, exit_flag: multiprocessing.Event | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        host: str = ALL_INTERFACES,
+        port: int = 8080,
+        exit_flag: multiprocessing.Event | None = None,
+        debug: bool = False,
+        import_guard: multiprocessing.RLock = DEFAULT_IMPORT_GUARD,
+    ) -> None:
         """Initialize the API worker process.
 
         Args:
             host (str): The host address to bind the server to. Defaults to ALL_INTERFACES.
             port (int): The port to listen on. Defaults to 8080.
             exit_flag (multiprocessing.Event | None): An optional event to signal process exit.
+            import_guard (multiprocessing.RLock): An optional lock to synchronize imports.
+            debug (bool): Whether to run in debug mode.
         """
         super().__init__()
         self.host = host
         self.port = port
         self.exit_flag = exit_flag
+        self.import_guard = import_guard
+        self.debug = debug
 
     @classmethod
-    def get_api(cls: type[ApiWorker]) -> falcon.App:
+    def get_api(cls: type[ApiWorker], import_guard: multiprocessing.Lock) -> falcon.App:
         """Create and configure the Falcon API application.
 
         Returns:
@@ -71,7 +84,9 @@ class ApiWorker(multiprocessing.Process):
             ],
         )
         api.set_error_serializer(json_error_serializer)  # Use custom JSON error serializer
-        sink = APIResource()  # Create the main API resource
+        sink = APIResource(
+            import_guard=import_guard,
+        )  # Create the main API resource
         api.add_sink(sink._handle, prefix="/")  # Route all requests to the sink handler
 
         json_handler = falcon.media.JSONHandler(
@@ -97,7 +112,7 @@ class ApiWorker(multiprocessing.Process):
         logging.info("Starting worker with pid %d", os.getpid())
         try:
             import bjoern  # noqa: PLC0415
-            app = self.get_api()  # Get the Falcon app
+            app = self.get_api(import_guard=self.import_guard)  # Get the Falcon app
             bjoern.run(
                 wsgi_app=app,
                 host=self.host,

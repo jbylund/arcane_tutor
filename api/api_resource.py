@@ -2,46 +2,54 @@
 
 from __future__ import annotations
 
-import collections
-import copy
-import csv
-import datetime
-import inspect
-import io
-import itertools
-import json
-import logging
-import os
-import pathlib
-import random
-import re
-import secrets
-import time
-import urllib.parse
-from typing import TYPE_CHECKING, Any
-from typing import cast as typecast
-from urllib.parse import urlparse
-
-import falcon
-import orjson
-import psycopg
-import requests
-from cachetools import LRUCache, TTLCache, cached
-from psycopg import Connection
-
-from .parsing import generate_sql_query, parse_scryfall_query
-from .tagger_client import TaggerClient
-from .utils import db_utils, error_monitoring
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    import psycopg_pool
+    from multiprocessing.synchronize import RLock as LockType
+
+if True:  # imports
+    import collections
+    import copy
+    import csv
+    import datetime
+    import inspect
+    import io
+    import itertools
+    import json
+    import logging
+    import multiprocessing
+    import os
+    import pathlib
+    import random
+    import re
+    import secrets
+    import time
+    import urllib.parse
+    from typing import Any
+    from typing import cast as typecast
+    from urllib.parse import urlparse
+
+    import falcon
+    import orjson
+    import psycopg
+    import requests
+    from cachetools import LRUCache, TTLCache, cached
+    from psycopg import Connection
+
+    from .parsing import generate_sql_query, parse_scryfall_query
+    from .tagger_client import TaggerClient
+    from .utils import db_utils, error_monitoring
+
+    if TYPE_CHECKING:
+        import psycopg_pool
 
 
 logger = logging.getLogger(__name__)
 
 # pylint: disable=c-extension-no-member
-
+DEFAULT_IMPORT_GUARD = multiprocessing.RLock()
 NOT_FOUND = 404
+
 
 @cached(cache=LRUCache(maxsize=10_000))
 def get_where_clause(query: str) -> tuple[str, dict]:
@@ -94,7 +102,7 @@ def can_serialize(iobj: object) -> bool:
 class APIResource:
     """Class implementing request handling for our simple API."""
 
-    def __init__(self: APIResource) -> None:
+    def __init__(self: APIResource, *, import_guard: LockType = DEFAULT_IMPORT_GUARD) -> None:
         """Initialize an APIResource object, set up connection pool and action map.
 
         Sets up the database connection pool and action mapping for the API.
@@ -104,6 +112,7 @@ class APIResource:
         self.action_map["index"] = self.index_html
         self._query_cache = LRUCache(maxsize=1_000)
         self._session = requests.Session()
+        self._import_guard: LockType = import_guard
 
         version = datetime.datetime.now(tz=datetime.UTC).strftime("%Y%m%d")
         version = f"magic-api/{version}"
@@ -325,52 +334,54 @@ class APIResource:
 
     def setup_schema(self: APIResource, *_: object, **__: object) -> None:
         """Set up the database schema and apply migrations as needed."""
-        # read migrations from the db dir...
-        # if any already applied migrations differ from what we want
-        # to apply then drop everything
-        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
-            cursor.execute(
-                """CREATE TABLE IF NOT EXISTS migrations (
-                    file_name text not null,
-                    file_sha256 text not null,
-                    date_applied timestamp default now(),
-                    file_contents text not null
-                )""",
-            )
-            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_migrations_filename ON migrations (file_name)")
-            cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_migrations_file_sha256 ON migrations USING HASH (file_sha256)",
-            )
+        filesystem_migrations = db_utils.get_migrations()
 
-            cursor.execute("SELECT file_name, file_sha256 FROM migrations ORDER BY date_applied")
-            applied_migrations = [dict(r) for r in cursor]
-            filesystem_migrations = db_utils.get_migrations()
-
-            already_applied = set()
-            for applied_migration, fs_migration in zip(applied_migrations, filesystem_migrations, strict=False):
-                if applied_migration.items() <= fs_migration.items():
-                    already_applied.add(applied_migration["file_sha256"])
-                else:
-                    already_applied.clear()
-                    cursor.execute("DELETE FROM migrations")
-                    cursor.execute("DROP SCHEMA IF EXISTS magic CASCADE")
-                    conn.commit()
-
-            for imigration in filesystem_migrations:
-                file_sha256 = imigration["file_sha256"]
-                if file_sha256 in already_applied:
-                    logger.info("%s was already applied...", imigration["file_name"])
-                    continue
-                logger.info("Applying %s ...", imigration["file_name"])
-                cursor.execute(imigration["file_contents"])
+        with self._import_guard:  # noqa: SIM117
+            # read migrations from the db dir...
+            # if any already applied migrations differ from what we want
+            # to apply then drop everything
+            with self._conn_pool.connection() as conn, conn.cursor() as cursor:
                 cursor.execute(
-                    """
-                        INSERT INTO migrations
-                            (  file_name  ,   file_sha256  ,   file_contents  ) VALUES
-                            (%(file_name)s, %(file_sha256)s, %(file_contents)s)""",
-                    imigration,
+                    """CREATE TABLE IF NOT EXISTS migrations (
+                        file_name text not null,
+                        file_sha256 text not null,
+                        date_applied timestamp default now(),
+                        file_contents text not null
+                    )""",
                 )
-                conn.commit()
+                cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_migrations_filename ON migrations (file_name)")
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_migrations_file_sha256 ON migrations USING HASH (file_sha256)",
+                )
+
+                cursor.execute("SELECT file_name, file_sha256 FROM migrations ORDER BY date_applied")
+                applied_migrations = [dict(r) for r in cursor]
+
+                already_applied = set()
+                for applied_migration, fs_migration in zip(applied_migrations, filesystem_migrations, strict=False):
+                    if applied_migration.items() <= fs_migration.items():
+                        already_applied.add(applied_migration["file_sha256"])
+                    else:
+                        already_applied.clear()
+                        cursor.execute("DELETE FROM migrations")
+                        cursor.execute("DROP SCHEMA IF EXISTS magic CASCADE")
+                        conn.commit()
+
+                for imigration in filesystem_migrations:
+                    file_sha256 = imigration["file_sha256"]
+                    if file_sha256 in already_applied:
+                        logger.info("%s was already applied...", imigration["file_name"])
+                        continue
+                    logger.info("Applying %s ...", imigration["file_name"])
+                    cursor.execute(imigration["file_contents"])
+                    cursor.execute(
+                        """
+                            INSERT INTO migrations
+                                (  file_name  ,   file_sha256  ,   file_contents  ) VALUES
+                                (%(file_name)s, %(file_sha256)s, %(file_contents)s)""",
+                        imigration,
+                    )
+                    conn.commit()
 
     def _get_cards_to_insert(self: APIResource) -> list[dict[str, Any]]:
         """Get the cards to insert into the database."""
@@ -450,33 +461,38 @@ class APIResource:
     def import_data(self: APIResource, **_: object) -> None:
         """Import data from Scryfall and insert into the database."""
         if self._setup_complete():
+            # check without taking the lock
+            # so the majority of the time we will never have to take the lock
             return None
 
-        self.setup_schema()
+        with self._import_guard:
+            if self._setup_complete():
+                return None
+            self.setup_schema()
 
-        to_insert = self._get_cards_to_insert()
+            to_insert = self._get_cards_to_insert()
 
-        before = time.monotonic()
+            before = time.monotonic()
 
-        # Use the consolidated loading method
-        result = self._load_cards_with_staging(to_insert)
+            # Use the consolidated loading method
+            result = self._load_cards_with_staging(to_insert)
 
-        after_transfer = time.monotonic()
+            after_transfer = time.monotonic()
 
-        if result["status"] == "success":
-            total_time = after_transfer - before
-            rate = len(to_insert) / total_time if total_time > 0 else 0
-            logger.info(
-                "Loaded %d cards in %.2f seconds, rate: %.2f cards/s...",
-                result["cards_loaded"],
-                total_time,
-                rate,
-            )
+            if result["status"] == "success":
+                total_time = after_transfer - before
+                rate = len(to_insert) / total_time if total_time > 0 else 0
+                logger.info(
+                    "Loaded %d cards in %.2f seconds, rate: %.2f cards/s...",
+                    result["cards_loaded"],
+                    total_time,
+                    rate,
+                )
 
-            # Return the sample cards as before
-            return result["sample_cards"]
-        logger.error("Failed to import data: %s", result["message"])
-        return None
+                # Return the sample cards as before
+                return result["sample_cards"]
+            logger.error("Failed to import data: %s", result["message"])
+            return None
 
     def get_cards(
         self: APIResource,
@@ -1206,7 +1222,11 @@ class APIResource:
         """
         # Add standard filters for paper format and format legality
         # Wrap original query in parentheses to ensure proper filter application
-        filters = ["game:paper", "(f:m or f:l or f:c or f:v)"]
+        filters = [
+            "(f:m or f:l or f:c or f:v)",
+            "game:paper",
+            "unique:prints",
+        ]
         full_query = f"({query}) {' '.join(filters)}"
 
         base_url = "https://api.scryfall.com/cards/search"
