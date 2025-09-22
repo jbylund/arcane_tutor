@@ -23,7 +23,15 @@ from pyparsing import (
     oneOf,
 )
 
-from .db_info import KNOWN_CARD_ATTRIBUTES, NON_NUMERIC_ATTRIBUTES, NUMERIC_ATTRIBUTES
+from .db_info import (
+    KNOWN_CARD_ATTRIBUTES,
+    LEGALITY_ATTRIBUTES,
+    MANA_ATTRIBUTES,
+    NON_NUMERIC_ATTRIBUTES,
+    NUMERIC_ATTRIBUTES,
+    RARITY_ATTRIBUTES,
+    TEXT_ATTRIBUTES,
+)
 from .nodes import (
     AndNode,
     AttributeNode,
@@ -269,41 +277,59 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     arithmetic_expr <<= arithmetic_term + arithmetic_op + arithmetic_term + ZeroOrMore(arithmetic_op + arithmetic_term)
     arithmetic_expr.setParseAction(make_chained_arithmetic)
 
+    # Create attribute parsers for each parser class - eliminates the need for special cases
+    mana_attr_word = Regex("|".join(sorted(MANA_ATTRIBUTES, key=len, reverse=True)), flags=re.IGNORECASE)
+    mana_attr_word.setParseAction(make_attribute_node)
+
+    rarity_attr_word = Regex("|".join(sorted(RARITY_ATTRIBUTES, key=len, reverse=True)), flags=re.IGNORECASE)
+    rarity_attr_word.setParseAction(make_attribute_node)
+
+    legality_attr_word = Regex("|".join(sorted(LEGALITY_ATTRIBUTES, key=len, reverse=True)), flags=re.IGNORECASE)
+    legality_attr_word.setParseAction(make_attribute_node)
+
+    text_attr_word = Regex("|".join(sorted(TEXT_ATTRIBUTES, key=len, reverse=True)), flags=re.IGNORECASE)
+    text_attr_word.setParseAction(make_attribute_node)
+
     # Unified numeric comparison rule: handles all combinations of arithmetic expressions, numeric attributes, and literals
     # This consolidates the previous arithmetic_comparison and numeric_condition rules
     unified_numeric_comparison = (arithmetic_expr | numeric_attr_word | literal_number) + attrop + (arithmetic_expr | numeric_attr_word | literal_number)
     unified_numeric_comparison.setParseAction(make_binary_operator_node)
 
-    # Attribute-to-attribute comparison should be between same types
-    # Non-numeric to non-numeric (numeric comparisons are now handled by unified_numeric_comparison)
-    non_numeric_attr_attr_condition = non_numeric_attr_word + attrop + non_numeric_attr_word
-    non_numeric_attr_attr_condition.setParseAction(make_binary_operator_node)
-
-    # Non-numeric attributes compared with string values
-    non_numeric_condition = non_numeric_attr_word + attrop + (quoted_string | string_value_word)
-    non_numeric_condition.setParseAction(make_binary_operator_node)
-
-    # Special case for rarity attributes with string values (rarity:rare, r:common, etc.)
-    rarity_attr = Regex(r"\b(rarity|r)\b", flags=re.IGNORECASE)
-    rarity_attr.setParseAction(make_attribute_node)
-    rarity_condition = rarity_attr + attrop + (quoted_string | string_value_word)
-    rarity_condition.setParseAction(make_binary_operator_node)
-
-    # Special case for mana attributes with mana cost values (mana:{1}{G}, m:WU, etc.)
-    mana_attr = Regex(r"\b(mana|m)\b", flags=re.IGNORECASE)
-    mana_attr.setParseAction(make_attribute_node)
-
+    # Mana condition: mana attributes with mana cost values (mana:{1}{G}, m:WU, etc.)
     # For mana attributes, try mana patterns first, then fall back to quoted strings and regular strings
     mana_value_or_string = mana_value | quoted_string | string_value_word
-    mana_condition = mana_attr + attrop + mana_value_or_string
+    mana_condition = mana_attr_word + attrop + mana_value_or_string
     mana_condition.setParseAction(make_binary_operator_node)
 
-    condition = mana_condition | rarity_condition | unified_numeric_comparison | non_numeric_condition
+    # Rarity condition: rarity attributes with string values (rarity:rare, r:common, etc.)
+    rarity_condition = rarity_attr_word + attrop + (quoted_string | string_value_word)
+    rarity_condition.setParseAction(make_binary_operator_node)
 
-    # Special rule for non-numeric attribute-colon-hyphenated-value to handle cases like "otag:dual-land" and "otag:40k-model"
-    # Only non-numeric attributes should have hyphenated string values
+    # Legality condition: legality attributes with string values (legal:standard, format:modern, etc.)
+    legality_condition = legality_attr_word + attrop + (quoted_string | string_value_word)
+    legality_condition.setParseAction(make_binary_operator_node)
+
+    # Text condition: text attributes compared with string values
+    text_condition = text_attr_word + attrop + (quoted_string | string_value_word)
+    text_condition.setParseAction(make_binary_operator_node)
+
+    # Attribute-to-attribute comparisons should be between attributes of the same parser class
+    attr_attr_condition = (
+        (numeric_attr_word + attrop + numeric_attr_word) |
+        (mana_attr_word + attrop + mana_attr_word) |
+        (rarity_attr_word + attrop + rarity_attr_word) |
+        (legality_attr_word + attrop + legality_attr_word) |
+        (text_attr_word + attrop + text_attr_word)
+    )
+    attr_attr_condition.setParseAction(make_binary_operator_node)
+
+    # Combine all conditions with clear precedence - no more special cases needed
+    condition = mana_condition | rarity_condition | legality_condition | unified_numeric_comparison | text_condition | attr_attr_condition
+
+    # Special rule for text attribute-colon-hyphenated-value to handle cases like "otag:dual-land" and "otag:40k-model"
+    # Only text attributes should have hyphenated string values (not numeric, mana, rarity, or legality)
     # Allow values starting with digits, letters, or underscores
-    hyphenated_condition = non_numeric_attr_word + Literal(":") + Regex(r"[a-zA-Z0-9_][a-zA-Z0-9_-]*")
+    hyphenated_condition = text_attr_word + Literal(":") + Regex(r"[a-zA-Z0-9_][a-zA-Z0-9_-]*")
     hyphenated_condition.setParseAction(make_binary_operator_node)
 
     # Single word (implicit name search)
@@ -349,7 +375,7 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
 
     # For negation, we exclude arithmetic expressions from being negated
     # Test: revert to original order to confirm this breaks it
-    negatable_primary = non_numeric_attr_attr_condition | condition | group | single_word
+    negatable_primary = attr_attr_condition | condition | group | single_word
     negatable_factor = Optional(operator_not) + negatable_primary
     negatable_factor.setParseAction(handle_negation)
 
