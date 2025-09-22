@@ -580,6 +580,24 @@ def test_parse_mana_cost_searches(test_input: str, expected_ast: BinaryOperatorN
     assert observed.root == expected_ast
 
 
+@pytest.mark.parametrize(
+    argnames=("test_input", "expected_ast"),
+    argvalues=[
+        ("mana=1{G}", BinaryOperatorNode(AttributeNode("mana"), "=", parsing.ManaValueNode("1{G}"))),
+        ("m:2{R}{G}", BinaryOperatorNode(AttributeNode("m"), ":", parsing.ManaValueNode("2{R}{G}"))),
+        ("mana=W{U/R}", BinaryOperatorNode(AttributeNode("mana"), "=", parsing.ManaValueNode("W{U/R}"))),
+        ("m:{2/W}G", BinaryOperatorNode(AttributeNode("m"), ":", parsing.ManaValueNode("{2/W}G"))),
+        ("mana:1WU", BinaryOperatorNode(AttributeNode("mana"), ":", parsing.ManaValueNode("1WU"))),
+        ("m=2RRG", BinaryOperatorNode(AttributeNode("m"), "=", parsing.ManaValueNode("2RRG"))),
+        ("mana:WU", BinaryOperatorNode(AttributeNode("mana"), ":", parsing.ManaValueNode("WU"))),
+    ],
+)
+def test_parse_mixed_mana_notation(test_input: str, expected_ast: BinaryOperatorNode) -> None:
+    """Test parsing mana cost searches with mixed notation (per Scryfall rules)."""
+    observed = parsing.parse_search_query(test_input)
+    assert observed.root == expected_ast
+
+
 def test_parse_combined_mana_queries() -> None:
     """Test parsing combined queries with mana cost searches."""
     # Test combining mana with other attributes

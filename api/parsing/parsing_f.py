@@ -236,25 +236,28 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     # Allow values starting with digits, letters, or underscores to handle cases like "40k-model"
     string_value_word = Regex(r"[a-zA-Z0-9_][a-zA-Z0-9_-]*")
 
-    # Mana cost patterns - match both full {X} notation and shorthand
-    # Pattern matches: {1}{G}, {2/W}, {W/P}, WUG, 2WW, etc.
-    # Full curly-brace notation: one or more {symbol} patterns
-    curly_mana_symbol = Regex(r"\{[^}]+\}")
-    full_mana_pattern = Combine(OneOrMore(curly_mana_symbol))
+    # Mana cost patterns - support mixed notation as per Scryfall rules
+    # Simple symbols don't need braces: W, U, B, R, G, C, 1, 2, etc.
+    # Complex symbols (with alternatives) must use braces: {W/U}, {2/W}, {W/U/P}
 
-    # Shorthand notation: valid mana sequences like "WUG", "2WW", "G", etc.
-    # This matches sequences that:
-    # 1. Start with optional numbers
-    # 2. Contain only valid mana symbols (W, U, B, R, G, C, X, Y, Z)
-    # 3. Have at least one mana letter symbol
-    shorthand_mana_pattern = Regex(r"[0-9]*[WUBRGCXYZ]+[0-9WUBRGCXYZ]*")
+    # Individual mana components
+    curly_mana_symbol = Regex(r"\{[^}]+\}")  # Complex symbols in braces: {W/U}, {2/W}
+    simple_mana_symbol = Regex(r"[0-9WUBRGCXYZ]")  # Simple symbols without braces: W, 1, 2
 
-    # Combined mana pattern - full notation takes precedence
+    # Mixed mana pattern: any combination of simple and complex symbols
+    # Examples: {1}{G}, 1{G}, 2RR, W{U/R}, {2/W}G, etc.
+    mixed_mana_pattern = Combine(OneOrMore(curly_mana_symbol | simple_mana_symbol))
+
+    # Legacy patterns for backwards compatibility
+    full_mana_pattern = Combine(OneOrMore(curly_mana_symbol))  # Pure braced notation
+    shorthand_mana_pattern = Regex(r"[0-9]*[WUBRGCXYZ]+[0-9WUBRGCXYZ]*")  # Pure shorthand
+
+    # Combined mana pattern - mixed notation takes precedence, then full, then shorthand
     def make_mana_value_node(tokens: list[str]) -> ManaValueNode:
         """Create a ManaValueNode for mana cost strings."""
         return ManaValueNode(tokens[0])
 
-    mana_value = (full_mana_pattern | shorthand_mana_pattern).setParseAction(make_mana_value_node)
+    mana_value = (mixed_mana_pattern | full_mana_pattern | shorthand_mana_pattern).setParseAction(make_mana_value_node)
 
     # Build the grammar with proper precedence
     expr = Forward()
@@ -358,7 +361,7 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     # SPECIAL: hyphenated_condition first to handle "otag:dual-land", then condition (includes comparisons) before standalone arithmetic
     # Note: arithmetic_comparison is now consolidated into unified_numeric_comparison within condition
     # Add standalone_numeric at the end to handle cases like "1" without operators
-    factor = hyphenated_condition | condition | arithmetic_expr | negatable_factor | standalone_numeric
+    factor = condition | hyphenated_condition | arithmetic_expr | negatable_factor | standalone_numeric
 
     # Expression with explicit AND/OR operators (highest precedence)
     def handle_operators(tokens: list[object]) -> object:
