@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from api.api_resource import get_migrations
+from api.utils.db_utils import get_migrations
 
 
 class TestMigrationOrdering:
