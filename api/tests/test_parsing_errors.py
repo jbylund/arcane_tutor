@@ -40,7 +40,7 @@ class TestParsingErrorHandling:
         # Verify the error details
         assert exc_info.value.title == "Invalid Search Query"
         assert query in exc_info.value.description
-        assert "invalid syntax" in exc_info.value.description.lower()
+        assert f"Failed to parse query: \"{query}\"" == exc_info.value.description
 
     @pytest.mark.parametrize("query", [
         "cmc=2 and id=",  # The original issue case
@@ -56,7 +56,7 @@ class TestParsingErrorHandling:
         # Verify the error details
         assert exc_info.value.title == "Invalid Search Query"
         assert query in exc_info.value.description
-        assert "invalid syntax" in exc_info.value.description.lower()
+        assert f"Failed to parse query: \"{query}\"" == exc_info.value.description
 
     def test_search_normal_parsing_unaffected(self) -> None:
         """Test that normal queries still work correctly."""
