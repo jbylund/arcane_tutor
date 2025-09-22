@@ -83,7 +83,7 @@ def can_serialize(iobj: object) -> bool:
     """
     max_json_object_length = 16_000
     try:
-        s = orjson.dumps(iobj).decode('utf-8')
+        s = orjson.dumps(iobj).decode("utf-8")
         return len(s) < max_json_object_length
     except TypeError:
         return False
