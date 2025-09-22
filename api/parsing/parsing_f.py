@@ -166,6 +166,38 @@ def make_binary_operator_node(tokens: list[object]) -> BinaryOperatorNode:
     return BinaryOperatorNode(create_value_node(left), operator, create_value_node(right))
 
 
+def create_attribute_parser(attributes: list[str]) -> ParserElement:
+    """Factory function to create attribute parsers with consistent parse actions.
+
+    Args:
+        attributes: List of attribute names to match
+
+    Returns:
+        Parser element that matches attributes and creates AttributeNode instances
+    """
+    parser = make_regex_pattern(attributes)
+    parser.setParseAction(lambda tokens: AttributeNode(tokens[0]))
+    return parser
+
+
+def create_condition_parser(attr_parser: ParserElement, value_parser: ParserElement, operators: ParserElement = None) -> ParserElement:
+    """Factory function to create condition parsers with consistent structure.
+
+    Args:
+        attr_parser: Parser for the attribute part
+        value_parser: Parser for the value part
+        operators: Optional custom operators parser (defaults to standard attribute operators)
+
+    Returns:
+        Parser element that matches attribute operator value patterns
+    """
+    if operators is None:
+        operators = oneOf(": > < >= <= = !=")
+    condition = attr_parser + operators + value_parser
+    condition.setParseAction(make_binary_operator_node)
+    return condition
+
+
 def make_chained_arithmetic(tokens: list[object]) -> QueryNode:
     """Create a chained arithmetic expression with left associativity.
 
@@ -245,18 +277,11 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
 
     word = Word(alphas + "_").setParseAction(make_word)
 
-    # Define different types of attribute words based on their types using Regex
+    # Define different types of attribute words based on their types using factory functions
     # Sort by length (longest first) to avoid partial matches
     # Use case-insensitive regex patterns for attribute matching
-    def make_attribute_node(tokens: list[str]) -> AttributeNode:
-        """Create an AttributeNode for any attribute."""
-        return AttributeNode(tokens[0])
-
-    numeric_attr_word = make_regex_pattern(NUMERIC_ATTRIBUTES)
-    numeric_attr_word.setParseAction(make_attribute_node)
-
-    non_numeric_attr_word = make_regex_pattern(NON_NUMERIC_ATTRIBUTES)
-    non_numeric_attr_word.setParseAction(make_attribute_node)
+    numeric_attr_word = create_attribute_parser(NUMERIC_ATTRIBUTES)
+    create_attribute_parser(NON_NUMERIC_ATTRIBUTES)
 
     # Create a literal number parser for numeric constants
     # Note: float_number must come before integer to match decimal numbers
@@ -311,48 +336,33 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     arithmetic_expr <<= arithmetic_term + arithmetic_op + arithmetic_term + ZeroOrMore(arithmetic_op + arithmetic_term)
     arithmetic_expr.setParseAction(make_chained_arithmetic)
 
-    # Create attribute parsers for each parser class - eliminates the need for special cases
-    mana_attr_word = make_regex_pattern(MANA_ATTRIBUTES)
-    mana_attr_word.setParseAction(make_attribute_node)
-
-    rarity_attr_word = make_regex_pattern(RARITY_ATTRIBUTES)
-    rarity_attr_word.setParseAction(make_attribute_node)
-
-    legality_attr_word = make_regex_pattern(LEGALITY_ATTRIBUTES)
-    legality_attr_word.setParseAction(make_attribute_node)
-
-    color_attr_word = make_regex_pattern(COLOR_ATTRIBUTES)
-    color_attr_word.setParseAction(make_attribute_node)
-
-    text_attr_word = make_regex_pattern(TEXT_ATTRIBUTES)
-    text_attr_word.setParseAction(make_attribute_node)
+    # Create attribute parsers for each parser class using factory function
+    mana_attr_word = create_attribute_parser(MANA_ATTRIBUTES)
+    rarity_attr_word = create_attribute_parser(RARITY_ATTRIBUTES)
+    legality_attr_word = create_attribute_parser(LEGALITY_ATTRIBUTES)
+    color_attr_word = create_attribute_parser(COLOR_ATTRIBUTES)
+    text_attr_word = create_attribute_parser(TEXT_ATTRIBUTES)
 
     # Unified numeric comparison rule: handles all combinations of arithmetic expressions, numeric attributes, and literals
     # This consolidates the previous arithmetic_comparison and numeric_condition rules
     unified_numeric_comparison = (arithmetic_expr | numeric_attr_word | literal_number) + attrop + (arithmetic_expr | numeric_attr_word | literal_number)
     unified_numeric_comparison.setParseAction(make_binary_operator_node)
 
+    # Create condition parsers using factory function where possible
+    # For complex value types, we still need custom definitions
+
     # Mana condition: mana attributes with mana cost values (mana:{1}{G}, m:WU, etc.)
     # For mana attributes, try mana patterns first, then fall back to quoted strings and regular strings
     mana_value_or_string = mana_value | quoted_string | string_value_word
-    mana_condition = mana_attr_word + attrop + mana_value_or_string
-    mana_condition.setParseAction(make_binary_operator_node)
-
-    # Rarity condition: rarity attributes with string values (rarity:rare, r:common, etc.)
-    rarity_condition = rarity_attr_word + attrop + (quoted_string | string_value_word)
-    rarity_condition.setParseAction(make_binary_operator_node)
-
-    # Legality condition: legality attributes with string values (legal:standard, format:modern, etc.)
-    legality_condition = legality_attr_word + attrop + (quoted_string | string_value_word)
-    legality_condition.setParseAction(make_binary_operator_node)
+    mana_condition = create_condition_parser(mana_attr_word, mana_value_or_string)
 
     # Color condition: color attributes with color values (color:red, c:rg, id:wubr, etc.)
-    color_condition = color_attr_word + attrop + (color_value | quoted_string)
-    color_condition.setParseAction(make_binary_operator_node)
+    color_condition = create_condition_parser(color_attr_word, color_value | quoted_string)
 
-    # Text condition: text attributes compared with string values
-    text_condition = text_attr_word + attrop + (quoted_string | string_value_word)
-    text_condition.setParseAction(make_binary_operator_node)
+    # Standard string-based conditions using factory function
+    rarity_condition = create_condition_parser(rarity_attr_word, quoted_string | string_value_word)
+    legality_condition = create_condition_parser(legality_attr_word, quoted_string | string_value_word)
+    text_condition = create_condition_parser(text_attr_word, quoted_string | string_value_word)
 
     # Attribute-to-attribute comparisons should be between attributes of the same parser class
     attr_attr_condition = (
