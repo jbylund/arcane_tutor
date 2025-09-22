@@ -709,7 +709,7 @@ class APIResource:
             logger.info("ValueError caught for query '%s', raising BadRequest", query)
             raise falcon.HTTPBadRequest(
                 title="Invalid Search Query",
-                description=f"Failed to parse query: \"{query}\"",
+                description=f'Failed to parse query: "{query}"',
             ) from err
         sql_orderby = {
             "cmc": "cmc",
