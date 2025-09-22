@@ -197,6 +197,24 @@ def create_condition_parser(attr_parser: ParserElement, value_parser: ParserElem
     return condition
 
 
+def create_parsing_error(context: str, original_error: Exception, query: str = "") -> ValueError:
+    """Create a standardized parsing error with helpful context.
+
+    Args:
+        context: Description of what was being parsed
+        original_error: The original exception that occurred
+        query: The query string being parsed (optional)
+
+    Returns:
+        A ValueError with a standardized error message
+    """
+    if query:
+        msg = f"Parse error in {context} for query '{query}': {original_error}"
+    else:
+        msg = f"Parse error in {context}: {original_error}"
+    return ValueError(msg)
+
+
 def create_basic_parsers() -> dict[str, ParserElement]:
     """Create basic parsing elements used throughout the grammar.
 
@@ -229,7 +247,7 @@ def create_basic_parsers() -> dict[str, ParserElement]:
         """Reject reserved keywords as words."""
         word_str = tokens[0]
         if word_str.upper() in ["AND", "OR"]:
-            msg = f"'{word_str}' is a reserved keyword"
+            msg = f"Reserved keyword '{word_str}' cannot be used as a search term. Use quotes if you want to search for this word literally."
             raise ValueError(msg)
         return word_str
 
@@ -533,7 +551,7 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
         if len(tokens) == NEGATION_TOKEN_COUNT and tokens[0] == "-":
             # Don't allow negation of arithmetic expressions
             if isinstance(tokens[1], BinaryOperatorNode) and tokens[1].operator in ["+", "-", "*", "/"]:
-                msg = "Cannot negate arithmetic expressions"
+                msg = f"Cannot negate arithmetic expressions like '{tokens[1]}'. Use parentheses if you want to negate the result of arithmetic."
                 raise ValueError(msg)
             return NotNode(tokens[1])
         return tokens[0]
@@ -607,8 +625,13 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
             # Flatten nested operations to create canonical n-ary forms
             return flatten_nested_operations(Query(parsed[0]))
         return Query(BinaryOperatorNode("name", ":", ""))
-    except (ValueError, TypeError, IndexError, ParseException) as e:
-        msg = f"Failed to parse query '{query}': {e}"
+    except (ValueError, TypeError, IndexError) as e:
+        msg = "main query parsing"
+        raise create_parsing_error(msg, e, query) from e
+    except ParseException as e:
+        # ParseException has more specific information about where parsing failed
+        # Keep backward compatibility while providing more context
+        msg = f"Failed to parse query '{query}': Syntax error at position {e.loc}: {e.msg}"
         raise ValueError(msg) from e
 
 
@@ -630,7 +653,7 @@ def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
             quote_char = char
             end_quote = query.find(quote_char, i + 1)
             if end_quote == -1:
-                msg = f"Unmatched {quote_char} quote in query"
+                msg = f"Unmatched {quote_char} quote in query '{query}'"
                 raise ValueError(msg)
             tokens.append(query[i : end_quote + 1])
             i = end_quote + 1
