@@ -23,6 +23,7 @@ XPGUSER=foouser
 	/tmp/pip.conf \
 	build_images \
 	check_env \
+	coverage \
 	dockerclean \
 	down \
 	ensure_black \
@@ -125,3 +126,9 @@ test-integration:
 
 test-unit:
 	python -m pytest -vvv --exitfirst --ignore=api/tests/test_integration_testcontainers.py
+
+coverage: # @doc generate HTML coverage report
+	python -m pytest --cov=. --cov-report=html --cov-report=term-missing --durations=10 -vvv
+
+test-profiling:
+	python -m pytest --profile-svg --durations=10 -vvv
