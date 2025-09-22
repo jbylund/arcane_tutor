@@ -575,9 +575,7 @@ class APIResource:
             return None
         card_types, _, card_subtypes = (x.strip().split() for x in card.get("type_line", "").title().partition("\u2014"))
         card["card_types"] = card_types
-        card["card_subtypes"] = card_subtypes or None
-        if not card["card_subtypes"]:
-            card.pop("card_subtypes")
+        card["card_subtypes"] = card_subtypes or []  # Use empty array instead of None
         for creature_field in ["power", "toughness"]:
             val = card.setdefault(creature_field, None)
             try:
