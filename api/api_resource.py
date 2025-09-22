@@ -293,7 +293,82 @@ class APIResource:
 
     def _raise_not_found(self: APIResource, **_: object) -> None:
         """Raise a Falcon HTTPNotFound error with available routes."""
-        raise falcon.HTTPNotFound(title="Not Found", description={"routes": {k: v.__doc__ for k, v in self.action_map.items()}})
+        routes = {}
+
+        for endpoint_name, wrapped_func in self.action_map.items():
+            # Get the original function from the wrapper
+            original_func = wrapped_func.__wrapped__ if hasattr(wrapped_func, '__wrapped__') else wrapped_func
+
+            # Get function signature
+            sig = inspect.signature(original_func)
+
+            # Extract docstring
+            doc = original_func.__doc__ or ""
+
+            # Parse arguments
+            args = []
+            kwargs = {}
+
+            for param_name, param in sig.parameters.items():
+                if param_name.startswith("_"):
+                    continue
+                if param_name in ("self", "falcon_response"):
+                    continue
+
+                param_info = {
+                    "name": param_name,
+                    "type": self._get_type_name(param.annotation)
+                }
+
+                if param.default != inspect.Parameter.empty:
+                    # It's a keyword argument with default
+                    kwargs[param_name] = {
+                        "type": self._get_type_name(param.annotation),
+                        "default": param.default
+                    }
+                else:
+                    # It's a positional argument
+                    args.append(param_info)
+
+            routes[endpoint_name] = {
+                "doc": doc,
+                "args": args,
+                "kwargs": kwargs
+            }
+
+        raise falcon.HTTPNotFound(
+            title="Not Found",
+            description={
+                "routes": routes,
+            },
+        )
+
+    def _get_type_name(self: APIResource, annotation: Any) -> str:
+        """Convert a type annotation to a readable string.
+
+        Args:
+            annotation: The type annotation to convert
+
+        Returns:
+            A string representation of the type
+        """
+        if annotation == inspect.Parameter.empty:
+            return "Any"
+
+        # Handle generic types and complex annotations
+        if hasattr(annotation, '__name__'):
+            return annotation.__name__
+        elif annotation is None:
+            return "None"
+        elif hasattr(annotation, '__origin__'):
+            # Handle generic types like List[str], Dict[str, int], etc.
+            origin = annotation.__origin__
+            if hasattr(origin, '__name__'):
+                return origin.__name__
+            return str(origin)
+
+        # Fallback to string representation
+        return str(annotation)
 
     def _run_query(
         self: APIResource,
