@@ -12,7 +12,7 @@
         --color-secondary: #764ba2;
       }
 
-      [data-theme="light"] {
+      [data-theme='light'] {
         /* Light Mode Colors */
         --color-primary: #667eea;
         --color-secondary: #764ba2;
@@ -44,7 +44,7 @@
         --color-input-background: #ffffff;
       }
 
-      [data-theme="dark"] {
+      [data-theme='dark'] {
         /* Dark Mode Colors */
         --color-primary: #667eea;
         --color-secondary: #764ba2;
@@ -1337,7 +1337,7 @@
 
           // Add click event listener
           if (this.themeToggle) {
-            this.themeToggle.addEventListener('click', (e) => {
+            this.themeToggle.addEventListener('click', e => {
               e.preventDefault();
               e.stopPropagation();
               this.toggleTheme();
@@ -1368,7 +1368,7 @@
       }
 
       // Apply initial theme immediately to prevent flash
-      (function() {
+      (function () {
         let savedTheme = 'light';
         try {
           const theme = localStorage.getItem('theme');

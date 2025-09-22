@@ -118,7 +118,7 @@ reset:
 	rm -rvf data
 
 test:
-	python -m pytest -vvv --exitfirst
+	python -m pytest -vvv --durations=10
 
 test-integration:
 	python -m pytest api/tests/test_integration_testcontainers.py -vvv --exitfirst
