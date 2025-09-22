@@ -5,6 +5,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
+import orjson
 import pytest
 import requests
 
@@ -64,10 +65,10 @@ class TestImportCardByName(unittest.TestCase):
         """Test that _scryfall_search returns card data for successful responses."""
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {
+        mock_response.content = orjson.dumps({
             "data": [{"name": "Lightning Bolt", "cmc": 1}],
             "has_more": False,
-        }
+        })
         mock_get.return_value = mock_response
 
         result = self.api_resource._scryfall_search(query="name:'Lightning Bolt'")
