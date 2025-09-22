@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import re
+
 from .db_info import (
     CARD_SUPERTYPES,
     CARD_TYPES,
     COLOR_CODE_TO_NAME,
     COLOR_NAME_TO_CODE,
     DB_NAME_TO_FIELD_TYPE,
+    MANA_ATTRIBUTES,
+    ParserClass,
     SEARCH_NAME_TO_DB_NAME,
     FieldType,
 )
@@ -15,6 +19,7 @@ from .nodes import (
     AndNode,
     AttributeNode,
     BinaryOperatorNode,
+    ManaValueNode,
     NotNode,
     NumericValueNode,
     OrNode,
@@ -202,6 +207,54 @@ def get_legality_comparison_object(val: str, attr: str) -> dict[str, str]:
     return {format_name: status}
 
 
+def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
+    """Convert mana cost string to dictionary for approximate comparisons.
+    
+    Args:
+        mana_cost_str: Mana cost string like "{1}{G}" or "2RR"
+        
+    Returns:
+        Dictionary with colored mana symbols as keys and lists of counts as values.
+        For example, "{2}{R}{R}{G}" becomes {"R": [1, 2], "G": [1]}
+        
+    This format enables approximate mana cost comparisons using JSONB containment operators:
+    - A card costs <= another if it has no more colored pips of any color
+    - The generic mana cost is handled separately through CMC comparison
+    """
+    colored_symbol_counts = {}
+    generic_count = 0
+    
+    # Extract all mana symbols from the string
+    for mana_symbol in re.findall(r"{([^}]*)}", mana_cost_str):
+        try:
+            # Check if it's a generic mana symbol (numeric)
+            int(mana_symbol)
+        except ValueError:
+            # It's a colored or special mana symbol
+            colored_symbol_counts[mana_symbol] = colored_symbol_counts.get(mana_symbol, 0) + 1
+        else:
+            # It's generic mana - we'll track the largest generic cost
+            generic_count = int(mana_symbol)
+    
+    # Also handle simple notation (no braces) like "2RRG" 
+    # Remove already processed braced symbols first
+    remaining = re.sub(r"{[^}]*}", "", mana_cost_str)
+    for char in remaining:
+        if char.isdigit():
+            # Numeric generic mana
+            generic_count = max(generic_count, int(char))
+        elif char in "WUBRGCXYZ":
+            # Colored mana symbol
+            colored_symbol_counts[char] = colored_symbol_counts.get(char, 0) + 1
+    
+    # Convert counts to ranges for containment comparison
+    as_dict = {}
+    for colored_symbol, count in colored_symbol_counts.items():
+        as_dict[colored_symbol] = list(range(1, count + 1))
+    
+    return as_dict
+
+
 class ScryfallBinaryOperatorNode(BinaryOperatorNode):
     """Scryfall-specific binary operator node with custom SQL generation."""
 
@@ -227,6 +280,10 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         # Special routing for collector numbers based on operator
         if attr == "collector_number":
             return self._handle_collector_number(context)
+
+        # Special handling for mana cost comparisons using JSONB operations
+        if attr in MANA_ATTRIBUTES and self.operator in (">=", "<=", ">", "<", ":", "="):
+            return self._handle_mana_cost_comparison(context)
 
         lhs_sql = self.lhs.to_sql(context)
         field_type = get_field_type(attr)
@@ -311,6 +368,56 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         if self.operator == ":":
             self.operator = "="
         return super().to_sql(context)
+
+    def _handle_mana_cost_comparison(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+        """Handle mana cost comparisons using JSONB operations for approximate matching.
+        
+        For mana cost comparisons, we use the structured JSONB representation to enable
+        approximate comparisons where a card costs <= another if it has no more colored
+        pips of any color and doesn't exceed the total CMC.
+        """
+        # Ensure we're working with a ManaValueNode
+        if not isinstance(self.rhs, ManaValueNode):
+            msg = f"Mana cost comparison requires ManaValueNode, got {type(self.rhs)}"
+            raise ValueError(msg)
+        
+        # Convert the mana cost string to structured dictionary
+        mana_cost_dict = mana_cost_str_to_dict(self.rhs.value)
+        
+        # For approximate comparisons, we need to use the mana_cost_jsonb column
+        # Route the attribute to the JSONB column regardless of original attribute
+        original_attr = self.lhs.attribute_name
+        self.lhs.attribute_name = "mana_cost_jsonb"
+        jsonb_sql = self.lhs.to_sql(context)
+        
+        # Create parameter for the structured mana cost
+        mana_param = param_name(mana_cost_dict)
+        context[mana_param] = mana_cost_dict
+        
+        # Generate SQL based on operator
+        if self.operator in (":", ">="):
+            # Card costs >= query: card contains all colored mana in query
+            # This means the card has at least as much of each color as queried
+            sql = f"({jsonb_sql} @> %({mana_param})s)"
+        elif self.operator == "<=":
+            # Card costs <= query: query contains all colored mana in card  
+            # This means the card has no more of each color than queried
+            sql = f"(%({mana_param})s @> {jsonb_sql})"
+        elif self.operator == ">":
+            # Card costs > query: card contains all colored mana in query AND they're not equal
+            sql = f"({jsonb_sql} @> %({mana_param})s AND {jsonb_sql} <> %({mana_param})s)"
+        elif self.operator == "<":
+            # Card costs < query: query contains all colored mana in card AND they're not equal
+            sql = f"(%({mana_param})s @> {jsonb_sql} AND {jsonb_sql} <> %({mana_param})s)"
+        else:
+            # For equality and other operators, use exact matching
+            self.operator = "="
+            sql = f"({jsonb_sql} = %({mana_param})s)"
+        
+        # Restore original attribute name for potential reuse
+        self.lhs.attribute_name = original_attr
+        
+        return sql
 
     def _handle_text_field_pattern_matching(self: ScryfallBinaryOperatorNode, context: dict, lhs_sql: str) -> str:
         """Handle pattern matching for regular text fields."""

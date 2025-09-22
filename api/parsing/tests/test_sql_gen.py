@@ -860,3 +860,59 @@ def test_negated_type_queries_generate_simple_sql(input_query: str, expected_sql
     observed_params = {}
     observed_sql = parsed.to_sql(observed_params)
     assert expected_sql_fragment in observed_sql, f"Expected fragment '{expected_sql_fragment}' not found in SQL: {observed_sql}"
+
+
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_sql_pattern", "expected_param_structure"),
+    argvalues=[
+        # Test mana cost comparisons using JSONB containment operations
+        ("mana<={1}{G}", r"\(%\(p_dict_[^)]+\)s @> card\.mana_cost_jsonb\)", {"G": [1]}),
+        ("mana>={2}{R}", r"\(card\.mana_cost_jsonb @> %\(p_dict_[^)]+\)s\)", {"R": [1]}),
+        ("m<{W}{U}", r"\(%\(p_dict_[^)]+\)s @> card\.mana_cost_jsonb AND card\.mana_cost_jsonb <> %\(p_dict_[^)]+\)s\)", {"W": [1], "U": [1]}),
+        ("mana>{3}{W}", r"\(card\.mana_cost_jsonb @> %\(p_dict_[^)]+\)s AND card\.mana_cost_jsonb <> %\(p_dict_[^)]+\)s\)", {"W": [1]}),
+        ("mana:{1}{G}", r"\(card\.mana_cost_jsonb @> %\(p_dict_[^)]+\)s\)", {"G": [1]}),  # Colon should behave like >=
+        ("m:{W}{U}", r"\(card\.mana_cost_jsonb @> %\(p_dict_[^)]+\)s\)", {"W": [1], "U": [1]}),
+        ("mana={2}{R}{R}{G}", r"\(card\.mana_cost_jsonb = %\(p_dict_[^)]+\)s\)", {"R": [1, 2], "G": [1]}),
+    ],
+)
+def test_mana_cost_comparison_sql_generation(input_query: str, expected_sql_pattern: str, expected_param_structure: dict) -> None:
+    """Test that mana cost comparisons generate correct JSONB containment SQL."""
+    import re
+    
+    parsed = parsing.parse_scryfall_query(input_query)
+    observed_params = {}
+    observed_sql = parsed.to_sql(observed_params)
+    
+    # Check SQL pattern matches
+    assert re.search(expected_sql_pattern, observed_sql), f"SQL '{observed_sql}' doesn't match pattern '{expected_sql_pattern}'"
+    
+    # Check that we have exactly one parameter and it has the expected structure
+    assert len(observed_params) == 1, f"Expected 1 parameter, got {len(observed_params)}: {observed_params}"
+    param_value = list(observed_params.values())[0]
+    assert param_value == expected_param_structure, f"Parameter structure mismatch: expected {expected_param_structure}, got {param_value}"
+    
+    # Verify the parameter key follows the expected naming convention
+    param_key = list(observed_params.keys())[0]
+    assert param_key.startswith("p_dict_"), f"Parameter key should start with 'p_dict_', got '{param_key}'"
+
+
+def test_mana_cost_str_to_dict_function() -> None:
+    """Test the mana_cost_str_to_dict utility function."""
+    from api.parsing.scryfall_nodes import mana_cost_str_to_dict
+    
+    test_cases = [
+        ("{1}{G}", {"G": [1]}),
+        ("{2}{R}{R}{G}", {"R": [1, 2], "G": [1]}),
+        ("WU", {"W": [1], "U": [1]}),
+        ("{W}{U}", {"W": [1], "U": [1]}),
+        ("2RRG", {"R": [1, 2], "G": [1]}),
+        ("{3}{W}{U}", {"W": [1], "U": [1]}),
+        ("{0}", {}),
+        ("{X}{X}{W}", {"X": [1, 2], "W": [1]}),
+        ("{W/U}", {"W/U": [1]}),  # Hybrid mana
+        ("{2/W}", {"2/W": [1]}),  # Hybrid with generic
+    ]
+    
+    for mana_cost, expected_dict in test_cases:
+        result = mana_cost_str_to_dict(mana_cost)
+        assert result == expected_dict, f"mana_cost_str_to_dict({mana_cost}) = {result}, expected {expected_dict}"

@@ -30,6 +30,83 @@ $$
   SELECT array_agg(el) FROM jsonb_array_elements_text(jsonbin) el;
 $$ LANGUAGE sql IMMUTABLE;
 
+-- Function to convert mana cost string to structured JSONB for approximate comparisons
+CREATE OR REPLACE FUNCTION mana_cost_str_to_jsonb(mana_cost_str text)
+RETURNS jsonb AS $$
+DECLARE
+    result jsonb := '{}';
+    mana_symbol text;
+    symbol_clean text;
+    current_count int;
+BEGIN
+    -- Handle null or empty input
+    IF mana_cost_str IS NULL OR mana_cost_str = '' THEN
+        RETURN result;
+    END IF;
+    
+    -- Extract mana symbols from braced format {X} 
+    FOR mana_symbol IN
+        SELECT regexp_split_to_table(mana_cost_str, '[{}]') 
+        WHERE regexp_split_to_table(mana_cost_str, '[{}]') != ''
+    LOOP
+        -- Skip if it's just a number (generic mana cost)
+        IF mana_symbol ~ '^\d+$' THEN
+            CONTINUE;
+        END IF;
+        
+        -- Skip empty symbols
+        IF LENGTH(TRIM(mana_symbol)) = 0 THEN
+            CONTINUE;
+        END IF;
+        
+        symbol_clean := TRIM(mana_symbol);
+        
+        -- Get current count for this symbol (default to 0)
+        current_count := COALESCE((result->>symbol_clean)::int, 0);
+        
+        -- Increment count and update the JSONB object
+        -- Store as an array [1, 2, ..., count] for containment operations
+        result := jsonb_set(
+            result, 
+            ARRAY[symbol_clean], 
+            jsonb_build_array(generate_series(1, current_count + 1))
+        );
+    END LOOP;
+    
+    -- Also handle simple notation (no braces) like "2RRG"
+    -- Remove processed braced parts first
+    mana_cost_str := regexp_replace(mana_cost_str, '\{[^}]*\}', '', 'g');
+    
+    -- Process remaining characters
+    FOR i IN 1..LENGTH(mana_cost_str) LOOP
+        mana_symbol := SUBSTRING(mana_cost_str FROM i FOR 1);
+        
+        -- Skip digits (generic mana)
+        IF mana_symbol ~ '^\d$' THEN
+            CONTINUE;
+        END IF;
+        
+        -- Only process valid mana symbols
+        IF mana_symbol ~ '^[WUBRGCXYZ]$' THEN
+            -- Get current count for this symbol
+            current_count := COALESCE(jsonb_array_length(result->mana_symbol), 0);
+            
+            -- Add to count array
+            result := jsonb_set(
+                result,
+                ARRAY[mana_symbol],
+                (
+                    SELECT jsonb_agg(generate_series)
+                    FROM generate_series(1, current_count + 1)
+                )
+            );
+        END IF;
+    END LOOP;
+    
+    RETURN result;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
 CREATE TABLE IF NOT EXISTS magic.cards (
     card_name text NOT NULL,
     cmc integer, -- can be null for weird things

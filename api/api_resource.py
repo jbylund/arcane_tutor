@@ -1497,7 +1497,7 @@ class APIResource:
                         card_blob->>'name' AS card_name, -- 1
                         (card_blob->>'cmc')::float::integer AS cmc, -- 2
                         card_blob->>'mana_cost' AS mana_cost_text, -- 3
-                        card_blob->'mana_cost' AS mana_cost_jsonb, -- 4
+                        mana_cost_str_to_jsonb(card_blob->>'mana_cost') AS mana_cost_jsonb, -- 4
                         card_blob->'card_types' AS card_types, -- 5
                         card_blob->'card_subtypes' AS card_subtypes, -- 6
                         card_blob->'card_colors' AS card_colors, -- 7
