@@ -289,8 +289,7 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
 
     # Color value patterns - support both color names and letter combinations
     # Color names: white, blue, black, red, green, colorless (case-insensitive)
-    color_names = "|".join(COLOR_NAME_TO_CODE.keys())  # white|blue|black|red|green|colorless
-    color_word = Regex(rf"\b({color_names})\b", flags=re.IGNORECASE)
+    color_word = make_regex_pattern(COLOR_NAME_TO_CODE.keys())
 
     # Color letter pattern: any combination of w, u, b, r, g, c (case-insensitive)
     color_letter_pattern = Regex(r"[wubrgcWUBRGC]+")
