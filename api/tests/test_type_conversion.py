@@ -116,7 +116,21 @@ class TestTypeConversion(unittest.TestCase):
             # They should not be the same function object
             assert wrapped_method is not original_method
 
-    def test_discover_and_import_all_tags_type_conversion(self) -> None:
+    def test_make_type_converting_wrapper_no_wrapping_needed(self) -> None:
+        """Test that functions with no parameters or only self are not wrapped."""
+
+        def no_params_func() -> str:
+            return "no params"
+
+        def only_self_func(self) -> str:  # noqa: ANN001
+            return "only self"
+
+        # Functions that don't need wrapping should return the same function
+        wrapped_no_params = make_type_converting_wrapper(no_params_func)
+        wrapped_only_self = make_type_converting_wrapper(only_self_func)
+
+        assert wrapped_no_params is no_params_func
+        assert wrapped_only_self is only_self_func
         """Test that discover_and_import_all_tags properly handles string boolean parameters."""
         with patch("api.api_resource.db_utils.make_pool"), \
              patch("api.api_resource.requests.Session"), \

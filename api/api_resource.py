@@ -95,6 +95,12 @@ def make_type_converting_wrapper(func: callable) -> callable:
     """
     sig = inspect.signature(func)
 
+    # Check if function needs type conversion wrapper
+    # If signature has no parameters or only has 'self', return function as-is
+    params = [p for name, p in sig.parameters.items() if name not in ("self", "_")]
+    if not params:
+        return func
+
     def convert_args(**str_kwargs: str) -> dict[str, Any]:
         """Convert string keyword arguments to match function signature types."""
         converted_kwargs = {}
@@ -187,10 +193,11 @@ class APIResource:
         # Create action map with type-converting wrappers for all public methods
         self.action_map = {}
         for method_name in dir(self):
-            if not method_name.startswith("_"):
-                method = getattr(self, method_name)
-                if callable(method):
-                    self.action_map[method_name] = make_type_converting_wrapper(method)
+            if method_name.startswith("_"):
+                continue
+            method = getattr(self, method_name)
+            if callable(method):
+                self.action_map[method_name] = make_type_converting_wrapper(method)
         self.action_map["index"] = make_type_converting_wrapper(self.index_html)
         self._query_cache = LRUCache(maxsize=1_000)
         self._session = requests.Session()
