@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+import cachetools
 from pyparsing import (
     CaselessKeyword,
     Combine,
@@ -30,7 +31,6 @@ from .db_info import (
     KNOWN_CARD_ATTRIBUTES,
     LEGALITY_ATTRIBUTES,
     MANA_ATTRIBUTES,
-    NON_NUMERIC_ATTRIBUTES,
     NUMERIC_ATTRIBUTES,
     RARITY_ATTRIBUTES,
     TEXT_ATTRIBUTES,
@@ -57,6 +57,7 @@ ParserElement.enable_packrat(cache_size_limit=2**13)  # 8192 cache entries
 
 # Constants
 NEGATION_TOKEN_COUNT = 2
+DEFAULT_OPERATORS = oneOf(": > < >= <= = !=")
 
 
 def make_regex_pattern(words: Iterable[str]) -> Regex:
@@ -166,6 +167,271 @@ def make_binary_operator_node(tokens: list[object]) -> BinaryOperatorNode:
     return BinaryOperatorNode(create_value_node(left), operator, create_value_node(right))
 
 
+def create_attribute_parser(attributes: list[str]) -> ParserElement:
+    """Factory function to create attribute parsers with consistent parse actions.
+
+    Args:
+        attributes: List of attribute names to match
+
+    Returns:
+        Parser element that matches attributes and creates AttributeNode instances
+    """
+    parser = make_regex_pattern(attributes)
+    parser.setParseAction(lambda tokens: AttributeNode(tokens[0]))
+    return parser
+
+
+def create_condition_parser(attr_parser: ParserElement, value_parser: ParserElement, operators: ParserElement = DEFAULT_OPERATORS) -> ParserElement:
+    """Factory function to create condition parsers with consistent structure.
+
+    Args:
+        attr_parser: Parser for the attribute part
+        value_parser: Parser for the value part
+        operators: Optional custom operators parser (defaults to standard attribute operators)
+
+    Returns:
+        Parser element that matches attribute operator value patterns
+    """
+    condition = attr_parser + operators + value_parser
+    condition.setParseAction(make_binary_operator_node)
+    return condition
+
+
+def create_parsing_error(context: str, original_error: Exception, query: str = "") -> ValueError:
+    """Create a standardized parsing error with helpful context.
+
+    Args:
+        context: Description of what was being parsed
+        original_error: The original exception that occurred
+        query: The query string being parsed (optional)
+
+    Returns:
+        A ValueError with a standardized error message
+    """
+    if query:
+        msg = f"Parse error in {context} for query '{query}': {original_error}"
+    else:
+        msg = f"Parse error in {context}: {original_error}"
+    return ValueError(msg)
+
+
+def create_basic_parsers() -> dict[str, ParserElement]:
+    """Create basic parsing elements used throughout the grammar.
+
+    Returns:
+        Dictionary containing basic parser elements
+    """
+    # Basic operators and keywords
+    attrop = DEFAULT_OPERATORS
+    arithmetic_op = oneOf("+ - * /")
+    integer = Word(nums).setParseAction(lambda t: int(t[0]))
+    # Float must have a decimal point to distinguish from integer
+    float_number = Combine(Word(nums) + Literal(".") + Optional(Word(nums))).setParseAction(lambda t: float(t[0]))
+    lparen = Literal("(").suppress()
+    rparen = Literal(")").suppress()
+
+    # Keywords must be recognized before regular words
+    operator_and = CaselessKeyword("AND")
+    operator_or = CaselessKeyword("OR")
+    operator_not = Literal("-")
+
+    # Handle quoted strings and regular words (but not keywords)
+    def make_quoted_string(tokens: list[str]) -> tuple[str, str]:
+        """Mark quoted strings so they're always treated as string values."""
+        return ("quoted", tokens[0])
+
+    quoted_string = (QuotedString('"', escChar="\\") | QuotedString("'", escChar="\\")).setParseAction(make_quoted_string)
+
+    # Word that doesn't match keywords
+    def make_word(tokens: list[str]) -> str:
+        """Reject reserved keywords as words."""
+        word_str = tokens[0]
+        if word_str.upper() in ["AND", "OR"]:
+            msg = f"Reserved keyword '{word_str}' cannot be used as a search term. Use quotes if you want to search for this word literally."
+            raise ValueError(msg)
+        return word_str
+
+    word = Word(alphas + "_").setParseAction(make_word)
+
+    # Create a literal number parser for numeric constants
+    # Note: float_number must come before integer to match decimal numbers
+    # but only matches when there's actually a decimal point
+    literal_number = float_number | integer
+
+    # For attribute values, we want the raw string
+    # Use Regex to match words that may contain hyphens for string values
+    # Allow values starting with digits, letters, or underscores to handle cases like "40k-model"
+    string_value_word = Regex(r"[a-zA-Z0-9_][a-zA-Z0-9_-]*")
+
+    return {
+        "attrop": attrop,
+        "arithmetic_op": arithmetic_op,
+        "integer": integer,
+        "float_number": float_number,
+        "lparen": lparen,
+        "rparen": rparen,
+        "operator_and": operator_and,
+        "operator_or": operator_or,
+        "operator_not": operator_not,
+        "quoted_string": quoted_string,
+        "word": word,
+        "literal_number": literal_number,
+        "string_value_word": string_value_word,
+    }
+
+
+def create_mana_parsers() -> dict[str, ParserElement]:
+    """Create mana-related parsing elements.
+
+    Returns:
+        Dictionary containing mana parser elements
+    """
+    # Mana cost patterns - support mixed notation as per Scryfall rules
+    # Simple symbols don't need braces: W, U, B, R, G, C, 1, 2, etc.
+    # Complex symbols (with alternatives) must use braces: {W/U}, {2/W}, {W/U/P}
+
+    # Individual mana components
+    curly_mana_symbol = Regex(r"\{[^}]+\}")  # Complex symbols in braces: {W/U}, {2/W}
+    simple_mana_symbol = Regex(r"[0-9WUBRGCXYZ]")  # Simple symbols without braces: W, 1, 2
+
+    # Mixed mana pattern: any combination of simple and complex symbols
+    # Examples: {1}{G}, 1{G}, 2RR, W{U/R}, {2/W}G, etc.
+    mixed_mana_pattern = Combine(OneOrMore(curly_mana_symbol | simple_mana_symbol))
+
+    # Create ManaValueNode for mana cost strings
+    def make_mana_value_node(tokens: list[str]) -> ManaValueNode:
+        """Create a ManaValueNode for mana cost strings."""
+        return ManaValueNode(tokens[0])
+
+    mana_value = mixed_mana_pattern.setParseAction(make_mana_value_node)
+
+    return {
+        "mana_value": mana_value,
+        "mixed_mana_pattern": mixed_mana_pattern,
+    }
+
+
+def create_color_parsers() -> dict[str, ParserElement]:
+    """Create color-related parsing elements.
+
+    Returns:
+        Dictionary containing color parser elements
+    """
+    # Color value patterns - support both color names and letter combinations
+    # Color names: white, blue, black, red, green, colorless (case-insensitive)
+    color_word = make_regex_pattern(COLOR_NAME_TO_CODE.keys())
+
+    # Color letter pattern: any combination of w, u, b, r, g, c (case-insensitive)
+    color_letter_pattern = Regex(r"[wubrgcWUBRGC]+")
+
+    # Combined color value pattern
+    color_value = color_word | color_letter_pattern
+
+    return {
+        "color_value": color_value,
+    }
+
+
+def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_parsers: dict) -> dict[str, ParserElement]:
+    """Create all condition parsers using factory functions.
+
+    Args:
+        basic_parsers: Dictionary of basic parser elements
+        mana_parsers: Dictionary of mana parser elements
+        color_parsers: Dictionary of color parser elements
+
+    Returns:
+        Dictionary containing all condition parser elements
+    """
+    # Extract needed parsers
+    quoted_string = basic_parsers["quoted_string"]
+    string_value_word = basic_parsers["string_value_word"]
+    literal_number = basic_parsers["literal_number"]
+    arithmetic_op = basic_parsers["arithmetic_op"]
+    lparen = basic_parsers["lparen"]
+    rparen = basic_parsers["rparen"]
+    mana_value = mana_parsers["mana_value"]
+    color_value = color_parsers["color_value"]
+
+    # Create attribute parsers using factory functions
+    numeric_attr_word = create_attribute_parser(NUMERIC_ATTRIBUTES)
+    mana_attr_word = create_attribute_parser(MANA_ATTRIBUTES)
+    rarity_attr_word = create_attribute_parser(RARITY_ATTRIBUTES)
+    legality_attr_word = create_attribute_parser(LEGALITY_ATTRIBUTES)
+    color_attr_word = create_attribute_parser(COLOR_ATTRIBUTES)
+    text_attr_word = create_attribute_parser(TEXT_ATTRIBUTES)
+
+    # Build the grammar with proper precedence
+    expr = Forward()
+
+    # Define arithmetic expressions with proper precedence
+    # Start with the most basic arithmetic terms
+    # Only numeric attributes can be used in arithmetic expressions
+    arithmetic_term = numeric_attr_word | literal_number | Group(lparen + expr + rparen)
+
+    # Define arithmetic expressions that can be chained
+    # Only match if there's at least one arithmetic operator
+    arithmetic_expr = Forward()
+    arithmetic_expr <<= arithmetic_term + arithmetic_op + arithmetic_term + ZeroOrMore(arithmetic_op + arithmetic_term)
+    arithmetic_expr.setParseAction(make_chained_arithmetic)
+
+    # Unified numeric comparison rule: handles all combinations of arithmetic expressions, numeric attributes, and literals
+    # This consolidates the previous arithmetic_comparison and numeric_condition rules
+    unified_numeric_comparison = (arithmetic_expr | numeric_attr_word | literal_number) + DEFAULT_OPERATORS + (arithmetic_expr | numeric_attr_word | literal_number)
+    unified_numeric_comparison.setParseAction(make_binary_operator_node)
+
+    # Create condition parsers using factory function where possible
+    # For complex value types, we still need custom definitions
+
+    # Mana condition: mana attributes with mana cost values (mana:{1}{G}, m:WU, etc.)
+    # For mana attributes, try mana patterns first, then fall back to quoted strings and regular strings
+    mana_value_or_string = mana_value | quoted_string | string_value_word
+    mana_condition = create_condition_parser(mana_attr_word, mana_value_or_string)
+
+    # Color condition: color attributes with color values (color:red, c:rg, id:wubr, etc.)
+    color_condition = create_condition_parser(color_attr_word, color_value | quoted_string)
+
+    # Standard string-based conditions using factory function
+    rarity_condition = create_condition_parser(rarity_attr_word, quoted_string | string_value_word)
+    legality_condition = create_condition_parser(legality_attr_word, quoted_string | string_value_word)
+    text_condition = create_condition_parser(text_attr_word, quoted_string | string_value_word)
+
+    # Attribute-to-attribute comparisons should be between attributes of the same parser class
+    attr_attr_condition = (
+        (numeric_attr_word + DEFAULT_OPERATORS + numeric_attr_word) |
+        (mana_attr_word + DEFAULT_OPERATORS + mana_attr_word) |
+        (rarity_attr_word + DEFAULT_OPERATORS + rarity_attr_word) |
+        (legality_attr_word + DEFAULT_OPERATORS + legality_attr_word) |
+        (color_attr_word + DEFAULT_OPERATORS + color_attr_word) |
+        (text_attr_word + DEFAULT_OPERATORS + text_attr_word)
+    )
+    attr_attr_condition.setParseAction(make_binary_operator_node)
+
+    # Combine all conditions with clear precedence - no more special cases needed
+    condition = mana_condition | rarity_condition | legality_condition | color_condition | unified_numeric_comparison | text_condition | attr_attr_condition
+
+    # Special rule for text attribute-colon-hyphenated-value to handle cases like "otag:dual-land" and "otag:40k-model"
+    # Only text attributes should have hyphenated string values (not numeric, mana, rarity, or legality)
+    # Allow values starting with digits, letters, or underscores
+    hyphenated_condition = text_attr_word + Literal(":") + Regex(r"[a-zA-Z0-9_][a-zA-Z0-9_-]*")
+    hyphenated_condition.setParseAction(make_binary_operator_node)
+
+    return {
+        "expr": expr,
+        "arithmetic_expr": arithmetic_expr,
+        "unified_numeric_comparison": unified_numeric_comparison,
+        "mana_condition": mana_condition,
+        "color_condition": color_condition,
+        "rarity_condition": rarity_condition,
+        "legality_condition": legality_condition,
+        "text_condition": text_condition,
+        "attr_attr_condition": attr_attr_condition,
+        "condition": condition,
+        "hyphenated_condition": hyphenated_condition,
+        "numeric_attr_word": numeric_attr_word,
+    }
+
+
 def make_chained_arithmetic(tokens: list[object]) -> QueryNode:
     """Create a chained arithmetic expression with left associativity.
 
@@ -199,180 +465,61 @@ def parse_scryfall_query(query: str) -> Query:
     generic_query = parse_search_query(query)
     return to_scryfall_ast(generic_query)
 
+@cachetools.cached(cache={})
+def get_parse_expr() -> ParserElement:  # noqa: C901, PLR0915
+    """Create and return the main parser expression for Scryfall search queries.
 
-def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
-    """Parse a Scryfall search query string into an AST Query object.
+    This function builds a comprehensive parsing grammar that supports the full
+    Scryfall search syntax, including:
 
-    Raises ValueError if parsing fails.
+    - Attribute-value conditions (e.g., "cmc:3", "color:red", "type:creature")
+    - Comparison operators (>, <, >=, <=, =, !=, :)
+    - Boolean operators (AND, OR, NOT/-)
+    - Arithmetic expressions (e.g., "cmc+1", "power*2")
+    - Quoted strings and regular words
+    - Mana cost patterns (e.g., "{1}{G}", "WU", "{W/U}")
+    - Color values (names like "red" or letters like "rg")
+    - Grouped expressions with parentheses
+    - Negation of conditions and factors
+
+    The parser handles complex precedence rules where:
+    - Parentheses have highest precedence
+    - NOT/- negation applies to individual factors
+    - AND/OR operators group operands by type for n-ary operations
+    - Arithmetic expressions support chaining with left associativity
+    - Different attribute types have specialized value parsers
+
+    Returns:
+        ParserElement: The main expression parser that can parse complete
+            Scryfall search queries into an Abstract Syntax Tree (AST).
+
+    Note:
+        This function is cached to avoid rebuilding the complex grammar
+        on every call, improving performance for repeated parsing operations.
     """
-    if query is None or not query.strip():
-        # Return empty query
-        return Query(BinaryOperatorNode(AttributeNode("name"), ":", ""))
+    # Create basic parsing elements using helper functions
+    basic_parsers = create_basic_parsers()
+    mana_parsers = create_mana_parsers()
+    color_parsers = create_color_parsers()
 
-    # Pre-process the query to handle implicit AND operations
-    # Convert "a b" to "a AND b" when b is not an operator
-    query = preprocess_implicit_and(query)
+    # Extract frequently used parsers
+    lparen = basic_parsers["lparen"]
+    rparen = basic_parsers["rparen"]
+    operator_and = basic_parsers["operator_and"]
+    operator_or = basic_parsers["operator_or"]
+    operator_not = basic_parsers["operator_not"]
+    word = basic_parsers["word"]
+    literal_number = basic_parsers["literal_number"]
 
-    # Define the grammar components
-    attrop = oneOf(": > < >= <= = !=")
-    arithmetic_op = oneOf("+ - * /")
-    integer = Word(nums).setParseAction(lambda t: int(t[0]))
-    # Float must have a decimal point to distinguish from integer
-    float_number = Combine(Word(nums) + Literal(".") + Optional(Word(nums))).setParseAction(lambda t: float(t[0]))
-    lparen = Literal("(").suppress()
-    rparen = Literal(")").suppress()
+    # Build all condition parsers using helper function
+    condition_parsers = create_all_condition_parsers(basic_parsers, mana_parsers, color_parsers)
 
-    # Keywords must be recognized before regular words
-    operator_and = CaselessKeyword("AND")
-    operator_or = CaselessKeyword("OR")
-    operator_not = Literal("-")
-
-    # Handle quoted strings and regular words (but not keywords)
-    def make_quoted_string(tokens: list[str]) -> tuple[str, str]:
-        """Mark quoted strings so they're always treated as string values."""
-        return ("quoted", tokens[0])
-
-    quoted_string = (QuotedString('"', escChar="\\") | QuotedString("'", escChar="\\")).setParseAction(make_quoted_string)
-
-    # Word that doesn't match keywords
-    def make_word(tokens: list[str]) -> str:
-        """Reject reserved keywords as words."""
-        word_str = tokens[0]
-        if word_str.upper() in ["AND", "OR"]:
-            msg = f"'{word_str}' is a reserved keyword"
-            raise ValueError(msg)
-        return word_str
-
-    word = Word(alphas + "_").setParseAction(make_word)
-
-    # Define different types of attribute words based on their types using Regex
-    # Sort by length (longest first) to avoid partial matches
-    # Use case-insensitive regex patterns for attribute matching
-    def make_attribute_node(tokens: list[str]) -> AttributeNode:
-        """Create an AttributeNode for any attribute."""
-        return AttributeNode(tokens[0])
-
-    numeric_attr_word = make_regex_pattern(NUMERIC_ATTRIBUTES)
-    numeric_attr_word.setParseAction(make_attribute_node)
-
-    non_numeric_attr_word = make_regex_pattern(NON_NUMERIC_ATTRIBUTES)
-    non_numeric_attr_word.setParseAction(make_attribute_node)
-
-    # Create a literal number parser for numeric constants
-    # Note: float_number must come before integer to match decimal numbers
-    # but only matches when there's actually a decimal point
-    literal_number = float_number | integer
-
-    # For attribute values, we want the raw string
-    # Use Regex to match words that may contain hyphens for string values
-    # Allow values starting with digits, letters, or underscores to handle cases like "40k-model"
-    string_value_word = Regex(r"[a-zA-Z0-9_][a-zA-Z0-9_-]*")
-
-    # Mana cost patterns - support mixed notation as per Scryfall rules
-    # Simple symbols don't need braces: W, U, B, R, G, C, 1, 2, etc.
-    # Complex symbols (with alternatives) must use braces: {W/U}, {2/W}, {W/U/P}
-
-    # Individual mana components
-    curly_mana_symbol = Regex(r"\{[^}]+\}")  # Complex symbols in braces: {W/U}, {2/W}
-    simple_mana_symbol = Regex(r"[0-9WUBRGCXYZ]")  # Simple symbols without braces: W, 1, 2
-
-    # Mixed mana pattern: any combination of simple and complex symbols
-    # Examples: {1}{G}, 1{G}, 2RR, W{U/R}, {2/W}G, etc.
-    mixed_mana_pattern = Combine(OneOrMore(curly_mana_symbol | simple_mana_symbol))
-
-    # Create ManaValueNode for mana cost strings
-    def make_mana_value_node(tokens: list[str]) -> ManaValueNode:
-        """Create a ManaValueNode for mana cost strings."""
-        return ManaValueNode(tokens[0])
-
-    mana_value = mixed_mana_pattern.setParseAction(make_mana_value_node)
-
-    # Color value patterns - support both color names and letter combinations
-    # Color names: white, blue, black, red, green, colorless (case-insensitive)
-    color_word = make_regex_pattern(COLOR_NAME_TO_CODE.keys())
-
-    # Color letter pattern: any combination of w, u, b, r, g, c (case-insensitive)
-    color_letter_pattern = Regex(r"[wubrgcWUBRGC]+")
-
-    # Combined color value pattern
-    color_value = color_word | color_letter_pattern
-
-    # Build the grammar with proper precedence
-    expr = Forward()
-
-    # Define arithmetic expressions with proper precedence
-    # Start with the most basic arithmetic terms
-    # Only numeric attributes can be used in arithmetic expressions
-    arithmetic_term = numeric_attr_word | literal_number | Group(lparen + expr + rparen)
-
-    # Define arithmetic expressions that can be chained
-    # Only match if there's at least one arithmetic operator
-    arithmetic_expr = Forward()
-    arithmetic_expr <<= arithmetic_term + arithmetic_op + arithmetic_term + ZeroOrMore(arithmetic_op + arithmetic_term)
-    arithmetic_expr.setParseAction(make_chained_arithmetic)
-
-    # Create attribute parsers for each parser class - eliminates the need for special cases
-    mana_attr_word = make_regex_pattern(MANA_ATTRIBUTES)
-    mana_attr_word.setParseAction(make_attribute_node)
-
-    rarity_attr_word = make_regex_pattern(RARITY_ATTRIBUTES)
-    rarity_attr_word.setParseAction(make_attribute_node)
-
-    legality_attr_word = make_regex_pattern(LEGALITY_ATTRIBUTES)
-    legality_attr_word.setParseAction(make_attribute_node)
-
-    color_attr_word = make_regex_pattern(COLOR_ATTRIBUTES)
-    color_attr_word.setParseAction(make_attribute_node)
-
-    text_attr_word = make_regex_pattern(TEXT_ATTRIBUTES)
-    text_attr_word.setParseAction(make_attribute_node)
-
-    # Unified numeric comparison rule: handles all combinations of arithmetic expressions, numeric attributes, and literals
-    # This consolidates the previous arithmetic_comparison and numeric_condition rules
-    unified_numeric_comparison = (arithmetic_expr | numeric_attr_word | literal_number) + attrop + (arithmetic_expr | numeric_attr_word | literal_number)
-    unified_numeric_comparison.setParseAction(make_binary_operator_node)
-
-    # Mana condition: mana attributes with mana cost values (mana:{1}{G}, m:WU, etc.)
-    # For mana attributes, try mana patterns first, then fall back to quoted strings and regular strings
-    mana_value_or_string = mana_value | quoted_string | string_value_word
-    mana_condition = mana_attr_word + attrop + mana_value_or_string
-    mana_condition.setParseAction(make_binary_operator_node)
-
-    # Rarity condition: rarity attributes with string values (rarity:rare, r:common, etc.)
-    rarity_condition = rarity_attr_word + attrop + (quoted_string | string_value_word)
-    rarity_condition.setParseAction(make_binary_operator_node)
-
-    # Legality condition: legality attributes with string values (legal:standard, format:modern, etc.)
-    legality_condition = legality_attr_word + attrop + (quoted_string | string_value_word)
-    legality_condition.setParseAction(make_binary_operator_node)
-
-    # Color condition: color attributes with color values (color:red, c:rg, id:wubr, etc.)
-    color_condition = color_attr_word + attrop + (color_value | quoted_string)
-    color_condition.setParseAction(make_binary_operator_node)
-
-    # Text condition: text attributes compared with string values
-    text_condition = text_attr_word + attrop + (quoted_string | string_value_word)
-    text_condition.setParseAction(make_binary_operator_node)
-
-    # Attribute-to-attribute comparisons should be between attributes of the same parser class
-    attr_attr_condition = (
-        (numeric_attr_word + attrop + numeric_attr_word) |
-        (mana_attr_word + attrop + mana_attr_word) |
-        (rarity_attr_word + attrop + rarity_attr_word) |
-        (legality_attr_word + attrop + legality_attr_word) |
-        (color_attr_word + attrop + color_attr_word) |
-        (text_attr_word + attrop + text_attr_word)
-    )
-    attr_attr_condition.setParseAction(make_binary_operator_node)
-
-    # Combine all conditions with clear precedence - no more special cases needed
-    condition = mana_condition | rarity_condition | legality_condition | color_condition | unified_numeric_comparison | text_condition | attr_attr_condition
-
-    # Special rule for text attribute-colon-hyphenated-value to handle cases like "otag:dual-land" and "otag:40k-model"
-    # Only text attributes should have hyphenated string values (not numeric, mana, rarity, or legality)
-    # Allow values starting with digits, letters, or underscores
-    hyphenated_condition = text_attr_word + Literal(":") + Regex(r"[a-zA-Z0-9_][a-zA-Z0-9_-]*")
-    hyphenated_condition.setParseAction(make_binary_operator_node)
+    # Extract condition parsers
+    expr = condition_parsers["expr"]
+    arithmetic_expr = condition_parsers["arithmetic_expr"]
+    condition = condition_parsers["condition"]
+    hyphenated_condition = condition_parsers["hyphenated_condition"]
+    attr_attr_condition = condition_parsers["attr_attr_condition"]
 
     # Single word (implicit name search)
     def make_single_word(tokens: list[str]) -> BinaryOperatorNode:
@@ -410,7 +557,7 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
         if len(tokens) == NEGATION_TOKEN_COUNT and tokens[0] == "-":
             # Don't allow negation of arithmetic expressions
             if isinstance(tokens[1], BinaryOperatorNode) and tokens[1].operator in ["+", "-", "*", "/"]:
-                msg = "Cannot negate arithmetic expressions"
+                msg = f"Cannot negate arithmetic expressions like '{tokens[1]}'. Use parentheses if you want to negate the result of arithmetic."
                 raise ValueError(msg)
             return NotNode(tokens[1])
         return tokens[0]
@@ -476,6 +623,55 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     # The main expression: factors separated by AND/OR operators
     expr <<= factor + ZeroOrMore((operator_and | operator_or) + factor)
     expr.setParseAction(handle_operators)
+    return expr
+
+
+def parse_search_query(query: str) -> Query:
+    """Parse a search query string into a Query AST.
+
+    This function is the main entry point for parsing Scryfall-style search queries.
+    It handles the complete parsing pipeline including preprocessing, parsing, and
+    AST normalization.
+
+    The function performs the following steps:
+    1. Validates input and handles empty queries
+    2. Preprocesses the query to convert implicit AND operations to explicit ones
+    3. Uses the main parser expression to parse the query into tokens
+    4. Flattens nested operations to create canonical n-ary forms
+    5. Wraps the result in a Query AST node
+
+    Args:
+        query: The search query string to parse. Can be None or empty.
+
+    Returns:
+        Query: A Query AST node containing the parsed query structure.
+            For empty queries, returns a default query that searches for
+            empty name values.
+
+    Raises:
+        ValueError: If parsing fails due to syntax errors, invalid operators,
+            or other semantic issues. The error message includes context
+            about what was being parsed and where the error occurred.
+
+    Examples:
+        >>> parse_search_query("cmc:3")
+        Query(BinaryOperatorNode(AttributeNode("cmc"), ":", NumericValueNode(3)))
+
+        >>> parse_search_query("red AND creature")
+        Query(AndNode([BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("red")),
+                       BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("creature"))]))
+
+        >>> parse_search_query("")
+        Query(BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("")))
+    """
+    if query is None or not query.strip():
+        # Return empty query
+        return Query(BinaryOperatorNode(AttributeNode("name"), ":", ""))
+
+    # Pre-process the query to handle implicit AND operations
+    # Convert "a b" to "a AND b" when b is not an operator
+    query = preprocess_implicit_and(query)
+    expr = get_parse_expr()
 
     # Parse the query
     try:
@@ -484,8 +680,13 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
             # Flatten nested operations to create canonical n-ary forms
             return flatten_nested_operations(Query(parsed[0]))
         return Query(BinaryOperatorNode("name", ":", ""))
-    except (ValueError, TypeError, IndexError, ParseException) as e:
-        msg = f"Failed to parse query '{query}': {e}"
+    except (ValueError, TypeError, IndexError) as e:
+        msg = "main query parsing"
+        raise create_parsing_error(msg, e, query) from e
+    except ParseException as e:
+        # ParseException has more specific information about where parsing failed
+        # Keep backward compatibility while providing more context
+        msg = f"Failed to parse query '{query}': Syntax error at position {e.loc}: {e.msg}"
         raise ValueError(msg) from e
 
 
@@ -507,7 +708,7 @@ def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
             quote_char = char
             end_quote = query.find(quote_char, i + 1)
             if end_quote == -1:
-                msg = f"Unmatched {quote_char} quote in query"
+                msg = f"Unmatched {quote_char} quote in query '{query}'"
                 raise ValueError(msg)
             tokens.append(query[i : end_quote + 1])
             i = end_quote + 1
