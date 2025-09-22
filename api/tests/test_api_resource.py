@@ -2,8 +2,8 @@
 
 import multiprocessing
 import os
-import tempfile
 import unittest
+from typing import Any, Never
 from unittest.mock import MagicMock, patch
 
 import falcon
@@ -75,7 +75,7 @@ class TestAPIResourceInitialization(unittest.TestCase):
     @patch("api.api_resource.db_utils.make_pool")
     @patch("api.api_resource.requests.Session")
     @patch("api.api_resource.TaggerClient")
-    def test_initialization_defaults(self, mock_tagger, mock_session, mock_pool) -> None:
+    def test_initialization_defaults(self, mock_tagger: Any, mock_session: Any, mock_pool: Any) -> None:
         """Test APIResource initialization with default parameters."""
         mock_pool.return_value = self.mock_conn_pool
         mock_session.return_value = self.mock_session
@@ -100,7 +100,7 @@ class TestAPIResourceInitialization(unittest.TestCase):
     @patch("api.api_resource.db_utils.make_pool")
     @patch("api.api_resource.requests.Session")
     @patch("api.api_resource.TaggerClient")
-    def test_initialization_with_custom_import_guard(self, mock_tagger, mock_session, mock_pool) -> None:
+    def test_initialization_with_custom_import_guard(self, mock_tagger: Any, mock_session: Any, mock_pool: Any) -> None:
         """Test APIResource initialization with custom import guard."""
         mock_pool.return_value = self.mock_conn_pool
         mock_session.return_value = self.mock_session
@@ -143,7 +143,7 @@ class TestAPIResourceCoreMethods(unittest.TestCase):
         assert result == os.getpid()
 
     @patch.object(APIResource, "_run_query")
-    def test_db_ready_returns_true_when_migrations_table_exists(self, mock_run_query) -> None:
+    def test_db_ready_returns_true_when_migrations_table_exists(self, mock_run_query: Any) -> None:
         """Test db_ready returns True when migrations table exists."""
         mock_run_query.return_value = {
             "result": [{"relname": "migrations"}, {"relname": "other_table"}],
@@ -153,7 +153,7 @@ class TestAPIResourceCoreMethods(unittest.TestCase):
         assert result is True
 
     @patch.object(APIResource, "_run_query")
-    def test_db_ready_returns_false_when_migrations_table_missing(self, mock_run_query) -> None:
+    def test_db_ready_returns_false_when_migrations_table_missing(self, mock_run_query: Any) -> None:
         """Test db_ready returns False when migrations table is missing."""
         mock_run_query.return_value = {
             "result": [{"relname": "other_table"}],
@@ -271,16 +271,17 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
         mock_resp = MagicMock()
         mock_resp.complete = False
 
-        def raise_error(*args, **kwargs):
-            raise Exception("Test error")
+        def raise_error(*args: Any, **kwargs: Any) -> Never:
+            msg = "Test error"
+            raise Exception(msg)
         # Mock search method to raise a general exception
         with patch.object(self.api_resource, "action_map", {"search": raise_error}):
             with patch("api.api_resource.error_monitoring.error_handler") as mock_error_handler:
                 with pytest.raises(falcon.HTTPInternalServerError):
                     self.api_resource._handle(mock_req, mock_resp)
 
-                    # Should call error monitoring
-                    mock_error_handler.assert_called_once()
+                # Should call error monitoring
+                mock_error_handler.assert_called_once()
 
 
 class TestAPIResourceDataProcessing(unittest.TestCase):
@@ -457,7 +458,7 @@ class TestAPIResourceDataProcessing(unittest.TestCase):
 
     @patch.object(APIResource, "get_data")
     @patch.object(APIResource, "_preprocess_card")
-    def test_get_cards_to_insert_deduplicates_cards(self, mock_preprocess, mock_get_data) -> None:
+    def test_get_cards_to_insert_deduplicates_cards(self, mock_preprocess: Any, mock_get_data: Any) -> None:
         """Test _get_cards_to_insert deduplicates cards by name."""
         # Mock get_data to return duplicate cards
         mock_get_data.return_value = [
@@ -479,7 +480,7 @@ class TestAPIResourceDataProcessing(unittest.TestCase):
 
     @patch.object(APIResource, "get_data")
     @patch.object(APIResource, "_preprocess_card")
-    def test_get_cards_to_insert_filters_none_cards(self, mock_preprocess, mock_get_data) -> None:
+    def test_get_cards_to_insert_filters_none_cards(self, mock_preprocess: Any, mock_get_data: Any) -> None:
         """Test _get_cards_to_insert filters out None cards from preprocessing."""
         mock_get_data.return_value = [
             {"name": "Valid Card", "cmc": 1},
@@ -487,7 +488,7 @@ class TestAPIResourceDataProcessing(unittest.TestCase):
         ]
 
         # Mock _preprocess_card to return None for invalid card
-        def mock_preprocess_side_effect(card):
+        def mock_preprocess_side_effect(card: Any) -> Any:
             if card["name"] == "Invalid Card":
                 return None
             return card
@@ -586,7 +587,7 @@ class TestAPIResourceErrorHandling(unittest.TestCase):
             self.api_resource.import_cards_by_search(search_query=None)
 
     @patch("api.api_resource.requests.Session.get")
-    def test_discover_tags_from_scryfall_handles_request_errors(self, mock_get) -> None:
+    def test_discover_tags_from_scryfall_handles_request_errors(self, mock_get: Any) -> None:
         """Test discover_tags_from_scryfall handles request errors."""
         mock_get.side_effect = requests.RequestException("Network error")
 
@@ -637,11 +638,11 @@ class TestAPIResourceCaching(unittest.TestCase):
                 "color_identity": ["R"],
                 "keywords": [],
                 "prices": {},
-                "set": "test"
+                "set": "test",
             }
 
             # Call _load_cards_with_staging directly to test cache clearing
-            result = self.api_resource._load_cards_with_staging([valid_card])
+            self.api_resource._load_cards_with_staging([valid_card])
 
             # Cache should be cleared after successful load
             assert "test_key" not in self.api_resource._query_cache
@@ -666,7 +667,7 @@ class TestAPIResourceCaching(unittest.TestCase):
                 "color_identity": ["R"],
                 "keywords": [],
                 "prices": {},
-                "set": "test"
+                "set": "test",
             }
 
             # Add some data to the search cache
@@ -674,7 +675,7 @@ class TestAPIResourceCaching(unittest.TestCase):
             assert "test_key" in self.api_resource._search.cache
 
             # Call _load_cards_with_staging directly to test cache clearing
-            result = self.api_resource._load_cards_with_staging([valid_card])
+            self.api_resource._load_cards_with_staging([valid_card])
 
             # Search cache should be cleared after successful load
             assert "test_key" not in self.api_resource._search.cache
@@ -733,8 +734,8 @@ class TestAPIResourceTagHierarchy(unittest.TestCase):
                 mock_get_relationships.return_value = [
                     {
                         "parent": {"slug": "parent-tag", "name": "Parent Tag", "namespace": "test"},
-                        "child": {"slug": "test-tag", "name": "Test Tag", "namespace": "test"}
-                    }
+                        "child": {"slug": "test-tag", "name": "Test Tag", "namespace": "test"},
+                    },
                 ]
 
                 result = self.api_resource._populate_tag_hierarchy(tags=["test-tag"])
@@ -763,15 +764,15 @@ class TestAPIResourceTagHierarchy(unittest.TestCase):
                         return [
                             {
                                 "parent": {"slug": "parent1", "name": "Parent 1", "namespace": "test"},
-                                "child": {"slug": "tag1", "name": "Tag 1", "namespace": "test"}
-                            }
+                                "child": {"slug": "tag1", "name": "Tag 1", "namespace": "test"},
+                            },
                         ]
-                    elif tag == "tag2":
+                    if tag == "tag2":
                         return [
                             {
                                 "parent": {"slug": "parent2", "name": "Parent 2", "namespace": "test"},
-                                "child": {"slug": "tag2", "name": "Tag 2", "namespace": "test"}
-                            }
+                                "child": {"slug": "tag2", "name": "Tag 2", "namespace": "test"},
+                            },
                         ]
                     return []
 
@@ -824,8 +825,8 @@ class TestAPIResourceTagHierarchy(unittest.TestCase):
                 mock_get_relationships.return_value = [
                     {
                         "parent": {"slug": "parent-tag", "name": "Parent Tag", "namespace": "test"},
-                        "child": {"slug": "test-tag", "name": "Test Tag", "namespace": "test"}
-                    }
+                        "child": {"slug": "test-tag", "name": "Test Tag", "namespace": "test"},
+                    },
                 ]
 
                 # The method doesn't have explicit error handling, so it will propagate the exception

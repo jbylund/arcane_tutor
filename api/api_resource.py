@@ -334,7 +334,7 @@ class APIResource:
         """Set up the database schema and apply migrations as needed."""
         filesystem_migrations = db_utils.get_migrations()
 
-        with self._import_guard:  # noqa: SIM117
+        with self._import_guard:
             # read migrations from the db dir...
             # if any already applied migrations differ from what we want
             # to apply then drop everything
