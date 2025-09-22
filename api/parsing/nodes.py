@@ -85,6 +85,20 @@ class NumericValueNode(ValueNode):
         return f"%({_param_name})s"
 
 
+class ManaValueNode(ValueNode):
+    """Represents a mana cost value node, such as '{1}{G}' or 'WU'."""
+
+    def __init__(self: ManaValueNode, value: str) -> None:
+        """Initialize a ManaValueNode with a mana cost string."""
+        self.value = value
+
+    def to_sql(self: ManaValueNode, context: dict) -> str:
+        """Serialize this mana value node to a SQL string literal."""
+        _param_name = param_name(self.value)
+        context[_param_name] = self.value
+        return f"%({_param_name})s"
+
+
 class AttributeNode(LeafNode):
     """Represents an attribute of a card, such as 'cmc' or 'power'."""
 
