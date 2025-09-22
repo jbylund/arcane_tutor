@@ -687,7 +687,7 @@ def parse_search_query(query: str) -> Query:
     except ParseException as e:
         # ParseException has more specific information about where parsing failed
         # Keep backward compatibility while providing more context
-        msg = f"Failed to parse query: \"{original_query}\""
+        msg = f'Failed to parse query: "{original_query}"'
         raise ValueError(msg) from e
 
 
