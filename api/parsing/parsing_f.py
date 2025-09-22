@@ -664,6 +664,7 @@ def parse_search_query(query: str) -> Query:
         >>> parse_search_query("")
         Query(BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("")))
     """
+    original_query = query
     if query is None or not query.strip():
         # Return empty query
         return Query(BinaryOperatorNode(AttributeNode("name"), ":", ""))
@@ -686,7 +687,7 @@ def parse_search_query(query: str) -> Query:
     except ParseException as e:
         # ParseException has more specific information about where parsing failed
         # Keep backward compatibility while providing more context
-        msg = f"Failed to parse query '{query}': Syntax error at position {e.loc}: {e.msg}"
+        msg = f"Failed to parse query: \"{original_query}\""
         raise ValueError(msg) from e
 
 
