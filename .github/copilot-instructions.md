@@ -7,9 +7,12 @@ Always reference these instructions first and fallback to search or bash command
 ## Working Effectively
 
 ### Prerequisites and Environment Setup
-- Install Python dependencies:
-  - `python -m pip install --upgrade pip` -- takes ~2 seconds.
-  - `python -m pip install -r requirements.txt -r test-requirements.txt` -- takes ~4 seconds.
+- **Install uv** (recommended package manager):
+  - `python -m pip install uv` -- takes ~3 seconds. Modern Python package manager.
+  - Alternative: `curl -LsSf https://astral.sh/uv/install.sh | sh` -- official installer.
+- **Install Python dependencies using uv**:
+  - `uv pip install --system -r requirements.txt -r test-requirements.txt` -- takes ~2-3 seconds.
+  - Legacy method: `python -m pip install -r requirements.txt -r test-requirements.txt` -- takes ~4-6 seconds.
 
 ### Modular Dependency Structure
 - **requirements.txt**: Core application dependencies for testing and development
@@ -21,10 +24,12 @@ Always reference these instructions first and fallback to search or bash command
 - Install system dependencies:
   - `sudo apt-get update` -- takes ~7 seconds. NEVER CANCEL.
   - `sudo apt-get install -y libev-dev` -- takes ~5 seconds. NEVER CANCEL.
-- **IMPORTANT**: For local API testing, also install: `python -m pip install bjoern` -- takes ~3 seconds. Includes compilation of bjoern C extension.
+- **Install web server dependencies**:
+  - `uv pip install --system -r webserver-requirements.txt` -- takes ~3 seconds. Includes bjoern compilation.
+  - Legacy method: `python -m pip install -r webserver-requirements.txt` -- takes ~5 seconds.
 
 ### Build and Test Workflow
-- **Run tests**: `python -m pytest -vvv` -- takes ~1 second. All 100 tests should pass.
+- **Run tests**: `python -m pytest -vvv` -- takes ~15-20 seconds. All 438 tests should pass.
 - **Run linting**: `python -m ruff check` -- takes <1 second. Should pass with "All checks passed!"
 - **Run pylint**: `find . -type f -name "*.py" | xargs python -m pylint --fail-under 7.0 --max-line-length=132` -- takes ~7 seconds. Currently scores 9.01/10 and passes.
 - **Format code**: `python -m ruff check --fix --unsafe-fixes` -- takes <1 second. Auto-fixes style issues.
@@ -43,7 +48,7 @@ Always reference these instructions first and fallback to search or bash command
 ## Validation
 
 ### Manual Testing Scenarios
-- **ALWAYS run the complete test suite** after making changes: `python -m pytest -vvv` -- should show "100 passed"
+- **ALWAYS run the complete test suite** after making changes: `python -m pytest -vvv` -- should show "438 passed"
 - **Test parsing functionality**: `python -c "from api.parsing import parse_scryfall_query; print(parse_scryfall_query('cmc=3'))"` -- should output Query AST structure
 - **Test API entry point**: `python api/entrypoint.py --help` -- should show command line options
 - **Test API functionality**: Start API with `python api/entrypoint.py --port 8080 --workers 2` then visit http://localhost:8080/ to see web interface
@@ -52,7 +57,14 @@ Always reference these instructions first and fallback to search or bash command
 
 ### Quick Validation Workflow
 ```bash
-# Complete validation in under 15 seconds (no web server)
+# Modern approach with uv (recommended)
+python -m pip install uv  # Install uv if not available
+uv pip install --system -r requirements.txt -r test-requirements.txt
+python -m pytest -vvv
+python -c "from api.parsing import parse_scryfall_query; print(parse_scryfall_query('cmc=3'))"
+python -m ruff check
+
+# Legacy approach (fallback)
 python -m pip install -r requirements.txt -r test-requirements.txt
 python -m pytest -vvv
 python -c "from api.parsing import parse_scryfall_query; print(parse_scryfall_query('cmc=3'))"
@@ -60,7 +72,7 @@ python -m ruff check
 
 # Additional setup for web server testing (adds ~15 seconds)
 sudo apt-get update && sudo apt-get install -y libev-dev
-python -m pip install -r webserver-requirements.txt  # Required for local API testing
+uv pip install --system -r webserver-requirements.txt  # Required for local API testing
 ```
 
 ### Current Limitations
@@ -72,19 +84,23 @@ python -m pip install -r webserver-requirements.txt  # Required for local API te
 
 ### Development Commands That Work
 ```bash
-# Install dependencies (run once) - minimal setup
+# Install dependencies (run once) - modern approach with uv
+python -m pip install uv                   # Install uv package manager
+uv pip install --system -r requirements.txt -r test-requirements.txt
+
+# Legacy approach (fallback)
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt -r test-requirements.txt
 
 # Test and validate changes (works without system dependencies)
-python -m pytest -vvv                    # Run tests (~1 second)
+python -m pytest -vvv                    # Run tests (~15-20 seconds, 438 tests)
 python -m ruff check --fix --unsafe-fixes # Fix style issues (<1 second)
 npx prettier --write api/index.html      # Format HTML (~2 seconds)
 python api/entrypoint.py --help          # Test API entrypoint (shows help)
 
 # Additional setup for web server (optional)
 sudo apt-get update && sudo apt-get install -y libev-dev
-python -m pip install -r webserver-requirements.txt  # Required for local API testing
+uv pip install --system -r webserver-requirements.txt  # Required for local API testing
 
 # Docker workflow (works)
 make datadir                             # Create data directories (<1 second)
@@ -101,9 +117,12 @@ make lint                               # Works but requires installing pylint f
 
 ### Timing Expectations - NEVER CANCEL
 - **System package installation**: 5-7 seconds per package. NEVER CANCEL.
-- **Python dependency installation**: 2-4 seconds for standard packages. NEVER CANCEL.
+- **Python dependency installation**: 
+  - With uv: 2-3 seconds for standard packages. NEVER CANCEL.
+  - With pip: 4-6 seconds for standard packages. NEVER CANCEL.
+- **uv installation**: ~3 seconds. NEVER CANCEL.
 - **bjoern compilation**: ~3 seconds including C compilation. NEVER CANCEL.
-- **Unit tests**: ~1 second for full test suite (100 tests).
+- **Unit tests**: ~15-20 seconds for full test suite (438 tests).
 - **Linting**: <1 second for ruff, ~7 seconds for pylint.
 - **Docker builds**: 30-60 seconds when working. NEVER CANCEL.
 - **HTML formatting**: ~2 seconds. NEVER CANCEL.
@@ -144,15 +163,41 @@ api/
 ### GitHub Actions CI
 - **Unit tests workflow**: `.github/workflows/unit-tests.yml`
 - **Lint workflow**: `.github/workflows/lint.yml` 
-- **Runs on every push**: Installs Python 3.11, system deps, Python deps, runs pytest and ruff
-- **Expected to pass**: All 100 tests should pass in CI environment
-- **Automated setup script**: `.github/copilot-setup.sh` -- automated environment setup (may have permission issues)
+- **CI Monitor workflow**: `.github/workflows/ci-monitor.yml` -- automated failure detection
+- **Runs on every push**: Installs Python 3.13, system deps, uses uv for Python deps, runs pytest and ruff
+- **Expected to pass**: All 438 tests should pass in CI environment
+- **Uses uv**: CI workflows use uv package manager for faster dependency installation
+- **Automated setup script**: `.github/copilot-setup.sh` -- automated environment setup with uv support
 
 ## Key Development Notes
 - **Database schema**: Complex PostgreSQL schema in `api/db/` with Magic card data structures
 - **Query parser**: Implements Scryfall's search DSL in `api/parsing/` 
 - **Web framework**: Uses Falcon for lightweight, fast API development
 - **Multi-process**: API uses bjoern WSGI server with multiple worker processes (requires separate bjoern installation)
+- **Package management**: Uses uv for fast dependency installation (preferred over pip)
 - **Code quality**: Project maintains good code quality with ruff (passing) and pylint (9.01/10 score)
-- **Testing**: Excellent test coverage with 100 tests for parsing logic and query translation
+- **Testing**: Excellent test coverage with 438 tests for parsing logic, query translation, and API functionality
 - **Web interface**: Single-file HTML/CSS/JS application served by the API at `/`
+- **CI/CD**: Automated monitoring with issue creation for failed CI runs
+
+## GitHub Copilot Integration
+
+### Best Practices for Contributors
+- **Follow existing patterns**: The codebase has established patterns for parsing, testing, and API design
+- **Use type hints**: All new code should include proper Python type annotations
+- **Test coverage**: Write tests for new functionality following existing test patterns in `api/tests/` and `api/parsing/tests/`
+- **Code formatting**: Always run `python -m ruff check --fix --unsafe-fixes` before committing
+- **Performance**: Use uv for dependency management when possible for faster builds
+
+### Development Workflow with Copilot
+1. **Setup environment**: Run `./.github/copilot-setup.sh` for automated setup
+2. **Make changes**: Use GitHub Copilot to assist with code generation
+3. **Test locally**: Run `python -m pytest -vvv` to ensure all 438 tests pass
+4. **Format code**: Run `python -m ruff check --fix --unsafe-fixes`
+5. **Commit changes**: CI will automatically test with Python 3.13 and uv
+
+### Common Integration Points
+- **Parser development**: Focus on `api/parsing/` for Scryfall query syntax
+- **API endpoints**: Add new resources in `api/api_resource.py`
+- **Database queries**: SQL files in `api/db/` for complex queries
+- **Testing**: Comprehensive test suites in both `api/tests/` and `api/parsing/tests/`
