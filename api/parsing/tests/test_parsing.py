@@ -13,6 +13,7 @@ from api.parsing import (
     QueryNode,
     StringValueNode,
 )
+from api.parsing.scryfall_nodes import calculate_cmc, mana_cost_str_to_dict
 
 
 @pytest.mark.parametrize(
@@ -632,3 +633,104 @@ def test_mana_cost_with_comparison_operators() -> None:
     result2 = parsing.parse_search_query(query2)
     expected2 = BinaryOperatorNode(AttributeNode("m"), "=", parsing.ManaValueNode("{W}{U}"))
     assert result2.root == expected2
+
+
+def test_mana_cost_approximate_comparisons() -> None:
+    """Test mana cost approximate comparisons with <, <=, >, >= operators."""
+    # Test <= operator - use regular parser for AST structure validation
+    query1 = "mana<={2}{R}{R}"
+    result1 = parsing.parse_search_query(query1)
+    expected1 = BinaryOperatorNode(AttributeNode("mana"), "<=", parsing.ManaValueNode("{2}{R}{R}"))
+    assert result1.root == expected1
+
+    # Test < operator
+    query2 = "m<{1}{G}"
+    result2 = parsing.parse_search_query(query2)
+    expected2 = BinaryOperatorNode(AttributeNode("m"), "<", parsing.ManaValueNode("{1}{G}"))
+    assert result2.root == expected2
+
+    # Test >= operator (parsing test)
+    query3 = "mana>={W}{U}"
+    result3 = parsing.parse_search_query(query3)
+    expected3 = BinaryOperatorNode(AttributeNode("mana"), ">=", parsing.ManaValueNode("{W}{U}"))
+    assert result3.root == expected3
+
+    # Test > operator
+    query4 = "m>{0}"
+    result4 = parsing.parse_search_query(query4)
+    expected4 = BinaryOperatorNode(AttributeNode("m"), ">", parsing.ManaValueNode("{0}"))
+    assert result4.root == expected4
+
+
+def test_mana_cost_sql_generation() -> None:
+    """Test SQL generation for mana cost comparisons."""
+    # Test basic equality (colon operator) - use scryfall parser for proper node types
+    result1 = parsing.parse_scryfall_query("mana:{1}{G}")
+    context1 = {}
+    sql1 = result1.to_sql(context1)
+    assert "(card.mana_cost_text =" in sql1
+    assert "{1}{G}" in context1.values()
+
+    # Test <= operator generates containment + cmc check
+    result2 = parsing.parse_scryfall_query("mana<={2}{R}{R}")
+    context2 = {}
+    sql2 = result2.to_sql(context2)
+    assert "card.mana_cost_jsonb <@" in sql2
+    assert "card.cmc <=" in sql2
+    assert {"R": [1, 2]} in context2.values()
+    assert 4 in context2.values()  # CMC of {2}{R}{R}
+
+    # Test < operator includes inequality check
+    result3 = parsing.parse_scryfall_query("mana<{1}{G}")
+    context3 = {}
+    sql3 = result3.to_sql(context3)
+    assert "card.mana_cost_jsonb <@" in sql3
+    assert "card.cmc <=" in sql3
+    assert "card.mana_cost_jsonb <>" in sql3
+
+    # Test >= operator reverses containment direction
+    result4 = parsing.parse_scryfall_query("mana>={W}{U}")
+    context4 = {}
+    sql4 = result4.to_sql(context4)
+    assert "<@ card.mana_cost_jsonb" in sql4
+    assert "card.cmc >=" in sql4
+
+    # Test > operator includes inequality
+    result5 = parsing.parse_scryfall_query("mana>{0}")
+    context5 = {}
+    sql5 = result5.to_sql(context5)
+    assert "<@ card.mana_cost_jsonb" in sql5
+    assert "card.cmc >=" in sql5
+    assert "card.mana_cost_jsonb <>" in sql5
+
+
+def test_mana_cost_cmc_calculation() -> None:
+    """Test CMC calculation for various mana costs."""
+    # Test basic costs
+    assert calculate_cmc("{1}{G}") == 2
+    assert calculate_cmc("{2}{R}{R}") == 4
+    assert calculate_cmc("{W}{U}") == 2
+    assert calculate_cmc("{0}") == 0
+    assert calculate_cmc("{15}") == 15
+
+    # Test hybrid costs (each counts as 1)
+    assert calculate_cmc("{W/U}") == 1
+    assert calculate_cmc("{2/W}") == 1
+    assert calculate_cmc("{W/U/P}") == 1
+
+    # Test X costs (X counts as 0 for CMC calculation)
+    assert calculate_cmc("{X}{X}{W}") == 1
+
+
+def test_mana_cost_dict_conversion() -> None:
+    """Test mana cost to dict conversion."""
+    # Test basic conversions
+    assert mana_cost_str_to_dict("{1}{G}") == {"G": [1]}
+    assert mana_cost_str_to_dict("{2}{R}{R}") == {"R": [1, 2]}
+    assert mana_cost_str_to_dict("{W}{U}") == {"W": [1], "U": [1]}
+    assert mana_cost_str_to_dict("{0}") == {}
+
+    # Test complex symbols (they should still count as single symbols)
+    assert mana_cost_str_to_dict("{W/U}") == {"W/U": [1]}
+    assert mana_cost_str_to_dict("{2/W}") == {"2/W": [1]}
+    assert mana_cost_str_to_dict("{X}{X}{W}") == {"X": [1, 2], "W": [1]}

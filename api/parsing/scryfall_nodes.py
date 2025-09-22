@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from .db_info import (
     CARD_SUPERTYPES,
     CARD_TYPES,
@@ -15,6 +17,7 @@ from .nodes import (
     AndNode,
     AttributeNode,
     BinaryOperatorNode,
+    ManaValueNode,
     NotNode,
     NumericValueNode,
     OrNode,
@@ -202,6 +205,41 @@ def get_legality_comparison_object(val: str, attr: str) -> dict[str, str]:
     return {format_name: status}
 
 
+def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
+    """Convert a mana cost string to a dictionary of colored symbols and their counts."""
+    colored_symbol_counts = {}
+    for mana_symbol in re.findall(r"{([^}]*)}", mana_cost_str):
+        try:
+            int(mana_symbol)
+        except ValueError:
+            colored_symbol_counts[mana_symbol] = colored_symbol_counts.get(mana_symbol, 0) + 1
+        else:
+            pass
+    as_dict = {}
+    for colored_symbol, count in colored_symbol_counts.items():
+        as_dict[colored_symbol] = list(range(1, count + 1))
+    return as_dict
+
+
+def calculate_cmc(mana_cost_str: str) -> int:
+    """Calculate the converted mana cost from a mana cost string."""
+    cmc = 0
+    for mana_symbol in re.findall(r"{([^}]*)}", mana_cost_str):
+        try:
+            # Generic mana symbols add to CMC
+            cmc += int(mana_symbol)
+        except ValueError:
+            # X costs count as 0 for CMC calculation
+            if mana_symbol.upper() == "X":
+                continue
+            # Colored mana symbols (W, U, B, R, G, etc.) each count as 1
+            # Handle hybrid symbols like {W/U} as 1
+            # Handle Phyrexian symbols like {W/P} as 1
+            # For simplicity, any non-numeric, non-X symbol counts as 1
+            cmc += 1
+    return cmc
+
+
 class ScryfallBinaryOperatorNode(BinaryOperatorNode):
     """Scryfall-specific binary operator node with custom SQL generation."""
 
@@ -227,6 +265,10 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         # Special routing for collector numbers based on operator
         if attr == "collector_number":
             return self._handle_collector_number(context)
+
+        # Special handling for mana attributes with comparison operators
+        if attr in ("mana_cost_text", "mana_cost_jsonb") and isinstance(self.rhs, ManaValueNode):
+            return self._handle_mana_cost_comparison(context)
 
         lhs_sql = self.lhs.to_sql(context)
         field_type = get_field_type(attr)
@@ -312,9 +354,80 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             self.operator = "="
         return super().to_sql(context)
 
+    def _handle_mana_cost_comparison(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+        """Handle mana cost comparisons with approximate matching."""
+        attr = self.lhs.attribute_name
+        mana_cost_str = self.rhs.value
+
+        # For ":" and "=" operators, use text field matching for exact matches
+        if self.operator in (":", "="):
+            if attr == "mana_cost_text":
+                # Use text matching for exact mana cost matches
+                if self.operator == ":":
+                    self.operator = "="
+                return super().to_sql(context)
+            # For mana_cost_jsonb, convert to JSONB and use equality
+            mana_dict = mana_cost_str_to_dict(mana_cost_str)
+            pname = param_name(mana_dict)
+            context[pname] = mana_dict
+            lhs_sql = self.lhs.to_sql(context)
+            return f"({lhs_sql} = %({pname})s)"
+
+        # For comparison operators, we need both containment check and CMC check
+        if self.operator in ("<=", "<", ">=", ">"):
+            return self._handle_mana_cost_approximate_comparison(context, mana_cost_str)
+
+        # Fallback to text pattern matching
+        return self._handle_text_field_pattern_matching(context, self.lhs.to_sql(context))
+
+    def _handle_mana_cost_approximate_comparison(self: ScryfallBinaryOperatorNode, context: dict, mana_cost_str: str) -> str:
+        """Handle approximate mana cost comparisons using containment and CMC."""
+        # Convert the query mana cost to dict for containment checking
+        query_mana_dict = mana_cost_str_to_dict(mana_cost_str)
+        query_cmc = calculate_cmc(mana_cost_str)
+
+        # Prepare parameters
+        mana_param = param_name(query_mana_dict)
+        cmc_param = param_name(query_cmc)
+        context[mana_param] = query_mana_dict
+        context[cmc_param] = query_cmc
+
+        # SQL fragments
+        mana_jsonb_sql = "card.mana_cost_jsonb"
+        cmc_sql = "card.cmc"
+
+        if self.operator == "<=":
+            # Card costs <= query if:
+            # 1. Card doesn't have more colored pips (card mana <@ query mana)
+            # 2. Card doesn't cost more total (card cmc <= query cmc)
+            return f"({mana_jsonb_sql} <@ %({mana_param})s AND {cmc_sql} <= %({cmc_param})s)"
+
+        if self.operator == "<":
+            # Card costs < query if:
+            # 1. Card doesn't have more colored pips (card mana <@ query mana)
+            # 2. Card doesn't cost more total (card cmc <= query cmc)
+            # 3. Costs are not identical
+            return f"({mana_jsonb_sql} <@ %({mana_param})s AND {cmc_sql} <= %({cmc_param})s AND {mana_jsonb_sql} <> %({mana_param})s)"
+
+        if self.operator == ">=":
+            # Card costs >= query if:
+            # 1. Card has at least the colored pips (card mana @> query mana)
+            # 2. Card costs at least as much total (card cmc >= query cmc)
+            return f"(%({mana_param})s <@ {mana_jsonb_sql} AND {cmc_sql} >= %({cmc_param})s)"
+
+        if self.operator == ">":
+            # Card costs > query if:
+            # 1. Card has at least the colored pips (card mana @> query mana)
+            # 2. Card costs at least as much total (card cmc >= query cmc)
+            # 3. Costs are not identical
+            return f"(%({mana_param})s <@ {mana_jsonb_sql} AND {cmc_sql} >= %({cmc_param})s AND {mana_jsonb_sql} <> %({mana_param})s)"
+
+        msg = f"Unsupported mana cost operator: {self.operator}"
+        raise ValueError(msg)
+
     def _handle_text_field_pattern_matching(self: ScryfallBinaryOperatorNode, context: dict, lhs_sql: str) -> str:
         """Handle pattern matching for regular text fields."""
-        if isinstance(self.rhs, StringValueNode):
+        if isinstance(self.rhs, (StringValueNode, ManaValueNode)):
             txt_val = self.rhs.value.strip()
         elif isinstance(self.rhs, str):
             txt_val = self.rhs.strip()
