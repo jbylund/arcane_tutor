@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 
 from pyparsing import (
     CaselessKeyword,
@@ -10,6 +11,7 @@ from pyparsing import (
     Forward,
     Group,
     Literal,
+    OneOrMore,
     Optional,
     ParseException,
     ParserElement,
@@ -22,11 +24,22 @@ from pyparsing import (
     oneOf,
 )
 
-from .db_info import KNOWN_CARD_ATTRIBUTES, NON_NUMERIC_ATTRIBUTES, NUMERIC_ATTRIBUTES
+from .db_info import (
+    COLOR_ATTRIBUTES,
+    COLOR_NAME_TO_CODE,
+    KNOWN_CARD_ATTRIBUTES,
+    LEGALITY_ATTRIBUTES,
+    MANA_ATTRIBUTES,
+    NON_NUMERIC_ATTRIBUTES,
+    NUMERIC_ATTRIBUTES,
+    RARITY_ATTRIBUTES,
+    TEXT_ATTRIBUTES,
+)
 from .nodes import (
     AndNode,
     AttributeNode,
     BinaryOperatorNode,
+    ManaValueNode,
     NotNode,
     NumericValueNode,
     OrNode,
@@ -36,11 +49,32 @@ from .nodes import (
 )
 from .scryfall_nodes import to_scryfall_ast
 
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
 # Enable pyparsing packrat caching for improved performance with increased cache size
 ParserElement.enable_packrat(cache_size_limit=2**13)  # 8192 cache entries
 
 # Constants
 NEGATION_TOKEN_COUNT = 2
+
+
+def make_regex_pattern(words: Iterable[str]) -> Regex:
+    """Create a regex pattern for matching words with word boundaries.
+
+    Args:
+        words: Iterable of words to match
+
+    Returns:
+        Regex parser element with case-insensitive matching and word boundaries
+    """
+    if not words:
+        # Return a pattern that matches nothing if no words provided
+        return Regex(r"(?!)", flags=re.IGNORECASE)
+
+    # Sort by length (longest first) to avoid partial matches, then wrap with word boundaries
+    pattern = r"\b(" + "|".join(sorted(words, key=len, reverse=True)) + r")\b"
+    return Regex(pattern, flags=re.IGNORECASE)
 
 
 def balance_partial_query(query: str) -> str:
@@ -218,10 +252,10 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
         """Create an AttributeNode for any attribute."""
         return AttributeNode(tokens[0])
 
-    numeric_attr_word = Regex("|".join(sorted(NUMERIC_ATTRIBUTES, key=len, reverse=True)), flags=re.IGNORECASE)
+    numeric_attr_word = make_regex_pattern(NUMERIC_ATTRIBUTES)
     numeric_attr_word.setParseAction(make_attribute_node)
 
-    non_numeric_attr_word = Regex("|".join(sorted(NON_NUMERIC_ATTRIBUTES, key=len, reverse=True)), flags=re.IGNORECASE)
+    non_numeric_attr_word = make_regex_pattern(NON_NUMERIC_ATTRIBUTES)
     non_numeric_attr_word.setParseAction(make_attribute_node)
 
     # Create a literal number parser for numeric constants
@@ -233,6 +267,35 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     # Use Regex to match words that may contain hyphens for string values
     # Allow values starting with digits, letters, or underscores to handle cases like "40k-model"
     string_value_word = Regex(r"[a-zA-Z0-9_][a-zA-Z0-9_-]*")
+
+    # Mana cost patterns - support mixed notation as per Scryfall rules
+    # Simple symbols don't need braces: W, U, B, R, G, C, 1, 2, etc.
+    # Complex symbols (with alternatives) must use braces: {W/U}, {2/W}, {W/U/P}
+
+    # Individual mana components
+    curly_mana_symbol = Regex(r"\{[^}]+\}")  # Complex symbols in braces: {W/U}, {2/W}
+    simple_mana_symbol = Regex(r"[0-9WUBRGCXYZ]")  # Simple symbols without braces: W, 1, 2
+
+    # Mixed mana pattern: any combination of simple and complex symbols
+    # Examples: {1}{G}, 1{G}, 2RR, W{U/R}, {2/W}G, etc.
+    mixed_mana_pattern = Combine(OneOrMore(curly_mana_symbol | simple_mana_symbol))
+
+    # Create ManaValueNode for mana cost strings
+    def make_mana_value_node(tokens: list[str]) -> ManaValueNode:
+        """Create a ManaValueNode for mana cost strings."""
+        return ManaValueNode(tokens[0])
+
+    mana_value = mixed_mana_pattern.setParseAction(make_mana_value_node)
+
+    # Color value patterns - support both color names and letter combinations
+    # Color names: white, blue, black, red, green, colorless (case-insensitive)
+    color_word = make_regex_pattern(COLOR_NAME_TO_CODE.keys())
+
+    # Color letter pattern: any combination of w, u, b, r, g, c (case-insensitive)
+    color_letter_pattern = Regex(r"[wubrgcWUBRGC]+")
+
+    # Combined color value pattern
+    color_value = color_word | color_letter_pattern
 
     # Build the grammar with proper precedence
     expr = Forward()
@@ -248,32 +311,67 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     arithmetic_expr <<= arithmetic_term + arithmetic_op + arithmetic_term + ZeroOrMore(arithmetic_op + arithmetic_term)
     arithmetic_expr.setParseAction(make_chained_arithmetic)
 
+    # Create attribute parsers for each parser class - eliminates the need for special cases
+    mana_attr_word = make_regex_pattern(MANA_ATTRIBUTES)
+    mana_attr_word.setParseAction(make_attribute_node)
+
+    rarity_attr_word = make_regex_pattern(RARITY_ATTRIBUTES)
+    rarity_attr_word.setParseAction(make_attribute_node)
+
+    legality_attr_word = make_regex_pattern(LEGALITY_ATTRIBUTES)
+    legality_attr_word.setParseAction(make_attribute_node)
+
+    color_attr_word = make_regex_pattern(COLOR_ATTRIBUTES)
+    color_attr_word.setParseAction(make_attribute_node)
+
+    text_attr_word = make_regex_pattern(TEXT_ATTRIBUTES)
+    text_attr_word.setParseAction(make_attribute_node)
+
     # Unified numeric comparison rule: handles all combinations of arithmetic expressions, numeric attributes, and literals
     # This consolidates the previous arithmetic_comparison and numeric_condition rules
     unified_numeric_comparison = (arithmetic_expr | numeric_attr_word | literal_number) + attrop + (arithmetic_expr | numeric_attr_word | literal_number)
     unified_numeric_comparison.setParseAction(make_binary_operator_node)
 
-    # Attribute-to-attribute comparison should be between same types
-    # Non-numeric to non-numeric (numeric comparisons are now handled by unified_numeric_comparison)
-    non_numeric_attr_attr_condition = non_numeric_attr_word + attrop + non_numeric_attr_word
-    non_numeric_attr_attr_condition.setParseAction(make_binary_operator_node)
+    # Mana condition: mana attributes with mana cost values (mana:{1}{G}, m:WU, etc.)
+    # For mana attributes, try mana patterns first, then fall back to quoted strings and regular strings
+    mana_value_or_string = mana_value | quoted_string | string_value_word
+    mana_condition = mana_attr_word + attrop + mana_value_or_string
+    mana_condition.setParseAction(make_binary_operator_node)
 
-    # Non-numeric attributes compared with string values
-    non_numeric_condition = non_numeric_attr_word + attrop + (quoted_string | string_value_word)
-    non_numeric_condition.setParseAction(make_binary_operator_node)
-
-    # Special case for rarity attributes with string values (rarity:rare, r:common, etc.)
-    rarity_attr = Regex(r"\b(rarity|r)\b", flags=re.IGNORECASE)
-    rarity_attr.setParseAction(make_attribute_node)
-    rarity_condition = rarity_attr + attrop + (quoted_string | string_value_word)
+    # Rarity condition: rarity attributes with string values (rarity:rare, r:common, etc.)
+    rarity_condition = rarity_attr_word + attrop + (quoted_string | string_value_word)
     rarity_condition.setParseAction(make_binary_operator_node)
 
-    condition = rarity_condition | unified_numeric_comparison | non_numeric_condition
+    # Legality condition: legality attributes with string values (legal:standard, format:modern, etc.)
+    legality_condition = legality_attr_word + attrop + (quoted_string | string_value_word)
+    legality_condition.setParseAction(make_binary_operator_node)
 
-    # Special rule for non-numeric attribute-colon-hyphenated-value to handle cases like "otag:dual-land" and "otag:40k-model"
-    # Only non-numeric attributes should have hyphenated string values
+    # Color condition: color attributes with color values (color:red, c:rg, id:wubr, etc.)
+    color_condition = color_attr_word + attrop + (color_value | quoted_string)
+    color_condition.setParseAction(make_binary_operator_node)
+
+    # Text condition: text attributes compared with string values
+    text_condition = text_attr_word + attrop + (quoted_string | string_value_word)
+    text_condition.setParseAction(make_binary_operator_node)
+
+    # Attribute-to-attribute comparisons should be between attributes of the same parser class
+    attr_attr_condition = (
+        (numeric_attr_word + attrop + numeric_attr_word) |
+        (mana_attr_word + attrop + mana_attr_word) |
+        (rarity_attr_word + attrop + rarity_attr_word) |
+        (legality_attr_word + attrop + legality_attr_word) |
+        (color_attr_word + attrop + color_attr_word) |
+        (text_attr_word + attrop + text_attr_word)
+    )
+    attr_attr_condition.setParseAction(make_binary_operator_node)
+
+    # Combine all conditions with clear precedence - no more special cases needed
+    condition = mana_condition | rarity_condition | legality_condition | color_condition | unified_numeric_comparison | text_condition | attr_attr_condition
+
+    # Special rule for text attribute-colon-hyphenated-value to handle cases like "otag:dual-land" and "otag:40k-model"
+    # Only text attributes should have hyphenated string values (not numeric, mana, rarity, or legality)
     # Allow values starting with digits, letters, or underscores
-    hyphenated_condition = non_numeric_attr_word + Literal(":") + Regex(r"[a-zA-Z0-9_][a-zA-Z0-9_-]*")
+    hyphenated_condition = text_attr_word + Literal(":") + Regex(r"[a-zA-Z0-9_][a-zA-Z0-9_-]*")
     hyphenated_condition.setParseAction(make_binary_operator_node)
 
     # Single word (implicit name search)
@@ -319,7 +417,7 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
 
     # For negation, we exclude arithmetic expressions from being negated
     # Test: revert to original order to confirm this breaks it
-    negatable_primary = non_numeric_attr_attr_condition | condition | group | single_word
+    negatable_primary = attr_attr_condition | condition | group | single_word
     negatable_factor = Optional(operator_not) + negatable_primary
     negatable_factor.setParseAction(handle_negation)
 
@@ -327,7 +425,7 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     # SPECIAL: hyphenated_condition first to handle "otag:dual-land", then condition (includes comparisons) before standalone arithmetic
     # Note: arithmetic_comparison is now consolidated into unified_numeric_comparison within condition
     # Add standalone_numeric at the end to handle cases like "1" without operators
-    factor = hyphenated_condition | condition | arithmetic_expr | negatable_factor | standalone_numeric
+    factor = condition | hyphenated_condition | arithmetic_expr | negatable_factor | standalone_numeric
 
     # Expression with explicit AND/OR operators (highest precedence)
     def handle_operators(tokens: list[object]) -> object:
@@ -434,7 +532,7 @@ def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
             i += 1
         elif char == "-":
             # Check if this hyphen is part of an attribute value
-            in_attr_value_context = tokens and tokens[-1] == ":"
+            in_attr_value_context = tokens and tokens[-1] in [":", "=", "!=", ">", "<", ">=", "<="]
             if in_attr_value_context:
                 # In attribute value context, treat hyphen as part of the word
                 word_end = i
@@ -451,14 +549,30 @@ def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
         else:
             # Handle words (alphanumeric starting) and numeric literals
             word_end = i
-            # Check if we're in an attribute value context (previous token was a colon)
-            in_attr_value_context = tokens and tokens[-1] == ":"
+            # Check if we're in an attribute value context (previous token was an operator)
+            in_attr_value_context = tokens and tokens[-1] in [":", "=", "!=", ">", "<", ">=", "<="]
 
             if in_attr_value_context:
-                # In attribute value context, allow alphanumeric, underscore, and hyphens
-                # This handles cases like "40k-model" as a single token
-                while word_end < len(query) and (query[word_end].isalnum() or query[word_end] in "_-"):
-                    word_end += 1
+                # In attribute value context, handle different types of values
+                if query[i].isdigit():
+                    # Check if this looks like a pure numeric literal (only digits and maybe one decimal point)
+                    temp_end = word_end
+                    while temp_end < len(query) and (query[temp_end].isdigit() or query[temp_end] == "."):
+                        temp_end += 1
+
+                    # If the numeric part is followed by letters or other characters, treat as string value
+                    if temp_end < len(query) and (query[temp_end].isalpha() or query[temp_end] in "_-{}/"):
+                        # Treat as string value: alphanumeric, underscore, hyphens, curly braces, and slashes
+                        while word_end < len(query) and (query[word_end].isalnum() or query[word_end] in "_-{}/"):
+                            word_end += 1
+                    else:
+                        # Pure numeric literal
+                        word_end = temp_end
+                else:
+                    # Handle alphanumeric, underscore, hyphens, curly braces, and slashes
+                    # This handles cases like "40k-model" and mana costs like "{1}{G}" and "{W/U}" as single tokens
+                    while word_end < len(query) and (query[word_end].isalnum() or query[word_end] in "_-{}/"):
+                        word_end += 1
             elif query[i].isdigit():
                 # Handle numeric literal (integer or float) only when not in attribute value context
                 while word_end < len(query) and (query[word_end].isdigit() or query[word_end] == "."):
