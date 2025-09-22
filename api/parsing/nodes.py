@@ -3,8 +3,33 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from base64 import b64encode
+from hashlib import md5
 from typing import Any
+
+
+def base62_encode(data: bytes) -> str:
+    """Encode bytes using base62 (26 uppercase + 26 lowercase + 10 digits).
+
+    Args:
+        data: The bytes to encode.
+
+    Returns:
+        A base62 encoded string.
+    """
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    if not data:
+        return ""
+
+    # Convert bytes to integer
+    num = int.from_bytes(data, byteorder='big')
+
+    # Convert to base62
+    result = []
+    while num > 0:
+        num, remainder = divmod(num, 62)
+        result.append(alphabet[remainder])
+
+    return ''.join(reversed(result))
 
 
 def param_name(ival: object) -> str:
@@ -16,9 +41,14 @@ def param_name(ival: object) -> str:
     Returns:
         A unique parameter name based on the value and its type.
     """
-    b64d = b64encode(str(ival).encode()).decode().rstrip("=")
+    # Create MD5 hash of the object
+    hash_obj = md5(str(ival).encode())
+    digest_bytes = hash_obj.digest()[-5:]
+
+    b62_encoded = base62_encode(digest_bytes)
+
     val_type = type(ival).__name__
-    return f"p_{val_type}_{b64d}"
+    return f"p_{val_type}_{b62_encoded}"
 
 
 # AST Classes
