@@ -53,6 +53,24 @@ ParserElement.enable_packrat(cache_size_limit=2**13)  # 8192 cache entries
 NEGATION_TOKEN_COUNT = 2
 
 
+def make_regex_pattern(words: list[str]) -> Regex:
+    """Create a regex pattern for matching words with word boundaries.
+
+    Args:
+        words: List of words to match
+
+    Returns:
+        Regex parser element with case-insensitive matching and word boundaries
+    """
+    if not words:
+        # Return a pattern that matches nothing if no words provided
+        return Regex(r"(?!)", flags=re.IGNORECASE)
+
+    # Sort by length (longest first) to avoid partial matches, then wrap with word boundaries
+    pattern = r"\b(" + "|".join(sorted(words, key=len, reverse=True)) + r")\b"
+    return Regex(pattern, flags=re.IGNORECASE)
+
+
 def balance_partial_query(query: str) -> str:
     """Balance quotes and parentheses for typeahead searches using a stack."""
     char_to_mirror = {
@@ -228,10 +246,10 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
         """Create an AttributeNode for any attribute."""
         return AttributeNode(tokens[0])
 
-    numeric_attr_word = Regex("|".join(sorted(NUMERIC_ATTRIBUTES, key=len, reverse=True)), flags=re.IGNORECASE)
+    numeric_attr_word = make_regex_pattern(list(NUMERIC_ATTRIBUTES))
     numeric_attr_word.setParseAction(make_attribute_node)
 
-    non_numeric_attr_word = Regex("|".join(sorted(NON_NUMERIC_ATTRIBUTES, key=len, reverse=True)), flags=re.IGNORECASE)
+    non_numeric_attr_word = make_regex_pattern(list(NON_NUMERIC_ATTRIBUTES))
     non_numeric_attr_word.setParseAction(make_attribute_node)
 
     # Create a literal number parser for numeric constants
@@ -278,16 +296,16 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     arithmetic_expr.setParseAction(make_chained_arithmetic)
 
     # Create attribute parsers for each parser class - eliminates the need for special cases
-    mana_attr_word = Regex("|".join(sorted(MANA_ATTRIBUTES, key=len, reverse=True)), flags=re.IGNORECASE)
+    mana_attr_word = make_regex_pattern(list(MANA_ATTRIBUTES))
     mana_attr_word.setParseAction(make_attribute_node)
 
-    rarity_attr_word = Regex("|".join(sorted(RARITY_ATTRIBUTES, key=len, reverse=True)), flags=re.IGNORECASE)
+    rarity_attr_word = make_regex_pattern(list(RARITY_ATTRIBUTES))
     rarity_attr_word.setParseAction(make_attribute_node)
 
-    legality_attr_word = Regex("|".join(sorted(LEGALITY_ATTRIBUTES, key=len, reverse=True)), flags=re.IGNORECASE)
+    legality_attr_word = make_regex_pattern(list(LEGALITY_ATTRIBUTES))
     legality_attr_word.setParseAction(make_attribute_node)
 
-    text_attr_word = Regex("|".join(sorted(TEXT_ATTRIBUTES, key=len, reverse=True)), flags=re.IGNORECASE)
+    text_attr_word = make_regex_pattern(list(TEXT_ATTRIBUTES))
     text_attr_word.setParseAction(make_attribute_node)
 
     # Unified numeric comparison rule: handles all combinations of arithmetic expressions, numeric attributes, and literals
