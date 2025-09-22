@@ -561,3 +561,56 @@ def test_parse_combined_collector_number_queries() -> None:
         BinaryOperatorNode(AttributeNode("cn"), ":", StringValueNode("2")),
     ])
     assert result2.root == expected2
+
+
+@pytest.mark.parametrize(
+    argnames=("test_input", "expected_ast"),
+    argvalues=[
+        ("mana:{1}{G}", BinaryOperatorNode(AttributeNode("mana"), ":", parsing.ManaValueNode("{1}{G}"))),
+        ("m:{2}{R}{G}", BinaryOperatorNode(AttributeNode("m"), ":", parsing.ManaValueNode("{2}{R}{G}"))),
+        ("mana:{W/U}", BinaryOperatorNode(AttributeNode("mana"), ":", parsing.ManaValueNode("{W/U}"))),
+        ("m:{X}{X}{W}", BinaryOperatorNode(AttributeNode("m"), ":", parsing.ManaValueNode("{X}{X}{W}"))),
+        ("mana:{0}", BinaryOperatorNode(AttributeNode("mana"), ":", parsing.ManaValueNode("{0}"))),
+        ("m:{15}", BinaryOperatorNode(AttributeNode("m"), ":", parsing.ManaValueNode("{15}"))),
+    ],
+)
+def test_parse_mana_cost_searches(test_input: str, expected_ast: BinaryOperatorNode) -> None:
+    """Test parsing mana cost searches with full curly-brace notation."""
+    observed = parsing.parse_search_query(test_input)
+    assert observed.root == expected_ast
+
+
+def test_parse_combined_mana_queries() -> None:
+    """Test parsing combined queries with mana cost searches."""
+    # Test combining mana with other attributes
+    query1 = "cmc<=3 mana:{1}{G}"
+    result1 = parsing.parse_search_query(query1)
+    expected1 = parsing.AndNode([
+        BinaryOperatorNode(AttributeNode("cmc"), "<=", NumericValueNode(3)),
+        BinaryOperatorNode(AttributeNode("mana"), ":", parsing.ManaValueNode("{1}{G}")),
+    ])
+    assert result1.root == expected1
+
+    # Test combining multiple mana attributes
+    query2 = "mana:{W} OR m:{U}"
+    result2 = parsing.parse_search_query(query2)
+    expected2 = parsing.OrNode([
+        BinaryOperatorNode(AttributeNode("mana"), ":", parsing.ManaValueNode("{W}")),
+        BinaryOperatorNode(AttributeNode("m"), ":", parsing.ManaValueNode("{U}")),
+    ])
+    assert result2.root == expected2
+
+
+def test_mana_cost_with_comparison_operators() -> None:
+    """Test that mana cost searches work with different operators."""
+    # Test colon operator (most common)
+    query1 = "mana:{1}{G}"
+    result1 = parsing.parse_search_query(query1)
+    expected1 = BinaryOperatorNode(AttributeNode("mana"), ":", parsing.ManaValueNode("{1}{G}"))
+    assert result1.root == expected1
+
+    # Test equals operator
+    query2 = "m={W}{U}"
+    result2 = parsing.parse_search_query(query2)
+    expected2 = BinaryOperatorNode(AttributeNode("m"), "=", parsing.ManaValueNode("{W}{U}"))
+    assert result2.root == expected2

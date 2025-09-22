@@ -10,6 +10,7 @@ from pyparsing import (
     Forward,
     Group,
     Literal,
+    OneOrMore,
     Optional,
     ParseException,
     ParserElement,
@@ -27,6 +28,7 @@ from .nodes import (
     AndNode,
     AttributeNode,
     BinaryOperatorNode,
+    ManaValueNode,
     NotNode,
     NumericValueNode,
     OrNode,
@@ -234,6 +236,26 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     # Allow values starting with digits, letters, or underscores to handle cases like "40k-model"
     string_value_word = Regex(r"[a-zA-Z0-9_][a-zA-Z0-9_-]*")
 
+    # Mana cost patterns - match both full {X} notation and shorthand
+    # Pattern matches: {1}{G}, {2/W}, {W/P}, WUG, 2WW, etc.
+    # Full curly-brace notation: one or more {symbol} patterns
+    curly_mana_symbol = Regex(r"\{[^}]+\}")
+    full_mana_pattern = Combine(OneOrMore(curly_mana_symbol))
+
+    # Shorthand notation: valid mana sequences like "WUG", "2WW", "G", etc.
+    # This matches sequences that:
+    # 1. Start with optional numbers
+    # 2. Contain only valid mana symbols (W, U, B, R, G, C, X, Y, Z)
+    # 3. Have at least one mana letter symbol
+    shorthand_mana_pattern = Regex(r"[0-9]*[WUBRGCXYZ]+[0-9WUBRGCXYZ]*")
+
+    # Combined mana pattern - full notation takes precedence
+    def make_mana_value_node(tokens: list[str]) -> ManaValueNode:
+        """Create a ManaValueNode for mana cost strings."""
+        return ManaValueNode(tokens[0])
+
+    mana_value = (full_mana_pattern | shorthand_mana_pattern).setParseAction(make_mana_value_node)
+
     # Build the grammar with proper precedence
     expr = Forward()
 
@@ -268,7 +290,16 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     rarity_condition = rarity_attr + attrop + (quoted_string | string_value_word)
     rarity_condition.setParseAction(make_binary_operator_node)
 
-    condition = rarity_condition | unified_numeric_comparison | non_numeric_condition
+    # Special case for mana attributes with mana cost values (mana:{1}{G}, m:WU, etc.)
+    mana_attr = Regex(r"\b(mana|m)\b", flags=re.IGNORECASE)
+    mana_attr.setParseAction(make_attribute_node)
+
+    # For mana attributes, try mana patterns first, then fall back to quoted strings and regular strings
+    mana_value_or_string = mana_value | quoted_string | string_value_word
+    mana_condition = mana_attr + attrop + mana_value_or_string
+    mana_condition.setParseAction(make_binary_operator_node)
+
+    condition = mana_condition | rarity_condition | unified_numeric_comparison | non_numeric_condition
 
     # Special rule for non-numeric attribute-colon-hyphenated-value to handle cases like "otag:dual-land" and "otag:40k-model"
     # Only non-numeric attributes should have hyphenated string values
@@ -434,7 +465,7 @@ def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
             i += 1
         elif char == "-":
             # Check if this hyphen is part of an attribute value
-            in_attr_value_context = tokens and tokens[-1] == ":"
+            in_attr_value_context = tokens and tokens[-1] in [":", "=", "!=", ">", "<", ">=", "<="]
             if in_attr_value_context:
                 # In attribute value context, treat hyphen as part of the word
                 word_end = i
@@ -451,14 +482,30 @@ def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
         else:
             # Handle words (alphanumeric starting) and numeric literals
             word_end = i
-            # Check if we're in an attribute value context (previous token was a colon)
-            in_attr_value_context = tokens and tokens[-1] == ":"
+            # Check if we're in an attribute value context (previous token was an operator)
+            in_attr_value_context = tokens and tokens[-1] in [":", "=", "!=", ">", "<", ">=", "<="]
 
             if in_attr_value_context:
-                # In attribute value context, allow alphanumeric, underscore, and hyphens
-                # This handles cases like "40k-model" as a single token
-                while word_end < len(query) and (query[word_end].isalnum() or query[word_end] in "_-"):
-                    word_end += 1
+                # In attribute value context, handle different types of values
+                if query[i].isdigit():
+                    # Check if this looks like a pure numeric literal (only digits and maybe one decimal point)
+                    temp_end = word_end
+                    while temp_end < len(query) and (query[temp_end].isdigit() or query[temp_end] == "."):
+                        temp_end += 1
+
+                    # If the numeric part is followed by letters or other characters, treat as string value
+                    if temp_end < len(query) and (query[temp_end].isalpha() or query[temp_end] in "_-{}/"):
+                        # Treat as string value: alphanumeric, underscore, hyphens, curly braces, and slashes
+                        while word_end < len(query) and (query[word_end].isalnum() or query[word_end] in "_-{}/"):
+                            word_end += 1
+                    else:
+                        # Pure numeric literal
+                        word_end = temp_end
+                else:
+                    # Handle alphanumeric, underscore, hyphens, curly braces, and slashes
+                    # This handles cases like "40k-model" and mana costs like "{1}{G}" and "{W/U}" as single tokens
+                    while word_end < len(query) and (query[word_end].isalnum() or query[word_end] in "_-{}/"):
+                        word_end += 1
             elif query[i].isdigit():
                 # Handle numeric literal (integer or float) only when not in attribute value context
                 while word_end < len(query) and (query[word_end].isdigit() or query[word_end] == "."):
