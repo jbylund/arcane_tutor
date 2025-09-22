@@ -116,6 +116,39 @@ class TestTypeConversion(unittest.TestCase):
             # They should not be the same function object
             assert wrapped_method is not original_method
 
+    def test_make_type_converting_wrapper_preserves_metadata(self) -> None:
+        """Test that wrapper preserves original function metadata using functools.update_wrapper."""
+
+        def original_function(param: int = 42) -> str:
+            """This is the original docstring for the function.
+
+            Args:
+                param: An integer parameter
+
+            Returns:
+                A string representation
+            """
+            return f"result: {param}"
+
+        # Set some additional attributes to test preservation
+        original_function.custom_attr = "custom_value"
+
+        wrapped = make_type_converting_wrapper(original_function)
+
+        # Test that metadata is preserved
+        assert wrapped.__name__ == original_function.__name__
+        assert wrapped.__doc__ == original_function.__doc__
+        assert wrapped.__module__ == original_function.__module__
+        assert wrapped.__qualname__ == original_function.__qualname__
+        assert wrapped.__annotations__ == original_function.__annotations__
+
+        # Custom attributes should also be preserved
+        assert hasattr(wrapped, "custom_attr")
+        assert wrapped.custom_attr == "custom_value"  # type: ignore[attr-defined]
+
+        # Test that functionality still works
+        assert wrapped(param="10") == "result: 10"  # String converted to int
+
     def test_make_type_converting_wrapper_no_wrapping_needed(self) -> None:
         """Test that functions with no parameters or only self are not wrapped."""
 

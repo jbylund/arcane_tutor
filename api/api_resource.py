@@ -12,6 +12,7 @@ if True:  # imports
     import copy
     import csv
     import datetime
+    import functools
     import inspect
     import itertools
     import logging
@@ -130,7 +131,8 @@ def make_type_converting_wrapper(func: callable) -> callable:
 
         return func(**final_params)
 
-    return wrapper
+    # Use functools.update_wrapper to preserve original function metadata
+    return functools.update_wrapper(wrapper, func)
 
 
 @cached(cache=LRUCache(maxsize=10_000))
