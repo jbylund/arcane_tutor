@@ -75,7 +75,7 @@ class TestImportCardByName(unittest.TestCase):
         assert result == [{"name": "Lightning Bolt", "cmc": 1}]
         mock_get.assert_called_once_with(
             "https://api.scryfall.com/cards/search",
-            params={"q": "(name:'Lightning Bolt') game:paper (f:m or f:l or f:c or f:v)", "format": "json"},
+            params={"q": "(name:'Lightning Bolt') (f:m or f:l or f:c or f:v) game:paper unique:prints", "format": "json"},
             timeout=30,
         )
 
