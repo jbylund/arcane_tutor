@@ -50,6 +50,22 @@ DEFAULT_IMPORT_GUARD = multiprocessing.RLock()
 NOT_FOUND = 404
 
 
+def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
+    """Convert a mana cost string to a dictionary of colored symbols and their counts."""
+    colored_symbol_counts = {}
+    for mana_symbol in re.findall(r"{([^}]*)}", mana_cost_str):
+        try:
+            int(mana_symbol)
+        except ValueError:
+            colored_symbol_counts[mana_symbol] = colored_symbol_counts.get(mana_symbol, 0) + 1
+        else:
+            pass
+    as_dict = {}
+    for colored_symbol, count in colored_symbol_counts.items():
+        as_dict[colored_symbol] = list(range(1, count + 1))
+    return as_dict
+
+
 def _convert_string_to_type(str_value: str, param_type: Any) -> Any:  # noqa: ANN401
     """Convert a string value to the specified type.
 
@@ -597,6 +613,8 @@ class APIResource:
 
         # Extract set code for dedicated column
         card["card_set_code"] = card.get("set")
+        mana_cost_text = card.get("mana_cost", "")
+        card["mana_cost_jsonb"] = mana_cost_str_to_dict(mana_cost_text)
 
         return card
 
@@ -1497,7 +1515,7 @@ class APIResource:
                         card_blob->>'name' AS card_name, -- 1
                         (card_blob->>'cmc')::float::integer AS cmc, -- 2
                         card_blob->>'mana_cost' AS mana_cost_text, -- 3
-                        card_blob->'mana_cost' AS mana_cost_jsonb, -- 4
+                        card_blob->'mana_cost_jsonb' AS mana_cost_jsonb, -- 4
                         card_blob->'card_types' AS card_types, -- 5
                         card_blob->'card_subtypes' AS card_subtypes, -- 6
                         card_blob->'card_colors' AS card_colors, -- 7
