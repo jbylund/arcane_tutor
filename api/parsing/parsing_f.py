@@ -56,6 +56,7 @@ ParserElement.enable_packrat(cache_size_limit=2**13)  # 8192 cache entries
 
 # Constants
 NEGATION_TOKEN_COUNT = 2
+DEFAULT_OPERATORS = oneOf(": > < >= <= = !=")
 
 
 def make_regex_pattern(words: Iterable[str]) -> Regex:
@@ -179,7 +180,7 @@ def create_attribute_parser(attributes: list[str]) -> ParserElement:
     return parser
 
 
-def create_condition_parser(attr_parser: ParserElement, value_parser: ParserElement, operators: ParserElement = None) -> ParserElement:
+def create_condition_parser(attr_parser: ParserElement, value_parser: ParserElement, operators: ParserElement = DEFAULT_OPERATORS) -> ParserElement:
     """Factory function to create condition parsers with consistent structure.
 
     Args:
@@ -190,8 +191,6 @@ def create_condition_parser(attr_parser: ParserElement, value_parser: ParserElem
     Returns:
         Parser element that matches attribute operator value patterns
     """
-    if operators is None:
-        operators = oneOf(": > < >= <= = !=")
     condition = attr_parser + operators + value_parser
     condition.setParseAction(make_binary_operator_node)
     return condition
@@ -222,7 +221,7 @@ def create_basic_parsers() -> dict[str, ParserElement]:
         Dictionary containing basic parser elements
     """
     # Basic operators and keywords
-    attrop = oneOf(": > < >= <= = !=")
+    attrop = DEFAULT_OPERATORS
     arithmetic_op = oneOf("+ - * /")
     integer = Word(nums).setParseAction(lambda t: int(t[0]))
     # Float must have a decimal point to distinguish from integer
@@ -377,7 +376,7 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
 
     # Unified numeric comparison rule: handles all combinations of arithmetic expressions, numeric attributes, and literals
     # This consolidates the previous arithmetic_comparison and numeric_condition rules
-    unified_numeric_comparison = (arithmetic_expr | numeric_attr_word | literal_number) + oneOf(": > < >= <= = !=") + (arithmetic_expr | numeric_attr_word | literal_number)
+    unified_numeric_comparison = (arithmetic_expr | numeric_attr_word | literal_number) + DEFAULT_OPERATORS + (arithmetic_expr | numeric_attr_word | literal_number)
     unified_numeric_comparison.setParseAction(make_binary_operator_node)
 
     # Create condition parsers using factory function where possible
@@ -398,12 +397,12 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
 
     # Attribute-to-attribute comparisons should be between attributes of the same parser class
     attr_attr_condition = (
-        (numeric_attr_word + oneOf(": > < >= <= = !=") + numeric_attr_word) |
-        (mana_attr_word + oneOf(": > < >= <= = !=") + mana_attr_word) |
-        (rarity_attr_word + oneOf(": > < >= <= = !=") + rarity_attr_word) |
-        (legality_attr_word + oneOf(": > < >= <= = !=") + legality_attr_word) |
-        (color_attr_word + oneOf(": > < >= <= = !=") + color_attr_word) |
-        (text_attr_word + oneOf(": > < >= <= = !=") + text_attr_word)
+        (numeric_attr_word + DEFAULT_OPERATORS + numeric_attr_word) |
+        (mana_attr_word + DEFAULT_OPERATORS + mana_attr_word) |
+        (rarity_attr_word + DEFAULT_OPERATORS + rarity_attr_word) |
+        (legality_attr_word + DEFAULT_OPERATORS + legality_attr_word) |
+        (color_attr_word + DEFAULT_OPERATORS + color_attr_word) |
+        (text_attr_word + DEFAULT_OPERATORS + text_attr_word)
     )
     attr_attr_condition.setParseAction(make_binary_operator_node)
 
@@ -485,24 +484,13 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     color_parsers = create_color_parsers()
 
     # Extract frequently used parsers
-    basic_parsers["attrop"]
-    basic_parsers["arithmetic_op"]
-    basic_parsers["integer"]
-    basic_parsers["float_number"]
     lparen = basic_parsers["lparen"]
     rparen = basic_parsers["rparen"]
     operator_and = basic_parsers["operator_and"]
     operator_or = basic_parsers["operator_or"]
     operator_not = basic_parsers["operator_not"]
-    basic_parsers["quoted_string"]
     word = basic_parsers["word"]
     literal_number = basic_parsers["literal_number"]
-    basic_parsers["string_value_word"]
-    mana_parsers["mana_value"]
-    color_parsers["color_value"]
-
-    # Create attribute parsers using factory functions
-    create_attribute_parser(NUMERIC_ATTRIBUTES)
 
     # Build all condition parsers using helper function
     condition_parsers = create_all_condition_parsers(basic_parsers, mana_parsers, color_parsers)
@@ -512,7 +500,6 @@ def parse_search_query(query: str) -> Query:  # noqa: C901, PLR0915
     arithmetic_expr = condition_parsers["arithmetic_expr"]
     condition = condition_parsers["condition"]
     hyphenated_condition = condition_parsers["hyphenated_condition"]
-    condition_parsers["numeric_attr_word"]
     attr_attr_condition = condition_parsers["attr_attr_condition"]
 
     # Single word (implicit name search)
