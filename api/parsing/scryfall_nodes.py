@@ -202,6 +202,32 @@ def get_legality_comparison_object(val: str, attr: str) -> dict[str, str]:
     return {format_name: status}
 
 
+class ScryfallNotNode(NotNode):
+    """Scryfall-specific NOT node with special handling for type queries."""
+
+    def to_sql(self: ScryfallNotNode, context: dict) -> str:
+        """Generate SQL for Scryfall-specific NOT operations.
+
+        For type queries (card_types/card_subtypes), adds NULL checks to handle
+        cards that don't have the attribute set (NULL arrays).
+        """
+        # Check if we're negating a type query that uses jsonb arrays
+        if (isinstance(self.operand, ScryfallBinaryOperatorNode) and
+            isinstance(self.operand.lhs, ScryfallAttributeNode) and
+            self.operand.lhs.attribute_name in ("card_types", "card_subtypes") and
+            self.operand.operator == ":"):
+
+            # For type queries, we need to handle NULL arrays properly
+            # NULL arrays should be considered as "not containing" the type
+            operand_sql = self.operand.to_sql(context)
+            column_name = self.operand.lhs.to_sql(context)
+            return f"NOT (({column_name} IS NOT NULL AND {operand_sql}))"
+
+        # Default behavior for other queries
+        operand_sql = self.operand.to_sql(context)
+        return f"NOT ({operand_sql})"
+
+
 class ScryfallBinaryOperatorNode(BinaryOperatorNode):
     """Scryfall-specific binary operator node with custom SQL generation."""
 
@@ -437,6 +463,8 @@ def to_scryfall_ast(node: QueryNode) -> QueryNode:  # noqa: PLR0911
         return node
     if isinstance(node, ScryfallAttributeNode):
         return node
+    if isinstance(node, ScryfallNotNode):
+        return node
 
     if isinstance(node, BinaryOperatorNode):
         return ScryfallBinaryOperatorNode(
@@ -451,7 +479,7 @@ def to_scryfall_ast(node: QueryNode) -> QueryNode:  # noqa: PLR0911
     if isinstance(node, OrNode):
         return OrNode([to_scryfall_ast(op) for op in node.operands])
     if isinstance(node, NotNode):
-        return NotNode(to_scryfall_ast(node.operand))
+        return ScryfallNotNode(to_scryfall_ast(node.operand))
     if isinstance(node, Query):
         return Query(to_scryfall_ast(node.root))
     return node
