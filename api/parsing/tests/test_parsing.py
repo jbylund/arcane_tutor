@@ -734,3 +734,28 @@ def test_mana_cost_dict_conversion() -> None:
     assert mana_cost_str_to_dict("{W/U}") == {"W/U": [1]}
     assert mana_cost_str_to_dict("{2/W}") == {"2/W": [1]}
     assert mana_cost_str_to_dict("{X}{X}{W}") == {"X": [1, 2], "W": [1]}
+
+
+def test_mana_cost_string_format_comparisons() -> None:
+    """Test mana cost comparisons work with both {X} and X string formats."""
+    # Test that both formats parse correctly and generate SQL
+    queries_to_test = [
+        ("mana>{g}{g}{g}", "Braced format should work"),
+        ("mana>ggg", "Unbraced format should work"),
+        ("m>GGG", "Uppercase unbraced should work"),
+        ("mana<=ggg", "Less than or equal with unbraced"),
+        ("mana<ggg", "Less than with unbraced"),
+        ("mana>=ggg", "Greater than or equal with unbraced"),
+    ]
+
+    for query, _description in queries_to_test:
+        # Test that parsing works
+        result = parsing.parse_scryfall_query(query)
+        assert result is not None, f"Failed to parse {query}"
+
+        # Test that SQL generation works (should not raise NotImplementedError)
+        context = {}
+        sql = result.to_sql(context)
+        assert sql is not None, f"Failed to generate SQL for {query}"
+        assert "card.mana_cost_jsonb" in sql, f"Should use JSONB containment for {query}"
+        assert "card.cmc" in sql, f"Should use CMC check for {query}"

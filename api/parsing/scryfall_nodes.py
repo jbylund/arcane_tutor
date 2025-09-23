@@ -267,7 +267,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             return self._handle_collector_number(context)
 
         # Special handling for mana attributes with comparison operators
-        if attr in ("mana_cost_text", "mana_cost_jsonb") and isinstance(self.rhs, ManaValueNode):
+        if attr in ("mana_cost_text", "mana_cost_jsonb") and isinstance(self.rhs, (ManaValueNode, StringValueNode)):
             return self._handle_mana_cost_comparison(context)
 
         lhs_sql = self.lhs.to_sql(context)
