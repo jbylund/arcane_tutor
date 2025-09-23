@@ -1800,6 +1800,8 @@ class APIResource:
                 "message": "No cards provided for loading",
             }
 
+        self.setup_schema()
+
         # TODO:
         # this is a little bit of a spray and pray method
         # what I want to do is implement a priority ordering
