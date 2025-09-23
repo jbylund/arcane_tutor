@@ -1,11 +1,11 @@
 """Tests for card data export/import functionality."""
 
-import csv
 import inspect
 import pathlib
 import tempfile
 from unittest import mock
 
+import orjson
 import pytest
 
 from api.api_resource import APIResource
@@ -69,9 +69,9 @@ class TestExportImportCardData:
         mock_conn.cursor.return_value.__exit__ = mock.Mock(return_value=None)
 
         # Mock helper methods to return empty results
-        with mock.patch.object(api_resource, "_export_cards_table", return_value={"file": "cards.csv", "count": 0}), \
-             mock.patch.object(api_resource, "_export_tags_table", return_value={"file": "tags.csv", "count": 0}), \
-             mock.patch.object(api_resource, "_export_tag_relationships_table", return_value={"file": "relations.csv", "count": 0}):
+        with mock.patch.object(api_resource, "_export_cards_table", return_value={"file": "cards.json", "count": 0}), \
+             mock.patch.object(api_resource, "_export_tags_table", return_value={"file": "tags.json", "count": 0}), \
+             mock.patch.object(api_resource, "_export_tag_relationships_table", return_value={"file": "relations.json", "count": 0}):
 
             result = api_resource.export_card_data()
 
@@ -158,9 +158,9 @@ class TestExportImportCardData:
             import_dir = pathlib.Path(temp_dir)
 
             # Create required files
-            (import_dir / "cards.csv").touch()
-            (import_dir / "tags.csv").touch()
-            (import_dir / "tag_relationships.csv").touch()
+            (import_dir / "cards.json").touch()
+            (import_dir / "tags.json").touch()
+            (import_dir / "tag_relationships.json").touch()
 
             # Should not raise any exception
             api_resource._validate_import_files(import_dir)
@@ -173,20 +173,39 @@ class TestExportImportCardData:
             import_dir = pathlib.Path(temp_dir)
 
             # Create only one file
-            (import_dir / "cards.csv").touch()
+            (import_dir / "cards.json").touch()
 
-            with pytest.raises(ValueError, match=r"Missing required files: tags\.csv, tag_relationships\.csv"):
+            with pytest.raises(ValueError, match=r"Missing required files: tags\.json, tag_relationships\.json"):
                 api_resource._validate_import_files(import_dir)
 
     def test_export_cards_table(self) -> None:
         """Test _export_cards_table helper method."""
         api_resource = APIResource()
 
-        # Mock cursor with sample data
+        # Mock cursor with sample data - create a dict-like mock row
+        mock_row = {
+            "card_name": "Lightning Bolt",
+            "cmc": 1,
+            "mana_cost_text": "{R}",
+            "mana_cost_jsonb": {"R": 1},
+            "raw_card_blob": {"name": "Lightning Bolt"},
+            "card_types": ["Instant"],
+            "card_subtypes": [],
+            "card_colors": {"R": True},
+            "card_color_identity": {"R": True},
+            "card_keywords": {},
+            "oracle_text": "Deal 3 damage",
+            "edhrec_rank": None,
+            "creature_power": None,
+            "creature_power_text": None,
+            "creature_toughness": None,
+            "creature_toughness_text": None,
+            "card_oracle_tags": {},
+        }
+
         mock_cursor = mock.Mock()
         mock_cursor.fetchmany.side_effect = [
-            [("Lightning Bolt", 1, "{R}", '{"R": 1}', '{"name": "Lightning Bolt"}', '["Instant"]',
-              "[]", '{"R": true}', '{"R": true}', "{}", "Deal 3 damage", None, None, None, None, None, "{}")],
+            [mock_row],
             [],  # Empty result to end the loop
         ]
 
@@ -195,26 +214,29 @@ class TestExportImportCardData:
             result = api_resource._export_cards_table(mock_cursor, export_dir)
 
             assert result["count"] == 1
-            assert "cards.csv" in result["file"]
+            assert "cards.json" in result["file"]
 
-            # Verify CSV file was created with header
-            cards_file = export_dir / "cards.csv"
+            # Verify JSON file was created
+            cards_file = export_dir / "cards.json"
             assert cards_file.exists()
 
+            # Verify JSON content
             with cards_file.open("r", encoding="utf-8") as f:
-                reader = csv.reader(f)
-                header = next(reader)
-                assert "card_name" in header
-                assert "cmc" in header
+                data = orjson.loads(f.read())
+                assert len(data) == 1
+                assert data[0]["card_name"] == "Lightning Bolt"
 
     def test_export_tags_table(self) -> None:
         """Test _export_tags_table helper method."""
         api_resource = APIResource()
 
         # Mock cursor with sample data
+        mock_row1 = {"tag": "haste"}
+        mock_row2 = {"tag": "flying"}
+
         mock_cursor = mock.Mock()
         mock_cursor.fetchmany.side_effect = [
-            [("haste",), ("flying",)],
+            [mock_row1, mock_row2],
             [],  # Empty result to end the loop
         ]
 
@@ -223,20 +245,30 @@ class TestExportImportCardData:
             result = api_resource._export_tags_table(mock_cursor, export_dir)
 
             assert result["count"] == 2
-            assert "tags.csv" in result["file"]
+            assert "tags.json" in result["file"]
 
-            # Verify CSV file was created
-            tags_file = export_dir / "tags.csv"
+            # Verify JSON file was created
+            tags_file = export_dir / "tags.json"
             assert tags_file.exists()
+
+            # Verify JSON content
+            with tags_file.open("r", encoding="utf-8") as f:
+                data = orjson.loads(f.read())
+                assert len(data) == 2
+                assert data[0]["tag"] == "haste"
+                assert data[1]["tag"] == "flying"
 
     def test_export_tag_relationships_table(self) -> None:
         """Test _export_tag_relationships_table helper method."""
         api_resource = APIResource()
 
         # Mock cursor with sample data
+        mock_row1 = {"child_tag": "haste", "parent_tag": "keyword"}
+        mock_row2 = {"child_tag": "flying", "parent_tag": "keyword"}
+
         mock_cursor = mock.Mock()
         mock_cursor.fetchmany.side_effect = [
-            [("haste", "keyword"), ("flying", "keyword")],
+            [mock_row1, mock_row2],
             [],  # Empty result to end the loop
         ]
 
@@ -245,11 +277,18 @@ class TestExportImportCardData:
             result = api_resource._export_tag_relationships_table(mock_cursor, export_dir)
 
             assert result["count"] == 2
-            assert "tag_relationships.csv" in result["file"]
+            assert "tag_relationships.json" in result["file"]
 
-            # Verify CSV file was created
-            relationships_file = export_dir / "tag_relationships.csv"
+            # Verify JSON file was created
+            relationships_file = export_dir / "tag_relationships.json"
             assert relationships_file.exists()
+
+            # Verify JSON content
+            with relationships_file.open("r", encoding="utf-8") as f:
+                data = orjson.loads(f.read())
+                assert len(data) == 2
+                assert data[0]["child_tag"] == "haste"
+                assert data[0]["parent_tag"] == "keyword"
 
     def test_perform_import(self) -> None:
         """Test _perform_import helper method."""
@@ -258,43 +297,42 @@ class TestExportImportCardData:
         # Mock cursor
         mock_cursor = mock.Mock()
         mock_cursor.fetchone.side_effect = [
-            {"count": 5},  # tags count
-            {"count": 3},  # relationships count
-            {"count": 100},  # cards count
+            {"count": 1},  # tags count
+            {"count": 1},  # relationships count
+            {"count": 1},  # cards count
         ]
 
         with tempfile.TemporaryDirectory() as temp_dir:
             import_dir = pathlib.Path(temp_dir)
 
-            # Create CSV files with headers
-            with (import_dir / "tags.csv").open("w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(["tag"])
-                writer.writerow(["haste"])
+            # Create JSON files with sample data
+            tags_data = [{"tag": "haste"}]
+            with (import_dir / "tags.json").open("w", encoding="utf-8") as f:
+                f.write(orjson.dumps(tags_data).decode("utf-8"))
 
-            with (import_dir / "tag_relationships.csv").open("w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(["child_tag", "parent_tag"])
-                writer.writerow(["haste", "keyword"])
+            relationships_data = [{"child_tag": "haste", "parent_tag": "keyword"}]
+            with (import_dir / "tag_relationships.json").open("w", encoding="utf-8") as f:
+                f.write(orjson.dumps(relationships_data).decode("utf-8"))
 
-            with (import_dir / "cards.csv").open("w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    "card_name", "cmc", "mana_cost_text", "mana_cost_jsonb", "raw_card_blob",
-                    "card_types", "card_subtypes", "card_colors", "card_color_identity",
-                    "card_keywords", "oracle_text", "edhrec_rank", "creature_power",
-                    "creature_power_text", "creature_toughness", "creature_toughness_text",
-                    "card_oracle_tags",
-                ])
+            cards_data = [{
+                "card_name": "Lightning Bolt", "cmc": 1, "mana_cost_text": "{R}",
+                "mana_cost_jsonb": {"R": 1}, "raw_card_blob": {"name": "Lightning Bolt"},
+                "card_types": ["Instant"], "card_subtypes": [], "card_colors": {"R": True},
+                "card_color_identity": {"R": True}, "card_keywords": {}, "oracle_text": "Deal 3 damage",
+                "edhrec_rank": None, "creature_power": None, "creature_power_text": None,
+                "creature_toughness": None, "creature_toughness_text": None, "card_oracle_tags": {},
+            }]
+            with (import_dir / "cards.json").open("w", encoding="utf-8") as f:
+                f.write(orjson.dumps(cards_data).decode("utf-8"))
 
             result = api_resource._perform_import(mock_cursor, import_dir)
 
-            assert result["tags"] == 5
-            assert result["tag_relationships"] == 3
-            assert result["cards"] == 100
+            assert result["tags"] == 1
+            assert result["tag_relationships"] == 1
+            assert result["cards"] == 1
 
-            # Verify truncate operations were called
-            assert mock_cursor.execute.call_count >= 6  # 3 truncates + 3 counts
+            # Verify truncate operations and inserts were called
+            assert mock_cursor.execute.call_count >= 9  # 3 truncates + 3 inserts + 3 counts
 
     def test_export_import_integration_structure(self) -> None:
         """Test that export/import methods have compatible interfaces."""

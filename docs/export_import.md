@@ -5,7 +5,7 @@ This document describes the card data export and import functionality that allow
 ## Overview
 
 The export/import functionality provides a way to:
-- Export card data to CSV files for backup purposes
+- Export card data to JSON files for backup purposes
 - Import previously exported data to restore database state  
 - Transfer data between instances of the application
 
@@ -23,7 +23,7 @@ The following tables are included in export/import operations:
 
 **Endpoint:** `GET /export_card_data`
 
-Exports all card data to timestamped CSV files in `/data/api/exports/{timestamp}/` directory.
+Exports all card data to timestamped JSON files in `/data/api/exports/{timestamp}/` directory.
 
 **Example:**
 ```bash
@@ -37,9 +37,9 @@ curl "http://localhost:8080/export_card_data"
   "export_directory": "/data/api/exports/20241001_143052",
   "timestamp": "20241001_143052", 
   "results": {
-    "cards": {"file": "/data/api/exports/20241001_143052/cards.csv", "count": 25847},
-    "tags": {"file": "/data/api/exports/20241001_143052/tags.csv", "count": 142},
-    "tag_relationships": {"file": "/data/api/exports/20241001_143052/tag_relationships.csv", "count": 85}
+    "cards": {"file": "/data/api/exports/20241001_143052/cards.json", "count": 25847},
+    "tags": {"file": "/data/api/exports/20241001_143052/tags.json", "count": 142},
+    "tag_relationships": {"file": "/data/api/exports/20241001_143052/tag_relationships.json", "count": 85}
   },
   "message": "Successfully exported 25847 cards, 142 tags, and 85 tag relationships"
 }
@@ -49,7 +49,7 @@ curl "http://localhost:8080/export_card_data"
 
 **Endpoint:** `GET /import_card_data[?timestamp=YYYYMMDD_HHMMSS]`
 
-Imports card data from CSV files, truncating existing data first.
+Imports card data from JSON files, truncating existing data first.
 
 **Parameters:**
 - `timestamp` (optional) - Specific export timestamp to import. If not provided, uses the most recent export.
@@ -80,35 +80,65 @@ curl "http://localhost:8080/import_card_data?timestamp=20241001_143052"
 
 ## File Structure
 
-Each export creates a timestamped directory containing three CSV files:
+Each export creates a timestamped directory containing three JSON files:
 
 ```
 /data/api/exports/
 ├── 20241001_143052/
-│   ├── cards.csv
-│   ├── tags.csv
-│   └── tag_relationships.csv
+│   ├── cards.json
+│   ├── tags.json
+│   └── tag_relationships.json
 ├── 20241001_120000/
-│   ├── cards.csv
-│   ├── tags.csv
-│   └── tag_relationships.csv
+│   ├── cards.json
+│   ├── tags.json
+│   └── tag_relationships.json
 └── ...
 ```
 
 ### File Formats
 
-**cards.csv** - Contains all card data with the following columns:
-- `card_name`, `cmc`, `mana_cost_text`, `mana_cost_jsonb`, `raw_card_blob`
-- `card_types`, `card_subtypes`, `card_colors`, `card_color_identity`
-- `card_keywords`, `oracle_text`, `edhrec_rank`
-- `creature_power`, `creature_power_text`, `creature_toughness`, `creature_toughness_text`
-- `card_oracle_tags`
+**cards.json** - Contains all card data as an array of objects:
+```json
+[
+  {
+    "card_name": "Lightning Bolt",
+    "cmc": 1,
+    "mana_cost_text": "{R}",
+    "mana_cost_jsonb": {"R": 1},
+    "raw_card_blob": {"name": "Lightning Bolt", "type_line": "Instant"},
+    "card_types": ["Instant"],
+    "card_subtypes": [],
+    "card_colors": {"R": true},
+    "card_color_identity": {"R": true},
+    "card_keywords": {},
+    "oracle_text": "Deal 3 damage to any target.",
+    "edhrec_rank": 1,
+    "creature_power": null,
+    "creature_power_text": null,
+    "creature_toughness": null,
+    "creature_toughness_text": null,
+    "card_oracle_tags": {}
+  }
+]
+```
 
-**tags.csv** - Contains tag definitions:
-- `tag`
+**tags.json** - Contains tag definitions as an array of objects:
+```json
+[
+  {"tag": "haste"},
+  {"tag": "flying"},
+  {"tag": "trample"}
+]
+```
 
-**tag_relationships.csv** - Contains tag hierarchy:
-- `child_tag`, `parent_tag`
+**tag_relationships.json** - Contains tag hierarchy as an array of objects:
+```json
+[
+  {"child_tag": "haste", "parent_tag": "keyword"},
+  {"child_tag": "flying", "parent_tag": "keyword"},
+  {"child_tag": "trample", "parent_tag": "keyword"}
+]
+```
 
 ## Important Notes
 
@@ -117,9 +147,11 @@ Each export creates a timestamped directory containing three CSV files:
 - Always verify you have a recent export before importing
 - The import operation is transactional - it will rollback on errors
 
-### JSONB Handling
-- JSONB columns are converted to text for CSV compatibility during export
-- They are automatically converted back to JSONB during import
+### JSON Benefits
+- Native support for JSONB columns without string conversion
+- Preserves data types and structure
+- More readable and editable than CSV format
+- Better compatibility with modern tooling
 
 ### Docker Volumes
 - The `/data/api/exports/` directory is mounted as a Docker volume
@@ -128,7 +160,7 @@ Each export creates a timestamped directory containing three CSV files:
 
 ### Performance
 - Export processes data in batches for memory efficiency
-- Import uses PostgreSQL COPY for fast bulk loading
+- Import uses individual INSERT statements for precise control
 - Large datasets may take several minutes to export/import
 
 ## Error Handling
@@ -155,7 +187,7 @@ Common error scenarios and responses:
 ```json
 {
   "status": "error",
-  "message": "Missing required files: tags.csv, tag_relationships.csv"
+  "message": "Missing required files: tags.json, tag_relationships.json"
 }
 ```
 

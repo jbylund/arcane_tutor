@@ -1433,7 +1433,7 @@ class APIResource:
         }
 
     def export_card_data(self: APIResource, **_: object) -> dict[str, Any]:
-        """Export card data tables to CSV files for backup/re-import.
+        """Export card data tables to JSON files for backup/re-import.
 
         Exports the three main tables:
         - magic.cards
@@ -1483,82 +1483,86 @@ class APIResource:
             }
 
     def _export_cards_table(self: APIResource, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
-        """Export magic.cards table to CSV file."""
-        cards_file = export_dir / "cards.csv"
-        with cards_file.open("w", newline="", encoding="utf-8") as f:
-            cursor.execute("""
-                SELECT card_name, cmc, mana_cost_text, mana_cost_jsonb::text as mana_cost_jsonb,
-                       raw_card_blob::text as raw_card_blob, card_types::text as card_types,
-                       card_subtypes::text as card_subtypes, card_colors::text as card_colors,
-                       card_color_identity::text as card_color_identity,
-                       card_keywords::text as card_keywords, oracle_text, edhrec_rank,
-                       creature_power, creature_power_text, creature_toughness, creature_toughness_text,
-                       card_oracle_tags::text as card_oracle_tags
-                FROM magic.cards
-                ORDER BY card_name
-            """)
+        """Export magic.cards table to JSON file."""
+        cards_file = export_dir / "cards.json"
+        cursor.execute("""
+            SELECT card_name, cmc, mana_cost_text, mana_cost_jsonb,
+                   raw_card_blob, card_types, card_subtypes, card_colors,
+                   card_color_identity, card_keywords, oracle_text, edhrec_rank,
+                   creature_power, creature_power_text, creature_toughness, creature_toughness_text,
+                   card_oracle_tags
+            FROM magic.cards
+            ORDER BY card_name
+        """)
 
-            writer = csv.writer(f)
-            writer.writerow([
-                "card_name", "cmc", "mana_cost_text", "mana_cost_jsonb", "raw_card_blob",
-                "card_types", "card_subtypes", "card_colors", "card_color_identity",
-                "card_keywords", "oracle_text", "edhrec_rank", "creature_power",
-                "creature_power_text", "creature_toughness", "creature_toughness_text",
-                "card_oracle_tags",
-            ])
+        cards_data = []
+        cards_count = 0
+        while True:
+            rows = cursor.fetchmany(1000)  # Process in batches
+            if not rows:
+                break
+            for row in rows:
+                # Convert row to dict for JSON serialization
+                card_dict = dict(row)
+                cards_data.append(card_dict)
+                cards_count += 1
 
-            cards_count = 0
-            while True:
-                rows = cursor.fetchmany(1000)  # Process in batches
-                if not rows:
-                    break
-                writer.writerows(rows)
-                cards_count += len(rows)
+        # Write JSON file
+        with cards_file.open("w", encoding="utf-8") as f:
+            f.write(orjson.dumps(cards_data, option=orjson.OPT_INDENT_2).decode("utf-8"))
 
         return {"file": str(cards_file), "count": cards_count}
 
     def _export_tags_table(self: APIResource, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
-        """Export magic.tags table to CSV file."""
-        tags_file = export_dir / "tags.csv"
-        with tags_file.open("w", newline="", encoding="utf-8") as f:
-            cursor.execute("SELECT tag FROM magic.tags ORDER BY tag")
-            writer = csv.writer(f)
-            writer.writerow(["tag"])
+        """Export magic.tags table to JSON file."""
+        tags_file = export_dir / "tags.json"
+        cursor.execute("SELECT tag FROM magic.tags ORDER BY tag")
 
-            tags_count = 0
-            while True:
-                rows = cursor.fetchmany(1000)
-                if not rows:
-                    break
-                writer.writerows(rows)
-                tags_count += len(rows)
+        tags_data = []
+        tags_count = 0
+        while True:
+            rows = cursor.fetchmany(1000)
+            if not rows:
+                break
+            for row in rows:
+                tag_dict = dict(row)
+                tags_data.append(tag_dict)
+                tags_count += 1
+
+        # Write JSON file
+        with tags_file.open("w", encoding="utf-8") as f:
+            f.write(orjson.dumps(tags_data, option=orjson.OPT_INDENT_2).decode("utf-8"))
 
         return {"file": str(tags_file), "count": tags_count}
 
     def _export_tag_relationships_table(self: APIResource, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
-        """Export magic.tag_relationships table to CSV file."""
-        relationships_file = export_dir / "tag_relationships.csv"
-        with relationships_file.open("w", newline="", encoding="utf-8") as f:
-            cursor.execute("""
-                SELECT child_tag, parent_tag
-                FROM magic.tag_relationships
-                ORDER BY child_tag, parent_tag
-            """)
-            writer = csv.writer(f)
-            writer.writerow(["child_tag", "parent_tag"])
+        """Export magic.tag_relationships table to JSON file."""
+        relationships_file = export_dir / "tag_relationships.json"
+        cursor.execute("""
+            SELECT child_tag, parent_tag
+            FROM magic.tag_relationships
+            ORDER BY child_tag, parent_tag
+        """)
 
-            relationships_count = 0
-            while True:
-                rows = cursor.fetchmany(1000)
-                if not rows:
-                    break
-                writer.writerows(rows)
-                relationships_count += len(rows)
+        relationships_data = []
+        relationships_count = 0
+        while True:
+            rows = cursor.fetchmany(1000)
+            if not rows:
+                break
+            for row in rows:
+                relationship_dict = dict(row)
+                relationships_data.append(relationship_dict)
+                relationships_count += 1
+
+        # Write JSON file
+        with relationships_file.open("w", encoding="utf-8") as f:
+            f.write(orjson.dumps(relationships_data, option=orjson.OPT_INDENT_2).decode("utf-8"))
 
         return {"file": str(relationships_file), "count": relationships_count}
 
     def import_card_data(self: APIResource, *, timestamp: str | None = None, **_: object) -> dict[str, Any]:
-        """Import card data from CSV files, truncating existing data.
+        """Import card data from JSON files, truncating existing data.
 
         Imports data from /data/api/exports/{timestamp}/ directory.
         If timestamp is not provided, uses the most recent export.
@@ -1635,9 +1639,9 @@ class APIResource:
     def _validate_import_files(self: APIResource, import_dir: pathlib.Path) -> None:
         """Validate that all required import files exist."""
         required_files = [
-            ("cards.csv", import_dir / "cards.csv"),
-            ("tags.csv", import_dir / "tags.csv"),
-            ("tag_relationships.csv", import_dir / "tag_relationships.csv"),
+            ("cards.json", import_dir / "cards.json"),
+            ("tags.json", import_dir / "tags.json"),
+            ("tag_relationships.json", import_dir / "tag_relationships.json"),
         ]
 
         missing_files = [name for name, file_path in required_files if not file_path.exists()]
@@ -1658,39 +1662,54 @@ class APIResource:
 
         # Import tags first (no dependencies)
         logger.info("Importing tags")
-        tags_file = import_dir / "tags.csv"
+        tags_file = import_dir / "tags.json"
         with tags_file.open("r", encoding="utf-8") as f:
-            cursor.copy_expert(
-                "COPY magic.tags (tag) FROM STDIN WITH (FORMAT csv, HEADER true)",
-                f,
-            )
+            tags_data = orjson.loads(f.read())
+
+        for tag_record in tags_data:
+            cursor.execute("INSERT INTO magic.tags (tag) VALUES (%(tag)s)", tag_record)
+
         cursor.execute("SELECT COUNT(*) FROM magic.tags")
         import_results["tags"] = cursor.fetchone()["count"]
 
         # Import tag relationships (depends on tags)
         logger.info("Importing tag relationships")
-        relationships_file = import_dir / "tag_relationships.csv"
+        relationships_file = import_dir / "tag_relationships.json"
         with relationships_file.open("r", encoding="utf-8") as f:
-            cursor.copy_expert(
-                "COPY magic.tag_relationships (child_tag, parent_tag) FROM STDIN WITH (FORMAT csv, HEADER true)",
-                f,
+            relationships_data = orjson.loads(f.read())
+
+        for relationship_record in relationships_data:
+            cursor.execute(
+                "INSERT INTO magic.tag_relationships (child_tag, parent_tag) VALUES (%(child_tag)s, %(parent_tag)s)",
+                relationship_record,
             )
+
         cursor.execute("SELECT COUNT(*) FROM magic.tag_relationships")
         import_results["tag_relationships"] = cursor.fetchone()["count"]
 
         # Import cards last (largest table)
         logger.info("Importing cards")
-        cards_file = import_dir / "cards.csv"
+        cards_file = import_dir / "cards.json"
         with cards_file.open("r", encoding="utf-8") as f:
-            cursor.copy_expert("""
-                COPY magic.cards (
+            cards_data = orjson.loads(f.read())
+
+        for card_record in cards_data:
+            cursor.execute("""
+                INSERT INTO magic.cards (
                     card_name, cmc, mana_cost_text, mana_cost_jsonb, raw_card_blob,
                     card_types, card_subtypes, card_colors, card_color_identity,
                     card_keywords, oracle_text, edhrec_rank, creature_power,
                     creature_power_text, creature_toughness, creature_toughness_text,
                     card_oracle_tags
-                ) FROM STDIN WITH (FORMAT csv, HEADER true)
-            """, f)
+                ) VALUES (
+                    %(card_name)s, %(cmc)s, %(mana_cost_text)s, %(mana_cost_jsonb)s, %(raw_card_blob)s,
+                    %(card_types)s, %(card_subtypes)s, %(card_colors)s, %(card_color_identity)s,
+                    %(card_keywords)s, %(oracle_text)s, %(edhrec_rank)s, %(creature_power)s,
+                    %(creature_power_text)s, %(creature_toughness)s, %(creature_toughness_text)s,
+                    %(card_oracle_tags)s
+                )
+            """, card_record)
+
         cursor.execute("SELECT COUNT(*) FROM magic.cards")
         import_results["cards"] = cursor.fetchone()["count"]
 
