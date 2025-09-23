@@ -1663,30 +1663,15 @@ class APIResource:
         with cards_file.open("r", encoding="utf-8") as f:
             cards_data = orjson.loads(f.read())
 
-        # Import cards in batches using jsonb_to_recordset
+        # Import cards in batches using jsonb_populate_record
         for card_batch in itertools.batched(cards_data, 100):  # noqa: B911
             batch_json = orjson.dumps(card_batch).decode("utf-8")
             cursor.execute("""
                 INSERT INTO magic.cards
-                SELECT * FROM jsonb_to_recordset(%s::jsonb) AS x(
-                    card_name text,
-                    cmc integer,
-                    mana_cost_text text,
-                    mana_cost_jsonb jsonb,
-                    raw_card_blob jsonb,
-                    card_types jsonb,
-                    card_subtypes jsonb,
-                    card_colors jsonb,
-                    card_color_identity jsonb,
-                    card_keywords jsonb,
-                    oracle_text text,
-                    edhrec_rank integer,
-                    creature_power integer,
-                    creature_power_text text,
-                    creature_toughness integer,
-                    creature_toughness_text text,
-                    card_oracle_tags jsonb
-                )
+                SELECT
+                    (jsonb_populate_record(null::magic.cards, value)).*
+                FROM
+                    jsonb_array_elements(%s::jsonb)
             """, (batch_json,))
 
         cursor.execute("SELECT COUNT(*) FROM magic.cards")
