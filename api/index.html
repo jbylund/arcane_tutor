@@ -78,8 +78,8 @@
         --color-shadow-medium: rgba(0, 0, 0, 0.2);
         --color-shadow-dark: rgba(0, 0, 0, 0.3);
         --color-border-light: #e3e3e3;
-        --color-hover-bg: #f0f0f0;
-        --color-hover-text: #333;
+        --color-hover-bg: #4a4a4a;
+        --color-hover-text: #ffffff;
         --color-theme-toggle-bg: #495057;
         --color-theme-toggle-border: #6c757d;
         --color-input-text: #cecece;
@@ -203,6 +203,17 @@
         transform: translateY(-2px);
         box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
         background: var(--color-hover-bg);
+      }
+
+      .order-dropdown option {
+        background: var(--color-input-background);
+        color: var(--color-input-text);
+      }
+
+      .order-dropdown option:hover,
+      .order-dropdown option:focus {
+        background: var(--color-hover-bg);
+        color: var(--color-hover-text);
       }
 
       .order-toggle {
