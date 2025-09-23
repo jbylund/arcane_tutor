@@ -204,10 +204,7 @@ class TestExportImportCardData:
         }
 
         mock_cursor = mock.Mock()
-        mock_cursor.fetchmany.side_effect = [
-            [mock_row],
-            [],  # Empty result to end the loop
-        ]
+        mock_cursor.fetchall.return_value = [mock_row]
 
         with tempfile.TemporaryDirectory() as temp_dir:
             export_dir = pathlib.Path(temp_dir)
@@ -235,10 +232,7 @@ class TestExportImportCardData:
         mock_row2 = {"tag": "flying"}
 
         mock_cursor = mock.Mock()
-        mock_cursor.fetchmany.side_effect = [
-            [mock_row1, mock_row2],
-            [],  # Empty result to end the loop
-        ]
+        mock_cursor.fetchall.return_value = [mock_row1, mock_row2]
 
         with tempfile.TemporaryDirectory() as temp_dir:
             export_dir = pathlib.Path(temp_dir)
@@ -267,10 +261,7 @@ class TestExportImportCardData:
         mock_row2 = {"child_tag": "flying", "parent_tag": "keyword"}
 
         mock_cursor = mock.Mock()
-        mock_cursor.fetchmany.side_effect = [
-            [mock_row1, mock_row2],
-            [],  # Empty result to end the loop
-        ]
+        mock_cursor.fetchall.return_value = [mock_row1, mock_row2]
 
         with tempfile.TemporaryDirectory() as temp_dir:
             export_dir = pathlib.Path(temp_dir)

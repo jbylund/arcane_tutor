@@ -1485,27 +1485,10 @@ class APIResource:
     def _export_cards_table(self: APIResource, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
         """Export magic.cards table to JSON file."""
         cards_file = export_dir / "cards.json"
-        cursor.execute("""
-            SELECT card_name, cmc, mana_cost_text, mana_cost_jsonb,
-                   raw_card_blob, card_types, card_subtypes, card_colors,
-                   card_color_identity, card_keywords, oracle_text, edhrec_rank,
-                   creature_power, creature_power_text, creature_toughness, creature_toughness_text,
-                   card_oracle_tags
-            FROM magic.cards
-            ORDER BY card_name
-        """)
+        cursor.execute("SELECT * FROM magic.cards ORDER BY card_name")
 
-        cards_data = []
-        cards_count = 0
-        while True:
-            rows = cursor.fetchmany(1000)  # Process in batches
-            if not rows:
-                break
-            for row in rows:
-                # Convert row to dict for JSON serialization
-                card_dict = dict(row)
-                cards_data.append(card_dict)
-                cards_count += 1
+        cards_data = [dict(row) for row in cursor.fetchall()]
+        cards_count = len(cards_data)
 
         # Write JSON file
         with cards_file.open("w", encoding="utf-8") as f:
@@ -1518,16 +1501,8 @@ class APIResource:
         tags_file = export_dir / "tags.json"
         cursor.execute("SELECT tag FROM magic.tags ORDER BY tag")
 
-        tags_data = []
-        tags_count = 0
-        while True:
-            rows = cursor.fetchmany(1000)
-            if not rows:
-                break
-            for row in rows:
-                tag_dict = dict(row)
-                tags_data.append(tag_dict)
-                tags_count += 1
+        tags_data = [dict(row) for row in cursor.fetchall()]
+        tags_count = len(tags_data)
 
         # Write JSON file
         with tags_file.open("w", encoding="utf-8") as f:
@@ -1544,16 +1519,8 @@ class APIResource:
             ORDER BY child_tag, parent_tag
         """)
 
-        relationships_data = []
-        relationships_count = 0
-        while True:
-            rows = cursor.fetchmany(1000)
-            if not rows:
-                break
-            for row in rows:
-                relationship_dict = dict(row)
-                relationships_data.append(relationship_dict)
-                relationships_count += 1
+        relationships_data = [dict(row) for row in cursor.fetchall()]
+        relationships_count = len(relationships_data)
 
         # Write JSON file
         with relationships_file.open("w", encoding="utf-8") as f:
@@ -1627,11 +1594,14 @@ class APIResource:
                 raise ValueError(msg)
         else:
             # Find most recent export
-            export_dirs = [d for d in exports_dir.iterdir() if d.is_dir()]
-            if not export_dirs:
+            try:
+                import_dir = max(
+                    (d for d in exports_dir.iterdir() if d.is_dir()),
+                    key=lambda d: d.name,
+                )
+            except ValueError:
                 msg = "No export directories found"
-                raise ValueError(msg)
-            import_dir = max(export_dirs, key=lambda d: d.name)
+                raise ValueError(msg) from None
             timestamp = import_dir.name
 
         return import_dir, timestamp
@@ -1652,11 +1622,11 @@ class APIResource:
 
     def _perform_import(self: APIResource, cursor: Cursor, import_dir: pathlib.Path) -> dict[str, int]:
         """Perform the actual import operation."""
-        # Truncate tables in correct order (respecting foreign keys)
-        logger.info("Truncating existing data")
-        cursor.execute("TRUNCATE TABLE magic.tag_relationships CASCADE")
-        cursor.execute("TRUNCATE TABLE magic.tags CASCADE")
-        cursor.execute("TRUNCATE TABLE magic.cards CASCADE")
+        # Delete data from tables in correct order (respecting foreign keys)
+        logger.info("Deleting existing data")
+        cursor.execute("DELETE FROM magic.tag_relationships")
+        cursor.execute("DELETE FROM magic.tags")
+        cursor.execute("DELETE FROM magic.cards")
 
         import_results = {}
 
@@ -1693,22 +1663,31 @@ class APIResource:
         with cards_file.open("r", encoding="utf-8") as f:
             cards_data = orjson.loads(f.read())
 
-        for card_record in cards_data:
+        # Import cards in batches using jsonb_to_recordset
+        for card_batch in itertools.batched(cards_data, 100):  # noqa: B911
+            batch_json = orjson.dumps(card_batch).decode("utf-8")
             cursor.execute("""
-                INSERT INTO magic.cards (
-                    card_name, cmc, mana_cost_text, mana_cost_jsonb, raw_card_blob,
-                    card_types, card_subtypes, card_colors, card_color_identity,
-                    card_keywords, oracle_text, edhrec_rank, creature_power,
-                    creature_power_text, creature_toughness, creature_toughness_text,
-                    card_oracle_tags
-                ) VALUES (
-                    %(card_name)s, %(cmc)s, %(mana_cost_text)s, %(mana_cost_jsonb)s, %(raw_card_blob)s,
-                    %(card_types)s, %(card_subtypes)s, %(card_colors)s, %(card_color_identity)s,
-                    %(card_keywords)s, %(oracle_text)s, %(edhrec_rank)s, %(creature_power)s,
-                    %(creature_power_text)s, %(creature_toughness)s, %(creature_toughness_text)s,
-                    %(card_oracle_tags)s
+                INSERT INTO magic.cards
+                SELECT * FROM jsonb_to_recordset(%s::jsonb) AS x(
+                    card_name text,
+                    cmc integer,
+                    mana_cost_text text,
+                    mana_cost_jsonb jsonb,
+                    raw_card_blob jsonb,
+                    card_types jsonb,
+                    card_subtypes jsonb,
+                    card_colors jsonb,
+                    card_color_identity jsonb,
+                    card_keywords jsonb,
+                    oracle_text text,
+                    edhrec_rank integer,
+                    creature_power integer,
+                    creature_power_text text,
+                    creature_toughness integer,
+                    creature_toughness_text text,
+                    card_oracle_tags jsonb
                 )
-            """, card_record)
+            """, (batch_json,))
 
         cursor.execute("SELECT COUNT(*) FROM magic.cards")
         import_results["cards"] = cursor.fetchone()["count"]
