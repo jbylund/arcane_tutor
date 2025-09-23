@@ -860,3 +860,39 @@ def test_negated_type_queries_generate_simple_sql(input_query: str, expected_sql
     observed_params = {}
     observed_sql = parsed.to_sql(observed_params)
     assert expected_sql_fragment in observed_sql, f"Expected fragment '{expected_sql_fragment}' not found in SQL: {observed_sql}"
+
+
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_sql", "expected_parameters"),
+    argvalues=[
+        # Basic frame search (text field with ILIKE pattern)
+        (
+            "frame:2015",
+            r"(card.card_frame ILIKE %(p_str_JTIwMTUl)s)",
+            {"p_str_JTIwMTUl": "%2015%"},
+        ),
+        (
+            "frame:1997",
+            r"(card.card_frame ILIKE %(p_str_JTE5OTcl)s)",
+            {"p_str_JTE5OTcl": "%1997%"},
+        ),
+        # Frame effects search (JSONB array)
+        (
+            "frame_effects:showcase",
+            r"(%(p_list_WydTaG93Y2FzZSdd)s <@ card.card_frame_effects)",
+            {"p_list_WydTaG93Y2FzZSdd": ["Showcase"]},
+        ),
+        (
+            "frame_effects:legendary",
+            r"(%(p_list_WydMZWdlbmRhcnknXQ)s <@ card.card_frame_effects)",
+            {"p_list_WydMZWdlbmRhcnknXQ": ["Legendary"]},
+        ),
+    ],
+)
+def test_frame_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
+    """Test that frame and frame_effects search generate correct SQL."""
+    parsed = parsing.parse_scryfall_query(input_query)
+    observed_params = {}
+    observed_sql = parsed.to_sql(observed_params)
+    assert observed_sql == expected_sql, f"\nExpected: {expected_sql}\nObserved: {observed_sql}"
+    assert observed_params == expected_parameters, f"\nExpected params: {expected_parameters}\nObserved params: {observed_params}"

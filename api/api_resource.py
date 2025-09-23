@@ -590,6 +590,10 @@ class APIResource:
         card["card_keywords"] = dict.fromkeys(card.get("keywords", []), True)
         card["edhrec_rank"] = card.get("edhrec_rank")
 
+        # Extract frame data
+        card["card_frame"] = card.get("frame")
+        card["card_frame_effects"] = card.get("frame_effects", [])
+
         # Extract pricing data if available
         prices = card.get("prices", {})
         card["price_usd"] = prices.get("usd")
@@ -1494,7 +1498,9 @@ class APIResource:
                         collector_number,        -- 23
                         collector_number_int,    -- 24
                         raw_card_blob,           -- 25
-                        card_legalities          -- 26
+                        card_legalities,         -- 26
+                        card_frame,              -- 27
+                        card_frame_effects       -- 28
                     )
                     SELECT
                         card_blob->>'name' AS card_name, -- 1
@@ -1522,7 +1528,9 @@ class APIResource:
                         card_blob->>'collector_number' AS collector_number, -- 23
                         magic.extract_collector_number_int(card_blob->>'collector_number') AS collector_number_int, -- 24
                         card_blob AS raw_card_blob, -- 25
-                        COALESCE(card_blob->'legalities', '{{}}'::jsonb) AS card_legalities -- 26
+                        COALESCE(card_blob->'legalities', '{{}}'::jsonb) AS card_legalities, -- 26
+                        card_blob->>'card_frame' AS card_frame, -- 27
+                        COALESCE(card_blob->'card_frame_effects', '[]'::jsonb) AS card_frame_effects -- 28
                     FROM
                         {staging_table_name}
                     ON CONFLICT (card_name) DO NOTHING
