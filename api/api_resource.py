@@ -33,12 +33,13 @@ if True:  # imports
     import psycopg
     import requests
     from cachetools import LRUCache, TTLCache, cached
-    from psycopg import Connection
+    from psycopg import Connection, Cursor
 
     from .parsing import generate_sql_query, parse_scryfall_query
     from .parsing.scryfall_nodes import mana_cost_str_to_dict
     from .tagger_client import TaggerClient
     from .utils import db_utils, error_monitoring
+
 
     if TYPE_CHECKING:
         import psycopg_pool
@@ -1408,6 +1409,27 @@ class APIResource:
             raise ValueError(msg) from oops
 
         return all_cards
+
+    def backfill_mana_cost_jsonb(self: APIResource, **_: object) -> None:
+        """Backfill the mana_cost_jsonb column with the mana_cost_text column."""
+        logger.info("Backfilling mana_cost_jsonb column with mana_cost_text column")
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            cursor = typecast("Cursor", cursor)
+            cursor.execute("SELECT mana_cost_text FROM magic.cards GROUP BY mana_cost_text")
+            for mana_cost_text in cursor.fetchall():
+                mana_cost_jsonb = mana_cost_str_to_dict(mana_cost_text["mana_cost_text"])
+                cursor.execute(
+                    query="UPDATE magic.cards SET mana_cost_jsonb = %(mana_cost_jsonb)s WHERE mana_cost_text = %(mana_cost_text)s",
+                    params={
+                        "mana_cost_jsonb": db_utils.maybe_json(mana_cost_jsonb),
+                        "mana_cost_text": mana_cost_text["mana_cost_text"],
+                    },
+                )
+            conn.commit()
+        return {
+            "status": "success",
+            "message": "Mana cost jsonb backfilled successfully",
+        }
 
     def _load_cards_with_staging(
         self: APIResource,
