@@ -415,6 +415,45 @@ class TestAPIResourceDataProcessing(unittest.TestCase):
         assert result["price_tix"] == "0.01"
         assert result["card_set_code"] == "m15"
 
+    def test_preprocess_card_processes_frame_data(self) -> None:
+        """Test _preprocess_card processes frame data correctly."""
+        card_with_frame = {
+            "name": "Showcase Card",
+            "legalities": {"standard": "legal"},
+            "games": ["paper"],
+            "type_line": "Creature — Human",
+            "colors": ["W"],
+            "color_identity": ["W"],
+            "keywords": [],
+            "frame": "2015",
+            "frame_effects": ["showcase", "legendary"],
+            "set": "test",
+        }
+
+        result = self.api_resource._preprocess_card(card_with_frame)
+
+        assert result is not None
+        expected_frame_data = {"2015": True, "Showcase": True, "Legendary": True}
+        assert result["card_frame_data"] == expected_frame_data
+
+    def test_preprocess_card_handles_missing_frame_data(self) -> None:
+        """Test _preprocess_card handles missing frame data correctly."""
+        card_without_frame = {
+            "name": "Regular Card",
+            "legalities": {"standard": "legal"},
+            "games": ["paper"],
+            "type_line": "Creature — Human",
+            "colors": ["W"],
+            "color_identity": ["W"],
+            "keywords": [],
+            "set": "test",
+        }
+
+        result = self.api_resource._preprocess_card(card_without_frame)
+
+        assert result is not None
+        assert result["card_frame_data"] == {}  # Should be empty object when no frame data present
+
     def test_preprocess_card_handles_missing_fields(self) -> None:
         """Test _preprocess_card handles missing optional fields."""
         minimal_card = {

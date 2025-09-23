@@ -150,6 +150,26 @@ def get_colors_comparison_object(val: str) -> dict[str, bool]:
         raise ValueError(msg) from e
 
 
+def get_frame_data_comparison_object(val: str) -> dict[str, bool]:
+    """Convert frame data string to comparison object for database queries.
+
+    Handles both frame versions (e.g., "2015", "1997") and frame effects (e.g., "showcase", "legendary").
+    All values are titlecased for consistency.
+
+    Args:
+        val: Frame data string to normalize.
+
+    Returns:
+        Dictionary mapping normalized frame data to True.
+    """
+    val = val.strip()
+
+    # Always titlecase for consistency
+    normalized_val = val.title()
+
+    return {normalized_val: True}
+
+
 def get_keywords_comparison_object(val: str) -> dict[str, bool]:
     """Convert keyword string to comparison object for database queries.
 
@@ -464,7 +484,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
     query ?& col AND not(col ?& query) # as array
     """
 
-    def _handle_jsonb_object(self: ScryfallBinaryOperatorNode, context: dict) -> str:  # noqa: PLR0911, C901
+    def _handle_jsonb_object(self: ScryfallBinaryOperatorNode, context: dict) -> str:  # noqa: PLR0911, PLR0912, C901
         # Produce the query as a jsonb object
         lhs_sql = self.lhs.to_sql(context)
         attr = self.lhs.attribute_name
@@ -477,6 +497,11 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             is_color_identity = attr == "card_color_identity"
         elif attr == "card_keywords":
             rhs = get_keywords_comparison_object(self.rhs.value.strip())
+            pname = param_name(rhs)
+            context[pname] = rhs
+        elif attr == "card_frame_data":
+            # Frame data handling - treat like keywords (exact string match)
+            rhs = get_frame_data_comparison_object(self.rhs.value.strip())
             pname = param_name(rhs)
             context[pname] = rhs
         elif attr == "card_oracle_tags":
