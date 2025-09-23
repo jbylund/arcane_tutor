@@ -11,6 +11,7 @@ import pytest
 import requests
 
 from api.api_resource import APIResource, can_serialize, get_where_clause, rewrap
+from api.parsing.scryfall_nodes import extract_frame_data_from_raw_card
 
 
 class TestUtilityFunctions(unittest.TestCase):
@@ -453,6 +454,46 @@ class TestAPIResourceDataProcessing(unittest.TestCase):
 
         assert result is not None
         assert result["card_frame_data"] == {}  # Should be empty object when no frame data present
+
+    def test_backfill_card_frame_data_method_exists(self) -> None:
+        """Test backfill_card_frame_data method exists and is callable."""
+        assert hasattr(self.api_resource, "backfill_card_frame_data")
+        assert callable(self.api_resource.backfill_card_frame_data)
+
+    def test_extract_frame_data_from_raw_card_with_frame_and_effects(self) -> None:
+        """Test extract_frame_data_from_raw_card with frame and frame_effects."""
+        raw_card = {
+            "frame": "2015",
+            "frame_effects": ["showcase", "legendary"],
+        }
+
+        result = extract_frame_data_from_raw_card(raw_card)
+        expected = {"2015": True, "Showcase": True, "Legendary": True}
+        assert result == expected
+
+    def test_extract_frame_data_from_raw_card_with_only_frame(self) -> None:
+        """Test extract_frame_data_from_raw_card with only frame version."""
+        raw_card = {"frame": "1997"}
+
+        result = extract_frame_data_from_raw_card(raw_card)
+        expected = {"1997": True}
+        assert result == expected
+
+    def test_extract_frame_data_from_raw_card_with_only_effects(self) -> None:
+        """Test extract_frame_data_from_raw_card with only frame effects."""
+        raw_card = {"frame_effects": ["borderless", "etched"]}
+
+        result = extract_frame_data_from_raw_card(raw_card)
+        expected = {"Borderless": True, "Etched": True}
+        assert result == expected
+
+    def test_extract_frame_data_from_raw_card_empty(self) -> None:
+        """Test extract_frame_data_from_raw_card with empty raw card."""
+        raw_card = {}
+
+        result = extract_frame_data_from_raw_card(raw_card)
+        expected = {}
+        assert result == expected
 
     def test_preprocess_card_handles_missing_fields(self) -> None:
         """Test _preprocess_card handles missing optional fields."""
