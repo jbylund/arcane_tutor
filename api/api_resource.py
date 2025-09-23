@@ -592,6 +592,18 @@ class APIResource:
         card["produced_mana"] = dict.fromkeys(card.get("produced_mana", []), True)
         card["edhrec_rank"] = card.get("edhrec_rank")
 
+        # Extract frame data - combine frame version and frame effects into single JSONB object
+        frame_data = {}
+        # Add frame version if present (titlecased for consistency)
+        frame_version = card.get("frame")
+        if frame_version:
+            frame_data[frame_version.title()] = True
+        # Add frame effects if present (titlecased for consistency)
+        frame_effects = card.get("frame_effects", [])
+        for effect in frame_effects:
+            frame_data[effect.title()] = True
+        card["card_frame_data"] = frame_data
+
         # Extract pricing data if available
         prices = card.get("prices", {})
         card["price_usd"] = prices.get("usd")
@@ -1518,7 +1530,8 @@ class APIResource:
                         collector_number_int,    -- 24
                         raw_card_blob,           -- 25
                         card_legalities,         -- 26
-                        produced_mana           -- 27
+                        produced_mana,           -- 27
+                        card_frame_data          -- 28
                     )
                     SELECT
                         card_blob->>'name' AS card_name, -- 1
@@ -1547,7 +1560,8 @@ class APIResource:
                         magic.extract_collector_number_int(card_blob->>'collector_number') AS collector_number_int, -- 24
                         card_blob AS raw_card_blob, -- 25
                         COALESCE(card_blob->'legalities', '{{}}'::jsonb) AS card_legalities, -- 26
-                        COALESCE(card_blob->'produced_mana', '{{}}'::jsonb) AS produced_mana -- 27
+                        COALESCE(card_blob->'produced_mana', '{{}}'::jsonb) AS produced_mana, -- 27
+                        COALESCE(card_blob->'card_frame_data', '{{}}'::jsonb) AS card_frame_data -- 28
                     FROM
                         {staging_table_name}
                     ON CONFLICT (card_name) DO NOTHING
