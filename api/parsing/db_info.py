@@ -63,6 +63,7 @@ DB_COLUMNS = [
     FieldInfo("price_tix", FieldType.NUMERIC, ["tix"], ParserClass.NUMERIC),
     FieldInfo("raw_card_blob", FieldType.JSONB_OBJECT, [], ParserClass.TEXT),
     FieldInfo("oracle_text", FieldType.TEXT, ["oracle", "o"], ParserClass.TEXT),
+    FieldInfo("flavor_text", FieldType.TEXT, ["flavor"], ParserClass.TEXT),
     FieldInfo("card_oracle_tags", FieldType.JSONB_OBJECT, ["oracle_tags", "otag"], ParserClass.TEXT),
     FieldInfo("card_rarity_int", FieldType.NUMERIC, ["rarity", "r"], ParserClass.RARITY),
     FieldInfo("card_set_code", FieldType.TEXT, ["set", "s"], ParserClass.TEXT),
