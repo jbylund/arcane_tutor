@@ -5,6 +5,7 @@ import hashlib
 import logging
 import os
 import pathlib
+import random
 
 import orjson
 import psycopg
@@ -22,6 +23,26 @@ def get_pg_creds() -> dict[str, str]:
     unmapped = {k[2:].lower(): v for k, v in os.environ.items() if k.startswith("PG")}
     return {mapping.get(k, k): v for k, v in unmapped.items()}
 
+def get_testcontainers_creds() -> dict[str, str]:
+    """Get postgres credentials from the testcontainers environment."""
+    logger.warning("Using an ephemeral postgres container...")
+    from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
+    exposed_port = random.randint(1024, 49151)  # noqa: S311
+    container = PostgresContainer(
+        image="postgres:18rc1",
+        username="testuser",
+        password="testpass",  # noqa: S106
+        dbname="testdb",
+    ).with_bind_ports(5432, exposed_port)
+    container.start()
+    return {
+        "dbname": "testdb",
+        "host": container.get_container_host_ip(),
+        "password": "testpass",
+        "port": container.get_exposed_port(5432),
+        "user": "testuser",
+    }
+
 
 def configure_connection(conn: psycopg.Connection) -> None:
     """Configure a connection to use dict_row as the row factory."""
@@ -30,6 +51,8 @@ def configure_connection(conn: psycopg.Connection) -> None:
 def make_pool() -> psycopg_pool.ConnectionPool:
     """Create and return a psycopg3 ConnectionPool for PostgreSQL connections."""
     creds = get_pg_creds()
+    if not creds:
+        creds = get_testcontainers_creds()
     conninfo = " ".join(f"{k}={v}" for k, v in creds.items())
     pool_args = {
         "configure": configure_connection,
@@ -42,9 +65,9 @@ def make_pool() -> psycopg_pool.ConnectionPool:
     pool = psycopg_pool.ConnectionPool(**pool_args)
 
     def cleanup() -> None:
-        logger.info("Closing connection pool")
+        logger.info("Closing connection pool in pid %d", os.getpid())
         pool.close()
-        logger.info("Connection pool closed")
+        logger.info("Connection pool closed in pid %d", os.getpid())
 
     atexit.register(cleanup)
     return pool
