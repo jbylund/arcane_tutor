@@ -874,6 +874,16 @@ class APIResource:
         logger.info("Favicon content length: %d", content_length)
         falcon_response.headers["content-length"] = content_length
 
+    def mana_min_css(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
+        """Return the mana.min.css file.
+
+        Args:
+        ----
+            falcon_response (falcon.Response): The Falcon response to write to.
+        """
+        self._serve_static_file(filename="mana.min.css", falcon_response=falcon_response)
+        falcon_response.content_type = "text/css"
+
     def _serve_static_file(self: APIResource, *, filename: str, falcon_response: falcon.Response) -> None:
         """Serve a static file to the Falcon response.
 

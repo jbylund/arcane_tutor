@@ -639,6 +639,16 @@ class TestAPIResourceStaticFileServing(unittest.TestCase):
             # This is expected if the file doesn't exist
             pass
 
+    def test_mana_min_css_serves_static_file(self) -> None:
+        """Test mana_min_css serves the mana.min.css file."""
+        mock_response = MagicMock()
+
+        with patch.object(self.api_resource, "_serve_static_file") as mock_serve:
+            self.api_resource.mana_min_css(falcon_response=mock_response)
+
+            mock_serve.assert_called_once_with(filename="mana.min.css", falcon_response=mock_response)
+            assert mock_response.content_type == "text/css"
+
 
 class TestAPIResourceErrorHandling(unittest.TestCase):
     """Test error handling in APIResource methods."""
