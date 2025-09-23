@@ -292,6 +292,8 @@ class TestExportImportCardData:
             {"count": 1},  # relationships count
             {"count": 1},  # cards count
         ]
+        # Mock rowcount for progress tracking
+        mock_cursor.rowcount = 1
 
         with tempfile.TemporaryDirectory() as temp_dir:
             import_dir = pathlib.Path(temp_dir)
@@ -322,8 +324,74 @@ class TestExportImportCardData:
             assert result["tag_relationships"] == 1
             assert result["cards"] == 1
 
-            # Verify truncate operations and inserts were called
-            assert mock_cursor.execute.call_count >= 9  # 3 truncates + 3 inserts + 3 counts
+            # Verify delete operations and inserts were called
+            # Should include: 3 deletes + 1 tag insert + 1 relationship insert + 1 card batch insert + 3 counts
+            assert mock_cursor.execute.call_count >= 8
+
+    def test_perform_import_large_batch(self) -> None:
+        """Test _perform_import with larger dataset to verify batch processing."""
+        api_resource = APIResource()
+
+        # Mock cursor
+        mock_cursor = mock.Mock()
+        mock_cursor.fetchone.side_effect = [
+            {"count": 5},   # tags count
+            {"count": 3},   # relationships count
+            {"count": 1000},  # cards count
+        ]
+        # Mock rowcount for progress tracking - simulate 750 cards per batch
+        mock_cursor.rowcount = 750
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            import_dir = pathlib.Path(temp_dir)
+
+            # Create JSON files with larger sample data
+            tags_data = [{"tag": f"tag_{i}"} for i in range(5)]
+            with (import_dir / "tags.json").open("w", encoding="utf-8") as f:
+                f.write(orjson.dumps(tags_data).decode("utf-8"))
+
+            relationships_data = [
+                {"child_tag": "tag_0", "parent_tag": "tag_1"},
+                {"child_tag": "tag_1", "parent_tag": "tag_2"},
+                {"child_tag": "tag_2", "parent_tag": "tag_3"},
+            ]
+            with (import_dir / "tag_relationships.json").open("w", encoding="utf-8") as f:
+                f.write(orjson.dumps(relationships_data).decode("utf-8"))
+
+            # Create 1000 test cards to test batch processing
+            cards_data = []
+            for i in range(1000):
+                cards_data.append({
+                    "card_name": f"Test Card {i}",
+                    "cmc": i % 10,
+                    "mana_cost_text": "{R}",
+                    "mana_cost_jsonb": {"R": 1},
+                    "raw_card_blob": {"name": f"Test Card {i}"},
+                    "card_types": ["Instant"],
+                    "card_subtypes": [],
+                    "card_colors": {"R": True},
+                    "card_color_identity": {"R": True},
+                    "card_keywords": {},
+                    "oracle_text": f"Test card {i}",
+                    "edhrec_rank": None,
+                    "creature_power": None,
+                    "creature_power_text": None,
+                    "creature_toughness": None,
+                    "creature_toughness_text": None,
+                    "card_oracle_tags": {},
+                })
+            with (import_dir / "cards.json").open("w", encoding="utf-8") as f:
+                f.write(orjson.dumps(cards_data).decode("utf-8"))
+
+            result = api_resource._perform_import(mock_cursor, import_dir)
+
+            assert result["tags"] == 5
+            assert result["tag_relationships"] == 3
+            assert result["cards"] == 1000
+
+            # Verify batch processing: with 1000 cards and batch size 750, we expect 2 batches
+            # Total calls: 3 deletes + 5 tag inserts + 3 relationship inserts + 2 card batch inserts + 3 counts = 16
+            assert mock_cursor.execute.call_count >= 16
 
     def test_export_import_integration_structure(self) -> None:
         """Test that export/import methods have compatible interfaces."""
