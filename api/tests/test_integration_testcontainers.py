@@ -8,9 +8,9 @@ import time
 from typing import TYPE_CHECKING
 
 import psycopg
-import psycopg.rows
 import pytest
 from testcontainers.postgres import PostgresContainer
+import multiprocessing
 
 from api.api_resource import APIResource
 
@@ -101,7 +101,8 @@ class TestContainerIntegration:
     def api_resource(self: TestContainerIntegration, test_db_environment: None) -> Generator[APIResource]:  # noqa: ARG002
         """Create APIResource instance, set up database schema and test data, then yield the configured instance."""
         # Create APIResource instance
-        api = APIResource()
+        schema_setup_event = multiprocessing.Event()
+        api = APIResource(schema_setup_event=schema_setup_event)
 
         # Set up the schema using real migrations
         api.setup_schema()
