@@ -1,5 +1,6 @@
 """Database utility functions for the API."""
 
+import atexit
 import hashlib
 import logging
 import os
@@ -22,12 +23,12 @@ def get_pg_creds() -> dict[str, str]:
     return {mapping.get(k, k): v for k, v in unmapped.items()}
 
 
+def configure_connection(conn: psycopg.Connection) -> None:
+    """Configure a connection to use dict_row as the row factory."""
+    conn.row_factory = psycopg.rows.dict_row
+
 def make_pool() -> psycopg_pool.ConnectionPool:
     """Create and return a psycopg3 ConnectionPool for PostgreSQL connections."""
-
-    def configure_connection(conn: psycopg.Connection) -> None:
-        conn.row_factory = psycopg.rows.dict_row
-
     creds = get_pg_creds()
     conninfo = " ".join(f"{k}={v}" for k, v in creds.items())
     pool_args = {
@@ -38,7 +39,15 @@ def make_pool() -> psycopg_pool.ConnectionPool:
         "open": True,
     }
     logger.info("Pool args: %s", pool_args)
-    return psycopg_pool.ConnectionPool(**pool_args)
+    pool = psycopg_pool.ConnectionPool(**pool_args)
+
+    def cleanup() -> None:
+        logger.info("Closing connection pool")
+        pool.close()
+        logger.info("Connection pool closed")
+
+    atexit.register(cleanup)
+    return pool
 
 
 def get_migrations() -> list[dict[str, str]]:

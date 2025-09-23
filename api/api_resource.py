@@ -2,47 +2,42 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import collections
+import copy
+import csv
+import datetime
+import functools
+import inspect
+import itertools
+import logging
+import multiprocessing
+import os
+import pathlib
+import random
+import re
+import secrets
+import time
+import urllib.parse
+from typing import TYPE_CHECKING, Any
+from typing import cast as typecast
+from urllib.parse import urlparse
+
+import falcon
+import orjson
+import psycopg
+import requests
+from cachetools import LRUCache, TTLCache, cached
+from psycopg import Connection, Cursor
+
+from .parsing import generate_sql_query, parse_scryfall_query
+from .parsing.scryfall_nodes import extract_frame_data_from_raw_card, mana_cost_str_to_dict
+from .tagger_client import TaggerClient
+from .utils import db_utils, error_monitoring
 
 if TYPE_CHECKING:
     from multiprocessing.synchronize import RLock as LockType
 
-if True:  # imports
-    import collections
-    import copy
-    import csv
-    import datetime
-    import functools
-    import inspect
-    import itertools
-    import logging
-    import multiprocessing
-    import os
-    import pathlib
-    import random
-    import re
-    import secrets
-    import time
-    import urllib.parse
-    from typing import Any
-    from typing import cast as typecast
-    from urllib.parse import urlparse
-
-    import falcon
-    import orjson
-    import psycopg
-    import requests
-    from cachetools import LRUCache, TTLCache, cached
-    from psycopg import Connection, Cursor
-
-    from .parsing import generate_sql_query, parse_scryfall_query
-    from .parsing.scryfall_nodes import extract_frame_data_from_raw_card, mana_cost_str_to_dict
-    from .tagger_client import TaggerClient
-    from .utils import db_utils, error_monitoring
-
-
-    if TYPE_CHECKING:
-        import psycopg_pool
+    import psycopg_pool
 
 
 logger = logging.getLogger(__name__)
