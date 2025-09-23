@@ -45,6 +45,7 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 - Collector numbers (`number:`, `cn:`) and rarity search (`rarity:`, `r:`) 
 - Pricing data (`usd:`, `eur:`, `tix:`) for market analysis
 - Artist search (`artist:`, `a:`) with trigram indexing
+- Flavor text search (`flavor:`) for searching card flavor text
 
 ### Missing Functionality - Complexity vs Impact Grid
 
@@ -52,15 +53,15 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 
 | **Complexity** | **Low Impact**                                                   | **Medium Impact**                                                                            | **High Impact**                                                                                   |
 | -------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| **Low**        | **Watermark** (`watermark:`)<br/>**Flavor Text** (`flavor:`)     | **Layout** (`layout:`)<br/>**Border** (`border:`)<br/>**Frame** (`frame:`)                   | **Special Properties** (`is:`, `produces:`)<br/>**Card Visual Properties**                        |
+| **Low**        | **Watermark** (`watermark:`)                                    | **Layout** (`layout:`)<br/>**Border** (`border:`)<br/>**Frame** (`frame:`)                   | **Special Properties** (`is:`, `produces:`)<br/>**Card Visual Properties**                        |
 | **Medium**     | **Cube Inclusion** (`cube:`)<br/>**Commander Features** (`cmd:`) | **Release Dates** (`year:`, `date:`)<br/>**Planeswalker Loyalty** (`loyalty:`)               | **Advanced Mechanics** (`spellpower:`, `spellresistance:`)<br/>**Devotion** (`devotion:`)        |
 | **High**       | **Regular Expressions** (`/pattern/`)<br/>**Wildcards** (`*`)    | **Advanced Functions** (`max:`, `min:`)<br/>**Paper Sets** (`papersets:`)                   | **Complex Game Rules** (`is:split`, `is:modal`)<br/>**Meta Properties** (`is:booster`)            |
 
 ### Implementation Status
 
-- **Current API Success Rate**: 100% for supported features (enhanced coverage with rarity search)
-- **Test Coverage**: 339 total tests including 209 parser tests with comprehensive rarity validation
-- **Performance**: Optimized PostgreSQL with proper indexing including integer-based rarity comparisons
+- **Current API Success Rate**: 100% for supported features (enhanced coverage with flavor text search)
+- **Test Coverage**: 376 total tests including 299 parser tests with comprehensive validation
+- **Performance**: Optimized PostgreSQL with proper indexing including full-text search capabilities
 - **Data Quality**: Regular comparison testing against official Scryfall API
 
 ### Scryfall OS vs Official Scryfall
@@ -70,6 +71,7 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 | Feature                | Syntax                             | Status                                               |
 | ---------------------- | ---------------------------------- | ---------------------------------------------------- |
 | **Basic Search**       | `name:`, `oracle:`, `type:`        | Full support with exact matching                     |
+| **Flavor Text**        | `flavor:`                          | Full text search with pattern matching               |
 | **Artist Search**      | `artist:`, `a:`                    | Full text search with trigram indexing               |
 | **Set Search**         | `set:`, `s:`                       | Dedicated indexed column with exact matching         |
 | **Rarity Search**      | `rarity:`, `r:`                    | Integer-based ordering with all comparison operators |
