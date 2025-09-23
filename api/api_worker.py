@@ -6,15 +6,21 @@ import json
 import logging
 import multiprocessing
 import os
+from typing import TYPE_CHECKING
 
 import falcon
 import falcon.media
 import orjson
 
+if TYPE_CHECKING:
+    from multiprocessing.synchronize import Event as EventType
+    from multiprocessing.synchronize import RLock as LockType
+
 # Set up a logger for this module
 logger = logging.getLogger(__name__)
 
 DEFAULT_IMPORT_GUARD = multiprocessing.RLock()
+DEFAULT_SCHEMA_SETUP_EVENT = multiprocessing.Event()
 ALL_INTERFACES = "0.0.0.0"  # noqa: S104
 
 
@@ -40,14 +46,15 @@ class ApiWorker(multiprocessing.Process):
     the API server in its own process, allowing for parallelism and isolation.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         host: str = ALL_INTERFACES,
         port: int = 8080,
-        exit_flag: multiprocessing.Event | None = None,
+        exit_flag: EventType | None = None,
         debug: bool = False,
-        import_guard: multiprocessing.RLock = DEFAULT_IMPORT_GUARD,
+        import_guard: LockType = DEFAULT_IMPORT_GUARD,
+        schema_setup_event: EventType = DEFAULT_SCHEMA_SETUP_EVENT,
     ) -> None:
         """Initialize the API worker process.
 
@@ -56,6 +63,7 @@ class ApiWorker(multiprocessing.Process):
             port (int): The port to listen on. Defaults to 8080.
             exit_flag (multiprocessing.Event | None): An optional event to signal process exit.
             import_guard (multiprocessing.RLock): An optional lock to synchronize imports.
+            schema_setup_event (multiprocessing.Event): Event denoting schema setup has been completed.
             debug (bool): Whether to run in debug mode.
         """
         super().__init__()
@@ -64,9 +72,10 @@ class ApiWorker(multiprocessing.Process):
         self.exit_flag = exit_flag
         self.import_guard = import_guard
         self.debug = debug
+        self.schema_setup_event = schema_setup_event
 
     @classmethod
-    def get_api(cls: type[ApiWorker], import_guard: multiprocessing.Lock) -> falcon.App:
+    def get_api(cls: type[ApiWorker], import_guard: LockType, schema_setup_event: EventType) -> falcon.App:
         """Create and configure the Falcon API application.
 
         Returns:
@@ -86,6 +95,7 @@ class ApiWorker(multiprocessing.Process):
         api.set_error_serializer(json_error_serializer)  # Use custom JSON error serializer
         sink = APIResource(
             import_guard=import_guard,
+            schema_setup_event=schema_setup_event,
         )  # Create the main API resource
         api.add_sink(sink._handle, prefix="/")  # Route all requests to the sink handler
 
@@ -112,7 +122,10 @@ class ApiWorker(multiprocessing.Process):
         logging.info("Starting worker with pid %d", os.getpid())
         try:
             import bjoern  # noqa: PLC0415
-            app = self.get_api(import_guard=self.import_guard)  # Get the Falcon app
+            app = self.get_api(
+                import_guard=self.import_guard,
+                schema_setup_event=self.schema_setup_event,
+            )  # Get the Falcon app
             bjoern.run(
                 wsgi_app=app,
                 host=self.host,
