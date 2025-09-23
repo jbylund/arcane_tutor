@@ -6,6 +6,8 @@ import logging
 import os
 import pathlib
 import random
+import sys
+from types import TracebackType
 
 import orjson
 import psycopg
@@ -63,6 +65,23 @@ def make_pool() -> psycopg_pool.ConnectionPool:
     }
     logger.info("Pool args: %s", pool_args)
     pool = psycopg_pool.ConnectionPool(**pool_args)
+
+    original_log = logger.log
+    def try_log(  # noqa: PLR0913
+        level: int,
+        msg: str,
+        args: tuple[object, ...],
+        exc_info: tuple[type[BaseException], BaseException, TracebackType] | None,
+        stack_info: bool,
+        stacklevel: int,
+        extra: dict[str, object],
+    ) -> None:
+        try:
+            original_log(level, msg, args, exc_info, stack_info, stacklevel, extra)
+        except (ValueError, OSError):
+            # Logging system may be shut down during interpreter exit
+            sys.stderr.write(msg % args)
+    logger.log = try_log
 
     def cleanup() -> None:
         logger.info("Closing connection pool in pid %d", os.getpid())
