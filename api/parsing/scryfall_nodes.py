@@ -154,7 +154,7 @@ def get_frame_data_comparison_object(val: str) -> dict[str, bool]:
     """Convert frame data string to comparison object for database queries.
 
     Handles both frame versions (e.g., "2015", "1997") and frame effects (e.g., "showcase", "legendary").
-    Frame versions are kept as-is, frame effects are titlecased.
+    All values are titlecased for consistency.
 
     Args:
         val: Frame data string to normalize.
@@ -164,10 +164,8 @@ def get_frame_data_comparison_object(val: str) -> dict[str, bool]:
     """
     val = val.strip()
 
-    # Known frame versions (keep as-is)
-    frame_versions = {"1993", "1997", "2003", "2015", "future"}
-
-    normalized_val = val if val in frame_versions else val.title()
+    # Always titlecase for consistency
+    normalized_val = val.title()
 
     return {normalized_val: True}
 

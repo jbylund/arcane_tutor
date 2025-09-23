@@ -433,7 +433,7 @@ class TestAPIResourceDataProcessing(unittest.TestCase):
         result = self.api_resource._preprocess_card(card_with_frame)
 
         assert result is not None
-        expected_frame_data = {"2015": True, "showcase": True, "legendary": True}
+        expected_frame_data = {"2015": True, "Showcase": True, "Legendary": True}
         assert result["card_frame_data"] == expected_frame_data
 
     def test_preprocess_card_handles_missing_frame_data(self) -> None:

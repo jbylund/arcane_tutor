@@ -865,7 +865,7 @@ def test_negated_type_queries_generate_simple_sql(input_query: str, expected_sql
 @pytest.mark.parametrize(
     argnames=("input_query", "expected_sql", "expected_parameters"),
     argvalues=[
-        # Frame version search (exact matching with JSONB object)
+        # Frame version search (exact matching with JSONB object, all titlecased)
         (
             "frame:2015",
             r"(card.card_frame_data @> %(p_dict_eycyMDE1JzogVHJ1ZX0)s)",
@@ -876,7 +876,7 @@ def test_negated_type_queries_generate_simple_sql(input_query: str, expected_sql
             r"(card.card_frame_data @> %(p_dict_eycxOTk3JzogVHJ1ZX0)s)",
             {"p_dict_eycxOTk3JzogVHJ1ZX0": {"1997": True}},
         ),
-        # Frame effects search (using same frame: syntax)
+        # Frame effects search (using same frame: syntax, titlecased)
         (
             "frame:showcase",
             r"(card.card_frame_data @> %(p_dict_eydTaG93Y2FzZSc6IFRydWV9)s)",

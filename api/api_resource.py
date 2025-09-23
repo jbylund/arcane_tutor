@@ -592,14 +592,14 @@ class APIResource:
 
         # Extract frame data - combine frame version and frame effects into single JSONB object
         frame_data = {}
-        # Add frame version if present
+        # Add frame version if present (titlecased for consistency)
         frame_version = card.get("frame")
         if frame_version:
-            frame_data[frame_version] = True
-        # Add frame effects if present
+            frame_data[frame_version.title()] = True
+        # Add frame effects if present (titlecased for consistency)
         frame_effects = card.get("frame_effects", [])
         for effect in frame_effects:
-            frame_data[effect] = True
+            frame_data[effect.title()] = True
         card["card_frame_data"] = frame_data
 
         # Extract pricing data if available
