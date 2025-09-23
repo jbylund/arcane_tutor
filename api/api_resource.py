@@ -10,7 +10,6 @@ import functools
 import inspect
 import itertools
 import logging
-import multiprocessing
 import os
 import pathlib
 import random
@@ -18,7 +17,7 @@ import re
 import secrets
 import time
 import urllib.parse
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TracebackType
 from typing import cast as typecast
 from urllib.parse import urlparse
 
@@ -44,8 +43,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # pylint: disable=c-extension-no-member
-DEFAULT_IMPORT_GUARD = multiprocessing.RLock()
-DEFAULT_SCHEMA_SETUP_EVENT = multiprocessing.Event()
 NOT_FOUND = 404
 
 
@@ -181,6 +178,36 @@ def can_serialize(iobj: object) -> bool:
     return True
 
 
+class MockLock:
+    """Mock implementation of multiprocessing.Lock for testing."""
+
+    def __enter__(self) -> MockLock:
+        """Enter the context manager."""
+
+    def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
+        """Exit the context manager."""
+
+class MockEvent:
+    """Mock implementation of multiprocessing.Event for testing."""
+
+    def __init__(self) -> None:
+        """Initialize the mock event."""
+        self._is_set = False
+
+    def set(self) -> None:
+        """Set the event."""
+        self._is_set = True
+
+    def clear(self) -> None:
+        """Clear the event."""
+        self._is_set = False
+
+    def is_set(self) -> bool:
+        """Return True if the event is set."""
+        return self._is_set
+
+DEFAULT_IMPORT_GUARD = MockLock()
+DEFAULT_SCHEMA_SETUP_EVENT = MockEvent()
 
 class APIResource:
     """Class implementing request handling for our simple API."""
