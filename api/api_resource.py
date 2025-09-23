@@ -930,9 +930,10 @@ class APIResource:
             raise ValueError(msg)
 
         # Fetch cards with this tag from Scryfall API (handles pagination)
-        card_names = self._scryfall_search(query=f"oracletag:{tag}")
+        cards = self._scryfall_search(query=f"oracletag:{tag}")
+        card_names = [c["name"] for c in cards]
 
-        if not card_names:
+        if not cards:
             return {
                 "tag": tag,
                 "cards_updated": 0,
