@@ -2,7 +2,7 @@
 
 ![Scryfall OS Web Interface](scryfallos-screenshot.png)
 
-*Scryfall OS web interface showing modern format cards ordered by USD price*
+*Scryfall OS web interface in dark mode showing cards with CMC less than 10, ordered by USD price descending*
 
 ## Table of Contents
 
