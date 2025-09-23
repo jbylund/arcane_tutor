@@ -1443,9 +1443,10 @@ class APIResource:
                 SELECT
                     raw_card_blob->>'frame' AS frame,
                     raw_card_blob->'frame_effects' AS frame_effects
-                FROM magic.cards
-                WHERE card_frame_data = '{}'::jsonb
-                AND (raw_card_blob ? 'frame' OR raw_card_blob ? 'frame_effects')
+                FROM
+                    magic.cards
+                WHERE
+                    (raw_card_blob ? 'frame' OR raw_card_blob ? 'frame_effects')
                 GROUP BY 1, 2
             """)
 
@@ -1458,23 +1459,27 @@ class APIResource:
                     raw_card["frame_effects"] = row["frame_effects"]
 
                 frame_data = extract_frame_data_from_raw_card(raw_card)
+                if frame_data is None:
+                    continue
 
-                if frame_data:  # Only update if there's actually frame data to set
-                    cursor.execute(
-                        query="""
-                            UPDATE magic.cards
-                            SET card_frame_data = %(frame_data)s
-                            WHERE card_frame_data = '{}'::jsonb
-                            AND raw_card_blob->>'frame' IS NOT DISTINCT FROM %(frame)s
-                            AND raw_card_blob->'frame_effects' IS NOT DISTINCT FROM %(frame_effects)s
-                        """,
-                        params={
-                            "frame_data": db_utils.maybe_json(frame_data),
-                            "frame": row["frame"],
-                            "frame_effects": row["frame_effects"],
-                        },
-                    )
-                    updated_count += cursor.rowcount
+                logger.info("Updating frame: frame_data=%s, row=%s", frame_data, row)
+                cursor.execute(
+                    query=rewrap("""
+                        UPDATE
+                            magic.cards
+                        SET
+                            card_frame_data = %(frame_data)s
+                        WHERE
+                            raw_card_blob->>'frame' IS NOT DISTINCT FROM %(frame)s AND
+                            raw_card_blob->'frame_effects' IS NOT DISTINCT FROM %(frame_effects)s
+                    """),
+                    params={
+                        "frame": db_utils.maybe_json(row["frame"]),
+                        "frame_data": db_utils.maybe_json(frame_data),
+                        "frame_effects": db_utils.maybe_json(row["frame_effects"]),
+                    },
+                )
+                updated_count += cursor.rowcount
 
             conn.commit()
 
