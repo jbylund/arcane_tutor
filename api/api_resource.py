@@ -1438,24 +1438,40 @@ class APIResource:
         updated_count = 0
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             cursor = typecast("Cursor", cursor)
-            # Select cards that have frame data in raw_card_blob but empty card_frame_data
+            # Select unique combinations of frame and frame_effects for efficient batch processing
             cursor.execute("""
-                SELECT card_name, raw_card_blob
+                SELECT
+                    raw_card_blob->>'frame' AS frame,
+                    raw_card_blob->'frame_effects' AS frame_effects
                 FROM magic.cards
                 WHERE card_frame_data = '{}'::jsonb
                 AND (raw_card_blob ? 'frame' OR raw_card_blob ? 'frame_effects')
+                GROUP BY 1, 2
             """)
 
             for row in cursor.fetchall():
-                raw_card = row["raw_card_blob"]
+                # Build raw card data for frame extraction
+                raw_card = {}
+                if row["frame"] is not None:
+                    raw_card["frame"] = row["frame"]
+                if row["frame_effects"] is not None:
+                    raw_card["frame_effects"] = row["frame_effects"]
+
                 frame_data = extract_frame_data_from_raw_card(raw_card)
 
                 if frame_data:  # Only update if there's actually frame data to set
                     cursor.execute(
-                        query="UPDATE magic.cards SET card_frame_data = %(frame_data)s WHERE card_name = %(card_name)s",
+                        query="""
+                            UPDATE magic.cards
+                            SET card_frame_data = %(frame_data)s
+                            WHERE card_frame_data = '{}'::jsonb
+                            AND raw_card_blob->>'frame' IS NOT DISTINCT FROM %(frame)s
+                            AND raw_card_blob->'frame_effects' IS NOT DISTINCT FROM %(frame_effects)s
+                        """,
                         params={
                             "frame_data": db_utils.maybe_json(frame_data),
-                            "card_name": row["card_name"],
+                            "frame": row["frame"],
+                            "frame_effects": row["frame_effects"],
                         },
                     )
                     updated_count += cursor.rowcount
