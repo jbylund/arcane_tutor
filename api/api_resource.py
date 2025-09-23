@@ -17,7 +17,7 @@ import re
 import secrets
 import time
 import urllib.parse
-from typing import TYPE_CHECKING, Any, TracebackType
+from typing import TYPE_CHECKING, Any
 from typing import cast as typecast
 from urllib.parse import urlparse
 
@@ -36,6 +36,7 @@ from .utils import db_utils, error_monitoring
 if TYPE_CHECKING:
     from multiprocessing.synchronize import Event as EventType
     from multiprocessing.synchronize import RLock as LockType
+    from types import TracebackType
 
     import psycopg_pool
 
