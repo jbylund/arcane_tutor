@@ -729,12 +729,13 @@ class APIResource:
                 description=f'Failed to parse query: "{query}"',
             ) from err
         sql_orderby = {
+            # what's in the query => the db column name
             "cmc": "cmc",
             "edhrec": "edhrec_rank",
             "power": "creature_power",
-            "toughness": "creature_toughness",
-            "usd": "usd",
             "rarity": "card_rarity_int",
+            "toughness": "creature_toughness",
+            "usd": "price_usd",
         }.get(orderby, "edhrec_rank")
         sql_direction = {
             "asc": "ASC",
