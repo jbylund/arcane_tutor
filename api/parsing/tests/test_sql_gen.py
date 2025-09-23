@@ -865,32 +865,32 @@ def test_negated_type_queries_generate_simple_sql(input_query: str, expected_sql
 @pytest.mark.parametrize(
     argnames=("input_query", "expected_sql", "expected_parameters"),
     argvalues=[
-        # Basic frame search (text field with ILIKE pattern)
+        # Frame version search (exact matching with JSONB object)
         (
             "frame:2015",
-            r"(card.card_frame ILIKE %(p_str_JTIwMTUl)s)",
-            {"p_str_JTIwMTUl": "%2015%"},
+            r"(card.card_frame_data @> %(p_dict_eycyMDE1JzogVHJ1ZX0)s)",
+            {"p_dict_eycyMDE1JzogVHJ1ZX0": {"2015": True}},
         ),
         (
             "frame:1997",
-            r"(card.card_frame ILIKE %(p_str_JTE5OTcl)s)",
-            {"p_str_JTE5OTcl": "%1997%"},
+            r"(card.card_frame_data @> %(p_dict_eycxOTk3JzogVHJ1ZX0)s)",
+            {"p_dict_eycxOTk3JzogVHJ1ZX0": {"1997": True}},
         ),
-        # Frame effects search (JSONB array)
+        # Frame effects search (using same frame: syntax)
         (
-            "frame_effects:showcase",
-            r"(%(p_list_WydTaG93Y2FzZSdd)s <@ card.card_frame_effects)",
-            {"p_list_WydTaG93Y2FzZSdd": ["Showcase"]},
+            "frame:showcase",
+            r"(card.card_frame_data @> %(p_dict_eydTaG93Y2FzZSc6IFRydWV9)s)",
+            {"p_dict_eydTaG93Y2FzZSc6IFRydWV9": {"Showcase": True}},
         ),
         (
-            "frame_effects:legendary",
-            r"(%(p_list_WydMZWdlbmRhcnknXQ)s <@ card.card_frame_effects)",
-            {"p_list_WydMZWdlbmRhcnknXQ": ["Legendary"]},
+            "frame:legendary",
+            r"(card.card_frame_data @> %(p_dict_eydMZWdlbmRhcnknOiBUcnVlfQ)s)",
+            {"p_dict_eydMZWdlbmRhcnknOiBUcnVlfQ": {"Legendary": True}},
         ),
     ],
 )
 def test_frame_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
-    """Test that frame and frame_effects search generate correct SQL."""
+    """Test that frame search generates correct SQL with exact matching."""
     parsed = parsing.parse_scryfall_query(input_query)
     observed_params = {}
     observed_sql = parsed.to_sql(observed_params)

@@ -150,6 +150,28 @@ def get_colors_comparison_object(val: str) -> dict[str, bool]:
         raise ValueError(msg) from e
 
 
+def get_frame_data_comparison_object(val: str) -> dict[str, bool]:
+    """Convert frame data string to comparison object for database queries.
+
+    Handles both frame versions (e.g., "2015", "1997") and frame effects (e.g., "showcase", "legendary").
+    Frame versions are kept as-is, frame effects are titlecased.
+
+    Args:
+        val: Frame data string to normalize.
+
+    Returns:
+        Dictionary mapping normalized frame data to True.
+    """
+    val = val.strip()
+
+    # Known frame versions (keep as-is)
+    frame_versions = {"1993", "1997", "2003", "2015", "future"}
+
+    normalized_val = val if val in frame_versions else val.title()
+
+    return {normalized_val: True}
+
+
 def get_keywords_comparison_object(val: str) -> dict[str, bool]:
     """Convert keyword string to comparison object for database queries.
 
@@ -477,6 +499,11 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             is_color_identity = attr == "card_color_identity"
         elif attr == "card_keywords":
             rhs = get_keywords_comparison_object(self.rhs.value.strip())
+            pname = param_name(rhs)
+            context[pname] = rhs
+        elif attr == "card_frame_data":
+            # Frame data handling - treat like keywords (exact string match)
+            rhs = get_frame_data_comparison_object(self.rhs.value.strip())
             pname = param_name(rhs)
             context[pname] = rhs
         elif attr == "card_oracle_tags":

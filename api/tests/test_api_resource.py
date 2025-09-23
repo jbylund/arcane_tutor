@@ -433,8 +433,8 @@ class TestAPIResourceDataProcessing(unittest.TestCase):
         result = self.api_resource._preprocess_card(card_with_frame)
 
         assert result is not None
-        assert result["card_frame"] == "2015"
-        assert result["card_frame_effects"] == ["showcase", "legendary"]
+        expected_frame_data = {"2015": True, "showcase": True, "legendary": True}
+        assert result["card_frame_data"] == expected_frame_data
 
     def test_preprocess_card_handles_missing_frame_data(self) -> None:
         """Test _preprocess_card handles missing frame data correctly."""
@@ -452,8 +452,7 @@ class TestAPIResourceDataProcessing(unittest.TestCase):
         result = self.api_resource._preprocess_card(card_without_frame)
 
         assert result is not None
-        assert result["card_frame"] is None  # Should be None when not present
-        assert result["card_frame_effects"] == []  # Should be empty array when not present
+        assert result["card_frame_data"] == {}  # Should be empty object when no frame data present
 
     def test_preprocess_card_handles_missing_fields(self) -> None:
         """Test _preprocess_card handles missing optional fields."""
