@@ -765,3 +765,49 @@ def test_mana_cost_string_format_comparisons() -> None:
         assert sql is not None, f"Failed to generate SQL for {query}"
         assert "card.mana_cost_jsonb" in sql, f"Should use JSONB containment for {query}"
         assert "card.cmc" in sql, f"Should use CMC check for {query}"
+
+
+@pytest.mark.parametrize(
+    argnames=("test_input", "expected_ast"),
+    argvalues=[
+        ("produces:g", BinaryOperatorNode(AttributeNode("produces"), ":", StringValueNode("g"))),
+        ("produces:wu", BinaryOperatorNode(AttributeNode("produces"), ":", StringValueNode("wu"))),
+        ("produces:wubrg", BinaryOperatorNode(AttributeNode("produces"), ":", StringValueNode("wubrg"))),
+        ("produces:c", BinaryOperatorNode(AttributeNode("produces"), ":", StringValueNode("c"))),
+        ("produces:G", BinaryOperatorNode(AttributeNode("produces"), ":", StringValueNode("G"))),
+        ("produces:WU", BinaryOperatorNode(AttributeNode("produces"), ":", StringValueNode("WU"))),
+        ('produces:"wu"', BinaryOperatorNode(AttributeNode("produces"), ":", StringValueNode("wu"))),
+        ("PRODUCES:g", BinaryOperatorNode(AttributeNode("PRODUCES"), ":", StringValueNode("g"))),
+    ],
+)
+def test_parse_produces_searches(test_input: str, expected_ast: BinaryOperatorNode) -> None:
+    """Test parsing of produces searches for mana production."""
+    observed = parsing.parse_search_query(test_input)
+    assert observed.root == expected_ast
+
+
+def test_parse_combined_produces_queries() -> None:
+    """Test parsing of complex queries combining produces searches."""
+    # Test combining produces with other attributes
+    query1 = "produces:g type:land"
+    result1 = parsing.parse_search_query(query1)
+    expected1 = parsing.AndNode([
+        BinaryOperatorNode(AttributeNode("produces"), ":", StringValueNode("g")),
+        BinaryOperatorNode(AttributeNode("type"), ":", StringValueNode("land")),
+    ])
+    assert result1.root == expected1
+
+    # Test OR with produces
+    query2 = "produces:w OR produces:u"
+    result2 = parsing.parse_search_query(query2)
+    expected2 = parsing.OrNode([
+        BinaryOperatorNode(AttributeNode("produces"), ":", StringValueNode("w")),
+        BinaryOperatorNode(AttributeNode("produces"), ":", StringValueNode("u")),
+    ])
+    assert result2.root == expected2
+
+    # Test produces with comparison operators
+    query3 = "produces=wu"
+    result3 = parsing.parse_search_query(query3)
+    expected3 = BinaryOperatorNode(AttributeNode("produces"), "=", StringValueNode("wu"))
+    assert result3.root == expected3

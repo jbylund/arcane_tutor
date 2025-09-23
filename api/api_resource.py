@@ -588,6 +588,7 @@ class APIResource:
         card["card_colors"] = dict.fromkeys(card["colors"], True)
         card["card_color_identity"] = dict.fromkeys(card["color_identity"], True)
         card["card_keywords"] = dict.fromkeys(card.get("keywords", []), True)
+        card["produced_mana"] = dict.fromkeys(card.get("produced_mana", []), True)
         card["edhrec_rank"] = card.get("edhrec_rank")
 
         # Extract pricing data if available
