@@ -7,4 +7,5 @@ psycopg[binary,pool]
 pyparsing
 requests
 tenacity
+testcontainers[postgres]
 zstandard
