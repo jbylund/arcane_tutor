@@ -1,5 +1,9 @@
 # Scryfall OS
 
+![Scryfall OS Web Interface](scryfallos-screenshot.png)
+
+*Scryfall OS web interface showing modern format cards ordered by USD price*
+
 ## Table of Contents
 
 1. [Project Overview](#project-overview)
