@@ -46,6 +46,8 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 - Pricing data (`usd:`, `eur:`, `tix:`) for market analysis
 - Artist search (`artist:`, `a:`) with trigram indexing
 - Flavor text search (`flavor:`) for searching card flavor text
+- Card frame search (`frame:`) for frame type and visual properties
+- Mana production search (`produces:`) for lands and mana-producing cards
 
 ### Missing Functionality - Complexity vs Impact Grid
 
@@ -53,7 +55,7 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 
 | **Complexity** | **Low Impact**                                                   | **Medium Impact**                                                                            | **High Impact**                                                                                   |
 | -------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| **Low**        | **Watermark** (`watermark:`)                                    | **Layout** (`layout:`)<br/>**Border** (`border:`)<br/>**Frame** (`frame:`)                   | **Special Properties** (`is:`, `produces:`)<br/>**Card Visual Properties**                        |
+| **Low**        | **Watermark** (`watermark:`)                                    | **Layout** (`layout:`)<br/>**Border** (`border:`)                                           | **Special Properties** (`is:`)<br/>**Card Visual Properties**                                     |
 | **Medium**     | **Cube Inclusion** (`cube:`)<br/>**Commander Features** (`cmd:`) | **Release Dates** (`year:`, `date:`)<br/>**Planeswalker Loyalty** (`loyalty:`)               | **Advanced Mechanics** (`spellpower:`, `spellresistance:`)<br/>**Devotion** (`devotion:`)        |
 | **High**       | **Regular Expressions** (`/pattern/`)<br/>**Wildcards** (`*`)    | **Advanced Functions** (`max:`, `min:`)<br/>**Paper Sets** (`papersets:`)                   | **Complex Game Rules** (`is:split`, `is:modal`)<br/>**Meta Properties** (`is:booster`)            |
 
@@ -70,11 +72,14 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 
 | Feature                | Syntax                             | Status                                               |
 | ---------------------- | ---------------------------------- | ---------------------------------------------------- |
-| **Basic Search**       | `name:`, `oracle:`, `type:`        | Full support with exact matching                     |
+| **Basic Search**       | `name:`, `oracle:`                 | Full substring search with pattern matching          |
+| **Type Search**        | `type:`, `t:`                      | Exact matching with intelligent autocomplete         |
 | **Flavor Text**        | `flavor:`                          | Full text search with pattern matching               |
 | **Artist Search**      | `artist:`, `a:`                    | Full text search with trigram indexing               |
 | **Set Search**         | `set:`, `s:`                       | Dedicated indexed column with exact matching         |
 | **Rarity Search**      | `rarity:`, `r:`                    | Integer-based ordering with all comparison operators |
+| **Frame Search**       | `frame:`                           | Card frame type and visual properties search         |
+| **Mana Production**    | `produces:`                        | Search for lands and mana-producing cards            |
 | **Numeric Attributes** | `cmc:`, `power:`, `toughness:`     | Complete with all comparison operators               |
 | **Colors & Identity**  | `color:`, `identity:`, `c:`, `id:` | JSONB-based with complex color logic                 |
 | **Pricing Data**       | `usd:`, `eur:`, `tix:`             | Complete with all comparison operators               |
