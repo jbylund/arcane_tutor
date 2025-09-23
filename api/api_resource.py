@@ -1432,6 +1432,270 @@ class APIResource:
             "message": "Mana cost jsonb backfilled successfully",
         }
 
+    def export_card_data(self: APIResource, **_: object) -> dict[str, Any]:
+        """Export card data tables to CSV files for backup/re-import.
+
+        Exports the three main tables:
+        - magic.cards
+        - magic.tags
+        - magic.tag_relationships
+
+        Files are saved to /data/api/exports/{timestamp}/ directory.
+
+        Returns:
+        -------
+            Dict[str, Any]: Export result with status, file paths, and counts.
+        """
+        logger.info("Starting card data export")
+
+        # Create timestamped export directory
+        timestamp = datetime.datetime.now(tz=datetime.UTC).strftime("%Y%m%d_%H%M%S")
+        export_dir = pathlib.Path("/data/api/exports") / timestamp
+        export_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+                cursor = typecast("Cursor", cursor)
+
+                export_results = {}
+                export_results["cards"] = self._export_cards_table(cursor, export_dir)
+                export_results["tags"] = self._export_tags_table(cursor, export_dir)
+                export_results["tag_relationships"] = self._export_tag_relationships_table(cursor, export_dir)
+
+                cards_count = export_results["cards"]["count"]
+                tags_count = export_results["tags"]["count"]
+                relationships_count = export_results["tag_relationships"]["count"]
+
+                logger.info("Export completed successfully to %s", export_dir)
+                return {
+                    "status": "success",
+                    "export_directory": str(export_dir),
+                    "timestamp": timestamp,
+                    "results": export_results,
+                    "message": f"Successfully exported {cards_count} cards, {tags_count} tags, and {relationships_count} tag relationships",
+                }
+
+        except (OSError, psycopg.Error, ValueError) as e:
+            logger.error("Failed to export card data: %s", e)
+            return {
+                "status": "error",
+                "message": f"Export failed: {e}",
+            }
+
+    def _export_cards_table(self: APIResource, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
+        """Export magic.cards table to CSV file."""
+        cards_file = export_dir / "cards.csv"
+        with cards_file.open("w", newline="", encoding="utf-8") as f:
+            cursor.execute("""
+                SELECT card_name, cmc, mana_cost_text, mana_cost_jsonb::text as mana_cost_jsonb,
+                       raw_card_blob::text as raw_card_blob, card_types::text as card_types,
+                       card_subtypes::text as card_subtypes, card_colors::text as card_colors,
+                       card_color_identity::text as card_color_identity,
+                       card_keywords::text as card_keywords, oracle_text, edhrec_rank,
+                       creature_power, creature_power_text, creature_toughness, creature_toughness_text,
+                       card_oracle_tags::text as card_oracle_tags
+                FROM magic.cards
+                ORDER BY card_name
+            """)
+
+            writer = csv.writer(f)
+            writer.writerow([
+                "card_name", "cmc", "mana_cost_text", "mana_cost_jsonb", "raw_card_blob",
+                "card_types", "card_subtypes", "card_colors", "card_color_identity",
+                "card_keywords", "oracle_text", "edhrec_rank", "creature_power",
+                "creature_power_text", "creature_toughness", "creature_toughness_text",
+                "card_oracle_tags",
+            ])
+
+            cards_count = 0
+            while True:
+                rows = cursor.fetchmany(1000)  # Process in batches
+                if not rows:
+                    break
+                writer.writerows(rows)
+                cards_count += len(rows)
+
+        return {"file": str(cards_file), "count": cards_count}
+
+    def _export_tags_table(self: APIResource, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
+        """Export magic.tags table to CSV file."""
+        tags_file = export_dir / "tags.csv"
+        with tags_file.open("w", newline="", encoding="utf-8") as f:
+            cursor.execute("SELECT tag FROM magic.tags ORDER BY tag")
+            writer = csv.writer(f)
+            writer.writerow(["tag"])
+
+            tags_count = 0
+            while True:
+                rows = cursor.fetchmany(1000)
+                if not rows:
+                    break
+                writer.writerows(rows)
+                tags_count += len(rows)
+
+        return {"file": str(tags_file), "count": tags_count}
+
+    def _export_tag_relationships_table(self: APIResource, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
+        """Export magic.tag_relationships table to CSV file."""
+        relationships_file = export_dir / "tag_relationships.csv"
+        with relationships_file.open("w", newline="", encoding="utf-8") as f:
+            cursor.execute("""
+                SELECT child_tag, parent_tag
+                FROM magic.tag_relationships
+                ORDER BY child_tag, parent_tag
+            """)
+            writer = csv.writer(f)
+            writer.writerow(["child_tag", "parent_tag"])
+
+            relationships_count = 0
+            while True:
+                rows = cursor.fetchmany(1000)
+                if not rows:
+                    break
+                writer.writerows(rows)
+                relationships_count += len(rows)
+
+        return {"file": str(relationships_file), "count": relationships_count}
+
+    def import_card_data(self: APIResource, *, timestamp: str | None = None, **_: object) -> dict[str, Any]:
+        """Import card data from CSV files, truncating existing data.
+
+        Imports data from /data/api/exports/{timestamp}/ directory.
+        If timestamp is not provided, uses the most recent export.
+
+        Args:
+        ----
+            timestamp (str, optional): Timestamp of export to import. If None, uses latest.
+
+        Returns:
+        -------
+            Dict[str, Any]: Import result with status and counts.
+        """
+        logger.info("Starting card data import")
+
+        try:
+            import_dir, timestamp = self._find_import_directory(timestamp)
+            self._validate_import_files(import_dir)
+
+            logger.info("Importing from directory: %s", import_dir)
+
+            with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+                cursor = typecast("Cursor", cursor)
+                conn.autocommit = False
+
+                try:
+                    import_results = self._perform_import(cursor, import_dir)
+                    conn.commit()
+
+                    logger.info("Import completed successfully")
+                    return {
+                        "status": "success",
+                        "timestamp": timestamp,
+                        "import_directory": str(import_dir),
+                        "results": import_results,
+                        "message": f"Successfully imported {import_results['cards']} cards, {import_results['tags']} tags, and {import_results['tag_relationships']} tag relationships",
+                    }
+
+                except (OSError, psycopg.Error, ValueError) as e:
+                    conn.rollback()
+                    raise e
+                finally:
+                    conn.autocommit = True
+
+        except (OSError, psycopg.Error, ValueError) as e:
+            logger.error("Failed to import card data: %s", e)
+            return {
+                "status": "error",
+                "message": f"Import failed: {e}",
+            }
+
+    def _find_import_directory(self: APIResource, timestamp: str | None) -> tuple[pathlib.Path, str]:
+        """Find and validate the import directory."""
+        exports_dir = pathlib.Path("/data/api/exports")
+        if not exports_dir.exists():
+            msg = "No exports directory found at /data/api/exports"
+            raise ValueError(msg)
+
+        if timestamp:
+            import_dir = exports_dir / timestamp
+            if not import_dir.exists():
+                msg = f"Export directory for timestamp {timestamp} not found"
+                raise ValueError(msg)
+        else:
+            # Find most recent export
+            export_dirs = [d for d in exports_dir.iterdir() if d.is_dir()]
+            if not export_dirs:
+                msg = "No export directories found"
+                raise ValueError(msg)
+            import_dir = max(export_dirs, key=lambda d: d.name)
+            timestamp = import_dir.name
+
+        return import_dir, timestamp
+
+    def _validate_import_files(self: APIResource, import_dir: pathlib.Path) -> None:
+        """Validate that all required import files exist."""
+        required_files = [
+            ("cards.csv", import_dir / "cards.csv"),
+            ("tags.csv", import_dir / "tags.csv"),
+            ("tag_relationships.csv", import_dir / "tag_relationships.csv"),
+        ]
+
+        missing_files = [name for name, file_path in required_files if not file_path.exists()]
+
+        if missing_files:
+            msg = f"Missing required files: {', '.join(missing_files)}"
+            raise ValueError(msg)
+
+    def _perform_import(self: APIResource, cursor: Cursor, import_dir: pathlib.Path) -> dict[str, int]:
+        """Perform the actual import operation."""
+        # Truncate tables in correct order (respecting foreign keys)
+        logger.info("Truncating existing data")
+        cursor.execute("TRUNCATE TABLE magic.tag_relationships CASCADE")
+        cursor.execute("TRUNCATE TABLE magic.tags CASCADE")
+        cursor.execute("TRUNCATE TABLE magic.cards CASCADE")
+
+        import_results = {}
+
+        # Import tags first (no dependencies)
+        logger.info("Importing tags")
+        tags_file = import_dir / "tags.csv"
+        with tags_file.open("r", encoding="utf-8") as f:
+            cursor.copy_expert(
+                "COPY magic.tags (tag) FROM STDIN WITH (FORMAT csv, HEADER true)",
+                f,
+            )
+        cursor.execute("SELECT COUNT(*) FROM magic.tags")
+        import_results["tags"] = cursor.fetchone()["count"]
+
+        # Import tag relationships (depends on tags)
+        logger.info("Importing tag relationships")
+        relationships_file = import_dir / "tag_relationships.csv"
+        with relationships_file.open("r", encoding="utf-8") as f:
+            cursor.copy_expert(
+                "COPY magic.tag_relationships (child_tag, parent_tag) FROM STDIN WITH (FORMAT csv, HEADER true)",
+                f,
+            )
+        cursor.execute("SELECT COUNT(*) FROM magic.tag_relationships")
+        import_results["tag_relationships"] = cursor.fetchone()["count"]
+
+        # Import cards last (largest table)
+        logger.info("Importing cards")
+        cards_file = import_dir / "cards.csv"
+        with cards_file.open("r", encoding="utf-8") as f:
+            cursor.copy_expert("""
+                COPY magic.cards (
+                    card_name, cmc, mana_cost_text, mana_cost_jsonb, raw_card_blob,
+                    card_types, card_subtypes, card_colors, card_color_identity,
+                    card_keywords, oracle_text, edhrec_rank, creature_power,
+                    creature_power_text, creature_toughness, creature_toughness_text,
+                    card_oracle_tags
+                ) FROM STDIN WITH (FORMAT csv, HEADER true)
+            """, f)
+        cursor.execute("SELECT COUNT(*) FROM magic.cards")
+        import_results["cards"] = cursor.fetchone()["count"]
+
+        return import_results
+
     def _load_cards_with_staging(
         self: APIResource,
         cards: list[dict[str, Any]],
