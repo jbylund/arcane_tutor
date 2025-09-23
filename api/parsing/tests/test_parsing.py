@@ -735,6 +735,12 @@ def test_mana_cost_dict_conversion() -> None:
     assert mana_cost_str_to_dict("{2/W}") == {"2/W": [1]}
     assert mana_cost_str_to_dict("{X}{X}{W}") == {"X": [1, 2], "W": [1]}
 
+    # Test case sensitivity - lowercase should be converted to uppercase
+    assert mana_cost_str_to_dict("{g}{g}{g}") == {"G": [1, 2, 3]}
+    assert mana_cost_str_to_dict("{r}{u}{b}") == {"R": [1], "U": [1], "B": [1]}
+    assert mana_cost_str_to_dict("{w/u}") == {"W/U": [1]}
+    assert mana_cost_str_to_dict("{2/w}") == {"2/W": [1]}
+
 
 def test_mana_cost_string_format_comparisons() -> None:
     """Test mana cost comparisons work with both {X} and X string formats."""

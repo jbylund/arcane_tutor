@@ -212,7 +212,9 @@ def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
         try:
             int(mana_symbol)
         except ValueError:
-            colored_symbol_counts[mana_symbol] = colored_symbol_counts.get(mana_symbol, 0) + 1
+            # Uppercase the mana symbol to ensure consistent storage
+            upper_symbol = mana_symbol.upper()
+            colored_symbol_counts[upper_symbol] = colored_symbol_counts.get(upper_symbol, 0) + 1
         else:
             pass
     as_dict = {}
