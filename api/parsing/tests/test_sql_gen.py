@@ -860,3 +860,39 @@ def test_negated_type_queries_generate_simple_sql(input_query: str, expected_sql
     observed_params = {}
     observed_sql = parsed.to_sql(observed_params)
     assert expected_sql_fragment in observed_sql, f"Expected fragment '{expected_sql_fragment}' not found in SQL: {observed_sql}"
+
+
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_sql", "expected_parameters"),
+    argvalues=[
+        # Frame version search (exact matching with JSONB object, all titlecased)
+        (
+            "frame:2015",
+            r"(card.card_frame_data @> %(p_dict_eycyMDE1JzogVHJ1ZX0)s)",
+            {"p_dict_eycyMDE1JzogVHJ1ZX0": {"2015": True}},
+        ),
+        (
+            "frame:1997",
+            r"(card.card_frame_data @> %(p_dict_eycxOTk3JzogVHJ1ZX0)s)",
+            {"p_dict_eycxOTk3JzogVHJ1ZX0": {"1997": True}},
+        ),
+        # Frame effects search (using same frame: syntax, titlecased)
+        (
+            "frame:showcase",
+            r"(card.card_frame_data @> %(p_dict_eydTaG93Y2FzZSc6IFRydWV9)s)",
+            {"p_dict_eydTaG93Y2FzZSc6IFRydWV9": {"Showcase": True}},
+        ),
+        (
+            "frame:legendary",
+            r"(card.card_frame_data @> %(p_dict_eydMZWdlbmRhcnknOiBUcnVlfQ)s)",
+            {"p_dict_eydMZWdlbmRhcnknOiBUcnVlfQ": {"Legendary": True}},
+        ),
+    ],
+)
+def test_frame_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
+    """Test that frame search generates correct SQL with exact matching."""
+    parsed = parsing.parse_scryfall_query(input_query)
+    observed_params = {}
+    observed_sql = parsed.to_sql(observed_params)
+    assert observed_sql == expected_sql, f"\nExpected: {expected_sql}\nObserved: {observed_sql}"
+    assert observed_params == expected_parameters, f"\nExpected params: {expected_parameters}\nObserved params: {observed_params}"
