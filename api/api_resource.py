@@ -36,6 +36,7 @@ if True:  # imports
     from psycopg import Connection
 
     from .parsing import generate_sql_query, parse_scryfall_query
+    from .parsing.scryfall_nodes import mana_cost_str_to_dict
     from .tagger_client import TaggerClient
     from .utils import db_utils, error_monitoring
 
@@ -48,22 +49,6 @@ logger = logging.getLogger(__name__)
 # pylint: disable=c-extension-no-member
 DEFAULT_IMPORT_GUARD = multiprocessing.RLock()
 NOT_FOUND = 404
-
-
-def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
-    """Convert a mana cost string to a dictionary of colored symbols and their counts."""
-    colored_symbol_counts = {}
-    for mana_symbol in re.findall(r"{([^}]*)}", mana_cost_str):
-        try:
-            int(mana_symbol)
-        except ValueError:
-            colored_symbol_counts[mana_symbol] = colored_symbol_counts.get(mana_symbol, 0) + 1
-        else:
-            pass
-    as_dict = {}
-    for colored_symbol, count in colored_symbol_counts.items():
-        as_dict[colored_symbol] = list(range(1, count + 1))
-    return as_dict
 
 
 def _convert_string_to_type(str_value: str, param_type: Any) -> Any:  # noqa: ANN401
