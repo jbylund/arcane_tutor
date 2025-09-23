@@ -1782,16 +1782,17 @@ class APIResource:
                         price_eur,               -- 16
                         price_tix,               -- 17
                         oracle_text,             -- 18
-                        card_set_code,           -- 19
-                        card_artist,             -- 20
-                        card_rarity_text,        -- 21
-                        card_rarity_int,         -- 22
-                        collector_number,        -- 23
-                        collector_number_int,    -- 24
-                        raw_card_blob,           -- 25
-                        card_legalities,         -- 26
-                        produced_mana,           -- 27
-                        card_frame_data          -- 28
+                        flavor_text,             -- 19
+                        card_set_code,           -- 20
+                        card_artist,             -- 21
+                        card_rarity_text,        -- 22
+                        card_rarity_int,         -- 23
+                        collector_number,        -- 24
+                        collector_number_int,    -- 25
+                        raw_card_blob,           -- 26
+                        card_legalities,         -- 27
+                        produced_mana,           -- 28
+                        card_frame_data          -- 29
                     )
                     SELECT
                         card_blob->>'name' AS card_name, -- 1
@@ -1812,16 +1813,17 @@ class APIResource:
                         (card_blob->>'price_eur')::real AS price_eur, -- 16
                         (card_blob->>'price_tix')::real AS price_tix, -- 17
                         card_blob->>'oracle_text' AS oracle_text, -- 18
-                        card_blob->>'card_set_code' AS card_set_code, -- 19
-                        card_blob->>'artist' AS card_artist, -- 20
-                        LOWER(card_blob->>'rarity') AS card_rarity_text, -- 21
-                        magic.rarity_text_to_int(LOWER(card_blob->>'rarity')) AS card_rarity_int, -- 22
-                        card_blob->>'collector_number' AS collector_number, -- 23
-                        magic.extract_collector_number_int(card_blob->>'collector_number') AS collector_number_int, -- 24
-                        card_blob AS raw_card_blob, -- 25
-                        COALESCE(card_blob->'legalities', '{{}}'::jsonb) AS card_legalities, -- 26
-                        COALESCE(card_blob->'produced_mana', '{{}}'::jsonb) AS produced_mana, -- 27
-                        COALESCE(card_blob->'card_frame_data', '{{}}'::jsonb) AS card_frame_data -- 28
+                        card_blob->>'flavor_text' AS flavor_text, -- 19
+                        card_blob->>'card_set_code' AS card_set_code, -- 20
+                        card_blob->>'artist' AS card_artist, -- 21
+                        LOWER(card_blob->>'rarity') AS card_rarity_text, -- 22
+                        magic.rarity_text_to_int(LOWER(card_blob->>'rarity')) AS card_rarity_int, -- 23
+                        card_blob->>'collector_number' AS collector_number, -- 24
+                        magic.extract_collector_number_int(card_blob->>'collector_number') AS collector_number_int, -- 25
+                        card_blob AS raw_card_blob, -- 26
+                        COALESCE(card_blob->'legalities', '{{}}'::jsonb) AS card_legalities, -- 27
+                        COALESCE(card_blob->'produced_mana', '{{}}'::jsonb) AS produced_mana, -- 28
+                        COALESCE(card_blob->'card_frame_data', '{{}}'::jsonb) AS card_frame_data -- 29
                     FROM
                         {staging_table_name}
                     ON CONFLICT (card_name) DO NOTHING
