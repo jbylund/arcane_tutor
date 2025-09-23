@@ -1457,14 +1457,11 @@ class APIResource:
             with self._conn_pool.connection() as conn, conn.cursor() as cursor:
                 cursor = typecast("Cursor", cursor)
 
-                export_results = {}
-                export_results["cards"] = self._export_cards_table(cursor, export_dir)
-                export_results["tags"] = self._export_tags_table(cursor, export_dir)
-                export_results["tag_relationships"] = self._export_tag_relationships_table(cursor, export_dir)
-
-                cards_count = export_results["cards"]["count"]
-                tags_count = export_results["tags"]["count"]
-                relationships_count = export_results["tag_relationships"]["count"]
+                export_results = {
+                    "cards": self._export_cards_table(cursor, export_dir),
+                    "tags": self._export_tags_table(cursor, export_dir),
+                    "tag_relationships": self._export_tag_relationships_table(cursor, export_dir),
+                }
 
                 logger.info("Export completed successfully to %s", export_dir)
                 return {
@@ -1472,7 +1469,7 @@ class APIResource:
                     "export_directory": str(export_dir),
                     "timestamp": timestamp,
                     "results": export_results,
-                    "message": f"Successfully exported {cards_count} cards, {tags_count} tags, and {relationships_count} tag relationships",
+                    "message": "Successfully exported cards, tags, and tag relationships",
                 }
 
         except (OSError, psycopg.Error, ValueError) as e:
@@ -1485,6 +1482,7 @@ class APIResource:
     def _export_cards_table(self: APIResource, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
         """Export magic.cards table to JSON file."""
         cards_file = export_dir / "cards.json"
+        logger.info("Exporting magic.cards table to %s file", cards_file)
         cursor.execute("SELECT * FROM magic.cards ORDER BY card_name")
 
         cards_data = [dict(row) for row in cursor.fetchall()]
@@ -1494,11 +1492,13 @@ class APIResource:
         with cards_file.open("w", encoding="utf-8") as f:
             f.write(orjson.dumps(cards_data, option=orjson.OPT_INDENT_2).decode("utf-8"))
 
+        logger.info("Exported magic.cards table to %s file", cards_file)
         return {"file": str(cards_file), "count": cards_count}
 
     def _export_tags_table(self: APIResource, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
         """Export magic.tags table to JSON file."""
         tags_file = export_dir / "tags.json"
+        logger.info("Exporting tags table to %s file", tags_file)
         cursor.execute("SELECT tag FROM magic.tags ORDER BY tag")
 
         tags_data = [dict(row) for row in cursor.fetchall()]
@@ -1508,11 +1508,13 @@ class APIResource:
         with tags_file.open("w", encoding="utf-8") as f:
             f.write(orjson.dumps(tags_data, option=orjson.OPT_INDENT_2).decode("utf-8"))
 
+        logger.info("Exported tags table to %s file", tags_file)
         return {"file": str(tags_file), "count": tags_count}
 
     def _export_tag_relationships_table(self: APIResource, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
         """Export magic.tag_relationships table to JSON file."""
         relationships_file = export_dir / "tag_relationships.json"
+        logger.info("Exporting tag_relationships table to %s file", relationships_file)
         cursor.execute("""
             SELECT child_tag, parent_tag
             FROM magic.tag_relationships
@@ -1526,6 +1528,7 @@ class APIResource:
         with relationships_file.open("w", encoding="utf-8") as f:
             f.write(orjson.dumps(relationships_data, option=orjson.OPT_INDENT_2).decode("utf-8"))
 
+        logger.info("Exported tag_relationships table to %s file", relationships_file)
         return {"file": str(relationships_file), "count": relationships_count}
 
     def import_card_data(self: APIResource, *, timestamp: str | None = None, **_: object) -> dict[str, Any]:
@@ -1663,8 +1666,11 @@ class APIResource:
         with cards_file.open("r", encoding="utf-8") as f:
             cards_data = orjson.loads(f.read())
 
+        num_cards = len(cards_data)
+        page_size = 750
+        num_imported = 0
         # Import cards in batches using jsonb_populate_record
-        for card_batch in itertools.batched(cards_data, 100):  # noqa: B911
+        for card_batch in itertools.batched(cards_data, page_size):  # noqa: B911
             batch_json = orjson.dumps(card_batch).decode("utf-8")
             cursor.execute("""
                 INSERT INTO magic.cards
@@ -1673,6 +1679,13 @@ class APIResource:
                 FROM
                     jsonb_array_elements(%s::jsonb)
             """, (batch_json,))
+            num_imported += cursor.rowcount
+            logger.info(
+                "Imported %s of %s cards (%.1f%%)",
+                f"{num_imported:,}",
+                f"{num_cards:,}",
+                num_imported / num_cards * 100,
+            )
 
         cursor.execute("SELECT COUNT(*) FROM magic.cards")
         import_results["cards"] = cursor.fetchone()["count"]
