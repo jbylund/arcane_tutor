@@ -39,4 +39,4 @@ jobs:
 
       - name: Run tests
         run: |
-          python -m pytest -vvv
+          python -m pytest -vvv --durations=10

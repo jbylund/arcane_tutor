@@ -119,7 +119,7 @@ reset:
 	rm -rvf data
 
 test:
-	python -m pytest -vvv --durations=10
+	python -m pytest -vvv --capture=no --durations=10
 
 test-integration:
 	python -m pytest api/tests/test_integration_testcontainers.py -vvv --exitfirst
@@ -131,4 +131,4 @@ coverage: # @doc generate HTML coverage report
 	python -m pytest --cov=. --cov-report=html --cov-report=term-missing --durations=10 -vvv
 
 test-profiling:
-	python -m pytest --profile-svg --durations=10 -vvv
+	python -m pytest --profile-svg --durations=10 -vvv -k TestImportCardByName
