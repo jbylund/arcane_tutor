@@ -19,8 +19,11 @@ convention = "google"
 
 [tool.pylint]
 max-line-length = 120
-disable = []
+disable = ["line-too-long"]
 ignore = [".venv", "venv", "build", "dist", "migrations"]
+
+[tool.pylint."**/tests/**/*.py"]
+disable = ["missing-docstring", "protected-access"]
 
 [tool.mypy]
 python_version = "3.13"
