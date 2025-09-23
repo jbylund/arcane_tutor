@@ -6,6 +6,7 @@ import logging
 import os
 import pathlib
 import random
+import sys
 
 import orjson
 import psycopg
@@ -65,9 +66,11 @@ def make_pool() -> psycopg_pool.ConnectionPool:
     pool = psycopg_pool.ConnectionPool(**pool_args)
 
     def cleanup() -> None:
-        logger.info("Closing connection pool in pid %d", os.getpid())
+        # The logger may be shut down during interpreter exit
+        # so we use stderr instead
+        sys.stderr.write(f"Closing connection pool in pid {os.getpid()}\n")
         pool.close()
-        logger.info("Connection pool closed in pid %d", os.getpid())
+        sys.stderr.write(f"Connection pool closed in pid {os.getpid()}\n")
 
     atexit.register(cleanup)
     return pool
