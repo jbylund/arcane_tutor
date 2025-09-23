@@ -62,6 +62,7 @@ DB_COLUMNS = [
     FieldInfo("price_usd", FieldType.NUMERIC, ["usd"], ParserClass.NUMERIC),
     FieldInfo("price_eur", FieldType.NUMERIC, ["eur"], ParserClass.NUMERIC),
     FieldInfo("price_tix", FieldType.NUMERIC, ["tix"], ParserClass.NUMERIC),
+    FieldInfo("produced_mana", FieldType.JSONB_OBJECT, ["produces"], ParserClass.COLOR),
     FieldInfo("raw_card_blob", FieldType.JSONB_OBJECT, [], ParserClass.TEXT),
     FieldInfo("oracle_text", FieldType.TEXT, ["oracle", "o"], ParserClass.TEXT),
     FieldInfo("card_oracle_tags", FieldType.JSONB_OBJECT, ["oracle_tags", "otag"], ParserClass.TEXT),

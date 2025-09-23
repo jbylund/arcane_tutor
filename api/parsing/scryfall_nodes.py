@@ -489,7 +489,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         lhs_sql = self.lhs.to_sql(context)
         attr = self.lhs.attribute_name
         is_color_identity = False
-        if attr in ("card_colors", "card_color_identity"):
+        if attr in ("card_colors", "card_color_identity", "produced_mana"):
             rhs = get_colors_comparison_object(self.rhs.value.strip().lower())
             pname = param_name(rhs)
             context[pname] = rhs
