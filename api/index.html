@@ -1347,7 +1347,7 @@
         constructor() {
           this.themeToggle = document.getElementById('themeToggle');
           this.themeIcon = document.getElementById('themeIcon');
-          this.currentTheme = localStorage.getItem('theme') || 'light';
+          this.currentTheme = localStorage.getItem('theme') || 'dark';
 
           this.init();
         }
@@ -1390,7 +1390,7 @@
 
       // Apply initial theme immediately to prevent flash
       (function () {
-        let savedTheme = 'light';
+        let savedTheme = 'dark';
         try {
           const theme = localStorage.getItem('theme');
           if (theme) savedTheme = theme;
