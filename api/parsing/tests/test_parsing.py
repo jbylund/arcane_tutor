@@ -139,6 +139,13 @@ def test_parse_complex_nested() -> None:
     # The right side should be an OR operation
     assert isinstance(result.root.operands[1], OrNode)
 
+    # Test with flavor text as well
+    query2 = "cmc:3 AND (flavor:magic OR oracle:flying)"
+    result2 = parsing.parse_search_query(query2)
+    assert isinstance(result2, parsing.Query)
+    assert isinstance(result2.root, AndNode)
+    assert len(result2.root.operands) == 2
+
 
 def test_parse_quoted_strings() -> None:
     """Test parsing quoted strings."""
@@ -262,6 +269,12 @@ def test_name_vs_name_attribute() -> None:
     result4 = parsing.parse_search_query(query4)
     expected = BinaryOperatorNode(AttributeNode("oracle"), ":", StringValueNode("flying"))
     assert result4.root == expected
+
+    # Test flavor text search
+    query5 = "flavor:magic"
+    result5 = parsing.parse_search_query(query5)
+    expected = BinaryOperatorNode(AttributeNode("flavor"), ":", StringValueNode("magic"))
+    assert result5.root == expected
 
 
 @pytest.mark.parametrize(

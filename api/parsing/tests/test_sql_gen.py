@@ -218,6 +218,31 @@ def test_oracle_text_sql_translation(input_query: str, expected_sql: str, expect
 @pytest.mark.parametrize(
     argnames=("input_query", "expected_sql", "expected_parameters"),
     argvalues=[
+        # Flavor text search tests
+        ("flavor:exile", "(card.flavor_text ILIKE %(p_str_JWV4aWxlJQ)s)", {"p_str_JWV4aWxlJQ": "%exile%"}),
+        ("flavor:'ancient power'", "(card.flavor_text ILIKE %(p_str_JWFuY2llbnQlcG93ZXIl)s)", {"p_str_JWFuY2llbnQlcG93ZXIl": "%ancient%power%"}),
+        ('flavor:"ancient power"', "(card.flavor_text ILIKE %(p_str_JWFuY2llbnQlcG93ZXIl)s)", {"p_str_JWFuY2llbnQlcG93ZXIl": "%ancient%power%"}),
+        ("flavor:magic", "(card.flavor_text ILIKE %(p_str_JW1hZ2ljJQ)s)", {"p_str_JW1hZ2ljJQ": "%magic%"}),
+        # Test flavor search with complex phrases
+        (
+            "flavor:'power of darkness'",
+            "(card.flavor_text ILIKE %(p_str_JXBvd2VyJW9mJWRhcmtuZXNzJQ)s)",
+            {"p_str_JXBvd2VyJW9mJWRhcmtuZXNzJQ": "%power%of%darkness%"},
+        ),
+    ],
+)
+def test_flavor_text_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
+    """Test that flavor text search generates correct SQL with ILIKE patterns."""
+    parsed = parsing.parse_scryfall_query(input_query)
+    context = {}
+    observed_sql = parsed.to_sql(context)
+    assert observed_sql == expected_sql
+    assert context == expected_parameters
+
+
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_sql", "expected_parameters"),
+    argvalues=[
         # Basic keyword search
         (
             "keyword:flying",
