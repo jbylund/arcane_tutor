@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import multiprocessing
 import os
 import pathlib
 import time
@@ -10,7 +11,6 @@ from typing import TYPE_CHECKING
 import psycopg
 import pytest
 from testcontainers.postgres import PostgresContainer
-import multiprocessing
 
 from api.api_resource import APIResource
 
