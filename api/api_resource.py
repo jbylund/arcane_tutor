@@ -36,7 +36,7 @@ if True:  # imports
     from psycopg import Connection, Cursor
 
     from .parsing import generate_sql_query, parse_scryfall_query
-    from .parsing.scryfall_nodes import mana_cost_str_to_dict
+    from .parsing.scryfall_nodes import extract_frame_data_from_raw_card, mana_cost_str_to_dict
     from .tagger_client import TaggerClient
     from .utils import db_utils, error_monitoring
 
@@ -1430,6 +1430,42 @@ class APIResource:
         return {
             "status": "success",
             "message": "Mana cost jsonb backfilled successfully",
+        }
+
+    def backfill_card_frame_data(self: APIResource, **_: object) -> dict[str, Any]:
+        """Backfill the card_frame_data column from raw_card_blob frame data."""
+        logger.info("Backfilling card_frame_data column from raw_card_blob")
+        updated_count = 0
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            cursor = typecast("Cursor", cursor)
+            # Select cards that have frame data in raw_card_blob but empty card_frame_data
+            cursor.execute("""
+                SELECT card_name, raw_card_blob
+                FROM magic.cards
+                WHERE card_frame_data = '{}'::jsonb
+                AND (raw_card_blob ? 'frame' OR raw_card_blob ? 'frame_effects')
+            """)
+
+            for row in cursor.fetchall():
+                raw_card = row["raw_card_blob"]
+                frame_data = extract_frame_data_from_raw_card(raw_card)
+
+                if frame_data:  # Only update if there's actually frame data to set
+                    cursor.execute(
+                        query="UPDATE magic.cards SET card_frame_data = %(frame_data)s WHERE card_name = %(card_name)s",
+                        params={
+                            "frame_data": db_utils.maybe_json(frame_data),
+                            "card_name": row["card_name"],
+                        },
+                    )
+                    updated_count += cursor.rowcount
+
+            conn.commit()
+
+        return {
+            "status": "success",
+            "message": f"Card frame data backfilled successfully. Updated {updated_count} cards.",
+            "updated_count": updated_count,
         }
 
     def export_card_data(self: APIResource, **_: object) -> dict[str, Any]:
