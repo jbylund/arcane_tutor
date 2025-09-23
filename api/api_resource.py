@@ -884,6 +884,68 @@ class APIResource:
         self._serve_static_file(filename="mana.min.css", falcon_response=falcon_response)
         falcon_response.content_type = "text/css"
 
+    def _serve_font_file(self: APIResource, *, filename: str, falcon_response: falcon.Response) -> None:
+        """Serve a font file from the fonts directory.
+
+        Args:
+        ----
+            filename (str): The font file to serve.
+            falcon_response (falcon.Response): The Falcon response to write to.
+        """
+        full_filename = pathlib.Path(__file__).parent / "fonts" / filename
+
+        # Determine content type based on file extension
+        if filename.endswith(".woff"):
+            content_type = "font/woff"
+        elif filename.endswith(".woff2"):
+            content_type = "font/woff2"
+        elif filename.endswith(".ttf"):
+            content_type = "font/ttf"
+        elif filename.endswith(".eot"):
+            content_type = "application/vnd.ms-fontobject"
+        elif filename.endswith(".svg"):
+            content_type = "image/svg+xml"
+        else:
+            content_type = "application/octet-stream"
+
+        with pathlib.Path(full_filename).open(mode="rb") as f:
+            falcon_response.data = contents = f.read()
+        falcon_response.content_type = content_type
+        content_length = len(contents)
+        falcon_response.headers["content-length"] = str(content_length)
+
+    def fonts_mana_eot(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
+        """Return the mana.eot font file."""
+        self._serve_font_file(filename="mana.eot", falcon_response=falcon_response)
+
+    def fonts_mana_woff(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
+        """Return the mana.woff font file."""
+        self._serve_font_file(filename="mana.woff", falcon_response=falcon_response)
+
+    def fonts_mana_ttf(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
+        """Return the mana.ttf font file."""
+        self._serve_font_file(filename="mana.ttf", falcon_response=falcon_response)
+
+    def fonts_mana_svg(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
+        """Return the mana.svg font file."""
+        self._serve_font_file(filename="mana.svg", falcon_response=falcon_response)
+
+    def fonts_mplantin_eot(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
+        """Return the mplantin.eot font file."""
+        self._serve_font_file(filename="mplantin.eot", falcon_response=falcon_response)
+
+    def fonts_mplantin_woff(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
+        """Return the mplantin.woff font file."""
+        self._serve_font_file(filename="mplantin.woff", falcon_response=falcon_response)
+
+    def fonts_mplantin_ttf(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
+        """Return the mplantin.ttf font file."""
+        self._serve_font_file(filename="mplantin.ttf", falcon_response=falcon_response)
+
+    def fonts_mplantin_svg(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
+        """Return the mplantin.svg font file."""
+        self._serve_font_file(filename="mplantin.svg", falcon_response=falcon_response)
+
     def _serve_static_file(self: APIResource, *, filename: str, falcon_response: falcon.Response) -> None:
         """Serve a static file to the Falcon response.
 

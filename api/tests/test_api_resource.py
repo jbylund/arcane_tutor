@@ -649,6 +649,30 @@ class TestAPIResourceStaticFileServing(unittest.TestCase):
             mock_serve.assert_called_once_with(filename="mana.min.css", falcon_response=mock_response)
             assert mock_response.content_type == "text/css"
 
+    def test_serve_font_file_serves_binary_content(self) -> None:
+        """Test _serve_font_file serves binary font content with correct content type."""
+        mock_response = MagicMock()
+
+        with patch("api.api_resource.pathlib.Path") as mock_path:
+            mock_file = MagicMock()
+            mock_file.open.return_value.__enter__.return_value.read.return_value = b"font content"
+            mock_path.return_value = mock_file
+
+            self.api_resource._serve_font_file(filename="test.woff", falcon_response=mock_response)
+
+            assert mock_response.data == b"font content"
+            assert mock_response.content_type == "font/woff"
+            mock_response.headers.__setitem__.assert_called_with("content-length", "12")
+
+    def test_fonts_mana_woff_serves_font_file(self) -> None:
+        """Test fonts_mana_woff serves the mana.woff file."""
+        mock_response = MagicMock()
+
+        with patch.object(self.api_resource, "_serve_font_file") as mock_serve:
+            self.api_resource.fonts_mana_woff(falcon_response=mock_response)
+
+            mock_serve.assert_called_once_with(filename="mana.woff", falcon_response=mock_response)
+
 
 class TestAPIResourceErrorHandling(unittest.TestCase):
     """Test error handling in APIResource methods."""
