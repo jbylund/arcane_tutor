@@ -1,11 +1,11 @@
 """Fixtures for the test suite."""
 from __future__ import annotations
 
+import logging
 import os
 import random
 from typing import TYPE_CHECKING
 
-import logging
 import pytest
 from testcontainers.postgres import PostgresContainer
 
