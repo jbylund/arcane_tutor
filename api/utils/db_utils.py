@@ -6,7 +6,6 @@ import logging
 import os
 import pathlib
 import random
-import sys
 import time
 
 import docker
@@ -92,11 +91,7 @@ def make_pool() -> psycopg_pool.ConnectionPool:
     pool = psycopg_pool.ConnectionPool(**pool_args)
 
     def cleanup() -> None:
-        # The logger may be shut down during interpreter exit
-        # so we use stderr instead
-        sys.stderr.write(f"Closing connection pool in pid {os.getpid()}\n")
         pool.close()
-        sys.stderr.write(f"Connection pool closed in pid {os.getpid()}\n")
 
     atexit.register(cleanup)
     return pool
