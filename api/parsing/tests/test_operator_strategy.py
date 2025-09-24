@@ -14,7 +14,7 @@ class TestOperatorStrategy:
     def test_get_operator_strategy_exact_fields(self) -> None:
         """Test that exact match fields return EXACT strategy."""
         exact_fields = ["card_set_code", "card_layout", "card_border"]
-        
+
         for field in exact_fields:
             strategy = get_operator_strategy(field)
             assert strategy == OperatorStrategy.EXACT, f"Field {field} should use EXACT strategy"
@@ -22,7 +22,7 @@ class TestOperatorStrategy:
     def test_get_operator_strategy_pattern_fields(self) -> None:
         """Test that pattern match fields return PATTERN strategy."""
         pattern_fields = ["card_name", "card_artist", "oracle_text", "flavor_text"]
-        
+
         for field in pattern_fields:
             strategy = get_operator_strategy(field)
             assert strategy == OperatorStrategy.PATTERN, f"Field {field} should use PATTERN strategy"

@@ -91,6 +91,7 @@ DB_COLUMNS = [
     FieldInfo(db_column_name="card_legalities", field_type=FieldType.JSONB_OBJECT, search_aliases=["format", "f", "legal", "banned", "restricted"], parser_class=ParserClass.LEGALITY),
     FieldInfo(db_column_name="card_layout", field_type=FieldType.TEXT, search_aliases=["layout"], parser_class=ParserClass.TEXT, operator_strategy=OperatorStrategy.EXACT),
     FieldInfo(db_column_name="card_border", field_type=FieldType.TEXT, search_aliases=["border"], parser_class=ParserClass.TEXT, operator_strategy=OperatorStrategy.EXACT),
+    FieldInfo(db_column_name="card_watermark", field_type=FieldType.TEXT, search_aliases=["watermark"], parser_class=ParserClass.TEXT, operator_strategy=OperatorStrategy.EXACT),
 ]
 
 KNOWN_CARD_ATTRIBUTES = set()
