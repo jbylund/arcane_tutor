@@ -11,11 +11,11 @@ class TestScreenshotFunctionality:
     """Test class for screenshot-related API methods."""
 
     @pytest.fixture
-    def api_resource(self):
+    def api_resource(self) -> APIResource:
         """Create an APIResource instance for testing."""
         return APIResource()
 
-    def test_get_public_ip_success(self, api_resource):
+    def test_get_public_ip_success(self, api_resource: APIResource) -> None:
         """Test successful public IP retrieval."""
         with requests_mock.Mocker() as m:
             mock_response = {"YourFuckingIPAddress": "203.0.113.1"}
@@ -27,7 +27,7 @@ class TestScreenshotFunctionality:
             assert result["public_ip"] == "203.0.113.1"
             assert result["source"] == "myip.wtf"
 
-    def test_get_public_ip_missing_field(self, api_resource):
+    def test_get_public_ip_missing_field(self, api_resource: APIResource) -> None:
         """Test handling of missing IP field in response."""
         with requests_mock.Mocker() as m:
             mock_response = {"SomeOtherField": "value"}
@@ -39,7 +39,7 @@ class TestScreenshotFunctionality:
             assert "Could not determine public IP address" in result["message"]
             assert result["raw_response"] == mock_response
 
-    def test_get_public_ip_network_error(self, api_resource):
+    def test_get_public_ip_network_error(self, api_resource: APIResource) -> None:
         """Test handling of network errors."""
         with requests_mock.Mocker() as m:
             m.get("https://myip.wtf/json", exc=requests.exceptions.ConnectTimeout)
@@ -49,7 +49,7 @@ class TestScreenshotFunctionality:
             assert result["status"] == "error"
             assert "Failed to fetch public IP" in result["message"]
 
-    def test_get_public_ip_invalid_json(self, api_resource):
+    def test_get_public_ip_invalid_json(self, api_resource: APIResource) -> None:
         """Test handling of invalid JSON response."""
         with requests_mock.Mocker() as m:
             m.get("https://myip.wtf/json", text="invalid json")
@@ -59,14 +59,14 @@ class TestScreenshotFunctionality:
             assert result["status"] == "error"
             assert "Failed to fetch public IP" in result["message"]  # JSON decode errors are caught as RequestException
 
-    def test_take_screenshot_with_url(self, api_resource):
+    def test_take_screenshot_with_url(self, api_resource: APIResource) -> None:
         """Test taking screenshot with provided URL."""
         with requests_mock.Mocker() as m:
             # Mock a successful screenshot response
             m.get(
                 "https://api.screenshotmachine.com/",
                 content=b"fake_png_data",
-                headers={"content-type": "image/png"}
+                headers={"content-type": "image/png"},
             )
 
             result = api_resource.take_screenshot(url="https://example.com")
@@ -76,14 +76,14 @@ class TestScreenshotFunctionality:
             assert result["screenshot_size_bytes"] == len(b"fake_png_data")
             assert result["content_type"] == "image/png"
 
-    def test_take_screenshot_api_error(self, api_resource):
+    def test_take_screenshot_api_error(self, api_resource: APIResource) -> None:
         """Test handling of screenshot API errors."""
         with requests_mock.Mocker() as m:
             # Mock an error response from screenshot API
             m.get(
                 "https://api.screenshotmachine.com/",
                 text="Invalid API key",
-                headers={"content-type": "text/plain"}
+                headers={"content-type": "text/plain"},
             )
 
             result = api_resource.take_screenshot(url="https://example.com")
@@ -92,7 +92,7 @@ class TestScreenshotFunctionality:
             assert "Screenshot service error" in result["message"]
             assert "Invalid API key" in result["message"]
 
-    def test_take_screenshot_without_url_ip_failure(self, api_resource):
+    def test_take_screenshot_without_url_ip_failure(self, api_resource: APIResource) -> None:
         """Test screenshot without URL when IP retrieval fails."""
         with requests_mock.Mocker() as m:
             # Mock IP retrieval failure
@@ -104,7 +104,7 @@ class TestScreenshotFunctionality:
             assert "Could not determine public IP for screenshot" in result["message"]
             assert "ip_error" in result
 
-    def test_take_screenshot_without_url_success(self, api_resource):
+    def test_take_screenshot_without_url_success(self, api_resource: APIResource) -> None:
         """Test screenshot without URL using public IP."""
         with requests_mock.Mocker() as m:
             # Mock successful IP retrieval
@@ -115,7 +115,7 @@ class TestScreenshotFunctionality:
             m.get(
                 "https://api.screenshotmachine.com/",
                 content=b"fake_png_data",
-                headers={"content-type": "image/png"}
+                headers={"content-type": "image/png"},
             )
 
             result = api_resource.take_screenshot()
@@ -125,13 +125,13 @@ class TestScreenshotFunctionality:
             assert "t%253Abeast" in result["target_url"]  # URL encoded query
             assert result["screenshot_size_bytes"] == len(b"fake_png_data")
 
-    def test_take_screenshot_network_error(self, api_resource):
+    def test_take_screenshot_network_error(self, api_resource: APIResource) -> None:
         """Test handling of network errors during screenshot."""
         with requests_mock.Mocker() as m:
             # Mock network error for screenshot API
             m.get(
                 "https://api.screenshotmachine.com/",
-                exc=requests.exceptions.ConnectTimeout
+                exc=requests.exceptions.ConnectTimeout,
             )
 
             result = api_resource.take_screenshot(url="https://example.com")
@@ -140,7 +140,7 @@ class TestScreenshotFunctionality:
             assert "Failed to take screenshot" in result["message"]
             assert result["target_url"] == "https://example.com"
 
-    def test_take_screenshot_custom_parameters(self, api_resource):
+    def test_take_screenshot_custom_parameters(self, api_resource: APIResource) -> None:
         """Test screenshot with custom query parameters."""
         with requests_mock.Mocker() as m:
             # Mock successful IP retrieval
@@ -151,14 +151,14 @@ class TestScreenshotFunctionality:
             m.get(
                 "https://api.screenshotmachine.com/",
                 content=b"fake_png_data",
-                headers={"content-type": "image/png"}
+                headers={"content-type": "image/png"},
             )
 
             result = api_resource.take_screenshot(
                 host="3000",
                 query="c:blue",
                 orderby="name",
-                direction="desc"
+                direction="desc",
             )
 
             assert result["status"] == "success"
