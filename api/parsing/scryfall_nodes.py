@@ -225,6 +225,20 @@ def get_oracle_tags_comparison_object(val: str) -> dict[str, bool]:
     return {normalized_tag: True}
 
 
+def get_is_tags_comparison_object(val: str) -> dict[str, bool]:
+    """Convert is: tag string to comparison object for database queries.
+
+    Args:
+        val: is: tag string to normalize.
+
+    Returns:
+        Dictionary mapping normalized is: tag to True.
+    """
+    # is: tags are stored in lowercase
+    normalized_tag = val.strip().lower()
+    return {normalized_tag: True}
+
+
 def get_legality_comparison_object(val: str, attr: str) -> dict[str, str]:
     """Convert legality search to comparison object for database queries.
 
@@ -534,6 +548,11 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         elif attr == "card_oracle_tags":
             # Oracle tags are stored in lowercase, unlike keywords
             rhs = get_oracle_tags_comparison_object(self.rhs.value.strip())
+            pname = param_name(rhs)
+            context[pname] = rhs
+        elif attr == "card_is_tags":
+            # is: tags are stored in lowercase, similar to oracle tags
+            rhs = get_is_tags_comparison_object(self.rhs.value.strip())
             pname = param_name(rhs)
             context[pname] = rhs
         elif attr == "card_legalities":
