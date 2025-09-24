@@ -10,8 +10,10 @@ from .db_info import (
     COLOR_CODE_TO_NAME,
     COLOR_NAME_TO_CODE,
     DB_NAME_TO_FIELD_TYPE,
+    DB_NAME_TO_OPERATOR_STRATEGY,
     SEARCH_NAME_TO_DB_NAME,
     FieldType,
+    OperatorStrategy,
 )
 from .nodes import (
     AndNode,
@@ -63,6 +65,18 @@ def get_field_type(attr: str) -> str:
         The field type for the attribute, or TEXT if not found.
     """
     return DB_NAME_TO_FIELD_TYPE.get(attr, FieldType.TEXT)
+
+
+def get_operator_strategy(attr: str) -> OperatorStrategy:
+    """Get the operator strategy for a given attribute name.
+
+    Args:
+        attr: The attribute name to look up.
+
+    Returns:
+        The operator strategy for the attribute, or PATTERN if not found.
+    """
+    return DB_NAME_TO_OPERATOR_STRATEGY.get(attr, OperatorStrategy.PATTERN)
 
 
 # Rarity ordering for comparison operations
@@ -369,8 +383,11 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
     def _handle_colon_operator(self: ScryfallBinaryOperatorNode, context: dict, field_type: str, lhs_sql: str, attr: str) -> str:
         """Handle colon operator for different field types."""
         if field_type == FieldType.TEXT:
-            # Handle fields that need exact matching instead of pattern matching
-            if attr in ("card_set_code", "card_layout", "card_border"):
+            # Get the operator strategy for this field
+            operator_strategy = get_operator_strategy(attr)
+
+            if operator_strategy == OperatorStrategy.EXACT:
+                # Handle fields that need exact matching instead of pattern matching
                 # For layout and border fields, lowercase the search value for case-insensitive matching
                 if attr in ("card_layout", "card_border") and hasattr(self.rhs, "value"):
                     self.rhs.value = self.rhs.value.lower()
@@ -378,7 +395,6 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
                 if self.operator == ":":
                     self.operator = "="
                 return super().to_sql(context)
-
             # Regular text field handling with pattern matching
             return self._handle_text_field_pattern_matching(context, lhs_sql)
 
