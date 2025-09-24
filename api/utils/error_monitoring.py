@@ -9,8 +9,9 @@ logger = logging.getLogger(__name__)
 
 # Try to import honeybadger, fall back to basic error handling if not available
 try:
-    from honeybadger import honeybadger
     import socket
+
+    from honeybadger import honeybadger
 
 
     # Configure honeybadger if available
