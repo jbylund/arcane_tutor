@@ -60,8 +60,8 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 | **Complexity** | **Low Impact**                                                   | **Medium Impact**                                                                            | **High Impact**                                                                                   |
 | -------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | **Low**        | **Watermark** (`watermark:`)                                    | **Layout** (`layout:`)<br/>**Border** (`border:`)                                           | **Special Properties** (`is:`)<br/>**Card Visual Properties**                                     |
-| **Medium**     | **Cube Inclusion** (`cube:`)<br/>**Commander Features** (`cmd:`) | **Release Dates** (`year:`, `date:`)<br/>**Planeswalker Loyalty** (`loyalty:`)               | **Advanced Mechanics** (`spellpower:`, `spellresistance:`)<br/>**Devotion** (`devotion:`)        |
-| **High**       | **Regular Expressions** (`/pattern/`)<br/>**Wildcards** (`*`)    | **Advanced Functions** (`max:`, `min:`)<br/>**Paper Sets** (`papersets:`)                   | **Complex Game Rules** (`is:split`, `is:modal`)<br/>**Meta Properties** (`is:booster`)            |
+| **Medium**     | **Cube Inclusion** (`cube:`)<br/>**Commander Features** (`cmd:`) | **Release Dates** (`year:`, `date:`)<br/>**Planeswalker Loyalty** (`loyalty:`)               | **Devotion** (`devotion:`)        |
+| **High**       | **Regular Expressions** (`/pattern/`)    | **Advanced Functions** (`max:`, `min:`)<br/>**Paper Sets** (`papersets:`)                   | **Complex Game Rules** (`is:split`, `is:modal`)<br/>**Meta Properties** (`is:booster`)            |
 
 ### Implementation Status
 
@@ -91,13 +91,6 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 | **Arithmetic**         | `cmc+1<power`, `power-toughness=0` | Advanced mathematical expressions                    |
 | **Keywords**           | `keyword:`                         | JSONB object storage                                 |
 | **Oracle Tags**        | `oracle_tags:`, `ot:`              | Scryfall OS unique extension                         |
-
-#### Partially Supported Features ⚠️
-
-| Feature        | Syntax      | Status      | Notes                               |
-| -------------- | ----------- | ----------- | ----------------------------------- |
-| **Card Types** | `subtypes:` | JSONB array | May have data completeness issues   |
-| **Mana Costs** | `mana:`     | Dual format | Both JSONB and text representations |
 
 ## Code Organization
 
