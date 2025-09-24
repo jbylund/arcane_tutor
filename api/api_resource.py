@@ -667,6 +667,13 @@ class APIResource:
 
         # Extract set code for dedicated column
         card["card_set_code"] = card.get("set")
+
+        # Extract layout and border for dedicated columns (lowercased for case-insensitive search)
+        if "layout" in card:
+            card["card_layout"] = card["layout"].lower()
+        if "border_color" in card:
+            card["card_border"] = card["border_color"].lower()
+
         mana_cost_text = card.get("mana_cost", "")
         card["mana_cost_jsonb"] = mana_cost_str_to_dict(mana_cost_text)
 
@@ -2068,7 +2075,9 @@ class APIResource:
                         raw_card_blob,           -- 26
                         card_legalities,         -- 27
                         produced_mana,           -- 28
-                        card_frame_data          -- 29
+                        card_frame_data,         -- 29
+                        card_layout,             -- 30
+                        card_border              -- 31
                     )
                     SELECT
                         card_blob->>'name' AS card_name, -- 1
@@ -2099,7 +2108,9 @@ class APIResource:
                         card_blob AS raw_card_blob, -- 26
                         COALESCE(card_blob->'legalities', '{{}}'::jsonb) AS card_legalities, -- 27
                         COALESCE(card_blob->'produced_mana', '{{}}'::jsonb) AS produced_mana, -- 28
-                        COALESCE(card_blob->'card_frame_data', '{{}}'::jsonb) AS card_frame_data -- 29
+                        COALESCE(card_blob->'card_frame_data', '{{}}'::jsonb) AS card_frame_data, -- 29
+                        LOWER(card_blob->>'card_layout') AS card_layout, -- 30
+                        LOWER(card_blob->>'card_border') AS card_border -- 31
                     FROM
                         {staging_table_name}
                     ON CONFLICT (card_name) DO NOTHING
