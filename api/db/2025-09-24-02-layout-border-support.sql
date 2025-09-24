@@ -29,6 +29,13 @@ WHERE card_layout IS NOT NULL;
 CREATE INDEX idx_cards_border ON magic.cards USING HASH (card_border) 
 WHERE card_border IS NOT NULL;
 
+-- Add CHECK constraints to ensure values are stored in lowercase
+ALTER TABLE magic.cards ADD CONSTRAINT check_card_layout_lowercase 
+CHECK (card_layout IS NULL OR card_layout = lower(card_layout));
+
+ALTER TABLE magic.cards ADD CONSTRAINT check_card_border_lowercase 
+CHECK (card_border IS NULL OR card_border = lower(card_border));
+
 -- Add comments for documentation
-COMMENT ON COLUMN magic.cards.card_layout IS 'Card layout type (normal, split, flip, transform, etc.)';
-COMMENT ON COLUMN magic.cards.card_border IS 'Card border color (black, white, borderless, silver, gold)';
+COMMENT ON COLUMN magic.cards.card_layout IS 'Card layout type (normal, split, flip, transform, etc.) - stored in lowercase';
+COMMENT ON COLUMN magic.cards.card_border IS 'Card border color (black, white, borderless, silver, gold) - stored in lowercase';

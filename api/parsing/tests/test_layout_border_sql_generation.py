@@ -81,33 +81,31 @@ class TestLayoutBorderSQLGeneration:
         for value in values:
             assert "%" not in str(value)
 
-    def test_case_insensitive_layout_border_searches(self) -> None:
+    @pytest.mark.parametrize(("query", "expected_lowercase"), [
+        ("layout:NORMAL", "normal"),
+        ("layout:Split", "split"),
+        ("layout:TRANSFORM", "transform"),
+        ("border:BLACK", "black"),
+        ("border:White", "white"),
+        ("border:BORDERLESS", "borderless"),
+    ])
+    def test_case_insensitive_layout_border_searches(self, query: str, expected_lowercase: str) -> None:
         """Test that layout and border searches are case-insensitive."""
-        test_cases = [
-            ("layout:NORMAL", "normal"),
-            ("layout:Split", "split"),
-            ("layout:TRANSFORM", "transform"),
-            ("border:BLACK", "black"),
-            ("border:White", "white"),
-            ("border:BORDERLESS", "borderless"),
-        ]
+        result = parse_scryfall_query(query)
+        assert isinstance(result, Query)
 
-        for query, expected_lowercase in test_cases:
-            result = parse_scryfall_query(query)
-            assert isinstance(result, Query)
+        context: dict[str, Any] = {}
+        sql = result.to_sql(context)
 
-            context: dict[str, Any] = {}
-            sql = result.to_sql(context)
+        # Should generate exact equality with = operator
+        assert "=" in sql
+        assert "ILIKE" not in sql
 
-            # Should generate exact equality with = operator
-            assert "=" in sql
-            assert "ILIKE" not in sql
-
-            # Context should contain the lowercase value
-            assert len(context) == 1
-            param_value = next(iter(context.values()))
-            assert param_value == expected_lowercase
-            assert "%" not in param_value
+        # Context should contain the lowercase value
+        assert len(context) == 1
+        param_value = next(iter(context.values()))
+        assert param_value == expected_lowercase
+        assert "%" not in param_value
 
 
 if __name__ == "__main__":
