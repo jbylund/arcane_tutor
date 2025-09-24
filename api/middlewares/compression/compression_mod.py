@@ -30,17 +30,7 @@ def parse_q_list(
         list[str]: List of encoding names sorted by priority.
     """
     # TODO: add client priority
-    values: list[tuple[str, int]] = []
-    logger.info("Server priorities: %s", server_priorities)
-    logger.info("Accept encoding: %s", accept_encoding)
-    for name in accept_encoding.split(","):
-        encoding = name.strip().lower()
-        server_prioritiy = server_priorities.get(encoding)
-        if server_prioritiy is None:
-            continue
-        values.append((encoding, server_prioritiy))
-    values.sort(key=lambda v: v[1])
-    return [v[0] for v in values]
+
 
 
 class CompressionMiddleware:
@@ -49,7 +39,6 @@ class CompressionMiddleware:
     def __init__(self: CompressionMiddleware) -> None:
         """Initialize the CompressionMiddleware and register available compressors."""
         self._compressors: dict[str, object] = {}
-        self._priorities: dict[str, int] = {}
         self._add_compressor(BrotliCompressor())
         self._add_compressor(GzipCompressor())
         self._add_compressor(ZstdCompressor())
@@ -60,7 +49,6 @@ class CompressionMiddleware:
         Args:
             compressor: Compressor instance with 'encoding' and 'priority' attributes.
         """
-        self._priorities[compressor.encoding] = compressor.priority
         self._compressors[compressor.encoding] = compressor
 
     def _get_compressor(self: CompressionMiddleware, accept_encoding: str) -> object | None:
@@ -72,11 +60,26 @@ class CompressionMiddleware:
         Returns:
             object | None: The selected compressor or None if not found.
         """
-        for encoding in parse_q_list(accept_encoding, self._priorities):
-            compressor = self._compressors.get(encoding)
-            if compressor:
-                return compressor
-        return None
+        accept_encoding_header = accept_encoding
+        # accept encoding looks like:
+        # Accept-Encoding: br;q=1.0, gzip;q=0.8, *;q=0.1
+        compressor_candidates = []
+        for accept_encoding_item in accept_encoding_header.split(","):
+            name, _, _ = accept_encoding_item.partition(";")
+            name = name.strip().lower()
+            compressor = self._compressors.get(name)
+            if compressor is None:
+                continue
+            compressor_candidates.append(compressor)
+        compressor = min(compressor_candidates, key=lambda v: v.priority) if compressor_candidates else None
+        logger.info(
+            "Server priorities: %s / Accept encoding: %s / Selected compressor: %s",
+            {k: v.priority for k, v in self._compressors.items()},
+            accept_encoding_header,
+            compressor.encoding,
+        )
+        return compressor
+
 
     def process_response(
         self: CompressionMiddleware,
@@ -95,7 +98,7 @@ class CompressionMiddleware:
         """
         del resource, req_succeeded
         if resp.complete:
-            logger.info("Will serve response from cache...")
+            logger.debug("Will serve response from cache...")
             return
         accept_encoding = req.get_header("Accept-Encoding")
         if accept_encoding is None:
@@ -109,7 +112,6 @@ class CompressionMiddleware:
         compressor = self._get_compressor(accept_encoding)
         if compressor is None:
             return
-        logger.info("Using compressor: %s", compressor.encoding)
 
         if resp.stream:
             logger.info("Compressing stream")
@@ -128,10 +130,11 @@ class CompressionMiddleware:
             resp.text = None
             size_after_compression = len(compressed)
             logger.info(
-                "%s: Compressed %s bytes to %s bytes (%.2f x compression) in %.2f ms - %s",
+                "%s: Compressed %s bytes to %s bytes using %s (%.2f x compression) in %.2f ms - %s",
                 req.url,
                 f"{size_before_compression:,}",
                 f"{size_after_compression:,}",
+                compressor.encoding,
                 size_before_compression / size_after_compression,
                 1000 * (after_compression - before_compression),
                 req.get_header("User-Agent"),

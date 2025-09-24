@@ -10,7 +10,6 @@ import functools
 import inspect
 import itertools
 import logging
-import multiprocessing
 import os
 import pathlib
 import random
@@ -37,6 +36,7 @@ from .utils import db_utils, error_monitoring
 if TYPE_CHECKING:
     from multiprocessing.synchronize import Event as EventType
     from multiprocessing.synchronize import RLock as LockType
+    from types import TracebackType
 
     import psycopg_pool
 
@@ -44,8 +44,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # pylint: disable=c-extension-no-member
-DEFAULT_IMPORT_GUARD = multiprocessing.RLock()
-DEFAULT_SCHEMA_SETUP_EVENT = multiprocessing.Event()
 NOT_FOUND = 404
 
 
@@ -181,6 +179,36 @@ def can_serialize(iobj: object) -> bool:
     return True
 
 
+class MockLock:
+    """Mock implementation of multiprocessing.Lock for testing."""
+
+    def __enter__(self) -> MockLock:
+        """Enter the context manager."""
+
+    def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
+        """Exit the context manager."""
+
+class MockEvent:
+    """Mock implementation of multiprocessing.Event for testing."""
+
+    def __init__(self) -> None:
+        """Initialize the mock event."""
+        self._is_set = False
+
+    def set(self) -> None:
+        """Set the event."""
+        self._is_set = True
+
+    def clear(self) -> None:
+        """Clear the event."""
+        self._is_set = False
+
+    def is_set(self) -> bool:
+        """Return True if the event is set."""
+        return self._is_set
+
+DEFAULT_IMPORT_GUARD = MockLock()
+DEFAULT_SCHEMA_SETUP_EVENT = MockEvent()
 
 class APIResource:
     """Class implementing request handling for our simple API."""
@@ -483,25 +511,37 @@ class APIResource:
             Any: The card data (likely a list of dicts).
 
         """
-        cache_file = "/data/api/foo.json"
+        data_key = "oracle_cards"
+        cache_dir_path = pathlib.Path("/data/api")
+        if not cache_dir_path.exists():
+            cache_dir_path = pathlib.Path("/tmp/api")  # noqa: S108
+            cache_dir_path.mkdir(parents=True, exist_ok=True)
+        cache_file_path = cache_dir_path / f"{data_key}.json"
         try:
-            with pathlib.Path(cache_file).open() as f:
+            with cache_file_path.open() as f:
                 response = orjson.loads(f.read())
         except FileNotFoundError:
             logger.info("Cache miss!")
-            response = orjson.loads(self._session.get("https://api.scryfall.com/bulk-data", timeout=1).content)["data"]
-            by_type = {r["type"]: r for r in response}
-            oracle_cards_download_uri = by_type["oracle_cards"]["download_uri"]
-            response = orjson.loads(self._session.get(oracle_cards_download_uri, timeout=30).content)
-            with pathlib.Path(cache_file).open("w") as f:
+        else:
+            logger.info("Cache hit!")
+            return response
+        response = orjson.loads(self._session.get("https://api.scryfall.com/bulk-data", timeout=1).content)["data"]
+        by_type = {r["type"]: r for r in response}
+        oracle_cards_download_uri = by_type[data_key]["download_uri"]
+        logger.info("Downloading %s from %s", data_key, oracle_cards_download_uri)
+        before = time.monotonic()
+        response = orjson.loads(self._session.get(oracle_cards_download_uri, timeout=30).content)
+        logger.info("Downloaded %s from %s in %.3f seconds", data_key, oracle_cards_download_uri, time.monotonic() - before)
+        try:
+            with cache_file_path.open("w") as f:
                 f.write(
                     orjson.dumps(
                         response,
                         option=orjson.OPT_SORT_KEYS | orjson.OPT_INDENT_2,
                     ).decode("utf-8"),
                 )
-        else:
-            logger.info("Cache hit!")
+        except FileNotFoundError:
+            logger.error("Failed to write cache file: %s", cache_file_path)
         return response
 
     def setup_schema(self: APIResource, *_: object, **__: object) -> None:
