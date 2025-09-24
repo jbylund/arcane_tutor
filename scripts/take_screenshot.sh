@@ -184,6 +184,16 @@ take_screenshot() {
     
     log "Capturing page: $search_url"
     
+    # First, let's test if the server is returning data
+    log "Testing server response..."
+    local response=$(curl -s "http://localhost:$PORT/search?q=cmc%3C10" | head -200)
+    local card_count=$(echo "$response" | grep -o '"total_cards":[0-9]*' | cut -d':' -f2)
+    log "Server reports $card_count cards available"
+    
+    # Check if any images are referenced in the response
+    local image_urls=$(echo "$response" | grep -o 'https://cards.scryfall.io[^"]*' | wc -l)
+    log "Found $image_urls image URLs in API response"
+    
     timeout $TIMEOUT_SECONDS google-chrome \
         --headless=new \
         --disable-gpu \
@@ -206,7 +216,7 @@ take_screenshot() {
         --force-dark-mode \
         --enable-features=WebUIDarkMode \
         --window-size=2200,2022 \
-        --virtual-time-budget=20000 \
+        --virtual-time-budget=25000 \
         --run-all-compositor-stages-before-draw \
         --user-data-dir=/tmp/chrome-profile-screenshot \
         --screenshot="$temp_screenshot" \
