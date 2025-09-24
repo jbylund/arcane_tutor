@@ -73,6 +73,8 @@ DB_COLUMNS = [
     FieldInfo("collector_number", FieldType.TEXT, ["number", "cn"], ParserClass.TEXT),
     FieldInfo("collector_number_int", FieldType.NUMERIC, [], ParserClass.NUMERIC),  # No direct aliases - will be routed
     FieldInfo("card_legalities", FieldType.JSONB_OBJECT, ["format", "f", "legal", "banned", "restricted"], ParserClass.LEGALITY),
+    FieldInfo("card_layout", FieldType.TEXT, ["layout"], ParserClass.TEXT),
+    FieldInfo("card_border", FieldType.TEXT, ["border"], ParserClass.TEXT),
 ]
 
 KNOWN_CARD_ATTRIBUTES = set()

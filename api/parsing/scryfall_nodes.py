@@ -369,8 +369,12 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
     def _handle_colon_operator(self: ScryfallBinaryOperatorNode, context: dict, field_type: str, lhs_sql: str, attr: str) -> str:
         """Handle colon operator for different field types."""
         if field_type == FieldType.TEXT:
-            # Handle set codes specially - use exact matching instead of pattern matching
-            if attr == "card_set_code":
+            # Handle fields that need exact matching instead of pattern matching
+            if attr in ("card_set_code", "card_layout", "card_border"):
+                # For layout and border fields, lowercase the search value for case-insensitive matching
+                if attr in ("card_layout", "card_border") and hasattr(self.rhs, "value"):
+                    self.rhs.value = self.rhs.value.lower()
+
                 if self.operator == ":":
                     self.operator = "="
                 return super().to_sql(context)
