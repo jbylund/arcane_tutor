@@ -15,50 +15,6 @@ class TestScreenshotFunctionality:
         """Create an APIResource instance for testing."""
         return APIResource()
 
-    def test_get_public_ip_success(self, api_resource: APIResource) -> None:
-        """Test successful public IP retrieval."""
-        with requests_mock.Mocker() as m:
-            mock_response = {"YourFuckingIPAddress": "203.0.113.1"}
-            m.get("https://myip.wtf/json", json=mock_response)
-
-            result = api_resource.get_public_ip()
-
-            assert result["status"] == "success"
-            assert result["public_ip"] == "203.0.113.1"
-            assert result["source"] == "myip.wtf"
-
-    def test_get_public_ip_missing_field(self, api_resource: APIResource) -> None:
-        """Test handling of missing IP field in response."""
-        with requests_mock.Mocker() as m:
-            mock_response = {"SomeOtherField": "value"}
-            m.get("https://myip.wtf/json", json=mock_response)
-
-            result = api_resource.get_public_ip()
-
-            assert result["status"] == "error"
-            assert "Could not determine public IP address" in result["message"]
-            assert result["raw_response"] == mock_response
-
-    def test_get_public_ip_network_error(self, api_resource: APIResource) -> None:
-        """Test handling of network errors."""
-        with requests_mock.Mocker() as m:
-            m.get("https://myip.wtf/json", exc=requests.exceptions.ConnectTimeout)
-
-            result = api_resource.get_public_ip()
-
-            assert result["status"] == "error"
-            assert "Failed to fetch public IP" in result["message"]
-
-    def test_get_public_ip_invalid_json(self, api_resource: APIResource) -> None:
-        """Test handling of invalid JSON response."""
-        with requests_mock.Mocker() as m:
-            m.get("https://myip.wtf/json", text="invalid json")
-
-            result = api_resource.get_public_ip()
-
-            assert result["status"] == "error"
-            assert "Failed to fetch public IP" in result["message"]  # JSON decode errors are caught as RequestException
-
     def test_take_screenshot_with_url(self, api_resource: APIResource) -> None:
         """Test taking screenshot with provided URL."""
         with requests_mock.Mocker() as m:
@@ -96,20 +52,19 @@ class TestScreenshotFunctionality:
         """Test screenshot without URL when IP retrieval fails."""
         with requests_mock.Mocker() as m:
             # Mock IP retrieval failure
-            m.get("https://myip.wtf/json", exc=requests.exceptions.ConnectTimeout)
+            m.get("https://api.ipify.org/?format=json", exc=requests.exceptions.ConnectTimeout)
 
             result = api_resource.take_screenshot()
 
             assert result["status"] == "error"
             assert "Could not determine public IP for screenshot" in result["message"]
-            assert "ip_error" in result
 
     def test_take_screenshot_without_url_success(self, api_resource: APIResource) -> None:
         """Test screenshot without URL using public IP."""
         with requests_mock.Mocker() as m:
             # Mock successful IP retrieval
-            mock_ip_response = {"YourFuckingIPAddress": "203.0.113.1"}
-            m.get("https://myip.wtf/json", json=mock_ip_response)
+            mock_ip_response = {"ip": "203.0.113.1"}
+            m.get("https://api.ipify.org/?format=json", json=mock_ip_response)
 
             # Mock successful screenshot response
             m.get(
@@ -144,8 +99,8 @@ class TestScreenshotFunctionality:
         """Test screenshot with custom query parameters."""
         with requests_mock.Mocker() as m:
             # Mock successful IP retrieval
-            mock_ip_response = {"YourFuckingIPAddress": "203.0.113.1"}
-            m.get("https://myip.wtf/json", json=mock_ip_response)
+            mock_ip_response = {"ip": "203.0.113.1"}
+            m.get("https://api.ipify.org/?format=json", json=mock_ip_response)
 
             # Mock successful screenshot response
             m.get(

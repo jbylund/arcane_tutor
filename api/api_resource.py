@@ -1986,52 +1986,6 @@ class APIResource:
                 "message": f"Error loading cards: {e}",
             }
 
-    def get_public_ip(self: APIResource, **_: object) -> dict[str, Any]:
-        """Get the public IP address of this server.
-
-        Uses the myip.wtf/json service to determine the public IP address.
-
-        Returns:
-        -------
-            dict[str, Any]: Dictionary containing the public IP address and status.
-
-        """
-        try:
-            logger.info("Fetching public IP address from myip.wtf")
-            response = self._session.get("https://myip.wtf/json", timeout=10)
-            response.raise_for_status()
-
-            ip_data = response.json()
-            public_ip = ip_data.get("YourFuckingIPAddress")
-
-            if not public_ip:
-                logger.error("No IP address found in response: %s", ip_data)
-                return {
-                    "status": "error",
-                    "message": "Could not determine public IP address",
-                    "raw_response": ip_data,
-                }
-
-            logger.info("Successfully retrieved public IP: %s", public_ip)
-            return {
-                "status": "success",
-                "public_ip": public_ip,
-                "source": "myip.wtf",
-            }
-
-        except requests.exceptions.RequestException as e:
-            logger.error("Error fetching public IP: %s", e)
-            return {
-                "status": "error",
-                "message": f"Failed to fetch public IP: {e}",
-            }
-        except (ValueError, KeyError) as e:
-            logger.error("Error parsing IP response: %s", e)
-            return {
-                "status": "error",
-                "message": f"Failed to parse IP response: {e}",
-            }
-
     def take_screenshot(
         self: APIResource,
         *,
@@ -2064,16 +2018,29 @@ class APIResource:
                 target_url = url
                 logger.info("Using provided URL for screenshot: %s", target_url)
             else:
-                # Get public IP first
-                ip_result = self.get_public_ip()
-                if ip_result["status"] != "success":
+                # Get public IP using ipify.org
+                try:
+                    logger.info("Fetching public IP address from ipify.org")
+                    ip_response = self._session.get("https://api.ipify.org/?format=json", timeout=10)
+                    ip_response.raise_for_status()
+                    ip_data = ip_response.json()
+                    public_ip = ip_data.get("ip")
+
+                    if not public_ip:
+                        logger.error("No IP address found in ipify response: %s", ip_data)
+                        return {
+                            "status": "error",
+                            "message": "Could not determine public IP for screenshot",
+                        }
+
+                    logger.info("Successfully retrieved public IP: %s", public_ip)
+
+                except requests.exceptions.RequestException as e:
+                    logger.error("Error fetching public IP from ipify: %s", e)
                     return {
                         "status": "error",
-                        "message": "Could not determine public IP for screenshot",
-                        "ip_error": ip_result,
+                        "message": f"Could not determine public IP for screenshot: {e}",
                     }
-
-                public_ip = ip_result["public_ip"]
 
                 # Construct the target URL
                 encoded_query = urllib.parse.quote(f"q={urllib.parse.quote(query)}&orderby={orderby}&direction={direction}")

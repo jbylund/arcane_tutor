@@ -101,7 +101,7 @@ def wait_for_server(port: int = DEFAULT_PORT, timeout: int = STARTUP_TIMEOUT) ->
 
 
 def load_sample_cards(port: int = DEFAULT_PORT) -> bool:
-    """Load sample cards into the database.
+    """Load sample cards using specific otag searches.
 
     Args:
         port: Port the server is running on
@@ -110,7 +110,16 @@ def load_sample_cards(port: int = DEFAULT_PORT) -> bool:
         True if successful, False otherwise
     """
     logger = logging.getLogger(__name__)
-    logger.info("Loading sample cards...")
+    logger.info("Loading sample cards using otag searches...")
+
+    # Tags for specific cycles as requested
+    otags = [
+        "cycle-akh-god",
+        "cycle-thb-monocolor-god",
+        "cycle-ths-major-god",
+        "cycle-afr-chromatic-dragon",
+        "cycle-chk-dragon",
+    ]
 
     try:
         # First ensure schema is setup
@@ -119,13 +128,25 @@ def load_sample_cards(port: int = DEFAULT_PORT) -> bool:
             logger.error("Failed to setup schema: %s", response.text)
             return False
 
-        # Then import data
-        response = requests.post(f"http://{DEFAULT_HOST}:{port}/import_data", timeout=60)
-        if response.status_code != HTTP_OK:
-            logger.error("Failed to import data: %s", response.text)
-            return False
+        # Import cards for each otag
+        total_cards_loaded = 0
+        for otag in otags:
+            logger.info("Importing cards for otag: %s", otag)
+            response = requests.post(
+                f"http://{DEFAULT_HOST}:{port}/import_cards_by_search",
+                params={"search_query": f"otag:{otag}"},
+                timeout=60,
+            )
+            if response.status_code != HTTP_OK:
+                logger.error("Failed to import cards for otag %s: %s", otag, response.text)
+                return False
 
-        logger.info("Sample cards loaded successfully")
+            result = response.json()
+            cards_loaded = result.get("cards_loaded", 0)
+            total_cards_loaded += cards_loaded
+            logger.info("Loaded %d cards for otag: %s", cards_loaded, otag)
+
+        logger.info("Sample cards loaded successfully: %d total cards", total_cards_loaded)
         return True
 
     except requests.exceptions.RequestException as e:
@@ -133,29 +154,28 @@ def load_sample_cards(port: int = DEFAULT_PORT) -> bool:
         return False
 
 
-def get_public_ip(port: int = DEFAULT_PORT) -> str | None:
-    """Get the public IP address of the server.
-
-    Args:
-        port: Port the server is running on
+def get_public_ip() -> str | None:
+    """Get the public IP address using ipify.org.
 
     Returns:
         The public IP address, or None if failed
     """
     logger = logging.getLogger(__name__)
-    logger.info("Getting public IP address...")
+    logger.info("Getting public IP address from ipify.org...")
 
     try:
-        response = requests.get(f"http://{DEFAULT_HOST}:{port}/get_public_ip", timeout=10)
-        if response.status_code == HTTP_OK:
-            result = response.json()
-            if result.get("status") == "success":
-                public_ip = result.get("public_ip")
-                logger.info("Public IP address: %s", public_ip)
-                return public_ip
+        response = requests.get("https://api.ipify.org/?format=json", timeout=10)
+        response.raise_for_status()
 
-        logger.error("Failed to get public IP: %s", response.text)
-        return None
+        result = response.json()
+        public_ip = result.get("ip")
+
+        if not public_ip:
+            logger.error("No IP address found in response: %s", result)
+            return None
+
+        logger.info("Public IP address: %s", public_ip)
+        return public_ip
 
     except requests.exceptions.RequestException as e:
         logger.error("Error getting public IP: %s", e)
