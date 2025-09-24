@@ -83,6 +83,10 @@ setup_environment() {
     log "Installing Python dependencies..."
     uv pip install -r requirements.txt -r test-requirements.txt
     
+    # Install webserver dependencies
+    log "Installing webserver dependencies..."
+    uv pip install -r webserver-requirements.txt
+    
     success "Python environment ready"
 }
 
@@ -176,8 +180,9 @@ take_screenshot() {
     # Remove any existing temp screenshot
     rm -f "$temp_screenshot"
     
-    log "Capturing page: $search_url"
+    log "Capturing page with image loading delay: $search_url"
     
+    # First, navigate to the page and wait for images to load
     timeout $TIMEOUT_SECONDS google-chrome \
         --headless=new \
         --disable-gpu \
@@ -200,11 +205,49 @@ take_screenshot() {
         --force-dark-mode \
         --enable-features=WebUIDarkMode \
         --window-size=2200,2200 \
-        --virtual-time-budget=15000 \
+        --virtual-time-budget=20000 \
         --run-all-compositor-stages-before-draw \
+        --disable-features=VizDisplayCompositor \
         --user-data-dir=/tmp/chrome-profile-screenshot \
         --screenshot="$temp_screenshot" \
         "$search_url" 2>/dev/null
+    
+    # Additional delay to ensure images are fully loaded
+    if [ -f "$temp_screenshot" ]; then
+        log "Initial screenshot captured, waiting for images to load..."
+        sleep 3
+        
+        # Take a second screenshot after the delay to ensure images are loaded
+        rm -f "$temp_screenshot"
+        timeout $TIMEOUT_SECONDS google-chrome \
+            --headless=new \
+            --disable-gpu \
+            --no-sandbox \
+            --disable-dev-shm-usage \
+            --disable-web-security \
+            --allow-running-insecure-content \
+            --disable-background-timer-throttling \
+            --disable-backgrounding-occluded-windows \
+            --disable-renderer-backgrounding \
+            --disable-field-trial-config \
+            --disable-ipc-flooding-protection \
+            --enable-logging \
+            --log-level=0 \
+            --disable-extensions \
+            --disable-plugins \
+            --disable-default-apps \
+            --allow-external-pages \
+            --disable-translate \
+            --force-dark-mode \
+            --enable-features=WebUIDarkMode \
+            --window-size=2200,2200 \
+            --virtual-time-budget=25000 \
+            --run-all-compositor-stages-before-draw \
+            --disable-features=VizDisplayCompositor \
+            --user-data-dir=/tmp/chrome-profile-screenshot \
+            --screenshot="$temp_screenshot" \
+            "$search_url" 2>/dev/null
+    fi
     
     if [ -f "$temp_screenshot" ]; then
         local file_size=$(stat -c%s "$temp_screenshot" 2>/dev/null)
