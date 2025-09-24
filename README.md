@@ -16,7 +16,35 @@
 
 ## Project Overview
 
-Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering card search engine. This project provides a complete card database and search system that mirrors many of Scryfall's features while adding unique extensions like Oracle tags and comprehensive card tagging.
+Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering card search engine.
+
+### Shared Features (Both Scryfall & Scryfall OS)
+
+- **Core Search Syntax**: `name:`, `oracle:`, `type:`, `set:`, `artist:`, `rarity:`, `cmc:`, `power:`, `color:`, `identity:`, `number:`, `cn:`
+- **Pricing Data**: `usd:`, `eur:`, `tix:` with all comparison operators
+- **Format Legality**: `format:`, `legal:`, `banned:`, `restricted:`
+- **Card Properties**: `layout:`, `border:`, `frame:`, `is:`, `produces:`, `flavor:`
+- **Oracle Tags**: `oracle_tags:`, `ot:`
+- **Boolean Logic**: `AND`, `OR`, `NOT`, `()` parentheses
+- **Comparison Operators**: `=`, `<`, `>`, `<=`, `>=`, `!=`, `<>`
+
+### Scryfall OS Unique Features
+
+- **Arithmetic operations** - Mathematical expressions like `cmc+1<power`
+- **Typeahead search with intelligent completion** - Enhanced UX for query building
+- **Optimized database schema for low latency queries** - Performance improvements
+- **Larger data fetch capabilities** - No 175 card/page limit like Scryfall
+- **Data synchronization tools** - Tools to sync from upstream Scryfall
+- **Local deployment** - Run your own instance with Docker
+
+### Scryfall Unique Features (Not Yet Implemented)
+
+- **Watermark search** - `watermark:` for card watermarks
+- **Date filtering** - `year:`, `date:` for release information
+- **Advanced mechanics** - `loyalty:`, `devotion:`
+- **Collection features** - `cube:`, `commander:`, `papersets:`
+- **Regular expressions** - `/pattern/` syntax
+- **Wildcard matching** - `*` for partial string matching
 
 ### Core Components
 
@@ -27,31 +55,27 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 5. **Card Tagging System** - Extended functionality for importing and managing Scryfall's card tags with hierarchy support
 6. **RESTful API** - Falcon-based web service with multi-process worker support and comprehensive search endpoints
 
-### Key Features
-
-- **Full Scryfall Syntax Support**: Implements core search functionality including `name:`, `oracle:`, `type:`, `set:`, `s:`, `artist:`, `rarity:`, `r:`, `cmc:`, `power:`, `color:`, `identity:`, `number:`, `cn:`, pricing data (`usd:`, `eur:`, `tix:`), and arithmetic operations
-- **Advanced Search Operations**: Supports complex queries with `AND`, `OR`, `NOT` logic, parenthetical grouping, and arithmetic expressions like `cmc+1<power`
-- **Oracle Tags Extension**: Enhanced tagging system with hierarchy support and bulk import capabilities
-- **Performance Optimized**: PostgreSQL backend with proper indexing and query optimization for fast search results
-- **Docker Ready**: Complete containerization with Docker Compose for easy deployment and development
-
 ## Functionality Comparison
 
 ### Recommended Development Priorities
 
-1. **High Impact, Low Complexity** - 🎯 **Next Priority**: Special properties (`is:`, `produces:`) and card visual properties for enhanced search capabilities
-2. **High Impact, Medium Complexity** - Advanced mechanics and devotion calculations for specialized gameplay searches  
-3. **Medium Impact Features** - Layout, dates, and planeswalker loyalty for comprehensive card metadata coverage
-4. **Low Impact Features** - Watermarks, flavor text, and advanced pattern matching for completeness
+1. Watermarks search
+2. Devotion search
+3. Support unique art/printings/cards - we are going to need to decide which attributes belong to cards/printings/artworks
+3. **Medium Impact Features** - Dates and planeswalker loyalty for comprehensive card metadata coverage
+4. **Low Impact Features** - regex based search
 
 **Recently Completed ✅:**
 - Format legality (`format:`, `legal:`, `banned:`) for competitive play support
-- Collector numbers (`number:`, `cn:`) and rarity search (`rarity:`, `r:`) 
+- Collector numbers (`number:`, `cn:`) and rarity search (`rarity:`, `r:`)
 - Pricing data (`usd:`, `eur:`, `tix:`) for market analysis
 - Artist search (`artist:`, `a:`) with trigram indexing
 - Flavor text search (`flavor:`) for searching card flavor text
 - Card frame search (`frame:`) for frame type and visual properties
 - Mana production search (`produces:`) for lands and mana-producing cards
+- Card layout search (`layout:`) for card layout types (normal, split, transform, etc.)
+- Card border search (`border:`) for border colors (black, white, borderless, etc.)
+- Special properties search (`is:`) for card classifications (creature, spell, permanent, etc.)
 
 ### Missing Functionality - Complexity vs Impact Grid
 
@@ -59,9 +83,9 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 
 | **Complexity** | **Low Impact**                                                   | **Medium Impact**                                                                            | **High Impact**                                                                                   |
 | -------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| **Low**        | **Watermark** (`watermark:`)                                    | **Layout** (`layout:`)<br/>**Border** (`border:`)                                           | **Special Properties** (`is:`)<br/>**Card Visual Properties**                                     |
-| **Medium**     | **Cube Inclusion** (`cube:`)<br/>**Commander Features** (`cmd:`) | **Release Dates** (`year:`, `date:`)<br/>**Planeswalker Loyalty** (`loyalty:`)               | **Devotion** (`devotion:`)        |
-| **High**       | **Regular Expressions** (`/pattern/`)    | **Advanced Functions** (`max:`, `min:`)<br/>**Paper Sets** (`papersets:`)                   | **Complex Game Rules** (`is:split`, `is:modal`)<br/>**Meta Properties** (`is:booster`)            |
+| **Low**        | **Watermark** (`watermark:`)                                    | **Release Dates** (`year:`, `date:`)<br/>**Planeswalker Loyalty** (`loyalty:`)               | **Advanced Mechanics**                                                                               |
+| **Medium**     | **Cube Inclusion** (`cube:`)<br/>**Commander Features** (`cmd:`) | **Advanced Functions** (`max:`, `min:`)<br/>**Paper Sets** (`papersets:`)                   | **Devotion** (`devotion:`)                                                                         |
+| **High**       | **Regular Expressions** (`/pattern/`)                           | **Complex Game Rules** (`is:split`, `is:modal`)<br/>**Meta Properties** (`is:booster`)      | **Advanced Mechanics**                                                                              |
 
 ### Implementation Status
 
@@ -91,7 +115,7 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 | **Arithmetic**         | `cmc+1<power`, `power-toughness=0` | Advanced mathematical expressions                    |
 | **Keywords**           | `keyword:`                         | JSONB object storage                                 |
 | **Mana Costs**         | `mana:`, `m:`                      | Both JSONB and text representations                  |
-| **Oracle Tags**        | `oracle_tags:`, `ot:`              | Scryfall OS unique extension                         |
+| **Oracle Tags**        | `oracle_tags:`, `ot:`              | Standard Scryfall feature                           |
 
 ## Code Organization
 
