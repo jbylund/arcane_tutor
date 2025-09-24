@@ -370,9 +370,9 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         """Handle colon operator for different field types."""
         if field_type == FieldType.TEXT:
             # Handle fields that need exact matching instead of pattern matching
-            if attr in ("card_set_code", "card_layout", "card_border"):
-                # For layout and border fields, lowercase the search value for case-insensitive matching
-                if attr in ("card_layout", "card_border") and hasattr(self.rhs, "value"):
+            if attr in ("card_set_code", "card_layout", "card_border", "card_watermark"):
+                # For layout, border, and watermark fields, lowercase the search value for case-insensitive matching
+                if attr in ("card_layout", "card_border", "card_watermark") and hasattr(self.rhs, "value"):
                     self.rhs.value = self.rhs.value.lower()
 
                 if self.operator == ":":
