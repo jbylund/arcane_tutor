@@ -23,7 +23,7 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 - **Core Search Syntax**: `name:`, `oracle:`, `type:`, `set:`, `artist:`, `rarity:`, `cmc:`, `power:`, `color:`, `identity:`, `number:`, `cn:`
 - **Pricing Data**: `usd:`, `eur:`, `tix:` with all comparison operators
 - **Format Legality**: `format:`, `legal:`, `banned:`, `restricted:`
-- **Card Properties**: `layout:`, `border:`, `frame:`, `is:`, `produces:`, `flavor:`
+- **Card Properties**: `layout:`, `border:`, `frame:`, `is:`, `produces:`, `flavor:`, `watermark:`
 - **Oracle Tags**: `oracle_tags:`, `ot:`
 - **Boolean Logic**: `AND`, `OR`, `NOT`, `()` parentheses
 - **Comparison Operators**: `=`, `<`, `>`, `<=`, `>=`, `!=`, `<>`
@@ -39,7 +39,6 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 
 ### Scryfall Unique Features (Not Yet Implemented)
 
-- **Watermark search** - `watermark:` for card watermarks
 - **Date filtering** - `year:`, `date:` for release information
 - **Advanced mechanics** - `loyalty:`, `devotion:`
 - **Collection features** - `cube:`, `commander:`, `papersets:`
@@ -76,16 +75,17 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 - Card layout search (`layout:`) for card layout types (normal, split, transform, etc.)
 - Card border search (`border:`) for border colors (black, white, borderless, etc.)
 - Special properties search (`is:`) for card classifications (creature, spell, permanent, etc.)
+- Watermark search (`watermark:`) for card watermarks and visual properties
 
 ### Missing Functionality - Complexity vs Impact Grid
 
 Based on [comprehensive functionality analysis](docs/scryfall_functionality_analysis.md), here's the updated priority matrix:
 
-| **Complexity** | **Low Impact**                                                   | **Medium Impact**                                                                            | **High Impact**                                                                                   |
-| -------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| **Low**        | **Watermark** (`watermark:`)                                    | **Release Dates** (`year:`, `date:`)<br/>**Planeswalker Loyalty** (`loyalty:`)               | **Advanced Mechanics**                                                                               |
-| **Medium**     | **Cube Inclusion** (`cube:`)<br/>**Commander Features** (`cmd:`) | **Advanced Functions** (`max:`, `min:`)<br/>**Paper Sets** (`papersets:`)                   | **Devotion** (`devotion:`)                                                                         |
-| **High**       | **Regular Expressions** (`/pattern/`)                           | **Complex Game Rules** (`is:split`, `is:modal`)<br/>**Meta Properties** (`is:booster`)      | **Advanced Mechanics**                                                                              |
+| **Complexity** | **Low Impact**                            | **Medium Impact**                                                                            | **High Impact**                                                                                   |
+| -------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------- |
+| **Low**        | **Cube Inclusion** (`cube:`)              | **Release Dates** (`year:`, `date:`)<br/>**Planeswalker Loyalty** (`loyalty:`)               |                              |
+| **Medium**     | **Commander Features** (`cmd:`)           | **Reprint Info** (`papersets:`) - [Scryfall Docs](https://scryfall.com/docs/syntax#reprints) | **Devotion** (`devotion:`)   |
+| **High**       | **Regular Expressions** (`/pattern/`)     |                                                                                              |                              |
 
 ### Implementation Status
 
@@ -107,6 +107,7 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 | **Set Search**         | `set:`, `s:`                       | Dedicated indexed column with exact matching         |
 | **Rarity Search**      | `rarity:`, `r:`                    | Integer-based ordering with all comparison operators |
 | **Frame Search**       | `frame:`                           | Card frame type and visual properties search         |
+| **Watermark Search**   | `watermark:`                       | Card watermark and visual properties search          |
 | **Mana Production**    | `produces:`                        | Search for lands and mana-producing cards            |
 | **Numeric Attributes** | `cmc:`, `power:`, `toughness:`     | Complete with all comparison operators               |
 | **Colors & Identity**  | `color:`, `identity:`, `c:`, `id:` | JSONB-based with complex color logic                 |
