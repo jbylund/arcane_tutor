@@ -10,11 +10,15 @@ logger = logging.getLogger(__name__)
 # Try to import honeybadger, fall back to basic error handling if not available
 try:
     from honeybadger import honeybadger
+    import socket
+
 
     # Configure honeybadger if available
     honeybadger.configure(
         api_key="hbp_mHbJs4KJAOeUhK17Ixr0AzDC0gx8Zt2WG6kH",
+        hostname=socket.gethostname(),
         project_root=str(pathlib.Path(__file__).parent.parent.parent),
+        report_local_variables=True,
     )
 
     def error_handler(req: falcon.Request, exception: Exception) -> None:
