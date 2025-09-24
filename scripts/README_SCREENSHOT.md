@@ -101,8 +101,8 @@ The script uses Chrome with these specific flags for optimal screenshot capture:
 - `--force-dark-mode` - Forces dark mode theme
 - `--enable-features=WebUIDarkMode` - Enables dark mode features
 - `--disable-web-security` - Allows external resource loading
-- `--window-size=1400,1200` - Sets consistent window size
-- `--virtual-time-budget=15000` - Ensures complete page loading
+- `--window-size=2200,2022` - Sets consistent window size for high-resolution screenshots
+- `--virtual-time-budget=20000` - Ensures complete page loading with extra time for high-res rendering
 
 ## Troubleshooting
 
@@ -189,6 +189,10 @@ git commit -m "Update README screenshot"
 - `--disable-web-security` - Disables same-origin policy to allow card image loading
 - `--virtual-time-budget=15000` - Gives the page 15 seconds of virtual time to fully load
 - `--run-all-compositor-stages-before-draw` - Ensures complete rendering before screenshot
+- `--disable-partial-raster` - Improves screenshot quality by disabling partial rendering
+- `--disable-skia-runtime-opts` - Ensures consistent rendering behavior
+- `--disable-threaded-compositing` - Prevents rendering artifacts in screenshots
+- `--disable-checker-imaging` - Improves image loading reliability
 
 ### Card Import Process
 

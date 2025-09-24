@@ -201,9 +201,13 @@ take_screenshot() {
         --disable-translate \
         --force-dark-mode \
         --enable-features=WebUIDarkMode \
-        --window-size=1400,1200 \
-        --virtual-time-budget=15000 \
+        --window-size=2200,2022 \
+        --virtual-time-budget=20000 \
         --run-all-compositor-stages-before-draw \
+        --disable-partial-raster \
+        --disable-skia-runtime-opts \
+        --disable-threaded-compositing \
+        --disable-checker-imaging \
         --user-data-dir=/tmp/chrome-profile-screenshot \
         --screenshot="$temp_screenshot" \
         "$search_url" 2>/dev/null
