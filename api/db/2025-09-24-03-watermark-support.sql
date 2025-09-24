@@ -1,5 +1,5 @@
 -- Migration to add watermark column with hash index
--- Date: 2025-01-16
+-- Date: 2025-09-24
 
 -- Add watermark column for card watermarks (guild symbols, set symbols, etc.)
 ALTER TABLE magic.cards ADD COLUMN card_watermark text;
