@@ -363,6 +363,49 @@ def test_oracle_tag_sql_translation(input_query: str, expected_sql: str, expecte
 @pytest.mark.parametrize(
     argnames=("input_query", "expected_sql", "expected_parameters"),
     argvalues=[
+        # Basic is: tag search (should be lowercase)
+        (
+            "is:creature",
+            r"(card.card_is_tags @> %(p_dict_eydjcmVhdHVyZSc6IFRydWV9)s)",
+            {"p_dict_eydjcmVhdHVyZSc6IFRydWV9": {"creature": True}},
+        ),
+        # is: tag search with hyphenated term
+        (
+            "is:modal-dfc",
+            r"(card.card_is_tags @> %(p_dict_eydtb2RhbC1kZmMnOiBUcnVlfQ)s)",
+            {"p_dict_eydtb2RhbC1kZmMnOiBUcnVlfQ": {"modal-dfc": True}},
+        ),
+        # is: tag with quoted hyphenated term
+        (
+            'is:"modal-dfc"',
+            r"(card.card_is_tags @> %(p_dict_eydtb2RhbC1kZmMnOiBUcnVlfQ)s)",
+            {"p_dict_eydtb2RhbC1kZmMnOiBUcnVlfQ": {"modal-dfc": True}},
+        ),
+        # Common is: tags
+        (
+            "is:spell",
+            r"(card.card_is_tags @> %(p_dict_eydzcGVsbCc6IFRydWV9)s)",
+            {"p_dict_eydzcGVsbCc6IFRydWV9": {"spell": True}},
+        ),
+        (
+            "is:permanent",
+            r"(card.card_is_tags @> %(p_dict_eydwZXJtYW5lbnQnOiBUcnVlfQ)s)",
+            {"p_dict_eydwZXJtYW5lbnQnOiBUcnVlfQ": {"permanent": True}},
+        ),
+    ],
+)
+def test_is_tag_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
+    """Test that is: tag search generates correct SQL with lowercase tags."""
+    parsed = parsing.parse_scryfall_query(input_query)
+    context = {}
+    observed_sql = parsed.to_sql(context)
+    assert observed_sql == expected_sql, f"\nExpected: {expected_sql}\nObserved: {observed_sql}"
+    assert context == expected_parameters, f"\nExpected params: {expected_parameters}\nObserved params: {context}"
+
+
+@pytest.mark.parametrize(
+    argnames=("input_query", "expected_sql", "expected_parameters"),
+    argvalues=[
         # Case-insensitive oracle tag search
         (
             "Otag:flying",

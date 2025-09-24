@@ -1024,6 +1024,61 @@ class APIResource:
             "message": f"Successfully updated {updated_count} cards with tag '{tag}'",
         }
 
+    def _add_is_tag_to_cards(self: APIResource, *, is_tag: str) -> dict[str, Any]:
+        """Add a specific is: tag to all cards matching that tag using Scryfall search.
+
+        Args:
+        ----
+            is_tag (str): The is: tag to fetch and apply to cards (e.g., 'creature', 'spell').
+
+        Returns:
+        -------
+            Dict[str, Any]: Result summary with updated card count and tag info.
+
+        """
+        if not is_tag:
+            msg = "is_tag parameter is required"
+            raise ValueError(msg)
+
+        # Fetch cards with this is: tag from Scryfall API (handles pagination)
+        cards = self._scryfall_search(query=f"is:{is_tag}")
+        card_names = [c["name"] for c in cards]
+
+        if not cards:
+            return {
+                "is_tag": is_tag,
+                "cards_updated": 0,
+                "message": f"No cards found with is:{is_tag} in Scryfall API",
+            }
+
+        logger.info("Updating %d cards with is:%s", len(card_names), is_tag)
+        # Update cards in database with the new is: tag
+        updated_count = 0
+        card_names.sort()
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            # Use SQL update with jsonb concatenation to add the is: tag
+            for card_name_batch in itertools.batched(card_names, 200):  # noqa: B911
+                cursor.execute(
+                    """
+                    UPDATE magic.cards
+                    SET card_is_tags = card_is_tags || %(new_tag)s::jsonb
+                    WHERE card_name = ANY(%(card_names)s)
+                    """,
+                    {
+                        "card_names": list(card_name_batch),
+                        "new_tag": orjson.dumps({is_tag: True}).decode("utf-8"),
+                    },
+                )
+                updated_count += cursor.rowcount
+                conn.commit()
+
+        return {
+            "is_tag": is_tag,
+            "cards_updated": updated_count,
+            "total_cards_found": len(card_names),
+            "message": f"Successfully updated {updated_count} cards with is:{is_tag}",
+        }
+
     def discover_tags_from_scryfall(self: APIResource, **_: object) -> list[str]:
         """Discover all available tags from Scryfall tagger documentation.
 
@@ -1100,6 +1155,36 @@ class APIResource:
         unique_tags = sorted(tags)
         logger.info("Discovered %d unique tags from GraphQL", len(unique_tags))
         return unique_tags
+
+    def discover_is_tags_from_syntax(self: APIResource, **_: object) -> list[str]:
+        """Discover all available is: tags from Scryfall syntax documentation.
+
+        Returns:
+        -------
+            List[str]: List of all available is: tag names.
+
+        Raises:
+        ------
+            ValueError: If API request fails or returns invalid data.
+
+        """
+        try:
+            response = self._session.get("https://scryfall.com/docs/syntax", timeout=30)
+            response.raise_for_status()
+        except requests.RequestException as e:
+            msg = f"Failed to fetch is: tags from Scryfall syntax: {e}"
+            raise ValueError(msg) from e
+
+        # Extract is: tag names from the documentation
+        # Look for patterns like "is:permanent", "is:spell", etc.
+        is_tag_pattern = r"is:([a-zA-Z_-]+)"
+        matches = re.findall(is_tag_pattern, response.text)
+
+        # Remove duplicates and sort
+        unique_is_tags = sorted({match.lower() for match in matches})
+
+        logger.info("Discovered %d unique is: tags from Scryfall syntax", len(unique_is_tags))
+        return unique_is_tags
 
     def _get_tag_relationships(self: APIResource, *, tag: str) -> str | None:
         """Fetch list of relationships for a specific tag using Scryfall tagger GraphQL API.
@@ -1278,6 +1363,81 @@ class APIResource:
         # Step 3: Import card associations for each tag if requested
         if import_cards:
             result["card_taggings"] = self._update_all_card_taggings()
+
+        return result
+
+    def import_all_is_tags(self: APIResource, **_: object) -> dict[str, Any]:
+        """Discover and import all is: tags from Scryfall syntax documentation.
+
+        Returns:
+        -------
+            Dict[str, Any]: Summary of the bulk is: tag import operation.
+
+        """
+        result = {
+            "success": True,
+        }
+        logger.info("Starting bulk is: tag discovery and import")
+
+        try:
+            all_is_tags = self.discover_is_tags_from_syntax()
+        except ValueError as e:
+            result.update({
+                "success": False,
+                "error": str(e),
+                "message": "Failed to discover is: tags from Scryfall syntax",
+            })
+            return result
+
+        if not all_is_tags:
+            return {
+                "success": False,
+                "message": "No is: tags discovered from Scryfall syntax",
+            }
+
+        # Import card associations for each is: tag
+        start_time = time.monotonic()
+        imported_tags = []
+        failed_tags = []
+        total_cards_updated = 0
+
+        for idx, is_tag in enumerate(all_is_tags):
+            try:
+                if idx > 0:
+                    elapsed_time = time.monotonic() - start_time
+                    fraction_complete = idx / len(all_is_tags)
+                    estimated_time_remaining = (elapsed_time / fraction_complete) - elapsed_time
+                    estimated_duration = datetime.timedelta(seconds=round(estimated_time_remaining, 1))
+                    logger.info(
+                        "Importing is: tag %d of %d: %20s (ETA: %s)",
+                        idx + 1,
+                        len(all_is_tags),
+                        is_tag,
+                        estimated_duration,
+                    )
+
+                tag_result = self._add_is_tag_to_cards(is_tag=is_tag)
+                imported_tags.append({
+                    "is_tag": is_tag,
+                    "cards_updated": tag_result["cards_updated"],
+                    "total_cards_found": tag_result["total_cards_found"],
+                })
+                total_cards_updated += tag_result["cards_updated"]
+
+            except ValueError as e:
+                logger.warning("Failed to import is: tag '%s': %s", is_tag, e)
+                failed_tags.append({"is_tag": is_tag, "error": str(e)})
+
+        result.update({
+            "duration": time.monotonic() - start_time,
+            "discovered_is_tags": len(all_is_tags),
+            "imported_is_tags": len(imported_tags),
+            "failed_is_tags": len(failed_tags),
+            "total_cards_updated": total_cards_updated,
+            "imported_tags": imported_tags,
+            "failed_tags": failed_tags,
+            "message": f"Successfully imported {len(imported_tags)} is: tags, {len(failed_tags)} failed",
+        })
 
         return result
 
