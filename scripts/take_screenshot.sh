@@ -1,0 +1,351 @@
+#!/bin/bash
+
+# Scryfall OS Screenshot Generation Script
+# This script replicates the procedure used to generate the README screenshot
+# showing the dark mode interface with search results
+
+set -e
+
+# Configuration
+PORT=${PORT:-8080}
+WORKERS=${WORKERS:-2}
+SCREENSHOT_PATH=${SCREENSHOT_PATH:-./scryfallos-screenshot.png}
+TIMEOUT_SECONDS=${TIMEOUT_SECONDS:-120}
+
+# Color codes for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+log() {
+    echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $1"
+}
+
+error() {
+    echo -e "${RED}[ERROR]${NC} $1" >&2
+}
+
+success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+warn() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+# Check dependencies
+check_dependencies() {
+    log "Checking dependencies..."
+    
+    local missing_deps=()
+    
+    if ! command -v python3 &> /dev/null; then
+        missing_deps+=("python3")
+    fi
+    
+    if ! command -v google-chrome &> /dev/null; then
+        missing_deps+=("google-chrome")
+    fi
+    
+    if ! command -v curl &> /dev/null; then
+        missing_deps+=("curl")
+    fi
+    
+    if [ ${#missing_deps[@]} -ne 0 ]; then
+        error "Missing dependencies: ${missing_deps[*]}"
+        error "Please install the missing dependencies and try again."
+        exit 1
+    fi
+    
+    success "All dependencies found"
+}
+
+# Setup Python environment
+setup_environment() {
+    log "Setting up Python environment..."
+    
+    if [ ! -d "venv" ]; then
+        log "Creating virtual environment..."
+        python3 -m venv venv
+    fi
+    
+    source venv/bin/activate
+    
+    # Install uv if not present
+    if ! command -v uv &> /dev/null; then
+        log "Installing uv package manager..."
+        python -m pip install uv
+    fi
+    
+    # Install dependencies
+    log "Installing Python dependencies..."
+    uv pip install -r requirements.txt -r test-requirements.txt
+    
+    success "Python environment ready"
+}
+
+# Start the API server using testcontainers
+start_server() {
+    log "Starting API server on port $PORT with $WORKERS workers..."
+    
+    # Start server in background - testcontainers will handle database
+    source venv/bin/activate
+    python -m api.entrypoint --port $PORT --workers $WORKERS &
+    SERVER_PID=$!
+    
+    # Wait for server to start
+    log "Waiting for server to start..."
+    local retries=0
+    local max_retries=60  # Increased timeout for database startup
+    
+    while [ $retries -lt $max_retries ]; do
+        if curl -s "http://localhost:$PORT/" > /dev/null 2>&1; then
+            success "Server started successfully (PID: $SERVER_PID)"
+            return 0
+        fi
+        sleep 3
+        ((retries++))
+        log "Waiting for server... ($retries/$max_retries)"
+    done
+    
+    error "Server failed to start within $((max_retries * 3)) seconds"
+    return 1
+}
+
+# Import sample cards
+import_cards() {
+    log "Importing sample cards..."
+    
+    local cards=(
+        "Lightning Bolt"
+        "Black Lotus" 
+        "Path to Exile"
+        "Llanowar Elves"
+        "Brainstorm"
+        "Sol Ring"
+    )
+    
+    for card in "${cards[@]}"; do
+        log "Importing: $card"
+        local encoded_card=$(echo "$card" | sed 's/ /%20/g')
+        local response=$(curl -s "http://localhost:$PORT/import_cards_by_search?search_query=name:%22$encoded_card%22" || echo "error")
+        if [[ "$response" != "error" ]]; then
+            log "✓ Imported: $card"
+        else
+            warn "Failed to import: $card"
+        fi
+        # Small delay to avoid overwhelming the API
+        sleep 0.5
+    done
+    
+    success "Card import completed"
+}
+
+# Verify search functionality
+verify_search() {
+    log "Verifying search functionality..."
+    
+    # Test search endpoint
+    local response=$(curl -s "http://localhost:$PORT/search?q=cmc%3C10&orderby=edhrec&direction=asc" || echo "error")
+    if [[ "$response" != "error" ]]; then
+        success "Search endpoint working - received response"
+    else
+        warn "Search endpoint issue, but continuing..."
+    fi
+    
+    # Test base page
+    log "Testing base page..."
+    local base_response=$(curl -s "http://localhost:$PORT/" || echo "error")
+    if [[ "$base_response" != "error" ]]; then
+        success "Base page working - received response"
+    else
+        error "Base page not working properly"
+        return 1
+    fi
+}
+
+# Take screenshot using Chrome
+take_screenshot() {
+    log "Taking screenshot using Chrome..."
+    
+    local temp_screenshot="/tmp/scryfallos-temp-screenshot.png"
+    local search_url="http://localhost:$PORT/?q=cmc&orderby=usd&direction=desc"
+    
+    # Remove any existing temp screenshot
+    rm -f "$temp_screenshot"
+    
+    log "Capturing page: $search_url"
+    
+    timeout $TIMEOUT_SECONDS google-chrome \
+        --headless=new \
+        --disable-gpu \
+        --no-sandbox \
+        --disable-dev-shm-usage \
+        --disable-web-security \
+        --allow-running-insecure-content \
+        --disable-background-timer-throttling \
+        --disable-backgrounding-occluded-windows \
+        --disable-renderer-backgrounding \
+        --disable-field-trial-config \
+        --disable-ipc-flooding-protection \
+        --enable-logging \
+        --log-level=0 \
+        --disable-extensions \
+        --disable-plugins \
+        --disable-default-apps \
+        --allow-external-pages \
+        --disable-translate \
+        --force-dark-mode \
+        --enable-features=WebUIDarkMode \
+        --window-size=2200,2200 \
+        --virtual-time-budget=15000 \
+        --run-all-compositor-stages-before-draw \
+        --user-data-dir=/tmp/chrome-profile-screenshot \
+        --screenshot="$temp_screenshot" \
+        "$search_url" 2>/dev/null
+    
+    if [ -f "$temp_screenshot" ]; then
+        local file_size=$(stat -c%s "$temp_screenshot" 2>/dev/null)
+        log "Screenshot captured (${file_size} bytes)"
+        
+        # Trim white borders using imagemagick if available
+        if command -v convert &> /dev/null; then
+            log "Trimming white borders with imagemagick..."
+            convert "$temp_screenshot" -trim "$SCREENSHOT_PATH"
+            success "Screenshot trimmed and saved to: $SCREENSHOT_PATH"
+        else
+            # Move to final location without trimming
+            mv "$temp_screenshot" "$SCREENSHOT_PATH"
+            warn "imagemagick not available - screenshot saved without trimming to: $SCREENSHOT_PATH"
+        fi
+        
+        # Verify screenshot is not just a white page
+        local final_size=$(stat -c%s "$SCREENSHOT_PATH" 2>/dev/null)
+        if [ "$final_size" -gt 50000 ]; then
+            success "Screenshot appears to have content (${final_size} bytes)"
+        else
+            warn "Screenshot file size seems small (${final_size} bytes) - may be blank"
+        fi
+    else
+        error "Screenshot file not created"
+        return 1
+    fi
+}
+
+# Cleanup function
+cleanup() {
+    log "Cleaning up..."
+    
+    if [ ! -z "$SERVER_PID" ]; then
+        log "Stopping server (PID: $SERVER_PID)"
+        kill $SERVER_PID 2>/dev/null || true
+        wait $SERVER_PID 2>/dev/null || true
+        sleep 2
+    fi
+    
+    # Clean up Chrome profile
+    rm -rf /tmp/chrome-profile-screenshot
+    
+    # Kill any remaining testcontainer processes
+    pkill -f "testcontainers" 2>/dev/null || true
+    
+    log "Cleanup completed"
+}
+
+# Print usage information
+usage() {
+    cat << EOF
+Usage: $0 [OPTIONS]
+
+Options:
+    -p, --port PORT         Server port (default: 8080)
+    -w, --workers WORKERS   Number of workers (default: 2)
+    -o, --output PATH       Screenshot output path (default: ./scryfallos-screenshot.png)
+    -t, --timeout SECONDS   Screenshot timeout (default: 120)
+    -h, --help             Show this help message
+
+Environment Variables:
+    PORT                   Server port
+    WORKERS                Number of workers
+    SCREENSHOT_PATH        Screenshot output path
+    TIMEOUT_SECONDS        Screenshot timeout
+
+Examples:
+    $0                                          # Use defaults
+    $0 -p 9000 -w 4                           # Custom port and workers
+    $0 -o /tmp/my-screenshot.png               # Custom output path
+    PORT=9000 WORKERS=4 $0                     # Using environment variables
+
+This script will:
+1. Check dependencies (python3, google-chrome, curl)
+2. Set up Python virtual environment and install packages
+3. Start the Scryfall OS API server
+4. Import sample Magic cards for demonstration
+5. Take a screenshot of the dark mode interface
+6. Clean up resources
+
+The screenshot shows a search for cards with CMC, ordered by USD price descending,
+in dark mode with proper card images loaded.
+EOF
+}
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -p|--port)
+            PORT="$2"
+            shift 2
+            ;;
+        -w|--workers)
+            WORKERS="$2"
+            shift 2
+            ;;
+        -o|--output)
+            SCREENSHOT_PATH="$2"
+            shift 2
+            ;;
+        -t|--timeout)
+            TIMEOUT_SECONDS="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            error "Unknown option: $1"
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+# Main execution
+main() {
+    log "Starting Scryfall OS screenshot generation..."
+    log "Configuration: Port=$PORT, Workers=$WORKERS, Output=$SCREENSHOT_PATH"
+    
+    # Set up cleanup trap
+    trap cleanup EXIT
+    
+    # Execute steps
+    check_dependencies
+    setup_environment
+    start_server
+    import_cards
+    verify_search
+    take_screenshot
+    
+    success "Screenshot generation completed successfully!"
+    success "Screenshot saved to: $SCREENSHOT_PATH"
+    
+    if [ -f "$SCREENSHOT_PATH" ]; then
+        local file_size=$(stat -c%s "$SCREENSHOT_PATH" 2>/dev/null)
+        log "Final screenshot size: ${file_size} bytes"
+    fi
+}
+
+# Run main function
+main "$@"
