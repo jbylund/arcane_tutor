@@ -1985,3 +1985,158 @@ class APIResource:
                 "sample_cards": [],
                 "message": f"Error loading cards: {e}",
             }
+
+    def get_public_ip(self: APIResource, **_: object) -> dict[str, Any]:
+        """Get the public IP address of this server.
+
+        Uses the myip.wtf/json service to determine the public IP address.
+
+        Returns:
+        -------
+            dict[str, Any]: Dictionary containing the public IP address and status.
+
+        """
+        try:
+            logger.info("Fetching public IP address from myip.wtf")
+            response = self._session.get("https://myip.wtf/json", timeout=10)
+            response.raise_for_status()
+
+            ip_data = response.json()
+            public_ip = ip_data.get("YourFuckingIPAddress")
+
+            if not public_ip:
+                logger.error("No IP address found in response: %s", ip_data)
+                return {
+                    "status": "error",
+                    "message": "Could not determine public IP address",
+                    "raw_response": ip_data,
+                }
+
+            logger.info("Successfully retrieved public IP: %s", public_ip)
+            return {
+                "status": "success",
+                "public_ip": public_ip,
+                "source": "myip.wtf",
+            }
+
+        except requests.exceptions.RequestException as e:
+            logger.error("Error fetching public IP: %s", e)
+            return {
+                "status": "error",
+                "message": f"Failed to fetch public IP: {e}",
+            }
+        except (ValueError, KeyError) as e:
+            logger.error("Error parsing IP response: %s", e)
+            return {
+                "status": "error",
+                "message": f"Failed to parse IP response: {e}",
+            }
+
+    def take_screenshot(
+        self: APIResource,
+        *,
+        url: str | None = None,
+        host: str = "8080",
+        query: str = "t:beast",
+        orderby: str = "edhrec",
+        direction: str = "asc",
+        **_: object,
+    ) -> dict[str, Any]:
+        """Take a screenshot using screenshotmachine.com API.
+
+        Args:
+        ----
+            url: Optional full URL to screenshot. If not provided, will construct from public IP.
+            host: Port number for the local server (default: 8080).
+            query: Search query to use in the screenshot (default: t:beast).
+            orderby: Sort order for results (default: edhrec).
+            direction: Sort direction (default: asc).
+
+        Returns:
+        -------
+            dict[str, Any]: Dictionary containing screenshot information and status.
+
+        """
+        api_key = "c5816c"  # API key from the issue description
+
+        try:
+            if url:
+                target_url = url
+                logger.info("Using provided URL for screenshot: %s", target_url)
+            else:
+                # Get public IP first
+                ip_result = self.get_public_ip()
+                if ip_result["status"] != "success":
+                    return {
+                        "status": "error",
+                        "message": "Could not determine public IP for screenshot",
+                        "ip_error": ip_result,
+                    }
+
+                public_ip = ip_result["public_ip"]
+
+                # Construct the target URL
+                encoded_query = urllib.parse.quote(f"q={urllib.parse.quote(query)}&orderby={orderby}&direction={direction}")
+                target_url = f"https://{public_ip}:{host}/?{encoded_query}"
+                logger.info("Constructed target URL for screenshot: %s", target_url)
+
+            # Prepare screenshotmachine API parameters
+            screenshot_params = {
+                "key": api_key,
+                "url": target_url,
+                "device": "desktop",
+                "dimension": "1900x1900",
+                "format": "png",
+                "cacheLimit": "0",
+                "delay": "2000",
+                "user-agent": "screenshotter",
+            }
+
+            # Make request to screenshotmachine API
+            screenshot_url = "https://api.screenshotmachine.com/"
+            logger.info("Requesting screenshot from %s with params: %s", screenshot_url, screenshot_params)
+
+            response = self._session.get(screenshot_url, params=screenshot_params, timeout=30)
+            response.raise_for_status()
+
+            # Check if response is an image (PNG) or error message
+            content_type = response.headers.get("content-type", "")
+
+            if "image" in content_type:
+                # Successful screenshot
+                screenshot_size = len(response.content)
+                logger.info("Successfully received screenshot: %d bytes, content-type: %s", screenshot_size, content_type)
+
+                return {
+                    "status": "success",
+                    "target_url": target_url,
+                    "screenshot_url": f"{screenshot_url}?{urllib.parse.urlencode(screenshot_params)}",
+                    "screenshot_size_bytes": screenshot_size,
+                    "content_type": content_type,
+                    "message": "Screenshot taken successfully",
+                }
+            # Error response from screenshotmachine
+            error_message = response.text
+            logger.error("Screenshot API returned error: %s", error_message)
+
+            return {
+                "status": "error",
+                "target_url": target_url,
+                "message": f"Screenshot service error: {error_message}",
+                "screenshot_url": f"{screenshot_url}?{urllib.parse.urlencode(screenshot_params)}",
+            }
+
+        except requests.exceptions.RequestException as e:
+            logger.error("Error taking screenshot: %s", e)
+            return {
+                "status": "error",
+                "message": f"Failed to take screenshot: {e}",
+                "target_url": target_url if "target_url" in locals() else None,
+            }
+        except (ValueError, KeyError, TypeError) as e:
+            logger.error("Unexpected error taking screenshot: %s", e)
+            return {
+                "status": "error",
+                "message": f"Unexpected error: {e}",
+                "target_url": target_url if "target_url" in locals() else None,
+            }
