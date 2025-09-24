@@ -9,14 +9,14 @@ ALTER TABLE magic.cards ADD COLUMN card_border text;
 
 -- Populate card_layout from raw_card_blob data
 UPDATE magic.cards 
-SET card_layout = raw_card_blob->>'layout'
+SET card_layout = lower(raw_card_blob->>'layout')
 WHERE raw_card_blob ? 'layout' 
 AND raw_card_blob->>'layout' IS NOT NULL
 AND TRIM(raw_card_blob->>'layout') != '';
 
 -- Populate card_border from raw_card_blob data
 UPDATE magic.cards 
-SET card_border = raw_card_blob->>'border_color'
+SET card_border = lower(raw_card_blob->>'border_color')
 WHERE raw_card_blob ? 'border_color' 
 AND raw_card_blob->>'border_color' IS NOT NULL
 AND TRIM(raw_card_blob->>'border_color') != '';

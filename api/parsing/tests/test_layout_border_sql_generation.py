@@ -25,18 +25,18 @@ class TestLayoutBorderSQLGeneration:
         """Test that layout and border searches generate exact equality SQL (not ILIKE)."""
         result = parse_scryfall_query(query)
         assert isinstance(result, Query)
-        
+
         context: dict[str, Any] = {}
         sql = result.to_sql(context)
-        
+
         # Should generate exact equality with = operator, not ILIKE
         assert "=" in sql
         assert "ILIKE" not in sql
         assert expected_column in sql
-        
+
         # Context should contain the exact value without wildcards
         assert len(context) == 1
-        param_value = list(context.values())[0]
+        param_value = next(iter(context.values()))
         assert param_value == expected_value
         assert "%" not in param_value  # No wildcards
 
@@ -44,34 +44,35 @@ class TestLayoutBorderSQLGeneration:
         """Test that regular text fields like name still use ILIKE pattern matching."""
         result = parse_scryfall_query("name:lightning")
         assert isinstance(result, Query)
-        
+
         context: dict[str, Any] = {}
         sql = result.to_sql(context)
-        
+
         # Should generate ILIKE pattern matching
         assert "ILIKE" in sql
         assert "card.card_name" in sql
-        
+
         # Context should contain wildcards
         assert len(context) == 1
-        param_value = list(context.values())[0]
+        param_value = next(iter(context.values()))
         assert param_value == "%lightning%"
-        assert param_value.startswith("%") and param_value.endswith("%")
+        assert param_value.startswith("%")
+        assert param_value.endswith("%")
 
     def test_combined_layout_border_query_sql(self) -> None:
         """Test that combined layout and border queries generate correct SQL."""
         result = parse_scryfall_query("layout:normal border:black")
         assert isinstance(result, Query)
-        
+
         context: dict[str, Any] = {}
         sql = result.to_sql(context)
-        
+
         # Should have both exact equality conditions with AND
         assert "card.card_layout =" in sql
         assert "card.card_border =" in sql
         assert "AND" in sql
         assert "ILIKE" not in sql
-        
+
         # Context should have two exact values without wildcards
         assert len(context) == 2
         values = list(context.values())
@@ -79,6 +80,34 @@ class TestLayoutBorderSQLGeneration:
         assert "black" in values
         for value in values:
             assert "%" not in str(value)
+
+    def test_case_insensitive_layout_border_searches(self) -> None:
+        """Test that layout and border searches are case-insensitive."""
+        test_cases = [
+            ("layout:NORMAL", "normal"),
+            ("layout:Split", "split"),
+            ("layout:TRANSFORM", "transform"),
+            ("border:BLACK", "black"),
+            ("border:White", "white"),
+            ("border:BORDERLESS", "borderless"),
+        ]
+
+        for query, expected_lowercase in test_cases:
+            result = parse_scryfall_query(query)
+            assert isinstance(result, Query)
+
+            context: dict[str, Any] = {}
+            sql = result.to_sql(context)
+
+            # Should generate exact equality with = operator
+            assert "=" in sql
+            assert "ILIKE" not in sql
+
+            # Context should contain the lowercase value
+            assert len(context) == 1
+            param_value = next(iter(context.values()))
+            assert param_value == expected_lowercase
+            assert "%" not in param_value
 
 
 if __name__ == "__main__":

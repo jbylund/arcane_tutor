@@ -667,6 +667,13 @@ class APIResource:
 
         # Extract set code for dedicated column
         card["card_set_code"] = card.get("set")
+
+        # Extract layout and border for dedicated columns (lowercased for case-insensitive search)
+        if "layout" in card:
+            card["card_layout"] = card["layout"].lower()
+        if "border_color" in card:
+            card["card_border"] = card["border_color"].lower()
+
         mana_cost_text = card.get("mana_cost", "")
         card["mana_cost_jsonb"] = mana_cost_str_to_dict(mana_cost_text)
 

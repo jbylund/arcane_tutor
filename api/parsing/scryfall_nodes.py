@@ -371,6 +371,10 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         if field_type == FieldType.TEXT:
             # Handle fields that need exact matching instead of pattern matching
             if attr in ("card_set_code", "card_layout", "card_border"):
+                # For layout and border fields, lowercase the search value for case-insensitive matching
+                if attr in ("card_layout", "card_border") and hasattr(self.rhs, "value"):
+                    self.rhs.value = self.rhs.value.lower()
+
                 if self.operator == ":":
                     self.operator = "="
                 return super().to_sql(context)
