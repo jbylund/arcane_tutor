@@ -55,7 +55,10 @@ Based on the codebase analysis and successful API comparisons:
    - `keywords:` or `k:` - Keyword abilities (JSONB object)
    - `oracle_tags:` or `ot:` - Oracle tags
 
-9. **Operators**
+9. **Visual Properties** ✅ Recently Implemented
+   - `watermark:` - Card watermarks
+
+10. **Operators**
    - Comparison: `=`, `<`, `>`, `<=`, `>=`, `!=`, `<>`
    - Logic: `AND`, `OR`, `NOT`, `-` (negation)
    - Arithmetic: `+`, `-`, `*`, `/` (e.g., `cmc+1<power`)
@@ -77,8 +80,8 @@ Based on official Scryfall documentation and current implementation gaps:
 
 #### High Priority Missing Features
 
-1. **Card Visual Properties**
-   - `watermark:` - Card watermarks
+1. **Advanced Mechanics**
+   - `devotion:` - Mana symbol devotion counting
 
 #### Medium Priority Missing Features
 
@@ -174,8 +177,8 @@ Recent comprehensive testing (21 queries) shows the following performance charac
 
 ### High Priority Development (Next Major Features)
 
-1. **Visual Properties** 🎯
-   - Implement `watermark:` support for card watermarks
+1. **Advanced Mechanics** 🎯
+   - Implement `devotion:` support for mana symbol devotion counting
 
 ### Medium Priority Development
 
@@ -262,7 +265,7 @@ With comprehensive support for basic search, advanced querying, pricing data, fo
 
 **Current Focus Areas:**
 - Ongoing data synchronization improvements and monitoring
-- Implementation of remaining visual properties (`watermark:`)
+- Implementation of advanced mechanics (`devotion:`)
 - Enhanced specialized features for advanced users
 
 The automated comparison framework provides excellent ongoing quality assurance capabilities, and the system is well-positioned for continued feature development while maintaining high stability and accuracy standards.
