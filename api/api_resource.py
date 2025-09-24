@@ -2,53 +2,48 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import collections
+import copy
+import csv
+import datetime
+import functools
+import inspect
+import itertools
+import logging
+import os
+import pathlib
+import random
+import re
+import secrets
+import time
+import urllib.parse
+from typing import TYPE_CHECKING, Any
+from typing import cast as typecast
+from urllib.parse import urlparse
+
+import falcon
+import orjson
+import psycopg
+import requests
+from cachetools import LRUCache, TTLCache, cached
+from psycopg import Connection, Cursor
+
+from .parsing import generate_sql_query, parse_scryfall_query
+from .parsing.scryfall_nodes import extract_frame_data_from_raw_card, mana_cost_str_to_dict
+from .tagger_client import TaggerClient
+from .utils import db_utils, error_monitoring
 
 if TYPE_CHECKING:
+    from multiprocessing.synchronize import Event as EventType
     from multiprocessing.synchronize import RLock as LockType
+    from types import TracebackType
 
-if True:  # imports
-    import collections
-    import copy
-    import csv
-    import datetime
-    import functools
-    import inspect
-    import itertools
-    import logging
-    import multiprocessing
-    import os
-    import pathlib
-    import random
-    import re
-    import secrets
-    import time
-    import urllib.parse
-    from typing import Any
-    from typing import cast as typecast
-    from urllib.parse import urlparse
-
-    import falcon
-    import orjson
-    import psycopg
-    import requests
-    from cachetools import LRUCache, TTLCache, cached
-    from psycopg import Connection, Cursor
-
-    from .parsing import generate_sql_query, parse_scryfall_query
-    from .parsing.scryfall_nodes import extract_frame_data_from_raw_card, mana_cost_str_to_dict
-    from .tagger_client import TaggerClient
-    from .utils import db_utils, error_monitoring
-
-
-    if TYPE_CHECKING:
-        import psycopg_pool
+    import psycopg_pool
 
 
 logger = logging.getLogger(__name__)
 
 # pylint: disable=c-extension-no-member
-DEFAULT_IMPORT_GUARD = multiprocessing.RLock()
 NOT_FOUND = 404
 
 
@@ -184,11 +179,46 @@ def can_serialize(iobj: object) -> bool:
     return True
 
 
+class MockLock:
+    """Mock implementation of multiprocessing.Lock for testing."""
+
+    def __enter__(self) -> MockLock:
+        """Enter the context manager."""
+
+    def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
+        """Exit the context manager."""
+
+class MockEvent:
+    """Mock implementation of multiprocessing.Event for testing."""
+
+    def __init__(self) -> None:
+        """Initialize the mock event."""
+        self._is_set = False
+
+    def set(self) -> None:
+        """Set the event."""
+        self._is_set = True
+
+    def clear(self) -> None:
+        """Clear the event."""
+        self._is_set = False
+
+    def is_set(self) -> bool:
+        """Return True if the event is set."""
+        return self._is_set
+
+DEFAULT_IMPORT_GUARD = MockLock()
+DEFAULT_SCHEMA_SETUP_EVENT = MockEvent()
 
 class APIResource:
     """Class implementing request handling for our simple API."""
 
-    def __init__(self: APIResource, *, import_guard: LockType = DEFAULT_IMPORT_GUARD) -> None:
+    def __init__(
+        self: APIResource,
+        *,
+        import_guard: LockType = DEFAULT_IMPORT_GUARD,
+        schema_setup_event: EventType = DEFAULT_SCHEMA_SETUP_EVENT,
+    ) -> None:
         """Initialize an APIResource object, set up connection pool and action map.
 
         Sets up the database connection pool and action mapping for the API.
@@ -206,6 +236,7 @@ class APIResource:
         self._query_cache = LRUCache(maxsize=1_000)
         self._session = requests.Session()
         self._import_guard: LockType = import_guard
+        self._schema_setup_event: EventType = schema_setup_event
 
         version = datetime.datetime.now(tz=datetime.UTC).strftime("%Y%m%d")
         version = f"magic-api/{version}"
@@ -213,6 +244,7 @@ class APIResource:
         # Initialize Tagger client for GraphQL API access
         self._tagger_client = TaggerClient()
         logger.info("Worker with pid has conn pool %s", self._conn_pool)
+        self.setup_schema()
 
     @cached(cache={}, key=lambda _self, filename: filename)
     def read_sql(self: APIResource, filename: str) -> str:
@@ -479,32 +511,52 @@ class APIResource:
             Any: The card data (likely a list of dicts).
 
         """
-        cache_file = "/data/api/foo.json"
+        data_key = "oracle_cards"
+        cache_dir_path = pathlib.Path("/data/api")
+        if not cache_dir_path.exists():
+            cache_dir_path = pathlib.Path("/tmp/api")  # noqa: S108
+            cache_dir_path.mkdir(parents=True, exist_ok=True)
+        cache_file_path = cache_dir_path / f"{data_key}.json"
         try:
-            with pathlib.Path(cache_file).open() as f:
+            with cache_file_path.open() as f:
                 response = orjson.loads(f.read())
         except FileNotFoundError:
             logger.info("Cache miss!")
-            response = orjson.loads(self._session.get("https://api.scryfall.com/bulk-data", timeout=1).content)["data"]
-            by_type = {r["type"]: r for r in response}
-            oracle_cards_download_uri = by_type["oracle_cards"]["download_uri"]
-            response = orjson.loads(self._session.get(oracle_cards_download_uri, timeout=30).content)
-            with pathlib.Path(cache_file).open("w") as f:
+        else:
+            logger.info("Cache hit!")
+            return response
+        response = orjson.loads(self._session.get("https://api.scryfall.com/bulk-data", timeout=1).content)["data"]
+        by_type = {r["type"]: r for r in response}
+        oracle_cards_download_uri = by_type[data_key]["download_uri"]
+        logger.info("Downloading %s from %s", data_key, oracle_cards_download_uri)
+        before = time.monotonic()
+        response = orjson.loads(self._session.get(oracle_cards_download_uri, timeout=30).content)
+        logger.info("Downloaded %s from %s in %.3f seconds", data_key, oracle_cards_download_uri, time.monotonic() - before)
+        try:
+            with cache_file_path.open("w") as f:
                 f.write(
                     orjson.dumps(
                         response,
                         option=orjson.OPT_SORT_KEYS | orjson.OPT_INDENT_2,
                     ).decode("utf-8"),
                 )
-        else:
-            logger.info("Cache hit!")
+        except FileNotFoundError:
+            logger.error("Failed to write cache file: %s", cache_file_path)
         return response
 
     def setup_schema(self: APIResource, *_: object, **__: object) -> None:
         """Set up the database schema and apply migrations as needed."""
+        if self._schema_setup_event.is_set():
+            logger.info("Schema already setup (fastpath) in pid %d", os.getpid())
+            return
+
         filesystem_migrations = db_utils.get_migrations()
 
         with self._import_guard:
+            if self._schema_setup_event.is_set():
+                logger.info("Schema already setup (slowpath) in pid %d", os.getpid())
+                return
+            logger.info("Setting up schema in pid %d", os.getpid())
             # read migrations from the db dir...
             # if any already applied migrations differ from what we want
             # to apply then drop everything
@@ -550,6 +602,9 @@ class APIResource:
                         imigration,
                     )
                     conn.commit()
+
+            self._schema_setup_event.set()
+            logger.info("Schema setup complete in pid %d", os.getpid())
 
     def _get_cards_to_insert(self: APIResource) -> list[dict[str, Any]]:
         """Get the cards to insert into the database."""
@@ -1856,6 +1911,8 @@ class APIResource:
                 "sample_cards": [],
                 "message": "No cards provided for loading",
             }
+
+        self.setup_schema()
 
         # TODO:
         # this is a little bit of a spray and pray method

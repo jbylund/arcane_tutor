@@ -1,17 +1,23 @@
 """Database utility functions for the API."""
 
+import atexit
 import hashlib
 import logging
 import os
 import pathlib
+import random
+import sys
+import time
 
+import docker
+import docker.errors
 import orjson
 import psycopg
 import psycopg.types.json
 import psycopg_pool
 
 logger = logging.getLogger(__name__)
-
+CONFLICT = 409
 
 def get_pg_creds() -> dict[str, str]:
     """Get postgres credentials from the environment."""
@@ -21,14 +27,59 @@ def get_pg_creds() -> dict[str, str]:
     unmapped = {k[2:].lower(): v for k, v in os.environ.items() if k.startswith("PG")}
     return {mapping.get(k, k): v for k, v in unmapped.items()}
 
+def get_testcontainers_creds() -> dict[str, str]:
+    """Get postgres credentials from the testcontainers environment."""
+    logger.warning("Using an ephemeral postgres container...")
+    from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
+    exposed_port = random.randint(1024, 49151)  # noqa: S311
+    container = PostgresContainer(
+        image="postgres:18rc1",
+        username="testuser",
+        password="testpass",  # noqa: S106
+        dbname="testdb",
+    ).with_bind_ports(5432, exposed_port).with_name("postgres-test")
+
+    connection_info = {
+        "dbname": "testdb",
+        "password": "testpass",
+        "user": "testuser",
+    }
+    connection_info["host"] = "localhost"
+    try:
+        container.start()
+    except docker.errors.APIError as oops:
+        if oops.status_code != CONFLICT:
+            raise
+        docker_client = docker.from_env()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            containers = docker_client.containers.list(
+                filters={"name": "postgres-test"},
+            )
+            if containers:
+                break
+        else:
+            msg = "Ephemeral postgres container not found"
+            raise RuntimeError(msg)
+        the_container = containers[0]
+        container_attrs = the_container.attrs
+        network_settings = container_attrs["NetworkSettings"]
+        connection_info["port"] = network_settings["Ports"].popitem()[1][0]["HostPort"]
+    else:
+        connection_info["port"] = container.get_exposed_port(5432)
+    logger.info("Connection info in pid %d: %s", os.getpid(), connection_info)
+    return connection_info
+
+
+def configure_connection(conn: psycopg.Connection) -> None:
+    """Configure a connection to use dict_row as the row factory."""
+    conn.row_factory = psycopg.rows.dict_row
 
 def make_pool() -> psycopg_pool.ConnectionPool:
     """Create and return a psycopg3 ConnectionPool for PostgreSQL connections."""
-
-    def configure_connection(conn: psycopg.Connection) -> None:
-        conn.row_factory = psycopg.rows.dict_row
-
     creds = get_pg_creds()
+    if not creds:
+        creds = get_testcontainers_creds()
     conninfo = " ".join(f"{k}={v}" for k, v in creds.items())
     pool_args = {
         "configure": configure_connection,
@@ -38,7 +89,17 @@ def make_pool() -> psycopg_pool.ConnectionPool:
         "open": True,
     }
     logger.info("Pool args: %s", pool_args)
-    return psycopg_pool.ConnectionPool(**pool_args)
+    pool = psycopg_pool.ConnectionPool(**pool_args)
+
+    def cleanup() -> None:
+        # The logger may be shut down during interpreter exit
+        # so we use stderr instead
+        sys.stderr.write(f"Closing connection pool in pid {os.getpid()}\n")
+        pool.close()
+        sys.stderr.write(f"Connection pool closed in pid {os.getpid()}\n")
+
+    atexit.register(cleanup)
+    return pool
 
 
 def get_migrations() -> list[dict[str, str]]:
