@@ -31,12 +31,11 @@ from psycopg import Connection, Cursor
 from .parsing import generate_sql_query, parse_scryfall_query
 from .parsing.scryfall_nodes import extract_frame_data_from_raw_card, mana_cost_str_to_dict
 from .tagger_client import TaggerClient
-from .utils import db_utils, error_monitoring
+from .utils import db_utils, error_monitoring, multiprocessing_utils
 
 if TYPE_CHECKING:
     from multiprocessing.synchronize import Event as EventType
     from multiprocessing.synchronize import RLock as LockType
-    from types import TracebackType
 
     import psycopg_pool
 
@@ -179,45 +178,14 @@ def can_serialize(iobj: object) -> bool:
     return True
 
 
-class MockLock:
-    """Mock implementation of multiprocessing.Lock for testing."""
-
-    def __enter__(self) -> MockLock:
-        """Enter the context manager."""
-
-    def __exit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
-        """Exit the context manager."""
-
-class MockEvent:
-    """Mock implementation of multiprocessing.Event for testing."""
-
-    def __init__(self) -> None:
-        """Initialize the mock event."""
-        self._is_set = False
-
-    def set(self) -> None:
-        """Set the event."""
-        self._is_set = True
-
-    def clear(self) -> None:
-        """Clear the event."""
-        self._is_set = False
-
-    def is_set(self) -> bool:
-        """Return True if the event is set."""
-        return self._is_set
-
-DEFAULT_IMPORT_GUARD = MockLock()
-DEFAULT_SCHEMA_SETUP_EVENT = MockEvent()
-
 class APIResource:
     """Class implementing request handling for our simple API."""
 
     def __init__(
         self: APIResource,
         *,
-        import_guard: LockType = DEFAULT_IMPORT_GUARD,
-        schema_setup_event: EventType = DEFAULT_SCHEMA_SETUP_EVENT,
+        import_guard: LockType = multiprocessing_utils.DEFAULT_LOCK,
+        schema_setup_event: EventType = multiprocessing_utils.DEFAULT_EVENT,
     ) -> None:
         """Initialize an APIResource object, set up connection pool and action map.
 
@@ -620,7 +588,7 @@ class APIResource:
             to_insert[card_name] = processed_card
         return list(to_insert.values())
 
-    def _preprocess_card(self: APIResource, card: dict[str, Any]) -> None | dict[str, Any]:
+    def _preprocess_card(self: APIResource, card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: C901
         """Preprocess a card to remove invalid cards and add necessary fields."""
         if set(card["legalities"].values()) == {"not_legal"}:
             return None

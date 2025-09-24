@@ -12,6 +12,8 @@ import falcon
 import falcon.media
 import orjson
 
+from .utils import multiprocessing_utils
+
 if TYPE_CHECKING:
     from multiprocessing.synchronize import Event as EventType
     from multiprocessing.synchronize import RLock as LockType
@@ -19,8 +21,6 @@ if TYPE_CHECKING:
 # Set up a logger for this module
 logger = logging.getLogger(__name__)
 
-DEFAULT_IMPORT_GUARD = multiprocessing.RLock()
-DEFAULT_SCHEMA_SETUP_EVENT = multiprocessing.Event()
 ALL_INTERFACES = "0.0.0.0"  # noqa: S104
 
 
@@ -53,8 +53,8 @@ class ApiWorker(multiprocessing.Process):
         port: int = 8080,
         exit_flag: EventType | None = None,
         debug: bool = False,
-        import_guard: LockType = DEFAULT_IMPORT_GUARD,
-        schema_setup_event: EventType = DEFAULT_SCHEMA_SETUP_EVENT,
+        import_guard: LockType = multiprocessing_utils.DEFAULT_LOCK,
+        schema_setup_event: EventType = multiprocessing_utils.DEFAULT_EVENT,
     ) -> None:
         """Initialize the API worker process.
 
