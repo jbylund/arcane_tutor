@@ -90,6 +90,7 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 | **Advanced Logic**     | `AND`, `OR`, `NOT`, `()`           | Full boolean logic support                           |
 | **Arithmetic**         | `cmc+1<power`, `power-toughness=0` | Advanced mathematical expressions                    |
 | **Keywords**           | `keyword:`                         | JSONB object storage                                 |
+| **Mana Costs**         | `mana:`, `m:`                      | Both JSONB and text representations                  |
 | **Oracle Tags**        | `oracle_tags:`, `ot:`              | Scryfall OS unique extension                         |
 
 ## Code Organization
