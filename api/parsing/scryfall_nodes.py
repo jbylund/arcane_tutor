@@ -389,10 +389,8 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             if operator_strategy == OperatorStrategy.EXACT:
                 # Handle fields that need exact matching instead of pattern matching
                 # For layout and border fields, lowercase the search value for case-insensitive matching
-                if attr in ("card_layout", "card_border", "card_watermark") and hasattr(self.rhs, "value"):
+                if attr in ("card_layout", "card_border", "card_watermark", "card_set_code") and hasattr(self.rhs, "value"):
                     self.rhs.value = self.rhs.value.lower()
-                elif attr in ("card_set_code"):
-                    self.rhs.value = self.rhs.value.upper()
 
                 if self.operator == ":":
                     self.operator = "="
