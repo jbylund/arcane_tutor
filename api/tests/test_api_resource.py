@@ -411,9 +411,9 @@ class TestAPIResourceDataProcessing(unittest.TestCase):
         assert result["card_keywords"] == {"haste": True}
         assert result["power_numeric"] == 3
         assert result["toughness_numeric"] == 1
-        assert result["price_usd"] == "0.25"
-        assert result["price_eur"] == "0.20"
-        assert result["price_tix"] == "0.01"
+        assert result["price_usd"] == 0.25
+        assert result["price_eur"] == 0.20
+        assert result["price_tix"] == 0.01
         assert result["card_set_code"] == "m15"
 
     def test_preprocess_card_processes_frame_data(self) -> None:
