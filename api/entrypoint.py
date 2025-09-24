@@ -6,7 +6,7 @@ import multiprocessing
 
 from .api_worker import ApiWorker
 
-logger = logging.getLogger("api")
+logger = logging.getLogger(__name__)
 
 ALL_INTERFACES = "0.0.0.0"  # noqa: S104
 
@@ -20,7 +20,10 @@ def get_args() -> dict:
 
 def main() -> None:
     """Main entrypoint for the api container."""
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        level=logging.INFO,
+    )
     args = get_args()
     workers = []
 

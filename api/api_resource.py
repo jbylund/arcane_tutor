@@ -991,9 +991,10 @@ class APIResource:
 
         if not cards:
             return {
-                "tag": tag,
                 "cards_updated": 0,
                 "message": f"No cards found with tag '{tag}' in Scryfall API",
+                "tag": tag,
+                "total_cards_found": 0,
             }
 
         logger.info("Updating %d cards with tag '%s'", len(card_names), tag)
@@ -1041,14 +1042,15 @@ class APIResource:
             raise ValueError(msg)
 
         # Fetch cards with this is: tag from Scryfall API (handles pagination)
-        cards = self._scryfall_search(query=f"is:{is_tag}")
+        cards = self._scryfall_search(query=f"is:{is_tag}", limit=175 * 4)
         card_names = [c["name"] for c in cards]
 
         if not cards:
             return {
-                "is_tag": is_tag,
                 "cards_updated": 0,
+                "is_tag": is_tag,
                 "message": f"No cards found with is:{is_tag} in Scryfall API",
+                "total_cards_found": 0,
             }
 
         logger.info("Updating %d cards with is:%s", len(card_names), is_tag)
@@ -1400,6 +1402,12 @@ class APIResource:
         imported_tags = []
         failed_tags = []
         total_cards_updated = 0
+        all_is_tags = set(all_is_tags)
+        bad_tags = ["booster", "foil", "permanent", "spell"]
+        for bad_tag in bad_tags:
+            all_is_tags.discard(bad_tag)
+        all_is_tags = list(all_is_tags)
+        random.shuffle(all_is_tags)
 
         for idx, is_tag in enumerate(all_is_tags):
             try:
@@ -1414,6 +1422,13 @@ class APIResource:
                         len(all_is_tags),
                         is_tag,
                         estimated_duration,
+                    )
+                else:
+                    logger.info(
+                        "Importing is: tag %d of %d: %20s",
+                        idx + 1,
+                        len(all_is_tags),
+                        is_tag,
                     )
 
                 tag_result = self._add_is_tag_to_cards(is_tag=is_tag)
@@ -1560,7 +1575,7 @@ class APIResource:
         return load_result
 
 
-    def _scryfall_search(self: APIResource, *, query: str) -> list[dict[str, Any]]:
+    def _scryfall_search(self: APIResource, *, query: str, limit: int = 10**10) -> list[dict[str, Any]]:
         """Search Scryfall API for cards matching the given query.
 
         This method handles pagination to get the complete list of cards and
@@ -1569,6 +1584,7 @@ class APIResource:
         Args:
         ----
             query (str): The search query string for Scryfall.
+            limit (int): The maximum number of cards to return.
 
         Returns:
         -------
@@ -1586,7 +1602,8 @@ class APIResource:
             "game:paper",
             "unique:prints",
         ]
-        full_query = f"({query}) {' '.join(filters)}"
+        extra_filters = " ".join(filters)
+        full_query = f"({query}) {extra_filters}"
 
         base_url = "https://api.scryfall.com/cards/search"
         params = {"q": full_query, "format": "json"}
@@ -1602,9 +1619,22 @@ class APIResource:
                 if "data" not in data:
                     break
 
+                unlimited_total_cards = data.get("total_cards", 0)
+                limited_total_cards = min(unlimited_total_cards, limit)
+
                 # Extract card data from current page
-                page_cards = [card for card in data["data"] if card]
-                all_cards.extend(page_cards)
+                all_cards.extend(card for card in data["data"] if card)
+
+                all_cards = all_cards[:limit]
+
+                logger.info(
+                    "Done with %d of %d cards (limited from %d)",
+                    len(all_cards),
+                    limited_total_cards,
+                    unlimited_total_cards,
+                )
+                if limit <= len(all_cards):
+                    break
 
                 # Check if there are more pages
                 if not data.get("has_more", False):
@@ -1618,7 +1648,6 @@ class APIResource:
                 # Update base_url and clear params for next page
                 base_url = next_page
                 params = {}
-
         except requests.RequestException as oops:
             # Check if it's a 404 error - return empty list
             if (hasattr(oops, "response") and oops.response and oops.response.status_code == NOT_FOUND) or "404" in str(oops):
