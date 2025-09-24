@@ -53,6 +53,10 @@ check_dependencies() {
         missing_deps+=("curl")
     fi
     
+    if ! command -v convert &> /dev/null; then
+        missing_deps+=("imagemagick")
+    fi
+    
     if [ ${#missing_deps[@]} -ne 0 ]; then
         error "Missing dependencies: ${missing_deps[*]}"
         error "Please install the missing dependencies and try again."
@@ -204,10 +208,6 @@ take_screenshot() {
         --window-size=2200,2022 \
         --virtual-time-budget=20000 \
         --run-all-compositor-stages-before-draw \
-        --disable-partial-raster \
-        --disable-skia-runtime-opts \
-        --disable-threaded-compositing \
-        --disable-checker-imaging \
         --user-data-dir=/tmp/chrome-profile-screenshot \
         --screenshot="$temp_screenshot" \
         "$search_url" 2>/dev/null
@@ -215,6 +215,21 @@ take_screenshot() {
     if [ -f "$temp_screenshot" ]; then
         local file_size=$(stat -f%z "$temp_screenshot" 2>/dev/null || stat -c%s "$temp_screenshot" 2>/dev/null)
         log "Screenshot captured (${file_size} bytes)"
+        
+        # Trim white space from the bottom using ImageMagick
+        log "Trimming white space from screenshot..."
+        if command -v convert &> /dev/null; then
+            # Use ImageMagick to trim white space from bottom
+            convert "$temp_screenshot" -trim +repage "$temp_screenshot"
+            if [ $? -eq 0 ]; then
+                local trimmed_size=$(stat -f%z "$temp_screenshot" 2>/dev/null || stat -c%s "$temp_screenshot" 2>/dev/null)
+                log "Screenshot trimmed (${trimmed_size} bytes)"
+            else
+                warn "Failed to trim screenshot, using original"
+            fi
+        else
+            warn "ImageMagick not available, skipping trim"
+        fi
         
         # Move to final location
         mv "$temp_screenshot" "$SCREENSHOT_PATH"

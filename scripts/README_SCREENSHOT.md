@@ -22,13 +22,14 @@ The `take_screenshot.sh` script automates the entire process of setting up the d
 - **Python 3.x** - For running the API server
 - **Google Chrome** - For taking screenshots with proper rendering
 - **curl** - For API calls and server health checks
+- **ImageMagick** - For trimming white space from screenshots
 - **libev-dev** (optional) - For webserver dependencies
 
 ### Installation on Ubuntu/Debian
 ```bash
 # Install system dependencies
 sudo apt-get update
-sudo apt-get install -y python3 python3-venv curl libev-dev
+sudo apt-get install -y python3 python3-venv curl libev-dev imagemagick
 
 # Install Google Chrome
 wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
@@ -53,7 +54,8 @@ The script follows this procedure:
    - Sol Ring
 5. **Search Verification** - Confirms the search functionality works
 6. **Screenshot Capture** - Uses Chrome with dark mode flags to capture the interface
-7. **Cleanup** - Stops server and cleans up temporary files
+7. **Image Processing** - Automatically trims white space from the bottom of the screenshot
+8. **Cleanup** - Stops server and cleans up temporary files
 
 ## Usage Options
 
@@ -111,7 +113,7 @@ The script uses Chrome with these specific flags for optimal screenshot capture:
 **Script fails with "Missing dependencies"**
 ```bash
 # Install missing system packages
-sudo apt-get install -y python3 python3-venv curl google-chrome-stable
+sudo apt-get install -y python3 python3-venv curl google-chrome-stable imagemagick
 ```
 
 **Server fails to start**
@@ -187,12 +189,8 @@ git commit -m "Update README screenshot"
 - `--force-dark-mode` - Forces all websites to render in dark mode
 - `--enable-features=WebUIDarkMode` - Enables Chrome's dark mode UI features
 - `--disable-web-security` - Disables same-origin policy to allow card image loading
-- `--virtual-time-budget=15000` - Gives the page 15 seconds of virtual time to fully load
+- `--virtual-time-budget=20000` - Gives the page 20 seconds of virtual time to fully load
 - `--run-all-compositor-stages-before-draw` - Ensures complete rendering before screenshot
-- `--disable-partial-raster` - Improves screenshot quality by disabling partial rendering
-- `--disable-skia-runtime-opts` - Ensures consistent rendering behavior
-- `--disable-threaded-compositing` - Prevents rendering artifacts in screenshots
-- `--disable-checker-imaging` - Improves image loading reliability
 
 ### Card Import Process
 
