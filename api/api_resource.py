@@ -211,7 +211,7 @@ class APIResource:
         self._session.headers.update({"User-Agent": version})
         # Initialize Tagger client for GraphQL API access
         self._tagger_client = TaggerClient()
-        logger.info("Worker with pid has conn pool %s", self._conn_pool)
+        logger.info("Worker with pid %d has conn pool %s", os.getpid(), self._conn_pool)
         self.setup_schema()
 
     @cached(cache={}, key=lambda _self, filename: filename)
@@ -641,6 +641,8 @@ class APIResource:
             card["card_layout"] = card["layout"].lower()
         if "border_color" in card:
             card["card_border"] = card["border_color"].lower()
+        if "watermark" in card:
+            card["card_watermark"] = card["watermark"].lower()
 
         mana_cost_text = card.get("mana_cost", "")
         card["mana_cost_jsonb"] = mana_cost_str_to_dict(mana_cost_text)
@@ -2045,7 +2047,8 @@ class APIResource:
                         produced_mana,           -- 28
                         card_frame_data,         -- 29
                         card_layout,             -- 30
-                        card_border              -- 31
+                        card_border,             -- 31
+                        card_watermark           -- 32
                     )
                     SELECT
                         card_blob->>'name' AS card_name, -- 1
@@ -2078,7 +2081,8 @@ class APIResource:
                         COALESCE(card_blob->'produced_mana', '{{}}'::jsonb) AS produced_mana, -- 28
                         COALESCE(card_blob->'card_frame_data', '{{}}'::jsonb) AS card_frame_data, -- 29
                         LOWER(card_blob->>'card_layout') AS card_layout, -- 30
-                        LOWER(card_blob->>'card_border') AS card_border -- 31
+                        LOWER(card_blob->>'card_border') AS card_border, -- 31
+                        LOWER(card_blob->>'card_watermark') AS card_watermark -- 32
                     FROM
                         {staging_table_name}
                     ON CONFLICT (card_name) DO NOTHING
