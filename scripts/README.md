@@ -2,6 +2,60 @@
 
 This directory contains utility scripts for the Scryfall OS project.
 
+## Take Screenshot Script
+
+### Overview
+`take_screenshot.py` is a complete automation script that:
+1. Starts the API server
+2. Loads sample cards into the database
+3. Gets the public IP address of the server
+4. Makes a request to screenshotmachine.com to get a screenshot of the rendered page
+
+### Usage
+
+#### Basic Usage
+```bash
+python scripts/take_screenshot.py
+```
+
+This will:
+- Start the server on port 8080 with 2 workers
+- Wait for the server to be ready
+- Load sample cards automatically
+- Get the public IP address
+- Take a screenshot with default parameters (query: "t:beast", orderby: "edhrec", direction: "asc")
+- Save the screenshot to a timestamped PNG file
+
+#### Requirements
+- All dependencies from `requirements.txt` and `test-requirements.txt`
+- Internet access for myip.wtf and screenshotmachine.com APIs
+- Available port 8080 (or modify the script for different port)
+
+#### Output
+The script will:
+- Display progress in the console with timestamps
+- Save the screenshot as `screenshot_<timestamp>.png`
+- Display the final results including screenshot URL and file details
+- Automatically clean up the server process when done
+
+#### Example Output
+```
+2025-09-24 01:45:51,228 - INFO - Starting screenshot script...
+2025-09-24 01:45:51,228 - INFO - Starting API server on port 8080...
+2025-09-24 01:45:51,229 - INFO - Server process started with PID 2730
+2025-09-24 01:45:51,229 - INFO - Waiting for server to be ready...
+2025-09-24 01:45:55,234 - INFO - Server is ready!
+2025-09-24 01:45:55,234 - INFO - Loading sample cards...
+2025-09-24 01:46:20,445 - INFO - Sample cards loaded successfully
+2025-09-24 01:46:20,445 - INFO - Getting public IP address...
+2025-09-24 01:46:21,123 - INFO - Public IP address: 172.182.226.135
+2025-09-24 01:46:21,123 - INFO - Taking screenshot...
+2025-09-24 01:46:21,123 - INFO - Target URL: https://172.182.226.135:8080/?q%3Dt%253Abeast%26orderby%3Dedhrec%26direction%3Dasc
+2025-09-24 01:46:25,789 - INFO - Screenshot taken successfully: 52690 bytes, content-type: image/png
+2025-09-24 01:46:25,790 - INFO - Screenshot saved to: screenshot_1727139985.png
+2025-09-24 01:46:25,790 - INFO - Screenshot process completed successfully!
+```
+
 ## Scryfall Comparison Script
 
 ### Overview
