@@ -56,8 +56,7 @@ Based on the official Scryfall syntax documentation and analysis of the existing
 - **date:** - Specific release dates
 
 ### 9. Game Mechanics
-- **spellpower:** - Spell power (numeric, for Alchemy)
-- **spellresistance:** - Spell resistance (numeric, for Alchemy)
+- **devotion:** - Mana symbol devotion counting
 
 ### 10. Advanced Features
 - **cube:** - Cube inclusion
@@ -77,13 +76,24 @@ Based on the official Scryfall syntax documentation and analysis of the existing
 - **Wildcards**: `*` for partial matches
 
 ### 12. Special Syntax
-- **Arithmetic**: `cmc+power>5`, `power-toughness=0`
 - **Regular expressions**: `/pattern/`
-- **Functions**: `max:power`, `min:cmc`
 
-### 13. Oracle Tags (Extensions)
-- **ot:** or **oracle_tags:** - Custom oracle tags (Scryfall OS specific)
+### 13. Oracle Tags
+- **ot:** or **oracle_tags:** - Oracle tags
 
 ## Analysis Notes
 
-This list represents the full scope of Scryfall search functionality. The current Scryfall OS implementation supports a subset of these features based on the parsing code analysis.
+This list represents the full scope of official Scryfall search functionality. The current Scryfall OS implementation supports a subset of these features based on the parsing code analysis.
+
+### Scryfall OS Extensions
+
+**Enhanced Features**: Scryfall OS includes additional functionality beyond official Scryfall:
+- **Arithmetic operations**: `cmc+power>5`, `power-toughness=0` (Scryfall OS extension)
+
+### Excluded Features
+
+**Alchemy-Only Features**: The following features are specific to Magic: The Gathering Arena's Alchemy format and are not implemented in Scryfall OS:
+- `spellpower:` - Spell power (Alchemy format only)
+- `spellresistance:` - Spell resistance (Alchemy format only)
+
+These features are excluded because Scryfall OS focuses on traditional paper Magic and other formats where these mechanics don't apply.

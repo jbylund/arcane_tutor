@@ -45,7 +45,7 @@ Based on the codebase analysis and successful API comparisons:
 
 6. **Pricing Data** ✅ Recently Implemented
    - `usd:` - USD prices with all comparison operators
-   - `eur:` - EUR prices with all comparison operators  
+   - `eur:` - EUR prices with all comparison operators
    - `tix:` - MTGO ticket prices with all comparison operators
 
 7. **Artist Search** ✅ Recently Implemented
@@ -53,7 +53,7 @@ Based on the codebase analysis and successful API comparisons:
 
 8. **Advanced Features**
    - `keywords:` or `k:` - Keyword abilities (JSONB object)
-   - `oracle_tags:` or `ot:` - Oracle tags (Scryfall OS extension)
+   - `oracle_tags:` or `ot:` - Oracle tags
 
 9. **Operators**
    - Comparison: `=`, `<`, `>`, `<=`, `>=`, `!=`, `<>`
@@ -77,16 +77,8 @@ Based on official Scryfall documentation and current implementation gaps:
 
 #### High Priority Missing Features
 
-1. **Special Properties**
-   - `is:` - Special card properties (permanent, spell, historic, vanilla, etc.)
-   - `produces:` - Mana production capabilities
+1. **Card Visual Properties**
    - `watermark:` - Card watermarks
-
-2. **Card Layout and Visual Properties**
-   - `layout:` - Card layouts (normal, split, flip, transform, etc.)
-   - `border:` - Border colors (black, white, borderless, etc.)
-   - `frame:` - Frame versions (1993, 1997, 2003, 2015, future, etc.)
-   - `flavor:` - Flavor text search
 
 #### Medium Priority Missing Features
 
@@ -96,8 +88,6 @@ Based on official Scryfall documentation and current implementation gaps:
 
 2. **Advanced Mechanics**
    - `loyalty:` - Planeswalker loyalty counters
-   - `spellpower:` - Spell power (Alchemy format)
-   - `spellresistance:` - Spell resistance (Alchemy format)
    - `devotion:` - Mana symbol devotion counting
 
 3. **Collection and Game Features**
@@ -184,15 +174,8 @@ Recent comprehensive testing (21 queries) shows the following performance charac
 
 ### High Priority Development (Next Major Features)
 
-1. **Special Properties System** 🎯
-   - Implement `is:` property syntax for card type classifications
-   - Add `produces:` mana production analysis
-   - Include `watermark:` support for card watermarks
-
-2. **Visual and Layout Properties** 🎯
-   - Add database schema and parsing for `layout:` variations
-   - Implement `border:` and `frame:` version filtering
-   - Add `flavor:` text search capabilities
+1. **Visual Properties** 🎯
+   - Implement `watermark:` support for card watermarks
 
 ### Medium Priority Development
 
@@ -202,7 +185,6 @@ Recent comprehensive testing (21 queries) shows the following performance charac
 
 2. **Advanced Mechanics Support**
    - `loyalty:` counter tracking for planeswalkers
-   - Alchemy-specific features (`spellpower:`, `spellresistance:`)
    - `devotion:` calculation capabilities
 
 3. **Collection and Meta Features**
@@ -221,6 +203,13 @@ Recent comprehensive testing (21 queries) shows the following performance charac
    - Booster pack availability tracking
    - Spotlight and featured card properties
 
+### Won't Implement
+
+1. **Alchemy-Only Features**
+   - `spellpower:` - Spell power (Alchemy format only)
+   - `spellresistance:` - Spell resistance (Alchemy format only)
+   - **Rationale**: These features are specific to Magic: The Gathering Arena's Alchemy format and are not relevant for traditional paper Magic or other formats that Scryfall OS targets.
+
 ### Testing and Quality Assurance
 
 1. **Automated Comparison Suite** ✅
@@ -230,7 +219,7 @@ Recent comprehensive testing (21 queries) shows the following performance charac
 
 2. **Implementation Validation** ✅
    - 339 total tests including 209 comprehensive parser tests
-   - Current API success rate: 100% for all supported features  
+   - Current API success rate: 100% for all supported features
    - Excellent data quality with regular comparison against official Scryfall API
 
 ## API Comparison Results
@@ -273,7 +262,7 @@ With comprehensive support for basic search, advanced querying, pricing data, fo
 
 **Current Focus Areas:**
 - Ongoing data synchronization improvements and monitoring
-- Implementation of remaining visual/layout properties (`is:`, `produces:`, `layout:`)
+- Implementation of remaining visual properties (`watermark:`)
 - Enhanced specialized features for advanced users
 
 The automated comparison framework provides excellent ongoing quality assurance capabilities, and the system is well-positioned for continued feature development while maintaining high stability and accuracy standards.
