@@ -704,18 +704,14 @@ class APIResource:
             # Implement magic.extract_collector_number_int in Python
             # Extract numeric characters using regex, similar to the database function
             numeric_part = re.sub(r"[^0-9]", "", str(collector_number))
-            try:
-                if numeric_part:
+            if numeric_part:
+                try:
                     int_val = int(numeric_part)
                     # PostgreSQL integer range is -2^31 to 2^31-1
                     if -2**31 <= int_val <= 2**31-1:
                         card["collector_number_int"] = int_val
-                    else:
-                        card["collector_number_int"] = None
-                else:
-                    card["collector_number_int"] = None
-            except (ValueError, OverflowError):
-                card["collector_number_int"] = None
+                except (ValueError, OverflowError):
+                    pass  # Field will be null by default
 
         # Handle legalities and produced_mana defaults
         card.setdefault("card_legalities", card.get("legalities", {}))
