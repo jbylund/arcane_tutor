@@ -699,14 +699,44 @@ class APIResource:
         else:
             card["edhrec_rank"] = None
 
-        # Handle rarity conversion - let database function handle the int conversion
+        # Handle rarity conversion - implement in Python to avoid SQL boilerplate
         if card.get("rarity"):
             card["card_rarity_text"] = card["rarity"].lower()
+            # Implement magic.rarity_text_to_int in Python
+            rarity_map = {
+                "common": 0,
+                "uncommon": 1,
+                "rare": 2,
+                "mythic": 3,
+                "special": 4,
+                "bonus": 5,
+            }
+            card["card_rarity_int"] = rarity_map.get(card["card_rarity_text"], -1)
         else:
             card["card_rarity_text"] = None
+            card["card_rarity_int"] = None
 
-        # Handle collector number - let database function handle the int conversion
-        card["collector_number"] = card.get("collector_number")
+        # Handle collector number - implement extraction in Python to avoid SQL boilerplate
+        collector_number = card.get("collector_number")
+        card["collector_number"] = collector_number
+        if collector_number:
+            # Implement magic.extract_collector_number_int in Python
+            # Extract numeric characters using regex, similar to the database function
+            numeric_part = re.sub(r"[^0-9]", "", str(collector_number))
+            try:
+                if numeric_part:
+                    int_val = int(numeric_part)
+                    # PostgreSQL integer range is -2^31 to 2^31-1
+                    if -2**31 <= int_val <= 2**31-1:
+                        card["collector_number_int"] = int_val
+                    else:
+                        card["collector_number_int"] = None
+                else:
+                    card["collector_number_int"] = None
+            except (ValueError, OverflowError):
+                card["collector_number_int"] = None
+        else:
+            card["collector_number_int"] = None
 
         # Handle legalities and produced_mana defaults
         card["card_legalities"] = card.get("legalities", {})
@@ -2085,83 +2115,13 @@ class APIResource:
                 cursor.execute(f"SELECT card_blob FROM {staging_table_name} ORDER BY RANDOM() LIMIT 10")
                 sample_cards = [r["card_blob"] for r in cursor.fetchall()]
 
-                # Transfer from staging to main table using jsonb_populate_record with database functions for complex fields
+                # Transfer from staging to main table using direct jsonb_populate_record
                 insert_query = f"""
-                    INSERT INTO magic.cards (
-                        card_name,
-                        cmc,
-                        mana_cost_text,
-                        mana_cost_jsonb,
-                        card_types,
-                        card_subtypes,
-                        card_colors,
-                        card_color_identity,
-                        card_keywords,
-                        creature_power,
-                        creature_power_text,
-                        creature_toughness,
-                        creature_toughness_text,
-                        edhrec_rank,
-                        price_usd,
-                        price_eur,
-                        price_tix,
-                        oracle_text,
-                        flavor_text,
-                        card_set_code,
-                        card_artist,
-                        card_rarity_text,
-                        card_rarity_int,
-                        collector_number,
-                        collector_number_int,
-                        raw_card_blob,
-                        card_legalities,
-                        produced_mana,
-                        card_frame_data,
-                        card_layout,
-                        card_border,
-                        card_watermark,
-                        card_oracle_tags,
-                        card_is_tags
-                    )
+                    INSERT INTO magic.cards
                     SELECT
-                        populated.card_name,
-                        populated.cmc,
-                        populated.mana_cost_text,
-                        populated.mana_cost_jsonb,
-                        populated.card_types,
-                        populated.card_subtypes,
-                        populated.card_colors,
-                        populated.card_color_identity,
-                        populated.card_keywords,
-                        populated.creature_power,
-                        populated.creature_power_text,
-                        populated.creature_toughness,
-                        populated.creature_toughness_text,
-                        populated.edhrec_rank,
-                        populated.price_usd,
-                        populated.price_eur,
-                        populated.price_tix,
-                        populated.oracle_text,
-                        populated.flavor_text,
-                        populated.card_set_code,
-                        populated.card_artist,
-                        populated.card_rarity_text,
-                        magic.rarity_text_to_int(populated.card_rarity_text),  -- Use database function
-                        populated.collector_number,
-                        magic.extract_collector_number_int(populated.collector_number),  -- Use database function
-                        populated.raw_card_blob,
-                        populated.card_legalities,
-                        populated.produced_mana,
-                        populated.card_frame_data,
-                        populated.card_layout,
-                        populated.card_border,
-                        populated.card_watermark,
-                        populated.card_oracle_tags,
-                        populated.card_is_tags
-                    FROM (
-                        SELECT (jsonb_populate_record(null::magic.cards, card_blob)).*
-                        FROM {staging_table_name}
-                    ) AS populated
+                        (jsonb_populate_record(null::magic.cards, card_blob)).*
+                    FROM
+                        {staging_table_name}
                     ON CONFLICT (card_name) DO NOTHING
                 """
 
