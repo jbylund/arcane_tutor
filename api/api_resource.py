@@ -602,6 +602,24 @@ class APIResource:
         # Store the original card data before modifications for raw_card_blob
         raw_card_data = copy.deepcopy(card)
 
+        def maybe_float(val: str | int | float | None) -> float | None:
+            """Convert value to float, returning None if conversion fails."""
+            if val is None:
+                return None
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return None
+
+        def maybe_int(val: str | int | float | None) -> int | None:
+            """Convert value to int (via float first), returning None if conversion fails."""
+            if val is None:
+                return None
+            try:
+                return int(float(val))
+            except (ValueError, TypeError):
+                return None
+
         card_types, _, card_subtypes = (x.strip().split() for x in card.get("type_line", "").title().partition("\u2014"))
         card["card_types"] = card_types
         card["card_subtypes"] = card_subtypes or []  # Use empty array instead of None
@@ -633,25 +651,9 @@ class APIResource:
 
         # Extract pricing data if available - ensure they are floats for jsonb_populate_record
         prices = card.get("prices", {})
-        usd_price = prices.get("usd")
-        eur_price = prices.get("eur")
-        tix_price = prices.get("tix")
-
-        # Convert price strings to floats for database storage
-        try:
-            card["price_usd"] = float(usd_price) if usd_price is not None else None
-        except (ValueError, TypeError):
-            card["price_usd"] = None
-
-        try:
-            card["price_eur"] = float(eur_price) if eur_price is not None else None
-        except (ValueError, TypeError):
-            card["price_eur"] = None
-
-        try:
-            card["price_tix"] = float(tix_price) if tix_price is not None else None
-        except (ValueError, TypeError):
-            card["price_tix"] = None
+        card["price_usd"] = maybe_float(prices.get("usd"))
+        card["price_eur"] = maybe_float(prices.get("eur"))
+        card["price_tix"] = maybe_float(prices.get("tix"))
 
         # Extract set code for dedicated column
         card["card_set_code"] = card.get("set")
@@ -674,30 +676,12 @@ class APIResource:
         card["creature_power_text"] = card.get("power")
         card["creature_toughness"] = card.get("toughness_numeric")
         card["creature_toughness_text"] = card.get("toughness")
-        card["oracle_text"] = card.get("oracle_text")
-        card["flavor_text"] = card.get("flavor_text")
         card["card_artist"] = card.get("artist")
         card["raw_card_blob"] = raw_card_data  # Store the original card data
 
-        # Handle CMC conversion - convert float to integer for jsonb_populate_record
-        cmc_value = card.get("cmc")
-        if cmc_value is not None:
-            try:
-                card["cmc"] = int(float(cmc_value))
-            except (ValueError, TypeError):
-                card["cmc"] = None
-        else:
-            card["cmc"] = None
-
-        # Handle edhrec_rank conversion - convert to integer if present
-        edhrec_value = card.get("edhrec_rank")
-        if edhrec_value is not None:
-            try:
-                card["edhrec_rank"] = int(float(edhrec_value))
-            except (ValueError, TypeError):
-                card["edhrec_rank"] = None
-        else:
-            card["edhrec_rank"] = None
+        # Handle CMC and edhrec_rank conversion using helper function
+        card["cmc"] = maybe_int(card.get("cmc"))
+        card["edhrec_rank"] = maybe_int(card.get("edhrec_rank"))
 
         # Handle rarity conversion - implement in Python to avoid SQL boilerplate
         if card.get("rarity"):
@@ -712,9 +696,6 @@ class APIResource:
                 "bonus": 5,
             }
             card["card_rarity_int"] = rarity_map.get(card["card_rarity_text"], -1)
-        else:
-            card["card_rarity_text"] = None
-            card["card_rarity_int"] = None
 
         # Handle collector number - implement extraction in Python to avoid SQL boilerplate
         collector_number = card.get("collector_number")
@@ -735,19 +716,14 @@ class APIResource:
                     card["collector_number_int"] = None
             except (ValueError, OverflowError):
                 card["collector_number_int"] = None
-        else:
-            card["collector_number_int"] = None
 
         # Handle legalities and produced_mana defaults
-        card["card_legalities"] = card.get("legalities", {})
-        if not card["produced_mana"]:
-            card["produced_mana"] = {}
+        card.setdefault("card_legalities", card.get("legalities", {}))
+        card.setdefault("produced_mana", {})
 
         # Ensure all NOT NULL DEFAULT fields are set to avoid constraint violations
-        if "card_oracle_tags" not in card:
-            card["card_oracle_tags"] = {}
-        if "card_is_tags" not in card:
-            card["card_is_tags"] = {}
+        card.setdefault("card_oracle_tags", {})
+        card.setdefault("card_is_tags", {})
 
         return card
 
