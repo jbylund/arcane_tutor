@@ -25,7 +25,7 @@ class TestContainerIntegration:
     def postgres_container(self: TestContainerIntegration) -> Generator[PostgresContainer]:
         """Create and manage PostgreSQL test container."""
         container = PostgresContainer(
-            image="postgres:18rc1",
+            image="postgres:18",
             username="testuser",
             password="testpass",  # noqa: S106
             dbname="testdb",
