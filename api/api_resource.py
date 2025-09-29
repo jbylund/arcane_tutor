@@ -46,6 +46,46 @@ logger = logging.getLogger(__name__)
 NOT_FOUND = 404
 
 
+def maybeify(func: callable) -> callable:
+    """Convert value to int (via float first), returning None if conversion fails."""
+    @functools.wraps(func)
+    def wrapper(val: str | int | float | None) -> int | None:
+        if val is None:
+            return None
+        try:
+            return func(val)
+        except (ValueError, TypeError):
+            return None
+    return wrapper
+
+@maybeify
+def maybe_float(val: str | int | float | None) -> float | None:
+    """Convert value to float, returning None if conversion fails."""
+    return float(val)
+
+@maybeify
+def maybe_int(val: str | int | float | None) -> int | None:
+    """Convert value to int (via float first), returning None if conversion fails."""
+    return int(float(val))
+
+
+def extract_collector_number_int(collector_number: str | int | float | None) -> int | None:
+    """Extract the integer part of a collector number."""
+    if collector_number is None:
+        return None
+    # Implement magic.extract_collector_number_int in Python
+    # Extract numeric characters using regex, similar to the database function
+    numeric_part = re.sub(r"[^0-9]", "", str(collector_number))
+    if numeric_part:
+        try:
+            int_val = int(numeric_part)
+            # PostgreSQL integer range is -2^31 to 2^31-1
+            if -2**31 <= int_val <= 2**31-1:
+                return int_val
+        except (ValueError, OverflowError):
+            pass
+    return None  # Field will be null by default
+
 def _convert_string_to_type(str_value: str, param_type: Any) -> Any:  # noqa: ANN401
     """Convert a string value to the specified type.
 
@@ -489,9 +529,9 @@ class APIResource:
             with cache_file_path.open() as f:
                 response = orjson.loads(f.read())
         except FileNotFoundError:
-            logger.info("Cache miss!")
+            logger.info("Cache miss, %s not found!", cache_file_path)
         else:
-            logger.info("Cache hit!")
+            logger.info("Cache hit, %s found!", cache_file_path)
             return response
         response = orjson.loads(self._session.get("https://api.scryfall.com/bulk-data", timeout=1).content)["data"]
         by_type = {r["type"]: r for r in response}
@@ -588,7 +628,7 @@ class APIResource:
             to_insert[card_name] = processed_card
         return list(to_insert.values())
 
-    def _preprocess_card(self: APIResource, card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: C901
+    def _preprocess_card(self: APIResource, card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: C901, PLR0915
         """Preprocess a card to remove invalid cards and add necessary fields."""
         if set(card["legalities"].values()) == {"not_legal"}:
             return None
@@ -598,21 +638,27 @@ class APIResource:
             return None
         if card.get("set_type") == "funny":
             return None
+
+        if card.get("preprocessed"):
+            return card
+
+        # Store the original card data before modifications for raw_card_blob
+        raw_card_data = copy.deepcopy(card)
+        card["preprocessed"] = True
+
         card_types, _, card_subtypes = (x.strip().split() for x in card.get("type_line", "").title().partition("\u2014"))
         card["card_types"] = card_types
         card["card_subtypes"] = card_subtypes or []  # Use empty array instead of None
-        for creature_field in ["power", "toughness"]:
-            val = card.setdefault(creature_field, None)
-            try:
-                numeric_val = int(val)
-            except (TypeError, ValueError):
-                card[f"{creature_field}_numeric"] = None
-            else:
-                card[f"{creature_field}_numeric"] = numeric_val
+
+        card["creature_power"] = maybe_int(card.get("power"))
+        card["creature_toughness"] = maybe_int(card.get("toughness"))
+
+        # objects of keys to true
         card["card_colors"] = dict.fromkeys(card["colors"], True)
         card["card_color_identity"] = dict.fromkeys(card["color_identity"], True)
         card["card_keywords"] = dict.fromkeys(card.get("keywords", []), True)
         card["produced_mana"] = dict.fromkeys(card.get("produced_mana", []), True)
+
         card["edhrec_rank"] = card.get("edhrec_rank")
 
         # Extract frame data - combine frame version and frame effects into single JSONB object
@@ -627,11 +673,11 @@ class APIResource:
             frame_data[effect.title()] = True
         card["card_frame_data"] = frame_data
 
-        # Extract pricing data if available
+        # Extract pricing data if available - ensure they are floats for jsonb_populate_record
         prices = card.get("prices", {})
-        card["price_usd"] = prices.get("usd")
-        card["price_eur"] = prices.get("eur")
-        card["price_tix"] = prices.get("tix")
+        card["price_usd"] = maybe_float(prices.get("usd"))
+        card["price_eur"] = maybe_float(prices.get("eur"))
+        card["price_tix"] = maybe_float(prices.get("tix"))
 
         # Extract set code for dedicated column
         card["card_set_code"] = card.get("set")
@@ -646,6 +692,47 @@ class APIResource:
 
         mana_cost_text = card.get("mana_cost", "")
         card["mana_cost_jsonb"] = mana_cost_str_to_dict(mana_cost_text)
+
+        # Map field names to match database column names for jsonb_populate_record
+        card["card_name"] = card.get("name")
+        card["mana_cost_text"] = card.get("mana_cost")
+        card["creature_power_text"] = card.get("power")
+        card["creature_toughness_text"] = card.get("toughness")
+        card["card_artist"] = card.get("artist")
+        card["raw_card_blob"] = raw_card_data  # Store the original card data
+
+        # Handle CMC and edhrec_rank conversion using helper function
+        card["cmc"] = maybe_int(card.get("cmc"))
+
+        # Handle rarity conversion - implement in Python to avoid SQL boilerplate
+        if card.get("rarity"):
+            card["card_rarity_text"] = card["rarity"].lower()
+            # Implement magic.rarity_text_to_int in Python
+            rarity_map = {
+                "common": 0,
+                "uncommon": 1,
+                "rare": 2,
+                "mythic": 3,
+                "special": 4,
+                "bonus": 5,
+            }
+            card["card_rarity_int"] = rarity_map.get(card["card_rarity_text"], -1)
+
+        # Handle collector number - implement extraction in Python to avoid SQL boilerplate
+        collector_number = card.get("collector_number")
+        card["collector_number"] = collector_number
+        card["collector_number_int"] = extract_collector_number_int(collector_number)
+
+        # Handle legalities and produced_mana defaults
+        card.setdefault("card_legalities", card.get("legalities", {}))
+        card.setdefault("produced_mana", {})
+
+        # Ensure all NOT NULL DEFAULT fields are set to avoid constraint violations
+        card.setdefault("card_oracle_tags", {})
+        card.setdefault("card_is_tags", {})
+        if "raw_card_blob" in card["raw_card_blob"]:
+            msg = "raw_card_blob is not a dictionary"
+            raise AssertionError(msg)
 
         return card
 
@@ -2013,76 +2100,11 @@ class APIResource:
                 cursor.execute(f"SELECT card_blob FROM {staging_table_name} ORDER BY RANDOM() LIMIT 10")
                 sample_cards = [r["card_blob"] for r in cursor.fetchall()]
 
-                # Transfer from staging to main table (always with price fields)
+                # Transfer from staging to main table using direct jsonb_populate_record
                 insert_query = f"""
                     INSERT INTO magic.cards
-                    (
-                        card_name,               -- 1
-                        cmc,                     -- 2
-                        mana_cost_text,          -- 3
-                        mana_cost_jsonb,         -- 4
-                        card_types,              -- 5
-                        card_subtypes,           -- 6
-                        card_colors,             -- 7
-                        card_color_identity,     -- 8
-                        card_keywords,           -- 9
-                        creature_power,          -- 10
-                        creature_power_text,     -- 11
-                        creature_toughness,      -- 12
-                        creature_toughness_text, -- 13
-                        edhrec_rank,             -- 14
-                        price_usd,               -- 15
-                        price_eur,               -- 16
-                        price_tix,               -- 17
-                        oracle_text,             -- 18
-                        flavor_text,             -- 19
-                        card_set_code,           -- 20
-                        card_artist,             -- 21
-                        card_rarity_text,        -- 22
-                        card_rarity_int,         -- 23
-                        collector_number,        -- 24
-                        collector_number_int,    -- 25
-                        raw_card_blob,           -- 26
-                        card_legalities,         -- 27
-                        produced_mana,           -- 28
-                        card_frame_data,         -- 29
-                        card_layout,             -- 30
-                        card_border,             -- 31
-                        card_watermark           -- 32
-                    )
                     SELECT
-                        card_blob->>'name' AS card_name, -- 1
-                        (card_blob->>'cmc')::float::integer AS cmc, -- 2
-                        card_blob->>'mana_cost' AS mana_cost_text, -- 3
-                        card_blob->'mana_cost_jsonb' AS mana_cost_jsonb, -- 4
-                        card_blob->'card_types' AS card_types, -- 5
-                        card_blob->'card_subtypes' AS card_subtypes, -- 6
-                        card_blob->'card_colors' AS card_colors, -- 7
-                        card_blob->'card_color_identity' AS card_color_identity, -- 8
-                        card_blob->'card_keywords' AS card_keywords, -- 9
-                        (card_blob->>'power_numeric')::integer AS creature_power, -- 10
-                        card_blob->>'power' AS creature_power_text, -- 11
-                        (card_blob->>'toughness_numeric')::integer AS creature_toughness, -- 12
-                        card_blob->>'toughness' AS creature_toughness_text, -- 13
-                        (card_blob->>'edhrec_rank')::integer AS edhrec_rank, -- 14
-                        (card_blob->>'price_usd')::real AS price_usd, -- 15
-                        (card_blob->>'price_eur')::real AS price_eur, -- 16
-                        (card_blob->>'price_tix')::real AS price_tix, -- 17
-                        card_blob->>'oracle_text' AS oracle_text, -- 18
-                        card_blob->>'flavor_text' AS flavor_text, -- 19
-                        card_blob->>'card_set_code' AS card_set_code, -- 20
-                        card_blob->>'artist' AS card_artist, -- 21
-                        LOWER(card_blob->>'rarity') AS card_rarity_text, -- 22
-                        magic.rarity_text_to_int(LOWER(card_blob->>'rarity')) AS card_rarity_int, -- 23
-                        card_blob->>'collector_number' AS collector_number, -- 24
-                        magic.extract_collector_number_int(card_blob->>'collector_number') AS collector_number_int, -- 25
-                        card_blob AS raw_card_blob, -- 26
-                        COALESCE(card_blob->'legalities', '{{}}'::jsonb) AS card_legalities, -- 27
-                        COALESCE(card_blob->'produced_mana', '{{}}'::jsonb) AS produced_mana, -- 28
-                        COALESCE(card_blob->'card_frame_data', '{{}}'::jsonb) AS card_frame_data, -- 29
-                        LOWER(card_blob->>'card_layout') AS card_layout, -- 30
-                        LOWER(card_blob->>'card_border') AS card_border, -- 31
-                        LOWER(card_blob->>'card_watermark') AS card_watermark -- 32
+                        (jsonb_populate_record(null::magic.cards, card_blob)).*
                     FROM
                         {staging_table_name}
                     ON CONFLICT (card_name) DO NOTHING
