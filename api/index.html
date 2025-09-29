@@ -377,7 +377,7 @@
         padding: 30px;
         max-width: 95vw;
         max-height: 90vh;
-        overflow: hidden;
+        overflow-y: auto;
         position: relative;
         box-shadow: 0 20px 60px var(--color-shadow-dark);
         animation: modalFadeIn 0.3s ease-out;
@@ -570,12 +570,14 @@
           max-height: 95vh;
           flex-direction: column;
           gap: 20px;
+          overflow-y: auto;
         }
 
         .modal-image {
-          max-width: 100%;
-          max-height: 50vh;
+          max-width: min(350px, 70vw);
+          max-height: none;
           margin-bottom: 0;
+          align-self: center;
         }
 
         .modal-card-name {
