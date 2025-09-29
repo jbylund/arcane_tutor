@@ -344,7 +344,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             return self._handle_collector_number(context)
 
         # Special handling for mana attributes with comparison operators
-        if attr in ("mana_cost_text", "mana_cost_jsonb") and isinstance(self.rhs, (ManaValueNode, StringValueNode)):
+        if attr in ("mana_cost_text", "mana_cost_jsonb") and isinstance(self.rhs, ManaValueNode | StringValueNode):
             return self._handle_mana_cost_comparison(context)
 
         lhs_sql = self.lhs.to_sql(context)
@@ -510,7 +510,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
 
     def _handle_text_field_pattern_matching(self: ScryfallBinaryOperatorNode, context: dict, lhs_sql: str) -> str:
         """Handle pattern matching for regular text fields."""
-        if isinstance(self.rhs, (StringValueNode, ManaValueNode)):
+        if isinstance(self.rhs, StringValueNode | ManaValueNode):
             txt_val = self.rhs.value.strip()
         elif isinstance(self.rhs, str):
             txt_val = self.rhs.strip()

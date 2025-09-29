@@ -44,7 +44,7 @@ Based on the official Scryfall syntax documentation and analysis of the existing
 - **is:** - Special properties (permanent, spell, historic, etc.)
 - **keyword:** or **k:** - Keyword abilities
 - **produces:** - Mana production
-- **watermark:** - Watermark searches
+- **watermark:** - Watermark searches ✅ Implemented
 
 ### 7. Prices and Market
 - **usd:** - USD price (numeric)
@@ -83,7 +83,8 @@ Based on the official Scryfall syntax documentation and analysis of the existing
 
 ## Analysis Notes
 
-This list represents the full scope of official Scryfall search functionality. The current Scryfall OS implementation supports a subset of these features based on the parsing code analysis.
+This list represents the full scope of official Scryfall search functionality.
+The current Scryfall OS implementation supports most of these features, with watermark search recently added to the supported feature set.
 
 ### Scryfall OS Extensions
 
