@@ -32,7 +32,7 @@ def get_testcontainers_creds() -> dict[str, str]:
     from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
     exposed_port = random.randint(1024, 49151)  # noqa: S311
     container = PostgresContainer(
-        image="postgres:18rc1",
+        image="postgres:18",
         username="testuser",
         password="testpass",  # noqa: S106
         dbname="testdb",
