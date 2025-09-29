@@ -101,12 +101,12 @@
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         background: var(--color-background);
         min-height: 100vh;
-        padding: 20px;
+        padding: 1em;
         overscroll-behavior-y: none;
       }
 
       .container {
-        max-width: 95vw;
+        max-width: 98vw;
         margin: 0 auto;
       }
 
@@ -295,15 +295,15 @@
 
       .results-container {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(min(360px, 28vw), 1fr));
-        gap: 20px;
+        grid-template-columns: repeat(auto-fit, minmax(min(300px, 45vw), 1fr));
+        gap: 0.5vw;
         margin-top: 30px;
       }
 
       .card-item {
         background: var(--color-card-background);
         border-radius: 15px;
-        padding: 20px;
+        padding: 0.8em;
         box-shadow: 0 10px 30px var(--color-shadow-light);
         transition: all 0.3s ease;
         cursor: pointer;
@@ -374,7 +374,7 @@
       .modal-content {
         background: var(--color-modal-background);
         border-radius: 15px;
-        padding: 30px;
+        padding: 1em;
         max-width: 95vw;
         max-height: 90vh;
         overflow-y: auto;
@@ -414,6 +414,7 @@
         justify-content: center;
         border-radius: 50%;
         transition: all 0.2s ease;
+        z-index: 10;
       }
 
       .modal-close:hover {
@@ -510,8 +511,8 @@
       .card-image {
         display: block;
         width: 100%;
-        max-width: min(350px, 25vw);
-        margin: 0 auto 12px auto;
+        max-width: min(400px, 35vw);
+        margin: 0 auto 10px auto;
         border-radius: 5.5% / 4%;
         box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
       }
@@ -522,7 +523,7 @@
         }
 
         .results-container {
-          grid-template-columns: repeat(auto-fill, minmax(min(340px, 32vw), 1fr));
+          grid-template-columns: repeat(auto-fit, minmax(min(280px, 40vw), 1fr));
         }
       }
 
@@ -553,11 +554,11 @@
         }
 
         .results-container {
-          grid-template-columns: 1fr;
+          grid-template-columns: repeat(auto-fit, minmax(min(250px, 45vw), 1fr));
         }
 
         .card-image {
-          max-width: min(350px, 70vw);
+          max-width: min(400px, 35vw);
         }
 
         body {
@@ -565,9 +566,9 @@
         }
 
         .modal-content {
-          padding: 20px;
-          max-width: 95vw;
-          max-height: 95vh;
+          padding: 1em;
+          max-width: 98vw;
+          max-height: 90vh;
           flex-direction: column;
           gap: 20px;
           overflow-y: auto;
@@ -578,6 +579,7 @@
           max-height: none;
           margin-bottom: 0;
           align-self: center;
+          flex-shrink: 0;
         }
 
         .modal-card-name {
@@ -595,6 +597,19 @@
 
         .modal-card-info {
           text-align: center;
+          overflow-y: visible;
+          flex-shrink: 0;
+          padding-bottom: 20px;
+        }
+      }
+
+      @media (max-width: 480px) {
+        .results-container {
+          grid-template-columns: repeat(2, 1fr);
+        }
+
+        .card-image {
+          max-width: min(400px, 85vw);
         }
       }
     </style>
@@ -1027,7 +1042,9 @@
 
           // Show modal
           modalOverlay.style.display = 'flex';
-          document.body.style.overflow = 'hidden'; // Prevent background scrolling
+
+          // Prevent background scrolling more comprehensively
+          this.preventBackgroundScroll();
 
           // Add click outside to close
           modalOverlay.onclick = e => {
@@ -1043,13 +1060,54 @@
         closeModal() {
           const modalOverlay = document.getElementById('modalOverlay');
           modalOverlay.style.display = 'none';
-          document.body.style.overflow = ''; // Restore scrolling
+
+          // Restore background scrolling
+          this.restoreBackgroundScroll();
+
           document.removeEventListener('keydown', this.handleEscapeKey);
         }
 
         handleEscapeKey = e => {
           if (e.key === 'Escape') {
             this.closeModal();
+          }
+        };
+
+        preventBackgroundScroll() {
+          // Store the current scroll position
+          this.scrollPosition = window.pageYOffset || document.documentElement.scrollTop;
+
+          // Prevent scrolling on body
+          document.body.style.overflow = 'hidden';
+          document.body.style.position = 'fixed';
+          document.body.style.top = `-${this.scrollPosition}px`;
+          document.body.style.width = '100%';
+
+          // Prevent touch events on the body (for mobile)
+          document.body.addEventListener('touchmove', this.preventTouchMove, { passive: false });
+        }
+
+        restoreBackgroundScroll() {
+          // Restore body styles
+          document.body.style.overflow = '';
+          document.body.style.position = '';
+          document.body.style.top = '';
+          document.body.style.width = '';
+
+          // Restore scroll position
+          if (this.scrollPosition !== undefined) {
+            window.scrollTo(0, this.scrollPosition);
+          }
+
+          // Remove touch event listener
+          document.body.removeEventListener('touchmove', this.preventTouchMove);
+        }
+
+        preventTouchMove = e => {
+          // Allow touch events only on the modal content
+          const modalContent = document.getElementById('modalContent');
+          if (modalContent && !modalContent.contains(e.target)) {
+            e.preventDefault();
           }
         };
 
