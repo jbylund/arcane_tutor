@@ -650,8 +650,8 @@ class APIResource:
         card["card_types"] = card_types
         card["card_subtypes"] = card_subtypes or []  # Use empty array instead of None
 
-        card["power_numeric"] = maybe_int(card.get("power"))
-        card["toughness_numeric"] = maybe_int(card.get("toughness"))
+        card["creature_power"] = maybe_int(card.get("power"))
+        card["creature_toughness"] = maybe_int(card.get("toughness"))
 
         # objects of keys to true
         card["card_colors"] = dict.fromkeys(card["colors"], True)
