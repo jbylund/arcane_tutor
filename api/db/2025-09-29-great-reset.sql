@@ -110,8 +110,6 @@ END;
 $$;
 
 
-ALTER FUNCTION magic.check_circular_reference() OWNER TO foouser;
-
 CREATE FUNCTION magic.get_tag_ancestors(target_tag text) RETURNS TABLE(tag text, level integer)
     LANGUAGE plpgsql
     AS $$

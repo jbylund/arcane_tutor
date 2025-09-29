@@ -9,7 +9,6 @@ PROJECTNAME := scryfallos
 GIT_ROOT := $(shell git rev-parse --show-toplevel)
 MAYBENORUN := $(shell if echo | xargs --no-run-if-empty >/dev/null 2>/dev/null; then echo "--no-run-if-empty"; else echo ""; fi)
 BASE_COMPOSE := $(mkfile_dir)/docker-compose.yml
-PG_DUMP := $(shell find /opt/homebrew -name pg_dump)
 LINTABLE_DIRS := .
 
 DOCKER_POSTGRES_HOST=postgres
@@ -114,7 +113,7 @@ dbconn: # @doc connect to the local database
 	psql
 
 dump_schema: # @doc dump database schema to file using container's pg_dump
-	docker exec scryfallpostgres pg_dump -U $(XPGUSER) -d $(XPGDATABASE) -s
+	docker exec scryfallpostgres $(shell find /usr/bin /opt/homebrew -name pg_dump) -U $(XPGUSER) -d $(XPGDATABASE) -s
 
 datadir:
 	mkdir -p data/api data/postgres /tmp/pgdata
