@@ -987,7 +987,7 @@ class TestAPIResourceTagHierarchy(unittest.TestCase):
                 assert "tags_processed" in result
 
                 assert result["success"] is True
-                assert isinstance(result["duration"], (int, float))
+                assert isinstance(result["duration"], int | float)
                 assert isinstance(result["message"], str)
                 assert isinstance(result["tags_processed"], int)
                 assert result["tags_processed"] == 1

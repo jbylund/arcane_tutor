@@ -46,6 +46,46 @@ logger = logging.getLogger(__name__)
 NOT_FOUND = 404
 
 
+def maybeify(func: callable) -> callable:
+    """Convert value to int (via float first), returning None if conversion fails."""
+    @functools.wraps(func)
+    def wrapper(val: str | int | float | None) -> int | None:
+        if val is None:
+            return None
+        try:
+            return func(val)
+        except (ValueError, TypeError):
+            return None
+    return wrapper
+
+@maybeify
+def maybe_float(val: str | int | float | None) -> float | None:
+    """Convert value to float, returning None if conversion fails."""
+    return float(val)
+
+@maybeify
+def maybe_int(val: str | int | float | None) -> int | None:
+    """Convert value to int (via float first), returning None if conversion fails."""
+    return int(float(val))
+
+
+def extract_collector_number_int(collector_number: str | int | float | None) -> int | None:
+    """Extract the integer part of a collector number."""
+    if collector_number is None:
+        return None
+    # Implement magic.extract_collector_number_int in Python
+    # Extract numeric characters using regex, similar to the database function
+    numeric_part = re.sub(r"[^0-9]", "", str(collector_number))
+    if numeric_part:
+        try:
+            int_val = int(numeric_part)
+            # PostgreSQL integer range is -2^31 to 2^31-1
+            if -2**31 <= int_val <= 2**31-1:
+                return int_val
+        except (ValueError, OverflowError):
+            pass
+    return None  # Field will be null by default
+
 def _convert_string_to_type(str_value: str, param_type: Any) -> Any:  # noqa: ANN401
     """Convert a string value to the specified type.
 
@@ -489,9 +529,9 @@ class APIResource:
             with cache_file_path.open() as f:
                 response = orjson.loads(f.read())
         except FileNotFoundError:
-            logger.info("Cache miss!")
+            logger.info("Cache miss, %s not found!", cache_file_path)
         else:
-            logger.info("Cache hit!")
+            logger.info("Cache hit, %s found!", cache_file_path)
             return response
         response = orjson.loads(self._session.get("https://api.scryfall.com/bulk-data", timeout=1).content)["data"]
         by_type = {r["type"]: r for r in response}
@@ -588,7 +628,7 @@ class APIResource:
             to_insert[card_name] = processed_card
         return list(to_insert.values())
 
-    def _preprocess_card(self: APIResource, card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: C901, PLR0912, PLR0915
+    def _preprocess_card(self: APIResource, card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: C901, PLR0915
         """Preprocess a card to remove invalid cards and add necessary fields."""
         if set(card["legalities"].values()) == {"not_legal"}:
             return None
@@ -599,42 +639,26 @@ class APIResource:
         if card.get("set_type") == "funny":
             return None
 
+        if card.get("preprocessed"):
+            return card
+
         # Store the original card data before modifications for raw_card_blob
         raw_card_data = copy.deepcopy(card)
-
-        def maybe_float(val: str | int | float | None) -> float | None:
-            """Convert value to float, returning None if conversion fails."""
-            if val is None:
-                return None
-            try:
-                return float(val)
-            except (ValueError, TypeError):
-                return None
-
-        def maybe_int(val: str | int | float | None) -> int | None:
-            """Convert value to int (via float first), returning None if conversion fails."""
-            if val is None:
-                return None
-            try:
-                return int(float(val))
-            except (ValueError, TypeError):
-                return None
+        card["preprocessed"] = True
 
         card_types, _, card_subtypes = (x.strip().split() for x in card.get("type_line", "").title().partition("\u2014"))
         card["card_types"] = card_types
         card["card_subtypes"] = card_subtypes or []  # Use empty array instead of None
-        for creature_field in ["power", "toughness"]:
-            val = card.setdefault(creature_field, None)
-            try:
-                numeric_val = int(val)
-            except (TypeError, ValueError):
-                card[f"{creature_field}_numeric"] = None
-            else:
-                card[f"{creature_field}_numeric"] = numeric_val
+
+        card["power_numeric"] = maybe_int(card.get("power"))
+        card["toughness_numeric"] = maybe_int(card.get("toughness"))
+
+        # objects of keys to true
         card["card_colors"] = dict.fromkeys(card["colors"], True)
         card["card_color_identity"] = dict.fromkeys(card["color_identity"], True)
         card["card_keywords"] = dict.fromkeys(card.get("keywords", []), True)
         card["produced_mana"] = dict.fromkeys(card.get("produced_mana", []), True)
+
         card["edhrec_rank"] = card.get("edhrec_rank")
 
         # Extract frame data - combine frame version and frame effects into single JSONB object
@@ -672,16 +696,13 @@ class APIResource:
         # Map field names to match database column names for jsonb_populate_record
         card["card_name"] = card.get("name")
         card["mana_cost_text"] = card.get("mana_cost")
-        card["creature_power"] = card.get("power_numeric")
         card["creature_power_text"] = card.get("power")
-        card["creature_toughness"] = card.get("toughness_numeric")
         card["creature_toughness_text"] = card.get("toughness")
         card["card_artist"] = card.get("artist")
         card["raw_card_blob"] = raw_card_data  # Store the original card data
 
         # Handle CMC and edhrec_rank conversion using helper function
         card["cmc"] = maybe_int(card.get("cmc"))
-        card["edhrec_rank"] = maybe_int(card.get("edhrec_rank"))
 
         # Handle rarity conversion - implement in Python to avoid SQL boilerplate
         if card.get("rarity"):
@@ -700,18 +721,7 @@ class APIResource:
         # Handle collector number - implement extraction in Python to avoid SQL boilerplate
         collector_number = card.get("collector_number")
         card["collector_number"] = collector_number
-        if collector_number:
-            # Implement magic.extract_collector_number_int in Python
-            # Extract numeric characters using regex, similar to the database function
-            numeric_part = re.sub(r"[^0-9]", "", str(collector_number))
-            if numeric_part:
-                try:
-                    int_val = int(numeric_part)
-                    # PostgreSQL integer range is -2^31 to 2^31-1
-                    if -2**31 <= int_val <= 2**31-1:
-                        card["collector_number_int"] = int_val
-                except (ValueError, OverflowError):
-                    pass  # Field will be null by default
+        card["collector_number_int"] = extract_collector_number_int(collector_number)
 
         # Handle legalities and produced_mana defaults
         card.setdefault("card_legalities", card.get("legalities", {}))
@@ -720,6 +730,9 @@ class APIResource:
         # Ensure all NOT NULL DEFAULT fields are set to avoid constraint violations
         card.setdefault("card_oracle_tags", {})
         card.setdefault("card_is_tags", {})
+        if "raw_card_blob" in card["raw_card_blob"]:
+            msg = "raw_card_blob is not a dictionary"
+            raise AssertionError(msg)
 
         return card
 
