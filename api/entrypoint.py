@@ -1,6 +1,7 @@
 """Main entrypoint for the api container."""
 
 import argparse
+import contextlib
 import logging
 import multiprocessing
 import signal
@@ -39,10 +40,8 @@ def run_server(  # noqa: C901
         logger.info("Received signal %d, setting exit flag", signum)
         for iworker in workers:
             logger.info("Terminating worker %d", iworker.pid)
-            try:
+            with contextlib.suppress(AttributeError):
                 iworker.terminate()
-            except AttributeError:
-                pass
         wait_time = 1
         for iworker in workers:
             logger.info("Joining worker %d", iworker.pid)

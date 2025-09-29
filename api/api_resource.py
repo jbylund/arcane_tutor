@@ -427,6 +427,7 @@ class APIResource:
             query (str): The SQL query to run.
             params (Optional[Dict[str, Any]]): Query parameters.
             explain (bool): Whether to run EXPLAIN on the query.
+            statement_timeout (int): The statement timeout in milliseconds.
 
         Returns:
         -------
