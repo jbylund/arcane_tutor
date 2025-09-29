@@ -409,8 +409,8 @@ class TestAPIResourceDataProcessing(unittest.TestCase):
         assert result["card_colors"] == {"R": True}
         assert result["card_color_identity"] == {"R": True}
         assert result["card_keywords"] == {"haste": True}
-        assert result["power_numeric"] == 3
-        assert result["toughness_numeric"] == 1
+        assert result["creature_power"] == 3
+        assert result["creature_toughness"] == 1
         assert result["price_usd"] == 0.25
         assert result["price_eur"] == 0.20
         assert result["price_tix"] == 0.01
@@ -515,8 +515,8 @@ class TestAPIResourceDataProcessing(unittest.TestCase):
         assert result["card_colors"] == {}
         assert result["card_color_identity"] == {}
         assert result["card_keywords"] == {}
-        assert result["power_numeric"] is None
-        assert result["toughness_numeric"] is None
+        assert result["creature_power"] is None
+        assert result["creature_toughness"] is None
         assert result["price_usd"] is None
         assert result["price_eur"] is None
         assert result["price_tix"] is None
@@ -540,8 +540,8 @@ class TestAPIResourceDataProcessing(unittest.TestCase):
         result = self.api_resource._preprocess_card(card)
 
         assert result is not None
-        assert result["power_numeric"] is None
-        assert result["toughness_numeric"] is None
+        assert result["creature_power"] is None
+        assert result["creature_toughness"] is None
 
     @patch.object(APIResource, "get_data")
     @patch.object(APIResource, "_preprocess_card")
