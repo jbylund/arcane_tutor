@@ -39,7 +39,10 @@ def run_server(  # noqa: C901
         logger.info("Received signal %d, setting exit flag", signum)
         for iworker in workers:
             logger.info("Terminating worker %d", iworker.pid)
-            iworker.terminate()
+            try:
+                iworker.terminate()
+            except AttributeError:
+                pass
         wait_time = 1
         for iworker in workers:
             logger.info("Joining worker %d", iworker.pid)

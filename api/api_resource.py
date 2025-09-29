@@ -418,6 +418,7 @@ class APIResource:
         query: str,
         params: dict[str, Any] | None = None,
         explain: bool = True,
+        statement_timeout: int = 10_000,
     ) -> dict[str, Any]:
         """Run a SQL query with optional parameters and explanation.
 
@@ -459,7 +460,7 @@ class APIResource:
 
         result: dict[str, Any] = {}
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
-            cursor.execute("set statement_timeout = 10000")
+            cursor.execute(f"set statement_timeout = {statement_timeout}")
             if explain:
                 cursor.execute(explain_query, params)
                 for row in cursor.fetchall():
@@ -2088,6 +2089,8 @@ class APIResource:
 
         try:
             with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+                statement_timeout = 30_000
+                cursor.execute(f"set statement_timeout = {statement_timeout}")
                 # Create staging table with unique name
                 cursor.execute(f"CREATE TEMPORARY TABLE {staging_table_name} (card_blob jsonb)")
 
