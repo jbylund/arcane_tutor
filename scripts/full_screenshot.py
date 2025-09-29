@@ -1,6 +1,7 @@
 """Script for taking full screenshots of the scryfallos application."""
 from __future__ import annotations
 
+import argparse
 import logging
 import time
 from multiprocessing import Process
@@ -58,14 +59,26 @@ class ServerContext:
 
 def main() -> None:
     """Main entrypoint for the full screenshot script."""
+    parser = argparse.ArgumentParser(description="Take screenshots of the scryfallos application")
+    parser.add_argument("--width", type=int, default=2200, help="Viewport width in pixels (default: 2200)")
+    parser.add_argument("--height", type=int, default=3000, help="Viewport height in pixels (default: 3000)")
+    parser.add_argument("--output", type=str, help="Output filename (default: scryfallos-{timestamp}.png)")
+    parser.add_argument("--full-page", action="store_true", help="Take full page screenshot instead of viewport only")
+    args = parser.parse_args()
+
     logging.basicConfig(level=logging.INFO)
     base_url = "http://127.0.0.1:8080"
+
+    # Generate default filename if not provided
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    output_filename = args.output or f"scryfallos-{args.width}x{args.height}-{timestamp}.png"
+
     with ServerContext():
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             # Set viewport to custom width x height
             context = browser.new_context(
-                viewport={"width": 2200, "height": 3000},
+                viewport={"width": args.width, "height": args.height},
             )
             page = context.new_page()
             url = f"{base_url}/?q=name%3Abeast+or+t%3Abeast&orderby=edhrec&direction=asc"
@@ -76,16 +89,16 @@ def main() -> None:
             )
             page.wait_for_timeout(20)  # give it a moment for JS to settle
 
-            # Screenshot of just the viewport
-            timestamp = time.strftime("%Y%m%d-%H%M%S")
+            # Screenshot of viewport or full page
             page.screenshot(
-                full_page=False,
-                path=f"scryfallos-{timestamp}.png",
+                full_page=args.full_page,
+                path=output_filename,
                 # quality=100, - no quality for png
                 timeout=30*MILLISECONDS,
                 type="png",
             )
 
+            logger.info(f"Screenshot saved as: {output_filename}")
             browser.close()
 
 
