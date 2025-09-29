@@ -23,7 +23,7 @@ def postgres_container_fixture() -> Generator[None]:
     """Fixture to start and stop a postgres container for the session."""
     exposed_port = random.randint(1024, 49151)  # noqa: S311
     container = PostgresContainer(
-        image="postgres:18rc1",
+        image="postgres:18",
         username="testuser",
         password="testpass",  # noqa: S106
         dbname="testdb",
