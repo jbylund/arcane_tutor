@@ -7,12 +7,13 @@
 ## Table of Contents
 
 1. [Project Overview](#project-overview)
-2. [Functionality Comparison](#functionality-comparison)
-3. [Code Organization](#code-organization)
-4. [Developer Quick Start](#developer-quick-start)
-5. [Card Tagging System](#card-tagging-system)
-6. [API Documentation](#api-documentation)
-7. [Development Notes](#development-notes)
+1. [Functionality Comparison](#functionality-comparison)
+   1. [Recommended Development Priorities](#recommended-development-priorities)
+1. [Code Organization](#code-organization)
+1. [Developer Quick Start](#developer-quick-start)
+1. [Card Tagging System](#card-tagging-system)
+1. [API Documentation](#api-documentation)
+1. [Development Notes](#development-notes)
 
 ## Project Overview
 
@@ -48,21 +49,20 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 ### Core Components
 
 1. **Search DSL Parser** - A comprehensive parsing library for Scryfall's query syntax supporting text search, numeric comparisons, color identity, and advanced operators
-2. **Database Query Engine** - Converts parsed queries into optimized PostgreSQL queries with support for complex joins and filtering
-3. **Data Import Tools** - Bulk data loading from Scryfall exports with incremental updates and card tagging integration
-4. **Web Interface** - A responsive HTML/JavaScript application providing search functionality with card display similar to Scryfall
-5. **Card Tagging System** - Extended functionality for importing and managing Scryfall's card tags with hierarchy support
-6. **RESTful API** - Falcon-based web service with multi-process worker support and comprehensive search endpoints
+1. **Database Query Engine** - Converts parsed queries into optimized PostgreSQL queries with support for complex joins and filtering
+1. **Data Import Tools** - Bulk data loading from Scryfall exports with incremental updates and card tagging integration
+1. **Web Interface** - A responsive HTML/JavaScript application providing search functionality with card display similar to Scryfall
+1. **Card Tagging System** - Extended functionality for importing and managing Scryfall's card tags with hierarchy support
+1. **RESTful API** - Falcon-based web service with multi-process worker support and comprehensive search endpoints
 
 ## Functionality Comparison
 
 ### Recommended Development Priorities
 
-1. Watermarks search
-2. Devotion search
-3. Support unique art/printings/cards - we are going to need to decide which attributes belong to cards/printings/artworks
-3. **Medium Impact Features** - Dates and planeswalker loyalty for comprehensive card metadata coverage
-4. **Low Impact Features** - regex based search
+1. Devotion search
+1. Support unique art/printings/cards - we are going to need to decide which attributes belong to cards/printings/artworks
+1. **Medium Impact Features** - Dates and planeswalker loyalty for comprehensive card metadata coverage
+1. **Low Impact Features** - regex based search
 
 **Recently Completed ✅:**
 - Format legality (`format:`, `legal:`, `banned:`) for competitive play support
@@ -175,7 +175,7 @@ scryfallos/
    python -m pip install -r requirements.txt -r test-requirements.txt
    ```
 
-2. **Optional: Web Server Dependencies**
+1. **Optional: Web Server Dependencies**
 
    ```bash
    # Only needed for local API server (includes bjoern compilation)
@@ -183,7 +183,7 @@ scryfallos/
    python -m pip install -r webserver-requirements.txt
    ```
 
-3. **Validate Installation**
+1. **Validate Installation**
 
    ```bash
    # Run test suite (should pass all 339 tests)
@@ -271,7 +271,7 @@ curl "http://localhost:8080/discover_and_import_all_tags?import_cards=true&impor
 The tagging system uses two main database components:
 
 1. **magic.cards.card_tags** (jsonb) - Stores tag associations for each card
-2. **magic.card_tags** table - Stores tag hierarchy with parent-child relationships
+1. **magic.card_tags** table - Stores tag hierarchy with parent-child relationships
 
 ### Rate Limiting
 
@@ -309,7 +309,7 @@ The search endpoint supports comprehensive Scryfall syntax. See [syntax analysis
 ### Future Enhancements
 
 1. **Database Migration**: Evaluate `default_cards` vs `oracle_cards` for improved completeness
-2. **Features**: Implement highest-priority missing functionality from grid above
-3. **Testing**: Expand API comparison coverage and add performance benchmarks
+1. **Features**: Implement highest-priority missing functionality from grid above
+1. **Testing**: Expand API comparison coverage and add performance benchmarks
 
 For detailed technical analysis, see [functionality analysis documentation](docs/scryfall_functionality_analysis.md).
