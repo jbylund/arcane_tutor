@@ -112,6 +112,9 @@ dbconn: # @doc connect to the local database
 	PGUSER=$(XPGUSER) \
 	psql
 
+dump_schema: # @doc dump database schema to file using container's pg_dump
+	docker exec scryfallpostgres $(shell find /usr/bin /opt/homebrew -name pg_dump) -U $(XPGUSER) -d $(XPGDATABASE) -s
+
 datadir:
 	mkdir -p data/api data/postgres /tmp/pgdata
 
@@ -132,3 +135,4 @@ coverage: # @doc generate HTML coverage report
 
 test-profiling:
 	python -m pytest --profile-svg --durations=10 -vvv -k TestImportCardByName
+
