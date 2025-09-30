@@ -12,6 +12,12 @@ services:
         - POSTGRES_DB=${XPGDATABASE}
         - POSTGRES_PASSWORD=${XPGPASSWORD}
         - POSTGRES_USER=${XPGUSER}
+        healthcheck:
+            test: ["CMD-SHELL", "psql -U ${XPGUSER} -d ${XPGDATABASE} -c 'SELECT 1'"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+            start_period: 30s
         image: registry.hub.docker.com/library/postgres:18
         ports:
         - 15432:5432
@@ -35,6 +41,9 @@ services:
         - -m
         - scryfallos.api.entrypoint
         container_name: apiservice
+        depends_on:
+            postgres:
+                condition: service_healthy
         environment:
         - PGDATABASE=${XPGDATABASE}
         - PGHOST=${DOCKER_POSTGRES_HOST}
@@ -48,18 +57,3 @@ services:
         user: 1000:1000
         volumes:
             - ./data/api:/data/api
-    clientservice:
-        build:
-            context: ./client/
-            dockerfile: ./Dockerfile
-        cap_add:
-        - ALL
-        command:
-        - dumb-init
-        - --
-        - python
-        - -u
-        - ./entrypoint.py
-        container_name: clientservice
-        external_links:
-        - apiservice
