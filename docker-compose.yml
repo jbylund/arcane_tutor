@@ -14,8 +14,8 @@ services:
         - POSTGRES_USER=${XPGUSER}
         healthcheck:
             test: ["CMD-SHELL", "psql -U ${XPGUSER} -d ${XPGDATABASE} -c 'SELECT 1'"]
-            interval: 10s
-            timeout: 5s
+            interval: 1s
+            timeout: 1s
             retries: 5
             start_period: 30s
         image: registry.hub.docker.com/library/postgres:18
