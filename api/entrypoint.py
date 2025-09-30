@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import logging
 import multiprocessing
+import os
 import signal
 from types import FrameType
 
@@ -31,14 +32,18 @@ def run_server(  # noqa: C901
     logging.basicConfig(level=logging.INFO)
     workers: list[ApiWorker] = []
     logger.info("Starting %d workers on port %d...", num_workers, port)
+    os.getpid()
 
     exit_flag = multiprocessing.Event()
 
     def graceful_shutdown(signum: int, frame: FrameType) -> None:
         """Graceful shutdown."""
         del frame
-        logger.info("Received signal %d, setting exit flag", signum)
+        logger.info("Received signal %d in pid %d, setting exit flag", signum, os.getpid())
         for iworker in workers:
+            if iworker.pid is None:
+                logger.warning("Worker %s has no pid", iworker)
+                continue
             logger.info("Terminating worker %d", iworker.pid)
             with contextlib.suppress(AttributeError):
                 iworker.terminate()
@@ -51,10 +56,6 @@ def run_server(  # noqa: C901
                 iworker.kill()
             wait_time = 1 / 10
         logger.info("Shutdown complete")
-
-    # Set up signal handlers for graceful shutdown
-    signal.signal(signal.SIGTERM, graceful_shutdown)
-    signal.signal(signal.SIGINT, graceful_shutdown)
 
     # Create shared objects for all workers
     import_guard = multiprocessing.RLock()
@@ -73,6 +74,10 @@ def run_server(  # noqa: C901
 
     for iworker in workers:
         iworker.start()
+
+    # Set up signal handlers for graceful shutdown
+    signal.signal(signal.SIGTERM, graceful_shutdown)
+    signal.signal(signal.SIGINT, graceful_shutdown)
 
     def all_workers_alive() -> bool:
         if exit_flag.is_set():
