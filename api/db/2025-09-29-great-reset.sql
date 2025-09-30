@@ -15,12 +15,12 @@ BEGIN
     BEGIN
         -- Use regexp_replace to remove all non-numeric characters
         numeric_part := regexp_replace(collector_number_text, '[^0-9]', '', 'g');
-        
+
         -- Return NULL if no numeric characters remain or if empty
         IF numeric_part = '' OR numeric_part IS NULL THEN
             RETURN NULL;
         END IF;
-        
+
         -- Cast to integer, handle potential overflow
         RETURN numeric_part::integer;
     EXCEPTION
@@ -257,7 +257,7 @@ CREATE INDEX IF NOT EXISTS idx_cards_oracle_text_trgm ON magic.cards USING gin (
 CREATE INDEX IF NOT EXISTS idx_cards_price_eur ON magic.cards USING btree (price_eur) WHERE (price_eur IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_cards_price_tix ON magic.cards USING btree (price_tix) WHERE (price_tix IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_cards_price_usd ON magic.cards USING btree (price_usd) WHERE (price_usd IS NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_cards_produced_mana ON magic.cards USING gin (produced_mana) WHERE (produced_mana <> '{}'::jsonb);
+CREATE INDEX IF NOT EXISTS idx_cards_produced_mana ON magic.cards USING gin (produced_mana);
 CREATE INDEX IF NOT EXISTS idx_cards_set_code ON magic.cards USING hash (card_set_code) WHERE (card_set_code IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_cards_watermark ON magic.cards USING hash (card_watermark) WHERE (card_watermark IS NOT NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_name ON magic.cards USING btree (card_name);
@@ -318,7 +318,7 @@ CREATE TABLE magic.valid_rarities (
     card_rarity_text text NOT NULL
 );
 
-INSERT INTO magic.valid_rarities (card_rarity_int, card_rarity_text) VALUES 
+INSERT INTO magic.valid_rarities (card_rarity_int, card_rarity_text) VALUES
     (0, 'common'),
     (1, 'uncommon'),
     (2, 'rare'),
@@ -354,5 +354,3 @@ ALTER TABLE ONLY magic.tag_relationships
 
 ALTER TABLE ONLY magic.tag_relationships
     ADD CONSTRAINT tag_relationships_parent_tag_fkey FOREIGN KEY (parent_tag) REFERENCES magic.tags(tag) ON DELETE CASCADE;
-
-
