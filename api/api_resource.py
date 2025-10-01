@@ -125,6 +125,35 @@ def extract_card_faces(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
         card_face_id_to_card_face[card_face_id] = ocard
     return list(card_face_id_to_card_face.values())
 
+def extract_card_printings(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Extract card printings from cards."""
+    card_printings = []
+    for icard in cards:
+        oracle_id = extract_oracle_id(icard)
+        rarity = icard["rarity"]
+        collector_number = icard["collector_number"]
+        collector_number_int = extract_collector_number_int(collector_number)
+        if collector_number_int is None:
+            logger.warning("Collector number %s is not a valid integer: %s", collector_number, icard)
+            continue
+        if collector_number_int < 0:
+            logger.warning("Collector number %s is negative: %s", collector_number, icard)
+            continue
+        as_dict = {
+            "border_color": icard["border_color"].lower(),
+            "card_id": oracle_id,
+            "card_printing_id": icard["id"],
+            "collector_number_int": collector_number_int,
+            "collector_number_text": collector_number,
+            "frame_bag": {},
+            "rarity_int": rarity_text_to_int(rarity),
+            "rarity_text": rarity,
+            "set_code": icard["set"],
+        }
+        card_printings.append(as_dict)
+    return card_printings
+
+
 def extract_card_face_printings(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Extract card face printings from cards."""
     """
@@ -139,6 +168,12 @@ def extract_card_face_printings(cards: list[dict[str, Any]]) -> list[dict[str, A
 
     card_face_printings = {}
     for icard in get_cards_and_faces(cards):
+
+        collector_number = icard["collector_number"]
+        collector_number_int = extract_collector_number_int(collector_number)
+        if collector_number_int is None or collector_number_int < 0:
+            continue
+
         ocard = {}
         try:
             ocard["card_printing_id"] = icard["id"]
@@ -236,34 +271,6 @@ def rarity_text_to_int(rarity_text: str) -> int:
         "bonus": 5,
     }
     return rarity_map.get(rarity_text, -1)
-
-def extract_card_printings(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Extract card printings from cards."""
-    card_printings = []
-    for icard in cards:
-        oracle_id = extract_oracle_id(icard)
-        rarity = icard["rarity"]
-        collector_number = icard["collector_number"]
-        collector_number_int = extract_collector_number_int(collector_number)
-        if collector_number_int is None:
-            logger.warning("Collector number %s is not a valid integer: %s", collector_number, icard)
-            continue
-        if collector_number_int < 0:
-            logger.warning("Collector number %s is negative: %s", collector_number, icard)
-            continue
-        as_dict = {
-            "border_color": icard["border_color"].lower(),
-            "card_id": oracle_id,
-            "card_printing_id": icard["id"],
-            "collector_number_int": collector_number_int,
-            "collector_number_text": collector_number,
-            "frame_bag": {},
-            "rarity_int": rarity_text_to_int(rarity),
-            "rarity_text": rarity,
-            "set_code": icard["set"],
-        }
-        card_printings.append(as_dict)
-    return card_printings
 
 
 def color_array_to_object(color_array: list[str]) -> dict[str, bool]:
@@ -2326,14 +2333,6 @@ class APIResource:
             if include_card(c)
         ]
 
-        # TODO:
-        # this is a little bit of a spray and pray method
-        # what I want to do is implement a priority ordering
-        # for cards, so that we import only one card of each name
-        # but we use frame, printing time, etc. to get the best instance
-        # of that card (likely the one with the highest quality artwork)
-        # cards = list(filter(None, (self._preprocess_card(icard) for icard in cards)))
-
         if not cards:
             return {
                 "status": "no_cards_after_preprocessing",
@@ -2372,7 +2371,7 @@ class APIResource:
                 for target_table, table_data in data:
                     cursor.execute(f"CREATE TEMPORARY TABLE {staging_table_name} (item_blob jsonb)")
                     items_loaded = 0
-                    page_size = 3000
+                    page_size = 200_000 // 9
                     for item_batch in itertools.batched(table_data, page_size):  # noqa: B911
                         # Load cards into staging table using COPY for efficiency
                         with cursor.copy(f"COPY {staging_table_name} (item_blob) FROM STDIN WITH (FORMAT csv, HEADER false)") as copy_filehandle:
@@ -2410,8 +2409,8 @@ class APIResource:
                             (jsonb_populate_record(null::magic.{target_table}, item_blob)).*
                         FROM
                             {staging_table_name}
+                        ON CONFLICT DO NOTHING
                     """
-                    # ON CONFLICT DO NOTHING
 
                     cursor.execute(transfer_query)
                     items_loaded_obj[target_table] = cursor.rowcount
