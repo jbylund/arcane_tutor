@@ -122,7 +122,7 @@ reset:
 	rm -rvf data
 
 test:
-	python -m pytest -vvv --capture=no --durations=10 --exitfirst
+	python -m pytest -vvv --capture=no --durations=10
 
 test-integration:
 	python -m pytest api/tests/test_integration_testcontainers.py -vvv --exitfirst

@@ -584,7 +584,12 @@ class APIResource:
             ) from oops
         finally:
             duration = time.monotonic() - before
-            logger.info("Request duration: %f seconds / %s", duration, resp.status)
+            logger.info(
+                "Request duration: %.5f seconds (%.2f ms) / %s",
+                duration,
+                duration * 1000,
+                resp.status,
+            )
 
     def _raise_not_found(self: APIResource, **_: object) -> None:
         """Raise a Falcon HTTPNotFound error with available routes."""
@@ -1082,37 +1087,44 @@ class APIResource:
                 description=f'Failed to parse query: "{query}"',
             ) from err
         sql_orderby = {
-            # what's in the query => the db column name
-            "cmc": "cmc",
-            "edhrec": "edhrec_rank",
-            "power": "creature_power",
-            "rarity": "card_rarity_int",
-            "toughness": "creature_toughness",
-            "usd": "price_usd",
-        }.get(orderby, "edhrec_rank")
+            # what's in the query => the db column name with table prefix
+            "cmc": "magic.card_faces.cmc",
+            "edhrec": "magic.cards.edhrec_rank",
+            "power": "magic.card_faces.power_int",
+            "rarity": "magic.card_printings.rarity_int",
+            "toughness": "magic.card_faces.toughness_int",
+            "usd": "magic.prices.price_usd",
+        }.get(orderby, "magic.cards.edhrec_rank")
         sql_direction = {
             "asc": "ASC",
             "desc": "DESC",
         }.get(direction, "ASC")
         full_query = f"""
         SELECT
-            card_name AS name,
-            mana_cost_text AS mana_cost,
-            oracle_text AS oracle_text,
-            card_artist AS artist,
-            cmc,
-            raw_card_blob->>'set_name' AS set_name,
-            raw_card_blob->>'type_line' AS type_line,
-            raw_card_blob->'image_uris'->>'small' AS image_small,
-            raw_card_blob->'image_uris'->>'normal' AS image_normal,
-            raw_card_blob->'image_uris'->>'large' AS image_large
+            magic.cards.card_name AS name,
+            magic.card_faces.mana_cost_text AS mana_cost,
+            magic.card_faces.oracle_text AS oracle_text,
+            magic.artists.artist_name AS artist,
+            magic.card_faces.cmc,
+            magic.card_sets.set_name AS set_name,
+            magic.card_faces.type_line AS type_line,
+            magic.card_face_printings.image_uris->>'small' AS image_small,
+            magic.card_face_printings.image_uris->>'normal' AS image_normal,
+            magic.card_face_printings.image_uris->>'large' AS image_large
         FROM
-            magic.cards AS card
+            magic.cards
+        JOIN magic.card_printings ON magic.cards.card_id = magic.card_printings.card_id
+        JOIN magic.card_faces ON magic.cards.card_id = magic.card_faces.card_id
+        JOIN magic.card_face_printings ON magic.card_faces.card_face_id = magic.card_face_printings.card_face_id AND magic.card_printings.card_printing_id = magic.card_face_printings.card_printing_id
+        JOIN magic.card_sets ON magic.card_printings.set_code = magic.card_sets.set_code
+        LEFT JOIN magic.prices ON magic.card_printings.card_printing_id = magic.prices.card_printing_id
+        LEFT JOIN magic.illustration_artists ON magic.card_face_printings.illustration_id = magic.illustration_artists.illustration_id
+        LEFT JOIN magic.artists ON magic.illustration_artists.artist_id = magic.artists.artist_id
         WHERE
             {where_clause}
         ORDER BY
             {sql_orderby} {sql_direction} NULLS LAST,
-            edhrec_rank ASC NULLS LAST
+            magic.cards.edhrec_rank ASC NULLS LAST
         LIMIT
             {limit}
         """
@@ -1155,9 +1167,16 @@ class APIResource:
     ) -> int:
         full_query = f"""
         SELECT
-            COUNT(1) AS total_cards
+            COUNT(DISTINCT magic.cards.card_id) AS total_cards
         FROM
-            magic.cards AS card
+            magic.cards
+        JOIN magic.card_printings ON magic.cards.card_id = magic.card_printings.card_id
+        JOIN magic.card_faces ON magic.cards.card_id = magic.card_faces.card_id
+        JOIN magic.card_face_printings ON magic.card_faces.card_face_id = magic.card_face_printings.card_face_id AND magic.card_printings.card_printing_id = magic.card_face_printings.card_printing_id
+        JOIN magic.card_sets ON magic.card_printings.set_code = magic.card_sets.set_code
+        LEFT JOIN magic.prices ON magic.card_printings.card_printing_id = magic.prices.card_printing_id
+        LEFT JOIN magic.illustration_artists ON magic.card_face_printings.illustration_id = magic.illustration_artists.illustration_id
+        LEFT JOIN magic.artists ON magic.illustration_artists.artist_id = magic.artists.artist_id
         WHERE
             {where_clause}
         """
@@ -1786,21 +1805,6 @@ class APIResource:
             raise ValueError(msg)
 
         logger.info("Importing card by name: '%s'", card_name)
-
-        # TODO: use _search or search instead
-        # Check if card already exists in database for backward compatibility
-        existing_check = self._run_query(
-            query="SELECT card_name FROM magic.cards WHERE card_name = %(card_name)s",
-            params={"card_name": card_name},
-            explain=False,
-        )
-
-        if existing_check["result"]:
-            return {
-                "card_name": card_name,
-                "status": "already_exists",
-                "message": f"Card '{card_name}' already exists in database",
-            }
 
         # Use import_cards_by_search with exact name query
         return self.import_cards_by_search(search_query=f'!"{card_name}"')

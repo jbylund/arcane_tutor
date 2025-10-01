@@ -681,15 +681,15 @@ def test_mana_cost_sql_generation() -> None:
     result1 = parsing.parse_scryfall_query("mana:{1}{G}")
     context1 = {}
     sql1 = result1.to_sql(context1)
-    assert "(card.mana_cost_text =" in sql1
+    assert "(magic.card_faces.mana_cost_text =" in sql1
     assert "{1}{G}" in context1.values()
 
     # Test <= operator generates containment + cmc check
     result2 = parsing.parse_scryfall_query("mana<={2}{R}{R}")
     context2 = {}
     sql2 = result2.to_sql(context2)
-    assert "card.mana_cost_jsonb <@" in sql2
-    assert "card.cmc <=" in sql2
+    assert "magic.card_faces.mana_cost_jsonb <@" in sql2
+    assert "magic.card_faces.cmc <=" in sql2
     assert {"R": [1, 2]} in context2.values()
     assert 4 in context2.values()  # CMC of {2}{R}{R}
 
@@ -697,24 +697,24 @@ def test_mana_cost_sql_generation() -> None:
     result3 = parsing.parse_scryfall_query("mana<{1}{G}")
     context3 = {}
     sql3 = result3.to_sql(context3)
-    assert "card.mana_cost_jsonb <@" in sql3
-    assert "card.cmc <=" in sql3
-    assert "card.mana_cost_jsonb <>" in sql3
+    assert "magic.card_faces.mana_cost_jsonb <@" in sql3
+    assert "magic.card_faces.cmc <=" in sql3
+    assert "magic.card_faces.mana_cost_jsonb <>" in sql3
 
     # Test >= operator reverses containment direction
     result4 = parsing.parse_scryfall_query("mana>={W}{U}")
     context4 = {}
     sql4 = result4.to_sql(context4)
-    assert "<@ card.mana_cost_jsonb" in sql4
-    assert "card.cmc >=" in sql4
+    assert "<@ magic.card_faces.mana_cost_jsonb" in sql4
+    assert "magic.card_faces.cmc >=" in sql4
 
     # Test > operator includes inequality
     result5 = parsing.parse_scryfall_query("mana>{0}")
     context5 = {}
     sql5 = result5.to_sql(context5)
-    assert "<@ card.mana_cost_jsonb" in sql5
-    assert "card.cmc >=" in sql5
-    assert "card.mana_cost_jsonb <>" in sql5
+    assert "<@ magic.card_faces.mana_cost_jsonb" in sql5
+    assert "magic.card_faces.cmc >=" in sql5
+    assert "magic.card_faces.mana_cost_jsonb <>" in sql5
 
 
 def test_mana_cost_cmc_calculation() -> None:
@@ -776,8 +776,8 @@ def test_mana_cost_string_format_comparisons() -> None:
         context = {}
         sql = result.to_sql(context)
         assert sql is not None, f"Failed to generate SQL for {query}"
-        assert "card.mana_cost_jsonb" in sql, f"Should use JSONB containment for {query}"
-        assert "card.cmc" in sql, f"Should use CMC check for {query}"
+        assert "magic.card_faces.mana_cost_jsonb" in sql, f"Should use JSONB containment for {query}"
+        assert "magic.card_faces.cmc" in sql, f"Should use CMC check for {query}"
 
 
 @pytest.mark.parametrize(

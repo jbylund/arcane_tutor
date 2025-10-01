@@ -122,7 +122,120 @@ class ScryfallAttributeNode(AttributeNode):
         """
         del context
         remapped = SEARCH_NAME_TO_DB_NAME.get(self.attribute_name, self.attribute_name)
-        return f"card.{remapped}"
+
+        # Map attributes to their correct table prefixes in the new multi-table schema
+        table_prefix_map = {
+            # Core card data (stays in cards table)
+            "card_name": "magic.cards.card_name",
+            "edhrec_rank": "magic.cards.edhrec_rank",
+            "card_color_identity": "magic.cards.card_color_identity",
+            "card_oracle_tags": "magic.cards.card_oracle_tags",
+            "card_legalities": "magic.cards.card_legalities",
+            "keywords": "magic.cards.keywords",
+
+            # Face-specific data (now in card_faces table)
+            "mana_cost_text": "magic.card_faces.mana_cost_text",
+            "mana_cost_jsonb": "magic.card_faces.mana_cost_jsonb",
+            "oracle_text": "magic.card_faces.oracle_text",
+            "cmc": "magic.card_faces.cmc",
+            "type_line": "magic.card_faces.type_line",
+            "face_types": "magic.card_faces.face_types",
+            "face_subtypes": "magic.card_faces.face_subtypes",
+            "face_produced_mana": "magic.card_faces.face_produced_mana",
+            "power_text": "magic.card_faces.power_text",
+            "power_int": "magic.card_faces.power_int",
+            "toughness_text": "magic.card_faces.toughness_text",
+            "toughness_int": "magic.card_faces.toughness_int",
+            "loyalty_text": "magic.card_faces.loyalty_text",
+            "loyalty_int": "magic.card_faces.loyalty_int",
+            "defense_text": "magic.card_faces.defense_text",
+            "defense_int": "magic.card_faces.defense_int",
+            "colors": "magic.card_faces.colors",
+
+            # Printing-specific data (now in card_printings table)
+            "card_set_code": "magic.card_printings.set_code",
+            "collector_number": "magic.card_printings.collector_number_text",
+            "collector_number_int": "magic.card_printings.collector_number_int",
+            "card_rarity_int": "magic.card_printings.rarity_int",
+            "card_rarity_text": "magic.card_printings.rarity_text",
+            "border_color": "magic.card_printings.border_color",
+            "frame_bag": "magic.card_printings.frame_bag",
+
+            # Set data (now in card_sets table)
+            "set_name": "magic.card_sets.set_name",
+            "set_type": "magic.card_sets.set_type",
+
+            # Face printing data (now in card_face_printings table)
+            "card_watermark": "magic.card_face_printings.watermark",
+            "card_layout": "magic.card_face_printings.layout",
+            "flavor_text": "magic.card_face_printings.flavor_text",
+            "image_uris": "magic.card_face_printings.image_uris",
+
+            # Artist data (now in artists table via joins)
+            "card_artist": "magic.artists.artist_name",
+
+            # Price data (now in prices table)
+            "price_usd": "magic.prices.price_usd",
+            "price_eur": "magic.prices.price_eur",
+            "price_tix": "magic.prices.price_tix",
+
+            # Legacy mappings for backwards compatibility
+            "card_types": "magic.card_faces.face_types",
+            "card_subtypes": "magic.card_faces.face_subtypes",
+            "card_colors": "magic.card_faces.colors",
+            "creature_power": "magic.card_faces.power_int",
+            "creature_toughness": "magic.card_faces.toughness_int",
+            "card_keywords": "magic.cards.keywords",
+            "card_frame_data": "magic.card_printings.frame_bag",
+            "card_border": "magic.card_printings.border_color",
+            "produced_mana": "magic.card_faces.face_produced_mana",
+            "mana": "magic.card_faces.mana_cost_text",
+            "m": "magic.card_faces.mana_cost_text",
+            "power": "magic.card_faces.power_int",
+            "pow": "magic.card_faces.power_int",
+            "toughness": "magic.card_faces.toughness_int",
+            "tou": "magic.card_faces.toughness_int",
+            "name": "magic.cards.card_name",
+            "type": "magic.card_faces.face_types",
+            "types": "magic.card_faces.face_types",
+            "t": "magic.card_faces.face_subtypes",
+            "subtype": "magic.card_faces.face_subtypes",
+            "subtypes": "magic.card_faces.face_subtypes",
+            "color": "magic.card_faces.colors",
+            "c": "magic.card_faces.colors",
+            "color_identity": "magic.cards.card_color_identity",
+            "coloridentity": "magic.cards.card_color_identity",
+            "id": "magic.cards.card_color_identity",
+            "identity": "magic.cards.card_color_identity",
+            "artist": "magic.artists.artist_name",
+            "a": "magic.artists.artist_name",
+            "set": "magic.card_printings.set_code",
+            "s": "magic.card_printings.set_code",
+            "number": "magic.card_printings.collector_number_text",
+            "cn": "magic.card_printings.collector_number_text",
+            "rarity": "magic.card_printings.rarity_int",
+            "r": "magic.card_printings.rarity_int",
+            "format": "magic.cards.card_legalities",
+            "f": "magic.cards.card_legalities",
+            "legal": "magic.cards.card_legalities",
+            "banned": "magic.cards.card_legalities",
+            "restricted": "magic.cards.card_legalities",
+            "layout": "magic.card_face_printings.layout",
+            "border": "magic.card_printings.border_color",
+            "watermark": "magic.card_face_printings.watermark",
+            "oracle": "magic.card_faces.oracle_text",
+            "o": "magic.card_faces.oracle_text",
+            "oracle_tags": "magic.cards.card_oracle_tags",
+            "otag": "magic.cards.card_oracle_tags",
+            "is": "magic.cards.card_is_tags",
+            "usd": "magic.prices.price_usd",
+            "eur": "magic.prices.price_eur",
+            "tix": "magic.prices.price_tix",
+            "produces": "magic.card_faces.face_produced_mana",
+            "frame": "magic.card_printings.frame_bag",
+        }
+
+        return table_prefix_map.get(remapped, f"magic.cards.{remapped}")
 
 
 def get_colors_comparison_object(val: str) -> dict[str, bool]:
@@ -460,8 +573,8 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         context[cmc_param] = query_cmc
 
         # SQL fragments
-        mana_jsonb_sql = "card.mana_cost_jsonb"
-        cmc_sql = "card.cmc"
+        mana_jsonb_sql = "magic.card_faces.mana_cost_jsonb"
+        cmc_sql = "magic.card_faces.cmc"
 
         if self.operator == "<=":
             # Card costs <= query if:

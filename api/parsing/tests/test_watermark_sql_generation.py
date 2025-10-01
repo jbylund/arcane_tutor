@@ -14,18 +14,18 @@ class TestWatermarkSQLGeneration:
     """Test that watermark searches generate exact equality SQL queries."""
 
     @pytest.mark.parametrize(("query", "expected_column", "expected_value"), [
-        ("watermark:azorius", "card.card_watermark", "azorius"),
-        ("watermark:dimir", "card.card_watermark", "dimir"),
-        ("watermark:rakdos", "card.card_watermark", "rakdos"),
-        ("watermark:gruul", "card.card_watermark", "gruul"),
-        ("watermark:selesnya", "card.card_watermark", "selesnya"),
-        ("watermark:orzhov", "card.card_watermark", "orzhov"),
-        ("watermark:izzet", "card.card_watermark", "izzet"),
-        ("watermark:golgari", "card.card_watermark", "golgari"),
-        ("watermark:boros", "card.card_watermark", "boros"),
-        ("watermark:simic", "card.card_watermark", "simic"),
-        ("watermark:set", "card.card_watermark", "set"),
-        ("watermark:planeswalker", "card.card_watermark", "planeswalker"),
+        ("watermark:azorius", "magic.card_face_printings.watermark", "azorius"),
+        ("watermark:dimir", "magic.card_face_printings.watermark", "dimir"),
+        ("watermark:rakdos", "magic.card_face_printings.watermark", "rakdos"),
+        ("watermark:gruul", "magic.card_face_printings.watermark", "gruul"),
+        ("watermark:selesnya", "magic.card_face_printings.watermark", "selesnya"),
+        ("watermark:orzhov", "magic.card_face_printings.watermark", "orzhov"),
+        ("watermark:izzet", "magic.card_face_printings.watermark", "izzet"),
+        ("watermark:golgari", "magic.card_face_printings.watermark", "golgari"),
+        ("watermark:boros", "magic.card_face_printings.watermark", "boros"),
+        ("watermark:simic", "magic.card_face_printings.watermark", "simic"),
+        ("watermark:set", "magic.card_face_printings.watermark", "set"),
+        ("watermark:planeswalker", "magic.card_face_printings.watermark", "planeswalker"),
     ])
     def test_watermark_generate_exact_equality_sql(self, query: str, expected_column: str, expected_value: str) -> None:
         """Test that watermark searches generate exact equality SQL (not ILIKE)."""
@@ -56,7 +56,7 @@ class TestWatermarkSQLGeneration:
 
         # Should generate ILIKE pattern matching
         assert "ILIKE" in sql
-        assert "card.card_name" in sql
+        assert "magic.cards.card_name" in sql
 
         # Context should contain wildcards
         assert len(context) == 1
@@ -74,7 +74,7 @@ class TestWatermarkSQLGeneration:
         sql = result.to_sql(context)
 
         # Should have both exact equality conditions with AND
-        assert "card.card_watermark =" in sql
+        assert "magic.card_face_printings.watermark =" in sql
         assert "AND" in sql
         assert "ILIKE" not in sql
 
@@ -95,8 +95,8 @@ class TestWatermarkSQLGeneration:
         sql = result.to_sql(context)
 
         # Should have both exact equality conditions with AND
-        assert "card.card_watermark =" in sql
-        assert "card.card_border =" in sql
+        assert "magic.card_face_printings.watermark =" in sql
+        assert "magic.card_printings.border_color =" in sql
         assert "AND" in sql
         assert "ILIKE" not in sql
 
@@ -149,9 +149,9 @@ class TestWatermarkSQLGeneration:
         sql = result.to_sql(context)
 
         # Should have all three conditions with AND
-        assert "card.card_watermark =" in sql
-        assert "card.card_border =" in sql
-        assert "card.cmc =" in sql
+        assert "magic.card_face_printings.watermark =" in sql
+        assert "magic.card_printings.border_color =" in sql
+        assert "magic.card_faces.cmc =" in sql
         assert "AND" in sql
         assert "ILIKE" not in sql
 

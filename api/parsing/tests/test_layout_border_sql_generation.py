@@ -14,12 +14,12 @@ class TestLayoutBorderSQLGeneration:
     """Test that layout and border searches generate exact equality SQL queries."""
 
     @pytest.mark.parametrize(("query", "expected_column", "expected_value"), [
-        ("layout:normal", "card.card_layout", "normal"),
-        ("layout:split", "card.card_layout", "split"),
-        ("layout:flip", "card.card_layout", "flip"),
-        ("border:black", "card.card_border", "black"),
-        ("border:white", "card.card_border", "white"),
-        ("border:borderless", "card.card_border", "borderless"),
+        ("layout:normal", "magic.card_face_printings.layout", "normal"),
+        ("layout:split", "magic.card_face_printings.layout", "split"),
+        ("layout:flip", "magic.card_face_printings.layout", "flip"),
+        ("border:black", "magic.card_printings.border_color", "black"),
+        ("border:white", "magic.card_printings.border_color", "white"),
+        ("border:borderless", "magic.card_printings.border_color", "borderless"),
     ])
     def test_layout_border_generate_exact_equality_sql(self, query: str, expected_column: str, expected_value: str) -> None:
         """Test that layout and border searches generate exact equality SQL (not ILIKE)."""
@@ -50,7 +50,7 @@ class TestLayoutBorderSQLGeneration:
 
         # Should generate ILIKE pattern matching
         assert "ILIKE" in sql
-        assert "card.card_name" in sql
+        assert "magic.cards.card_name" in sql
 
         # Context should contain wildcards
         assert len(context) == 1
@@ -68,8 +68,8 @@ class TestLayoutBorderSQLGeneration:
         sql = result.to_sql(context)
 
         # Should have both exact equality conditions with AND
-        assert "card.card_layout =" in sql
-        assert "card.card_border =" in sql
+        assert "magic.card_face_printings.layout =" in sql
+        assert "magic.card_printings.border_color =" in sql
         assert "AND" in sql
         assert "ILIKE" not in sql
 

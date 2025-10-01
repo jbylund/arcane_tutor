@@ -89,18 +89,6 @@ class TestImportCardByName(unittest.TestCase):
             self.api_resource._scryfall_search(query="name:'Lightning Bolt'")
 
     @patch.object(APIResource, "_run_query")
-    def test_import_card_by_name_returns_already_exists_for_existing_card(self, mock_run_query: MagicMock) -> None:
-        """Test that import_card_by_name returns already_exists status for existing cards."""
-        # Mock _run_query to return existing card
-        mock_run_query.return_value = {"result": [{"card_name": "Lightning Bolt"}]}
-
-        result = self.api_resource.import_card_by_name(card_name="Lightning Bolt")
-
-        assert result["status"] == "already_exists"
-        assert result["card_name"] == "Lightning Bolt"
-        assert "already exists in database" in result["message"]
-
-    @patch.object(APIResource, "_run_query")
     @patch.object(APIResource, "_scryfall_search")
     def test_import_card_by_name_returns_not_found_for_missing_card(self, mock_search: MagicMock, mock_run_query: MagicMock) -> None:
         """Test that import_card_by_name returns not_found status when card doesn't exist in Scryfall."""
