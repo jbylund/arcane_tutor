@@ -1,18 +1,18 @@
 WITH card_types AS (
     SELECT
-        jsonb_array_elements_text(card_types) as type_name
+        jsonb_array_elements_text(face_types) as type_name
     FROM
-        magic.cards
+        magic.card_faces
     WHERE
-        card_types IS NOT NULL
+        face_types IS NOT NULL
 ),
 card_subtypes AS (
     SELECT
-        jsonb_array_elements_text(card_subtypes) as subtype_name
+        jsonb_array_elements_text(face_subtypes) as subtype_name
     FROM
-        magic.cards
+        magic.card_faces
     WHERE
-        card_subtypes IS NOT NULL
+        face_subtypes IS NOT NULL
 ),
 card_types_and_subtypes AS (
     SELECT

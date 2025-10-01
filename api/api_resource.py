@@ -369,30 +369,23 @@ def _convert_string_to_type(str_value: str, param_type: Any) -> Any:  # noqa: AN
     Returns:
         The converted value, or the original string if conversion fails/unsupported
     """
-    logger.info("param_type: %s %s", type(param_type), param_type)
-    # Handle special cases for no type annotation
-    if param_type in {inspect.Parameter.empty, Any, "object"}:
-        result = str_value
-    # Convert to boolean
-    elif param_type is bool or str(param_type) == "<class 'bool'>" or param_type == "bool":
-        result = str_value.lower() in ("true", "1", "yes", "on")
-    # Convert to integer
-    elif param_type is int or str(param_type) == "<class 'int'>" or param_type == "int":
-        try:
-            result = int(str_value)
-        except ValueError:
-            result = str_value  # Keep as string if conversion fails
-    # Convert to float
-    elif param_type is float or str(param_type) == "<class 'float'>" or param_type == "float":
-        try:
-            result = float(str_value)
-        except ValueError:
-            result = str_value  # Keep as string if conversion fails
-    else:
-        # For all other types (including str), keep as string
-        result = str_value
+    if str_value is None:
+        return None
 
-    return result
+    def identity(x: str) -> str:
+        return x
+
+    def convert_to_bool(x: str) -> bool:
+        return x.lower() in ("true", "1", "yes", "on")
+
+    converter = {
+        "bool": convert_to_bool,
+        "float": float,
+        "int": int,
+        "str": identity,
+    }
+    converter = converter.get(param_type, identity)
+    return converter(str_value)
 
 
 def make_type_converting_wrapper(func: callable) -> callable:
@@ -1121,8 +1114,9 @@ class APIResource:
             "asc": "ASC",
             "desc": "DESC",
         }.get(direction, "ASC")
-        full_query = f"""
+        full_query = rf"""
         SELECT
+            magic.cards.card_id AS card_id,
             magic.cards.card_name AS name,
             magic.card_faces.mana_cost_text AS mana_cost,
             magic.card_faces.oracle_text AS oracle_text,
@@ -1130,9 +1124,11 @@ class APIResource:
             magic.card_faces.cmc,
             magic.card_sets.set_name AS set_name,
             magic.card_faces.type_line AS type_line,
-            magic.card_face_printings.image_uris->>'small' AS image_small,
-            magic.card_face_printings.image_uris->>'normal' AS image_normal,
-            magic.card_face_printings.image_uris->>'large' AS image_large
+            magic.card_face_printings.illustration_id AS illustration_id,
+            substring(
+                magic.card_face_printings.image_uris->>'small',
+                '[0-9a-f\-]{{36}}'
+            ) AS image_location_uuid
         FROM
             magic.cards
         JOIN magic.card_printings ON magic.cards.card_id = magic.card_printings.card_id

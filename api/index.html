@@ -961,13 +961,26 @@
 
         createCardHTML(card, index) {
           const cardId = index.toString();
-          const imageSmall = card.image_small;
-          const imageNormal = card.image_normal;
-          const imageLarge = card.image_large;
+
+          const image_location_uuid = card.image_location_uuid;
+          const idPrefix = image_location_uuid.substring(0, 1);
+          const idSuffix = image_location_uuid.substring(1, 2);
+
+          // Calculate cache timestamp: unix seconds rounded down to nearest 3 days
+          const now = Math.floor(Date.now() / 1000); // Current unix timestamp in seconds
+          const threeDaysInSeconds = 3 * 24 * 60 * 60; // 3 days in seconds
+          const cache_timestamp = Math.floor(now / threeDaysInSeconds) * threeDaysInSeconds;
+
+          const imageSmall = `https://cards.scryfall.io/small/front/${idPrefix}/${idSuffix}/${image_location_uuid}.jpg?${cache_timestamp}`;
+          const imageNormal = `https://cards.scryfall.io/normal/front/${idPrefix}/${idSuffix}/${image_location_uuid}.jpg?${cache_timestamp}`;
+          const imageLarge = `https://cards.scryfall.io/large/front/${idPrefix}/${idSuffix}/${image_location_uuid}.jpg?${cache_timestamp}`;
 
           // Debug logging
           console.log('Creating card HTML for:', card);
           console.log('Card ID will be:', cardId);
+          console.log('Using image_location_uuid:', card.image_location_uuid);
+          console.log('Cache timestamp:', cache_timestamp);
+          console.log('Constructed image URLs:', { imageSmall, imageNormal, imageLarge });
 
           // Create descriptive alt text with card name, mana cost, and oracle text
           let altText = this.escapeHtml(card.name || 'Unknown Card');
