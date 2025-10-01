@@ -187,15 +187,18 @@ def extract_card_sets(cards: list[dict[str, Any]]) -> list[dict[str, str]]:
 
 def extract_artists(cards: list[dict[str, Any]]) -> list[dict[str, str]]:
     """Extract artists from cards."""
-    artists = set()
+    artist_id_to_name = {}
     for icard in get_cards_and_faces(cards):
         artist_ids = icard.get("artist_ids", [])
         if len(artist_ids) != 1:
             continue
-        artist_str = icard.get("artist")
-        as_dict = {"artist_name": artist_str, "artist_id": artist_ids[0]}
-        artists.add(dict_to_tuple(as_dict))
-    return [dict(r) for r in artists]
+        artist_name = icard.get("artist")
+        artist_id = artist_ids[0]
+        artist_id_to_name[artist_id] = artist_name
+    return [
+        {"artist_name": artist_name, "artist_id": artist_id}
+        for artist_id, artist_name in artist_id_to_name.items()
+    ]
 
 def extract_illustrations(cards: list[dict[str, Any]]) -> list[dict[str, str]]:
     """Extract illustrations from cards."""
@@ -287,21 +290,12 @@ def extract_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     input_cards = cards
     del cards
 
-    """
-    keywords should belong to the card face, but scryfall actually has them on the card object
-    so put them here:
-    ocard["keywords"] = dict.fromkeys(icard.get("keywords", []), True)
-    """
+    # keywords should belong to the card face, but scryfall actually
+    # has them on the card object - so we're leaving them here
     output_cards = {}
     for icard in input_cards:
-        # card_id uuid PRIMARY KEY,
-        # edhrec_rank integer,
-        # card_color_identity jsonb NOT NULL,
-        # card_oracle_tags jsonb NOT NULL,
-        # card_legalities jsonb NOT NULL
-        oracle_id = extract_oracle_id(icard)
-        icard["keywords"] = dict.fromkeys(icard.get("keywords", []), True)
-        output_cards[oracle_id] = icard
+        output_cards[extract_oracle_id(icard)] = icard
+    del icard
     return [
         {
             "card_color_identity": color_array_to_object(c.get("color_identity")),
@@ -310,9 +304,9 @@ def extract_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "card_name": c["name"],
             "card_oracle_tags": c.get("oracle_tags", {}),
             "edhrec_rank": c.get("edhrec_rank"),
-            "keywords": c.get("keywords", {}),
+            "keywords": dict.fromkeys(c.get("keywords", []), True),
         }
-        for c in output_cards.values()
+        for oracle_id, c in output_cards.items()
     ]
 
 
@@ -368,6 +362,7 @@ def _convert_string_to_type(str_value: str, param_type: Any) -> Any:  # noqa: AN
     Returns:
         The converted value, or the original string if conversion fails/unsupported
     """
+    logger.info("param_type: %s %s", type(param_type), param_type)
     # Handle special cases for no type annotation
     if param_type in {inspect.Parameter.empty, Any, "object"}:
         result = str_value
@@ -2289,7 +2284,7 @@ class APIResource:
 
         return import_results
 
-    def _load_cards_with_staging(
+    def _load_cards_with_staging(  # noqa: PLR0915
         self: APIResource,
         cards: list[dict[str, Any]],
     ) -> dict[str, Any]:
@@ -2415,14 +2410,17 @@ class APIResource:
                             (jsonb_populate_record(null::magic.{target_table}, item_blob)).*
                         FROM
                             {staging_table_name}
-                        ON CONFLICT DO NOTHING
                     """
+                    # ON CONFLICT DO NOTHING
 
                     cursor.execute(transfer_query)
                     items_loaded_obj[target_table] = cursor.rowcount
 
                     # Drop the staging table
                     cursor.execute(f"DROP TABLE {staging_table_name}")
+                    cursor.execute(f"SELECT SUM(1) AS total_items FROM magic.{target_table}")
+                    total_items = cursor.fetchone()["total_items"]
+                    logger.info("Total items in magic.%s: %s", target_table, total_items)
 
                 conn.commit()
 
