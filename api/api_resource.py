@@ -253,7 +253,7 @@ def extract_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     del cards
 
     """
-    keywords should belong to the card face, but scryfal actually has them on the card object
+    keywords should belong to the card face, but scryfall actually has them on the card object
     so put them here:
     ocard["keywords"] = dict.fromkeys(icard.get("keywords", []), True)
     """
