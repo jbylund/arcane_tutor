@@ -67,9 +67,19 @@ def get_cards_and_faces(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return cards_and_faces
 
 def extract_card_face_id(icard: dict[str, Any]) -> str:
-    face_index = icard["face_index"]
-    oracle_id = icard["oracle_id"]
-    return uuid_from_args(face_index, oracle_id)
+    """Extract a card face id from a card."""
+    return uuid_from_args(
+        icard["face_index"],
+        icard["oracle_id"],
+    )
+
+def extract_card_face_printing_id(icard: dict[str, Any]) -> str:
+    """Extract a card face printing id from a card."""
+    return uuid_from_args(
+        icard["face_index"],
+        icard["id"],
+    )
+
 
 def uuid_from_args(*args: object) -> str:
     """Generate a uuid from a list of arguments."""
@@ -91,7 +101,7 @@ def extract_card_faces(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
         ocard["card_face_id"] = card_face_id = extract_card_face_id(icard)
         ocard["card_id"] = icard["oracle_id"]
         ocard["card_face_name"] = icard["name"]
-        ocard["face_index"] = face_index
+        ocard["face_index"] = icard["face_index"]
         ocard["mana_cost_text"] = mana_cost_str = icard["mana_cost"]
         ocard["mana_cost_jsonb"] = mana_cost_str_to_dict(mana_cost_str)
         ocard["colors"] = color_array_to_object(icard["colors"])
@@ -117,7 +127,6 @@ def extract_card_faces(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def extract_card_face_printings(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Extract card face printings from cards."""
-
     """
     card_face_id uuid NOT NULL REFERENCES magic.card_faces(card_face_id),
     illustration_id uuid NOT NULL REFERENCES magic.illustrations(illustration_id),
@@ -128,17 +137,24 @@ def extract_card_face_printings(cards: list[dict[str, Any]]) -> list[dict[str, A
     image_uris jsonb, -- Object providing URIs to imagery for this face
     """
 
-    card_face_printings = set()
+    card_face_printings = {}
     for icard in get_cards_and_faces(cards):
-        # need to generate card_face_printing_id using the face index and the id (not oracle id)
         ocard = {}
-        card_id = icard["id"]
-        face_index = icard["face_index"]
-        oracle_id = icard["oracle_id"]
+        ocard["card_printing_id"] = icard["id"]
         ocard["card_face_id"] = extract_card_face_id(icard)
-        ocard["card_face_printing_id"] = extract_card_face_printing_id(icard)
-        card_face_printings.add(dict_to_tuple(ocard))
-    return [dict(r) for r in card_face_printings]
+        ocard["card_face_printing_id"] = face_printing_id = extract_card_face_printing_id(icard)
+        ocard["illustration_id"] = icard["illustration_id"]
+        ocard["flavor_text"] = icard.get("flavor_text") # not all cards (or card faces) have flavor text
+        ocard["image_uris"] = icard["image_uris"]
+
+        for field in ["layout", "watermark"]:
+            val = icard.get(field)
+            if val is not None:
+                ocard[field] = val.lower()
+
+        card_face_printings[face_printing_id] = ocard
+
+    return list(card_face_printings.values())
 
 def include_card(card: dict[str, Any]) -> bool:
     """Should this card be included in the db."""
@@ -230,14 +246,14 @@ def extract_card_printings(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         as_dict = {
             "border_color": icard["border_color"].lower(),
-            "card_id": icard.get("oracle_id"),
-            "card_printing_id": icard.get("id"),
+            "card_id": icard["oracle_id"],
+            "card_printing_id": icard["id"],
             "collector_number_int": collector_number_int,
             "collector_number_text": collector_number,
             "frame_bag": {},
             "rarity_int": rarity_text_to_int(rarity),
             "rarity_text": rarity,
-            "set_code": icard.get("set"),
+            "set_code": icard["set"],
         }
         card_printings.append(as_dict)
     return card_printings
@@ -2343,9 +2359,10 @@ class APIResource:
                             writer.writerows([orjson.dumps(item, option=orjson.OPT_SORT_KEYS).decode("utf-8")] for item in item_batch)
                         items_loaded += len(item_batch)
                         logger.info(
-                            "Loaded %s of %s cards (%.1f%%)...",
-                            f"{items_loaded:,}",
-                            f"{len(table_data):,}",
+                            "Loaded %s of %s items into magic.%s (%.1f%%)...",
+                            f"{items_loaded:8,}",
+                            f"{len(table_data):8,}",
+                            target_table,
                             items_loaded / len(table_data) * 100,
                         )
 
