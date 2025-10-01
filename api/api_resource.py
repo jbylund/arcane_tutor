@@ -58,7 +58,7 @@ def get_cards_and_faces(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for icard in cards:
         faces = icard.get("card_faces", [])
         if faces:
-            for face_index,face in enumerate(faces):
+            for face_index, face in enumerate(faces):
                 face["face_index"] = face_index
                 cards_and_faces.append(icard | face)
         else:
