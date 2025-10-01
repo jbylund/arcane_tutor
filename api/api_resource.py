@@ -66,9 +66,15 @@ def get_cards_and_faces(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
             cards_and_faces.append(icard)
     return cards_and_faces
 
+def extract_card_face_id(icard: dict[str, Any]) -> str:
+    face_index = icard["face_index"]
+    oracle_id = icard["oracle_id"]
+    return uuid_from_args(face_index, oracle_id)
+
 def uuid_from_args(*args: object) -> str:
     """Generate a uuid from a list of arguments."""
-    signature_string = "-".join(str(arg) for arg in args)
+    seperator = "🍵"
+    signature_string = seperator.join(str(arg) for arg in args)
     signature_bytes = signature_string.encode()
     digest = hashlib.sha256(signature_bytes).hexdigest()
     return str(uuid.UUID(digest[:32]))
@@ -82,11 +88,7 @@ def extract_card_faces(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     card_face_id_to_card_face = {}
     for icard in get_cards_and_faces(cards):
         ocard = {}
-        # need to generate card_face_id using the face index and the oracle id
-        face_index = icard["face_index"]
-        oracle_id = icard["oracle_id"]
-        # hash them together, then make a uuid, must be reproducible
-        ocard["card_face_id"] = card_face_id =uuid_from_args(face_index, oracle_id)
+        ocard["card_face_id"] = card_face_id = extract_card_face_id(icard)
         ocard["card_id"] = icard["oracle_id"]
         ocard["card_face_name"] = icard["name"]
         ocard["face_index"] = face_index
@@ -115,10 +117,27 @@ def extract_card_faces(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def extract_card_face_printings(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Extract card face printings from cards."""
+
+    """
+    card_face_id uuid NOT NULL REFERENCES magic.card_faces(card_face_id),
+    illustration_id uuid NOT NULL REFERENCES magic.illustrations(illustration_id),
+    card_printing_id uuid NOT NULL REFERENCES magic.card_printings(card_printing_id),
+    layout text, -- Layout of this card face (for reversible cards)
+    watermark text, -- Watermark on this particular card face
+    flavor_text text,
+    image_uris jsonb, -- Object providing URIs to imagery for this face
+    """
+
     card_face_printings = set()
     for icard in get_cards_and_faces(cards):
         # need to generate card_face_printing_id using the face index and the id (not oracle id)
-        card_face_printings.add(dict_to_tuple(icard))
+        ocard = {}
+        card_id = icard["id"]
+        face_index = icard["face_index"]
+        oracle_id = icard["oracle_id"]
+        ocard["card_face_id"] = extract_card_face_id(icard)
+        ocard["card_face_printing_id"] = extract_card_face_printing_id(icard)
+        card_face_printings.add(dict_to_tuple(ocard))
     return [dict(r) for r in card_face_printings]
 
 def include_card(card: dict[str, Any]) -> bool:
@@ -2296,7 +2315,7 @@ class APIResource:
             ("card_sets", extract_card_sets(cards)),
             ("card_printings", extract_card_printings(cards)),
             ("card_faces", extract_card_faces(cards)),
-            # ("card_face_printings", extract_card_face_printings(cards)),
+            ("card_face_printings", extract_card_face_printings(cards)),
         ]
         del cards
 

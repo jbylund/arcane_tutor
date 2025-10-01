@@ -77,8 +77,8 @@ CREATE TABLE magic.tags (
 );
 
 CREATE TABLE magic.tag_relationships (
-    child_tag text NOT NULL REFERENCES magic.tags(tag),
-    parent_tag text NOT NULL REFERENCES magic.tags(tag),
+    child_tag text NOT NULL REFERENCES magic.tags(tag) ON DELETE CASCADE,
+    parent_tag text NOT NULL REFERENCES magic.tags(tag) ON DELETE CASCADE,
     PRIMARY KEY (child_tag, parent_tag),
     CONSTRAINT no_self_reference CHECK ((child_tag <> parent_tag))
 );
