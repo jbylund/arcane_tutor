@@ -54,7 +54,7 @@ def run_server(  # noqa: C901
             if iworker.is_alive():
                 logger.info("Killing worker %d", iworker.pid)
                 iworker.kill()
-            wait_time = 1 / 10
+            wait_time = 1 / 100
         logger.info("Shutdown complete")
 
     # Create shared objects for all workers

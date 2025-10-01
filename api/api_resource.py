@@ -7,6 +7,7 @@ import copy
 import csv
 import datetime
 import functools
+import hashlib
 import inspect
 import itertools
 import logging
@@ -17,6 +18,7 @@ import re
 import secrets
 import time
 import urllib.parse
+import uuid
 from typing import TYPE_CHECKING, Any
 from typing import cast as typecast
 from urllib.parse import urlparse
@@ -44,6 +46,221 @@ logger = logging.getLogger(__name__)
 
 # pylint: disable=c-extension-no-member
 NOT_FOUND = 404
+
+def parse_type_line(type_line: str) -> tuple[list[str], list[str]]:
+    """Parse the type line of a card."""
+    card_types, _, card_subtypes = (x.strip().split() for x in type_line.title().partition("\u2014"))
+    return card_types, card_subtypes or []
+
+def get_cards_and_faces(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Get cards and faces from cards."""
+    cards_and_faces = []
+    for icard in cards:
+        faces = icard.get("card_faces", [])
+        if faces:
+            for face_index,face in enumerate(faces):
+                face["face_index"] = face_index
+                cards_and_faces.append(icard | face)
+        else:
+            icard["face_index"] = 0
+            cards_and_faces.append(icard)
+    return cards_and_faces
+
+def uuid_from_args(*args: object) -> str:
+    """Generate a uuid from a list of arguments."""
+    signature_string = "-".join(str(arg) for arg in args)
+    signature_bytes = signature_string.encode()
+    digest = hashlib.sha256(signature_bytes).hexdigest()
+    return str(uuid.UUID(digest[:32]))
+
+def extract_card_faces(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Extract card faces from cards."""
+    """
+    face_keywords jsonb,
+    face_produced_mana jsonb,
+    """
+    card_face_id_to_card_face = {}
+    for icard in get_cards_and_faces(cards):
+        ocard = {}
+        # need to generate card_face_id using the face index and the oracle id
+        face_index = icard["face_index"]
+        oracle_id = icard["oracle_id"]
+        # hash them together, then make a uuid, must be reproducible
+        ocard["card_face_id"] = card_face_id =uuid_from_args(face_index, oracle_id)
+        ocard["card_id"] = icard["oracle_id"]
+        ocard["card_face_name"] = icard["name"]
+        ocard["face_index"] = face_index
+        ocard["mana_cost_text"] = mana_cost_str = icard["mana_cost"]
+        ocard["mana_cost_jsonb"] = mana_cost_str_to_dict(mana_cost_str)
+        ocard["colors"] = color_array_to_object(icard["colors"])
+        ocard["cmc"] = int(icard["cmc"])
+        ocard["type_line"] = type_line = icard["type_line"]
+        card_types, card_subtypes = parse_type_line(type_line)
+        ocard["face_types"] = card_types
+        ocard["face_subtypes"] = card_subtypes
+        ocard["oracle_text"] = icard["oracle_text"]
+
+        # integer like fields
+        ocard["power_text"] = power = icard.get("power")
+        ocard["toughness_text"] = toughness = icard.get("toughness")
+        ocard["power_int"] = maybe_int(power)
+        ocard["toughness_int"] = maybe_int(toughness)
+        ocard["loyalty_text"] = loyalty = icard.get("loyalty")
+        ocard["loyalty_int"] = maybe_int(loyalty)
+        ocard["defense_text"] = defense = icard.get("defense")
+        ocard["defense_int"] = maybe_int(defense)
+
+        card_face_id_to_card_face[card_face_id] = ocard
+    return list(card_face_id_to_card_face.values())
+
+def extract_card_face_printings(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Extract card face printings from cards."""
+    card_face_printings = set()
+    for icard in get_cards_and_faces(cards):
+        # need to generate card_face_printing_id using the face index and the id (not oracle id)
+        card_face_printings.add(dict_to_tuple(icard))
+    return [dict(r) for r in card_face_printings]
+
+def include_card(card: dict[str, Any]) -> bool:
+    """Should this card be included in the db."""
+    return set(card["legalities"].values()) != {"not_legal"}
+
+def dict_to_tuple(d: dict[str, Any]) -> tuple[str, Any]:
+    """Convert a dictionary to a tuple."""
+    try:
+        res = tuple(sorted(d.items()))
+        hash(res)
+        return res
+    except TypeError as oops:
+        msg = f"Dictionary {d} is not hashable"
+        raise TypeError(msg) from oops
+
+
+def extract_card_sets(cards: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Extract card sets from cards."""
+    card_sets = set()
+    for icard in cards:
+        projected = {k: v for k, v in icard.items() if k.startswith("set")}
+        projected = projected | {k[4:]: v for k, v in projected.items()}
+        projected["set_code"] = icard["set"]
+        card_sets.add(dict_to_tuple(projected))
+    return [dict(r) for r in card_sets]
+
+
+def extract_artists(cards: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Extract artists from cards."""
+    artists = set()
+    for icard in get_cards_and_faces(cards):
+        artist_ids = icard.get("artist_ids", [])
+        if len(artist_ids) != 1:
+            continue
+        artist_str = icard.get("artist")
+        as_dict = {"artist_name": artist_str, "artist_id": artist_ids[0]}
+        artists.add(dict_to_tuple(as_dict))
+    return [dict(r) for r in artists]
+
+def extract_illustrations(cards: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Extract illustrations from cards."""
+    illustrations = {
+        icard.get("illustration_id")
+        for icard in get_cards_and_faces(cards)
+    }
+    illustrations.discard(None)
+    return [{"illustration_id": illustration_id} for illustration_id in illustrations]
+
+def extract_illustration_artists(cards: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Extract illustration artists from cards."""
+    illustration_artists = set()
+    for icard in get_cards_and_faces(cards):
+        illustration_id = icard.get("illustration_id")
+        if illustration_id is None:
+            # this is true of the base card of a double faced card
+            # each face has an illustration, but the parent card does not
+            continue
+        artist_ids = icard.get("artist_ids", [])
+        if len(artist_ids) != 1:
+            continue
+        for artist_id in artist_ids:
+            illustration_artists.add((illustration_id, artist_id))
+    return [{"illustration_id": illustration_id, "artist_id": artist_id} for illustration_id, artist_id in illustration_artists]
+
+def rarity_text_to_int(rarity_text: str) -> int:
+    """Convert rarity text to integer."""
+    rarity_map = {
+        "common": 0,
+        "uncommon": 1,
+        "rare": 2,
+        "mythic": 3,
+        "special": 4,
+        "bonus": 5,
+    }
+    return rarity_map.get(rarity_text, -1)
+
+def extract_card_printings(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Extract card printings from cards."""
+    card_printings = []
+    for icard in cards:
+        rarity = icard["rarity"]
+        collector_number = icard["collector_number"]
+        collector_number_int = extract_collector_number_int(collector_number)
+        if collector_number_int is None:
+            logger.warning("Collector number %s is not a valid integer: %s", collector_number, icard)
+            continue
+        if collector_number_int < 0:
+            logger.warning("Collector number %s is negative: %s", collector_number, icard)
+            continue
+        as_dict = {
+            "border_color": icard["border_color"].lower(),
+            "card_id": icard.get("oracle_id"),
+            "card_printing_id": icard.get("id"),
+            "collector_number_int": collector_number_int,
+            "collector_number_text": collector_number,
+            "frame_bag": {},
+            "rarity_int": rarity_text_to_int(rarity),
+            "rarity_text": rarity,
+            "set_code": icard.get("set"),
+        }
+        card_printings.append(as_dict)
+    return card_printings
+
+
+def color_array_to_object(color_array: list[str]) -> dict[str, bool]:
+    """Convert a color array to an object."""
+    return dict.fromkeys(color_array, True)
+
+def extract_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Extract cards from cards."""
+    input_cards = cards
+    del cards
+
+    """
+    keywords should belong to the card face, but scryfal actually has them on the card object
+    so put them here:
+    ocard["keywords"] = dict.fromkeys(icard.get("keywords", []), True)
+    """
+    output_cards = {}
+    for icard in input_cards:
+        # card_id uuid PRIMARY KEY,
+        # edhrec_rank integer,
+        # card_color_identity jsonb NOT NULL,
+        # card_oracle_tags jsonb NOT NULL,
+        # card_legalities jsonb NOT NULL
+        oracle_id = icard.get("oracle_id")
+        icard["keywords"] = dict.fromkeys(icard.get("keywords", []), True)
+        output_cards[oracle_id] = icard
+    return [
+        {
+            "card_color_identity": color_array_to_object(c.get("color_identity")),
+            "card_id": c.get("oracle_id"),
+            "card_legalities": c["legalities"],
+            "card_name": c["name"],
+            "card_oracle_tags": c.get("oracle_tags", {}),
+            "edhrec_rank": c.get("edhrec_rank"),
+            "keywords": c.get("keywords", {}),
+        }
+        for c in output_cards.values()
+    ]
+
 
 
 def maybeify(func: callable) -> callable:
@@ -75,8 +292,9 @@ def extract_collector_number_int(collector_number: str | int | float | None) -> 
         return None
     # Implement magic.extract_collector_number_int in Python
     # Extract numeric characters using regex, similar to the database function
-    numeric_part = re.sub(r"[^0-9]", "", str(collector_number))
-    if numeric_part:
+    numeric_part_match = re.search(r"[0-9]+", str(collector_number))
+    if numeric_part_match:
+        numeric_part = numeric_part_match.group(0)
         try:
             int_val = int(numeric_part)
             # PostgreSQL integer range is -2^31 to 2^31-1
@@ -571,20 +789,21 @@ class APIResource:
             # if any already applied migrations differ from what we want
             # to apply then drop everything
             with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+                cursor.execute("CREATE SCHEMA IF NOT EXISTS migrations")
                 cursor.execute(
-                    """CREATE TABLE IF NOT EXISTS migrations (
+                    """CREATE TABLE IF NOT EXISTS migrations.migrations (
                         file_name text not null,
                         file_sha256 text not null,
                         date_applied timestamp default now(),
                         file_contents text not null
                     )""",
                 )
-                cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_migrations_filename ON migrations (file_name)")
+                cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_migrations_filename ON migrations.migrations (file_name)")
                 cursor.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_migrations_file_sha256 ON migrations USING HASH (file_sha256)",
+                    "CREATE INDEX IF NOT EXISTS idx_migrations_file_sha256 ON migrations.migrations USING HASH (file_sha256)",
                 )
 
-                cursor.execute("SELECT file_name, file_sha256 FROM migrations ORDER BY date_applied")
+                cursor.execute("SELECT file_name, file_sha256 FROM migrations.migrations ORDER BY date_applied")
                 applied_migrations = [dict(r) for r in cursor]
 
                 already_applied = set()
@@ -593,7 +812,7 @@ class APIResource:
                         already_applied.add(applied_migration["file_sha256"])
                     else:
                         already_applied.clear()
-                        cursor.execute("DELETE FROM migrations")
+                        cursor.execute("DELETE FROM migrations.migrations")
                         cursor.execute("DROP SCHEMA IF EXISTS magic CASCADE")
                         conn.commit()
 
@@ -606,7 +825,7 @@ class APIResource:
                     cursor.execute(imigration["file_contents"])
                     cursor.execute(
                         """
-                            INSERT INTO migrations
+                            INSERT INTO migrations.migrations
                                 (  file_name  ,   file_sha256  ,   file_contents  ) VALUES
                                 (%(file_name)s, %(file_sha256)s, %(file_contents)s)""",
                         imigration,
@@ -632,17 +851,14 @@ class APIResource:
 
     def _preprocess_card(self: APIResource, card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: C901, PLR0915
         """Preprocess a card to remove invalid cards and add necessary fields."""
+        if card.get("preprocessed"):
+            return card
         if set(card["legalities"].values()) == {"not_legal"}:
             return None
         if "paper" not in card["games"]:
             return None
-        if "card_faces" in card:
-            return None
         if card.get("set_type") == "funny":
             return None
-
-        if card.get("preprocessed"):
-            return card
 
         # Store the original card data before modifications for raw_card_blob
         raw_card_data = copy.deepcopy(card)
@@ -740,7 +956,7 @@ class APIResource:
 
     def get_stats(self: APIResource, **_: object) -> dict[str, Any]:
         """Get stats about the cards."""
-        to_insert = self._get_cards_to_insert()
+        to_insert = self.get_data()
         key_frequency = collections.Counter()
         for card in to_insert:
             key_frequency.update(k for k, v in card.items() if v not in [None, [], {}])
@@ -772,29 +988,10 @@ class APIResource:
                 return None
             self.setup_schema()
 
-            to_insert = self._get_cards_to_insert()
-
-            before = time.monotonic()
+            to_insert = self.get_data()
 
             # Use the consolidated loading method
-            result = self._load_cards_with_staging(to_insert)
-
-            after_transfer = time.monotonic()
-
-            if result["status"] == "success":
-                total_time = after_transfer - before
-                rate = len(to_insert) / total_time if total_time > 0 else 0
-                logger.info(
-                    "Loaded %d cards in %.2f seconds, rate: %.2f cards/s...",
-                    result["cards_loaded"],
-                    total_time,
-                    rate,
-                )
-
-                # Return the sample cards as before
-                return result["sample_cards"]
-            logger.error("Failed to import data: %s", result["message"])
-            return None
+            return self._load_cards_with_staging(to_insert)
 
     def search(  # noqa: PLR0913
         self: APIResource,
@@ -2068,13 +2265,19 @@ class APIResource:
 
         self.setup_schema()
 
+        cards = [
+            c
+            for c in cards
+            if include_card(c)
+        ]
+
         # TODO:
         # this is a little bit of a spray and pray method
         # what I want to do is implement a priority ordering
         # for cards, so that we import only one card of each name
         # but we use frame, printing time, etc. to get the best instance
         # of that card (likely the one with the highest quality artwork)
-        cards = list(filter(None, (self._preprocess_card(icard) for icard in cards)))
+        # cards = list(filter(None, (self._preprocess_card(icard) for icard in cards)))
 
         if not cards:
             return {
@@ -2084,53 +2287,93 @@ class APIResource:
                 "message": "No cards remaining after preprocessing",
             }
 
+        # from cards... extract...
+        data = [
+            ("artists", extract_artists(cards)),
+            ("illustrations", extract_illustrations(cards)),
+            ("illustration_artists", extract_illustration_artists(cards)),
+            ("cards", extract_cards(cards)),
+            ("card_sets", extract_card_sets(cards)),
+            ("card_printings", extract_card_printings(cards)),
+            ("card_faces", extract_card_faces(cards)),
+            # ("card_face_printings", extract_card_face_printings(cards)),
+        ]
+        del cards
+
         # Generate random staging table name
         staging_suffix = secrets.token_hex(8)
         staging_table_name = f"import_staging_{staging_suffix}"
+
+        sample_data = {}
+        items_loaded_obj = {}
 
         try:
             with self._conn_pool.connection() as conn, conn.cursor() as cursor:
                 statement_timeout = 30_000
                 cursor.execute(f"set statement_timeout = {statement_timeout}")
                 # Create staging table with unique name
-                cursor.execute(f"CREATE TEMPORARY TABLE {staging_table_name} (card_blob jsonb)")
 
-                # Load cards into staging table using COPY for efficiency
-                with cursor.copy(f"COPY {staging_table_name} (card_blob) FROM STDIN WITH (FORMAT csv, HEADER false)") as copy_filehandle:
-                    writer = csv.writer(copy_filehandle, quoting=csv.QUOTE_ALL)
-                    writer.writerows([orjson.dumps(card, option=orjson.OPT_SORT_KEYS).decode("utf-8")] for card in cards)
+                for target_table, table_data in data:
+                    cursor.execute(f"CREATE TEMPORARY TABLE {staging_table_name} (item_blob jsonb)")
+                    items_loaded = 0
+                    page_size = 3000
+                    for item_batch in itertools.batched(table_data, page_size):  # noqa: B911
+                        # Load cards into staging table using COPY for efficiency
+                        with cursor.copy(f"COPY {staging_table_name} (item_blob) FROM STDIN WITH (FORMAT csv, HEADER false)") as copy_filehandle:
+                            writer = csv.writer(copy_filehandle, quoting=csv.QUOTE_ALL)
+                            writer.writerows([orjson.dumps(item, option=orjson.OPT_SORT_KEYS).decode("utf-8")] for item in item_batch)
+                        items_loaded += len(item_batch)
+                        logger.info(
+                            "Loaded %s of %s cards (%.1f%%)...",
+                            f"{items_loaded:,}",
+                            f"{len(table_data):,}",
+                            items_loaded / len(table_data) * 100,
+                        )
 
-                # Get random sample before transfer (up to 10 cards)
-                cursor.execute(f"SELECT card_blob FROM {staging_table_name} ORDER BY RANDOM() LIMIT 10")
-                sample_cards = [r["card_blob"] for r in cursor.fetchall()]
+                    # Get random sample before transfer (up to 10 cards)
+                    target_sample_size = 10
+                    sample_data[target_table] = []
+                    random_threshold = 2 * target_sample_size / len(table_data)
+                    cursor.execute(f"""
+                        SELECT
+                            (jsonb_populate_record(null::magic.{target_table}, item_blob)).*
+                        FROM
+                            {staging_table_name}
+                        WHERE
+                            RANDOM() < {random_threshold}
+                        ORDER BY RANDOM()
+                        LIMIT {target_sample_size}""",
+                    )
+                    sample_data[target_table] = [dict(r) for r in cursor.fetchall()]
 
-                # Transfer from staging to main table using direct jsonb_populate_record
-                insert_query = f"""
-                    INSERT INTO magic.cards
-                    SELECT
-                        (jsonb_populate_record(null::magic.cards, card_blob)).*
-                    FROM
-                        {staging_table_name}
-                    ON CONFLICT (card_name) DO NOTHING
-                """
+                    # Transfer from staging to main table using direct jsonb_populate_record
+                    transfer_query = f"""
+                        INSERT INTO magic.{target_table}
+                        SELECT
+                            (jsonb_populate_record(null::magic.{target_table}, item_blob)).*
+                        FROM
+                            {staging_table_name}
+                        ON CONFLICT DO NOTHING
+                    """
 
-                cursor.execute(insert_query)
-                cards_loaded = cursor.rowcount
+                    cursor.execute(transfer_query)
+                    items_loaded_obj[target_table] = cursor.rowcount
 
-                # Drop the staging table
-                cursor.execute(f"DROP TABLE {staging_table_name}")
+                    # Drop the staging table
+                    cursor.execute(f"DROP TABLE {staging_table_name}")
 
                 conn.commit()
 
+                total_items_loaded = sum(items_loaded_obj.values())
                 result = {
                     "status": "success",
-                    "cards_loaded": cards_loaded,
-                    "sample_cards": sample_cards,
-                    "message": f"Successfully loaded {cards_loaded} cards",
+                    "items_loaded": items_loaded_obj,
+                    "sample_items": sample_data,
+                    "message": f"Successfully loaded {total_items_loaded} items",
                 }
 
-                # Clear caches when cards are successfully loaded
-                if cards_loaded > 0:
+                # Clear caches when items are successfully loaded
+                if total_items_loaded > 0:
                     self._query_cache.clear()
                     # Clear the search cache by accessing its cache attribute
                     if hasattr(self._search, "cache"):

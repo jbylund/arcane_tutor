@@ -49,7 +49,7 @@ hlep: help
 ###  Entry points
 
 up: datadir images down check_env # @doc start services for scryfallos
-	cd $(GIT_ROOT) && docker compose --file $(BASE_COMPOSE) up --remove-orphans --abort-on-container-exit
+	cd $(GIT_ROOT) && docker compose  --file $(BASE_COMPOSE) up --timestamps --remove-orphans --abort-on-container-exit
 
 up-detach: datadir images down check_env
 	cd $(GIT_ROOT) && docker compose --file $(BASE_COMPOSE) up --remove-orphans --detach
@@ -135,4 +135,3 @@ coverage: # @doc generate HTML coverage report
 
 test-profiling:
 	python -m pytest --profile-svg --durations=10 -vvv -k TestImportCardByName
-

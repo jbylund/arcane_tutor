@@ -156,25 +156,6 @@ END;
 $$;
 
 
-CREATE FUNCTION magic.is_sorted_alphabetically(arr jsonb) RETURNS boolean
-    LANGUAGE plpgsql IMMUTABLE
-    AS $$
-BEGIN
-    RETURN arr = (
-        SELECT jsonb_agg(value ORDER BY value)
-        FROM jsonb_array_elements_text(arr)
-    );
-END;
-$$;
-
-
-CREATE FUNCTION magic.json_array_to_array(jsonbin jsonb) RETURNS text[]
-    LANGUAGE sql IMMUTABLE
-    AS $$
-  SELECT array_agg(el) FROM jsonb_array_elements_text(jsonbin) el;
-$$;
-
-
 CREATE TABLE magic.cards (
     -- integer columns
     card_rarity_int integer,
