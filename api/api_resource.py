@@ -140,17 +140,20 @@ def extract_card_face_printings(cards: list[dict[str, Any]]) -> list[dict[str, A
     card_face_printings = {}
     for icard in get_cards_and_faces(cards):
         ocard = {}
-        ocard["card_printing_id"] = icard["id"]
-        ocard["card_face_id"] = extract_card_face_id(icard)
-        ocard["card_face_printing_id"] = face_printing_id = extract_card_face_printing_id(icard)
-        ocard["illustration_id"] = icard["illustration_id"]
-        ocard["flavor_text"] = icard.get("flavor_text") # not all cards (or card faces) have flavor text
-        ocard["image_uris"] = icard["image_uris"]
-
-        for field in ["layout", "watermark"]:
-            val = icard.get(field)
-            if val is not None:
-                ocard[field] = val.lower()
+        try:
+            ocard["card_printing_id"] = icard["id"]
+            ocard["card_face_id"] = extract_card_face_id(icard)
+            ocard["card_face_printing_id"] = face_printing_id = extract_card_face_printing_id(icard)
+            ocard["illustration_id"] = icard["illustration_id"]
+            ocard["flavor_text"] = icard.get("flavor_text") # not all cards (or card faces) have flavor text
+            ocard["image_uris"] = icard["image_uris"]
+            for field in ["layout", "watermark"]:
+                val = icard.get(field)
+                if val is not None:
+                    ocard[field] = val.lower()
+        except KeyError as oops:
+            logger.error("Card %s has no %s", icard, oops)
+            continue
 
         card_face_printings[face_printing_id] = ocard
 
@@ -235,6 +238,7 @@ def extract_card_printings(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Extract card printings from cards."""
     card_printings = []
     for icard in cards:
+        oracle_id = extract_oracle_id(icard)
         rarity = icard["rarity"]
         collector_number = icard["collector_number"]
         collector_number_int = extract_collector_number_int(collector_number)
@@ -246,7 +250,7 @@ def extract_card_printings(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         as_dict = {
             "border_color": icard["border_color"].lower(),
-            "card_id": icard["oracle_id"],
+            "card_id": oracle_id,
             "card_printing_id": icard["id"],
             "collector_number_int": collector_number_int,
             "collector_number_text": collector_number,
@@ -262,6 +266,21 @@ def extract_card_printings(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def color_array_to_object(color_array: list[str]) -> dict[str, bool]:
     """Convert a color array to an object."""
     return dict.fromkeys(color_array, True)
+
+def extract_oracle_id(icard: dict[str, Any]) -> str:
+    """Extract an oracle id from a card."""
+    try:
+        return icard["oracle_id"]
+    except KeyError:
+        pass
+    oracle_ids = {
+        face["oracle_id"]
+        for face in icard["card_faces"]
+    }
+    if len(oracle_ids) != 1:
+        msg = f"Card {icard} has multiple oracle ids: {oracle_ids}"
+        raise ValueError(msg)
+    return oracle_ids.pop()
 
 def extract_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Extract cards from cards."""
@@ -280,13 +299,13 @@ def extract_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
         # card_color_identity jsonb NOT NULL,
         # card_oracle_tags jsonb NOT NULL,
         # card_legalities jsonb NOT NULL
-        oracle_id = icard.get("oracle_id")
+        oracle_id = extract_oracle_id(icard)
         icard["keywords"] = dict.fromkeys(icard.get("keywords", []), True)
         output_cards[oracle_id] = icard
     return [
         {
             "card_color_identity": color_array_to_object(c.get("color_identity")),
-            "card_id": c.get("oracle_id"),
+            "card_id": oracle_id,
             "card_legalities": c["legalities"],
             "card_name": c["name"],
             "card_oracle_tags": c.get("oracle_tags", {}),
@@ -780,6 +799,7 @@ class APIResource:
 
         """
         data_key = "oracle_cards"
+        data_key = "default_cards"
         cache_dir_path = pathlib.Path("/data/api")
         if not cache_dir_path.exists():
             cache_dir_path = pathlib.Path("/tmp/api")  # noqa: S108
@@ -2346,6 +2366,7 @@ class APIResource:
 
         sample_data = {}
         items_loaded_obj = {}
+        target_table = "undefined"
 
         try:
             with self._conn_pool.connection() as conn, conn.cursor() as cursor:
@@ -2422,8 +2443,13 @@ class APIResource:
 
                 return result
 
-        except (psycopg.Error, ValueError, KeyError) as e:
-            logger.error("Error loading cards with staging table %s: %s", staging_table_name, e)
+        except (psycopg.Error, ValueError, KeyError) as oops:
+            logger.error(
+                "Error loading %s with staging table %s: %s",
+                target_table,
+                staging_table_name,
+                oops,
+            )
             # Try to clean up staging table on error
             try:
                 with self._conn_pool.connection() as conn, conn.cursor() as cursor:
@@ -2436,5 +2462,5 @@ class APIResource:
                 "status": "database_error",
                 "cards_loaded": 0,
                 "sample_cards": [],
-                "message": f"Error loading cards: {e}",
+                "message": f"Error loading cards: {oops}",
             }

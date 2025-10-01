@@ -169,7 +169,7 @@ CREATE TABLE magic.card_printings (
     border_color text NOT NULL, -- border color: black, white, borderless, gold...
     frame_bag jsonb NOT NULL, -- frame version and frame effects
     -- does everything else belong to either the face or the printing?
-    CONSTRAINT check_collector_number_int_non_negative CHECK (0 < collector_number_int),
+    -- CONSTRAINT check_collector_number_int_non_negative CHECK (0 < collector_number_int),
     CONSTRAINT check_collector_int_correct CHECK (collector_number_int = magic.extract_collector_number_int(collector_number_text)),
     CONSTRAINT check_rarity_pair FOREIGN KEY (rarity_text, rarity_int) REFERENCES magic.valid_rarities(card_rarity_text, card_rarity_int),
     CONSTRAINT check_border_color_lowercase CHECK (border_color = lower(border_color)),
