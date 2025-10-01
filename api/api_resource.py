@@ -1787,6 +1787,7 @@ class APIResource:
 
         logger.info("Importing card by name: '%s'", card_name)
 
+        # TODO: use _search or search instead
         # Check if card already exists in database for backward compatibility
         existing_check = self._run_query(
             query="SELECT card_name FROM magic.cards WHERE card_name = %(card_name)s",

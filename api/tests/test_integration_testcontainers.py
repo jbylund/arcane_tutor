@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import multiprocessing
 import os
 import pathlib
@@ -109,12 +110,17 @@ class TestContainerIntegration:
 
         # Load test data
         test_dir = pathlib.Path(__file__).parent
-        data_file = test_dir / "fixtures" / "test_data.sql"
+        api_dir = test_dir.parent
+        project_dir = api_dir.parent
+        docs_dir = project_dir / "docs"
+        sample_data_dir = docs_dir / "sample_data"
 
-        with api._conn_pool.connection() as conn, conn.cursor() as cursor:
-            cursor.execute(data_file.read_text())
-            conn.commit()
+        sample_data_files = []
+        for data_file in sample_data_dir.glob("*.json"):
+            with data_file.open("r", encoding="utf-8") as f:
+                sample_data_files.append(json.load(f))
 
+        api._load_cards_with_staging(sample_data_files)
         # Yield the fully configured APIResource for tests to use
         yield api
 
@@ -276,6 +282,7 @@ class TestContainerIntegration:
         # Import the card using the import_card_by_name method
         import_result = api_resource.import_card_by_name(card_name=card_name)
 
+        raise AssertionError(import_result)
         # Check that the import was successful (or already exists, which is also fine for this test)
         assert import_result["status"] in ["success", "already_exists"], f"Import failed: {import_result}"
 

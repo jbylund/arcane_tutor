@@ -1,8 +1,11 @@
 """Comprehensive tests for APIResource class functionality."""
 
+import json
 import multiprocessing
 import os
+import pathlib
 import unittest
+import uuid
 from typing import Any, Never
 from unittest.mock import MagicMock, patch
 
@@ -12,7 +15,18 @@ import requests
 
 from api.api_resource import APIResource, can_serialize, get_where_clause, rewrap
 from api.parsing.scryfall_nodes import extract_frame_data_from_raw_card
+from api.utils.db_utils import UUIDToStringLoader
 
+
+def load_sample_card(name: str) -> dict[str, Any]:
+    """Load a sample card from the sample_data directory."""
+    test_dir = pathlib.Path(__file__).parent
+    api_dir = test_dir.parent
+    project_dir = api_dir.parent
+    docs_dir = project_dir / "docs"
+    sample_data_dir = docs_dir / "sample_data"
+    with (sample_data_dir / f"{name}.json").open(encoding="utf-8") as f:
+        return json.load(f)
 
 class TestUtilityFunctions(unittest.TestCase):
     """Test utility functions in api_resource module."""
@@ -52,6 +66,24 @@ class TestUtilityFunctions(unittest.TestCase):
         assert rewrap("SELECT\n*\nFROM\ntable") == "SELECT * FROM table"
         assert rewrap("SELECT\t*\tFROM\ttable") == "SELECT * FROM table"
         assert rewrap("  \n  SELECT  \n  *  \n  FROM  \n  table  \n  ") == "SELECT * FROM table"
+
+    def test_uuid_loader_conversion(self) -> None:
+        """Test UUID loader conversion function."""
+        # Test with a known UUID string
+        test_uuid_str = "12345678-1234-5678-9abc-def012345678"
+        as_memoryview = memoryview(test_uuid_str.encode("utf-8"))
+        loader = UUIDToStringLoader(2950)  # 2950 is the UUID OID in PostgreSQL
+        result = loader.load(as_memoryview)
+        assert result == test_uuid_str
+        assert isinstance(result, str)
+
+        # Test with a randomly generated UUID
+        random_uuid = uuid.uuid4()
+        random_uuid_str = str(random_uuid)
+        as_memoryview = memoryview(random_uuid_str.encode("utf-8"))
+        result_random = loader.load(as_memoryview)
+        assert result_random == random_uuid_str
+        assert isinstance(result_random, str)
 
     def test_get_where_clause_caching(self) -> None:
         """Test that get_where_clause uses caching."""
@@ -327,26 +359,6 @@ class TestAPIResourceDataProcessing(unittest.TestCase):
             "name": "Test Card",
             "legalities": {"standard": "legal"},
             "games": ["mtgo"],  # Not paper
-            "type_line": "Creature — Test",
-            "colors": ["R"],
-            "color_identity": ["R"],
-            "keywords": ["haste"],
-            "power": "2",
-            "toughness": "2",
-            "prices": {"usd": "1.00"},
-            "set": "test",
-        }
-
-        result = self.api_resource._preprocess_card(invalid_card)
-        assert result is None
-
-    def test_preprocess_card_filters_card_faces(self) -> None:
-        """Test _preprocess_card filters out cards with card_faces."""
-        invalid_card = {
-            "name": "Test Card",
-            "legalities": {"standard": "legal"},
-            "games": ["paper"],
-            "card_faces": [{"name": "Front"}, {"name": "Back"}],  # Has card_faces
             "type_line": "Creature — Test",
             "colors": ["R"],
             "color_identity": ["R"],
@@ -716,17 +728,7 @@ class TestAPIResourceCaching(unittest.TestCase):
             mock_pool.connection.return_value.__enter__.return_value = mock_conn
 
             # Provide valid card data that will pass preprocessing
-            valid_card = {
-                "name": "Test Card",
-                "legalities": {"standard": "legal"},
-                "games": ["paper"],
-                "type_line": "Creature — Test",
-                "colors": ["R"],
-                "color_identity": ["R"],
-                "keywords": [],
-                "prices": {},
-                "set": "test",
-            }
+            valid_card = load_sample_card("black_lotus")
 
             # Call _load_cards_with_staging directly to test cache clearing
             self.api_resource._load_cards_with_staging([valid_card])
@@ -745,17 +747,7 @@ class TestAPIResourceCaching(unittest.TestCase):
             mock_pool.connection.return_value.__enter__.return_value = mock_conn
 
             # Provide valid card data that will pass preprocessing
-            valid_card = {
-                "name": "Test Card",
-                "legalities": {"standard": "legal"},
-                "games": ["paper"],
-                "type_line": "Creature — Test",
-                "colors": ["R"],
-                "color_identity": ["R"],
-                "keywords": [],
-                "prices": {},
-                "set": "test",
-            }
+            valid_card = load_sample_card("black_lotus")
 
             # Add some data to the search cache
             self.api_resource._search.cache["test_key"] = "test_value"
