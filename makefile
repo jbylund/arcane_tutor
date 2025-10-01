@@ -9,6 +9,7 @@ PROJECTNAME := scryfallos
 GIT_ROOT := $(shell git rev-parse --show-toplevel)
 MAYBENORUN := $(shell if echo | xargs --no-run-if-empty >/dev/null 2>/dev/null; then echo "--no-run-if-empty"; else echo ""; fi)
 BASE_COMPOSE := $(mkfile_dir)/docker-compose.yml
+LINT_HTML_ARTIFACT := /tmp/lint_html.stamp
 LINTABLE_DIRS := .
 
 DOCKER_POSTGRES_HOST=postgres
@@ -90,11 +91,16 @@ ensure_uv:
 	@python -m uv --version > /dev/null || \
 	python -m pip install uv
 
-lint: ensure_ruff ensure_pylint # @doc lint all python files
+lint: lint_python $(LINT_HTML_ARTIFACT) # @doc lint all python files
+
+lint_python: ensure_ruff ensure_pylint
 	find . -type f -name "*.py" | xargs python -m ruff check --fix --unsafe-fixes >/dev/null 2>/dev/null || true
 	find . -type f -name "*.py" | xargs python -m ruff check --fix --unsafe-fixes
 	find . -type f -name "*.py" | xargs python -m pylint --fail-under 7.0 --max-line-length=132
+
+$(LINT_HTML_ARTIFACT): api/index.html
 	npx prettier --write api/index.html
+	touch $(LINT_HTML_ARTIFACT)
 
 check_env: ensure_pydocker
 	true
