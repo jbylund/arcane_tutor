@@ -377,6 +377,7 @@ CREATE INDEX IF NOT EXISTS idx_cards_cmc_edhrec_btree_include ON magic.cards USI
     set_name,
     type_line
 );
+
 CREATE INDEX IF NOT EXISTS idx_cards_setcode_edhrec_btree_include ON magic.cards USING btree (card_set_code, edhrec_rank) include (
     card_artist,
     card_name,
@@ -387,4 +388,16 @@ CREATE INDEX IF NOT EXISTS idx_cards_setcode_edhrec_btree_include ON magic.cards
     oracle_text,
     set_name,
     type_line
-)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cards_setcode_edhrec_btree_include ON magic.cards USING btree (card_set_code, edhrec_rank) include (
+    card_artist,
+    card_name,
+    cmc,
+    illustration_id,
+    image_location_uuid,
+    mana_cost_text,
+    oracle_text,
+    set_name,
+    type_line
+);

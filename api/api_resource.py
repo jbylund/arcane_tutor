@@ -6,6 +6,7 @@ import collections
 import copy
 import csv
 import datetime
+import enum
 import functools
 import inspect
 import itertools
@@ -16,7 +17,6 @@ import random
 import re
 import secrets
 import time
-import enum
 import urllib.parse
 from typing import TYPE_CHECKING, Any
 from typing import cast as typecast
@@ -847,6 +847,7 @@ class APIResource:
             direction: Sort direction ('asc' or 'desc').
             limit: Maximum number of results to return.
             orderby: Field to sort by.
+            unique: Unique on field.
 
         Returns:
             Dict containing search results and metadata.
