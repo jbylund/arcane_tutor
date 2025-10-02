@@ -649,7 +649,7 @@
           const initialQuery = params.get('q') || '';
           const initialOrder = params.get('orderby') || 'edhrec';
           const initialDirection = params.get('direction') || 'asc';
-          const initialUnique = params.get('unique') || 'cards';
+          const initialUnique = params.get('unique') || 'card';
 
           // Set the order controls to match URL params
           this.orderDropdown.value = initialOrder;
@@ -1223,7 +1223,10 @@
 
         showResultsCount(count, query, elapsed) {
           const formattedCount = count.toLocaleString();
-          let msg = `Found ${formattedCount} card${count !== 1 ? 's' : ''} matching "${query}"`;
+          const uniqueValue = this.uniqueDropdown.value;
+          const itemType = uniqueValue + (count > 1 ? 's' : '');
+
+          let msg = `Found ${formattedCount} ${itemType} matching "${query}"`;
           if (typeof elapsed === 'number') {
             msg += ` (completed in ${elapsed}ms)`;
           }
@@ -1544,9 +1547,9 @@
             <option value="usd">USD</option>
           </select>
           <select class="order-dropdown" id="uniqueDropdown">
-            <option value="cards">Cards</option>
-            <option value="arts">Artwork</option>
-            <option value="prints">Printings</option>
+            <option value="card">Cards</option>
+            <option value="artwork">Artwork</option>
+            <option value="printing">Printings</option>
           </select>
           <button class="order-toggle" id="orderToggle" title="Toggle ascending/descending">
             <span class="arrow-up">↑</span>

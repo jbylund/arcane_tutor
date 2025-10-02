@@ -49,9 +49,9 @@ NOT_FOUND = 404
 
 class UniqueOn(enum.StrEnum):
     """Enum for the distinct on column for the search."""
-    CARDS = enum.auto()
-    PRINTS = enum.auto()
-    ARTS = enum.auto()
+    CARD = enum.auto()
+    PRINTING = enum.auto()
+    ARTWORK = enum.auto()
 
 def extract_image_location_uuid(card: dict[str, Any]) -> str:
     """Extract the image location UUID from a card."""
@@ -144,7 +144,12 @@ def _convert_string_to_type(str_value: str | None, param_type: Any) -> Any:  # n
         except (ValueError, TypeError):
             continue
 
-    logger.warning("Was unable to convert parameter: [%s][%s]", type(param_type), param_type)
+    logger.warning(
+        "Was unable to convert parameter: [%s][%s]: %s",
+        type(param_type),
+        param_type,
+        str_value,
+    )
     return str_value
 
 
@@ -510,6 +515,8 @@ class APIResource:
             total_duration = after_fetch - before
             timings["total_duration_ms"] = total_duration * 1000
             timings["total_frequency"] = 1 / total_duration
+            for key, value in timings.items():
+                timings[key] = round(value, 3)
 
         if use_cache:
             self._query_cache[cachekey] = result
@@ -785,7 +792,7 @@ class APIResource:
                     cursor.execute("SELECT COUNT(*) AS num_cards FROM magic.cards")
                     cards_found = cursor.fetchall()[0]["num_cards"]
                     logger.info("Cards found: %d", cards_found)
-                    return 0 < cards_found
+                    return cards_found > 0
         except Exception as oops:
             logger.error("Error checking if setup is complete: %s", oops, exc_info=True)
             return False
@@ -838,7 +845,7 @@ class APIResource:
         orderby: str | None = None,
         direction: str | None = None,
         limit: int = 100,
-        unique: UniqueOn | None = UniqueOn.CARDS,
+        unique: UniqueOn | None = UniqueOn.CARD,
     ) -> dict[str, Any]:
         """Run a search query and return results and metadata.
 
@@ -875,7 +882,7 @@ class APIResource:
         orderby: str | None = None,
         direction: str | None = None,
         limit: int = 100,
-        unique: UniqueOn | None = UniqueOn.CARDS,
+        unique: UniqueOn | None = UniqueOn.CARD,
     ) -> dict[str, Any]:
         try:
             where_clause, params = get_where_clause(query)
@@ -902,11 +909,11 @@ class APIResource:
         # scryfall supports distinct:
         # cards, prints, arts
         distinct_on = {
-            "art": "illustration_id",
-            "card": "card_name",
-            "print": "scryfall_id",
+            UniqueOn.ARTWORK: "illustration_id",
+            UniqueOn.CARD: "card_name",
+            UniqueOn.PRINTING: "scryfall_id",
         }.get(unique.rstrip("s"), "card_name")
-        full_query = f"""
+        no_limit_query = f"""
         WITH distinct_cards AS (
             SELECT DISTINCT ON ({distinct_on})
                 card_name AS name,
@@ -937,6 +944,10 @@ class APIResource:
             type_line
         FROM
             distinct_cards
+        """
+
+        full_query = f"""
+        {no_limit_query}
         ORDER BY
             sort_value {sql_direction} NULLS LAST,
             edhrec_rank ASC NULLS LAST
@@ -962,7 +973,7 @@ class APIResource:
         total_cards = len(cards)
         if total_cards == limit:
             total_cards = self._get_total_cards_exact(
-                where_clause=where_clause,
+                no_limit_query=no_limit_query,
                 params=params,
             )
         return {
@@ -977,16 +988,14 @@ class APIResource:
     def _get_total_cards_exact(
         self: APIResource,
         *,
-        where_clause: str,
+        no_limit_query: str,
         params: dict[str, Any],
     ) -> int:
         full_query = f"""
         SELECT
             COUNT(1) AS total_cards
         FROM
-            magic.cards AS card
-        WHERE
-            {where_clause}
+            ({no_limit_query}) subq
         """
         full_query = rewrap(full_query)
         logger.info("Full query: %s", full_query)
