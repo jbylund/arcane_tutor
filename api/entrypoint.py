@@ -1,7 +1,6 @@
 """Main entrypoint for the api container."""
 
 import argparse
-import contextlib
 import logging
 import multiprocessing
 import os

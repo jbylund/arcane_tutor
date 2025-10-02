@@ -189,6 +189,12 @@ CREATE TABLE magic.cards (
     price_eur real,
     price_tix real,
 
+    scryfall_id UUID NOT NULL,
+    set_name TEXT,
+    oracle_id UUID,
+    image_location_uuid UUID,
+    type_line text,
+
     -- columns
     card_name text NOT NULL,
     oracle_text text,
@@ -240,7 +246,6 @@ CREATE TABLE magic.cards (
 
 CREATE INDEX IF NOT EXISTS idx_cards_artist_trgm ON magic.cards USING gin (card_artist magic.gin_trgm_ops) WHERE (card_artist IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_cards_border ON magic.cards USING hash (card_border) WHERE (card_border IS NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_cards_card_name_trgm ON magic.cards USING gin (card_name magic.gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_cards_collector_number ON magic.cards USING btree (collector_number) WHERE (collector_number IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_cards_collector_number_int ON magic.cards USING btree (collector_number_int) WHERE (collector_number_int IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_cards_color_identity_gin ON magic.cards USING gin (card_color_identity);
@@ -260,7 +265,8 @@ CREATE INDEX IF NOT EXISTS idx_cards_price_usd ON magic.cards USING btree (price
 CREATE INDEX IF NOT EXISTS idx_cards_produced_mana ON magic.cards USING gin (produced_mana);
 CREATE INDEX IF NOT EXISTS idx_cards_set_code ON magic.cards USING hash (card_set_code) WHERE (card_set_code IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_cards_watermark ON magic.cards USING hash (card_watermark) WHERE (card_watermark IS NOT NULL);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_name ON magic.cards USING btree (card_name);
+CREATE INDEX IF NOT EXISTS idx_cards_name ON magic.cards USING btree (card_name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_scryfall_id ON magic.cards USING btree (scryfall_id);
 
 
 COMMENT ON COLUMN magic.cards.card_artist IS 'Artist name for the card artwork - will be null for cards without artist information';
@@ -354,3 +360,11 @@ ALTER TABLE ONLY magic.tag_relationships
 
 ALTER TABLE ONLY magic.tag_relationships
     ADD CONSTRAINT tag_relationships_parent_tag_fkey FOREIGN KEY (parent_tag) REFERENCES magic.tags(tag) ON DELETE CASCADE;
+
+
+/*
+these indexes help support index only scans for a couple of specific queries
+*/
+
+CREATE INDEX IF NOT EXISTS idx_cards_cmc_edhrec_btree_include ON magic.cards USING btree (cmc, edhrec_rank) include (card_name, card_artist, image_location_uuid, mana_cost_text, oracle_text, set_name, type_line);
+CREATE INDEX IF NOT EXISTS idx_cards_setcode_edhrec_btree_include ON magic.cards USING btree (card_set_code, edhrec_rank) include (card_name, card_artist, cmc, image_location_uuid, mana_cost_text, oracle_text, set_name, type_line);

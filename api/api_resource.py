@@ -46,6 +46,14 @@ logger = logging.getLogger(__name__)
 NOT_FOUND = 404
 
 
+def extract_image_location_uuid(card: dict[str, Any]) -> str:
+    """Extract the image location UUID from a card."""
+    for image_location in card.get("image_uris", {}).values():
+        if ".jpg" in image_location:
+            return image_location.rpartition("/")[-1].partition(".")[0]
+    msg = f"No image location found for card: {card}"
+    raise AssertionError(msg)
+
 def parse_type_line(type_line: str) -> tuple[list[str], list[str]]:
     """Parse the type line of a card."""
     card_types, _, card_subtypes = (x.strip().split() for x in type_line.title().partition("\u2014"))
@@ -735,6 +743,7 @@ class APIResource:
         collector_number = card.get("collector_number")
         card["collector_number"] = collector_number
         card["collector_number_int"] = extract_collector_number_int(collector_number)
+        card["image_location_uuid"] = extract_image_location_uuid(card)
 
         # Handle legalities and produced_mana defaults
         card.setdefault("card_legalities", card.get("legalities", {}))
@@ -878,15 +887,13 @@ class APIResource:
         full_query = f"""
         SELECT
             card_name AS name,
-            mana_cost_text AS mana_cost,
-            oracle_text AS oracle_text,
             card_artist AS artist,
             cmc,
-            raw_card_blob->>'set_name' AS set_name,
-            raw_card_blob->>'type_line' AS type_line,
-            raw_card_blob->'image_uris'->>'small' AS image_small,
-            raw_card_blob->'image_uris'->>'normal' AS image_normal,
-            raw_card_blob->'image_uris'->>'large' AS image_large
+            image_location_uuid,
+            mana_cost_text AS mana_cost,
+            oracle_text AS oracle_text,
+            set_name,
+            type_line
         FROM
             magic.cards AS card
         WHERE
@@ -2106,7 +2113,7 @@ class APIResource:
                 statement_timeout = 30_000
                 cursor.execute(f"set statement_timeout = {statement_timeout}")
 
-                page_size = 3000
+                page_size = 6000
                 cards_loaded = 0
                 for page in itertools.batched(cards, page_size):
                     # Create staging table with unique name

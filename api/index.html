@@ -959,11 +959,26 @@
           this.observeImages();
         }
 
+        buildImageUrl(image_location_uuid, size, face_index = 0) {
+          const idPrefix = image_location_uuid.substring(0, 1);
+          const idSuffix = image_location_uuid.substring(1, 2);
+
+          // Calculate cache timestamp: unix seconds rounded down to nearest 3 days
+          const now = Math.floor(Date.now() / 1000); // Current unix timestamp in seconds
+          const threeDaysInSeconds = 3 * 24 * 60 * 60; // 3 days in seconds
+          const cache_timestamp = Math.floor(now / threeDaysInSeconds) * threeDaysInSeconds;
+
+          // Use /front/ for face_index 0, /back/ for face_index 1
+          const facePath = face_index === 0 ? 'front' : 'back';
+
+          return `https://cards.scryfall.io/${size}/${facePath}/${idPrefix}/${idSuffix}/${image_location_uuid}.jpg?${cache_timestamp}`;
+        }
+
         createCardHTML(card, index) {
           const cardId = index.toString();
-          const imageSmall = card.image_small;
-          const imageNormal = card.image_normal;
-          const imageLarge = card.image_large;
+          const imageSmall = this.buildImageUrl(card.image_location_uuid, 'small');
+          const imageNormal = this.buildImageUrl(card.image_location_uuid, 'normal');
+          const imageLarge = this.buildImageUrl(card.image_location_uuid, 'large');
 
           // Debug logging
           console.log('Creating card HTML for:', card);
@@ -1023,7 +1038,7 @@
           const modalContent = document.getElementById('modalContent');
 
           // Create modal content
-          const imageLarge = card.image_large || card.image_normal || card.image_small;
+          const imageLarge = this.buildImageUrl(card.image_location_uuid, 'large');
           const imageHtml = imageLarge
             ? `<img class="modal-image" src="${this.escapeHtml(imageLarge)}" alt="${this.escapeHtml(card.name || 'Card Image')}" />`
             : '';
