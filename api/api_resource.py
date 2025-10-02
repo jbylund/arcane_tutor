@@ -1188,7 +1188,8 @@ class APIResource:
             power_int,
             toughness_int,
             rarity_int,
-            price_usd
+            price_usd,
+            face_index
         FROM (
             SELECT
                 magic.artists.artist_name AS artist,
@@ -1209,6 +1210,7 @@ class APIResource:
                     magic.card_face_printings.image_uris->>'small',
                     '[0-9a-f\-]{{36}}'
                 ) AS image_location_uuid,
+                magic.card_faces.face_index AS face_index,
                 {partition_sql}
             FROM
                 magic.cards

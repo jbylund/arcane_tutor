@@ -249,12 +249,18 @@ CREATE TABLE magic.raw_cards (
     CONSTRAINT check_raw_card_is_object CHECK (jsonb_typeof(raw_card_blob) = 'object')
 );
 
+
+CREATE INDEX IF NOT EXISTS idx_cards_card_name_trgm ON magic.cards USING gin (card_name magic.gin_trgm_ops);
 CREATE INDEX on magic.artists using hash (artist_id);
-CREATE INDEX on magic.illustration_artists using hash (artist_id);
-CREATE INDEX on magic.illustration_artists using hash (illustration_id);
+CREATE INDEX on magic.card_face_printings using btree (card_face_id, card_printing_id);
+CREATE INDEX on magic.card_face_printings using hash (illustration_id);
 CREATE INDEX on magic.card_faces using hash (card_id);
 CREATE INDEX on magic.cards using hash (card_id);
-CREATE INDEX IF NOT EXISTS idx_cards_card_name_trgm ON magic.cards USING gin (card_name magic.gin_trgm_ops);
-CREATE INDEX on magic.card_face_printings using btree (card_face_id, card_printing_id);
+CREATE INDEX on magic.illustration_artists using hash (artist_id);
+CREATE INDEX on magic.illustration_artists using hash (illustration_id);
+create index on magic.card_face_printings using hash (card_printing_id);
+create index on magic.card_printings using hash (set_code);
+create index on magic.card_faces using gin (face_types);
+create index on magic.card_faces using gin (face_subtypes);
 
 COMMIT;

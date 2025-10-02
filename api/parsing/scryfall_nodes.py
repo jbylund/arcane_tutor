@@ -476,8 +476,17 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         if self.operator == ":":
             return self._handle_colon_operator(context, field_type, lhs_sql, attr)
 
+        if field_type == FieldType.TEXT:
+            return super().to_sql(context)
+
         msg = f"Unknown field type: {field_type}"
         raise NotImplementedError(msg)
+
+
+
+    def _handle_card_name(self: ScryfallBinaryOperatorNode, context: dict, lhs_sql: str) -> str:
+        """Handle card name comparisons."""
+        return f"({lhs_sql} = %({param_name(self.rhs.value)})s)"
 
     def _handle_colon_operator(self: ScryfallBinaryOperatorNode, context: dict, field_type: str, lhs_sql: str, attr: str) -> str:
         """Handle colon operator for different field types."""
