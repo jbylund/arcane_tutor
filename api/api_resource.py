@@ -999,58 +999,6 @@ class APIResource:
             "total_cards": total_cards,
         }
 
-    def _get_total_cards_exact(
-        self: APIResource,
-        *,
-        no_limit_query: str,
-        params: dict[str, Any],
-    ) -> int:
-        full_query = f"""
-        SELECT
-            COUNT(1) AS total_cards
-        FROM
-            ({no_limit_query}) subq
-        """
-        full_query = rewrap(full_query)
-        logger.info("Full query: %s", full_query)
-        logger.info("Params: %s", params)
-        count_result_bag = self._run_query(query=full_query, params=params, explain=False)
-        return count_result_bag["result"][0]["total_cards"]
-
-    def _get_total_cards_from_estimate(
-        self: APIResource,
-        *,
-        where_clause: str,
-        params: dict[str, Any],
-    ) -> int:
-        """Get total cards count either from estimate or actual count.
-
-        Args:
-        ----
-            where_clause: The WHERE clause for the query
-            params: Query parameters
-            use_estimate: Whether to use EXPLAIN estimate or actual COUNT
-
-        Returns:
-        -------
-            Total number of cards matching the query
-        """
-        full_query = f"""
-        EXPLAIN (FORMAT JSON)
-        SELECT
-            card_name
-        FROM
-            magic.cards AS card
-        WHERE
-            {where_clause}
-        """
-        full_query = rewrap(full_query)
-        logger.info("Full query: %s", full_query)
-        logger.info("Params: %s", params)
-        ptr = self._run_query(query=full_query, params=params, explain=False)["result"][0]["QUERY PLAN"][0]["Plan"]
-        return ptr["Plan Rows"]
-
-
     def index_html(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
         """Return the index page.
 
