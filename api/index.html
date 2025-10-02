@@ -1224,7 +1224,7 @@
         showResultsCount(count, query, elapsed) {
           const formattedCount = count.toLocaleString();
           const uniqueValue = this.uniqueDropdown.value;
-          const itemType = uniqueValue + (count > 1 ? 's' : '');
+          const itemType = uniqueValue + (count !== 1 ? 's' : '');
 
           let msg = `Found ${formattedCount} ${itemType} matching "${query}"`;
           if (typeof elapsed === 'number') {
