@@ -23,7 +23,7 @@ def get_args() -> dict:
     parser.add_argument("--workers", type=int, dest="num_workers", default=DEFAULT_WORKERS)
     return vars(parser.parse_args())
 
-def run_server(  # noqa: C901
+def run_server(
     *,
     port: int = DEFAULT_PORT,
     num_workers: int = DEFAULT_WORKERS,

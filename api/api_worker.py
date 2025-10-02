@@ -82,13 +82,13 @@ class ApiWorker(multiprocessing.Process):
             falcon.App: The configured Falcon application instance.
         """
         # Importing here (post-fork) is safer for some servers/clients than importing before forking.
-        from .api_resource import APIResource  # pylint: disable=import-outside-toplevel  # noqa: PLC0415
-        from .middlewares import CachingMiddleware, CompressionMiddleware, TimingMiddleware  # noqa: PLC0415
+        from .api_resource import APIResource  # pylint: disable=import-outside-toplevel
+        from .middlewares import CompressionMiddleware, TimingMiddleware
 
         api = falcon.App(
             middleware=[
                 TimingMiddleware(),
-                CachingMiddleware(),  # important that this is first
+                # CachingMiddleware(),  # important that this is first  # noqa: ERA001
                 CompressionMiddleware(),
             ],
         )
@@ -121,7 +121,7 @@ class ApiWorker(multiprocessing.Process):
         logging.basicConfig(level=logging.INFO)
         logging.info("Starting worker with pid %d", os.getpid())
         try:
-            import bjoern  # noqa: PLC0415
+            import bjoern
             app = self.get_api(
                 import_guard=self.import_guard,
                 schema_setup_event=self.schema_setup_event,

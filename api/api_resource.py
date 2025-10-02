@@ -630,7 +630,7 @@ class APIResource:
             to_insert[card_name] = processed_card
         return list(to_insert.values())
 
-    def _preprocess_card(self: APIResource, card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: C901, PLR0915
+    def _preprocess_card(self: APIResource, card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: PLR0915
         """Preprocess a card to remove invalid cards and add necessary fields."""
         if set(card["legalities"].values()) == {"not_legal"}:
             return None
@@ -1068,7 +1068,7 @@ class APIResource:
         card_names.sort()
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             # Use SQL update with jsonb concatenation to add the tag
-            for card_name_batch in itertools.batched(card_names, 200):  # noqa: B911
+            for card_name_batch in itertools.batched(card_names, 200):
                 cursor.execute(
                     """
                     UPDATE magic.cards
@@ -1123,7 +1123,7 @@ class APIResource:
         card_names.sort()
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             # Use SQL update with jsonb concatenation to add the is: tag
-            for card_name_batch in itertools.batched(card_names, 200):  # noqa: B911
+            for card_name_batch in itertools.batched(card_names, 200):
                 cursor.execute(
                     """
                     UPDATE magic.cards
@@ -2010,7 +2010,7 @@ class APIResource:
         page_size = 750
         num_imported = 0
         # Import cards in batches using jsonb_populate_record
-        for card_batch in itertools.batched(cards_data, page_size):  # noqa: B911
+        for card_batch in itertools.batched(cards_data, page_size):
             batch_json = orjson.dumps(card_batch).decode("utf-8")
             cursor.execute("""
                 INSERT INTO magic.cards

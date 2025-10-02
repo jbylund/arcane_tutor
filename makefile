@@ -121,7 +121,7 @@ datadir:
 reset:
 	rm -rvf data
 
-test:
+test tests:
 	python -m pytest -vvv --capture=no --durations=10
 
 test-integration:
@@ -135,4 +135,3 @@ coverage: # @doc generate HTML coverage report
 
 test-profiling:
 	python -m pytest --profile-svg --durations=10 -vvv -k TestImportCardByName
-
