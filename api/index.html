@@ -623,6 +623,7 @@
           this.noResultsMessage = document.getElementById('noResults');
           this.resultsCount = document.getElementById('resultsCount');
           this.orderDropdown = document.getElementById('orderDropdown');
+          this.uniqueDropdown = document.getElementById('uniqueDropdown');
           this.orderToggle = document.getElementById('orderToggle');
 
           this.debounceTimeout = null;
@@ -648,9 +649,11 @@
           const initialQuery = params.get('q') || '';
           const initialOrder = params.get('orderby') || 'edhrec';
           const initialDirection = params.get('direction') || 'asc';
+          const initialUnique = params.get('unique') || 'card';
 
           // Set the order controls to match URL params
           this.orderDropdown.value = initialOrder;
+          this.uniqueDropdown.value = initialUnique;
           this.isAscending = initialDirection === 'asc';
           this.updateOrderToggleAppearance();
 
@@ -664,8 +667,9 @@
             this.handleSearch(query);
             // Update the URL as the user types
             const order = this.orderDropdown.value;
+            const unique = this.uniqueDropdown.value;
             const direction = this.isAscending ? 'asc' : 'desc';
-            this.updateURL(query, order, direction);
+            this.updateURL(query, order, direction, unique);
           });
 
           // Handle enter key for immediate search
@@ -695,6 +699,10 @@
           // Add event listeners for order controls
           this.orderDropdown.addEventListener('change', () => {
             this.handleOrderChange();
+          });
+
+          this.uniqueDropdown.addEventListener('change', () => {
+            this.handleUniqueChange();
           });
 
           this.orderToggle.addEventListener('click', () => {
@@ -839,10 +847,11 @@
 
           // Get current order settings
           const order = this.orderDropdown.value;
+          const unique = this.uniqueDropdown.value;
           const orderDirection = this.isAscending ? 'asc' : 'desc';
 
           // Generate the URL for this request
-          const url = `/search?q=${encodeURIComponent(normalizedQuery)}&orderby=${order}&direction=${orderDirection}`;
+          const url = `/search?q=${encodeURIComponent(normalizedQuery)}&orderby=${order}&direction=${orderDirection}&unique=${unique}`;
 
           // Check if this is the same URL as the last request - if so, skip the request
           if (this.lastRequestedUrl === url) {
@@ -959,11 +968,26 @@
           this.observeImages();
         }
 
+        buildImageUrl(image_location_uuid, size, face_index = 0) {
+          const idPrefix = image_location_uuid.substring(0, 1);
+          const idSuffix = image_location_uuid.substring(1, 2);
+
+          // Calculate cache timestamp: unix seconds rounded down to nearest 3 days
+          const now = Math.floor(Date.now() / 1000); // Current unix timestamp in seconds
+          const threeDaysInSeconds = 3 * 24 * 60 * 60; // 3 days in seconds
+          const cache_timestamp = Math.floor(now / threeDaysInSeconds) * threeDaysInSeconds;
+
+          // Use /front/ for face_index 0, /back/ for face_index 1
+          const facePath = face_index === 0 ? 'front' : 'back';
+
+          return `https://cards.scryfall.io/${size}/${facePath}/${idPrefix}/${idSuffix}/${image_location_uuid}.jpg?${cache_timestamp}`;
+        }
+
         createCardHTML(card, index) {
           const cardId = index.toString();
-          const imageSmall = card.image_small;
-          const imageNormal = card.image_normal;
-          const imageLarge = card.image_large;
+          const imageSmall = this.buildImageUrl(card.image_location_uuid, 'small');
+          const imageNormal = this.buildImageUrl(card.image_location_uuid, 'normal');
+          const imageLarge = this.buildImageUrl(card.image_location_uuid, 'large');
 
           // Debug logging
           console.log('Creating card HTML for:', card);
@@ -1023,7 +1047,7 @@
           const modalContent = document.getElementById('modalContent');
 
           // Create modal content
-          const imageLarge = card.image_large || card.image_normal || card.image_small;
+          const imageLarge = this.buildImageUrl(card.image_location_uuid, 'large');
           const imageHtml = imageLarge
             ? `<img class="modal-image" src="${this.escapeHtml(imageLarge)}" alt="${this.escapeHtml(card.name || 'Card Image')}" />`
             : '';
@@ -1199,7 +1223,10 @@
 
         showResultsCount(count, query, elapsed) {
           const formattedCount = count.toLocaleString();
-          let msg = `Found ${formattedCount} card${count !== 1 ? 's' : ''} matching "${query}"`;
+          const uniqueValue = this.uniqueDropdown.value;
+          const itemType = uniqueValue + (count !== 1 ? 's' : '');
+
+          let msg = `Found ${formattedCount} ${itemType} matching "${query}"`;
           if (typeof elapsed === 'number') {
             msg += ` (completed in ${elapsed}ms)`;
           }
@@ -1224,7 +1251,7 @@
           this.clearResults();
 
           // Clear URL parameters
-          this.updateURL('', this.orderDropdown.value, this.isAscending ? 'asc' : 'desc');
+          this.updateURL('', this.orderDropdown.value, this.isAscending ? 'asc' : 'desc', this.uniqueDropdown.value);
 
           // Focus back on search input
           this.searchInput.focus();
@@ -1362,16 +1389,18 @@
           }
         }
 
-        updateURL(query, order, direction) {
+        updateURL(query, order, direction, unique) {
           const url = new URL(window.location);
           if (query.trim()) {
             url.searchParams.set('q', query);
             url.searchParams.set('orderby', order);
             url.searchParams.set('direction', direction);
+            url.searchParams.set('unique', unique);
           } else {
             url.searchParams.delete('q');
             url.searchParams.delete('orderby');
             url.searchParams.delete('direction');
+            url.searchParams.delete('unique');
           }
           window.history.replaceState({}, '', url);
         }
@@ -1380,10 +1409,25 @@
           // Update URL with current state
           const query = this.searchInput.value.trim();
           const order = this.orderDropdown.value;
+          const unique = this.uniqueDropdown.value;
           const direction = this.isAscending ? 'asc' : 'desc';
-          this.updateURL(query, order, direction);
+          this.updateURL(query, order, direction, unique);
 
           // Trigger a new search with the current query and new order
+          if (query) {
+            this.performSearch(query);
+          }
+        }
+
+        handleUniqueChange() {
+          // Update URL with current state
+          const query = this.searchInput.value.trim();
+          const order = this.orderDropdown.value;
+          const unique = this.uniqueDropdown.value;
+          const direction = this.isAscending ? 'asc' : 'desc';
+          this.updateURL(query, order, direction, unique);
+
+          // Trigger a new search with the current query and new unique setting
           if (query) {
             this.performSearch(query);
           }
@@ -1396,8 +1440,9 @@
           // Update URL with current state
           const query = this.searchInput.value.trim();
           const order = this.orderDropdown.value;
+          const unique = this.uniqueDropdown.value;
           const direction = this.isAscending ? 'asc' : 'desc';
-          this.updateURL(query, order, direction);
+          this.updateURL(query, order, direction, unique);
 
           // Trigger a new search with the current query and new order direction
           if (query) {
@@ -1500,6 +1545,11 @@
             <option value="toughness">Toughness</option>
             <option value="rarity">Rarity</option>
             <option value="usd">USD</option>
+          </select>
+          <select class="order-dropdown" id="uniqueDropdown">
+            <option value="card">Cards</option>
+            <option value="artwork">Artwork</option>
+            <option value="printing">Printings</option>
           </select>
           <button class="order-toggle" id="orderToggle" title="Toggle ascending/descending">
             <span class="arrow-up">↑</span>

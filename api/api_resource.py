@@ -6,6 +6,7 @@ import collections
 import copy
 import csv
 import datetime
+import enum
 import functools
 import inspect
 import itertools
@@ -45,6 +46,25 @@ logger = logging.getLogger(__name__)
 # pylint: disable=c-extension-no-member
 NOT_FOUND = 404
 
+
+class UniqueOn(enum.StrEnum):
+    """Enum for the distinct on column for the search."""
+    CARD = enum.auto()
+    PRINTING = enum.auto()
+    ARTWORK = enum.auto()
+
+def extract_image_location_uuid(card: dict[str, Any]) -> str:
+    """Extract the image location UUID from a card."""
+    for image_location in card.get("image_uris", {}).values():
+        if ".jpg" in image_location:
+            return image_location.rpartition("/")[-1].partition(".")[0]
+    msg = f"No image location found for card: {card}"
+    raise AssertionError(msg)
+
+def parse_type_line(type_line: str) -> tuple[list[str], list[str]]:
+    """Parse the type line of a card."""
+    card_types, _, card_subtypes = (x.strip().split() for x in type_line.title().partition("\u2014"))
+    return card_types, card_subtypes or []
 
 def maybeify(func: callable) -> callable:
     """Convert value to int (via float first), returning None if conversion fails."""
@@ -86,7 +106,8 @@ def extract_collector_number_int(collector_number: str | int | float | None) -> 
             pass
     return None  # Field will be null by default
 
-def _convert_string_to_type(str_value: str, param_type: Any) -> Any:  # noqa: ANN401
+
+def _convert_string_to_type(str_value: str | None, param_type: Any) -> Any:  # noqa: ANN401
     """Convert a string value to the specified type.
 
     Args:
@@ -96,29 +117,45 @@ def _convert_string_to_type(str_value: str, param_type: Any) -> Any:  # noqa: AN
     Returns:
         The converted value, or the original string if conversion fails/unsupported
     """
-    # Handle special cases for no type annotation
-    if param_type in {inspect.Parameter.empty, Any, "object"}:
-        result = str_value
-    # Convert to boolean
-    elif param_type is bool or str(param_type) == "<class 'bool'>" or param_type == "bool":
-        result = str_value.lower() in ("true", "1", "yes", "on")
-    # Convert to integer
-    elif param_type is int or str(param_type) == "<class 'int'>" or param_type == "int":
-        try:
-            result = int(str_value)
-        except ValueError:
-            result = str_value  # Keep as string if conversion fails
-    # Convert to float
-    elif param_type is float or str(param_type) == "<class 'float'>" or param_type == "float":
-        try:
-            result = float(str_value)
-        except ValueError:
-            result = str_value  # Keep as string if conversion fails
-    else:
-        # For all other types (including str), keep as string
-        result = str_value
+    if str_value is None:
+        return None
 
-    return result
+    def identity(x: str) -> str:
+        return x
+
+    def convert_to_bool(x: str) -> bool:
+        return x.lower() in ("true", "1", "yes", "on")
+
+    converter_map = {
+        "UniqueOn": UniqueOn,
+        "bool": convert_to_bool,
+        "float": float,
+        "int": int,
+        "str": identity,
+    }
+    if isinstance(param_type, str):
+        pass
+    else:
+        param_type = param_type.__name__
+    possible_types = [x.strip() for x in param_type.split("|")]
+    for ipossible_type in possible_types:
+        try:
+            converter = converter_map[ipossible_type]
+        except KeyError:
+            continue
+        try:
+            return converter(str_value)
+        except (ValueError, TypeError):
+            continue
+
+    logger.warning(
+        "Was unable to convert parameter: [%s][%s][%s]: %s",
+        type(param_type),
+        param_type,
+        str(param_type),
+        str_value,
+    )
+    return str_value
 
 
 def make_type_converting_wrapper(func: callable) -> callable:
@@ -483,6 +520,8 @@ class APIResource:
             total_duration = after_fetch - before
             timings["total_duration_ms"] = total_duration * 1000
             timings["total_frequency"] = 1 / total_duration
+            for key, value in timings.items():
+                timings[key] = round(value, 3)
 
         if use_cache:
             self._query_cache[cachekey] = result
@@ -521,7 +560,7 @@ class APIResource:
             Any: The card data (likely a list of dicts).
 
         """
-        data_key = "oracle_cards"
+        data_key = "default_cards"
         cache_dir_path = pathlib.Path("/data/api")
         if not cache_dir_path.exists():
             cache_dir_path = pathlib.Path("/tmp/api")  # noqa: S108
@@ -619,16 +658,14 @@ class APIResource:
     def _get_cards_to_insert(self: APIResource) -> list[dict[str, Any]]:
         """Get the cards to insert into the database."""
         all_cards = self.get_data()
-        to_insert = {}
+        scryfall_id_to_card = {}
         for card in all_cards:
-            card_name = card["name"]
-            if card_name in to_insert:
-                continue
             processed_card = self._preprocess_card(card)
             if processed_card is None:
                 continue
-            to_insert[card_name] = processed_card
-        return list(to_insert.values())
+            scryfall_id = processed_card["scryfall_id"]
+            scryfall_id_to_card[scryfall_id] = processed_card
+        return list(scryfall_id_to_card.values())
 
     def _preprocess_card(self: APIResource, card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: PLR0915
         """Preprocess a card to remove invalid cards and add necessary fields."""
@@ -646,11 +683,13 @@ class APIResource:
 
         # Store the original card data before modifications for raw_card_blob
         raw_card_data = copy.deepcopy(card)
+        card["raw_card_blob"] = raw_card_data
         card["preprocessed"] = True
+        card["scryfall_id"] = card["id"]
 
-        card_types, _, card_subtypes = (x.strip().split() for x in card.get("type_line", "").title().partition("\u2014"))
+        card_types, card_subtypes = parse_type_line(card["type_line"])
         card["card_types"] = card_types
-        card["card_subtypes"] = card_subtypes or []  # Use empty array instead of None
+        card["card_subtypes"] = card_subtypes
 
         card["creature_power"] = maybe_int(card.get("power"))
         card["creature_toughness"] = maybe_int(card.get("toughness"))
@@ -701,7 +740,6 @@ class APIResource:
         card["creature_power_text"] = card.get("power")
         card["creature_toughness_text"] = card.get("toughness")
         card["card_artist"] = card.get("artist")
-        card["raw_card_blob"] = raw_card_data  # Store the original card data
 
         # Handle CMC and edhrec_rank conversion using helper function
         card["cmc"] = maybe_int(card.get("cmc"))
@@ -724,6 +762,8 @@ class APIResource:
         collector_number = card.get("collector_number")
         card["collector_number"] = collector_number
         card["collector_number_int"] = extract_collector_number_int(collector_number)
+        card["image_location_uuid"] = extract_image_location_uuid(card)
+        card["illustration_id"] = card.get("illustration_id")
 
         # Handle legalities and produced_mana defaults
         card.setdefault("card_legalities", card.get("legalities", {}))
@@ -754,7 +794,9 @@ class APIResource:
                 conn = typecast("Connection", conn)
                 with conn.cursor() as cursor:
                     cursor.execute("SELECT COUNT(*) AS num_cards FROM magic.cards")
-                    return cursor.fetchall()[0]["num_cards"] > 0
+                    cards_found = cursor.fetchall()[0]["num_cards"]
+                    logger.info("Cards found: %d", cards_found)
+                    return cards_found > 0
         except Exception as oops:
             logger.error("Error checking if setup is complete: %s", oops, exc_info=True)
             return False
@@ -765,10 +807,12 @@ class APIResource:
         if self._setup_complete():
             # check without taking the lock
             # so the majority of the time we will never have to take the lock
+            logger.info("Setup complete fastpath...")
             return None
 
         with self._import_guard:
             if self._setup_complete():
+                logger.info("Setup complete slowpath...")
                 return None
             self.setup_schema()
 
@@ -805,6 +849,7 @@ class APIResource:
         orderby: str | None = None,
         direction: str | None = None,
         limit: int = 100,
+        unique: UniqueOn | None = UniqueOn.CARD,
     ) -> dict[str, Any]:
         """Run a search query and return results and metadata.
 
@@ -815,6 +860,7 @@ class APIResource:
             direction: Sort direction ('asc' or 'desc').
             limit: Maximum number of results to return.
             orderby: Field to sort by.
+            unique: Unique on field.
 
         Returns:
             Dict containing search results and metadata.
@@ -826,6 +872,7 @@ class APIResource:
             orderby=orderby,
             direction=direction,
             limit=limit,
+            unique=unique,
         )
 
     @cached(
@@ -839,6 +886,7 @@ class APIResource:
         orderby: str | None = None,
         direction: str | None = None,
         limit: int = 100,
+        unique: UniqueOn | None = UniqueOn.CARD,
     ) -> dict[str, Any]:
         try:
             where_clause, params = get_where_clause(query)
@@ -862,24 +910,50 @@ class APIResource:
             "asc": "ASC",
             "desc": "DESC",
         }.get(direction, "ASC")
-        full_query = f"""
+        # scryfall supports distinct:
+        # cards, prints, arts
+        distinct_on = {
+            UniqueOn.ARTWORK: "illustration_id",
+            UniqueOn.CARD: "card_name",
+            UniqueOn.PRINTING: "scryfall_id",
+        }.get(unique.rstrip("s"), "card_name")
+        no_limit_query = f"""
+        WITH distinct_cards AS (
+            SELECT DISTINCT ON ({distinct_on})
+                card_name AS name,
+                card_artist AS artist,
+                cmc,
+                image_location_uuid,
+                mana_cost_text AS mana_cost,
+                oracle_text AS oracle_text,
+                set_name,
+                type_line,
+                {sql_orderby} AS sort_value,
+                edhrec_rank
+            FROM
+                magic.cards AS card
+            WHERE
+                {where_clause}
+            ORDER BY
+                {distinct_on}
+        )
         SELECT
-            card_name AS name,
-            mana_cost_text AS mana_cost,
-            oracle_text AS oracle_text,
-            card_artist AS artist,
+            name,
+            artist,
             cmc,
-            raw_card_blob->>'set_name' AS set_name,
-            raw_card_blob->>'type_line' AS type_line,
-            raw_card_blob->'image_uris'->>'small' AS image_small,
-            raw_card_blob->'image_uris'->>'normal' AS image_normal,
-            raw_card_blob->'image_uris'->>'large' AS image_large
+            image_location_uuid,
+            mana_cost,
+            oracle_text,
+            set_name,
+            type_line
         FROM
-            magic.cards AS card
-        WHERE
-            {where_clause}
+            distinct_cards
+        """
+
+        full_query = f"""
+        {no_limit_query}
         ORDER BY
-            {sql_orderby} {sql_direction} NULLS LAST,
+            sort_value {sql_direction} NULLS LAST,
             edhrec_rank ASC NULLS LAST
         LIMIT
             {limit}
@@ -903,7 +977,7 @@ class APIResource:
         total_cards = len(cards)
         if total_cards == limit:
             total_cards = self._get_total_cards_exact(
-                where_clause=where_clause,
+                no_limit_query=no_limit_query,
                 params=params,
             )
         return {
@@ -918,16 +992,14 @@ class APIResource:
     def _get_total_cards_exact(
         self: APIResource,
         *,
-        where_clause: str,
+        no_limit_query: str,
         params: dict[str, Any],
     ) -> int:
         full_query = f"""
         SELECT
             COUNT(1) AS total_cards
         FROM
-            magic.cards AS card
-        WHERE
-            {where_clause}
+            ({no_limit_query}) subq
         """
         full_query = rewrap(full_query)
         logger.info("Full query: %s", full_query)
@@ -2092,33 +2164,49 @@ class APIResource:
             with self._conn_pool.connection() as conn, conn.cursor() as cursor:
                 statement_timeout = 30_000
                 cursor.execute(f"set statement_timeout = {statement_timeout}")
-                # Create staging table with unique name
-                cursor.execute(f"CREATE TEMPORARY TABLE {staging_table_name} (card_blob jsonb)")
 
-                # Load cards into staging table using COPY for efficiency
-                with cursor.copy(f"COPY {staging_table_name} (card_blob) FROM STDIN WITH (FORMAT csv, HEADER false)") as copy_filehandle:
-                    writer = csv.writer(copy_filehandle, quoting=csv.QUOTE_ALL)
-                    writer.writerows([orjson.dumps(card, option=orjson.OPT_SORT_KEYS).decode("utf-8")] for card in cards)
+                page_size = 6000
+                cards_loaded = 0
+                for page in itertools.batched(cards, page_size):
+                    # Create staging table with unique name
+                    cursor.execute(f"CREATE TEMPORARY TABLE {staging_table_name} (card_blob jsonb)")
 
-                # Get random sample before transfer (up to 10 cards)
-                cursor.execute(f"SELECT card_blob FROM {staging_table_name} ORDER BY RANDOM() LIMIT 10")
-                sample_cards = [r["card_blob"] for r in cursor.fetchall()]
+                    # Load cards into staging table using COPY for efficiency
+                    with cursor.copy(f"COPY {staging_table_name} (card_blob) FROM STDIN WITH (FORMAT csv, HEADER false)") as copy_filehandle:
+                        writer = csv.writer(copy_filehandle, quoting=csv.QUOTE_ALL)
+                        writer.writerows([orjson.dumps(card, option=orjson.OPT_SORT_KEYS).decode("utf-8")] for card in page)
 
-                # Transfer from staging to main table using direct jsonb_populate_record
-                insert_query = f"""
-                    INSERT INTO magic.cards
-                    SELECT
-                        (jsonb_populate_record(null::magic.cards, card_blob)).*
-                    FROM
-                        {staging_table_name}
-                    ON CONFLICT (card_name) DO NOTHING
-                """
+                    target_sample_size = 10
+                    random_threshold = 2 * target_sample_size / len(page)
+                    cursor.execute(f"""
+                        SELECT
+                            (jsonb_populate_record(null::magic.cards, card_blob)).*
+                        FROM
+                            {staging_table_name}
+                        WHERE
+                            RANDOM() < {random_threshold}
+                        ORDER BY RANDOM()
+                        LIMIT {target_sample_size}""",
+                    )
+                    sample_cards = [dict(r) for r in cursor.fetchall()]
 
-                cursor.execute(insert_query)
-                cards_loaded = cursor.rowcount
+                    # Transfer from staging to main table using direct jsonb_populate_record
+                    insert_query = f"""
+                        INSERT INTO magic.cards
+                        SELECT
+                            (jsonb_populate_record(null::magic.cards, card_blob)).*
+                        FROM
+                            {staging_table_name}
+                        ON CONFLICT DO NOTHING
+                    """
+                    # could we update the on conflict to replace?
 
-                # Drop the staging table
-                cursor.execute(f"DROP TABLE {staging_table_name}")
+                    cursor.execute(insert_query)
+                    cards_loaded += cursor.rowcount
+
+                    # Drop the staging table
+                    cursor.execute(f"DROP TABLE {staging_table_name}")
+                    logger.info("%d of %d cards loaded", cards_loaded, len(cards))
 
                 conn.commit()
 
