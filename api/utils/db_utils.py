@@ -29,7 +29,7 @@ def get_pg_creds() -> dict[str, str]:
 def get_testcontainers_creds() -> dict[str, str]:
     """Get postgres credentials from the testcontainers environment."""
     logger.warning("Using an ephemeral postgres container...")
-    from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
+    from testcontainers.postgres import PostgresContainer
     exposed_port = random.randint(1024, 49151)  # noqa: S311
     container = PostgresContainer(
         image="postgres:18",
