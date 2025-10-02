@@ -12,11 +12,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-script_dir = Path(__file__).parent
-sys.path.insert(0, str(script_dir))
-
 # ruff: noqa: E402
-from ci_monitor import (
+from ..ci_monitor import (
     format_issue_body,
     get_args,
     get_github_headers,
@@ -128,9 +125,9 @@ class TestCIMonitor:
             assert args.failed_checks == '[{"name": "test"}]'
             assert args.commit_sha == "abc123"
 
-    @mock.patch("ci_monitor.get_repository_info")
-    @mock.patch("ci_monitor.check_ci_status")
-    @mock.patch("ci_monitor.set_github_output")
+    @mock.patch("scripts.ci_monitor.get_repository_info")
+    @mock.patch("scripts.ci_monitor.check_ci_status")
+    @mock.patch("scripts.ci_monitor.set_github_output")
     def test_main_check_only(
         self,
         mock_set_output: MagicMock,
@@ -151,10 +148,10 @@ class TestCIMonitor:
         mock_set_output.assert_any_call("failed_checks", '[{"name": "test"}]')
         mock_set_output.assert_any_call("commit_sha", "abc123")
 
-    @mock.patch("ci_monitor.get_repository_info")
-    @mock.patch("ci_monitor.create_ci_issue_if_needed")
-    @mock.patch("ci_monitor.check_ci_status")
-    @mock.patch("ci_monitor.set_github_output")
+    @mock.patch("scripts.ci_monitor.get_repository_info")
+    @mock.patch("scripts.ci_monitor.create_ci_issue_if_needed")
+    @mock.patch("scripts.ci_monitor.check_ci_status")
+    @mock.patch("scripts.ci_monitor.set_github_output")
     def test_main_check_and_create_issue_with_failure(
         self,
         mock_set_output: MagicMock,  # noqa: ARG002
@@ -175,8 +172,8 @@ class TestCIMonitor:
         mock_check_ci.assert_called_once_with("owner", "repo")
         mock_create_issue.assert_called_once_with("owner", "repo", [{"name": "test"}], "abc123")
 
-    @mock.patch("ci_monitor.get_repository_info")
-    @mock.patch("ci_monitor.create_ci_issue_if_needed")
+    @mock.patch("scripts.ci_monitor.get_repository_info")
+    @mock.patch("scripts.ci_monitor.create_ci_issue_if_needed")
     def test_main_create_issue_direct(
         self,
         mock_create_issue: MagicMock,
