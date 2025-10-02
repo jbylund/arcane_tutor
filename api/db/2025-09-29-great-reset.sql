@@ -246,6 +246,7 @@ CREATE TABLE magic.cards (
 
 
 CREATE INDEX IF NOT EXISTS idx_cards_artist_trgm ON magic.cards USING gin (card_artist magic.gin_trgm_ops) WHERE (card_artist IS NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_cards_cardname_trgm ON magic.cards USING gin (card_name magic.gin_trgm_ops) WHERE (card_name IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_cards_border ON magic.cards USING hash (card_border) WHERE (card_border IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_cards_collector_number ON magic.cards USING btree (collector_number) WHERE (collector_number IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_cards_collector_number_int ON magic.cards USING btree (collector_number_int) WHERE (collector_number_int IS NOT NULL);
@@ -268,7 +269,8 @@ CREATE INDEX IF NOT EXISTS idx_cards_set_code ON magic.cards USING hash (card_se
 CREATE INDEX IF NOT EXISTS idx_cards_watermark ON magic.cards USING hash (card_watermark) WHERE (card_watermark IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_cards_name ON magic.cards USING btree (card_name);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_scryfall_id ON magic.cards USING btree (scryfall_id);
-
+CREATE INDEX IF NOT EXISTS idx_cards_cardtypes_gin ON magic.cards USING gin (card_types);
+CREATE INDEX IF NOT EXISTS idx_cards_cardsubtypes_gin ON magic.cards USING gin (card_subtypes);
 
 COMMENT ON COLUMN magic.cards.card_artist IS 'Artist name for the card artwork - will be null for cards without artist information';
 COMMENT ON COLUMN magic.cards.card_border IS 'Card border color (black, white, borderless, silver, gold) - stored in lowercase';
@@ -390,9 +392,8 @@ CREATE INDEX IF NOT EXISTS idx_cards_setcode_edhrec_btree_include ON magic.cards
     type_line
 );
 
-CREATE INDEX IF NOT EXISTS idx_cards_setcode_edhrec_btree_include ON magic.cards USING btree (card_set_code, edhrec_rank) include (
+CREATE INDEX IF NOT EXISTS idx_cards_cardname_edhrec_btree_include ON magic.cards USING btree (card_name, edhrec_rank) include (
     card_artist,
-    card_name,
     cmc,
     illustration_id,
     image_location_uuid,

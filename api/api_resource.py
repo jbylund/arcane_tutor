@@ -783,7 +783,9 @@ class APIResource:
                 conn = typecast("Connection", conn)
                 with conn.cursor() as cursor:
                     cursor.execute("SELECT COUNT(*) AS num_cards FROM magic.cards")
-                    return cursor.fetchall()[0]["num_cards"] > 0
+                    cards_found = cursor.fetchall()[0]["num_cards"]
+                    logger.info("Cards found: %d", cards_found)
+                    return 0 < cards_found
         except Exception as oops:
             logger.error("Error checking if setup is complete: %s", oops, exc_info=True)
             return False
