@@ -6,6 +6,7 @@ import collections
 import copy
 import csv
 import datetime
+import enum
 import functools
 import hashlib
 import inspect
@@ -41,6 +42,12 @@ if TYPE_CHECKING:
 
     import psycopg_pool
 
+
+class UniqueMode(enum.StrEnum):
+    """Unique mode for partitioning."""
+    CARDS = enum.auto()
+    PRINTINGS = enum.auto()
+    ILLUSTRATIONS = enum.auto()
 
 logger = logging.getLogger(__name__)
 
@@ -378,14 +385,26 @@ def _convert_string_to_type(str_value: str, param_type: Any) -> Any:  # noqa: AN
     def convert_to_bool(x: str) -> bool:
         return x.lower() in ("true", "1", "yes", "on")
 
-    converter = {
+    converter_map = {
+        "UniqueMode": UniqueMode,
         "bool": convert_to_bool,
         "float": float,
         "int": int,
         "str": identity,
     }
-    converter = converter.get(param_type, identity)
-    return converter(str_value)
+    possible_types = [x.strip() for x in param_type.split("|")]
+    for ipossible_type in possible_types:
+        try:
+            converter = converter_map[ipossible_type]
+        except KeyError:
+            continue
+        try:
+            return converter(str_value)
+        except (ValueError, TypeError):
+            continue
+
+    logger.warning("Was unable to convert parameter: [%s][%s]", type(param_type), param_type)
+    return str_value
 
 
 def make_type_converting_wrapper(func: callable) -> callable:
@@ -1057,6 +1076,7 @@ class APIResource:
         orderby: str | None = None,
         direction: str | None = None,
         limit: int = 100,
+        unique: UniqueMode = UniqueMode.CARDS,
     ) -> dict[str, Any]:
         """Run a search query and return results and metadata.
 
@@ -1067,6 +1087,7 @@ class APIResource:
             direction: Sort direction ('asc' or 'desc').
             limit: Maximum number of results to return.
             orderby: Field to sort by.
+            unique: Unique mode to use for partitioning.
 
         Returns:
             Dict containing search results and metadata.
@@ -1078,7 +1099,48 @@ class APIResource:
             orderby=orderby,
             direction=direction,
             limit=limit,
+            unique=unique,
         )
+
+    def _get_partition_sql(self: APIResource, unique: UniqueMode) -> str:
+        """Generate the partitioning SQL based on unique mode.
+
+        Args:
+            unique: The unique mode to use for partitioning.
+
+        Returns:
+            SQL expression for partitioning (window function).
+        """
+        if unique == UniqueMode.CARDS:
+            # Partition by card_id - return only one row per unique card
+            return "ROW_NUMBER() OVER (PARTITION BY magic.cards.card_id ORDER BY magic.card_printings.card_printing_id) AS row_num"
+        if unique == UniqueMode.PRINTINGS:
+            # No partitioning - return all printings
+            return "1 AS row_num"
+        if unique == UniqueMode.ILLUSTRATIONS:
+            # Partition by illustration_id - return only one row per unique illustration
+            return "ROW_NUMBER() OVER (PARTITION BY magic.card_face_printings.illustration_id ORDER BY magic.card_printings.card_printing_id) AS row_num"
+        msg = f"Unknown unique mode: {unique}"
+        raise ValueError(msg)
+
+    def _get_outer_orderby_sql(self: APIResource, orderby: str | None) -> str:
+        """Generate the outer query ORDER BY field based on orderby parameter.
+
+        Args:
+            orderby: The orderby parameter from the request.
+
+        Returns:
+            SQL field name for the outer query ORDER BY clause.
+        """
+        outer_orderby_map = {
+            "cmc": "cmc",
+            "edhrec": "edhrec_rank",
+            "power": "power_int",
+            "rarity": "rarity_int",
+            "toughness": "toughness_int",
+            "usd": "price_usd",
+        }
+        return outer_orderby_map.get(orderby, "edhrec_rank")
 
     @cached(
         cache=TTLCache(maxsize=1000, ttl=60),
@@ -1091,6 +1153,7 @@ class APIResource:
         orderby: str | None = None,
         direction: str | None = None,
         limit: int = 100,
+        unique: UniqueMode = UniqueMode.CARDS,
     ) -> dict[str, Any]:
         try:
             where_clause, params = get_where_clause(query)
@@ -1101,48 +1164,69 @@ class APIResource:
                 title="Invalid Search Query",
                 description=f'Failed to parse query: "{query}"',
             ) from err
-        sql_orderby = {
-            # what's in the query => the db column name with table prefix
-            "cmc": "magic.card_faces.cmc",
-            "edhrec": "magic.cards.edhrec_rank",
-            "power": "magic.card_faces.power_int",
-            "rarity": "magic.card_printings.rarity_int",
-            "toughness": "magic.card_faces.toughness_int",
-            "usd": "magic.prices.price_usd",
-        }.get(orderby, "magic.cards.edhrec_rank")
+
         sql_direction = {
             "asc": "ASC",
             "desc": "DESC",
         }.get(direction, "ASC")
+
+        # Generate partitioning SQL based on unique mode
+        partition_sql = self._get_partition_sql(unique)
         full_query = rf"""
         SELECT
-            magic.cards.card_id AS card_id,
-            magic.cards.card_name AS name,
-            magic.card_faces.mana_cost_text AS mana_cost,
-            magic.card_faces.oracle_text AS oracle_text,
-            magic.artists.artist_name AS artist,
-            magic.card_faces.cmc,
-            magic.card_sets.set_name AS set_name,
-            magic.card_faces.type_line AS type_line,
-            magic.card_face_printings.illustration_id AS illustration_id,
-            substring(
-                magic.card_face_printings.image_uris->>'small',
-                '[0-9a-f\-]{{36}}'
-            ) AS image_location_uuid
-        FROM
-            magic.cards
-        JOIN magic.card_printings ON magic.cards.card_id = magic.card_printings.card_id
-        JOIN magic.card_faces ON magic.cards.card_id = magic.card_faces.card_id
-        JOIN magic.card_face_printings ON magic.card_faces.card_face_id = magic.card_face_printings.card_face_id AND magic.card_printings.card_printing_id = magic.card_face_printings.card_printing_id
-        JOIN magic.card_sets ON magic.card_printings.set_code = magic.card_sets.set_code
-        LEFT JOIN magic.prices ON magic.card_printings.card_printing_id = magic.prices.card_printing_id
-        LEFT JOIN magic.illustration_artists ON magic.card_face_printings.illustration_id = magic.illustration_artists.illustration_id
-        LEFT JOIN magic.artists ON magic.illustration_artists.artist_id = magic.artists.artist_id
+            card_id,
+            name,
+            mana_cost,
+            oracle_text,
+            artist,
+            cmc,
+            set_name,
+            type_line,
+            illustration_id,
+            image_location_uuid,
+            edhrec_rank,
+            power_int,
+            toughness_int,
+            rarity_int,
+            price_usd
+        FROM (
+            SELECT
+                magic.artists.artist_name AS artist,
+                magic.card_face_printings.illustration_id AS illustration_id,
+                magic.card_faces.cmc,
+                magic.card_faces.mana_cost_text AS mana_cost,
+                magic.card_faces.oracle_text AS oracle_text,
+                magic.card_faces.power_int AS power_int,
+                magic.card_faces.toughness_int AS toughness_int,
+                magic.card_faces.type_line AS type_line,
+                magic.card_printings.rarity_int AS rarity_int,
+                magic.card_sets.set_name AS set_name,
+                magic.cards.card_id AS card_id,
+                magic.cards.card_name AS name,
+                magic.cards.edhrec_rank AS edhrec_rank,
+                magic.prices.price_usd AS price_usd,
+                substring(
+                    magic.card_face_printings.image_uris->>'small',
+                    '[0-9a-f\-]{{36}}'
+                ) AS image_location_uuid,
+                {partition_sql}
+            FROM
+                magic.cards
+            JOIN magic.card_printings ON magic.cards.card_id = magic.card_printings.card_id
+            JOIN magic.card_faces ON magic.cards.card_id = magic.card_faces.card_id
+            JOIN magic.card_face_printings ON magic.card_faces.card_face_id = magic.card_face_printings.card_face_id AND magic.card_printings.card_printing_id = magic.card_face_printings.card_printing_id
+            JOIN magic.card_sets ON magic.card_printings.set_code = magic.card_sets.set_code
+            LEFT JOIN magic.prices ON magic.card_printings.card_printing_id = magic.prices.card_printing_id
+            LEFT JOIN magic.illustration_artists ON magic.card_face_printings.illustration_id = magic.illustration_artists.illustration_id
+            LEFT JOIN magic.artists ON magic.illustration_artists.artist_id = magic.artists.artist_id
+            WHERE
+                {where_clause}
+        ) partitioned_results
         WHERE
-            {where_clause}
+            row_num = 1
         ORDER BY
-            {sql_orderby} {sql_direction} NULLS LAST,
-            magic.cards.edhrec_rank ASC NULLS LAST
+            {self._get_outer_orderby_sql(orderby)} {sql_direction} NULLS LAST,
+            edhrec_rank ASC NULLS LAST
         LIMIT
             {limit}
         """

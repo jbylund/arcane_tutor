@@ -179,10 +179,23 @@
         max-width: 600px;
       }
 
+      .search-controls {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        justify-content: center;
+        flex-wrap: wrap;
+      }
+
       .order-controls {
         display: flex;
         align-items: center;
         gap: 8px;
+      }
+
+      .unique-mode-controls {
+        display: flex;
+        align-items: center;
       }
 
       .order-dropdown {
@@ -212,6 +225,43 @@
 
       .order-dropdown option:hover,
       .order-dropdown option:focus {
+        background: var(--color-hover-bg);
+        color: var(--color-hover-text);
+      }
+
+      .unique-mode-dropdown {
+        padding: 15px 20px;
+        font-size: 1.1rem;
+        border: none;
+        border-radius: 25px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        outline: none;
+        background: var(--color-input-background);
+        color: var(--color-input-text);
+        cursor: pointer;
+        transition: all 0.3s ease;
+        min-width: 140px;
+      }
+
+      .unique-mode-dropdown:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
+        background: var(--color-hover-bg);
+      }
+
+      .unique-mode-dropdown:focus {
+        transform: translateY(-2px);
+        box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
+        background: var(--color-hover-bg);
+      }
+
+      .unique-mode-dropdown option {
+        background: var(--color-input-background);
+        color: var(--color-input-text);
+      }
+
+      .unique-mode-dropdown option:hover,
+      .unique-mode-dropdown option:focus {
         background: var(--color-hover-bg);
         color: var(--color-hover-text);
       }
@@ -543,12 +593,27 @@
           gap: 10px;
         }
 
+        .search-controls {
+          flex-direction: column;
+          gap: 12px;
+        }
+
         .order-controls {
           width: 100%;
           justify-content: center;
         }
 
         .order-dropdown {
+          flex: 1;
+          max-width: 200px;
+        }
+
+        .unique-mode-controls {
+          width: 100%;
+          justify-content: center;
+        }
+
+        .unique-mode-dropdown {
           flex: 1;
           max-width: 200px;
         }
@@ -624,6 +689,7 @@
           this.resultsCount = document.getElementById('resultsCount');
           this.orderDropdown = document.getElementById('orderDropdown');
           this.orderToggle = document.getElementById('orderToggle');
+          this.uniqueModeDropdown = document.getElementById('uniqueModeDropdown');
 
           this.debounceTimeout = null;
           this.debounceDelay = 140; // milliseconds
@@ -648,11 +714,15 @@
           const initialQuery = params.get('q') || '';
           const initialOrder = params.get('orderby') || 'edhrec';
           const initialDirection = params.get('direction') || 'asc';
+          const initialUniqueMode = params.get('unique') || 'cards';
 
           // Set the order controls to match URL params
           this.orderDropdown.value = initialOrder;
           this.isAscending = initialDirection === 'asc';
           this.updateOrderToggleAppearance();
+
+          // Set the unique mode dropdown
+          this.uniqueModeDropdown.value = initialUniqueMode;
 
           if (initialQuery) {
             this.searchInput.value = initialQuery;
@@ -699,6 +769,11 @@
 
           this.orderToggle.addEventListener('click', () => {
             this.toggleOrderDirection();
+          });
+
+          // Add event listener for unique mode dropdown
+          this.uniqueModeDropdown.addEventListener('change', () => {
+            this.handleUniqueModeChange();
           });
         }
 
@@ -840,9 +915,10 @@
           // Get current order settings
           const order = this.orderDropdown.value;
           const orderDirection = this.isAscending ? 'asc' : 'desc';
+          const uniqueMode = this.uniqueModeDropdown.value;
 
           // Generate the URL for this request
-          const url = `/search?q=${encodeURIComponent(normalizedQuery)}&orderby=${order}&direction=${orderDirection}`;
+          const url = `/search?q=${encodeURIComponent(normalizedQuery)}&orderby=${order}&direction=${orderDirection}&unique=${uniqueMode}`;
 
           // Check if this is the same URL as the last request - if so, skip the request
           if (this.lastRequestedUrl === url) {
@@ -1375,16 +1451,23 @@
           }
         }
 
-        updateURL(query, order, direction) {
+        updateURL(query, order, direction, uniqueMode = null) {
           const url = new URL(window.location);
           if (query.trim()) {
             url.searchParams.set('q', query);
             url.searchParams.set('orderby', order);
             url.searchParams.set('direction', direction);
+            if (uniqueMode !== null) {
+              url.searchParams.set('unique', uniqueMode);
+            } else {
+              // Use current unique mode value if not provided
+              url.searchParams.set('unique', this.uniqueModeDropdown.value);
+            }
           } else {
             url.searchParams.delete('q');
             url.searchParams.delete('orderby');
             url.searchParams.delete('direction');
+            url.searchParams.delete('unique');
           }
           window.history.replaceState({}, '', url);
         }
@@ -1413,6 +1496,20 @@
           this.updateURL(query, order, direction);
 
           // Trigger a new search with the current query and new order direction
+          if (query) {
+            this.performSearch(query);
+          }
+        }
+
+        handleUniqueModeChange() {
+          // Update URL with current state
+          const query = this.searchInput.value.trim();
+          const order = this.orderDropdown.value;
+          const direction = this.isAscending ? 'asc' : 'desc';
+          const uniqueMode = this.uniqueModeDropdown.value;
+          this.updateURL(query, order, direction, uniqueMode);
+
+          // Trigger a new search with the current query and new unique mode
           if (query) {
             this.performSearch(query);
           }
@@ -1505,18 +1602,27 @@
             <div class="spinner"></div>
           </div>
         </div>
-        <div class="order-controls">
-          <select class="order-dropdown" id="orderDropdown">
-            <option value="edhrec">EDHREC</option>
-            <option value="cmc">CMC</option>
-            <option value="power">Power</option>
-            <option value="toughness">Toughness</option>
-            <option value="rarity">Rarity</option>
-            <option value="usd">USD</option>
-          </select>
-          <button class="order-toggle" id="orderToggle" title="Toggle ascending/descending">
-            <span class="arrow-up">↑</span>
-          </button>
+        <div class="search-controls">
+          <div class="order-controls">
+            <select class="order-dropdown" id="orderDropdown">
+              <option value="edhrec">EDHREC</option>
+              <option value="cmc">CMC</option>
+              <option value="power">Power</option>
+              <option value="toughness">Toughness</option>
+              <option value="rarity">Rarity</option>
+              <option value="usd">USD</option>
+            </select>
+            <button class="order-toggle" id="orderToggle" title="Toggle ascending/descending">
+              <span class="arrow-up">↑</span>
+            </button>
+          </div>
+          <div class="unique-mode-controls">
+            <select class="unique-mode-dropdown" id="uniqueModeDropdown" title="Choose how to group results">
+              <option value="cards">Cards</option>
+              <option value="printings">Printings</option>
+              <option value="illustrations">Unique Art</option>
+            </select>
+          </div>
         </div>
       </div>
 
