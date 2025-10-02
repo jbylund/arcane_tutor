@@ -518,10 +518,8 @@ class APIResource:
             timings["fetch_duration_ms"] = fetch_duration * 1000
             timings["fetch_frequency"] = 1 / fetch_duration
             total_duration = after_fetch - before
-            timings["total_duration_ms"] = total_duration * 1000
-            timings["total_frequency"] = 1 / total_duration
-            for key, value in timings.items():
-                timings[key] = round(value, 3)
+            timings["total_queryfetch_duration_ms"] = total_duration * 1000
+            timings["total_queryfetch_frequency"] = 1 / total_duration
 
         if use_cache:
             self._query_cache[cachekey] = result
@@ -888,6 +886,7 @@ class APIResource:
         limit: int = 100,
         unique: UniqueOn | None = UniqueOn.CARD,
     ) -> dict[str, Any]:
+        begin = time.monotonic()
         try:
             where_clause, params = get_where_clause(query)
         except ValueError as err:
@@ -917,7 +916,7 @@ class APIResource:
             UniqueOn.CARD: "card_name",
             UniqueOn.PRINTING: "scryfall_id",
         }.get(unique.rstrip("s"), "card_name")
-        no_limit_query = f"""
+        query_sql = f"""
         WITH distinct_cards AS (
             SELECT DISTINCT ON ({distinct_on})
                 card_name AS name,
@@ -937,32 +936,39 @@ class APIResource:
             ORDER BY
                 {distinct_on}
         )
-        SELECT
-            name,
-            artist,
-            cmc,
-            image_location_uuid,
-            mana_cost,
-            oracle_text,
-            set_name,
-            type_line
-        FROM
-            distinct_cards
+        (
+            SELECT
+                null AS total_cards_count,
+                name,
+                artist,
+                cmc,
+                image_location_uuid,
+                mana_cost,
+                oracle_text,
+                set_name,
+                type_line
+            FROM
+                distinct_cards
+            ORDER BY
+                sort_value {sql_direction} NULLS LAST,
+                edhrec_rank ASC NULLS LAST
+            LIMIT
+                {limit}
+        )
+        UNION ALL
+        (
+            SELECT
+                COUNT(1) AS total_cards_count,
+                null, null, null, null, null, null, null, null
+            FROM
+                distinct_cards
+        )
         """
-
-        full_query = f"""
-        {no_limit_query}
-        ORDER BY
-            sort_value {sql_direction} NULLS LAST,
-            edhrec_rank ASC NULLS LAST
-        LIMIT
-            {limit}
-        """
-        full_query = rewrap(full_query)
-        logger.info("Full query: %s", full_query)
+        query_sql = rewrap(query_sql)
+        logger.info("Full query: %s", query_sql)
         logger.info("Params: %s", params)
         try:
-            result_bag = self._run_query(query=full_query, params=params, explain=False)
+            result_bag = self._run_query(query=query_sql, params=params, explain=False)
         except psycopg.errors.DatatypeMismatch as err:
             # Raise BadRequest error for invalid query syntax
             # This happens with standalone arithmetic expressions like "cmc+1"
@@ -974,18 +980,22 @@ class APIResource:
             ) from err
 
         cards = result_bag.pop("result", [])
-        total_cards = len(cards)
-        if total_cards == limit:
-            total_cards = self._get_total_cards_exact(
-                no_limit_query=no_limit_query,
-                params=params,
-            )
+        count_row = cards.pop()
+        total_cards = count_row["total_cards_count"]
+        for icard in cards:
+            icard.pop("total_cards_count")
+        timings = result_bag.pop("timings")
+        total_fn_duration = (time.monotonic() - begin)
+        timings["total_fn_duration_ms"] = total_fn_duration * 1000
+        timings["total_fn_frequency"] = 1 / total_fn_duration
+        for key, value in timings.items():
+            timings[key] = round(value, 3)
         return {
             "cards": cards,
-            "compiled": full_query,
+            "compiled": query_sql,
             "params": params,
             "query": query,
-            "result": result_bag,
+            "timings": timings,
             "total_cards": total_cards,
         }
 

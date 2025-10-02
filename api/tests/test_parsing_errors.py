@@ -63,7 +63,10 @@ class TestParsingErrorHandling:
         # Mock successful query execution
         with patch.object(self.api_resource, "_run_query") as mock_run_query:
             mock_run_query.return_value = {
-                "result": [{"name": "Lightning Bolt"}],
+                "result": [
+                    {"name": "Lightning Bolt", "total_cards_count": None},
+                    {"total_cards_count": 1},
+                ],
                 "timings": {},
             }
 
