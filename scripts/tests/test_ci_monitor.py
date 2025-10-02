@@ -4,7 +4,6 @@
 import os
 
 # Import the script functions
-import sys
 import tempfile
 from pathlib import Path
 from unittest import mock
@@ -12,8 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# ruff: noqa: E402
-from ..ci_monitor import (
+from scripts.ci_monitor import (
     format_issue_body,
     get_args,
     get_github_headers,

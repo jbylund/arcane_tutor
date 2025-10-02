@@ -8,7 +8,7 @@ select = ["E", "F", "W", "C90", "I", "N", "D", "UP", "YTT", "ANN", "S", "BLE", "
 # E501: Ignore line too long
 # S105: Ignore hardcoded password string
 ignore = [
-    "ANN101", # no self annotation
+    "B911",
     "E501", # line too long
     "FBT001",
     "FBT002",
@@ -17,7 +17,8 @@ ignore = [
     "S608",
     "SIM117",
 ]
-per-file-ignores = {"**/tests/**/*.py" = ["ANN401", "ARG001", "D101", "D102", "D103", "PLR2004", "PT004", "S101"], "conftest.py" = ["ANN401", "ARG001", "D101", "D102", "D103", "PLR2004", "PT004", "S101"]}
+per-file-ignores = {"**/tests/**/*.py" = ["ANN401", "ARG001", "D101", "D102", "D103", "PLR2004", "PT004", "S101"], "conftest.py" = ["ANN401", "ARG001", "D101", "D102", "D103", "PLR2004", "PT004", "S101"], "api_worker.py" = ["PLC0415"]}
+
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
