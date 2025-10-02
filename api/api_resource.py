@@ -133,6 +133,10 @@ def _convert_string_to_type(str_value: str | None, param_type: Any) -> Any:  # n
         "int": int,
         "str": identity,
     }
+    if isinstance(param_type, str):
+        pass
+    else:
+        param_type = param_type.__name__
     possible_types = [x.strip() for x in param_type.split("|")]
     for ipossible_type in possible_types:
         try:
@@ -145,9 +149,10 @@ def _convert_string_to_type(str_value: str | None, param_type: Any) -> Any:  # n
             continue
 
     logger.warning(
-        "Was unable to convert parameter: [%s][%s]: %s",
+        "Was unable to convert parameter: [%s][%s][%s]: %s",
         type(param_type),
         param_type,
+        str(param_type),
         str_value,
     )
     return str_value

@@ -3,6 +3,7 @@
 import multiprocessing
 import os
 import unittest
+import uuid
 from typing import Any, Never
 from unittest.mock import MagicMock, patch
 
@@ -12,6 +13,97 @@ import requests
 
 from api.api_resource import APIResource, can_serialize, get_where_clause, rewrap
 from api.parsing.scryfall_nodes import extract_frame_data_from_raw_card
+
+
+def create_test_card(  # noqa: PLR0913
+    card_id: str | None = None,
+    name: str = "Test Card",
+    legalities: dict | None = None,
+    games: list | None = None,
+    type_line: str = "Creature — Test",
+    colors: list | None = None,
+    color_identity: list | None = None,
+    keywords: list | None = None,
+    power: str | None = None,
+    toughness: str | None = None,
+    prices: dict | None = None,
+    set_code: str = "test",
+    artist: str | None = None,
+    rarity: str = "common",
+    collector_number: str = "1",
+    edhrec_rank: int | None = None,
+    **kwargs,  # noqa: ANN003
+) -> dict:
+    """Create a test card with default values that can be overridden.
+
+    Args:
+        card_id: Unique identifier for the card
+        name: Card name
+        legalities: Card legalities dict
+        games: List of games the card is legal in
+        type_line: Card type line
+        colors: Card colors list
+        color_identity: Card color identity list
+        keywords: List of keywords
+        power: Creature power
+        toughness: Creature toughness
+        prices: Price dict
+        set_code: Set code
+        artist: Artist name
+        rarity: Card rarity
+        collector_number: Collector number
+        edhrec_rank: EDHREC rank
+        **kwargs: Additional fields to add to the card
+
+    Returns:
+        A test card dictionary with all required fields
+    """
+    if legalities is None:
+        legalities = {"standard": "legal", "modern": "legal"}
+    if games is None:
+        games = ["paper"]
+    if colors is None:
+        colors = ["R"]
+    if color_identity is None:
+        color_identity = ["R"]
+    if keywords is None:
+        keywords = []
+    if prices is None:
+        prices = {"usd": "1.00"}
+    card_id = card_id or str(uuid.uuid4())
+    jpg_part = f"{card_id[0]}/{card_id[1]}/{card_id}.jpg"
+    card = {
+        "id": card_id,
+        "name": name,
+        "legalities": legalities,
+        "games": games,
+        "type_line": type_line,
+        "colors": colors,
+        "color_identity": color_identity,
+        "keywords": keywords,
+        "power": power,
+        "toughness": toughness,
+        "prices": prices,
+        "set": set_code,
+        "artist": artist,
+        "rarity": rarity,
+        "collector_number": collector_number,
+        "edhrec_rank": edhrec_rank,
+        "image_uris": {
+            # https://cards.scryfall.io/normal/front/a/7/a7af8350-9a51-437c-a55e-19f3e07acfa9.jpg?1562934732
+            "small": f"https://cards.scryfall.io/small/front/{jpg_part}",
+            "normal": f"https://cards.scryfall.io/normal/front/{jpg_part}",
+            "large": f"https://cards.scryfall.io/large/front/{jpg_part}",
+            "png": f"https://cards.scryfall.io/png/front/{jpg_part}",
+            "art_crop": f"https://cards.scryfall.io/art_crop/front/{jpg_part}",
+            "border_crop": f"https://cards.scryfall.io/border_crop/front/{jpg_part}",
+        },
+    }
+
+    # Add any additional fields
+    card.update(kwargs)
+
+    return card
 
 
 class TestUtilityFunctions(unittest.TestCase):
@@ -304,101 +396,55 @@ class TestAPIResourceDataProcessing(unittest.TestCase):
     def test_preprocess_card_filters_invalid_cards(self) -> None:
         """Test _preprocess_card filters out invalid cards."""
         # Test card with all not_legal legalities
-        invalid_card = {
-            "name": "Test Card",
-            "legalities": {"standard": "not_legal", "modern": "not_legal"},
-            "games": ["paper"],
-            "type_line": "Creature — Test",
-            "colors": ["R"],
-            "color_identity": ["R"],
-            "keywords": ["haste"],
-            "power": "2",
-            "toughness": "2",
-            "prices": {"usd": "1.00"},
-            "set": "test",
-        }
+        invalid_card = create_test_card(
+            legalities={"standard": "not_legal", "modern": "not_legal"},
+        )
 
         result = self.api_resource._preprocess_card(invalid_card)
         assert result is None
 
     def test_preprocess_card_filters_non_paper_cards(self) -> None:
         """Test _preprocess_card filters out non-paper cards."""
-        invalid_card = {
-            "name": "Test Card",
-            "legalities": {"standard": "legal"},
-            "games": ["mtgo"],  # Not paper
-            "type_line": "Creature — Test",
-            "colors": ["R"],
-            "color_identity": ["R"],
-            "keywords": ["haste"],
-            "power": "2",
-            "toughness": "2",
-            "prices": {"usd": "1.00"},
-            "set": "test",
-        }
+        invalid_card = create_test_card(
+            games=["mtgo"],  # Not paper
+        )
 
         result = self.api_resource._preprocess_card(invalid_card)
         assert result is None
 
     def test_preprocess_card_filters_card_faces(self) -> None:
         """Test _preprocess_card filters out cards with card_faces."""
-        invalid_card = {
-            "name": "Test Card",
-            "legalities": {"standard": "legal"},
-            "games": ["paper"],
-            "card_faces": [{"name": "Front"}, {"name": "Back"}],  # Has card_faces
-            "type_line": "Creature — Test",
-            "colors": ["R"],
-            "color_identity": ["R"],
-            "keywords": ["haste"],
-            "power": "2",
-            "toughness": "2",
-            "prices": {"usd": "1.00"},
-            "set": "test",
-        }
+        invalid_card = create_test_card(
+            card_faces=[{"name": "Front"}, {"name": "Back"}],  # Has card_faces
+        )
 
         result = self.api_resource._preprocess_card(invalid_card)
         assert result is None
 
     def test_preprocess_card_filters_funny_sets(self) -> None:
         """Test _preprocess_card filters out funny set types."""
-        invalid_card = {
-            "name": "Test Card",
-            "legalities": {"standard": "legal"},
-            "games": ["paper"],
-            "set_type": "funny",  # Funny set type
-            "type_line": "Creature — Test",
-            "colors": ["R"],
-            "color_identity": ["R"],
-            "keywords": ["haste"],
-            "power": "2",
-            "toughness": "2",
-            "prices": {"usd": "1.00"},
-            "set": "test",
-        }
+        invalid_card = create_test_card(
+            set_type="funny",  # Funny set type
+        )
 
         result = self.api_resource._preprocess_card(invalid_card)
         assert result is None
 
     def test_preprocess_card_processes_valid_card(self) -> None:
         """Test _preprocess_card processes valid cards correctly."""
-        valid_card = {
-            "name": "Lightning Bolt",
-            "legalities": {"standard": "legal", "modern": "legal"},
-            "games": ["paper"],
-            "type_line": "Instant",
-            "colors": ["R"],
-            "color_identity": ["R"],
-            "keywords": ["haste"],
-            "power": "3",
-            "toughness": "1",
-            "prices": {"usd": "0.25", "eur": "0.20", "tix": "0.01"},
-            "set": "m15",
-            "artist": "Christopher Rush",
-            "rarity": "common",
-            "collector_number": "1",
-            "edhrec_rank": 1,
-        }
+        valid_card = create_test_card(
+            card_id="00000000-0000-0000-0000-000000000006",
+            name="Lightning Bolt",
+            type_line="Instant",
+            keywords=["haste"],
+            power="3",
+            toughness="1",
+            prices={"usd": "0.25", "eur": "0.20", "tix": "0.01"},
+            set_code="m15",
+            artist="Christopher Rush",
+            collector_number="1",
+            edhrec_rank=1,
+        )
 
         result = self.api_resource._preprocess_card(valid_card)
 
@@ -418,18 +464,10 @@ class TestAPIResourceDataProcessing(unittest.TestCase):
 
     def test_preprocess_card_processes_frame_data(self) -> None:
         """Test _preprocess_card processes frame data correctly."""
-        card_with_frame = {
-            "name": "Showcase Card",
-            "legalities": {"standard": "legal"},
-            "games": ["paper"],
-            "type_line": "Creature — Human",
-            "colors": ["W"],
-            "color_identity": ["W"],
-            "keywords": [],
-            "frame": "2015",
-            "frame_effects": ["showcase", "legendary"],
-            "set": "test",
-        }
+        card_with_frame = create_test_card(
+            frame="2015",
+            frame_effects=["showcase", "legendary"],
+        )
 
         result = self.api_resource._preprocess_card(card_with_frame)
 
@@ -439,16 +477,13 @@ class TestAPIResourceDataProcessing(unittest.TestCase):
 
     def test_preprocess_card_handles_missing_frame_data(self) -> None:
         """Test _preprocess_card handles missing frame data correctly."""
-        card_without_frame = {
-            "name": "Regular Card",
-            "legalities": {"standard": "legal"},
-            "games": ["paper"],
-            "type_line": "Creature — Human",
-            "colors": ["W"],
-            "color_identity": ["W"],
-            "keywords": [],
-            "set": "test",
-        }
+        card_without_frame = create_test_card(
+            name="Regular Card",
+            type_line="Creature — Human",
+            colors=["W"],
+            color_identity=["W"],
+            keywords=[],
+        )
 
         result = self.api_resource._preprocess_card(card_without_frame)
 
@@ -497,17 +532,12 @@ class TestAPIResourceDataProcessing(unittest.TestCase):
 
     def test_preprocess_card_handles_missing_fields(self) -> None:
         """Test _preprocess_card handles missing optional fields."""
-        minimal_card = {
-            "name": "Test Card",
-            "legalities": {"standard": "legal"},
-            "games": ["paper"],
-            "type_line": "Creature — Test",
-            "colors": [],
-            "color_identity": [],
-            "keywords": [],
-            "prices": {},
-            "set": "test",
-        }
+        minimal_card = create_test_card(
+            colors=[],
+            color_identity=[],
+            keywords=[],
+            prices={},
+        )
 
         result = self.api_resource._preprocess_card(minimal_card)
 
@@ -523,19 +553,12 @@ class TestAPIResourceDataProcessing(unittest.TestCase):
 
     def test_preprocess_card_handles_non_numeric_power_toughness(self) -> None:
         """Test _preprocess_card handles non-numeric power/toughness values."""
-        card = {
-            "name": "Test Card",
-            "legalities": {"standard": "legal"},
-            "games": ["paper"],
-            "type_line": "Creature — Test",
-            "colors": ["R"],
-            "color_identity": ["R"],
-            "keywords": [],
-            "power": "*",  # Non-numeric
-            "toughness": "X",  # Non-numeric
-            "prices": {},
-            "set": "test",
-        }
+        card = create_test_card(
+            keywords=[],
+            power="*",  # Non-numeric
+            toughness="X",  # Non-numeric
+            prices={},
+        )
 
         result = self.api_resource._preprocess_card(card)
 
@@ -549,36 +572,46 @@ class TestAPIResourceDataProcessing(unittest.TestCase):
         """Test _get_cards_to_insert deduplicates cards by name."""
         # Mock get_data to return duplicate cards
         mock_get_data.return_value = [
-            {"name": "Lightning Bolt", "cmc": 1},
-            {"name": "Lightning Bolt", "cmc": 1},  # Duplicate
-            {"name": "Counterspell", "cmc": 2},
+            create_test_card(card_id="00000000-0000-0000-0000-000000000010", name="Lightning Bolt", cmc=1),
+            create_test_card(card_id="00000000-0000-0000-0000-000000000011", name="Lightning Bolt", cmc=1),  # Duplicate
+            create_test_card(card_id="00000000-0000-0000-0000-000000000012", name="Counterspell", cmc=2),
         ]
 
-        # Mock _preprocess_card to return the card as-is
-        mock_preprocess.side_effect = lambda card: card
+        # Mock _preprocess_card to return the card with scryfall_id added
+        def mock_preprocess_side_effect(card: Any) -> Any:
+            card_copy = card.copy()
+            card_copy["scryfall_id"] = card["id"]
+            return card_copy
+
+        mock_preprocess.side_effect = mock_preprocess_side_effect
 
         result = self.api_resource._get_cards_to_insert()
 
-        # Should only have 2 unique cards
-        assert len(result) == 2
+        # Should have 3 cards (deduplication is by scryfall_id, not name)
+        assert len(result) == 3
         card_names = [card["name"] for card in result]
         assert "Lightning Bolt" in card_names
         assert "Counterspell" in card_names
+        # Should have 2 Lightning Bolts with different scryfall_ids
+        lightning_bolts = [card for card in result if card["name"] == "Lightning Bolt"]
+        assert len(lightning_bolts) == 2
 
     @patch.object(APIResource, "get_data")
     @patch.object(APIResource, "_preprocess_card")
     def test_get_cards_to_insert_filters_none_cards(self, mock_preprocess: Any, mock_get_data: Any) -> None:
         """Test _get_cards_to_insert filters out None cards from preprocessing."""
         mock_get_data.return_value = [
-            {"name": "Valid Card", "cmc": 1},
-            {"name": "Invalid Card", "cmc": 2},
+            create_test_card(card_id="00000000-0000-0000-0000-000000000013", name="Valid Card", cmc=1),
+            create_test_card(card_id="00000000-0000-0000-0000-000000000014", name="Invalid Card", cmc=2),
         ]
 
-        # Mock _preprocess_card to return None for invalid card
+        # Mock _preprocess_card to return None for invalid card, or card with scryfall_id for valid
         def mock_preprocess_side_effect(card: Any) -> Any:
             if card["name"] == "Invalid Card":
                 return None
-            return card
+            card_copy = card.copy()
+            card_copy["scryfall_id"] = card["id"]
+            return card_copy
 
         mock_preprocess.side_effect = mock_preprocess_side_effect
 
@@ -716,17 +749,11 @@ class TestAPIResourceCaching(unittest.TestCase):
             mock_pool.connection.return_value.__enter__.return_value = mock_conn
 
             # Provide valid card data that will pass preprocessing
-            valid_card = {
-                "name": "Test Card",
-                "legalities": {"standard": "legal"},
-                "games": ["paper"],
-                "type_line": "Creature — Test",
-                "colors": ["R"],
-                "color_identity": ["R"],
-                "keywords": [],
-                "prices": {},
-                "set": "test",
-            }
+            valid_card = create_test_card(
+                card_id="00000000-0000-0000-0000-000000000007",
+                keywords=[],
+                prices={},
+            )
 
             # Call _load_cards_with_staging directly to test cache clearing
             self.api_resource._load_cards_with_staging([valid_card])
@@ -745,17 +772,11 @@ class TestAPIResourceCaching(unittest.TestCase):
             mock_pool.connection.return_value.__enter__.return_value = mock_conn
 
             # Provide valid card data that will pass preprocessing
-            valid_card = {
-                "name": "Test Card",
-                "legalities": {"standard": "legal"},
-                "games": ["paper"],
-                "type_line": "Creature — Test",
-                "colors": ["R"],
-                "color_identity": ["R"],
-                "keywords": [],
-                "prices": {},
-                "set": "test",
-            }
+            valid_card = create_test_card(
+                card_id="00000000-0000-0000-0000-000000000007",
+                keywords=[],
+                prices={},
+            )
 
             # Add some data to the search cache
             self.api_resource._search.cache["test_key"] = "test_value"
