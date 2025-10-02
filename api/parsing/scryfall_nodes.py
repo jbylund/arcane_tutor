@@ -363,6 +363,9 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         if self.operator == ":":
             return self._handle_colon_operator(context, field_type, lhs_sql, attr)
 
+        if field_type == FieldType.TEXT:
+            return super().to_sql(context)
+
         msg = f"Unknown field type: {field_type}"
         raise NotImplementedError(msg)
 
@@ -529,7 +532,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
     query ?& col AND not(col ?& query) # as array
     """
 
-    def _handle_jsonb_object(self: ScryfallBinaryOperatorNode, context: dict) -> str:  # noqa: PLR0911, PLR0912, C901
+    def _handle_jsonb_object(self: ScryfallBinaryOperatorNode, context: dict) -> str:  # noqa: PLR0912
         # Produce the query as a jsonb object
         lhs_sql = self.lhs.to_sql(context)
         attr = self.lhs.attribute_name
@@ -613,7 +616,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         raise ValueError(msg)
 
 
-def to_scryfall_ast(node: QueryNode) -> QueryNode:  # noqa: PLR0911
+def to_scryfall_ast(node: QueryNode) -> QueryNode:
     """Convert a generic query node to a Scryfall-specific AST node.
 
     Args:
