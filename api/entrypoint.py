@@ -1,7 +1,6 @@
 """Main entrypoint for the api container."""
 
 import argparse
-import contextlib
 import logging
 import multiprocessing
 import os
@@ -44,17 +43,9 @@ def run_server(
             if iworker.pid is None:
                 logger.warning("Worker %s has no pid", iworker)
                 continue
-            logger.info("Terminating worker %d", iworker.pid)
-            with contextlib.suppress(AttributeError):
-                iworker.terminate()
-        wait_time = 1
-        for iworker in workers:
-            logger.info("Joining worker %d", iworker.pid)
-            iworker.join(timeout=wait_time)
             if iworker.is_alive():
                 logger.info("Killing worker %d", iworker.pid)
                 iworker.kill()
-            wait_time = 1 / 10
         logger.info("Shutdown complete")
 
     # Create shared objects for all workers
