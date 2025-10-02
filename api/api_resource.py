@@ -16,6 +16,7 @@ import random
 import re
 import secrets
 import time
+import enum
 import urllib.parse
 from typing import TYPE_CHECKING, Any
 from typing import cast as typecast
@@ -45,6 +46,12 @@ logger = logging.getLogger(__name__)
 # pylint: disable=c-extension-no-member
 NOT_FOUND = 404
 
+
+class UniqueOn(enum.StrEnum):
+    """Enum for the distinct on column for the search."""
+    CARDS = enum.auto()
+    PRINTS = enum.auto()
+    ARTS = enum.auto()
 
 def extract_image_location_uuid(card: dict[str, Any]) -> str:
     """Extract the image location UUID from a card."""
@@ -120,6 +127,7 @@ def _convert_string_to_type(str_value: str | None, param_type: Any) -> Any:  # n
         return x.lower() in ("true", "1", "yes", "on")
 
     converter_map = {
+        "UniqueOn": UniqueOn,
         "bool": convert_to_bool,
         "float": float,
         "int": int,
@@ -744,6 +752,7 @@ class APIResource:
         card["collector_number"] = collector_number
         card["collector_number_int"] = extract_collector_number_int(collector_number)
         card["image_location_uuid"] = extract_image_location_uuid(card)
+        card["illustration_id"] = card.get("illustration_id")
 
         # Handle legalities and produced_mana defaults
         card.setdefault("card_legalities", card.get("legalities", {}))
@@ -827,6 +836,7 @@ class APIResource:
         orderby: str | None = None,
         direction: str | None = None,
         limit: int = 100,
+        unique: UniqueOn | None = UniqueOn.CARDS,
     ) -> dict[str, Any]:
         """Run a search query and return results and metadata.
 
@@ -848,6 +858,7 @@ class APIResource:
             orderby=orderby,
             direction=direction,
             limit=limit,
+            unique=unique,
         )
 
     @cached(
@@ -861,6 +872,7 @@ class APIResource:
         orderby: str | None = None,
         direction: str | None = None,
         limit: int = 100,
+        unique: UniqueOn | None = UniqueOn.CARDS,
     ) -> dict[str, Any]:
         try:
             where_clause, params = get_where_clause(query)
@@ -884,22 +896,46 @@ class APIResource:
             "asc": "ASC",
             "desc": "DESC",
         }.get(direction, "ASC")
+        # scryfall supports distinct:
+        # cards, prints, arts
+        distinct_on = {
+            "art": "illustration_id",
+            "card": "card_name",
+            "print": "scryfall_id",
+        }.get(unique.rstrip("s"), "card_name")
         full_query = f"""
+        WITH distinct_cards AS (
+            SELECT DISTINCT ON ({distinct_on})
+                card_name AS name,
+                card_artist AS artist,
+                cmc,
+                image_location_uuid,
+                mana_cost_text AS mana_cost,
+                oracle_text AS oracle_text,
+                set_name,
+                type_line,
+                {sql_orderby} AS sort_value,
+                edhrec_rank
+            FROM
+                magic.cards AS card
+            WHERE
+                {where_clause}
+            ORDER BY
+                {distinct_on}
+        )
         SELECT
-            card_name AS name,
-            card_artist AS artist,
+            name,
+            artist,
             cmc,
             image_location_uuid,
-            mana_cost_text AS mana_cost,
-            oracle_text AS oracle_text,
+            mana_cost,
+            oracle_text,
             set_name,
             type_line
         FROM
-            magic.cards AS card
-        WHERE
-            {where_clause}
+            distinct_cards
         ORDER BY
-            {sql_orderby} {sql_direction} NULLS LAST,
+            sort_value {sql_direction} NULLS LAST,
             edhrec_rank ASC NULLS LAST
         LIMIT
             {limit}

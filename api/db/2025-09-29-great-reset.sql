@@ -194,6 +194,7 @@ CREATE TABLE magic.cards (
     oracle_id UUID,
     image_location_uuid UUID,
     type_line text,
+    illustration_id UUID,
 
     -- columns
     card_name text NOT NULL,
@@ -366,5 +367,24 @@ ALTER TABLE ONLY magic.tag_relationships
 these indexes help support index only scans for a couple of specific queries
 */
 
-CREATE INDEX IF NOT EXISTS idx_cards_cmc_edhrec_btree_include ON magic.cards USING btree (cmc, edhrec_rank) include (card_name, card_artist, image_location_uuid, mana_cost_text, oracle_text, set_name, type_line);
-CREATE INDEX IF NOT EXISTS idx_cards_setcode_edhrec_btree_include ON magic.cards USING btree (card_set_code, edhrec_rank) include (card_name, card_artist, cmc, image_location_uuid, mana_cost_text, oracle_text, set_name, type_line);
+CREATE INDEX IF NOT EXISTS idx_cards_cmc_edhrec_btree_include ON magic.cards USING btree (cmc, edhrec_rank) include (
+    card_artist,
+    card_name,
+    illustration_id,
+    image_location_uuid,
+    mana_cost_text,
+    oracle_text,
+    set_name,
+    type_line
+);
+CREATE INDEX IF NOT EXISTS idx_cards_setcode_edhrec_btree_include ON magic.cards USING btree (card_set_code, edhrec_rank) include (
+    card_artist,
+    card_name,
+    cmc,
+    illustration_id,
+    image_location_uuid,
+    mana_cost_text,
+    oracle_text,
+    set_name,
+    type_line
+)
