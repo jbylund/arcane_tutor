@@ -560,7 +560,6 @@ class APIResource:
             Any: The card data (likely a list of dicts).
 
         """
-        data_key = "oracle_cards"
         data_key = "default_cards"
         cache_dir_path = pathlib.Path("/data/api")
         if not cache_dir_path.exists():
