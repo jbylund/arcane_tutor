@@ -30,7 +30,7 @@ from cachetools import LRUCache, TTLCache, cached
 from psycopg import Connection, Cursor
 
 from .parsing import generate_sql_query, parse_scryfall_query
-from .parsing.scryfall_nodes import extract_frame_data_from_raw_card, mana_cost_str_to_dict
+from .parsing.scryfall_nodes import calculate_devotion, extract_frame_data_from_raw_card, mana_cost_str_to_dict
 from .tagger_client import TaggerClient
 from .utils import db_utils, error_monitoring, multiprocessing_utils
 
@@ -137,6 +137,7 @@ def _convert_string_to_type(str_value: str | None, param_type: Any) -> Any:  # n
         return x.lower() in ("true", "1", "yes", "on")
 
     converter_map = {
+        "PreferOrder": PreferOrder,
         "UniqueOn": UniqueOn,
         "bool": convert_to_bool,
         "float": float,
@@ -742,6 +743,7 @@ class APIResource:
 
         mana_cost_text = card.get("mana_cost", "")
         card["mana_cost_jsonb"] = mana_cost_str_to_dict(mana_cost_text)
+        card["devotion"] = calculate_devotion(mana_cost_text)
 
         # Map field names to match database column names for jsonb_populate_record
         card["card_name"] = card.get("name")

@@ -204,6 +204,7 @@ CREATE TABLE magic.cards (
     raw_card_blob jsonb NOT NULL,
     mana_cost_text text,
     mana_cost_jsonb jsonb,
+    devotion jsonb,
     card_types jsonb NOT NULL,
     card_subtypes jsonb DEFAULT '[]'::jsonb NOT NULL,
     card_colors jsonb NOT NULL,
@@ -231,6 +232,7 @@ CREATE TABLE magic.cards (
     CONSTRAINT card_color_identity_valid_colors CHECK ((card_color_identity <@ '{"B": true, "C": true, "G": true, "R": true, "U": true, "W": true}'::jsonb)),
     CONSTRAINT card_colors_must_be_object CHECK ((jsonb_typeof(card_colors) = 'object'::text)),
     CONSTRAINT card_colors_valid_colors CHECK ((card_colors <@ '{"B": true, "C": true, "G": true, "R": true, "U": true, "W": true}'::jsonb)),
+    CONSTRAINT devotion_must_be_object CHECK ((jsonb_typeof(devotion) = 'object'::text)),
     CONSTRAINT card_frame_data_must_be_object CHECK ((jsonb_typeof(card_frame_data) = 'object'::text)),
     CONSTRAINT card_is_tags_must_be_object CHECK ((jsonb_typeof(card_is_tags) = 'object'::text)),
     CONSTRAINT card_keywords_must_be_object CHECK ((jsonb_typeof(card_keywords) = 'object'::text)),
@@ -268,6 +270,7 @@ CREATE INDEX IF NOT EXISTS idx_cards_price_eur ON magic.cards USING btree (price
 CREATE INDEX IF NOT EXISTS idx_cards_price_tix ON magic.cards USING btree (price_tix) WHERE (price_tix IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_cards_price_usd ON magic.cards USING btree (price_usd) WHERE (price_usd IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_cards_produced_mana ON magic.cards USING gin (produced_mana);
+CREATE INDEX IF NOT EXISTS idx_cards_devotion ON magic.cards USING gin (devotion);
 CREATE INDEX IF NOT EXISTS idx_cards_set_code ON magic.cards USING hash (card_set_code) WHERE (card_set_code IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_cards_watermark ON magic.cards USING hash (card_watermark) WHERE (card_watermark IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_cards_name ON magic.cards USING btree (card_name);
