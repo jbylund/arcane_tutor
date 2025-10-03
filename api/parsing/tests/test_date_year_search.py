@@ -43,13 +43,13 @@ def test_date_year_search_parsing(searchattr: str, searchoperator: str, searchva
         ("date<2025-02-02", "card.released_at < "),
         ("date>=2025-02-02", "card.released_at >= "),
         ("date<=2025-02-02", "card.released_at <= "),
-        # Year searches should use EXTRACT(YEAR FROM released_at)
-        ("year:2025", "EXTRACT(YEAR FROM card.released_at) = "),
-        ("year=2025", "EXTRACT(YEAR FROM card.released_at) = "),
-        ("year>2025", "EXTRACT(YEAR FROM card.released_at) > "),
-        ("year<2025", "EXTRACT(YEAR FROM card.released_at) < "),
-        ("year>=2025", "EXTRACT(YEAR FROM card.released_at) >= "),
-        ("year<=2025", "EXTRACT(YEAR FROM card.released_at) <= "),
+        # Year searches should use date ranges for index usage
+        ("year:2025", "<= card.released_at AND card.released_at <"),
+        ("year=2025", "<= card.released_at AND card.released_at <"),
+        ("year>2025", "card.released_at >="),
+        ("year<2025", "card.released_at <"),
+        ("year>=2025", "card.released_at >="),
+        ("year<=2025", "card.released_at <"),
     ],
 )
 def test_date_year_sql_generation(query: str, expected_sql_fragment: str) -> None:
@@ -60,8 +60,8 @@ def test_date_year_sql_generation(query: str, expected_sql_fragment: str) -> Non
 
     # Check that the SQL contains the expected fragment
     assert expected_sql_fragment in sql
-    # Check that parameters were added to context
-    assert len(context) == 1
+    # Check that parameters were added to context (1 for date, 1 or 2 for year)
+    assert len(context) >= 1
 
 
 def test_date_search_full_date() -> None:
@@ -81,9 +81,12 @@ def test_year_search_numeric() -> None:
     context = {}
     sql = parsed.to_sql(context)
 
-    assert "EXTRACT(YEAR FROM card.released_at) = " in sql
-    # Should have a parameter with the year as integer
-    assert 2025 in context.values()
+    # Year search should convert to date range: 2025-01-01 <= released_at < 2026-01-01
+    assert "card.released_at" in sql
+    assert "<= card.released_at AND card.released_at <" in sql
+    # Should have parameters with date strings
+    assert "2025-01-01" in context.values()
+    assert "2026-01-01" in context.values()
 
 
 def test_year_search_with_date_format() -> None:
@@ -92,9 +95,11 @@ def test_year_search_with_date_format() -> None:
     context = {}
     sql = parsed.to_sql(context)
 
-    assert "EXTRACT(YEAR FROM card.released_at) = " in sql
-    # Should extract and use year 2025
-    assert 2025 in context.values()
+    # Should extract year 2025 and convert to date range
+    assert "card.released_at" in sql
+    assert "<= card.released_at AND card.released_at <" in sql
+    assert "2025-01-01" in context.values()
+    assert "2026-01-01" in context.values()
 
 
 def test_date_year_combined_query() -> None:
@@ -103,7 +108,7 @@ def test_date_year_combined_query() -> None:
     context = {}
     sql = parsed.to_sql(context)
 
-    assert "EXTRACT(YEAR FROM card.released_at) = " in sql
+    assert "card.released_at" in sql
     assert "card.cmc = " in sql
-    assert 2025 in context.values()
+    assert "2025-01-01" in context.values()
     assert 3 in context.values()

@@ -11,6 +11,7 @@ class FieldType(StrEnum):
     JSONB_OBJECT = "jsonb_object"
     NUMERIC = "numeric"
     TEXT = "text"
+    DATE = "date"
 
 
 class ParserClass(StrEnum):
@@ -77,7 +78,7 @@ DB_COLUMNS = [
     FieldInfo("card_layout", FieldType.TEXT, ["layout"], ParserClass.TEXT),
     FieldInfo("card_border", FieldType.TEXT, ["border"], ParserClass.TEXT),
     FieldInfo("card_watermark", FieldType.TEXT, ["watermark"], ParserClass.TEXT),
-    FieldInfo("released_at", FieldType.TEXT, ["date", "year"], ParserClass.DATE),
+    FieldInfo("released_at", FieldType.DATE, ["date", "year"], ParserClass.DATE),
 ]
 
 KNOWN_CARD_ATTRIBUTES = set()
@@ -127,6 +128,12 @@ for col in DB_COLUMNS:
     elif col.parser_class == ParserClass.DATE:
         DATE_ATTRIBUTES.add(col.db_column_name)
         DATE_ATTRIBUTES.update(col.search_aliases)
+    elif col.parser_class == ParserClass.NUMERIC:
+        # NUMERIC fields are already tracked in NUMERIC_ATTRIBUTES based on field_type
+        pass
+    else:
+        msg = f"Unknown parser class: {col.parser_class}"
+        raise ValueError(msg)
 
     for ialias in col.search_aliases:
         SEARCH_NAME_TO_DB_NAME[ialias.lower()] = col.db_column_name

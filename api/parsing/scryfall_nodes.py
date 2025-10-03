@@ -504,7 +504,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         """Handle date and year search queries.
 
         For 'date:' searches, compares against the full released_at date.
-        For 'year:' searches, extracts the year from released_at and compares.
+        For 'year:' searches, converts to date range queries for better index usage.
 
         Args:
             context: SQL parameter context.
@@ -519,8 +519,8 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         operator = "=" if self.operator == ":" else self.operator
 
         if original_attr == "year":
-            # For year searches, extract year from released_at and compare
-            # Handle both string years ("2025") and numeric years
+            # For year searches, convert to date range queries for better index usage
+            # Extract year value from input
             year_str_length = 4
             if (isinstance(search_value, str) and len(search_value) == year_str_length and search_value.isdigit()) or isinstance(search_value, int | float):
                 year_value = int(search_value)
@@ -531,9 +531,48 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
                 msg = f"Invalid year value: {search_value}"
                 raise ValueError(msg)
 
-            pname = param_name(year_value)
-            context[pname] = year_value
-            return f"(EXTRACT(YEAR FROM card.released_at) {operator} %({pname})s)"
+            # Convert year comparison to date range for index usage
+            # year=2024 becomes: '2024-01-01' <= released_at AND released_at < '2025-01-01'
+            # year>2024 becomes: released_at >= '2025-01-01'
+            # year<2024 becomes: released_at < '2024-01-01'
+            # year>=2024 becomes: released_at >= '2024-01-01'
+            # year<=2024 becomes: released_at < '2025-01-01'
+
+            if operator == "=":
+                start_date = f"{year_value}-01-01"
+                end_date = f"{year_value + 1}-01-01"
+                start_param = param_name(start_date)
+                end_param = param_name(end_date)
+                context[start_param] = start_date
+                context[end_param] = end_date
+                return f"(%({start_param})s <= card.released_at AND card.released_at < %({end_param})s)"
+            if operator == ">":
+                # year > 2024 means released_at >= 2025-01-01
+                start_date = f"{year_value + 1}-01-01"
+                start_param = param_name(start_date)
+                context[start_param] = start_date
+                return f"(card.released_at >= %({start_param})s)"
+            if operator == "<":
+                # year < 2024 means released_at < 2024-01-01
+                end_date = f"{year_value}-01-01"
+                end_param = param_name(end_date)
+                context[end_param] = end_date
+                return f"(card.released_at < %({end_param})s)"
+            if operator == ">=":
+                # year >= 2024 means released_at >= 2024-01-01
+                start_date = f"{year_value}-01-01"
+                start_param = param_name(start_date)
+                context[start_param] = start_date
+                return f"(card.released_at >= %({start_param})s)"
+            if operator == "<=":
+                # year <= 2024 means released_at < 2025-01-01
+                end_date = f"{year_value + 1}-01-01"
+                end_param = param_name(end_date)
+                context[end_param] = end_date
+                return f"(card.released_at < %({end_param})s)"
+
+            msg = f"Unsupported operator for year search: {operator}"
+            raise ValueError(msg)
 
         # For date searches, compare against the full date
         # The value should be in YYYY-MM-DD format
