@@ -21,7 +21,7 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 
 ### Shared Features (Both Scryfall & Scryfall OS)
 
-- **Core Search Syntax**: `name:`, `oracle:`, `type:`, `set:`, `artist:`, `rarity:`, `cmc:`, `power:`, `color:`, `identity:`, `number:`, `cn:`
+- **Core Search Syntax**: `name:`, `oracle:`, `type:`, `set:`, `artist:`, `rarity:`, `cmc:`, `power:`, `color:`, `identity:`, `number:`, `cn:`, `devotion:`
 - **Pricing Data**: `usd:`, `eur:`, `tix:` with all comparison operators
 - **Format Legality**: `format:`, `legal:`, `banned:`, `restricted:`
 - **Card Properties**: `layout:`, `border:`, `frame:`, `is:`, `produces:`, `flavor:`, `watermark:`
@@ -41,10 +41,8 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 
 ### Scryfall Unique Features (Not Yet Implemented)
 
-- **Advanced mechanics** - `devotion:`
 - **Collection features** - `cube:`, `commander:`, `papersets:`
 - **Regular expressions** - `/pattern/` syntax
-- **Wildcard matching** - `*` for partial string matching
 
 ### Core Components
 
@@ -59,10 +57,10 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 
 ### Recommended Development Priorities
 
-1. **Medium Impact Features** - Devotion search for comprehensive card metadata coverage
 1. **Low Impact Features** - regex based search
 
 **Recently Completed:**
+- Devotion search (`devotion:`) for mana cost devotion calculations with split mana support
 - Format legality (`format:`, `legal:`, `banned:`) for competitive play support
 - Collector numbers (`number:`, `cn:`) and rarity search (`rarity:`, `r:`)
 - Pricing data (`usd:`, `eur:`, `tix:`) for market analysis
@@ -84,13 +82,13 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 | **Complexity** | **Low Impact**                            | **Medium Impact**                                                                            | **High Impact**                                                                                   |
 | -------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------- |
 | **Low**        | **Cube Inclusion** (`cube:`)              |                                                                                              |                              |
-| **Medium**     | **Commander Features** (`cmd:`)           | **Reprint Info** (`papersets:`) - [Scryfall Docs](https://scryfall.com/docs/syntax#reprints) | **Devotion** (`devotion:`)   |
+| **Medium**     | **Commander Features** (`cmd:`)           | **Reprint Info** (`papersets:`) - [Scryfall Docs](https://scryfall.com/docs/syntax#reprints) |                              |
 | **High**       | **Regular Expressions** (`/pattern/`)     |                                                                                              |                              |
 
 ### Implementation Status
 
 - **Current API Success Rate**: 100% for supported features (enhanced coverage with flavor text search)
-- **Test Coverage**: 603 total tests including 426 parser tests with comprehensive validation
+- **Test Coverage**: 622 total tests including 426 parser tests with comprehensive validation
 - **Performance**: Optimized PostgreSQL with proper indexing including full-text search capabilities
 - **Data Quality**: Regular comparison testing against official Scryfall API
 
@@ -187,7 +185,7 @@ scryfallos/
 1. **Validate Installation**
 
    ```bash
-   # Run test suite (should pass all 339 tests)
+   # Run test suite (should pass all 622 tests)
    python -m pytest -vvv
 
    # Verify linting
