@@ -51,9 +51,9 @@ Based on the official Scryfall syntax documentation and analysis of the existing
 - **eur:** - EUR price (numeric)
 - **tix:** - MTGO ticket price (numeric)
 
-### 8. Dates and Releases
-- **year:** - Release year (numeric)
-- **date:** - Specific release dates
+### 8. Dates and Releases ✅ Implemented
+- **year:** - Release year (numeric) with optimized date range queries
+- **date:** - Specific release dates with all comparison operators
 
 ### 9. Game Mechanics
 - **devotion:** - Mana symbol devotion counting
@@ -73,7 +73,6 @@ Based on the official Scryfall syntax documentation and analysis of the existing
 - **Logic operators**: `AND`, `OR`, `NOT`, `-` (negation)
 - **Parentheses**: `()` for grouping
 - **Quotes**: `"text"` for exact phrases
-- **Wildcards**: `*` for partial matches
 
 ### 12. Special Syntax
 - **Regular expressions**: `/pattern/`
