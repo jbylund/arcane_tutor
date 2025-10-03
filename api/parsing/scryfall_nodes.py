@@ -305,6 +305,25 @@ def calculate_cmc(mana_cost_str: str) -> int:
     return cmc
 
 
+def calculate_devotion(mana_cost_str: str) -> dict:
+    """Calculate devotion from a mana cost string, handling split mana costs properly.
+
+    For split mana costs like {R/G}, each color contributes 1 to its respective devotion.
+    For example, {R/G} contributes 1 to both R devotion and G devotion.
+    """
+    devotion = {"W": [], "U": [], "B": [], "R": [], "G": [], "C": []}
+    for ichar in mana_cost_str.upper():
+        current_devotion = devotion.get(ichar)
+        if current_devotion is not None:
+            current_devotion.append(len(current_devotion) + 1)
+    # Remove colors with 0 devotion for cleaner storage
+    return {
+        color: color_devotion
+        for color, color_devotion in devotion.items()
+        if color_devotion
+    }
+
+
 class ScryfallBinaryOperatorNode(BinaryOperatorNode):
     """Scryfall-specific binary operator node with custom SQL generation."""
 
