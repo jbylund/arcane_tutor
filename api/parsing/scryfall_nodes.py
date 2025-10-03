@@ -438,14 +438,14 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
 
     def _handle_devotion(self: ScryfallBinaryOperatorNode, context: dict) -> str:
         """Handle devotion counting - counts mana symbols of a specific color.
-        
+
         Devotion counts the number of mana symbols of a specific color in a card's mana cost.
         For example, devotionw>=5 or devotion:w>=5 finds cards with 5 or more white mana symbols.
         """
         # Extract color from the original attribute name
         # Could be "devotionw", "devotionu", "devotion:w", "devotion:u", etc.
         original_attr = self.lhs.original_attribute
-        
+
         # Extract color code from attribute name
         if original_attr.startswith("devotion:"):
             # Format: devotion:w, devotion:u, etc.
@@ -456,25 +456,25 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         else:
             msg = f"Invalid devotion attribute: {original_attr}"
             raise ValueError(msg)
-        
+
         # Validate color code
         if color_code not in COLOR_CODE_TO_NAME:
             msg = f"Invalid color for devotion: {color_code}"
             raise ValueError(msg)
-        
+
         # Convert to uppercase for SQL (jsonb keys are uppercase)
         color_code_upper = color_code.upper()
-        
+
         # Generate SQL to count the length of the array for this color in mana_cost_jsonb
         # The mana_cost_jsonb structure is like: {"W": [1, 2], "U": [1]}
         # We need to count elements in the array for the specified color
         devotion_sql = f"COALESCE(jsonb_array_length(card.mana_cost_jsonb->'{color_code_upper}'), 0)"
-        
+
         # Convert : operator to = for consistency
         operator = self.operator
         if operator == ":":
             operator = "="
-        
+
         # Get the numeric value to compare against
         if isinstance(self.rhs, NumericValueNode):
             rhs_val = self.rhs.value
@@ -483,7 +483,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         else:
             msg = f"Devotion comparison requires a numeric value, got {type(self.rhs)}: {self.rhs}"
             raise ValueError(msg)
-        
+
         # Return the comparison SQL
         pname = param_name(rhs_val)
         context[pname] = rhs_val
@@ -491,18 +491,18 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
 
     def _handle_year(self: ScryfallBinaryOperatorNode, context: dict) -> str:
         """Handle year extraction from released_at date field.
-        
+
         Year searches extract the year from the released_at date column.
         For example, year=2020 finds cards released in 2020.
         """
         # Extract year from released_at field
         year_sql = "EXTRACT(YEAR FROM card.released_at)"
-        
+
         # Convert : operator to = for consistency
         operator = self.operator
         if operator == ":":
             operator = "="
-        
+
         # Get the year value
         if isinstance(self.rhs, NumericValueNode):
             year_val = int(self.rhs.value)
@@ -515,7 +515,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         else:
             msg = f"Year requires a numeric value, got {type(self.rhs)}"
             raise ValueError(msg)
-        
+
         # Return the comparison SQL
         pname = param_name(year_val)
         context[pname] = year_val
@@ -523,18 +523,18 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
 
     def _handle_date(self: ScryfallBinaryOperatorNode, context: dict) -> str:
         """Handle date comparison using released_at field.
-        
+
         Date searches compare against the released_at date column.
         For example, date>=2020-01-01 finds cards released on or after January 1, 2020.
         """
         # Use the released_at column directly
         date_sql = "card.released_at"
-        
+
         # Convert : operator to = for consistency
         operator = self.operator
         if operator == ":":
             operator = "="
-        
+
         # Get the date value
         if isinstance(self.rhs, StringValueNode):
             date_val = self.rhs.value
@@ -544,7 +544,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         else:
             msg = f"Date requires a string or numeric value, got {type(self.rhs)}"
             raise ValueError(msg)
-        
+
         # Return the comparison SQL
         pname = param_name(date_val)
         context[pname] = date_val

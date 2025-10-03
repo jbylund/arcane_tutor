@@ -399,11 +399,11 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
     rarity_condition = create_condition_parser(rarity_attr_word, quoted_string | string_value_word)
     legality_condition = create_condition_parser(legality_attr_word, quoted_string | string_value_word)
     text_condition = create_condition_parser(text_attr_word, quoted_string | string_value_word)
-    
+
     # Devotion condition: devotion attribute with color and numeric value (devotion:w>=5, devotion:r>3, etc.)
     # Format is devotion:color operator number
     devotion_condition = create_condition_parser(devotion_attr_word, color_value)
-    
+
     # Date condition: date/year attributes with string values for dates or numeric for years
     date_condition = create_condition_parser(date_attr_word, quoted_string | string_value_word | literal_number)
 
