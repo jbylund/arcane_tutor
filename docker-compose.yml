@@ -14,7 +14,7 @@ services:
         - POSTGRES_USER=${XPGUSER}
         healthcheck:
             test: ["CMD-SHELL", "psql -U ${XPGUSER} -d ${XPGDATABASE} -c 'SELECT 1'"]
-            interval: 1s
+            interval: 100ms
             timeout: 1s
             retries: 5
             start_period: 30s
@@ -28,6 +28,7 @@ services:
         - ./configs/postgres/conf/postgresql.conf:/postgresql.conf
         - ./configs/postgres/init/:/docker-entrypoint-initdb.d
         - /tmp/pgdata/:/data/pg
+        - ./data/postgres/logs:/var/log/postgresql
     apiservice:
         build:
             context: ./

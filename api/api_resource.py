@@ -896,7 +896,7 @@ class APIResource:
                 title="Invalid Search Query",
                 description=f'Failed to parse query: "{query}"',
             ) from err
-        sql_orderby = {
+        sql_orderby: str = {
             # what's in the query => the db column name
             "cmc": "cmc",
             "edhrec": "edhrec_rank",
@@ -904,18 +904,18 @@ class APIResource:
             "rarity": "card_rarity_int",
             "toughness": "creature_toughness",
             "usd": "price_usd",
-        }.get(orderby, "edhrec_rank")
+        }.get(str(orderby), "edhrec_rank")
         sql_direction = {
             "asc": "ASC",
             "desc": "DESC",
-        }.get(direction, "ASC")
+        }.get(str(direction), "ASC")
         # scryfall supports distinct:
         # cards, prints, arts
         distinct_on = {
             UniqueOn.ARTWORK: "illustration_id",
             UniqueOn.CARD: "card_name",
             UniqueOn.PRINTING: "scryfall_id",
-        }.get(unique.rstrip("s"), "card_name")
+        }.get(UniqueOn(str(unique).rstrip("s")), "card_name")
         query_sql = f"""
         WITH distinct_cards AS (
             SELECT DISTINCT ON ({distinct_on})
@@ -1017,6 +1017,8 @@ class APIResource:
         ----
             falcon_response (falcon.Response): The Falcon response to write to.
         """
+        if falcon_response is None:
+            return
         full_filename = pathlib.Path(__file__).parent / "favicon.ico"
         with pathlib.Path(full_filename).open(mode="rb") as f:
             falcon_response.data = contents = f.read()
@@ -1282,7 +1284,7 @@ class APIResource:
         logger.info("Discovered %d unique is: tags from Scryfall syntax", len(unique_is_tags))
         return unique_is_tags
 
-    def _get_tag_relationships(self: APIResource, *, tag: str) -> str | None:
+    def _get_tag_relationships(self: APIResource, *, tag: str) -> list[dict[str, str]]:
         """Fetch list of relationships for a specific tag using Scryfall tagger GraphQL API.
 
         Args:
@@ -1432,7 +1434,7 @@ class APIResource:
 
         """
         # Step 1: Discover all available tags
-        result = {
+        result: dict = {
             "success": True,
         }
         logger.info("Starting bulk tag discovery and import")
@@ -1470,7 +1472,7 @@ class APIResource:
             Dict[str, Any]: Summary of the bulk is: tag import operation.
 
         """
-        result = {
+        result: dict[str, Any] = {
             "success": True,
         }
         logger.info("Starting bulk is: tag discovery and import")
@@ -1537,7 +1539,7 @@ class APIResource:
 
         return result
 
-    def _update_all_card_taggings(self: APIResource) -> None:
+    def _update_all_card_taggings(self: APIResource) -> dict[str, Any]:
         """Update all card taggings."""
         logger.info("Updating all card taggings")
         tags = self._get_all_tags()
@@ -1724,13 +1726,14 @@ class APIResource:
 
         return all_cards
 
-    def backfill_mana_cost_jsonb(self: APIResource, **_: object) -> None:
+    def backfill_mana_cost_jsonb(self: APIResource, **_: object) -> dict[str, str]:
         """Backfill the mana_cost_jsonb column with the mana_cost_text column."""
         logger.info("Backfilling mana_cost_jsonb column with mana_cost_text column")
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             cursor = typecast("Cursor", cursor)
             cursor.execute("SELECT mana_cost_text FROM magic.cards GROUP BY mana_cost_text")
             for mana_cost_text in cursor.fetchall():
+                mana_cost_text = typecast("dict", mana_cost_text)
                 mana_cost_jsonb = mana_cost_str_to_dict(mana_cost_text["mana_cost_text"])
                 cursor.execute(
                     query="UPDATE magic.cards SET mana_cost_jsonb = %(mana_cost_jsonb)s WHERE mana_cost_text = %(mana_cost_text)s",
@@ -1785,7 +1788,7 @@ class APIResource:
                         WHERE
                             raw_card_blob->>'frame' IS NOT DISTINCT FROM %(frame)s AND
                             raw_card_blob->'frame_effects' IS NOT DISTINCT FROM %(frame_effects)s
-                    """),
+                    """).encode(),
                     params={
                         "frame": db_utils.maybe_json(row["frame"]),
                         "frame_data": db_utils.maybe_json(frame_data),
