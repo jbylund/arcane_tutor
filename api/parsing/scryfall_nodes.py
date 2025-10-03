@@ -559,38 +559,35 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         # year>=2024 becomes: released_at >= '2024-01-01'
         # year<=2024 becomes: released_at < '2025-01-01'
 
+        start_of_year = f"{year_value}-01-01"
+        start_of_next_year = f"{year_value + 1}-01-01"
+
         if operator == "=":
-            start_date = f"{year_value}-01-01"
-            end_date = f"{year_value + 1}-01-01"
-            start_param = param_name(start_date)
-            end_param = param_name(end_date)
-            context[start_param] = start_date
-            context[end_param] = end_date
-            return f"(%({start_param})s <= card.released_at AND card.released_at < %({end_param})s)"
+            p_start_name = param_name(start_of_year)
+            p_end_name = param_name(start_of_next_year)
+            context[p_start_name] = start_of_year
+            context[p_end_name] = start_of_next_year
+            return f"(%({p_start_name})s <= card.released_at AND card.released_at < %({p_end_name})s)"
         if operator == ">":
             # year > 2024 means released_at >= 2025-01-01
-            start_date = f"{year_value + 1}-01-01"
-            start_param = param_name(start_date)
-            context[start_param] = start_date
-            return f"(card.released_at >= %({start_param})s)"
+            pname = param_name(start_of_next_year)
+            context[pname] = start_of_next_year
+            return f"(card.released_at >= %({pname})s)"
         if operator == "<":
             # year < 2024 means released_at < 2024-01-01
-            end_date = f"{year_value}-01-01"
-            end_param = param_name(end_date)
-            context[end_param] = end_date
-            return f"(card.released_at < %({end_param})s)"
+            pname = param_name(start_of_year)
+            context[pname] = start_of_year
+            return f"(card.released_at < %({pname})s)"
         if operator == ">=":
             # year >= 2024 means released_at >= 2024-01-01
-            start_date = f"{year_value}-01-01"
-            start_param = param_name(start_date)
-            context[start_param] = start_date
-            return f"(card.released_at >= %({start_param})s)"
+            pname = param_name(start_of_year)
+            context[pname] = start_of_year
+            return f"(card.released_at >= %({pname})s)"
         if operator == "<=":
             # year <= 2024 means released_at < 2025-01-01
-            end_date = f"{year_value + 1}-01-01"
-            end_param = param_name(end_date)
-            context[end_param] = end_date
-            return f"(card.released_at < %({end_param})s)"
+            pname = param_name(start_of_next_year)
+            context[pname] = start_of_next_year
+            return f"(card.released_at < %({pname})s)"
 
         msg = f"Unsupported operator for year search: {operator}"
         raise ValueError(msg)
