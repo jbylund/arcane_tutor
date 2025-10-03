@@ -28,6 +28,7 @@ from pyparsing import (
 from .db_info import (
     COLOR_ATTRIBUTES,
     COLOR_NAME_TO_CODE,
+    DATE_ATTRIBUTES,
     KNOWN_CARD_ATTRIBUTES,
     LEGALITY_ATTRIBUTES,
     MANA_ATTRIBUTES,
@@ -332,13 +333,57 @@ def create_color_parsers() -> dict[str, ParserElement]:
     }
 
 
-def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_parsers: dict) -> dict[str, ParserElement]:
+def create_devotion_parsers() -> dict[str, ParserElement]:
+    """Create devotion-related parsing elements.
+
+    Returns:
+        Dictionary containing devotion parser elements
+    """
+    # Devotion value patterns - support both color names and letter combinations
+    # Color names: white, blue, black, red, green, colorless (case-insensitive)
+    devotion_color_word = make_regex_pattern(COLOR_NAME_TO_CODE.keys())
+
+    # Color letter pattern: any combination of w, u, b, r, g, c (case-insensitive)
+    devotion_color_letter_pattern = Regex(r"[wubrgcWUBRGC]+")
+
+    # Combined devotion color value pattern
+    devotion_color_value = devotion_color_word | devotion_color_letter_pattern
+
+    return {
+        "devotion_color_value": devotion_color_value,
+    }
+
+
+def create_date_parsers() -> dict[str, ParserElement]:
+    """Create date-related parsing elements.
+
+    Returns:
+        Dictionary containing date parser elements
+    """
+    # Date patterns - support various date formats
+    # ISO date: YYYY-MM-DD
+    iso_date_pattern = Regex(r"\d{4}-\d{2}-\d{2}")
+
+    # Year pattern: YYYY
+    year_pattern = Regex(r"\d{4}")
+
+    # Combined date value pattern
+    date_value = iso_date_pattern | year_pattern
+
+    return {
+        "date_value": date_value,
+    }
+
+
+def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_parsers: dict, devotion_parsers: dict, date_parsers: dict) -> dict[str, ParserElement]:
     """Create all condition parsers using factory functions.
 
     Args:
         basic_parsers: Dictionary of basic parser elements
         mana_parsers: Dictionary of mana parser elements
         color_parsers: Dictionary of color parser elements
+        devotion_parsers: Dictionary of devotion parser elements
+        date_parsers: Dictionary of date parser elements
 
     Returns:
         Dictionary containing all condition parser elements
@@ -352,6 +397,8 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
     rparen = basic_parsers["rparen"]
     mana_value = mana_parsers["mana_value"]
     color_value = color_parsers["color_value"]
+    devotion_color_value = devotion_parsers["devotion_color_value"]
+    date_value = date_parsers["date_value"]
 
     # Create attribute parsers using factory functions
     numeric_attr_word = create_attribute_parser(NUMERIC_ATTRIBUTES)
@@ -360,6 +407,7 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
     legality_attr_word = create_attribute_parser(LEGALITY_ATTRIBUTES)
     color_attr_word = create_attribute_parser(COLOR_ATTRIBUTES)
     text_attr_word = create_attribute_parser(TEXT_ATTRIBUTES)
+    date_attr_word = create_attribute_parser(DATE_ATTRIBUTES)
 
     # Build the grammar with proper precedence
     expr = Forward()
@@ -391,6 +439,12 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
     # Color condition: color attributes with color values (color:red, c:rg, id:wubr, etc.)
     color_condition = create_condition_parser(color_attr_word, color_value | quoted_string)
 
+    # Devotion condition: devotion attributes with color values (devotion:white, devotion:W, etc.)
+    devotion_condition = create_condition_parser(mana_attr_word, devotion_color_value | quoted_string)
+
+    # Date condition: date attributes with date values (date:2023, year:2023, date:2023-01-01, etc.)
+    date_condition = create_condition_parser(date_attr_word, date_value | quoted_string)
+
     # Standard string-based conditions using factory function
     rarity_condition = create_condition_parser(rarity_attr_word, quoted_string | string_value_word)
     legality_condition = create_condition_parser(legality_attr_word, quoted_string | string_value_word)
@@ -403,12 +457,13 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
         (rarity_attr_word + DEFAULT_OPERATORS + rarity_attr_word) |
         (legality_attr_word + DEFAULT_OPERATORS + legality_attr_word) |
         (color_attr_word + DEFAULT_OPERATORS + color_attr_word) |
-        (text_attr_word + DEFAULT_OPERATORS + text_attr_word)
+        (text_attr_word + DEFAULT_OPERATORS + text_attr_word) |
+        (date_attr_word + DEFAULT_OPERATORS + date_attr_word)
     )
     attr_attr_condition.setParseAction(make_binary_operator_node)
 
     # Combine all conditions with clear precedence - no more special cases needed
-    condition = mana_condition | rarity_condition | legality_condition | color_condition | unified_numeric_comparison | text_condition | attr_attr_condition
+    condition = mana_condition | rarity_condition | legality_condition | color_condition | devotion_condition | date_condition | unified_numeric_comparison | text_condition | attr_attr_condition
 
     # Special rule for text attribute-colon-hyphenated-value to handle cases like "otag:dual-land" and "otag:40k-model"
     # Only text attributes should have hyphenated string values (not numeric, mana, rarity, or legality)
@@ -501,6 +556,8 @@ def get_parse_expr() -> ParserElement:  # noqa: C901, PLR0915
     basic_parsers = create_basic_parsers()
     mana_parsers = create_mana_parsers()
     color_parsers = create_color_parsers()
+    devotion_parsers = create_devotion_parsers()
+    date_parsers = create_date_parsers()
 
     # Extract frequently used parsers
     lparen = basic_parsers["lparen"]
@@ -512,7 +569,7 @@ def get_parse_expr() -> ParserElement:  # noqa: C901, PLR0915
     literal_number = basic_parsers["literal_number"]
 
     # Build all condition parsers using helper function
-    condition_parsers = create_all_condition_parsers(basic_parsers, mana_parsers, color_parsers)
+    condition_parsers = create_all_condition_parsers(basic_parsers, mana_parsers, color_parsers, devotion_parsers, date_parsers)
 
     # Extract condition parsers
     expr = condition_parsers["expr"]

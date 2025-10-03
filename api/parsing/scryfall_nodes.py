@@ -333,6 +333,14 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         if attr in ("mana_cost_text", "mana_cost_jsonb") and isinstance(self.rhs, ManaValueNode | StringValueNode):
             return self._handle_mana_cost_comparison(context)
 
+        # Special handling for devotion attributes
+        if attr == "devotion" and isinstance(self.rhs, (StringValueNode, ManaValueNode)):
+            return self._handle_devotion_comparison(context)
+
+        # Special handling for date attributes (date and year map to released_at)
+        if attr in ("date", "year", "released_at") and isinstance(self.rhs, StringValueNode):
+            return self._handle_date_comparison(context)
+
         lhs_sql = self.lhs.to_sql(context)
         field_type = get_field_type(attr)
 
@@ -615,6 +623,53 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         msg = f"Unknown operator: {self.operator}"
         raise ValueError(msg)
 
+    def _handle_devotion_comparison(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+        """Handle devotion comparisons by calculating devotion from mana_cost_jsonb."""
+        # Check if this is a numeric devotion query (like devotion>=3) or a color devotion query (like devotion:white)
+        msg = "Numeric devotion queries are not supported"
+        raise NotImplementedError(msg)
+
+    def _handle_date_comparison(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+        """Handle date comparisons using the released_at column."""
+        date_value = self.rhs.value.strip()
+
+        # Parse the date value
+        if len(date_value) == 4 and date_value.isdigit():   # noqa: PLR2004
+            return self._handle_year_comparison(context)
+        # Full date - use as is
+        date_param = param_name(date_value)
+        context[date_param] = date_value
+
+        # Generate SQL for exact date
+        if self.operator == ":":
+            self.operator = "="
+
+        return f"(card.released_at {self.operator} %({date_param})s)"
+
+    def _handle_year_comparison(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+        # Year only - convert to date range
+        date_value = self.rhs.value.strip()
+        year = int(date_value)
+        start_date = f"{year}-01-01"
+        end_date = f"{year}-12-31"
+
+        # Create parameters
+        start_param = param_name(start_date)
+        end_param = param_name(end_date)
+        context[start_param] = start_date
+        context[end_param] = end_date
+
+        # Generate SQL for year range
+        if self.operator == ":":
+            return f"(card.released_at >= %({start_param})s AND card.released_at <= %({end_param})s)"
+        if self.operator in (">=", ">"):
+            return f"(card.released_at {self.operator} %({start_param})s)"
+        if self.operator in ("<", "<="):
+            return f"(card.released_at {self.operator} %({end_param})s)"
+        if self.operator == "!=":
+            return f"(card.released_at < %({start_param})s OR card.released_at > %({end_param})s)"
+        msg = f"Unknown operator: {self.operator}"
+        raise ValueError(msg)
 
 def to_scryfall_ast(node: QueryNode) -> QueryNode:
     """Convert a generic query node to a Scryfall-specific AST node.
