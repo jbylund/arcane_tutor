@@ -403,12 +403,12 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
     # Date condition: date attributes with date values (date:2025-02-02 or date:2025)
     # Accept both full date format (YYYY-MM-DD) and year format (YYYY)
     date_value = Regex(r"\d{4}(?:-\d{2}-\d{2})?")  # Matches YYYY or YYYY-MM-DD
-    date_condition = create_condition_parser(date_attr_word, date_value | quoted_string | string_value_word)
+    date_condition = create_condition_parser(date_attr_word, date_value)
 
     # Year condition: year attributes with 4-digit year values (year:2025)
     # Only accept 4-digit years
     year_value = Regex(r"\d{4}")  # Matches only YYYY
-    year_condition = create_condition_parser(year_attr_word, year_value | quoted_string | string_value_word)
+    year_condition = create_condition_parser(year_attr_word, year_value)
 
     # Attribute-to-attribute comparisons should be between attributes of the same parser class
     attr_attr_condition = (
