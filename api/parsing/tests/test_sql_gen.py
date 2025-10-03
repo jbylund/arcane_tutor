@@ -34,6 +34,11 @@ from api.parsing.scryfall_nodes import get_legality_comparison_object
         ),
         ("cmc:3", "(card.cmc = %(p_int_Mw)s)", {"p_int_Mw": 3}),  # Numeric field uses exact equality
         ("power:5", "(card.creature_power = %(p_int_NQ)s)", {"p_int_NQ": 5}),  # Numeric field uses exact equality
+        # loyalty tests
+        ("loyalty=3", "(card.planeswalker_loyalty = %(p_int_Mw)s)", {"p_int_Mw": 3}),
+        ("loyalty>5", "(card.planeswalker_loyalty > %(p_int_NQ)s)", {"p_int_NQ": 5}),
+        ("loyalty<=7", "(card.planeswalker_loyalty <= %(p_int_Nw)s)", {"p_int_Nw": 7}),
+        ("loy:4", "(card.planeswalker_loyalty = %(p_int_NA)s)", {"p_int_NA": 4}),
         # color
         ("color:g", "(card.card_colors @> %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # >=
         ("color=g", "(card.card_colors = %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # =
