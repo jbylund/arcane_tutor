@@ -169,20 +169,7 @@ scryfallos/
    git clone git@github.com:jbylund/scryfallos.git
    cd scryfallos
 
-   # Modern approach with uv (recommended)
-   python -m pip install uv
-   python -m uv venv .venv           # Create virtual environment
-   source .venv/bin/activate         # Activate virtual environment
-   uv pip install -r requirements.txt -r test-requirements.txt
-
-   # Alternative: use make
-   make venv                         # Create virtual environment
-   source .venv/bin/activate         # Activate virtual environment
-   uv pip install -r requirements.txt -r test-requirements.txt
-
-   # Legacy approach with pip (fallback)
-   python -m venv .venv              # Create virtual environment
-   source .venv/bin/activate         # Activate virtual environment
+   # Install core dependencies
    python -m pip install --upgrade pip
    python -m pip install -r requirements.txt -r test-requirements.txt
    ```
@@ -191,15 +178,14 @@ scryfallos/
 
    ```bash
    # Only needed for local API server (includes bjoern compilation)
-   # Make sure virtual environment is activated first!
    sudo apt-get update && sudo apt-get install -y libev-dev
-   uv pip install -r webserver-requirements.txt
+   python -m pip install -r webserver-requirements.txt
    ```
 
 1. **Validate Installation**
 
    ```bash
-   # Run test suite (should pass all 566 tests)
+   # Run test suite (should pass all 339 tests)
    python -m pytest -vvv
 
    # Verify linting
