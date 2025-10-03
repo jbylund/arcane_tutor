@@ -28,6 +28,7 @@ services:
         - ./configs/postgres/conf/postgresql.conf:/postgresql.conf
         - ./configs/postgres/init/:/docker-entrypoint-initdb.d
         - /tmp/pgdata/:/data/pg
+        - ./data/postgres/logs:/var/log/postgresql
     apiservice:
         build:
             context: ./
