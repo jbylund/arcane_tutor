@@ -12,6 +12,7 @@ from .db_info import (
     DATE_ATTRIBUTES,
     DB_NAME_TO_FIELD_TYPE,
     SEARCH_NAME_TO_DB_NAME,
+    YEAR_ATTRIBUTES,
     FieldType,
 )
 from .nodes import (
@@ -337,6 +338,8 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         # Special handling for date/year searches
         if self.lhs.original_attribute in DATE_ATTRIBUTES:
             return self._handle_date_search(context)
+        if self.lhs.original_attribute in YEAR_ATTRIBUTES:
+            return self._handle_year_search(context)
 
         lhs_sql = self.lhs.to_sql(context)
         field_type = get_field_type(attr)
@@ -501,84 +504,96 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         raise ValueError(msg)
 
     def _handle_date_search(self: ScryfallBinaryOperatorNode, context: dict) -> str:
-        """Handle date and year search queries.
+        """Handle date search queries.
 
         For 'date:' searches, compares against the full released_at date.
-        For 'year:' searches, converts to date range queries for better index usage.
+        Accepts either YYYY or YYYY-MM-DD format.
 
         Args:
             context: SQL parameter context.
 
         Returns:
-            SQL string for the date/year comparison.
+            SQL string for the date comparison.
         """
-        original_attr = self.lhs.original_attribute
         search_value = self.rhs.value if isinstance(self.rhs, StringValueNode | NumericValueNode) else str(self.rhs)
 
         # Normalize : operator to =
         operator = "=" if self.operator == ":" else self.operator
 
-        if original_attr == "year":
-            # For year searches, convert to date range queries for better index usage
-            # Extract year value from input
-            year_str_length = 4
-            if (isinstance(search_value, str) and len(search_value) == year_str_length and search_value.isdigit()) or isinstance(search_value, int | float):
-                year_value = int(search_value)
-            # Try to extract year from date string (e.g., "2025-02-02")
-            elif "-" in str(search_value):
-                year_value = int(str(search_value).split("-")[0])
-            else:
-                msg = f"Invalid year value: {search_value}"
-                raise ValueError(msg)
-
-            # Convert year comparison to date range for index usage
-            # year=2024 becomes: '2024-01-01' <= released_at AND released_at < '2025-01-01'
-            # year>2024 becomes: released_at >= '2025-01-01'
-            # year<2024 becomes: released_at < '2024-01-01'
-            # year>=2024 becomes: released_at >= '2024-01-01'
-            # year<=2024 becomes: released_at < '2025-01-01'
-
-            if operator == "=":
-                start_date = f"{year_value}-01-01"
-                end_date = f"{year_value + 1}-01-01"
-                start_param = param_name(start_date)
-                end_param = param_name(end_date)
-                context[start_param] = start_date
-                context[end_param] = end_date
-                return f"(%({start_param})s <= card.released_at AND card.released_at < %({end_param})s)"
-            if operator == ">":
-                # year > 2024 means released_at >= 2025-01-01
-                start_date = f"{year_value + 1}-01-01"
-                start_param = param_name(start_date)
-                context[start_param] = start_date
-                return f"(card.released_at >= %({start_param})s)"
-            if operator == "<":
-                # year < 2024 means released_at < 2024-01-01
-                end_date = f"{year_value}-01-01"
-                end_param = param_name(end_date)
-                context[end_param] = end_date
-                return f"(card.released_at < %({end_param})s)"
-            if operator == ">=":
-                # year >= 2024 means released_at >= 2024-01-01
-                start_date = f"{year_value}-01-01"
-                start_param = param_name(start_date)
-                context[start_param] = start_date
-                return f"(card.released_at >= %({start_param})s)"
-            if operator == "<=":
-                # year <= 2024 means released_at < 2025-01-01
-                end_date = f"{year_value + 1}-01-01"
-                end_param = param_name(end_date)
-                context[end_param] = end_date
-                return f"(card.released_at < %({end_param})s)"
-
-            msg = f"Unsupported operator for year search: {operator}"
-            raise ValueError(msg)
-
         # For date searches, compare against the full date
-        # The value should be in YYYY-MM-DD format
+        # The value should be in YYYY-MM-DD or YYYY format
         pname = param_name(search_value)
         context[pname] = search_value
         return f"(card.released_at {operator} %({pname})s)"
+
+    def _handle_year_search(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+        """Handle year search queries.
+
+        For 'year:' searches, converts to date range queries for better index usage.
+        Only accepts 4-digit year values (YYYY).
+
+        Args:
+            context: SQL parameter context.
+
+        Returns:
+            SQL string for the year comparison using date ranges.
+        """
+        search_value = self.rhs.value if isinstance(self.rhs, StringValueNode | NumericValueNode) else str(self.rhs)
+
+        # Normalize : operator to =
+        operator = "=" if self.operator == ":" else self.operator
+
+        # For year searches, convert to date range queries for better index usage
+        # Only accept 4-digit year values
+        year_str_length = 4
+        if (isinstance(search_value, str) and len(search_value) == year_str_length and search_value.isdigit()) or isinstance(search_value, int | float):
+            year_value = int(search_value)
+        else:
+            msg = f"Invalid year value: {search_value}. Year must be a 4-digit number."
+            raise ValueError(msg)
+
+        # Convert year comparison to date range for index usage
+        # year=2024 becomes: '2024-01-01' <= released_at AND released_at < '2025-01-01'
+        # year>2024 becomes: released_at >= '2025-01-01'
+        # year<2024 becomes: released_at < '2024-01-01'
+        # year>=2024 becomes: released_at >= '2024-01-01'
+        # year<=2024 becomes: released_at < '2025-01-01'
+
+        if operator == "=":
+            start_date = f"{year_value}-01-01"
+            end_date = f"{year_value + 1}-01-01"
+            start_param = param_name(start_date)
+            end_param = param_name(end_date)
+            context[start_param] = start_date
+            context[end_param] = end_date
+            return f"(%({start_param})s <= card.released_at AND card.released_at < %({end_param})s)"
+        if operator == ">":
+            # year > 2024 means released_at >= 2025-01-01
+            start_date = f"{year_value + 1}-01-01"
+            start_param = param_name(start_date)
+            context[start_param] = start_date
+            return f"(card.released_at >= %({start_param})s)"
+        if operator == "<":
+            # year < 2024 means released_at < 2024-01-01
+            end_date = f"{year_value}-01-01"
+            end_param = param_name(end_date)
+            context[end_param] = end_date
+            return f"(card.released_at < %({end_param})s)"
+        if operator == ">=":
+            # year >= 2024 means released_at >= 2024-01-01
+            start_date = f"{year_value}-01-01"
+            start_param = param_name(start_date)
+            context[start_param] = start_date
+            return f"(card.released_at >= %({start_param})s)"
+        if operator == "<=":
+            # year <= 2024 means released_at < 2025-01-01
+            end_date = f"{year_value + 1}-01-01"
+            end_param = param_name(end_date)
+            context[end_param] = end_date
+            return f"(card.released_at < %({end_param})s)"
+
+        msg = f"Unsupported operator for year search: {operator}"
+        raise ValueError(msg)
 
     def _handle_text_field_pattern_matching(self: ScryfallBinaryOperatorNode, context: dict, lhs_sql: str) -> str:
         """Handle pattern matching for regular text fields."""

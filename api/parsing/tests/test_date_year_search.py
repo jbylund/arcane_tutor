@@ -12,9 +12,16 @@ from api.parsing import AttributeNode, BinaryOperatorNode, StringValueNode
     argnames=("searchattr", "searchoperator", "searchvalue"),
     argvalues=list(
         itertools.product(
-            ["date", "year"],
+            ["date"],
             [":", "=", ">", "<", ">=", "<="],
             ["2025-02-02", "2025"],
+        ),
+    )
+    + list(
+        itertools.product(
+            ["year"],
+            [":", "=", ">", "<", ">=", "<="],
+            ["2025"],  # Year only accepts 4-digit years
         ),
     ),
 )
@@ -89,17 +96,12 @@ def test_year_search_numeric() -> None:
     assert "2026-01-01" in context.values()
 
 
-def test_year_search_with_date_format() -> None:
-    """Test year search with date format (should extract year)."""
-    parsed = parsing.parse_scryfall_query("year:2025-02-02")
-    context = {}
-    sql = parsed.to_sql(context)
-
-    # Should extract year 2025 and convert to date range
-    assert "card.released_at" in sql
-    assert "<= card.released_at AND card.released_at <" in sql
-    assert "2025-01-01" in context.values()
-    assert "2026-01-01" in context.values()
+def test_year_search_rejects_date_format() -> None:
+    """Test year search rejects date format (YYYY-MM-DD)."""
+    # Year search should only accept 4-digit years
+    # Parsing with date format should fail
+    with pytest.raises(ValueError, match="Failed to parse query"):
+        parsing.parse_scryfall_query("year:2025-02-02")
 
 
 def test_date_year_combined_query() -> None:
