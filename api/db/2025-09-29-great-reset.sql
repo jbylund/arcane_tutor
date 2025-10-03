@@ -195,6 +195,7 @@ CREATE TABLE magic.cards (
     image_location_uuid UUID,
     type_line text,
     illustration_id UUID,
+    released_at date NOT NULL,
 
     -- columns
     card_name text NOT NULL,
