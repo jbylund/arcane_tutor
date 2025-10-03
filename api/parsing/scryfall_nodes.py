@@ -312,7 +312,7 @@ def calculate_devotion(mana_cost_str: str) -> dict:
     For example, {R/G} contributes 1 to both R devotion and G devotion.
     """
     devotion = {"W": [], "U": [], "B": [], "R": [], "G": [], "C": []}
-    for ichar in mana_cost_str.upper():
+    for ichar in mana_cost_str.upper().strip():
         current_devotion = devotion.get(ichar)
         if current_devotion is not None:
             current_devotion.append(len(current_devotion) + 1)
@@ -659,6 +659,12 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             context[pname] = rhs
             # Color identity has inverted semantics for the : operator only
             is_color_identity = attr == "card_color_identity"
+        elif attr == "devotion":
+            # Devotion uses mana cost syntax, so we need to convert it to color comparison
+            # Extract color codes from mana cost syntax like {G}, {R}{G}, etc.
+            query_devotion = calculate_devotion(self.rhs.value.strip())
+            pname = param_name(query_devotion)
+            context[pname] = query_devotion
         elif attr == "card_keywords":
             rhs = get_keywords_comparison_object(self.rhs.value.strip())
             pname = param_name(rhs)
