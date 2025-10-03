@@ -25,6 +25,7 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 - **Pricing Data**: `usd:`, `eur:`, `tix:` with all comparison operators
 - **Format Legality**: `format:`, `legal:`, `banned:`, `restricted:`
 - **Card Properties**: `layout:`, `border:`, `frame:`, `is:`, `produces:`, `flavor:`, `watermark:`
+- **Date Search**: `date:`, `year:` with all comparison operators
 - **Oracle Tags**: `oracle_tags:`, `ot:`
 - **Boolean Logic**: `AND`, `OR`, `NOT`, `()` parentheses
 - **Comparison Operators**: `=`, `<`, `>`, `<=`, `>=`, `!=`, `<>`
@@ -40,7 +41,6 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 
 ### Scryfall Unique Features (Not Yet Implemented)
 
-- **Date filtering** - `year:`, `date:` for release information
 - **Advanced mechanics** - `loyalty:`, `devotion:`
 - **Collection features** - `cube:`, `commander:`, `papersets:`
 - **Regular expressions** - `/pattern/` syntax
@@ -60,10 +60,10 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 ### Recommended Development Priorities
 
 1. Devotion search
-1. **Medium Impact Features** - Dates and planeswalker loyalty for comprehensive card metadata coverage
+1. **Medium Impact Features** - Planeswalker loyalty for comprehensive card metadata coverage
 1. **Low Impact Features** - regex based search
 
-**Recently Completed ✅:**
+**Recently Completed:**
 - Format legality (`format:`, `legal:`, `banned:`) for competitive play support
 - Collector numbers (`number:`, `cn:`) and rarity search (`rarity:`, `r:`)
 - Pricing data (`usd:`, `eur:`, `tix:`) for market analysis
@@ -75,6 +75,7 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 - Card border search (`border:`) for border colors (black, white, borderless, etc.)
 - Special properties search (`is:`) for card classifications (creature, spell, permanent, etc.)
 - Watermark search (`watermark:`) for card watermarks and visual properties
+- Date and year search (`date:`, `year:`) for card release date filtering
 
 ### Missing Functionality - Complexity vs Impact Grid
 
@@ -82,40 +83,41 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 
 | **Complexity** | **Low Impact**                            | **Medium Impact**                                                                            | **High Impact**                                                                                   |
 | -------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------- |
-| **Low**        | **Cube Inclusion** (`cube:`)              | **Release Dates** (`year:`, `date:`)<br/>**Planeswalker Loyalty** (`loyalty:`)               |                              |
+| **Low**        | **Cube Inclusion** (`cube:`)              | **Planeswalker Loyalty** (`loyalty:`)                                                        |                              |
 | **Medium**     | **Commander Features** (`cmd:`)           | **Reprint Info** (`papersets:`) - [Scryfall Docs](https://scryfall.com/docs/syntax#reprints) | **Devotion** (`devotion:`)   |
 | **High**       | **Regular Expressions** (`/pattern/`)     |                                                                                              |                              |
 
 ### Implementation Status
 
 - **Current API Success Rate**: 100% for supported features (enhanced coverage with flavor text search)
-- **Test Coverage**: 376 total tests including 299 parser tests with comprehensive validation
+- **Test Coverage**: 603 total tests including 426 parser tests with comprehensive validation
 - **Performance**: Optimized PostgreSQL with proper indexing including full-text search capabilities
 - **Data Quality**: Regular comparison testing against official Scryfall API
 
 ### Scryfall OS vs Official Scryfall
 
-#### Fully Supported Features ✅
+#### Fully Supported Features
 
-| Feature                | Syntax                             | Status                                               |
-| ---------------------- | ---------------------------------- | ---------------------------------------------------- |
-| **Basic Search**       | `name:`, `oracle:`                 | Full substring search with pattern matching          |
-| **Type Search**        | `type:`, `t:`                      | Exact matching with intelligent autocomplete         |
-| **Flavor Text**        | `flavor:`                          | Full text search with pattern matching               |
-| **Artist Search**      | `artist:`, `a:`                    | Full text search with trigram indexing               |
-| **Set Search**         | `set:`, `s:`                       | Dedicated indexed column with exact matching         |
-| **Rarity Search**      | `rarity:`, `r:`                    | Integer-based ordering with all comparison operators |
-| **Frame Search**       | `frame:`                           | Card frame type and visual properties search         |
-| **Watermark Search**   | `watermark:`                       | Card watermark and visual properties search          |
-| **Mana Production**    | `produces:`                        | Search for lands and mana-producing cards            |
-| **Numeric Attributes** | `cmc:`, `power:`, `toughness:`     | Complete with all comparison operators               |
-| **Colors & Identity**  | `color:`, `identity:`, `c:`, `id:` | JSONB-based with complex color logic                 |
-| **Pricing Data**       | `usd:`, `eur:`, `tix:`             | Complete with all comparison operators               |
-| **Advanced Logic**     | `AND`, `OR`, `NOT`, `()`           | Full boolean logic support                           |
-| **Arithmetic**         | `cmc+1<power`, `power-toughness=0` | Advanced mathematical expressions                    |
-| **Keywords**           | `keyword:`                         | JSONB object storage                                 |
-| **Mana Costs**         | `mana:`, `m:`                      | Both JSONB and text representations                  |
-| **Oracle Tags**        | `oracle_tags:`, `ot:`              | Standard Scryfall feature                           |
+| Feature                | Syntax                             | Status                                                |
+| ---------------------- | ---------------------------------- | ------------------------------------------------------|
+| **Basic Search**       | `name:`, `oracle:`                 | Full substring search with pattern matching           |
+| **Type Search**        | `type:`, `t:`                      | Exact matching with intelligent autocomplete          |
+| **Flavor Text**        | `flavor:`                          | Full text search with pattern matching                |
+| **Artist Search**      | `artist:`, `a:`                    | Full text search with trigram indexing                |
+| **Set Search**         | `set:`, `s:`                       | Dedicated indexed column with exact matching          |
+| **Rarity Search**      | `rarity:`, `r:`                    | Integer-based ordering with all comparison operators  |
+| **Frame Search**       | `frame:`                           | Card frame type and visual properties search          |
+| **Watermark Search**   | `watermark:`                       | Card watermark and visual properties search           |
+| **Mana Production**    | `produces:`                        | Search for lands and mana-producing cards             |
+| **Numeric Attributes** | `cmc:`, `power:`, `toughness:`     | Complete with all comparison operators                |
+| **Colors & Identity**  | `color:`, `identity:`, `c:`, `id:` | JSONB-based with complex color logic                  |
+| **Pricing Data**       | `usd:`, `eur:`, `tix:`             | Complete with all comparison operators                |
+| **Advanced Logic**     | `AND`, `OR`, `NOT`, `()`           | Full boolean logic support                            |
+| **Arithmetic**         | `cmc+1<power`, `power-toughness=0` | Advanced mathematical expressions                     |
+| **Keywords**           | `keyword:`                         | JSONB object storage                                  |
+| **Mana Costs**         | `mana:`, `m:`                      | Both JSONB and text representations                   |
+| **Oracle Tags**        | `oracle_tags:`, `ot:`              | Standard Scryfall feature                             |
+| **Date Search**        | `date:`, `year:`                   | Card release date filtering with comparison operators |
 
 ## Code Organization
 
@@ -292,7 +294,6 @@ The bulk import includes built-in rate limiting:
 
 - **GET /update_tagged_cards** - Import cards for specific tags
 - **GET /discover_and_import_all_tags** - Bulk tag discovery and import
-- **GET /get_all_tags** - Retrieve all available tags
 
 ### Query Parameters
 
