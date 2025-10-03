@@ -303,11 +303,9 @@ The search endpoint supports comprehensive Scryfall syntax. See [syntax analysis
 ### Current Limitations
 
 - **Missing Features**: See functionality grid above for complete list
-- **Data Source**: Currently uses `oracle_cards` bulk data; may migrate to `default_cards`
 
 ### Future Enhancements
 
-1. **Database Migration**: Evaluate `default_cards` vs `oracle_cards` for improved completeness
 1. **Features**: Implement highest-priority missing functionality from grid above
 1. **Testing**: Expand API comparison coverage and add performance benchmarks
 
