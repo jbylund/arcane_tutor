@@ -701,6 +701,7 @@ class APIResource:
 
         card["creature_power"] = maybe_int(card.get("power"))
         card["creature_toughness"] = maybe_int(card.get("toughness"))
+        card["planeswalker_loyalty"] = maybe_int(card.get("loyalty"))
 
         # objects of keys to true
         card["card_colors"] = dict.fromkeys(card["colors"], True)
@@ -747,6 +748,7 @@ class APIResource:
         card["mana_cost_text"] = card.get("mana_cost")
         card["creature_power_text"] = card.get("power")
         card["creature_toughness_text"] = card.get("toughness")
+        card["planeswalker_loyalty_text"] = card.get("loyalty")
         card["card_artist"] = card.get("artist")
 
         # Handle CMC and edhrec_rank conversion using helper function

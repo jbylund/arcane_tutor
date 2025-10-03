@@ -73,6 +73,11 @@ from api.parsing.scryfall_nodes import calculate_cmc, mana_cost_str_to_dict
         ("usd=2.5", BinaryOperatorNode(AttributeNode("usd"), "=", NumericValueNode(2.5))),
         ("eur!=10", BinaryOperatorNode(AttributeNode("eur"), "!=", NumericValueNode(10))),
         ("tix>=0.5", BinaryOperatorNode(AttributeNode("tix"), ">=", NumericValueNode(0.5))),
+        # Test cases for loyalty attributes
+        ("loyalty=3", BinaryOperatorNode(AttributeNode("loyalty"), "=", NumericValueNode(3))),
+        ("loyalty>5", BinaryOperatorNode(AttributeNode("loyalty"), ">", NumericValueNode(5))),
+        ("loyalty<=7", BinaryOperatorNode(AttributeNode("loyalty"), "<=", NumericValueNode(7))),
+        ("loy:4", BinaryOperatorNode(AttributeNode("loy"), ":", NumericValueNode(4))),
     ],
 )
 def test_parse_to_nodes(test_input: str, expected_ast: QueryNode) -> None:

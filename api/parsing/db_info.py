@@ -59,6 +59,7 @@ DB_COLUMNS = [
     FieldInfo("cmc", FieldType.NUMERIC, ["cmc"], ParserClass.NUMERIC),
     FieldInfo("creature_power", FieldType.NUMERIC, ["power", "pow"], ParserClass.NUMERIC),
     FieldInfo("creature_toughness", FieldType.NUMERIC, ["toughness", "tou"], ParserClass.NUMERIC),
+    FieldInfo("planeswalker_loyalty", FieldType.NUMERIC, ["loyalty", "loy"], ParserClass.NUMERIC),
     FieldInfo("edhrec_rank", FieldType.NUMERIC, [], ParserClass.NUMERIC),
     FieldInfo("mana_cost_jsonb", FieldType.JSONB_OBJECT, ["mana"], ParserClass.MANA),
     FieldInfo("mana_cost_text", FieldType.TEXT, ["mana", "m"], ParserClass.MANA),

@@ -182,6 +182,7 @@ CREATE TABLE magic.cards (
     collector_number_int integer,
     creature_power integer,
     creature_toughness integer,
+    planeswalker_loyalty integer,
     edhrec_rank integer,
 
     -- real columns
@@ -210,6 +211,7 @@ CREATE TABLE magic.cards (
     card_keywords jsonb NOT NULL,
     creature_power_text text,
     creature_toughness_text text,
+    planeswalker_loyalty_text text,
     card_oracle_tags jsonb DEFAULT '{}'::jsonb NOT NULL,
     card_set_code text,
     card_artist text,
