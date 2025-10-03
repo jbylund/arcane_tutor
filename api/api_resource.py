@@ -53,6 +53,16 @@ class UniqueOn(enum.StrEnum):
     PRINTING = enum.auto()
     ARTWORK = enum.auto()
 
+
+class PreferOrder(enum.StrEnum):
+    """Enum for the prefer order column for the search."""
+    DEFAULT = enum.auto()
+    OLDEST = enum.auto()
+    NEWEST = enum.auto()
+    USD_LOW = enum.auto()
+    USD_HIGH = enum.auto()
+    PROMO = enum.auto()
+
 def extract_image_location_uuid(card: dict[str, Any]) -> str:
     """Extract the image location UUID from a card."""
     for image_location in card.get("image_uris", {}).values():
@@ -848,6 +858,7 @@ class APIResource:
         direction: str | None = None,
         limit: int = 100,
         unique: UniqueOn | None = UniqueOn.CARD,
+        prefer: PreferOrder | None = PreferOrder.DEFAULT,
     ) -> dict[str, Any]:
         """Run a search query and return results and metadata.
 
@@ -859,6 +870,7 @@ class APIResource:
             limit: Maximum number of results to return.
             orderby: Field to sort by.
             unique: Unique on field.
+            prefer: Prefer order (oldest, newest, usd-low, usd-high, promo).
 
         Returns:
             Dict containing search results and metadata.
@@ -871,13 +883,14 @@ class APIResource:
             direction=direction,
             limit=limit,
             unique=unique,
+            prefer=prefer,
         )
 
     @cached(
         cache=TTLCache(maxsize=1000, ttl=60),
         key=lambda _self, *args, **kwargs: (args, tuple(sorted(kwargs.items()))),
     )
-    def _search(
+    def _search(  # noqa: PLR0913
         self: APIResource,
         *,
         query: str | None = None,
@@ -885,6 +898,7 @@ class APIResource:
         direction: str | None = None,
         limit: int = 100,
         unique: UniqueOn | None = UniqueOn.CARD,
+        prefer: PreferOrder | None = PreferOrder.DEFAULT,
     ) -> dict[str, Any]:
         begin = time.monotonic()
         try:
@@ -916,6 +930,19 @@ class APIResource:
             UniqueOn.CARD: "card_name",
             UniqueOn.PRINTING: "scryfall_id",
         }.get(UniqueOn(str(unique).rstrip("s")), "card_name")
+        # Map prefer values to SQL columns and directions
+        prefer_mapping = {
+            PreferOrder.OLDEST: ("released_at", "ASC"),
+            PreferOrder.NEWEST: ("released_at", "DESC"),
+            PreferOrder.USD_LOW: ("price_usd", "ASC"),
+            PreferOrder.USD_HIGH: ("price_usd", "DESC"),
+            PreferOrder.PROMO: ("edhrec_rank", "ASC"),  # Use edhrec_rank as fallback for promo
+            PreferOrder.DEFAULT: ("edhrec_rank", "ASC"),
+        }
+        prefer_column, prefer_direction = prefer_mapping.get(
+            PreferOrder(str(prefer).replace("-", "_")),
+            ("edhrec_rank", "ASC"),
+        )
         query_sql = f"""
         WITH distinct_cards AS (
             SELECT DISTINCT ON ({distinct_on})
@@ -934,7 +961,8 @@ class APIResource:
             WHERE
                 {where_clause}
             ORDER BY
-                {distinct_on}
+                {distinct_on},
+                {prefer_column} {prefer_direction} NULLS LAST
         )
         (
             SELECT
