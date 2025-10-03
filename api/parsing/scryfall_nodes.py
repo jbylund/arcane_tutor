@@ -9,8 +9,10 @@ from .db_info import (
     CARD_TYPES,
     COLOR_CODE_TO_NAME,
     COLOR_NAME_TO_CODE,
+    DATE_ATTRIBUTES,
     DB_NAME_TO_FIELD_TYPE,
     SEARCH_NAME_TO_DB_NAME,
+    YEAR_ATTRIBUTES,
     FieldType,
 )
 from .nodes import (
@@ -333,6 +335,12 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         if attr in ("mana_cost_text", "mana_cost_jsonb") and isinstance(self.rhs, ManaValueNode | StringValueNode):
             return self._handle_mana_cost_comparison(context)
 
+        # Special handling for date/year searches
+        if self.lhs.original_attribute in DATE_ATTRIBUTES:
+            return self._handle_date_search(context)
+        if self.lhs.original_attribute in YEAR_ATTRIBUTES:
+            return self._handle_year_search(context)
+
         lhs_sql = self.lhs.to_sql(context)
         field_type = get_field_type(attr)
 
@@ -493,6 +501,95 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             return f"(%({mana_param})s <@ {mana_jsonb_sql} AND {cmc_sql} >= %({cmc_param})s AND {mana_jsonb_sql} <> %({mana_param})s)"
 
         msg = f"Unsupported mana cost operator: {self.operator}"
+        raise ValueError(msg)
+
+    def _handle_date_search(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+        """Handle date search queries.
+
+        For 'date:' searches, compares against the full released_at date.
+        Accepts either YYYY or YYYY-MM-DD format.
+
+        Args:
+            context: SQL parameter context.
+
+        Returns:
+            SQL string for the date comparison.
+        """
+        search_value = self.rhs.value if isinstance(self.rhs, StringValueNode | NumericValueNode) else str(self.rhs)
+
+        # Normalize : operator to =
+        operator = "=" if self.operator == ":" else self.operator
+
+        # For date searches, compare against the full date
+        # The value should be in YYYY-MM-DD or YYYY format
+        pname = param_name(search_value)
+        context[pname] = search_value
+        return f"(card.released_at {operator} %({pname})s)"
+
+    def _handle_year_search(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+        """Handle year search queries.
+
+        For 'year:' searches, converts to date range queries for better index usage.
+        Only accepts 4-digit year values (YYYY).
+
+        Args:
+            context: SQL parameter context.
+
+        Returns:
+            SQL string for the year comparison using date ranges.
+        """
+        search_value = self.rhs.value if isinstance(self.rhs, StringValueNode | NumericValueNode) else str(self.rhs)
+
+        # Normalize : operator to =
+        operator = "=" if self.operator == ":" else self.operator
+
+        # For year searches, convert to date range queries for better index usage
+        # Only accept 4-digit year values
+        year_str_length = 4
+        if (isinstance(search_value, str) and len(search_value) == year_str_length and search_value.isdigit()) or isinstance(search_value, int | float):
+            year_value = int(search_value)
+        else:
+            msg = f"Invalid year value: {search_value}. Year must be a 4-digit number."
+            raise ValueError(msg)
+
+        # Convert year comparison to date range for index usage
+        # year=2024 becomes: '2024-01-01' <= released_at AND released_at < '2025-01-01'
+        # year>2024 becomes: released_at >= '2025-01-01'
+        # year<2024 becomes: released_at < '2024-01-01'
+        # year>=2024 becomes: released_at >= '2024-01-01'
+        # year<=2024 becomes: released_at < '2025-01-01'
+
+        start_of_year = f"{year_value}-01-01"
+        start_of_next_year = f"{year_value + 1}-01-01"
+
+        if operator == "=":
+            p_start_name = param_name(start_of_year)
+            p_end_name = param_name(start_of_next_year)
+            context[p_start_name] = start_of_year
+            context[p_end_name] = start_of_next_year
+            return f"(%({p_start_name})s <= card.released_at AND card.released_at < %({p_end_name})s)"
+        if operator == ">":
+            # year > 2024 means released_at >= 2025-01-01
+            pname = param_name(start_of_next_year)
+            context[pname] = start_of_next_year
+            return f"(card.released_at >= %({pname})s)"
+        if operator == "<":
+            # year < 2024 means released_at < 2024-01-01
+            pname = param_name(start_of_year)
+            context[pname] = start_of_year
+            return f"(card.released_at < %({pname})s)"
+        if operator == ">=":
+            # year >= 2024 means released_at >= 2024-01-01
+            pname = param_name(start_of_year)
+            context[pname] = start_of_year
+            return f"(card.released_at >= %({pname})s)"
+        if operator == "<=":
+            # year <= 2024 means released_at < 2025-01-01
+            pname = param_name(start_of_next_year)
+            context[pname] = start_of_next_year
+            return f"(card.released_at < %({pname})s)"
+
+        msg = f"Unsupported operator for year search: {operator}"
         raise ValueError(msg)
 
     def _handle_text_field_pattern_matching(self: ScryfallBinaryOperatorNode, context: dict, lhs_sql: str) -> str:

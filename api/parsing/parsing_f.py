@@ -28,12 +28,14 @@ from pyparsing import (
 from .db_info import (
     COLOR_ATTRIBUTES,
     COLOR_NAME_TO_CODE,
+    DATE_ATTRIBUTES,
     KNOWN_CARD_ATTRIBUTES,
     LEGALITY_ATTRIBUTES,
     MANA_ATTRIBUTES,
     NUMERIC_ATTRIBUTES,
     RARITY_ATTRIBUTES,
     TEXT_ATTRIBUTES,
+    YEAR_ATTRIBUTES,
 )
 from .nodes import (
     AndNode,
@@ -360,6 +362,8 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
     legality_attr_word = create_attribute_parser(LEGALITY_ATTRIBUTES)
     color_attr_word = create_attribute_parser(COLOR_ATTRIBUTES)
     text_attr_word = create_attribute_parser(TEXT_ATTRIBUTES)
+    date_attr_word = create_attribute_parser(DATE_ATTRIBUTES)
+    year_attr_word = create_attribute_parser(YEAR_ATTRIBUTES)
 
     # Build the grammar with proper precedence
     expr = Forward()
@@ -396,6 +400,16 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
     legality_condition = create_condition_parser(legality_attr_word, quoted_string | string_value_word)
     text_condition = create_condition_parser(text_attr_word, quoted_string | string_value_word)
 
+    # Date condition: date attributes with date values (date:2025-02-02 or date:2025)
+    # Accept both full date format (YYYY-MM-DD) and year format (YYYY)
+    date_value = Regex(r"\d{4}(?:-\d{2}-\d{2})?")  # Matches YYYY or YYYY-MM-DD
+    date_condition = create_condition_parser(date_attr_word, date_value)
+
+    # Year condition: year attributes with 4-digit year values (year:2025)
+    # Only accept 4-digit years
+    year_value = Regex(r"\d{4}")  # Matches only YYYY
+    year_condition = create_condition_parser(year_attr_word, year_value)
+
     # Attribute-to-attribute comparisons should be between attributes of the same parser class
     attr_attr_condition = (
         (numeric_attr_word + DEFAULT_OPERATORS + numeric_attr_word) |
@@ -403,12 +417,14 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
         (rarity_attr_word + DEFAULT_OPERATORS + rarity_attr_word) |
         (legality_attr_word + DEFAULT_OPERATORS + legality_attr_word) |
         (color_attr_word + DEFAULT_OPERATORS + color_attr_word) |
-        (text_attr_word + DEFAULT_OPERATORS + text_attr_word)
+        (text_attr_word + DEFAULT_OPERATORS + text_attr_word) |
+        (date_attr_word + DEFAULT_OPERATORS + date_attr_word) |
+        (year_attr_word + DEFAULT_OPERATORS + year_attr_word)
     )
     attr_attr_condition.setParseAction(make_binary_operator_node)
 
     # Combine all conditions with clear precedence - no more special cases needed
-    condition = mana_condition | rarity_condition | legality_condition | color_condition | unified_numeric_comparison | text_condition | attr_attr_condition
+    condition = mana_condition | rarity_condition | legality_condition | color_condition | date_condition | year_condition | unified_numeric_comparison | text_condition | attr_attr_condition
 
     # Special rule for text attribute-colon-hyphenated-value to handle cases like "otag:dual-land" and "otag:40k-model"
     # Only text attributes should have hyphenated string values (not numeric, mana, rarity, or legality)
@@ -425,6 +441,8 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
         "rarity_condition": rarity_condition,
         "legality_condition": legality_condition,
         "text_condition": text_condition,
+        "date_condition": date_condition,
+        "year_condition": year_condition,
         "attr_attr_condition": attr_attr_condition,
         "condition": condition,
         "hyphenated_condition": hyphenated_condition,

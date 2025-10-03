@@ -272,6 +272,8 @@ CREATE INDEX IF NOT EXISTS idx_cards_name ON magic.cards USING btree (card_name)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_scryfall_id ON magic.cards USING btree (scryfall_id);
 CREATE INDEX IF NOT EXISTS idx_cards_cardtypes_gin ON magic.cards USING gin (card_types);
 CREATE INDEX IF NOT EXISTS idx_cards_cardsubtypes_gin ON magic.cards USING gin (card_subtypes);
+CREATE INDEX IF NOT EXISTS idx_cards_releasedat ON magic.cards USING btree (released_at);
+
 
 COMMENT ON COLUMN magic.cards.card_artist IS 'Artist name for the card artwork - will be null for cards without artist information';
 COMMENT ON COLUMN magic.cards.card_border IS 'Card border color (black, white, borderless, silver, gold) - stored in lowercase';
