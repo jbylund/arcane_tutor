@@ -60,7 +60,6 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 ### Recommended Development Priorities
 
 1. Devotion search
-1. Support unique art/printings/cards - we are going to need to decide which attributes belong to cards/printings/artworks
 1. **Medium Impact Features** - Dates and planeswalker loyalty for comprehensive card metadata coverage
 1. **Low Impact Features** - regex based search
 
