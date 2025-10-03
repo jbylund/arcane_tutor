@@ -9,8 +9,8 @@ The core search engine demonstrates excellent stability and accuracy with compre
 ## Methodology
 
 1. **Functionality Mapping**: Analyzed official Scryfall syntax documentation and current codebase
-2. **API Comparison**: Automated testing comparing official Scryfall API vs local implementation
-3. **Gap Analysis**: Identified missing or incomplete features based on current implementation
+1. **API Comparison**: Automated testing comparing official Scryfall API vs local implementation
+1. **Gap Analysis**: Identified missing or incomplete features based on current implementation
 
 ## Current Implementation Status
 
@@ -23,42 +23,46 @@ Based on the codebase analysis and successful API comparisons:
    - `oracle:` or `o:` - Oracle text searches
    - `type:` or `t:` - Type line searches
 
-2. **Numeric Attributes**
+1. **Numeric Attributes**
    - `cmc:` - Converted mana cost
    - `power:` or `pow:` - Creature power
    - `toughness:` or `tou:` - Creature toughness
 
-3. **Colors and Identity**
+1. **Colors and Identity**
    - `color:` or `c:` - Card colors (JSONB object)
    - `identity:` or `id:` - Color identity (JSONB object)
 
-4. **Set and Collection Data** ✅ Recently Implemented
+1. **Set and Collection Data** ✅ Recently Implemented
    - `set:` or `s:` - Set codes with exact matching
    - `rarity:` or `r:` - Card rarity with integer-based ordering
    - `number:` or `cn:` - Collector numbers
 
-5. **Format Legality** ✅ Recently Implemented
+1. **Format Legality** ✅ Recently Implemented
    - `format:` or `f:` - Format legality
    - `legal:` - Legal in specific format
    - `banned:` - Banned in specific format
    - `restricted:` - Restricted in specific format
 
-6. **Pricing Data** ✅ Recently Implemented
+1. **Pricing Data** ✅ Recently Implemented
    - `usd:` - USD prices with all comparison operators
    - `eur:` - EUR prices with all comparison operators
    - `tix:` - MTGO ticket prices with all comparison operators
 
-7. **Artist Search** ✅ Recently Implemented
+1. **Artist Search** ✅ Recently Implemented
    - `artist:` or `a:` - Artist names with trigram indexing
 
-8. **Advanced Features**
+1. **Advanced Features**
    - `keywords:` or `k:` - Keyword abilities (JSONB object)
    - `oracle_tags:` or `ot:` - Oracle tags
 
-9. **Visual Properties** ✅ Recently Implemented
+1. **Visual Properties** ✅ Recently Implemented
    - `watermark:` - Card watermarks
 
-10. **Operators**
+1. **Temporal Features** ✅ Recently Implemented
+    - `date:` - Specific release date filtering with all comparison operators
+    - `year:` - Release year filtering with optimized date range queries
+
+1. **Operators**
    - Comparison: `=`, `<`, `>`, `<=`, `>=`, `!=`, `<>`
    - Logic: `AND`, `OR`, `NOT`, `-` (negation)
    - Arithmetic: `+`, `-`, `*`, `/` (e.g., `cmc+1<power`)
@@ -70,7 +74,7 @@ Based on the codebase analysis and successful API comparisons:
    - `subtypes:` - Implemented as JSONB array
    - Status: Works but may have data completeness issues
 
-2. **Mana Costs**
+1. **Mana Costs**
    - `mana:` - Both JSONB object and text representations available
    - Status: Implementation exists but may have minor comparison discrepancies
 
@@ -85,15 +89,11 @@ Based on official Scryfall documentation and current implementation gaps:
 
 #### Medium Priority Missing Features
 
-1. **Dates and Releases**
-   - `year:` - Release year filtering
-   - `date:` - Specific release date ranges
-
-2. **Advanced Mechanics**
+1. **Advanced Mechanics**
    - `loyalty:` - Planeswalker loyalty counters
    - `devotion:` - Mana symbol devotion counting
 
-3. **Collection and Game Features**
+1. **Collection and Game Features**
    - `cube:` - Cube inclusion status
    - `commander:` or `cmd:` - Commander format specifics
    - `papersets:` - Paper set availability
@@ -102,10 +102,8 @@ Based on official Scryfall documentation and current implementation gaps:
 
 1. **Complex Search Patterns**
    - Regular expressions: `/pattern/` syntax
-   - Wildcards: `*` for partial string matching
-   - Advanced functions: `max:power`, `min:cmc`
 
-2. **Meta Properties**
+1. **Meta Properties**
    - `is:booster` - Available in booster packs
    - `is:spotlight` - Featured spotlight cards
    - Various specialized game properties
@@ -125,16 +123,16 @@ Based on official Scryfall documentation and current implementation gaps:
    - No server errors or timeouts during comprehensive testing
    - Both APIs achieving perfect 100% success rates
 
-2. **Dramatic Improvement in Data Quality**
+1. **Dramatic Improvement in Data Quality**
    - Major discrepancies reduced to just 4.8% of queries (1 out of 21)
    - Position correlation excellent across most queries (0.98-1.00)
    - Most result count differences now small and manageable (typically 1-55 cards)
 
-3. **Remaining Issues Resolved**
+1. **Remaining Issues Resolved**
    - Previous `keyword:flying` major discrepancy resolved (now 2796 vs 2779, difference of 17)
    - Data completeness significantly improved across all query types
 
-4. **Current Data Quality Status**
+1. **Current Data Quality Status**
    - Small result count differences remain (1-257 cards typically)
    - Variations likely due to database refresh timing and card edition differences
 
@@ -170,7 +168,7 @@ Recent comprehensive testing (21 queries) shows the following performance charac
    - Maintain card database currency with latest Scryfall bulk data
    - Implement automated incremental update processes
 
-2. **Quality Assurance Enhancement**
+1. **Quality Assurance Enhancement**
    - Expand automated test coverage beyond current test suite
    - Add regression testing for critical features
    - Implement continuous monitoring of API comparison results
@@ -182,15 +180,11 @@ Recent comprehensive testing (21 queries) shows the following performance charac
 
 ### Medium Priority Development
 
-1. **Temporal Features**
-   - `year:` and `date:` filtering for release information
-   - Historical analysis capabilities
-
-2. **Advanced Mechanics Support**
+1. **Advanced Mechanics Support**
    - `loyalty:` counter tracking for planeswalkers
    - `devotion:` calculation capabilities
 
-3. **Collection and Meta Features**
+1. **Collection and Meta Features**
    - `cube:` inclusion tracking
    - Commander format specific features (`cmd:`)
    - Paper availability tracking (`papersets:`)
@@ -199,10 +193,8 @@ Recent comprehensive testing (21 queries) shows the following performance charac
 
 1. **Advanced Search Patterns**
    - Regular expression support (`/pattern/`)
-   - Wildcard matching (`*` syntax)
-   - Advanced aggregation functions
 
-2. **Specialized Game Properties**
+1. **Specialized Game Properties**
    - Booster pack availability tracking
    - Spotlight and featured card properties
 
@@ -220,7 +212,7 @@ Recent comprehensive testing (21 queries) shows the following performance charac
    - Automated reporting and discrepancy detection working effectively
    - Performance benchmarking and response time monitoring in place
 
-2. **Implementation Validation** ✅
+1. **Implementation Validation** ✅
    - 339 total tests including 209 comprehensive parser tests
    - Current API success rate: 100% for all supported features
    - Excellent data quality with regular comparison against official Scryfall API
@@ -241,12 +233,12 @@ Recent comprehensive testing (21 queries) shows the following performance charac
    - Advanced features like rarity comparisons, pricing, and format legality fully operational
    - Excellent stability across text search, numeric comparisons, and complex queries
 
-2. **Data Quality Excellence**
+1. **Data Quality Excellence**
    - Minor result count differences only (typically 1-257 cards)
    - Strong correlation in result ordering and relevance
    - Consistent behavior across different query types and complexities
 
-3. **Performance and Reliability**
+1. **Performance and Reliability**
    - Local API achieving 100% uptime during testing
    - Fast response times with optimized PostgreSQL backend
    - Proper indexing including integer-based rarity comparisons
