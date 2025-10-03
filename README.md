@@ -59,11 +59,12 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 
 ### Recommended Development Priorities
 
-1. Devotion search
-1. **Medium Impact Features** - Dates and planeswalker loyalty for comprehensive card metadata coverage
+1. **Medium Impact Features** - Planeswalker loyalty for comprehensive card metadata coverage
 1. **Low Impact Features** - regex based search
 
 **Recently Completed ✅:**
+- Devotion search (`devotionw:`, `devotionu:`, etc.) for mana symbol counting
+- Release date search (`date:`, `year:`) for filtering by release date
 - Format legality (`format:`, `legal:`, `banned:`) for competitive play support
 - Collector numbers (`number:`, `cn:`) and rarity search (`rarity:`, `r:`)
 - Pricing data (`usd:`, `eur:`, `tix:`) for market analysis
@@ -82,14 +83,14 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 
 | **Complexity** | **Low Impact**                            | **Medium Impact**                                                                            | **High Impact**                                                                                   |
 | -------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------- |
-| **Low**        | **Cube Inclusion** (`cube:`)              | **Release Dates** (`year:`, `date:`)<br/>**Planeswalker Loyalty** (`loyalty:`)               |                              |
-| **Medium**     | **Commander Features** (`cmd:`)           | **Reprint Info** (`papersets:`) - [Scryfall Docs](https://scryfall.com/docs/syntax#reprints) | **Devotion** (`devotion:`)   |
+| **Low**        | **Cube Inclusion** (`cube:`)              | **Planeswalker Loyalty** (`loyalty:`)               |                              |
+| **Medium**     | **Commander Features** (`cmd:`)           | **Reprint Info** (`papersets:`) - [Scryfall Docs](https://scryfall.com/docs/syntax#reprints) |    |
 | **High**       | **Regular Expressions** (`/pattern/`)     |                                                                                              |                              |
 
 ### Implementation Status
 
-- **Current API Success Rate**: 100% for supported features (enhanced coverage with flavor text search)
-- **Test Coverage**: 376 total tests including 299 parser tests with comprehensive validation
+- **Current API Success Rate**: 100% for supported features (enhanced with devotion and date search)
+- **Test Coverage**: 441 total tests including comprehensive devotion and date/year search validation
 - **Performance**: Optimized PostgreSQL with proper indexing including full-text search capabilities
 - **Data Quality**: Regular comparison testing against official Scryfall API
 
@@ -116,6 +117,8 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 | **Keywords**           | `keyword:`                         | JSONB object storage                                 |
 | **Mana Costs**         | `mana:`, `m:`                      | Both JSONB and text representations                  |
 | **Oracle Tags**        | `oracle_tags:`, `ot:`              | Standard Scryfall feature                           |
+| **Devotion**           | `devotionw:`, `devotionu:`, etc.   | Counts mana symbols of specific colors              |
+| **Release Dates**      | `date:`, `year:`                   | Filter by release date or year                       |
 
 ## Code Organization
 
