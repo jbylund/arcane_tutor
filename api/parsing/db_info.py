@@ -63,6 +63,7 @@ DB_COLUMNS = [
     FieldInfo("edhrec_rank", FieldType.NUMERIC, [], ParserClass.NUMERIC),
     FieldInfo("mana_cost_jsonb", FieldType.JSONB_OBJECT, ["mana"], ParserClass.MANA),
     FieldInfo("mana_cost_text", FieldType.TEXT, ["mana", "m"], ParserClass.MANA),
+    FieldInfo("devotion", FieldType.JSONB_OBJECT, ["devotion"], ParserClass.MANA),
     FieldInfo("price_usd", FieldType.NUMERIC, ["usd"], ParserClass.NUMERIC),
     FieldInfo("price_eur", FieldType.NUMERIC, ["eur"], ParserClass.NUMERIC),
     FieldInfo("price_tix", FieldType.NUMERIC, ["tix"], ParserClass.NUMERIC),
