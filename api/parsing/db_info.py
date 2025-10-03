@@ -11,6 +11,7 @@ class FieldType(StrEnum):
     JSONB_OBJECT = "jsonb_object"
     NUMERIC = "numeric"
     TEXT = "text"
+    DATE = "date"
 
 
 class ParserClass(StrEnum):
@@ -21,6 +22,8 @@ class ParserClass(StrEnum):
     LEGALITY = "legality"   # Format/legal fields with JSON handling
     COLOR = "color"         # Color fields (card colors and color identity)
     TEXT = "text"           # Simple text fields (name, artist, oracle text)
+    DATE = "date"           # Date fields with full date values
+    YEAR = "year"           # Year fields with 4-digit year values
 
 
 class FieldInfo:
@@ -76,6 +79,8 @@ DB_COLUMNS = [
     FieldInfo("card_layout", FieldType.TEXT, ["layout"], ParserClass.TEXT),
     FieldInfo("card_border", FieldType.TEXT, ["border"], ParserClass.TEXT),
     FieldInfo("card_watermark", FieldType.TEXT, ["watermark"], ParserClass.TEXT),
+    FieldInfo("released_at", FieldType.DATE, ["date"], ParserClass.DATE),
+    FieldInfo("released_at", FieldType.DATE, ["year"], ParserClass.YEAR),
 ]
 
 KNOWN_CARD_ATTRIBUTES = set()
@@ -90,6 +95,8 @@ RARITY_ATTRIBUTES = set()
 LEGALITY_ATTRIBUTES = set()
 COLOR_ATTRIBUTES = set()
 TEXT_ATTRIBUTES = set()
+DATE_ATTRIBUTES = set()
+YEAR_ATTRIBUTES = set()
 
 for col in DB_COLUMNS:
     KNOWN_CARD_ATTRIBUTES.add(col.db_column_name.lower())
@@ -121,6 +128,18 @@ for col in DB_COLUMNS:
     elif col.parser_class == ParserClass.TEXT:
         TEXT_ATTRIBUTES.add(col.db_column_name)
         TEXT_ATTRIBUTES.update(col.search_aliases)
+    elif col.parser_class == ParserClass.DATE:
+        DATE_ATTRIBUTES.add(col.db_column_name)
+        DATE_ATTRIBUTES.update(col.search_aliases)
+    elif col.parser_class == ParserClass.YEAR:
+        YEAR_ATTRIBUTES.add(col.db_column_name)
+        YEAR_ATTRIBUTES.update(col.search_aliases)
+    elif col.parser_class == ParserClass.NUMERIC:
+        # NUMERIC fields are already tracked in NUMERIC_ATTRIBUTES based on field_type
+        pass
+    else:
+        msg = f"Unknown parser class: {col.parser_class}"
+        raise ValueError(msg)
 
     for ialias in col.search_aliases:
         SEARCH_NAME_TO_DB_NAME[ialias.lower()] = col.db_column_name

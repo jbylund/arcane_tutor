@@ -83,12 +83,15 @@ class ApiWorker(multiprocessing.Process):
         """
         # Importing here (post-fork) is safer for some servers/clients than importing before forking.
         from .api_resource import APIResource  # pylint: disable=import-outside-toplevel
-        from .middlewares import CompressionMiddleware, TimingMiddleware
+        from .middlewares import CachingMiddleware, CompressionMiddleware, TimingMiddleware
 
+        if CachingMiddleware is None:
+            msg = "CachingMiddleware is not available"
+            raise RuntimeError(msg)
         api = falcon.App(
             middleware=[
                 TimingMiddleware(),
-                # CachingMiddleware(),  # important that this is first  # noqa: ERA001
+                CachingMiddleware(),  # important that this is first
                 CompressionMiddleware(),
             ],
         )
