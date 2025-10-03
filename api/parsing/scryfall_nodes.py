@@ -9,6 +9,7 @@ from .db_info import (
     CARD_TYPES,
     COLOR_CODE_TO_NAME,
     COLOR_NAME_TO_CODE,
+    DATE_ATTRIBUTES,
     DB_NAME_TO_FIELD_TYPE,
     SEARCH_NAME_TO_DB_NAME,
     FieldType,
@@ -333,6 +334,10 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         if attr in ("mana_cost_text", "mana_cost_jsonb") and isinstance(self.rhs, ManaValueNode | StringValueNode):
             return self._handle_mana_cost_comparison(context)
 
+        # Special handling for date/year searches
+        if self.lhs.original_attribute in DATE_ATTRIBUTES:
+            return self._handle_date_search(context)
+
         lhs_sql = self.lhs.to_sql(context)
         field_type = get_field_type(attr)
 
@@ -494,6 +499,47 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
 
         msg = f"Unsupported mana cost operator: {self.operator}"
         raise ValueError(msg)
+
+    def _handle_date_search(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+        """Handle date and year search queries.
+
+        For 'date:' searches, compares against the full released_at date.
+        For 'year:' searches, extracts the year from released_at and compares.
+
+        Args:
+            context: SQL parameter context.
+
+        Returns:
+            SQL string for the date/year comparison.
+        """
+        original_attr = self.lhs.original_attribute
+        search_value = self.rhs.value if isinstance(self.rhs, StringValueNode | NumericValueNode) else str(self.rhs)
+
+        # Normalize : operator to =
+        operator = "=" if self.operator == ":" else self.operator
+
+        if original_attr == "year":
+            # For year searches, extract year from released_at and compare
+            # Handle both string years ("2025") and numeric years
+            year_str_length = 4
+            if (isinstance(search_value, str) and len(search_value) == year_str_length and search_value.isdigit()) or isinstance(search_value, int | float):
+                year_value = int(search_value)
+            # Try to extract year from date string (e.g., "2025-02-02")
+            elif "-" in str(search_value):
+                year_value = int(str(search_value).split("-")[0])
+            else:
+                msg = f"Invalid year value: {search_value}"
+                raise ValueError(msg)
+
+            pname = param_name(year_value)
+            context[pname] = year_value
+            return f"(EXTRACT(YEAR FROM card.released_at) {operator} %({pname})s)"
+
+        # For date searches, compare against the full date
+        # The value should be in YYYY-MM-DD format
+        pname = param_name(search_value)
+        context[pname] = search_value
+        return f"(card.released_at {operator} %({pname})s)"
 
     def _handle_text_field_pattern_matching(self: ScryfallBinaryOperatorNode, context: dict, lhs_sql: str) -> str:
         """Handle pattern matching for regular text fields."""
