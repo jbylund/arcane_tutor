@@ -129,7 +129,7 @@ dump_schema: # @doc dump database schema to file using container's pg_dump
 	docker exec scryfallpostgres $(shell find /usr/bin /opt/homebrew -name pg_dump) -U $(XPGUSER) -d $(XPGDATABASE) -s
 
 datadir:
-	mkdir -p data/api data/postgres /tmp/pgdata
+	mkdir -p data/api data/postgres data/postgres/logs /tmp/pgdata
 
 reset:
 	rm -rvf data
