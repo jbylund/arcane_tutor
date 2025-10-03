@@ -28,6 +28,8 @@ from pyparsing import (
 from .db_info import (
     COLOR_ATTRIBUTES,
     COLOR_NAME_TO_CODE,
+    DATE_ATTRIBUTES,
+    DEVOTION_ATTRIBUTES,
     KNOWN_CARD_ATTRIBUTES,
     LEGALITY_ATTRIBUTES,
     MANA_ATTRIBUTES,
@@ -360,6 +362,8 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
     legality_attr_word = create_attribute_parser(LEGALITY_ATTRIBUTES)
     color_attr_word = create_attribute_parser(COLOR_ATTRIBUTES)
     text_attr_word = create_attribute_parser(TEXT_ATTRIBUTES)
+    devotion_attr_word = create_attribute_parser(DEVOTION_ATTRIBUTES)
+    date_attr_word = create_attribute_parser(DATE_ATTRIBUTES)
 
     # Build the grammar with proper precedence
     expr = Forward()
@@ -395,6 +399,13 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
     rarity_condition = create_condition_parser(rarity_attr_word, quoted_string | string_value_word)
     legality_condition = create_condition_parser(legality_attr_word, quoted_string | string_value_word)
     text_condition = create_condition_parser(text_attr_word, quoted_string | string_value_word)
+    
+    # Devotion condition: devotion attribute with color and numeric value (devotion:w>=5, devotion:r>3, etc.)
+    # Format is devotion:color operator number
+    devotion_condition = create_condition_parser(devotion_attr_word, color_value)
+    
+    # Date condition: date/year attributes with string values for dates or numeric for years
+    date_condition = create_condition_parser(date_attr_word, quoted_string | string_value_word | literal_number)
 
     # Attribute-to-attribute comparisons should be between attributes of the same parser class
     attr_attr_condition = (
@@ -403,12 +414,14 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
         (rarity_attr_word + DEFAULT_OPERATORS + rarity_attr_word) |
         (legality_attr_word + DEFAULT_OPERATORS + legality_attr_word) |
         (color_attr_word + DEFAULT_OPERATORS + color_attr_word) |
-        (text_attr_word + DEFAULT_OPERATORS + text_attr_word)
+        (text_attr_word + DEFAULT_OPERATORS + text_attr_word) |
+        (devotion_attr_word + DEFAULT_OPERATORS + devotion_attr_word) |
+        (date_attr_word + DEFAULT_OPERATORS + date_attr_word)
     )
     attr_attr_condition.setParseAction(make_binary_operator_node)
 
     # Combine all conditions with clear precedence - no more special cases needed
-    condition = mana_condition | rarity_condition | legality_condition | color_condition | unified_numeric_comparison | text_condition | attr_attr_condition
+    condition = devotion_condition | date_condition | mana_condition | rarity_condition | legality_condition | color_condition | unified_numeric_comparison | text_condition | attr_attr_condition
 
     # Special rule for text attribute-colon-hyphenated-value to handle cases like "otag:dual-land" and "otag:40k-model"
     # Only text attributes should have hyphenated string values (not numeric, mana, rarity, or legality)

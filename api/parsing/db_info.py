@@ -21,6 +21,8 @@ class ParserClass(StrEnum):
     LEGALITY = "legality"   # Format/legal fields with JSON handling
     COLOR = "color"         # Color fields (card colors and color identity)
     TEXT = "text"           # Simple text fields (name, artist, oracle text)
+    DEVOTION = "devotion"   # Devotion fields with color-specific mana symbol counting
+    DATE = "date"           # Date fields for release date searching
 
 
 class FieldInfo:
@@ -76,6 +78,16 @@ DB_COLUMNS = [
     FieldInfo("card_layout", FieldType.TEXT, ["layout"], ParserClass.TEXT),
     FieldInfo("card_border", FieldType.TEXT, ["border"], ParserClass.TEXT),
     FieldInfo("card_watermark", FieldType.TEXT, ["watermark"], ParserClass.TEXT),
+    # Devotion attributes - one for each color, treated as numeric for comparisons
+    FieldInfo("mana_cost_jsonb", FieldType.NUMERIC, ["devotionw", "devotion:w"], ParserClass.DEVOTION),
+    FieldInfo("mana_cost_jsonb", FieldType.NUMERIC, ["devotionu", "devotion:u"], ParserClass.DEVOTION),
+    FieldInfo("mana_cost_jsonb", FieldType.NUMERIC, ["devotionb", "devotion:b"], ParserClass.DEVOTION),
+    FieldInfo("mana_cost_jsonb", FieldType.NUMERIC, ["devotionr", "devotion:r"], ParserClass.DEVOTION),
+    FieldInfo("mana_cost_jsonb", FieldType.NUMERIC, ["devotiong", "devotion:g"], ParserClass.DEVOTION),
+    FieldInfo("mana_cost_jsonb", FieldType.NUMERIC, ["devotionc", "devotion:c"], ParserClass.DEVOTION),
+    # Date attributes
+    FieldInfo("released_at", FieldType.TEXT, ["date"], ParserClass.DATE),
+    FieldInfo("released_at", FieldType.NUMERIC, ["year"], ParserClass.DATE),
 ]
 
 KNOWN_CARD_ATTRIBUTES = set()
@@ -90,6 +102,8 @@ RARITY_ATTRIBUTES = set()
 LEGALITY_ATTRIBUTES = set()
 COLOR_ATTRIBUTES = set()
 TEXT_ATTRIBUTES = set()
+DEVOTION_ATTRIBUTES = set()
+DATE_ATTRIBUTES = set()
 
 for col in DB_COLUMNS:
     KNOWN_CARD_ATTRIBUTES.add(col.db_column_name.lower())
@@ -121,6 +135,12 @@ for col in DB_COLUMNS:
     elif col.parser_class == ParserClass.TEXT:
         TEXT_ATTRIBUTES.add(col.db_column_name)
         TEXT_ATTRIBUTES.update(col.search_aliases)
+    elif col.parser_class == ParserClass.DEVOTION:
+        DEVOTION_ATTRIBUTES.add(col.db_column_name)
+        DEVOTION_ATTRIBUTES.update(col.search_aliases)
+    elif col.parser_class == ParserClass.DATE:
+        DATE_ATTRIBUTES.add(col.db_column_name)
+        DATE_ATTRIBUTES.update(col.search_aliases)
 
     for ialias in col.search_aliases:
         SEARCH_NAME_TO_DB_NAME[ialias.lower()] = col.db_column_name

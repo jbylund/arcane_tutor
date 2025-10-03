@@ -329,6 +329,18 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         if attr == "collector_number":
             return self._handle_collector_number(context)
 
+        # Special handling for devotion - count mana symbols of a specific color
+        if self.lhs.original_attribute.startswith("devotion"):
+            return self._handle_devotion(context)
+
+        # Special handling for year - extract year from released_at
+        if self.lhs.original_attribute == "year":
+            return self._handle_year(context)
+
+        # Special handling for date - use released_at field
+        if self.lhs.original_attribute == "date":
+            return self._handle_date(context)
+
         # Special handling for mana attributes with comparison operators
         if attr in ("mana_cost_text", "mana_cost_jsonb") and isinstance(self.rhs, ManaValueNode | StringValueNode):
             return self._handle_mana_cost_comparison(context)
@@ -423,6 +435,120 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         if self.operator == ":":
             self.operator = "="
         return super().to_sql(context)
+
+    def _handle_devotion(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+        """Handle devotion counting - counts mana symbols of a specific color.
+        
+        Devotion counts the number of mana symbols of a specific color in a card's mana cost.
+        For example, devotionw>=5 or devotion:w>=5 finds cards with 5 or more white mana symbols.
+        """
+        # Extract color from the original attribute name
+        # Could be "devotionw", "devotionu", "devotion:w", "devotion:u", etc.
+        original_attr = self.lhs.original_attribute
+        
+        # Extract color code from attribute name
+        if original_attr.startswith("devotion:"):
+            # Format: devotion:w, devotion:u, etc.
+            color_code = original_attr.split(":", 1)[1].strip().lower()
+        elif original_attr.startswith("devotion"):
+            # Format: devotionw, devotionu, etc.
+            color_code = original_attr.replace("devotion", "").strip().lower()
+        else:
+            msg = f"Invalid devotion attribute: {original_attr}"
+            raise ValueError(msg)
+        
+        # Validate color code
+        if color_code not in COLOR_CODE_TO_NAME:
+            msg = f"Invalid color for devotion: {color_code}"
+            raise ValueError(msg)
+        
+        # Convert to uppercase for SQL (jsonb keys are uppercase)
+        color_code_upper = color_code.upper()
+        
+        # Generate SQL to count the length of the array for this color in mana_cost_jsonb
+        # The mana_cost_jsonb structure is like: {"W": [1, 2], "U": [1]}
+        # We need to count elements in the array for the specified color
+        devotion_sql = f"COALESCE(jsonb_array_length(card.mana_cost_jsonb->'{color_code_upper}'), 0)"
+        
+        # Convert : operator to = for consistency
+        operator = self.operator
+        if operator == ":":
+            operator = "="
+        
+        # Get the numeric value to compare against
+        if isinstance(self.rhs, NumericValueNode):
+            rhs_val = self.rhs.value
+        elif isinstance(self.rhs, int):
+            rhs_val = self.rhs
+        else:
+            msg = f"Devotion comparison requires a numeric value, got {type(self.rhs)}: {self.rhs}"
+            raise ValueError(msg)
+        
+        # Return the comparison SQL
+        pname = param_name(rhs_val)
+        context[pname] = rhs_val
+        return f"({devotion_sql} {operator} %({pname})s)"
+
+    def _handle_year(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+        """Handle year extraction from released_at date field.
+        
+        Year searches extract the year from the released_at date column.
+        For example, year=2020 finds cards released in 2020.
+        """
+        # Extract year from released_at field
+        year_sql = "EXTRACT(YEAR FROM card.released_at)"
+        
+        # Convert : operator to = for consistency
+        operator = self.operator
+        if operator == ":":
+            operator = "="
+        
+        # Get the year value
+        if isinstance(self.rhs, NumericValueNode):
+            year_val = int(self.rhs.value)
+        elif isinstance(self.rhs, StringValueNode):
+            try:
+                year_val = int(self.rhs.value)
+            except ValueError as e:
+                msg = f"Year must be a numeric value, got: {self.rhs.value}"
+                raise ValueError(msg) from e
+        else:
+            msg = f"Year requires a numeric value, got {type(self.rhs)}"
+            raise ValueError(msg)
+        
+        # Return the comparison SQL
+        pname = param_name(year_val)
+        context[pname] = year_val
+        return f"({year_sql}::INTEGER {operator} %({pname})s)"
+
+    def _handle_date(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+        """Handle date comparison using released_at field.
+        
+        Date searches compare against the released_at date column.
+        For example, date>=2020-01-01 finds cards released on or after January 1, 2020.
+        """
+        # Use the released_at column directly
+        date_sql = "card.released_at"
+        
+        # Convert : operator to = for consistency
+        operator = self.operator
+        if operator == ":":
+            operator = "="
+        
+        # Get the date value
+        if isinstance(self.rhs, StringValueNode):
+            date_val = self.rhs.value
+        elif isinstance(self.rhs, NumericValueNode):
+            # Allow numeric values for year-only dates
+            date_val = str(int(self.rhs.value))
+        else:
+            msg = f"Date requires a string or numeric value, got {type(self.rhs)}"
+            raise ValueError(msg)
+        
+        # Return the comparison SQL
+        pname = param_name(date_val)
+        context[pname] = date_val
+        return f"({date_sql} {operator} %({pname})s)"
 
     def _handle_mana_cost_comparison(self: ScryfallBinaryOperatorNode, context: dict) -> str:
         """Handle mana cost comparisons with approximate matching."""
