@@ -38,9 +38,7 @@ XPGUSER=foouser
 	test \
 	test-integration \
 	test-unit \
-	up \
-	venv \
-	install-deps
+	up
 
 help: # @doc show this help and exit
 	@python ./scripts/show_makefile_help.py $(mkfile_path)
@@ -89,37 +87,8 @@ ensure_ruff: ensure_uv
 	python -m uv pip install ruff
 
 ensure_uv:
-	@which uv > /dev/null 2>&1 || python3 -m uv --version > /dev/null 2>&1 || python -m uv --version > /dev/null 2>&1 || \
+	@python -m uv --version > /dev/null || \
 	python -m pip install uv
-
-venv: # @doc create a virtual environment
-	@if [ ! -d .venv ]; then \
-		which uv > /dev/null 2>&1 || python3 -m uv --version > /dev/null 2>&1 || python -m uv --version > /dev/null 2>&1 || python -m pip install uv; \
-		echo "Creating virtual environment..."; \
-		if which uv > /dev/null 2>&1; then \
-			uv venv .venv; \
-		elif python3 -m uv --version > /dev/null 2>&1; then \
-			python3 -m uv venv .venv; \
-		else \
-			python -m uv venv .venv; \
-		fi; \
-		echo "Virtual environment created at .venv"; \
-		echo "To activate: source .venv/bin/activate"; \
-	else \
-		echo "Virtual environment already exists at .venv"; \
-	fi
-
-install-deps: venv # @doc install dependencies in virtual environment
-	@if [ -z "$$VIRTUAL_ENV" ]; then \
-		echo "Error: Virtual environment not activated"; \
-		echo "Please activate the virtual environment first:"; \
-		echo "  source .venv/bin/activate"; \
-		echo "Then run: make install-deps"; \
-		exit 1; \
-	fi
-	@echo "Installing dependencies in virtual environment..."
-	uv pip install -r requirements.txt -r test-requirements.txt
-	@echo "Dependencies installed successfully"
 
 lint: ruff_lint prettier_lint # @doc lint all python files
 	true
