@@ -108,6 +108,22 @@ def test_full_sql_translation(input_query: str, expected_sql: str, expected_para
             r"(card.card_colors <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s AND card.card_colors <> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
             {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
         ),
+        # devotion tests
+        (
+            "devotion:{G}",
+            r"(card.devotion @> %(p_dict_eydHJzogWzFdfQ)s)",
+            {"p_dict_eydHJzogWzFdfQ": {"G": [1]}},
+        ),
+        (
+            "devotion>={G}",
+            r"(card.devotion @> %(p_dict_eydHJzogWzFdfQ)s)",
+            {"p_dict_eydHJzogWzFdfQ": {"G": [1]}},
+        ),
+        (
+            "devotion>={G}{R}",
+            r"(card.devotion @> %(p_dict_eydSJzogWzFdLCAnRyc6IFsxXX0)s)",
+            {"p_dict_eydSJzogWzFdLCAnRyc6IFsxXX0": {"G": [1], "R": [1]}},
+        ),
     ],
 )
 def test_full_sql_translation_jsonb_colors(input_query: str, expected_sql: str, expected_parameters: dict) -> None:

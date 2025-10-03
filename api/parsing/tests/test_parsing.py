@@ -760,6 +760,49 @@ def test_mana_cost_dict_conversion() -> None:
     assert mana_cost_str_to_dict("{2/w}") == {"2/W": [1]}
 
 
+@pytest.mark.parametrize(
+    argnames=("test_input", "expected_ast"),
+    argvalues=[
+        ("devotion:{G}", BinaryOperatorNode(AttributeNode("devotion"), ":", parsing.ManaValueNode("{G}"))),
+        ("devotion={G}", BinaryOperatorNode(AttributeNode("devotion"), "=", parsing.ManaValueNode("{G}"))),
+        ("devotion>={G}", BinaryOperatorNode(AttributeNode("devotion"), ">=", parsing.ManaValueNode("{G}"))),
+        ("devotion>={G}{R}", BinaryOperatorNode(AttributeNode("devotion"), ">=", parsing.ManaValueNode("{G}{R}"))),
+        ("devotion<={W}{U}", BinaryOperatorNode(AttributeNode("devotion"), "<=", parsing.ManaValueNode("{W}{U}"))),
+        ("devotion>{B}", BinaryOperatorNode(AttributeNode("devotion"), ">", parsing.ManaValueNode("{B}"))),
+        ("devotion<{R}{G}{B}", BinaryOperatorNode(AttributeNode("devotion"), "<", parsing.ManaValueNode("{R}{G}{B}"))),
+    ],
+)
+def test_parse_devotion_searches(test_input: str, expected_ast: BinaryOperatorNode) -> None:
+    """Test parsing devotion searches with various operators."""
+    observed = parsing.parse_search_query(test_input)
+    assert observed.root == expected_ast
+
+
+def test_devotion_sql_generation() -> None:
+    """Test SQL generation for devotion comparisons."""
+    # Test basic equality (colon operator)
+    result1 = parsing.parse_scryfall_query("devotion:{G}")
+    context1 = {}
+    sql1 = result1.to_sql(context1)
+    assert "card.devotion" in sql1
+    assert "G" in str(context1.values())
+
+    # Test >= operator generates containment check
+    result2 = parsing.parse_scryfall_query("devotion>={G}")
+    context2 = {}
+    sql2 = result2.to_sql(context2)
+    assert "card.devotion" in sql2
+    assert ">=" in sql2 or "@>" in sql2
+
+    # Test >= operator with multiple colors
+    result3 = parsing.parse_scryfall_query("devotion>={G}{R}")
+    context3 = {}
+    sql3 = result3.to_sql(context3)
+    assert "card.devotion" in sql3
+    assert "G" in str(context3.values())
+    assert "R" in str(context3.values())
+
+
 def test_mana_cost_string_format_comparisons() -> None:
     """Test mana cost comparisons work with both {X} and X string formats."""
     # Test that both formats parse correctly and generate SQL
