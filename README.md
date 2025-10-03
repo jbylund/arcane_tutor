@@ -2,7 +2,7 @@
 
 ![Scryfall OS Web Interface](scryfallos-screenshot.png)
 
-_Scryfall OS web interface in dark mode showing cards with CMC less than 10, ordered by USD price descending_
+*Scryfall OS web interface in dark mode showing cards with CMC less than 10, ordered by USD price descending*
 
 ## Table of Contents
 
@@ -64,7 +64,6 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 1. **Low Impact Features** - regex based search
 
 **Recently Completed ✅:**
-
 - Format legality (`format:`, `legal:`, `banned:`) for competitive play support
 - Collector numbers (`number:`, `cn:`) and rarity search (`rarity:`, `r:`)
 - Pricing data (`usd:`, `eur:`, `tix:`) for market analysis
@@ -81,11 +80,11 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 
 Based on [comprehensive functionality analysis](docs/scryfall_functionality_analysis.md), here's the updated priority matrix:
 
-| **Complexity** | **Low Impact**                        | **Medium Impact**                                                                            | **High Impact**            |
-| -------------- | ------------------------------------- | -------------------------------------------------------------------------------------------- | -------------------------- |
-| **Low**        | **Cube Inclusion** (`cube:`)          | **Release Dates** (`year:`, `date:`)<br/>**Planeswalker Loyalty** (`loyalty:`)               |                            |
-| **Medium**     | **Commander Features** (`cmd:`)       | **Reprint Info** (`papersets:`) - [Scryfall Docs](https://scryfall.com/docs/syntax#reprints) | **Devotion** (`devotion:`) |
-| **High**       | **Regular Expressions** (`/pattern/`) |                                                                                              |                            |
+| **Complexity** | **Low Impact**                            | **Medium Impact**                                                                            | **High Impact**                                                                                   |
+| -------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------- |
+| **Low**        | **Cube Inclusion** (`cube:`)              | **Release Dates** (`year:`, `date:`)<br/>**Planeswalker Loyalty** (`loyalty:`)               |                              |
+| **Medium**     | **Commander Features** (`cmd:`)           | **Reprint Info** (`papersets:`) - [Scryfall Docs](https://scryfall.com/docs/syntax#reprints) | **Devotion** (`devotion:`)   |
+| **High**       | **Regular Expressions** (`/pattern/`)     |                                                                                              |                              |
 
 ### Implementation Status
 
@@ -116,7 +115,7 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 | **Arithmetic**         | `cmc+1<power`, `power-toughness=0` | Advanced mathematical expressions                    |
 | **Keywords**           | `keyword:`                         | JSONB object storage                                 |
 | **Mana Costs**         | `mana:`, `m:`                      | Both JSONB and text representations                  |
-| **Oracle Tags**        | `oracle_tags:`, `ot:`              | Standard Scryfall feature                            |
+| **Oracle Tags**        | `oracle_tags:`, `ot:`              | Standard Scryfall feature                           |
 
 ## Code Organization
 
@@ -240,37 +239,6 @@ npx prettier --write api/index.html        # Format frontend code
 - **Parser testing**: Use `api/parsing/tests/` for comprehensive query parser validation
 - **Database connection**: Use `make dbconn` to connect to local PostgreSQL instance
 - **API comparison**: Run `python scripts/scryfall_comparison_script.py` to compare against official Scryfall API
-
-### Database Observability
-
-Scryfall OS includes comprehensive PostgreSQL observability features for monitoring query performance:
-
-- **pg_stat_statements**: Tracks execution statistics for all SQL statements
-- **auto_explain**: Automatically logs query plans for slow queries (>30ms)
-- **Query logging**: Logs all queries taking longer than 15ms
-- **I/O timing**: Tracks I/O timing statistics for performance analysis
-- **Log files**: Accessible in `./data/postgres/logs/` after starting with `make up`
-
-#### Viewing Query Statistics
-
-```bash
-# Connect to database
-make dbconn
-
-# View slowest queries
-SELECT query, calls, total_exec_time, mean_exec_time
-FROM pg_stat_statements
-ORDER BY total_exec_time DESC
-LIMIT 10;
-
-# View most frequent queries
-SELECT query, calls, mean_exec_time
-FROM pg_stat_statements
-ORDER BY calls DESC
-LIMIT 10;
-```
-
-For detailed documentation, see [docs/changelog/2025-10-03-postgres-observability.md](docs/changelog/2025-10-03-postgres-observability.md)
 
 ## Card Tagging System
 
