@@ -9,10 +9,13 @@ Always reference these instructions first and fallback to search or bash command
 ### Prerequisites and Environment Setup
 - **Install uv** (recommended package manager):
   - `python -m pip install uv` -- takes ~3 seconds. Modern Python package manager.
-  - Alternative: `curl -LsSf https://astral.sh/uv/install.sh | sh` -- official installer.
-- **Install Python dependencies using uv**:
-  - `uv pip install --system -r requirements.txt -r test-requirements.txt` -- takes ~2-3 seconds.
-  - Legacy method: `python -m pip install -r requirements.txt -r test-requirements.txt` -- takes ~4-6 seconds.
+- **Create virtual environment** (required for Python 3.12+):
+  - `python -m uv venv .venv` -- takes ~1 second. Creates virtual environment at `.venv/`
+  - `source .venv/bin/activate` -- activates the virtual environment
+  - Alternative: Use `make venv` to create virtual environment
+- **Install Python dependencies using uv** (after activating virtual environment):
+  - `uv pip install -r requirements.txt -r test-requirements.txt` -- takes ~2-3 seconds.
+  - Alternative: Legacy method with pip (not recommended): `python -m pip install -r requirements.txt -r test-requirements.txt` -- takes ~4-6 seconds.
 
 ### Modular Dependency Structure
 - **requirements.txt**: Core application dependencies for testing and development
@@ -24,8 +27,8 @@ Always reference these instructions first and fallback to search or bash command
 - Install system dependencies:
   - `sudo apt-get update` -- takes ~7 seconds. NEVER CANCEL.
   - `sudo apt-get install -y libev-dev` -- takes ~5 seconds. NEVER CANCEL.
-- **Install web server dependencies**:
-  - `uv pip install --system -r webserver-requirements.txt` -- takes ~3 seconds. Includes bjoern compilation.
+- **Install web server dependencies** (in virtual environment):
+  - `uv pip install -r webserver-requirements.txt` -- takes ~3 seconds. Includes bjoern compilation.
   - Legacy method: `python -m pip install -r webserver-requirements.txt` -- takes ~5 seconds.
 
 ### Build and Test Workflow
@@ -58,13 +61,17 @@ Always reference these instructions first and fallback to search or bash command
 ### Quick Validation Workflow
 ```bash
 # Modern approach with uv (recommended)
-python -m pip install uv  # Install uv if not available
-uv pip install --system -r requirements.txt -r test-requirements.txt
+python -m pip install uv              # Install uv if not available
+python -m uv venv .venv               # Create virtual environment
+source .venv/bin/activate             # Activate virtual environment
+uv pip install -r requirements.txt -r test-requirements.txt
 python -m pytest -vvv
 python -c "from api.parsing import parse_scryfall_query; print(parse_scryfall_query('cmc=3'))"
 python -m ruff check
 
 # Legacy approach (fallback)
+python -m venv .venv                  # Create virtual environment
+source .venv/bin/activate             # Activate virtual environment
 python -m pip install -r requirements.txt -r test-requirements.txt
 python -m pytest -vvv
 python -c "from api.parsing import parse_scryfall_query; print(parse_scryfall_query('cmc=3'))"
@@ -72,7 +79,7 @@ python -m ruff check
 
 # Additional setup for web server testing (adds ~15 seconds)
 sudo apt-get update && sudo apt-get install -y libev-dev
-uv pip install --system -r webserver-requirements.txt  # Required for local API testing
+uv pip install -r webserver-requirements.txt  # Required for local API testing (in venv)
 ```
 
 ### Current Limitations
@@ -86,9 +93,13 @@ uv pip install --system -r webserver-requirements.txt  # Required for local API 
 ```bash
 # Install dependencies (run once) - modern approach with uv
 python -m pip install uv                   # Install uv package manager
-uv pip install --system -r requirements.txt -r test-requirements.txt
+make venv                                  # Create virtual environment (or: python -m uv venv .venv)
+source .venv/bin/activate                  # Activate virtual environment
+uv pip install -r requirements.txt -r test-requirements.txt
 
 # Legacy approach (fallback)
+python -m venv .venv                       # Create virtual environment
+source .venv/bin/activate                  # Activate virtual environment
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt -r test-requirements.txt
 
@@ -100,7 +111,7 @@ python api/entrypoint.py --help          # Test API entrypoint (shows help)
 
 # Additional setup for web server (optional)
 sudo apt-get update && sudo apt-get install -y libev-dev
-uv pip install --system -r webserver-requirements.txt  # Required for local API testing
+uv pip install -r webserver-requirements.txt  # Required for local API testing (in venv)
 
 # Docker workflow (works)
 make datadir                             # Create data directories (<1 second)
@@ -112,11 +123,12 @@ make up                                  # Start all services (may have permissi
 ```bash
 # These commands work but have caveats:
 make lint                               # Works but requires installing pylint first
-./.github/copilot-setup.sh             # Automated setup script (has permission issues with system packages)
+./.github/copilot-setup.sh             # Automated setup script (creates virtual environment, needs activation after)
 ```
 
 ### Timing Expectations - NEVER CANCEL
 - **System package installation**: 5-7 seconds per package. NEVER CANCEL.
+- **Virtual environment creation**: ~1 second. NEVER CANCEL.
 - **Python dependency installation**: 
   - With uv: 2-3 seconds for standard packages. NEVER CANCEL.
   - With pip: 4-6 seconds for standard packages. NEVER CANCEL.

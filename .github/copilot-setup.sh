@@ -13,17 +13,21 @@ sudo apt-get install -y libev-dev
 
 # Install uv for faster package management
 echo "Installing uv..."
-# Try the official installer first, fallback to pip if needed
-if curl -LsSf https://astral.sh/uv/install.sh | sh; then
-    source $HOME/.cargo/env
-else
-    echo "Installing uv via pip as fallback..."
-    python -m pip install --upgrade pip
-    python -m pip install uv
-fi
+python -m pip install --upgrade pip
+python -m pip install uv
 
-# Install Python dependencies
+# Create virtual environment
+echo "Creating virtual environment..."
+python -m uv venv .venv
+
+# Activate virtual environment
+echo "Activating virtual environment..."
+source .venv/bin/activate
+
+# Install Python dependencies in virtual environment
 echo "Installing Python dependencies..."
-uv pip install --system --break-system-packages -r requirements.txt -r test-requirements.txt
+uv pip install -r requirements.txt -r test-requirements.txt
 
 echo "Setup complete! Environment ready for Scryfall OS development."
+echo "Virtual environment created at .venv"
+echo "To activate the virtual environment, run: source .venv/bin/activate"
