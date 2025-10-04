@@ -330,8 +330,8 @@
           Use the sliders below to modify scoring weights and see the rankings update in real-time.
         </p>
         <p>
-          <strong>Note:</strong> Artwork popularity scores use estimated printing counts since we fetch cards individually.
-          The actual database implementation calculates exact counts across all printings by illustration_id.
+          <strong>Artwork scoring:</strong> Counts how many printings share the same illustration_id within the fetched results,
+          then applies the formula: <code>multiplier * ln(count) / ln(40)</code> where multiplier is adjustable via slider.
         </p>
       </div>
 
@@ -406,10 +406,10 @@
           </div>
           <div class="control-group">
             <label>
-              <span>Artwork Cap:</span>
-              <span class="control-value" id="artwork-cap-val">40</span>
+              <span>Artwork Multiplier:</span>
+              <span class="control-value" id="artwork-cap-val">100</span>
             </label>
-            <input type="range" id="artwork-cap" min="10" max="100" value="40" oninput="updateScoring()" />
+            <input type="range" id="artwork-cap" min="0" max="200" value="100" oninput="updateScoring()" />
           </div>
         </div>
       </div>
@@ -485,15 +485,24 @@
             return;
           }
 
+          // Count illustration_id occurrences across all cards
+          const illustrationCounts = {};
+          data.data.forEach(card => {
+            if (card.illustration_id) {
+              illustrationCounts[card.illustration_id] = (illustrationCounts[card.illustration_id] || 0) + 1;
+            }
+          });
+
           // Store raw data for this card - Scryfall provides all needed fields
           cardData[cardName] = data.data.map(card => {
             // Extract frame effects to check for extended art
             const frameEffects = card.frame_effects || [];
             const hasExtendedArt = frameEffects.includes('extendedart');
             
-            // Count printings by illustration_id (we'll use a placeholder for now)
-            // In a real implementation, we'd need to count across all cards
-            const printings = 20; // Placeholder - would need full dataset to calculate
+            // Get the count of printings with this illustration_id
+            const printingsWithIllustration = card.illustration_id 
+              ? illustrationCounts[card.illustration_id] 
+              : 1;
             
             return {
               name: card.name,
@@ -505,7 +514,7 @@
               rarity: card.rarity,
               illustration_id: card.illustration_id,
               image_uris: card.image_uris,
-              printings: printings,
+              printings: printingsWithIllustration,
               extendedArt: hasExtendedArt,
               collector_number: card.collector_number,
               released_at: card.released_at
@@ -645,8 +654,9 @@
         }
 
         // Artwork score (logarithmic)
+        // Formula: illustration_frequency_multiplier * ln(num_printings) / ln(40)
         if (card.printings > 1) {
-          const artworkScore = Math.min(100, (Math.log(card.printings) / Math.log(params.artworkCap)) * 100);
+          const artworkScore = params.artworkCap * (Math.log(card.printings) / Math.log(40));
           breakdown.artwork = Math.round(artworkScore);
           score += artworkScore;
         } else {
@@ -725,7 +735,7 @@
         document.getElementById('rarity-rare').value = 8;
         document.getElementById('rarity-mythic').value = 1;
         document.getElementById('extended-art').value = 100;
-        document.getElementById('artwork-cap').value = 40;
+        document.getElementById('artwork-cap').value = 100;
         updateScoring();
       }
     </script>
