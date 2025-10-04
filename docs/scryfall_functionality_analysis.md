@@ -62,6 +62,9 @@ Based on the codebase analysis and successful API comparisons:
     - `date:` - Specific release date filtering with all comparison operators
     - `year:` - Release year filtering with optimized date range queries
 
+1. **Advanced Search Patterns** ✅ Recently Implemented
+   - `regex:` or `re:` - Regular expression pattern matching on oracle text using `/pattern/` syntax
+
 1. **Operators**
    - Comparison: `=`, `<`, `>`, `<=`, `>=`, `!=`, `<>`
    - Logic: `AND`, `OR`, `NOT`, `-` (negation)
@@ -191,9 +194,6 @@ Recent comprehensive testing (21 queries) shows the following performance charac
 
 ### Low Priority Development
 
-1. **Advanced Search Patterns**
-   - Regular expression support (`/pattern/`)
-
 1. **Specialized Game Properties**
    - Booster pack availability tracking
    - Spotlight and featured card properties
@@ -213,7 +213,7 @@ Recent comprehensive testing (21 queries) shows the following performance charac
    - Performance benchmarking and response time monitoring in place
 
 1. **Implementation Validation** ✅
-   - 339 total tests including 209 comprehensive parser tests
+   - 471 total tests including comprehensive parser tests
    - Current API success rate: 100% for all supported features
    - Excellent data quality with regular comparison against official Scryfall API
 

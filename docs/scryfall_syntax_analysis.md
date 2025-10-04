@@ -74,8 +74,8 @@ Based on the official Scryfall syntax documentation and analysis of the existing
 - **Parentheses**: `()` for grouping
 - **Quotes**: `"text"` for exact phrases
 
-### 12. Special Syntax
-- **Regular expressions**: `/pattern/`
+### 12. Special Syntax ✅ Implemented
+- **regex:** or **re:** - Regular expression pattern matching on oracle text using `/pattern/` syntax
 
 ### 13. Oracle Tags
 - **ot:** or **oracle_tags:** - Oracle tags
@@ -83,7 +83,7 @@ Based on the official Scryfall syntax documentation and analysis of the existing
 ## Analysis Notes
 
 This list represents the full scope of official Scryfall search functionality.
-The current Scryfall OS implementation supports most of these features, with watermark search recently added to the supported feature set.
+The current Scryfall OS implementation supports most of these features, with watermark search and regex pattern matching recently added to the supported feature set.
 
 ### Scryfall OS Extensions
 
