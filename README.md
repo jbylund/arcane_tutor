@@ -21,7 +21,6 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 
 ### Scryfall OS vs Official Scryfall
 
-<div style="overflow-x: auto;">
 
 | Feature                    | Syntax                                        | Scryfall | Scryfall OS | Description                                                                 |
 |----------------------------|-----------------------------------------------|----------|-------------|-----------------------------------------------------------------------------|
@@ -53,13 +52,6 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 | **Regular Expressions**    | `/pattern/`                                   | ✔        | ✘           | Pattern matching with regex syntax                                          |
 | **Arithmetic Expressions** | `cmc+1<power`, `power-toughness=0`            | ✘        | ✔           | Advanced mathematical expressions                                           |
 
-</div>
-
-<style>
-table tr:nth-child(27) { background-color: #f8d7da; } /* Collection Features - red (✔✘) */
-table tr:nth-child(28) { background-color: #f8d7da; } /* Regular Expressions - red (✔✘) */
-table tr:nth-child(29) { background-color: #d1ecf1; } /* Arithmetic Expressions - blue (✘✔) */
-</style>
 
 ### Scryfall OS Unique Features
 
