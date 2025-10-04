@@ -70,7 +70,7 @@ DB_COLUMNS = [
     FieldInfo("produced_mana", FieldType.JSONB_OBJECT, ["produces"], ParserClass.COLOR),
     FieldInfo("raw_card_blob", FieldType.JSONB_OBJECT, [], ParserClass.TEXT),
     FieldInfo("oracle_text", FieldType.TEXT, ["oracle", "o"], ParserClass.TEXT),
-    FieldInfo("flavor_text", FieldType.TEXT, ["flavor"], ParserClass.TEXT),
+    FieldInfo("flavor_text", FieldType.TEXT, ["flavor", "ft"], ParserClass.TEXT),
     FieldInfo("card_oracle_tags", FieldType.JSONB_OBJECT, ["oracle_tags", "otag"], ParserClass.TEXT),
     FieldInfo("card_is_tags", FieldType.JSONB_OBJECT, ["is"], ParserClass.TEXT),
     FieldInfo("card_rarity_int", FieldType.NUMERIC, ["rarity", "r"], ParserClass.RARITY),
