@@ -941,7 +941,7 @@ class APIResource:
             PreferOrder.USD_LOW: ("price_usd", "ASC"),
             PreferOrder.USD_HIGH: ("price_usd", "DESC"),
             PreferOrder.PROMO: ("edhrec_rank", "ASC"),  # Use edhrec_rank as fallback for promo
-            PreferOrder.DEFAULT: ("edhrec_rank", "ASC"),
+            PreferOrder.DEFAULT: ("prefer_score", "DESC"),
         }
         prefer_column, prefer_direction = prefer_mapping.get(
             PreferOrder(str(prefer).replace("-", "_")),
