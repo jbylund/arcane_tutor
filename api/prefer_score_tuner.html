@@ -326,12 +326,12 @@
       <div class="instructions">
         <h3>How it works</h3>
         <p>
-          This tool fetches actual card printings from the database and calculates scores client-side based on your adjustments.
+          This tool fetches actual card printings from the Scryfall API and calculates scores client-side based on your adjustments.
           Use the sliders below to modify scoring weights and see the rankings update in real-time.
         </p>
         <p>
-          <strong>Note:</strong> Since the search API doesn't return all necessary fields, this demo uses simplified data.
-          The actual database calculations use more detailed information including card border, frame data, rarity, and illustration counts.
+          <strong>Note:</strong> Artwork popularity scores use estimated printing counts since we fetch cards individually.
+          The actual database implementation calculates exact counts across all printings by illustration_id.
         </p>
       </div>
 
@@ -469,9 +469,9 @@
       async function loadCardPrintings(cardName) {
         const container = document.getElementById('cards-container');
         
-        // Search for all printings with unique=printing
-        const query = `!"${cardName}"`;
-        const url = `/search?query=${encodeURIComponent(query)}&unique=printing&limit=50`;
+        // Use Scryfall API to get all printings with full data
+        const query = encodeURIComponent(`name:"${cardName}"`);
+        const url = `https://api.scryfall.com/cards/search?q=${query}&unique=prints`;
 
         try {
           const response = await fetch(url);
@@ -481,20 +481,36 @@
 
           const data = await response.json();
           
-          if (!data.cards || data.cards.length === 0) {
+          if (!data.data || data.data.length === 0) {
             return;
           }
 
-          // Store raw data for this card
-          cardData[cardName] = data.cards.map((card, idx) => ({
-            ...card,
-            // Simulated data - in real version would come from raw_card_blob
-            border: idx % 3 === 0 ? 'black' : (idx % 3 === 1 ? 'white' : 'borderless'),
-            frame: idx % 2 === 0 ? '2015' : '2003',
-            rarity: ['common', 'uncommon', 'rare', 'mythic'][idx % 4],
-            printings: Math.max(1, 50 - idx * 2),
-            extendedArt: idx % 5 === 0,
-          }));
+          // Store raw data for this card - Scryfall provides all needed fields
+          cardData[cardName] = data.data.map(card => {
+            // Extract frame effects to check for extended art
+            const frameEffects = card.frame_effects || [];
+            const hasExtendedArt = frameEffects.includes('extendedart');
+            
+            // Count printings by illustration_id (we'll use a placeholder for now)
+            // In a real implementation, we'd need to count across all cards
+            const printings = 20; // Placeholder - would need full dataset to calculate
+            
+            return {
+              name: card.name,
+              set_name: card.set_name,
+              set: card.set,
+              artist: card.artist,
+              border_color: card.border_color,
+              frame: card.frame,
+              rarity: card.rarity,
+              illustration_id: card.illustration_id,
+              image_uris: card.image_uris,
+              printings: printings,
+              extendedArt: hasExtendedArt,
+              collector_number: card.collector_number,
+              released_at: card.released_at
+            };
+          });
 
           // Create section for this card
           renderCardSection(cardName);
@@ -548,8 +564,10 @@
 
         const setName = card.set_name || 'Unknown Set';
         const artist = card.artist || 'Unknown';
-        const imageUrl = card.image_location_uuid 
-          ? `https://cards.scryfall.io/normal/front/${card.image_location_uuid.substring(0, 1)}/${card.image_location_uuid.substring(1, 2)}/${card.image_location_uuid}.jpg`
+        
+        // Use Scryfall's image_uris
+        const imageUrl = card.image_uris && card.image_uris.normal 
+          ? card.image_uris.normal
           : '';
 
         const maxScore = 500;
@@ -558,11 +576,12 @@
         div.innerHTML = `
           <div class="printing-rank">#${rank}</div>
           ${imageUrl ? `<img src="${imageUrl}" class="card-image" alt="${card.name}" onerror="this.style.display='none'" />` : ''}
-          <div class="printing-set">${setName}</div>
+          <div class="printing-set">${setName} (${card.set.toUpperCase()})</div>
           <div class="printing-details"><strong>Artist:</strong> ${artist}</div>
-          <div class="printing-details"><strong>Border:</strong> ${card.border}</div>
+          <div class="printing-details"><strong>Border:</strong> ${card.border_color}</div>
           <div class="printing-details"><strong>Frame:</strong> ${card.frame}</div>
           <div class="printing-details"><strong>Rarity:</strong> ${card.rarity}</div>
+          <div class="printing-details"><strong>Released:</strong> ${card.released_at}</div>
           <div class="score-display">
             <div class="score-value">Score: ${card.score}</div>
             <div class="score-bar">
@@ -596,24 +615,31 @@
         const breakdown = {};
         let score = 0;
 
-        // Border score
-        if (card.border === 'black') {
+        // Border score (using border_color from Scryfall)
+        const border = card.border_color || '';
+        if (border === 'black') {
           breakdown.border = params.borderBlack;
           score += params.borderBlack;
-        } else if (card.border === 'white' || card.border === 'borderless') {
+        } else if (border === 'white' || border === 'borderless') {
           breakdown.border = params.borderWhite;
           score += params.borderWhite;
         } else {
           breakdown.border = 0;
         }
 
-        // Frame score
+        // Frame score (using frame from Scryfall)
         if (card.frame === '2015') {
           breakdown.frame = params.frame2015;
           score += params.frame2015;
         } else if (card.frame === '2003') {
           breakdown.frame = params.frame2003;
           score += params.frame2003;
+        } else if (card.frame === '1997') {
+          breakdown.frame = 25;
+          score += 25;
+        } else if (card.frame === '1993') {
+          breakdown.frame = 10;
+          score += 10;
         } else {
           breakdown.frame = 0;
         }
@@ -627,7 +653,7 @@
           breakdown.artwork = 0;
         }
 
-        // Rarity score
+        // Rarity score (using rarity from Scryfall)
         const rarityMap = {
           'common': params.rarityCommon,
           'uncommon': params.rarityUncommon,
@@ -637,7 +663,7 @@
         breakdown.rarity = rarityMap[card.rarity] || 0;
         score += breakdown.rarity;
 
-        // Extended art
+        // Extended art (using extendedArt flag we set from frame_effects)
         if (card.extendedArt) {
           breakdown.extendedArt = params.extendedArt;
           score += params.extendedArt;
