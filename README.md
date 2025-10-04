@@ -41,7 +41,7 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 
 ### Scryfall Unique Features (Not Yet Implemented)
 
-- **Collection features** - `cube:`, `commander:`, `papersets:`
+- **Collection features** - `cube:`, `papersets:`
 - **Regular expressions** - `/pattern/` syntax
 
 ### Core Components
@@ -82,7 +82,7 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 | **Complexity** | **Low Impact**                            | **Medium Impact**                                                                            | **High Impact**                                                                                   |
 | -------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------- |
 | **Low**        | **Cube Inclusion** (`cube:`)              |                                                                                              |                              |
-| **Medium**     | **Commander Features** (`cmd:`)           | **Reprint Info** (`papersets:`) - [Scryfall Docs](https://scryfall.com/docs/syntax#reprints) |                              |
+| **Medium**     |         | **Reprint Info** (`papersets:`) - [Scryfall Docs](https://scryfall.com/docs/syntax#reprints) |                              |
 | **High**       | **Regular Expressions** (`/pattern/`)     |                                                                                              |                              |
 
 ### Implementation Status
