@@ -50,17 +50,14 @@ BEGIN
         FROM magic.cards
         WHERE illustration_id = p_illustration_id;
         
-        -- Scale: 40+ printings = 100 points, 10 printings = 50 points, 3 printings = 25 points
-        -- Using logarithmic-like scaling for better distribution
-        v_artwork_score := CASE
-            WHEN v_illustration_count >= 40 THEN 100
-            WHEN v_illustration_count >= 20 THEN 75
-            WHEN v_illustration_count >= 10 THEN 50
-            WHEN v_illustration_count >= 5 THEN 35
-            WHEN v_illustration_count >= 3 THEN 25
-            WHEN v_illustration_count >= 2 THEN 15
-            ELSE 5
-        END;
+        -- Scale using logarithmic function: min(100, log(count) / log(40) * 100)
+        -- 40+ printings = 100 points, logarithmic scaling for better distribution
+        -- Handle count = 0 or 1 cases (ln(1) = 0)
+        IF v_illustration_count > 1 THEN
+            v_artwork_score := LEAST(100, (LN(v_illustration_count) / LN(40)) * 100);
+        ELSE
+            v_artwork_score := 0;
+        END IF;
     END IF;
 
     -- Rarity scoring: prefer lower rarity (common is most preferred)
@@ -68,9 +65,9 @@ BEGIN
     -- Common (~11 per pack), Uncommon (~3 per pack), Rare (~1 per pack), Mythic (~1/8 per pack)
     v_rarity_score := CASE p_card_rarity_int
         WHEN 0 THEN 100  -- common (most preferred)
-        WHEN 1 THEN 25   -- uncommon
-        WHEN 2 THEN 10   -- rare
-        WHEN 3 THEN 5    -- mythic (least preferred)
+        WHEN 1 THEN 27   -- uncommon
+        WHEN 2 THEN 8    -- rare
+        WHEN 3 THEN 1    -- mythic (least preferred)
         WHEN 4 THEN 0    -- special
         WHEN 5 THEN 0    -- bonus
         ELSE 0

@@ -1,5 +1,6 @@
 """Test cases for prefer score calculation function."""
 
+import math
 import unittest
 
 
@@ -61,46 +62,49 @@ class TestPreferScoreCalculation(unittest.TestCase):
 
         Rarity scoring should prefer lower rarity (common is most preferred):
         - common (0): 100 points
-        - uncommon (1): 25 points
-        - rare (2): 10 points
-        - mythic (3): 5 points
+        - uncommon (1): 27 points
+        - rare (2): 8 points
+        - mythic (3): 1 point
         - special (4): 0 points
         - bonus (5): 0 points
         """
         expected_rarity_scores = {
             0: 100,  # common
-            1: 25,   # uncommon
-            2: 10,   # rare
-            3: 5,    # mythic
+            1: 27,   # uncommon
+            2: 8,    # rare
+            3: 1,    # mythic
             4: 0,    # special
             5: 0,    # bonus
         }
         assert expected_rarity_scores[0] == 100  # common most preferred
-        assert expected_rarity_scores[3] == 5    # mythic least preferred
+        assert expected_rarity_scores[3] == 1    # mythic least preferred
 
     def test_artwork_popularity_scoring_logic(self) -> None:
         """Test that artwork popularity scoring logic is correctly defined.
 
-        Artwork scoring based on printing count:
-        - 40+ printings: 100 points
-        - 20+ printings: 75 points
-        - 10+ printings: 50 points
-        - 5+ printings: 35 points
-        - 3+ printings: 25 points
-        - 2+ printings: 15 points
-        - 1 printing: 5 points
+        Artwork scoring uses logarithmic scaling: min(100, ln(count) / ln(40) * 100)
+        - 40+ printings: 100 points (capped at 100)
+        - Logarithmic scaling for better distribution
+        - Single printing gets lowest score
+
+        Example values:
+        - 40 printings: 100 points
+        - 10 printings: ~62 points
+        - 3 printings: ~30 points
+        - 1 printing: 0 points
         """
-        expected_artwork_scores = {
-            40: 100,
-            20: 75,
-            10: 50,
-            5: 35,
-            3: 25,
-            2: 15,
-            1: 5,
-        }
-        assert expected_artwork_scores[40] == 100
-        assert expected_artwork_scores[10] == 50
+        # Test the logarithmic formula
+        def calc_artwork_score(count: int) -> float:
+            return min(100, (math.log(count) / math.log(40)) * 100)
+
+        # 40+ printings should be capped at 100
+        assert calc_artwork_score(40) == 100
+        assert calc_artwork_score(50) == 100
+
+        # Verify logarithmic scaling
+        assert calc_artwork_score(10) < 100
+        assert calc_artwork_score(10) > calc_artwork_score(3)
+        assert calc_artwork_score(3) > calc_artwork_score(1)
 
     def test_extended_art_scoring_logic(self) -> None:
         """Test that extended art scoring logic is correctly defined.
@@ -139,18 +143,20 @@ class TestPreferScoreCalculation(unittest.TestCase):
         Minimum score would be:
         - Border (silver/gold): 0
         - Frame (other): 0
-        - Artwork (1 printing): 5
-        - Rarity (mythic/special/bonus): 0-5
+        - Artwork (1 printing): 0 (ln(1) = 0)
+        - Rarity (special/bonus): 0
         - Extended art: 0
-        Total: 5-10 points minimum
+        Total: 0 points minimum
+
+        Note: Mythic rarity gets 1 point, so mythic cards have minimum of 1 point
         """
         min_border = 0
         min_frame = 0
-        min_artwork = 5  # Even single printings get 5 points
-        min_rarity = 0  # special/bonus get 0, mythic gets 5
+        min_artwork = 0  # Single printing: ln(1) = 0
+        min_rarity = 0  # special/bonus get 0, mythic gets 1
         min_extended_art = 0
         min_total = min_border + min_frame + min_artwork + min_rarity + min_extended_art
-        assert min_total == 5
+        assert min_total == 0
 
 
 class TestPreferScoreIntegration(unittest.TestCase):

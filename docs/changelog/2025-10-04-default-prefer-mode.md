@@ -32,21 +32,19 @@ A new `prefer_score` column was added to the `magic.cards` table, calculated bas
    - 1993 frame: 10 points (original frame)
    - Other frames: 0 points
 
-3. **Artwork Popularity** (5-100 points)
+3. **Artwork Popularity** (0-100 points)
    - Based on number of printings with the same `illustration_id`
-   - 40+ printings: 100 points (iconic artwork)
-   - 20+ printings: 75 points
-   - 10+ printings: 50 points
-   - 5+ printings: 35 points
-   - 3+ printings: 25 points
-   - 2+ printings: 15 points
-   - 1 printing: 5 points (minimum for unique artwork)
+   - Uses logarithmic scaling: `min(100, ln(count) / ln(40) * 100)`
+   - 40+ printings: 100 points (capped at 100)
+   - 10 printings: ~62 points
+   - 3 printings: ~30 points
+   - 1 printing: 0 points (ln(1) = 0)
 
 4. **Rarity** (0-100 points)
    - Common: 100 points (most preferred - most accessible)
-   - Uncommon: 25 points
-   - Rare: 10 points
-   - Mythic: 5 points (least preferred among regular rarities)
+   - Uncommon: 27 points
+   - Rare: 8 points
+   - Mythic: 1 point (least preferred among regular rarities)
    - Special: 0 points
    - Bonus: 0 points
 
@@ -61,8 +59,9 @@ A new `prefer_score` column was added to the `magic.cards` table, calculated bas
 - **Maximum possible score**: 500 points
   - Black border (100) + 2015 frame (100) + 40+ printings (100) + Common (100) + Extended art (100)
   
-- **Minimum possible score**: 5 points
-  - Silver/gold border (0) + Other frame (0) + 1 printing (5) + Special/bonus rarity (0) + No extended art (0)
+- **Minimum possible score**: 0 points
+  - Silver/gold border (0) + Other frame (0) + 1 printing (0) + Special/bonus rarity (0) + No extended art (0)
+  - Note: Mythic cards get at least 1 point from rarity
 
 ## Database Changes
 
