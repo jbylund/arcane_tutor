@@ -5,6 +5,8 @@
 -- Add prefer_score column
 ALTER TABLE magic.cards ADD COLUMN IF NOT EXISTS prefer_score_components jsonb;
 
+ALTER TABLE magic.cards ADD COLUMN IF NOT EXISTS prefer_score real;
+
 UPDATE magic.cards update_target_cards
 SET prefer_score_components = JSONB_BUILD_OBJECT(
     'illustration_count', (
@@ -61,9 +63,6 @@ SET prefer_score_components = JSONB_BUILD_OBJECT(
     )
 );
 
-
-
-ALTER TABLE magic.cards ADD COLUMN IF NOT EXISTS prefer_score real;
 
 -- Update prefer_score to be the sum of all component values
 UPDATE magic.cards 

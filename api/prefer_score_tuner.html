@@ -283,7 +283,7 @@
         const container = document.getElementById('cards-container');
         
         // Search for all printings of this card with unique=printing and prefer=default
-        const query = `!"${cardName}"`;
+        const query = `name:"${cardName}"`;
         const url = `/search?query=${encodeURIComponent(query)}&unique=printing&prefer=default&limit=100`;
 
         try {
