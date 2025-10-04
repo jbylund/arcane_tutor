@@ -75,18 +75,19 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 
 ### Recommended Development Priorities
 
-1. **Low Impact Features** - regex based search
+1. Pull in tagging and `is` tags
+1. **Low Impact Features** - cube, reprint info
 
 
 ### Missing Functionality - Complexity vs Impact Grid
 
 Based on [comprehensive functionality analysis](docs/scryfall_functionality_analysis.md), here's the updated priority matrix:
 
-| **Complexity** | **Low Impact**                            | **Medium Impact**                                                                            | **High Impact**                                                                                   |
-| -------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------- |
-| **Low**        | **Cube Inclusion** (`cube:`)              |                                                                                              |                              |
-| **Medium**     |         | **Reprint Info** (`papersets:`) - [Scryfall Docs](https://scryfall.com/docs/syntax#reprints) |                              |
-| **High**       | **Regular Expressions** (`/pattern/`)     |                                                                                              |                              |
+| **Complexity** | **Low Impact**                | **Medium Impact**                                                                            | **High Impact** |
+| -------------- | ------------------------------|----------------------------------------------------------------------------------------------| ----------------|
+| **Low**        | **Cube Inclusion** (`cube:`)  |                                                                                              |                 |
+| **Medium**     |                               | **Reprint Info** (`papersets:`) - [Scryfall Docs](https://scryfall.com/docs/syntax#reprints) |                 |
+| **High**       |                               |                                                                                              |                 |
 
 ### Implementation Status
 
