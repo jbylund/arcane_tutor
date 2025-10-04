@@ -1,6 +1,10 @@
 """Fixtures for the test suite."""
 from __future__ import annotations
 
+if True:
+    import warnings
+    warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 import logging
 import os
 import random
