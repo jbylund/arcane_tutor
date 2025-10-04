@@ -25,6 +25,7 @@ from .nodes import (
     OrNode,
     Query,
     QueryNode,
+    RegexValueNode,
     StringValueNode,
     param_name,
 )
@@ -613,6 +614,15 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
 
     def _handle_text_field_pattern_matching(self: ScryfallBinaryOperatorNode, context: dict, lhs_sql: str) -> str:
         """Handle pattern matching for regular text fields."""
+        # Check if RHS is a regex pattern
+        if isinstance(self.rhs, RegexValueNode):
+            regex_pattern = self.rhs.value
+            _param_name = param_name(regex_pattern)
+            context[_param_name] = regex_pattern
+            # Use PostgreSQL ~* operator for case-insensitive regex matching
+            return f"({lhs_sql} ~* %({_param_name})s)"
+
+        # Regular text pattern matching with ILIKE
         if isinstance(self.rhs, StringValueNode | ManaValueNode):
             txt_val = self.rhs.value.strip()
         elif isinstance(self.rhs, str):

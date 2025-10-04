@@ -99,6 +99,20 @@ class ManaValueNode(ValueNode):
         return f"%({_param_name})s"
 
 
+class RegexValueNode(ValueNode):
+    r"""Represents a regex pattern value node, such as /^{T}:/ or /\spp/."""
+
+    def __init__(self: RegexValueNode, value: str) -> None:
+        """Initialize a RegexValueNode with a regex pattern string."""
+        self.value = value
+
+    def to_sql(self: RegexValueNode, context: dict) -> str:
+        """Serialize this regex value node to a SQL string literal."""
+        _param_name = param_name(self.value)
+        context[_param_name] = self.value
+        return f"%({_param_name})s"
+
+
 class AttributeNode(LeafNode):
     """Represents an attribute of a card, such as 'cmc' or 'power'."""
 

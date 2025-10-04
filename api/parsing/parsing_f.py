@@ -47,6 +47,7 @@ from .nodes import (
     OrNode,
     Query,
     QueryNode,
+    RegexValueNode,
     StringValueNode,
 )
 from .scryfall_nodes import to_scryfall_ast
@@ -159,6 +160,8 @@ def create_value_node(value: object) -> QueryNode:
         return StringValueNode(value)
     if isinstance(value, tuple) and value[0] == "quoted":
         return StringValueNode(value[1])
+    if isinstance(value, tuple) and value[0] == "regex":
+        return RegexValueNode(value[1])
     return value  # Fallback for other types
 
 
@@ -244,6 +247,24 @@ def create_basic_parsers() -> dict[str, ParserElement]:
 
     quoted_string = (QuotedString('"', escChar="\\") | QuotedString("'", escChar="\\")).setParseAction(make_quoted_string)
 
+    # Regex pattern parser - matches /pattern/ with escaped forward slashes
+    def make_regex_pattern_value(tokens: list[str]) -> tuple[str, str]:
+        r"""Mark regex patterns so they're treated as regex values.
+
+        Note: We preserve backslashes in the pattern because they're significant in regex.
+        We only convert escaped forward slashes \/ back to /.
+        """
+        # With unquoteResults=False, the string includes the delimiters, so strip them
+        # Then convert escaped forward slashes \/ back to /
+        pattern = tokens[0][1:-1]  # Strip leading and trailing /
+        pattern = pattern.replace("\\/", "/")
+        return ("regex", pattern)
+
+    # Use QuotedString with forward slash delimiter
+    # unquoteResults=False keeps the original string with backslashes intact
+    # convertWhitespaceEscapes=False prevents \n, \t, \b, etc. from being interpreted
+    regex_pattern = QuotedString("/", escChar="\\", unquoteResults=False, convertWhitespaceEscapes=False).setParseAction(make_regex_pattern_value)
+
     # Word that doesn't match keywords
     def make_word(tokens: list[str]) -> str:
         """Reject reserved keywords as words."""
@@ -276,6 +297,7 @@ def create_basic_parsers() -> dict[str, ParserElement]:
         "operator_or": operator_or,
         "operator_not": operator_not,
         "quoted_string": quoted_string,
+        "regex_pattern": regex_pattern,
         "word": word,
         "literal_number": literal_number,
         "string_value_word": string_value_word,
@@ -396,9 +418,10 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
     color_condition = create_condition_parser(color_attr_word, color_value | quoted_string)
 
     # Standard string-based conditions using factory function
+    regex_pattern = basic_parsers["regex_pattern"]
     rarity_condition = create_condition_parser(rarity_attr_word, quoted_string | string_value_word)
     legality_condition = create_condition_parser(legality_attr_word, quoted_string | string_value_word)
-    text_condition = create_condition_parser(text_attr_word, quoted_string | string_value_word)
+    text_condition = create_condition_parser(text_attr_word, regex_pattern | quoted_string | string_value_word)
 
     # Date condition: date attributes with date values (date:2025-02-02 or date:2025)
     # Accept both full date format (YYYY-MM-DD) and year format (YYYY)
@@ -731,6 +754,25 @@ def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
                 raise ValueError(msg)
             tokens.append(query[i : end_quote + 1])
             i = end_quote + 1
+        elif char == "/":
+            # Handle regex pattern (forward slash delimited, with backslash escaping)
+            # Find the closing forward slash, respecting escaped slashes
+            j = i + 1
+            while j < len(query):
+                if query[j] == "\\" and j + 1 < len(query):
+                    # Skip escaped character
+                    j += 2
+                elif query[j] == "/":
+                    # Found closing slash
+                    tokens.append(query[i : j + 1])
+                    i = j + 1
+                    break
+                else:
+                    j += 1
+            else:
+                # No closing slash found
+                msg = f"Unmatched / in regex pattern in query '{query}'"
+                raise ValueError(msg)
         elif char in "()":
             # Handle parentheses
             tokens.append(char)
