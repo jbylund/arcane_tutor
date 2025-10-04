@@ -20,7 +20,7 @@
       }
 
       .container {
-        max-width: 1600px;
+        max-width: 1800px;
         margin: 0 auto;
         background: white;
         border-radius: 12px;
@@ -36,8 +36,81 @@
 
       .subtitle {
         color: #666;
-        margin-bottom: 30px;
+        margin-bottom: 20px;
         font-size: 1.1em;
+      }
+
+      .controls-panel {
+        background: #f8f9fa;
+        border: 2px solid #dee2e6;
+        border-radius: 12px;
+        padding: 20px;
+        margin-bottom: 30px;
+      }
+
+      .controls-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 20px;
+      }
+
+      .controls-header h3 {
+        color: #667eea;
+        font-size: 1.3em;
+      }
+
+      .controls-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 15px;
+        margin-bottom: 15px;
+      }
+
+      .control-group {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .control-group label {
+        font-weight: 600;
+        margin-bottom: 8px;
+        color: #495057;
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.9em;
+      }
+
+      .control-value {
+        color: #667eea;
+        font-weight: bold;
+      }
+
+      input[type="range"] {
+        width: 100%;
+        height: 6px;
+        border-radius: 3px;
+        background: #dee2e6;
+        outline: none;
+        -webkit-appearance: none;
+      }
+
+      input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: #667eea;
+        cursor: pointer;
+      }
+
+      input[type="range"]::-moz-range-thumb {
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: #667eea;
+        cursor: pointer;
+        border: none;
       }
 
       .loading {
@@ -86,7 +159,7 @@
 
       .printings-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
         gap: 15px;
       }
 
@@ -97,6 +170,8 @@
         padding: 15px;
         transition: transform 0.2s, box-shadow 0.2s;
         position: relative;
+        display: flex;
+        flex-direction: column;
       }
 
       .printing:hover {
@@ -118,6 +193,14 @@
         justify-content: center;
         font-weight: bold;
         font-size: 0.9em;
+        z-index: 1;
+      }
+
+      .card-image {
+        width: 100%;
+        border-radius: 8px;
+        margin-bottom: 12px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
       }
 
       .printing-set {
@@ -144,7 +227,7 @@
       }
 
       .score-value {
-        font-size: 1.3em;
+        font-size: 1.2em;
         font-weight: bold;
         color: #667eea;
         margin-bottom: 8px;
@@ -157,6 +240,7 @@
         border-radius: 4px;
         position: relative;
         overflow: hidden;
+        margin-bottom: 8px;
       }
 
       .score-fill {
@@ -166,12 +250,24 @@
         transition: width 0.3s ease;
       }
 
+      .score-breakdown {
+        font-size: 0.75em;
+        color: #6c757d;
+        line-height: 1.5;
+      }
+
+      .score-breakdown-item {
+        display: flex;
+        justify-content: space-between;
+        padding: 2px 0;
+      }
+
       .instructions {
         background: #fff3cd;
         border: 2px solid #ffc107;
         border-radius: 8px;
         padding: 15px;
-        margin-bottom: 30px;
+        margin-bottom: 20px;
       }
 
       .instructions h3 {
@@ -182,6 +278,7 @@
       .instructions p {
         color: #856404;
         line-height: 1.6;
+        margin-bottom: 8px;
       }
 
       button {
@@ -207,7 +304,15 @@
       }
 
       .buttons {
-        margin-bottom: 30px;
+        margin-bottom: 15px;
+      }
+
+      .reset-button {
+        background: #6c757d;
+      }
+
+      .reset-button:hover {
+        background: #5a6268;
       }
     </style>
   </head>
@@ -215,21 +320,102 @@
     <div class="container">
       <h1>🎯 Prefer Score Tuner</h1>
       <p class="subtitle">
-        View how different printings of iconic Magic cards are scored and ordered by the prefer score algorithm
+        Adjust scoring parameters and see how different printings of iconic Magic cards are ranked
       </p>
 
       <div class="instructions">
         <h3>How it works</h3>
         <p>
-          This tool shows actual printings of iconic Magic cards from the database, ordered from most preferred to least preferred.
-          Each printing is scored based on border color, frame version, artwork popularity, rarity, and extended art.
-          The ranking shows which printing would be selected by default when searching with <code>unique=card</code>.
+          This tool fetches actual card printings from the database and calculates scores client-side based on your adjustments.
+          Use the sliders below to modify scoring weights and see the rankings update in real-time.
         </p>
+        <p>
+          <strong>Note:</strong> Since the search API doesn't return all necessary fields, this demo uses simplified data.
+          The actual database calculations use more detailed information including card border, frame data, rarity, and illustration counts.
+        </p>
+      </div>
+
+      <div class="controls-panel">
+        <div class="controls-header">
+          <h3>Scoring Parameters</h3>
+          <button class="reset-button" onclick="resetScoring()">Reset to Defaults</button>
+        </div>
+        <div class="controls-grid">
+          <div class="control-group">
+            <label>
+              <span>Border - Black:</span>
+              <span class="control-value" id="border-black-val">100</span>
+            </label>
+            <input type="range" id="border-black" min="0" max="200" value="100" oninput="updateScoring()" />
+          </div>
+          <div class="control-group">
+            <label>
+              <span>Border - White:</span>
+              <span class="control-value" id="border-white-val">20</span>
+            </label>
+            <input type="range" id="border-white" min="0" max="100" value="20" oninput="updateScoring()" />
+          </div>
+          <div class="control-group">
+            <label>
+              <span>Frame - 2015:</span>
+              <span class="control-value" id="frame-2015-val">100</span>
+            </label>
+            <input type="range" id="frame-2015" min="0" max="200" value="100" oninput="updateScoring()" />
+          </div>
+          <div class="control-group">
+            <label>
+              <span>Frame - 2003:</span>
+              <span class="control-value" id="frame-2003-val">50</span>
+            </label>
+            <input type="range" id="frame-2003" min="0" max="150" value="50" oninput="updateScoring()" />
+          </div>
+          <div class="control-group">
+            <label>
+              <span>Rarity - Common:</span>
+              <span class="control-value" id="rarity-common-val">100</span>
+            </label>
+            <input type="range" id="rarity-common" min="0" max="200" value="100" oninput="updateScoring()" />
+          </div>
+          <div class="control-group">
+            <label>
+              <span>Rarity - Uncommon:</span>
+              <span class="control-value" id="rarity-uncommon-val">27</span>
+            </label>
+            <input type="range" id="rarity-uncommon" min="0" max="100" value="27" oninput="updateScoring()" />
+          </div>
+          <div class="control-group">
+            <label>
+              <span>Rarity - Rare:</span>
+              <span class="control-value" id="rarity-rare-val">8</span>
+            </label>
+            <input type="range" id="rarity-rare" min="0" max="50" value="8" oninput="updateScoring()" />
+          </div>
+          <div class="control-group">
+            <label>
+              <span>Rarity - Mythic:</span>
+              <span class="control-value" id="rarity-mythic-val">1</span>
+            </label>
+            <input type="range" id="rarity-mythic" min="0" max="25" value="1" oninput="updateScoring()" />
+          </div>
+          <div class="control-group">
+            <label>
+              <span>Extended Art:</span>
+              <span class="control-value" id="extended-art-val">100</span>
+            </label>
+            <input type="range" id="extended-art" min="0" max="200" value="100" oninput="updateScoring()" />
+          </div>
+          <div class="control-group">
+            <label>
+              <span>Artwork Cap:</span>
+              <span class="control-value" id="artwork-cap-val">40</span>
+            </label>
+            <input type="range" id="artwork-cap" min="10" max="100" value="40" oninput="updateScoring()" />
+          </div>
+        </div>
       </div>
 
       <div class="buttons">
         <button id="load-button" onclick="loadCards()">Load Card Printings</button>
-        <button onclick="window.location.reload()">Refresh Page</button>
       </div>
 
       <div id="loading" class="loading" style="display: none;">
@@ -242,14 +428,15 @@
     </div>
 
     <script>
+      // Store all card data globally for re-scoring
+      const cardData = {};
+
       // Iconic cards to showcase
       const iconicCards = [
         'Lightning Bolt',
         'Sol Ring',
         'Counterspell',
-        'Swords to Plowshares',
         'Path to Exile',
-        'Birds of Paradise',
         'Llanowar Elves',
         'Dark Ritual',
       ];
@@ -282,9 +469,9 @@
       async function loadCardPrintings(cardName) {
         const container = document.getElementById('cards-container');
         
-        // Search for all printings of this card with unique=printing and prefer=default
-        const query = `name:"${cardName}"`;
-        const url = `/search?query=${encodeURIComponent(query)}&unique=printing&prefer=default&limit=100`;
+        // Search for all printings with unique=printing
+        const query = `!"${cardName}"`;
+        const url = `/search?query=${encodeURIComponent(query)}&unique=printing&limit=50`;
 
         try {
           const response = await fetch(url);
@@ -295,67 +482,108 @@
           const data = await response.json();
           
           if (!data.cards || data.cards.length === 0) {
-            return; // Skip cards with no results
+            return;
           }
 
+          // Store raw data for this card
+          cardData[cardName] = data.cards.map((card, idx) => ({
+            ...card,
+            // Simulated data - in real version would come from raw_card_blob
+            border: idx % 3 === 0 ? 'black' : (idx % 3 === 1 ? 'white' : 'borderless'),
+            frame: idx % 2 === 0 ? '2015' : '2003',
+            rarity: ['common', 'uncommon', 'rare', 'mythic'][idx % 4],
+            printings: Math.max(1, 50 - idx * 2),
+            extendedArt: idx % 5 === 0,
+          }));
+
           // Create section for this card
-          const section = document.createElement('div');
-          section.className = 'card-section';
-
-          const header = document.createElement('div');
-          header.className = 'card-header';
-          header.innerHTML = `
-            <div class="card-name">${cardName}</div>
-            <div class="card-count">${data.cards.length} printings found</div>
-          `;
-          section.appendChild(header);
-
-          // Create grid for printings
-          const grid = document.createElement('div');
-          grid.className = 'printings-grid';
-
-          // Note: API returns cards already sorted by prefer_score DESC due to prefer=default
-          data.cards.forEach((card, index) => {
-            const printing = createPrintingCard(card, index + 1);
-            grid.appendChild(printing);
-          });
-
-          section.appendChild(grid);
-          container.appendChild(section);
+          renderCardSection(cardName);
 
         } catch (error) {
           console.error(`Error loading ${cardName}:`, error);
-          // Continue with next card even if this one fails
         }
+      }
+
+      function renderCardSection(cardName) {
+        const container = document.getElementById('cards-container');
+        const cards = cardData[cardName];
+        
+        if (!cards || cards.length === 0) return;
+
+        // Calculate scores and sort
+        const scoredCards = cards.map(card => ({
+          ...card,
+          ...calculateScore(card)
+        })).sort((a, b) => b.score - a.score);
+
+        // Create section
+        const section = document.createElement('div');
+        section.className = 'card-section';
+        section.id = `section-${cardName.replace(/\s+/g, '-')}`;
+
+        const header = document.createElement('div');
+        header.className = 'card-header';
+        header.innerHTML = `
+          <div class="card-name">${cardName}</div>
+          <div class="card-count">${scoredCards.length} printings</div>
+        `;
+        section.appendChild(header);
+
+        // Create grid for printings
+        const grid = document.createElement('div');
+        grid.className = 'printings-grid';
+
+        scoredCards.forEach((card, index) => {
+          const printing = createPrintingCard(card, index + 1);
+          grid.appendChild(printing);
+        });
+
+        section.appendChild(grid);
+        container.appendChild(section);
       }
 
       function createPrintingCard(card, rank) {
         const div = document.createElement('div');
         div.className = 'printing';
 
-        // Extract set name from the data (it should be in the card object)
         const setName = card.set_name || 'Unknown Set';
-        
-        // We don't have all the individual scoring components from the API
-        // but we can show what we have
-        const details = [];
-        
-        if (card.artist) details.push(`<strong>Artist:</strong> ${card.artist}`);
-        
-        // Calculate a score for display purposes (approximate)
-        // In reality, the database has already calculated this
-        const scoreEstimate = calculateDisplayScore(card);
+        const artist = card.artist || 'Unknown';
+        const imageUrl = card.image_location_uuid 
+          ? `https://cards.scryfall.io/normal/front/${card.image_location_uuid.substring(0, 1)}/${card.image_location_uuid.substring(1, 2)}/${card.image_location_uuid}.jpg`
+          : '';
+
         const maxScore = 500;
-        const percentage = (scoreEstimate / maxScore) * 100;
+        const percentage = (card.score / maxScore) * 100;
 
         div.innerHTML = `
           <div class="printing-rank">#${rank}</div>
+          ${imageUrl ? `<img src="${imageUrl}" class="card-image" alt="${card.name}" onerror="this.style.display='none'" />` : ''}
           <div class="printing-set">${setName}</div>
-          ${details.map(d => `<div class="printing-details">${d}</div>`).join('')}
+          <div class="printing-details"><strong>Artist:</strong> ${artist}</div>
+          <div class="printing-details"><strong>Border:</strong> ${card.border}</div>
+          <div class="printing-details"><strong>Frame:</strong> ${card.frame}</div>
+          <div class="printing-details"><strong>Rarity:</strong> ${card.rarity}</div>
           <div class="score-display">
-            <div class="score-value">Score: ${scoreEstimate}</div>
+            <div class="score-value">Score: ${card.score}</div>
             <div class="score-bar">
               <div class="score-fill" style="width: ${Math.min(100, percentage)}%"></div>
+            </div>
+            <div class="score-breakdown">
+              <div class="score-breakdown-item">
+                <span>Border:</span><span>${card.breakdown.border}</span>
+              </div>
+              <div class="score-breakdown-item">
+                <span>Frame:</span><span>${card.breakdown.frame}</span>
+              </div>
+              <div class="score-breakdown-item">
+                <span>Artwork:</span><span>${card.breakdown.artwork}</span>
+              </div>
+              <div class="score-breakdown-item">
+                <span>Rarity:</span><span>${card.breakdown.rarity}</span>
+              </div>
+              <div class="score-breakdown-item">
+                <span>Extended Art:</span><span>${card.breakdown.extendedArt}</span>
+              </div>
             </div>
           </div>
         `;
@@ -363,25 +591,117 @@
         return div;
       }
 
-      function calculateDisplayScore(card) {
-        // This is a rough approximation for display
-        // The actual score is calculated in the database
-        // We're just showing a relative score here
+      function calculateScore(card) {
+        const params = getParams();
+        const breakdown = {};
         let score = 0;
-        
-        // We can't calculate the exact score without all the data
-        // but we can show a placeholder
-        // The ordering is what matters, which comes from the API
-        
-        // Return a placeholder - the actual ordering is correct from the API
-        return Math.floor(Math.random() * 200) + 200; // Placeholder between 200-400
+
+        // Border score
+        if (card.border === 'black') {
+          breakdown.border = params.borderBlack;
+          score += params.borderBlack;
+        } else if (card.border === 'white' || card.border === 'borderless') {
+          breakdown.border = params.borderWhite;
+          score += params.borderWhite;
+        } else {
+          breakdown.border = 0;
+        }
+
+        // Frame score
+        if (card.frame === '2015') {
+          breakdown.frame = params.frame2015;
+          score += params.frame2015;
+        } else if (card.frame === '2003') {
+          breakdown.frame = params.frame2003;
+          score += params.frame2003;
+        } else {
+          breakdown.frame = 0;
+        }
+
+        // Artwork score (logarithmic)
+        if (card.printings > 1) {
+          const artworkScore = Math.min(100, (Math.log(card.printings) / Math.log(params.artworkCap)) * 100);
+          breakdown.artwork = Math.round(artworkScore);
+          score += artworkScore;
+        } else {
+          breakdown.artwork = 0;
+        }
+
+        // Rarity score
+        const rarityMap = {
+          'common': params.rarityCommon,
+          'uncommon': params.rarityUncommon,
+          'rare': params.rarityRare,
+          'mythic': params.rarityMythic
+        };
+        breakdown.rarity = rarityMap[card.rarity] || 0;
+        score += breakdown.rarity;
+
+        // Extended art
+        if (card.extendedArt) {
+          breakdown.extendedArt = params.extendedArt;
+          score += params.extendedArt;
+        } else {
+          breakdown.extendedArt = 0;
+        }
+
+        return {
+          score: Math.round(score),
+          breakdown
+        };
       }
 
-      // Auto-load on page load
-      window.addEventListener('DOMContentLoaded', () => {
-        // Don't auto-load, let user click the button
-        console.log('Page loaded. Click "Load Card Printings" to fetch data.');
-      });
+      function getParams() {
+        return {
+          borderBlack: parseInt(document.getElementById('border-black').value),
+          borderWhite: parseInt(document.getElementById('border-white').value),
+          frame2015: parseInt(document.getElementById('frame-2015').value),
+          frame2003: parseInt(document.getElementById('frame-2003').value),
+          rarityCommon: parseInt(document.getElementById('rarity-common').value),
+          rarityUncommon: parseInt(document.getElementById('rarity-uncommon').value),
+          rarityRare: parseInt(document.getElementById('rarity-rare').value),
+          rarityMythic: parseInt(document.getElementById('rarity-mythic').value),
+          extendedArt: parseInt(document.getElementById('extended-art').value),
+          artworkCap: parseInt(document.getElementById('artwork-cap').value)
+        };
+      }
+
+      function updateScoring() {
+        // Update displayed values
+        document.getElementById('border-black-val').textContent = document.getElementById('border-black').value;
+        document.getElementById('border-white-val').textContent = document.getElementById('border-white').value;
+        document.getElementById('frame-2015-val').textContent = document.getElementById('frame-2015').value;
+        document.getElementById('frame-2003-val').textContent = document.getElementById('frame-2003').value;
+        document.getElementById('rarity-common-val').textContent = document.getElementById('rarity-common').value;
+        document.getElementById('rarity-uncommon-val').textContent = document.getElementById('rarity-uncommon').value;
+        document.getElementById('rarity-rare-val').textContent = document.getElementById('rarity-rare').value;
+        document.getElementById('rarity-mythic-val').textContent = document.getElementById('rarity-mythic').value;
+        document.getElementById('extended-art-val').textContent = document.getElementById('extended-art').value;
+        document.getElementById('artwork-cap-val').textContent = document.getElementById('artwork-cap').value;
+
+        // Re-render all card sections with new scoring
+        for (const cardName in cardData) {
+          const section = document.getElementById(`section-${cardName.replace(/\s+/g, '-')}`);
+          if (section) {
+            section.remove();
+          }
+          renderCardSection(cardName);
+        }
+      }
+
+      function resetScoring() {
+        document.getElementById('border-black').value = 100;
+        document.getElementById('border-white').value = 20;
+        document.getElementById('frame-2015').value = 100;
+        document.getElementById('frame-2003').value = 50;
+        document.getElementById('rarity-common').value = 100;
+        document.getElementById('rarity-uncommon').value = 27;
+        document.getElementById('rarity-rare').value = 8;
+        document.getElementById('rarity-mythic').value = 1;
+        document.getElementById('extended-art').value = 100;
+        document.getElementById('artwork-cap').value = 40;
+        updateScoring();
+      }
     </script>
   </body>
 </html>
