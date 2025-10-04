@@ -1042,6 +1042,17 @@ class APIResource:
         self._serve_static_file(filename="index.html", falcon_response=falcon_response)
         falcon_response.content_type = "text/html"
 
+    def prefer_score_tuner(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
+        """Return the prefer score tuner page.
+
+        Args:
+        ----
+            falcon_response (falcon.Response): The Falcon response to write to.
+
+        """
+        self._serve_static_file(filename="prefer_score_tuner.html", falcon_response=falcon_response)
+        falcon_response.content_type = "text/html"
+
     def favicon_ico(self: APIResource, *, falcon_response: falcon.Response | None = None) -> None:
         """Return the favicon.ico file.
 
