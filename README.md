@@ -48,8 +48,8 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 | **Card Border**            | `border:`                                     | ✔        | ✔           | Border colors (black, white, borderless, etc.)                              |
 | **Special Properties**     | `is:`                                         | ✔        | ✔           | Card classifications (creature, spell, permanent, etc.)                     |
 | **Comparison Operators**   | `=`, `<`, `>`, `<=`, `>=`, `!=`, `<>`         | ✔        | ✔           | All comparison operators supported                                          |
+| **Regular Expressions**    | `/pattern/`                                   | ✔        | ✔           | Pattern matching with regex syntax                                          |
 | **Collection Features**    | `cube:`, `papersets:`                         | ✔        | ✘           | Collection and cube inclusion features                                      |
-| **Regular Expressions**    | `/pattern/`                                   | ✔        | ✘           | Pattern matching with regex syntax                                          |
 | **Arithmetic Expressions** | `cmc+1<power`, `power-toughness=0`            | ✘        | ✔           | Advanced mathematical expressions                                           |
 
 
