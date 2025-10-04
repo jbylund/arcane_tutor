@@ -24,6 +24,7 @@ class ParserClass(StrEnum):
     TEXT = "text"           # Simple text fields (name, artist, oracle text)
     DATE = "date"           # Date fields with full date values
     YEAR = "year"           # Year fields with 4-digit year values
+    REGEX = "regex"         # Regex pattern matching fields
 
 
 class FieldInfo:
@@ -70,6 +71,7 @@ DB_COLUMNS = [
     FieldInfo("produced_mana", FieldType.JSONB_OBJECT, ["produces"], ParserClass.COLOR),
     FieldInfo("raw_card_blob", FieldType.JSONB_OBJECT, [], ParserClass.TEXT),
     FieldInfo("oracle_text", FieldType.TEXT, ["oracle", "o"], ParserClass.TEXT),
+    FieldInfo("oracle_text", FieldType.TEXT, ["regex", "re"], ParserClass.REGEX),
     FieldInfo("flavor_text", FieldType.TEXT, ["flavor"], ParserClass.TEXT),
     FieldInfo("card_oracle_tags", FieldType.JSONB_OBJECT, ["oracle_tags", "otag"], ParserClass.TEXT),
     FieldInfo("card_is_tags", FieldType.JSONB_OBJECT, ["is"], ParserClass.TEXT),
@@ -99,6 +101,7 @@ COLOR_ATTRIBUTES = set()
 TEXT_ATTRIBUTES = set()
 DATE_ATTRIBUTES = set()
 YEAR_ATTRIBUTES = set()
+REGEX_ATTRIBUTES = set()
 
 for col in DB_COLUMNS:
     KNOWN_CARD_ATTRIBUTES.add(col.db_column_name.lower())
@@ -136,6 +139,9 @@ for col in DB_COLUMNS:
     elif col.parser_class == ParserClass.YEAR:
         YEAR_ATTRIBUTES.add(col.db_column_name)
         YEAR_ATTRIBUTES.update(col.search_aliases)
+    elif col.parser_class == ParserClass.REGEX:
+        REGEX_ATTRIBUTES.add(col.db_column_name)
+        REGEX_ATTRIBUTES.update(col.search_aliases)
     elif col.parser_class == ParserClass.NUMERIC:
         # NUMERIC fields are already tracked in NUMERIC_ATTRIBUTES based on field_type
         pass

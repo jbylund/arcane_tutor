@@ -34,6 +34,7 @@ from .db_info import (
     MANA_ATTRIBUTES,
     NUMERIC_ATTRIBUTES,
     RARITY_ATTRIBUTES,
+    REGEX_ATTRIBUTES,
     TEXT_ATTRIBUTES,
     YEAR_ATTRIBUTES,
 )
@@ -47,6 +48,7 @@ from .nodes import (
     OrNode,
     Query,
     QueryNode,
+    RegexValueNode,
     StringValueNode,
 )
 from .scryfall_nodes import to_scryfall_ast
@@ -265,6 +267,16 @@ def create_basic_parsers() -> dict[str, ParserElement]:
     # Allow values starting with digits, letters, or underscores to handle cases like "40k-model"
     string_value_word = Regex(r"[a-zA-Z0-9_][a-zA-Z0-9_-]*")
 
+    # Regex pattern: /pattern/ - match content between slashes
+    # Pattern can contain any characters except unescaped forward slashes
+    def make_regex_value(tokens: list[str]) -> RegexValueNode:
+        """Create a RegexValueNode for regex patterns."""
+        # Remove the leading and trailing slashes
+        pattern = tokens[0][1:-1]
+        return RegexValueNode(pattern)
+
+    regex_pattern = Regex(r"/(?:[^\\/]|\\.)+/").setParseAction(make_regex_value)
+
     return {
         "attrop": attrop,
         "arithmetic_op": arithmetic_op,
@@ -279,6 +291,7 @@ def create_basic_parsers() -> dict[str, ParserElement]:
         "word": word,
         "literal_number": literal_number,
         "string_value_word": string_value_word,
+        "regex_pattern": regex_pattern,
     }
 
 
@@ -352,6 +365,7 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
     arithmetic_op = basic_parsers["arithmetic_op"]
     lparen = basic_parsers["lparen"]
     rparen = basic_parsers["rparen"]
+    regex_pattern = basic_parsers["regex_pattern"]
     mana_value = mana_parsers["mana_value"]
     color_value = color_parsers["color_value"]
 
@@ -362,6 +376,7 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
     legality_attr_word = create_attribute_parser(LEGALITY_ATTRIBUTES)
     color_attr_word = create_attribute_parser(COLOR_ATTRIBUTES)
     text_attr_word = create_attribute_parser(TEXT_ATTRIBUTES)
+    regex_attr_word = create_attribute_parser(REGEX_ATTRIBUTES)
     date_attr_word = create_attribute_parser(DATE_ATTRIBUTES)
     year_attr_word = create_attribute_parser(YEAR_ATTRIBUTES)
 
@@ -400,6 +415,10 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
     legality_condition = create_condition_parser(legality_attr_word, quoted_string | string_value_word)
     text_condition = create_condition_parser(text_attr_word, quoted_string | string_value_word)
 
+    # Regex condition: regex attributes with regex patterns (regex:/pattern/, re:/\d+/)
+    # Only accept regex patterns for regex attributes
+    regex_condition = create_condition_parser(regex_attr_word, regex_pattern)
+
     # Date condition: date attributes with date values (date:2025-02-02 or date:2025)
     # Accept both full date format (YYYY-MM-DD) and year format (YYYY)
     date_value = Regex(r"\d{4}(?:-\d{2}-\d{2})?")  # Matches YYYY or YYYY-MM-DD
@@ -424,7 +443,7 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
     attr_attr_condition.setParseAction(make_binary_operator_node)
 
     # Combine all conditions with clear precedence - no more special cases needed
-    condition = mana_condition | rarity_condition | legality_condition | color_condition | date_condition | year_condition | unified_numeric_comparison | text_condition | attr_attr_condition
+    condition = mana_condition | rarity_condition | legality_condition | color_condition | date_condition | year_condition | regex_condition | unified_numeric_comparison | text_condition | attr_attr_condition
 
     # Special rule for text attribute-colon-hyphenated-value to handle cases like "otag:dual-land" and "otag:40k-model"
     # Only text attributes should have hyphenated string values (not numeric, mana, rarity, or legality)
@@ -441,6 +460,7 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
         "rarity_condition": rarity_condition,
         "legality_condition": legality_condition,
         "text_condition": text_condition,
+        "regex_condition": regex_condition,
         "date_condition": date_condition,
         "year_condition": year_condition,
         "attr_attr_condition": attr_attr_condition,
@@ -740,7 +760,24 @@ def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
             i += 1
         elif char in "><=!+-*/":
             # Handle operators including arithmetic operators
-            if i + 1 < len(query) and query[i : i + 2] in [">=", "<=", "!="]:
+            # Special case: if this is a '/' and we're in attribute value context, it might be a regex pattern
+            in_attr_value_context = tokens and tokens[-1] in [":", "=", "!=", ">", "<", ">=", "<="]
+            if char == "/" and in_attr_value_context:
+                # This is likely a regex pattern /pattern/
+                word_end = i + 1
+                while word_end < len(query):
+                    if query[word_end] == "\\":
+                        # Skip escaped character
+                        word_end += 2
+                    elif query[word_end] == "/":
+                        # Found closing slash
+                        word_end += 1
+                        break
+                    else:
+                        word_end += 1
+                tokens.append(query[i:word_end])
+                i = word_end
+            elif i + 1 < len(query) and query[i : i + 2] in [">=", "<=", "!="]:
                 tokens.append(query[i : i + 2])
                 i += 2
             else:

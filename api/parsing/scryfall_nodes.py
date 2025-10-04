@@ -342,7 +342,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         # Fallback: use default logic
         return super().to_sql(context)
 
-    def _handle_scryfall_attribute(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+    def _handle_scryfall_attribute(self: ScryfallBinaryOperatorNode, context: dict) -> str:  # noqa: PLR0912
         """Handle Scryfall attribute-specific SQL generation."""
         attr = self.lhs.attribute_name
 
@@ -359,6 +359,11 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             return self._handle_date_search(context)
         if self.lhs.original_attribute in YEAR_ATTRIBUTES:
             return self._handle_year_search(context)
+
+        # Special handling for regex searches
+        from .nodes import RegexValueNode  # noqa: PLC0415 - Import here to avoid circular dependency
+        if isinstance(self.rhs, RegexValueNode):
+            return self._handle_regex_search(context)
 
         lhs_sql = self.lhs.to_sql(context)
         field_type = get_field_type(attr)
@@ -625,6 +630,36 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         _param_name = param_name(pattern)
         context[_param_name] = pattern
         return f"({lhs_sql} ILIKE %({_param_name})s)"
+
+    def _handle_regex_search(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+        """Handle regex pattern matching for text fields.
+
+        Uses PostgreSQL's ~ operator for case-sensitive regex matching.
+        The operator is normalized to ~ (or ~* for case-insensitive).
+
+        Args:
+            context: SQL parameter context.
+
+        Returns:
+            SQL string for the regex comparison.
+        """
+        from .nodes import RegexValueNode  # noqa: PLC0415 - Import here to avoid circular dependency
+
+        if not isinstance(self.rhs, RegexValueNode):
+            msg = f"Expected RegexValueNode, got {type(self.rhs)}"
+            raise TypeError(msg)
+
+        lhs_sql = self.lhs.to_sql(context)
+        pattern = self.rhs.value
+
+        # Store the regex pattern in context
+        _param_name = param_name(pattern)
+        context[_param_name] = pattern
+
+        # Use PostgreSQL's ~ operator for regex matching (case-sensitive by default)
+        # For case-insensitive, we'd use ~*
+        # Since Scryfall doesn't specify, we'll use case-insensitive ~*
+        return f"({lhs_sql} ~* %({_param_name})s)"
 
     """
     col = query
