@@ -314,6 +314,14 @@
       .reset-button:hover {
         background: #5a6268;
       }
+
+      .card-input-section {
+        background: white;
+        border: 2px solid #dee2e6;
+        border-radius: 8px;
+        padding: 20px;
+        margin-bottom: 20px;
+      }
     </style>
   </head>
   <body>
@@ -344,82 +352,94 @@
           <div class="control-group">
             <label>
               <span>Border - Black:</span>
-              <span class="control-value" id="border-black-val">100</span>
+              <span class="control-value" id="border-black-val">14</span>
             </label>
-            <input type="range" id="border-black" min="0" max="200" value="100" oninput="updateScoring()" />
+            <input type="range" id="border-black" min="0" max="200" value="14" oninput="updateScoring()" />
           </div>
           <div class="control-group">
             <label>
               <span>Border - White:</span>
-              <span class="control-value" id="border-white-val">20</span>
+              <span class="control-value" id="border-white-val">0</span>
             </label>
-            <input type="range" id="border-white" min="0" max="100" value="20" oninput="updateScoring()" />
+            <input type="range" id="border-white" min="0" max="100" value="0" oninput="updateScoring()" />
           </div>
           <div class="control-group">
             <label>
               <span>Frame - 2015:</span>
-              <span class="control-value" id="frame-2015-val">100</span>
+              <span class="control-value" id="frame-2015-val">42</span>
             </label>
-            <input type="range" id="frame-2015" min="0" max="200" value="100" oninput="updateScoring()" />
+            <input type="range" id="frame-2015" min="0" max="200" value="42" oninput="updateScoring()" />
           </div>
           <div class="control-group">
             <label>
               <span>Frame - 2003:</span>
-              <span class="control-value" id="frame-2003-val">50</span>
+              <span class="control-value" id="frame-2003-val">30</span>
             </label>
-            <input type="range" id="frame-2003" min="0" max="150" value="50" oninput="updateScoring()" />
+            <input type="range" id="frame-2003" min="0" max="150" value="30" oninput="updateScoring()" />
           </div>
           <div class="control-group">
             <label>
               <span>Rarity - Common:</span>
-              <span class="control-value" id="rarity-common-val">100</span>
+              <span class="control-value" id="rarity-common-val">16</span>
             </label>
-            <input type="range" id="rarity-common" min="0" max="200" value="100" oninput="updateScoring()" />
+            <input type="range" id="rarity-common" min="0" max="200" value="16" oninput="updateScoring()" />
           </div>
           <div class="control-group">
             <label>
               <span>Rarity - Uncommon:</span>
-              <span class="control-value" id="rarity-uncommon-val">27</span>
+              <span class="control-value" id="rarity-uncommon-val">16</span>
             </label>
-            <input type="range" id="rarity-uncommon" min="0" max="100" value="27" oninput="updateScoring()" />
+            <input type="range" id="rarity-uncommon" min="0" max="100" value="16" oninput="updateScoring()" />
           </div>
           <div class="control-group">
             <label>
               <span>Rarity - Rare:</span>
-              <span class="control-value" id="rarity-rare-val">8</span>
+              <span class="control-value" id="rarity-rare-val">0</span>
             </label>
-            <input type="range" id="rarity-rare" min="0" max="50" value="8" oninput="updateScoring()" />
+            <input type="range" id="rarity-rare" min="0" max="50" value="0" oninput="updateScoring()" />
           </div>
           <div class="control-group">
             <label>
               <span>Rarity - Mythic:</span>
-              <span class="control-value" id="rarity-mythic-val">1</span>
+              <span class="control-value" id="rarity-mythic-val">0</span>
             </label>
-            <input type="range" id="rarity-mythic" min="0" max="25" value="1" oninput="updateScoring()" />
+            <input type="range" id="rarity-mythic" min="0" max="25" value="0" oninput="updateScoring()" />
           </div>
           <div class="control-group">
             <label>
               <span>Extended Art:</span>
-              <span class="control-value" id="extended-art-val">100</span>
+              <span class="control-value" id="extended-art-val">12</span>
             </label>
-            <input type="range" id="extended-art" min="0" max="200" value="100" oninput="updateScoring()" />
+            <input type="range" id="extended-art" min="0" max="200" value="12" oninput="updateScoring()" />
           </div>
           <div class="control-group">
             <label>
               <span>Artwork Multiplier:</span>
-              <span class="control-value" id="artwork-cap-val">100</span>
+              <span class="control-value" id="artwork-cap-val">23</span>
             </label>
-            <input type="range" id="artwork-cap" min="0" max="200" value="100" oninput="updateScoring()" />
+            <input type="range" id="artwork-cap" min="0" max="200" value="23" oninput="updateScoring()" />
           </div>
         </div>
       </div>
 
-      <div class="buttons">
-        <button id="load-button" onclick="loadCards()">Load Card Printings</button>
+      <div class="card-input-section">
+        <label for="card-name-input" style="font-weight: 600; margin-bottom: 8px; display: block;">Enter Card Name:</label>
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <input 
+            type="text" 
+            id="card-name-input" 
+            placeholder="e.g., Lightning Bolt, Dark Ritual, Sol Ring..."
+            style="flex: 1; padding: 10px; border: 2px solid #dee2e6; border-radius: 6px; font-size: 1em;"
+            onkeypress="if(event.key === 'Enter') loadCard()"
+          />
+          <button onclick="loadCard()" style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 1em; font-weight: 600;">
+            Load Card
+          </button>
+        </div>
       </div>
 
       <div id="loading" class="loading" style="display: none;">
-        Loading card printings from database...
+        Loading card printings from Scryfall...
       </div>
 
       <div id="error" style="display: none;"></div>
@@ -431,38 +451,32 @@
       // Store all card data globally for re-scoring
       const cardData = {};
 
-      // Iconic cards to showcase
-      const iconicCards = [
-        'Lightning Bolt',
-        'Sol Ring',
-        'Counterspell',
-        'Path to Exile',
-        'Llanowar Elves',
-        'Dark Ritual',
-      ];
-
-      async function loadCards() {
-        const loadButton = document.getElementById('load-button');
+      async function loadCard() {
+        const input = document.getElementById('card-name-input');
         const loading = document.getElementById('loading');
         const errorDiv = document.getElementById('error');
         const container = document.getElementById('cards-container');
+        
+        const cardName = input.value.trim();
+        
+        if (!cardName) {
+          errorDiv.innerHTML = '<div class="error">Please enter a card name</div>';
+          errorDiv.style.display = 'block';
+          return;
+        }
 
-        loadButton.disabled = true;
         loading.style.display = 'block';
         errorDiv.style.display = 'none';
         container.innerHTML = '';
 
         try {
-          for (const cardName of iconicCards) {
-            await loadCardPrintings(cardName);
-          }
+          await loadCardPrintings(cardName);
         } catch (error) {
-          errorDiv.innerHTML = `<div class="error">Error loading cards: ${error.message}</div>`;
+          errorDiv.innerHTML = `<div class="error">Error loading "${cardName}": ${error.message}</div>`;
           errorDiv.style.display = 'block';
           console.error('Error:', error);
         } finally {
           loading.style.display = 'none';
-          loadButton.disabled = false;
         }
       }
 
@@ -737,16 +751,16 @@
       }
 
       function resetScoring() {
-        document.getElementById('border-black').value = 100;
-        document.getElementById('border-white').value = 20;
-        document.getElementById('frame-2015').value = 100;
-        document.getElementById('frame-2003').value = 50;
-        document.getElementById('rarity-common').value = 100;
-        document.getElementById('rarity-uncommon').value = 27;
-        document.getElementById('rarity-rare').value = 8;
-        document.getElementById('rarity-mythic').value = 1;
-        document.getElementById('extended-art').value = 100;
-        document.getElementById('artwork-cap').value = 100;
+        document.getElementById('border-black').value = 14;
+        document.getElementById('border-white').value = 0;
+        document.getElementById('frame-2015').value = 42;
+        document.getElementById('frame-2003').value = 30;
+        document.getElementById('rarity-common').value = 16;
+        document.getElementById('rarity-uncommon').value = 16;
+        document.getElementById('rarity-rare').value = 0;
+        document.getElementById('rarity-mythic').value = 0;
+        document.getElementById('extended-art').value = 12;
+        document.getElementById('artwork-cap').value = 23;
         updateScoring();
       }
     </script>
