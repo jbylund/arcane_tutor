@@ -614,6 +614,7 @@
       }
     </style>
     <script>
+      const UNIQUE_PRINTING = 'printing';
       class CardSearch {
         constructor() {
           this.searchInput = document.getElementById('searchInput');
@@ -659,6 +660,7 @@
           this.preferDropdown.value = initialPrefer;
           this.isAscending = initialDirection === 'asc';
           this.updateOrderToggleAppearance();
+          this.updatePreferVisibility();
 
           if (initialQuery) {
             this.searchInput.value = initialQuery;
@@ -706,6 +708,7 @@
           });
 
           this.uniqueDropdown.addEventListener('change', () => {
+            this.updatePreferVisibility();
             this.handleUniqueChange();
           });
 
@@ -1411,7 +1414,11 @@
             url.searchParams.set('orderby', order);
             url.searchParams.set('direction', direction);
             url.searchParams.set('unique', unique);
-            url.searchParams.set('prefer', prefer);
+            if (unique !== UNIQUE_PRINTING) {
+              url.searchParams.set('prefer', prefer);
+            } else {
+              url.searchParams.delete('prefer');
+            }
           } else {
             url.searchParams.delete('q');
             url.searchParams.delete('orderby');
@@ -1420,6 +1427,12 @@
             url.searchParams.delete('prefer');
           }
           window.history.replaceState({}, '', url);
+        }
+
+        updatePreferVisibility() {
+          const isPrinting = this.uniqueDropdown.value === UNIQUE_PRINTING;
+          this.preferDropdown.style.display = isPrinting ? 'none' : '';
+          this.preferDropdown.disabled = isPrinting;
         }
 
         handleOrderChange() {
@@ -1590,8 +1603,8 @@
             <option value="default">Default</option>
             <option value="oldest">Oldest</option>
             <option value="newest">Newest</option>
-            <option value="usd-low">$-Low</option>
-            <option value="usd-high">$-High</option>
+            <option value="usd-low">$ Low</option>
+            <option value="usd-high">$ High</option>
             <option value="promo">Promo</option>
           </select>
           <button class="order-toggle" id="orderToggle" title="Toggle ascending/descending">
