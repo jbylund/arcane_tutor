@@ -614,6 +614,7 @@
       }
     </style>
     <script>
+      const UNIQUE_PRINTING = 'printing';
       class CardSearch {
         constructor() {
           this.searchInput = document.getElementById('searchInput');
@@ -1413,7 +1414,7 @@
             url.searchParams.set('orderby', order);
             url.searchParams.set('direction', direction);
             url.searchParams.set('unique', unique);
-            if (unique !== 'printing') {
+            if (unique !== UNIQUE_PRINTING) {
               url.searchParams.set('prefer', prefer);
             } else {
               url.searchParams.delete('prefer');
@@ -1429,7 +1430,7 @@
         }
 
         updatePreferVisibility() {
-          const isPrinting = this.uniqueDropdown.value === 'printing';
+          const isPrinting = this.uniqueDropdown.value === UNIQUE_PRINTING;
           this.preferDropdown.style.display = isPrinting ? 'none' : '';
           this.preferDropdown.disabled = isPrinting;
         }
