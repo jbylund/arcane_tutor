@@ -83,6 +83,12 @@ def merge_card_faces_data(card: dict[str, Any]) -> dict[str, Any]:  # noqa: PLR0
     for search purposes. This function combines types, subtypes, colors,
     keywords, and oracle text from all faces.
 
+    Note on color handling: This implementation unions colors from all faces,
+    which means `color:gu` will match a modal DFC with G on one face and U on
+    another. Scryfall's actual behavior is more nuanced - it checks if any single
+    face has the exact color combination. The current approach is simpler and
+    handles most searches correctly (e.g., `color:g and color:u` works as expected).
+
     Args:
         card: Card data with card_faces array.
 
