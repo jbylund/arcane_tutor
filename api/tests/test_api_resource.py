@@ -412,14 +412,107 @@ class TestAPIResourceDataProcessing(unittest.TestCase):
         result = self.api_resource._preprocess_card(invalid_card)
         assert result is None
 
-    def test_preprocess_card_filters_card_faces(self) -> None:
-        """Test _preprocess_card filters out cards with card_faces."""
-        invalid_card = create_test_card(
-            card_faces=[{"name": "Front"}, {"name": "Back"}],  # Has card_faces
+    def test_preprocess_card_processes_double_faced_cards(self) -> None:
+        """Test _preprocess_card properly processes cards with card_faces."""
+        # Create a double-faced card similar to Delver of Secrets // Insectile Aberration
+        # For double-faced cards, card-level colors/keywords are typically not present
+        # and should be derived from faces
+        dfc_card = create_test_card(
+            name="Delver of Secrets // Insectile Aberration",
+            type_line="Creature — Human Wizard // Creature — Human Insect",
+            color_identity=["U"],
         )
+        # Remove card-level colors/keywords as they come from faces in DFCs
+        dfc_card["colors"] = []
+        dfc_card["keywords"] = []
+        dfc_card["card_faces"] = [
+            {
+                "name": "Delver of Secrets",
+                "type_line": "Creature — Human Wizard",
+                "colors": ["U"],
+                "keywords": [],
+                "mana_cost": "{U}",
+                "oracle_text": "At the beginning of your upkeep, look at the top card of your library.",
+                "power": "1",
+                "toughness": "1",
+            },
+            {
+                "name": "Insectile Aberration",
+                "type_line": "Creature — Human Insect",
+                "colors": ["U"],
+                "keywords": ["Flying"],
+                "oracle_text": "Flying",
+                "power": "3",
+                "toughness": "2",
+            },
+        ]
 
-        result = self.api_resource._preprocess_card(invalid_card)
-        assert result is None
+        result = self.api_resource._preprocess_card(dfc_card)
+
+        assert result is not None
+        # Should have types from both faces
+        assert "Creature" in result["card_types"]
+        # Should have subtypes from both faces
+        assert "Human" in result["card_subtypes"]
+        assert "Wizard" in result["card_subtypes"]
+        assert "Insect" in result["card_subtypes"]
+        # Should have colors from faces
+        assert result["card_colors"] == {"U": True}
+        # Should have keywords from all faces
+        assert result["card_keywords"] == {"Flying": True}
+        # Should have is:dfc tag
+        assert result["card_is_tags"].get("dfc") is True
+        # Front face power/toughness should be used
+        assert result["creature_power"] == 1
+        assert result["creature_toughness"] == 1
+
+    def test_preprocess_card_processes_modal_dfc(self) -> None:
+        """Test _preprocess_card properly processes modal double-faced cards with different types."""
+        # Create a modal DFC similar to Augmenter Pugilist // Echoing Equation
+        modal_dfc_card = create_test_card(
+            name="Augmenter Pugilist // Echoing Equation",
+            type_line="Creature — Troll Druid // Sorcery",
+            color_identity=["G", "U"],
+        )
+        # Remove card-level colors/keywords as they come from faces in DFCs
+        modal_dfc_card["colors"] = []
+        modal_dfc_card["keywords"] = []
+        modal_dfc_card["card_faces"] = [
+            {
+                "name": "Augmenter Pugilist",
+                "type_line": "Creature — Troll Druid",
+                "colors": ["G"],
+                "keywords": [],
+                "mana_cost": "{1}{G}{G}",
+                "oracle_text": "Some creature ability",
+                "power": "3",
+                "toughness": "3",
+            },
+            {
+                "name": "Echoing Equation",
+                "type_line": "Sorcery",
+                "colors": ["U"],
+                "keywords": [],
+                "mana_cost": "{3}{U}{U}",
+                "oracle_text": "Some sorcery effect",
+            },
+        ]
+
+        result = self.api_resource._preprocess_card(modal_dfc_card)
+
+        assert result is not None
+        # Should have both Creature and Sorcery types
+        assert "Creature" in result["card_types"]
+        assert "Sorcery" in result["card_types"]
+        # Should have subtypes from creature face
+        assert "Troll" in result["card_subtypes"]
+        assert "Druid" in result["card_subtypes"]
+        # Should have colors from both faces (union)
+        assert result["card_colors"] == {"G": True, "U": True}
+        # Color identity should be preserved from card level
+        assert result["card_color_identity"] == {"G": True, "U": True}
+        # Should have is:dfc tag
+        assert result["card_is_tags"].get("dfc") is True
 
     def test_preprocess_card_filters_funny_sets(self) -> None:
         """Test _preprocess_card filters out funny set types."""

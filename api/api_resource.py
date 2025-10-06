@@ -76,6 +76,87 @@ def parse_type_line(type_line: str) -> tuple[list[str], list[str]]:
     card_types, _, card_subtypes = (x.strip().split() for x in type_line.title().partition("\u2014"))
     return card_types, card_subtypes or []
 
+def merge_card_faces_data(card: dict[str, Any]) -> dict[str, Any]:  # noqa: PLR0912
+    """Merge data from card faces into a single card representation.
+
+    For double-faced cards, Scryfall unions the properties from all faces
+    for search purposes. This function combines types, subtypes, colors,
+    keywords, and oracle text from all faces.
+
+    Args:
+        card: Card data with card_faces array.
+
+    Returns:
+        Modified card dict with merged face data.
+    """
+    faces = card.get("card_faces", [])
+    if not faces:
+        return card
+
+    # Union types and subtypes from all faces
+    all_types = set()
+    all_subtypes = set()
+    all_colors = set()
+    all_keywords = set()
+    oracle_texts = []
+
+    for face in faces:
+        # Parse type line for this face
+        if "type_line" in face:
+            face_types, face_subtypes = parse_type_line(face["type_line"])
+            all_types.update(face_types)
+            all_subtypes.update(face_subtypes)
+
+        # Collect colors from each face
+        if "colors" in face:
+            all_colors.update(face["colors"])
+
+        # Collect keywords from each face
+        if "keywords" in face:
+            all_keywords.update(face.get("keywords", []))
+
+        # Collect oracle text from each face
+        if "oracle_text" in face:
+            oracle_texts.append(face["oracle_text"])
+
+    # For DFCs, always construct type line from faces (union of types/subtypes)
+    # This ensures searches like "t:creature t:sorcery" find modal DFCs
+    types_str = " ".join(sorted(all_types))
+    subtypes_str = " ".join(sorted(all_subtypes))
+    if subtypes_str:
+        card["type_line"] = f"{types_str} — {subtypes_str}"
+    else:
+        card["type_line"] = types_str
+
+    # Always use union of face colors for DFCs (empty list means no colors at card level)
+    if not card.get("colors") or card["colors"] == []:
+        card["colors"] = sorted(all_colors)
+
+    # Always use union of keywords from all faces for DFCs
+    if not card.get("keywords") or card["keywords"] == []:
+        card["keywords"] = sorted(all_keywords)
+
+    # Combine oracle texts with a separator
+    if not card.get("oracle_text") and oracle_texts:
+        card["oracle_text"] = "\n-----\n".join(oracle_texts)
+
+    # For mana cost, use the front face (first face)
+    if not card.get("mana_cost") and faces:
+        card["mana_cost"] = faces[0].get("mana_cost", "")
+
+    # For power/toughness/loyalty, use the front face if it's a creature/planeswalker
+    if not card.get("power") and faces:
+        card["power"] = faces[0].get("power")
+    if not card.get("toughness") and faces:
+        card["toughness"] = faces[0].get("toughness")
+    if not card.get("loyalty") and faces:
+        card["loyalty"] = faces[0].get("loyalty")
+
+    # Mark as a double-faced card for the is:dfc tag
+    card["_is_dfc"] = True
+
+    return card
+
 def maybeify(func: callable) -> callable:
     """Convert value to int (via float first), returning None if conversion fails."""
     @functools.wraps(func)
@@ -676,19 +757,21 @@ class APIResource:
             scryfall_id_to_card[scryfall_id] = processed_card
         return list(scryfall_id_to_card.values())
 
-    def _preprocess_card(self: APIResource, card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: PLR0915
+    def _preprocess_card(self: APIResource, card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: PLR0912, PLR0915
         """Preprocess a card to remove invalid cards and add necessary fields."""
         if set(card["legalities"].values()) == {"not_legal"}:
             return None
         if "paper" not in card["games"]:
-            return None
-        if "card_faces" in card:
             return None
         if card.get("set_type") == "funny":
             return None
 
         if card.get("preprocessed"):
             return card
+
+        # Handle double-faced cards by merging face data
+        if "card_faces" in card:
+            card = merge_card_faces_data(card)
 
         # Store the original card data before modifications for raw_card_blob
         raw_card_data = copy.deepcopy(card)
@@ -784,6 +867,11 @@ class APIResource:
         # Ensure all NOT NULL DEFAULT fields are set to avoid constraint violations
         card.setdefault("card_oracle_tags", {})
         card.setdefault("card_is_tags", {})
+
+        # Set is:dfc tag for double-faced cards
+        if card.get("_is_dfc"):
+            card["card_is_tags"]["dfc"] = True
+
         if "raw_card_blob" in card["raw_card_blob"]:
             msg = "raw_card_blob is not a dictionary"
             raise AssertionError(msg)
