@@ -1,6 +1,8 @@
 brotli
 cachetools
 falcon
+prometheus_client
+waitress
 honeybadger
 orjson
 psycopg[binary,pool]

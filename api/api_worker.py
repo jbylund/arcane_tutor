@@ -55,6 +55,7 @@ class ApiWorker(multiprocessing.Process):
         debug: bool = False,
         import_guard: LockType = multiprocessing_utils.DEFAULT_LOCK,
         schema_setup_event: EventType = multiprocessing_utils.DEFAULT_EVENT,
+        metrics_queue: multiprocessing.Queue = multiprocessing_utils.DEFAULT_QUEUE,
     ) -> None:
         """Initialize the API worker process.
 
@@ -65,6 +66,7 @@ class ApiWorker(multiprocessing.Process):
             import_guard (multiprocessing.RLock): An optional lock to synchronize imports.
             schema_setup_event (multiprocessing.Event): Event denoting schema setup has been completed.
             debug (bool): Whether to run in debug mode.
+            metrics_queue (multiprocessing.Queue): A queue to send metrics to.
         """
         super().__init__()
         self.host = host
@@ -73,9 +75,10 @@ class ApiWorker(multiprocessing.Process):
         self.import_guard = import_guard
         self.debug = debug
         self.schema_setup_event = schema_setup_event
+        self.metrics_queue = metrics_queue
 
     @classmethod
-    def get_api(cls: type[ApiWorker], import_guard: LockType, schema_setup_event: EventType) -> falcon.App:
+    def get_api(cls: type[ApiWorker], import_guard: LockType, schema_setup_event: EventType, metrics_queue: multiprocessing.Queue) -> falcon.App:
         """Create and configure the Falcon API application.
 
         Returns:
@@ -83,22 +86,21 @@ class ApiWorker(multiprocessing.Process):
         """
         # Importing here (post-fork) is safer for some servers/clients than importing before forking.
         from .api_resource import APIResource  # pylint: disable=import-outside-toplevel
-        from .middlewares import CachingMiddleware, CompressionMiddleware, TimingMiddleware
+        from .middlewares import MetricsMiddleware
 
-        if CachingMiddleware is None:
-            msg = "CachingMiddleware is not available"
-            raise RuntimeError(msg)
         api = falcon.App(
             middleware=[
-                TimingMiddleware(),
-                CachingMiddleware(),  # important that this is first
-                CompressionMiddleware(),
+                MetricsMiddleware(metrics_queue=metrics_queue),  # Metrics collection
+                # TimingMiddleware(),
+                # CachingMiddleware(),  # important that this is first
+                # CompressionMiddleware(),
             ],
         )
         api.set_error_serializer(json_error_serializer)  # Use custom JSON error serializer
         sink = APIResource(
             import_guard=import_guard,
             schema_setup_event=schema_setup_event,
+            metrics_queue=metrics_queue,
         )  # Create the main API resource
         api.add_sink(sink._handle, prefix="/")  # Route all requests to the sink handler
 
@@ -128,6 +130,7 @@ class ApiWorker(multiprocessing.Process):
             app = self.get_api(
                 import_guard=self.import_guard,
                 schema_setup_event=self.schema_setup_event,
+                metrics_queue=self.metrics_queue,
             )  # Get the Falcon app
             bjoern.run(
                 wsgi_app=app,

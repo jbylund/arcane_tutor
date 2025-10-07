@@ -8,6 +8,7 @@ import signal
 from types import FrameType
 
 from .api_worker import ApiWorker
+from .metrics_aggregator import MetricsAggregator
 
 logger = logging.getLogger("api")
 
@@ -51,6 +52,14 @@ def run_server(
     # Create shared objects for all workers
     import_guard = multiprocessing.RLock()
     schema_setup_event = multiprocessing.Event()
+    metrics_queue = multiprocessing.Queue()
+
+    # Start metrics aggregator
+    metrics_aggregator = MetricsAggregator(
+        port=8081,
+        metrics_queue=metrics_queue,
+    )
+    workers.append(metrics_aggregator)
 
     # start workers
     for _ in range(num_workers):
@@ -60,6 +69,7 @@ def run_server(
             import_guard=import_guard,
             port=port,
             schema_setup_event=schema_setup_event,
+            metrics_queue=metrics_queue,
         )
         workers.append(iworker)
 

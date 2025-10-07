@@ -35,6 +35,7 @@ from .tagger_client import TaggerClient
 from .utils import db_utils, error_monitoring, multiprocessing_utils
 
 if TYPE_CHECKING:
+    import multiprocessing
     from multiprocessing.synchronize import Event as EventType
     from multiprocessing.synchronize import RLock as LockType
 
@@ -274,6 +275,7 @@ class APIResource:
         *,
         import_guard: LockType = multiprocessing_utils.DEFAULT_LOCK,
         schema_setup_event: EventType = multiprocessing_utils.DEFAULT_EVENT,
+        metrics_queue: multiprocessing.Queue = multiprocessing_utils.DEFAULT_QUEUE,
     ) -> None:
         """Initialize an APIResource object, set up connection pool and action map.
 

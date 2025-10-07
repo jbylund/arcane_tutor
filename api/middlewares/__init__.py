@@ -9,12 +9,14 @@ from __future__ import annotations
 from .caching_middleware import CachingMiddleware
 from .compression import CompressionMiddleware
 from .logging_middleware import LoggingMiddleware
+from .metrics_middleware import MetricsMiddleware
 from .timing import ProfilingMiddleware, TimingMiddleware
 
 __all__ = [
     "CachingMiddleware",
     "CompressionMiddleware",
     "LoggingMiddleware",
+    "MetricsMiddleware",
     "ProfilingMiddleware",
     "TimingMiddleware",
 ]

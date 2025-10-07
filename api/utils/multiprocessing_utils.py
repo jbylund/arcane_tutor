@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -38,5 +39,23 @@ class MockEvent:
         """Return True if the event is set."""
         return self._is_set
 
+class MockQueue:
+    """Mock implementation of multiprocessing.Queue for testing."""
+    def __init__(self) -> None:
+        """Initialize the mock queue."""
+        self._queue = deque()
+
+    def put(self, item: object) -> None:
+        """Put an item into the queue."""
+        self._queue.append(item)
+
+    def get(self) -> object:
+        """Get an item from the queue."""
+        return self._queue.popleft()
+
+
+
 DEFAULT_LOCK = MockLock()
 DEFAULT_EVENT = MockEvent()
+
+DEFAULT_QUEUE = MockQueue()
