@@ -62,9 +62,33 @@
 
       .controls-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 15px;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 20px;
         margin-bottom: 15px;
+      }
+
+      .slider-group {
+        background: white;
+        border: 1px solid #dee2e6;
+        border-radius: 8px;
+        padding: 15px;
+      }
+
+      .slider-group h4 {
+        color: #667eea;
+        margin-bottom: 15px;
+        font-size: 1.1em;
+        text-align: center;
+        border-bottom: 2px solid #e9ecef;
+        padding-bottom: 8px;
+      }
+
+      .slider-group .control-group {
+        margin-bottom: 12px;
+      }
+
+      .slider-group .control-group:last-child {
+        margin-bottom: 0;
       }
 
       .control-group {
@@ -326,7 +350,7 @@
   </head>
   <body>
     <div class="container">
-      <h1>🎯 Prefer Score Tuner</h1>
+      <h1>Prefer Score Tuner</h1>
       <p class="subtitle">
         Adjust scoring parameters and see how different printings of iconic Magic cards are ranked
       </p>
@@ -349,75 +373,115 @@
           <button class="reset-button" onclick="resetScoring()">Reset to Defaults</button>
         </div>
         <div class="controls-grid">
-          <div class="control-group">
-            <label>
-              <span>Border - Black:</span>
-              <span class="control-value" id="border-black-val">14</span>
-            </label>
-            <input type="range" id="border-black" min="0" max="200" value="14" oninput="updateScoring()" />
+          <!-- Border Colors Column -->
+          <div class="slider-group">
+            <h4>Border Colors</h4>
+            <div class="control-group">
+              <label>
+                <span>Black:</span>
+                <span class="control-value" id="border-black-val">14</span>
+              </label>
+              <input type="range" id="border-black" min="0" max="200" value="14" oninput="updateScoring()" />
+            </div>
+            <div class="control-group">
+              <label>
+                <span>White:</span>
+                <span class="control-value" id="border-white-val">0</span>
+              </label>
+              <input type="range" id="border-white" min="0" max="100" value="0" oninput="updateScoring()" />
+            </div>
+            <div class="control-group">
+              <label>
+                <span>Borderless:</span>
+                <span class="control-value" id="border-borderless-val">0</span>
+              </label>
+              <input type="range" id="border-borderless" min="0" max="100" value="0" oninput="updateScoring()" />
+            </div>
           </div>
-          <div class="control-group">
-            <label>
-              <span>Border - White:</span>
-              <span class="control-value" id="border-white-val">0</span>
-            </label>
-            <input type="range" id="border-white" min="0" max="100" value="0" oninput="updateScoring()" />
+
+          <!-- Frame Types Column -->
+          <div class="slider-group">
+            <h4>Frame Types</h4>
+            <div class="control-group">
+              <label>
+                <span>2015:</span>
+                <span class="control-value" id="frame-2015-val">42</span>
+              </label>
+              <input type="range" id="frame-2015" min="0" max="200" value="42" oninput="updateScoring()" />
+            </div>
+            <div class="control-group">
+              <label>
+                <span>2003:</span>
+                <span class="control-value" id="frame-2003-val">30</span>
+              </label>
+              <input type="range" id="frame-2003" min="0" max="150" value="30" oninput="updateScoring()" />
+            </div>
+            <div class="control-group">
+              <label>
+                <span>1997:</span>
+                <span class="control-value" id="frame-1997-val">25</span>
+              </label>
+              <input type="range" id="frame-1997" min="0" max="150" value="25" oninput="updateScoring()" />
+            </div>
+            <div class="control-group">
+              <label>
+                <span>1993:</span>
+                <span class="control-value" id="frame-1993-val">10</span>
+              </label>
+              <input type="range" id="frame-1993" min="0" max="150" value="10" oninput="updateScoring()" />
+            </div>
           </div>
-          <div class="control-group">
-            <label>
-              <span>Frame - 2015:</span>
-              <span class="control-value" id="frame-2015-val">42</span>
-            </label>
-            <input type="range" id="frame-2015" min="0" max="200" value="42" oninput="updateScoring()" />
+
+          <!-- Rarity Column -->
+          <div class="slider-group">
+            <h4>Rarity</h4>
+            <div class="control-group">
+              <label>
+                <span>Common:</span>
+                <span class="control-value" id="rarity-common-val">16</span>
+              </label>
+              <input type="range" id="rarity-common" min="0" max="200" value="16" oninput="updateScoring()" />
+            </div>
+            <div class="control-group">
+              <label>
+                <span>Uncommon:</span>
+                <span class="control-value" id="rarity-uncommon-val">16</span>
+              </label>
+              <input type="range" id="rarity-uncommon" min="0" max="100" value="16" oninput="updateScoring()" />
+            </div>
+            <div class="control-group">
+              <label>
+                <span>Rare:</span>
+                <span class="control-value" id="rarity-rare-val">0</span>
+              </label>
+              <input type="range" id="rarity-rare" min="0" max="50" value="11" oninput="updateScoring()" />
+            </div>
+            <div class="control-group">
+              <label>
+                <span>Mythic:</span>
+                <span class="control-value" id="rarity-mythic-val">0</span>
+              </label>
+              <input type="range" id="rarity-mythic" min="0" max="25" value="0" oninput="updateScoring()" />
+            </div>
           </div>
-          <div class="control-group">
-            <label>
-              <span>Frame - 2003:</span>
-              <span class="control-value" id="frame-2003-val">30</span>
-            </label>
-            <input type="range" id="frame-2003" min="0" max="150" value="30" oninput="updateScoring()" />
-          </div>
-          <div class="control-group">
-            <label>
-              <span>Rarity - Common:</span>
-              <span class="control-value" id="rarity-common-val">16</span>
-            </label>
-            <input type="range" id="rarity-common" min="0" max="200" value="16" oninput="updateScoring()" />
-          </div>
-          <div class="control-group">
-            <label>
-              <span>Rarity - Uncommon:</span>
-              <span class="control-value" id="rarity-uncommon-val">16</span>
-            </label>
-            <input type="range" id="rarity-uncommon" min="0" max="100" value="16" oninput="updateScoring()" />
-          </div>
-          <div class="control-group">
-            <label>
-              <span>Rarity - Rare:</span>
-              <span class="control-value" id="rarity-rare-val">0</span>
-            </label>
-            <input type="range" id="rarity-rare" min="0" max="50" value="0" oninput="updateScoring()" />
-          </div>
-          <div class="control-group">
-            <label>
-              <span>Rarity - Mythic:</span>
-              <span class="control-value" id="rarity-mythic-val">0</span>
-            </label>
-            <input type="range" id="rarity-mythic" min="0" max="25" value="0" oninput="updateScoring()" />
-          </div>
-          <div class="control-group">
-            <label>
-              <span>Extended Art:</span>
-              <span class="control-value" id="extended-art-val">12</span>
-            </label>
-            <input type="range" id="extended-art" min="0" max="200" value="12" oninput="updateScoring()" />
-          </div>
-          <div class="control-group">
-            <label>
-              <span>Artwork Multiplier:</span>
-              <span class="control-value" id="artwork-cap-val">23</span>
-            </label>
-            <input type="range" id="artwork-cap" min="0" max="200" value="23" oninput="updateScoring()" />
+
+          <!-- Artwork Column -->
+          <div class="slider-group">
+            <h4>Artwork</h4>
+            <div class="control-group">
+              <label>
+                <span>Extended Art:</span>
+                <span class="control-value" id="extended-art-val">12</span>
+              </label>
+              <input type="range" id="extended-art" min="0" max="200" value="12" oninput="updateScoring()" />
+            </div>
+            <div class="control-group">
+              <label>
+                <span>Artwork Multiplier:</span>
+                <span class="control-value" id="artwork-cap-val">23</span>
+              </label>
+              <input type="range" id="artwork-cap" min="0" max="200" value="23" oninput="updateScoring()" />
+            </div>
           </div>
         </div>
       </div>
@@ -468,6 +532,9 @@
         loading.style.display = 'block';
         errorDiv.style.display = 'none';
         container.innerHTML = '';
+        
+        // Clear existing card data
+        Object.keys(cardData).forEach(key => delete cardData[key]);
 
         try {
           await loadCardPrintings(cardName);
@@ -616,6 +683,7 @@
           <div class="printing-details"><strong>Type:</strong> ${card.set_type}</div>
           <div class="printing-details"><strong>Border:</strong> ${card.border_color} | <strong>Frame:</strong> ${card.frame}</div>
           <div class="printing-details"><strong>Rarity:</strong> ${card.rarity}${card.extendedArt ? ' | Extended Art' : ''}</div>
+          <div class="printing-details"><strong>Artwork Printings:</strong> ${card.printings}</div>
           <div class="score-display">
             <div class="score-value">Score: ${card.score}</div>
             <div class="score-bar">
@@ -654,9 +722,12 @@
         if (border === 'black') {
           breakdown.border = params.borderBlack;
           score += params.borderBlack;
-        } else if (border === 'white' || border === 'borderless') {
+        } else if (border === 'white') {
           breakdown.border = params.borderWhite;
           score += params.borderWhite;
+        } else if (border === 'borderless') {
+          breakdown.border = params.borderBorderless;
+          score += params.borderBorderless;
         } else {
           breakdown.border = 0;
         }
@@ -669,11 +740,11 @@
           breakdown.frame = params.frame2003;
           score += params.frame2003;
         } else if (card.frame === '1997') {
-          breakdown.frame = 25;
-          score += 25;
+          breakdown.frame = params.frame1997;
+          score += params.frame1997;
         } else if (card.frame === '1993') {
-          breakdown.frame = 10;
-          score += 10;
+          breakdown.frame = params.frame1993;
+          score += params.frame1993;
         } else {
           breakdown.frame = 0;
         }
@@ -681,9 +752,9 @@
         // Artwork score (logarithmic)
         // Formula: illustration_frequency_multiplier * ln(num_printings) / ln(40)
         if (card.printings > 1) {
-          const artworkScore = params.artworkCap * (Math.log(card.printings) / Math.log(40));
-          breakdown.artwork = Math.round(artworkScore);
-          score += artworkScore;
+          const artworkScore = params.artworkCap * 100 * (Math.log(card.printings) / Math.log(40));
+          breakdown.artwork = Math.round(artworkScore) / 100;
+          score += breakdown.artwork;
         } else {
           breakdown.artwork = 0;
         }
@@ -707,7 +778,7 @@
         }
 
         return {
-          score: Math.round(score),
+          score: Math.round(100 * score) / 100,
           breakdown
         };
       }
@@ -716,8 +787,11 @@
         return {
           borderBlack: parseInt(document.getElementById('border-black').value),
           borderWhite: parseInt(document.getElementById('border-white').value),
+          borderBorderless: parseInt(document.getElementById('border-borderless').value),
           frame2015: parseInt(document.getElementById('frame-2015').value),
           frame2003: parseInt(document.getElementById('frame-2003').value),
+          frame1997: parseInt(document.getElementById('frame-1997').value),
+          frame1993: parseInt(document.getElementById('frame-1993').value),
           rarityCommon: parseInt(document.getElementById('rarity-common').value),
           rarityUncommon: parseInt(document.getElementById('rarity-uncommon').value),
           rarityRare: parseInt(document.getElementById('rarity-rare').value),
@@ -727,12 +801,42 @@
         };
       }
 
+      function updateCardSection(cardName) {
+        const cards = cardData[cardName];
+        if (!cards || cards.length === 0) return;
+
+        // Calculate new scores and sort
+        const scoredCards = cards.map(card => ({
+          ...card,
+          ...calculateScore(card)
+        })).sort((a, b) => b.score - a.score);
+
+        // Update the grid with new scores and rankings
+        const section = document.getElementById(`section-${cardName.replace(/\s+/g, '-')}`);
+        if (!section) return;
+
+        const grid = section.querySelector('.printings-grid');
+        if (!grid) return;
+
+        // Clear existing cards
+        grid.innerHTML = '';
+
+        // Add updated cards with new scores and rankings
+        scoredCards.forEach((card, index) => {
+          const printing = createPrintingCard(card, index + 1);
+          grid.appendChild(printing);
+        });
+      }
+
       function updateScoring() {
         // Update displayed values
         document.getElementById('border-black-val').textContent = document.getElementById('border-black').value;
         document.getElementById('border-white-val').textContent = document.getElementById('border-white').value;
+        document.getElementById('border-borderless-val').textContent = document.getElementById('border-borderless').value;
         document.getElementById('frame-2015-val').textContent = document.getElementById('frame-2015').value;
         document.getElementById('frame-2003-val').textContent = document.getElementById('frame-2003').value;
+        document.getElementById('frame-1997-val').textContent = document.getElementById('frame-1997').value;
+        document.getElementById('frame-1993-val').textContent = document.getElementById('frame-1993').value;
         document.getElementById('rarity-common-val').textContent = document.getElementById('rarity-common').value;
         document.getElementById('rarity-uncommon-val').textContent = document.getElementById('rarity-uncommon').value;
         document.getElementById('rarity-rare-val').textContent = document.getElementById('rarity-rare').value;
@@ -740,21 +844,20 @@
         document.getElementById('extended-art-val').textContent = document.getElementById('extended-art').value;
         document.getElementById('artwork-cap-val').textContent = document.getElementById('artwork-cap').value;
 
-        // Re-render all card sections with new scoring
+        // Update all card sections with new scoring
         for (const cardName in cardData) {
-          const section = document.getElementById(`section-${cardName.replace(/\s+/g, '-')}`);
-          if (section) {
-            section.remove();
-          }
-          renderCardSection(cardName);
+          updateCardSection(cardName);
         }
       }
 
       function resetScoring() {
         document.getElementById('border-black').value = 14;
         document.getElementById('border-white').value = 0;
+        document.getElementById('border-borderless').value = 0;
         document.getElementById('frame-2015').value = 42;
         document.getElementById('frame-2003').value = 30;
+        document.getElementById('frame-1997').value = 25;
+        document.getElementById('frame-1993').value = 10;
         document.getElementById('rarity-common').value = 16;
         document.getElementById('rarity-uncommon').value = 16;
         document.getElementById('rarity-rare').value = 0;
