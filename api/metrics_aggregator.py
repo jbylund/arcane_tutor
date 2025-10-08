@@ -23,7 +23,7 @@ class MetricsEndpoint:
     def on_get(self, _req: falcon.Request, resp: falcon.Response) -> None:
         """Serve metrics in Prometheus format."""
         resp.content_type = CONTENT_TYPE_LATEST
-        resp.text = generate_latest()
+        resp.data = generate_latest()
 
 
 class MetricsAggregator(multiprocessing.Process):
