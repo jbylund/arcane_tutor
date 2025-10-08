@@ -327,14 +327,14 @@ class APIResource:
 
         """
         if resp.complete:
-            logger.info("Request already handled: %s", req.uri)
+            logger.info("Request already handled: %s", req.path)
             return
 
         path = req.path.strip("/") or "index"
 
         logger.info(
             "Handling request for %s / |%s| / response id: %d",
-            req.uri,
+            req.path,
             path,
             id(resp),
         )

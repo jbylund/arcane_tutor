@@ -310,7 +310,7 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
     def test_handle_returns_early_if_response_complete(self) -> None:
         """Test _handle returns early if response is already complete."""
         mock_req = MagicMock()
-        mock_req.uri = "/test"
+        mock_req.path = "/test"
         mock_resp = MagicMock()
         mock_resp.complete = True
 
@@ -321,7 +321,7 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
     def test_handle_processes_valid_paths(self) -> None:
         """Test _handle processes valid paths correctly."""
         mock_req = MagicMock()
-        mock_req.uri = "/get_pid"
+        mock_req.path = "/get_pid"
         mock_req.params = {}
         mock_resp = MagicMock()
         mock_resp.complete = False
@@ -335,7 +335,7 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
     def test_handle_raises_not_found_for_invalid_paths(self) -> None:
         """Test _handle raises HTTPNotFound for invalid paths."""
         mock_req = MagicMock()
-        mock_req.uri = "/nonexistent"
+        mock_req.path = "/nonexistent"
         mock_req.params = {}
         mock_resp = MagicMock()
         mock_resp.complete = False
@@ -346,7 +346,7 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
     def test_handle_handles_type_errors(self) -> None:
         """Test _handle handles TypeError exceptions."""
         mock_req = MagicMock()
-        mock_req.uri = "/search"
+        mock_req.path = "/search"
         mock_req.params = {"invalid_param": "value"}
         mock_resp = MagicMock()
         mock_resp.complete = False
@@ -366,7 +366,7 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
     def test_handle_handles_general_exceptions(self) -> None:
         """Test _handle handles general exceptions."""
         mock_req = MagicMock()
-        mock_req.uri = "/search"
+        mock_req.path = "/search"
         mock_req.params = {}
         mock_resp = MagicMock()
         mock_resp.complete = False
