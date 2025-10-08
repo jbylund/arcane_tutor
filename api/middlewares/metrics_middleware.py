@@ -7,7 +7,7 @@ import os
 import time
 from typing import TYPE_CHECKING, Any
 
-from api import metrics
+from scryfallos.api import metrics
 
 if TYPE_CHECKING:
     import multiprocessing
@@ -52,32 +52,41 @@ class MetricsMiddleware:
     """Middleware that collects metrics using queue-based prometheus_client wrapper."""
 
     def __init__(self, metrics_queue: multiprocessing.Queue) -> None:
+        """Initialize metrics middleware.
+
+        Args:
+            metrics_queue: Queue to send metrics to aggregator process
+        """
         self.worker_id = os.getpid()
         logger.info("MetricsMiddleware initialized with worker id %d", self.worker_id)
         # Set the global queue for the metrics module
         metrics.set_metrics_queue(metrics_queue)
 
-    def process_request(self, req: Any, resp: Any) -> None:
+    def process_request(self, req: Any, _resp: Any) -> None:  # noqa: ANN401
         """Process incoming request."""
-        logger.info("MetricsMiddleware processing request: %s", req.uri)
         req.start_time = time.monotonic()
 
-    def process_response(self, req: Any, resp: Any, resource: Any, req_succeeded: bool) -> None:
+    def process_response(
+        self,
+        req: Any,  # noqa: ANN401
+        resp: Any,  # noqa: ANN401
+        _resource: Any,  # noqa: ANN401
+        _req_succeeded: bool,
+    ) -> None:
         """Process response and record metrics."""
-        logger.info("MetricsMiddleware processing response: %s", req.uri)
-        if hasattr(req, "start_time"):
-            duration = time.monotonic() - req.start_time
+        if not hasattr(req, "start_time"):
+            logger.warning("Request has no start time: %s", req.uri)
+            return
+        duration = time.monotonic() - req.start_time
 
-            try:
-                self._record_metrics(req, resp, duration)
-            except Exception as e:
-                logger.debug("Failed to record metrics: %s", e)
-        else:
-            logger.info("Request has no start time")
+        try:
+            self._record_metrics(req, resp, duration)
+        except (OSError, ValueError) as e:
+            logger.debug("Failed to record metrics: %s", e)
 
-    def _record_metrics(self, req: Any, resp: Any, duration: float) -> None:
+
+    def _record_metrics(self, req: Any, resp: Any, duration: float) -> None:  # noqa: ANN401
         """Record metrics using the queue-based wrapper."""
-        logger.info("MetricsMiddleware recording metrics: %s", req.uri)
         try:
             endpoint = req.path or "/"
             method = req.method or "GET"
@@ -88,7 +97,7 @@ class MetricsMiddleware:
             request_duration.labels(method=method, endpoint=endpoint).observe(duration)
             worker_requests.labels(worker_id=self.worker_id).inc()
 
-            logger.info(
+            logger.debug(
                 "METRICS: worker=%d method=%s endpoint=%s status=%s duration=%.3f",
                 self.worker_id,
                 method,

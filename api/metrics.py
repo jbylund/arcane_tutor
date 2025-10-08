@@ -21,6 +21,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from cachetools import LRUCache
+
 if TYPE_CHECKING:
     import multiprocessing
 
@@ -31,6 +33,10 @@ _metrics_queue: multiprocessing.Queue | None = None
 
 
 def get_default_buckets() -> tuple[float, ...]:
+    """Return default histogram buckets for latency measurements.
+
+    Generates exponentially-spaced buckets around a 50ms median latency.
+    """
     latency_median = 50 / 1000
     latency_buckets = {latency_median}
     ptr_low = ptr_high = latency_median
@@ -43,7 +49,7 @@ def get_default_buckets() -> tuple[float, ...]:
 
 def set_metrics_queue(queue: multiprocessing.Queue) -> None:
     """Set the global metrics queue."""
-    global _metrics_queue
+    global _metrics_queue  # noqa: PLW0603
     logger.info("Setting metrics queue to %s", queue)
     _metrics_queue = queue
 
@@ -58,40 +64,48 @@ class _LabeledMetric:
 
     def __init__(
         self,
-        **kwargs,
+        *,
+        name: str,
+        **kwargs: str | dict | tuple,
     ) -> None:
         self.kwargs = kwargs
+        self.kwargs["name"] = self.name = name
+        self.kwargs.setdefault("labels", {})
+        self.messages_sent = 0
 
-    def _send_message(self, *op_args, **op_kwargs) -> None:
+    def _send_message(self, op_name: str, op_args: tuple, op_kwargs: dict) -> None:
         """Send a metric message to the queue."""
         queue = get_metrics_queue()
         if queue is None:
             logger.debug("Metrics queue not set, dropping metric: %s", self.name)
             return
 
-        message = (self.kwargs, op_args, op_kwargs)
-        logger.info("Sending metric message: %s", message)
+        if not self.messages_sent:
+            # First message includes full metric definition
+            message = (self.kwargs, (op_name, *op_args), op_kwargs)
+        else:
+            # Subsequent messages only include name and labels to avoid re-sending buckets
+            message = (
+                {
+                    "labels": self.kwargs["labels"],
+                    "name": self.kwargs["name"],
+                },
+                (op_name, *op_args),
+                op_kwargs,
+            )
+        logger.debug("Sending metric message: %s", message)
 
         try:
             queue.put_nowait(message)
-        except Exception as e:
+        except (OSError, ValueError) as e:
             logger.warning("Failed to send metric to queue: %s", e)
+        self.messages_sent += 1
 
-    def inc(self, amount: float = 1.0) -> None:
-        """Increment counter/gauge by amount."""
-        self._send_message("inc", amount)
-
-    def dec(self, amount: float = 1.0) -> None:
-        """Decrement gauge by amount."""
-        self._send_message("dec", amount)
-
-    def set(self, value: float) -> None:
-        """Set gauge to value."""
-        self._send_message("set", value)
-
-    def observe(self, value: float) -> None:
-        """Observe a value for histogram/summary."""
-        self._send_message("observe", value)
+    def __getattr__(self, operation_name: str) -> Any:  # noqa: ANN401
+        """Dynamic attribute access for metric operations."""
+        def metric_operation_wrapper(*args: float, **kwargs: object) -> None:
+            self._send_message(operation_name, args, kwargs)
+        return metric_operation_wrapper
 
 
 class _BaseMetric:
@@ -99,13 +113,20 @@ class _BaseMetric:
 
     def __init__(
         self,
-        **kwargs: Any,
+        **kwargs: Any,  # noqa: ANN401
     ) -> None:
+        self._metric_type = self.__class__.__name__
         self.kwargs = kwargs
+        self._labeled_metric_cache = LRUCache(maxsize=10_000)
 
     def labels(self, **labels: str) -> _LabeledMetric:
         """Return a labeled version of this metric."""
         # Validate that all required labels are provided
+        key = tuple(sorted(labels.items()))
+        labeled_metric = self._labeled_metric_cache.get(key)
+        if labeled_metric is not None:
+            return labeled_metric
+
         provided_labels = set(labels)
         required_labels = set(self.kwargs.get("labelnames", ()))
 
@@ -119,11 +140,13 @@ class _BaseMetric:
                 msg = f"Unexpected labels: {extra}"
                 raise ValueError(msg)
 
-        return _LabeledMetric(
+        labeled_metric = _LabeledMetric(
             metric_type=self.__class__.__name__,
             labels=labels,
             **self.kwargs,
         )
+        self._labeled_metric_cache[key] = labeled_metric
+        return labeled_metric
 
 
 class Counter(_BaseMetric):
@@ -136,13 +159,6 @@ class Counter(_BaseMetric):
         requests.labels(method='GET', endpoint='/api').inc()
         requests.labels(method='POST', endpoint='/api').inc(5)
     """
-    def inc(self, amount: float = 1.0) -> None:
-        """Increment counter (for unlabeled metrics)."""
-        labeled = _LabeledMetric(
-            metric_type=self.__class__.__name__,
-            **self.kwargs,
-        )
-        labeled.inc(amount)
 
 
 class Gauge(_BaseMetric):
@@ -155,20 +171,6 @@ class Gauge(_BaseMetric):
         temperature.labels(room='kitchen').dec(1.0)
     """
 
-    def set(self, value: float) -> None:
-        """Set gauge value (for unlabeled metrics)."""
-        labeled = _LabeledMetric(self.metric_type, self.name, {})
-        labeled.set(value)
-
-    def inc(self, amount: float = 1.0) -> None:
-        """Increment gauge (for unlabeled metrics)."""
-        labeled = _LabeledMetric(self.metric_type, self.name, {})
-        labeled.inc(amount)
-
-    def dec(self, amount: float = 1.0) -> None:
-        """Decrement gauge (for unlabeled metrics)."""
-        labeled = _LabeledMetric(self.metric_type, self.name, {})
-        labeled.dec(amount)
 
 
 class Histogram(_BaseMetric):
@@ -181,17 +183,12 @@ class Histogram(_BaseMetric):
 
     def __init__(
         self,
-        *args,
-        **kwargs,
+        *args: str,
+        **kwargs: Any,  # noqa: ANN401
     ) -> None:
+        """Initialize histogram with default buckets."""
         kwargs.setdefault("buckets", get_default_buckets())
         super().__init__(*args, **kwargs)
-
-    def observe(self, value: float) -> None:
-        """Observe a value (for unlabeled metrics)."""
-        labeled = _LabeledMetric(self.metric_type, self.name, {})
-        labeled.observe(value)
-
 
 class Summary(_BaseMetric):
     """Summary metric that observes values and calculates quantiles.
@@ -200,8 +197,3 @@ class Summary(_BaseMetric):
         response_size = Summary('http_response_size_bytes', 'Response size', ['endpoint'])
         response_size.labels(endpoint='/api').observe(1024)
     """
-
-    def observe(self, value: float) -> None:
-        """Observe a value (for unlabeled metrics)."""
-        labeled = _LabeledMetric(self.metric_type, self.name, {})
-        labeled.observe(value)

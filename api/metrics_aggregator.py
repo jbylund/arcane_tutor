@@ -20,7 +20,7 @@ _metrics_registry: dict[str, Counter | Gauge | Histogram | Summary] = {}
 class MetricsEndpoint:
     """Falcon endpoint for serving Prometheus metrics."""
 
-    def on_get(self, req: falcon.Request, resp: falcon.Response) -> None:
+    def on_get(self, _req: falcon.Request, resp: falcon.Response) -> None:
         """Serve metrics in Prometheus format."""
         resp.content_type = CONTENT_TYPE_LATEST
         resp.text = generate_latest()
@@ -30,11 +30,19 @@ class MetricsAggregator(multiprocessing.Process):
     """Process that aggregates metrics from workers via a queue."""
 
     def __init__(self, port: int = 8081, metrics_queue: multiprocessing.Queue | None = None) -> None:
+        """Initialize metrics aggregator process.
+
+        Args:
+            port: Port to serve metrics on
+            metrics_queue: Queue to receive metrics from workers
+        """
         super().__init__()
         self.port = port
         self.metrics_queue = metrics_queue
         self.app = falcon.App()
-        self.app.add_route("/metrics", MetricsEndpoint())
+        metrics_endpoint = MetricsEndpoint()
+        self.app.add_route("/", metrics_endpoint)
+        self.app.add_route("/metrics", metrics_endpoint)
         self._stop_event = threading.Event()
 
     def _consume_metrics(self) -> None:
@@ -64,12 +72,12 @@ class MetricsAggregator(multiprocessing.Process):
 
     def _process_metric_message(self, message: dict[str, Any]) -> None:
         """Process a single metric message."""
-        logger.info("Processing metric message: %s", message)
+        logger.debug("Processing metric message: %s", message)
         metric_kwargs, (op_name, *op_args), op_kwargs = message
         metric_name = metric_kwargs.pop("name")
         labels = metric_kwargs.pop("labels", {})
         metric = _metrics_registry.get(metric_name)
-        if metric is  None:
+        if metric is None:
             metric_cls = getattr(prometheus_client, metric_kwargs.pop("metric_type"))
             # ... need to construct the thing
             _metrics_registry[metric_name] = metric = metric_cls(metric_name, **metric_kwargs)
@@ -83,7 +91,7 @@ class MetricsAggregator(multiprocessing.Process):
 
     def run(self) -> None:
         """Run the metrics server and consumer."""
-        import waitress
+        import waitress  # noqa: PLC0415
 
         logger.info("Starting metrics aggregator on port %d", self.port)
         logger.info("Metrics will be created dynamically as they are received")
@@ -97,7 +105,7 @@ class MetricsAggregator(multiprocessing.Process):
 
         # Start web server (this blocks)
         try:
-            waitress.serve(self.app, host="0.0.0.0", port=self.port)
+            waitress.serve(self.app, host="0.0.0.0", port=self.port)  # noqa: S104
         finally:
             self._stop_event.set()
             if self.metrics_queue:

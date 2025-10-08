@@ -85,22 +85,20 @@ class ApiWorker(multiprocessing.Process):
             falcon.App: The configured Falcon application instance.
         """
         # Importing here (post-fork) is safer for some servers/clients than importing before forking.
+        from . import middlewares
         from .api_resource import APIResource  # pylint: disable=import-outside-toplevel
-        from .middlewares import MetricsMiddleware
 
         api = falcon.App(
             middleware=[
-                MetricsMiddleware(metrics_queue=metrics_queue),  # Metrics collection
-                # TimingMiddleware(),
-                # CachingMiddleware(),  # important that this is first
-                # CompressionMiddleware(),
+                middlewares.MetricsMiddleware(metrics_queue=metrics_queue),  # Metrics collection
+                middlewares.CachingMiddleware(),
+                middlewares.CompressionMiddleware(),
             ],
         )
         api.set_error_serializer(json_error_serializer)  # Use custom JSON error serializer
         sink = APIResource(
             import_guard=import_guard,
             schema_setup_event=schema_setup_event,
-            metrics_queue=metrics_queue,
         )  # Create the main API resource
         api.add_sink(sink._handle, prefix="/")  # Route all requests to the sink handler
 

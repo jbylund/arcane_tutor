@@ -1,0 +1,2 @@
+"""Scryfallos package."""
+

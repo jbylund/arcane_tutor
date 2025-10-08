@@ -73,6 +73,7 @@ services:
         volumes:
         - ./configs/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
         - /tmp/prometheus_data:/prometheus
+    
     grafana:
         image: grafana/grafana:latest
         container_name: grafana

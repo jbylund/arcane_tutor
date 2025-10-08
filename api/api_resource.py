@@ -35,7 +35,6 @@ from .tagger_client import TaggerClient
 from .utils import db_utils, error_monitoring, multiprocessing_utils
 
 if TYPE_CHECKING:
-    import multiprocessing
     from multiprocessing.synchronize import Event as EventType
     from multiprocessing.synchronize import RLock as LockType
 
@@ -275,7 +274,6 @@ class APIResource:
         *,
         import_guard: LockType = multiprocessing_utils.DEFAULT_LOCK,
         schema_setup_event: EventType = multiprocessing_utils.DEFAULT_EVENT,
-        metrics_queue: multiprocessing.Queue = multiprocessing_utils.DEFAULT_QUEUE,
     ) -> None:
         """Initialize an APIResource object, set up connection pool and action map.
 
@@ -347,7 +345,7 @@ class APIResource:
         )
         path = path.replace(".", "_")
         action = self.action_map.get(path, self._raise_not_found)
-        before = time.monotonic()
+        time.monotonic()
         try:
             res = action(falcon_response=resp, **req.params)
             resp.media = res
@@ -379,9 +377,6 @@ class APIResource:
                     "stack_info": stack_info,
                 },
             ) from oops
-        finally:
-            duration = time.monotonic() - before
-            logger.info("Request duration: %f seconds / %s", duration, resp.status)
 
     def _raise_not_found(self: APIResource, **_: object) -> None:
         """Raise a Falcon HTTPNotFound error with available routes."""

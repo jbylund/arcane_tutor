@@ -1,13 +1,13 @@
 brotli
 cachetools
 falcon
-prometheus_client
-waitress
 honeybadger
 orjson
+prometheus_client
 psycopg[binary,pool]
 pyparsing
 requests
 tenacity
 testcontainers[postgres]
+waitress
 zstandard
