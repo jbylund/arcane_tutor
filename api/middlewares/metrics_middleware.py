@@ -7,7 +7,7 @@ import os
 import time
 from typing import TYPE_CHECKING, Any
 
-from .. import metrics
+from scryfallos.api import metrics
 
 if TYPE_CHECKING:
     import multiprocessing
