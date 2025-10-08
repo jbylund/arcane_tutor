@@ -20,7 +20,6 @@ import time
 import urllib.parse
 from typing import TYPE_CHECKING, Any
 from typing import cast as typecast
-from urllib.parse import urlparse
 
 import falcon
 import orjson
@@ -331,11 +330,7 @@ class APIResource:
             logger.info("Request already handled: %s", req.uri)
             return
 
-        parsed = urlparse(req.uri)
-        path = parsed.path.strip("/") or "index"
-
-        if path in ("db_ready", "pid"):
-            return
+        path = req.path.strip("/") or "index"
 
         logger.info(
             "Handling request for %s / |%s| / response id: %d",
@@ -345,7 +340,6 @@ class APIResource:
         )
         path = path.replace(".", "_")
         action = self.action_map.get(path, self._raise_not_found)
-        time.monotonic()
         try:
             res = action(falcon_response=resp, **req.params)
             resp.media = res
