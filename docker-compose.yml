@@ -67,6 +67,7 @@ services:
         - --storage.tsdb.path=/prometheus
         - --web.console.libraries=/usr/share/prometheus/console_libraries
         - --web.console.templates=/usr/share/prometheus/consoles
+        - --log.level=warn
         ports:
         - 19090:9090
         user: 1000:1000
@@ -83,6 +84,7 @@ services:
         - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
         - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
         - GF_USERS_ALLOW_SIGN_UP=false
+        - GF_LOG_LEVEL=warn
         ports:
         - 13000:3000
         user: 1000:1000

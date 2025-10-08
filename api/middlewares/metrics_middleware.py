@@ -7,7 +7,10 @@ import os
 import time
 from typing import TYPE_CHECKING, Any
 
-from scryfallos.api import metrics
+try:
+    from scryfallos.api import metrics
+except ImportError:
+    from scryfallos.api import metrics
 
 if TYPE_CHECKING:
     import multiprocessing
@@ -22,16 +25,8 @@ request_count = metrics.Counter(
     labelnames=["method", "endpoint", "status_code"],
 )
 
-latency_median = 50 / 1000
-latency_buckets = {latency_median}
-ptr_low = ptr_high = latency_median
-for _ in range(7):
-    ptr_high = ptr_high * 1.2
-    ptr_low = ptr_low / 1.2
-    latency_buckets.add(ptr_low)
-    latency_buckets.add(ptr_high)
-latency_buckets = tuple(sorted(round(x, 4) for x in latency_buckets))
 
+latency_buckets = metrics.get_default_buckets()
 
 
 request_duration = metrics.Histogram(
