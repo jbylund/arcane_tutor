@@ -198,6 +198,18 @@
         gap: 8px;
       }
 
+      .dropdown-label {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border-width: 0;
+      }
+
       .order-dropdown {
         padding: 15px 20px;
         font-size: 1.1rem;
@@ -1629,6 +1641,7 @@
           </div>
         </div>
         <div class="order-controls">
+          <label for="orderDropdown" class="dropdown-label">Order By:</label>
           <select class="order-dropdown" id="orderDropdown">
             <option value="edhrec">EDHREC</option>
             <option value="cmc">CMC</option>
@@ -1637,11 +1650,13 @@
             <option value="rarity">Rarity</option>
             <option value="usd">USD</option>
           </select>
+          <label for="uniqueDropdown" class="dropdown-label">Unique Mode:</label>
           <select class="order-dropdown" id="uniqueDropdown">
             <option value="card">Cards</option>
             <option value="artwork">Artwork</option>
             <option value="printing">Printings</option>
           </select>
+          <label for="preferDropdown" class="dropdown-label">Prefer:</label>
           <select class="order-dropdown" id="preferDropdown">
             <option value="default">Default</option>
             <option value="oldest">Oldest</option>
