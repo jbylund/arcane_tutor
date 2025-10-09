@@ -8,6 +8,7 @@ This script:
 """
 
 import argparse
+import datetime
 import json
 import logging
 import math
@@ -16,6 +17,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,12 +32,19 @@ from api.utils.db_utils import configure_connection, get_pg_creds
 logger = logging.getLogger(__name__)
 
 # Image size configuration
+ORIGINAL_WIDTH = 745  # this seems to be the size of the pngs that scryfall returns
 LARGE_WIDTH = 745  # Full resolution width in pixels
+MEDIUM_WIDTH = 410  # Medium resolution width in pixels
 SMALL_WIDTH = 220  # Small resolution width in pixels
 
 # WebP quality setting
 WEBP_QUALITY = 85
 
+LARGE_KEY = "745"
+MEDIUM_KEY = "410"
+SMALL_KEY = "220"
+
+ORIGINAL_KEY = "o"
 
 def setup_logging(verbose: bool = False) -> None:
     """Set up logging configuration."""
@@ -256,15 +265,15 @@ def process_card(
 
     if not set_code or not collector_number or not png_url:
         logger.warning(f"Skipping card with missing data: {card}")
-        return {"sm": False, "med": False, "lg": False}
+        return {SMALL_KEY: False, MEDIUM_KEY: False, LARGE_KEY: False}
 
     logger.info("Processing %s/%s", set_code, collector_number)
 
     if dry_run:
         logger.info(f"[DRY RUN] Would process {set_code}/{collector_number}")
-        return {"sm": True, "med": True, "lg": True}
+        return {SMALL_KEY: True, MEDIUM_KEY: True, LARGE_KEY: True}
 
-    results = {"sm": False, "med": False, "lg": False}
+    results = {SMALL_KEY: False, MEDIUM_KEY: False, LARGE_KEY: False}
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
@@ -275,13 +284,10 @@ def process_card(
         if not download_image(png_url, png_path):
             return results
 
-        # Calculate sizes
-        medium_width = calculate_medium_width(LARGE_WIDTH)
-
         sizes = {
-            "lg": LARGE_WIDTH,
-            "med": medium_width,
-            "sm": SMALL_WIDTH,
+            LARGE_KEY: LARGE_WIDTH,
+            MEDIUM_KEY: MEDIUM_WIDTH,
+            SMALL_KEY: SMALL_WIDTH,
         }
 
         # Convert and upload each size
@@ -291,7 +297,7 @@ def process_card(
             if not convert_to_webp(png_path, webp_path, width):
                 continue
 
-            s3_key = f"{set_code}/{collector_number}/{size_name}.webp"
+            s3_key = f"img/{set_code}/{collector_number}/{size_name}.webp"
             if upload_to_s3(s3_client, webp_path, bucket, s3_key):
                 results[size_name] = True
 
@@ -431,18 +437,8 @@ def check_cwebp() -> None:
         )
         sys.exit(1)
 
-def main() -> None:  # noqa: PLR0912
-    """Main entry point for the script."""
-    args = get_args()
-    setup_logging(args.verbose)
-
-    if args.dry_run:
-        logger.info("Running in DRY RUN mode - no actual downloads or uploads")
-
-    check_cwebp()
-    configure_env()
-
-    # Connect to database
+def get_db_cards(args: Args) -> list[dict[str, Any]]:
+    """Get all cards in the database."""
     logger.info("Connecting to database...")
     conn = get_database_connection()
 
@@ -453,18 +449,24 @@ def main() -> None:  # noqa: PLR0912
 
     if not db_cards:
         logger.warning("No cards found to process")
-        return
+        return None
 
     logger.info("Found %d cards in database, should create %d images", len(db_cards), len(db_cards) * 3)
+    return db_cards
 
+
+def get_s3_cards(args: Args) -> set[tuple[str, str, str]]:
+    """Get all cards in S3."""
     s3resource = boto3.resource("s3")
     bucket = s3resource.Bucket(args.bucket)
     s3_cards = set()
-    for obj in bucket.objects.filter(MaxKeys=9999999):
+    for obj in bucket.objects.filter(Prefix="img/", MaxKeys=9999999):
         if not obj.key.endswith(".webp"):
             continue
         try:
-            set_code, collector_number, size_webp = obj.key.split("/")
+            # discard the img/ prefix
+            _, _, obj_key = obj.key.partition("/")
+            set_code, collector_number, size_webp = obj_key.split("/")
             size = size_webp.partition(".")[0]
             s3_cards.add((set_code, collector_number, size))
         except ValueError:
@@ -472,13 +474,28 @@ def main() -> None:  # noqa: PLR0912
 
     distinct_s3_cards = {(set_code, collector_number) for (set_code, collector_number, _size) in s3_cards}
     logger.info("Found %d image objects in S3, belonging to %d distinct cards", len(s3_cards), len(distinct_s3_cards))
+    return s3_cards
+
+def main() -> None:
+    """Main entry point for the script."""
+    args = get_args()
+    setup_logging(args.verbose)
+
+    if args.dry_run:
+        logger.info("Running in DRY RUN mode - no actual downloads or uploads")
+
+    check_cwebp()
+    configure_env()
+
+    db_cards = get_db_cards(args)
+    s3_cards = get_s3_cards(args)
 
     cards_with_missing_images = []
     for icard in db_cards:
         set_code = icard["card_set_code"]
         collector_number = icard["collector_number"]
         missing_for_card = []
-        for size in ["sm", "med", "lg"]:
+        for size in [SMALL_KEY, MEDIUM_KEY, LARGE_KEY]:
             key = (set_code, collector_number, size)
             if key not in s3_cards:
                 missing_for_card.append(size)
@@ -499,8 +516,10 @@ def main() -> None:  # noqa: PLR0912
     logger.info("Processing cards using %d worker processes", args.workers)
 
     successful_cards = failed_cards = 0
+    start_time = time.monotonic()
 
-    with multiprocessing.Pool(processes=args.workers, initializer=CardProcessorPool.init_worker) as pool:
+    pool = multiprocessing.Pool(processes=args.workers, initializer=CardProcessorPool.init_worker)
+    try:
         # Use imap_unordered for better progress tracking
         for idx, results in enumerate(
             pool.imap_unordered(
@@ -509,13 +528,21 @@ def main() -> None:  # noqa: PLR0912
             ),
             1,
         ):
-            if idx % 10 == 0 or idx == len(cards_with_missing_images):
-                logger.info("Progress: %d / %d cards processed", idx, len(cards_with_missing_images))
+            if (idx and idx % 10 == 0) or idx == len(cards_with_missing_images):
+                elapsed_time = time.monotonic() - start_time
+                fraction_complete = idx / len(cards_with_missing_images)
+                estimated_time_remaining = (elapsed_time / fraction_complete) - elapsed_time
+                estimated_remaining_duration = datetime.timedelta(seconds=round(estimated_time_remaining, 1))
+                logger.info("Progress: %d / %d cards processed (ETA: %s)", idx, len(cards_with_missing_images), estimated_remaining_duration)
 
             if all(results.values()):
                 successful_cards += 1
             else:
                 failed_cards += 1
+    finally:
+        # Properly clean up the pool to avoid weakref finalize errors
+        pool.close()  # Prevent new tasks from being submitted
+        pool.join()   # Wait for all worker processes to finish
 
     logger.info(
         "Processing complete: %d successful, %d failed out of %d total",
