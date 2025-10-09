@@ -656,7 +656,6 @@
           this.debounceTimeout = null;
           this.debounceDelay = 140; // milliseconds
           this.currentController = null;
-          this.imageObserver = null;
           this.cardsData = new Map(); // Store card data by ID
           this.lastRequestedUrl = null; // Track the last requested URL to prevent duplicate requests
           this.isAscending = true; // Track order direction
@@ -710,9 +709,6 @@
               this.performSearch(e.target.value);
             }
           });
-
-          // Initialize intersection observer for lazy image loading
-          this.initImageObserver();
 
           // Add event delegation for card clicks
           this.resultsContainer.addEventListener('click', e => {
@@ -1005,9 +1001,6 @@
           this.resultsContainer.innerHTML = cards
             .map((card, index) => this.createCardHTML(card, index, index < firstRowCount))
             .join('');
-
-          // Observe all images for viewport-based loading
-          this.observeImages();
         }
 
         calculateFirstRowCount() {
@@ -1061,14 +1054,18 @@
             const oracleTextWithSymbols = this.convertManaSymbolsToText(card.oracle_text);
             const maxLength = 300;
             const truncatedText =
-              oracleTextWithSymbols.length > maxLength ? oracleTextWithSymbols.substring(0, maxLength) + '...' : oracleTextWithSymbols;
+              oracleTextWithSymbols.length > maxLength
+                ? oracleTextWithSymbols.substring(0, maxLength) + '...'
+                : oracleTextWithSymbols;
             altText += this.escapeHtml(truncatedText);
           }
 
-          // Create placeholder image that will be replaced when in viewport
+          // Use srcset for responsive images - browser automatically picks the right size
           // Add fetchpriority="high" for first row cards to improve LCP
+          // Use loading="lazy" for images not in first row
           const fetchPriorityAttr = isFirstRow ? ' fetchpriority="high"' : '';
-          const imageHtml = `<img class="card-image" data-small="${this.escapeHtml(imageSmall)}" data-normal="${this.escapeHtml(imageNormal)}" data-large="${this.escapeHtml(imageLarge)}" alt="${altText}" title="${altText}"${fetchPriorityAttr} />`;
+          const loadingAttr = isFirstRow ? '' : ' loading="lazy"';
+          const imageHtml = `<img class="card-image" srcset="${this.escapeHtml(imageSmall)} 220w, ${this.escapeHtml(imageNormal)} 410w, ${this.escapeHtml(imageLarge)} 745w" sizes="(max-width: 480px) 85vw, 35vw" src="${this.escapeHtml(imageNormal)}" alt="${altText}" title="${altText}"${fetchPriorityAttr}${loadingAttr} />`;
 
           return `
              <div class="card-item" data-card-id="${this.escapeHtml(cardId)}">
@@ -1107,31 +1104,15 @@
           const modalOverlay = document.getElementById('modalOverlay');
           const modalContent = document.getElementById('modalContent');
 
-          // Determine optimal image size for modal
-          // Modal images have max-width: 50vw and max-height: 85vh
-          const viewportWidth = window.innerWidth;
-          const viewportHeight = window.innerHeight;
-          const maxModalWidth = viewportWidth * 0.5;
-          const maxModalHeight = viewportHeight * 0.85;
-
-          // Estimate the display size (assuming typical card aspect ratio of ~0.7)
-          const estimatedWidth = Math.min(maxModalWidth, maxModalHeight * 0.7);
-          const effectiveWidth = estimatedWidth * (window.devicePixelRatio || 1);
-
-          // Select appropriate image size
+          // Build image URLs for srcset
           const imageSmall = this.buildImageUrl(card, '220');
           const imageNormal = this.buildImageUrl(card, '410');
           const imageLarge = this.buildImageUrl(card, '745');
 
-          let selectedImageUrl = imageSmall;
-          if (effectiveWidth >= 410) {
-            selectedImageUrl = imageLarge; // Use large for modal if >= 410 for best quality
-          } else if (effectiveWidth >= 220) {
-            selectedImageUrl = imageNormal;
-          }
-
-          const imageHtml = selectedImageUrl
-            ? `<img class="modal-image" src="${this.escapeHtml(selectedImageUrl)}" alt="${this.escapeHtml(card.name || 'Card Image')}" />`
+          // Use srcset for modal images too
+          // Modal images have max-width: 50vw on desktop, min(350px, 70vw) on mobile
+          const imageHtml = imageLarge
+            ? `<img class="modal-image" srcset="${this.escapeHtml(imageSmall)} 220w, ${this.escapeHtml(imageNormal)} 410w, ${this.escapeHtml(imageLarge)} 745w" sizes="(max-width: 768px) min(350px, 70vw), 50vw" src="${this.escapeHtml(imageLarge)}" alt="${this.escapeHtml(card.name || 'Card Image')}" />`
             : '';
 
           modalContent.innerHTML = `
@@ -1217,95 +1198,6 @@
           }
         };
 
-        initImageObserver() {
-          // Create intersection observer to watch for images entering viewport
-          this.imageObserver = new IntersectionObserver(
-            entries => {
-              entries.forEach(entry => {
-                if (entry.isIntersecting) {
-                  const img = entry.target;
-                  this.loadImage(img);
-                  // Stop observing once image is loaded
-                  this.imageObserver.unobserve(img);
-                }
-              });
-            },
-            {
-              rootMargin: '150px', // Start loading 150px before entering viewport
-              threshold: 0.1,
-            }
-          );
-        }
-
-        loadImage(imgElement) {
-          const smallImageUrl = imgElement.getAttribute('data-small');
-          const normalImageUrl = imgElement.getAttribute('data-normal');
-          const largeImageUrl = imgElement.getAttribute('data-large');
-
-          if (!smallImageUrl) return;
-
-          // Get the actual display width of the image element
-          // This accounts for CSS sizing (max-width, responsive breakpoints, etc.)
-          const displayWidth = imgElement.getBoundingClientRect().width || imgElement.clientWidth;
-
-          // Account for device pixel ratio for high-DPI displays
-          const effectiveWidth = displayWidth * (window.devicePixelRatio || 1);
-
-          // Available image sizes in pixels
-          const availableSizes = [
-            { width: 220, url: smallImageUrl },
-            { width: 410, url: normalImageUrl },
-            { width: 745, url: largeImageUrl }
-          ];
-
-          // Find the smallest image that is at least as large as the display size
-          // If all images are smaller than display, use the largest available
-          let selectedImage = availableSizes[0]; // Default to smallest
-
-          for (const size of availableSizes) {
-            if (size.url && size.width >= effectiveWidth) {
-              selectedImage = size;
-              break;
-            } else if (size.url) {
-              // Keep track of the largest available image in case display is bigger than all
-              selectedImage = size;
-            }
-          }
-
-          console.log(`Display width: ${displayWidth}px, Effective width (with DPR): ${effectiveWidth}px, Selected: ${selectedImage.width}px`);
-
-          // Load the selected image size directly
-          imgElement.src = selectedImage.url;
-
-          // Clean up data attributes
-          imgElement.onload = () => {
-            imgElement.removeAttribute('data-small');
-            imgElement.removeAttribute('data-normal');
-            imgElement.removeAttribute('data-large');
-            imgElement.onload = null;
-          };
-
-          imgElement.onerror = () => {
-            console.warn('Failed to load image:', selectedImage.url);
-            // Fallback to small image if selected image fails
-            if (selectedImage.width !== 220 && smallImageUrl) {
-              imgElement.src = smallImageUrl;
-            }
-            imgElement.removeAttribute('data-small');
-            imgElement.removeAttribute('data-normal');
-            imgElement.removeAttribute('data-large');
-            imgElement.onerror = null;
-          };
-        }
-
-        observeImages() {
-          // Find all images that haven't been loaded yet
-          const images = this.resultsContainer.querySelectorAll('img.card-image:not([src])');
-          images.forEach(img => {
-            this.imageObserver.observe(img);
-          });
-        }
-
         showLoading() {
           this.loadingIndicator.style.display = 'block';
         }
@@ -1341,10 +1233,6 @@
         }
 
         clearResults() {
-          // Disconnect observer to clean up
-          if (this.imageObserver) {
-            this.imageObserver.disconnect();
-          }
           this.resultsContainer.innerHTML = '';
           this.clearMessages();
         }
@@ -1386,17 +1274,17 @@
 
           // Map of mana symbols to Unicode/text representations for alt text
           const manaTextMap = {
-            '{W}': '☀️',  // White - sun
-            '{U}': '💧',  // Blue - water drop
-            '{B}': '💀',  // Black - skull
-            '{R}': '🔥',  // Red - fire
-            '{G}': '🌳',  // Green - tree
-            '{C}': '◇',   // Colorless diamond
-            '{T}': '↻',   // Tap symbol
-            '{Q}': '↺',   // Untap symbol
-            '{E}': '⚡',  // Energy symbol
-            '{P}': 'Φ',   // Phyrexian symbol
-            '{S}': '❄',   // Snow symbol
+            '{W}': '☀️', // White - sun
+            '{U}': '💧', // Blue - water drop
+            '{B}': '💀', // Black - skull
+            '{R}': '🔥', // Red - fire
+            '{G}': '🌳', // Green - tree
+            '{C}': '◇', // Colorless diamond
+            '{T}': '↻', // Tap symbol
+            '{Q}': '↺', // Untap symbol
+            '{E}': '⚡', // Energy symbol
+            '{P}': 'Φ', // Phyrexian symbol
+            '{S}': '❄', // Snow symbol
             '{X}': 'X',
             '{Y}': 'Y',
             '{Z}': 'Z',
