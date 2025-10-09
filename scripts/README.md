@@ -68,3 +68,63 @@ The script includes automatic rate limiting (0.1-0.2 second delays) to be respec
 - Handles network timeouts and connection errors
 - Graceful handling of 404 (no results) and 400 (bad query) responses
 - Special handling for 502 errors from local API server downtime
+
+## Copy Images to S3 Script
+
+### Overview
+`copy_images_to_s3.py` downloads card images from Scryfall, converts them to WebP format at multiple sizes, and uploads them to AWS S3.
+
+### Usage
+
+#### Basic Usage
+```bash
+python -m scripts.copy_images_to_s3
+```
+
+#### Filter by Set
+```bash
+python -m scripts.copy_images_to_s3 --set iko
+```
+
+#### Limit Processing
+```bash
+python -m scripts.copy_images_to_s3 --limit 100
+```
+
+#### Dry Run
+```bash
+python -m scripts.copy_images_to_s3 --dry-run --limit 10 --verbose
+```
+
+### Prerequisites
+
+- **cwebp**: Install with `sudo apt-get install webp` (Ubuntu/Debian) or `brew install webp` (macOS)
+- **AWS credentials**: Configure via `aws configure` or environment variables
+- **Database access**: PostgreSQL connection environment variables (PGHOST, PGUSER, etc.)
+
+### Image Sizes
+
+Generates three WebP versions per card:
+- **lg** (745px): Full resolution
+- **med** (~404px): Medium resolution (sqrt(220 * 745))
+- **sm** (220px): Thumbnail
+
+### S3 Structure
+
+Images are uploaded to: `s3://biblioplex/{set_code}/{collector_number}/{size}.webp`
+
+Example: `s3://biblioplex/iko/123/lg.webp`
+
+### Options
+
+- `--bucket`: S3 bucket name (default: biblioplex)
+- `--set`: Filter by set code
+- `--limit`: Limit number of cards
+- `--skip-existing`: Skip cards with existing images (default)
+- `--no-skip-existing`: Re-process all cards
+- `--dry-run`: Test without downloading/uploading
+- `--verbose`: Enable debug logging
+
+### Documentation
+
+See [docs/copy_images_to_s3.md](../docs/copy_images_to_s3.md) for detailed documentation.
