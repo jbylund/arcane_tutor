@@ -987,10 +987,38 @@
 
           this.showResultsCount(totalCards, query, elapsed);
 
-          this.resultsContainer.innerHTML = cards.map((card, index) => this.createCardHTML(card, index)).join('');
+          // Calculate number of columns in the first row for fetchpriority
+          const firstRowCount = this.calculateFirstRowCount();
+
+          this.resultsContainer.innerHTML = cards
+            .map((card, index) => this.createCardHTML(card, index, index < firstRowCount))
+            .join('');
 
           // Observe all images for viewport-based loading
           this.observeImages();
+        }
+
+        calculateFirstRowCount() {
+          // Calculate how many cards fit in the first row based on viewport width
+          // Grid uses: repeat(auto-fit, minmax(min(300px, 45vw), 1fr))
+          const viewportWidth = window.innerWidth;
+
+          // Account for body padding (35px on each side from CSS)
+          const contentWidth = viewportWidth - 70;
+
+          // Media query breakpoints
+          if (viewportWidth <= 480) {
+            // Mobile: fixed 2 columns
+            return 2;
+          } else if (viewportWidth <= 768) {
+            // Tablet: minmax(min(250px, 45vw), 1fr)
+            const minWidth = Math.min(250, viewportWidth * 0.45);
+            return Math.floor(contentWidth / minWidth);
+          } else {
+            // Desktop: minmax(min(300px, 45vw), 1fr)
+            const minWidth = Math.min(300, viewportWidth * 0.45);
+            return Math.floor(contentWidth / minWidth);
+          }
         }
 
         buildImageUrl(image_location_uuid, size, face_index = 0) {
@@ -1008,7 +1036,7 @@
           return `https://cards.scryfall.io/${size}/${facePath}/${idPrefix}/${idSuffix}/${image_location_uuid}.jpg?${cache_timestamp}`;
         }
 
-        createCardHTML(card, index) {
+        createCardHTML(card, index, isFirstRow = false) {
           const cardId = index.toString();
           const imageSmall = this.buildImageUrl(card.image_location_uuid, 'small');
           const imageNormal = this.buildImageUrl(card.image_location_uuid, 'normal');
@@ -1032,7 +1060,9 @@
           }
 
           // Create placeholder image that will be replaced when in viewport
-          const imageHtml = `<img class="card-image" data-small="${this.escapeHtml(imageSmall)}" data-normal="${this.escapeHtml(imageNormal)}" data-large="${this.escapeHtml(imageLarge)}" alt="${altText}" title="${altText}" />`;
+          // Add fetchpriority="high" for first row cards to improve LCP
+          const fetchPriorityAttr = isFirstRow ? ' fetchpriority="high"' : '';
+          const imageHtml = `<img class="card-image" data-small="${this.escapeHtml(imageSmall)}" data-normal="${this.escapeHtml(imageNormal)}" data-large="${this.escapeHtml(imageLarge)}" alt="${altText}" title="${altText}"${fetchPriorityAttr} />`;
 
           return `
              <div class="card-item" data-card-id="${this.escapeHtml(cardId)}">
