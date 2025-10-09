@@ -199,10 +199,15 @@
       }
 
       .dropdown-label {
-        font-size: 1rem;
-        color: var(--color-text-primary);
-        font-weight: 500;
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
         white-space: nowrap;
+        border-width: 0;
       }
 
       .order-dropdown {
@@ -566,10 +571,6 @@
         .order-controls {
           width: 100%;
           justify-content: center;
-        }
-
-        .dropdown-label {
-          display: none;
         }
 
         .order-dropdown {
