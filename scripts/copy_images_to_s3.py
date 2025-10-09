@@ -11,7 +11,6 @@ import argparse
 import datetime
 import json
 import logging
-import math
 import multiprocessing
 import os
 import subprocess
@@ -112,11 +111,6 @@ def fetch_cards_from_db(
     return cards
 
 
-def calculate_medium_width(full_width: int) -> int:
-    """Calculate medium image width using sqrt(220 * full_width)."""
-    return int(math.sqrt(SMALL_WIDTH * full_width))
-
-
 def download_image(url: str, output_path: Path) -> bool:
     """Download an image from a URL.
 
@@ -187,27 +181,6 @@ def convert_to_webp(
         return False
     except subprocess.TimeoutExpired:
         logger.error(f"Timeout converting image {input_path}")
-        return False
-
-
-def check_s3_file_exists(s3_client: Any, bucket: str, key: str) -> bool:  # noqa: ANN401
-    """Check if a file exists in S3.
-
-    Args:
-        s3_client: Boto3 S3 client
-        bucket: S3 bucket name
-        key: S3 object key
-
-    Returns:
-        True if file exists, False otherwise
-    """
-    try:
-        s3_client.head_object(Bucket=bucket, Key=key)
-        return True
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "404":
-            return False
-        logger.error(f"Error checking S3 file {bucket}/{key}: {e}")
         return False
 
 

@@ -136,7 +136,13 @@ datadir:
 reset:
 	rm -rvf data
 
-test tests:
+install_deps:
+	python -m uv pip install -r requirements.txt
+
+install_test_deps:
+	python -m uv pip install -r test-requirements.txt -r requirements.txt
+
+test tests: install_test_deps
 	python -m pytest -vvv --capture=no --durations=10
 
 test-integration:
