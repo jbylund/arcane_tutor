@@ -1067,12 +1067,12 @@
           }
           altText += '\n\n';
           if (card.oracle_text) {
+            // Convert mana symbols in oracle text to Unicode for alt text first, then truncate
+            const oracleTextWithSymbols = this.convertManaSymbolsToText(card.oracle_text);
             const maxLength = 300;
             const truncatedText =
-              card.oracle_text.length > maxLength ? card.oracle_text.substring(0, maxLength) + '...' : card.oracle_text;
-            // Convert mana symbols in oracle text to Unicode for alt text
-            const oracleTextWithSymbols = this.convertManaSymbolsToText(truncatedText);
-            altText += this.escapeHtml(oracleTextWithSymbols);
+              oracleTextWithSymbols.length > maxLength ? oracleTextWithSymbols.substring(0, maxLength) + '...' : oracleTextWithSymbols;
+            altText += this.escapeHtml(truncatedText);
           }
 
           // Create placeholder image that will be replaced when in viewport
