@@ -1061,13 +1061,17 @@
           // Create descriptive alt text with card name, mana cost, and oracle text
           let altText = this.escapeHtml(card.name || 'Unknown Card');
           if (card.mana_cost) {
-            altText += ` / ${this.escapeHtml(card.mana_cost)}`;
+            // Convert mana symbols to Unicode for alt text
+            const manaTextRepresentation = this.convertManaSymbolsToText(card.mana_cost);
+            altText += ` / ${this.escapeHtml(manaTextRepresentation)}`;
           }
           altText += '\n\n';
           if (card.oracle_text) {
+            // Convert mana symbols in oracle text to Unicode for alt text first, then truncate
+            const oracleTextWithSymbols = this.convertManaSymbolsToText(card.oracle_text);
             const maxLength = 300;
             const truncatedText =
-              card.oracle_text.length > maxLength ? card.oracle_text.substring(0, maxLength) + '...' : card.oracle_text;
+              oracleTextWithSymbols.length > maxLength ? oracleTextWithSymbols.substring(0, maxLength) + '...' : oracleTextWithSymbols;
             altText += this.escapeHtml(truncatedText);
           }
 
@@ -1340,6 +1344,97 @@
           const div = document.createElement('div');
           div.textContent = text;
           return div.innerHTML;
+        }
+
+        convertManaSymbolsToText(text) {
+          if (!text) return '';
+
+          // Map of mana symbols to Unicode/text representations for alt text
+          const manaTextMap = {
+            '{W}': '☀️',  // White - sun
+            '{U}': '💧',  // Blue - water drop
+            '{B}': '💀',  // Black - skull
+            '{R}': '🔥',  // Red - fire
+            '{G}': '🌳',  // Green - tree
+            '{C}': '◇',   // Colorless diamond
+            '{T}': '↻',   // Tap symbol
+            '{Q}': '↺',   // Untap symbol
+            '{E}': '⚡',  // Energy symbol
+            '{P}': 'Φ',   // Phyrexian symbol
+            '{S}': '❄',   // Snow symbol
+            '{X}': 'X',
+            '{Y}': 'Y',
+            '{Z}': 'Z',
+            '{0}': '⓪',
+            '{1}': '①',
+            '{2}': '②',
+            '{3}': '③',
+            '{4}': '④',
+            '{5}': '⑤',
+            '{6}': '⑥',
+            '{7}': '⑦',
+            '{8}': '⑧',
+            '{9}': '⑨',
+            '{10}': '⑩',
+            '{11}': '⑪',
+            '{12}': '⑫',
+            '{13}': '⑬',
+            '{14}': '⑭',
+            '{15}': '⑮',
+            '{16}': '⑯',
+            '{17}': '⑰',
+            '{18}': '⑱',
+            '{19}': '⑲',
+            '{20}': '⑳',
+            '{CHAOS}': '🌀',
+            '{PW}': 'PW',
+            '{∞}': '♾︎',
+            // Hybrid mana symbols
+            '{W/U}': '(☀️/💧)',
+            '{U/B}': '(💧/💀)',
+            '{B/R}': '(💀/🔥)',
+            '{R/G}': '(🔥/🌳)',
+            '{G/W}': '(🌳/☀️)',
+            '{W/B}': '(☀️/💀)',
+            '{U/R}': '(💧/🔥)',
+            '{B/G}': '(💀/🌳)',
+            '{R/W}': '(🔥/☀️)',
+            '{G/U}': '(🌳/💧)',
+            '{2/W}': '(②/☀️)',
+            '{2/U}': '(②/💧)',
+            '{2/B}': '(②/💀)',
+            '{2/R}': '(②/🔥)',
+            '{2/G}': '(②/🌳)',
+            // Phyrexian hybrid mana symbols
+            '{W/P}': '(☀️/Φ)',
+            '{U/P}': '(💧/Φ)',
+            '{B/P}': '(💀/Φ)',
+            '{R/P}': '(🔥/Φ)',
+            '{G/P}': '(🌳/Φ)',
+            // 3-color hybrid mana symbols (2 colors + Phyrexian)
+            '{W/U/P}': '(☀️/💧/Φ)',
+            '{W/B/P}': '(☀️/💀/Φ)',
+            '{U/B/P}': '(💧/💀/Φ)',
+            '{U/R/P}': '(💧/🔥/Φ)',
+            '{B/R/P}': '(💀/🔥/Φ)',
+            '{B/G/P}': '(💀/🌳/Φ)',
+            '{R/W/P}': '(🔥/☀️/Φ)',
+            '{R/G/P}': '(🔥/🌳/Φ)',
+            '{G/W/P}': '(🌳/☀️/Φ)',
+            '{G/U/P}': '(🌳/💧/Φ)',
+          };
+
+          let converted = text;
+          
+          // Process longer symbols first (hybrid and 3-color symbols)
+          const sortedSymbols = Object.keys(manaTextMap).sort((a, b) => b.length - a.length);
+          
+          sortedSymbols.forEach(symbol => {
+            const regex = new RegExp(symbol.replace(/[{}]/g, '\\$&'), 'g');
+            converted = converted.replace(regex, manaTextMap[symbol]);
+          });
+
+          return converted;
         }
 
         convertManaSymbols(manaCost, isModal = false) {
