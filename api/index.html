@@ -1063,9 +1063,10 @@
           // Use srcset for responsive images - browser automatically picks the right size
           // Add fetchpriority="high" for first row cards to improve LCP
           // Use loading="lazy" for images not in first row
+          // sizes matches actual grid layout: 2 columns on mobile, 3-5 columns on desktop
           const fetchPriorityAttr = isFirstRow ? ' fetchpriority="high"' : '';
           const loadingAttr = isFirstRow ? '' : ' loading="lazy"';
-          const imageHtml = `<img class="card-image" srcset="${this.escapeHtml(imageSmall)} 220w, ${this.escapeHtml(imageNormal)} 410w, ${this.escapeHtml(imageLarge)} 745w" sizes="(max-width: 480px) 85vw, 35vw" src="${this.escapeHtml(imageNormal)}" alt="${altText}" title="${altText}"${fetchPriorityAttr}${loadingAttr} />`;
+          const imageHtml = `<img class="card-image" srcset="${this.escapeHtml(imageSmall)} 220w, ${this.escapeHtml(imageNormal)} 410w, ${this.escapeHtml(imageLarge)} 745w" sizes="(max-width: 480px) 35vw, (max-width: 768px) 25vw, 18vw" src="${this.escapeHtml(imageNormal)}" alt="${altText}" title="${altText}"${fetchPriorityAttr}${loadingAttr} />`;
 
           return `
              <div class="card-item" data-card-id="${this.escapeHtml(cardId)}">
