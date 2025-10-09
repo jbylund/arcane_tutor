@@ -20,7 +20,7 @@ import psycopg
 import requests
 from botocore.exceptions import ClientError
 
-from api.utils.db_utils import configure_connection, get_pg_creds, get_testcontainers_creds
+from api.utils.db_utils import configure_connection, get_pg_creds
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +44,6 @@ def setup_logging(verbose: bool = False) -> None:
 def get_database_connection() -> psycopg.Connection:
     """Get a connection to the PostgreSQL database."""
     creds = get_pg_creds()
-    if not creds:
-        creds = get_testcontainers_creds()
     conninfo = " ".join(f"{k}={v}" for k, v in creds.items())
     conn = psycopg.connect(conninfo)
     configure_connection(conn)
@@ -71,7 +69,7 @@ def fetch_cards_from_db(
         where_clause = ""
         params = []
 
-        conditions = ["image_location_uuid IS NOT NULL"]
+        conditions = []
 
         if set_code:
             conditions.append("card_set_code = %s")
@@ -86,7 +84,7 @@ def fetch_cards_from_db(
             SELECT
                 card_set_code,
                 collector_number,
-                image_location_uuid
+                raw_card_blob->'image_uris'->>'png' as png_url
             FROM magic.cards
             {where_clause}
             ORDER BY card_set_code, collector_number_int NULLS LAST, collector_number
@@ -103,21 +101,6 @@ def fetch_cards_from_db(
 def calculate_medium_width(full_width: int) -> int:
     """Calculate medium image width using sqrt(220 * full_width)."""
     return int(math.sqrt(SMALL_WIDTH * full_width))
-
-
-def build_scryfall_image_url(image_location_uuid: str, size: str = "png") -> str:
-    """Build Scryfall image URL.
-
-    Args:
-        image_location_uuid: UUID of the image location
-        size: Image size (png, large, normal, small)
-
-    Returns:
-        Full URL to the image
-    """
-    id_prefix = image_location_uuid[0]
-    id_suffix = image_location_uuid[1]
-    return f"https://cards.scryfall.io/{size}/front/{id_prefix}/{id_suffix}/{image_location_uuid}.jpg"
 
 
 def download_image(url: str, output_path: Path) -> bool:
@@ -272,9 +255,9 @@ def process_card(
     """
     set_code = card["card_set_code"]
     collector_number = card["collector_number"]
-    image_uuid = card["image_location_uuid"]
+    png_url = card["png_url"]
 
-    if not set_code or not collector_number or not image_uuid:
+    if not set_code or not collector_number or not png_url:
         logger.warning(f"Skipping card with missing data: {card}")
         return {"sm": False, "med": False, "lg": False}
 
@@ -305,7 +288,6 @@ def process_card(
         temp_path = Path(temp_dir)
 
         # Download PNG image from Scryfall
-        png_url = build_scryfall_image_url(image_uuid, "png")
         png_path = temp_path / "original.png"
 
         if not download_image(png_url, png_path):
