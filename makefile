@@ -12,8 +12,10 @@ BASE_COMPOSE := $(mkfile_dir)/docker-compose.yml
 LINTABLE_DIRS := .
 
 DOCKER_POSTGRES_HOST=postgres
+
 XPGDATABASE=magic
 XPGPASSWORD=foopassword
+XPGPORT=15432
 XPGUSER=foouser
 
 .PHONY: \

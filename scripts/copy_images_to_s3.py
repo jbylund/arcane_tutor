@@ -8,10 +8,14 @@ This script:
 """
 
 import argparse
+import json
 import logging
 import math
+import os
 import subprocess
+import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -202,7 +206,6 @@ def upload_to_s3(
     local_path: Path,
     bucket: str,
     key: str,
-    skip_existing: bool = True,
 ) -> bool:
     """Upload a file to S3.
 
@@ -211,16 +214,11 @@ def upload_to_s3(
         local_path: Path to local file
         bucket: S3 bucket name
         key: S3 object key
-        skip_existing: Skip upload if file already exists
 
     Returns:
         True if successful or skipped, False otherwise
     """
     try:
-        if skip_existing and check_s3_file_exists(s3_client, bucket, key):
-            logger.debug(f"Skipping existing S3 file: s3://{bucket}/{key}")
-            return True
-
         s3_client.upload_file(
             str(local_path),
             bucket,
@@ -238,7 +236,6 @@ def process_card(
     card: dict[str, Any],
     s3_client: Any,  # noqa: ANN401
     bucket: str,
-    skip_existing: bool = True,
     dry_run: bool = False,
 ) -> dict[str, bool]:
     """Process a single card: download, convert, and upload.
@@ -247,7 +244,6 @@ def process_card(
         card: Card data dict with card_set_code, collector_number, image_location_uuid
         s3_client: Boto3 S3 client
         bucket: S3 bucket name
-        skip_existing: Skip if files already exist in S3
         dry_run: If True, skip actual downloads and uploads
 
     Returns:
@@ -261,22 +257,7 @@ def process_card(
         logger.warning(f"Skipping card with missing data: {card}")
         return {"sm": False, "med": False, "lg": False}
 
-    logger.info(f"Processing {set_code}/{collector_number}")
-
-    # Check if all files exist in S3
-    if skip_existing:
-        s3_keys = {
-            "sm": f"{set_code}/{collector_number}/sm.webp",
-            "med": f"{set_code}/{collector_number}/med.webp",
-            "lg": f"{set_code}/{collector_number}/lg.webp",
-        }
-        all_exist = all(
-            check_s3_file_exists(s3_client, bucket, key)
-            for key in s3_keys.values()
-        )
-        if all_exist:
-            logger.info(f"All sizes already exist for {set_code}/{collector_number}, skipping")
-            return {"sm": True, "med": True, "lg": True}
+    logger.info("Processing %s/%s", set_code, collector_number)
 
     if dry_run:
         logger.info(f"[DRY RUN] Would process {set_code}/{collector_number}")
@@ -310,7 +291,7 @@ def process_card(
                 continue
 
             s3_key = f"{set_code}/{collector_number}/{size_name}.webp"
-            if upload_to_s3(s3_client, webp_path, bucket, s3_key, skip_existing):
+            if upload_to_s3(s3_client, webp_path, bucket, s3_key):
                 results[size_name] = True
 
     success_count = sum(results.values())
@@ -319,8 +300,31 @@ def process_card(
     return results
 
 
-def main() -> None:
-    """Main entry point for the script."""
+@dataclass
+class Args:
+    """Command-line arguments for the image copy script.
+
+    Attributes:
+        bucket: S3 bucket name to upload images to
+        set_code: Optional set code to filter cards by
+        limit: Optional limit on number of cards to process
+        skip_existing: Whether to skip cards that already have images in S3
+        dry_run: If True, simulate the process without actual downloads/uploads
+        verbose: Enable verbose logging output
+    """
+    bucket: str = "biblioplex"
+    set_code: str | None = None
+    limit: int | None = None
+    skip_existing: bool = True
+    dry_run: bool = False
+    verbose: bool = False
+
+def get_args() -> Args:
+    """Parse command-line arguments and return Args dataclass.
+
+    Returns:
+        Args object containing parsed command-line arguments
+    """
     parser = argparse.ArgumentParser(
         description="Copy card images to S3 with WebP conversion",
     )
@@ -361,15 +365,17 @@ def main() -> None:
         action="store_true",
         help="Enable verbose logging",
     )
+    return Args(**vars(parser.parse_args()))
 
-    args = parser.parse_args()
 
-    setup_logging(args.verbose)
+def configure_env() -> None:
+    """Load environment variables from env.json file."""
+    with Path("env.json").open("r") as f:
+        env = json.load(f)
+    os.environ.update(env)
 
-    if args.dry_run:
-        logger.info("Running in DRY RUN mode - no actual downloads or uploads")
-
-    # Check for cwebp
+def check_cwebp() -> None:
+    """Check if cwebp command is available and exit if not found."""
     try:
         subprocess.run(["cwebp", "-version"], capture_output=True, check=True, timeout=5)  # noqa: S607
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -378,38 +384,80 @@ def main() -> None:
             "  Ubuntu/Debian: sudo apt-get install webp\n"
             "  macOS: brew install webp",
         )
-        return
+        sys.exit(1)
+
+def main() -> None:
+    """Main entry point for the script."""
+    args = get_args()
+    setup_logging(args.verbose)
+
+    if args.dry_run:
+        logger.info("Running in DRY RUN mode - no actual downloads or uploads")
+
+    check_cwebp()
+    configure_env()
 
     # Connect to database
     logger.info("Connecting to database...")
     conn = get_database_connection()
 
     # Fetch cards
-    logger.info(f"Fetching cards from database (set={args.set_code}, limit={args.limit})...")
-    cards = fetch_cards_from_db(conn, limit=args.limit, set_code=args.set_code)
+    logger.info("Fetching cards from database (set=%s, limit=%s)...", args.set_code, args.limit)
+    db_cards = fetch_cards_from_db(conn, limit=args.limit, set_code=args.set_code)
     conn.close()
 
-    if not cards:
+    if not db_cards:
         logger.warning("No cards found to process")
         return
 
-    # Initialize S3 client
-    logger.info("Initializing S3 client...")
-    s3_client = boto3.client("s3")
+    logger.info("Found %d cards in database, should create %d images", len(db_cards), len(db_cards) * 3)
+
+    s3resource = boto3.resource("s3")
+    bucket = s3resource.Bucket(args.bucket)
+    s3_cards = set()
+    for obj in bucket.objects.filter(MaxKeys=9999999):
+        if not obj.key.endswith(".webp"):
+            continue
+        try:
+            set_code, collector_number, size_webp = obj.key.split("/")
+            size = size_webp.partition(".")[0]
+            s3_cards.add((set_code, collector_number, size))
+        except ValueError:
+            continue
+
+    distinct_s3_cards = {(set_code, collector_number) for (set_code, collector_number, _size) in s3_cards}
+    logger.info("Found %d image objects in S3, belonging to %d distinct cards", len(s3_cards), len(distinct_s3_cards))
+
+    cards_with_missing_images = []
+    for icard in db_cards:
+        set_code = icard["card_set_code"]
+        collector_number = icard["collector_number"]
+        missing_for_card = []
+        for size in ["sm", "med", "lg"]:
+            key = (set_code, collector_number, size)
+            if key not in s3_cards:
+                missing_for_card.append(size)
+        if missing_for_card:
+            cards_with_missing_images.append(
+                {
+                    "card_set_code": set_code,
+                    "collector_number": collector_number,
+                    "png_url": icard["png_url"],
+                    "sizes": missing_for_card,
+                },
+            )
+    logger.info("Found %d cards with missing images", len(cards_with_missing_images))
+    s3_client = bucket.meta.client
 
     # Process cards
-    total_cards = len(cards)
-    successful_cards = 0
-    failed_cards = 0
-
-    for i, card in enumerate(cards, 1):
-        logger.info(f"Processing card {i}/{total_cards}")
+    successful_cards = failed_cards = 0
+    for idx, card in enumerate(cards_with_missing_images, 1):
+        logger.info("Processing card %d / %d", idx, len(cards_with_missing_images))
 
         results = process_card(
             card,
             s3_client,
             args.bucket,
-            skip_existing=args.skip_existing,
             dry_run=args.dry_run,
         )
 
@@ -419,8 +467,10 @@ def main() -> None:
             failed_cards += 1
 
     logger.info(
-        f"Processing complete: {successful_cards} successful, "
-        f"{failed_cards} failed out of {total_cards} total",
+        "Processing complete: %d successful, %d failed out of %d total",
+        successful_cards,
+        failed_cards,
+        len(cards_with_missing_images),
     )
 
 
