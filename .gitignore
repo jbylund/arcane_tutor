@@ -5,3 +5,5 @@ __pycache__
 .vscode/
 venv
 *venv*
+mana_symbols_test.png
+mana_symbols_demo.png
