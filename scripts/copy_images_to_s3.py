@@ -11,6 +11,7 @@ import argparse
 import json
 import logging
 import math
+import multiprocessing
 import os
 import subprocess
 import sys
@@ -300,6 +301,42 @@ def process_card(
     return results
 
 
+class CardProcessorPool:
+    """Multiprocessing worker pool for processing cards.
+
+    Each worker process gets its own S3 client initialized once via init_worker.
+    This avoids creating a new boto3 client for every card while keeping
+    the S3 client namespaced within a class instead of as a global variable.
+    """
+
+    s3_client = None
+
+    @classmethod
+    def init_worker(cls) -> None:
+        """Initialize worker process with S3 client.
+
+        This runs once per worker process when the pool is created.
+        Sets cls.s3_client which is separate per worker process.
+        """
+        cls.s3_client = boto3.client("s3")
+
+    @classmethod
+    def process_card_worker(cls, job_task: dict[str, Any]) -> dict[str, bool]:
+        """Worker function for parallel processing of cards.
+
+        Uses the class-level S3 client initialized once per worker process.
+
+        Args:
+            job_task: Dict of job task
+
+        Returns:
+            Dict with success status for each size (sm, med, lg)
+        """
+        bucket = job_task.pop("bucket")
+        dry_run = job_task.pop("dry_run")
+        return process_card(job_task, cls.s3_client, bucket, dry_run)
+
+
 @dataclass
 class Args:
     """Command-line arguments for the image copy script.
@@ -311,6 +348,7 @@ class Args:
         skip_existing: Whether to skip cards that already have images in S3
         dry_run: If True, simulate the process without actual downloads/uploads
         verbose: Enable verbose logging output
+        workers: Number of parallel worker processes for image processing
     """
     bucket: str = "biblioplex"
     set_code: str | None = None
@@ -318,6 +356,7 @@ class Args:
     skip_existing: bool = True
     dry_run: bool = False
     verbose: bool = False
+    workers: int = 8
 
 def get_args() -> Args:
     """Parse command-line arguments and return Args dataclass.
@@ -365,6 +404,12 @@ def get_args() -> Args:
         action="store_true",
         help="Enable verbose logging",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        help="Number of parallel worker processes (default: 8)",
+    )
     return Args(**vars(parser.parse_args()))
 
 
@@ -386,7 +431,7 @@ def check_cwebp() -> None:
         )
         sys.exit(1)
 
-def main() -> None:
+def main() -> None:  # noqa: PLR0912
     """Main entry point for the script."""
     args = get_args()
     setup_logging(args.verbose)
@@ -444,27 +489,33 @@ def main() -> None:
                     "collector_number": collector_number,
                     "png_url": icard["png_url"],
                     "sizes": missing_for_card,
+                    "bucket": args.bucket,
+                    "dry_run": args.dry_run,
                 },
             )
     logger.info("Found %d cards with missing images", len(cards_with_missing_images))
-    s3_client = bucket.meta.client
 
-    # Process cards
+    # Process cards in parallel
+    logger.info("Processing cards using %d worker processes", args.workers)
+
     successful_cards = failed_cards = 0
-    for idx, card in enumerate(cards_with_missing_images, 1):
-        logger.info("Processing card %d / %d", idx, len(cards_with_missing_images))
 
-        results = process_card(
-            card,
-            s3_client,
-            args.bucket,
-            dry_run=args.dry_run,
-        )
+    with multiprocessing.Pool(processes=args.workers, initializer=CardProcessorPool.init_worker) as pool:
+        # Use imap_unordered for better progress tracking
+        for idx, results in enumerate(
+            pool.imap_unordered(
+                func=CardProcessorPool.process_card_worker,
+                iterable=cards_with_missing_images,
+            ),
+            1,
+        ):
+            if idx % 10 == 0 or idx == len(cards_with_missing_images):
+                logger.info("Progress: %d / %d cards processed", idx, len(cards_with_missing_images))
 
-        if all(results.values()):
-            successful_cards += 1
-        else:
-            failed_cards += 1
+            if all(results.values()):
+                successful_cards += 1
+            else:
+                failed_cards += 1
 
     logger.info(
         "Processing complete: %d successful, %d failed out of %d total",
