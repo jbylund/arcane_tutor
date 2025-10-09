@@ -1041,6 +1041,8 @@ class APIResource:
         """
         self._serve_static_file(filename="index.html", falcon_response=falcon_response)
         falcon_response.content_type = "text/html"
+        # Cache for 1 hour - improves repeat visit performance
+        falcon_response.set_header("Cache-Control", "public, max-age=3600")
 
     def favicon_ico(self: APIResource, *, falcon_response: falcon.Response | None = None) -> None:
         """Return the favicon.ico file.
@@ -1058,6 +1060,8 @@ class APIResource:
         content_length = len(contents)
         logger.info("Favicon content length: %d", content_length)
         falcon_response.headers["content-length"] = content_length
+        # Cache favicon for 7 days - it rarely changes
+        falcon_response.set_header("Cache-Control", "public, max-age=604800")
 
     def _serve_static_file(self: APIResource, *, filename: str, falcon_response: falcon.Response) -> None:
         """Serve a static file to the Falcon response.
