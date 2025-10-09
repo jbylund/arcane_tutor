@@ -1,10 +1,6 @@
 node_modules/
-node_modules/
 data/
 __pycache__
 .vscode/
 venv
 *venv*
-mana_symbols_test.png
-mana_symbols_demo.png
-before_after_comparison.png
