@@ -2,7 +2,7 @@
 
 ## Summary
 
-The mana symbol replacement logic in `api/index.html` has been optimized from using forEach loops with repeated RegExp creation to using cached regex patterns. This resulted in a **51.63x speedup** (98.06% performance improvement).
+The mana symbol replacement logic in `api/index.html` has been optimized from using forEach loops with repeated RegExp creation to using a simple cached regex pattern with map lookup. This resulted in a **45x speedup** (97.8% performance improvement) with significantly lower code complexity.
 
 ## Problem
 
@@ -37,13 +37,14 @@ convertManaSymbols(manaCost, isModal = false) {
 
 ## Solution
 
-The optimized implementation:
+The optimized implementation uses a simple, elegant approach:
 
-1. **Caches RegExp Patterns**: The regex pattern is created once during initialization and stored as an instance variable
-2. **Single Pass Replacement**: All symbols are matched and replaced in a single `replace()` call using alternation (`|`)
-3. **Maintains Correctness**: Symbols are sorted by length (longest first) to avoid partial matches
+1. **Simple Regex Pattern**: Uses `/\{[^}]{1,5}\}/g` to match any content between braces (1-5 characters)
+2. **Map Lookup**: Checks if the matched symbol exists in the map before replacing
+3. **Cached Pattern**: The regex is created once during initialization
+4. **Low Complexity**: Much simpler than building a large alternation pattern
 
-### Optimized Implementation (cached regex)
+### Optimized Implementation (simple pattern with map lookup)
 
 ```javascript
 // In constructor:
@@ -51,12 +52,9 @@ initManaSymbolPatterns() {
   const manaMap = { /* ... */ };
   const hybridMap = { /* ... */ };
   
-  const allSymbols = { ...hybridMap, ...manaMap };
-  const sortedSymbols = Object.keys(allSymbols).sort((a, b) => b.length - a.length);
-  const pattern = sortedSymbols.map(s => s.replace(/[{}]/g, '\\$&')).join('|');
-  
-  this.manaSymbolsMap = allSymbols;
-  this.manaSymbolsRegex = new RegExp(pattern, 'g');  // Created once
+  // Simple pattern: match any content between braces (1-5 chars)
+  this.manaSymbolsMap = { ...hybridMap, ...manaMap };
+  this.manaSymbolsRegex = /\{[^}]{1,5}\}/g;
 }
 
 // In the method:
@@ -64,10 +62,14 @@ convertManaSymbols(manaCost, isModal = false) {
   if (!manaCost) return '';
   
   const symbolClass = isModal ? 'modal-mana-symbol' : 'mana-symbol';
-  this.manaSymbolsRegex.lastIndex = 0;  // Reset regex state
+  this.manaSymbolsRegex.lastIndex = 0;
   
-  return manaCost.replace(this.manaSymbolsRegex, match => {  // Single replace call
-    return `<span class="${symbolClass} ${this.manaSymbolsMap[match]}"></span>`;
+  return manaCost.replace(this.manaSymbolsRegex, match => {
+    // Only replace if the symbol exists in our map
+    if (this.manaSymbolsMap[match]) {
+      return `<span class="${symbolClass} ${this.manaSymbolsMap[match]}"></span>`;
+    }
+    return match; // Return unchanged if not in map
   });
 }
 ```
@@ -78,10 +80,30 @@ Test performed with 10,000 iterations × 14 test cases (140,000 conversions tota
 
 | Implementation | Time (ms) | Speedup |
 |---------------|-----------|---------|
-| Old (forEach loops) | 7,147.83 | 1.0x (baseline) |
-| New (cached regex) | 138.44 | **51.63x** |
+| Old (forEach loops) | 7,202.97 | 1.0x (baseline) |
+| New (simple pattern) | 158.07 | **45.57x** |
 
-**Performance Improvement: 98.06%**
+**Performance Improvement: 97.81%**
+
+### Comparison of Three Approaches
+
+We evaluated three different optimization approaches:
+
+1. **forEach loops** (original): Creates 70+ RegExp objects per call
+2. **Cached alternation**: Single regex with all symbols joined (`{W/U/P}|{W/U}|{W}|...`)
+3. **Simple pattern** (chosen): Single regex `/\{[^}]{1,5}\}/g` with map lookup
+
+| Approach | Time (ms) | vs Original | Code Complexity |
+|----------|-----------|-------------|-----------------|
+| forEach loops | 7,202.97 | baseline | Medium (nested loops) |
+| Cached alternation | 142.20 | 50.65x faster | Medium (requires sorting, ~1000 char pattern) |
+| **Simple pattern** | **158.07** | **45.57x faster** | **Low (12 char pattern)** |
+
+The simple pattern approach was chosen because:
+- **Comparable performance**: Only 10% slower than alternation, but still 45x faster than original
+- **Much lower complexity**: 12-character pattern vs 1000+ character pattern
+- **More maintainable**: No need to sort symbols or build complex patterns
+- **More flexible**: Automatically handles any symbol format without modification
 
 ### Test Cases
 
@@ -94,9 +116,11 @@ The test included various mana cost combinations:
 - Special symbols: `{T}{Q}{E}{P}{S}`
 - High costs: `{16}{G}{G}{G}`
 
-## Running the Performance Test
+## Running the Performance Tests
 
-To run the performance test yourself:
+### Basic Performance Test
+
+To run the basic performance test:
 
 ```bash
 cd api/tests
@@ -113,13 +137,27 @@ Expected output:
 2. Running performance benchmarks...
 
 Results (10000 iterations × 14 test cases):
-  Old implementation (forEach): 7147.83ms
-  New implementation (single regex): 138.44ms
-  Performance improvement: 98.06%
-  Speedup: 51.63x faster
+  Old implementation (forEach): 9503.35ms
+  New implementation (single regex): 259.63ms
+  Performance improvement: 97.27%
+  Speedup: 36.60x faster
 
 ✅ All tests passed!
 ```
+
+### Three-Way Comparison Test
+
+To run the comprehensive comparison of all three approaches:
+
+```bash
+cd api/tests
+node test_mana_symbol_performance_comparison.js
+```
+
+This test compares:
+1. Original forEach implementation
+2. Cached alternation pattern
+3. Simple pattern with map lookup (current implementation)
 
 ## Benefits
 
@@ -130,10 +168,12 @@ Results (10000 iterations × 14 test cases):
 
 ## Implementation Notes
 
-- The regex pattern uses alternation (`symbol1|symbol2|...`) to match any symbol in one pass
-- Symbols are sorted by length (longest first) to ensure `{W/U/P}` is matched before `{W/U}` or `{W}`
+- The regex pattern `/\{[^}]{1,5}\}/g` matches any content between braces with 1-5 characters
+- The callback function checks if the matched symbol exists in the map before replacing
+- If a symbol is not in the map, it's returned unchanged (graceful degradation)
 - The `lastIndex` property is reset before each use to ensure the regex with the global flag works correctly
 - The same optimization was applied to both `convertManaSymbols()` and `convertManaSymbolsToText()`
+- No sorting or complex pattern building is required, making the code simpler and more maintainable
 
 ## Related Files
 

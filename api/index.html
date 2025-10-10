@@ -823,20 +823,15 @@
             '{G/U/P}': '(🌳/💧/Φ)',
           };
 
-          // Cache the merged symbol map and regex pattern for convertManaSymbols
-          const allSymbols = { ...hybridMap, ...manaMap };
-          const sortedSymbols = Object.keys(allSymbols).sort((a, b) => b.length - a.length);
-          const pattern = sortedSymbols.map(s => s.replace(/[{}]/g, '\\$&')).join('|');
+          // Cache the merged symbol map for convertManaSymbols
+          // Use simple pattern that matches any content between braces (1-5 chars)
+          // and check if it exists in the map
+          this.manaSymbolsMap = { ...hybridMap, ...manaMap };
+          this.manaSymbolsRegex = /\{[^}]{1,5}\}/g;
 
-          this.manaSymbolsMap = allSymbols;
-          this.manaSymbolsRegex = new RegExp(pattern, 'g');
-
-          // Cache the text map and regex pattern for convertManaSymbolsToText
-          const sortedTextSymbols = Object.keys(manaTextMap).sort((a, b) => b.length - a.length);
-          const textPattern = sortedTextSymbols.map(s => s.replace(/[{}]/g, '\\$&')).join('|');
-
+          // Cache the text map for convertManaSymbolsToText
           this.manaTextMap = manaTextMap;
-          this.manaTextRegex = new RegExp(textPattern, 'g');
+          this.manaTextRegex = /\{[^}]{1,5}\}/g;
         }
 
         async init() {
@@ -1520,7 +1515,8 @@
           this.manaTextRegex.lastIndex = 0;
 
           // Replace all symbols in a single pass using a callback function
-          return text.replace(this.manaTextRegex, match => this.manaTextMap[match]);
+          // Only replace if the symbol exists in our map, otherwise return unchanged
+          return text.replace(this.manaTextRegex, match => this.manaTextMap[match] || match);
         }
 
         convertManaSymbols(manaCost, isModal = false) {
@@ -1533,8 +1529,12 @@
           this.manaSymbolsRegex.lastIndex = 0;
 
           // Replace all symbols in a single pass using a callback function
+          // Only replace if the symbol exists in our map, otherwise return unchanged
           return manaCost.replace(this.manaSymbolsRegex, match => {
-            return `<span class="${symbolClass} ${this.manaSymbolsMap[match]}"></span>`;
+            if (this.manaSymbolsMap[match]) {
+              return `<span class="${symbolClass} ${this.manaSymbolsMap[match]}"></span>`;
+            }
+            return match;
           });
         }
 

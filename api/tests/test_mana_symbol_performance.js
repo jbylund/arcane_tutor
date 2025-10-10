@@ -92,7 +92,7 @@ function convertManaSymbols_Old(manaCost, isModal = false) {
   return converted;
 }
 
-// NEW IMPLEMENTATION (single regex with caching - final optimized version)
+// NEW IMPLEMENTATION (simple pattern with map lookup - final optimized version)
 class ManaConverter {
   constructor() {
     const manaMap = {
@@ -165,11 +165,10 @@ class ManaConverter {
       '{G/U/P}': 'ms ms-gup ms-cost',
     };
 
-    // Cache the merged symbol map and regex pattern
+    // Cache the merged symbol map
+    // Use simple pattern that matches any content between braces (1-5 chars)
     this.allSymbols = { ...hybridMap, ...manaMap };
-    const sortedSymbols = Object.keys(this.allSymbols).sort((a, b) => b.length - a.length);
-    const pattern = sortedSymbols.map(s => s.replace(/[{}]/g, '\\$&')).join('|');
-    this.regex = new RegExp(pattern, 'g');
+    this.regex = /\{[^}]{1,5}\}/g;
   }
 
   convert(manaCost, isModal = false) {
@@ -177,7 +176,11 @@ class ManaConverter {
     const symbolClass = isModal ? 'modal-mana-symbol' : 'mana-symbol';
     this.regex.lastIndex = 0; // Reset regex state
     return manaCost.replace(this.regex, (match) => {
-      return `<span class="${symbolClass} ${this.allSymbols[match]}"></span>`;
+      // Only replace if the symbol exists in our map
+      if (this.allSymbols[match]) {
+        return `<span class="${symbolClass} ${this.allSymbols[match]}"></span>`;
+      }
+      return match;
     });
   }
 }
