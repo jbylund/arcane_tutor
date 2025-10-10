@@ -7,7 +7,7 @@ import os
 import signal
 from types import FrameType
 
-from .api_worker import ApiWorker
+from api.api_worker import ApiWorker
 
 logger = logging.getLogger("api")
 

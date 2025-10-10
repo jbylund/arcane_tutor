@@ -5,7 +5,7 @@ import inspect
 import logging
 from typing import Any
 
-from ..enums import CardOrdering, PreferOrder, SortDirection, UniqueOn
+from api.enums import CardOrdering, PreferOrder, SortDirection, UniqueOn
 
 logger = logging.getLogger(__name__)
 

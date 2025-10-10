@@ -25,5 +25,6 @@ COPY ./requirements/ /tmp/requirements/
 RUN python -m uv pip install --quiet --system --upgrade --break-system-packages \
     -r /tmp/requirements/base.txt -r /tmp/requirements/webserver.txt
 
-RUN mkdir -p /scryfallos
-COPY ./api /scryfallos/api
+RUN mkdir -p /app
+COPY ./api /app/api
+WORKDIR /app
