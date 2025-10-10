@@ -17,6 +17,7 @@ XPGDATABASE=magic
 XPGPASSWORD=foopassword
 XPGPORT=15432
 XPGUSER=foouser
+S3_BUCKET=biblioplex
 
 .PHONY: \
 	/tmp/PIP_ACCESS_TOKEN \
@@ -140,10 +141,10 @@ reset:
 	rm -rvf data
 
 install_deps:
-	python -m uv pip install -r requirements.txt
+	python -m uv pip install -r requirements/base.txt
 
 install_test_deps:
-	python -m uv pip install -r test-requirements.txt -r requirements.txt
+	python -m uv pip install -r requirements/test.txt -r requirements/base.txt
 
 test tests: install_test_deps
 	python -m pytest -vvv --capture=no --durations=10
@@ -160,47 +161,30 @@ coverage: # @doc generate HTML coverage report
 test-profiling:
 	python -m pytest --profile-svg --durations=10 -vvv -k TestImportCardByName
 
-fonts: # @doc subset and optimize the Mana font for web delivery
-	@echo "Installing font subsetting dependencies..."
-	@python -m uv pip install fonttools brotli requests boto3 2>/dev/null || python -m pip install fonttools brotli requests boto3
-	@echo "Running font subsetting script..."
-	@if [ -z "$(S3_BUCKET)" ]; then \
-		echo "Note: S3_BUCKET not set. Generating fonts locally only."; \
-		echo "To auto-upload, run: make fonts S3_BUCKET=your-bucket-name"; \
-		python scripts/subset_mana_font.py --output-dir data/fonts/mana --cdn-url https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mana --skip-upload; \
-	else \
-		echo "Uploading to S3 bucket: $(S3_BUCKET)"; \
-		python scripts/subset_mana_font.py --output-dir data/fonts/mana --cdn-url https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mana --s3-bucket $(S3_BUCKET) --s3-prefix cdn/fonts/mana; \
-	fi
-	@echo ""
-	@echo "See docs/font_optimization.md for next steps"
+font-dependencies:
+	echo "Installing font subsetting dependencies..."
+	python -m uv pip install -r requirements/fonts.txt
 
-beleren_font: # @doc subset and optimize the Beleren font for web delivery
-	@echo "Installing font subsetting dependencies..."
-	@python -m uv pip install fonttools brotli requests boto3 2>/dev/null || python -m pip install fonttools brotli requests boto3
-	@echo "Running Beleren font subsetting script..."
-	@if [ -z "$(S3_BUCKET)" ]; then \
-		echo "Note: S3_BUCKET not set. Generating fonts locally only."; \
-		echo "To auto-upload, run: make beleren_font S3_BUCKET=your-bucket-name"; \
-		python scripts/subset_beleren_font.py --output-dir data/fonts/beleren --cdn-url https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/beleren --skip-upload; \
-	else \
-		echo "Uploading to S3 bucket: $(S3_BUCKET)"; \
-		python scripts/subset_beleren_font.py --output-dir data/fonts/beleren --cdn-url https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/beleren --s3-bucket $(S3_BUCKET) --s3-prefix cdn/fonts/beleren; \
-	fi
-	@echo ""
-	@echo "✓ Beleren font subsetting complete!"
+fonts: mana_font beleren_font mplantin_font
 
-mplantin_font: # @doc subset and optimize the MPlantin font for web delivery
-	@echo "Installing font subsetting dependencies..."
-	@python -m uv pip install fonttools brotli boto3 2>/dev/null || python -m pip install fonttools brotli boto3
-	@echo "Running MPlantin font subsetting script..."
-	@if [ -z "$(S3_BUCKET)" ]; then \
-		echo "Note: S3_BUCKET not set. Generating fonts locally only."; \
-		echo "To auto-upload, run: make mplantin_font S3_BUCKET=your-bucket-name"; \
-		python scripts/subset_mplantin_font.py --input-font fonts/mplantin.otf --output-dir data/fonts/mplantin --cdn-url https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mplantin --skip-upload; \
-	else \
-		echo "Uploading to S3 bucket: $(S3_BUCKET)"; \
-		python scripts/subset_mplantin_font.py --input-font fonts/mplantin.otf --output-dir data/fonts/mplantin --cdn-url https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mplantin --s3-bucket $(S3_BUCKET) --s3-prefix cdn/fonts/mplantin; \
-	fi
-	@echo ""
-	@echo "✓ MPlantin font subsetting complete!"
+mana_font: font-dependencies # @doc subset and optimize the Mana font for web delivery
+	python scripts/subset_mana_font.py \
+		--output-dir data/fonts/mana \
+		--cdn-url https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mana \
+		--s3-bucket $(S3_BUCKET) \
+		--s3-prefix cdn/fonts/mana
+
+beleren_font: font-dependencies # @doc subset and optimize the Beleren font for web delivery
+	python scripts/subset_beleren_font.py \
+		--output-dir data/fonts/beleren \
+		--cdn-url https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/beleren \
+		--s3-bucket $(S3_BUCKET) \
+		--s3-prefix cdn/fonts/beleren
+
+mplantin_font: font-dependencies # @doc subset and optimize the MPlantin font for web delivery
+	python scripts/subset_mplantin_font.py \
+		--input-font fonts/mplantin.otf \
+		--output-dir data/fonts/mplantin \
+		--cdn-url https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mplantin \
+		--s3-bucket $(S3_BUCKET) \
+		--s3-prefix cdn/fonts/mplantin
