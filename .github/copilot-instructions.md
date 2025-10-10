@@ -14,13 +14,14 @@ Always reference these instructions first and fallback to search or bash command
   - `source .venv/bin/activate` -- activates the virtual environment
   - Alternative: Use `make venv` to create virtual environment
 - **Install Python dependencies using uv** (after activating virtual environment):
-  - `uv pip install -r requirements.txt -r test-requirements.txt` -- takes ~2-3 seconds.
-  - Alternative: Legacy method with pip (not recommended): `python -m pip install -r requirements.txt -r test-requirements.txt` -- takes ~4-6 seconds.
+  - `uv pip install -r requirements/base.txt -r requirements/test.txt` -- takes ~2-3 seconds.
+  - Alternative: Legacy method with pip (not recommended): `python -m pip install -r requirements/base.txt -r requirements/test.txt` -- takes ~4-6 seconds.
 
 ### Modular Dependency Structure
-- **requirements.txt**: Core application dependencies for testing and development
-- **test-requirements.txt**: Testing and linting dependencies
-- **webserver-requirements.txt**: Web server dependencies (bjoern) only needed for local API server
+- **requirements/base.txt**: Core application dependencies for testing and development
+- **requirements/test.txt**: Testing and linting dependencies
+- **requirements/webserver.txt**: Web server dependencies (bjoern) only needed for local API server
+- **requirements/fonts.txt**: Font subsetting dependencies for font optimization
 
 ### For Web Server Development (Optional)
 **Only needed if you plan to run the local API server**:
@@ -28,8 +29,8 @@ Always reference these instructions first and fallback to search or bash command
   - `sudo apt-get update` -- takes ~7 seconds. NEVER CANCEL.
   - `sudo apt-get install -y libev-dev` -- takes ~5 seconds. NEVER CANCEL.
 - **Install web server dependencies** (in virtual environment):
-  - `uv pip install -r webserver-requirements.txt` -- takes ~3 seconds. Includes bjoern compilation.
-  - Legacy method: `python -m pip install -r webserver-requirements.txt` -- takes ~5 seconds.
+  - `uv pip install -r requirements/webserver.txt` -- takes ~3 seconds. Includes bjoern compilation.
+  - Legacy method: `python -m pip install -r requirements/webserver.txt` -- takes ~5 seconds.
 
 ### Build and Test Workflow
 - **Run tests**: `python -m pytest -vvv` -- takes ~15-20 seconds. All 438 tests should pass.
@@ -64,7 +65,7 @@ Always reference these instructions first and fallback to search or bash command
 python -m pip install uv              # Install uv if not available
 python -m uv venv .venv               # Create virtual environment
 source .venv/bin/activate             # Activate virtual environment
-uv pip install -r requirements.txt -r test-requirements.txt
+uv pip install -r requirements/base.txt -r requirements/test.txt
 python -m pytest -vvv
 python -c "from api.parsing import parse_scryfall_query; print(parse_scryfall_query('cmc=3'))"
 python -m ruff check
@@ -72,18 +73,18 @@ python -m ruff check
 # Legacy approach (fallback)
 python -m venv .venv                  # Create virtual environment
 source .venv/bin/activate             # Activate virtual environment
-python -m pip install -r requirements.txt -r test-requirements.txt
+python -m pip install -r requirements/base.txt -r requirements/test.txt
 python -m pytest -vvv
 python -c "from api.parsing import parse_scryfall_query; print(parse_scryfall_query('cmc=3'))"
 python -m ruff check
 
 # Additional setup for web server testing (adds ~15 seconds)
 sudo apt-get update && sudo apt-get install -y libev-dev
-uv pip install -r webserver-requirements.txt  # Required for local API testing (in venv)
+uv pip install -r requirements/webserver.txt  # Required for local API testing (in venv)
 ```
 
 ### Current Limitations
-- **bjoern dependency**: Separated into webserver-requirements.txt for modular installation
+- **bjoern dependency**: Separated into requirements/webserver.txt for modular installation
 - **Database integration testing**: Requires running PostgreSQL or Docker compose setup
 - The project builds and tests successfully for both local Python development and containerized deployment.
 
@@ -95,13 +96,13 @@ uv pip install -r webserver-requirements.txt  # Required for local API testing (
 python -m pip install uv                   # Install uv package manager
 make venv                                  # Create virtual environment (or: python -m uv venv .venv)
 source .venv/bin/activate                  # Activate virtual environment
-uv pip install -r requirements.txt -r test-requirements.txt
+uv pip install -r requirements/base.txt -r requirements/test.txt
 
 # Legacy approach (fallback)
 python -m venv .venv                       # Create virtual environment
 source .venv/bin/activate                  # Activate virtual environment
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt -r test-requirements.txt
+python -m pip install -r requirements/base.txt -r requirements/test.txt
 
 # Test and validate changes (works without system dependencies)
 python -m pytest -vvv                    # Run tests (~15-20 seconds, 438 tests)
@@ -111,7 +112,7 @@ python api/entrypoint.py --help          # Test API entrypoint (shows help)
 
 # Additional setup for web server (optional)
 sudo apt-get update && sudo apt-get install -y libev-dev
-uv pip install -r webserver-requirements.txt  # Required for local API testing (in venv)
+uv pip install -r requirements/webserver.txt  # Required for local API testing (in venv)
 
 # Docker workflow (works)
 make datadir                             # Create data directories (<1 second)
@@ -129,7 +130,7 @@ make lint                               # Works but requires installing pylint f
 ### Timing Expectations - NEVER CANCEL
 - **System package installation**: 5-7 seconds per package. NEVER CANCEL.
 - **Virtual environment creation**: ~1 second. NEVER CANCEL.
-- **Python dependency installation**: 
+- **Python dependency installation**:
   - With uv: 2-3 seconds for standard packages. NEVER CANCEL.
   - With pip: 4-6 seconds for standard packages. NEVER CANCEL.
 - **uv installation**: ~3 seconds. NEVER CANCEL.
@@ -150,8 +151,11 @@ make lint                               # Works but requires installing pylint f
 ├── docker-compose.yml       # Container orchestration
 ├── package.json             # Node.js dependencies (prettier)
 ├── pyproject.toml           # Python project configuration
-├── requirements.txt         # Python runtime dependencies
-├── test-requirements.txt    # Python test dependencies
+├── requirements/            # Python dependencies
+│   ├── base.txt             # Core runtime dependencies
+│   ├── fonts.txt            # Font subsetting dependencies
+│   ├── test.txt             # Test dependencies
+│   └── webserver.txt        # Web server dependencies
 ├── api/                     # Python API service
 ├── client/                  # HTML/JS client
 ├── configs/                 # Configuration files
@@ -174,7 +178,7 @@ api/
 
 ### GitHub Actions CI
 - **Unit tests workflow**: `.github/workflows/unit-tests.yml`
-- **Lint workflow**: `.github/workflows/lint.yml` 
+- **Lint workflow**: `.github/workflows/lint.yml`
 - **CI Monitor workflow**: `.github/workflows/ci-monitor.yml` -- automated failure detection
 - **Runs on every push**: Installs Python 3.13, system deps, uses uv for Python deps, runs pytest and ruff
 - **Expected to pass**: All 438 tests should pass in CI environment
@@ -183,7 +187,7 @@ api/
 
 ## Key Development Notes
 - **Database schema**: Complex PostgreSQL schema in `api/db/` with Magic card data structures
-- **Query parser**: Implements Scryfall's search DSL in `api/parsing/` 
+- **Query parser**: Implements Scryfall's search DSL in `api/parsing/`
 - **Web framework**: Uses Falcon for lightweight, fast API development
 - **Multi-process**: API uses bjoern WSGI server with multiple worker processes (requires separate bjoern installation)
 - **Package management**: Uses uv for fast dependency installation (preferred over pip)
