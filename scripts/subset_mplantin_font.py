@@ -58,9 +58,9 @@ def check_dependencies() -> None:
 def subset_font(input_font: Path, output_font: Path, font_format: str = "woff2") -> None:
     """Subset the font to include only Latin characters and common punctuation."""
     print(f"Subsetting {input_font.name} to {output_font.name}...")
-    
+
     unicode_range_arg = ",".join(UNICODE_RANGES)
-    
+
     cmd = [
         "pyftsubset",
         str(input_font),
@@ -78,15 +78,15 @@ def subset_font(input_font: Path, output_font: Path, font_format: str = "woff2")
         "--name-legacy",
         "--name-languages=*",
     ]
-    
+
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
-        
+
         # Check file sizes
         input_size = input_font.stat().st_size
         output_size = output_font.stat().st_size
         reduction = (1 - output_size / input_size) * 100
-        
+
         print(f"  → Original: {input_size:,} bytes")
         print(f"  → Subset: {output_size:,} bytes")
         print(f"  → Reduction: {reduction:.1f}%")
@@ -116,12 +116,12 @@ def generate_css(output_dir: Path, cdn_base_url: str = "/cdn/fonts/mplantin") ->
   font-display: swap;
 }}
 """
-    
+
     css_file = output_dir / "mplantin-subset.css"
     css_file.parent.mkdir(parents=True, exist_ok=True)
     with open(css_file, "w") as f:
         f.write(css_content)
-    
+
     print(f"Generated CSS: {css_file}")
 
 
@@ -130,10 +130,10 @@ def configure_bucket_cors(bucket: str) -> bool:
     if not HAS_BOTO3:
         print("Warning: boto3 not installed, skipping CORS configuration")
         return False
-    
+
     try:
         s3_client = boto3.client("s3")
-        
+
         cors_config = {
             "CORSRules": [
                 {
@@ -142,10 +142,10 @@ def configure_bucket_cors(bucket: str) -> bool:
                     "AllowedOrigins": ["*"],
                     "ExposeHeaders": ["ETag"],
                     "MaxAgeSeconds": 3600,
-                }
-            ]
+                },
+            ],
         }
-        
+
         s3_client.put_bucket_cors(Bucket=bucket, CORSConfiguration=cors_config)
         print(f"✓ Configured CORS on bucket: {bucket}")
         return True
@@ -165,22 +165,22 @@ def upload_to_s3(
     if not HAS_BOTO3:
         print("Warning: boto3 not installed, skipping upload")
         return False
-    
+
     try:
         s3_client = boto3.client("s3")
-        
+
         extra_args = {
             "ContentType": content_type,
             "CacheControl": cache_control,
         }
-        
+
         s3_client.upload_file(
             str(file_path),
             bucket,
             s3_key,
             ExtraArgs=extra_args,
         )
-        
+
         print(f"✓ Uploaded: s3://{bucket}/{s3_key}")
         return True
     except (ClientError, NoCredentialsError) as e:
@@ -197,26 +197,26 @@ def upload_fonts_to_cloudfront(
     if not HAS_BOTO3:
         print("Skipping upload: boto3 not installed")
         return
-    
+
     # Configure CORS on the bucket first
     configure_bucket_cors(bucket)
-    
+
     # Ensure s3_prefix doesn't start with / but does end without /
     s3_prefix = s3_prefix.strip("/")
-    
+
     # Files to upload with their content types
     files_to_upload = [
         ("mplantin-subset.woff2", "font/woff2"),
         ("mplantin-subset.woff", "font/woff"),
         ("mplantin-subset.css", "text/css; charset=utf-8"),
     ]
-    
+
     for filename, content_type in files_to_upload:
         file_path = output_dir / filename
         if not file_path.exists():
             print(f"Warning: {filename} not found, skipping")
             continue
-        
+
         s3_key = f"{s3_prefix}/{filename}"
         upload_to_s3(file_path, bucket, s3_key, content_type)
 
@@ -237,7 +237,7 @@ def load_env() -> None:
 def main() -> None:
     """Main entry point for the font subsetting tool."""
     parser = argparse.ArgumentParser(
-        description="Subset MPlantin font for optimized web delivery"
+        description="Subset MPlantin font for optimized web delivery",
     )
     parser.add_argument(
         "--input-font",
@@ -273,43 +273,43 @@ def main() -> None:
         action="store_true",
         help="Skip uploading to S3 even if bucket is specified",
     )
-    
+
     args = parser.parse_args()
-    
+
     # Load environment
     load_env()
-    
+
     # Check dependencies
     check_dependencies()
-    
+
     # Check if input font exists
     if not args.input_font.exists():
         print(f"Error: Input font not found: {args.input_font}")
         sys.exit(1)
-    
+
     # Create output directory
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     print("=" * 60)
     print("MPlantin Font Subsetting Tool")
     print("=" * 60)
-    
+
     # Subset to woff2
     woff2_subset = args.output_dir / "mplantin-subset.woff2"
     subset_font(args.input_font, woff2_subset, "woff2")
-    
+
     # Subset to woff
     woff_subset = args.output_dir / "mplantin-subset.woff"
     subset_font(args.input_font, woff_subset, "woff")
-    
+
     # Generate CSS
     generate_css(args.output_dir, args.cdn_url)
-    
+
     # Upload to S3/CloudFront if requested
     if not args.skip_upload and args.s3_bucket:
         print("\nUploading to S3/CloudFront...")
         upload_fonts_to_cloudfront(args.output_dir, args.s3_bucket, args.s3_prefix)
-    
+
     print("\n" + "=" * 60)
     print("✓ Font subsetting complete!")
     print("=" * 60)
@@ -317,7 +317,7 @@ def main() -> None:
     print("  - mplantin-subset.woff2 (recommended)")
     print("  - mplantin-subset.woff (fallback)")
     print("  - mplantin-subset.css")
-    
+
     if args.s3_bucket and not args.skip_upload:
         print(f"\nUploaded to: s3://{args.s3_bucket}/{args.s3_prefix}/")
         print(f"CDN URL: {args.cdn_url}/")
