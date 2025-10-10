@@ -1,0 +1,4 @@
+boto3
+brotli
+fonttools
+requests
