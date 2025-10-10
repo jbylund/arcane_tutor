@@ -619,11 +619,21 @@
         .order-controls {
           width: 100%;
           justify-content: center;
+          flex-wrap: wrap;
         }
 
         .order-dropdown {
           flex: 1;
-          max-width: 200px;
+          max-width: 140px;
+          min-width: 90px;
+          padding: 12px 15px;
+          font-size: 0.95rem;
+        }
+
+        .order-toggle {
+          padding: 12px 15px;
+          min-width: 50px;
+          height: 48px;
         }
 
         .results-container {
@@ -683,6 +693,20 @@
 
         .card-image {
           max-width: 100%;
+        }
+
+        .order-dropdown {
+          max-width: 110px;
+          min-width: 80px;
+          padding: 10px 12px;
+          font-size: 0.9rem;
+        }
+
+        .order-toggle {
+          padding: 10px 12px;
+          min-width: 45px;
+          height: 42px;
+          font-size: 1rem;
         }
       }
     </style>
