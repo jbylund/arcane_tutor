@@ -161,7 +161,7 @@ def _convert_string_to_type(str_value: str | None, param_type: Any) -> Any:  # n
                 type(str_value),
                 str_value,
                 type(converted),
-                converted
+                converted,
             )
             return converted
         except (ValueError, TypeError):
