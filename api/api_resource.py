@@ -958,16 +958,18 @@ class APIResource:
         query_sql = f"""
         WITH distinct_cards AS (
             SELECT DISTINCT ON ({distinct_on})
-                card_name AS name,
-                card_artist AS artist,
+                card_artist,
+                card_name,
+                card_set_code,
                 cmc,
+                collector_number,
+                edhrec_rank,
                 image_location_uuid,
-                mana_cost_text AS mana_cost,
-                oracle_text AS oracle_text,
+                mana_cost_text,
+                oracle_text,
                 set_name,
                 type_line,
-                {sql_orderby} AS sort_value,
-                edhrec_rank
+                {sql_orderby} AS sort_value
             FROM
                 magic.cards AS card
             WHERE
@@ -979,11 +981,13 @@ class APIResource:
         (
             SELECT
                 null AS total_cards_count,
-                name,
-                artist,
+                card_artist,
+                card_name AS name,
+                card_set_code AS set_code,
                 cmc,
-                image_location_uuid,
-                mana_cost,
+                collector_number,
+                edhrec_rank,
+                mana_cost_text AS mana_cost,
                 oracle_text,
                 set_name,
                 type_line
@@ -999,7 +1003,7 @@ class APIResource:
         (
             SELECT
                 COUNT(1) AS total_cards_count,
-                null, null, null, null, null, null, null, null
+                null, null, null, null, null, null, null, null, null, null
             FROM
                 distinct_cards
         )
