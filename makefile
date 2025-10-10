@@ -98,7 +98,7 @@ lint: ruff_lint prettier_lint # @doc lint all python files
 prettier_lint: /tmp/prettier.stamp
 	true
 
-/tmp/prettier.stamp:
+/tmp/prettier.stamp: api/index.html
 	npx prettier --write api/index.html
 	touch /tmp/prettier.stamp
 

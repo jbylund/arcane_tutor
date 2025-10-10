@@ -134,7 +134,7 @@ def _convert_string_to_type(str_value: str | None, param_type: Any) -> Any:  # n
         return x
 
     def convert_to_bool(x: str) -> bool:
-        return x.lower() in ("true", "1", "yes", "on")
+        return x.lower() in ("true", "1", "yes", "on", "t")
 
     converter_map = {
         "PreferOrder": PreferOrder,
@@ -155,7 +155,15 @@ def _convert_string_to_type(str_value: str | None, param_type: Any) -> Any:  # n
         except KeyError:
             continue
         try:
-            return converter(str_value)
+            converted = converter(str_value)
+            logger.info(
+                "Converted %s %s to %s %s",
+                type(str_value),
+                str_value,
+                type(converted),
+                converted,
+            )
+            return converted
         except (ValueError, TypeError):
             continue
 
@@ -1045,6 +1053,8 @@ class APIResource:
         """
         self._serve_static_file(filename="index.html", falcon_response=falcon_response)
         falcon_response.content_type = "text/html"
+        # Cache for 1 hour - improves repeat visit performance
+        falcon_response.set_header("Cache-Control", "public, max-age=3600")
 
     def favicon_ico(self: APIResource, *, falcon_response: falcon.Response | None = None) -> None:
         """Return the favicon.ico file.
@@ -1062,6 +1072,8 @@ class APIResource:
         content_length = len(contents)
         logger.info("Favicon content length: %d", content_length)
         falcon_response.headers["content-length"] = content_length
+        # Cache favicon for 7 days - it rarely changes
+        falcon_response.set_header("Cache-Control", "public, max-age=604800")
 
     def _serve_static_file(self: APIResource, *, filename: str, falcon_response: falcon.Response) -> None:
         """Serve a static file to the Falcon response.
@@ -1470,6 +1482,7 @@ class APIResource:
 
         """
         # Step 1: Discover all available tags
+        logger.info("discover_and_import_all_tags: %s", locals())
         result: dict = {
             "success": True,
         }
