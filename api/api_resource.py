@@ -6,7 +6,6 @@ import collections
 import copy
 import csv
 import datetime
-import enum
 import functools
 import inspect
 import itertools
@@ -29,10 +28,12 @@ import requests
 from cachetools import LRUCache, TTLCache, cached
 from psycopg import Connection, Cursor
 
+from .enums import CardOrdering, PreferOrder, SortDirection, UniqueOn
 from .parsing import generate_sql_query, parse_scryfall_query
 from .parsing.scryfall_nodes import calculate_devotion, extract_frame_data_from_raw_card, mana_cost_str_to_dict
 from .tagger_client import TaggerClient
 from .utils import db_utils, error_monitoring, multiprocessing_utils
+from .utils.type_conversions import make_type_converting_wrapper
 
 if TYPE_CHECKING:
     from multiprocessing.synchronize import Event as EventType
@@ -46,22 +47,6 @@ logger = logging.getLogger(__name__)
 # pylint: disable=c-extension-no-member
 NOT_FOUND = 404
 
-
-class UniqueOn(enum.StrEnum):
-    """Enum for the distinct on column for the search."""
-    CARD = enum.auto()
-    PRINTING = enum.auto()
-    ARTWORK = enum.auto()
-
-
-class PreferOrder(enum.StrEnum):
-    """Enum for the prefer order column for the search."""
-    DEFAULT = enum.auto()
-    OLDEST = enum.auto()
-    NEWEST = enum.auto()
-    USD_LOW = enum.auto()
-    USD_HIGH = enum.auto()
-    PROMO = enum.auto()
 
 def extract_image_location_uuid(card: dict[str, Any]) -> str:
     """Extract the image location UUID from a card."""
@@ -115,116 +100,6 @@ def extract_collector_number_int(collector_number: str | int | float | None) -> 
         except (ValueError, OverflowError):
             pass
     return None  # Field will be null by default
-
-
-def _convert_string_to_type(str_value: str | None, param_type: Any) -> Any:  # noqa: ANN401
-    """Convert a string value to the specified type.
-
-    Args:
-        str_value: The string value to convert
-        param_type: The target type annotation
-
-    Returns:
-        The converted value, or the original string if conversion fails/unsupported
-    """
-    if str_value is None:
-        return None
-
-    def identity(x: str) -> str:
-        return x
-
-    def convert_to_bool(x: str) -> bool:
-        return x.lower() in ("true", "1", "yes", "on", "t")
-
-    converter_map = {
-        "PreferOrder": PreferOrder,
-        "UniqueOn": UniqueOn,
-        "bool": convert_to_bool,
-        "float": float,
-        "int": int,
-        "str": identity,
-    }
-    if isinstance(param_type, str):
-        pass
-    else:
-        param_type = param_type.__name__
-    possible_types = [x.strip() for x in param_type.split("|")]
-    for ipossible_type in possible_types:
-        try:
-            converter = converter_map[ipossible_type]
-        except KeyError:
-            continue
-        try:
-            converted = converter(str_value)
-            logger.info(
-                "Converted %s %s to %s %s",
-                type(str_value),
-                str_value,
-                type(converted),
-                converted,
-            )
-            return converted
-        except (ValueError, TypeError):
-            continue
-
-    logger.warning(
-        "Was unable to convert parameter: [%s][%s][%s]: %s",
-        type(param_type),
-        param_type,
-        str(param_type),
-        str_value,
-    )
-    return str_value
-
-
-def make_type_converting_wrapper(func: callable) -> callable:
-    """Create a wrapper that converts string arguments to the types expected by the function.
-
-    Args:
-        func: The function to wrap with type conversion
-
-    Returns:
-        A new function that converts string arguments to match the function's signature
-    """
-    sig = inspect.signature(func)
-
-    # Check if function needs type conversion wrapper
-    # If signature has no parameters or only has 'self', return function as-is
-    params = [p for name, p in sig.parameters.items() if name not in ("self", "_")]
-    if not params:
-        return func
-
-    def convert_args(**str_kwargs: str) -> dict[str, Any]:
-        """Convert string keyword arguments to match function signature types."""
-        converted_kwargs = {}
-
-        for param_name, param in sig.parameters.items():
-            if param_name in str_kwargs:
-                str_value = str_kwargs[param_name]
-                converted_kwargs[param_name] = _convert_string_to_type(str_value, param.annotation)
-            elif param_name not in ("self", "_"):
-                # Parameter not provided, use default if available
-                if param.default != inspect.Parameter.empty:
-                    converted_kwargs[param_name] = param.default
-
-        return converted_kwargs
-
-    def wrapper(**raw_kwargs: Any) -> Any:  # noqa: ANN401
-        """Wrapper function that converts arguments and calls the original function."""
-        # Filter out string parameters that need conversion
-        str_params = {k: v for k, v in raw_kwargs.items() if isinstance(v, str)}
-        non_str_params = {k: v for k, v in raw_kwargs.items() if not isinstance(v, str)}
-
-        # Convert string parameters
-        converted_params = convert_args(**str_params)
-
-        # Merge with non-string parameters (non-string params take precedence)
-        final_params = {**converted_params, **non_str_params}
-
-        return func(**final_params)
-
-    # Use functools.update_wrapper to preserve original function metadata
-    return functools.update_wrapper(wrapper, func)
 
 
 @cached(cache=LRUCache(maxsize=10_000))
@@ -864,13 +739,14 @@ class APIResource:
         self: APIResource,
         *,
         falcon_response: falcon.Response | None = None,
+        # search parameters
+        direction: SortDirection = SortDirection.ASC,
+        limit: int = 100,
+        orderby: CardOrdering = CardOrdering.EDHREC,
+        prefer: PreferOrder = PreferOrder.DEFAULT,
         q: str | None = None,
         query: str | None = None,
-        orderby: str | None = None,
-        direction: str | None = None,
-        limit: int = 100,
-        unique: UniqueOn | None = UniqueOn.CARD,
-        prefer: PreferOrder | None = PreferOrder.DEFAULT,
+        unique: UniqueOn = UniqueOn.CARD,
     ) -> dict[str, Any]:
         """Run a search query and return results and metadata.
 
@@ -906,12 +782,12 @@ class APIResource:
     def _search(  # noqa: PLR0913
         self: APIResource,
         *,
-        query: str | None = None,
-        orderby: str | None = None,
-        direction: str | None = None,
+        direction: SortDirection = SortDirection.ASC,
         limit: int = 100,
-        unique: UniqueOn | None = UniqueOn.CARD,
-        prefer: PreferOrder | None = PreferOrder.DEFAULT,
+        orderby: CardOrdering = CardOrdering.EDHREC,
+        prefer: PreferOrder = PreferOrder.DEFAULT,
+        query: str | None = None,
+        unique: UniqueOn = UniqueOn.CARD,
     ) -> dict[str, Any]:
         begin = time.monotonic()
         try:
