@@ -3,11 +3,24 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Search for Magic: The Gathering cards. Find MTG cards by name, type, text, mana cost, and more. Open source Scryfall implementation."
+    />
+    <meta name="theme-color" content="#667eea" />
+    <!-- Open Graph meta tags for better social sharing -->
+    <meta property="og:title" content="Card Search - Scryfall OS" />
+    <meta
+      property="og:description"
+      content="Search for Magic: The Gathering cards by name, type, text, mana cost, and more."
+    />
+    <meta property="og:type" content="website" />
     <title>Card Search</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <!-- Preconnect to external CDNs for faster resource loading -->
-    <link rel="preconnect" href="https://cards.scryfall.io" crossorigin />
-    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
-    <link rel="preconnect" href="https://d1hot9ps2xugbc.cloudfront.net" crossorigin />
+    <link rel="preconnect" href="https://cards.scryfall.io" />
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+    <link rel="preconnect" href="https://d1hot9ps2xugbc.cloudfront.net" />
     <link
       href="https://cdn.jsdelivr.net/npm/mana-font@latest/css/mana.min.css"
       rel="stylesheet"
@@ -536,6 +549,7 @@
       .card-image {
         display: block;
         width: 100%;
+        height: auto;
         max-width: min(400px, 35vw);
         margin: 0 auto 10px auto;
         border-radius: 5.5% / 4%;
@@ -1071,14 +1085,18 @@
             const oracleTextWithSymbols = this.convertManaSymbolsToText(card.oracle_text);
             const maxLength = 300;
             const truncatedText =
-              oracleTextWithSymbols.length > maxLength ? oracleTextWithSymbols.substring(0, maxLength) + '...' : oracleTextWithSymbols;
+              oracleTextWithSymbols.length > maxLength
+                ? oracleTextWithSymbols.substring(0, maxLength) + '...'
+                : oracleTextWithSymbols;
             altText += this.escapeHtml(truncatedText);
           }
 
           // Create placeholder image that will be replaced when in viewport
           // Add fetchpriority="high" for first row cards to improve LCP
+          // Add loading="lazy" for non-first-row images to improve initial load
           const fetchPriorityAttr = isFirstRow ? ' fetchpriority="high"' : '';
-          const imageHtml = `<img class="card-image" data-small="${this.escapeHtml(imageSmall)}" data-normal="${this.escapeHtml(imageNormal)}" data-large="${this.escapeHtml(imageLarge)}" alt="${altText}" title="${altText}"${fetchPriorityAttr} />`;
+          const loadingAttr = isFirstRow ? '' : ' loading="lazy"';
+          const imageHtml = `<img class="card-image" data-small="${this.escapeHtml(imageSmall)}" data-normal="${this.escapeHtml(imageNormal)}" data-large="${this.escapeHtml(imageLarge)}" width="410" height="573" alt="${altText}" title="${altText}"${fetchPriorityAttr}${loadingAttr} />`;
 
           return `
              <div class="card-item" data-card-id="${this.escapeHtml(cardId)}">
@@ -1120,7 +1138,7 @@
           // Create modal content
           const imageLarge = this.buildImageUrl(card.image_location_uuid, 'large');
           const imageHtml = imageLarge
-            ? `<img class="modal-image" src="${this.escapeHtml(imageLarge)}" alt="${this.escapeHtml(card.name || 'Card Image')}" />`
+            ? `<img class="modal-image" src="${this.escapeHtml(imageLarge)}" width="745" height="1040" alt="${this.escapeHtml(card.name || 'Card Image')}" />`
             : '';
 
           modalContent.innerHTML = `
@@ -1351,17 +1369,17 @@
 
           // Map of mana symbols to Unicode/text representations for alt text
           const manaTextMap = {
-            '{W}': '☀️',  // White - sun
-            '{U}': '💧',  // Blue - water drop
-            '{B}': '💀',  // Black - skull
-            '{R}': '🔥',  // Red - fire
-            '{G}': '🌳',  // Green - tree
-            '{C}': '◇',   // Colorless diamond
-            '{T}': '↻',   // Tap symbol
-            '{Q}': '↺',   // Untap symbol
-            '{E}': '⚡',  // Energy symbol
-            '{P}': 'Φ',   // Phyrexian symbol
-            '{S}': '❄',   // Snow symbol
+            '{W}': '☀️', // White - sun
+            '{U}': '💧', // Blue - water drop
+            '{B}': '💀', // Black - skull
+            '{R}': '🔥', // Red - fire
+            '{G}': '🌳', // Green - tree
+            '{C}': '◇', // Colorless diamond
+            '{T}': '↻', // Tap symbol
+            '{Q}': '↺', // Untap symbol
+            '{E}': '⚡', // Energy symbol
+            '{P}': 'Φ', // Phyrexian symbol
+            '{S}': '❄', // Snow symbol
             '{X}': 'X',
             '{Y}': 'Y',
             '{Z}': 'Z',
@@ -1425,10 +1443,10 @@
           };
 
           let converted = text;
-          
+
           // Process longer symbols first (hybrid and 3-color symbols)
           const sortedSymbols = Object.keys(manaTextMap).sort((a, b) => b.length - a.length);
-          
+
           sortedSymbols.forEach(symbol => {
             const regex = new RegExp(symbol.replace(/[{}]/g, '\\$&'), 'g');
             converted = converted.replace(regex, manaTextMap[symbol]);
