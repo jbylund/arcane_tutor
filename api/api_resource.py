@@ -134,7 +134,7 @@ def _convert_string_to_type(str_value: str | None, param_type: Any) -> Any:  # n
         return x
 
     def convert_to_bool(x: str) -> bool:
-        return x.lower() in ("true", "1", "yes", "on")
+        return x.lower() in ("true", "1", "yes", "on", "t")
 
     converter_map = {
         "PreferOrder": PreferOrder,
@@ -155,7 +155,15 @@ def _convert_string_to_type(str_value: str | None, param_type: Any) -> Any:  # n
         except KeyError:
             continue
         try:
-            return converter(str_value)
+            converted = converter(str_value)
+            logger.info(
+                "Converted %s %s to %s %s",
+                type(str_value),
+                str_value,
+                type(converted),
+                converted
+            )
+            return converted
         except (ValueError, TypeError):
             continue
 
@@ -1470,6 +1478,7 @@ class APIResource:
 
         """
         # Step 1: Discover all available tags
+        logger.info("discover_and_import_all_tags: %s", locals())
         result: dict = {
             "success": True,
         }
