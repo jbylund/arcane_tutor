@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mana Symbol Test - Scryfall OS</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link
+      href="https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mana/mana-subset.css"
+      rel="stylesheet"
+      type="text/css"
+    />
+    <style>
+      :root {
+        --color-primary: #667eea;
+        --color-secondary: #764ba2;
+        --color-background: #f8f9fa;
+        --color-text: #212529;
+        --color-border: #dee2e6;
+        --color-hover: #e9ecef;
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+        background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%);
+        color: var(--color-text);
+        min-height: 100vh;
+        padding: 2rem;
+      }
+
+      .container {
+        max-width: 1400px;
+        margin: 0 auto;
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+        padding: 2rem;
+      }
+
+      h1 {
+        color: var(--color-primary);
+        margin-bottom: 1rem;
+        font-size: 2.5rem;
+        text-align: center;
+      }
+
+      .description {
+        text-align: center;
+        color: #6c757d;
+        margin-bottom: 2rem;
+        font-size: 1.1rem;
+      }
+
+      .section-title {
+        color: var(--color-primary);
+        margin-top: 2rem;
+        margin-bottom: 1rem;
+        font-size: 1.8rem;
+        border-bottom: 2px solid var(--color-border);
+        padding-bottom: 0.5rem;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 2rem;
+      }
+
+      thead {
+        background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%);
+        color: white;
+      }
+
+      th {
+        padding: 1rem;
+        text-align: left;
+        font-weight: 600;
+        font-size: 1rem;
+      }
+
+      td {
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid var(--color-border);
+        vertical-align: middle;
+      }
+
+      tbody tr:hover {
+        background-color: var(--color-hover);
+      }
+
+      .symbol-raw {
+        font-family: 'Courier New', monospace;
+        font-weight: bold;
+        color: #495057;
+        font-size: 1rem;
+      }
+
+      .symbol-emoji {
+        font-size: 1.5rem;
+      }
+
+      .symbol-font {
+        font-size: 1.5rem;
+      }
+
+      .mana-symbol {
+        display: inline-block;
+        vertical-align: middle;
+      }
+
+      /* Ensure the modal mana symbol class is available if needed */
+      .modal-mana-symbol {
+        display: inline-block;
+        vertical-align: middle;
+      }
+
+      .stats {
+        background: #f8f9fa;
+        padding: 1rem;
+        border-radius: 8px;
+        margin-bottom: 2rem;
+        text-align: center;
+      }
+
+      .stats-item {
+        display: inline-block;
+        margin: 0 1.5rem;
+        font-size: 1rem;
+      }
+
+      .stats-label {
+        font-weight: 600;
+        color: var(--color-primary);
+      }
+
+      .filter-section {
+        margin-bottom: 1.5rem;
+        text-align: center;
+      }
+
+      .filter-button {
+        padding: 0.5rem 1rem;
+        margin: 0.25rem;
+        border: 2px solid var(--color-primary);
+        background: white;
+        color: var(--color-primary);
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 0.9rem;
+        font-weight: 500;
+        transition: all 0.2s;
+      }
+
+      .filter-button:hover {
+        background: var(--color-primary);
+        color: white;
+      }
+
+      .filter-button.active {
+        background: var(--color-primary);
+        color: white;
+      }
+
+      .search-box {
+        width: 100%;
+        max-width: 400px;
+        padding: 0.75rem 1rem;
+        border: 2px solid var(--color-border);
+        border-radius: 8px;
+        font-size: 1rem;
+        margin-bottom: 1rem;
+      }
+
+      .search-box:focus {
+        outline: none;
+        border-color: var(--color-primary);
+      }
+
+      @media (max-width: 768px) {
+        body {
+          padding: 1rem;
+        }
+
+        .container {
+          padding: 1rem;
+        }
+
+        h1 {
+          font-size: 1.8rem;
+        }
+
+        th, td {
+          padding: 0.5rem;
+          font-size: 0.9rem;
+        }
+
+        .symbol-emoji, .symbol-font {
+          font-size: 1.2rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>🧪 Mana Symbol Test Page</h1>
+      <p class="description">
+        This page displays all mana symbols used in Scryfall OS to help identify rendering issues.
+      </p>
+
+      <div class="stats">
+        <div class="stats-item">
+          <span class="stats-label">Total Symbols:</span> <span id="total-count">0</span>
+        </div>
+        <div class="stats-item">
+          <span class="stats-label">Regular Symbols:</span> <span id="regular-count">0</span>
+        </div>
+        <div class="stats-item">
+          <span class="stats-label">Hybrid Symbols:</span> <span id="hybrid-count">0</span>
+        </div>
+      </div>
+
+      <div class="filter-section">
+        <input
+          type="text"
+          id="search-box"
+          class="search-box"
+          placeholder="Search symbols (e.g., W/U, phyrexian, tap)..."
+        />
+        <div>
+          <button class="filter-button active" data-filter="all">Show All</button>
+          <button class="filter-button" data-filter="regular">Regular Only</button>
+          <button class="filter-button" data-filter="hybrid">Hybrid Only</button>
+          <button class="filter-button" data-filter="phyrexian">Phyrexian</button>
+        </div>
+      </div>
+
+      <h2 class="section-title">All Mana Symbols</h2>
+      <table id="symbols-table">
+        <thead>
+          <tr>
+            <th>Raw Mana Symbol</th>
+            <th>Emoji Representation</th>
+            <th>Symbol Representation (Mana Font)</th>
+          </tr>
+        </thead>
+        <tbody id="symbols-tbody">
+          <!-- Symbols will be inserted here by JavaScript -->
+        </tbody>
+      </table>
+    </div>
+
+    <script>
+      // Mana symbol maps (extracted from index.html)
+      const manaMap = {
+        '{R}': 'ms ms-r ms-cost',
+        '{G}': 'ms ms-g ms-cost',
+        '{W}': 'ms ms-w ms-cost',
+        '{U}': 'ms ms-u ms-cost',
+        '{B}': 'ms ms-b ms-cost',
+        '{C}': 'ms ms-c ms-cost',
+        '{0}': 'ms ms-0 ms-cost',
+        '{1}': 'ms ms-1 ms-cost',
+        '{2}': 'ms ms-2 ms-cost',
+        '{3}': 'ms ms-3 ms-cost',
+        '{4}': 'ms ms-4 ms-cost',
+        '{5}': 'ms ms-5 ms-cost',
+        '{6}': 'ms ms-6 ms-cost',
+        '{7}': 'ms ms-7 ms-cost',
+        '{8}': 'ms ms-8 ms-cost',
+        '{9}': 'ms ms-9 ms-cost',
+        '{10}': 'ms ms-10 ms-cost',
+        '{11}': 'ms ms-11 ms-cost',
+        '{12}': 'ms ms-12 ms-cost',
+        '{13}': 'ms ms-13 ms-cost',
+        '{14}': 'ms ms-14 ms-cost',
+        '{15}': 'ms ms-15 ms-cost',
+        '{16}': 'ms ms-16 ms-cost',
+        '{X}': 'ms ms-x ms-cost',
+        '{Y}': 'ms ms-y ms-cost',
+        '{Z}': 'ms ms-z ms-cost',
+        '{T}': 'ms ms-tap',
+        '{Q}': 'ms ms-untap',
+        '{E}': 'ms ms-energy',
+        '{P}': 'ms ms-p ms-cost',
+        '{S}': 'ms ms-s ms-cost',
+        '{CHAOS}': 'ms ms-chaos',
+        '{PW}': 'ms ms-pw',
+        '{∞}': 'ms ms-infinity',
+      };
+
+      const hybridMap = {
+        '{W/U}': 'ms ms-wu ms-cost',
+        '{U/B}': 'ms ms-ub ms-cost',
+        '{B/R}': 'ms ms-br ms-cost',
+        '{R/G}': 'ms ms-rg ms-cost',
+        '{G/W}': 'ms ms-gw ms-cost',
+        '{W/B}': 'ms ms-wb ms-cost',
+        '{U/R}': 'ms ms-ur ms-cost',
+        '{B/G}': 'ms ms-bg ms-cost',
+        '{R/W}': 'ms ms-rw ms-cost',
+        '{G/U}': 'ms ms-gu ms-cost',
+        '{2/W}': 'ms ms-2w ms-cost',
+        '{2/U}': 'ms ms-2u ms-cost',
+        '{2/B}': 'ms ms-2b ms-cost',
+        '{2/R}': 'ms ms-2r ms-cost',
+        '{2/G}': 'ms ms-2g ms-cost',
+        '{W/P}': 'ms ms-wp ms-cost',
+        '{U/P}': 'ms ms-up ms-cost',
+        '{B/P}': 'ms ms-bp ms-cost',
+        '{R/P}': 'ms ms-rp ms-cost',
+        '{G/P}': 'ms ms-gp ms-cost',
+        '{W/U/P}': 'ms ms-wup ms-cost',
+        '{W/B/P}': 'ms ms-wbp ms-cost',
+        '{U/B/P}': 'ms ms-ubp ms-cost',
+        '{U/R/P}': 'ms ms-urp ms-cost',
+        '{B/R/P}': 'ms ms-brp ms-cost',
+        '{B/G/P}': 'ms ms-bgp ms-cost',
+        '{R/W/P}': 'ms ms-rwp ms-cost',
+        '{R/G/P}': 'ms ms-rgp ms-cost',
+        '{G/W/P}': 'ms ms-gwp ms-cost',
+        '{G/U/P}': 'ms ms-gup ms-cost',
+      };
+
+      const manaTextMap = {
+        '{W}': '☀️',
+        '{U}': '💧',
+        '{B}': '💀',
+        '{R}': '🔥',
+        '{G}': '🌳',
+        '{C}': '◇',
+        '{T}': '↻',
+        '{Q}': '↺',
+        '{E}': '⚡',
+        '{P}': 'Φ',
+        '{S}': '❄',
+        '{X}': 'X',
+        '{Y}': 'Y',
+        '{Z}': 'Z',
+        '{0}': '⓪',
+        '{1}': '①',
+        '{2}': '②',
+        '{3}': '③',
+        '{4}': '④',
+        '{5}': '⑤',
+        '{6}': '⑥',
+        '{7}': '⑦',
+        '{8}': '⑧',
+        '{9}': '⑨',
+        '{10}': '⑩',
+        '{11}': '⑪',
+        '{12}': '⑫',
+        '{13}': '⑬',
+        '{14}': '⑭',
+        '{15}': '⑮',
+        '{16}': '⑯',
+        '{CHAOS}': '🌀',
+        '{PW}': 'PW',
+        '{∞}': '♾︎',
+        '{W/U}': '(☀️/💧)',
+        '{U/B}': '(💧/💀)',
+        '{B/R}': '(💀/🔥)',
+        '{R/G}': '(🔥/🌳)',
+        '{G/W}': '(🌳/☀️)',
+        '{W/B}': '(☀️/💀)',
+        '{U/R}': '(💧/🔥)',
+        '{B/G}': '(💀/🌳)',
+        '{R/W}': '(🔥/☀️)',
+        '{G/U}': '(🌳/💧)',
+        '{2/W}': '(②/☀️)',
+        '{2/U}': '(②/💧)',
+        '{2/B}': '(②/💀)',
+        '{2/R}': '(②/🔥)',
+        '{2/G}': '(②/🌳)',
+        '{W/P}': '(☀️/Φ)',
+        '{U/P}': '(💧/Φ)',
+        '{B/P}': '(💀/Φ)',
+        '{R/P}': '(🔥/Φ)',
+        '{G/P}': '(🌳/Φ)',
+        '{W/U/P}': '(☀️/💧/Φ)',
+        '{W/B/P}': '(☀️/💀/Φ)',
+        '{U/B/P}': '(💧/💀/Φ)',
+        '{U/R/P}': '(💧/🔥/Φ)',
+        '{B/R/P}': '(💀/🔥/Φ)',
+        '{B/G/P}': '(💀/🌳/Φ)',
+        '{R/W/P}': '(🔥/☀️/Φ)',
+        '{R/G/P}': '(🔥/🌳/Φ)',
+        '{G/W/P}': '(🌳/☀️/Φ)',
+        '{G/U/P}': '(🌳/💧/Φ)',
+      };
+
+      // Create array of all symbols with metadata
+      const allSymbols = [];
+
+      // Add regular mana symbols
+      Object.entries(manaMap).forEach(([symbol, cssClass]) => {
+        const emoji = manaTextMap[symbol] || '(no emoji)';
+        const isHybrid = symbol.includes('/');
+        const isPhyrexian = symbol.includes('/P');
+        allSymbols.push({
+          symbol,
+          emoji,
+          cssClass,
+          type: 'regular',
+          isHybrid: false,
+          isPhyrexian: symbol === '{P}',
+        });
+      });
+
+      // Add hybrid mana symbols
+      Object.entries(hybridMap).forEach(([symbol, cssClass]) => {
+        const emoji = manaTextMap[symbol] || '(no emoji)';
+        const isPhyrexian = symbol.includes('/P');
+        allSymbols.push({
+          symbol,
+          emoji,
+          cssClass,
+          type: 'hybrid',
+          isHybrid: true,
+          isPhyrexian,
+        });
+      });
+
+      // Sort symbols: regular first, then hybrid, alphabetically within each group
+      allSymbols.sort((a, b) => {
+        if (a.type !== b.type) {
+          return a.type === 'regular' ? -1 : 1;
+        }
+        return a.symbol.localeCompare(b.symbol);
+      });
+
+      // Render function
+      function renderSymbols(symbolsToRender) {
+        const tbody = document.getElementById('symbols-tbody');
+        tbody.innerHTML = '';
+
+        symbolsToRender.forEach((item) => {
+          const row = document.createElement('tr');
+          row.dataset.type = item.type;
+          row.dataset.isPhyrexian = item.isPhyrexian;
+          row.dataset.symbol = item.symbol.toLowerCase();
+
+          row.innerHTML = `
+            <td class="symbol-raw">${item.symbol}</td>
+            <td class="symbol-emoji" title="${item.emoji}">${item.emoji}</td>
+            <td class="symbol-font">
+              <span class="mana-symbol ${item.cssClass}"></span>
+            </td>
+          `;
+
+          tbody.appendChild(row);
+        });
+
+        // Update counts
+        const regularCount = symbolsToRender.filter((s) => s.type === 'regular').length;
+        const hybridCount = symbolsToRender.filter((s) => s.type === 'hybrid').length;
+        document.getElementById('total-count').textContent = symbolsToRender.length;
+        document.getElementById('regular-count').textContent = regularCount;
+        document.getElementById('hybrid-count').textContent = hybridCount;
+      }
+
+      // Filter function
+      function filterSymbols(filterType, searchTerm = '') {
+        let filtered = allSymbols;
+
+        // Apply type filter
+        if (filterType === 'regular') {
+          filtered = filtered.filter((s) => s.type === 'regular');
+        } else if (filterType === 'hybrid') {
+          filtered = filtered.filter((s) => s.type === 'hybrid');
+        } else if (filterType === 'phyrexian') {
+          filtered = filtered.filter((s) => s.isPhyrexian);
+        }
+
+        // Apply search filter
+        if (searchTerm) {
+          const term = searchTerm.toLowerCase();
+          filtered = filtered.filter(
+            (s) =>
+              s.symbol.toLowerCase().includes(term) ||
+              s.emoji.toLowerCase().includes(term) ||
+              s.cssClass.toLowerCase().includes(term)
+          );
+        }
+
+        renderSymbols(filtered);
+      }
+
+      // Event listeners
+      let currentFilter = 'all';
+      const searchBox = document.getElementById('search-box');
+
+      document.querySelectorAll('.filter-button').forEach((button) => {
+        button.addEventListener('click', () => {
+          // Update active state
+          document.querySelectorAll('.filter-button').forEach((btn) => btn.classList.remove('active'));
+          button.classList.add('active');
+
+          // Apply filter
+          currentFilter = button.dataset.filter;
+          filterSymbols(currentFilter, searchBox.value);
+        });
+      });
+
+      searchBox.addEventListener('input', (e) => {
+        filterSymbols(currentFilter, e.target.value);
+      });
+
+      // Initial render
+      renderSymbols(allSymbols);
+    </script>
+  </body>
+</html>
