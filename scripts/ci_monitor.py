@@ -276,7 +276,7 @@ def check_ci_status(owner: str, repo: str) -> tuple[bool, list[dict[str, Any]], 
                         "conclusion": latest_run["conclusion"],
                     })
         except requests.RequestException as error:
-            print(f"Error checking workflow {workflow['name']}: {error}")  # noqa: T201
+            print(f"Error checking workflow {workflow['name']}: {error}")
 
     return has_failed, failed_checks, latest_commit_sha
 
@@ -287,10 +287,10 @@ def create_ci_issue_if_needed(owner: str, repo: str, failed_checks: list[dict[st
     existing_issues = check_existing_issues(owner, repo)
 
     if existing_issues:
-        print("CI failure issue already exists, skipping creation")  # noqa: T201
+        print("CI failure issue already exists, skipping creation")
         issue = existing_issues[0]
     else:
-        print(f"No existing issues found for {owner}/{repo}")  # noqa: T201
+        print(f"No existing issues found for {owner}/{repo}")
         issue_title = f"CI Checks Failing on Main Branch ({commit_sha[:7]})"
         issue_body = format_issue_body(commit_sha, failed_checks)
 
@@ -303,15 +303,15 @@ def create_ci_issue_if_needed(owner: str, repo: str, failed_checks: list[dict[st
             repo=repo,
             title=issue_title,
         )
-        print(f"Created CI failure issue: {issue['html_url']}")  # noqa: T201
+        print(f"Created CI failure issue: {issue['html_url']}")
 
     # Now assign to copilot-swe-agent via GraphQL
     issue_number = issue["number"]
     assignment_success = assign_issue_to_copilot_via_graphql(owner, repo, issue_number)
 
     if not assignment_success:
-        print("Warning: Failed to assign issue to copilot-swe-agent via GraphQL")  # noqa: T201
-        print("Issue was created but may need manual assignment")  # noqa: T201
+        print("Warning: Failed to assign issue to copilot-swe-agent via GraphQL")
+        print("Issue was created but may need manual assignment")
 
     return True
 
@@ -335,11 +335,11 @@ def handle_check_only(owner: str, repo: str) -> None:
     set_github_output("failed_checks", json.dumps(failed_checks))
     set_github_output("commit_sha", commit_sha)
 
-    print(f"CI Status: {'FAILED' if has_failed else 'PASSED'}")  # noqa: T201
+    print(f"CI Status: {'FAILED' if has_failed else 'PASSED'}")
     if has_failed:
-        print(f"Failed checks: {len(failed_checks)}")  # noqa: T201
+        print(f"Failed checks: {len(failed_checks)}")
         for check in failed_checks:
-            print(f"  - {check['name']}")  # noqa: T201
+            print(f"  - {check['name']}")
 
 
 def handle_check_and_create_issue(owner: str, repo: str) -> None:
@@ -351,29 +351,29 @@ def handle_check_and_create_issue(owner: str, repo: str) -> None:
     set_github_output("failed_checks", json.dumps(failed_checks))
     set_github_output("commit_sha", commit_sha)
 
-    print(f"CI Status: {'FAILED' if has_failed else 'PASSED'}")  # noqa: T201
+    print(f"CI Status: {'FAILED' if has_failed else 'PASSED'}")
 
     if has_failed:
-        print(f"Failed checks: {len(failed_checks)}")  # noqa: T201
+        print(f"Failed checks: {len(failed_checks)}")
         for check in failed_checks:
-            print(f"  - {check['name']}")  # noqa: T201
+            print(f"  - {check['name']}")
 
         # Create issue if needed
         issue_created = create_ci_issue_if_needed(owner, repo, failed_checks, commit_sha)
         if not issue_created:
-            print("Issue creation skipped (existing issue found)")  # noqa: T201
+            print("Issue creation skipped (existing issue found)")
 
 
 def handle_create_issue_direct(owner: str, repo: str, args: argparse.Namespace) -> None:
     """Handle --create-issue mode."""
     if not args.failed_checks or not args.commit_sha:
-        print("Error: --failed-checks and --commit-sha are required when using --create-issue", file=sys.stderr)  # noqa: T201
+        print("Error: --failed-checks and --commit-sha are required when using --create-issue", file=sys.stderr)
         sys.exit(1)
 
     try:
         failed_checks = json.loads(args.failed_checks)
     except json.JSONDecodeError as e:
-        print(f"Error: Invalid JSON in --failed-checks: {e}", file=sys.stderr)  # noqa: T201
+        print(f"Error: Invalid JSON in --failed-checks: {e}", file=sys.stderr)
         sys.exit(1)
 
     create_ci_issue_if_needed(owner, repo, failed_checks, args.commit_sha)
@@ -440,7 +440,7 @@ def main() -> None:
             handle_create_issue_direct(owner, repo, args)
 
     except (ValueError, requests.RequestException, json.JSONDecodeError) as e:
-        print(f"Error: {e}", file=sys.stderr)  # noqa: T201
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
 

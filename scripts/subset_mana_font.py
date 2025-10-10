@@ -62,7 +62,7 @@ def check_dependencies() -> None:
     if not pyftsubset_path:
         sys.exit(1)
     try:
-        subprocess.run([pyftsubset_path, "--help"], capture_output=True, check=True)  # noqa: S603
+        subprocess.run([pyftsubset_path, "--help"], capture_output=True, check=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
         sys.exit(1)
 
@@ -126,7 +126,7 @@ def subset_font(input_font: Path, output_font: Path, font_format: str = "woff2")
         "--desubroutinize",
     ]
 
-    result = subprocess.run(cmd, check=False, capture_output=True, text=True)  # noqa: S603
+    result = subprocess.run(cmd, check=False, capture_output=True, text=True)
 
     if result.returncode != 0:
         sys.exit(1)
