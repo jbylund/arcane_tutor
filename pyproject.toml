@@ -33,6 +33,15 @@ max-returns = 10  # Increase from default 6 to 10
 max-line-length = 120
 disable = ["line-too-long"]
 ignore = [".venv", "venv", "build", "dist", "migrations"]
+# Specify known members of C extension modules for static analysis
+generated-members = [
+    "orjson.loads",
+    "orjson.dumps",
+    "orjson.JSONDecodeError",
+    "orjson.JSONEncodeError",
+    "orjson.Fragment",
+    "orjson.OPT_.*",
+]
 
 [tool.pylint."**/tests/**/*.py"]
 disable = ["missing-docstring", "protected-access"]
