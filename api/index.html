@@ -698,7 +698,160 @@
           // Autocomplete properties
           this.commonCardTypes = []; // Will store the common card types
 
+          // Initialize cached regex patterns for mana symbol replacement (performance optimization)
+          this.initManaSymbolPatterns();
+
           this.init();
+        }
+
+        initManaSymbolPatterns() {
+          // Define mana symbol maps once
+          const manaMap = {
+            '{R}': 'ms ms-r ms-cost',
+            '{G}': 'ms ms-g ms-cost',
+            '{W}': 'ms ms-w ms-cost',
+            '{U}': 'ms ms-u ms-cost',
+            '{B}': 'ms ms-b ms-cost',
+            '{C}': 'ms ms-c ms-cost',
+            '{0}': 'ms ms-0 ms-cost',
+            '{1}': 'ms ms-1 ms-cost',
+            '{2}': 'ms ms-2 ms-cost',
+            '{3}': 'ms ms-3 ms-cost',
+            '{4}': 'ms ms-4 ms-cost',
+            '{5}': 'ms ms-5 ms-cost',
+            '{6}': 'ms ms-6 ms-cost',
+            '{7}': 'ms ms-7 ms-cost',
+            '{8}': 'ms ms-8 ms-cost',
+            '{9}': 'ms ms-9 ms-cost',
+            '{10}': 'ms ms-10 ms-cost',
+            '{11}': 'ms ms-11 ms-cost',
+            '{12}': 'ms ms-12 ms-cost',
+            '{13}': 'ms ms-13 ms-cost',
+            '{14}': 'ms ms-14 ms-cost',
+            '{15}': 'ms ms-15 ms-cost',
+            '{16}': 'ms ms-16 ms-cost',
+            '{X}': 'ms ms-x ms-cost',
+            '{Y}': 'ms ms-y ms-cost',
+            '{Z}': 'ms ms-z ms-cost',
+            '{T}': 'ms ms-tap',
+            '{Q}': 'ms ms-untap',
+            '{E}': 'ms ms-energy',
+            '{P}': 'ms ms-phyrexian ms-cost',
+            '{S}': 'ms ms-snow ms-cost',
+            '{CHAOS}': 'ms ms-chaos',
+            '{PW}': 'ms ms-pw',
+            '{∞}': 'ms ms-infinity',
+          };
+
+          const hybridMap = {
+            '{W/U}': 'ms ms-wu ms-cost',
+            '{U/B}': 'ms ms-ub ms-cost',
+            '{B/R}': 'ms ms-br ms-cost',
+            '{R/G}': 'ms ms-rg ms-cost',
+            '{G/W}': 'ms ms-gw ms-cost',
+            '{W/B}': 'ms ms-wb ms-cost',
+            '{U/R}': 'ms ms-ur ms-cost',
+            '{B/G}': 'ms ms-bg ms-cost',
+            '{R/W}': 'ms ms-rw ms-cost',
+            '{G/U}': 'ms ms-gu ms-cost',
+            '{2/W}': 'ms ms-2w ms-cost',
+            '{2/U}': 'ms ms-2u ms-cost',
+            '{2/B}': 'ms ms-2b ms-cost',
+            '{2/R}': 'ms ms-2r ms-cost',
+            '{2/G}': 'ms ms-2g ms-cost',
+            '{W/P}': 'ms ms-wp ms-cost',
+            '{U/P}': 'ms ms-up ms-cost',
+            '{B/P}': 'ms ms-bp ms-cost',
+            '{R/P}': 'ms ms-rp ms-cost',
+            '{G/P}': 'ms ms-gp ms-cost',
+            '{W/U/P}': 'ms ms-wup ms-cost',
+            '{W/B/P}': 'ms ms-wbp ms-cost',
+            '{U/B/P}': 'ms ms-ubp ms-cost',
+            '{U/R/P}': 'ms ms-urp ms-cost',
+            '{B/R/P}': 'ms ms-brp ms-cost',
+            '{B/G/P}': 'ms ms-bgp ms-cost',
+            '{R/W/P}': 'ms ms-rwp ms-cost',
+            '{R/G/P}': 'ms ms-rgp ms-cost',
+            '{G/W/P}': 'ms ms-gwp ms-cost',
+            '{G/U/P}': 'ms ms-gup ms-cost',
+          };
+
+          const manaTextMap = {
+            '{W}': '☀️',
+            '{U}': '💧',
+            '{B}': '💀',
+            '{R}': '🔥',
+            '{G}': '🌳',
+            '{C}': '◇',
+            '{T}': '↻',
+            '{Q}': '↺',
+            '{E}': '⚡',
+            '{P}': 'Φ',
+            '{S}': '❄',
+            '{X}': 'X',
+            '{Y}': 'Y',
+            '{Z}': 'Z',
+            '{0}': '⓪',
+            '{1}': '①',
+            '{2}': '②',
+            '{3}': '③',
+            '{4}': '④',
+            '{5}': '⑤',
+            '{6}': '⑥',
+            '{7}': '⑦',
+            '{8}': '⑧',
+            '{9}': '⑨',
+            '{10}': '⑩',
+            '{11}': '⑪',
+            '{12}': '⑫',
+            '{13}': '⑬',
+            '{14}': '⑭',
+            '{15}': '⑮',
+            '{16}': '⑯',
+            '{CHAOS}': '🌀',
+            '{PW}': 'PW',
+            '{∞}': '♾︎',
+            '{W/U}': '(☀️/💧)',
+            '{U/B}': '(💧/💀)',
+            '{B/R}': '(💀/🔥)',
+            '{R/G}': '(🔥/🌳)',
+            '{G/W}': '(🌳/☀️)',
+            '{W/B}': '(☀️/💀)',
+            '{U/R}': '(💧/🔥)',
+            '{B/G}': '(💀/🌳)',
+            '{R/W}': '(🔥/☀️)',
+            '{G/U}': '(🌳/💧)',
+            '{2/W}': '(②/☀️)',
+            '{2/U}': '(②/💧)',
+            '{2/B}': '(②/💀)',
+            '{2/R}': '(②/🔥)',
+            '{2/G}': '(②/🌳)',
+            '{W/P}': '(☀️/Φ)',
+            '{U/P}': '(💧/Φ)',
+            '{B/P}': '(💀/Φ)',
+            '{R/P}': '(🔥/Φ)',
+            '{G/P}': '(🌳/Φ)',
+            '{W/U/P}': '(☀️/💧/Φ)',
+            '{W/B/P}': '(☀️/💀/Φ)',
+            '{U/B/P}': '(💧/💀/Φ)',
+            '{U/R/P}': '(💧/🔥/Φ)',
+            '{B/R/P}': '(💀/🔥/Φ)',
+            '{B/G/P}': '(💀/🌳/Φ)',
+            '{R/W/P}': '(🔥/☀️/Φ)',
+            '{R/G/P}': '(🔥/🌳/Φ)',
+            '{G/W/P}': '(🌳/☀️/Φ)',
+            '{G/U/P}': '(🌳/💧/Φ)',
+          };
+
+          // Cache the merged symbol map for convertManaSymbols
+          // Use simple pattern that matches any content between braces (1-5 chars)
+          // Use Map for O(1) lookup with single get() operation
+          this.manaSymbolsMap = new Map(Object.entries({ ...hybridMap, ...manaMap }));
+          this.manaSymbolsRegex = /\{[^}]{1,5}\}/g;
+
+          // Cache the text map for convertManaSymbolsToText
+          this.manaTextMap = new Map(Object.entries(manaTextMap));
+          this.manaTextRegex = /\{[^}]{1,5}\}/g;
         }
 
         async init() {
@@ -1377,184 +1530,39 @@
         convertManaSymbolsToText(text) {
           if (!text) return '';
 
-          // Map of mana symbols to Unicode/text representations for alt text
-          const manaTextMap = {
-            '{W}': '☀️', // White - sun
-            '{U}': '💧', // Blue - water drop
-            '{B}': '💀', // Black - skull
-            '{R}': '🔥', // Red - fire
-            '{G}': '🌳', // Green - tree
-            '{C}': '◇', // Colorless diamond
-            '{T}': '↻', // Tap symbol
-            '{Q}': '↺', // Untap symbol
-            '{E}': '⚡', // Energy symbol
-            '{P}': 'Φ', // Phyrexian symbol
-            '{S}': '❄', // Snow symbol
-            '{X}': 'X',
-            '{Y}': 'Y',
-            '{Z}': 'Z',
-            '{0}': '⓪',
-            '{1}': '①',
-            '{2}': '②',
-            '{3}': '③',
-            '{4}': '④',
-            '{5}': '⑤',
-            '{6}': '⑥',
-            '{7}': '⑦',
-            '{8}': '⑧',
-            '{9}': '⑨',
-            '{10}': '⑩',
-            '{11}': '⑪',
-            '{12}': '⑫',
-            '{13}': '⑬',
-            '{14}': '⑭',
-            '{15}': '⑮',
-            '{16}': '⑯',
-            '{CHAOS}': '🌀',
-            '{PW}': 'PW',
-            '{∞}': '♾︎',
-            // Hybrid mana symbols
-            '{W/U}': '(☀️/💧)',
-            '{U/B}': '(💧/💀)',
-            '{B/R}': '(💀/🔥)',
-            '{R/G}': '(🔥/🌳)',
-            '{G/W}': '(🌳/☀️)',
-            '{W/B}': '(☀️/💀)',
-            '{U/R}': '(💧/🔥)',
-            '{B/G}': '(💀/🌳)',
-            '{R/W}': '(🔥/☀️)',
-            '{G/U}': '(🌳/💧)',
-            '{2/W}': '(②/☀️)',
-            '{2/U}': '(②/💧)',
-            '{2/B}': '(②/💀)',
-            '{2/R}': '(②/🔥)',
-            '{2/G}': '(②/🌳)',
-            // Phyrexian hybrid mana symbols
-            '{W/P}': '(☀️/Φ)',
-            '{U/P}': '(💧/Φ)',
-            '{B/P}': '(💀/Φ)',
-            '{R/P}': '(🔥/Φ)',
-            '{G/P}': '(🌳/Φ)',
-            // 3-color hybrid mana symbols (2 colors + Phyrexian)
-            '{W/U/P}': '(☀️/💧/Φ)',
-            '{W/B/P}': '(☀️/💀/Φ)',
-            '{U/B/P}': '(💧/💀/Φ)',
-            '{U/R/P}': '(💧/🔥/Φ)',
-            '{B/R/P}': '(💀/🔥/Φ)',
-            '{B/G/P}': '(💀/🌳/Φ)',
-            '{R/W/P}': '(🔥/☀️/Φ)',
-            '{R/G/P}': '(🔥/🌳/Φ)',
-            '{G/W/P}': '(🌳/☀️/Φ)',
-            '{G/U/P}': '(🌳/💧/Φ)',
-          };
+          // Use cached regex pattern and map for performance
+          // Reset regex state before use (important for 'g' flag)
+          this.manaTextRegex.lastIndex = 0;
 
-          let converted = text;
-
-          // Process longer symbols first (hybrid and 3-color symbols)
-          const sortedSymbols = Object.keys(manaTextMap).sort((a, b) => b.length - a.length);
-
-          sortedSymbols.forEach(symbol => {
-            const regex = new RegExp(symbol.replace(/[{}]/g, '\\$&'), 'g');
-            converted = converted.replace(regex, manaTextMap[symbol]);
+          // Replace all symbols in a single pass using a callback function
+          // Only replace if the symbol exists in our map, otherwise return unchanged
+          return text.replace(this.manaTextRegex, match => {
+            const replacement = this.manaTextMap.get(match);
+            if (replacement === undefined) {
+              return match;
+            }
+            return replacement;
           });
-
-          return converted;
         }
 
         convertManaSymbols(manaCost, isModal = false) {
           if (!manaCost) return '';
 
-          // Map of mana symbols to Mana font classes with casting cost circles
-          const manaMap = {
-            '{R}': 'ms ms-r ms-cost',
-            '{G}': 'ms ms-g ms-cost',
-            '{W}': 'ms ms-w ms-cost',
-            '{U}': 'ms ms-u ms-cost',
-            '{B}': 'ms ms-b ms-cost',
-            '{C}': 'ms ms-c ms-cost',
-            '{0}': 'ms ms-0 ms-cost',
-            '{1}': 'ms ms-1 ms-cost',
-            '{2}': 'ms ms-2 ms-cost',
-            '{3}': 'ms ms-3 ms-cost',
-            '{4}': 'ms ms-4 ms-cost',
-            '{5}': 'ms ms-5 ms-cost',
-            '{6}': 'ms ms-6 ms-cost',
-            '{7}': 'ms ms-7 ms-cost',
-            '{8}': 'ms ms-8 ms-cost',
-            '{9}': 'ms ms-9 ms-cost',
-            '{10}': 'ms ms-10 ms-cost',
-            '{11}': 'ms ms-11 ms-cost',
-            '{12}': 'ms ms-12 ms-cost',
-            '{13}': 'ms ms-13 ms-cost',
-            '{14}': 'ms ms-14 ms-cost',
-            '{15}': 'ms ms-15 ms-cost',
-            '{16}': 'ms ms-16 ms-cost',
-            '{X}': 'ms ms-x ms-cost',
-            '{Y}': 'ms ms-y ms-cost',
-            '{Z}': 'ms ms-z ms-cost',
-            '{T}': 'ms ms-tap',
-            '{Q}': 'ms ms-untap',
-            '{E}': 'ms ms-energy',
-            '{P}': 'ms ms-phyrexian ms-cost',
-            '{S}': 'ms ms-snow ms-cost',
-            '{CHAOS}': 'ms ms-chaos',
-            '{PW}': 'ms ms-pw',
-            '{∞}': 'ms ms-infinity',
-          };
-
-          // Hybrid mana symbols with casting cost circles
-          const hybridMap = {
-            '{W/U}': 'ms ms-wu ms-cost',
-            '{U/B}': 'ms ms-ub ms-cost',
-            '{B/R}': 'ms ms-br ms-cost',
-            '{R/G}': 'ms ms-rg ms-cost',
-            '{G/W}': 'ms ms-gw ms-cost',
-            '{W/B}': 'ms ms-wb ms-cost',
-            '{U/R}': 'ms ms-ur ms-cost',
-            '{B/G}': 'ms ms-bg ms-cost',
-            '{R/W}': 'ms ms-rw ms-cost',
-            '{G/U}': 'ms ms-gu ms-cost',
-            '{2/W}': 'ms ms-2w ms-cost',
-            '{2/U}': 'ms ms-2u ms-cost',
-            '{2/B}': 'ms ms-2b ms-cost',
-            '{2/R}': 'ms ms-2r ms-cost',
-            '{2/G}': 'ms ms-2g ms-cost',
-            // Phyrexian hybrid mana symbols
-            '{W/P}': 'ms ms-wp ms-cost',
-            '{U/P}': 'ms ms-up ms-cost',
-            '{B/P}': 'ms ms-bp ms-cost',
-            '{R/P}': 'ms ms-rp ms-cost',
-            '{G/P}': 'ms ms-gp ms-cost',
-            // 3-color hybrid mana symbols (2 colors + Phyrexian)
-            '{W/U/P}': 'ms ms-wup ms-cost',
-            '{W/B/P}': 'ms ms-wbp ms-cost',
-            '{U/B/P}': 'ms ms-ubp ms-cost',
-            '{U/R/P}': 'ms ms-urp ms-cost',
-            '{B/R/P}': 'ms ms-brp ms-cost',
-            '{B/G/P}': 'ms ms-bgp ms-cost',
-            '{R/W/P}': 'ms ms-rwp ms-cost',
-            '{R/G/P}': 'ms ms-rgp ms-cost',
-            '{G/W/P}': 'ms ms-gwp ms-cost',
-            '{G/U/P}': 'ms ms-gup ms-cost',
-          };
-
-          // Replace mana symbols with Mana font spans
-          let converted = manaCost;
           const symbolClass = isModal ? 'modal-mana-symbol' : 'mana-symbol';
 
-          // Process hybrid symbols first (they need to be processed before single symbols)
-          Object.keys(hybridMap).forEach(symbol => {
-            const regex = new RegExp(symbol.replace(/[{}]/g, '\\$&'), 'g');
-            converted = converted.replace(regex, `<span class="${symbolClass} ${hybridMap[symbol]}"></span>`);
-          });
+          // Use cached regex pattern and map for performance
+          // Reset regex state before use (important for 'g' flag)
+          this.manaSymbolsRegex.lastIndex = 0;
 
-          // Process regular mana symbols
-          Object.keys(manaMap).forEach(symbol => {
-            const regex = new RegExp(symbol.replace(/[{}]/g, '\\$&'), 'g');
-            converted = converted.replace(regex, `<span class="${symbolClass} ${manaMap[symbol]}"></span>`);
+          // Replace all symbols in a single pass using a callback function
+          // Only replace if the symbol exists in our map, otherwise return unchanged
+          return manaCost.replace(this.manaSymbolsRegex, match => {
+            const replacement = this.manaSymbolsMap.get(match);
+            if (replacement === undefined) {
+              return match;
+            }
+            return `<span class="${symbolClass} ${replacement}"></span>`;
           });
-
-          return converted;
         }
 
         formatOracleText(oracleText, isModal = false) {
