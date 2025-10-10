@@ -37,6 +37,7 @@ XPGUSER=foouser
 	hlep \
 	images \
 	lint \
+	mplantin_font \
 	pull_images \
 	reset \
 	test \
@@ -188,3 +189,18 @@ beleren_font: # @doc subset and optimize the Beleren font for web delivery
 	fi
 	@echo ""
 	@echo "✓ Beleren font subsetting complete!"
+
+mplantin_font: # @doc subset and optimize the MPlantin font for web delivery
+	@echo "Installing font subsetting dependencies..."
+	@python -m uv pip install fonttools brotli boto3 2>/dev/null || python -m pip install fonttools brotli boto3
+	@echo "Running MPlantin font subsetting script..."
+	@if [ -z "$(S3_BUCKET)" ]; then \
+		echo "Note: S3_BUCKET not set. Generating fonts locally only."; \
+		echo "To auto-upload, run: make mplantin_font S3_BUCKET=your-bucket-name"; \
+		python scripts/subset_mplantin_font.py --input-font fonts/mplantin.otf --output-dir data/fonts/mplantin --cdn-url https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mplantin --skip-upload; \
+	else \
+		echo "Uploading to S3 bucket: $(S3_BUCKET)"; \
+		python scripts/subset_mplantin_font.py --input-font fonts/mplantin.otf --output-dir data/fonts/mplantin --cdn-url https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mplantin --s3-bucket $(S3_BUCKET) --s3-prefix cdn/fonts/mplantin; \
+	fi
+	@echo ""
+	@echo "✓ MPlantin font subsetting complete!"

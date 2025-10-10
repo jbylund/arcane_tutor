@@ -30,11 +30,11 @@ Following the authentic Magic card typography:
   - `.card-type` - Card type line in search results
   - `.modal-card-type` - Card type line in the modal view
 
-- **MPlantin (with fallbacks)** is used for:
+- **MPlantin** (see `docs/mplantin_font.md`) is used for:
   - `.card-text` - Oracle text in search results
   - `.modal-card-text` - Oracle text in the modal view
   
-  Oracle text uses `font-family: 'MPlantin', 'Plantin MT Pro', 'Plantin', Georgia, serif;` to match the serif font used on physical cards. If MPlantin is not installed, it falls back to Georgia (a similar serif font).
+  Oracle text uses `font-family: 'MPlantin', Georgia, serif;` which loads from CloudFront. The MPlantin font is subsetted from `fonts/mplantin.otf` and hosted on the CDN. If the CDN font fails to load, it falls back to Georgia (a similar serif font).
 
 ## Generating and Uploading the Font
 
