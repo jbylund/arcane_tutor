@@ -825,12 +825,12 @@
 
           // Cache the merged symbol map for convertManaSymbols
           // Use simple pattern that matches any content between braces (1-5 chars)
-          // and check if it exists in the map
-          this.manaSymbolsMap = { ...hybridMap, ...manaMap };
+          // Use Map for O(1) lookup with single get() operation
+          this.manaSymbolsMap = new Map(Object.entries({ ...hybridMap, ...manaMap }));
           this.manaSymbolsRegex = /\{[^}]{1,5}\}/g;
 
           // Cache the text map for convertManaSymbolsToText
-          this.manaTextMap = manaTextMap;
+          this.manaTextMap = new Map(Object.entries(manaTextMap));
           this.manaTextRegex = /\{[^}]{1,5}\}/g;
         }
 
@@ -1516,7 +1516,13 @@
 
           // Replace all symbols in a single pass using a callback function
           // Only replace if the symbol exists in our map, otherwise return unchanged
-          return text.replace(this.manaTextRegex, match => this.manaTextMap[match] || match);
+          return text.replace(this.manaTextRegex, match => {
+            const replacement = this.manaTextMap.get(match);
+            if (replacement === undefined) {
+              return match;
+            }
+            return replacement;
+          });
         }
 
         convertManaSymbols(manaCost, isModal = false) {
@@ -1531,10 +1537,11 @@
           // Replace all symbols in a single pass using a callback function
           // Only replace if the symbol exists in our map, otherwise return unchanged
           return manaCost.replace(this.manaSymbolsRegex, match => {
-            if (this.manaSymbolsMap[match]) {
-              return `<span class="${symbolClass} ${this.manaSymbolsMap[match]}"></span>`;
+            const replacement = this.manaSymbolsMap.get(match);
+            if (replacement === undefined) {
+              return match;
             }
-            return match;
+            return `<span class="${symbolClass} ${replacement}"></span>`;
           });
         }
 

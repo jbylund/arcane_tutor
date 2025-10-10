@@ -139,7 +139,8 @@ function convertManaSymbols_Cached(manaCost, isModal = false) {
 // OPTION 3: Simple regex pattern with map lookup
 class ManaConverterSimple {
   constructor() {
-    this.allSymbols = { ...hybridMap, ...manaMap };
+    // Use Map for O(1) lookup with single get() operation
+    this.allSymbols = new Map(Object.entries({ ...hybridMap, ...manaMap }));
     // Simple pattern: match anything between braces with 1-5 characters
     this.regex = /\{[^}]{1,5}\}/g;
   }
@@ -149,12 +150,11 @@ class ManaConverterSimple {
     const symbolClass = isModal ? 'modal-mana-symbol' : 'mana-symbol';
     this.regex.lastIndex = 0;
     return manaCost.replace(this.regex, (match) => {
-      // Only replace if the symbol exists in our map
-      if (this.allSymbols[match]) {
-        return `<span class="${symbolClass} ${this.allSymbols[match]}"></span>`;
+      const replacement = this.allSymbols.get(match);
+      if (replacement === undefined) {
+        return match;
       }
-      // Return unchanged if not in map
-      return match;
+      return `<span class="${symbolClass} ${replacement}"></span>`;
     });
   }
 }
