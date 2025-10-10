@@ -6,6 +6,8 @@ from abc import ABC, abstractmethod
 from base64 import b64encode
 from typing import Any
 
+type SqlContext = dict[str, int | float | str | list | dict]
+
 
 def param_name(ival: object) -> str:
     """Generate a unique parameter name for SQL queries.
@@ -26,7 +28,7 @@ class QueryNode(ABC):
     """Base class for all query nodes in the abstract syntax tree (AST)."""
 
     @abstractmethod
-    def to_sql(self: QueryNode, context: dict) -> str:
+    def to_sql(self: QueryNode, context: SqlContext) -> str:
         """Convert this node to a SQL WHERE clause string representation."""
 
 
@@ -64,7 +66,7 @@ class StringValueNode(ValueNode):
         """Initialize a StringValueNode with a string value."""
         self.value = value
 
-    def to_sql(self: StringValueNode, context: dict) -> str:
+    def to_sql(self: StringValueNode, context: SqlContext) -> str:
         """Serialize this string value node to a SQL string literal."""
         _param_name = param_name(self.value)
         context[_param_name] = self.value
@@ -78,7 +80,7 @@ class NumericValueNode(ValueNode):
         """Initialize a NumericValueNode with a numeric value."""
         self.value = value
 
-    def to_sql(self: NumericValueNode, context: dict) -> str:
+    def to_sql(self: NumericValueNode, context: SqlContext) -> str:
         """Serialize this numeric value node to a SQL number literal."""
         _param_name = param_name(self.value)
         context[_param_name] = self.value
@@ -92,7 +94,7 @@ class ManaValueNode(ValueNode):
         """Initialize a ManaValueNode with a mana cost string."""
         self.value = value
 
-    def to_sql(self: ManaValueNode, context: dict) -> str:
+    def to_sql(self: ManaValueNode, context: SqlContext) -> str:
         """Serialize this mana value node to a SQL string literal."""
         _param_name = param_name(self.value)
         context[_param_name] = self.value
@@ -106,7 +108,7 @@ class RegexValueNode(ValueNode):
         """Initialize a RegexValueNode with a regex pattern string."""
         self.value = value
 
-    def to_sql(self: RegexValueNode, context: dict) -> str:
+    def to_sql(self: RegexValueNode, context: SqlContext) -> str:
         """Serialize this regex value node to a SQL string literal."""
         _param_name = param_name(self.value)
         context[_param_name] = self.value
@@ -120,7 +122,7 @@ class AttributeNode(LeafNode):
         """Initialize an AttributeNode with the attribute name."""
         self.attribute_name = attribute_name
 
-    def to_sql(self: AttributeNode, context: dict) -> str:
+    def to_sql(self: AttributeNode, context: SqlContext) -> str:
         """Serialize this attribute node to a SQL column reference."""
         del context
         return f"card.{self.attribute_name}"
@@ -178,7 +180,7 @@ class BinaryOperatorNode(QueryNode):
             msg = f"Unknown operator: {operator}"
             raise ValueError(msg)
 
-    def to_sql(self: BinaryOperatorNode, context: dict) -> str:
+    def to_sql(self: BinaryOperatorNode, context: SqlContext) -> str:
         """Serialize this binary operator node to a SQL expression."""
         sql_operator = self.operator
         if sql_operator == ":":
@@ -214,7 +216,7 @@ class NaryOperatorNode(QueryNode):
         """Initialize an NaryOperatorNode with a list of operand nodes."""
         self.operands = operands
 
-    def to_sql(self: NaryOperatorNode, context: dict) -> str:
+    def to_sql(self: NaryOperatorNode, context: SqlContext) -> str:
         """Serialize this n-ary operator node to a SQL expression."""
         if not self.operands:
             return self._empty_result()
@@ -283,7 +285,7 @@ class NotNode(QueryNode):
         """Initialize a NotNode with a single operand node."""
         self.operand = operand
 
-    def to_sql(self: NotNode, context: dict) -> str:
+    def to_sql(self: NotNode, context: SqlContext) -> str:
         """Serialize this NOT node to a SQL expression."""
         operand_sql = self.operand.to_sql(context)
         return f"NOT ({operand_sql})"
@@ -310,7 +312,7 @@ class Query(QueryNode):
         """Initialize a Query with the root QueryNode."""
         self.root = root
 
-    def to_sql(self: Query, context: dict) -> str:
+    def to_sql(self: Query, context: SqlContext) -> str:
         """Serialize this query to a SQL string."""
         return self.root.to_sql(context)
 
