@@ -1,1 +1,0 @@
-"""Client package for ScryfallOS."""
