@@ -118,9 +118,10 @@ scryfallos/
 ├── docs/                        # Project documentation and analysis
 ├── client/                      # Client-side assets (minimal)
 ├── configs/                     # Configuration files
-├── requirements.txt             # Core Python dependencies
-├── test-requirements.txt        # Testing dependencies
-├── webserver-requirements.txt   # Optional web server dependencies
+├── requirements/                # Requirements files
+│   ├── base.txt                 # base requirements
+│   ├── test.txt                 # testing requirements
+│   └── webserver.txt            # webserver requirements - requires building libev
 ├── docker-compose.yml           # Container orchestration
 └── makefile                     # Build automation
 ```

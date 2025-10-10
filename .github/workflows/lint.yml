@@ -31,7 +31,7 @@ jobs:
             python -m pip install --upgrade pip
             python -m pip install uv
           fi
-          uv pip install --system --break-system-packages -r requirements.txt -r test-requirements.txt
+          uv pip install --system --break-system-packages -r requirements/base.txt -r requirements/test.txt
 
       - name: Run ruff linting
         run: |

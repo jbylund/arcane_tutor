@@ -26,7 +26,7 @@ source .venv/bin/activate
 
 # Install Python dependencies in virtual environment
 echo "Installing Python dependencies..."
-uv pip install -r requirements.txt -r test-requirements.txt
+uv pip install -r requirements/base.txt -r requirements/test.txt
 
 echo "Setup complete! Environment ready for Scryfall OS development."
 echo "Virtual environment created at .venv"

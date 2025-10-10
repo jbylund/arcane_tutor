@@ -163,7 +163,7 @@ def convert_to_webp(
             "-o", str(output_path),
         ]
 
-        subprocess.run(  # noqa: S603
+        subprocess.run(
             cmd,
             capture_output=True,
             text=True,
@@ -401,7 +401,7 @@ def configure_env() -> None:
 def check_cwebp() -> None:
     """Check if cwebp command is available and exit if not found."""
     try:
-        subprocess.run(["cwebp", "-version"], capture_output=True, check=True, timeout=5)  # noqa: S607
+        subprocess.run(["cwebp", "-version"], capture_output=True, check=True, timeout=5)
     except (subprocess.CalledProcessError, FileNotFoundError):
         logger.error(
             "cwebp not found. Please install webp tools:\n"

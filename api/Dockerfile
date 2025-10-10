@@ -21,10 +21,9 @@ RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python && \
     python -m pip install --upgrade pip && \
     python -m pip install --upgrade uv
 
-COPY ./requirements.txt /tmp/requirements.txt
-COPY ./webserver-requirements.txt /tmp/webserver-requirements.txt
+COPY ./requirements/ /tmp/requirements/
 RUN python -m uv pip install --quiet --system --upgrade --break-system-packages \
-    -r /tmp/requirements.txt -r /tmp/webserver-requirements.txt
+    -r /tmp/requirements/base.txt -r /tmp/requirements/webserver.txt
 
 RUN mkdir -p /scryfallos
 COPY ./api /scryfallos/api
