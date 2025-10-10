@@ -23,6 +23,7 @@ XPGUSER=foouser
 	/tmp/PIP_INDEX_URL \
 	/tmp/auth.toml \
 	/tmp/pip.conf \
+	beleren_font \
 	build_images \
 	check_env \
 	coverage \
@@ -172,3 +173,18 @@ fonts: # @doc subset and optimize the Mana font for web delivery
 	fi
 	@echo ""
 	@echo "See docs/font_optimization.md for next steps"
+
+beleren_font: # @doc subset and optimize the Beleren font for web delivery
+	@echo "Installing font subsetting dependencies..."
+	@python -m uv pip install fonttools brotli requests boto3 2>/dev/null || python -m pip install fonttools brotli requests boto3
+	@echo "Running Beleren font subsetting script..."
+	@if [ -z "$(S3_BUCKET)" ]; then \
+		echo "Note: S3_BUCKET not set. Generating fonts locally only."; \
+		echo "To auto-upload, run: make beleren_font S3_BUCKET=your-bucket-name"; \
+		python scripts/subset_beleren_font.py --output-dir data/fonts/beleren --cdn-url https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/beleren --skip-upload; \
+	else \
+		echo "Uploading to S3 bucket: $(S3_BUCKET)"; \
+		python scripts/subset_beleren_font.py --output-dir data/fonts/beleren --cdn-url https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/beleren --s3-bucket $(S3_BUCKET) --s3-prefix cdn/fonts/beleren; \
+	fi
+	@echo ""
+	@echo "✓ Beleren font subsetting complete!"
