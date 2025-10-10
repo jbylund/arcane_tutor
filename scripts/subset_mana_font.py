@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -29,24 +30,33 @@ try:
 except ImportError:
     HAS_BOTO3 = False
 
+logger = logging.getLogger(__name__)
 
 # All the mana symbol classes used in index.html
 USED_SYMBOLS = [
     # Basic colors
     "r", "g", "w", "u", "b", "c",
+
     # Numbers 0-16
-    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
-    "11", "12", "13", "14", "15", "16",
+    "0", "1", "2", "3", "4", "5",
+    "6", "7", "8", "9", "10", "11",
+    "12", "13", "14", "15", "16",
+
     # Variables
     "x", "y", "z",
+
     # Special symbols
     "tap", "untap", "energy", "phyrexian", "snow", "chaos", "pw", "infinity",
+
     # 2-color hybrid
     "wu", "ub", "br", "rg", "gw", "wb", "ur", "bg", "rw", "gu",
+
     # Generic hybrid (2/)
     "2w", "2u", "2b", "2r", "2g",
+
     # Phyrexian hybrid
     "wp", "up", "bp", "rp", "gp",
+
     # 3-color phyrexian
     "wup", "wbp", "ubp", "urp", "brp", "bgp", "rwp", "rgp", "gwp", "gup",
 ]
@@ -134,8 +144,8 @@ def subset_font(input_font: Path, output_font: Path, font_format: str = "woff2")
     # Check file size
     input_size = input_font.stat().st_size
     output_size = output_font.stat().st_size
-    (1 - output_size / input_size) * 100
-
+    reduction_percentage = (1 - output_size / input_size) * 100
+    logger.info(f"Font subsetted successfully: {reduction_percentage:.2f}% reduction")
 
 
 def generate_css(output_dir: Path, cdn_base_url: str = "/cdn/fonts/mana") -> None:
@@ -149,7 +159,7 @@ def generate_css(output_dir: Path, cdn_base_url: str = "/cdn/fonts/mana") -> Non
  */
 
 @font-face {{
-  font-family: 'Mana';
+  font-family: "Mana";
   src: url('{cdn_base_url}/mana-subset.woff2') format('woff2'),
        url('{cdn_base_url}/mana-subset.woff') format('woff');
   font-weight: normal;
@@ -157,19 +167,158 @@ def generate_css(output_dir: Path, cdn_base_url: str = "/cdn/fonts/mana") -> Non
   font-display: swap;
 }}
 
-/* Mana symbol base styles */
+/* Base mana symbol styles */
 .ms {{
   display: inline-block;
-  font-family: 'Mana';
-  font-style: normal;
-  font-weight: normal;
-  line-height: 1;
+  font: normal normal normal 14px Mana;
   font-size: inherit;
+  line-height: 1em;
+  text-rendering: auto;
+  transform: translate(0, 0);
+  speak: none;
+  text-transform: none;
+  vertical-align: middle;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  --ms-mana-b: #a7999e;
+  --ms-mana-c: #d0c6bb;
+  --ms-mana-g: #9fcba6;
+  --ms-mana-r: #f19b79;
+  --ms-mana-u: #bcdaf7;
+  --ms-mana-w: #fdfbce;
 }}
 
-/* Cost styles - matching original mana-font styling */
+/* Individual symbol content codes */
+.ms-w::before {{
+  content: "\\e600";
+}}
+.ms-u::before {{
+  content: "\\e601";
+}}
+.ms-b::before {{
+  content: "\\e602";
+}}
+.ms-r::before {{
+  content: "\\e603";
+}}
+.ms-g::before {{
+  content: "\\e604";
+}}
+.ms-0::before {{
+  content: "\\e605";
+}}
+.ms-1::before {{
+  content: "\\e606";
+}}
+.ms-2 {{
+  margin-left: inherit !important;
+}}
+.ms-2::before {{
+  content: "\\e607";
+}}
+.ms-3::before {{
+  content: "\\e608";
+}}
+.ms-4::before {{
+  content: "\\e609";
+}}
+.ms-5::before {{
+  content: "\\e60a";
+}}
+.ms-6::before {{
+  content: "\\e60b";
+}}
+.ms-7::before {{
+  content: "\\e60c";
+}}
+.ms-8::before {{
+  content: "\\e60d";
+}}
+.ms-9::before {{
+  content: "\\e60e";
+}}
+.ms-10::before {{
+  content: "\\e60f";
+}}
+.ms-11::before {{
+  content: "\\e610";
+}}
+.ms-12::before {{
+  content: "\\e611";
+}}
+.ms-13::before {{
+  content: "\\e612";
+}}
+.ms-14::before {{
+  content: "\\e613";
+}}
+.ms-15::before {{
+  content: "\\e614";
+}}
+.ms-16::before {{
+  content: "\\e62a";
+}}
+.ms-x::before {{
+  content: "\\e615";
+}}
+.ms-y::before {{
+  content: "\\e616";
+}}
+.ms-z::before {{
+  content: "\\e617";
+}}
+.ms-s::before {{
+  content: "\\e619";
+}}
+.ms-c::before {{
+  content: "\\e904";
+}}
+.ms-e::before, .ms-energy::before {{
+  content: "\\e907";
+}}
+.ms-infinity::before {{
+  content: "\\e903";
+}}
+.ms-p::before {{
+  content: "\\e618";
+}}
+.ms-tap::before {{
+  content: "\\e61a";
+}}
+.ms-untap::before {{
+  content: "\\e61b";
+}}
+.ms-chaos::before {{
+  content: "\\e61d";
+}}
+.ms-planeswalker::before {{
+  content: "\\e623";
+}}
+
+/* Hybrid mana - uses ::before and ::after for split symbols */
+.ms-wu::before, .ms-wb::before, .ms-rw::after, .ms-gw::after, .ms-2w::after {{
+  content: "\\e600";
+}}
+.ms-ub::before, .ms-ur::before, .ms-wu::after, .ms-gu::after, .ms-2u::after {{
+  content: "\\e601";
+}}
+.ms-br::before, .ms-bg::before, .ms-wb::after, .ms-ub::after, .ms-2b::after {{
+  content: "\\e602";
+}}
+.ms-rw::before, .ms-rg::before, .ms-ur::after, .ms-br::after, .ms-2r::after {{
+  content: "\\e603";
+}}
+.ms-gw::before, .ms-gu::before, .ms-bg::after, .ms-rg::after, .ms-2g::after {{
+  content: "\\e604";
+}}
+.ms-2w::before, .ms-2u::before, .ms-2b::before, .ms-2r::before, .ms-2g::before {{
+  content: "\\e607";
+}}
+.ms-wp::before, .ms-up::before, .ms-bp::before, .ms-rp::before, .ms-gp::before, .ms-wup::before, .ms-wup::after, .ms-wbp::before, .ms-wbp::after, .ms-ubp::before, .ms-ubp::after, .ms-urp::before, .ms-urp::after, .ms-brp::before, .ms-brp::after, .ms-bgp::before, .ms-bgp::after, .ms-rwp::before, .ms-rwp::after, .ms-rgp::before, .ms-rgp::after, .ms-gwp::before, .ms-gwp::after, .ms-gup::before, .ms-gup::after {{
+  content: "\\e618";
+}}
+
+/* Cost styling */
 .ms-cost {{
   background-color: #beb9b2;
   border-radius: 1em;
@@ -180,110 +329,152 @@ def generate_css(output_dir: Path, cdn_base_url: str = "/cdn/fonts/mana") -> Non
   line-height: 1.35em;
   text-align: center;
 }}
-
-/* Colored mana symbols */
-.ms-cost.ms-w,
-.ms-cost.ms-wp {{
+.ms-cost.ms-w, .ms-cost.ms-wp {{
   background-color: #f0f2c0;
 }}
-
-.ms-cost.ms-u,
-.ms-cost.ms-up {{
+.ms-cost.ms-u, .ms-cost.ms-up {{
   background-color: #b5cde3;
 }}
-
-.ms-cost.ms-b,
-.ms-cost.ms-bp {{
+.ms-cost.ms-b, .ms-cost.ms-bp {{
   background-color: #aca29a;
 }}
-
-.ms-cost.ms-r,
-.ms-cost.ms-rp {{
+.ms-cost.ms-r, .ms-cost.ms-rp {{
   background-color: #db8664;
 }}
-
-.ms-cost.ms-g,
-.ms-cost.ms-gp {{
+.ms-cost.ms-g, .ms-cost.ms-gp {{
   background-color: #93b483;
 }}
+.ms-cost.ms-wu, .ms-cost.ms-wb, .ms-cost.ms-ub, .ms-cost.ms-ur, .ms-cost.ms-br, .ms-cost.ms-bg, .ms-cost.ms-rw, .ms-cost.ms-rg, .ms-cost.ms-gw, .ms-cost.ms-gu, .ms-cost.ms-2w, .ms-cost.ms-2u, .ms-cost.ms-2b, .ms-cost.ms-2r, .ms-cost.ms-2g, .ms-cost.ms-wup, .ms-cost.ms-wbp, .ms-cost.ms-ubp, .ms-cost.ms-urp, .ms-cost.ms-brp, .ms-cost.ms-bgp, .ms-cost.ms-rwp, .ms-cost.ms-rgp, .ms-cost.ms-gwp, .ms-cost.ms-gup {{
+  --ms-split-top: var(--ms-mana-c);
+  --ms-split-bottom: var(--ms-mana-u);
+  background: var(--ms-split-top);
+  background: -moz-linear-gradient(135deg, var(--ms-split-top) 0%, var(--ms-split-top) 50%, var(--ms-split-bottom) 50%, var(--ms-split-bottom) 100%);
+  background: -webkit-linear-gradient(135deg, var(--ms-split-top) 0%, var(--ms-split-top) 50%, var(--ms-split-bottom) 50%, var(--ms-split-bottom) 100%);
+  background: linear-gradient(135deg, var(--ms-split-top) 0%, var(--ms-split-top) 50%, var(--ms-split-bottom) 50%, var(--ms-split-bottom) 100%);
+  position: relative;
+  width: 1.3em;
+  height: 1.3em;
+}}
+.ms-cost.ms-wu::before, .ms-cost.ms-wu::after, .ms-cost.ms-wb::before, .ms-cost.ms-wb::after, .ms-cost.ms-ub::before, .ms-cost.ms-ub::after, .ms-cost.ms-ur::before, .ms-cost.ms-ur::after, .ms-cost.ms-br::before, .ms-cost.ms-br::after, .ms-cost.ms-bg::before, .ms-cost.ms-bg::after, .ms-cost.ms-rw::before, .ms-cost.ms-rw::after, .ms-cost.ms-rg::before, .ms-cost.ms-rg::after, .ms-cost.ms-gw::before, .ms-cost.ms-gw::after, .ms-cost.ms-gu::before, .ms-cost.ms-gu::after, .ms-cost.ms-2w::before, .ms-cost.ms-2w::after, .ms-cost.ms-2u::before, .ms-cost.ms-2u::after, .ms-cost.ms-2b::before, .ms-cost.ms-2b::after, .ms-cost.ms-2r::before, .ms-cost.ms-2r::after, .ms-cost.ms-2g::before, .ms-cost.ms-2g::after, .ms-cost.ms-wup::before, .ms-cost.ms-wup::after, .ms-cost.ms-wbp::before, .ms-cost.ms-wbp::after, .ms-cost.ms-ubp::before, .ms-cost.ms-ubp::after, .ms-cost.ms-urp::before, .ms-cost.ms-urp::after, .ms-cost.ms-brp::before, .ms-cost.ms-brp::after, .ms-cost.ms-bgp::before, .ms-cost.ms-bgp::after, .ms-cost.ms-rwp::before, .ms-cost.ms-rwp::after, .ms-cost.ms-rgp::before, .ms-cost.ms-rgp::after, .ms-cost.ms-gwp::before, .ms-cost.ms-gwp::after, .ms-cost.ms-gup::before, .ms-cost.ms-gup::after {{
+  font-size: 0.55em !important;
+  position: absolute;
+}}
+.ms-cost.ms-wu::before, .ms-cost.ms-wb::before, .ms-cost.ms-ub::before, .ms-cost.ms-ur::before, .ms-cost.ms-br::before, .ms-cost.ms-bg::before, .ms-cost.ms-rw::before, .ms-cost.ms-rg::before, .ms-cost.ms-gw::before, .ms-cost.ms-gu::before, .ms-cost.ms-2w::before, .ms-cost.ms-2u::before, .ms-cost.ms-2b::before, .ms-cost.ms-2r::before, .ms-cost.ms-2g::before, .ms-cost.ms-wup::before, .ms-cost.ms-wbp::before, .ms-cost.ms-ubp::before, .ms-cost.ms-urp::before, .ms-cost.ms-brp::before, .ms-cost.ms-bgp::before, .ms-cost.ms-rwp::before, .ms-cost.ms-rgp::before, .ms-cost.ms-gwp::before, .ms-cost.ms-gup::before {{
+  top: -0.38em;
+  left: 0.28em;
+}}
+.ms-cost.ms-wu::after, .ms-cost.ms-wb::after, .ms-cost.ms-ub::after, .ms-cost.ms-ur::after, .ms-cost.ms-br::after, .ms-cost.ms-bg::after, .ms-cost.ms-rw::after, .ms-cost.ms-rg::after, .ms-cost.ms-gw::after, .ms-cost.ms-gu::after, .ms-cost.ms-2w::after, .ms-cost.ms-2u::after, .ms-cost.ms-2b::after, .ms-cost.ms-2r::after, .ms-cost.ms-2g::after, .ms-cost.ms-wup::after, .ms-cost.ms-wbp::after, .ms-cost.ms-ubp::after, .ms-cost.ms-urp::after, .ms-cost.ms-brp::after, .ms-cost.ms-bgp::after, .ms-cost.ms-rwp::after, .ms-cost.ms-rgp::after, .ms-cost.ms-gwp::after, .ms-cost.ms-gup::after {{
+  top: 0.5em;
+  left: 1em;
+}}
+.ms-cost.ms-wu, .ms-cost.ms-wup {{
+  --ms-split-top: var(--ms-mana-w);
+}}
+.ms-cost.ms-wb, .ms-cost.ms-wbp {{
+  --ms-split-top: var(--ms-mana-w);
+  --ms-split-bottom: var(--ms-mana-b);
+}}
+.ms-cost.ms-ub, .ms-cost.ms-ubp {{
+  --ms-split-top: var(--ms-mana-u);
+  --ms-split-bottom: var(--ms-mana-b);
+}}
+.ms-cost.ms-ur, .ms-cost.ms-urp {{
+  --ms-split-top: var(--ms-mana-u);
+  --ms-split-bottom: var(--ms-mana-r);
+}}
+.ms-cost.ms-br, .ms-cost.ms-brp {{
+  --ms-split-top: var(--ms-mana-b);
+  --ms-split-bottom: var(--ms-mana-r);
+}}
+.ms-cost.ms-bg, .ms-cost.ms-bgp {{
+  --ms-split-top: var(--ms-mana-b);
+  --ms-split-bottom: var(--ms-mana-g);
+}}
+.ms-cost.ms-rw, .ms-cost.ms-rwp {{
+  --ms-split-top: var(--ms-mana-r);
+  --ms-split-bottom: var(--ms-mana-w);
+}}
+.ms-cost.ms-rg, .ms-cost.ms-rgp {{
+  --ms-split-top: var(--ms-mana-r);
+  --ms-split-bottom: var(--ms-mana-g);
+}}
+.ms-cost.ms-gw, .ms-cost.ms-gwp {{
+  --ms-split-top: var(--ms-mana-g);
+  --ms-split-bottom: var(--ms-mana-w);
+}}
+.ms-cost.ms-gu, .ms-cost.ms-gup {{
+  --ms-split-top: var(--ms-mana-g);
+}}
+.ms-cost.ms-2w {{
+  --ms-split-bottom: var(--ms-mana-w);
+}}
+.ms-cost.ms-2b {{
+  --ms-split-bottom: var(--ms-mana-b);
+}}
+.ms-cost.ms-2r {{
+  --ms-split-bottom: var(--ms-mana-r);
+}}
+.ms-cost.ms-2g {{
+  --ms-split-bottom: var(--ms-mana-g);
+}}
+.ms-cost.ms-p::before {{
+  display: inline-block;
+  -moz-transform: scale(1.2, 1.2);
+  -webkit-transform: scale(1.2, 1.2);
+  transform: scale(1.2, 1.2);
+}}
+.ms-cost.ms-wp::before, .ms-cost.ms-up::before, .ms-cost.ms-bp::before, .ms-cost.ms-rp::before, .ms-cost.ms-gp::before, .ms-cost.ms-wup::before, .ms-cost.ms-wbp::before, .ms-cost.ms-ubp::before, .ms-cost.ms-urp::before, .ms-cost.ms-brp::before, .ms-cost.ms-bgp::before, .ms-cost.ms-rwp::before, .ms-cost.ms-rgp::before, .ms-cost.ms-gwp::before, .ms-cost.ms-gup::before, .ms-cost.ms-wup::after, .ms-cost.ms-wbp::after, .ms-cost.ms-ubp::after, .ms-cost.ms-urp::after, .ms-cost.ms-brp::after, .ms-cost.ms-bgp::after, .ms-cost.ms-rwp::after, .ms-cost.ms-rgp::after, .ms-cost.ms-gwp::after, .ms-cost.ms-gup::after {{
+  display: inline-block;
+  transform: scale(1.2) translateX(0.01rem) translateY(-0.03rem);
+}}
+.ms-cost.ms-s::before {{
+  color: #fff;
+  -webkit-text-stroke: 2px #fff;
+  font-size: 0.85em;
+  top: -0.05em;
+  position: relative;
+  display: inline-block;
+}}
+.ms-cost.ms-s::after {{
+  content: "\\e619";
+  position: absolute;
+  color: #333;
+  margin-left: -0.9em;
+  font-size: 1.1em;
+}}
+.ms-cost.ms-untap {{
+  background-color: #111;
+  color: #fff;
+}}
+.ms-cost.ms-shadow {{
+  box-shadow: -0.06em 0.07em 0 #111, 0 0.06em 0 #111;
+}}
+.ms-cost.ms-shadow.ms-untap {{
+  box-shadow: -0.06em 0.07em 0 #fff, 0 0.06em 0 #fff;
+}}
 
-/* Individual symbol classes */
-.ms-w::before {{ content: "\\e600"; }}
-.ms-u::before {{ content: "\\e601"; }}
-.ms-b::before {{ content: "\\e602"; }}
-.ms-r::before {{ content: "\\e603"; }}
-.ms-g::before {{ content: "\\e604"; }}
-.ms-c::before {{ content: "\\e904"; }}
+/* Split mana positioning */
+.ms-split {{
+  position: relative;
+  width: 1.3em;
+  height: 1.3em;
+}}
 
-.ms-0::before {{ content: "\\e605"; }}
-.ms-1::before {{ content: "\\e606"; }}
-.ms-2::before {{ content: "\\e607"; }}
-.ms-3::before {{ content: "\\e608"; }}
-.ms-4::before {{ content: "\\e609"; }}
-.ms-5::before {{ content: "\\e60a"; }}
-.ms-6::before {{ content: "\\e60b"; }}
-.ms-7::before {{ content: "\\e60c"; }}
-.ms-8::before {{ content: "\\e60d"; }}
-.ms-9::before {{ content: "\\e60e"; }}
-.ms-10::before {{ content: "\\e60f"; }}
-.ms-11::before {{ content: "\\e610"; }}
-.ms-12::before {{ content: "\\e611"; }}
-.ms-13::before {{ content: "\\e612"; }}
-.ms-14::before {{ content: "\\e613"; }}
-.ms-15::before {{ content: "\\e614"; }}
-.ms-16::before {{ content: "\\e62a"; }}
+.ms-split::before,
+.ms-split::after {{
+  font-size: 0.55em !important;
+  position: absolute;
+}}
 
-.ms-x::before {{ content: "\\e615"; }}
-.ms-y::before {{ content: "\\e616"; }}
-.ms-z::before {{ content: "\\e617"; }}
+.ms-split::before {{
+  top: -0.38em;
+  left: 0.28em;
+}}
 
-.ms-phyrexian::before {{ content: "\\e618"; }}
-.ms-tap::before {{ content: "\\e61a"; }}
-
-.ms-untap::before {{ content: "\\e619"; }}
-.ms-energy::before {{ content: "\\e907"; }}
-.ms-snow::before {{ content: "\\e909"; }}
-.ms-chaos::before {{ content: "\\e61b"; }}
-.ms-pw::before {{ content: "\\e61c"; }}
-.ms-infinity::before {{ content: "\\e903"; }}
-
-/* 2-color hybrid mana */
-.ms-wu::before {{ content: "\\e61d"; }}
-.ms-ub::before {{ content: "\\e61e"; }}
-.ms-br::before {{ content: "\\e61f"; }}
-.ms-rg::before {{ content: "\\e620"; }}
-.ms-gw::before {{ content: "\\e621"; }}
-.ms-wb::before {{ content: "\\e622"; }}
-.ms-ur::before {{ content: "\\e623"; }}
-.ms-bg::before {{ content: "\\e624"; }}
-.ms-rw::before {{ content: "\\e625"; }}
-.ms-gu::before {{ content: "\\e626"; }}
-
-/* Generic hybrid (2/) */
-.ms-2w::before {{ content: "\\e627"; }}
-.ms-2u::before {{ content: "\\e628"; }}
-.ms-2b::before {{ content: "\\e629"; }}
-.ms-2r::before {{ content: "\\e62f"; }}
-.ms-2g::before {{ content: "\\e630"; }}
-
-/* Phyrexian hybrid */
-.ms-wp::before {{ content: "\\e631"; }}
-.ms-up::before {{ content: "\\e632"; }}
-.ms-bp::before {{ content: "\\e633"; }}
-.ms-rp::before {{ content: "\\e634"; }}
-.ms-gp::before {{ content: "\\e635"; }}
-
-/* 3-color phyrexian hybrid */
-.ms-wup::before {{ content: "\\e908"; }}
-.ms-wbp::before {{ content: "\\e636"; }}
-.ms-ubp::before {{ content: "\\e637"; }}
-.ms-urp::before {{ content: "\\e638"; }}
-.ms-brp::before {{ content: "\\e639"; }}
-.ms-bgp::before {{ content: "\\e63a"; }}
-.ms-rwp::before {{ content: "\\e63b"; }}
-.ms-rgp::before {{ content: "\\e63c"; }}
-.ms-gwp::before {{ content: "\\e63d"; }}
-.ms-gup::before {{ content: "\\e63e"; }}
+.ms-split::after {{
+  top: 0.5em;
+  left: 1em;
+}}
 """
 
     css_path = output_dir / "mana-subset.css"
@@ -437,6 +628,7 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO)
 
     load_env()
 
@@ -492,4 +684,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
