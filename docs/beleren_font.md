@@ -1,10 +1,10 @@
 # Beleren Font Integration
 
-This document describes how the Beleren font is used for displaying oracle text in the Scryfall OS application.
+This document describes how the Beleren font is used for displaying card titles and type lines in the Scryfall OS application, matching the authentic Magic: The Gathering card typography.
 
 ## Overview
 
-The Beleren font is the official Magic: The Gathering typeface used on actual cards for oracle text. By using this font in the application, we make the card text display more authentic and visually similar to physical Magic cards.
+The Beleren font is the official Magic: The Gathering typeface used on actual cards for **card names and type lines**. By using this font in the application, we make the card display more authentic and visually similar to physical Magic cards.
 
 The full Beleren Bold font is ~58KB. By subsetting it to include only Latin characters and common punctuation (the characters needed for English card text), we reduce the file size to ~25KB (WOFF2 format), a 56.7% reduction.
 
@@ -20,14 +20,21 @@ The Beleren font subsetting follows the same pattern as the Mana font:
 6. **Delivery**: CloudFront CDN with 1-year cache headers
 7. **Loading Strategy**: `font-display: swap` to prevent FOIT (Flash of Invisible Text)
 
-## Where It's Used
+## Typography Matching Physical MTG Cards
 
-The Beleren font is applied to these CSS classes:
+Following the authentic Magic card typography:
 
-- `.card-type` - Card type line in search results
-- `.card-text` - Oracle text in search results
-- `.modal-card-type` - Card type line in the modal view
-- `.modal-card-text` - Oracle text in the modal view
+- **Beleren Bold** is used for:
+  - `.card-name` - Card titles in search results
+  - `.modal-card-name` - Card titles in the modal view
+  - `.card-type` - Card type line in search results
+  - `.modal-card-type` - Card type line in the modal view
+
+- **MPlantin (with fallbacks)** is used for:
+  - `.card-text` - Oracle text in search results
+  - `.modal-card-text` - Oracle text in the modal view
+  
+  Oracle text uses `font-family: 'MPlantin', 'Plantin MT Pro', 'Plantin', Georgia, serif;` to match the serif font used on physical cards. If MPlantin is not installed, it falls back to Georgia (a similar serif font).
 
 ## Generating and Uploading the Font
 

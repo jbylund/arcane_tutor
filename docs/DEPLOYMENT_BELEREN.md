@@ -37,7 +37,10 @@ https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/beleren/beleren-subset.css
 
 1. Open your Scryfall OS instance
 2. Search for any card
-3. Check that oracle text displays in bold Beleren font
+3. Check that:
+   - Card titles display in bold Beleren font
+   - Type lines display in bold Beleren font
+   - Oracle text displays in serif font (MPlantin/Georgia)
 4. Verify in browser DevTools that font loads from CDN
 5. Check that font file is ~25KB (WOFF2)
 
@@ -86,11 +89,13 @@ make beleren_font S3_BUCKET=your-bucket-name
 1. Check browser console for errors
 2. Verify CSS is loaded: View Source → look for `beleren-subset.css` link
 3. Verify font files are accessible (visit URLs directly)
-4. Check that `.card-text` has `font-family: 'Beleren', sans-serif;`
+4. Check that:
+   - `.card-name` and `.card-type` have `font-family: 'Beleren', sans-serif;`
+   - `.card-text` has `font-family: 'MPlantin', 'Plantin MT Pro', 'Plantin', Georgia, serif;`
 
 ### Wrong font weight
 
-Ensure the CSS specifies `font-weight: bold` for Beleren Bold
+Ensure the CSS specifies `font-weight: bold` for Beleren Bold on card titles and type lines
 
 ## Manual Upload (if needed)
 
