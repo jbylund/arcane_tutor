@@ -12,7 +12,7 @@ import falcon
 import falcon.media
 import orjson
 
-from .utils import multiprocessing_utils
+from api.utils import multiprocessing_utils
 
 if TYPE_CHECKING:
     from multiprocessing.synchronize import Event as EventType
@@ -82,8 +82,8 @@ class ApiWorker(multiprocessing.Process):
             falcon.App: The configured Falcon application instance.
         """
         # Importing here (post-fork) is safer for some servers/clients than importing before forking.
-        from .api_resource import APIResource  # pylint: disable=import-outside-toplevel
-        from .middlewares import CachingMiddleware, CompressionMiddleware, TimingMiddleware
+        from api.api_resource import APIResource  # pylint: disable=import-outside-toplevel
+        from api.middlewares import CachingMiddleware, CompressionMiddleware, TimingMiddleware
 
         if CachingMiddleware is None:
             msg = "CachingMiddleware is not available"

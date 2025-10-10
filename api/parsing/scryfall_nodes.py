@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from .db_info import (
+from api.parsing.db_info import (
     CARD_SUPERTYPES,
     CARD_TYPES,
     COLOR_CODE_TO_NAME,
@@ -15,7 +15,7 @@ from .db_info import (
     YEAR_ATTRIBUTES,
     FieldType,
 )
-from .nodes import (
+from api.parsing.nodes import (
     AndNode,
     AttributeNode,
     BinaryOperatorNode,

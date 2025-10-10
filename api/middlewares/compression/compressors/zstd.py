@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING
 
 import zstandard as zstd
 
-from .base_compressor import BaseCompressor
-from .util import StreamingBuffer, wrap_file
+from api.middlewares.compression.compressors.base_compressor import BaseCompressor
+from api.middlewares.compression.compressors.util import StreamingBuffer, wrap_file
 
 if TYPE_CHECKING:
     from collections.abc import Generator

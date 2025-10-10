@@ -1,0 +1,34 @@
+"""Enums for the API."""
+
+import enum
+
+
+class UniqueOn(enum.StrEnum):
+    """Enum for the distinct on column for the search."""
+    CARD = enum.auto()
+    PRINTING = enum.auto()
+    ARTWORK = enum.auto()
+
+
+class PreferOrder(enum.StrEnum):
+    """Enum for the prefer order column for the search."""
+    DEFAULT = enum.auto()
+    OLDEST = enum.auto()
+    NEWEST = enum.auto()
+    USD_LOW = enum.auto()
+    USD_HIGH = enum.auto()
+    PROMO = enum.auto()
+
+class CardOrdering(enum.StrEnum):
+    """Enum for the ordering of the cards."""
+    CMC = enum.auto()
+    EDHREC = enum.auto()
+    POWER = enum.auto()
+    RARITY = enum.auto()
+    TOUGHNESS = enum.auto()
+    USD = enum.auto()
+
+class SortDirection(enum.StrEnum):
+    """Enum for the direction of the sort."""
+    ASC = enum.auto()
+    DESC = enum.auto()

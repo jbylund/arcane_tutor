@@ -6,7 +6,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from .compressors import BrotliCompressor, GzipCompressor, ZstdCompressor
+from api.middlewares.compression.compressors import BrotliCompressor, GzipCompressor, ZstdCompressor
 
 if TYPE_CHECKING:
     import falcon
