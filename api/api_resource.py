@@ -134,7 +134,7 @@ def _convert_string_to_type(str_value: str | None, param_type: Any) -> Any:  # n
         return x
 
     def convert_to_bool(x: str) -> bool:
-        return x.lower() in ("true", "1", "yes", "on")
+        return x.lower() in ("true", "1", "yes", "on", "t")
 
     converter_map = {
         "PreferOrder": PreferOrder,
@@ -155,7 +155,15 @@ def _convert_string_to_type(str_value: str | None, param_type: Any) -> Any:  # n
         except KeyError:
             continue
         try:
-            return converter(str_value)
+            converted = converter(str_value)
+            logger.info(
+                "Converted %s %s to %s %s",
+                type(str_value),
+                str_value,
+                type(converted),
+                converted,
+            )
+            return converted
         except (ValueError, TypeError):
             continue
 
@@ -950,16 +958,18 @@ class APIResource:
         query_sql = f"""
         WITH distinct_cards AS (
             SELECT DISTINCT ON ({distinct_on})
-                card_name AS name,
-                card_artist AS artist,
+                card_artist,
+                card_name,
+                card_set_code,
                 cmc,
+                collector_number,
+                edhrec_rank,
                 image_location_uuid,
-                mana_cost_text AS mana_cost,
-                oracle_text AS oracle_text,
+                mana_cost_text,
+                oracle_text,
                 set_name,
                 type_line,
-                {sql_orderby} AS sort_value,
-                edhrec_rank
+                {sql_orderby} AS sort_value
             FROM
                 magic.cards AS card
             WHERE
@@ -971,11 +981,13 @@ class APIResource:
         (
             SELECT
                 null AS total_cards_count,
-                name,
-                artist,
+                card_artist,
+                card_name AS name,
+                card_set_code AS set_code,
                 cmc,
-                image_location_uuid,
-                mana_cost,
+                collector_number,
+                edhrec_rank,
+                mana_cost_text AS mana_cost,
                 oracle_text,
                 set_name,
                 type_line
@@ -991,7 +1003,7 @@ class APIResource:
         (
             SELECT
                 COUNT(1) AS total_cards_count,
-                null, null, null, null, null, null, null, null
+                null, null, null, null, null, null, null, null, null, null
             FROM
                 distinct_cards
         )
@@ -1041,6 +1053,8 @@ class APIResource:
         """
         self._serve_static_file(filename="index.html", falcon_response=falcon_response)
         falcon_response.content_type = "text/html"
+        # Cache for 1 hour - improves repeat visit performance
+        falcon_response.set_header("Cache-Control", "public, max-age=3600")
 
     def prefer_score_tuner(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
         """Return the prefer score tuner page.
@@ -1069,6 +1083,8 @@ class APIResource:
         content_length = len(contents)
         logger.info("Favicon content length: %d", content_length)
         falcon_response.headers["content-length"] = content_length
+        # Cache favicon for 7 days - it rarely changes
+        falcon_response.set_header("Cache-Control", "public, max-age=604800")
 
     def _serve_static_file(self: APIResource, *, filename: str, falcon_response: falcon.Response) -> None:
         """Serve a static file to the Falcon response.
@@ -1477,6 +1493,7 @@ class APIResource:
 
         """
         # Step 1: Discover all available tags
+        logger.info("discover_and_import_all_tags: %s", locals())
         result: dict = {
             "success": True,
         }

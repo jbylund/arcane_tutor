@@ -12,8 +12,10 @@ BASE_COMPOSE := $(mkfile_dir)/docker-compose.yml
 LINTABLE_DIRS := .
 
 DOCKER_POSTGRES_HOST=postgres
+
 XPGDATABASE=magic
 XPGPASSWORD=foopassword
+XPGPORT=15432
 XPGUSER=foouser
 
 .PHONY: \
@@ -29,6 +31,7 @@ XPGUSER=foouser
 	ensure_black \
 	ensure_isort \
 	ensure_pylint \
+	fonts \
 	help \
 	hlep \
 	images \
@@ -96,7 +99,7 @@ lint: ruff_lint prettier_lint # @doc lint all python files
 prettier_lint: /tmp/prettier.stamp
 	true
 
-/tmp/prettier.stamp:
+/tmp/prettier.stamp: api/index.html
 	npx prettier --write api/index.html
 	touch /tmp/prettier.stamp
 
@@ -134,7 +137,13 @@ datadir:
 reset:
 	rm -rvf data
 
-test tests:
+install_deps:
+	python -m uv pip install -r requirements.txt
+
+install_test_deps:
+	python -m uv pip install -r test-requirements.txt -r requirements.txt
+
+test tests: install_test_deps
 	python -m pytest -vvv --capture=no --durations=10
 
 test-integration:
@@ -148,3 +157,18 @@ coverage: # @doc generate HTML coverage report
 
 test-profiling:
 	python -m pytest --profile-svg --durations=10 -vvv -k TestImportCardByName
+
+fonts: # @doc subset and optimize the Mana font for web delivery
+	@echo "Installing font subsetting dependencies..."
+	@python -m uv pip install fonttools brotli requests boto3 2>/dev/null || python -m pip install fonttools brotli requests boto3
+	@echo "Running font subsetting script..."
+	@if [ -z "$(S3_BUCKET)" ]; then \
+		echo "Note: S3_BUCKET not set. Generating fonts locally only."; \
+		echo "To auto-upload, run: make fonts S3_BUCKET=your-bucket-name"; \
+		python scripts/subset_mana_font.py --output-dir data/fonts/mana --cdn-url https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mana --skip-upload; \
+	else \
+		echo "Uploading to S3 bucket: $(S3_BUCKET)"; \
+		python scripts/subset_mana_font.py --output-dir data/fonts/mana --cdn-url https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mana --s3-bucket $(S3_BUCKET) --s3-prefix cdn/fonts/mana; \
+	fi
+	@echo ""
+	@echo "See docs/font_optimization.md for next steps"

@@ -3,8 +3,30 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Search for Magic: The Gathering cards. Find MTG cards by name, type, text, mana cost, and more. Open source Scryfall implementation."
+    />
+    <meta name="theme-color" content="#667eea" />
+    <meta property="og:title" content="Card Search - Scryfall OS" />
+    <meta
+      property="og:description"
+      content="Search for Magic: The Gathering cards by name, type, text, mana cost, and more."
+    />
+    <meta property="og:type" content="website" />
     <title>Card Search</title>
-    <link href="https://cdn.jsdelivr.net/npm/mana-font@latest/css/mana.min.css" rel="stylesheet" type="text/css" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="preconnect" href="https://d1hot9ps2xugbc.cloudfront.net" />
+    <link
+      href="https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mana/mana-subset.css"
+      rel="stylesheet"
+      type="text/css"
+      media="print"
+      onload="this.media='all'"
+    />
+    <noscript>
+      <link href="https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mana/mana-subset.css" rel="stylesheet" type="text/css"/>
+    </noscript>
     <style>
       :root {
         /* Default colors (fallback) */
@@ -183,6 +205,18 @@
         display: flex;
         align-items: center;
         gap: 8px;
+      }
+
+      .dropdown-label {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border-width: 0;
       }
 
       .order-dropdown {
@@ -511,6 +545,7 @@
       .card-image {
         display: block;
         width: 100%;
+        height: auto;
         max-width: min(400px, 35vw);
         margin: 0 auto 10px auto;
         border-radius: 5.5% / 4%;
@@ -614,6 +649,7 @@
       }
     </style>
     <script>
+      const UNIQUE_PRINTING = 'printing';
       class CardSearch {
         constructor() {
           this.searchInput = document.getElementById('searchInput');
@@ -659,6 +695,7 @@
           this.preferDropdown.value = initialPrefer;
           this.isAscending = initialDirection === 'asc';
           this.updateOrderToggleAppearance();
+          this.updatePreferVisibility();
 
           if (initialQuery) {
             this.searchInput.value = initialQuery;
@@ -706,6 +743,7 @@
           });
 
           this.uniqueDropdown.addEventListener('change', () => {
+            this.updatePreferVisibility();
             this.handleUniqueChange();
           });
 
@@ -971,32 +1009,50 @@
 
           this.showResultsCount(totalCards, query, elapsed);
 
-          this.resultsContainer.innerHTML = cards.map((card, index) => this.createCardHTML(card, index)).join('');
+          // Calculate number of columns in the first row for fetchpriority
+          const firstRowCount = this.calculateFirstRowCount();
+
+          this.resultsContainer.innerHTML = cards
+            .map((card, index) => this.createCardHTML(card, index, index < firstRowCount))
+            .join('');
 
           // Observe all images for viewport-based loading
           this.observeImages();
         }
 
-        buildImageUrl(image_location_uuid, size, face_index = 0) {
-          const idPrefix = image_location_uuid.substring(0, 1);
-          const idSuffix = image_location_uuid.substring(1, 2);
+        calculateFirstRowCount() {
+          // Calculate how many cards fit in the first row based on viewport width
+          // Grid uses: repeat(auto-fit, minmax(min(300px, 45vw), 1fr))
+          const viewportWidth = window.innerWidth;
 
-          // Calculate cache timestamp: unix seconds rounded down to nearest 3 days
-          const now = Math.floor(Date.now() / 1000); // Current unix timestamp in seconds
-          const threeDaysInSeconds = 3 * 24 * 60 * 60; // 3 days in seconds
-          const cache_timestamp = Math.floor(now / threeDaysInSeconds) * threeDaysInSeconds;
+          // Account for body padding (35px on each side from CSS)
+          const contentWidth = viewportWidth - 70;
 
-          // Use /front/ for face_index 0, /back/ for face_index 1
-          const facePath = face_index === 0 ? 'front' : 'back';
-
-          return `https://cards.scryfall.io/${size}/${facePath}/${idPrefix}/${idSuffix}/${image_location_uuid}.jpg?${cache_timestamp}`;
+          // Media query breakpoints
+          if (viewportWidth <= 480) {
+            // Mobile: fixed 2 columns
+            return 2;
+          } else if (viewportWidth <= 768) {
+            // Tablet: minmax(min(250px, 45vw), 1fr)
+            const minWidth = Math.min(250, viewportWidth * 0.45);
+            return Math.floor(contentWidth / minWidth);
+          } else {
+            // Desktop: minmax(min(300px, 45vw), 1fr)
+            const minWidth = Math.min(300, viewportWidth * 0.45);
+            return Math.floor(contentWidth / minWidth);
+          }
         }
 
-        createCardHTML(card, index) {
+        buildImageUrl(card, size) {
+          return `https://d1hot9ps2xugbc.cloudfront.net/img/${card.set_code}/${card.collector_number}/${size}.webp`;
+        }
+
+        createCardHTML(card, index, isFirstRow = false) {
           const cardId = index.toString();
-          const imageSmall = this.buildImageUrl(card.image_location_uuid, 'small');
-          const imageNormal = this.buildImageUrl(card.image_location_uuid, 'normal');
-          const imageLarge = this.buildImageUrl(card.image_location_uuid, 'large');
+
+          const imageSmall = this.buildImageUrl(card, '220');
+          const imageNormal = this.buildImageUrl(card, '410');
+          const imageLarge = this.buildImageUrl(card, '745');
 
           // Debug logging
           console.log('Creating card HTML for:', card);
@@ -1005,18 +1061,28 @@
           // Create descriptive alt text with card name, mana cost, and oracle text
           let altText = this.escapeHtml(card.name || 'Unknown Card');
           if (card.mana_cost) {
-            altText += ` / ${this.escapeHtml(card.mana_cost)}`;
+            // Convert mana symbols to Unicode for alt text
+            const manaTextRepresentation = this.convertManaSymbolsToText(card.mana_cost);
+            altText += ` / ${this.escapeHtml(manaTextRepresentation)}`;
           }
           altText += '\n\n';
           if (card.oracle_text) {
+            // Convert mana symbols in oracle text to Unicode for alt text first, then truncate
+            const oracleTextWithSymbols = this.convertManaSymbolsToText(card.oracle_text);
             const maxLength = 300;
             const truncatedText =
-              card.oracle_text.length > maxLength ? card.oracle_text.substring(0, maxLength) + '...' : card.oracle_text;
+              oracleTextWithSymbols.length > maxLength
+                ? oracleTextWithSymbols.substring(0, maxLength) + '...'
+                : oracleTextWithSymbols;
             altText += this.escapeHtml(truncatedText);
           }
 
           // Create placeholder image that will be replaced when in viewport
-          const imageHtml = `<img class="card-image" data-small="${this.escapeHtml(imageSmall)}" data-normal="${this.escapeHtml(imageNormal)}" data-large="${this.escapeHtml(imageLarge)}" alt="${altText}" title="${altText}" />`;
+          // Add fetchpriority="high" for first row cards to improve LCP
+          // Add loading="lazy" for non-first-row images to improve initial load
+          const fetchPriorityAttr = isFirstRow ? ' fetchpriority="high"' : '';
+          const loadingAttr = isFirstRow ? '' : ' loading="lazy"';
+          const imageHtml = `<img class="card-image" data-small="${this.escapeHtml(imageSmall)}" data-normal="${this.escapeHtml(imageNormal)}" data-large="${this.escapeHtml(imageLarge)}" width="410" height="573" alt="${altText}" title="${altText}"${fetchPriorityAttr}${loadingAttr} />`;
 
           return `
              <div class="card-item" data-card-id="${this.escapeHtml(cardId)}">
@@ -1056,9 +1122,9 @@
           const modalContent = document.getElementById('modalContent');
 
           // Create modal content
-          const imageLarge = this.buildImageUrl(card.image_location_uuid, 'large');
+          const imageLarge = this.buildImageUrl(card, '745');
           const imageHtml = imageLarge
-            ? `<img class="modal-image" src="${this.escapeHtml(imageLarge)}" alt="${this.escapeHtml(card.name || 'Card Image')}" />`
+            ? `<img class="modal-image" src="${this.escapeHtml(imageLarge)}" width="745" height="1040" alt="${this.escapeHtml(card.name || 'Card Image')}" />`
             : '';
 
           modalContent.innerHTML = `
@@ -1284,6 +1350,93 @@
           return div.innerHTML;
         }
 
+        convertManaSymbolsToText(text) {
+          if (!text) return '';
+
+          // Map of mana symbols to Unicode/text representations for alt text
+          const manaTextMap = {
+            '{W}': '☀️', // White - sun
+            '{U}': '💧', // Blue - water drop
+            '{B}': '💀', // Black - skull
+            '{R}': '🔥', // Red - fire
+            '{G}': '🌳', // Green - tree
+            '{C}': '◇', // Colorless diamond
+            '{T}': '↻', // Tap symbol
+            '{Q}': '↺', // Untap symbol
+            '{E}': '⚡', // Energy symbol
+            '{P}': 'Φ', // Phyrexian symbol
+            '{S}': '❄', // Snow symbol
+            '{X}': 'X',
+            '{Y}': 'Y',
+            '{Z}': 'Z',
+            '{0}': '⓪',
+            '{1}': '①',
+            '{2}': '②',
+            '{3}': '③',
+            '{4}': '④',
+            '{5}': '⑤',
+            '{6}': '⑥',
+            '{7}': '⑦',
+            '{8}': '⑧',
+            '{9}': '⑨',
+            '{10}': '⑩',
+            '{11}': '⑪',
+            '{12}': '⑫',
+            '{13}': '⑬',
+            '{14}': '⑭',
+            '{15}': '⑮',
+            '{16}': '⑯',
+            '{CHAOS}': '🌀',
+            '{PW}': 'PW',
+            '{∞}': '♾︎',
+            // Hybrid mana symbols
+            '{W/U}': '(☀️/💧)',
+            '{U/B}': '(💧/💀)',
+            '{B/R}': '(💀/🔥)',
+            '{R/G}': '(🔥/🌳)',
+            '{G/W}': '(🌳/☀️)',
+            '{W/B}': '(☀️/💀)',
+            '{U/R}': '(💧/🔥)',
+            '{B/G}': '(💀/🌳)',
+            '{R/W}': '(🔥/☀️)',
+            '{G/U}': '(🌳/💧)',
+            '{2/W}': '(②/☀️)',
+            '{2/U}': '(②/💧)',
+            '{2/B}': '(②/💀)',
+            '{2/R}': '(②/🔥)',
+            '{2/G}': '(②/🌳)',
+            // Phyrexian hybrid mana symbols
+            '{W/P}': '(☀️/Φ)',
+            '{U/P}': '(💧/Φ)',
+            '{B/P}': '(💀/Φ)',
+            '{R/P}': '(🔥/Φ)',
+            '{G/P}': '(🌳/Φ)',
+            // 3-color hybrid mana symbols (2 colors + Phyrexian)
+            '{W/U/P}': '(☀️/💧/Φ)',
+            '{W/B/P}': '(☀️/💀/Φ)',
+            '{U/B/P}': '(💧/💀/Φ)',
+            '{U/R/P}': '(💧/🔥/Φ)',
+            '{B/R/P}': '(💀/🔥/Φ)',
+            '{B/G/P}': '(💀/🌳/Φ)',
+            '{R/W/P}': '(🔥/☀️/Φ)',
+            '{R/G/P}': '(🔥/🌳/Φ)',
+            '{G/W/P}': '(🌳/☀️/Φ)',
+            '{G/U/P}': '(🌳/💧/Φ)',
+          };
+
+          let converted = text;
+
+          // Process longer symbols first (hybrid and 3-color symbols)
+          const sortedSymbols = Object.keys(manaTextMap).sort((a, b) => b.length - a.length);
+
+          sortedSymbols.forEach(symbol => {
+            const regex = new RegExp(symbol.replace(/[{}]/g, '\\$&'), 'g');
+            converted = converted.replace(regex, manaTextMap[symbol]);
+          });
+
+          return converted;
+        }
+
         convertManaSymbols(manaCost, isModal = false) {
           if (!manaCost) return '';
 
@@ -1312,10 +1465,6 @@
             '{14}': 'ms ms-14 ms-cost',
             '{15}': 'ms ms-15 ms-cost',
             '{16}': 'ms ms-16 ms-cost',
-            '{17}': 'ms ms-17 ms-cost',
-            '{18}': 'ms ms-18 ms-cost',
-            '{19}': 'ms ms-19 ms-cost',
-            '{20}': 'ms ms-20 ms-cost',
             '{X}': 'ms ms-x ms-cost',
             '{Y}': 'ms ms-y ms-cost',
             '{Z}': 'ms ms-z ms-cost',
@@ -1411,7 +1560,11 @@
             url.searchParams.set('orderby', order);
             url.searchParams.set('direction', direction);
             url.searchParams.set('unique', unique);
-            url.searchParams.set('prefer', prefer);
+            if (unique !== UNIQUE_PRINTING) {
+              url.searchParams.set('prefer', prefer);
+            } else {
+              url.searchParams.delete('prefer');
+            }
           } else {
             url.searchParams.delete('q');
             url.searchParams.delete('orderby');
@@ -1420,6 +1573,12 @@
             url.searchParams.delete('prefer');
           }
           window.history.replaceState({}, '', url);
+        }
+
+        updatePreferVisibility() {
+          const isPrinting = this.uniqueDropdown.value === UNIQUE_PRINTING;
+          this.preferDropdown.style.display = isPrinting ? 'none' : '';
+          this.preferDropdown.disabled = isPrinting;
         }
 
         handleOrderChange() {
@@ -1573,6 +1732,7 @@
           </div>
         </div>
         <div class="order-controls">
+          <label for="orderDropdown" class="dropdown-label">Order By:</label>
           <select class="order-dropdown" id="orderDropdown">
             <option value="edhrec">EDHREC</option>
             <option value="cmc">CMC</option>
@@ -1581,17 +1741,19 @@
             <option value="rarity">Rarity</option>
             <option value="usd">USD</option>
           </select>
+          <label for="uniqueDropdown" class="dropdown-label">Unique Mode:</label>
           <select class="order-dropdown" id="uniqueDropdown">
             <option value="card">Cards</option>
             <option value="artwork">Artwork</option>
             <option value="printing">Printings</option>
           </select>
+          <label for="preferDropdown" class="dropdown-label">Prefer:</label>
           <select class="order-dropdown" id="preferDropdown">
             <option value="default">Default</option>
             <option value="oldest">Oldest</option>
             <option value="newest">Newest</option>
-            <option value="usd-low">$-Low</option>
-            <option value="usd-high">$-High</option>
+            <option value="usd-low">$ Low</option>
+            <option value="usd-high">$ High</option>
             <option value="promo">Promo</option>
           </select>
           <button class="order-toggle" id="orderToggle" title="Toggle ascending/descending">
