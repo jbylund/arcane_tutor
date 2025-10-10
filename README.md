@@ -101,7 +101,7 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 
 ```
 scryfallos/
-├── api/                          # Python API service (main application)
+├── api/                         # Python API service (main application)
 │   ├── db/                      # Database schema and migrations
 │   ├── middlewares/             # HTTP middleware components
 │   ├── parsing/                 # Query parser implementation
