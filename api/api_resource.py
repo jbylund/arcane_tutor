@@ -887,7 +887,8 @@ class APIResource:
         Returns:
             Dict containing search results and metadata.
         """
-        del falcon_response
+        if falcon_response is not None:
+            falcon_response.set_header("Cache-Control", "public, max-age=90")
         self.import_data()  # ensures that database is setup
         return self._search(
             query=query or q,
@@ -1098,8 +1099,10 @@ class APIResource:
         """
         return db_utils.get_migrations()
 
-    def get_common_card_types(self: APIResource, **_: object) -> list[dict[str, Any]]:
+    def get_common_card_types(self: APIResource, falcon_response: falcon.Response | None = None, **_: object) -> list[dict[str, Any]]:
         """Get the common card types from the database."""
+        if falcon_response is not None:
+            falcon_response.set_header("Cache-Control", "public, max-age=3600")
         return self._run_query(
             query=self.read_sql("get_common_card_types"),
         )["result"]
