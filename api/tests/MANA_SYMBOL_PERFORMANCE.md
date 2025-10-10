@@ -2,7 +2,8 @@
 
 ## Summary
 
-The mana symbol replacement logic in `api/index.html` has been optimized from using forEach loops with repeated RegExp creation to using a simple cached regex pattern with map lookup. This resulted in a **45x speedup** (97.8% performance improvement) with significantly lower code complexity.
+The mana symbol replacement logic in `api/index.html` has been optimized from using forEach loops with repeated RegExp creation to using a simple cached regex pattern with JavaScript Map lookup.
+This resulted in a **60.7x speedup** (98.35% performance improvement) with significantly lower code complexity.
 
 ## Problem
 
@@ -101,6 +102,7 @@ We evaluated three different optimization approaches:
 | **Simple pattern with Map** | **119.37** | **60.70x faster** | **Low (12 char pattern)** |
 
 The simple pattern approach was chosen because:
+
 - **Best performance**: 60.7x faster than original, and 16% faster than alternation
 - **Much lower complexity**: 12-character pattern vs 1000+ character pattern
 - **Single lookup**: Uses `Map.get()` which returns `undefined` if key doesn't exist, saving one lookup operation
@@ -110,6 +112,7 @@ The simple pattern approach was chosen because:
 ### Test Cases
 
 The test included various mana cost combinations:
+
 - Simple costs: `{W}{U}{B}{R}{G}`
 - Repeated symbols: `{1}{R}{R}{R}`
 - Variable costs: `{X}{X}{W}{U}`
@@ -157,6 +160,7 @@ node test_mana_symbol_performance_comparison.js
 ```
 
 This test compares:
+
 1. Original forEach implementation
 2. Cached alternation pattern
 3. Simple pattern with map lookup (current implementation)
