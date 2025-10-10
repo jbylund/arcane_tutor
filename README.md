@@ -102,27 +102,27 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 ```
 scryfallos/
 ├── api/                          # Python API service (main application)
-│   ├── entrypoint.py            # API server entry point and CLI
+│   ├── db/                      # Database schema and migrations
+│   ├── middlewares/             # HTTP middleware components
+│   ├── parsing/                 # Query parser implementation
+│   │   ├── tests/               # Parser unit tests (100+ tests)
+│   │   ├── nodes.py             # AST node definitions
+│   │   ├── parsing_f.py         # Main parser with pyparsing
+│   │   └── scryfall_nodes.py    # Scryfall-specific node types
+│   ├── sql/                     # SQL query templates
+│   ├── tests/                   # Integration and API tests
 │   ├── api_resource.py          # Falcon web framework resources
 │   ├── api_worker.py            # Multi-process worker implementation
-│   ├── index.html               # Web frontend (single-file app)
-│   ├── parsing/                 # Query parser implementation
-│   │   ├── parsing_f.py         # Main parser with pyparsing
-│   │   ├── nodes.py             # AST node definitions
-│   │   ├── scryfall_nodes.py    # Scryfall-specific node types
-│   │   └── tests/               # Parser unit tests (100+ tests)
-│   ├── db/                      # Database schema and migrations
-│   ├── sql/                     # SQL query templates
-│   ├── middlewares/             # HTTP middleware components
-│   └── tests/                   # Integration and API tests
-├── scripts/                     # Utility and maintenance scripts
-├── docs/                        # Project documentation and analysis
+│   ├── entrypoint.py            # API server entry point and CLI
+│   └── index.html               # Web frontend (single-file app)
 ├── client/                      # Client-side assets (minimal)
 ├── configs/                     # Configuration files
+├── docs/                        # Project documentation and analysis
 ├── requirements/                # Requirements files
 │   ├── base.txt                 # base requirements
 │   ├── test.txt                 # testing requirements
 │   └── webserver.txt            # webserver requirements - requires building libev
+├── scripts/                     # Utility and maintenance scripts
 ├── docker-compose.yml           # Container orchestration
 └── makefile                     # Build automation
 ```
