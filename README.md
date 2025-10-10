@@ -152,7 +152,7 @@ scryfallos/
 
    # Install core dependencies
    python -m pip install --upgrade pip
-   python -m pip install -r requirements.txt -r test-requirements.txt
+   python -m pip install -r requirements/base.txt -r requirements/test.txt
    ```
 
 1. **Optional: Web Server Dependencies**
@@ -160,7 +160,7 @@ scryfallos/
    ```bash
    # Only needed for local API server (includes bjoern compilation)
    sudo apt-get update && sudo apt-get install -y libev-dev
-   python -m pip install -r webserver-requirements.txt
+   python -m pip install -r requirements/webserver.txt
    ```
 
 1. **Validate Installation**
