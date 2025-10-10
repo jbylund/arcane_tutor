@@ -1428,17 +1428,15 @@
             '{G/U/P}': '(🌳/💧/Φ)',
           };
 
-          let converted = text;
-
-          // Process longer symbols first (hybrid and 3-color symbols)
+          // Sort symbols by length (longest first to avoid partial matches)
           const sortedSymbols = Object.keys(manaTextMap).sort((a, b) => b.length - a.length);
 
-          sortedSymbols.forEach(symbol => {
-            const regex = new RegExp(symbol.replace(/[{}]/g, '\\$&'), 'g');
-            converted = converted.replace(regex, manaTextMap[symbol]);
-          });
+          // Create a single regex pattern that matches any mana symbol
+          const pattern = sortedSymbols.map(s => s.replace(/[{}]/g, '\\$&')).join('|');
+          const regex = new RegExp(pattern, 'g');
 
-          return converted;
+          // Replace all symbols in a single pass using a callback function
+          return text.replace(regex, match => manaTextMap[match]);
         }
 
         convertManaSymbols(manaCost, isModal = false) {
@@ -1518,23 +1516,20 @@
             '{G/U/P}': 'ms ms-gup ms-cost',
           };
 
-          // Replace mana symbols with Mana font spans
-          let converted = manaCost;
+          // Merge maps and sort by symbol length (longest first to avoid partial matches)
+          const allSymbols = { ...hybridMap, ...manaMap };
+          const sortedSymbols = Object.keys(allSymbols).sort((a, b) => b.length - a.length);
+
+          // Create a single regex pattern that matches any mana symbol
+          const pattern = sortedSymbols.map(s => s.replace(/[{}]/g, '\\$&')).join('|');
+          const regex = new RegExp(pattern, 'g');
+
           const symbolClass = isModal ? 'modal-mana-symbol' : 'mana-symbol';
 
-          // Process hybrid symbols first (they need to be processed before single symbols)
-          Object.keys(hybridMap).forEach(symbol => {
-            const regex = new RegExp(symbol.replace(/[{}]/g, '\\$&'), 'g');
-            converted = converted.replace(regex, `<span class="${symbolClass} ${hybridMap[symbol]}"></span>`);
+          // Replace all symbols in a single pass using a callback function
+          return manaCost.replace(regex, match => {
+            return `<span class="${symbolClass} ${allSymbols[match]}"></span>`;
           });
-
-          // Process regular mana symbols
-          Object.keys(manaMap).forEach(symbol => {
-            const regex = new RegExp(symbol.replace(/[{}]/g, '\\$&'), 'g');
-            converted = converted.replace(regex, `<span class="${symbolClass} ${manaMap[symbol]}"></span>`);
-          });
-
-          return converted;
         }
 
         formatOracleText(oracleText, isModal = false) {
