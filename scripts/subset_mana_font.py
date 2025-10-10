@@ -237,10 +237,11 @@ def generate_css(output_dir: Path, cdn_base_url: str = "/cdn/fonts/mana") -> Non
 .ms-y::before {{ content: "\\e616"; }}
 .ms-z::before {{ content: "\\e617"; }}
 
-.ms-tap::before {{ content: "\\e618"; }}
+.ms-phyrexian::before {{ content: "\\e618"; }}
+.ms-tap::before {{ content: "\\e61a"; }}
+
 .ms-untap::before {{ content: "\\e619"; }}
 .ms-energy::before {{ content: "\\e907"; }}
-.ms-phyrexian::before {{ content: "\\e61a"; }}
 .ms-snow::before {{ content: "\\e909"; }}
 .ms-chaos::before {{ content: "\\e61b"; }}
 .ms-pw::before {{ content: "\\e61c"; }}
