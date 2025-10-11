@@ -807,9 +807,10 @@ class APIResource:
         """
         logger.info("Starting prefer score backfill")
         
+        backfill_sql = self.read_sql("backfill_prefer_scores")
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
-            # Read and execute the backfill SQL
-            backfill_sql = self.read_sql("backfill_prefer_scores")
+            statement_timeout = 60_000
+            cursor.execute(f"set statement_timeout = {statement_timeout}")
             cursor.execute(backfill_sql)
             
             # Get count of updated cards

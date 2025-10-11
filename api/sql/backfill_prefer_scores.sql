@@ -37,6 +37,8 @@ SET prefer_score_components = JSONB_BUILD_OBJECT(
             CASE 
                 WHEN card_frame_data ? '2015' THEN 42
                 WHEN card_frame_data ? '2003' THEN 30
+                WHEN card_frame_data ? '1997' THEN 25
+                WHEN card_frame_data ? '1993' THEN 10
                 ELSE 0
             END
     ),
@@ -50,7 +52,7 @@ SET prefer_score_components = JSONB_BUILD_OBJECT(
     'highres_scan', (
         SELECT 
             CASE 
-                WHEN raw_card_blob ->> 'image_status' = 'highres_scan' THEN 8
+                WHEN raw_card_blob ->> 'image_status' = 'highres_scan' THEN 16
                 ELSE 0
             END
     ),
