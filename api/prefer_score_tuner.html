@@ -483,6 +483,25 @@
               <input type="range" id="artwork-cap" min="0" max="100" value="23" oninput="updateScoring()" />
             </div>
           </div>
+
+          <!-- Quality Column -->
+          <div class="slider-group">
+            <h4>Quality</h4>
+            <div class="control-group">
+              <label>
+                <span>Highres Scan:</span>
+                <span class="control-value" id="highres-scan-val">0</span>
+              </label>
+              <input type="range" id="highres-scan" min="0" max="100" value="0" oninput="updateScoring()" />
+            </div>
+            <div class="control-group">
+              <label>
+                <span>Paper Game:</span>
+                <span class="control-value" id="paper-game-val">0</span>
+              </label>
+              <input type="range" id="paper-game" min="0" max="100" value="0" oninput="updateScoring()" />
+            </div>
+          </div>
         </div>
       </div>
 
@@ -705,6 +724,12 @@
               <div class="score-breakdown-item">
                 <span>Extended Art:</span><span>${card.breakdown.extendedArt}</span>
               </div>
+              <div class="score-breakdown-item">
+                <span>Highres:</span><span>${card.breakdown.highresScan}</span>
+              </div>
+              <div class="score-breakdown-item">
+                <span>Paper:</span><span>${card.breakdown.paperGame}</span>
+              </div>
             </div>
           </div>
         `;
@@ -777,6 +802,22 @@
           breakdown.extendedArt = 0;
         }
 
+        // Highres scan (using image_status from Scryfall)
+        if (card.image_status === 'highres_scan') {
+          breakdown.highresScan = params.highresScan;
+          score += params.highresScan;
+        } else {
+          breakdown.highresScan = 0;
+        }
+
+        // Paper game (check if 'paper' is in games array)
+        if (card.games && card.games.includes('paper')) {
+          breakdown.paperGame = params.paperGame;
+          score += params.paperGame;
+        } else {
+          breakdown.paperGame = 0;
+        }
+
         return {
           score: Math.round(100 * score) / 100,
           breakdown
@@ -797,7 +838,9 @@
           rarityRare: parseInt(document.getElementById('rarity-rare').value),
           rarityMythic: parseInt(document.getElementById('rarity-mythic').value),
           extendedArt: parseInt(document.getElementById('extended-art').value),
-          artworkCap: parseInt(document.getElementById('artwork-cap').value)
+          artworkCap: parseInt(document.getElementById('artwork-cap').value),
+          highresScan: parseInt(document.getElementById('highres-scan').value),
+          paperGame: parseInt(document.getElementById('paper-game').value)
         };
       }
 
@@ -843,6 +886,8 @@
         document.getElementById('rarity-mythic-val').textContent = document.getElementById('rarity-mythic').value;
         document.getElementById('extended-art-val').textContent = document.getElementById('extended-art').value;
         document.getElementById('artwork-cap-val').textContent = document.getElementById('artwork-cap').value;
+        document.getElementById('highres-scan-val').textContent = document.getElementById('highres-scan').value;
+        document.getElementById('paper-game-val').textContent = document.getElementById('paper-game').value;
 
         // Update all card sections with new scoring
         for (const cardName in cardData) {
@@ -860,10 +905,12 @@
         document.getElementById('frame-1993').value = 10;
         document.getElementById('rarity-common').value = 16;
         document.getElementById('rarity-uncommon').value = 16;
-        document.getElementById('rarity-rare').value = 0;
+        document.getElementById('rarity-rare').value = 11;
         document.getElementById('rarity-mythic').value = 0;
         document.getElementById('extended-art').value = 12;
         document.getElementById('artwork-cap').value = 23;
+        document.getElementById('highres-scan').value = 0;
+        document.getElementById('paper-game').value = 0;
         updateScoring();
       }
     </script>
