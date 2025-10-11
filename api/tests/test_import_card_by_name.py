@@ -134,7 +134,7 @@ class TestImportCardByName(unittest.TestCase):
 
     @patch.object(APIResource, "_run_query")
     @patch.object(APIResource, "_scryfall_search")
-    @patch.object(APIResource, "_preprocess_card")
+    @patch("api.card_processing.preprocess_card")
     def test_import_card_by_name_returns_filtered_out_for_invalid_cards(
         self, mock_preprocess: MagicMock, mock_search: MagicMock, mock_run_query: MagicMock,
     ) -> None:
