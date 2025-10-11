@@ -1,6 +1,7 @@
 """Tests for type conversion functionality in API query parameter handling."""
 
-import unittest
+from __future__ import annotations
+
 from typing import Any
 from unittest.mock import patch
 
@@ -8,7 +9,7 @@ from api.api_resource import APIResource
 from api.utils.type_conversions import make_type_converting_wrapper
 
 
-class TestTypeConversion(unittest.TestCase):
+class TestTypeConversion:
     """Test type conversion for query string parameters."""
 
     def test_make_type_converting_wrapper_with_typed_function(self) -> None:
@@ -165,6 +166,8 @@ class TestTypeConversion(unittest.TestCase):
 
         assert wrapped_no_params is no_params_func
         assert wrapped_only_self is only_self_func
+
+    def test_discover_and_import_all_tags_handles_string_boolean_parameters(self) -> None:
         """Test that discover_and_import_all_tags properly handles string boolean parameters."""
         with patch("api.api_resource.db_utils.make_pool"), \
              patch("api.api_resource.requests.Session"), \
@@ -195,7 +198,3 @@ class TestTypeConversion(unittest.TestCase):
             assert result["import_hierarchy"] is True
             assert result["import_cards_type"] == "bool"
             assert result["import_hierarchy_type"] == "bool"
-
-
-if __name__ == "__main__":
-    unittest.main()
