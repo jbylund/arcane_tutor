@@ -89,3 +89,10 @@ class TestPreferOrder(unittest.TestCase):
                 prefer=PreferOrder.USD_HIGH,
             )
             assert "price_usd" in result["compiled"]
+
+            # Test with default prefer
+            result = self.api_resource.search(
+                query="cmc=3",
+                prefer=PreferOrder.DEFAULT,
+            )
+            assert "prefer_score" in result["compiled"]

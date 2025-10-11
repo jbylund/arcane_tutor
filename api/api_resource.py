@@ -616,7 +616,7 @@ class APIResource:
             PreferOrder.USD_LOW: ("price_usd", "ASC"),
             PreferOrder.USD_HIGH: ("price_usd", "DESC"),
             PreferOrder.PROMO: ("edhrec_rank", "ASC"),  # Use edhrec_rank as fallback for promo
-            PreferOrder.DEFAULT: ("edhrec_rank", "ASC"),
+            PreferOrder.DEFAULT: ("prefer_score", "DESC"),
         }
         prefer_column, prefer_direction = prefer_mapping.get(
             PreferOrder(str(prefer).replace("-", "_")),
@@ -723,6 +723,17 @@ class APIResource:
         # Cache for 1 hour - improves repeat visit performance
         falcon_response.set_header("Cache-Control", "public, max-age=3600")
 
+    def prefer_score_tuner(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
+        """Return the prefer score tuner page.
+
+        Args:
+        ----
+            falcon_response (falcon.Response): The Falcon response to write to.
+
+        """
+        self._serve_static_file(filename="prefer_score_tuner.html", falcon_response=falcon_response)
+        falcon_response.content_type = "text/html"
+
     def favicon_ico(self: APIResource, *, falcon_response: falcon.Response | None = None) -> None:
         """Return the favicon.ico file.
 
@@ -778,6 +789,44 @@ class APIResource:
         return self._run_query(
             query=self.read_sql("get_common_keywords"),
         )["result"]
+
+    def backfill_prefer_scores(self: APIResource, **_: object) -> dict[str, Any]:
+        """Backfill prefer_score and prefer_score_components for all cards.
+
+        This endpoint recalculates the prefer score for all existing cards based on:
+        - Border color (black: 14, white: 0)
+        - Frame version (2015: 42, 2003: 30)
+        - Artwork popularity (logarithmic scaling: 23 * ln(count) / ln(40))
+        - Rarity (common: 16, uncommon: 16, rare: 11, mythic: 0)
+        - Extended art (12 points if present)
+        - Highres scan (8 points if image_status='highres_scan')
+        - Has paper (6 points if 'paper' in games array)
+
+        Returns:
+            Dict with status and count of cards updated
+        """
+        logger.info("Starting prefer score backfill")
+
+        backfill_sql = self.read_sql("backfill_prefer_scores")
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            statement_timeout = 60_000
+            cursor.execute(f"set statement_timeout = {statement_timeout}")
+            cursor.execute(backfill_sql)
+
+            # Get count of updated cards
+            cursor.execute("SELECT COUNT(*) as count FROM magic.cards WHERE prefer_score IS NOT NULL")
+            result = cursor.fetchone()
+            count = result["count"] if result else 0
+
+            conn.commit()
+
+        logger.info("Prefer score backfill complete: %d cards updated", count)
+
+        return {
+            "status": "success",
+            "cards_updated": count,
+            "message": f"Successfully backfilled prefer scores for {count} cards",
+        }
 
     def update_tagged_cards(
         self: APIResource,
