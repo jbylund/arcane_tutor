@@ -618,7 +618,9 @@
               printings: printingsWithIllustration,
               extendedArt: hasExtendedArt,
               collector_number: card.collector_number,
-              released_at: card.released_at
+              released_at: card.released_at,
+              image_status: card.image_status,
+              games: card.games || []
             };
           });
 
@@ -702,7 +704,7 @@
           <div class="printing-details"><strong>Type:</strong> ${card.set_type}</div>
           <div class="printing-details"><strong>Border:</strong> ${card.border_color} | <strong>Frame:</strong> ${card.frame}</div>
           <div class="printing-details"><strong>Rarity:</strong> ${card.rarity}${card.extendedArt ? ' | Extended Art' : ''}</div>
-          <div class="printing-details"><strong>Artwork Printings:</strong> ${card.printings}</div>
+          <div class="printing-details"><strong>Image:</strong> ${card.image_status || 'unknown'} | <strong>Artwork Printings:</strong> ${card.printings}</div>
           <div class="score-display">
             <div class="score-value">Score: ${card.score}</div>
             <div class="score-bar">
