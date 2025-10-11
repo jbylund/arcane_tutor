@@ -636,6 +636,7 @@ class APIResource:
                 oracle_text,
                 set_name,
                 type_line,
+                prefer_score,
                 {sql_orderby} AS sort_value
             FROM
                 magic.cards AS card
@@ -643,7 +644,8 @@ class APIResource:
                 {where_clause}
             ORDER BY
                 {distinct_on},
-                {prefer_column} {prefer_direction} NULLS LAST
+                {prefer_column} {prefer_direction} NULLS LAST,
+                prefer_score DESC NULLS LAST
         )
         (
             SELECT
@@ -662,7 +664,8 @@ class APIResource:
                 distinct_cards
             ORDER BY
                 sort_value {sql_direction} NULLS LAST,
-                edhrec_rank ASC NULLS LAST
+                edhrec_rank ASC NULLS LAST,
+                prefer_score DESC NULLS LAST
             LIMIT
                 {limit}
         )
