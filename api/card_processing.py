@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import functools
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def extract_image_location_uuid(card: dict[str, Any]) -> str:
@@ -19,7 +22,7 @@ def parse_type_line(type_line: str) -> tuple[list[str], list[str]]:
     card_types, _, card_subtypes = (x.strip().split() for x in type_line.title().partition("\u2014"))
     return card_types, card_subtypes or []
 
-def maybeify(func: callable) -> callable:
+def maybeify(func: Callable) -> Callable:
     """Convert value to int (via float first), returning None if conversion fails."""
     @functools.wraps(func)
     def wrapper(val: str | int | float | None) -> int | None:
