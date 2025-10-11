@@ -81,27 +81,6 @@ def rewrap(query: str) -> str:
     return " ".join(query.strip().split())
 
 
-def can_serialize(iobj: object) -> bool:
-    """Check if an object is JSON serializable and not too large.
-
-    Args:
-    ----
-        iobj (object): The object to check.
-
-    Returns:
-    -------
-        bool: True if serializable and not too large, False otherwise.
-
-    """
-    max_json_object_length = 16_000
-    try:
-        s = orjson.dumps(iobj).decode("utf-8")
-        return len(s) < max_json_object_length
-    except TypeError:
-        return False
-    return True
-
-
 class APIResource:
     """Class implementing request handling for our simple API."""
 
@@ -202,7 +181,11 @@ class APIResource:
                         "file": iframe.filename,
                         "function": iframe.function,
                         "line_no": iframe.lineno,
-                        "locals": {k: v for k, v in iframe.frame.f_locals.items() if can_serialize(v)},
+                        "locals": {
+                            k: v
+                            for k, v in iframe.frame.f_locals.items()
+                            if error_monitoring.can_serialize(v)
+                        },
                     },
                 )
 
