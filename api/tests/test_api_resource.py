@@ -105,28 +105,32 @@ def create_test_card(  # noqa: PLR0913
 
     return card
 
+@pytest.fixture(name="patch_conn_pool")
+def patch_conn_pool_fixture() -> MagicMock:
+    """Patch connection pool."""
+    mock_conn_pool = MagicMock()
+    with patch("api.api_resource.db_utils.make_pool") as mock_pool:
+        mock_pool.return_value = mock_conn_pool
+        yield mock_conn_pool
 
-class TestAPIResourceInitialization(unittest.TestCase):
+class TestBaseAPIResourceTest:
+
+    @pytest.fixture(autouse=True)
+    def setUp(self, request: pytest.FixtureRequest, patch_conn_pool: MagicMock) -> None:
+        """Set up test fixtures."""
+        del patch_conn_pool
+        self_reference = request.instance
+
+        self_reference.mock_conn_pool = MagicMock()
+        self_reference.api_resource = APIResource()
+        self_reference.api_resource._conn_pool = self_reference.mock_conn_pool
+
+class TestAPIResourceInitializationNewStyle(TestBaseAPIResourceTest):
     """Test APIResource initialization and basic setup."""
 
-    def setUp(self) -> None:
-        """Set up test fixtures."""
-        self.mock_conn_pool = MagicMock()
-        self.mock_session = MagicMock()
-        self.mock_tagger_client = MagicMock()
-
-    @patch("api.api_resource.db_utils.make_pool")
-    @patch("api.api_resource.requests.Session")
-    @patch("api.api_resource.TaggerClient")
-    def test_initialization_defaults(self, mock_tagger: Any, mock_session: Any, mock_pool: Any) -> None:
+    def test_initialization_defaults(self) -> None:
         """Test APIResource initialization with default parameters."""
-        mock_pool.return_value = self.mock_conn_pool
-        mock_session.return_value = self.mock_session
-        mock_tagger.return_value = self.mock_tagger_client
-
-        api_resource = APIResource()
-
-        # Check that connection pool is set up
+        api_resource = self.api_resource
         assert api_resource._conn_pool == self.mock_conn_pool
 
         # Check that action map is populated
@@ -140,15 +144,9 @@ class TestAPIResourceInitialization(unittest.TestCase):
         assert hasattr(api_resource, "_session")
         assert hasattr(api_resource, "_tagger_client")
 
-    @patch("api.api_resource.db_utils.make_pool")
-    @patch("api.api_resource.requests.Session")
-    @patch("api.api_resource.TaggerClient")
-    def test_initialization_with_custom_import_guard(self, mock_tagger: Any, mock_session: Any, mock_pool: Any) -> None:
-        """Test APIResource initialization with custom import guard."""
-        mock_pool.return_value = self.mock_conn_pool
-        mock_session.return_value = self.mock_session
-        mock_tagger.return_value = self.mock_tagger_client
 
+    def test_initialization_with_custom_import_guard(self) -> None:
+        """Test APIResource initialization with custom import guard."""
         custom_guard = multiprocessing.RLock()
         api_resource = APIResource(import_guard=custom_guard)
 
@@ -156,18 +154,14 @@ class TestAPIResourceInitialization(unittest.TestCase):
 
     def test_action_map_includes_all_public_methods(self) -> None:
         """Test that action_map includes all public methods."""
-        with patch("api.api_resource.db_utils.make_pool"), \
-             patch("api.api_resource.requests.Session"), \
-             patch("api.api_resource.TaggerClient"):
+        api_resource = self.api_resource
+        public_methods = [
+            method for method in dir(api_resource)
+            if not method.startswith("_") and callable(getattr(api_resource, method))
+        ]
 
-            api_resource = APIResource()
-
-            # Check that all public methods are in action_map
-            public_methods = [method for method in dir(api_resource)
-                            if not method.startswith("_") and callable(getattr(api_resource, method))]
-
-            for method in public_methods:
-                assert method in api_resource.action_map
+        for method in public_methods:
+            assert method in api_resource.action_map
 
 
 class TestAPIResourceCoreMethods(unittest.TestCase):
