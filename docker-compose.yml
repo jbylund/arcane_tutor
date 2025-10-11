@@ -40,7 +40,7 @@ services:
         - --
         - python
         - -m
-        - scryfallos.api.entrypoint
+        - api.entrypoint
         container_name: apiservice
         depends_on:
             postgres:

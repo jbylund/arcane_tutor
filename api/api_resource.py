@@ -6,8 +6,6 @@ import collections
 import copy
 import csv
 import datetime
-import enum
-import functools
 import inspect
 import itertools
 import logging
@@ -29,10 +27,13 @@ import requests
 from cachetools import LRUCache, TTLCache, cached
 from psycopg import Connection, Cursor
 
-from .parsing import generate_sql_query, parse_scryfall_query
-from .parsing.scryfall_nodes import calculate_devotion, extract_frame_data_from_raw_card, mana_cost_str_to_dict
-from .tagger_client import TaggerClient
-from .utils import db_utils, error_monitoring, multiprocessing_utils
+from api.card_processing import preprocess_card
+from api.enums import CardOrdering, PreferOrder, SortDirection, UniqueOn
+from api.parsing import generate_sql_query, parse_scryfall_query
+from api.parsing.scryfall_nodes import extract_frame_data_from_raw_card, mana_cost_str_to_dict
+from api.tagger_client import TaggerClient
+from api.utils import db_utils, error_monitoring, multiprocessing_utils
+from api.utils.type_conversions import _get_type_name, make_type_converting_wrapper
 
 if TYPE_CHECKING:
     from multiprocessing.synchronize import Event as EventType
@@ -45,186 +46,7 @@ logger = logging.getLogger(__name__)
 
 # pylint: disable=c-extension-no-member
 NOT_FOUND = 404
-
-
-class UniqueOn(enum.StrEnum):
-    """Enum for the distinct on column for the search."""
-    CARD = enum.auto()
-    PRINTING = enum.auto()
-    ARTWORK = enum.auto()
-
-
-class PreferOrder(enum.StrEnum):
-    """Enum for the prefer order column for the search."""
-    DEFAULT = enum.auto()
-    OLDEST = enum.auto()
-    NEWEST = enum.auto()
-    USD_LOW = enum.auto()
-    USD_HIGH = enum.auto()
-    PROMO = enum.auto()
-
-def extract_image_location_uuid(card: dict[str, Any]) -> str:
-    """Extract the image location UUID from a card."""
-    for image_location in card.get("image_uris", {}).values():
-        if ".jpg" in image_location:
-            return image_location.rpartition("/")[-1].partition(".")[0]
-    msg = f"No image location found for card: {card}"
-    raise AssertionError(msg)
-
-def parse_type_line(type_line: str) -> tuple[list[str], list[str]]:
-    """Parse the type line of a card."""
-    card_types, _, card_subtypes = (x.strip().split() for x in type_line.title().partition("\u2014"))
-    return card_types, card_subtypes or []
-
-def maybeify(func: callable) -> callable:
-    """Convert value to int (via float first), returning None if conversion fails."""
-    @functools.wraps(func)
-    def wrapper(val: str | int | float | None) -> int | None:
-        if val is None:
-            return None
-        try:
-            return func(val)
-        except (ValueError, TypeError):
-            return None
-    return wrapper
-
-@maybeify
-def maybe_float(val: str | int | float | None) -> float | None:
-    """Convert value to float, returning None if conversion fails."""
-    return float(val)
-
-@maybeify
-def maybe_int(val: str | int | float | None) -> int | None:
-    """Convert value to int (via float first), returning None if conversion fails."""
-    return int(float(val))
-
-
-def extract_collector_number_int(collector_number: str | int | float | None) -> int | None:
-    """Extract the integer part of a collector number."""
-    if collector_number is None:
-        return None
-    # Implement magic.extract_collector_number_int in Python
-    # Extract numeric characters using regex, similar to the database function
-    numeric_part = re.sub(r"[^0-9]", "", str(collector_number))
-    if numeric_part:
-        try:
-            int_val = int(numeric_part)
-            # PostgreSQL integer range is -2^31 to 2^31-1
-            if -2**31 <= int_val <= 2**31-1:
-                return int_val
-        except (ValueError, OverflowError):
-            pass
-    return None  # Field will be null by default
-
-
-def _convert_string_to_type(str_value: str | None, param_type: Any) -> Any:  # noqa: ANN401
-    """Convert a string value to the specified type.
-
-    Args:
-        str_value: The string value to convert
-        param_type: The target type annotation
-
-    Returns:
-        The converted value, or the original string if conversion fails/unsupported
-    """
-    if str_value is None:
-        return None
-
-    def identity(x: str) -> str:
-        return x
-
-    def convert_to_bool(x: str) -> bool:
-        return x.lower() in ("true", "1", "yes", "on", "t")
-
-    converter_map = {
-        "PreferOrder": PreferOrder,
-        "UniqueOn": UniqueOn,
-        "bool": convert_to_bool,
-        "float": float,
-        "int": int,
-        "str": identity,
-    }
-    if isinstance(param_type, str):
-        pass
-    else:
-        param_type = param_type.__name__
-    possible_types = [x.strip() for x in param_type.split("|")]
-    for ipossible_type in possible_types:
-        try:
-            converter = converter_map[ipossible_type]
-        except KeyError:
-            continue
-        try:
-            converted = converter(str_value)
-            logger.info(
-                "Converted %s %s to %s %s",
-                type(str_value),
-                str_value,
-                type(converted),
-                converted,
-            )
-            return converted
-        except (ValueError, TypeError):
-            continue
-
-    logger.warning(
-        "Was unable to convert parameter: [%s][%s][%s]: %s",
-        type(param_type),
-        param_type,
-        str(param_type),
-        str_value,
-    )
-    return str_value
-
-
-def make_type_converting_wrapper(func: callable) -> callable:
-    """Create a wrapper that converts string arguments to the types expected by the function.
-
-    Args:
-        func: The function to wrap with type conversion
-
-    Returns:
-        A new function that converts string arguments to match the function's signature
-    """
-    sig = inspect.signature(func)
-
-    # Check if function needs type conversion wrapper
-    # If signature has no parameters or only has 'self', return function as-is
-    params = [p for name, p in sig.parameters.items() if name not in ("self", "_")]
-    if not params:
-        return func
-
-    def convert_args(**str_kwargs: str) -> dict[str, Any]:
-        """Convert string keyword arguments to match function signature types."""
-        converted_kwargs = {}
-
-        for param_name, param in sig.parameters.items():
-            if param_name in str_kwargs:
-                str_value = str_kwargs[param_name]
-                converted_kwargs[param_name] = _convert_string_to_type(str_value, param.annotation)
-            elif param_name not in ("self", "_"):
-                # Parameter not provided, use default if available
-                if param.default != inspect.Parameter.empty:
-                    converted_kwargs[param_name] = param.default
-
-        return converted_kwargs
-
-    def wrapper(**raw_kwargs: Any) -> Any:  # noqa: ANN401
-        """Wrapper function that converts arguments and calls the original function."""
-        # Filter out string parameters that need conversion
-        str_params = {k: v for k, v in raw_kwargs.items() if isinstance(v, str)}
-        non_str_params = {k: v for k, v in raw_kwargs.items() if not isinstance(v, str)}
-
-        # Convert string parameters
-        converted_params = convert_args(**str_params)
-
-        # Merge with non-string parameters (non-string params take precedence)
-        final_params = {**converted_params, **non_str_params}
-
-        return func(**final_params)
-
-    # Use functools.update_wrapper to preserve original function metadata
-    return functools.update_wrapper(wrapper, func)
+BACKFILL = IMPORT_EXPORT = True
 
 
 @cached(cache=LRUCache(maxsize=10_000))
@@ -251,27 +73,6 @@ def rewrap(query: str) -> str:
         The query with normalized whitespace.
     """
     return " ".join(query.strip().split())
-
-
-def can_serialize(iobj: object) -> bool:
-    """Check if an object is JSON serializable and not too large.
-
-    Args:
-    ----
-        iobj (object): The object to check.
-
-    Returns:
-    -------
-        bool: True if serializable and not too large, False otherwise.
-
-    """
-    max_json_object_length = 16_000
-    try:
-        s = orjson.dumps(iobj).decode("utf-8")
-        return len(s) < max_json_object_length
-    except TypeError:
-        return False
-    return True
 
 
 class APIResource:
@@ -374,7 +175,11 @@ class APIResource:
                         "file": iframe.filename,
                         "function": iframe.function,
                         "line_no": iframe.lineno,
-                        "locals": {k: v for k, v in iframe.frame.f_locals.items() if can_serialize(v)},
+                        "locals": {
+                            k: v
+                            for k, v in iframe.frame.f_locals.items()
+                            if error_monitoring.can_serialize(v)
+                        },
                     },
                 )
 
@@ -415,13 +220,13 @@ class APIResource:
 
                 param_info = {
                     "name": param_name,
-                    "type": self._get_type_name(param.annotation),
+                    "type": _get_type_name(param.annotation),
                 }
 
                 if param.default != inspect.Parameter.empty:
                     # It's a keyword argument with default
                     kwargs[param_name] = {
-                        "type": self._get_type_name(param.annotation),
+                        "type": _get_type_name(param.annotation),
                         "default": param.default,
                     }
                 else:
@@ -440,33 +245,6 @@ class APIResource:
                 "routes": routes,
             },
         )
-
-    def _get_type_name(self: APIResource, annotation: Any) -> str:  # noqa: ANN401
-        """Convert a type annotation to a readable string.
-
-        Args:
-            annotation: The type annotation to convert
-
-        Returns:
-            A string representation of the type
-        """
-        if annotation == inspect.Parameter.empty:
-            return "Any"
-
-        # Handle generic types and complex annotations
-        if hasattr(annotation, "__name__"):
-            return annotation.__name__
-        if annotation is None:
-            return "None"
-        if hasattr(annotation, "__origin__"):
-            # Handle generic types like List[str], Dict[str, int], etc.
-            origin = annotation.__origin__
-            if hasattr(origin, "__name__"):
-                return origin.__name__
-            return str(origin)
-
-        # Fallback to string representation
-        return str(annotation)
 
     def _run_query(
         self: APIResource,
@@ -677,126 +455,13 @@ class APIResource:
         all_cards = self.get_data()
         scryfall_id_to_card = {}
         for card in all_cards:
-            processed_card = self._preprocess_card(card)
+            processed_card = preprocess_card(card)
             if processed_card is None:
                 continue
             scryfall_id = processed_card["scryfall_id"]
             scryfall_id_to_card[scryfall_id] = processed_card
         return list(scryfall_id_to_card.values())
 
-    def _preprocess_card(self: APIResource, card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: PLR0915
-        """Preprocess a card to remove invalid cards and add necessary fields."""
-        if set(card["legalities"].values()) == {"not_legal"}:
-            return None
-        if "paper" not in card["games"]:
-            return None
-        if "card_faces" in card:
-            return None
-        if card.get("set_type") == "funny":
-            return None
-
-        if card.get("preprocessed"):
-            return card
-
-        # Store the original card data before modifications for raw_card_blob
-        raw_card_data = copy.deepcopy(card)
-        card["raw_card_blob"] = raw_card_data
-        card["preprocessed"] = True
-        card["scryfall_id"] = card["id"]
-
-        card_types, card_subtypes = parse_type_line(card["type_line"])
-        card["card_types"] = card_types
-        card["card_subtypes"] = card_subtypes
-
-        card["creature_power"] = maybe_int(card.get("power"))
-        card["creature_toughness"] = maybe_int(card.get("toughness"))
-        card["planeswalker_loyalty"] = maybe_int(card.get("loyalty"))
-
-        # objects of keys to true
-        card["card_colors"] = dict.fromkeys(card["colors"], True)
-        card["card_color_identity"] = dict.fromkeys(card["color_identity"], True)
-        card["card_keywords"] = dict.fromkeys(card.get("keywords", []), True)
-        card["produced_mana"] = dict.fromkeys(card.get("produced_mana", []), True)
-
-        card["edhrec_rank"] = card.get("edhrec_rank")
-
-        # Extract frame data - combine frame version and frame effects into single JSONB object
-        frame_data = {}
-        # Add frame version if present (titlecased for consistency)
-        frame_version = card.get("frame")
-        if frame_version:
-            frame_data[frame_version.title()] = True
-        # Add frame effects if present (titlecased for consistency)
-        frame_effects = card.get("frame_effects", [])
-        for effect in frame_effects:
-            frame_data[effect.title()] = True
-        card["card_frame_data"] = frame_data
-
-        # Extract pricing data if available - ensure they are floats for jsonb_populate_record
-        prices = card.get("prices", {})
-        card["price_usd"] = maybe_float(prices.get("usd"))
-        card["price_eur"] = maybe_float(prices.get("eur"))
-        card["price_tix"] = maybe_float(prices.get("tix"))
-
-        # Extract set code for dedicated column
-        card["card_set_code"] = card.get("set")
-
-        # Extract layout and border for dedicated columns (lowercased for case-insensitive search)
-        if "layout" in card:
-            card["card_layout"] = card["layout"].lower()
-        if "border_color" in card:
-            card["card_border"] = card["border_color"].lower()
-        if "watermark" in card:
-            card["card_watermark"] = card["watermark"].lower()
-
-        mana_cost_text = card.get("mana_cost", "")
-        card["mana_cost_jsonb"] = mana_cost_str_to_dict(mana_cost_text)
-        card["devotion"] = calculate_devotion(mana_cost_text)
-
-        # Map field names to match database column names for jsonb_populate_record
-        card["card_name"] = card.get("name")
-        card["mana_cost_text"] = card.get("mana_cost")
-        card["creature_power_text"] = card.get("power")
-        card["creature_toughness_text"] = card.get("toughness")
-        card["planeswalker_loyalty_text"] = card.get("loyalty")
-        card["card_artist"] = card.get("artist")
-
-        # Handle CMC and edhrec_rank conversion using helper function
-        card["cmc"] = maybe_int(card.get("cmc"))
-
-        # Handle rarity conversion - implement in Python to avoid SQL boilerplate
-        if card.get("rarity"):
-            card["card_rarity_text"] = card["rarity"].lower()
-            # Implement magic.rarity_text_to_int in Python
-            rarity_map = {
-                "common": 0,
-                "uncommon": 1,
-                "rare": 2,
-                "mythic": 3,
-                "special": 4,
-                "bonus": 5,
-            }
-            card["card_rarity_int"] = rarity_map.get(card["card_rarity_text"], -1)
-
-        # Handle collector number - implement extraction in Python to avoid SQL boilerplate
-        collector_number = card.get("collector_number")
-        card["collector_number"] = collector_number
-        card["collector_number_int"] = extract_collector_number_int(collector_number)
-        card["image_location_uuid"] = extract_image_location_uuid(card)
-        card["illustration_id"] = card.get("illustration_id")
-
-        # Handle legalities and produced_mana defaults
-        card.setdefault("card_legalities", card.get("legalities", {}))
-        card.setdefault("produced_mana", {})
-
-        # Ensure all NOT NULL DEFAULT fields are set to avoid constraint violations
-        card.setdefault("card_oracle_tags", {})
-        card.setdefault("card_is_tags", {})
-        if "raw_card_blob" in card["raw_card_blob"]:
-            msg = "raw_card_blob is not a dictionary"
-            raise AssertionError(msg)
-
-        return card
 
     def get_stats(self: APIResource, **_: object) -> dict[str, Any]:
         """Get stats about the cards."""
@@ -864,13 +529,14 @@ class APIResource:
         self: APIResource,
         *,
         falcon_response: falcon.Response | None = None,
+        # search parameters
+        direction: SortDirection = SortDirection.ASC,
+        limit: int = 100,
+        orderby: CardOrdering = CardOrdering.EDHREC,
+        prefer: PreferOrder = PreferOrder.DEFAULT,
         q: str | None = None,
         query: str | None = None,
-        orderby: str | None = None,
-        direction: str | None = None,
-        limit: int = 100,
-        unique: UniqueOn | None = UniqueOn.CARD,
-        prefer: PreferOrder | None = PreferOrder.DEFAULT,
+        unique: UniqueOn = UniqueOn.CARD,
     ) -> dict[str, Any]:
         """Run a search query and return results and metadata.
 
@@ -906,12 +572,12 @@ class APIResource:
     def _search(  # noqa: PLR0913
         self: APIResource,
         *,
-        query: str | None = None,
-        orderby: str | None = None,
-        direction: str | None = None,
+        direction: SortDirection = SortDirection.ASC,
         limit: int = 100,
-        unique: UniqueOn | None = UniqueOn.CARD,
-        prefer: PreferOrder | None = PreferOrder.DEFAULT,
+        orderby: CardOrdering = CardOrdering.EDHREC,
+        prefer: PreferOrder = PreferOrder.DEFAULT,
+        query: str | None = None,
+        unique: UniqueOn = UniqueOn.CARD,
     ) -> dict[str, Any]:
         begin = time.monotonic()
         try:
@@ -1789,344 +1455,348 @@ class APIResource:
 
         return all_cards
 
-    def backfill_mana_cost_jsonb(self: APIResource, **_: object) -> dict[str, str]:
-        """Backfill the mana_cost_jsonb column with the mana_cost_text column."""
-        logger.info("Backfilling mana_cost_jsonb column with mana_cost_text column")
-        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
-            cursor = typecast("Cursor", cursor)
-            cursor.execute("SELECT mana_cost_text FROM magic.cards GROUP BY mana_cost_text")
-            for mana_cost_text in cursor.fetchall():
-                mana_cost_text = typecast("dict", mana_cost_text)
-                mana_cost_jsonb = mana_cost_str_to_dict(mana_cost_text["mana_cost_text"])
-                cursor.execute(
-                    query="UPDATE magic.cards SET mana_cost_jsonb = %(mana_cost_jsonb)s WHERE mana_cost_text = %(mana_cost_text)s",
-                    params={
-                        "mana_cost_jsonb": db_utils.maybe_json(mana_cost_jsonb),
-                        "mana_cost_text": mana_cost_text["mana_cost_text"],
-                    },
-                )
-            conn.commit()
-        return {
-            "status": "success",
-            "message": "Mana cost jsonb backfilled successfully",
-        }
 
-    def backfill_card_frame_data(self: APIResource, **_: object) -> dict[str, Any]:
-        """Backfill the card_frame_data column from raw_card_blob frame data."""
-        logger.info("Backfilling card_frame_data column from raw_card_blob")
-        updated_count = 0
-        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
-            cursor = typecast("Cursor", cursor)
-            # Select unique combinations of frame and frame_effects for efficient batch processing
-            cursor.execute("""
-                SELECT
-                    raw_card_blob->>'frame' AS frame,
-                    raw_card_blob->'frame_effects' AS frame_effects
-                FROM
-                    magic.cards
-                WHERE
-                    (raw_card_blob ? 'frame' OR raw_card_blob ? 'frame_effects')
-                GROUP BY 1, 2
-            """)
-
-            for row in cursor.fetchall():
-                # Build raw card data for frame extraction
-                raw_card = {}
-                if row["frame"] is not None:
-                    raw_card["frame"] = row["frame"]
-                if row["frame_effects"] is not None:
-                    raw_card["frame_effects"] = row["frame_effects"]
-
-                frame_data = extract_frame_data_from_raw_card(raw_card)
-                if frame_data is None:
-                    continue
-
-                logger.info("Updating frame: frame_data=%s, row=%s", frame_data, row)
-                cursor.execute(
-                    query=rewrap("""
-                        UPDATE
-                            magic.cards
-                        SET
-                            card_frame_data = %(frame_data)s
-                        WHERE
-                            raw_card_blob->>'frame' IS NOT DISTINCT FROM %(frame)s AND
-                            raw_card_blob->'frame_effects' IS NOT DISTINCT FROM %(frame_effects)s
-                    """).encode(),
-                    params={
-                        "frame": db_utils.maybe_json(row["frame"]),
-                        "frame_data": db_utils.maybe_json(frame_data),
-                        "frame_effects": db_utils.maybe_json(row["frame_effects"]),
-                    },
-                )
-                updated_count += cursor.rowcount
-
-            conn.commit()
-
-        return {
-            "status": "success",
-            "message": f"Card frame data backfilled successfully. Updated {updated_count} cards.",
-            "updated_count": updated_count,
-        }
-
-    def export_card_data(self: APIResource, **_: object) -> dict[str, Any]:
-        """Export card data tables to JSON files for backup/re-import.
-
-        Exports the three main tables:
-        - magic.cards
-        - magic.tags
-        - magic.tag_relationships
-
-        Files are saved to /data/api/exports/{timestamp}/ directory.
-
-        Returns:
-        -------
-            Dict[str, Any]: Export result with status, file paths, and counts.
-        """
-        logger.info("Starting card data export")
-
-        # Create timestamped export directory
-        timestamp = datetime.datetime.now(tz=datetime.UTC).strftime("%Y%m%d_%H%M%S")
-        export_dir = pathlib.Path("/data/api/exports") / timestamp
-        export_dir.mkdir(parents=True, exist_ok=True)
-
-        try:
+    if BACKFILL:
+        def backfill_mana_cost_jsonb(self: APIResource, **_: object) -> dict[str, str]:
+            """Backfill the mana_cost_jsonb column with the mana_cost_text column."""
+            logger.info("Backfilling mana_cost_jsonb column with mana_cost_text column")
             with self._conn_pool.connection() as conn, conn.cursor() as cursor:
                 cursor = typecast("Cursor", cursor)
-
-                export_results = {
-                    "cards": self._export_cards_table(cursor, export_dir),
-                    "tags": self._export_tags_table(cursor, export_dir),
-                    "tag_relationships": self._export_tag_relationships_table(cursor, export_dir),
-                }
-
-                logger.info("Export completed successfully to %s", export_dir)
-                return {
-                    "status": "success",
-                    "export_directory": str(export_dir),
-                    "timestamp": timestamp,
-                    "results": export_results,
-                    "message": "Successfully exported cards, tags, and tag relationships",
-                }
-
-        except (OSError, psycopg.Error, ValueError) as e:
-            logger.error("Failed to export card data: %s", e)
+                cursor.execute("SELECT mana_cost_text FROM magic.cards GROUP BY mana_cost_text")
+                for mana_cost_text in cursor.fetchall():
+                    mana_cost_text = typecast("dict", mana_cost_text)
+                    mana_cost_jsonb = mana_cost_str_to_dict(mana_cost_text["mana_cost_text"])
+                    cursor.execute(
+                        query="UPDATE magic.cards SET mana_cost_jsonb = %(mana_cost_jsonb)s WHERE mana_cost_text = %(mana_cost_text)s",
+                        params={
+                            "mana_cost_jsonb": db_utils.maybe_json(mana_cost_jsonb),
+                            "mana_cost_text": mana_cost_text["mana_cost_text"],
+                        },
+                    )
+                conn.commit()
             return {
-                "status": "error",
-                "message": f"Export failed: {e}",
+                "status": "success",
+                "message": "Mana cost jsonb backfilled successfully",
             }
 
-    def _export_cards_table(self: APIResource, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
-        """Export magic.cards table to JSON file."""
-        cards_file = export_dir / "cards.json"
-        logger.info("Exporting magic.cards table to %s file", cards_file)
-        cursor.execute("SELECT * FROM magic.cards ORDER BY card_name")
-
-        cards_data = [dict(row) for row in cursor.fetchall()]
-        cards_count = len(cards_data)
-
-        # Write JSON file
-        with cards_file.open("w", encoding="utf-8") as f:
-            f.write(orjson.dumps(cards_data, option=orjson.OPT_INDENT_2).decode("utf-8"))
-
-        logger.info("Exported magic.cards table to %s file", cards_file)
-        return {"file": str(cards_file), "count": cards_count}
-
-    def _export_tags_table(self: APIResource, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
-        """Export magic.tags table to JSON file."""
-        tags_file = export_dir / "tags.json"
-        logger.info("Exporting tags table to %s file", tags_file)
-        cursor.execute("SELECT tag FROM magic.tags ORDER BY tag")
-
-        tags_data = [dict(row) for row in cursor.fetchall()]
-        tags_count = len(tags_data)
-
-        # Write JSON file
-        with tags_file.open("w", encoding="utf-8") as f:
-            f.write(orjson.dumps(tags_data, option=orjson.OPT_INDENT_2).decode("utf-8"))
-
-        logger.info("Exported tags table to %s file", tags_file)
-        return {"file": str(tags_file), "count": tags_count}
-
-    def _export_tag_relationships_table(self: APIResource, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
-        """Export magic.tag_relationships table to JSON file."""
-        relationships_file = export_dir / "tag_relationships.json"
-        logger.info("Exporting tag_relationships table to %s file", relationships_file)
-        cursor.execute("""
-            SELECT child_tag, parent_tag
-            FROM magic.tag_relationships
-            ORDER BY child_tag, parent_tag
-        """)
-
-        relationships_data = [dict(row) for row in cursor.fetchall()]
-        relationships_count = len(relationships_data)
-
-        # Write JSON file
-        with relationships_file.open("w", encoding="utf-8") as f:
-            f.write(orjson.dumps(relationships_data, option=orjson.OPT_INDENT_2).decode("utf-8"))
-
-        logger.info("Exported tag_relationships table to %s file", relationships_file)
-        return {"file": str(relationships_file), "count": relationships_count}
-
-    def import_card_data(self: APIResource, *, timestamp: str | None = None, **_: object) -> dict[str, Any]:
-        """Import card data from JSON files, truncating existing data.
-
-        Imports data from /data/api/exports/{timestamp}/ directory.
-        If timestamp is not provided, uses the most recent export.
-
-        Args:
-        ----
-            timestamp (str, optional): Timestamp of export to import. If None, uses latest.
-
-        Returns:
-        -------
-            Dict[str, Any]: Import result with status and counts.
-        """
-        logger.info("Starting card data import")
-
-        try:
-            import_dir, timestamp = self._find_import_directory(timestamp)
-            self._validate_import_files(import_dir)
-
-            logger.info("Importing from directory: %s", import_dir)
-
+        def backfill_card_frame_data(self: APIResource, **_: object) -> dict[str, Any]:
+            """Backfill the card_frame_data column from raw_card_blob frame data."""
+            logger.info("Backfilling card_frame_data column from raw_card_blob")
+            updated_count = 0
             with self._conn_pool.connection() as conn, conn.cursor() as cursor:
                 cursor = typecast("Cursor", cursor)
-                conn.autocommit = False
+                # Select unique combinations of frame and frame_effects for efficient batch processing
+                cursor.execute("""
+                    SELECT
+                        raw_card_blob->>'frame' AS frame,
+                        raw_card_blob->'frame_effects' AS frame_effects
+                    FROM
+                        magic.cards
+                    WHERE
+                        (raw_card_blob ? 'frame' OR raw_card_blob ? 'frame_effects')
+                    GROUP BY 1, 2
+                """)
 
-                try:
-                    import_results = self._perform_import(cursor, import_dir)
-                    conn.commit()
+                for row in cursor.fetchall():
+                    # Build raw card data for frame extraction
+                    raw_card = {}
+                    if row["frame"] is not None:
+                        raw_card["frame"] = row["frame"]
+                    if row["frame_effects"] is not None:
+                        raw_card["frame_effects"] = row["frame_effects"]
 
-                    logger.info("Import completed successfully")
-                    return {
-                        "status": "success",
-                        "timestamp": timestamp,
-                        "import_directory": str(import_dir),
-                        "results": import_results,
-                        "message": f"Successfully imported {import_results['cards']} cards, {import_results['tags']} tags, and {import_results['tag_relationships']} tag relationships",
+                    frame_data = extract_frame_data_from_raw_card(raw_card)
+                    if frame_data is None:
+                        continue
+
+                    logger.info("Updating frame: frame_data=%s, row=%s", frame_data, row)
+                    cursor.execute(
+                        query=rewrap("""
+                            UPDATE
+                                magic.cards
+                            SET
+                                card_frame_data = %(frame_data)s
+                            WHERE
+                                raw_card_blob->>'frame' IS NOT DISTINCT FROM %(frame)s AND
+                                raw_card_blob->'frame_effects' IS NOT DISTINCT FROM %(frame_effects)s
+                        """).encode(),
+                        params={
+                            "frame": db_utils.maybe_json(row["frame"]),
+                            "frame_data": db_utils.maybe_json(frame_data),
+                            "frame_effects": db_utils.maybe_json(row["frame_effects"]),
+                        },
+                    )
+                    updated_count += cursor.rowcount
+
+                conn.commit()
+
+            return {
+                "status": "success",
+                "message": f"Card frame data backfilled successfully. Updated {updated_count} cards.",
+                "updated_count": updated_count,
+            }
+
+
+    if IMPORT_EXPORT:
+        def export_card_data(self: APIResource, **_: object) -> dict[str, Any]:
+            """Export card data tables to JSON files for backup/re-import.
+
+            Exports the three main tables:
+            - magic.cards
+            - magic.tags
+            - magic.tag_relationships
+
+            Files are saved to /data/api/exports/{timestamp}/ directory.
+
+            Returns:
+            -------
+                Dict[str, Any]: Export result with status, file paths, and counts.
+            """
+            logger.info("Starting card data export")
+
+            # Create timestamped export directory
+            timestamp = datetime.datetime.now(tz=datetime.UTC).strftime("%Y%m%d_%H%M%S")
+            export_dir = pathlib.Path("/data/api/exports") / timestamp
+            export_dir.mkdir(parents=True, exist_ok=True)
+
+            try:
+                with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+                    cursor = typecast("Cursor", cursor)
+
+                    export_results = {
+                        "cards": self._export_cards_table(cursor, export_dir),
+                        "tags": self._export_tags_table(cursor, export_dir),
+                        "tag_relationships": self._export_tag_relationships_table(cursor, export_dir),
                     }
 
-                except (OSError, psycopg.Error, ValueError) as e:
-                    conn.rollback()
-                    raise e
-                finally:
-                    conn.autocommit = True
+                    logger.info("Export completed successfully to %s", export_dir)
+                    return {
+                        "status": "success",
+                        "export_directory": str(export_dir),
+                        "timestamp": timestamp,
+                        "results": export_results,
+                        "message": "Successfully exported cards, tags, and tag relationships",
+                    }
 
-        except (OSError, psycopg.Error, ValueError) as e:
-            logger.error("Failed to import card data: %s", e)
-            return {
-                "status": "error",
-                "message": f"Import failed: {e}",
-            }
+            except (OSError, psycopg.Error, ValueError) as e:
+                logger.error("Failed to export card data: %s", e)
+                return {
+                    "status": "error",
+                    "message": f"Export failed: {e}",
+                }
 
-    def _find_import_directory(self: APIResource, timestamp: str | None) -> tuple[pathlib.Path, str]:
-        """Find and validate the import directory."""
-        exports_dir = pathlib.Path("/data/api/exports")
-        if not exports_dir.exists():
-            msg = "No exports directory found at /data/api/exports"
-            raise ValueError(msg)
+        def _export_cards_table(self: APIResource, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
+            """Export magic.cards table to JSON file."""
+            cards_file = export_dir / "cards.json"
+            logger.info("Exporting magic.cards table to %s file", cards_file)
+            cursor.execute("SELECT * FROM magic.cards ORDER BY card_name")
 
-        if timestamp:
-            import_dir = exports_dir / timestamp
-            if not import_dir.exists():
-                msg = f"Export directory for timestamp {timestamp} not found"
-                raise ValueError(msg)
-        else:
-            # Find most recent export
-            try:
-                import_dir = max(
-                    (d for d in exports_dir.iterdir() if d.is_dir()),
-                    key=lambda d: d.name,
-                )
-            except ValueError:
-                msg = "No export directories found"
-                raise ValueError(msg) from None
-            timestamp = import_dir.name
+            cards_data = [dict(row) for row in cursor.fetchall()]
+            cards_count = len(cards_data)
 
-        return import_dir, timestamp
+            # Write JSON file
+            with cards_file.open("w", encoding="utf-8") as f:
+                f.write(orjson.dumps(cards_data, option=orjson.OPT_INDENT_2).decode("utf-8"))
 
-    def _validate_import_files(self: APIResource, import_dir: pathlib.Path) -> None:
-        """Validate that all required import files exist."""
-        required_files = [
-            ("cards.json", import_dir / "cards.json"),
-            ("tags.json", import_dir / "tags.json"),
-            ("tag_relationships.json", import_dir / "tag_relationships.json"),
-        ]
+            logger.info("Exported magic.cards table to %s file", cards_file)
+            return {"file": str(cards_file), "count": cards_count}
 
-        missing_files = [name for name, file_path in required_files if not file_path.exists()]
+        def _export_tags_table(self: APIResource, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
+            """Export magic.tags table to JSON file."""
+            tags_file = export_dir / "tags.json"
+            logger.info("Exporting tags table to %s file", tags_file)
+            cursor.execute("SELECT tag FROM magic.tags ORDER BY tag")
 
-        if missing_files:
-            msg = f"Missing required files: {', '.join(missing_files)}"
-            raise ValueError(msg)
+            tags_data = [dict(row) for row in cursor.fetchall()]
+            tags_count = len(tags_data)
 
-    def _perform_import(self: APIResource, cursor: Cursor, import_dir: pathlib.Path) -> dict[str, int]:
-        """Perform the actual import operation."""
-        # Delete data from tables in correct order (respecting foreign keys)
-        logger.info("Deleting existing data")
-        cursor.execute("DELETE FROM magic.tag_relationships")
-        cursor.execute("DELETE FROM magic.tags")
-        cursor.execute("DELETE FROM magic.cards")
+            # Write JSON file
+            with tags_file.open("w", encoding="utf-8") as f:
+                f.write(orjson.dumps(tags_data, option=orjson.OPT_INDENT_2).decode("utf-8"))
 
-        import_results = {}
+            logger.info("Exported tags table to %s file", tags_file)
+            return {"file": str(tags_file), "count": tags_count}
 
-        # Import tags first (no dependencies)
-        logger.info("Importing tags")
-        tags_file = import_dir / "tags.json"
-        with tags_file.open("r", encoding="utf-8") as f:
-            tags_data = orjson.loads(f.read())
-
-        for tag_record in tags_data:
-            cursor.execute("INSERT INTO magic.tags (tag) VALUES (%(tag)s)", tag_record)
-
-        cursor.execute("SELECT COUNT(*) FROM magic.tags")
-        import_results["tags"] = cursor.fetchone()["count"]
-
-        # Import tag relationships (depends on tags)
-        logger.info("Importing tag relationships")
-        relationships_file = import_dir / "tag_relationships.json"
-        with relationships_file.open("r", encoding="utf-8") as f:
-            relationships_data = orjson.loads(f.read())
-
-        for relationship_record in relationships_data:
-            cursor.execute(
-                "INSERT INTO magic.tag_relationships (child_tag, parent_tag) VALUES (%(child_tag)s, %(parent_tag)s)",
-                relationship_record,
-            )
-
-        cursor.execute("SELECT COUNT(*) FROM magic.tag_relationships")
-        import_results["tag_relationships"] = cursor.fetchone()["count"]
-
-        # Import cards last (largest table)
-        logger.info("Importing cards")
-        cards_file = import_dir / "cards.json"
-        with cards_file.open("r", encoding="utf-8") as f:
-            cards_data = orjson.loads(f.read())
-
-        num_cards = len(cards_data)
-        page_size = 750
-        num_imported = 0
-        # Import cards in batches using jsonb_populate_record
-        for card_batch in itertools.batched(cards_data, page_size):
-            batch_json = orjson.dumps(card_batch).decode("utf-8")
+        def _export_tag_relationships_table(self: APIResource, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
+            """Export magic.tag_relationships table to JSON file."""
+            relationships_file = export_dir / "tag_relationships.json"
+            logger.info("Exporting tag_relationships table to %s file", relationships_file)
             cursor.execute("""
-                INSERT INTO magic.cards
-                SELECT
-                    (jsonb_populate_record(null::magic.cards, value)).*
-                FROM
-                    jsonb_array_elements(%s::jsonb)
-            """, (batch_json,))
-            num_imported += cursor.rowcount
-            logger.info(
-                "Imported %s of %s cards (%.1f%%)",
-                f"{num_imported:,}",
-                f"{num_cards:,}",
-                num_imported / num_cards * 100,
-            )
+                SELECT child_tag, parent_tag
+                FROM magic.tag_relationships
+                ORDER BY child_tag, parent_tag
+            """)
 
-        cursor.execute("SELECT COUNT(*) FROM magic.cards")
-        import_results["cards"] = cursor.fetchone()["count"]
+            relationships_data = [dict(row) for row in cursor.fetchall()]
+            relationships_count = len(relationships_data)
 
-        return import_results
+            # Write JSON file
+            with relationships_file.open("w", encoding="utf-8") as f:
+                f.write(orjson.dumps(relationships_data, option=orjson.OPT_INDENT_2).decode("utf-8"))
+
+            logger.info("Exported tag_relationships table to %s file", relationships_file)
+            return {"file": str(relationships_file), "count": relationships_count}
+
+        def import_card_data(self: APIResource, *, timestamp: str | None = None, **_: object) -> dict[str, Any]:
+            """Import card data from JSON files, truncating existing data.
+
+            Imports data from /data/api/exports/{timestamp}/ directory.
+            If timestamp is not provided, uses the most recent export.
+
+            Args:
+            ----
+                timestamp (str, optional): Timestamp of export to import. If None, uses latest.
+
+            Returns:
+            -------
+                Dict[str, Any]: Import result with status and counts.
+            """
+            logger.info("Starting card data import")
+
+            try:
+                import_dir, timestamp = self._find_import_directory(timestamp)
+                self._validate_import_files(import_dir)
+
+                logger.info("Importing from directory: %s", import_dir)
+
+                with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+                    cursor = typecast("Cursor", cursor)
+                    conn.autocommit = False
+
+                    try:
+                        import_results = self._perform_import(cursor, import_dir)
+                        conn.commit()
+
+                        logger.info("Import completed successfully")
+                        return {
+                            "status": "success",
+                            "timestamp": timestamp,
+                            "import_directory": str(import_dir),
+                            "results": import_results,
+                            "message": f"Successfully imported {import_results['cards']} cards, {import_results['tags']} tags, and {import_results['tag_relationships']} tag relationships",
+                        }
+
+                    except (OSError, psycopg.Error, ValueError) as e:
+                        conn.rollback()
+                        raise e
+                    finally:
+                        conn.autocommit = True
+
+            except (OSError, psycopg.Error, ValueError) as e:
+                logger.error("Failed to import card data: %s", e)
+                return {
+                    "status": "error",
+                    "message": f"Import failed: {e}",
+                }
+
+        def _find_import_directory(self: APIResource, timestamp: str | None) -> tuple[pathlib.Path, str]:
+            """Find and validate the import directory."""
+            exports_dir = pathlib.Path("/data/api/exports")
+            if not exports_dir.exists():
+                msg = "No exports directory found at /data/api/exports"
+                raise ValueError(msg)
+
+            if timestamp:
+                import_dir = exports_dir / timestamp
+                if not import_dir.exists():
+                    msg = f"Export directory for timestamp {timestamp} not found"
+                    raise ValueError(msg)
+            else:
+                # Find most recent export
+                try:
+                    import_dir = max(
+                        (d for d in exports_dir.iterdir() if d.is_dir()),
+                        key=lambda d: d.name,
+                    )
+                except ValueError:
+                    msg = "No export directories found"
+                    raise ValueError(msg) from None
+                timestamp = import_dir.name
+
+            return import_dir, timestamp
+
+        def _validate_import_files(self: APIResource, import_dir: pathlib.Path) -> None:
+            """Validate that all required import files exist."""
+            required_files = [
+                ("cards.json", import_dir / "cards.json"),
+                ("tags.json", import_dir / "tags.json"),
+                ("tag_relationships.json", import_dir / "tag_relationships.json"),
+            ]
+
+            missing_files = [name for name, file_path in required_files if not file_path.exists()]
+
+            if missing_files:
+                msg = f"Missing required files: {', '.join(missing_files)}"
+                raise ValueError(msg)
+
+        def _perform_import(self: APIResource, cursor: Cursor, import_dir: pathlib.Path) -> dict[str, int]:
+            """Perform the actual import operation."""
+            # Delete data from tables in correct order (respecting foreign keys)
+            logger.info("Deleting existing data")
+            cursor.execute("DELETE FROM magic.tag_relationships")
+            cursor.execute("DELETE FROM magic.tags")
+            cursor.execute("DELETE FROM magic.cards")
+
+            import_results = {}
+
+            # Import tags first (no dependencies)
+            logger.info("Importing tags")
+            tags_file = import_dir / "tags.json"
+            with tags_file.open("r", encoding="utf-8") as f:
+                tags_data = orjson.loads(f.read())
+
+            for tag_record in tags_data:
+                cursor.execute("INSERT INTO magic.tags (tag) VALUES (%(tag)s)", tag_record)
+
+            cursor.execute("SELECT COUNT(*) FROM magic.tags")
+            import_results["tags"] = cursor.fetchone()["count"]
+
+            # Import tag relationships (depends on tags)
+            logger.info("Importing tag relationships")
+            relationships_file = import_dir / "tag_relationships.json"
+            with relationships_file.open("r", encoding="utf-8") as f:
+                relationships_data = orjson.loads(f.read())
+
+            for relationship_record in relationships_data:
+                cursor.execute(
+                    "INSERT INTO magic.tag_relationships (child_tag, parent_tag) VALUES (%(child_tag)s, %(parent_tag)s)",
+                    relationship_record,
+                )
+
+            cursor.execute("SELECT COUNT(*) FROM magic.tag_relationships")
+            import_results["tag_relationships"] = cursor.fetchone()["count"]
+
+            # Import cards last (largest table)
+            logger.info("Importing cards")
+            cards_file = import_dir / "cards.json"
+            with cards_file.open("r", encoding="utf-8") as f:
+                cards_data = orjson.loads(f.read())
+
+            num_cards = len(cards_data)
+            page_size = 750
+            num_imported = 0
+            # Import cards in batches using jsonb_populate_record
+            for card_batch in itertools.batched(cards_data, page_size):
+                batch_json = orjson.dumps(card_batch).decode("utf-8")
+                cursor.execute("""
+                    INSERT INTO magic.cards
+                    SELECT
+                        (jsonb_populate_record(null::magic.cards, value)).*
+                    FROM
+                        jsonb_array_elements(%s::jsonb)
+                """, (batch_json,))
+                num_imported += cursor.rowcount
+                logger.info(
+                    "Imported %s of %s cards (%.1f%%)",
+                    f"{num_imported:,}",
+                    f"{num_cards:,}",
+                    num_imported / num_cards * 100,
+                )
+
+            cursor.execute("SELECT COUNT(*) FROM magic.cards")
+            import_results["cards"] = cursor.fetchone()["count"]
+
+            return import_results
 
     def _load_cards_with_staging(
         self: APIResource,
@@ -2170,7 +1840,7 @@ class APIResource:
         # for cards, so that we import only one card of each name
         # but we use frame, printing time, etc. to get the best instance
         # of that card (likely the one with the highest quality artwork)
-        cards = list(filter(None, (self._preprocess_card(icard) for icard in cards)))
+        cards = list(filter(None, (preprocess_card(icard) for icard in cards)))
 
         if not cards:
             return {

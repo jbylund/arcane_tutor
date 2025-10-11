@@ -21,36 +21,35 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 
 ### Scryfall OS vs Official Scryfall
 
-
-| Feature                    | Syntax                                        | Scryfall | Scryfall OS | Description                                                                 |
-|----------------------------|-----------------------------------------------|----------|-------------|-----------------------------------------------------------------------------|
-| **Basic Search**           | `name:`, `oracle:`                            | ✔        | ✔           | Full substring search with pattern matching                                 |
-| **Type Search**            | `type:`, `t:`                                 | ✔        | ✔           | Exact matching with intelligent autocomplete                                |
-| **Flavor Text**            | `flavor:`                                     | ✔        | ✔           | Full text search with pattern matching                                      |
-| **Artist Search**          | `artist:`, `a:`                               | ✔        | ✔           | Full text search with trigram indexing                                      |
-| **Set Search**             | `set:`, `s:`                                  | ✔        | ✔           | Dedicated indexed column with exact matching                                |
-| **Rarity Search**          | `rarity:`, `r:`                               | ✔        | ✔           | Integer-based ordering with all comparison operators                        |
-| **Frame Search**           | `frame:`                                      | ✔        | ✔           | Card frame type and visual properties search                                |
-| **Watermark Search**       | `watermark:`                                  | ✔        | ✔           | Card watermark and visual properties search                                 |
-| **Mana Production**        | `produces:`                                   | ✔        | ✔           | Search for lands and mana-producing cards                                   |
-| **Numeric Attributes**     | `cmc:`, `power:`, `toughness:`, `loyalty:`    | ✔        | ✔           | Complete with all comparison operators                                      |
-| **Colors & Identity**      | `color:`, `identity:`, `c:`, `id:`            | ✔        | ✔           | JSONB-based with complex color logic                                        |
-| **Pricing Data**           | `usd:`, `eur:`, `tix:`                        | ✔        | ✔           | Complete with all comparison operators                                      |
-| **Advanced Logic**         | `AND`, `OR`, `NOT`, `()`                      | ✔        | ✔           | Full boolean logic support                                                  |
-| **Keywords**               | `keyword:`                                    | ✔        | ✔           | JSONB object storage                                                        |
-| **Mana Costs**             | `mana:`, `m:`                                 | ✔        | ✔           | Both JSONB and text representations                                         |
-| **Oracle Tags**            | `oracle_tags:`, `ot:`                         | ✔        | ✔           | Standard Scryfall feature                                                   |
-| **Date Search**            | `date:`, `year:`                              | ✔        | ✔           | Card release date filtering with comparison operators                       |
-| **Devotion Search**        | `devotion:`                                   | ✔        | ✔           | Mana cost devotion calculations with split mana support                     |
-| **Format Legality**        | `format:`, `legal:`, `banned:`, `restricted:` | ✔        | ✔           | Competitive play support                                                    |
-| **Collector Numbers**      | `number:`, `cn:`                              | ✔        | ✔           | Card collector number search                                                |
-| **Card Layout**            | `layout:`                                     | ✔        | ✔           | Card layout types (normal, split, transform, etc.)                          |
-| **Card Border**            | `border:`                                     | ✔        | ✔           | Border colors (black, white, borderless, etc.)                              |
-| **Special Properties**     | `is:`                                         | ✔        | ✔           | Card classifications (creature, spell, permanent, etc.)                     |
-| **Comparison Operators**   | `=`, `<`, `>`, `<=`, `>=`, `!=`, `<>`         | ✔        | ✔           | All comparison operators supported                                          |
-| **Regular Expressions**    | `/pattern/`                                   | ✔        | ✔           | Pattern matching with regex syntax                                          |
-| **Collection Features**    | `cube:`, `papersets:`                         | ✔        | ✘           | Collection and cube inclusion features                                      |
-| **Arithmetic Expressions** | `cmc+1<power`, `power-toughness=0`            | ✘        | ✔           | Advanced mathematical expressions                                           |
+| Feature                    | Syntax                                        | Scryfall | Scryfall OS | Description                                               |
+|----------------------------|-----------------------------------------------|----------|-------------|-----------------------------------------------------------|
+| **Basic Search**           | `name:`, `oracle:`                            | ✔        | ✔           | Full substring search with pattern matching               |
+| **Type Search**            | `type:`, `t:`                                 | ✔        | ✔           | Exact matching with intelligent autocomplete              |
+| **Flavor Text**            | `flavor:`                                     | ✔        | ✔           | Full text search with pattern matching                    |
+| **Artist Search**          | `artist:`, `a:`                               | ✔        | ✔           | Full text search with trigram indexing                    |
+| **Set Search**             | `set:`, `s:`                                  | ✔        | ✔           | Dedicated indexed column with exact matching              |
+| **Rarity Search**          | `rarity:`, `r:`                               | ✔        | ✔           | Integer-based ordering with all comparison operators      |
+| **Frame Search**           | `frame:`                                      | ✔        | ✔           | Card frame type and visual properties search              |
+| **Watermark Search**       | `watermark:`                                  | ✔        | ✔           | Card watermark and visual properties search               |
+| **Mana Production**        | `produces:`                                   | ✔        | ✔           | Search for lands and mana-producing cards                 |
+| **Numeric Attributes**     | `cmc:`, `power:`, `toughness:`, `loyalty:`    | ✔        | ✔           | Complete with all comparison operators                    |
+| **Colors & Identity**      | `color:`, `identity:`, `c:`, `id:`            | ✔        | ✔           | JSONB-based with complex color logic                      |
+| **Pricing Data**           | `usd:`, `eur:`, `tix:`                        | ✔        | ✔           | Complete with all comparison operators                    |
+| **Advanced Logic**         | `AND`, `OR`, `NOT`, `()`                      | ✔        | ✔           | Full boolean logic support                                |
+| **Keywords**               | `keyword:`                                    | ✔        | ✔           | JSONB object storage                                      |
+| **Mana Costs**             | `mana:`, `m:`                                 | ✔        | ✔           | Both JSONB and text representations                       |
+| **Oracle Tags**            | `oracle_tags:`, `ot:`                         | ✔        | ✔           | Standard Scryfall feature                                 |
+| **Date Search**            | `date:`, `year:`                              | ✔        | ✔           | Card release date filtering with comparison operators     |
+| **Devotion Search**        | `devotion:`                                   | ✔        | ✔           | Mana cost devotion calculations with split mana support   |
+| **Format Legality**        | `format:`, `legal:`, `banned:`, `restricted:` | ✔        | ✔           | Competitive play support                                  |
+| **Collector Numbers**      | `number:`, `cn:`                              | ✔        | ✔           | Card collector number search                              |
+| **Card Layout**            | `layout:`                                     | ✔        | ✔           | Card layout types (normal, split, transform, etc.)        |
+| **Card Border**            | `border:`                                     | ✔        | ✔           | Border colors (black, white, borderless, etc.)            |
+| **Special Properties**     | `is:`                                         | ✔        | ✔           | Card classifications (creature, spell, permanent, etc.)   |
+| **Comparison Operators**   | `=`, `<`, `>`, `<=`, `>=`, `!=`, `<>`         | ✔        | ✔           | All comparison operators supported                        |
+| **Regular Expressions**    | `/pattern/`                                   | ✔        | ✔           | Pattern matching with regex syntax                        |
+| **Collection Features**    | `cube:`, `papersets:`                         | ✔        | ✘           | Collection and cube inclusion features                    |
+| **Arithmetic Expressions** | `cmc+1<power`, `power-toughness=0`            | ✘        | ✔           | Advanced mathematical expressions                         |
 
 
 ### Scryfall OS Unique Features
@@ -75,8 +74,10 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 
 ### Recommended Development Priorities
 
-1. Pull in tagging and `is` tags
-1. **Low Impact Features** - cube, reprint info
+1. Implement a default prefer order
+1. Support for double faced cards
+1. More comprehensive tagging info - per card, per card-printing, per artwork
+1. `cube:`, `papersets:`
 
 
 ### Missing Functionality - Complexity vs Impact Grid
@@ -100,28 +101,28 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 
 ```
 scryfallos/
-├── api/                          # Python API service (main application)
-│   ├── entrypoint.py            # API server entry point and CLI
+├── api/                         # Python API service (main application)
+│   ├── db/                      # Database schema and migrations
+│   ├── middlewares/             # HTTP middleware components
+│   ├── parsing/                 # Query parser implementation
+│   │   ├── tests/               # Parser unit tests (100+ tests)
+│   │   ├── nodes.py             # AST node definitions
+│   │   ├── parsing_f.py         # Main parser with pyparsing
+│   │   └── scryfall_nodes.py    # Scryfall-specific node types
+│   ├── sql/                     # SQL query templates
+│   ├── tests/                   # Integration and API tests
 │   ├── api_resource.py          # Falcon web framework resources
 │   ├── api_worker.py            # Multi-process worker implementation
-│   ├── index.html               # Web frontend (single-file app)
-│   ├── parsing/                 # Query parser implementation
-│   │   ├── parsing_f.py         # Main parser with pyparsing
-│   │   ├── nodes.py             # AST node definitions
-│   │   ├── scryfall_nodes.py    # Scryfall-specific node types
-│   │   └── tests/               # Parser unit tests (100+ tests)
-│   ├── db/                      # Database schema and migrations
-│   ├── sql/                     # SQL query templates
-│   ├── middlewares/             # HTTP middleware components
-│   └── tests/                   # Integration and API tests
-├── scripts/                     # Utility and maintenance scripts
-├── docs/                        # Project documentation and analysis
+│   ├── entrypoint.py            # API server entry point and CLI
+│   └── index.html               # Web frontend (single-file app)
 ├── client/                      # Client-side assets (minimal)
 ├── configs/                     # Configuration files
+├── docs/                        # Project documentation and analysis
 ├── requirements/                # Requirements files
 │   ├── base.txt                 # base requirements
 │   ├── test.txt                 # testing requirements
 │   └── webserver.txt            # webserver requirements - requires building libev
+├── scripts/                     # Utility and maintenance scripts
 ├── docker-compose.yml           # Container orchestration
 └── makefile                     # Build automation
 ```
@@ -151,7 +152,7 @@ scryfallos/
 
    # Install core dependencies
    python -m pip install --upgrade pip
-   python -m pip install -r requirements.txt -r test-requirements.txt
+   python -m pip install -r requirements/base.txt -r requirements/test.txt
    ```
 
 1. **Optional: Web Server Dependencies**
@@ -159,7 +160,7 @@ scryfallos/
    ```bash
    # Only needed for local API server (includes bjoern compilation)
    sudo apt-get update && sudo apt-get install -y libev-dev
-   python -m pip install -r webserver-requirements.txt
+   python -m pip install -r requirements/webserver.txt
    ```
 
 1. **Validate Installation**
