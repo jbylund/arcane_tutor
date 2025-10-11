@@ -4,6 +4,7 @@ import logging
 import pathlib
 
 import falcon
+import orjson
 
 logger = logging.getLogger(__name__)
 
@@ -53,3 +54,24 @@ except ImportError:
         """
         del req  # Unused when honeybadger is not available
         logger.error("Error handling request: %s", exception, exc_info=True)
+
+
+def can_serialize(iobj: object) -> bool:
+    """Check if an object is JSON serializable and not too large.
+
+    Args:
+    ----
+        iobj (object): The object to check.
+
+    Returns:
+    -------
+        bool: True if serializable and not too large, False otherwise.
+
+    """
+    max_json_object_length = 16_000
+    try:
+        s = orjson.dumps(iobj).decode("utf-8")
+        return len(s) < max_json_object_length
+    except TypeError:
+        return False
+    return True

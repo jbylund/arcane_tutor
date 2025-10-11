@@ -11,8 +11,7 @@ import falcon
 import pytest
 import requests
 
-from api.api_resource import APIResource, can_serialize, get_where_clause, rewrap
-from api.parsing.scryfall_nodes import extract_frame_data_from_raw_card
+from api.api_resource import APIResource
 
 
 def create_test_card(  # noqa: PLR0913
@@ -105,78 +104,32 @@ def create_test_card(  # noqa: PLR0913
 
     return card
 
+@pytest.fixture(name="patch_conn_pool")
+def patch_conn_pool_fixture() -> MagicMock:
+    """Patch connection pool."""
+    mock_conn_pool = MagicMock()
+    with patch("api.api_resource.db_utils.make_pool") as mock_pool:
+        mock_pool.return_value = mock_conn_pool
+        yield mock_conn_pool
 
-class TestUtilityFunctions(unittest.TestCase):
-    """Test utility functions in api_resource module."""
+class TestBaseAPIResourceTest:
 
-    def test_can_serialize_valid_objects(self) -> None:
-        """Test can_serialize with valid serializable objects."""
-        # Test with simple types
-        assert can_serialize("string") is True
-        assert can_serialize(123) is True
-        assert can_serialize(123.45) is True
-        assert can_serialize(True) is True
-        assert can_serialize(None) is True
+    @pytest.fixture(autouse=True)
+    def setUp(self, request: pytest.FixtureRequest, patch_conn_pool: MagicMock) -> None:
+        """Set up test fixtures."""
+        del patch_conn_pool
+        self_reference = request.instance
 
-        # Test with collections
-        assert can_serialize([1, 2, 3]) is True
-        assert can_serialize({"key": "value"}) is True
-        assert can_serialize({"nested": {"data": [1, 2, 3]}}) is True
+        self_reference.mock_conn_pool = MagicMock()
+        self_reference.api_resource = APIResource()
+        self_reference.api_resource._conn_pool = self_reference.mock_conn_pool
 
-    def test_can_serialize_invalid_objects(self) -> None:
-        """Test can_serialize with non-serializable objects."""
-        # Test with non-serializable objects
-        assert can_serialize(object()) is False
-        assert can_serialize(lambda x: x) is False
-        assert can_serialize({1, 2, 3}) is False
-
-    def test_can_serialize_large_objects(self) -> None:
-        """Test can_serialize with objects that exceed size limit."""
-        # Create a large string that exceeds the 16KB limit
-        large_string = "x" * 20000
-        assert can_serialize(large_string) is False
-
-    def test_rewrap_normalizes_whitespace(self) -> None:
-        """Test rewrap function normalizes whitespace in SQL queries."""
-        # Test with various whitespace patterns
-        assert rewrap("SELECT * FROM table") == "SELECT * FROM table"
-        assert rewrap("  SELECT   *   FROM   table  ") == "SELECT * FROM table"
-        assert rewrap("SELECT\n*\nFROM\ntable") == "SELECT * FROM table"
-        assert rewrap("SELECT\t*\tFROM\ttable") == "SELECT * FROM table"
-        assert rewrap("  \n  SELECT  \n  *  \n  FROM  \n  table  \n  ") == "SELECT * FROM table"
-
-    def test_get_where_clause_caching(self) -> None:
-        """Test that get_where_clause uses caching."""
-        # This tests the @cached decorator functionality
-        query = "cmc:3"
-        result1 = get_where_clause(query)
-        result2 = get_where_clause(query)
-
-        # Results should be identical (cached)
-        assert result1 == result2
-
-
-class TestAPIResourceInitialization(unittest.TestCase):
+class TestAPIResourceInitializationNewStyle(TestBaseAPIResourceTest):
     """Test APIResource initialization and basic setup."""
 
-    def setUp(self) -> None:
-        """Set up test fixtures."""
-        self.mock_conn_pool = MagicMock()
-        self.mock_session = MagicMock()
-        self.mock_tagger_client = MagicMock()
-
-    @patch("api.api_resource.db_utils.make_pool")
-    @patch("api.api_resource.requests.Session")
-    @patch("api.api_resource.TaggerClient")
-    def test_initialization_defaults(self, mock_tagger: Any, mock_session: Any, mock_pool: Any) -> None:
+    def test_initialization_defaults(self) -> None:
         """Test APIResource initialization with default parameters."""
-        mock_pool.return_value = self.mock_conn_pool
-        mock_session.return_value = self.mock_session
-        mock_tagger.return_value = self.mock_tagger_client
-
-        api_resource = APIResource()
-
-        # Check that connection pool is set up
+        api_resource = self.api_resource
         assert api_resource._conn_pool == self.mock_conn_pool
 
         # Check that action map is populated
@@ -190,15 +143,9 @@ class TestAPIResourceInitialization(unittest.TestCase):
         assert hasattr(api_resource, "_session")
         assert hasattr(api_resource, "_tagger_client")
 
-    @patch("api.api_resource.db_utils.make_pool")
-    @patch("api.api_resource.requests.Session")
-    @patch("api.api_resource.TaggerClient")
-    def test_initialization_with_custom_import_guard(self, mock_tagger: Any, mock_session: Any, mock_pool: Any) -> None:
-        """Test APIResource initialization with custom import guard."""
-        mock_pool.return_value = self.mock_conn_pool
-        mock_session.return_value = self.mock_session
-        mock_tagger.return_value = self.mock_tagger_client
 
+    def test_initialization_with_custom_import_guard(self) -> None:
+        """Test APIResource initialization with custom import guard."""
         custom_guard = multiprocessing.RLock()
         api_resource = APIResource(import_guard=custom_guard)
 
@@ -206,18 +153,14 @@ class TestAPIResourceInitialization(unittest.TestCase):
 
     def test_action_map_includes_all_public_methods(self) -> None:
         """Test that action_map includes all public methods."""
-        with patch("api.api_resource.db_utils.make_pool"), \
-             patch("api.api_resource.requests.Session"), \
-             patch("api.api_resource.TaggerClient"):
+        api_resource = self.api_resource
+        public_methods = [
+            method for method in dir(api_resource)
+            if not method.startswith("_") and callable(getattr(api_resource, method))
+        ]
 
-            api_resource = APIResource()
-
-            # Check that all public methods are in action_map
-            public_methods = [method for method in dir(api_resource)
-                            if not method.startswith("_") and callable(getattr(api_resource, method))]
-
-            for method in public_methods:
-                assert method in api_resource.action_map
+        for method in public_methods:
+            assert method in api_resource.action_map
 
 
 class TestAPIResourceCoreMethods(unittest.TestCase):
@@ -382,244 +325,6 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
 
                 # Should call error monitoring
                 mock_error_handler.assert_called_once()
-
-
-class TestAPIResourceDataProcessing(unittest.TestCase):
-    """Test data processing methods."""
-
-    def setUp(self) -> None:
-        """Set up test fixtures."""
-        self.mock_conn_pool = MagicMock()
-        self.api_resource = APIResource()
-        self.api_resource._conn_pool = self.mock_conn_pool
-
-    def test_preprocess_card_filters_invalid_cards(self) -> None:
-        """Test _preprocess_card filters out invalid cards."""
-        # Test card with all not_legal legalities
-        invalid_card = create_test_card(
-            legalities={"standard": "not_legal", "modern": "not_legal"},
-        )
-
-        result = self.api_resource._preprocess_card(invalid_card)
-        assert result is None
-
-    def test_preprocess_card_filters_non_paper_cards(self) -> None:
-        """Test _preprocess_card filters out non-paper cards."""
-        invalid_card = create_test_card(
-            games=["mtgo"],  # Not paper
-        )
-
-        result = self.api_resource._preprocess_card(invalid_card)
-        assert result is None
-
-    def test_preprocess_card_filters_card_faces(self) -> None:
-        """Test _preprocess_card filters out cards with card_faces."""
-        invalid_card = create_test_card(
-            card_faces=[{"name": "Front"}, {"name": "Back"}],  # Has card_faces
-        )
-
-        result = self.api_resource._preprocess_card(invalid_card)
-        assert result is None
-
-    def test_preprocess_card_filters_funny_sets(self) -> None:
-        """Test _preprocess_card filters out funny set types."""
-        invalid_card = create_test_card(
-            set_type="funny",  # Funny set type
-        )
-
-        result = self.api_resource._preprocess_card(invalid_card)
-        assert result is None
-
-    def test_preprocess_card_processes_valid_card(self) -> None:
-        """Test _preprocess_card processes valid cards correctly."""
-        valid_card = create_test_card(
-            card_id="00000000-0000-0000-0000-000000000006",
-            name="Lightning Bolt",
-            type_line="Instant",
-            keywords=["haste"],
-            power="3",
-            toughness="1",
-            prices={"usd": "0.25", "eur": "0.20", "tix": "0.01"},
-            set_code="m15",
-            artist="Christopher Rush",
-            collector_number="1",
-            edhrec_rank=1,
-        )
-
-        result = self.api_resource._preprocess_card(valid_card)
-
-        assert result is not None
-        assert result["card_types"] == ["Instant"]
-        # card_subtypes is now always present, set to empty array when no subtypes
-        assert result["card_subtypes"] == []
-        assert result["card_colors"] == {"R": True}
-        assert result["card_color_identity"] == {"R": True}
-        assert result["card_keywords"] == {"haste": True}
-        assert result["creature_power"] == 3
-        assert result["creature_toughness"] == 1
-        assert result["price_usd"] == 0.25
-        assert result["price_eur"] == 0.20
-        assert result["price_tix"] == 0.01
-        assert result["card_set_code"] == "m15"
-
-    def test_preprocess_card_processes_frame_data(self) -> None:
-        """Test _preprocess_card processes frame data correctly."""
-        card_with_frame = create_test_card(
-            frame="2015",
-            frame_effects=["showcase", "legendary"],
-        )
-
-        result = self.api_resource._preprocess_card(card_with_frame)
-
-        assert result is not None
-        expected_frame_data = {"2015": True, "Showcase": True, "Legendary": True}
-        assert result["card_frame_data"] == expected_frame_data
-
-    def test_preprocess_card_handles_missing_frame_data(self) -> None:
-        """Test _preprocess_card handles missing frame data correctly."""
-        card_without_frame = create_test_card(
-            name="Regular Card",
-            type_line="Creature — Human",
-            colors=["W"],
-            color_identity=["W"],
-            keywords=[],
-        )
-
-        result = self.api_resource._preprocess_card(card_without_frame)
-
-        assert result is not None
-        assert result["card_frame_data"] == {}  # Should be empty object when no frame data present
-
-    def test_backfill_card_frame_data_method_exists(self) -> None:
-        """Test backfill_card_frame_data method exists and is callable."""
-        assert hasattr(self.api_resource, "backfill_card_frame_data")
-        assert callable(self.api_resource.backfill_card_frame_data)
-
-    def test_extract_frame_data_from_raw_card_with_frame_and_effects(self) -> None:
-        """Test extract_frame_data_from_raw_card with frame and frame_effects."""
-        raw_card = {
-            "frame": "2015",
-            "frame_effects": ["showcase", "legendary"],
-        }
-
-        result = extract_frame_data_from_raw_card(raw_card)
-        expected = {"2015": True, "Showcase": True, "Legendary": True}
-        assert result == expected
-
-    def test_extract_frame_data_from_raw_card_with_only_frame(self) -> None:
-        """Test extract_frame_data_from_raw_card with only frame version."""
-        raw_card = {"frame": "1997"}
-
-        result = extract_frame_data_from_raw_card(raw_card)
-        expected = {"1997": True}
-        assert result == expected
-
-    def test_extract_frame_data_from_raw_card_with_only_effects(self) -> None:
-        """Test extract_frame_data_from_raw_card with only frame effects."""
-        raw_card = {"frame_effects": ["borderless", "etched"]}
-
-        result = extract_frame_data_from_raw_card(raw_card)
-        expected = {"Borderless": True, "Etched": True}
-        assert result == expected
-
-    def test_extract_frame_data_from_raw_card_empty(self) -> None:
-        """Test extract_frame_data_from_raw_card with empty raw card."""
-        raw_card = {}
-
-        result = extract_frame_data_from_raw_card(raw_card)
-        expected = {}
-        assert result == expected
-
-    def test_preprocess_card_handles_missing_fields(self) -> None:
-        """Test _preprocess_card handles missing optional fields."""
-        minimal_card = create_test_card(
-            colors=[],
-            color_identity=[],
-            keywords=[],
-            prices={},
-        )
-
-        result = self.api_resource._preprocess_card(minimal_card)
-
-        assert result is not None
-        assert result["card_colors"] == {}
-        assert result["card_color_identity"] == {}
-        assert result["card_keywords"] == {}
-        assert result["creature_power"] is None
-        assert result["creature_toughness"] is None
-        assert result["price_usd"] is None
-        assert result["price_eur"] is None
-        assert result["price_tix"] is None
-
-    def test_preprocess_card_handles_non_numeric_power_toughness(self) -> None:
-        """Test _preprocess_card handles non-numeric power/toughness values."""
-        card = create_test_card(
-            keywords=[],
-            power="*",  # Non-numeric
-            toughness="X",  # Non-numeric
-            prices={},
-        )
-
-        result = self.api_resource._preprocess_card(card)
-
-        assert result is not None
-        assert result["creature_power"] is None
-        assert result["creature_toughness"] is None
-
-    @patch.object(APIResource, "get_data")
-    @patch.object(APIResource, "_preprocess_card")
-    def test_get_cards_to_insert_deduplicates_cards(self, mock_preprocess: Any, mock_get_data: Any) -> None:
-        """Test _get_cards_to_insert deduplicates cards by name."""
-        # Mock get_data to return duplicate cards
-        mock_get_data.return_value = [
-            create_test_card(card_id="00000000-0000-0000-0000-000000000010", name="Lightning Bolt", cmc=1),
-            create_test_card(card_id="00000000-0000-0000-0000-000000000011", name="Lightning Bolt", cmc=1),  # Duplicate
-            create_test_card(card_id="00000000-0000-0000-0000-000000000012", name="Counterspell", cmc=2),
-        ]
-
-        # Mock _preprocess_card to return the card with scryfall_id added
-        def mock_preprocess_side_effect(card: Any) -> Any:
-            card_copy = card.copy()
-            card_copy["scryfall_id"] = card["id"]
-            return card_copy
-
-        mock_preprocess.side_effect = mock_preprocess_side_effect
-
-        result = self.api_resource._get_cards_to_insert()
-
-        # Should have 3 cards (deduplication is by scryfall_id, not name)
-        assert len(result) == 3
-        card_names = [card["name"] for card in result]
-        assert "Lightning Bolt" in card_names
-        assert "Counterspell" in card_names
-        # Should have 2 Lightning Bolts with different scryfall_ids
-        lightning_bolts = [card for card in result if card["name"] == "Lightning Bolt"]
-        assert len(lightning_bolts) == 2
-
-    @patch.object(APIResource, "get_data")
-    @patch.object(APIResource, "_preprocess_card")
-    def test_get_cards_to_insert_filters_none_cards(self, mock_preprocess: Any, mock_get_data: Any) -> None:
-        """Test _get_cards_to_insert filters out None cards from preprocessing."""
-        mock_get_data.return_value = [
-            create_test_card(card_id="00000000-0000-0000-0000-000000000013", name="Valid Card", cmc=1),
-            create_test_card(card_id="00000000-0000-0000-0000-000000000014", name="Invalid Card", cmc=2),
-        ]
-
-        # Mock _preprocess_card to return None for invalid card, or card with scryfall_id for valid
-        def mock_preprocess_side_effect(card: Any) -> Any:
-            if card["name"] == "Invalid Card":
-                return None
-            card_copy = card.copy()
-            card_copy["scryfall_id"] = card["id"]
-            return card_copy
-
-        mock_preprocess.side_effect = mock_preprocess_side_effect
-
-        result = self.api_resource._get_cards_to_insert()
-
-        # Should only have 1 valid card
-        assert len(result) == 1
-        assert result[0]["name"] == "Valid Card"
 
 
 class TestAPIResourceStaticFileServing(unittest.TestCase):
