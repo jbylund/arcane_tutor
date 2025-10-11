@@ -39,7 +39,7 @@ from api.parsing import generate_sql_query, parse_scryfall_query
 from api.parsing.scryfall_nodes import calculate_devotion, extract_frame_data_from_raw_card, mana_cost_str_to_dict
 from api.tagger_client import TaggerClient
 from api.utils import db_utils, error_monitoring, multiprocessing_utils
-from api.utils.type_conversions import make_type_converting_wrapper
+from api.utils.type_conversions import _get_type_name, make_type_converting_wrapper
 
 if TYPE_CHECKING:
     from multiprocessing.synchronize import Event as EventType
@@ -242,13 +242,13 @@ class APIResource:
 
                 param_info = {
                     "name": param_name,
-                    "type": self._get_type_name(param.annotation),
+                    "type": _get_type_name(param.annotation),
                 }
 
                 if param.default != inspect.Parameter.empty:
                     # It's a keyword argument with default
                     kwargs[param_name] = {
-                        "type": self._get_type_name(param.annotation),
+                        "type": _get_type_name(param.annotation),
                         "default": param.default,
                     }
                 else:
@@ -267,33 +267,6 @@ class APIResource:
                 "routes": routes,
             },
         )
-
-    def _get_type_name(self: APIResource, annotation: Any) -> str:  # noqa: ANN401
-        """Convert a type annotation to a readable string.
-
-        Args:
-            annotation: The type annotation to convert
-
-        Returns:
-            A string representation of the type
-        """
-        if annotation == inspect.Parameter.empty:
-            return "Any"
-
-        # Handle generic types and complex annotations
-        if hasattr(annotation, "__name__"):
-            return annotation.__name__
-        if annotation is None:
-            return "None"
-        if hasattr(annotation, "__origin__"):
-            # Handle generic types like List[str], Dict[str, int], etc.
-            origin = annotation.__origin__
-            if hasattr(origin, "__name__"):
-                return origin.__name__
-            return str(origin)
-
-        # Fallback to string representation
-        return str(annotation)
 
     def _run_query(
         self: APIResource,

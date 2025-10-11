@@ -125,3 +125,31 @@ def make_type_converting_wrapper(func: callable) -> callable:
 
     # Use functools.update_wrapper to preserve original function metadata
     return functools.update_wrapper(wrapper, func)
+
+
+def _get_type_name(annotation: Any) -> str:  # noqa: ANN401
+    """Convert a type annotation to a readable string.
+
+    Args:
+        annotation: The type annotation to convert
+
+    Returns:
+        A string representation of the type
+    """
+    if annotation == inspect.Parameter.empty:
+        return "Any"
+
+    # Handle generic types and complex annotations
+    if hasattr(annotation, "__name__"):
+        return annotation.__name__
+    if annotation is None:
+        return "None"
+    if hasattr(annotation, "__origin__"):
+        # Handle generic types like List[str], Dict[str, int], etc.
+        origin = annotation.__origin__
+        if hasattr(origin, "__name__"):
+            return origin.__name__
+        return str(origin)
+
+    # Fallback to string representation
+    return str(annotation)
