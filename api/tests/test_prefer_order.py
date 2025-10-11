@@ -3,7 +3,8 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from api.api_resource import APIResource, PreferOrder
+from api.api_resource import APIResource
+from api.enums import PreferOrder
 
 
 class TestPreferOrder(unittest.TestCase):

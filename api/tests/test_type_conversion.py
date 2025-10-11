@@ -4,7 +4,8 @@ import unittest
 from typing import Any
 from unittest.mock import patch
 
-from api.api_resource import APIResource, make_type_converting_wrapper
+from api.api_resource import APIResource
+from api.utils.type_conversions import make_type_converting_wrapper
 
 
 class TestTypeConversion(unittest.TestCase):
