@@ -184,6 +184,7 @@ CREATE TABLE magic.cards (
     creature_toughness integer,
     planeswalker_loyalty integer,
     edhrec_rank integer,
+    face_idx integer,
 
     -- real columns
     price_usd real,

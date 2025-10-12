@@ -79,22 +79,33 @@ def extract_collector_number_int(collector_number: str | int | float | None) -> 
     return None  # Field will be null by default
 
 
-def preprocess_card(card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: PLR0915
+def preprocess_card(card: dict[str, Any]) -> list[dict[str, Any]]:  # noqa: PLR0915, C901, PLR0912
     """Preprocess a card to remove invalid cards and add necessary fields."""
+    # TODO: this function is way too complex
     if set(card["legalities"].values()) == {"not_legal"}:
-        return None
+        return []
     if "paper" not in card["games"]:
-        return None
-    if "card_faces" in card:
-        return None
+        return []
     if card.get("set_type") == "funny":
-        return None
+        return []
 
     if "raw_card_blob" in card:
-        return card
+        # this was already preprocessed... don't need re-process
+        return [card]
+
+    card_faces = card.get("card_faces")
+    if card_faces:
+        processed_faces = []
+        for face_idx, face_data in enumerate(card_faces, start=1):
+            merged = copy.deepcopy(card) | face_data | {"face_idx": face_idx}
+            merged.pop("card_faces", None) # do not keep recursing
+            processed_face = preprocess_card(merged)
+            processed_faces.extend(processed_face)
+        return processed_faces
 
     # Store the original card data before modifications for raw_card_blob
     raw_card_data = copy.deepcopy(card)
+    card.setdefault("face_idx", 1)
     card["raw_card_blob"] = raw_card_data
     card["scryfall_id"] = card["id"]
 
@@ -156,6 +167,7 @@ def preprocess_card(card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: PLR
     card["card_artist"] = card.get("artist")
 
     # Handle CMC and edhrec_rank conversion using helper function
+    # TODO: this should possibly be computed from mana cost text - as for double faced cards it gets weird
     card["cmc"] = maybe_int(card.get("cmc"))
 
     # Handle rarity conversion - implement in Python to avoid SQL boilerplate
@@ -177,4 +189,16 @@ def preprocess_card(card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: PLR
     for key in ["produced_mana", "card_oracle_tags", "card_is_tags"]:
         card.setdefault(key, {})
 
-    return card
+    if "creature_power_text" in card or "creature_toughness_text" in card:
+        if "Creature" in card["card_types"] or "Vehicle" in card["card_subtypes"] or "Spacecraft" in card["card_subtypes"]:
+            pass
+        else:
+            for creature_key in [
+                "creature_power_text",
+                "creature_power",
+                "creature_toughness_text",
+                "creature_toughness",
+            ]:
+                card.pop(creature_key, None)
+
+    return [card]

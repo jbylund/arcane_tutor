@@ -363,11 +363,12 @@ class APIResource:
         cache_file_path = cache_dir_path / f"{data_key}.json"
         try:
             with cache_file_path.open() as f:
+                logger.info("Cache hit, %s found!", cache_file_path)
                 response = orjson.loads(f.read())
         except FileNotFoundError:
             logger.info("Cache miss, %s not found!", cache_file_path)
         else:
-            logger.info("Cache hit, %s found!", cache_file_path)
+            logger.info("Cache hit, %s is valid!", cache_file_path)
             return response
         response = orjson.loads(self._session.get("https://api.scryfall.com/bulk-data", timeout=1).content)["data"]
         by_type = {r["type"]: r for r in response}
@@ -453,14 +454,10 @@ class APIResource:
     def _get_cards_to_insert(self: APIResource) -> list[dict[str, Any]]:
         """Get the cards to insert into the database."""
         all_cards = self.get_data()
-        scryfall_id_to_card = {}
+        processed_cards = []
         for card in all_cards:
-            processed_card = preprocess_card(card)
-            if processed_card is None:
-                continue
-            scryfall_id = processed_card["scryfall_id"]
-            scryfall_id_to_card[scryfall_id] = processed_card
-        return list(scryfall_id_to_card.values())
+            processed_cards.extend(preprocess_card(card))
+        return processed_cards
 
 
     def get_stats(self: APIResource, **_: object) -> dict[str, Any]:
@@ -502,6 +499,7 @@ class APIResource:
             self.setup_schema()
 
             to_insert = self._get_cards_to_insert()
+            logger.info("To insert: %s", to_insert[:10])
 
             before = time.monotonic()
 
@@ -1934,7 +1932,10 @@ class APIResource:
         # for cards, so that we import only one card of each name
         # but we use frame, printing time, etc. to get the best instance
         # of that card (likely the one with the highest quality artwork)
-        cards = list(filter(None, (preprocess_card(icard) for icard in cards)))
+        processed_cards = []
+        for icard in cards:
+            processed_cards.extend(preprocess_card(icard))
+        cards = processed_cards
 
         if not cards:
             return {

@@ -110,7 +110,7 @@ class TestCardProcessing:
         )
 
         result = preprocess_card(invalid_card)
-        assert result is None
+        assert result == []
 
     def test_preprocess_card_filters_non_paper_cards(self: TestCardProcessing) -> None:
         """Test preprocess_card filters out non-paper cards."""
@@ -119,16 +119,16 @@ class TestCardProcessing:
         )
 
         result = preprocess_card(invalid_card)
-        assert result is None
+        assert result == []
 
     def test_preprocess_card_filters_card_faces(self: TestCardProcessing) -> None:
         """Test preprocess_card filters out cards with card_faces."""
-        invalid_card = create_test_card(
+        double_sided_card = create_test_card(
             card_faces=[{"name": "Front"}, {"name": "Back"}],  # Has card_faces
         )
 
-        result = preprocess_card(invalid_card)
-        assert result is None
+        result = preprocess_card(double_sided_card)
+        assert len(result) == 2
 
     def test_preprocess_card_filters_funny_sets(self: TestCardProcessing) -> None:
         """Test preprocess_card filters out funny set types."""
@@ -137,14 +137,14 @@ class TestCardProcessing:
         )
 
         result = preprocess_card(invalid_card)
-        assert result is None
+        assert result == []
 
     def test_preprocess_card_processes_valid_card(self: TestCardProcessing) -> None:
         """Test preprocess_card processes valid cards correctly."""
         valid_card = create_test_card(
             card_id="00000000-0000-0000-0000-000000000006",
-            name="Lightning Bolt",
-            type_line="Instant",
+            name="Super Baloth",
+            type_line="Creature — Beast",
             keywords=["haste"],
             power="3",
             toughness="1",
@@ -156,11 +156,13 @@ class TestCardProcessing:
         )
 
         result = preprocess_card(valid_card)
+        assert len(result) == 1
+        result = result[0]
 
         assert result is not None
-        assert result["card_types"] == ["Instant"]
+        assert result["card_types"] == ["Creature"]
         # card_subtypes is now always present, set to empty array when no subtypes
-        assert result["card_subtypes"] == []
+        assert result["card_subtypes"] == ["Beast"]
         assert result["card_colors"] == {"R": True}
         assert result["card_color_identity"] == {"R": True}
         assert result["card_keywords"] == {"haste": True}
@@ -178,7 +180,7 @@ class TestCardProcessing:
             frame_effects=["showcase", "legendary"],
         )
 
-        result = preprocess_card(card_with_frame)
+        result, = preprocess_card(card_with_frame)
 
         assert result is not None
         expected_frame_data = {"2015": True, "Showcase": True, "Legendary": True}
@@ -194,7 +196,7 @@ class TestCardProcessing:
             keywords=[],
         )
 
-        result = preprocess_card(card_without_frame)
+        result, = preprocess_card(card_without_frame)
 
         assert result is not None
         assert result["card_frame_data"] == {}  # Should be empty object when no frame data present
@@ -243,7 +245,7 @@ class TestCardProcessing:
             prices={},
         )
 
-        result = preprocess_card(minimal_card)
+        result, = preprocess_card(minimal_card)
 
         assert result is not None
         assert result["card_colors"] == {}
@@ -264,9 +266,8 @@ class TestCardProcessing:
             prices={},
         )
 
-        result = preprocess_card(card)
+        result, = preprocess_card(card)
 
         assert result is not None
         assert result["creature_power"] is None
         assert result["creature_toughness"] is None
-
