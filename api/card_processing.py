@@ -29,8 +29,21 @@ def parse_type_line(type_line: str) -> tuple[list[str], list[str]]:
 def merge_dfc_faces(card: dict[str, Any]) -> dict[str, Any]:  # noqa: PLR0912, PLR0915, C901
     """Merge card faces for double-faced cards.
 
-    This function extracts data from card_faces and merges it into the main card
-    structure so that searches can find cards with properties on either face.
+    This function implements a single-row schema approach for DFCs by merging
+    data from all faces into a single searchable representation.
+
+    Schema Strategy:
+    - Union fields: Types, subtypes, keywords, colors (searchable from ANY face)
+    - First-face fields: Power, toughness, loyalty, mana cost (first face only)
+    - Combined fields: Oracle text (all faces joined)
+    - Preserved: Original data in raw_card_blob
+
+    Query Behavior:
+    - Type searches (t:creature t:sorcery) find cards with EITHER type
+    - Color searches (color:g color:u) find cards with EITHER color
+    - Power/toughness searches use first face's value only
+
+    See docs/DFC_IMPLEMENTATION.md for complete design rationale.
 
     Args:
         card: The card dictionary with card_faces.
@@ -224,6 +237,8 @@ def preprocess_card(card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: PLR
     card["scryfall_id"] = card["id"]
 
     # Handle double-faced cards by merging face data
+    # DFC Strategy: Single-row schema with unioned types/keywords/colors from all faces
+    # See merge_dfc_faces() and docs/DFC_IMPLEMENTATION.md for details
     has_card_faces = "card_faces" in card
     if has_card_faces:
         card = merge_dfc_faces(card)
@@ -308,6 +323,8 @@ def preprocess_card(card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: PLR
         card.setdefault(key, {})
 
     # Add is:dfc tag for double-faced cards
+    # This enables filtering: is:dfc, is:transform, is:modal_dfc
+    # Query behavior: Searches find cards by properties from ANY face (unioned)
     if has_card_faces:
         card["card_is_tags"]["dfc"] = True
         # Add layout-specific tag if available
