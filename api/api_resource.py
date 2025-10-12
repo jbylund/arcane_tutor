@@ -757,17 +757,14 @@ class APIResource:
                 )
                 # Convert search results to JSON and embed in HTML
                 search_results_json = orjson.dumps(search_results).decode("utf-8")
-                # Inject the search results before the closing </script> tag in the main script block
-                embedded_data = f"""
-      // Server-side embedded search results
+                # Inject the search results at the placeholder token
+                embedded_data = f"""// Server-side embedded search results
       window.EMBEDDED_SEARCH_RESULTS = {search_results_json};
-"""
-                # Insert the embedded data right after the <script> tag that calls cardSearchMain
-                # Find the script tag: <script>\n      window.cardSearchMain && window.cardSearchMain();
+      """
+                # Replace the placeholder token with the embedded data
                 html_content = html_content.replace(
-                    "<script>",
-                    f"<script>{embedded_data}",
-                    1,
+                    "<!-- SERVER_SIDE_EMBEDDED_DATA -->",
+                    embedded_data,
                 )
                 # Disable caching for pages with search results
                 falcon_response.set_header("Cache-Control", "public, max-age=90")
