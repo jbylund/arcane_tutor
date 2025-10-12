@@ -382,8 +382,8 @@ class TestAPIResourceStaticFileServing(unittest.TestCase):
         assert len(mock_response.text) > 0
         assert mock_response.content_type == "text/html"
 
-        # Verify that embedded search results are in the HTML
-        assert "window.EMBEDDED_SEARCH_RESULTS" in mock_response.text
+        # Verify that embedded search results are in the HTML (check for assignment, not just the variable name)
+        assert "window.EMBEDDED_SEARCH_RESULTS = {" in mock_response.text
         assert "Elvish Mystic" in mock_response.text
 
         # Verify it sets appropriate cache control header (shorter for search results)
