@@ -653,6 +653,29 @@ def test_mana_cost_with_comparison_operators() -> None:
     assert result2.root == expected2
 
 
+@pytest.mark.parametrize(
+    argnames=("lowercase_query", "uppercase_query"),
+    argvalues=[
+        ("mana:{x}", "mana:{X}"),
+        ("mana:{x}{x}", "mana:{X}{X}"),
+        ("mana:{x}{x}{w}", "mana:{X}{X}{W}"),
+        ("m:{x}", "m:{X}"),
+    ],
+)
+def test_mana_symbol_case_insensitivity(lowercase_query: str, uppercase_query: str) -> None:
+    """Test that mana symbols like {x} and {X} parse to the same AST."""
+    lowercase_result = parsing.parse_search_query(lowercase_query)
+    uppercase_result = parsing.parse_search_query(uppercase_query)
+
+    # Both should parse to the same AST structure
+    assert lowercase_result == uppercase_result, (
+        f"Lowercase query '{lowercase_query}' and uppercase query '{uppercase_query}' "
+        f"should parse to the same AST.\n"
+        f"Lowercase AST: {lowercase_result}\n"
+        f"Uppercase AST: {uppercase_result}"
+    )
+
+
 def test_mana_cost_approximate_comparisons() -> None:
     """Test mana cost approximate comparisons with <, <=, >, >= operators."""
     # Test <= operator - use regular parser for AST structure validation
