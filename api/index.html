@@ -916,7 +916,16 @@
 
           if (initialQuery) {
             this.searchInput.value = initialQuery;
-            this.performSearch(initialQuery);
+            // Check if we have embedded search results from the server
+            if (window.EMBEDDED_SEARCH_RESULTS) {
+              // Use the embedded results directly without making an API call
+              this.displayResults(window.EMBEDDED_SEARCH_RESULTS, initialQuery, null);
+              // Clear the embedded results so they're not reused
+              delete window.EMBEDDED_SEARCH_RESULTS;
+            } else {
+              // No embedded results, perform the search via API
+              this.performSearch(initialQuery);
+            }
           }
 
           this.searchInput.addEventListener('input', e => {

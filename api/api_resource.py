@@ -713,18 +713,74 @@ class APIResource:
             "total_cards": total_cards,
         }
 
-    def index_html(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
-        """Return the index page.
+    def index_html(  # noqa: PLR0913
+        self: APIResource,
+        *,
+        falcon_response: falcon.Response | None = None,
+        q: str | None = None,
+        query: str | None = None,
+        orderby: CardOrdering | None = None,
+        direction: SortDirection | None = None,
+        unique: UniqueOn | None = None,
+        prefer: PreferOrder | None = None,
+        **_: object,
+    ) -> None:
+        """Return the index page, optionally with embedded search results.
 
         Args:
         ----
             falcon_response (falcon.Response): The Falcon response to write to.
+            q (str): Search query (alternative to query parameter).
+            query (str): Search query (alternative to q parameter).
+            orderby (CardOrdering): Field to sort by.
+            direction (SortDirection): Sort direction.
+            unique (UniqueOn): Unique on field.
+            prefer (PreferOrder): Prefer order.
 
         """
-        self._serve_static_file(filename="index.html", falcon_response=falcon_response)
+        # Read the HTML file
+        full_filename = pathlib.Path(__file__).parent / "index.html"
+        with pathlib.Path(full_filename).open() as f:
+            html_content = f.read()
+
+        # Check if we have a search query
+        search_query = query or q
+        if search_query:
+            # Run the search server-side and embed results in the HTML
+            try:
+                search_results = self._search(
+                    query=search_query,
+                    orderby=orderby or CardOrdering.EDHREC,
+                    direction=direction or SortDirection.ASC,
+                    unique=unique or UniqueOn.CARD,
+                    prefer=prefer or PreferOrder.DEFAULT,
+                )
+                # Convert search results to JSON and embed in HTML
+                search_results_json = orjson.dumps(search_results).decode("utf-8")
+                # Inject the search results before the closing </script> tag in the main script block
+                embedded_data = f"""
+      // Server-side embedded search results
+      window.EMBEDDED_SEARCH_RESULTS = {search_results_json};
+"""
+                # Insert the embedded data right after the <script> tag that calls cardSearchMain
+                # Find the script tag: <script>\n      window.cardSearchMain && window.cardSearchMain();
+                html_content = html_content.replace(
+                    "<script>",
+                    f"<script>{embedded_data}",
+                    1,
+                )
+                # Disable caching for pages with search results
+                falcon_response.set_header("Cache-Control", "public, max-age=90")
+            except (ValueError, falcon.HTTPBadRequest, psycopg.errors.DatatypeMismatch) as err:
+                # If search fails, just serve the page without embedded results
+                logger.warning("Failed to embed search results: %s", err)
+                falcon_response.set_header("Cache-Control", "public, max-age=3600")
+        else:
+            # Cache for 1 hour - improves repeat visit performance
+            falcon_response.set_header("Cache-Control", "public, max-age=3600")
+
+        falcon_response.text = html_content
         falcon_response.content_type = "text/html"
-        # Cache for 1 hour - improves repeat visit performance
-        falcon_response.set_header("Cache-Control", "public, max-age=3600")
 
     def prefer_score_tuner(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
         """Return the prefer score tuner page.

@@ -353,11 +353,41 @@ class TestAPIResourceStaticFileServing(unittest.TestCase):
         """Test index_html serves the index.html file."""
         mock_response = MagicMock()
 
-        with patch.object(self.api_resource, "_serve_static_file") as mock_serve:
-            self.api_resource.index_html(falcon_response=mock_response)
+        self.api_resource.index_html(falcon_response=mock_response)
 
-            mock_serve.assert_called_once_with(filename="index.html", falcon_response=mock_response)
-            assert mock_response.content_type == "text/html"
+        # Verify the response contains HTML content
+        assert mock_response.text is not None
+        assert len(mock_response.text) > 0
+        assert mock_response.content_type == "text/html"
+        # Verify it sets cache control header
+        mock_response.set_header.assert_called_with("Cache-Control", "public, max-age=3600")
+
+    def test_index_html_with_query_embeds_search_results(self) -> None:
+        """Test index_html embeds search results when query parameter is provided."""
+        mock_response = MagicMock()
+
+        # Mock the _search method to return test results
+        mock_search_results = {
+            "cards": [{"name": "Elvish Mystic", "set_code": "m14", "collector_number": "1"}],
+            "total_cards": 1,
+            "query": "elf",
+        }
+
+        with patch.object(self.api_resource, "_search", return_value=mock_search_results):
+            # Call index_html with a search query
+            self.api_resource.index_html(falcon_response=mock_response, q="elf")
+
+        # Verify the response contains HTML content
+        assert mock_response.text is not None
+        assert len(mock_response.text) > 0
+        assert mock_response.content_type == "text/html"
+
+        # Verify that embedded search results are in the HTML
+        assert "window.EMBEDDED_SEARCH_RESULTS" in mock_response.text
+        assert "Elvish Mystic" in mock_response.text
+
+        # Verify it sets appropriate cache control header (shorter for search results)
+        mock_response.set_header.assert_called_with("Cache-Control", "public, max-age=90")
 
     def test_favicon_ico_serves_binary_content(self) -> None:
         """Test favicon_ico serves binary content correctly."""
