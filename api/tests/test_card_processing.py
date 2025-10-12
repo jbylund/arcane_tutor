@@ -121,14 +121,97 @@ class TestCardProcessing:
         result = preprocess_card(invalid_card)
         assert result is None
 
-    def test_preprocess_card_filters_card_faces(self: TestCardProcessing) -> None:
-        """Test preprocess_card filters out cards with card_faces."""
-        invalid_card = create_test_card(
-            card_faces=[{"name": "Front"}, {"name": "Back"}],  # Has card_faces
+    def test_preprocess_card_processes_dfc_cards(self: TestCardProcessing) -> None:
+        """Test preprocess_card processes double-faced cards correctly."""
+        dfc_card = create_test_card(
+            name="Hound Tamer // Untamed Pup",
+            type_line="Creature — Human Werewolf // Creature — Werewolf",
+            layout="transform",
+            card_faces=[
+                {
+                    "name": "Hound Tamer",
+                    "type_line": "Creature — Human Werewolf",
+                    "power": "3",
+                    "toughness": "3",
+                    "colors": ["G"],
+                    "keywords": ["Trample", "Daybound"],
+                    "mana_cost": "{2}{G}",
+                },
+                {
+                    "name": "Untamed Pup",
+                    "type_line": "Creature — Werewolf",
+                    "power": "4",
+                    "toughness": "4",
+                    "colors": ["G"],
+                    "keywords": ["Trample", "Nightbound"],
+                },
+            ],
         )
 
-        result = preprocess_card(invalid_card)
-        assert result is None
+        result = preprocess_card(dfc_card)
+
+        assert result is not None
+        # Check that is:dfc tag is added
+        assert result["card_is_tags"]["dfc"] is True
+        # Check that layout-specific tag is added
+        assert result["card_is_tags"]["transform"] is True
+        # Check that types are merged (Creature from both sides)
+        assert "Creature" in result["card_types"]
+        # Check that subtypes are merged (Human, Werewolf)
+        assert "Human" in result["card_subtypes"]
+        assert "Werewolf" in result["card_subtypes"]
+        # Check that keywords are merged
+        assert result["card_keywords"]["Trample"] is True
+        assert result["card_keywords"]["Daybound"] is True
+        assert result["card_keywords"]["Nightbound"] is True
+        # Check that power/toughness are stored (first face's value)
+        assert result["creature_power"] == 3
+        assert result["creature_toughness"] == 3
+        assert result["creature_power_text"] == "3"
+        assert result["creature_toughness_text"] == "3"
+
+    def test_preprocess_card_processes_modal_dfc_cards(self: TestCardProcessing) -> None:
+        """Test preprocess_card processes modal double-faced cards correctly."""
+        modal_dfc = create_test_card(
+            name="Augmenter Pugilist // Echoing Equation",
+            type_line="Creature — Troll Druid // Sorcery",
+            layout="modal_dfc",
+            color_identity=["G", "U"],
+            card_faces=[
+                {
+                    "name": "Augmenter Pugilist",
+                    "type_line": "Creature — Troll Druid",
+                    "power": "3",
+                    "toughness": "3",
+                    "colors": ["G"],
+                    "keywords": ["Trample"],
+                    "mana_cost": "{1}{G}{G}",
+                },
+                {
+                    "name": "Echoing Equation",
+                    "type_line": "Sorcery",
+                    "colors": ["U"],
+                    "mana_cost": "{3}{U}{U}",
+                },
+            ],
+        )
+
+        result = preprocess_card(modal_dfc)
+
+        assert result is not None
+        # Check that is:dfc tag is added
+        assert result["card_is_tags"]["dfc"] is True
+        # Check that layout-specific tag is added
+        assert result["card_is_tags"]["modal_dfc"] is True
+        # Check that types are merged (Creature and Sorcery)
+        assert "Creature" in result["card_types"]
+        assert "Sorcery" in result["card_types"]
+        # Check that subtypes are merged (Troll, Druid)
+        assert "Troll" in result["card_subtypes"]
+        assert "Druid" in result["card_subtypes"]
+        # Check that power/toughness are stored (only from creature face)
+        assert result["creature_power_text"] == "3"
+        assert result["creature_toughness_text"] == "3"
 
     def test_preprocess_card_filters_funny_sets(self: TestCardProcessing) -> None:
         """Test preprocess_card filters out funny set types."""
