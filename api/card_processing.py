@@ -146,6 +146,10 @@ def merge_dfc_faces(card: dict[str, Any]) -> dict[str, Any]:  # noqa: PLR0912, P
         if oracle_texts:
             card["oracle_text"] = "\n---\n".join(oracle_texts)
 
+    # Set colors at top level if not present (from merged face colors)
+    if not card.get("colors"):
+        card["colors"] = list(all_colors)
+
     return card
 
 def maybeify(func: Callable) -> Callable:
