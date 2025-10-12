@@ -898,6 +898,9 @@
           // Fetch common card types first
           await this.fetchCommonCardTypes();
 
+          // Initialize intersection observer for lazy image loading BEFORE displaying any results
+          this.initImageObserver();
+
           // On page load, check for query params and restore state
           const params = new URLSearchParams(window.location.search);
           const initialQuery = params.get('q') || '';
@@ -946,9 +949,6 @@
               this.performSearch(e.target.value);
             }
           });
-
-          // Initialize intersection observer for lazy image loading
-          this.initImageObserver();
 
           // Add event delegation for card clicks
           this.resultsContainer.addEventListener('click', e => {
