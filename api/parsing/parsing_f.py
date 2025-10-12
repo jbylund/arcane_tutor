@@ -346,7 +346,7 @@ def create_color_parsers() -> dict[str, ParserElement]:
     """
     # Color value patterns - support both color names and letter combinations
     # Color names: white, blue, black, red, green, colorless (case-insensitive)
-    color_word = make_regex_pattern(COLOR_NAME_TO_CODE.keys())
+    color_word = make_regex_pattern(COLOR_NAME_TO_CODE)
 
     # Color letter pattern: any combination of w, u, b, r, g, c (case-insensitive)
     color_letter_pattern = Regex(r"[wubrgcWUBRGC]+")
