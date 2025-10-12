@@ -111,7 +111,7 @@ class TestLayoutBorderParsing:
             return []
 
         attributes = extract_attributes(result.root)
-        expected_attrs = [("card_layout", "normal"), ("card_border", "black"), ("cmc", 3)]
+        expected_attrs = [("card_layout", "normal"), ("card_border", "black"), ("face_cmc", 3)]
 
         # Sort both lists to compare regardless of order
         attributes.sort()

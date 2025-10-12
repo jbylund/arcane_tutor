@@ -2,13 +2,15 @@
 
 -- Insert some test cards
 INSERT INTO magic.cards (
-    scryfall_id, card_name, cmc, mana_cost_text, mana_cost_jsonb, raw_card_blob,
+    scryfall_id, card_name, face_name,
+    cmc, mana_cost_text, mana_cost_jsonb, raw_card_blob,
     card_types, card_subtypes, card_colors, card_color_identity, card_keywords,
     oracle_text, creature_power, creature_toughness, card_oracle_tags, collector_number, collector_number_int,
-    released_at
+    released_at, face_idx
 ) VALUES
 (
     '00000000-0000-0000-0000-000000000001',
+    'Lightning Bolt',
     'Lightning Bolt',
     1,
     '{R}',
@@ -25,10 +27,13 @@ INSERT INTO magic.cards (
     '{"burn": true}',
     '123',
     123,
-    '2024-02-23'
+    '2024-02-23',
+    1
+
 ),
 (
     '00000000-0000-0000-0000-000000000002',
+    'Serra Angel',
     'Serra Angel',
     5,
     '{3}{W}{W}',
@@ -45,10 +50,12 @@ INSERT INTO magic.cards (
     '{"flying": true, "vigilance": true}',
     '45a',
     45,
-    '2024-02-23'
+    '2024-02-23',
+    1
 ),
 (
     '00000000-0000-0000-0000-000000000003',
+    'Black Lotus',
     'Black Lotus',
     0,
     '{0}',
@@ -65,13 +72,14 @@ INSERT INTO magic.cards (
     '{"mana-acceleration": true}',
     '1',
     1,
-    '2024-02-23'
-) ON CONFLICT (scryfall_id) DO NOTHING;
+    '2024-02-23',
+    1
+) ON CONFLICT DO NOTHING;
 
 -- Insert test tags
 INSERT INTO magic.tags (tag) VALUES
-('flying'),
-('vigilance'),
-('burn'),
-('mana-acceleration')
-ON CONFLICT (tag) DO NOTHING;
+    ('flying'),
+    ('vigilance'),
+    ('burn'),
+    ('mana-acceleration')
+ON CONFLICT DO NOTHING;

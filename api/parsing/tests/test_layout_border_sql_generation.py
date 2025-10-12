@@ -14,12 +14,12 @@ class TestLayoutBorderSQLGeneration:
     """Test that layout and border searches generate exact equality SQL queries."""
 
     @pytest.mark.parametrize(("query", "expected_column", "expected_value"), [
-        ("layout:normal", "card.card_layout", "normal"),
-        ("layout:split", "card.card_layout", "split"),
-        ("layout:flip", "card.card_layout", "flip"),
-        ("border:black", "card.card_border", "black"),
-        ("border:white", "card.card_border", "white"),
-        ("border:borderless", "card.card_border", "borderless"),
+        ("border:black", "((card).card_info).card_border", "black"),
+        ("border:borderless", "((card).card_info).card_border", "borderless"),
+        ("border:white", "((card).card_info).card_border", "white"),
+        ("layout:flip", "((card).card_info).card_layout", "flip"),
+        ("layout:normal", "((card).card_info).card_layout", "normal"),
+        ("layout:split", "((card).card_info).card_layout", "split"),
     ])
     def test_layout_border_generate_exact_equality_sql(self, query: str, expected_column: str, expected_value: str) -> None:
         """Test that layout and border searches generate exact equality SQL (not ILIKE)."""
@@ -50,12 +50,12 @@ class TestLayoutBorderSQLGeneration:
 
         # Should generate ILIKE pattern matching
         assert "ILIKE" in sql
-        assert "card.card_name" in sql
+        assert "((card).card_info).card_name" in sql
 
         # Context should contain wildcards
         assert len(context) == 1
         param_value = next(iter(context.values()))
-        assert param_value == "%lightning%"
+        assert param_value == r"%lightning%"
         assert param_value.startswith("%")
         assert param_value.endswith("%")
 
@@ -68,8 +68,8 @@ class TestLayoutBorderSQLGeneration:
         sql = result.to_sql(context)
 
         # Should have both exact equality conditions with AND
-        assert "card.card_layout =" in sql
-        assert "card.card_border =" in sql
+        assert "((card).card_info).card_layout = " in sql
+        assert "((card).card_info).card_border = " in sql
         assert "AND" in sql
         assert "ILIKE" not in sql
 

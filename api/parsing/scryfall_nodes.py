@@ -10,9 +10,12 @@ from api.parsing.db_info import (
     COLOR_CODE_TO_NAME,
     COLOR_NAME_TO_CODE,
     DATE_ATTRIBUTES,
+    DB_NAME_TO_ATTRIBUTE_LEVEL,
+    DB_NAME_TO_FIELD_INFO,
     DB_NAME_TO_FIELD_TYPE,
     SEARCH_NAME_TO_DB_NAME,
     YEAR_ATTRIBUTES,
+    AttributeLevel,
     FieldType,
 )
 from api.parsing.nodes import (
@@ -121,11 +124,33 @@ class ScryfallAttributeNode(AttributeNode):
             context: SQL parameter context.
 
         Returns:
-            SQL string for the attribute reference.
+            SQL string for the attribute reference with proper DFC schema path.
         """
         del context
         remapped = SEARCH_NAME_TO_DB_NAME.get(self.attribute_name, self.attribute_name)
-        return f"card.{remapped}"
+        field_info = DB_NAME_TO_FIELD_INFO.get(remapped)
+
+        if field_info is None:
+            # Fallback to old behavior if field not found
+            return f"card.{remapped}"
+
+        schema_path = field_info.schema_path
+
+        # For face-level attributes, return simple placeholder for _wrap_face_level_predicate
+        if field_info.attribute_level == AttributeLevel.FACE:
+            return f"card.{remapped}"
+
+        # For card and print-level attributes, build path from schema_path
+        # Example: ["card_info", "card_name"] -> ((card).card_info).card_name
+        # Example: ["print_info", "card_set_code"] -> ((card).print_info).card_set_code
+        # Example: ["print_info", "front_face", "print_artist"] -> (((card).print_info).front_face).print_artist
+
+        # Build the path: card → first_level → second_level → ... → attribute
+        # Wrap each composite access in parentheses
+        result = "card"
+        for _i, part in enumerate(schema_path):
+            result = f"({result}).{part}"
+        return result
 
 
 def get_colors_comparison_object(val: str) -> dict[str, bool]:
@@ -270,15 +295,31 @@ def get_legality_comparison_object(val: str, attr: str) -> dict[str, str]:
 
 
 def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
-    """Convert a mana cost string to a dictionary of colored symbols and their counts."""
+    """Convert a mana cost string to a dictionary of colored symbols and their counts.
+
+    Supports both braced format ({W}{U}), unbraced format (WU or wu), and mixed format (R{G}).
+    """
     colored_symbol_counts = {}
-    for mana_symbol in re.findall(r"{([^}]*)}", mana_cost_str.upper()):
+    mana_cost_upper = mana_cost_str.upper()
+
+    # First, extract all braced symbols
+    braced_symbols = re.findall(r"{([^}]*)}", mana_cost_upper)
+    for mana_symbol in braced_symbols:
         try:
             int(mana_symbol)
         except ValueError:
             colored_symbol_counts[mana_symbol] = colored_symbol_counts.get(mana_symbol, 0) + 1
         else:
             pass
+
+    # Then, process unbraced characters (replace braced sections with space to prevent merging)
+    # We don't care about digits here, only colored symbols
+    unbraced_part = re.sub(r"{[^}]*}", " ", mana_cost_upper)
+    for char in unbraced_part:
+        # Only count color characters (W, U, B, R, G, C)
+        if char in "WUBRGC":
+            colored_symbol_counts[char] = colored_symbol_counts.get(char, 0) + 1
+
     as_dict = {}
     for colored_symbol, count in colored_symbol_counts.items():
         as_dict[colored_symbol] = list(range(1, count + 1))
@@ -286,21 +327,42 @@ def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
 
 
 def calculate_cmc(mana_cost_str: str) -> int:
-    """Calculate the converted mana cost from a mana cost string."""
+    """Calculate the converted mana cost from a mana cost string.
+
+    Supports both braced format ({W}{U}), unbraced format (WU or wu), and mixed format (R{G} or 1{r}1).
+    Consecutive digits are treated as a single multi-digit number (e.g., "11R" is {11}{R}, not {1}{1}{R}).
+    """
     cmc = 0
-    for mana_symbol in re.findall(r"{([^}]*)}", mana_cost_str):
+    mana_cost_upper = mana_cost_str.upper()
+
+    # First, process all braced symbols
+    braced_symbols = re.findall(r"{([^}]*)}", mana_cost_upper)
+    for mana_symbol in braced_symbols:
         try:
             # Generic mana symbols add to CMC
             cmc += int(mana_symbol)
         except ValueError:
             # X costs count as 0 for CMC calculation
-            if mana_symbol.upper() == "X":
+            if mana_symbol == "X":
                 continue
             # Colored mana symbols (W, U, B, R, G, etc.) each count as 1
             # Handle hybrid symbols like {W/U} as 1
             # Handle Phyrexian symbols like {W/P} as 1
             # For simplicity, any non-numeric, non-X symbol counts as 1
             cmc += 1
+
+    # Then, process unbraced part (after removing braced sections)
+    # Replace braced sections with a space to prevent adjacent digits from merging
+    unbraced_part = re.sub(r"{[^}]*}", " ", mana_cost_upper)
+    # Match either: sequences of digits OR single color characters
+    for token in re.findall(r"\d+|[WUBRGC]", unbraced_part):
+        if token.isdigit():
+            # Multi-digit generic mana (e.g., "11" in "11R")
+            cmc += int(token)
+        elif token in "WUBRGC":
+            # Color character counts as 1
+            cmc += 1
+
     return cmc
 
 
@@ -350,8 +412,9 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             return self._handle_collector_number(context)
 
         # Special handling for mana attributes with comparison operators
-        if attr in ("mana_cost_text", "mana_cost_jsonb") and isinstance(self.rhs, ManaValueNode | StringValueNode):
-            return self._handle_mana_cost_comparison(context)
+        if attr in ("face_mana_cost_text", "face_mana_cost_jsonb") and isinstance(self.rhs, ManaValueNode | StringValueNode):
+            sql = self._handle_mana_cost_comparison(context)
+            return self._wrap_face_level_predicate(sql, attr)
 
         # Special handling for date/year searches
         if self.lhs.original_attribute in DATE_ATTRIBUTES:
@@ -359,7 +422,6 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         if self.lhs.original_attribute in YEAR_ATTRIBUTES:
             return self._handle_year_search(context)
 
-        lhs_sql = self.lhs.to_sql(context)
         field_type = get_field_type(attr)
 
         # handle numeric
@@ -378,30 +440,52 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
                     msg = f"Invalid rarity in comparison: {e}"
                     raise ValueError(msg) from e
 
-            return super().to_sql(context)
+            sql = super().to_sql(context)
+            # For face-level attributes, wrap in OR for front/back faces
+            return self._wrap_face_level_predicate(sql, attr)
 
         if field_type == FieldType.JSONB_OBJECT:
-            return self._handle_jsonb_object(context)
+            sql = self._handle_jsonb_object(context)
+            return self._wrap_face_level_predicate(sql, attr)
 
         if field_type == FieldType.JSONB_ARRAY:
-            return self._handle_jsonb_array(context)
+            sql = self._handle_jsonb_array(context)
+            return self._wrap_face_level_predicate(sql, attr)
 
         if self.operator == ":":
-            return self._handle_colon_operator(context, field_type, lhs_sql, attr)
+            lhs_sql = self.lhs.to_sql(context)
+            sql = self._handle_colon_operator(context, field_type, lhs_sql, attr)
+            return self._wrap_face_level_predicate(sql, attr)
 
         if field_type == FieldType.TEXT:
-            return super().to_sql(context)
+            sql = super().to_sql(context)
+            return self._wrap_face_level_predicate(sql, attr)
 
         msg = f"Unknown field type: {field_type}"
         raise NotImplementedError(msg)
+
+    def _wrap_face_level_predicate(self: ScryfallBinaryOperatorNode, sql: str, attr: str) -> str:
+        """Wrap face-level predicates to check both front and back faces."""
+        attr_level = DB_NAME_TO_ATTRIBUTE_LEVEL.get(attr, AttributeLevel.FACE)
+
+        # Only wrap if it's a face-level attribute
+        if attr_level != AttributeLevel.FACE:
+            return sql
+
+        # Replace card.face_xxx with versions for front and back face
+        # The pattern is: ((card).card_info).front_face.face_xxx OR ((card).card_info).back_face.face_xxx
+        front_sql = sql.replace("card.", "(((card).card_info).front_face).")
+        back_sql = sql.replace("card.", "(((card).card_info).back_face).")
+
+        return f"({front_sql} OR {back_sql})"
 
     def _handle_colon_operator(self: ScryfallBinaryOperatorNode, context: dict, field_type: str, lhs_sql: str, attr: str) -> str:
         """Handle colon operator for different field types."""
         if field_type == FieldType.TEXT:
             # Handle fields that need exact matching instead of pattern matching
-            if attr in ("card_set_code", "card_layout", "card_border", "card_watermark"):
+            if attr in ("card_set_code", "print_layout", "print_border", "print_watermark", "card_layout", "card_border"):
                 # For layout, border, and watermark fields, lowercase the search value for case-insensitive matching
-                if attr in ("card_layout", "card_border", "card_watermark") and hasattr(self.rhs, "value"):
+                if attr in ("print_layout", "print_border", "print_watermark", "card_layout", "card_border") and hasattr(self.rhs, "value"):
                     self.rhs.value = self.rhs.value.lower()
 
                 if self.operator == ":":
@@ -457,12 +541,12 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
 
         # For ":" and "=" operators, use text field matching for exact matches
         if self.operator in (":", "="):
-            if attr == "mana_cost_text":
+            if attr == "face_mana_cost_text":
                 # Use text matching for exact mana cost matches
                 if self.operator == ":":
                     self.operator = "="
                 return super().to_sql(context)
-            # For mana_cost_jsonb, convert to JSONB and use equality
+            # For face_mana_cost_jsonb, convert to JSONB and use equality
             mana_dict = mana_cost_str_to_dict(mana_cost_str)
             pname = param_name(mana_dict)
             context[pname] = mana_dict
@@ -489,8 +573,8 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         context[cmc_param] = query_cmc
 
         # SQL fragments
-        mana_jsonb_sql = "card.mana_cost_jsonb"
-        cmc_sql = "card.cmc"
+        mana_jsonb_sql = "card.face_mana_cost_jsonb"
+        cmc_sql = "card.face_cmc"
 
         if self.operator == "<=":
             # Card costs <= query if:
@@ -661,13 +745,13 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         lhs_sql = self.lhs.to_sql(context)
         attr = self.lhs.attribute_name
         is_color_identity = False
-        if attr in ("card_colors", "card_color_identity", "produced_mana"):
+        if attr in ("card_colors", "face_colors", "card_color_identity", "produced_mana"):
             rhs = get_colors_comparison_object(self.rhs.value.strip().lower())
             pname = param_name(rhs)
             context[pname] = rhs
             # Color identity has inverted semantics for the : operator only
             is_color_identity = attr == "card_color_identity"
-        elif attr == "devotion":
+        elif attr == "face_devotion":
             # Devotion uses mana cost syntax, so we need to convert it to color comparison
             # Extract color codes from mana cost syntax like {G}, {R}{G}, etc.
             query_devotion = calculate_devotion(self.rhs.value.strip())
@@ -677,17 +761,17 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             rhs = get_keywords_comparison_object(self.rhs.value.strip())
             pname = param_name(rhs)
             context[pname] = rhs
-        elif attr == "card_frame_data":
+        elif attr == "print_frame_data":
             # Frame data handling - treat like keywords (exact string match)
             rhs = get_frame_data_comparison_object(self.rhs.value.strip())
             pname = param_name(rhs)
             context[pname] = rhs
-        elif attr == "card_oracle_tags":
+        elif attr in ("face_oracle_tags", "card_oracle_tags"):
             # Oracle tags are stored in lowercase, unlike keywords
             rhs = get_oracle_tags_comparison_object(self.rhs.value.strip())
             pname = param_name(rhs)
             context[pname] = rhs
-        elif attr == "card_is_tags":
+        elif attr == "print_is_tags":
             # is: tags are stored in lowercase, similar to oracle tags
             rhs = get_is_tags_comparison_object(self.rhs.value.strip())
             pname = param_name(rhs)

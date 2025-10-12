@@ -392,3 +392,74 @@ class TestContainerIntegration:
                 break
 
         assert brainstorm_in_combined, "Brainstorm should be found by combined search"
+
+    def test_double_faced_card_import_and_search(self: TestContainerIntegration, api_resource: APIResource) -> None:
+        """Test importing and searching for double-faced cards (DFCs)."""
+        # Import a well-known double-faced card
+        card_name = "Hound Tamer // Untamed Pup"
+
+        # Import the card
+        import_result = api_resource.import_card_by_name(card_name=card_name)
+        assert import_result["status"] in ["success", "already_exists"], f"Import failed: {import_result}"
+
+        # Verify both face types were stored in the database (may have multiple printings)
+        with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT DISTINCT face_name, face_idx, creature_power, creature_toughness FROM magic.cards WHERE card_name = %s ORDER BY face_idx",
+                (card_name,),
+            )
+            faces = cursor.fetchall()
+            assert len(faces) == 2, f"DFC should have 2 distinct faces in database, got {len(faces)}"
+
+            # Check front face (Hound Tamer)
+            front_face = faces[0]
+            assert front_face["face_idx"] == 1
+            assert front_face["face_name"] == "Hound Tamer"
+            assert front_face["creature_power"] == 3, "Hound Tamer should have power 3"
+            assert front_face["creature_toughness"] == 3, "Hound Tamer should have toughness 3"
+
+            # Check back face (Untamed Pup)
+            back_face = faces[1]
+            assert back_face["face_idx"] == 2
+            assert back_face["face_name"] == "Untamed Pup"
+            assert back_face["creature_power"] == 4, "Untamed Pup should have power 4"
+            assert back_face["creature_toughness"] == 4, "Untamed Pup should have toughness 4"
+
+            # Also verify the total number of rows (all printings, all faces)
+            cursor.execute(
+                "SELECT COUNT(*) as count FROM magic.cards WHERE card_name = %s",
+                (card_name,),
+            )
+            total_count = cursor.fetchone()["count"]
+            assert total_count >= 2, f"DFC should have at least 2 rows (1 per face), got {total_count}"
+            assert total_count % 2 == 0, f"DFC should have even number of rows (faces come in pairs), got {total_count}"
+
+        # Test that searching by name returns the card once (not twice)
+        result_name = api_resource.search(q=f'name:"{card_name}"')
+        cards_name = result_name["cards"]
+        assert len(cards_name) == 1, f"DFC search by name should return 1 result (not 2), got {len(cards_name)}"
+        assert cards_name[0]["name"] == card_name
+
+        # Test that searching by front face power finds the card
+        result_power3 = api_resource.search(q="power=3 name:hound")
+        cards_power3 = result_power3["cards"]
+        found_by_power3 = any(card["name"] == card_name for card in cards_power3)
+        assert found_by_power3, "DFC should be found by front face power (power=3)"
+
+        # Test that searching by back face power also finds the card
+        result_power4 = api_resource.search(q="power=4 name:hound")
+        cards_power4 = result_power4["cards"]
+        found_by_power4 = any(card["name"] == card_name for card in cards_power4)
+        assert found_by_power4, "DFC should be found by back face power (power=4)"
+
+        # Test that searching by front face name finds the card
+        result_front = api_resource.search(q='name:"Hound Tamer"')
+        cards_front = result_front["cards"]
+        found_by_front = any(card["name"] == card_name for card in cards_front)
+        assert found_by_front, "DFC should be found by searching for front face name"
+
+        # Test that searching by back face name finds the card
+        result_back = api_resource.search(q='name:"Untamed Pup"')
+        cards_back = result_back["cards"]
+        found_by_back = any(card["name"] == card_name for card in cards_back)
+        assert found_by_back, "DFC should be found by searching for back face name"

@@ -14,18 +14,18 @@ class TestWatermarkSQLGeneration:
     """Test that watermark searches generate exact equality SQL queries."""
 
     @pytest.mark.parametrize(("query", "expected_column", "expected_value"), [
-        ("watermark:azorius", "card.card_watermark", "azorius"),
-        ("watermark:dimir", "card.card_watermark", "dimir"),
-        ("watermark:rakdos", "card.card_watermark", "rakdos"),
-        ("watermark:gruul", "card.card_watermark", "gruul"),
-        ("watermark:selesnya", "card.card_watermark", "selesnya"),
-        ("watermark:orzhov", "card.card_watermark", "orzhov"),
-        ("watermark:izzet", "card.card_watermark", "izzet"),
-        ("watermark:golgari", "card.card_watermark", "golgari"),
-        ("watermark:boros", "card.card_watermark", "boros"),
-        ("watermark:simic", "card.card_watermark", "simic"),
-        ("watermark:set", "card.card_watermark", "set"),
-        ("watermark:planeswalker", "card.card_watermark", "planeswalker"),
+        ("watermark:azorius", "print_watermark", "azorius"),
+        ("watermark:dimir", "print_watermark", "dimir"),
+        ("watermark:rakdos", "print_watermark", "rakdos"),
+        ("watermark:gruul", "print_watermark", "gruul"),
+        ("watermark:selesnya", "print_watermark", "selesnya"),
+        ("watermark:orzhov", "print_watermark", "orzhov"),
+        ("watermark:izzet", "print_watermark", "izzet"),
+        ("watermark:golgari", "print_watermark", "golgari"),
+        ("watermark:boros", "print_watermark", "boros"),
+        ("watermark:simic", "print_watermark", "simic"),
+        ("watermark:set", "print_watermark", "set"),
+        ("watermark:planeswalker", "print_watermark", "planeswalker"),
     ])
     def test_watermark_generate_exact_equality_sql(self, query: str, expected_column: str, expected_value: str) -> None:
         """Test that watermark searches generate exact equality SQL (not ILIKE)."""
@@ -56,7 +56,7 @@ class TestWatermarkSQLGeneration:
 
         # Should generate ILIKE pattern matching
         assert "ILIKE" in sql
-        assert "card.card_name" in sql
+        assert "card_name" in sql  # DFC schema uses card_name in card_info
 
         # Context should contain wildcards
         assert len(context) == 1
@@ -74,7 +74,7 @@ class TestWatermarkSQLGeneration:
         sql = result.to_sql(context)
 
         # Should have both exact equality conditions with AND
-        assert "card.card_watermark =" in sql
+        assert "print_watermark =" in sql
         assert "AND" in sql
         assert "ILIKE" not in sql
 
@@ -95,8 +95,8 @@ class TestWatermarkSQLGeneration:
         sql = result.to_sql(context)
 
         # Should have both exact equality conditions with AND
-        assert "card.card_watermark =" in sql
-        assert "card.card_border =" in sql
+        assert "print_watermark =" in sql
+        assert "print_border =" in sql
         assert "AND" in sql
         assert "ILIKE" not in sql
 
@@ -149,9 +149,9 @@ class TestWatermarkSQLGeneration:
         sql = result.to_sql(context)
 
         # Should have all three conditions with AND
-        assert "card.card_watermark =" in sql
-        assert "card.card_border =" in sql
-        assert "card.cmc =" in sql
+        assert "print_watermark =" in sql
+        assert "card_border" in sql  # Border is card-level not print-level
+        assert "face_cmc =" in sql  # DFC schema uses face_cmc with OR for front/back
         assert "AND" in sql
         assert "ILIKE" not in sql
 

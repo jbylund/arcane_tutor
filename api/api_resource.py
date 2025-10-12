@@ -363,11 +363,12 @@ class APIResource:
         cache_file_path = cache_dir_path / f"{data_key}.json"
         try:
             with cache_file_path.open() as f:
+                logger.info("Cache hit, %s found!", cache_file_path)
                 response = orjson.loads(f.read())
         except FileNotFoundError:
             logger.info("Cache miss, %s not found!", cache_file_path)
         else:
-            logger.info("Cache hit, %s found!", cache_file_path)
+            logger.info("Cache hit, %s is valid!", cache_file_path)
             return response
         response = orjson.loads(self._session.get("https://api.scryfall.com/bulk-data", timeout=1).content)["data"]
         by_type = {r["type"]: r for r in response}
@@ -453,14 +454,10 @@ class APIResource:
     def _get_cards_to_insert(self: APIResource) -> list[dict[str, Any]]:
         """Get the cards to insert into the database."""
         all_cards = self.get_data()
-        scryfall_id_to_card = {}
+        processed_cards = []
         for card in all_cards:
-            processed_card = preprocess_card(card)
-            if processed_card is None:
-                continue
-            scryfall_id = processed_card["scryfall_id"]
-            scryfall_id_to_card[scryfall_id] = processed_card
-        return list(scryfall_id_to_card.values())
+            processed_cards.extend(preprocess_card(card))
+        return processed_cards
 
 
     def get_stats(self: APIResource, **_: object) -> dict[str, Any]:
@@ -502,6 +499,7 @@ class APIResource:
             self.setup_schema()
 
             to_insert = self._get_cards_to_insert()
+            logger.info("To insert: %s", to_insert[:10])
 
             before = time.monotonic()
 
@@ -589,7 +587,7 @@ class APIResource:
                 title="Invalid Search Query",
                 description=f'Failed to parse query: "{query}"',
             ) from err
-        sql_orderby: str = {
+        sql_orderby_col = {
             # what's in the query => the db column name
             "cmc": "cmc",
             "edhrec": "edhrec_rank",
@@ -598,6 +596,17 @@ class APIResource:
             "toughness": "creature_toughness",
             "usd": "price_usd",
         }.get(str(orderby), "edhrec_rank")
+
+        # Map orderby column to DFC schema path
+        sql_orderby_map = {
+            "cmc": "((card.card_info).front_face).face_cmc",
+            "edhrec_rank": "((card.card_info).edhrec_rank)",
+            "creature_power": "((card.card_info).front_face).face_creature_power",
+            "card_rarity_int": "((card.print_info).card_rarity_int)",
+            "creature_toughness": "((card.card_info).front_face).face_creature_toughness",
+            "price_usd": "((card.print_info).price_usd)",
+        }
+        sql_orderby = sql_orderby_map.get(sql_orderby_col, f"((card.card_info).{sql_orderby_col})")
         sql_direction = {
             "asc": "ASC",
             "desc": "DESC",
@@ -622,30 +631,48 @@ class APIResource:
             PreferOrder(str(prefer).replace("-", "_")),
             ("edhrec_rank", "ASC"),
         )
+        # Map distinct_on to the appropriate column path in DFC schema
+        distinct_on_map = {
+            "illustration_id": "((card.print_info).front_face).print_illustration_id",
+            "card_name": "((card.card_info).card_name)",
+            "scryfall_id": "((card.print_info).scryfall_id)",
+        }
+        distinct_on_col = distinct_on_map.get(distinct_on, f"((card.card_info).{distinct_on})")
+
+        # Map prefer_column to DFC schema path
+        prefer_col_map = {
+            "released_at": "((card.print_info).released_at)",
+            "price_usd": "((card.print_info).price_usd)",
+            "edhrec_rank": "((card.card_info).edhrec_rank)",
+            "prefer_score": "((card.print_info).front_face).print_prefer_score",
+        }
+        prefer_col_path = prefer_col_map.get(prefer_column, f"((card.card_info).{prefer_column})")
+
         query_sql = f"""
         WITH distinct_cards AS (
-            SELECT DISTINCT ON ({distinct_on})
-                card_artist,
-                card_name,
-                card_set_code,
-                cmc,
-                collector_number,
-                edhrec_rank,
-                image_location_uuid,
-                mana_cost_text,
-                oracle_text,
-                set_name,
-                type_line,
-                prefer_score,
+            SELECT DISTINCT ON ({distinct_on_col})
+                (card.card_info).card_name AS card_name,
+
+                ((card.card_info).front_face).face_cmc AS cmc,
+                ((card.card_info).front_face).face_mana_cost_text AS mana_cost_text,
+                ((card.card_info).front_face).face_oracle_text AS oracle_text,
+                ((card.card_info).front_face).face_type_line AS type_line,
+                ((card.print_info).front_face).print_artist AS card_artist,
+                ((card.print_info).front_face).print_image_location_uuid AS image_location_uuid,
+                ((card.print_info).front_face).print_prefer_score AS prefer_score,
+                (card.card_info).edhrec_rank AS edhrec_rank,
+                (card.print_info).card_set_code AS card_set_code,
+                (card.print_info).collector_number AS collector_number,
+                (card.print_info).set_name AS set_name,
                 {sql_orderby} AS sort_value
             FROM
-                magic.cards AS card
+                s_dfc.cards_with_prints AS card
             WHERE
                 {where_clause}
             ORDER BY
-                {distinct_on},
-                {prefer_column} {prefer_direction} NULLS LAST,
-                prefer_score DESC NULLS LAST
+                {distinct_on_col},
+                {prefer_col_path} {prefer_direction} NULLS LAST,
+                ((card.print_info).front_face).print_prefer_score DESC NULLS LAST
         )
         (
             SELECT
@@ -1934,7 +1961,10 @@ class APIResource:
         # for cards, so that we import only one card of each name
         # but we use frame, printing time, etc. to get the best instance
         # of that card (likely the one with the highest quality artwork)
-        cards = list(filter(None, (preprocess_card(icard) for icard in cards)))
+        processed_cards = []
+        for icard in cards:
+            processed_cards.extend(preprocess_card(icard))
+        cards = processed_cards
 
         if not cards:
             return {

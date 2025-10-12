@@ -14,12 +14,22 @@ from api.parsing.scryfall_nodes import ScryfallAttributeNode, ScryfallBinaryOper
 class TestWatermarkParsing:
     """Test parsing of watermark search queries."""
 
+    @staticmethod
+    def extract_attributes(node: Any) -> list[tuple[str, Any]]:
+        """Recursively extract all attribute nodes from a parse tree."""
+        if isinstance(node, ScryfallBinaryOperatorNode) and hasattr(node.lhs, "attribute_name"):
+            return [(node.lhs.attribute_name, node.rhs.value)]
+        if isinstance(node, AndNode):
+            attrs = []
+            for child in node.operands:
+                attrs.extend(TestWatermarkParsing.extract_attributes(child))
+            return attrs
+        return []
+
     @pytest.mark.parametrize(("query", "expected_attr", "expected_value"), [
-        ("watermark:azorius", "card_watermark", "azorius"),
-        ("watermark:dimir", "card_watermark", "dimir"),
-        ("watermark:rakdos", "card_watermark", "rakdos"),
-        ("watermark:gruul", "card_watermark", "gruul"),
-        ("watermark:selesnya", "card_watermark", "selesnya"),
+        ("watermark:azorius", "print_watermark", "azorius"),
+        ("watermark:gruul", "print_watermark", "gruul"),
+        ("watermark:selesnya", "print_watermark", "selesnya"),
     ])
     def test_parse_watermark_queries(self, query: str, expected_attr: str, expected_value: str) -> None:
         """Test parsing of watermark search queries."""
@@ -41,7 +51,7 @@ class TestWatermarkParsing:
         assert isinstance(result, Query)
         binary_op = result.root
         assert isinstance(binary_op, ScryfallBinaryOperatorNode)
-        assert binary_op.lhs.attribute_name == "card_watermark"
+        assert binary_op.lhs.attribute_name == "print_watermark"
         # The value is preserved during parsing, but will be lowercased during SQL generation
         assert binary_op.rhs.value == "AZORIUS"
 
@@ -53,7 +63,7 @@ class TestWatermarkParsing:
         assert isinstance(result, Query)
         binary_op = result.root
         assert isinstance(binary_op, ScryfallBinaryOperatorNode)
-        assert binary_op.lhs.attribute_name == "card_watermark"
+        assert binary_op.lhs.attribute_name == "print_watermark"
         assert binary_op.rhs.value == "azorius"
 
     def test_parse_combined_watermark_query(self) -> None:
@@ -72,7 +82,7 @@ class TestWatermarkParsing:
 
         # Check that we have both watermark conditions
         attributes = {cond.lhs.attribute_name for cond in conditions}
-        assert attributes == {"card_watermark"}
+        assert attributes == {"print_watermark"}
 
         values = {cond.rhs.value for cond in conditions}
         assert values == {"azorius", "dimir"}
@@ -88,19 +98,8 @@ class TestWatermarkParsing:
         assert isinstance(and_node, AndNode)
 
         # Extract all conditions
-        def extract_attributes(node: Any) -> list[tuple[str, Any]]:
-            """Recursively extract all attribute nodes from a parse tree."""
-            if isinstance(node, ScryfallBinaryOperatorNode) and hasattr(node.lhs, "attribute_name"):
-                return [(node.lhs.attribute_name, node.rhs.value)]
-            if isinstance(node, AndNode):
-                attrs = []
-                for child in node.operands:
-                    attrs.extend(extract_attributes(child))
-                return attrs
-            return []
-
-        attributes = extract_attributes(result.root)
-        expected_attrs = [("card_watermark", "azorius"), ("card_border", "black")]
+        attributes = self.extract_attributes(result.root)
+        expected_attrs = [("print_watermark", "azorius"), ("card_border", "black")]
 
         # Sort both lists to compare regardless of order
         attributes.sort()
@@ -114,19 +113,8 @@ class TestWatermarkParsing:
 
         assert isinstance(result, Query)
         # Should be nested AND operations
-        def extract_attributes(node: Any) -> list[tuple[str, Any]]:
-            """Recursively extract all attribute nodes from a parse tree."""
-            if isinstance(node, ScryfallBinaryOperatorNode) and hasattr(node.lhs, "attribute_name"):
-                return [(node.lhs.attribute_name, node.rhs.value)]
-            if isinstance(node, AndNode):
-                attrs = []
-                for child in node.operands:
-                    attrs.extend(extract_attributes(child))
-                return attrs
-            return []
-
-        attributes = extract_attributes(result.root)
-        expected_attrs = [("card_watermark", "azorius"), ("card_border", "black"), ("cmc", 3)]
+        attributes = self.extract_attributes(result.root)
+        expected_attrs = [("print_watermark", "azorius"), ("card_border", "black"), ("face_cmc", 3)]
 
         # Sort both lists to compare regardless of order
         attributes.sort()

@@ -16,7 +16,7 @@ class TestCollectorNumberIntegration:
         sql, params = generate_sql_query(parsed)
 
         # Should generate exact match query for text column
-        assert "card.collector_number =" in sql
+        assert "((card).print_info).collector_number =" in sql
         assert len(params) == 1
 
         # Parameter should contain exact value (no wildcards)
@@ -30,7 +30,7 @@ class TestCollectorNumberIntegration:
         sql, params = generate_sql_query(parsed)
 
         # Should generate exact match query for text column
-        assert "card.collector_number =" in sql
+        assert "((card).print_info).collector_number =" in sql
         assert len(params) == 1
 
         # Parameter should contain exact value (no wildcards)
@@ -44,7 +44,7 @@ class TestCollectorNumberIntegration:
         sql, params = generate_sql_query(parsed)
 
         # Should generate exact match query for text column
-        assert "card.collector_number =" in sql
+        assert "((card).print_info).collector_number =" in sql
         assert len(params) == 1
 
         # Parameter should contain exact value (no wildcards)
@@ -68,7 +68,7 @@ class TestCollectorNumberIntegration:
         sql, params = generate_sql_query(parsed)
 
         # Should generate exact match query for text column
-        assert "card.collector_number =" in sql
+        assert "((card).print_info).collector_number =" in sql
         assert len(params) == 1
 
         # Parameter should match expected pattern
@@ -82,8 +82,8 @@ class TestCollectorNumberIntegration:
         sql, params = generate_sql_query(parsed)
 
         # Should generate queries for both collector_number and set
-        assert "card.collector_number =" in sql
-        assert "card.card_set_code =" in sql
+        assert "((card).print_info).collector_number =" in sql
+        assert "((card).print_info).card_set_code =" in sql
         assert len(params) == 2
 
         # Should contain parameters for both conditions
@@ -94,10 +94,10 @@ class TestCollectorNumberIntegration:
     def test_collector_number_numeric_comparisons_integration(self) -> None:
         """Test that numeric comparison operators work correctly with integer column."""
         test_cases = [
-            ("number>50", "card.collector_number_int >", 50),
-            ("cn<100", "card.collector_number_int <", 100),
-            ("number>=25", "card.collector_number_int >=", 25),
-            ("cn<=75", "card.collector_number_int <=", 75),
+            ("number>50", "((card).print_info).collector_number_int >", 50),
+            ("cn<100", "((card).print_info).collector_number_int <", 100),
+            ("number>=25", "((card).print_info).collector_number_int >=", 25),
+            ("cn<=75", "((card).print_info).collector_number_int <=", 75),
         ]
 
         for query, expected_sql_fragment, expected_param in test_cases:
@@ -132,7 +132,7 @@ class TestCollectorNumberIntegration:
             sql, params = generate_sql_query(parsed)
 
             # Should use the integer column for comparison
-            assert "card.collector_number_int" in sql
+            assert "((card).print_info).collector_number_int" in sql
             assert len(params) == 1
 
             # The comparison value should match what we expect
