@@ -324,8 +324,11 @@ def create_mana_parsers() -> dict[str, ParserElement]:
 
     # Create ManaValueNode for mana cost strings
     def make_mana_value_node(tokens: list[str]) -> ManaValueNode:
-        """Create a ManaValueNode for mana cost strings."""
-        return ManaValueNode(tokens[0])
+        """Create a ManaValueNode for mana cost strings.
+
+        Normalizes mana symbols to uppercase for consistency.
+        """
+        return ManaValueNode(tokens[0].upper())
 
     mana_value = mixed_mana_pattern.setParseAction(make_mana_value_node)
 

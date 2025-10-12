@@ -48,6 +48,19 @@ def maybe_int(val: str | int | float | None) -> int | None:
     return int(float(val))
 
 
+def rarity_text_to_int(rarity_text: str) -> int:
+    """Convert rarity text to int."""
+    rarity_map = {
+        "common": 0,
+        "uncommon": 1,
+        "rare": 2,
+        "mythic": 3,
+        "special": 4,
+        "bonus": 5,
+    }
+    return rarity_map.get(rarity_text.lower(), -1)
+
+
 def extract_collector_number_int(collector_number: str | int | float | None) -> int | None:
     """Extract the integer part of a collector number."""
     if collector_number is None:
@@ -77,13 +90,12 @@ def preprocess_card(card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: PLR
     if card.get("set_type") == "funny":
         return None
 
-    if card.get("preprocessed"):
+    if "raw_card_blob" in card:
         return card
 
     # Store the original card data before modifications for raw_card_blob
     raw_card_data = copy.deepcopy(card)
     card["raw_card_blob"] = raw_card_data
-    card["preprocessed"] = True
     card["scryfall_id"] = card["id"]
 
     card_types, card_subtypes = parse_type_line(card["type_line"])
@@ -147,35 +159,22 @@ def preprocess_card(card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: PLR
     card["cmc"] = maybe_int(card.get("cmc"))
 
     # Handle rarity conversion - implement in Python to avoid SQL boilerplate
-    if card.get("rarity"):
-        card["card_rarity_text"] = card["rarity"].lower()
-        # Implement magic.rarity_text_to_int in Python
-        rarity_map = {
-            "common": 0,
-            "uncommon": 1,
-            "rare": 2,
-            "mythic": 3,
-            "special": 4,
-            "bonus": 5,
-        }
-        card["card_rarity_int"] = rarity_map.get(card["card_rarity_text"], -1)
+    rarity_text = card.get("rarity", "").lower()
+    if rarity_text:
+        card["card_rarity_text"] = rarity_text
+        card["card_rarity_int"] = rarity_text_to_int(rarity_text)
 
     # Handle collector number - implement extraction in Python to avoid SQL boilerplate
     collector_number = card.get("collector_number")
     card["collector_number"] = collector_number
     card["collector_number_int"] = extract_collector_number_int(collector_number)
-    card["image_location_uuid"] = extract_image_location_uuid(card)
     card["illustration_id"] = card.get("illustration_id")
 
     # Handle legalities and produced_mana defaults
     card.setdefault("card_legalities", card.get("legalities", {}))
-    card.setdefault("produced_mana", {})
 
     # Ensure all NOT NULL DEFAULT fields are set to avoid constraint violations
-    card.setdefault("card_oracle_tags", {})
-    card.setdefault("card_is_tags", {})
-    if "raw_card_blob" in card["raw_card_blob"]:
-        msg = "raw_card_blob is not a dictionary"
-        raise AssertionError(msg)
+    for key in ["produced_mana", "card_oracle_tags", "card_is_tags"]:
+        card.setdefault(key, {})
 
     return card

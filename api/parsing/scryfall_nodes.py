@@ -272,13 +272,11 @@ def get_legality_comparison_object(val: str, attr: str) -> dict[str, str]:
 def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
     """Convert a mana cost string to a dictionary of colored symbols and their counts."""
     colored_symbol_counts = {}
-    for mana_symbol in re.findall(r"{([^}]*)}", mana_cost_str):
+    for mana_symbol in re.findall(r"{([^}]*)}", mana_cost_str.upper()):
         try:
             int(mana_symbol)
         except ValueError:
-            # Uppercase the mana symbol to ensure consistent storage
-            upper_symbol = mana_symbol.upper()
-            colored_symbol_counts[upper_symbol] = colored_symbol_counts.get(upper_symbol, 0) + 1
+            colored_symbol_counts[mana_symbol] = colored_symbol_counts.get(mana_symbol, 0) + 1
         else:
             pass
     as_dict = {}
