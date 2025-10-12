@@ -121,14 +121,15 @@ class TestCardProcessing:
         result = preprocess_card(invalid_card)
         assert result == []
 
-    def test_preprocess_card_filters_card_faces(self: TestCardProcessing) -> None:
+    def test_preprocess_card_double_faced_card(self: TestCardProcessing) -> None:
         """Test preprocess_card filters out cards with card_faces."""
         double_sided_card = create_test_card(
             card_faces=[{"name": "Front"}, {"name": "Back"}],  # Has card_faces
         )
 
-        result = preprocess_card(double_sided_card)
-        assert len(result) == 2
+        front, back = preprocess_card(double_sided_card)
+        assert front["face_idx"] == 1
+        assert back["face_idx"] == 2
 
     def test_preprocess_card_filters_funny_sets(self: TestCardProcessing) -> None:
         """Test preprocess_card filters out funny set types."""

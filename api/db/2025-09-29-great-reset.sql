@@ -275,10 +275,10 @@ CREATE INDEX IF NOT EXISTS idx_cards_devotion ON magic.cards USING gin (devotion
 CREATE INDEX IF NOT EXISTS idx_cards_set_code ON magic.cards USING hash (card_set_code) WHERE (card_set_code IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_cards_watermark ON magic.cards USING hash (card_watermark) WHERE (card_watermark IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_cards_name ON magic.cards USING btree (card_name);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_scryfall_id ON magic.cards USING btree (scryfall_id);
 CREATE INDEX IF NOT EXISTS idx_cards_cardtypes_gin ON magic.cards USING gin (card_types);
 CREATE INDEX IF NOT EXISTS idx_cards_cardsubtypes_gin ON magic.cards USING gin (card_subtypes);
 CREATE INDEX IF NOT EXISTS idx_cards_releasedat ON magic.cards USING btree (released_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_scryfall_id ON magic.cards USING btree (scryfall_id, face_idx);
 
 
 COMMENT ON COLUMN magic.cards.card_artist IS 'Artist name for the card artwork - will be null for cards without artist information';
