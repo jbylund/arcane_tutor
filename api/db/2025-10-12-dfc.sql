@@ -1,8 +1,20 @@
+
+-- delete some dirty data
+DELETE FROM magic.cards WHERE scryfall_id IN (
+    '9cf54062-7b5b-4e46-ae1e-fab7e419a9fa',  -- this is https://scryfall.com/card/tdm/379/scavenger-regent-exude-toxin-scavenger-regent - has 2 copies of one face
+    '484b5580-b179-4dce-8bdf-d714eb4635e5', -- coil and catch... same-ish issue 
+    '081f2de5-251a-41c9-a62f-11487f54d355' -- claim territory
+);
+
+-- less precise than the above but same idea
+DELETE FROM magic.cards WHERE card_name LIKE '%//%//%';
+
+
 CREATE SCHEMA s_dfc;
 
 CREATE TABLE s_dfc.card_faces AS (
     SELECT
-        card_name AS face_name,
+        face_name,
         oracle_id,
         face_idx,
 
@@ -69,24 +81,32 @@ CREATE TABLE s_dfc.cards AS (
     )
 );
 
-CREATE UNIQUE INDEX ON s_dfc.cards (card_name);
+CREATE UNIQUE INDEX ON s_dfc.cards (card_name); -- this applies now
 
-CREATE TABLE s_dfc.prints AS (
+/* todo update this to not unpack all the card data - just leave it in a card type */
+CREATE TABLE s_dfc.face_prints AS (
     SELECT
         card_name,
         scryfall_id,
         oracle_id,
+        face_idx,
+
+        card_set_code AS print_set_code, -- shared between faces
+        released_at AS print_released_at, -- shared between faces
+        set_name AS print_set_name, -- shared between faces
+        price_eur AS print_price_eur, -- shared
+        price_tix AS print_price_tix, -- shared
+        price_usd AS print_price_usd, -- shared
+        card_legalities AS print_legalities, -- I really hope this is shared
+        card_rarity_int AS print_rarity_int, -- again hope shared
+        card_rarity_text AS print_rarity_text,
 
         card_artist AS print_artist,
         card_border AS print_border,
         card_frame_data AS print_frame_data,
         card_is_tags AS print_is_tags,
         card_layout AS print_layout,
-        card_legalities AS print_legalities,
         card_oracle_tags AS print_oracle_tags,
-        card_rarity_int AS print_rarity_int,
-        card_rarity_text AS print_rarity_text,
-        card_set_code AS print_set_code,
         card_watermark AS print_watermark,
         collector_number AS print_collector_number,
         collector_number_int AS print_collector_number_int,
@@ -95,12 +115,7 @@ CREATE TABLE s_dfc.prints AS (
         image_location_uuid AS print_image_location_uuid,
         prefer_score AS print_prefer_score,
         prefer_score_components AS print_prefer_score_components,
-        price_eur AS print_price_eur,
-        price_tix AS print_price_tix,
-        price_usd AS print_price_usd,
-        raw_card_blob AS print_raw_card_blob,
-        released_at AS print_released_at,
-        set_name AS print_set_name
+        raw_card_blob AS print_raw_card_blob
     FROM
         magic.cards
     GROUP BY (
@@ -109,44 +124,25 @@ CREATE TABLE s_dfc.prints AS (
         11, 12, 13, 14, 15,
         16, 17, 18, 19, 20,
         21, 22, 23, 24, 25,
-        26, 27
+        26, 27, 28
     )
 );
 
-CREATE UNIQUE INDEX ON s_dfc.prints (scryfall_id);
-CREATE INDEX IF NOT EXISTS prints_oracleid_idx_hash ON s_dfc.prints USING HASH (oracle_id);
+CREATE UNIQUE INDEX ON s_dfc.face_prints (scryfall_id, face_idx);
+CREATE INDEX IF NOT EXISTS prints_oracleid_idx_hash ON s_dfc.face_prints USING HASH (oracle_id);
 
 CREATE VIEW s_dfc.cards_with_prints AS (
     SELECT
-        cards.*,
-        prints.print_artist,
-        prints.print_border,
-        prints.print_frame_data,
-        prints.print_is_tags,
-        prints.print_layout,
-        prints.print_legalities,
-        prints.print_oracle_tags,
-        prints.print_rarity_int,
-        prints.print_rarity_text,
-        prints.print_set_code,
-        prints.print_watermark,
-        prints.print_collector_number,
-        prints.print_collector_number_int,
-        prints.print_flavor_text,
-        prints.print_illustration_id,
-        prints.print_image_location_uuid,
-        prints.print_prefer_score,
-        prints.print_prefer_score_components,
-        prints.print_price_eur,
-        prints.print_price_tix,
-        prints.print_price_usd,
-        prints.print_raw_card_blob,
-        prints.print_released_at,
-        prints.print_set_name
+        card_info,
+        print_info
     FROM
-        s_dfc.cards AS cards
+        s_dfc.cards AS card_info
     JOIN 
-        s_dfc.prints AS prints 
+        s_dfc.prints AS print_info
     ON 
         cards.oracle_id = prints.oracle_id
 );
+
+*/
+
+SELECT 1;
