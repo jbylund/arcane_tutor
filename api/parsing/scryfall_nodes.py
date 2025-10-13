@@ -131,27 +131,8 @@ class ScryfallAttributeNode(AttributeNode):
 
         # Map the database column based on its level in the DFC schema
         if attr_level == AttributeLevel.FACE:
-            # Face-level attributes need "face_" prefix in the schema
-            # Map old column names to new face_ prefixed names
-            face_col_map = {
-                "card_colors": "face_colors",
-                "card_subtypes": "face_subtypes",
-                "card_types": "face_types",
-                "cmc": "face_cmc",
-                "creature_power": "face_creature_power",
-                "creature_toughness": "face_creature_toughness",
-                "planeswalker_loyalty": "face_planeswalker_loyalty",
-                "mana_cost_jsonb": "face_mana_cost_jsonb",
-                "mana_cost_text": "face_mana_cost_text",
-                "devotion": "face_devotion",
-                "produced_mana": "face_produced_mana",
-                "oracle_text": "face_oracle_text",
-                "card_oracle_tags": "face_oracle_tags",
-                "type_line": "face_type_line",
-            }
-            face_col = face_col_map.get(remapped, remapped)
-            # Return placeholder - will be replaced with front/back in _wrap_face_level_predicate
-            return f"card.face_{face_col}"
+            # Face-level attributes - return placeholder that will be expanded in _wrap_face_level_predicate
+            return f"card.{remapped}"
         if attr_level == AttributeLevel.CARD:
             # Card-level attributes from the card_info composite
             return f"((card.card_info).{remapped})"
@@ -469,8 +450,8 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
 
         # Replace card.face_xxx with versions for front and back face
         # The pattern is: (card_info).front_face.face_xxx OR (card_info).back_face.face_xxx
-        front_sql = sql.replace("card.face_", "((card.card_info).front_face).face_")
-        back_sql = sql.replace("card.face_", "((card.card_info).back_face).face_")
+        front_sql = sql.replace("card.", "((card.card_info).front_face).")
+        back_sql = sql.replace("card.", "((card.card_info).back_face).")
 
         return f"({front_sql} OR {back_sql})"
 

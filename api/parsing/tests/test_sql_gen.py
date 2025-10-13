@@ -10,48 +10,48 @@ from api.parsing.scryfall_nodes import get_legality_comparison_object
 @pytest.mark.parametrize(
     argnames=("input_query", "expected_sql", "expected_parameters"),
     argvalues=[
-        ("cmc=3", "(card.cmc = %(p_int_Mw)s)", {"p_int_Mw": 3}),
-        ("power=3", "(card.creature_power = %(p_int_Mw)s)", {"p_int_Mw": 3}),
-        ("cmc=3 power=3", "((card.cmc = %(p_int_Mw)s) AND (card.creature_power = %(p_int_Mw)s))", {"p_int_Mw": 3}),
-        ("power=toughness", "(card.creature_power = card.creature_toughness)", {}),
-        ("power:toughness", "(card.creature_power = card.creature_toughness)", {}),
-        ("power>toughness", "(card.creature_power > card.creature_toughness)", {}),
-        ("power<toughness", "(card.creature_power < card.creature_toughness)", {}),
-        ("power>cmc+1", r"(card.creature_power > (card.cmc + %(p_int_MQ)s))", {"p_int_MQ": 1}),
-        ("power-cmc>1", r"((card.creature_power - card.cmc) > %(p_int_MQ)s)", {"p_int_MQ": 1}),
-        ("1<power-cmc", r"(%(p_int_MQ)s < (card.creature_power - card.cmc))", {"p_int_MQ": 1}),
+        ("cmc=3", "((((card.card_info).front_face).face_cmc = %(p_int_Mw)s) OR (((card.card_info).back_face).face_cmc = %(p_int_Mw)s))", {"p_int_Mw": 3}),
+        ("power=3", "((((card.card_info).front_face).face_creature_power = %(p_int_Mw)s) OR (((card.card_info).back_face).face_creature_power = %(p_int_Mw)s))", {"p_int_Mw": 3}),
+        ("cmc=3 power=3", "((((card.card_info).front_face).face_cmc = %(p_int_Mw)s) OR (((card.card_info).back_face).face_cmc = %(p_int_Mw)s)) AND ((((card.card_info).front_face).face_creature_power = %(p_int_Mw)s) OR (((card.card_info).back_face).face_creature_power = %(p_int_Mw)s))", {"p_int_Mw": 3}),
+        ("power=toughness", "((((card.card_info).front_face).face_creature_power = ((card.card_info).front_face).face_creature_toughness) OR (((card.card_info).back_face).face_creature_power = ((card.card_info).back_face).face_creature_toughness))", {}),
+        ("power:toughness", "((((card.card_info).front_face).face_creature_power = ((card.card_info).front_face).face_creature_toughness) OR (((card.card_info).back_face).face_creature_power = ((card.card_info).back_face).face_creature_toughness))", {}),
+        ("power>toughness", "((((card.card_info).front_face).face_creature_power > ((card.card_info).front_face).face_creature_toughness) OR (((card.card_info).back_face).face_creature_power > ((card.card_info).back_face).face_creature_toughness))", {}),
+        ("power<toughness", "((((card.card_info).front_face).face_creature_power < ((card.card_info).front_face).face_creature_toughness) OR (((card.card_info).back_face).face_creature_power < ((card.card_info).back_face).face_creature_toughness))", {}),
+        ("power>cmc+1", r"((((card.card_info).front_face).face_creature_power > (((card.card_info).front_face).face_cmc + %(p_int_MQ)s)) OR (((card.card_info).back_face).face_creature_power > (((card.card_info).back_face).face_cmc + %(p_int_MQ)s)))", {"p_int_MQ": 1}),
+        ("power-cmc>1", r"(((((card.card_info).front_face).face_creature_power - ((card.card_info).front_face).face_cmc) > %(p_int_MQ)s) OR ((((card.card_info).back_face).face_creature_power - ((card.card_info).back_face).face_cmc) > %(p_int_MQ)s))", {"p_int_MQ": 1}),
+        ("1<power-cmc", r"((%(p_int_MQ)s < (((card.card_info).front_face).face_creature_power - ((card.card_info).front_face).face_cmc)) OR (%(p_int_MQ)s < (((card.card_info).back_face).face_creature_power - ((card.card_info).back_face).face_cmc)))", {"p_int_MQ": 1}),
         (
             "cmc+cmc+2<power+toughness",
-            r"(((card.cmc + card.cmc) + %(p_int_Mg)s) < (card.creature_power + card.creature_toughness))",
+            r"(((((card.card_info).front_face).face_cmc + ((card.card_info).front_face).face_cmc) + %(p_int_Mg)s) < (((card.card_info).front_face).face_creature_power + ((card.card_info).front_face).face_creature_toughness)) OR ((((((card.card_info).back_face).face_cmc + ((card.card_info).back_face).face_cmc) + %(p_int_Mg)s) < (((card.card_info).back_face).face_creature_power + ((card.card_info).back_face).face_creature_toughness)))",
             {"p_int_Mg": 2},
         ),
         # Test field-specific : operator behavior
-        ("name:lightning", r"(card.card_name ILIKE %(p_str_JWxpZ2h0bmluZyU)s)", {"p_str_JWxpZ2h0bmluZyU": r"%lightning%"}),
+        ("name:lightning", r"(((card.card_info).card_name) ILIKE %(p_str_JWxpZ2h0bmluZyU)s)", {"p_str_JWxpZ2h0bmluZyU": r"%lightning%"}),
         (
             "name:'lightning bolt'",
-            r"(card.card_name ILIKE %(p_str_JWxpZ2h0bmluZyVib2x0JQ)s)",
+            r"(((card.card_info).card_name) ILIKE %(p_str_JWxpZ2h0bmluZyVib2x0JQ)s)",
             {"p_str_JWxpZ2h0bmluZyVib2x0JQ": r"%lightning%bolt%"},
         ),
-        ("cmc:3", "(card.cmc = %(p_int_Mw)s)", {"p_int_Mw": 3}),  # Numeric field uses exact equality
-        ("power:5", "(card.creature_power = %(p_int_NQ)s)", {"p_int_NQ": 5}),  # Numeric field uses exact equality
+        ("cmc:3", "((((card.card_info).front_face).face_cmc = %(p_int_Mw)s) OR (((card.card_info).back_face).face_cmc = %(p_int_Mw)s))", {"p_int_Mw": 3}),  # Numeric field uses exact equality
+        ("power:5", "((((card.card_info).front_face).face_creature_power = %(p_int_NQ)s) OR (((card.card_info).back_face).face_creature_power = %(p_int_NQ)s))", {"p_int_NQ": 5}),  # Numeric field uses exact equality
         # loyalty tests
-        ("loyalty=3", "(card.planeswalker_loyalty = %(p_int_Mw)s)", {"p_int_Mw": 3}),
-        ("loyalty>5", "(card.planeswalker_loyalty > %(p_int_NQ)s)", {"p_int_NQ": 5}),
-        ("loyalty<=7", "(card.planeswalker_loyalty <= %(p_int_Nw)s)", {"p_int_Nw": 7}),
-        ("loy:4", "(card.planeswalker_loyalty = %(p_int_NA)s)", {"p_int_NA": 4}),
+        ("loyalty=3", "((((card.card_info).front_face).face_planeswalker_loyalty = %(p_int_Mw)s) OR (((card.card_info).back_face).face_planeswalker_loyalty = %(p_int_Mw)s))", {"p_int_Mw": 3}),
+        ("loyalty>5", "((((card.card_info).front_face).face_planeswalker_loyalty > %(p_int_NQ)s) OR (((card.card_info).back_face).face_planeswalker_loyalty > %(p_int_NQ)s))", {"p_int_NQ": 5}),
+        ("loyalty<=7", "((((card.card_info).front_face).face_planeswalker_loyalty <= %(p_int_Nw)s) OR (((card.card_info).back_face).face_planeswalker_loyalty <= %(p_int_Nw)s))", {"p_int_Nw": 7}),
+        ("loy:4", "((((card.card_info).front_face).face_planeswalker_loyalty = %(p_int_NA)s) OR (((card.card_info).back_face).face_planeswalker_loyalty = %(p_int_NA)s))", {"p_int_NA": 4}),
         # color
-        ("color:g", "(card.card_colors @> %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # >=
-        ("color=g", "(card.card_colors = %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # =
-        ("color<=g", "(card.card_colors <@ %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # <=
-        ("color>=g", "(card.card_colors @> %(p_dict_eydHJzogVHJ1ZX0)s)", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # >=
+        ("color:g", "((((card.card_info).front_face).face_colors @> %(p_dict_eydHJzogVHJ1ZX0)s) OR (((card.card_info).back_face).face_colors @> %(p_dict_eydHJzogVHJ1ZX0)s))", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # >=
+        ("color=g", "((((card.card_info).front_face).face_colors = %(p_dict_eydHJzogVHJ1ZX0)s) OR (((card.card_info).back_face).face_colors = %(p_dict_eydHJzogVHJ1ZX0)s))", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # =
+        ("color<=g", "((((card.card_info).front_face).face_colors <@ %(p_dict_eydHJzogVHJ1ZX0)s) OR (((card.card_info).back_face).face_colors <@ %(p_dict_eydHJzogVHJ1ZX0)s))", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # <=
+        ("color>=g", "((((card.card_info).front_face).face_colors @> %(p_dict_eydHJzogVHJ1ZX0)s) OR (((card.card_info).back_face).face_colors @> %(p_dict_eydHJzogVHJ1ZX0)s))", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # >=
         (
             "color>g",
-            "(card.card_colors @> %(p_dict_eydHJzogVHJ1ZX0)s AND card.card_colors <> %(p_dict_eydHJzogVHJ1ZX0)s)",
+            "((((card.card_info).front_face).face_colors @> %(p_dict_eydHJzogVHJ1ZX0)s AND ((card.card_info).front_face).face_colors <> %(p_dict_eydHJzogVHJ1ZX0)s) OR (((card.card_info).back_face).face_colors @> %(p_dict_eydHJzogVHJ1ZX0)s AND ((card.card_info).back_face).face_colors <> %(p_dict_eydHJzogVHJ1ZX0)s))",
             {"p_dict_eydHJzogVHJ1ZX0": {"G": True}},
         ),  # >
         (
             "color<g",
-            "(card.card_colors <@ %(p_dict_eydHJzogVHJ1ZX0)s AND card.card_colors <> %(p_dict_eydHJzogVHJ1ZX0)s)",
+            "((((card.card_info).front_face).face_colors <@ %(p_dict_eydHJzogVHJ1ZX0)s AND ((card.card_info).front_face).face_colors <> %(p_dict_eydHJzogVHJ1ZX0)s) OR (((card.card_info).back_face).face_colors <@ %(p_dict_eydHJzogVHJ1ZX0)s AND ((card.card_info).back_face).face_colors <> %(p_dict_eydHJzogVHJ1ZX0)s))",
             {"p_dict_eydHJzogVHJ1ZX0": {"G": True}},
         ),  # <
     ],
