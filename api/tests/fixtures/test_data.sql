@@ -5,7 +5,7 @@ INSERT INTO magic.cards (
     scryfall_id, card_name, cmc, mana_cost_text, mana_cost_jsonb, raw_card_blob,
     card_types, card_subtypes, card_colors, card_color_identity, card_keywords,
     oracle_text, creature_power, creature_toughness, card_oracle_tags, collector_number, collector_number_int,
-    released_at
+    released_at, face_idx
 ) VALUES
 (
     '00000000-0000-0000-0000-000000000001',
@@ -25,7 +25,9 @@ INSERT INTO magic.cards (
     '{"burn": true}',
     '123',
     123,
-    '2024-02-23'
+    '2024-02-23',
+    1
+
 ),
 (
     '00000000-0000-0000-0000-000000000002',
@@ -45,7 +47,8 @@ INSERT INTO magic.cards (
     '{"flying": true, "vigilance": true}',
     '45a',
     45,
-    '2024-02-23'
+    '2024-02-23',
+    1
 ),
 (
     '00000000-0000-0000-0000-000000000003',
@@ -65,7 +68,8 @@ INSERT INTO magic.cards (
     '{"mana-acceleration": true}',
     '1',
     1,
-    '2024-02-23'
+    '2024-02-23',
+    1
 ) ON CONFLICT DO NOTHING;
 
 -- Insert test tags
