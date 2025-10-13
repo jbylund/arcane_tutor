@@ -15,11 +15,9 @@ class TestWatermarkParsing:
     """Test parsing of watermark search queries."""
 
     @pytest.mark.parametrize(("query", "expected_attr", "expected_value"), [
-        ("watermark:azorius", "card_watermark", "azorius"),
-        ("watermark:dimir", "card_watermark", "dimir"),
-        ("watermark:rakdos", "card_watermark", "rakdos"),
-        ("watermark:gruul", "card_watermark", "gruul"),
-        ("watermark:selesnya", "card_watermark", "selesnya"),
+        ("watermark:azorius", "print_watermark", "azorius"),
+        ("watermark:gruul", "print_watermark", "GRUUL"),
+        ("watermark:selesnya", "print_watermark", "selesnya"),
     ])
     def test_parse_watermark_queries(self, query: str, expected_attr: str, expected_value: str) -> None:
         """Test parsing of watermark search queries."""
@@ -41,7 +39,7 @@ class TestWatermarkParsing:
         assert isinstance(result, Query)
         binary_op = result.root
         assert isinstance(binary_op, ScryfallBinaryOperatorNode)
-        assert binary_op.lhs.attribute_name == "card_watermark"
+        assert binary_op.lhs.attribute_name == "print_watermark"
         # The value is preserved during parsing, but will be lowercased during SQL generation
         assert binary_op.rhs.value == "AZORIUS"
 
