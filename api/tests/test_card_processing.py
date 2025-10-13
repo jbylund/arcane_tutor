@@ -122,7 +122,7 @@ class TestCardProcessing:
         assert result == []
 
     def test_preprocess_card_double_faced_card(self: TestCardProcessing) -> None:
-        """Test preprocess_card filters out cards with card_faces."""
+        """Test preprocess_card processes double faced cards correctly."""
         double_sided_card = create_test_card(
             name="Hound Tamer // Untamed Pup",
             card_faces=[
@@ -131,13 +131,122 @@ class TestCardProcessing:
             ],
         )
 
-        front, back = preprocess_card(double_sided_card)
+        result = preprocess_card(double_sided_card)
+        assert len(result) == 2
+
+        front, back = result
         assert front["face_idx"] == 1
         assert front["card_name"] == "Hound Tamer // Untamed Pup"
         assert front["face_name"] == "Hound Tamer"
+        assert front["creature_power"] == 3
+        assert front["creature_toughness"] == 3
+
         assert back["face_idx"] == 2
         assert back["card_name"] == "Hound Tamer // Untamed Pup"
         assert back["face_name"] == "Untamed Pup"
+        assert back["creature_power"] == 4
+        assert back["creature_toughness"] == 4
+
+    def test_preprocess_card_double_faced_card_with_different_attributes(self: TestCardProcessing) -> None:
+        """Test preprocess_card handles DFC with different types, colors, and attributes on each face."""
+        dfc_card = create_test_card(
+            name="Huntmaster of the Fells // Ravager of the Fells",
+            type_line="Creature — Human Werewolf // Creature — Werewolf",
+            colors=["R", "G"],
+            color_identity=["R", "G"],
+            keywords=["Trample"],
+            card_faces=[
+                {
+                    "name": "Huntmaster of the Fells",
+                    "type_line": "Creature — Human Werewolf",
+                    "colors": ["R", "G"],
+                    "mana_cost": "{2}{R}{G}",
+                    "power": "2",
+                    "toughness": "2",
+                    "oracle_text": "When Huntmaster of the Fells enters, create a 2/2 green Wolf creature token.",
+                },
+                {
+                    "name": "Ravager of the Fells",
+                    "type_line": "Creature — Werewolf",
+                    "colors": ["R", "G"],
+                    "mana_cost": "",
+                    "power": "4",
+                    "toughness": "4",
+                    "oracle_text": "Trample\nAt the beginning of each upkeep, if a player cast two or more spells last turn, transform Ravager of the Fells.",
+                },
+            ],
+        )
+
+        result = preprocess_card(dfc_card)
+        assert len(result) == 2
+
+        front, back = result
+        # Front face checks
+        assert front["face_idx"] == 1
+        assert front["card_name"] == "Huntmaster of the Fells // Ravager of the Fells"
+        assert front["face_name"] == "Huntmaster of the Fells"
+        assert front["creature_power"] == 2
+        assert front["creature_toughness"] == 2
+        assert "Human" in front["card_subtypes"]
+        assert "Werewolf" in front["card_subtypes"]
+
+        # Back face checks
+        assert back["face_idx"] == 2
+        assert back["card_name"] == "Huntmaster of the Fells // Ravager of the Fells"
+        assert back["face_name"] == "Ravager of the Fells"
+        assert back["creature_power"] == 4
+        assert back["creature_toughness"] == 4
+        assert "Werewolf" in back["card_subtypes"]
+        # Human should not be on back face
+        assert "Human" not in back["card_subtypes"]
+
+    def test_preprocess_card_modal_double_faced_card(self: TestCardProcessing) -> None:
+        """Test preprocess_card handles MDFC with different card types (creature/sorcery)."""
+        mdfc_card = create_test_card(
+            name="Augmenter Pugilist // Echoing Equation",
+            type_line="Creature — Troll Druid // Sorcery",
+            colors=["G", "U"],
+            color_identity=["G", "U"],
+            card_faces=[
+                {
+                    "name": "Augmenter Pugilist",
+                    "type_line": "Creature — Troll Druid",
+                    "colors": ["G"],
+                    "mana_cost": "{2}{G}",
+                    "power": "3",
+                    "toughness": "3",
+                    "oracle_text": "At the beginning of your end step, proliferate.",
+                },
+                {
+                    "name": "Echoing Equation",
+                    "type_line": "Sorcery",
+                    "colors": ["U"],
+                    "mana_cost": "{3}{U}{U}",
+                    "oracle_text": "Choose target creature you control. Each other creature you control becomes a copy.",
+                },
+            ],
+        )
+
+        result = preprocess_card(mdfc_card)
+        assert len(result) == 2
+
+        front, back = result
+        # Front face - creature
+        assert front["face_idx"] == 1
+        assert front["card_name"] == "Augmenter Pugilist // Echoing Equation"
+        assert front["face_name"] == "Augmenter Pugilist"
+        assert "Creature" in front["card_types"]
+        assert front["creature_power"] == 3
+        assert front["creature_toughness"] == 3
+
+        # Back face - sorcery (should not have power/toughness)
+        assert back["face_idx"] == 2
+        assert back["card_name"] == "Augmenter Pugilist // Echoing Equation"
+        assert back["face_name"] == "Echoing Equation"
+        assert "Sorcery" in back["card_types"]
+        # Power/toughness should be removed for non-creature types
+        assert "creature_power" not in back or back.get("creature_power") is None
+        assert "creature_toughness" not in back or back.get("creature_toughness") is None
 
     def test_preprocess_card_filters_funny_sets(self: TestCardProcessing) -> None:
         """Test preprocess_card filters out funny set types."""
