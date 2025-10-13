@@ -65,20 +65,20 @@ class FieldInfo:
 
 
 DB_COLUMNS = [
-    # Print-level attributes
-    FieldInfo(db_column_name="card_artist", field_type=FieldType.TEXT, search_aliases=["artist", "a"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="card_frame_data", field_type=FieldType.JSONB_OBJECT, search_aliases=["frame"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="card_is_tags", field_type=FieldType.JSONB_OBJECT, search_aliases=["is"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="card_layout", field_type=FieldType.TEXT, search_aliases=["layout"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="card_border", field_type=FieldType.TEXT, search_aliases=["border"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="card_watermark", field_type=FieldType.TEXT, search_aliases=["watermark"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="collector_number", field_type=FieldType.TEXT, search_aliases=["number", "cn"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="collector_number_int", field_type=FieldType.NUMERIC, search_aliases=[], parser_class=ParserClass.NUMERIC, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="illustration_id", field_type=FieldType.TEXT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="image_location_uuid", field_type=FieldType.TEXT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="prefer_score", field_type=FieldType.NUMERIC, search_aliases=[], parser_class=ParserClass.NUMERIC, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="flavor_text", field_type=FieldType.TEXT, search_aliases=["flavor", "ft"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="raw_card_blob", field_type=FieldType.JSONB_OBJECT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
+    # Print-level attributes (in front_face/back_face composites within print_info)
+    FieldInfo(db_column_name="print_artist", field_type=FieldType.TEXT, search_aliases=["artist", "a"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
+    FieldInfo(db_column_name="print_frame_data", field_type=FieldType.JSONB_OBJECT, search_aliases=["frame"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
+    FieldInfo(db_column_name="print_is_tags", field_type=FieldType.JSONB_OBJECT, search_aliases=["is"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
+    FieldInfo(db_column_name="print_layout", field_type=FieldType.TEXT, search_aliases=["layout"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
+    FieldInfo(db_column_name="print_border", field_type=FieldType.TEXT, search_aliases=["border"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
+    FieldInfo(db_column_name="print_watermark", field_type=FieldType.TEXT, search_aliases=["watermark"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
+    FieldInfo(db_column_name="print_collector_number", field_type=FieldType.TEXT, search_aliases=["number", "cn"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
+    FieldInfo(db_column_name="print_collector_number_int", field_type=FieldType.NUMERIC, search_aliases=[], parser_class=ParserClass.NUMERIC, attribute_level=AttributeLevel.PRINT),
+    FieldInfo(db_column_name="print_illustration_id", field_type=FieldType.TEXT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
+    FieldInfo(db_column_name="print_image_location_uuid", field_type=FieldType.TEXT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
+    FieldInfo(db_column_name="print_prefer_score", field_type=FieldType.NUMERIC, search_aliases=[], parser_class=ParserClass.NUMERIC, attribute_level=AttributeLevel.PRINT),
+    FieldInfo(db_column_name="print_flavor_text", field_type=FieldType.TEXT, search_aliases=["flavor", "ft"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
+    FieldInfo(db_column_name="print_raw_card_blob", field_type=FieldType.JSONB_OBJECT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
 
     # Card-level attributes (shared across faces, stored at oracle_id level)
     FieldInfo(db_column_name="card_name", field_type=FieldType.TEXT, search_aliases=["name"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.CARD),
@@ -87,7 +87,7 @@ DB_COLUMNS = [
     FieldInfo(db_column_name="card_keywords", field_type=FieldType.JSONB_OBJECT, search_aliases=["keyword"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.CARD),
     FieldInfo(db_column_name="edhrec_rank", field_type=FieldType.NUMERIC, search_aliases=[], parser_class=ParserClass.NUMERIC, attribute_level=AttributeLevel.CARD),
 
-    # Print-level attributes that come from card_info in prints table
+    # Print-level attributes that are direct columns in prints table (not in face composites)
     FieldInfo(db_column_name="scryfall_id", field_type=FieldType.TEXT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
     FieldInfo(db_column_name="card_set_code", field_type=FieldType.TEXT, search_aliases=["set", "s"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
     FieldInfo(db_column_name="released_at", field_type=FieldType.DATE, search_aliases=["date"], parser_class=ParserClass.DATE, attribute_level=AttributeLevel.PRINT),

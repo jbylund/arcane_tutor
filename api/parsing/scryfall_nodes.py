@@ -138,33 +138,11 @@ class ScryfallAttributeNode(AttributeNode):
             return f"((card.card_info).{remapped})"
         # AttributeLevel.PRINT
         # Print-level attributes from the print_info composite
-        print_col_map = {
-            "card_artist": "print_artist",
-            "card_border": "print_border",
-            "card_frame_data": "print_frame_data",
-            "card_is_tags": "print_is_tags",
-            "card_layout": "print_layout",
-            "card_oracle_tags": "print_oracle_tags",
-            "card_watermark": "print_watermark",
-            "collector_number": "print_collector_number",
-            "collector_number_int": "print_collector_number_int",
-            "flavor_text": "print_flavor_text",
-            "illustration_id": "print_illustration_id",
-            "image_location_uuid": "print_image_location_uuid",
-            "prefer_score": "print_prefer_score",
-            "raw_card_blob": "print_raw_card_blob",
-        }
-        # For print-level attrs that are direct columns in prints table
-        direct_print_cols = {
-            "scryfall_id", "card_name", "oracle_id", "card_set_code",
-            "released_at", "set_name", "price_eur", "price_tix", "price_usd",
-            "card_legalities", "card_rarity_int", "card_rarity_text",
-        }
-        if remapped in direct_print_cols:
-            return f"((card.print_info).{remapped})"
-        # These are in the front_face or back_face composite
-        print_col = print_col_map.get(remapped, remapped)
-        return f"((card.print_info).front_face).{print_col}"
+        # Attributes with print_ prefix are in the front_face/back_face composites
+        if remapped.startswith("print_"):
+            return f"((card.print_info).front_face).{remapped}"
+        # Other print-level attributes are direct columns in the print_info composite
+        return f"((card.print_info).{remapped})"
 
 
 def get_colors_comparison_object(val: str) -> dict[str, bool]:
@@ -385,11 +363,11 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         attr = self.lhs.attribute_name
 
         # Special routing for collector numbers based on operator
-        if attr == "collector_number":
+        if attr == "print_collector_number":
             return self._handle_collector_number(context)
 
         # Special handling for mana attributes with comparison operators
-        if attr in ("mana_cost_text", "mana_cost_jsonb") and isinstance(self.rhs, ManaValueNode | StringValueNode):
+        if attr in ("face_mana_cost_text", "face_mana_cost_jsonb") and isinstance(self.rhs, ManaValueNode | StringValueNode):
             return self._handle_mana_cost_comparison(context)
 
         # Special handling for date/year searches
@@ -459,9 +437,9 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         """Handle colon operator for different field types."""
         if field_type == FieldType.TEXT:
             # Handle fields that need exact matching instead of pattern matching
-            if attr in ("card_set_code", "card_layout", "card_border", "card_watermark"):
+            if attr in ("card_set_code", "print_layout", "print_border", "print_watermark"):
                 # For layout, border, and watermark fields, lowercase the search value for case-insensitive matching
-                if attr in ("card_layout", "card_border", "card_watermark") and hasattr(self.rhs, "value"):
+                if attr in ("print_layout", "print_border", "print_watermark") and hasattr(self.rhs, "value"):
                     self.rhs.value = self.rhs.value.lower()
 
                 if self.operator == ":":
@@ -478,8 +456,8 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         """Handle collector number routing based on operator type.
 
         Routes to appropriate column based on operator:
-        - ':' and '!=' operators use collector_number (text) with exact matching
-        - Comparison operators ('>', '>=', '<', '<=') use collector_number_int (numeric)
+        - ':' and '!=' operators use print_collector_number (text) with exact matching
+        - Comparison operators ('>', '>=', '<', '<=') use print_collector_number_int (numeric)
         """
         if self.operator in (":", "!=", "<>"):
             # Use text column with exact matching
@@ -490,7 +468,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             # Use numeric column for comparisons
             # But first we need to update the lhs to point to the int column
             original_attr = self.lhs.attribute_name
-            self.lhs.attribute_name = "collector_number_int"
+            self.lhs.attribute_name = "print_collector_number_int"
 
             # Convert string value to numeric if needed
             if isinstance(self.rhs, StringValueNode):
@@ -517,12 +495,12 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
 
         # For ":" and "=" operators, use text field matching for exact matches
         if self.operator in (":", "="):
-            if attr == "mana_cost_text":
+            if attr == "face_mana_cost_text":
                 # Use text matching for exact mana cost matches
                 if self.operator == ":":
                     self.operator = "="
                 return super().to_sql(context)
-            # For mana_cost_jsonb, convert to JSONB and use equality
+            # For face_mana_cost_jsonb, convert to JSONB and use equality
             mana_dict = mana_cost_str_to_dict(mana_cost_str)
             pname = param_name(mana_dict)
             context[pname] = mana_dict
@@ -549,8 +527,8 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         context[cmc_param] = query_cmc
 
         # SQL fragments
-        mana_jsonb_sql = "card.mana_cost_jsonb"
-        cmc_sql = "card.cmc"
+        mana_jsonb_sql = "card.face_mana_cost_jsonb"
+        cmc_sql = "card.face_cmc"
 
         if self.operator == "<=":
             # Card costs <= query if:
