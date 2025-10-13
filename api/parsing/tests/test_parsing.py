@@ -787,6 +787,8 @@ def test_mana_cost_dict_conversion() -> None:
     assert mana_cost_str_to_dict("{w/u}") == {"W/U": [1]}
     assert mana_cost_str_to_dict("{2/w}") == {"2/W": [1]}
 
+    assert mana_cost_str_to_dict("ggg") == {"G": [1, 2, 3]}
+
 
 @pytest.mark.parametrize(
     argnames=("test_input", "expected_ast"),
@@ -832,38 +834,35 @@ def test_devotion_sql_generation() -> None:
 
 
 @pytest.mark.parametrize(
-    argnames=("query", "description"),
+    argnames="query",
     argvalues=[
-        ("mana>{g}{g}{g}", "Braced format should work"),
-        ("mana>ggg", "Unbraced format should work"),
-        ("m>GGG", "Uppercase unbraced should work"),
-        ("mana<=ggg", "Less than or equal with unbraced"),
-        ("mana<ggg", "Less than with unbraced"),
-        ("mana>=ggg", "Greater than or equal with unbraced"),
-    ],
-    ids=[
-        "braced format",
-        "unbraced format",
-        "uppercase unbraced format",
-        "less than or equal with unbraced",
-        "less than with unbraced",
-        "greater than or equal with unbraced",
+        r"mana>{g}{g}{g}",
+        r"mana<={R}{R}",
+        r"mana<{W}{U}",
+        r"mana>={B}{B}{B}",
+        r"mana>bbrrr",
     ],
 )
-def test_mana_cost_string_format_comparisons(query: str, description: str) -> None:
-    """Test mana cost comparisons work with both {X} and X string formats."""
-    del description
-    # Test that both formats parse correctly and generate SQL
+def test_mana_cost_string_format_comparisons(query: str) -> None:
+    """Test mana cost comparisons work with braced {X} format and generate face-level SQL."""
     # Test that parsing works
     result = parsing.parse_scryfall_query(query)
     assert result is not None, f"Failed to parse {query}"
 
-    # Test that SQL generation works (should not raise NotImplementedError)
+    # Test that SQL generation works and includes face-level wrapping
     context = {}
     sql = result.to_sql(context)
     assert sql is not None, f"Failed to generate SQL for {query}"
-    assert "card.mana_cost_jsonb" in sql, f"Should use JSONB containment for {query}, got {sql}"
-    assert "card.cmc" in sql, f"Should use CMC check for {query}, got {sql}"
+    for face in ["front_face", "back_face"]:
+        for ifield in ["face_mana_cost_jsonb", "face_cmc"]:
+            needle = f"(((card).card_info).{face}).{ifield}"
+            assert needle in sql, f"Should use {needle} for {query}, got {sql}"
+    assert " OR " in sql, f"Should check both front and back faces for {query}, got {sql}"
+
+    # Verify the context has non-empty mana dict (braced format should work)
+    mana_dicts = [v for v in context.values() if isinstance(v, dict)]
+    assert len(mana_dicts) > 0, f"Expected mana dict in context for {query}"
+    assert any(len(d) > 0 for d in mana_dicts), f"Expected non-empty mana dict for {query}, got {context}"
 
 
 @pytest.mark.parametrize(
