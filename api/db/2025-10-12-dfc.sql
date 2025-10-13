@@ -86,20 +86,8 @@ CREATE UNIQUE INDEX ON s_dfc.cards (card_name); -- this applies now
 /* todo update this to not unpack all the card data - just leave it in a card type */
 CREATE TABLE s_dfc.face_prints AS (
     SELECT
-        card_name,
         scryfall_id,
-        oracle_id,
         face_idx,
-
-        card_set_code AS print_set_code, -- shared between faces
-        released_at AS print_released_at, -- shared between faces
-        set_name AS print_set_name, -- shared between faces
-        price_eur AS print_price_eur, -- shared
-        price_tix AS print_price_tix, -- shared
-        price_usd AS print_price_usd, -- shared
-        card_legalities AS print_legalities, -- I really hope this is shared
-        card_rarity_int AS print_rarity_int, -- again hope shared
-        card_rarity_text AS print_rarity_text,
 
         card_artist AS print_artist,
         card_border AS print_border,
@@ -122,16 +110,57 @@ CREATE TABLE s_dfc.face_prints AS (
         1, 2, 3, 4, 5,
         6, 7, 8, 9, 10,
         11, 12, 13, 14, 15,
-        16, 17, 18, 19, 20,
-        21, 22, 23, 24, 25,
-        26, 27, 28
+        16, 17
     )
 );
 
 CREATE UNIQUE INDEX ON s_dfc.face_prints (scryfall_id, face_idx);
-CREATE INDEX IF NOT EXISTS prints_oracleid_idx_hash ON s_dfc.face_prints USING HASH (oracle_id);
 
-CREATE VIEW s_dfc.cards_with_prints AS (
+CREATE TABLE s_dfc.prints AS (
+    WITH 
+    unique_scryfall_prints AS (
+        SELECT
+            scryfall_id
+        FROM
+            magic.cards
+        GROUP BY
+            scryfall_id
+    )
+    SELECT
+        unique_scryfall_prints.scryfall_id,
+        card_info.card_name,
+        card_info.oracle_id,
+        card_info.card_set_code,
+        card_info.released_at,
+        card_info.set_name,
+        card_info.price_eur,
+        card_info.price_tix,
+        card_info.price_usd,
+        card_info.card_legalities,
+        card_info.card_rarity_int,
+        card_info.card_rarity_text,
+        front_face,
+        back_face
+    FROM
+        unique_scryfall_prints
+    JOIN
+        magic.cards AS card_info
+    ON
+        unique_scryfall_prints.scryfall_id = card_info.scryfall_id AND
+        card_info.face_idx = 1
+    JOIN
+        s_dfc.face_prints AS front_face
+    ON
+        unique_scryfall_prints.scryfall_id = front_face.scryfall_id AND
+        front_face.face_idx = 1
+    LEFT JOIN
+        s_dfc.face_prints AS back_face
+    ON
+        unique_scryfall_prints.scryfall_id = back_face.scryfall_id AND
+        back_face.face_idx = 2
+);
+
+CREATE TABLE s_dfc.cards_with_prints AS (
     SELECT
         card_info,
         print_info
@@ -140,9 +169,6 @@ CREATE VIEW s_dfc.cards_with_prints AS (
     JOIN 
         s_dfc.prints AS print_info
     ON 
-        cards.oracle_id = prints.oracle_id
+        card_info.oracle_id = print_info.oracle_id
 );
 
-*/
-
-SELECT 1;
