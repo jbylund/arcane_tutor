@@ -435,9 +435,9 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             return sql
 
         # Replace card.face_xxx with versions for front and back face
-        # The pattern is: (card_info).front_face.face_xxx OR (card_info).back_face.face_xxx
-        front_sql = sql.replace("card.", "((card.card_info).front_face).")
-        back_sql = sql.replace("card.", "((card.card_info).back_face).")
+        # The pattern is: ((card).card_info).front_face.face_xxx OR ((card).card_info).back_face.face_xxx
+        front_sql = sql.replace("card.", "(((card).card_info).front_face).")
+        back_sql = sql.replace("card.", "(((card).card_info).back_face).")
 
         return f"({front_sql} OR {back_sql})"
 
