@@ -36,7 +36,7 @@ class AttributeLevel(StrEnum):
 class FieldInfo:
     """Information about a database field and its search aliases."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         db_column_name: str,
@@ -65,33 +65,31 @@ class FieldInfo:
         if parser_class is None:
             parser_class = ParserClass.NUMERIC if field_type == FieldType.NUMERIC else ParserClass.TEXT
         self.parser_class = parser_class
-        
+
         # Set schema_path - either explicit or inferred
         if schema_path is not None:
             self.schema_path = schema_path
         else:
             self.schema_path = self._infer_schema_path()
-    
+
     def _infer_schema_path(self) -> list[str]:
         """Infer schema path based on attribute level and column name.
-        
+
         Returns:
             List representing path to attribute in s_dfc schema.
         """
         if self.attribute_level == AttributeLevel.FACE:
             # Face-level attributes: card_info → front_face/back_face → face_*
             return ["card_info", "front_face", self.db_column_name]
-        elif self.attribute_level == AttributeLevel.CARD:
+        if self.attribute_level == AttributeLevel.CARD:
             # Card-level attributes: card_info → attribute
             return ["card_info", self.db_column_name]
-        else:  # AttributeLevel.PRINT
-            # Print-level attributes are more complex:
-            # - Attributes with print_ prefix are in: print_info → front_face/back_face → print_*
-            # - Other attributes are direct in print_info: print_info → attribute
-            if self.db_column_name.startswith("print_"):
-                return ["print_info", "front_face", self.db_column_name]
-            else:
-                return ["print_info", self.db_column_name]
+        # Print-level attributes are more complex:
+        # - Attributes with print_ prefix are in: print_info → front_face/back_face → print_*
+        # - Other attributes are direct in print_info: print_info → attribute
+        if self.db_column_name.startswith("print_"):
+            return ["print_info", "front_face", self.db_column_name]
+        return ["print_info", self.db_column_name]
 
 
 DB_COLUMNS = [

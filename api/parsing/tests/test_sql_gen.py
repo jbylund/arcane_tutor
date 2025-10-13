@@ -141,37 +141,37 @@ def test_full_sql_translation_jsonb_colors(input_query: str, expected_sql: str, 
     argvalues=[
         (
             "color_identity:g",
-            r"(card.card_color_identity <@ %(p_dict_eydHJzogVHJ1ZX0)s)",
+            r"(((card).card_info).card_color_identity <@ %(p_dict_eydHJzogVHJ1ZX0)s)",
             {"p_dict_eydHJzogVHJ1ZX0": {"G": True}},
         ),  # : maps to <= for color identity
         (
             "id:rg",
-            r"(card.card_color_identity <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            r"(((card).card_info).card_color_identity <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
             {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
         ),  # id is an alias for color_identity
         (
             "identity=rg",
-            r"(card.card_color_identity = %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            r"(((card).card_info).card_color_identity = %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
             {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
         ),  # = still means equality
         (
             "coloridentity>=rg",
-            r"(card.card_color_identity @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            r"(((card).card_info).card_color_identity @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
             {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
         ),  # >= maps to >= (no inversion for >=)
         (
             "color_identity<=rg",
-            r"(card.card_color_identity <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            r"(((card).card_info).card_color_identity <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
             {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
         ),  # <= maps to <= (no inversion for <=)
         (
             "identity>g",
-            r"(card.card_color_identity @> %(p_dict_eydHJzogVHJ1ZX0)s AND card.card_color_identity <> %(p_dict_eydHJzogVHJ1ZX0)s)",
+            r"(((card).card_info).card_color_identity @> %(p_dict_eydHJzogVHJ1ZX0)s AND ((card).card_info).card_color_identity <> %(p_dict_eydHJzogVHJ1ZX0)s)",
             {"p_dict_eydHJzogVHJ1ZX0": {"G": True}},
         ),  # > maps to > (no inversion for >)
         (
             "id<rg",
-            r"(card.card_color_identity <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s AND card.card_color_identity <> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            r"(((card).card_info).card_color_identity <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s AND ((card).card_info).card_color_identity <> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
             {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
         ),  # < maps to < (no inversion for <)
     ],

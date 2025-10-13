@@ -129,26 +129,26 @@ class ScryfallAttributeNode(AttributeNode):
         del context
         remapped = SEARCH_NAME_TO_DB_NAME.get(self.attribute_name, self.attribute_name)
         field_info = DB_NAME_TO_FIELD_INFO.get(remapped)
-        
+
         if field_info is None:
             # Fallback to old behavior if field not found
             return f"card.{remapped}"
-        
+
         schema_path = field_info.schema_path
-        
+
         # For face-level attributes, return simple placeholder for _wrap_face_level_predicate
         if field_info.attribute_level == AttributeLevel.FACE:
             return f"card.{remapped}"
-        
+
         # For card and print-level attributes, build path from schema_path
         # Example: ["card_info", "card_name"] -> ((card).card_info).card_name
         # Example: ["print_info", "card_set_code"] -> ((card).print_info).card_set_code
         # Example: ["print_info", "front_face", "print_artist"] -> (((card).print_info).front_face).print_artist
-        
+
         # Build the path: card → first_level → second_level → ... → attribute
         # Wrap each composite access in parentheses
         result = "card"
-        for i, part in enumerate(schema_path):
+        for _i, part in enumerate(schema_path):
             result = f"({result}).{part}"
         return result
 
