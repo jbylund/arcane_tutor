@@ -10,9 +10,11 @@ from api.parsing.db_info import (
     COLOR_CODE_TO_NAME,
     COLOR_NAME_TO_CODE,
     DATE_ATTRIBUTES,
+    DB_NAME_TO_ATTRIBUTE_LEVEL,
     DB_NAME_TO_FIELD_TYPE,
     SEARCH_NAME_TO_DB_NAME,
     YEAR_ATTRIBUTES,
+    AttributeLevel,
     FieldType,
 )
 from api.parsing.nodes import (
@@ -121,11 +123,67 @@ class ScryfallAttributeNode(AttributeNode):
             context: SQL parameter context.
 
         Returns:
-            SQL string for the attribute reference.
+            SQL string for the attribute reference with proper DFC schema path.
         """
         del context
         remapped = SEARCH_NAME_TO_DB_NAME.get(self.attribute_name, self.attribute_name)
-        return f"card.{remapped}"
+        attr_level = DB_NAME_TO_ATTRIBUTE_LEVEL.get(remapped, AttributeLevel.FACE)
+
+        # Map the database column based on its level in the DFC schema
+        if attr_level == AttributeLevel.FACE:
+            # Face-level attributes need "face_" prefix in the schema
+            # Map old column names to new face_ prefixed names
+            face_col_map = {
+                "card_colors": "face_colors",
+                "card_subtypes": "face_subtypes",
+                "card_types": "face_types",
+                "cmc": "face_cmc",
+                "creature_power": "face_creature_power",
+                "creature_toughness": "face_creature_toughness",
+                "planeswalker_loyalty": "face_planeswalker_loyalty",
+                "mana_cost_jsonb": "face_mana_cost_jsonb",
+                "mana_cost_text": "face_mana_cost_text",
+                "devotion": "face_devotion",
+                "produced_mana": "face_produced_mana",
+                "oracle_text": "face_oracle_text",
+                "card_oracle_tags": "face_oracle_tags",
+                "type_line": "face_type_line",
+            }
+            face_col = face_col_map.get(remapped, remapped)
+            # Return placeholder - will be replaced with front/back in _wrap_face_level_predicate
+            return f"card.face_{face_col}"
+        if attr_level == AttributeLevel.CARD:
+            # Card-level attributes from the card_info composite
+            return f"((card.card_info).{remapped})"
+        # AttributeLevel.PRINT
+        # Print-level attributes from the print_info composite
+        print_col_map = {
+            "card_artist": "print_artist",
+            "card_border": "print_border",
+            "card_frame_data": "print_frame_data",
+            "card_is_tags": "print_is_tags",
+            "card_layout": "print_layout",
+            "card_oracle_tags": "print_oracle_tags",
+            "card_watermark": "print_watermark",
+            "collector_number": "print_collector_number",
+            "collector_number_int": "print_collector_number_int",
+            "flavor_text": "print_flavor_text",
+            "illustration_id": "print_illustration_id",
+            "image_location_uuid": "print_image_location_uuid",
+            "prefer_score": "print_prefer_score",
+            "raw_card_blob": "print_raw_card_blob",
+        }
+        # For print-level attrs that are direct columns in prints table
+        direct_print_cols = {
+            "scryfall_id", "card_name", "oracle_id", "card_set_code",
+            "released_at", "set_name", "price_eur", "price_tix", "price_usd",
+            "card_legalities", "card_rarity_int", "card_rarity_text",
+        }
+        if remapped in direct_print_cols:
+            return f"((card.print_info).{remapped})"
+        # These are in the front_face or back_face composite
+        print_col = print_col_map.get(remapped, remapped)
+        return f"((card.print_info).front_face).{print_col}"
 
 
 def get_colors_comparison_object(val: str) -> dict[str, bool]:
@@ -359,7 +417,6 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         if self.lhs.original_attribute in YEAR_ATTRIBUTES:
             return self._handle_year_search(context)
 
-        lhs_sql = self.lhs.to_sql(context)
         field_type = get_field_type(attr)
 
         # handle numeric
@@ -378,22 +435,44 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
                     msg = f"Invalid rarity in comparison: {e}"
                     raise ValueError(msg) from e
 
-            return super().to_sql(context)
+            sql = super().to_sql(context)
+            # For face-level attributes, wrap in OR for front/back faces
+            return self._wrap_face_level_predicate(sql, attr)
 
         if field_type == FieldType.JSONB_OBJECT:
-            return self._handle_jsonb_object(context)
+            sql = self._handle_jsonb_object(context)
+            return self._wrap_face_level_predicate(sql, attr)
 
         if field_type == FieldType.JSONB_ARRAY:
-            return self._handle_jsonb_array(context)
+            sql = self._handle_jsonb_array(context)
+            return self._wrap_face_level_predicate(sql, attr)
 
         if self.operator == ":":
-            return self._handle_colon_operator(context, field_type, lhs_sql, attr)
+            lhs_sql = self.lhs.to_sql(context)
+            sql = self._handle_colon_operator(context, field_type, lhs_sql, attr)
+            return self._wrap_face_level_predicate(sql, attr)
 
         if field_type == FieldType.TEXT:
-            return super().to_sql(context)
+            sql = super().to_sql(context)
+            return self._wrap_face_level_predicate(sql, attr)
 
         msg = f"Unknown field type: {field_type}"
         raise NotImplementedError(msg)
+
+    def _wrap_face_level_predicate(self: ScryfallBinaryOperatorNode, sql: str, attr: str) -> str:
+        """Wrap face-level predicates to check both front and back faces."""
+        attr_level = DB_NAME_TO_ATTRIBUTE_LEVEL.get(attr, AttributeLevel.FACE)
+
+        # Only wrap if it's a face-level attribute
+        if attr_level != AttributeLevel.FACE:
+            return sql
+
+        # Replace card.face_xxx with versions for front and back face
+        # The pattern is: (card_info).front_face.face_xxx OR (card_info).back_face.face_xxx
+        front_sql = sql.replace("card.face_", "((card.card_info).front_face).face_")
+        back_sql = sql.replace("card.face_", "((card.card_info).back_face).face_")
+
+        return f"({front_sql} OR {back_sql})"
 
     def _handle_colon_operator(self: ScryfallBinaryOperatorNode, context: dict, field_type: str, lhs_sql: str, attr: str) -> str:
         """Handle colon operator for different field types."""
