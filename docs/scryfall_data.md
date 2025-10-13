@@ -80,6 +80,21 @@ The following nine iconic Magic cards have been selected as reference examples, 
 - **Significance**: One of the most powerful card advantage engines ever printed, nicknamed "Necro" and central to many historic tournament decks.
 - **JSON Data**: [`necropotence.json`](sample_data/necropotence.json)
 
+### 10. Hound Tamer // Untamed Pup (Double-Faced Card)
+
+- **Front Face**:
+  - **Mana Cost**: {2}{G} (3 mana)
+  - **Type**: Creature — Human Werewolf
+  - **Power/Toughness**: 3/3
+  - **Oracle Text**: Trample. {3}{G}: Put a +1/+1 counter on target creature. Daybound.
+- **Back Face**:
+  - **Mana Cost**: — (transforming card)
+  - **Type**: Creature — Werewolf
+  - **Power/Toughness**: 4/4
+  - **Oracle Text**: Trample. Other Wolves and Werewolves you control have trample. {3}{G}: Put a +1/+1 counter on target creature. Nightbound.
+- **Significance**: Representative of Double-Faced Cards (DFCs), a card mechanic where the card has two distinct faces with different attributes. Demonstrates how DFC cards are processed with separate database entries for each face.
+- **JSON Data**: [`hound_tamer.json`](sample_data/hound_tamer.json)
+
 ## Complete Coverage
 
 This collection provides comprehensive coverage for testing and development:
@@ -89,9 +104,13 @@ This collection provides comprehensive coverage for testing and development:
 - **Artifact**: Black Lotus, Sol Ring
 - **Instant**: Lightning Bolt, Brainstorm
 - **Sorcery**: Demonic Tutor
-- **Creature**: Llanowar Elves, Serra Angel
+- **Creature**: Llanowar Elves, Serra Angel, Hound Tamer // Untamed Pup
 - **Enchantment**: Necropotence
 - **Land**: Plains
+
+### Special Card Types
+
+- **Double-Faced Card (DFC)**: Hound Tamer // Untamed Pup - Demonstrates transforming cards with different attributes on each face
 
 ### Colors
 
@@ -114,6 +133,18 @@ Each JSON file contains the complete Scryfall API response for the card, includi
 - **Printing Information**: Set, rarity, collector number, release date
 - **Market Data**: Pricing information from various sources
 - **Metadata**: Colors, color identity, keywords, etc.
+
+### Double-Faced Card Structure
+
+For DFC cards (like Hound Tamer // Untamed Pup), the JSON includes a `card_faces` array with separate entries for each face. During processing:
+
+1. Each face is stored as a separate row in the database
+2. Both faces share the same `card_name` (e.g., "Hound Tamer // Untamed Pup")
+3. Each face has its own `face_name` (e.g., "Hound Tamer" or "Untamed Pup")
+4. Each face has a `face_idx` (1 for front, 2 for back)
+5. Face-specific attributes (power, toughness, types, etc.) are stored per face
+6. Searches match cards if ANY face matches the criteria
+7. Results are de-duplicated using `DISTINCT ON (card_name)` to return one result per card
 
 ## Usage in Development
 
@@ -138,6 +169,7 @@ The original JSON data was retrieved from these Scryfall API endpoints:
 - Serra Angel: `https://api.scryfall.com/cards/3cee9303-9d65-45a2-93d4-ef4aba59141b`
 - Demonic Tutor: `https://api.scryfall.com/cards/a24b4cb6-cebb-428b-8654-74347a6a8d63`
 - Necropotence: `https://api.scryfall.com/cards/c89c6895-b0f8-444a-9c89-c6b4fd027b3e`
+- Hound Tamer // Untamed Pup: `https://api.scryfall.com/cards/28e2119b-ed78-4b98-a956-f2b453d0b164`
 
 ## Notes
 
