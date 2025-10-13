@@ -83,7 +83,7 @@ class TestCollectorNumberIntegration:
 
         # Should generate queries for both collector_number and set
         assert "print_collector_number =" in sql
-        assert "card.card_set_code =" in sql
+        assert "print_set_code =" in sql
         assert len(params) == 2
 
         # Should contain parameters for both conditions

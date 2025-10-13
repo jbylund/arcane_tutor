@@ -150,7 +150,7 @@ class TestWatermarkSQLGeneration:
 
         # Should have all three conditions with AND
         assert "print_watermark =" in sql
-        assert "print_border =" in sql
+        assert "card_border" in sql  # Border is card-level not print-level
         assert "face_cmc =" in sql  # DFC schema uses face_cmc with OR for front/back
         assert "AND" in sql
         assert "ILIKE" not in sql

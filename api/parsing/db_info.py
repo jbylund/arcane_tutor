@@ -89,14 +89,14 @@ DB_COLUMNS = [
 
     # Print-level attributes that are direct columns in prints table (not in face composites)
     FieldInfo(db_column_name="scryfall_id", field_type=FieldType.TEXT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="card_set_code", field_type=FieldType.TEXT, search_aliases=["set", "s"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
+    FieldInfo(db_column_name="print_set_code", field_type=FieldType.TEXT, search_aliases=["set", "s"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
     FieldInfo(db_column_name="released_at", field_type=FieldType.DATE, search_aliases=["date"], parser_class=ParserClass.DATE, attribute_level=AttributeLevel.PRINT),
     FieldInfo(db_column_name="released_at", field_type=FieldType.DATE, search_aliases=["year"], parser_class=ParserClass.YEAR, attribute_level=AttributeLevel.PRINT),
     FieldInfo(db_column_name="set_name", field_type=FieldType.TEXT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
     FieldInfo(db_column_name="price_usd", field_type=FieldType.NUMERIC, search_aliases=["usd"], parser_class=ParserClass.NUMERIC, attribute_level=AttributeLevel.PRINT),
     FieldInfo(db_column_name="price_eur", field_type=FieldType.NUMERIC, search_aliases=["eur"], parser_class=ParserClass.NUMERIC, attribute_level=AttributeLevel.PRINT),
     FieldInfo(db_column_name="price_tix", field_type=FieldType.NUMERIC, search_aliases=["tix"], parser_class=ParserClass.NUMERIC, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="card_legalities", field_type=FieldType.JSONB_OBJECT, search_aliases=["format", "f", "legal", "banned", "restricted"], parser_class=ParserClass.LEGALITY, attribute_level=AttributeLevel.PRINT),
+    FieldInfo(db_column_name="card_legalities", field_type=FieldType.JSONB_OBJECT, search_aliases=["format", "f", "legal", "banned", "restricted"], parser_class=ParserClass.LEGALITY, attribute_level=AttributeLevel.CARD),
     FieldInfo(db_column_name="card_rarity_int", field_type=FieldType.NUMERIC, search_aliases=["rarity", "r"], parser_class=ParserClass.RARITY, attribute_level=AttributeLevel.PRINT),
     FieldInfo(db_column_name="card_rarity_text", field_type=FieldType.TEXT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
 
