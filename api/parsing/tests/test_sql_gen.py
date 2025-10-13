@@ -430,51 +430,51 @@ def test_is_tag_sql_translation(input_query: str, expected_sql: str, expected_pa
         # Case-insensitive oracle tag search
         (
             "Otag:flying",
-            r"(card.card_oracle_tags @> %(p_dict_eydmbHlpbmcnOiBUcnVlfQ)s)",
+            r"((((card.card_info).front_face).face_oracle_tags @> %(p_dict_eydmbHlpbmcnOiBUcnVlfQ)s) OR (((card.card_info).back_face).face_oracle_tags @> %(p_dict_eydmbHlpbmcnOiBUcnVlfQ)s))",
             {"p_dict_eydmbHlpbmcnOiBUcnVlfQ": {"flying": True}},
         ),
         (
             "OTAG:flying",
-            r"(card.card_oracle_tags @> %(p_dict_eydmbHlpbmcnOiBUcnVlfQ)s)",
+            r"((((card.card_info).front_face).face_oracle_tags @> %(p_dict_eydmbHlpbmcnOiBUcnVlfQ)s) OR (((card.card_info).back_face).face_oracle_tags @> %(p_dict_eydmbHlpbmcnOiBUcnVlfQ)s))",
             {"p_dict_eydmbHlpbmcnOiBUcnVlfQ": {"flying": True}},
         ),
         (
             "oTaG:flying",
-            r"(card.card_oracle_tags @> %(p_dict_eydmbHlpbmcnOiBUcnVlfQ)s)",
+            r"((((card.card_info).front_face).face_oracle_tags @> %(p_dict_eydmbHlpbmcnOiBUcnVlfQ)s) OR (((card.card_info).back_face).face_oracle_tags @> %(p_dict_eydmbHlpbmcnOiBUcnVlfQ)s))",
             {"p_dict_eydmbHlpbmcnOiBUcnVlfQ": {"flying": True}},
         ),
         # Case-insensitive color attribute search
         (
             "Color:red",
-            r"(card.card_colors @> %(p_dict_eydSJzogVHJ1ZX0)s)",
+            r"((((card.card_info).front_face).face_colors @> %(p_dict_eydSJzogVHJ1ZX0)s) OR (((card.card_info).back_face).face_colors @> %(p_dict_eydSJzogVHJ1ZX0)s))",
             {"p_dict_eydSJzogVHJ1ZX0": {"R": True}},
         ),
         (
             "COLOR:red",
-            r"(card.card_colors @> %(p_dict_eydSJzogVHJ1ZX0)s)",
+            r"((((card.card_info).front_face).face_colors @> %(p_dict_eydSJzogVHJ1ZX0)s) OR (((card.card_info).back_face).face_colors @> %(p_dict_eydSJzogVHJ1ZX0)s))",
             {"p_dict_eydSJzogVHJ1ZX0": {"R": True}},
         ),
         # Case-insensitive single-letter alias
         (
             "C:red",
-            r"(card.card_colors @> %(p_dict_eydSJzogVHJ1ZX0)s)",
+            r"((((card.card_info).front_face).face_colors @> %(p_dict_eydSJzogVHJ1ZX0)s) OR (((card.card_info).back_face).face_colors @> %(p_dict_eydSJzogVHJ1ZX0)s))",
             {"p_dict_eydSJzogVHJ1ZX0": {"R": True}},
         ),
         # Case-insensitive type attribute search
         (
             "Type:creature",
-            r"(%(p_list_WydDcmVhdHVyZSdd)s <@ card.card_types)",
+            r"((%(p_list_WydDcmVhdHVyZSdd)s <@ ((card.card_info).front_face).face_types) OR (%(p_list_WydDcmVhdHVyZSdd)s <@ ((card.card_info).back_face).face_types))",
             {"p_list_WydDcmVhdHVyZSdd": ["Creature"]},
         ),
         (
             "TYPE:creature",
-            r"(%(p_list_WydDcmVhdHVyZSdd)s <@ card.card_types)",
+            r"((%(p_list_WydDcmVhdHVyZSdd)s <@ ((card.card_info).front_face).face_types) OR (%(p_list_WydDcmVhdHVyZSdd)s <@ ((card.card_info).back_face).face_types))",
             {"p_list_WydDcmVhdHVyZSdd": ["Creature"]},
         ),
         # Case-insensitive alias 't'
         (
             "T:creature",
-            r"(%(p_list_WydDcmVhdHVyZSdd)s <@ card.card_types)",
+            r"((%(p_list_WydDcmVhdHVyZSdd)s <@ ((card.card_info).front_face).face_types) OR (%(p_list_WydDcmVhdHVyZSdd)s <@ ((card.card_info).back_face).face_types))",
             {"p_list_WydDcmVhdHVyZSdd": ["Creature"]},
         ),
     ],

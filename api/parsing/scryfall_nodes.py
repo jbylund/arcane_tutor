@@ -728,12 +728,12 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             rhs = get_frame_data_comparison_object(self.rhs.value.strip())
             pname = param_name(rhs)
             context[pname] = rhs
-        elif attr == "card_oracle_tags":
+        elif attr in ("face_oracle_tags", "card_oracle_tags"):
             # Oracle tags are stored in lowercase, unlike keywords
             rhs = get_oracle_tags_comparison_object(self.rhs.value.strip())
             pname = param_name(rhs)
             context[pname] = rhs
-        elif attr == "card_is_tags":
+        elif attr == "print_is_tags":
             # is: tags are stored in lowercase, similar to oracle tags
             rhs = get_is_tags_comparison_object(self.rhs.value.strip())
             pname = param_name(rhs)
