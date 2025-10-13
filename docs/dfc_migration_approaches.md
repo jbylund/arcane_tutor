@@ -156,6 +156,52 @@ WHERE (((card_info).front_face).face_creature_power > 3
 ORDER BY ((card_info).front_face).face_creature_power DESC;
 ```
 
-## Decision
+## Decision - FINAL ARCHITECTURE
 
-**Awaiting confirmation** from @jbylund on which approach to use. Once decided, implementation can proceed quickly.
+**Decision Made**: Use Approach 2 (s_dfc.cards_with_prints with composite types) for search queries, keep magic.cards for data storage/admin.
+
+### Final Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Data Flow                             │
+├─────────────────────────────────────────────────────────┤
+│                                                          │
+│  Scryfall API → card_processing.py → magic.cards        │
+│                    (Data Ingestion)    (Raw Storage)     │
+│                                                          │
+│  magic.cards → DFC Migration → s_dfc.*                  │
+│  (Raw Storage)  (2025-10-12)   (Normalized Views)       │
+│                                                          │
+│  s_dfc.cards_with_prints → Search Queries → Results     │
+│  (Query Layer with composites)                           │
+│                                                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Responsibilities
+
+**magic.cards** (Raw Data Layer):
+- ✅ Card ingestion from Scryfall API
+- ✅ Data export/import operations
+- ✅ Administrative operations (DELETE, COUNT for stats)
+- ✅ Raw data storage with denormalized face rows
+- ✅ Continues to store one row per face per printing
+
+**s_dfc.cards_with_prints** (Query Layer):
+- ✅ Search queries (WHERE clauses with face-level predicates)
+- ✅ Display results (SELECT with front face as default)
+- ✅ Composite type access for both faces
+- ✅ Normalized view of card/print/face data
+
+### Implementation Status
+
+✅ **COMPLETE** - Main search query migrated to use s_dfc.cards_with_prints
+✅ **COMPLETE** - SQL generation handles composite types and face-level OR expansion
+✅ **CORRECT** - Admin queries continue using magic.cards as intended
+
+This architecture provides:
+- Clean separation between storage and querying
+- Programmatic query generation handles composite type verbosity
+- Raw data always available in magic.cards for troubleshooting
+- Normalized query layer for DFC-aware searches
