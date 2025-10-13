@@ -9,7 +9,7 @@ DELETE FROM magic.cards WHERE scryfall_id IN (
 -- less precise than the above but same idea
 DELETE FROM magic.cards WHERE card_name LIKE '%//%//%';
 
-
+DROP SCHEMA IF EXISTS s_dfc CASCADE;
 CREATE SCHEMA s_dfc;
 
 CREATE TABLE s_dfc.card_faces AS (

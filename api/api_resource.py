@@ -651,18 +651,19 @@ class APIResource:
         query_sql = f"""
         WITH distinct_cards AS (
             SELECT DISTINCT ON ({distinct_on_col})
-                ((card.print_info).front_face).print_artist AS card_artist,
-                ((card.card_info).card_name) AS card_name,
-                ((card.print_info).card_set_code) AS card_set_code,
+                (card.card_info).card_name AS card_name,
+
                 ((card.card_info).front_face).face_cmc AS cmc,
-                ((card.print_info).front_face).print_collector_number AS collector_number,
-                ((card.card_info).edhrec_rank) AS edhrec_rank,
-                ((card.print_info).front_face).print_image_location_uuid AS image_location_uuid,
                 ((card.card_info).front_face).face_mana_cost_text AS mana_cost_text,
                 ((card.card_info).front_face).face_oracle_text AS oracle_text,
-                ((card.print_info).set_name) AS set_name,
                 ((card.card_info).front_face).face_type_line AS type_line,
+                ((card.print_info).front_face).print_artist AS card_artist,
+                ((card.print_info).front_face).print_image_location_uuid AS image_location_uuid,
                 ((card.print_info).front_face).print_prefer_score AS prefer_score,
+                (card.card_info).edhrec_rank AS edhrec_rank,
+                (card.print_info).card_set_code AS card_set_code,
+                (card.print_info).collector_number AS collector_number,
+                (card.print_info).set_name AS set_name,
                 {sql_orderby} AS sort_value
             FROM
                 s_dfc.cards_with_prints AS card
