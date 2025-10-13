@@ -4,7 +4,7 @@ SHELL:=/bin/bash
 
 mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
 mkfile_dir := $(shell dirname $(mkfile_path) )
-PROJECTNAME := scryfallos
+PROJECTNAME := arcane_tutor
 
 GIT_ROOT := $(shell git rev-parse --show-toplevel)
 MAYBENORUN := $(shell if echo | xargs --no-run-if-empty >/dev/null 2>/dev/null; then echo "--no-run-if-empty"; else echo ""; fi)
@@ -54,7 +54,7 @@ hlep: help
 
 ###  Entry points
 
-up: datadir images down check_env # @doc start services for scryfallos
+up: datadir images down check_env # @doc start services
 	cd $(GIT_ROOT) && docker compose --file $(BASE_COMPOSE) up --remove-orphans --abort-on-container-exit
 
 up-detach: datadir images down check_env
@@ -132,7 +132,7 @@ dbconn: # @doc connect to the local database
 	psql
 
 dump_schema: # @doc dump database schema to file using container's pg_dump
-	docker exec scryfallpostgres $(shell find /usr/bin /opt/homebrew -name pg_dump) -U $(XPGUSER) -d $(XPGDATABASE) -s
+	docker exec $(PROJECTNAME)postgres $(shell find /usr/bin /opt/homebrew -name pg_dump) -U $(XPGUSER) -d $(XPGDATABASE) -s
 
 datadir:
 	mkdir -p data/api data/postgres data/postgres/logs /tmp/pgdata

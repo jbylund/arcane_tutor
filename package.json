@@ -1,7 +1,7 @@
 {
-  "name": "scryfallos",
+  "name": "arcane_tutor",
   "version": "1.0.0",
-  "description": "An open source implementation of scryfall. This project contains a few pieces:",
+  "description": "An open source Magic: The Gathering card search engine. Unofficial Fan Content permitted under the Wizards of the Coast Fan Content Policy. Not approved/endorsed by Wizards. Card data from Scryfall.",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
@@ -10,15 +10,21 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jbylund/scryfallos.git"
+    "url": "git+https://github.com/jbylund/arcane_tutor.git"
   },
-  "keywords": [],
+  "keywords": [
+    "magic-the-gathering",
+    "mtg",
+    "card-search",
+    "scryfall",
+    "open-source"
+  ],
   "author": "",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/jbylund/scryfallos/issues"
+    "url": "https://github.com/jbylund/arcane_tutor/issues"
   },
-  "homepage": "https://github.com/jbylund/scryfallos#readme",
+  "homepage": "https://github.com/jbylund/arcane_tutor#readme",
   "devDependencies": {
     "prettier": "^3.6.2"
   }

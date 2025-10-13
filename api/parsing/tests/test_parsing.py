@@ -13,7 +13,7 @@ from api.parsing import (
     QueryNode,
     StringValueNode,
 )
-from api.parsing.scryfall_nodes import calculate_cmc, mana_cost_str_to_dict
+from api.parsing.card_query_nodes import calculate_cmc, mana_cost_str_to_dict
 
 
 @pytest.mark.parametrize(

@@ -1,4 +1,4 @@
-"""Script for taking full screenshots of the scryfallos application."""
+"""Script for taking full screenshots of the application."""
 from __future__ import annotations
 
 import argparse
@@ -59,10 +59,10 @@ class ServerContext:
 
 def main() -> None:
     """Main entrypoint for the full screenshot script."""
-    parser = argparse.ArgumentParser(description="Take screenshots of the scryfallos application")
+    parser = argparse.ArgumentParser(description="Take screenshots of the application")
     parser.add_argument("--width", type=int, default=2200, help="Viewport width in pixels (default: 2200)")
     parser.add_argument("--height", type=int, default=3000, help="Viewport height in pixels (default: 3000)")
-    parser.add_argument("--output", type=str, help="Output filename (default: scryfallos-{timestamp}.png)")
+    parser.add_argument("--output", type=str, help="Output filename (default: {timestamp}.png)")
     parser.add_argument("--full-page", action="store_true", help="Take full page screenshot instead of viewport only")
     args = parser.parse_args()
 
@@ -71,7 +71,7 @@ def main() -> None:
 
     # Generate default filename if not provided
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-    output_filename = args.output or f"scryfallos-{args.width}x{args.height}-{timestamp}.png"
+    output_filename = args.output or f"{args.width}x{args.height}-{timestamp}.png"
 
     with ServerContext():
         with sync_playwright() as p:
