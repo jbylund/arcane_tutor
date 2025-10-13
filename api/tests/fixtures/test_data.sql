@@ -66,12 +66,12 @@ INSERT INTO magic.cards (
     '1',
     1,
     '2024-02-23'
-) ON CONFLICT (scryfall_id) DO NOTHING;
+) ON CONFLICT DO NOTHING;
 
 -- Insert test tags
 INSERT INTO magic.tags (tag) VALUES
-('flying'),
-('vigilance'),
-('burn'),
-('mana-acceleration')
-ON CONFLICT (tag) DO NOTHING;
+    ('flying'),
+    ('vigilance'),
+    ('burn'),
+    ('mana-acceleration')
+ON CONFLICT DO NOTHING;
