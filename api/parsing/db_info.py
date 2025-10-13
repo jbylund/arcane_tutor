@@ -44,6 +44,7 @@ class FieldInfo:
         search_aliases: list[str],
         parser_class: ParserClass | None = None,
         attribute_level: AttributeLevel = AttributeLevel.FACE,
+        schema_path: list[str] | None = None,
     ) -> None:
         """Initialize field information.
 
@@ -53,6 +54,8 @@ class FieldInfo:
             search_aliases: List of search aliases for this field.
             parser_class: The parser class to use for this field. If None, defaults based on field_type.
             attribute_level: The level at which this attribute exists (face/card/print).
+            schema_path: Path to attribute in s_dfc schema (e.g., ["card_info", "front_face", "face_creature_power"]).
+                        If None, will be inferred from attribute_level and db_column_name.
         """
         self.db_column_name = db_column_name
         self.field_type = field_type
@@ -62,6 +65,33 @@ class FieldInfo:
         if parser_class is None:
             parser_class = ParserClass.NUMERIC if field_type == FieldType.NUMERIC else ParserClass.TEXT
         self.parser_class = parser_class
+        
+        # Set schema_path - either explicit or inferred
+        if schema_path is not None:
+            self.schema_path = schema_path
+        else:
+            self.schema_path = self._infer_schema_path()
+    
+    def _infer_schema_path(self) -> list[str]:
+        """Infer schema path based on attribute level and column name.
+        
+        Returns:
+            List representing path to attribute in s_dfc schema.
+        """
+        if self.attribute_level == AttributeLevel.FACE:
+            # Face-level attributes: card_info → front_face/back_face → face_*
+            return ["card_info", "front_face", self.db_column_name]
+        elif self.attribute_level == AttributeLevel.CARD:
+            # Card-level attributes: card_info → attribute
+            return ["card_info", self.db_column_name]
+        else:  # AttributeLevel.PRINT
+            # Print-level attributes are more complex:
+            # - Attributes with print_ prefix are in: print_info → front_face/back_face → print_*
+            # - Other attributes are direct in print_info: print_info → attribute
+            if self.db_column_name.startswith("print_"):
+                return ["print_info", "front_face", self.db_column_name]
+            else:
+                return ["print_info", self.db_column_name]
 
 
 DB_COLUMNS = [
@@ -72,8 +102,8 @@ DB_COLUMNS = [
     FieldInfo(db_column_name="card_layout", field_type=FieldType.TEXT, search_aliases=["layout"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.CARD),
     FieldInfo(db_column_name="card_border", field_type=FieldType.TEXT, search_aliases=["border"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.CARD),
     FieldInfo(db_column_name="print_watermark", field_type=FieldType.TEXT, search_aliases=["watermark"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="print_collector_number", field_type=FieldType.TEXT, search_aliases=["number", "cn"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="print_collector_number_int", field_type=FieldType.NUMERIC, search_aliases=[], parser_class=ParserClass.NUMERIC, attribute_level=AttributeLevel.PRINT),
+    FieldInfo(db_column_name="collector_number", field_type=FieldType.TEXT, search_aliases=["number", "cn"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT, schema_path=["print_info", "collector_number"]),
+    FieldInfo(db_column_name="collector_number_int", field_type=FieldType.NUMERIC, search_aliases=[], parser_class=ParserClass.NUMERIC, attribute_level=AttributeLevel.PRINT, schema_path=["print_info", "collector_number_int"]),
     FieldInfo(db_column_name="print_illustration_id", field_type=FieldType.TEXT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
     FieldInfo(db_column_name="print_image_location_uuid", field_type=FieldType.TEXT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
     FieldInfo(db_column_name="print_prefer_score", field_type=FieldType.NUMERIC, search_aliases=[], parser_class=ParserClass.NUMERIC, attribute_level=AttributeLevel.PRINT),
@@ -88,17 +118,17 @@ DB_COLUMNS = [
     FieldInfo(db_column_name="edhrec_rank", field_type=FieldType.NUMERIC, search_aliases=[], parser_class=ParserClass.NUMERIC, attribute_level=AttributeLevel.CARD),
 
     # Print-level attributes that are direct columns in prints table (not in face composites)
-    FieldInfo(db_column_name="scryfall_id", field_type=FieldType.TEXT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="print_set_code", field_type=FieldType.TEXT, search_aliases=["set", "s"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="released_at", field_type=FieldType.DATE, search_aliases=["date"], parser_class=ParserClass.DATE, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="released_at", field_type=FieldType.DATE, search_aliases=["year"], parser_class=ParserClass.YEAR, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="set_name", field_type=FieldType.TEXT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="price_usd", field_type=FieldType.NUMERIC, search_aliases=["usd"], parser_class=ParserClass.NUMERIC, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="price_eur", field_type=FieldType.NUMERIC, search_aliases=["eur"], parser_class=ParserClass.NUMERIC, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="price_tix", field_type=FieldType.NUMERIC, search_aliases=["tix"], parser_class=ParserClass.NUMERIC, attribute_level=AttributeLevel.PRINT),
+    FieldInfo(db_column_name="scryfall_id", field_type=FieldType.TEXT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT, schema_path=["print_info", "scryfall_id"]),
+    FieldInfo(db_column_name="card_set_code", field_type=FieldType.TEXT, search_aliases=["set", "s"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT, schema_path=["print_info", "card_set_code"]),
+    FieldInfo(db_column_name="released_at", field_type=FieldType.DATE, search_aliases=["date"], parser_class=ParserClass.DATE, attribute_level=AttributeLevel.PRINT, schema_path=["print_info", "released_at"]),
+    FieldInfo(db_column_name="released_at", field_type=FieldType.DATE, search_aliases=["year"], parser_class=ParserClass.YEAR, attribute_level=AttributeLevel.PRINT, schema_path=["print_info", "released_at"]),
+    FieldInfo(db_column_name="set_name", field_type=FieldType.TEXT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT, schema_path=["print_info", "set_name"]),
+    FieldInfo(db_column_name="price_usd", field_type=FieldType.NUMERIC, search_aliases=["usd"], parser_class=ParserClass.NUMERIC, attribute_level=AttributeLevel.PRINT, schema_path=["print_info", "price_usd"]),
+    FieldInfo(db_column_name="price_eur", field_type=FieldType.NUMERIC, search_aliases=["eur"], parser_class=ParserClass.NUMERIC, attribute_level=AttributeLevel.PRINT, schema_path=["print_info", "price_eur"]),
+    FieldInfo(db_column_name="price_tix", field_type=FieldType.NUMERIC, search_aliases=["tix"], parser_class=ParserClass.NUMERIC, attribute_level=AttributeLevel.PRINT, schema_path=["print_info", "price_tix"]),
     FieldInfo(db_column_name="card_legalities", field_type=FieldType.JSONB_OBJECT, search_aliases=["format", "f", "legal", "banned", "restricted"], parser_class=ParserClass.LEGALITY, attribute_level=AttributeLevel.CARD),
-    FieldInfo(db_column_name="card_rarity_int", field_type=FieldType.NUMERIC, search_aliases=["rarity", "r"], parser_class=ParserClass.RARITY, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="card_rarity_text", field_type=FieldType.TEXT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
+    FieldInfo(db_column_name="card_rarity_int", field_type=FieldType.NUMERIC, search_aliases=["rarity", "r"], parser_class=ParserClass.RARITY, attribute_level=AttributeLevel.PRINT, schema_path=["print_info", "card_rarity_int"]),
+    FieldInfo(db_column_name="card_rarity_text", field_type=FieldType.TEXT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT, schema_path=["print_info", "card_rarity_text"]),
 
     # Face-level attributes (differ between front and back face)
     FieldInfo(db_column_name="face_name", field_type=FieldType.TEXT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.FACE),
@@ -125,6 +155,7 @@ NON_NUMERIC_ATTRIBUTES = set()
 SEARCH_NAME_TO_DB_NAME = {}
 DB_NAME_TO_FIELD_TYPE = {}
 DB_NAME_TO_ATTRIBUTE_LEVEL = {}
+DB_NAME_TO_FIELD_INFO = {}  # New: map from db_column_name to FieldInfo object
 
 # Parser class attribute groups for cleaner parsing logic
 MANA_ATTRIBUTES = set()
@@ -146,6 +177,7 @@ for col in DB_COLUMNS:
     SEARCH_NAME_TO_DB_NAME[col.db_column_name.lower()] = col.db_column_name
     DB_NAME_TO_FIELD_TYPE[col.db_column_name] = col.field_type
     DB_NAME_TO_ATTRIBUTE_LEVEL[col.db_column_name] = col.attribute_level
+    DB_NAME_TO_FIELD_INFO[col.db_column_name] = col  # Map to full FieldInfo object
 
     # Map search aliases to db name and attribute level
     for alias in col.search_aliases:

@@ -11,6 +11,7 @@ from api.parsing.db_info import (
     COLOR_NAME_TO_CODE,
     DATE_ATTRIBUTES,
     DB_NAME_TO_ATTRIBUTE_LEVEL,
+    DB_NAME_TO_FIELD_INFO,
     DB_NAME_TO_FIELD_TYPE,
     SEARCH_NAME_TO_DB_NAME,
     YEAR_ATTRIBUTES,
@@ -127,22 +128,35 @@ class ScryfallAttributeNode(AttributeNode):
         """
         del context
         remapped = SEARCH_NAME_TO_DB_NAME.get(self.attribute_name, self.attribute_name)
-        attr_level = DB_NAME_TO_ATTRIBUTE_LEVEL.get(remapped, AttributeLevel.FACE)
-
-        # Map the database column based on its level in the DFC schema
-        if attr_level == AttributeLevel.FACE:
-            # Face-level attributes - return placeholder that will be expanded in _wrap_face_level_predicate
+        field_info = DB_NAME_TO_FIELD_INFO.get(remapped)
+        
+        if field_info is None:
+            # Fallback to old behavior if field not found
             return f"card.{remapped}"
-        if attr_level == AttributeLevel.CARD:
-            # Card-level attributes from the card_info composite
-            return f"((card.card_info).{remapped})"
-        # AttributeLevel.PRINT
-        # Print-level attributes from the print_info composite
-        # Attributes with print_ prefix are in the front_face/back_face composites
-        if remapped.startswith("print_"):
-            return f"((card.print_info).front_face).{remapped}"
-        # Other print-level attributes are direct columns in the print_info composite
-        return f"((card.print_info).{remapped})"
+        
+        schema_path = field_info.schema_path
+        
+        # For face-level attributes, return simple placeholder for _wrap_face_level_predicate
+        if field_info.attribute_level == AttributeLevel.FACE:
+            return f"card.{remapped}"
+        
+        # For card and print-level attributes, build path from schema_path
+        # Example: ["card_info", "card_name"] -> ((card.card_info).card_name)
+        # Example: ["print_info", "card_set_code"] -> ((card.print_info).card_set_code)
+        # Example: ["print_info", "front_face", "print_artist"] -> (((card.print_info).front_face).print_artist)
+        
+        # Build the path: card → first_level → second_level → ... → attribute
+        # Wrap each composite access in parentheses
+        result = "card"
+        for i, part in enumerate(schema_path):
+            if i < len(schema_path) - 1:
+                # Intermediate composite type access - wrap with extra parens
+                result = f"(({result}).{part})"
+            else:
+                # Final attribute access
+                result = f"({result}).{part}"
+        
+        return result
 
 
 def get_colors_comparison_object(val: str) -> dict[str, bool]:
