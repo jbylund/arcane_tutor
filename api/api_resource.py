@@ -587,7 +587,7 @@ class APIResource:
                 title="Invalid Search Query",
                 description=f'Failed to parse query: "{query}"',
             ) from err
-        sql_orderby: str = {
+        sql_orderby_col = {
             # what's in the query => the db column name
             "cmc": "cmc",
             "edhrec": "edhrec_rank",
@@ -596,6 +596,17 @@ class APIResource:
             "toughness": "creature_toughness",
             "usd": "price_usd",
         }.get(str(orderby), "edhrec_rank")
+
+        # Map orderby column to DFC schema path
+        sql_orderby_map = {
+            "cmc": "((card.card_info).front_face).face_cmc",
+            "edhrec_rank": "((card.card_info).edhrec_rank)",
+            "creature_power": "((card.card_info).front_face).face_creature_power",
+            "card_rarity_int": "((card.print_info).card_rarity_int)",
+            "creature_toughness": "((card.card_info).front_face).face_creature_toughness",
+            "price_usd": "((card.print_info).price_usd)",
+        }
+        sql_orderby = sql_orderby_map.get(sql_orderby_col, f"((card.card_info).{sql_orderby_col})")
         sql_direction = {
             "asc": "ASC",
             "desc": "DESC",
@@ -620,30 +631,47 @@ class APIResource:
             PreferOrder(str(prefer).replace("-", "_")),
             ("edhrec_rank", "ASC"),
         )
+        # Map distinct_on to the appropriate column path in DFC schema
+        distinct_on_map = {
+            "illustration_id": "((card.print_info).front_face).print_illustration_id",
+            "card_name": "((card.card_info).card_name)",
+            "scryfall_id": "((card.print_info).scryfall_id)",
+        }
+        distinct_on_col = distinct_on_map.get(distinct_on, f"((card.card_info).{distinct_on})")
+
+        # Map prefer_column to DFC schema path
+        prefer_col_map = {
+            "released_at": "((card.print_info).released_at)",
+            "price_usd": "((card.print_info).price_usd)",
+            "edhrec_rank": "((card.card_info).edhrec_rank)",
+            "prefer_score": "((card.print_info).front_face).print_prefer_score",
+        }
+        prefer_col_path = prefer_col_map.get(prefer_column, f"((card.card_info).{prefer_column})")
+
         query_sql = f"""
         WITH distinct_cards AS (
-            SELECT DISTINCT ON ({distinct_on})
-                card_artist,
-                card_name,
-                card_set_code,
-                cmc,
-                collector_number,
-                edhrec_rank,
-                image_location_uuid,
-                mana_cost_text,
-                oracle_text,
-                set_name,
-                type_line,
-                prefer_score,
+            SELECT DISTINCT ON ({distinct_on_col})
+                ((card.print_info).front_face).print_artist AS card_artist,
+                ((card.card_info).card_name) AS card_name,
+                ((card.print_info).card_set_code) AS card_set_code,
+                ((card.card_info).front_face).face_cmc AS cmc,
+                ((card.print_info).front_face).print_collector_number AS collector_number,
+                ((card.card_info).edhrec_rank) AS edhrec_rank,
+                ((card.print_info).front_face).print_image_location_uuid AS image_location_uuid,
+                ((card.card_info).front_face).face_mana_cost_text AS mana_cost_text,
+                ((card.card_info).front_face).face_oracle_text AS oracle_text,
+                ((card.print_info).set_name) AS set_name,
+                ((card.card_info).front_face).face_type_line AS type_line,
+                ((card.print_info).front_face).print_prefer_score AS prefer_score,
                 {sql_orderby} AS sort_value
             FROM
-                magic.cards AS card
+                s_dfc.cards_with_prints AS card
             WHERE
                 {where_clause}
             ORDER BY
-                {distinct_on},
-                {prefer_column} {prefer_direction} NULLS LAST,
-                prefer_score DESC NULLS LAST
+                {distinct_on_col},
+                {prefer_col_path} {prefer_direction} NULLS LAST,
+                ((card.print_info).front_face).print_prefer_score DESC NULLS LAST
         )
         (
             SELECT
