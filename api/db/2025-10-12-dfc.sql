@@ -96,21 +96,18 @@ CREATE TABLE s_dfc.face_prints AS (
         card_layout AS print_layout,
         card_oracle_tags AS print_oracle_tags,
         card_watermark AS print_watermark,
-        collector_number AS print_collector_number,
-        collector_number_int AS print_collector_number_int,
         flavor_text AS print_flavor_text,
         illustration_id AS print_illustration_id,
         image_location_uuid AS print_image_location_uuid,
         prefer_score AS print_prefer_score,
         prefer_score_components AS print_prefer_score_components,
-        raw_card_blob AS print_raw_card_blob
+        raw_card_blob AS print_raw_card_blob -- TODO: we probably don't want this
     FROM
         magic.cards
     GROUP BY (
         1, 2, 3, 4, 5,
         6, 7, 8, 9, 10,
-        11, 12, 13, 14, 15,
-        16, 17
+        11, 12, 13, 14, 15
     )
 );
 
@@ -139,6 +136,8 @@ CREATE TABLE s_dfc.prints AS (
         card_info.card_legalities,
         card_info.card_rarity_int,
         card_info.card_rarity_text,
+        card_info.collector_number,
+        card_info.collector_number_int,
         front_face,
         back_face
     FROM
@@ -171,4 +170,3 @@ CREATE TABLE s_dfc.cards_with_prints AS (
     ON 
         card_info.oracle_id = print_info.oracle_id
 );
-
