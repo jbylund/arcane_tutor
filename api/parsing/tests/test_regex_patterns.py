@@ -123,8 +123,8 @@ class TestRegexSQLGeneration:
         sql, params = generate_sql_query(result)
 
         # Should contain both the type search and regex oracle search
-        assert "card.card_types" in sql
-        assert "card.oracle_text ~*" in sql
+        assert "(card).card_types" in sql
+        assert "(card).oracle_text ~*" in sql
 
         # Should have two parameters
         assert len(params) == 2

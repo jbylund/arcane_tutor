@@ -68,60 +68,60 @@ def test_full_sql_translation(input_query: str, expected_sql: str, expected_para
 @pytest.mark.parametrize(
     argnames=("input_query", "expected_sql", "expected_parameters"),
     argvalues=[
-            (
-                "colors:red",
-                r"(((((card).card_info).front_face).face_colors @> %(p_dict_eydSJzogVHJ1ZX0)s) OR (((card).card_info).back_face).face_colors @> %(p_dict_eydSJzogVHJ1ZX0)s))",
-                {"p_dict_eydSJzogVHJ1ZX0": {"R": True}},
-            ),  # JSONB object uses containment
+        (
+            "colors:red",
+            r"(((((card).card_info).front_face).face_colors @> %(p_dict_eydSJzogVHJ1ZX0)s) OR ((((card).card_info).back_face).face_colors @> %(p_dict_eydSJzogVHJ1ZX0)s))",
+            {"p_dict_eydSJzogVHJ1ZX0": {"R": True}},
+        ),  # JSONB object uses containment
         (
             "colors:rg",
-            r"(card.card_colors @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            r"(((((card).card_info).front_face).face_colors @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s) OR ((((card).card_info).back_face).face_colors @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s))",
             {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
         ),  # JSONB object uses containment
         # test exact equality of colors
         (
             "colors=rg",
-            r"(card.card_colors = %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            r"(((((card).card_info).front_face).face_colors = %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s) OR ((((card).card_info).back_face).face_colors = %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s))",
             {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
         ),
         # test colors greater than
         (
             "colors>=rg",
-            r"(card.card_colors @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            r"(((((card).card_info).front_face).face_colors @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s) OR ((((card).card_info).back_face).face_colors @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s))",
             {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
         ),
         # test colors less than
         (
             "colors<=rg",
-            r"(card.card_colors <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            r"(((((card).card_info).front_face).face_colors <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s) OR ((((card).card_info).back_face).face_colors <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s))",
             {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
         ),
         # test colors strictly greater than
         (
             "colors>rg",
-            r"(card.card_colors @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s AND card.card_colors <> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            r"(((((card).card_info).front_face).face_colors @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s AND (((card).card_info).front_face).face_colors <> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s) OR ((((card).card_info).back_face).face_colors @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s AND (((card).card_info).back_face).face_colors <> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s))",
             {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
         ),
         # test colors strictly less than
         (
             "colors<rg",
-            r"(card.card_colors <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s AND card.card_colors <> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
+            r"(((((card).card_info).front_face).face_colors <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s AND (((card).card_info).front_face).face_colors <> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s) OR ((((card).card_info).back_face).face_colors <@ %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s AND (((card).card_info).back_face).face_colors <> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s))",
             {"p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ": {"R": True, "G": True}},
         ),
         # devotion tests
         (
             "devotion:{G}",
-            r"(card.devotion @> %(p_dict_eydHJzogWzFdfQ)s)",
+            r"(((((card).card_info).front_face).face_devotion @> %(p_dict_eydHJzogWzFdfQ)s) OR ((((card).card_info).back_face).face_devotion @> %(p_dict_eydHJzogWzFdfQ)s))",
             {"p_dict_eydHJzogWzFdfQ": {"G": [1]}},
         ),
         (
             "devotion>={G}",
-            r"(card.devotion @> %(p_dict_eydHJzogWzFdfQ)s)",
+            r"(((((card).card_info).front_face).face_devotion @> %(p_dict_eydHJzogWzFdfQ)s) OR ((((card).card_info).back_face).face_devotion @> %(p_dict_eydHJzogWzFdfQ)s))",
             {"p_dict_eydHJzogWzFdfQ": {"G": [1]}},
         ),
         (
             "devotion>={G}{R}",
-            r"(card.devotion @> %(p_dict_eydSJzogWzFdLCAnRyc6IFsxXX0)s)",
+            r"(((((card).card_info).front_face).face_devotion @> %(p_dict_eydSJzogWzFdLCAnRyc6IFsxXX0)s) OR ((((card).card_info).back_face).face_devotion @> %(p_dict_eydSJzogWzFdLCAnRyc6IFsxXX0)s))",
             {"p_dict_eydSJzogWzFdLCAnRyc6IFsxXX0": {"G": [1], "R": [1]}},
         ),
     ],
@@ -215,15 +215,15 @@ def test_full_sql_translation_jsonb_card_types(input_query: str, expected_sql: s
     argnames=("input_query", "expected_sql", "expected_parameters"),
     argvalues=[
         # Oracle text search tests
-        ("oracle:flying", "(card.oracle_text ILIKE %(p_str_JWZseWluZyU)s)", {"p_str_JWZseWluZyU": "%flying%"}),
-        ("oracle:'gain life'", "(card.oracle_text ILIKE %(p_str_JWdhaW4lbGlmZSU)s)", {"p_str_JWdhaW4lbGlmZSU": "%gain%life%"}),
-        ('oracle:"gain life"', "(card.oracle_text ILIKE %(p_str_JWdhaW4lbGlmZSU)s)", {"p_str_JWdhaW4lbGlmZSU": "%gain%life%"}),
-        ("oracle:haste", "(card.oracle_text ILIKE %(p_str_JWhhc3RlJQ)s)", {"p_str_JWhhc3RlJQ": "%haste%"}),
+        ("oracle:flying", r"((card).oracle_text ILIKE %(p_str_JWZseWluZyU)s)", {"p_str_JWZseWluZyU": r"%flying%"}),
+        ("oracle:'gain life'", r"((card).oracle_text ILIKE %(p_str_JWdhaW4lbGlmZSU)s)", {"p_str_JWdhaW4lbGlmZSU": r"%gain%life%"}),
+        ('oracle:"gain life"', r"((card).oracle_text ILIKE %(p_str_JWdhaW4lbGlmZSU)s)", {"p_str_JWdhaW4lbGlmZSU": r"%gain%life%"}),
+        ("oracle:haste", r"((card).oracle_text ILIKE %(p_str_JWhhc3RlJQ)s)", {"p_str_JWhhc3RlJQ": r"%haste%"}),
         # Test oracle search with complex phrases
         (
             "oracle:'tap target creature'",
-            "(card.oracle_text ILIKE %(p_str_JXRhcCV0YXJnZXQlY3JlYXR1cmUl)s)",
-            {"p_str_JXRhcCV0YXJnZXQlY3JlYXR1cmUl": "%tap%target%creature%"},
+            r"((card).oracle_text ILIKE %(p_str_JXRhcCV0YXJnZXQlY3JlYXR1cmUl)s)",
+            {"p_str_JXRhcCV0YXJnZXQlY3JlYXR1cmUl": r"%tap%target%creature%"},
         ),
     ],
 )
@@ -240,14 +240,14 @@ def test_oracle_text_sql_translation(input_query: str, expected_sql: str, expect
     argnames=("input_query", "expected_sql", "expected_parameters"),
     argvalues=[
         # Flavor text search tests
-        ("flavor:exile", "(card.flavor_text ILIKE %(p_str_JWV4aWxlJQ)s)", {"p_str_JWV4aWxlJQ": "%exile%"}),
-        ("flavor:'ancient power'", "(card.flavor_text ILIKE %(p_str_JWFuY2llbnQlcG93ZXIl)s)", {"p_str_JWFuY2llbnQlcG93ZXIl": "%ancient%power%"}),
-        ('flavor:"ancient power"', "(card.flavor_text ILIKE %(p_str_JWFuY2llbnQlcG93ZXIl)s)", {"p_str_JWFuY2llbnQlcG93ZXIl": "%ancient%power%"}),
-        ("flavor:magic", "(card.flavor_text ILIKE %(p_str_JW1hZ2ljJQ)s)", {"p_str_JW1hZ2ljJQ": "%magic%"}),
+        ("flavor:exile", "((card).flavor_text ILIKE %(p_str_JWV4aWxlJQ)s)", {"p_str_JWV4aWxlJQ": "%exile%"}),
+        ("flavor:'ancient power'", "((card).flavor_text ILIKE %(p_str_JWFuY2llbnQlcG93ZXIl)s)", {"p_str_JWFuY2llbnQlcG93ZXIl": "%ancient%power%"}),
+        ('flavor:"ancient power"', "((card).flavor_text ILIKE %(p_str_JWFuY2llbnQlcG93ZXIl)s)", {"p_str_JWFuY2llbnQlcG93ZXIl": "%ancient%power%"}),
+        ("flavor:magic", "((card).flavor_text ILIKE %(p_str_JW1hZ2ljJQ)s)", {"p_str_JW1hZ2ljJQ": "%magic%"}),
         # Test flavor search with complex phrases
         (
             "flavor:'power of darkness'",
-            "(card.flavor_text ILIKE %(p_str_JXBvd2VyJW9mJWRhcmtuZXNzJQ)s)",
+            "((card).flavor_text ILIKE %(p_str_JXBvd2VyJW9mJWRhcmtuZXNzJQ)s)",
             {"p_str_JXBvd2VyJW9mJWRhcmtuZXNzJQ": "%power%of%darkness%"},
         ),
     ],
@@ -733,7 +733,7 @@ def test_legality_search_sql_translation(input_query: str, expected_parameters: 
     context = {}
     observed_sql = parsed.to_sql(context)
     # Note: The parameter names will be auto-generated hashes, so we need a more flexible comparison
-    assert "(card.card_info).card_legalities @>" in observed_sql, f"Expected JSONB containment in SQL: {observed_sql}"
+    assert "((card).card_info).card_legalities @>" in observed_sql, f"Expected JSONB containment in SQL: {observed_sql}"
     # Check that we have exactly one parameter
     assert len(context) == 1, f"Expected exactly one parameter in context: {context}"
 

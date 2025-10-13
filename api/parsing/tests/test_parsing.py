@@ -709,40 +709,45 @@ def test_mana_cost_sql_generation() -> None:
     result1 = parsing.parse_scryfall_query("mana:{1}{G}")
     context1 = {}
     sql1 = result1.to_sql(context1)
-    assert "(card.mana_cost_text =" in sql1
+    assert "face_mana_cost_text =" in sql1
+    assert " OR " in sql1  # Should check both faces
     assert "{1}{G}" in context1.values()
 
-    # Test <= operator generates containment + cmc check
+    # Test <= operator generates containment + cmc check for both faces
     result2 = parsing.parse_scryfall_query("mana<={2}{R}{R}")
     context2 = {}
     sql2 = result2.to_sql(context2)
-    assert "card.mana_cost_jsonb <@" in sql2
-    assert "card.cmc <=" in sql2
+    assert "face_mana_cost_jsonb <@" in sql2
+    assert "face_cmc <=" in sql2
+    assert " OR " in sql2  # Should check both faces
     assert {"R": [1, 2]} in context2.values()
     assert 4 in context2.values()  # CMC of {2}{R}{R}
 
-    # Test < operator includes inequality check
+    # Test < operator includes inequality check for both faces
     result3 = parsing.parse_scryfall_query("mana<{1}{G}")
     context3 = {}
     sql3 = result3.to_sql(context3)
-    assert "card.mana_cost_jsonb <@" in sql3
-    assert "card.cmc <=" in sql3
-    assert "card.mana_cost_jsonb <>" in sql3
+    assert "face_mana_cost_jsonb <@" in sql3
+    assert "face_cmc <=" in sql3
+    assert "face_mana_cost_jsonb <>" in sql3
+    assert " OR " in sql3  # Should check both faces
 
-    # Test >= operator reverses containment direction
+    # Test >= operator reverses containment direction for both faces
     result4 = parsing.parse_scryfall_query("mana>={W}{U}")
     context4 = {}
     sql4 = result4.to_sql(context4)
-    assert "<@ card.mana_cost_jsonb" in sql4
-    assert "card.cmc >=" in sql4
+    assert "<@ " in sql4  # Contains the containment operator
+    assert "face_mana_cost_jsonb" in sql4
+    assert "face_cmc >=" in sql4
+    assert " OR " in sql4  # Should check both faces
 
-    # Test > operator includes inequality
+    # Test > operator includes inequality for both faces
     result5 = parsing.parse_scryfall_query("mana>{0}")
     context5 = {}
     sql5 = result5.to_sql(context5)
-    assert "<@ card.mana_cost_jsonb" in sql5
-    assert "card.cmc >=" in sql5
-    assert "card.mana_cost_jsonb <>" in sql5
+    assert "face_mana_cost_jsonb" in sql5
+    assert "face_cmc >=" in sql5
+    assert " OR " in sql5  # Should check both faces
 
 
 def test_mana_cost_cmc_calculation() -> None:
@@ -807,48 +812,58 @@ def test_devotion_sql_generation() -> None:
     result1 = parsing.parse_scryfall_query("devotion:{G}")
     context1 = {}
     sql1 = result1.to_sql(context1)
-    assert "card.devotion" in sql1
+    assert "face_devotion" in sql1
     assert "G" in str(context1.values())
 
     # Test >= operator generates containment check
     result2 = parsing.parse_scryfall_query("devotion>={G}")
     context2 = {}
     sql2 = result2.to_sql(context2)
-    assert "card.devotion" in sql2
+    assert "face_devotion" in sql2
     assert ">=" in sql2 or "@>" in sql2
 
     # Test >= operator with multiple colors
     result3 = parsing.parse_scryfall_query("devotion>={G}{R}")
     context3 = {}
     sql3 = result3.to_sql(context3)
-    assert "card.devotion" in sql3
+    assert "face_devotion" in sql3
     assert "G" in str(context3.values())
     assert "R" in str(context3.values())
 
 
-def test_mana_cost_string_format_comparisons() -> None:
-    """Test mana cost comparisons work with both {X} and X string formats."""
-    # Test that both formats parse correctly and generate SQL
-    queries_to_test = [
+@pytest.mark.parametrize(
+    argnames=("query", "description"),
+    argvalues=[
         ("mana>{g}{g}{g}", "Braced format should work"),
         ("mana>ggg", "Unbraced format should work"),
         ("m>GGG", "Uppercase unbraced should work"),
         ("mana<=ggg", "Less than or equal with unbraced"),
         ("mana<ggg", "Less than with unbraced"),
         ("mana>=ggg", "Greater than or equal with unbraced"),
-    ]
+    ],
+    ids=[
+        "braced format",
+        "unbraced format",
+        "uppercase unbraced format",
+        "less than or equal with unbraced",
+        "less than with unbraced",
+        "greater than or equal with unbraced",
+    ],
+)
+def test_mana_cost_string_format_comparisons(query: str, description: str) -> None:
+    """Test mana cost comparisons work with both {X} and X string formats."""
+    del description
+    # Test that both formats parse correctly and generate SQL
+    # Test that parsing works
+    result = parsing.parse_scryfall_query(query)
+    assert result is not None, f"Failed to parse {query}"
 
-    for query, _description in queries_to_test:
-        # Test that parsing works
-        result = parsing.parse_scryfall_query(query)
-        assert result is not None, f"Failed to parse {query}"
-
-        # Test that SQL generation works (should not raise NotImplementedError)
-        context = {}
-        sql = result.to_sql(context)
-        assert sql is not None, f"Failed to generate SQL for {query}"
-        assert "card.mana_cost_jsonb" in sql, f"Should use JSONB containment for {query}"
-        assert "card.cmc" in sql, f"Should use CMC check for {query}"
+    # Test that SQL generation works (should not raise NotImplementedError)
+    context = {}
+    sql = result.to_sql(context)
+    assert sql is not None, f"Failed to generate SQL for {query}"
+    assert "card.mana_cost_jsonb" in sql, f"Should use JSONB containment for {query}, got {sql}"
+    assert "card.cmc" in sql, f"Should use CMC check for {query}, got {sql}"
 
 
 @pytest.mark.parametrize(

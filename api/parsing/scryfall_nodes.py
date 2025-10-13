@@ -376,7 +376,8 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
 
         # Special handling for mana attributes with comparison operators
         if attr in ("face_mana_cost_text", "face_mana_cost_jsonb") and isinstance(self.rhs, ManaValueNode | StringValueNode):
-            return self._handle_mana_cost_comparison(context)
+            sql = self._handle_mana_cost_comparison(context)
+            return self._wrap_face_level_predicate(sql, attr)
 
         # Special handling for date/year searches
         if self.lhs.original_attribute in DATE_ATTRIBUTES:
@@ -713,7 +714,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             context[pname] = rhs
             # Color identity has inverted semantics for the : operator only
             is_color_identity = attr == "card_color_identity"
-        elif attr == "devotion":
+        elif attr == "face_devotion":
             # Devotion uses mana cost syntax, so we need to convert it to color comparison
             # Extract color codes from mana cost syntax like {G}, {R}{G}, etc.
             query_devotion = calculate_devotion(self.rhs.value.strip())
