@@ -538,84 +538,84 @@ def test_set_search_sql_translation(input_query: str, expected_sql: str, expecte
         # Basic rarity equality searches
         (
             "rarity:common",
-            "(card.card_rarity_int = %(p_int_MA)s)",
+            "(((card.print_info).card_rarity_int) = %(p_int_MA)s)",
             {"p_int_MA": 0},
         ),
         (
             "rarity:uncommon",
-            "(card.card_rarity_int = %(p_int_MQ)s)",
+            "(((card.print_info).card_rarity_int) = %(p_int_MQ)s)",
             {"p_int_MQ": 1},
         ),
         (
             "rarity:rare",
-            "(card.card_rarity_int = %(p_int_Mg)s)",
+            "(((card.print_info).card_rarity_int) = %(p_int_Mg)s)",
             {"p_int_Mg": 2},
         ),
         (
             "rarity:mythic",
-            "(card.card_rarity_int = %(p_int_Mw)s)",
+            "(((card.print_info).card_rarity_int) = %(p_int_Mw)s)",
             {"p_int_Mw": 3},
         ),
         (
             "rarity:special",
-            "(card.card_rarity_int = %(p_int_NA)s)",
+            "(((card.print_info).card_rarity_int) = %(p_int_NA)s)",
             {"p_int_NA": 4},
         ),
         (
             "rarity:bonus",
-            "(card.card_rarity_int = %(p_int_NQ)s)",
+            "(((card.print_info).card_rarity_int) = %(p_int_NQ)s)",
             {"p_int_NQ": 5},
         ),
         # Short alias tests
         (
             "r:common",
-            "(card.card_rarity_int = %(p_int_MA)s)",
+            "(((card.print_info).card_rarity_int) = %(p_int_MA)s)",
             {"p_int_MA": 0},
         ),
         (
             "r:mythic",
-            "(card.card_rarity_int = %(p_int_Mw)s)",
+            "(((card.print_info).card_rarity_int) = %(p_int_Mw)s)",
             {"p_int_Mw": 3},
         ),
         # Comparison operators - greater than
         (
             "rarity>common",
-            "(card.card_rarity_int > %(p_int_MA)s)",
+            "(((card.print_info).card_rarity_int) > %(p_int_MA)s)",
             {"p_int_MA": 0},
         ),
         (
             "rarity>uncommon",
-            "(card.card_rarity_int > %(p_int_MQ)s)",
+            "(((card.print_info).card_rarity_int) > %(p_int_MQ)s)",
             {"p_int_MQ": 1},
         ),
         # Comparison operators - greater than or equal
         (
             "rarity>=rare",
-            "(card.card_rarity_int >= %(p_int_Mg)s)",
+            "(((card.print_info).card_rarity_int) >= %(p_int_Mg)s)",
             {"p_int_Mg": 2},
         ),
         # Comparison operators - less than
         (
             "rarity<rare",
-            "(card.card_rarity_int < %(p_int_Mg)s)",
+            "(((card.print_info).card_rarity_int) < %(p_int_Mg)s)",
             {"p_int_Mg": 2},
         ),
         # Comparison operators - less than or equal
         (
             "rarity<=uncommon",
-            "(card.card_rarity_int <= %(p_int_MQ)s)",
+            "(((card.print_info).card_rarity_int) <= %(p_int_MQ)s)",
             {"p_int_MQ": 1},
         ),
         # Comparison operators - not equal
         (
             "rarity!=common",
-            "(card.card_rarity_int != %(p_int_MA)s)",
+            "(((card.print_info).card_rarity_int) != %(p_int_MA)s)",
             {"p_int_MA": 0},
         ),
         # Short alias with comparison
         (
             "r>common",
-            "(card.card_rarity_int > %(p_int_MA)s)",
+            "(((card.print_info).card_rarity_int) > %(p_int_MA)s)",
             {"p_int_MA": 0},
         ),
     ],
@@ -656,7 +656,7 @@ def test_rarity_case_insensitive() -> None:
         sql, params = generate_sql_query(parsed)
 
         # Should not raise errors and should generate valid SQL
-        assert sql.startswith("(card.card_rarity_int")
+        assert sql.startswith("(((card.print_info).card_rarity_int)")
         assert len(params) == 1
 
     # Test different cases for comparisons
@@ -664,7 +664,7 @@ def test_rarity_case_insensitive() -> None:
     sql, params = generate_sql_query(parsed_comparison)
 
     # Should contain simple numeric comparison and not raise errors
-    assert "card.card_rarity_int >" in sql
+    assert "(((card.print_info).card_rarity_int) >" in sql
     assert params[next(iter(params.keys()))] == 0  # common = 0
 
 
@@ -733,7 +733,7 @@ def test_legality_search_sql_translation(input_query: str, expected_parameters: 
     context = {}
     observed_sql = parsed.to_sql(context)
     # Note: The parameter names will be auto-generated hashes, so we need a more flexible comparison
-    assert "card.card_legalities @>" in observed_sql, f"Expected JSONB containment in SQL: {observed_sql}"
+    assert "((card.card_info).card_legalities) @>" in observed_sql, f"Expected JSONB containment in SQL: {observed_sql}"
     # Check that we have exactly one parameter
     assert len(context) == 1, f"Expected exactly one parameter in context: {context}"
 
