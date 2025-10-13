@@ -124,12 +124,20 @@ class TestCardProcessing:
     def test_preprocess_card_double_faced_card(self: TestCardProcessing) -> None:
         """Test preprocess_card filters out cards with card_faces."""
         double_sided_card = create_test_card(
-            card_faces=[{"name": "Front"}, {"name": "Back"}],  # Has card_faces
+            name="Hound Tamer // Untamed Pup",
+            card_faces=[
+                {"name": "Hound Tamer", "power": "3", "toughness": "3"},
+                {"name": "Untamed Pup", "power": "4", "toughness": "4"},
+            ],
         )
 
         front, back = preprocess_card(double_sided_card)
         assert front["face_idx"] == 1
+        assert front["card_name"] == "Hound Tamer // Untamed Pup"
+        assert front["face_name"] == "Hound Tamer"
         assert back["face_idx"] == 2
+        assert back["card_name"] == "Hound Tamer // Untamed Pup"
+        assert back["face_name"] == "Untamed Pup"
 
     def test_preprocess_card_filters_funny_sets(self: TestCardProcessing) -> None:
         """Test preprocess_card filters out funny set types."""

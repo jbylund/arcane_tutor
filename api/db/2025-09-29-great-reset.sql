@@ -201,6 +201,7 @@ CREATE TABLE magic.cards (
 
     -- columns
     card_name text NOT NULL,
+    face_name text NOT NULL,
     oracle_text text,
     raw_card_blob jsonb NOT NULL,
     mana_cost_text text,

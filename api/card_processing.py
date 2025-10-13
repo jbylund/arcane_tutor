@@ -93,6 +93,14 @@ def preprocess_card(card: dict[str, Any]) -> list[dict[str, Any]]:  # noqa: PLR0
         # this was already preprocessed... don't need re-process
         return [card]
 
+    # lift the name, because it shouldn't be clobbered by the card_faces
+    if "card_name" not in card:
+        # non recursive case
+        card["card_name"] = card.get("name")
+    else:
+        # recursive case
+        card["face_name"] = card.get("name")
+
     card_faces = card.get("card_faces")
     if card_faces:
         processed_faces = []
@@ -102,6 +110,9 @@ def preprocess_card(card: dict[str, Any]) -> list[dict[str, Any]]:  # noqa: PLR0
             processed_face = preprocess_card(merged)
             processed_faces.extend(processed_face)
         return processed_faces
+
+    # single face case
+    card.setdefault("face_name", card.get("name"))
 
     # Store the original card data before modifications for raw_card_blob
     raw_card_data = copy.deepcopy(card)
@@ -159,7 +170,6 @@ def preprocess_card(card: dict[str, Any]) -> list[dict[str, Any]]:  # noqa: PLR0
     card["devotion"] = calculate_devotion(mana_cost_text)
 
     # Map field names to match database column names for jsonb_populate_record
-    card["card_name"] = card.get("name")
     card["mana_cost_text"] = card.get("mana_cost")
     card["creature_power_text"] = card.get("power")
     card["creature_toughness_text"] = card.get("toughness")
