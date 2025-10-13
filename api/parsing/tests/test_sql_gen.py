@@ -10,48 +10,48 @@ from api.parsing.scryfall_nodes import get_legality_comparison_object
 @pytest.mark.parametrize(
     argnames=("input_query", "expected_sql", "expected_parameters"),
     argvalues=[
-        ("cmc=3", "((((card.card_info).front_face).face_cmc = %(p_int_Mw)s) OR (((card.card_info).back_face).face_cmc = %(p_int_Mw)s))", {"p_int_Mw": 3}),
-        ("power=3", "((((card.card_info).front_face).face_creature_power = %(p_int_Mw)s) OR (((card.card_info).back_face).face_creature_power = %(p_int_Mw)s))", {"p_int_Mw": 3}),
-        ("cmc=3 power=3", "((((card.card_info).front_face).face_cmc = %(p_int_Mw)s) OR (((card.card_info).back_face).face_cmc = %(p_int_Mw)s)) AND ((((card.card_info).front_face).face_creature_power = %(p_int_Mw)s) OR (((card.card_info).back_face).face_creature_power = %(p_int_Mw)s))", {"p_int_Mw": 3}),
-        ("power=toughness", "((((card.card_info).front_face).face_creature_power = ((card.card_info).front_face).face_creature_toughness) OR (((card.card_info).back_face).face_creature_power = ((card.card_info).back_face).face_creature_toughness))", {}),
-        ("power:toughness", "((((card.card_info).front_face).face_creature_power = ((card.card_info).front_face).face_creature_toughness) OR (((card.card_info).back_face).face_creature_power = ((card.card_info).back_face).face_creature_toughness))", {}),
-        ("power>toughness", "((((card.card_info).front_face).face_creature_power > ((card.card_info).front_face).face_creature_toughness) OR (((card.card_info).back_face).face_creature_power > ((card.card_info).back_face).face_creature_toughness))", {}),
-        ("power<toughness", "((((card.card_info).front_face).face_creature_power < ((card.card_info).front_face).face_creature_toughness) OR (((card.card_info).back_face).face_creature_power < ((card.card_info).back_face).face_creature_toughness))", {}),
-        ("power>cmc+1", r"((((card.card_info).front_face).face_creature_power > (((card.card_info).front_face).face_cmc + %(p_int_MQ)s)) OR (((card.card_info).back_face).face_creature_power > (((card.card_info).back_face).face_cmc + %(p_int_MQ)s)))", {"p_int_MQ": 1}),
-        ("power-cmc>1", r"(((((card.card_info).front_face).face_creature_power - ((card.card_info).front_face).face_cmc) > %(p_int_MQ)s) OR ((((card.card_info).back_face).face_creature_power - ((card.card_info).back_face).face_cmc) > %(p_int_MQ)s))", {"p_int_MQ": 1}),
-        ("1<power-cmc", r"((%(p_int_MQ)s < (((card.card_info).front_face).face_creature_power - ((card.card_info).front_face).face_cmc)) OR (%(p_int_MQ)s < (((card.card_info).back_face).face_creature_power - ((card.card_info).back_face).face_cmc)))", {"p_int_MQ": 1}),
+        ("cmc=3", "((((card).card_info).front_face).face_cmc = %(p_int_Mw)s) OR (((card).card_info).back_face).face_cmc = %(p_int_Mw)s))", {"p_int_Mw": 3}),
+        ("power=3", "((((card).card_info).front_face).face_creature_power = %(p_int_Mw)s) OR (((card).card_info).back_face).face_creature_power = %(p_int_Mw)s))", {"p_int_Mw": 3}),
+        ("cmc=3 power=3", "((((card).card_info).front_face).face_cmc = %(p_int_Mw)s) OR (((card).card_info).back_face).face_cmc = %(p_int_Mw)s)) AND ((((card).card_info).front_face).face_creature_power = %(p_int_Mw)s) OR (((card).card_info).back_face).face_creature_power = %(p_int_Mw)s))", {"p_int_Mw": 3}),
+        ("power=toughness", "((((card).card_info).front_face).face_creature_power = ((card).card_info).front_face).face_creature_toughness) OR (((card).card_info).back_face).face_creature_power = ((card).card_info).back_face).face_creature_toughness))", {}),
+        ("power:toughness", "((((card).card_info).front_face).face_creature_power = ((card).card_info).front_face).face_creature_toughness) OR (((card).card_info).back_face).face_creature_power = ((card).card_info).back_face).face_creature_toughness))", {}),
+        ("power>toughness", "((((card).card_info).front_face).face_creature_power > ((card).card_info).front_face).face_creature_toughness) OR (((card).card_info).back_face).face_creature_power > ((card).card_info).back_face).face_creature_toughness))", {}),
+        ("power<toughness", "((((card).card_info).front_face).face_creature_power < ((card).card_info).front_face).face_creature_toughness) OR (((card).card_info).back_face).face_creature_power < ((card).card_info).back_face).face_creature_toughness))", {}),
+        ("power>cmc+1", r"((((card).card_info).front_face).face_creature_power > (((card).card_info).front_face).face_cmc + %(p_int_MQ)s)) OR (((card).card_info).back_face).face_creature_power > (((card).card_info).back_face).face_cmc + %(p_int_MQ)s)))", {"p_int_MQ": 1}),
+        ("power-cmc>1", r"(((((card).card_info).front_face).face_creature_power - ((card).card_info).front_face).face_cmc) > %(p_int_MQ)s) OR ((((card).card_info).back_face).face_creature_power - ((card).card_info).back_face).face_cmc) > %(p_int_MQ)s))", {"p_int_MQ": 1}),
+        ("1<power-cmc", r"((%(p_int_MQ)s < (((card).card_info).front_face).face_creature_power - ((card).card_info).front_face).face_cmc)) OR (%(p_int_MQ)s < (((card).card_info).back_face).face_creature_power - ((card).card_info).back_face).face_cmc)))", {"p_int_MQ": 1}),
         (
             "cmc+cmc+2<power+toughness",
-            r"(((((card.card_info).front_face).face_cmc + ((card.card_info).front_face).face_cmc) + %(p_int_Mg)s) < (((card.card_info).front_face).face_creature_power + ((card.card_info).front_face).face_creature_toughness)) OR ((((((card.card_info).back_face).face_cmc + ((card.card_info).back_face).face_cmc) + %(p_int_Mg)s) < (((card.card_info).back_face).face_creature_power + ((card.card_info).back_face).face_creature_toughness)))",
+            r"(((((card).card_info).front_face).face_cmc + ((card).card_info).front_face).face_cmc) + %(p_int_Mg)s) < (((card).card_info).front_face).face_creature_power + ((card).card_info).front_face).face_creature_toughness)) OR ((((((card).card_info).back_face).face_cmc + ((card).card_info).back_face).face_cmc) + %(p_int_Mg)s) < (((card).card_info).back_face).face_creature_power + ((card).card_info).back_face).face_creature_toughness)))",
             {"p_int_Mg": 2},
         ),
         # Test field-specific : operator behavior
-        ("name:lightning", r"(((card.card_info).card_name) ILIKE %(p_str_JWxpZ2h0bmluZyU)s)", {"p_str_JWxpZ2h0bmluZyU": r"%lightning%"}),
+        ("name:lightning", r"(((card).card_info).card_name) ILIKE %(p_str_JWxpZ2h0bmluZyU)s)", {"p_str_JWxpZ2h0bmluZyU": r"%lightning%"}),
         (
             "name:'lightning bolt'",
-            r"(((card.card_info).card_name) ILIKE %(p_str_JWxpZ2h0bmluZyVib2x0JQ)s)",
+            r"(((card).card_info).card_name) ILIKE %(p_str_JWxpZ2h0bmluZyVib2x0JQ)s)",
             {"p_str_JWxpZ2h0bmluZyVib2x0JQ": r"%lightning%bolt%"},
         ),
-        ("cmc:3", "((((card.card_info).front_face).face_cmc = %(p_int_Mw)s) OR (((card.card_info).back_face).face_cmc = %(p_int_Mw)s))", {"p_int_Mw": 3}),  # Numeric field uses exact equality
-        ("power:5", "((((card.card_info).front_face).face_creature_power = %(p_int_NQ)s) OR (((card.card_info).back_face).face_creature_power = %(p_int_NQ)s))", {"p_int_NQ": 5}),  # Numeric field uses exact equality
+        ("cmc:3", "((((card).card_info).front_face).face_cmc = %(p_int_Mw)s) OR (((card).card_info).back_face).face_cmc = %(p_int_Mw)s))", {"p_int_Mw": 3}),  # Numeric field uses exact equality
+        ("power:5", "((((card).card_info).front_face).face_creature_power = %(p_int_NQ)s) OR (((card).card_info).back_face).face_creature_power = %(p_int_NQ)s))", {"p_int_NQ": 5}),  # Numeric field uses exact equality
         # loyalty tests
-        ("loyalty=3", "((((card.card_info).front_face).face_planeswalker_loyalty = %(p_int_Mw)s) OR (((card.card_info).back_face).face_planeswalker_loyalty = %(p_int_Mw)s))", {"p_int_Mw": 3}),
-        ("loyalty>5", "((((card.card_info).front_face).face_planeswalker_loyalty > %(p_int_NQ)s) OR (((card.card_info).back_face).face_planeswalker_loyalty > %(p_int_NQ)s))", {"p_int_NQ": 5}),
-        ("loyalty<=7", "((((card.card_info).front_face).face_planeswalker_loyalty <= %(p_int_Nw)s) OR (((card.card_info).back_face).face_planeswalker_loyalty <= %(p_int_Nw)s))", {"p_int_Nw": 7}),
-        ("loy:4", "((((card.card_info).front_face).face_planeswalker_loyalty = %(p_int_NA)s) OR (((card.card_info).back_face).face_planeswalker_loyalty = %(p_int_NA)s))", {"p_int_NA": 4}),
+        ("loyalty=3", "((((card).card_info).front_face).face_planeswalker_loyalty = %(p_int_Mw)s) OR (((card).card_info).back_face).face_planeswalker_loyalty = %(p_int_Mw)s))", {"p_int_Mw": 3}),
+        ("loyalty>5", "((((card).card_info).front_face).face_planeswalker_loyalty > %(p_int_NQ)s) OR (((card).card_info).back_face).face_planeswalker_loyalty > %(p_int_NQ)s))", {"p_int_NQ": 5}),
+        ("loyalty<=7", "((((card).card_info).front_face).face_planeswalker_loyalty <= %(p_int_Nw)s) OR (((card).card_info).back_face).face_planeswalker_loyalty <= %(p_int_Nw)s))", {"p_int_Nw": 7}),
+        ("loy:4", "((((card).card_info).front_face).face_planeswalker_loyalty = %(p_int_NA)s) OR (((card).card_info).back_face).face_planeswalker_loyalty = %(p_int_NA)s))", {"p_int_NA": 4}),
         # color
-        ("color:g", "((((card.card_info).front_face).face_colors @> %(p_dict_eydHJzogVHJ1ZX0)s) OR (((card.card_info).back_face).face_colors @> %(p_dict_eydHJzogVHJ1ZX0)s))", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # >=
-        ("color=g", "((((card.card_info).front_face).face_colors = %(p_dict_eydHJzogVHJ1ZX0)s) OR (((card.card_info).back_face).face_colors = %(p_dict_eydHJzogVHJ1ZX0)s))", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # =
-        ("color<=g", "((((card.card_info).front_face).face_colors <@ %(p_dict_eydHJzogVHJ1ZX0)s) OR (((card.card_info).back_face).face_colors <@ %(p_dict_eydHJzogVHJ1ZX0)s))", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # <=
-        ("color>=g", "((((card.card_info).front_face).face_colors @> %(p_dict_eydHJzogVHJ1ZX0)s) OR (((card.card_info).back_face).face_colors @> %(p_dict_eydHJzogVHJ1ZX0)s))", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # >=
+        ("color:g", "((((card).card_info).front_face).face_colors @> %(p_dict_eydHJzogVHJ1ZX0)s) OR (((card).card_info).back_face).face_colors @> %(p_dict_eydHJzogVHJ1ZX0)s))", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # >=
+        ("color=g", "((((card).card_info).front_face).face_colors = %(p_dict_eydHJzogVHJ1ZX0)s) OR (((card).card_info).back_face).face_colors = %(p_dict_eydHJzogVHJ1ZX0)s))", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # =
+        ("color<=g", "((((card).card_info).front_face).face_colors <@ %(p_dict_eydHJzogVHJ1ZX0)s) OR (((card).card_info).back_face).face_colors <@ %(p_dict_eydHJzogVHJ1ZX0)s))", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # <=
+        ("color>=g", "((((card).card_info).front_face).face_colors @> %(p_dict_eydHJzogVHJ1ZX0)s) OR (((card).card_info).back_face).face_colors @> %(p_dict_eydHJzogVHJ1ZX0)s))", {"p_dict_eydHJzogVHJ1ZX0": {"G": True}}),  # >=
         (
             "color>g",
-            "((((card.card_info).front_face).face_colors @> %(p_dict_eydHJzogVHJ1ZX0)s AND ((card.card_info).front_face).face_colors <> %(p_dict_eydHJzogVHJ1ZX0)s) OR (((card.card_info).back_face).face_colors @> %(p_dict_eydHJzogVHJ1ZX0)s AND ((card.card_info).back_face).face_colors <> %(p_dict_eydHJzogVHJ1ZX0)s))",
+            "((((card).card_info).front_face).face_colors @> %(p_dict_eydHJzogVHJ1ZX0)s AND ((card).card_info).front_face).face_colors <> %(p_dict_eydHJzogVHJ1ZX0)s) OR (((card).card_info).back_face).face_colors @> %(p_dict_eydHJzogVHJ1ZX0)s AND ((card).card_info).back_face).face_colors <> %(p_dict_eydHJzogVHJ1ZX0)s))",
             {"p_dict_eydHJzogVHJ1ZX0": {"G": True}},
         ),  # >
         (
             "color<g",
-            "((((card.card_info).front_face).face_colors <@ %(p_dict_eydHJzogVHJ1ZX0)s AND ((card.card_info).front_face).face_colors <> %(p_dict_eydHJzogVHJ1ZX0)s) OR (((card.card_info).back_face).face_colors <@ %(p_dict_eydHJzogVHJ1ZX0)s AND ((card.card_info).back_face).face_colors <> %(p_dict_eydHJzogVHJ1ZX0)s))",
+            "((((card).card_info).front_face).face_colors <@ %(p_dict_eydHJzogVHJ1ZX0)s AND ((card).card_info).front_face).face_colors <> %(p_dict_eydHJzogVHJ1ZX0)s) OR (((card).card_info).back_face).face_colors <@ %(p_dict_eydHJzogVHJ1ZX0)s AND ((card).card_info).back_face).face_colors <> %(p_dict_eydHJzogVHJ1ZX0)s))",
             {"p_dict_eydHJzogVHJ1ZX0": {"G": True}},
         ),  # <
     ],
@@ -68,11 +68,11 @@ def test_full_sql_translation(input_query: str, expected_sql: str, expected_para
 @pytest.mark.parametrize(
     argnames=("input_query", "expected_sql", "expected_parameters"),
     argvalues=[
-        (
-            "colors:red",
-            r"(card.card_colors @> %(p_dict_eydSJzogVHJ1ZX0)s)",
-            {"p_dict_eydSJzogVHJ1ZX0": {"R": True}},
-        ),  # JSONB object uses containment
+            (
+                "colors:red",
+                r"(((((card).card_info).front_face).face_colors @> %(p_dict_eydSJzogVHJ1ZX0)s) OR (((card).card_info).back_face).face_colors @> %(p_dict_eydSJzogVHJ1ZX0)s))",
+                {"p_dict_eydSJzogVHJ1ZX0": {"R": True}},
+            ),  # JSONB object uses containment
         (
             "colors:rg",
             r"(card.card_colors @> %(p_dict_eydSJzogVHJ1ZSwgJ0cnOiBUcnVlfQ)s)",
@@ -267,57 +267,57 @@ def test_flavor_text_sql_translation(input_query: str, expected_sql: str, expect
         # Basic keyword search
         (
             "keyword:flying",
-            r"(card.card_keywords @> %(p_dict_eydGbHlpbmcnOiBUcnVlfQ)s)",
+            r"(((card).card_info).card_keywords @> %(p_dict_eydGbHlpbmcnOiBUcnVlfQ)s)",
             {"p_dict_eydGbHlpbmcnOiBUcnVlfQ": {"Flying": True}},
         ),
         # Keyword search with colon operator (should behave like @>)
         (
             "keyword:trample",
-            r"(card.card_keywords @> %(p_dict_eydUcmFtcGxlJzogVHJ1ZX0)s)",
+            r"(((card).card_info).card_keywords @> %(p_dict_eydUcmFtcGxlJzogVHJ1ZX0)s)",
             {"p_dict_eydUcmFtcGxlJzogVHJ1ZX0": {"Trample": True}},
         ),
         # Keyword search (updated from alias 'k')
         (
             "keyword:haste",
-            r"(card.card_keywords @> %(p_dict_eydIYXN0ZSc6IFRydWV9)s)",
+            r"(((card).card_info).card_keywords @> %(p_dict_eydIYXN0ZSc6IFRydWV9)s)",
             {"p_dict_eydIYXN0ZSc6IFRydWV9": {"Haste": True}},
         ),
         # Keyword equality
         (
             "keyword=vigilance",
-            r"(card.card_keywords = %(p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ)s)",
+            r"(((card).card_info).card_keywords = %(p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ)s)",
             {"p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ": {"Vigilance": True}},
         ),
         # Custom keyword (not in the predefined list)
         (
             "keyword:customability",
-            r"(card.card_keywords @> %(p_dict_eydDdXN0b21hYmlsaXR5JzogVHJ1ZX0)s)",
+            r"(((card).card_info).card_keywords @> %(p_dict_eydDdXN0b21hYmlsaXR5JzogVHJ1ZX0)s)",
             {"p_dict_eydDdXN0b21hYmlsaXR5JzogVHJ1ZX0": {"Customability": True}},
         ),
         # Test different operators
         (
             "keyword>=flying",
-            r"(card.card_keywords @> %(p_dict_eydGbHlpbmcnOiBUcnVlfQ)s)",
+            r"(((card).card_info).card_keywords @> %(p_dict_eydGbHlpbmcnOiBUcnVlfQ)s)",
             {"p_dict_eydGbHlpbmcnOiBUcnVlfQ": {"Flying": True}},
         ),
         (
             "keyword<=haste",
-            r"(card.card_keywords <@ %(p_dict_eydIYXN0ZSc6IFRydWV9)s)",
+            r"(((card).card_info).card_keywords <@ %(p_dict_eydIYXN0ZSc6IFRydWV9)s)",
             {"p_dict_eydIYXN0ZSc6IFRydWV9": {"Haste": True}},
         ),
         (
             "keyword>trample",
-            r"(card.card_keywords @> %(p_dict_eydUcmFtcGxlJzogVHJ1ZX0)s AND card.card_keywords <> %(p_dict_eydUcmFtcGxlJzogVHJ1ZX0)s)",
+            r"(((card).card_info).card_keywords @> %(p_dict_eydUcmFtcGxlJzogVHJ1ZX0)s AND ((card).card_info).card_keywords <> %(p_dict_eydUcmFtcGxlJzogVHJ1ZX0)s)",
             {"p_dict_eydUcmFtcGxlJzogVHJ1ZX0": {"Trample": True}},
         ),
         (
             "keyword<vigilance",
-            r"(card.card_keywords <@ %(p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ)s AND card.card_keywords <> %(p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ)s)",
+            r"(((card).card_info).card_keywords <@ %(p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ)s AND ((card).card_info).card_keywords <> %(p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ)s)",
             {"p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ": {"Vigilance": True}},
         ),
         (
             "keyword!=flying",
-            r"(card.card_keywords <> %(p_dict_eydGbHlpbmcnOiBUcnVlfQ)s)",
+            r"(((card).card_info).card_keywords <> %(p_dict_eydGbHlpbmcnOiBUcnVlfQ)s)",
             {"p_dict_eydGbHlpbmcnOiBUcnVlfQ": {"Flying": True}},
         ),
     ],
@@ -494,31 +494,31 @@ def test_case_insensitive_attributes(input_query: str, expected_sql: str, expect
         # Basic set search with full 'set:' syntax
         (
             "set:iko",
-            r"(card.card_set_code = %(p_str_aWtv)s)",
+            r"(((card).print_info).card_set_code = %(p_str_aWtv)s)",
             {"p_str_aWtv": "iko"},
         ),
         # Set search with 's:' shorthand
         (
             "s:iko",
-            r"(card.card_set_code = %(p_str_aWtv)s)",
+            r"(((card).print_info).card_set_code = %(p_str_aWtv)s)",
             {"p_str_aWtv": "iko"},
         ),
         # Case-insensitive set attribute search
         (
             "SET:iko",
-            r"(card.card_set_code = %(p_str_aWtv)s)",
+            r"(((card).print_info).card_set_code = %(p_str_aWtv)s)",
             {"p_str_aWtv": "iko"},
         ),
         # Set search with different set codes
         (
             "set:thb",
-            r"(card.card_set_code = %(p_str_dGhi)s)",
+            r"(((card).print_info).card_set_code = %(p_str_dGhi)s)",
             {"p_str_dGhi": "thb"},
         ),
         # Set search with multiple characters
         (
             "s:m21",
-            r"(card.card_set_code = %(p_str_bTIx)s)",
+            r"(((card).print_info).card_set_code = %(p_str_bTIx)s)",
             {"p_str_bTIx": "m21"},
         ),
     ],
@@ -538,84 +538,84 @@ def test_set_search_sql_translation(input_query: str, expected_sql: str, expecte
         # Basic rarity equality searches
         (
             "rarity:common",
-            "(((card.print_info).card_rarity_int) = %(p_int_MA)s)",
+                "(((card).print_info).card_rarity_int = %(p_int_MA)s)",
             {"p_int_MA": 0},
         ),
         (
             "rarity:uncommon",
-            "(((card.print_info).card_rarity_int) = %(p_int_MQ)s)",
+                "(((card).print_info).card_rarity_int = %(p_int_MQ)s)",
             {"p_int_MQ": 1},
         ),
         (
             "rarity:rare",
-            "(((card.print_info).card_rarity_int) = %(p_int_Mg)s)",
+                "(((card).print_info).card_rarity_int = %(p_int_Mg)s)",
             {"p_int_Mg": 2},
         ),
         (
             "rarity:mythic",
-            "(((card.print_info).card_rarity_int) = %(p_int_Mw)s)",
+                "(((card).print_info).card_rarity_int = %(p_int_Mw)s)",
             {"p_int_Mw": 3},
         ),
         (
             "rarity:special",
-            "(((card.print_info).card_rarity_int) = %(p_int_NA)s)",
+                "(((card).print_info).card_rarity_int = %(p_int_NA)s)",
             {"p_int_NA": 4},
         ),
         (
             "rarity:bonus",
-            "(((card.print_info).card_rarity_int) = %(p_int_NQ)s)",
+                "(((card).print_info).card_rarity_int = %(p_int_NQ)s)",
             {"p_int_NQ": 5},
         ),
         # Short alias tests
         (
             "r:common",
-            "(((card.print_info).card_rarity_int) = %(p_int_MA)s)",
+                "(((card).print_info).card_rarity_int = %(p_int_MA)s)",
             {"p_int_MA": 0},
         ),
         (
             "r:mythic",
-            "(((card.print_info).card_rarity_int) = %(p_int_Mw)s)",
+                "(((card).print_info).card_rarity_int = %(p_int_Mw)s)",
             {"p_int_Mw": 3},
         ),
         # Comparison operators - greater than
         (
             "rarity>common",
-            "(((card.print_info).card_rarity_int) > %(p_int_MA)s)",
+                "(((card).print_info).card_rarity_int > %(p_int_MA)s)",
             {"p_int_MA": 0},
         ),
         (
             "rarity>uncommon",
-            "(((card.print_info).card_rarity_int) > %(p_int_MQ)s)",
+                "(((card).print_info).card_rarity_int > %(p_int_MQ)s)",
             {"p_int_MQ": 1},
         ),
         # Comparison operators - greater than or equal
         (
             "rarity>=rare",
-            "(((card.print_info).card_rarity_int) >= %(p_int_Mg)s)",
+                "(((card).print_info).card_rarity_int >= %(p_int_Mg)s)",
             {"p_int_Mg": 2},
         ),
         # Comparison operators - less than
         (
             "rarity<rare",
-            "(((card.print_info).card_rarity_int) < %(p_int_Mg)s)",
+                "(((card).print_info).card_rarity_int < %(p_int_Mg)s)",
             {"p_int_Mg": 2},
         ),
         # Comparison operators - less than or equal
         (
             "rarity<=uncommon",
-            "(((card.print_info).card_rarity_int) <= %(p_int_MQ)s)",
+                "(((card).print_info).card_rarity_int <= %(p_int_MQ)s)",
             {"p_int_MQ": 1},
         ),
         # Comparison operators - not equal
         (
             "rarity!=common",
-            "(((card.print_info).card_rarity_int) != %(p_int_MA)s)",
+                "(((card).print_info).card_rarity_int != %(p_int_MA)s)",
             {"p_int_MA": 0},
         ),
         # Short alias with comparison
         (
             "r>common",
-            "(((card.print_info).card_rarity_int) > %(p_int_MA)s)",
+                "(((card).print_info).card_rarity_int > %(p_int_MA)s)",
             {"p_int_MA": 0},
         ),
     ],
@@ -656,7 +656,7 @@ def test_rarity_case_insensitive() -> None:
         sql, params = generate_sql_query(parsed)
 
         # Should not raise errors and should generate valid SQL
-        assert sql.startswith("(((card.print_info).card_rarity_int)")
+        assert sql.startswith("(((card).print_info).card_rarity_int")
         assert len(params) == 1
 
     # Test different cases for comparisons
@@ -664,18 +664,18 @@ def test_rarity_case_insensitive() -> None:
     sql, params = generate_sql_query(parsed_comparison)
 
     # Should contain simple numeric comparison and not raise errors
-    assert "(((card.print_info).card_rarity_int) >" in sql
+    assert "(((card).print_info).card_rarity_int >" in sql
     assert params[next(iter(params.keys()))] == 0  # common = 0
 
 
 @pytest.mark.parametrize(
     argnames=("input_query", "expected_sql", "expected_parameters"),
     argvalues=[
-        ("artist:moeller", r"(card.card_artist ILIKE %(p_str_JW1vZWxsZXIl)s)", {"p_str_JW1vZWxsZXIl": r"%moeller%"}),
-        ("a:moeller", r"(card.card_artist ILIKE %(p_str_JW1vZWxsZXIl)s)", {"p_str_JW1vZWxsZXIl": r"%moeller%"}),
-        ('artist:"Christopher Moeller"', r"(card.card_artist ILIKE %(p_str_JUNocmlzdG9waGVyJU1vZWxsZXIl)s)", {"p_str_JUNocmlzdG9waGVyJU1vZWxsZXIl": r"%Christopher%Moeller%"}),
-        ("artist:nielsen", r"(card.card_artist ILIKE %(p_str_JW5pZWxzZW4l)s)", {"p_str_JW5pZWxzZW4l": r"%nielsen%"}),
-        ("ARTIST:moeller", r"(card.card_artist ILIKE %(p_str_JW1vZWxsZXIl)s)", {"p_str_JW1vZWxsZXIl": r"%moeller%"}),
+        ("artist:moeller", r"((((card).print_info).front_face).print_artist ILIKE %(p_str_JW1vZWxsZXIl)s)", {"p_str_JW1vZWxsZXIl": r"%moeller%"}),
+        ("a:moeller", r"((((card).print_info).front_face).print_artist ILIKE %(p_str_JW1vZWxsZXIl)s)", {"p_str_JW1vZWxsZXIl": r"%moeller%"}),
+        ('artist:"Christopher Moeller"', r"((((card).print_info).front_face).print_artist ILIKE %(p_str_JUNocmlzdG9waGVyJU1vZWxsZXIl)s)", {"p_str_JUNocmlzdG9waGVyJU1vZWxsZXIl": r"%Christopher%Moeller%"}),
+        ("artist:nielsen", r"((((card).print_info).front_face).print_artist ILIKE %(p_str_JW5pZWxzZW4l)s)", {"p_str_JW5pZWxzZW4l": r"%nielsen%"}),
+        ("ARTIST:moeller", r"((((card).print_info).front_face).print_artist ILIKE %(p_str_JW1vZWxsZXIl)s)", {"p_str_JW1vZWxsZXIl": r"%moeller%"}),
     ],
 )
 def test_artist_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
@@ -733,7 +733,7 @@ def test_legality_search_sql_translation(input_query: str, expected_parameters: 
     context = {}
     observed_sql = parsed.to_sql(context)
     # Note: The parameter names will be auto-generated hashes, so we need a more flexible comparison
-    assert "((card.card_info).card_legalities) @>" in observed_sql, f"Expected JSONB containment in SQL: {observed_sql}"
+    assert "((card).card_info).card_legalities @>" in observed_sql, f"Expected JSONB containment in SQL: {observed_sql}"
     # Check that we have exactly one parameter
     assert len(context) == 1, f"Expected exactly one parameter in context: {context}"
 
@@ -753,27 +753,27 @@ def test_legality_invalid_attribute() -> None:
     argvalues=[
         (
             "number:123",
-            "(card.collector_number = %(p_str_",
+            "((card).print_info).collector_number = %(p_str_",
             {"123"},
         ),
         (
             "cn:45",
-            "(card.collector_number = %(p_str_",
+            "((card).print_info).collector_number = %(p_str_",
             {"45"},
         ),
         (
             "number:1a",
-            "(card.collector_number = %(p_str_",
+            "((card).print_info).collector_number = %(p_str_",
             {"1a"},
         ),
         (
             "cn:100b",
-            "(card.collector_number = %(p_str_",
+            "((card).print_info).collector_number = %(p_str_",
             {"100b"},
         ),
         (
             'number:"123"',
-            "(card.collector_number = %(p_str_",
+            "((card).print_info).collector_number = %(p_str_",
             {"123"},
         ),
     ],
@@ -796,22 +796,22 @@ def test_collector_number_sql_translation(input_query: str, expected_sql_fragmen
     argvalues=[
         (
             "number>50",
-            "(card.collector_number_int > %(p_int_",
+            "((card).print_info).collector_number_int > %(p_int_",
             {50},
         ),
         (
             "cn<100",
-            "(card.collector_number_int < %(p_int_",
+            "((card).print_info).collector_number_int < %(p_int_",
             {100},
         ),
         (
             "number>=25",
-            "(card.collector_number_int >= %(p_int_",
+            "((card).print_info).collector_number_int >= %(p_int_",
             {25},
         ),
         (
             "cn<=75",
-            "(card.collector_number_int <= %(p_int_",
+            "((card).print_info).collector_number_int <= %(p_int_",
             {75},
         ),
     ],
@@ -957,23 +957,23 @@ def test_negated_type_queries_generate_simple_sql(input_query: str, expected_sql
         # Frame version search (exact matching with JSONB object, all titlecased)
         (
             "frame:2015",
-            r"(card.card_frame_data @> %(p_dict_eycyMDE1JzogVHJ1ZX0)s)",
+            r"((((card).print_info).front_face).print_frame_data @> %(p_dict_eycyMDE1JzogVHJ1ZX0)s)",
             {"p_dict_eycyMDE1JzogVHJ1ZX0": {"2015": True}},
         ),
         (
             "frame:1997",
-            r"(card.card_frame_data @> %(p_dict_eycxOTk3JzogVHJ1ZX0)s)",
+            r"((((card).print_info).front_face).print_frame_data @> %(p_dict_eycxOTk3JzogVHJ1ZX0)s)",
             {"p_dict_eycxOTk3JzogVHJ1ZX0": {"1997": True}},
         ),
         # Frame effects search (using same frame: syntax, titlecased)
         (
             "frame:showcase",
-            r"(card.card_frame_data @> %(p_dict_eydTaG93Y2FzZSc6IFRydWV9)s)",
+            r"((((card).print_info).front_face).print_frame_data @> %(p_dict_eydTaG93Y2FzZSc6IFRydWV9)s)",
             {"p_dict_eydTaG93Y2FzZSc6IFRydWV9": {"Showcase": True}},
         ),
         (
             "frame:legendary",
-            r"(card.card_frame_data @> %(p_dict_eydMZWdlbmRhcnknOiBUcnVlfQ)s)",
+            r"((((card).print_info).front_face).print_frame_data @> %(p_dict_eydMZWdlbmRhcnknOiBUcnVlfQ)s)",
             {"p_dict_eydMZWdlbmRhcnknOiBUcnVlfQ": {"Legendary": True}},
         ),
     ],

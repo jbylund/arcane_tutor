@@ -95,7 +95,7 @@ class TestRegexSQLGeneration:
         result = parsing.parse_scryfall_query(r"name:/\bizzet\b/")
         sql, params = generate_sql_query(result)
 
-        assert "card.card_name ~*" in sql
+        assert "((card).card_info).card_name ~*" in sql
         assert len(params) == 1
         assert r"\bizzet\b" in params.values()
 
@@ -104,7 +104,7 @@ class TestRegexSQLGeneration:
         result = parsing.parse_scryfall_query("o:/^{T}:/")
         sql, params = generate_sql_query(result)
 
-        assert "card.oracle_text ~*" in sql
+        assert "face_oracle_text ~*" in sql
         assert len(params) == 1
         assert "^{T}:" in params.values()
 
@@ -113,7 +113,7 @@ class TestRegexSQLGeneration:
         result = parsing.parse_scryfall_query("flavor:/magic/")
         sql, params = generate_sql_query(result)
 
-        assert "card.flavor_text ~*" in sql
+        assert "print_flavor_text ~*" in sql
         assert len(params) == 1
         assert "magic" in params.values()
 

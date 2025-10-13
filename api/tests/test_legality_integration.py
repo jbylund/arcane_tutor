@@ -16,7 +16,7 @@ class TestLegalityIntegration:
         sql, params = generate_sql_query(parsed)
 
         # Should generate JSONB containment query
-        assert "card_legalities) @>" in sql
+        assert "card_legalities @>" in sql
         assert len(params) == 1
 
         # Parameter should contain format -> legal mapping
@@ -30,7 +30,7 @@ class TestLegalityIntegration:
         sql, params = generate_sql_query(parsed)
 
         # Should generate JSONB containment query
-        assert "card_legalities) @>" in sql
+        assert "card_legalities @>" in sql
         assert len(params) == 1
 
         # Parameter should contain format -> banned mapping
@@ -44,7 +44,7 @@ class TestLegalityIntegration:
         sql, params = generate_sql_query(parsed)
 
         # Should generate JSONB containment query
-        assert "card_legalities) @>" in sql
+        assert "card_legalities @>" in sql
         assert len(params) == 1
 
         # Parameter should contain format -> restricted mapping
@@ -58,7 +58,7 @@ class TestLegalityIntegration:
         sql, params = generate_sql_query(parsed)
 
         # Should generate JSONB containment query
-        assert "card_legalities) @>" in sql
+        assert "card_legalities @>" in sql
         assert len(params) == 1
 
         # Parameter should contain format -> legal mapping
@@ -72,7 +72,7 @@ class TestLegalityIntegration:
         sql, params = generate_sql_query(parsed)
 
         # Should generate JSONB containment query
-        assert "card_legalities) @>" in sql
+        assert "card_legalities @>" in sql
         assert len(params) == 1
 
         # Parameter should contain format -> legal mapping
@@ -110,7 +110,7 @@ class TestLegalityIntegration:
             sql, params = generate_sql_query(parsed)
 
             # Should generate JSONB containment query
-            assert "card_legalities) @>" in sql
+            assert "card_legalities @>" in sql
             assert len(params) == 1
 
             # Parameter should contain lowercase format name
@@ -124,7 +124,7 @@ class TestLegalityIntegration:
         sql, params = generate_sql_query(parsed)
 
         # Should generate JSONB containment query
-        assert "card_legalities) @>" in sql
+        assert "card_legalities @>" in sql
         assert len(params) == 1
 
         # Parameter should contain the format with spaces
@@ -147,7 +147,7 @@ class TestLegalityIntegration:
         sql, params = generate_sql_query(parsed)
 
         # Should generate JSONB containment query
-        assert "card_legalities) @>" in sql
+        assert "card_legalities @>" in sql
         assert len(params) == 1
 
         # Parameter should contain expected format and status

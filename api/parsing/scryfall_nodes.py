@@ -141,21 +141,15 @@ class ScryfallAttributeNode(AttributeNode):
             return f"card.{remapped}"
         
         # For card and print-level attributes, build path from schema_path
-        # Example: ["card_info", "card_name"] -> ((card.card_info).card_name)
-        # Example: ["print_info", "card_set_code"] -> ((card.print_info).card_set_code)
-        # Example: ["print_info", "front_face", "print_artist"] -> (((card.print_info).front_face).print_artist)
+        # Example: ["card_info", "card_name"] -> ((card).card_info).card_name
+        # Example: ["print_info", "card_set_code"] -> ((card).print_info).card_set_code
+        # Example: ["print_info", "front_face", "print_artist"] -> (((card).print_info).front_face).print_artist
         
         # Build the path: card → first_level → second_level → ... → attribute
         # Wrap each composite access in parentheses
         result = "card"
         for i, part in enumerate(schema_path):
-            if i < len(schema_path) - 1:
-                # Intermediate composite type access - wrap with extra parens
-                result = f"(({result}).{part})"
-            else:
-                # Final attribute access
-                result = f"({result}).{part}"
-        
+            result = f"({result}).{part}"
         return result
 
 
@@ -377,7 +371,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         attr = self.lhs.attribute_name
 
         # Special routing for collector numbers based on operator
-        if attr == "print_collector_number":
+        if attr == "collector_number":
             return self._handle_collector_number(context)
 
         # Special handling for mana attributes with comparison operators
@@ -470,8 +464,8 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         """Handle collector number routing based on operator type.
 
         Routes to appropriate column based on operator:
-        - ':' and '!=' operators use print_collector_number (text) with exact matching
-        - Comparison operators ('>', '>=', '<', '<=') use print_collector_number_int (numeric)
+        - ':' and '!=' operators use collector_number (text) with exact matching
+        - Comparison operators ('>', '>=', '<', '<=') use collector_number_int (numeric)
         """
         if self.operator in (":", "!=", "<>"):
             # Use text column with exact matching
@@ -482,7 +476,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             # Use numeric column for comparisons
             # But first we need to update the lhs to point to the int column
             original_attr = self.lhs.attribute_name
-            self.lhs.attribute_name = "print_collector_number_int"
+            self.lhs.attribute_name = "collector_number_int"
 
             # Convert string value to numeric if needed
             if isinstance(self.rhs, StringValueNode):
@@ -729,7 +723,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             rhs = get_keywords_comparison_object(self.rhs.value.strip())
             pname = param_name(rhs)
             context[pname] = rhs
-        elif attr == "card_frame_data":
+        elif attr == "print_frame_data":
             # Frame data handling - treat like keywords (exact string match)
             rhs = get_frame_data_comparison_object(self.rhs.value.strip())
             pname = param_name(rhs)
