@@ -312,8 +312,9 @@ def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
         else:
             pass
 
-    # Then, remove braced sections and process remaining unbraced characters
-    unbraced_part = re.sub(r"{[^}]*}", "", mana_cost_upper)
+    # Then, process unbraced characters (replace braced sections with space to prevent merging)
+    # We don't care about digits here, only colored symbols
+    unbraced_part = re.sub(r"{[^}]*}", " ", mana_cost_upper)
     for char in unbraced_part:
         # Only count color characters (W, U, B, R, G, C)
         if char in "WUBRGC":
@@ -351,8 +352,8 @@ def calculate_cmc(mana_cost_str: str) -> int:
             cmc += 1
 
     # Then, process unbraced part (after removing braced sections)
-    # Use regex to find sequences of digits and individual color characters
-    unbraced_part = re.sub(r"{[^}]*}", "", mana_cost_upper)
+    # Replace braced sections with a space to prevent adjacent digits from merging
+    unbraced_part = re.sub(r"{[^}]*}", " ", mana_cost_upper)
     # Match either: sequences of digits OR single color characters
     for token in re.findall(r"\d+|[WUBRGC]", unbraced_part):
         if token.isdigit():
