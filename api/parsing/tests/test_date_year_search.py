@@ -111,6 +111,6 @@ def test_date_year_combined_query() -> None:
     sql = parsed.to_sql(context)
 
     assert "card.released_at" in sql
-    assert "card.cmc = " in sql
+    assert "face_cmc = " in sql  # DFC schema uses face_cmc with OR for front/back
     assert "2025-01-01" in context.values()
     assert 3 in context.values()

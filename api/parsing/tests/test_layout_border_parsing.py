@@ -27,13 +27,13 @@ class TestLayoutBorderParsing:
         ("layout:planar", "card_layout", "planar"),
         ("layout:scheme", "card_layout", "scheme"),
         ("layout:vanguard", "card_layout", "vanguard"),
-        ("layout:token", "card_layout", "token"),
-        ("layout:emblem", "card_layout", "emblem"),
-        ("border:black", "card_border", "black"),
-        ("border:white", "card_border", "white"),
-        ("border:borderless", "card_border", "borderless"),
-        ("border:silver", "card_border", "silver"),
-        ("border:gold", "card_border", "gold"),
+        ("layout:token", "print_layout", "token"),
+        ("layout:emblem", "print_layout", "emblem"),
+        ("border:black", "print_border", "black"),
+        ("border:white", "print_border", "white"),
+        ("border:borderless", "print_border", "borderless"),
+        ("border:silver", "print_border", "silver"),
+        ("border:gold", "print_border", "gold"),
     ])
     def test_parse_layout_and_border_queries(self, query: str, expected_attr: str, expected_value: str) -> None:
         """Test parsing of layout and border search queries."""
