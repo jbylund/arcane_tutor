@@ -437,9 +437,9 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         """Handle colon operator for different field types."""
         if field_type == FieldType.TEXT:
             # Handle fields that need exact matching instead of pattern matching
-            if attr in ("card_set_code", "print_layout", "print_border", "print_watermark"):
+            if attr in ("card_set_code", "print_layout", "print_border", "print_watermark", "card_layout", "card_border"):
                 # For layout, border, and watermark fields, lowercase the search value for case-insensitive matching
-                if attr in ("print_layout", "print_border", "print_watermark") and hasattr(self.rhs, "value"):
+                if attr in ("print_layout", "print_border", "print_watermark", "card_layout", "card_border") and hasattr(self.rhs, "value"):
                     self.rhs.value = self.rhs.value.lower()
 
                 if self.operator == ":":
@@ -699,7 +699,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         lhs_sql = self.lhs.to_sql(context)
         attr = self.lhs.attribute_name
         is_color_identity = False
-        if attr in ("card_colors", "card_color_identity", "produced_mana"):
+        if attr in ("card_colors", "face_colors", "card_color_identity", "produced_mana"):
             rhs = get_colors_comparison_object(self.rhs.value.strip().lower())
             pname = param_name(rhs)
             context[pname] = rhs
