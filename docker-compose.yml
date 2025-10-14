@@ -58,3 +58,25 @@ services:
         user: 1000:1000
         volumes:
             - ./data/api:/data/api
+    client:
+        build:
+            context: ./
+            dockerfile: ./client/Dockerfile
+        command:
+        - dumb-init
+        - --
+        - python
+        - -m
+        - client.query_runner
+        container_name: scryfallclient
+        depends_on:
+            apiservice:
+                condition: service_started
+        environment:
+        - API_URL=http://apiservice:8080
+        - QUERY_DELAY=1.0
+        - BATCH_SIZE=50
+        - PYTHONUNBUFFERED=true
+        external_links:
+        - apiservice:apiservice
+        user: 1000:1000
