@@ -77,8 +77,4 @@ services:
         - QUERY_DELAY=1.0
         - BATCH_SIZE=50
         - PYTHONUNBUFFERED=true
-        external_links:
-        - apiservice:apiservice
-        profiles:
-        - client
         user: 1000:1000

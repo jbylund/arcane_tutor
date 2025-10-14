@@ -161,7 +161,7 @@ def run_query(api_url: str, query: str, session: requests.Session) -> dict:
     Returns:
         Dictionary with query results and timing information.
     """
-    start_time = time.time()
+    before = time.monotonic()
     result = {
         "query": query,
         "success": False,
@@ -176,8 +176,8 @@ def run_query(api_url: str, query: str, session: requests.Session) -> dict:
             params={"q": query, "limit": 100},
             timeout=30,
         )
-        elapsed = time.time() - start_time
-        result["duration"] = elapsed
+        elapsed = time.monotonic() - before
+        result["duration"] = 1000 * elapsed
 
         response.raise_for_status()
         data = response.json()
@@ -186,14 +186,17 @@ def run_query(api_url: str, query: str, session: requests.Session) -> dict:
         result["card_count"] = len(data.get("cards", []))
 
         logging.info(
-            f"Query: '{query}' | Duration: {elapsed:.3f}s | Cards: {result['card_count']}",
+            "Query: '%s' | Duration: %.1fms | Cards: %d",
+            query,
+            elapsed,
+            result["card_count"],
         )
 
-    except requests.RequestException as e:
-        elapsed = time.time() - start_time
-        result["duration"] = elapsed
-        result["error"] = str(e)
-        logging.error(f"Query failed: '{query}' | Duration: {elapsed:.3f}s | Error: {e}")
+    except requests.RequestException as oops:
+        elapsed = time.monotonic() - before
+        result["duration"] = 1000 * elapsed
+        result["error"] = str(oops)
+        logging.error("Query failed: '%s' | Duration: %.1fms | Error: %s", query, elapsed, oops)
 
     return result
 

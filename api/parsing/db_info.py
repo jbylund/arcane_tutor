@@ -56,7 +56,7 @@ DB_COLUMNS = [
     FieldInfo("card_name", FieldType.TEXT, ["name"], ParserClass.TEXT),
     FieldInfo("card_subtypes", FieldType.JSONB_ARRAY, ["subtype", "subtypes"], ParserClass.TEXT),
     FieldInfo("card_types", FieldType.JSONB_ARRAY, ["type", "types", "t"], ParserClass.TEXT),
-    FieldInfo("cmc", FieldType.NUMERIC, ["cmc"], ParserClass.NUMERIC),
+    FieldInfo("cmc", FieldType.NUMERIC, ["cmc", "mv", "manavalue"], ParserClass.NUMERIC),
     FieldInfo("creature_power", FieldType.NUMERIC, ["power", "pow"], ParserClass.NUMERIC),
     FieldInfo("creature_toughness", FieldType.NUMERIC, ["toughness", "tou"], ParserClass.NUMERIC),
     FieldInfo("planeswalker_loyalty", FieldType.NUMERIC, ["loyalty", "loy"], ParserClass.NUMERIC),
