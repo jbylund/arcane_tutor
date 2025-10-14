@@ -79,4 +79,6 @@ services:
         - PYTHONUNBUFFERED=true
         external_links:
         - apiservice:apiservice
+        profiles:
+        - client
         user: 1000:1000
