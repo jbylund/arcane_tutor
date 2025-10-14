@@ -100,8 +100,7 @@ CREATE TABLE s_dfc.face_prints AS (
         illustration_id AS print_illustration_id,
         image_location_uuid AS print_image_location_uuid,
         prefer_score AS print_prefer_score,
-        prefer_score_components AS print_prefer_score_components,
-        raw_card_blob AS print_raw_card_blob -- TODO: we probably don't want this
+        prefer_score_components AS print_prefer_score_components
     FROM
         magic.cards
     GROUP BY (
