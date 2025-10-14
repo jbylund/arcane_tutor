@@ -1,5 +1,7 @@
 """Integration tests for legality search functionality."""
 
+import functools
+
 import pytest
 
 from api.parsing import parse_scryfall_query
@@ -86,18 +88,13 @@ class TestLegalityIntegration:
         sql, params = generate_sql_query(parsed)
 
         # Should generate AND query with two JSONB containment clauses
-        assert "AND" in sql
-        sql_parts = sql.split(" AND ")
-        assert len(sql_parts) == 2
-        assert all("card_legalities) @>" in part for part in sql_parts)
+        assert " AND " in sql
+        assert sql.count("(((card).card_info).card_legalities @>") == 2
 
         # Should have two parameters
         assert len(params) == 2
-
-        # Parameters should contain the expected mappings
-        param_values = list(params.values())
-        expected_values = [{"standard": "legal"}, {"modern": "banned"}]
-        assert all(val in param_values for val in expected_values)
+        merged_vals = functools.reduce(lambda x, y: x | y, params.values())
+        assert merged_vals == {"standard": "legal", "modern": "banned"}
 
     def test_case_insensitive_format_integration(self) -> None:
         """Test that format names are case-insensitive."""

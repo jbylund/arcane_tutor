@@ -215,9 +215,13 @@ class TestContainerIntegration:
 
     def test_get_all_tags_with_real_db(self: TestContainerIntegration, api_resource: APIResource) -> None:
         """Test getting all tags from real database."""
+        expected_tags = {"flying", "vigilance", "burn", "mana-acceleration"}
+
+        with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
+            cursor.executemany("INSERT INTO magic.tags (tag) VALUES (%(tag)s)", [{"tag": tag} for tag in expected_tags])
+            conn.commit()
         tags = api_resource._get_all_tags()
 
-        expected_tags = {"flying", "vigilance", "burn", "mana-acceleration"}
         assert tags == expected_tags
 
     def test_database_operations_isolation(self: TestContainerIntegration, api_resource: APIResource) -> None:

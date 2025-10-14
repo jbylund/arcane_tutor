@@ -29,11 +29,11 @@ class TestLayoutBorderParsing:
         ("layout:vanguard", "card_layout", "vanguard"),
         ("layout:token", "card_layout", "token"),
         ("layout:emblem", "card_layout", "emblem"),
-        ("border:black", "card_border", "black"),
-        ("border:white", "card_border", "white"),
-        ("border:borderless", "card_border", "borderless"),
-        ("border:silver", "card_border", "silver"),
-        ("border:gold", "card_border", "gold"),
+        ("border:black", "print_border", "black"),
+        ("border:white", "print_border", "white"),
+        ("border:borderless", "print_border", "borderless"),
+        ("border:silver", "print_border", "silver"),
+        ("border:gold", "print_border", "gold"),
     ])
     def test_parse_layout_and_border_queries(self, query: str, expected_attr: str, expected_value: str) -> None:
         """Test parsing of layout and border search queries."""
@@ -63,7 +63,7 @@ class TestLayoutBorderParsing:
 
         # Check that we have both layout and border conditions
         attributes = {cond.lhs.attribute_name for cond in conditions}
-        assert attributes == {"card_layout", "card_border"}
+        assert attributes == {"card_layout", "print_border"}
 
         values = {cond.rhs.value for cond in conditions}
         assert values == {"split", "black"}
@@ -87,7 +87,7 @@ class TestLayoutBorderParsing:
         assert isinstance(result, Query)
         binary_op = result.root
         assert isinstance(binary_op, ScryfallBinaryOperatorNode)
-        assert binary_op.lhs.attribute_name == "card_border"
+        assert binary_op.lhs.attribute_name == "print_border"
         assert binary_op.rhs.value == "borderless"
 
     def test_parse_complex_query_with_layout_border(self) -> None:
@@ -111,7 +111,7 @@ class TestLayoutBorderParsing:
             return []
 
         attributes = extract_attributes(result.root)
-        expected_attrs = [("card_layout", "normal"), ("card_border", "black"), ("face_cmc", 3)]
+        expected_attrs = [("card_layout", "normal"), ("print_border", "black"), ("face_cmc", 3)]
 
         # Sort both lists to compare regardless of order
         attributes.sort()

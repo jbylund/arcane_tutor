@@ -14,10 +14,10 @@ class TestLayoutBorderSQLGeneration:
     """Test that layout and border searches generate exact equality SQL queries."""
 
     @pytest.mark.parametrize(("query", "expected_column", "expected_value"), [
-        ("border:black", "((card).card_info).card_border", "black"),
-        ("border:borderless", "((card).card_info).card_border", "borderless"),
-        ("border:white", "((card).card_info).card_border", "white"),
-        ("layout:flip", "((card).card_info).card_layout", "flip"),
+        ("border:black", "print_border", "black"),  # Border is PRINT/FACE, checks both faces
+        ("border:borderless", "print_border", "borderless"),
+        ("border:white", "print_border", "white"),
+        ("layout:flip", "((card).card_info).card_layout", "flip"),  # Layout is CARD/CARD
         ("layout:normal", "((card).card_info).card_layout", "normal"),
         ("layout:split", "((card).card_info).card_layout", "split"),
     ])
@@ -33,6 +33,12 @@ class TestLayoutBorderSQLGeneration:
         assert "=" in sql
         assert "ILIKE" not in sql
         assert expected_column in sql
+
+        # For border (PRINT/FACE), should also check both faces
+        if "border" in query:
+            assert "OR" in sql  # Checks front_face OR back_face
+            assert "front_face" in sql
+            assert "back_face" in sql
 
         # Context should contain the exact value without wildcards
         assert len(context) == 1
@@ -68,9 +74,10 @@ class TestLayoutBorderSQLGeneration:
         sql = result.to_sql(context)
 
         # Should have both exact equality conditions with AND
-        assert "((card).card_info).card_layout = " in sql
-        assert "((card).card_info).card_border = " in sql
+        assert "((card).card_info).card_layout = " in sql  # Layout is CARD/CARD
+        assert "print_border = " in sql  # Border is PRINT/FACE (checks both faces)
         assert "AND" in sql
+        assert "OR" in sql  # Border checks both faces
         assert "ILIKE" not in sql
 
         # Context should have two exact values without wildcards

@@ -94,10 +94,11 @@ class TestWatermarkSQLGeneration:
         context: dict[str, Any] = {}
         sql = result.to_sql(context)
 
-        # Should have both exact equality conditions with AND
+        # Both watermark and border are PRINT/FACE attributes (check both faces)
         assert "print_watermark =" in sql
         assert "print_border =" in sql
         assert "AND" in sql
+        assert "OR" in sql  # Both attributes check front OR back face
         assert "ILIKE" not in sql
 
         # Context should have two exact values without wildcards
@@ -150,9 +151,10 @@ class TestWatermarkSQLGeneration:
 
         # Should have all three conditions with AND
         assert "print_watermark =" in sql
-        assert "card_border" in sql  # Border is card-level not print-level
+        assert "print_border =" in sql  # Border is PRINT/FACE (checks both faces)
         assert "face_cmc =" in sql  # DFC schema uses face_cmc with OR for front/back
         assert "AND" in sql
+        assert "OR" in sql  # Watermark, border, and cmc all check both faces
         assert "ILIKE" not in sql
 
         # Context should have three exact values without wildcards

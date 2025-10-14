@@ -99,7 +99,7 @@ class TestWatermarkParsing:
 
         # Extract all conditions
         attributes = self.extract_attributes(result.root)
-        expected_attrs = [("print_watermark", "azorius"), ("card_border", "black")]
+        expected_attrs = [("print_watermark", "azorius"), ("print_border", "black")]
 
         # Sort both lists to compare regardless of order
         attributes.sort()
@@ -114,7 +114,7 @@ class TestWatermarkParsing:
         assert isinstance(result, Query)
         # Should be nested AND operations
         attributes = self.extract_attributes(result.root)
-        expected_attrs = [("print_watermark", "azorius"), ("card_border", "black"), ("face_cmc", 3)]
+        expected_attrs = [("print_watermark", "azorius"), ("print_border", "black"), ("face_cmc", 3)]
 
         # Sort both lists to compare regardless of order
         attributes.sort()
