@@ -191,7 +191,7 @@ def test_color_identity_sql_translation(input_query: str, expected_sql: str, exp
     argvalues=[
         (
             "t:elf t:archer",
-            r"(((%(p_list_WydFbGYnXQ)s <@ (((card).card_info).front_face).face_types) OR (%(p_list_WydFbGYnXQ)s <@ (((card).card_info).back_face).face_types)) AND ((%(p_list_WydBcmNoZXInXQ)s <@ (((card).card_info).front_face).face_types) OR (%(p_list_WydBcmNoZXInXQ)s <@ (((card).card_info).back_face).face_types)))",
+            r"(((%(p_list_WydFbGYnXQ)s <@ (((card).card_info).front_face).face_subtypes) OR (%(p_list_WydFbGYnXQ)s <@ (((card).card_info).back_face).face_subtypes)) AND ((%(p_list_WydBcmNoZXInXQ)s <@ (((card).card_info).front_face).face_subtypes) OR (%(p_list_WydBcmNoZXInXQ)s <@ (((card).card_info).back_face).face_subtypes)))",
             {"p_list_WydFbGYnXQ": ["Elf"], "p_list_WydBcmNoZXInXQ": ["Archer"]},
         ),
         (
@@ -992,14 +992,15 @@ def test_color_parser_patterns(input_query: str, should_parse: bool) -> None:
     argnames=("input_query", "expected_sql_fragment"),
     argvalues=[
         # Test that negated type queries check both faces for DFCs
-        # (ensures the type is not present on either face)
-        ("-t:elf", "NOT (((%(p_list_WydFbGYnXQ)s <@ (((card).card_info).front_face).face_types) OR (%(p_list_WydFbGYnXQ)s <@ (((card).card_info).back_face).face_types)))"),
-        ("llanowar -t:elf", "NOT (((%(p_list_WydFbGYnXQ)s <@ (((card).card_info).front_face).face_types) OR (%(p_list_WydFbGYnXQ)s <@ (((card).card_info).back_face).face_types)))"),
+        # "Elf" is a subtype, so it uses face_subtypes
+        ("-t:elf", "NOT (((%(p_list_WydFbGYnXQ)s <@ (((card).card_info).front_face).face_subtypes) OR (%(p_list_WydFbGYnXQ)s <@ (((card).card_info).back_face).face_subtypes)))"),
+        ("llanowar -t:elf", "NOT (((%(p_list_WydFbGYnXQ)s <@ (((card).card_info).front_face).face_subtypes) OR (%(p_list_WydFbGYnXQ)s <@ (((card).card_info).back_face).face_subtypes)))"),
+        # "Creature" is a type, so it uses face_types
         ("-type:creature", "NOT (((%(p_list_WydDcmVhdHVyZSdd)s <@ (((card).card_info).front_face).face_types) OR (%(p_list_WydDcmVhdHVyZSdd)s <@ (((card).card_info).back_face).face_types)))"),
     ],
 )
 def test_negated_type_queries_generate_simple_sql(input_query: str, expected_sql_fragment: str) -> None:
-    """Test that negated type queries generate SQL checking both faces for DFCs."""
+    """Test that negated type queries generate SQL checking both faces for DFCs, routing to types or subtypes as appropriate."""
     parsed = parsing.parse_scryfall_query(input_query)
     observed_params = {}
     observed_sql = parsed.to_sql(observed_params)

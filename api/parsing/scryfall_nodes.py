@@ -833,11 +833,14 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
     def _handle_jsonb_array(self: ScryfallBinaryOperatorNode, context: dict) -> str:
         # TODO: this should produce the query as an array, not jsonb
         rhs_val = self.rhs.value.strip().title()
-        if self.lhs.attribute_name.lower() in ("card_types", "card_subtypes", "type"):
+        # Check if we're searching types/subtypes and route to correct column
+        if self.lhs.attribute_name.lower() in ("card_types", "face_types", "card_subtypes", "face_subtypes", "type"):
             if rhs_val in CARD_SUPERTYPES | CARD_TYPES:
-                self.lhs.attribute_name = "card_types"
+                # It's a type or supertype - use face_types
+                self.lhs.attribute_name = "face_types"
             else:
-                self.lhs.attribute_name = "card_subtypes"
+                # It's a subtype - use face_subtypes
+                self.lhs.attribute_name = "face_subtypes"
         col = self.lhs.to_sql(context)
 
         inners = [rhs_val]
