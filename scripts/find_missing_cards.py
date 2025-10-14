@@ -59,8 +59,8 @@ def search_scryfall(query: str, session: requests.Session) -> set[str]:
         Set of card names found in Scryfall.
     """
     base_url = "https://api.scryfall.com/cards/search"
-    # Note: Removed -is:dfc to allow importing double-faced cards
-    # Still excluding adventure and split cards for now
+    # Note: Removed -is:dfc to allow importing Double-Faced cards
+    # Still excluding Adventure and Split cards for now
     extra_params = [
             "-is:adventure",
             "-is:split",
