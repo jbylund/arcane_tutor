@@ -2042,6 +2042,7 @@ class APIResource:
                     if hasattr(self._search, "cache"):
                         self._search.cache.clear()
 
+                self.refresh_dfc_schema()
                 return result
 
         except (psycopg.Error, ValueError, KeyError) as e:
@@ -2060,3 +2061,14 @@ class APIResource:
                 "sample_cards": [],
                 "message": f"Error loading cards: {e}",
             }
+
+    def refresh_dfc_schema(self: APIResource, **_: object) -> dict[str, Any]:
+        """Refresh the DFC schema."""
+        raw_sql = self.read_sql("refresh_dfc_schema")
+        queries = raw_sql.split(";")
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            cursor.execute("SET statement_timeout = 60000")
+            for iquery in queries:
+                cursor.execute(iquery)
+            conn.commit()
+        return {"status": "success", "message": "DFC schema refreshed"}

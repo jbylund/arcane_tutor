@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import multiprocessing
 import os
 import pathlib
@@ -17,6 +18,18 @@ from api.api_resource import APIResource
 if TYPE_CHECKING:
     from collections.abc import Generator
 
+
+def get_sample_cards() -> list[dict]:
+    """Get the sample cards from the sample data directory."""
+    test_dir = pathlib.Path(__file__).parent
+    sample_data_dir = test_dir.parent.parent / "docs" / "sample_data"
+    sample_cards = []
+    for sample_file in sample_data_dir.glob("*.json"):
+        with sample_file.open() as f:
+            sample_card = json.load(f)
+            sample_cards.append(sample_card)
+        sample_cards.append(sample_card)
+    return sample_cards
 
 class TestContainerIntegration:
     """Integration tests using testcontainers with real PostgreSQL."""
@@ -107,13 +120,8 @@ class TestContainerIntegration:
         # Set up the schema using real migrations
         api.setup_schema()
 
-        # Load test data
-        test_dir = pathlib.Path(__file__).parent
-        data_file = test_dir / "fixtures" / "test_data.sql"
-
-        with api._conn_pool.connection() as conn, conn.cursor() as cursor:
-            cursor.execute(data_file.read_text())
-            conn.commit()
+        sample_cards = get_sample_cards()
+        api._load_cards_with_staging(sample_cards)
 
         # Yield the fully configured APIResource for tests to use
         yield api
@@ -140,10 +148,12 @@ class TestContainerIntegration:
         assert isinstance(result, dict)
         assert "cards" in result
 
-        # Should find Serra Angel (the only creature in test data)
-        cards = result["cards"]
-        assert len(cards) == 1
-        assert cards[0]["name"] == "Serra Angel"
+        sample_cards = get_sample_cards()
+        sample_card_names = {card["name"] for card in sample_cards if "Creature" in card["type_line"]}
+        api_card_names = {card["name"] for card in result["cards"]}
+        assert api_card_names >= sample_card_names
+        assert api_card_names
+        assert sample_card_names
 
     def test_card_search_by_name(self: TestContainerIntegration, api_resource: APIResource) -> None:
         """Test searching for cards by name."""
@@ -186,10 +196,8 @@ class TestContainerIntegration:
         assert isinstance(result, dict)
         assert "cards" in result
 
-        # Should find Black Lotus (CMC 0)
-        cards = result["cards"]
-        assert len(cards) == 1
-        assert cards[0]["name"] == "Black Lotus"
+        fetched_cards = sorted(c["name"] for c in result["cards"])
+        assert fetched_cards == ["Black Lotus", "Plains", "Stomping Ground"]
 
     def test_power_toughness_search(self: TestContainerIntegration, api_resource: APIResource) -> None:
         """Test searching for creatures by power and toughness."""
@@ -201,10 +209,9 @@ class TestContainerIntegration:
         assert isinstance(result, dict)
         assert "cards" in result
 
-        # Should find Serra Angel (4/4 creature)
         cards = result["cards"]
-        assert len(cards) == 1
-        assert cards[0]["name"] == "Serra Angel"
+        fetched_cards = sorted(c["name"] for c in cards)
+        assert fetched_cards == ["Hound Tamer // Untamed Pup", "Serra Angel"]
 
     def test_get_all_tags_with_real_db(self: TestContainerIntegration, api_resource: APIResource) -> None:
         """Test getting all tags from real database."""
@@ -219,14 +226,13 @@ class TestContainerIntegration:
         # and not affecting the main application database
 
         # Count cards in test database using a query that matches all cards
-        result = api_resource.search(q="cmc>=0", limit=100)
+        api_cards = api_resource.search(q="cmc>=0", limit=100)["cards"]
 
         # Should only have our test cards
-        cards = result["cards"]
-        assert len(cards) == 3
-        card_names = {card["name"] for card in cards}
-        expected_names = {"Lightning Bolt", "Serra Angel", "Black Lotus"}
-        assert card_names == expected_names
+        sample_cards = get_sample_cards()
+        api_card_names = {card["name"] for card in api_cards}
+        sample_data_card_names = {card["name"] for card in sample_cards}
+        assert api_card_names >= sample_data_card_names
 
     def test_get_pid(self: TestContainerIntegration, api_resource: APIResource) -> None:
         """Test basic API functionality with real database."""

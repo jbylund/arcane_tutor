@@ -20,7 +20,8 @@
     "full_art": false,
     "game_changer": false,
     "games": [
-        "mtgo"
+        "mtgo",
+        "paper"
     ],
     "highres_image": true,
     "id": "bd8fa327-dd41-4737-8f19-2cf5eb1f7cdd",
