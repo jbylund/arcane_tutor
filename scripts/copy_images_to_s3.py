@@ -201,12 +201,17 @@ def upload_to_s3(
     Returns:
         True if successful or skipped, False otherwise
     """
+    cache_duration = datetime.timedelta(days=20)
+    duration_seconds = int(cache_duration.total_seconds())
     try:
         s3_client.upload_file(
             str(local_path),
             bucket,
             key,
-            ExtraArgs={"ContentType": "image/webp"},
+            ExtraArgs={
+                "CacheControl": f"public, max-age={duration_seconds}, immutable",
+                "ContentType": "image/webp",
+            },
         )
         logger.debug(f"Uploaded to S3: s3://{bucket}/{key}")
         return True
