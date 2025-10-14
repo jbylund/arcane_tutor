@@ -106,7 +106,7 @@ def preprocess_card(card: dict[str, Any]) -> list[dict[str, Any]]:  # noqa: PLR0
         processed_faces = []
         for face_idx, face_data in enumerate(card_faces, start=1):
             merged = copy.deepcopy(card) | face_data | {"face_idx": face_idx}
-            merged.pop("card_faces", None) # do not keep recursing
+            merged.pop("card_faces", None)  # do not keep recursing
             processed_face = preprocess_card(merged)
             processed_faces.extend(processed_face)
         return processed_faces
