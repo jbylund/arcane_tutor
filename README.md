@@ -115,7 +115,7 @@ scryfallos/
 │   ├── api_worker.py            # Multi-process worker implementation
 │   ├── entrypoint.py            # API server entry point and CLI
 │   └── index.html               # Web frontend (single-file app)
-├── client/                      # Client-side assets (minimal)
+├── client/                      # Query runner client for index analysis
 ├── configs/                     # Configuration files
 ├── docs/                        # Project documentation and analysis
 ├── requirements/                # Requirements files
@@ -129,6 +129,7 @@ scryfallos/
 
 ### Specialized Documentation
 
+- **[Client Query Runner](client/README.md)** - Query runner client for testing and index analysis
 - **[Scripts Documentation](scripts/README.md)** - Detailed information about utility scripts including the Scryfall comparison tool
 - **[API Tests Documentation](api/tests/README.md)** - Testing framework and integration test information
 - **[CI/CD Workflows](docs/workflows/README_CI_MONITOR.md)** - Continuous integration and monitoring documentation
@@ -212,6 +213,18 @@ make test-integration # Integration tests (requires Docker)
 make lint            # Run ruff and pylint
 python -m ruff check --fix --unsafe-fixes  # Auto-fix style issues
 npx prettier --write api/index.html        # Format frontend code
+```
+
+#### Query Runner Client (for Index Analysis)
+
+```bash
+# Start the query runner client to test indexes
+docker compose --profile client up client
+
+# Or run locally
+python -m client.query_runner
+
+# See client/README.md for more details
 ```
 
 ### Development Tips
