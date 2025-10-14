@@ -214,21 +214,37 @@ def test_full_sql_translation_jsonb_card_types(input_query: str, expected_sql: s
 @pytest.mark.parametrize(
     argnames=("input_query", "expected_sql", "expected_parameters"),
     argvalues=[
-        # Oracle text search tests
-        ("oracle:flying", r"((card).oracle_text ILIKE %(p_str_JWZseWluZyU)s)", {"p_str_JWZseWluZyU": r"%flying%"}),
-        ("oracle:'gain life'", r"((card).oracle_text ILIKE %(p_str_JWdhaW4lbGlmZSU)s)", {"p_str_JWdhaW4lbGlmZSU": r"%gain%life%"}),
-        ('oracle:"gain life"', r"((card).oracle_text ILIKE %(p_str_JWdhaW4lbGlmZSU)s)", {"p_str_JWdhaW4lbGlmZSU": r"%gain%life%"}),
-        ("oracle:haste", r"((card).oracle_text ILIKE %(p_str_JWhhc3RlJQ)s)", {"p_str_JWhhc3RlJQ": r"%haste%"}),
+        # Oracle text search tests - should check both front and back faces for DFCs
+        (
+            "oracle:flying",
+            r"(((((card).card_info).front_face).face_oracle_text ILIKE %(p_str_JWZseWluZyU)s) OR ((((card).card_info).back_face).face_oracle_text ILIKE %(p_str_JWZseWluZyU)s))",
+            {"p_str_JWZseWluZyU": r"%flying%"},
+        ),
+        (
+            "oracle:'gain life'",
+            r"(((((card).card_info).front_face).face_oracle_text ILIKE %(p_str_JWdhaW4lbGlmZSU)s) OR ((((card).card_info).back_face).face_oracle_text ILIKE %(p_str_JWdhaW4lbGlmZSU)s))",
+            {"p_str_JWdhaW4lbGlmZSU": r"%gain%life%"},
+        ),
+        (
+            'oracle:"gain life"',
+            r"(((((card).card_info).front_face).face_oracle_text ILIKE %(p_str_JWdhaW4lbGlmZSU)s) OR ((((card).card_info).back_face).face_oracle_text ILIKE %(p_str_JWdhaW4lbGlmZSU)s))",
+            {"p_str_JWdhaW4lbGlmZSU": r"%gain%life%"},
+        ),
+        (
+            "oracle:haste",
+            r"(((((card).card_info).front_face).face_oracle_text ILIKE %(p_str_JWhhc3RlJQ)s) OR ((((card).card_info).back_face).face_oracle_text ILIKE %(p_str_JWhhc3RlJQ)s))",
+            {"p_str_JWhhc3RlJQ": r"%haste%"},
+        ),
         # Test oracle search with complex phrases
         (
             "oracle:'tap target creature'",
-            r"((card).oracle_text ILIKE %(p_str_JXRhcCV0YXJnZXQlY3JlYXR1cmUl)s)",
+            r"(((((card).card_info).front_face).face_oracle_text ILIKE %(p_str_JXRhcCV0YXJnZXQlY3JlYXR1cmUl)s) OR ((((card).card_info).back_face).face_oracle_text ILIKE %(p_str_JXRhcCV0YXJnZXQlY3JlYXR1cmUl)s))",
             {"p_str_JXRhcCV0YXJnZXQlY3JlYXR1cmUl": r"%tap%target%creature%"},
         ),
     ],
 )
 def test_oracle_text_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
-    """Test that oracle text search generates correct SQL with ILIKE patterns."""
+    """Test that oracle text search generates correct SQL with ILIKE patterns, checking both faces for DFCs."""
     parsed = parsing.parse_scryfall_query(input_query)
     context = {}
     observed_sql = parsed.to_sql(context)
@@ -239,21 +255,37 @@ def test_oracle_text_sql_translation(input_query: str, expected_sql: str, expect
 @pytest.mark.parametrize(
     argnames=("input_query", "expected_sql", "expected_parameters"),
     argvalues=[
-        # Flavor text search tests
-        ("flavor:exile", "((card).flavor_text ILIKE %(p_str_JWV4aWxlJQ)s)", {"p_str_JWV4aWxlJQ": "%exile%"}),
-        ("flavor:'ancient power'", "((card).flavor_text ILIKE %(p_str_JWFuY2llbnQlcG93ZXIl)s)", {"p_str_JWFuY2llbnQlcG93ZXIl": "%ancient%power%"}),
-        ('flavor:"ancient power"', "((card).flavor_text ILIKE %(p_str_JWFuY2llbnQlcG93ZXIl)s)", {"p_str_JWFuY2llbnQlcG93ZXIl": "%ancient%power%"}),
-        ("flavor:magic", "((card).flavor_text ILIKE %(p_str_JW1hZ2ljJQ)s)", {"p_str_JW1hZ2ljJQ": "%magic%"}),
+        # Flavor text search tests - should check both front and back faces for double-faced cards
+        (
+            "flavor:exile",
+            "(((((card).print_info).front_face).print_flavor_text ILIKE %(p_str_JWV4aWxlJQ)s) OR ((((card).print_info).back_face).print_flavor_text ILIKE %(p_str_JWV4aWxlJQ)s))",
+            {"p_str_JWV4aWxlJQ": "%exile%"},
+        ),
+        (
+            "flavor:'ancient power'",
+            "(((((card).print_info).front_face).print_flavor_text ILIKE %(p_str_JWFuY2llbnQlcG93ZXIl)s) OR ((((card).print_info).back_face).print_flavor_text ILIKE %(p_str_JWFuY2llbnQlcG93ZXIl)s))",
+            {"p_str_JWFuY2llbnQlcG93ZXIl": "%ancient%power%"},
+        ),
+        (
+            'flavor:"ancient power"',
+            "(((((card).print_info).front_face).print_flavor_text ILIKE %(p_str_JWFuY2llbnQlcG93ZXIl)s) OR ((((card).print_info).back_face).print_flavor_text ILIKE %(p_str_JWFuY2llbnQlcG93ZXIl)s))",
+            {"p_str_JWFuY2llbnQlcG93ZXIl": "%ancient%power%"},
+        ),
+        (
+            "flavor:magic",
+            "(((((card).print_info).front_face).print_flavor_text ILIKE %(p_str_JW1hZ2ljJQ)s) OR ((((card).print_info).back_face).print_flavor_text ILIKE %(p_str_JW1hZ2ljJQ)s))",
+            {"p_str_JW1hZ2ljJQ": "%magic%"},
+        ),
         # Test flavor search with complex phrases
         (
             "flavor:'power of darkness'",
-            "((card).flavor_text ILIKE %(p_str_JXBvd2VyJW9mJWRhcmtuZXNzJQ)s)",
+            "(((((card).print_info).front_face).print_flavor_text ILIKE %(p_str_JXBvd2VyJW9mJWRhcmtuZXNzJQ)s) OR ((((card).print_info).back_face).print_flavor_text ILIKE %(p_str_JXBvd2VyJW9mJWRhcmtuZXNzJQ)s))",
             {"p_str_JXBvd2VyJW9mJWRhcmtuZXNzJQ": "%power%of%darkness%"},
         ),
     ],
 )
 def test_flavor_text_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
-    """Test that flavor text search generates correct SQL with ILIKE patterns."""
+    """Test that flavor text search generates correct SQL with ILIKE patterns, checking both faces for DFCs."""
     parsed = parsing.parse_scryfall_query(input_query)
     context = {}
     observed_sql = parsed.to_sql(context)
@@ -671,15 +703,35 @@ def test_rarity_case_insensitive() -> None:
 @pytest.mark.parametrize(
     argnames=("input_query", "expected_sql", "expected_parameters"),
     argvalues=[
-        ("artist:moeller", r"((((card).print_info).front_face).print_artist ILIKE %(p_str_JW1vZWxsZXIl)s)", {"p_str_JW1vZWxsZXIl": r"%moeller%"}),
-        ("a:moeller", r"((((card).print_info).front_face).print_artist ILIKE %(p_str_JW1vZWxsZXIl)s)", {"p_str_JW1vZWxsZXIl": r"%moeller%"}),
-        ('artist:"Christopher Moeller"', r"((((card).print_info).front_face).print_artist ILIKE %(p_str_JUNocmlzdG9waGVyJU1vZWxsZXIl)s)", {"p_str_JUNocmlzdG9waGVyJU1vZWxsZXIl": r"%Christopher%Moeller%"}),
-        ("artist:nielsen", r"((((card).print_info).front_face).print_artist ILIKE %(p_str_JW5pZWxzZW4l)s)", {"p_str_JW5pZWxzZW4l": r"%nielsen%"}),
-        ("ARTIST:moeller", r"((((card).print_info).front_face).print_artist ILIKE %(p_str_JW1vZWxsZXIl)s)", {"p_str_JW1vZWxsZXIl": r"%moeller%"}),
+        (
+            "artist:moeller",
+            r"(((((card).print_info).front_face).print_artist ILIKE %(p_str_JW1vZWxsZXIl)s) OR ((((card).print_info).back_face).print_artist ILIKE %(p_str_JW1vZWxsZXIl)s))",
+            {"p_str_JW1vZWxsZXIl": r"%moeller%"},
+        ),
+        (
+            "a:moeller",
+            r"(((((card).print_info).front_face).print_artist ILIKE %(p_str_JW1vZWxsZXIl)s) OR ((((card).print_info).back_face).print_artist ILIKE %(p_str_JW1vZWxsZXIl)s))",
+            {"p_str_JW1vZWxsZXIl": r"%moeller%"},
+        ),
+        (
+            'artist:"Christopher Moeller"',
+            r"(((((card).print_info).front_face).print_artist ILIKE %(p_str_JUNocmlzdG9waGVyJU1vZWxsZXIl)s) OR ((((card).print_info).back_face).print_artist ILIKE %(p_str_JUNocmlzdG9waGVyJU1vZWxsZXIl)s))",
+            {"p_str_JUNocmlzdG9waGVyJU1vZWxsZXIl": r"%Christopher%Moeller%"},
+        ),
+        (
+            "artist:nielsen",
+            r"(((((card).print_info).front_face).print_artist ILIKE %(p_str_JW5pZWxzZW4l)s) OR ((((card).print_info).back_face).print_artist ILIKE %(p_str_JW5pZWxzZW4l)s))",
+            {"p_str_JW5pZWxzZW4l": r"%nielsen%"},
+        ),
+        (
+            "ARTIST:moeller",
+            r"(((((card).print_info).front_face).print_artist ILIKE %(p_str_JW1vZWxsZXIl)s) OR ((((card).print_info).back_face).print_artist ILIKE %(p_str_JW1vZWxsZXIl)s))",
+            {"p_str_JW1vZWxsZXIl": r"%moeller%"},
+        ),
     ],
 )
 def test_artist_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
-    """Test SQL generation for artist search queries."""
+    """Test SQL generation for artist search queries - checks both faces for DFCs."""
     parsed = parsing.parse_scryfall_query(input_query)
     context = {}
     observed_sql = parsed.to_sql(context)

@@ -16,6 +16,7 @@ from api.parsing.db_info import (
     SEARCH_NAME_TO_DB_NAME,
     YEAR_ATTRIBUTES,
     AttributeLevel,
+    FaceLevel,
     FieldType,
 )
 from api.parsing.nodes import (
@@ -136,14 +137,15 @@ class ScryfallAttributeNode(AttributeNode):
 
         schema_path = field_info.schema_path
 
-        # For face-level attributes, return simple placeholder for _wrap_face_level_predicate
-        if field_info.attribute_level == AttributeLevel.FACE:
+        # For face-varying attributes, return simple placeholder for _wrap_face_level_predicate
+        # This placeholder will be expanded to check both front and back faces
+        if field_info.face_level == FaceLevel.FACE:
             return f"card.{remapped}"
 
-        # For card and print-level attributes, build path from schema_path
+        # For attributes that don't vary by face, build path from schema_path
         # Example: ["card_info", "card_name"] -> ((card).card_info).card_name
         # Example: ["print_info", "card_set_code"] -> ((card).print_info).card_set_code
-        # Example: ["print_info", "front_face", "print_artist"] -> (((card).print_info).front_face).print_artist
+        # Example: ["print_info", "collector_number"] -> ((card).print_info).collector_number
 
         # Build the path: card → first_level → second_level → ... → attribute
         # Wrap each composite access in parentheses
@@ -465,17 +467,41 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         raise NotImplementedError(msg)
 
     def _wrap_face_level_predicate(self: ScryfallBinaryOperatorNode, sql: str, attr: str) -> str:
-        """Wrap face-level predicates to check both front and back faces."""
-        attr_level = DB_NAME_TO_ATTRIBUTE_LEVEL.get(attr, AttributeLevel.FACE)
+        """Wrap face-level predicates to check both front and back faces.
 
-        # Only wrap if it's a face-level attribute
-        if attr_level != AttributeLevel.FACE:
+        This handles attributes that vary by face, which can be either:
+        - Card/Face attributes (e.g., face_oracle_text, face_power)
+        - Print/Face attributes (e.g., print_flavor_text, print_artist)
+        """
+        field_info = DB_NAME_TO_FIELD_INFO.get(attr)
+
+        if field_info is None:
+            # Fallback to old behavior - check legacy attribute level
+            attr_level = DB_NAME_TO_ATTRIBUTE_LEVEL.get(attr, AttributeLevel.FACE)
+            if attr_level != AttributeLevel.FACE:
+                return sql
+            # Assume card_info for legacy attributes
+            front_sql = sql.replace("card.", "(((card).card_info).front_face).")
+            back_sql = sql.replace("card.", "(((card).card_info).back_face).")
+            return f"({front_sql} OR {back_sql})"
+
+        # Only wrap if it's a face-varying attribute
+        if field_info.face_level != FaceLevel.FACE:
             return sql
 
-        # Replace card.face_xxx with versions for front and back face
-        # The pattern is: ((card).card_info).front_face.face_xxx OR ((card).card_info).back_face.face_xxx
-        front_sql = sql.replace("card.", "(((card).card_info).front_face).")
-        back_sql = sql.replace("card.", "(((card).card_info).back_face).")
+        # Determine the base path based on the schema path
+        # This will be either card_info or print_info
+        schema_path = field_info.schema_path
+        if len(schema_path) >= 1:
+            base = schema_path[0]  # "card_info" or "print_info"
+        else:
+            base = "card_info"  # Default fallback
+
+        # Replace card.attr with versions for front and back face
+        # Input: card.print_flavor_text  # noqa
+        # Output: ((((card).print_info).front_face).print_flavor_text
+        front_sql = sql.replace("card.", f"(((card).{base}).front_face).")
+        back_sql = sql.replace("card.", f"(((card).{base}).back_face).")
 
         return f"({front_sql} OR {back_sql})"
 

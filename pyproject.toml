@@ -16,6 +16,7 @@ ignore = [
     "S105",
     "S608",
     "SIM117",
+    "SIM108",
 ]
 per-file-ignores = {"**/tests/**/*.py" = ["ANN401", "ARG001", "D101", "D102", "D103", "PLR2004", "PT004", "S101"], "conftest.py" = ["ANN401", "ARG001", "D101", "D102", "D103", "PLR2004", "PT004", "S101"], "api_worker.py" = ["PLC0415"], "**/scripts/**/*.py" = ["T201", "S603", "S607", "PTH123"]}
 

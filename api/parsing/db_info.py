@@ -26,8 +26,25 @@ class ParserClass(StrEnum):
     YEAR = "year"           # Year fields with 4-digit year values
 
 
+class PrintingLevel(StrEnum):
+    """Enumeration of printing dimension: does the attribute vary by printing?"""
+    CARD = "card"    # Same across all printings (e.g., color_identity, keywords, oracle_text)
+    PRINT = "print"  # Varies by printing (e.g., set, artist, flavor_text, price)
+
+
+class FaceLevel(StrEnum):
+    """Enumeration of face dimension: does the attribute vary by face?"""
+    CARD = "card"  # Same across all faces (e.g., color_identity, set, collector_number)
+    FACE = "face"  # Varies by face (e.g., oracle_text, flavor_text, artist, power, types)
+
+
+# Legacy enum for backward compatibility during transition
 class AttributeLevel(StrEnum):
-    """Enumeration of attribute levels in the DFC schema."""
+    """DEPRECATED: Use PrintingLevel and FaceLevel instead.
+
+    Enumeration of attribute levels in the DFC schema.
+    This conflates two independent dimensions and will be removed.
+    """
     FACE = "face"        # Attributes that differ between faces (power, toughness, types, etc.)
     CARD = "card"        # Attributes shared across all faces (color_identity, keywords, edhrec_rank)
     PRINT = "print"      # Attributes specific to a printing (set, collector_number, price, etc.)
@@ -43,7 +60,9 @@ class FieldInfo:
         field_type: FieldType,
         search_aliases: list[str],
         parser_class: ParserClass | None = None,
-        attribute_level: AttributeLevel = AttributeLevel.FACE,
+        printing_level: PrintingLevel | None = None,
+        face_level: FaceLevel | None = None,
+        attribute_level: AttributeLevel | None = None,  # DEPRECATED: for backward compatibility
         schema_path: list[str] | None = None,
     ) -> None:
         """Initialize field information.
@@ -53,14 +72,45 @@ class FieldInfo:
             field_type: The type of the field.
             search_aliases: List of search aliases for this field.
             parser_class: The parser class to use for this field. If None, defaults based on field_type.
-            attribute_level: The level at which this attribute exists (face/card/print).
+            printing_level: Does attribute vary by printing? (CARD or PRINT)
+            face_level: Does attribute vary by face? (CARD or FACE)
+            attribute_level: DEPRECATED - use printing_level and face_level instead.
             schema_path: Path to attribute in s_dfc schema (e.g., ["card_info", "front_face", "face_creature_power"]).
-                        If None, will be inferred from attribute_level and db_column_name.
+                        If None, will be inferred from printing_level and face_level.
         """
         self.db_column_name = db_column_name
         self.field_type = field_type
         self.search_aliases = search_aliases
-        self.attribute_level = attribute_level
+
+        # Handle backward compatibility with old attribute_level parameter
+        if attribute_level is not None and (printing_level is None or face_level is None):
+            # Map old single-dimension to new two-dimension system
+            if attribute_level == AttributeLevel.FACE:
+                # Old FACE meant card/face (oracle text, power, etc)
+                printing_level = printing_level or PrintingLevel.CARD
+                face_level = face_level or FaceLevel.FACE
+            elif attribute_level == AttributeLevel.CARD:
+                # Old CARD meant card/card (color identity, keywords, etc)
+                printing_level = printing_level or PrintingLevel.CARD
+                face_level = face_level or FaceLevel.CARD
+            elif attribute_level == AttributeLevel.PRINT:
+                # Old PRINT was ambiguous - could be print/card or print/face
+                # Default to print/card unless explicitly specified
+                printing_level = printing_level or PrintingLevel.PRINT
+                face_level = face_level or FaceLevel.CARD
+
+        # Set defaults if still not set
+        self.printing_level = printing_level or PrintingLevel.CARD
+        self.face_level = face_level or FaceLevel.CARD
+
+        # Keep attribute_level for backward compatibility (derived from new dimensions)
+        if self.printing_level == PrintingLevel.CARD and self.face_level == FaceLevel.FACE:
+            self.attribute_level = AttributeLevel.FACE
+        elif self.printing_level == PrintingLevel.CARD and self.face_level == FaceLevel.CARD:
+            self.attribute_level = AttributeLevel.CARD
+        else:  # PRINT
+            self.attribute_level = AttributeLevel.PRINT
+
         # Default parser class based on field type if not specified
         if parser_class is None:
             parser_class = ParserClass.NUMERIC if field_type == FieldType.NUMERIC else ParserClass.TEXT
@@ -73,30 +123,31 @@ class FieldInfo:
             self.schema_path = self._infer_schema_path()
 
     def _infer_schema_path(self) -> list[str]:
-        """Infer schema path based on attribute level and column name.
+        """Infer schema path based on printing and face levels.
 
         Returns:
             List representing path to attribute in s_dfc schema.
         """
-        if self.attribute_level == AttributeLevel.FACE:
-            # Face-level attributes: card_info → front_face/back_face → face_*
-            return ["card_info", "front_face", self.db_column_name]
-        if self.attribute_level == AttributeLevel.CARD:
-            # Card-level attributes: card_info → attribute
-            return ["card_info", self.db_column_name]
-        # Print-level attributes are more complex:
-        # - Attributes with print_ prefix are in: print_info → front_face/back_face → print_*
-        # - Other attributes are direct in print_info: print_info → attribute
-        if self.db_column_name.startswith("print_"):
-            return ["print_info", "front_face", self.db_column_name]
-        return ["print_info", self.db_column_name]
+        # Determine base path: card_info or print_info
+        if self.printing_level == PrintingLevel.CARD:
+            base = "card_info"
+        else:  # PRINT
+            base = "print_info"
+
+        # Determine if we need face component
+        if self.face_level == FaceLevel.FACE:
+            # Path includes front_face (will be replaced with front_face/back_face in SQL)
+            return [base, "front_face", self.db_column_name]
+        # CARD (same across faces)
+        # Path goes directly to attribute
+        return [base, self.db_column_name]
 
 
 DB_COLUMNS = [
-    # Print-level attributes (in front_face/back_face composites within print_info)
-    FieldInfo(db_column_name="print_artist", field_type=FieldType.TEXT, search_aliases=["artist", "a"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="print_frame_data", field_type=FieldType.JSONB_OBJECT, search_aliases=["frame"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="print_is_tags", field_type=FieldType.JSONB_OBJECT, search_aliases=["is"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
+    # Print/Face attributes (vary by both printing AND face)
+    FieldInfo(db_column_name="print_artist", field_type=FieldType.TEXT, search_aliases=["artist", "a"], parser_class=ParserClass.TEXT, printing_level=PrintingLevel.PRINT, face_level=FaceLevel.FACE),
+    FieldInfo(db_column_name="print_frame_data", field_type=FieldType.JSONB_OBJECT, search_aliases=["frame"], parser_class=ParserClass.TEXT, printing_level=PrintingLevel.PRINT, face_level=FaceLevel.FACE),
+    FieldInfo(db_column_name="print_is_tags", field_type=FieldType.JSONB_OBJECT, search_aliases=["is"], parser_class=ParserClass.TEXT, printing_level=PrintingLevel.PRINT, face_level=FaceLevel.FACE),
     FieldInfo(db_column_name="card_layout", field_type=FieldType.TEXT, search_aliases=["layout"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.CARD),
     FieldInfo(db_column_name="card_border", field_type=FieldType.TEXT, search_aliases=["border"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.CARD),
     FieldInfo(db_column_name="print_watermark", field_type=FieldType.TEXT, search_aliases=["watermark"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
@@ -105,7 +156,7 @@ DB_COLUMNS = [
     FieldInfo(db_column_name="print_illustration_id", field_type=FieldType.TEXT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
     FieldInfo(db_column_name="print_image_location_uuid", field_type=FieldType.TEXT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
     FieldInfo(db_column_name="print_prefer_score", field_type=FieldType.NUMERIC, search_aliases=[], parser_class=ParserClass.NUMERIC, attribute_level=AttributeLevel.PRINT),
-    FieldInfo(db_column_name="print_flavor_text", field_type=FieldType.TEXT, search_aliases=["flavor", "ft"], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
+    FieldInfo(db_column_name="print_flavor_text", field_type=FieldType.TEXT, search_aliases=["flavor", "ft"], parser_class=ParserClass.TEXT, printing_level=PrintingLevel.PRINT, face_level=FaceLevel.FACE),
     FieldInfo(db_column_name="print_raw_card_blob", field_type=FieldType.JSONB_OBJECT, search_aliases=[], parser_class=ParserClass.TEXT, attribute_level=AttributeLevel.PRINT),
 
     # Card-level attributes (shared across faces, stored at oracle_id level)
