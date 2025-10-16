@@ -30,7 +30,7 @@ class LoggingMiddleware:
             resp: The response object (unused).
         """
         del resp
-        logger.info("[%s] Request received: %s", self.middleware_name, req.uri)
+        logger.info("[%s] Request received: %s", self.middleware_name, req.relative_uri)
 
     def process_response(
         self: LoggingMiddleware,
@@ -48,4 +48,4 @@ class LoggingMiddleware:
             req_succeeded: Whether the request was successful (unused).
         """
         del resp, resource, req_succeeded
-        logger.info("[%s] Response sent: %s", self.middleware_name, req.uri)
+        logger.info("[%s] Response sent: %s", self.middleware_name, req.relative_uri)

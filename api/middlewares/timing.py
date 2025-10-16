@@ -47,11 +47,11 @@ class TimingMiddleware:
         start = req.context.get("_start_time")
         duration = time.monotonic() - start if start is not None else -1.0
         logger.info(
-            "[timing] %.2f ms | %d | %s | %s | %s",
+            "[timing] %.2f ms | pid: %d | %s | %s | %s",
             duration * 1000,
             os.getpid(),
             resp.status,
-            req.url,
+            req.relative_uri,
             req.get_header("User-Agent", "-"),
         )
 
@@ -93,7 +93,5 @@ class ProfilingMiddleware:
         profile = req.context.get("_profile")
         if isinstance(profile, cProfile.Profile):
             profile.disable()
-            profile_name = (req.url).rpartition("/")[-1]
-            profile_name = profile_name.partition("?")[0]
             profile_id = int(1000 * time.monotonic())
-            profile.dump_stats(self.datadir / f"profile_{profile_name}.{profile_id}.prof")
+            profile.dump_stats(self.datadir / f"profile_{req.path}.{profile_id}.prof")
