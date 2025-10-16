@@ -91,7 +91,7 @@ class ApiWorker(multiprocessing.Process):
         api = falcon.App(
             middleware=[
                 TimingMiddleware(),
-                CachingMiddleware(),  # important that this is first
+                # CachingMiddleware(),  # important that this is first
                 CompressionMiddleware(),
             ],
         )

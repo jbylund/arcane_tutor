@@ -24,7 +24,8 @@ import falcon
 import orjson
 import psycopg
 import requests
-from cachetools import LRUCache, TTLCache, cached
+from cachetools import LRUCache, TTLCache
+from cachetools import cached as cachetools_cached
 from psycopg import Connection, Cursor
 
 from api.card_processing import preprocess_card
@@ -49,6 +50,15 @@ logger = logging.getLogger(__name__)
 NOT_FOUND = 404
 BACKFILL = IMPORT_EXPORT = True
 
+ENABLE_CACHE = False
+
+def cached(cache, key=None):
+    """Decorator that respects the ENABLE_CACHE flag."""
+    def decorator(func):
+        if ENABLE_CACHE:
+            return cachetools_cached(cache, key=key)(func)
+        return func
+    return decorator
 
 def set_cache_header(falcon_response: falcon.Response | None, duration: timedelta) -> None:
     """Set the Cache-Control header on a Falcon response.
@@ -112,6 +122,8 @@ class APIResource:
                 self.action_map[method_name] = make_type_converting_wrapper(method)
         self.action_map["index"] = make_type_converting_wrapper(self.index_html)
         self._query_cache = LRUCache(maxsize=1_000)
+        if not ENABLE_CACHE:
+            self._query_cache = TTLCache(maxsize=1, ttl=0)
         self._session = requests.Session()
         self._import_guard: LockType = import_guard
         self._schema_setup_event: EventType = schema_setup_event
