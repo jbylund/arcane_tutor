@@ -207,8 +207,8 @@ class APIResource:
                 },
             ) from oops
         finally:
-            duration = time.monotonic() - before
-            logger.info("Request duration: %f seconds / %s", duration, resp.status)
+            duration = (time.monotonic() - before) * 1000
+            logger.info("Request duration: %.1f ms / %s", duration, resp.status)
 
     def _raise_not_found(self: APIResource, **_: object) -> None:
         """Raise a Falcon HTTPNotFound error with available routes."""
