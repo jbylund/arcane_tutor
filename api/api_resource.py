@@ -19,7 +19,6 @@ import urllib.parse
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 from typing import cast as typecast
-from urllib.parse import urlparse
 
 import falcon
 import orjson
@@ -155,18 +154,17 @@ class APIResource:
 
         """
         if resp.complete:
-            logger.info("Request already handled: %s", req.uri)
+            logger.info("Request already handled: %s", req.relative_uri)
             return
 
-        parsed = urlparse(req.uri)
-        path = parsed.path.strip("/") or "index"
+        path = req.path.strip("/") or "index"
 
         if path in ("db_ready", "pid"):
             return
 
         logger.info(
             "Handling request for %s / |%s| / response id: %d",
-            req.uri,
+            req.relative_uri,
             path,
             id(resp),
         )
