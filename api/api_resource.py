@@ -597,39 +597,12 @@ class APIResource:
                 title="Invalid Search Query",
                 description=f'Failed to parse query: "{query}"',
             ) from err
-        sql_orderby: str = {
-            # what's in the query => the db column name
-            CardOrdering.CMC: "cmc",
-            CardOrdering.EDHREC: "edhrec_rank",
-            CardOrdering.POWER: "creature_power",
-            CardOrdering.RARITY: "card_rarity_int",
-            CardOrdering.TOUGHNESS: "creature_toughness",
-            CardOrdering.USD: "price_usd",
-        }.get(orderby, "edhrec_rank")
-        sql_direction = {
-            "asc": "ASC",
-            "desc": "DESC",
-        }.get(str(direction), "ASC")
-        # scryfall supports distinct:
-        # cards, prints, arts
-        distinct_on = {
-            UniqueOn.ARTWORK: "illustration_id",
-            UniqueOn.CARD: "card_name",
-            UniqueOn.PRINTING: "scryfall_id",
-        }.get(unique, "card_name")
-        # Map prefer values to SQL columns and directions
-        prefer_mapping = {
-            PreferOrder.OLDEST: ("released_at", "ASC"),
-            PreferOrder.NEWEST: ("released_at", "DESC"),
-            PreferOrder.USD_LOW: ("price_usd", "ASC"),
-            PreferOrder.USD_HIGH: ("price_usd", "DESC"),
-            PreferOrder.PROMO: ("edhrec_rank", "ASC"),  # Use edhrec_rank as fallback for promo
-            PreferOrder.DEFAULT: ("prefer_score", "DESC"),
-        }
-        prefer_column, prefer_direction = prefer_mapping.get(
-            prefer,
-            ("edhrec_rank", "ASC"),
-        )
+
+        distinct_on = unique.get_distinct_on()
+        prefer_column, prefer_direction = prefer.get_column_and_direction()
+        sql_direction = direction.get_sql_direction()
+        sql_orderby = orderby.get_sql_orderby()
+
         query_sql = f"""
             WITH distinct_cards AS (
                 SELECT DISTINCT ON ({distinct_on})

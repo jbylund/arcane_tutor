@@ -33,10 +33,10 @@ def _convert_string_to_type(str_value: str | None, param_type: Any) -> Any:  # n
 
     converter_map = {
         # enums
-        "CardOrdering": CardOrdering,
-        "PreferOrder": PreferOrder,
-        "SortDirection": SortDirection,
-        "UniqueOn": UniqueOn,
+        "CardOrdering": CardOrdering.from_value,
+        "PreferOrder": PreferOrder.from_value,
+        "SortDirection": SortDirection.from_value,
+        "UniqueOn": UniqueOn.from_value,
 
         # other stuffs
         "bool": convert_to_bool,

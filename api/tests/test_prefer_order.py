@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from api.api_resource import APIResource
-from api.enums import PreferOrder
+from api.enums import CardOrdering, PreferOrder, SortDirection, UniqueOn
 
 
 class TestPreferOrder(unittest.TestCase):
@@ -40,9 +40,9 @@ class TestPreferOrder(unittest.TestCase):
             # Test that search accepts prefer parameter without error
             result = self.api_resource.search(
                 query="cmc=3",
-                orderby="cmc",
-                direction="asc",
-                unique="card",
+                orderby=CardOrdering.CMC,
+                direction=SortDirection.ASC,
+                unique=UniqueOn.CARD,
                 prefer=PreferOrder.OLDEST,
             )
             assert result is not None
