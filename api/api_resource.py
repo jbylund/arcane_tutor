@@ -285,6 +285,7 @@ class APIResource:
 
         """
         params = params or {}
+        query = " ".join(query.strip().split())
 
         use_cache = True
         if use_cache:
@@ -306,7 +307,6 @@ class APIResource:
                 return copy.deepcopy(cached_val)
 
         params = {k: db_utils.maybe_json(v) for k, v in params.items()}
-        query = " ".join(query.strip().split())
 
         root_timing_key = "root_timing_key"
         timer = Timer()
