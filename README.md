@@ -132,6 +132,8 @@ scryfallos/
 - **[Scripts Documentation](scripts/README.md)** - Detailed information about utility scripts including the Scryfall comparison tool
 - **[API Tests Documentation](api/tests/README.md)** - Testing framework and integration test information
 - **[CI/CD Workflows](docs/workflows/README_CI_MONITOR.md)** - Continuous integration and monitoring documentation
+- **[Caching Architecture](docs/caching-architecture.md)** - Multi-layered caching system documentation and configuration guide
+- **[Caching Configuration Plan](docs/changelog/2025-10-16-caching-configuration-plan.md)** - Detailed plan for unified cache configuration
 
 ## Developer Quick Start
 
@@ -278,6 +280,34 @@ The bulk import includes built-in rate limiting:
 
 The search endpoint supports comprehensive Scryfall syntax. See [syntax analysis](docs/scryfall_syntax_analysis.md) for complete documentation.
 
+## Performance and Caching
+
+Scryfall OS implements a sophisticated multi-layered caching system for optimal performance:
+
+### Cache Layers
+
+1. **HTTP Middleware Cache** - Caches complete HTTP responses
+2. **Query Parsing Cache** - Caches SQL WHERE clause generation
+3. **Search Results Cache** - 60-second TTL cache for search results
+4. **Database Query Cache** - Caches database query results
+5. **Bulk Data File Cache** - Caches downloaded card data from Scryfall
+
+### Configuration
+
+All cache layers can be configured via environment variables:
+
+```bash
+# Example: Disable search result caching for development
+export CACHE_SEARCH_RESULTS_ENABLED=false
+
+# Example: Increase cache sizes for production
+export CACHE_HTTP_MIDDLEWARE_MAXSIZE=50000
+export CACHE_SEARCH_RESULTS_MAXSIZE=5000
+export CACHE_DATABASE_QUERIES_MAXSIZE=5000
+```
+
+See **[Caching Architecture Documentation](docs/caching-architecture.md)** for complete details.
+
 ## Development Notes
 
 ### Current Limitations
@@ -288,5 +318,6 @@ The search endpoint supports comprehensive Scryfall syntax. See [syntax analysis
 
 1. **Features**: Implement highest-priority missing functionality from grid above
 1. **Testing**: Expand API comparison coverage and add performance benchmarks
+1. **Caching**: Implement unified configuration system (see [plan](docs/changelog/2025-10-16-caching-configuration-plan.md))
 
 For detailed technical analysis, see [functionality analysis documentation](docs/scryfall_functionality_analysis.md).
