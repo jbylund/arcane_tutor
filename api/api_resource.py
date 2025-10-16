@@ -16,9 +16,9 @@ import re
 import secrets
 import time
 import urllib.parse
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 from typing import cast as typecast
-from urllib.parse import urlparse
 
 import falcon
 import orjson
@@ -33,6 +33,7 @@ from api.parsing import generate_sql_query, parse_scryfall_query
 from api.parsing.scryfall_nodes import extract_frame_data_from_raw_card, mana_cost_str_to_dict
 from api.tagger_client import TaggerClient
 from api.utils import db_utils, error_monitoring, multiprocessing_utils
+from api.utils.timer import Timer
 from api.utils.type_conversions import _get_type_name, make_type_converting_wrapper
 
 if TYPE_CHECKING:
@@ -48,6 +49,18 @@ logger = logging.getLogger(__name__)
 NOT_FOUND = 404
 BACKFILL = IMPORT_EXPORT = True
 
+
+def set_cache_header(falcon_response: falcon.Response | None, duration: timedelta) -> None:
+    """Set the Cache-Control header on a Falcon response.
+
+    Args:
+        falcon_response: The Falcon response object.
+        duration: The duration of the cache in seconds.
+    """
+    if falcon_response is None:
+        return
+    seconds = int(duration.total_seconds())
+    falcon_response.set_header("Cache-Control", f"public, max-age={seconds}")
 
 @cached(cache=LRUCache(maxsize=10_000))
 def get_where_clause(query: str) -> tuple[str, dict]:
@@ -127,6 +140,10 @@ class APIResource:
         with sql_file.open(encoding="utf-8") as f:
             return f.read().strip()
 
+    def _get_timer(self: APIResource, req: falcon.Request) -> Timer:
+        """Get the timer for the request."""
+        return req.context.setdefault("timer", Timer())
+
     def _handle(self: APIResource, req: falcon.Request, resp: falcon.Response) -> None:
         """Handle a Falcon request and set the response.
 
@@ -137,18 +154,17 @@ class APIResource:
 
         """
         if resp.complete:
-            logger.info("Request already handled: %s", req.uri)
+            logger.info("Request already handled: %s", req.relative_uri)
             return
 
-        parsed = urlparse(req.uri)
-        path = parsed.path.strip("/") or "index"
+        path = req.path.strip("/") or "index"
 
         if path in ("db_ready", "pid"):
             return
 
         logger.info(
             "Handling request for %s / |%s| / response id: %d",
-            req.uri,
+            req.relative_uri,
             path,
             id(resp),
         )
@@ -191,8 +207,8 @@ class APIResource:
                 },
             ) from oops
         finally:
-            duration = time.monotonic() - before
-            logger.info("Request duration: %f seconds / %s", duration, resp.status)
+            duration = (time.monotonic() - before) * 1000
+            logger.info("Request duration: %.1f ms / %s", duration, resp.status)
 
     def _raise_not_found(self: APIResource, **_: object) -> None:
         """Raise a Falcon HTTPNotFound error with available routes."""
@@ -291,32 +307,23 @@ class APIResource:
 
         params = {k: db_utils.maybe_json(v) for k, v in params.items()}
         query = " ".join(query.strip().split())
-        explain_query = f"EXPLAIN (FORMAT JSON) {query}"
 
+        root_timing_key = "root_timing_key"
+        timer = Timer()
         result: dict[str, Any] = {}
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute(f"set statement_timeout = {statement_timeout}")
             if explain:
+                explain_query = f"EXPLAIN (FORMAT JSON) {query}"
                 cursor.execute(explain_query, params)
                 for row in cursor.fetchall():
                     result["plan"] = row
-
-            result["timings"] = timings = {}
-            before = time.monotonic()
-            cursor.execute(query, params)
-            after_query = time.monotonic()
-            query_duratrion = after_query - before
-            timings["query_duration_ms"] = query_duratrion * 1000
-            timings["query_frequency"] = 1 / query_duratrion
-            raw_rows = cursor.fetchall()
-            result["result"] = [dict(r) for r in raw_rows]
-            after_fetch = time.monotonic()
-            fetch_duration = after_fetch - after_query
-            timings["fetch_duration_ms"] = fetch_duration * 1000
-            timings["fetch_frequency"] = 1 / fetch_duration
-            total_duration = after_fetch - before
-            timings["total_queryfetch_duration_ms"] = total_duration * 1000
-            timings["total_queryfetch_frequency"] = 1 / total_duration
+            with timer(root_timing_key):
+                with timer("execute_query"):
+                    cursor.execute(query, params)
+                with timer("fetch_results"):
+                    result["result"] = [dict(r) for r in cursor.fetchall()]
+            result["timings"] = timer.get_timings()[root_timing_key]
 
         if use_cache:
             self._query_cache[cachekey] = result
@@ -553,8 +560,7 @@ class APIResource:
         Returns:
             Dict containing search results and metadata.
         """
-        if falcon_response is not None:
-            falcon_response.set_header("Cache-Control", "public, max-age=90")
+        set_cache_header(falcon_response, duration=timedelta(seconds=90))
         self.import_data()  # ensures that database is setup
         return self._search(
             query=query or q,
@@ -579,9 +585,11 @@ class APIResource:
         query: str | None = None,
         unique: UniqueOn = UniqueOn.CARD,
     ) -> dict[str, Any]:
-        begin = time.monotonic()
+        timer = Timer()
+
         try:
-            where_clause, params = get_where_clause(query)
+            with timer("get_where_clause"):
+                where_clause, params = get_where_clause(query)
         except ValueError as err:
             # Handle parsing errors from parse_scryfall_query
             logger.info("ValueError caught for query '%s', raising BadRequest", query)
@@ -591,13 +599,13 @@ class APIResource:
             ) from err
         sql_orderby: str = {
             # what's in the query => the db column name
-            "cmc": "cmc",
-            "edhrec": "edhrec_rank",
-            "power": "creature_power",
-            "rarity": "card_rarity_int",
-            "toughness": "creature_toughness",
-            "usd": "price_usd",
-        }.get(str(orderby), "edhrec_rank")
+            CardOrdering.CMC: "cmc",
+            CardOrdering.EDHREC: "edhrec_rank",
+            CardOrdering.POWER: "creature_power",
+            CardOrdering.RARITY: "card_rarity_int",
+            CardOrdering.TOUGHNESS: "creature_toughness",
+            CardOrdering.USD: "price_usd",
+        }.get(orderby, "edhrec_rank")
         sql_direction = {
             "asc": "ASC",
             "desc": "DESC",
@@ -608,7 +616,7 @@ class APIResource:
             UniqueOn.ARTWORK: "illustration_id",
             UniqueOn.CARD: "card_name",
             UniqueOn.PRINTING: "scryfall_id",
-        }.get(UniqueOn(str(unique).rstrip("s")), "card_name")
+        }.get(unique, "card_name")
         # Map prefer values to SQL columns and directions
         prefer_mapping = {
             PreferOrder.OLDEST: ("released_at", "ASC"),
@@ -619,70 +627,71 @@ class APIResource:
             PreferOrder.DEFAULT: ("prefer_score", "DESC"),
         }
         prefer_column, prefer_direction = prefer_mapping.get(
-            PreferOrder(str(prefer).replace("-", "_")),
+            prefer,
             ("edhrec_rank", "ASC"),
         )
         query_sql = f"""
-        WITH distinct_cards AS (
-            SELECT DISTINCT ON ({distinct_on})
-                card_artist,
-                card_name,
-                card_set_code,
-                cmc,
-                collector_number,
-                edhrec_rank,
-                image_location_uuid,
-                mana_cost_text,
-                oracle_text,
-                set_name,
-                type_line,
-                prefer_score,
-                {sql_orderby} AS sort_value
-            FROM
-                magic.cards AS card
-            WHERE
-                {where_clause}
-            ORDER BY
-                {distinct_on},
-                {prefer_column} {prefer_direction} NULLS LAST,
-                prefer_score DESC NULLS LAST
-        )
-        (
-            SELECT
-                null AS total_cards_count,
-                card_artist,
-                card_name AS name,
-                card_set_code AS set_code,
-                cmc,
-                collector_number,
-                edhrec_rank,
-                mana_cost_text AS mana_cost,
-                oracle_text,
-                set_name,
-                type_line
-            FROM
-                distinct_cards
-            ORDER BY
-                sort_value {sql_direction} NULLS LAST,
-                edhrec_rank ASC NULLS LAST,
-                prefer_score DESC NULLS LAST
-            LIMIT
-                {limit}
-        )
-        UNION ALL
-        (
-            SELECT
-                COUNT(1) AS total_cards_count,
-                null, null, null, null, null, null, null, null, null, null
-            FROM
-                distinct_cards
-        )
-        """
+            WITH distinct_cards AS (
+                SELECT DISTINCT ON ({distinct_on})
+                    card_artist,
+                    card_name,
+                    card_set_code,
+                    cmc,
+                    collector_number,
+                    edhrec_rank,
+                    image_location_uuid,
+                    mana_cost_text,
+                    oracle_text,
+                    set_name,
+                    type_line,
+                    prefer_score,
+                    {sql_orderby} AS sort_value
+                FROM
+                    magic.cards AS card
+                WHERE
+                    {where_clause}
+                ORDER BY
+                    {distinct_on},
+                    {prefer_column} {prefer_direction} NULLS LAST,
+                    prefer_score DESC NULLS LAST
+            )
+            (
+                SELECT
+                    null AS total_cards_count,
+                    card_artist,
+                    card_name AS name,
+                    card_set_code AS set_code,
+                    cmc,
+                    collector_number,
+                    edhrec_rank,
+                    mana_cost_text AS mana_cost,
+                    oracle_text,
+                    set_name,
+                    type_line
+                FROM
+                    distinct_cards
+                ORDER BY
+                    sort_value {sql_direction} NULLS LAST,
+                    edhrec_rank ASC NULLS LAST,
+                    prefer_score DESC NULLS LAST
+                LIMIT
+                    {limit}
+            )
+            UNION ALL
+            (
+                SELECT
+                    COUNT(1) AS total_cards_count,
+                    null, null, null, null, null, null, null, null, null, null
+                FROM
+                    distinct_cards
+            )"""
+
         query_sql = rewrap(query_sql)
         logger.info("Full query: %s", query_sql)
         logger.info("Params: %s", params)
         try:
-            result_bag = self._run_query(query=query_sql, params=params, explain=False)
+            with timer("run_query"):
+                result_bag = self._run_query(query=query_sql, params=params, explain=False)
         except psycopg.errors.DatatypeMismatch as err:
             # Raise BadRequest error for invalid query syntax
             # This happens with standalone arithmetic expressions like "cmc+1"
@@ -698,18 +707,13 @@ class APIResource:
         total_cards = count_row["total_cards_count"]
         for icard in cards:
             icard.pop("total_cards_count")
-        timings = result_bag.pop("timings")
-        total_fn_duration = (time.monotonic() - begin)
-        timings["total_fn_duration_ms"] = total_fn_duration * 1000
-        timings["total_fn_frequency"] = 1 / total_fn_duration
-        for key, value in timings.items():
-            timings[key] = round(value, 3)
         return {
             "cards": cards,
             "compiled": query_sql,
             "params": params,
             "query": query,
-            "timings": timings,
+            "outer_timings": timer.get_timings(),
+            "inner_timings": result_bag.pop("timings"),
             "total_cards": total_cards,
         }
 
@@ -767,14 +771,14 @@ class APIResource:
                     embedded_data,
                 )
                 # Disable caching for pages with search results
-                falcon_response.set_header("Cache-Control", "public, max-age=90")
+                set_cache_header(falcon_response, duration=timedelta(seconds=90))
             except (ValueError, falcon.HTTPBadRequest, psycopg.errors.DatatypeMismatch) as err:
                 # If search fails, just serve the page without embedded results
                 logger.warning("Failed to embed search results: %s", err)
-                falcon_response.set_header("Cache-Control", "public, max-age=3600")
+                set_cache_header(falcon_response, duration=timedelta(hours=1))
         else:
             # Cache for 1 hour - improves repeat visit performance
-            falcon_response.set_header("Cache-Control", "public, max-age=3600")
+            set_cache_header(falcon_response, duration=timedelta(hours=1))
 
         falcon_response.text = html_content
         falcon_response.content_type = "text/html"
@@ -807,7 +811,7 @@ class APIResource:
         logger.info("Favicon content length: %d", content_length)
         falcon_response.headers["content-length"] = content_length
         # Cache favicon for 7 days - it rarely changes
-        falcon_response.set_header("Cache-Control", "public, max-age=604800")
+        set_cache_header(falcon_response, duration=timedelta(days=7))
 
     def _serve_static_file(self: APIResource, *, filename: str, falcon_response: falcon.Response) -> None:
         """Serve a static file to the Falcon response.
@@ -834,8 +838,7 @@ class APIResource:
 
     def get_common_card_types(self: APIResource, falcon_response: falcon.Response | None = None, **_: object) -> list[dict[str, Any]]:
         """Get the common card types from the database."""
-        if falcon_response is not None:
-            falcon_response.set_header("Cache-Control", "public, max-age=3600")
+        set_cache_header(falcon_response, duration=timedelta(hours=1))
         return self._run_query(
             query=self.read_sql("get_common_card_types"),
         )["result"]
