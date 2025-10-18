@@ -36,7 +36,7 @@ This document provides a detailed review of the legal compliance checklist for S
 
 | Item | Status | Notes |
 |------|--------|-------|
-| Distinct color scheme | ⚠️ **NEEDS WORK** | Currently using #667eea and #764ba2 (purple/indigo - similar to Scryfall's purple/blue) |
+| Distinct color scheme | ✅ **COMPLETE** | Implemented WUBRG 5-color gradient (White→Blue→Black→Red→Green) - clearly different from Scryfall's purple/blue |
 | Different layout structure | ✅ **COMPLETE** | Custom grid layout, different search controls |
 | Original logo and branding | ❌ **TODO** | No custom logo, using text-only header |
 | Unique card display format | ✅ **COMPLETE** | Custom card grid and modal display |
@@ -44,7 +44,7 @@ This document provides a detailed review of the legal compliance checklist for S
 | Different typography | ⚠️ **PARTIAL** | Using custom fonts (Beleren, MPlantin) but need to verify licensing |
 
 ### Recommendations:
-1. **High Priority**: Change color scheme to be more distinct from Scryfall (consider different color families)
+1. ~~**High Priority**: Change color scheme to be more distinct from Scryfall (consider different color families)~~ **DONE** (October 2025)
 2. **Medium Priority**: Create custom logo/branding
 3. **Low Priority**: Verify font licensing and document in LEGAL.md
 
@@ -198,7 +198,7 @@ This document provides a detailed review of the legal compliance checklist for S
 3. ✅ **DONE**: Add Scryfall attribution to UI and documentation
 
 ### High Priority (Within 1-3 Months)
-1. ❌ **TODO**: Change color scheme to be more distinct from Scryfall
+1. ✅ **DONE** (Oct 2025): Change color scheme to be more distinct from Scryfall - Implemented WUBRG gradient
 2. ❌ **TODO**: Draft formal Terms of Service
 3. ❌ **TODO**: Draft formal Privacy Policy
 4. ❌ **TODO**: Verify and document card image sources
@@ -219,17 +219,17 @@ This document provides a detailed review of the legal compliance checklist for S
 
 ## Compliance Score
 
-**Overall Compliance: 73% (33/45 items complete)**
+**Overall Compliance: 76% (34/45 items complete)**
 
-- ✅ Complete: 33 items
-- ⚠️ Partial: 4 items  
-- ❌ TODO: 7 items
+- ✅ Complete: 34 items
+- ⚠️ Partial: 3 items  
+- ❌ TODO: 6 items
 - 🔲 N/A: 1 item
 - ⏳ Ongoing: 3 items
 
 ### By Category:
 - **Data & Content**: 67% (4/6 complete)
-- **Visual Design & UI**: 50% (3/6 complete)
+- **Visual Design & UI**: 67% (4/6 complete) - *Improved with WUBRG gradient*
 - **Features & Functionality**: 100% (5/5 complete)
 - **Code & Implementation**: 100% (5/5 complete)
 - **Legal & Compliance**: 71% (5/7 complete)
@@ -252,7 +252,7 @@ This document provides a detailed review of the legal compliance checklist for S
 
 ## Key Areas for Improvement
 
-1. ⚠️ **Color Scheme**: Too similar to Scryfall's purple/blue palette
+1. ~~⚠️ **Color Scheme**: Too similar to Scryfall's purple/blue palette~~ **RESOLVED** (Oct 2025)
 2. ❌ **Formal Legal Documents**: Missing TOS and Privacy Policy
 3. ❌ **User Documentation**: Lacks user-facing help and tutorials
 4. ❌ **Visual Branding**: No custom logo or distinctive visual identity
