@@ -17,11 +17,12 @@ Scryfall OS uses card data from **Scryfall's official bulk data API** (https://a
 
 ### Card Images
 
-Card images are sourced from Scryfall's CDN via our CloudFront distribution at `d1hot9ps2xugbc.cloudfront.net`:
+Card images are processed from Scryfall's PNG images and served via our own infrastructure:
 
-- **Image Source**: Card images are originally from Scryfall's image CDN (https://cards.scryfall.io)
-- **Delivery Method**: We serve these images through our CloudFront CDN for performance optimization
-- **Attribution**: We acknowledge Scryfall as the source of card images
+- **Image Source**: Derived from Scryfall's PNG card images
+- **Storage**: Amazon S3 bucket
+- **Delivery Method**: CloudFront CDN at `d1hot9ps2xugbc.cloudfront.net`
+- **Attribution**: We acknowledge Scryfall as the original source of the PNG images
 - **Compliance**: Card images are used in accordance with Scryfall's API Terms of Service and Wizards of the Coast's Fan Content Policy
 - **Rights**: All card artwork is © Wizards of the Coast LLC
 
@@ -81,7 +82,7 @@ Scryfall OS is intentionally designed to be different from Scryfall:
 - **Unique features**: Arithmetic expressions in queries, different sorting options
 
 ### Visual Differences
-- **Different color scheme**: Purple/indigo gradient theme (distinct from Scryfall's design)
+- **Different color scheme**: Blue gradient theme inspired by Tolarian Academy (distinct from Scryfall's purple/blue palette)
 - **Original layout**: Custom card display and grid system
 - **Different UI components**: Custom search interface and controls
 - **Original iconography**: Custom theme toggle and UI elements
