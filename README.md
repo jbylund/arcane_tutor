@@ -66,6 +66,7 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 1. **Search DSL Parser** - A comprehensive parsing library for Scryfall's query syntax supporting text search, numeric comparisons, color identity, and advanced operators
 1. **Database Query Engine** - Converts parsed queries into optimized PostgreSQL queries with support for complex joins and filtering
 1. **Data Import Tools** - Bulk data loading from Scryfall exports with incremental updates and card tagging integration
+1. **Gatherer Import Module** - New tool for importing card data from Gatherer/Scryfall and organizing it as JSON files per set (see `gatherer_import/`)
 1. **Web Interface** - A responsive HTML/JavaScript application providing search functionality with card display similar to Scryfall
 1. **Card Tagging System** - Extended functionality for importing and managing Scryfall's card tags with hierarchy support
 1. **RESTful API** - Falcon-based web service with multi-process worker support and comprehensive search endpoints
@@ -115,6 +116,12 @@ scryfallos/
 │   ├── api_worker.py            # Multi-process worker implementation
 │   ├── entrypoint.py            # API server entry point and CLI
 │   └── index.html               # Web frontend (single-file app)
+├── gatherer_import/             # Gatherer/Scryfall data import module
+│   ├── tests/                   # Import module tests
+│   ├── fetcher.py               # Card data fetcher from Scryfall API
+│   ├── set_converter.py         # JSON converter for set data
+│   ├── cli.py                   # Command-line interface
+│   └── README.md                # Import module documentation
 ├── client/                      # Client-side assets (minimal)
 ├── configs/                     # Configuration files
 ├── docs/                        # Project documentation and analysis
@@ -129,6 +136,7 @@ scryfallos/
 
 ### Specialized Documentation
 
+- **[Gatherer Import Module](gatherer_import/README.md)** - Import card data from Gatherer/Scryfall and organize as JSON per set
 - **[Scripts Documentation](scripts/README.md)** - Detailed information about utility scripts including the Scryfall comparison tool
 - **[API Tests Documentation](api/tests/README.md)** - Testing framework and integration test information
 - **[CI/CD Workflows](docs/workflows/README_CI_MONITOR.md)** - Continuous integration and monitoring documentation
@@ -199,6 +207,27 @@ python -m api.entrypoint --port 8080 --workers 2
 # Visit web interface
 open http://localhost:8080/
 ```
+
+#### Gatherer Data Import
+
+```bash
+# Import cards from a specific set
+python -m gatherer_import --set DOM --output ./data/sets
+
+# Import multiple sets
+python -m gatherer_import --set DOM --set WAR --set RNA
+
+# List available sets
+python -m gatherer_import --list --output ./data/sets
+
+# Import all sets (warning: takes a long time)
+python -m gatherer_import --all-sets --output ./data/sets
+
+# Include extras (tokens, emblems, etc.)
+python -m gatherer_import --set DOM --include-extras
+```
+
+See [gatherer_import/README.md](gatherer_import/README.md) for more details.
 
 #### Testing and Quality Assurance
 
