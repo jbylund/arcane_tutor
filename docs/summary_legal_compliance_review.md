@@ -77,7 +77,7 @@ The project demonstrates:
 
 ### Issue Template: Design and Implement Custom Logo
 
-**Location**: `docs/ISSUE_TEMPLATE_CUSTOM_LOGO.md`
+**Location**: `docs/issue_template_custom_logo.md`
 
 **Contents**:
 - Complete requirements (legal, design, technical)
@@ -94,7 +94,7 @@ The project demonstrates:
 
 ## Documentation Created
 
-### 1. LEGAL_COMPLIANCE_FINAL_STATUS.md
+### 1. legal_compliance_final_status.md
 
 Comprehensive final status report including:
 - Executive summary with overall score
@@ -104,7 +104,7 @@ Comprehensive final status report including:
 - Risk assessment (Very Low)
 - Recommendations for remaining work
 
-### 2. ISSUE_TEMPLATE_CUSTOM_LOGO.md
+### 2. issue_template_custom_logo.md
 
 Complete issue template for the custom logo including:
 - Background and requirements
@@ -125,7 +125,7 @@ Complete issue template for the custom logo including:
 ### Optional Next Steps
 
 1. **Create GitHub Issue for Custom Logo** (Low Priority)
-   - Copy content from `docs/ISSUE_TEMPLATE_CUSTOM_LOGO.md`
+   - Copy content from `docs/issue_template_custom_logo.md`
    - Label as: `enhancement`, `design`, `low-priority`
    - Consider making it `good-first-issue` if doing community contest
 
@@ -144,9 +144,9 @@ Complete issue template for the custom logo including:
 ## Files Modified/Created
 
 ### New Files
-1. `docs/LEGAL_COMPLIANCE_FINAL_STATUS.md` - Comprehensive status report
-2. `docs/ISSUE_TEMPLATE_CUSTOM_LOGO.md` - Issue template for logo work
-3. `docs/SUMMARY_LEGAL_COMPLIANCE_REVIEW.md` - This summary document
+1. `docs/legal_compliance_final_status.md` - Comprehensive status report
+2. `docs/issue_template_custom_logo.md` - Issue template for logo work
+3. `docs/summary_legal_compliance_review.md` - This summary document
 
 ### Existing Files
 - No modifications to existing files required
@@ -166,8 +166,8 @@ The single remaining item (custom logo) is a cosmetic enhancement that can be ad
 
 ## Related Documentation
 
-- [LEGAL_COMPLIANCE_FINAL_STATUS.md](LEGAL_COMPLIANCE_FINAL_STATUS.md) - Full detailed review
-- [ISSUE_TEMPLATE_CUSTOM_LOGO.md](ISSUE_TEMPLATE_CUSTOM_LOGO.md) - Ready-to-use issue template
+- [legal_compliance_final_status.md](legal_compliance_final_status.md) - Full detailed review
+- [issue_template_custom_logo.md](issue_template_custom_logo.md) - Ready-to-use issue template
 - [legal_compliance_summary.md](legal_compliance_summary.md) - Quick reference
 - [compliance_review.md](compliance_review.md) - Detailed status tracking
 - [legal.md](legal.md) - Legal compliance documentation
@@ -188,11 +188,11 @@ To create the new GitHub issue for the custom logo:
 1. Go to: https://github.com/jbylund/arcane_tutor/issues/new
 2. Title: "Design and Implement Custom Logo for Arcane Tutor"
 3. Labels: `enhancement`, `design`, `low-priority`, optionally `good-first-issue`
-4. Body: Copy content from `docs/ISSUE_TEMPLATE_CUSTOM_LOGO.md`
+4. Body: Copy content from `docs/issue_template_custom_logo.md`
 
 Or use GitHub CLI:
 ```bash
 gh issue create --title "Design and Implement Custom Logo for Arcane Tutor" \
-  --body-file docs/ISSUE_TEMPLATE_CUSTOM_LOGO.md \
+  --body-file docs/issue_template_custom_logo.md \
   --label enhancement,design,low-priority
 ```

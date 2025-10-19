@@ -18,13 +18,13 @@ Arcane Tutor has achieved excellent legal compliance standing with all critical 
 
 ### 📊 Status Reports
 
-1. **[SUMMARY_LEGAL_COMPLIANCE_REVIEW.md](SUMMARY_LEGAL_COMPLIANCE_REVIEW.md)** - **START HERE**
+1. **[summary_legal_compliance_review.md](summary_legal_compliance_review.md)** - **START HERE**
    - Executive summary of compliance review
    - What's complete vs. what remains
    - Instructions for next steps
    - Quick reference guide
 
-2. **[LEGAL_COMPLIANCE_FINAL_STATUS.md](LEGAL_COMPLIANCE_FINAL_STATUS.md)**
+2. **[legal_compliance_final_status.md](legal_compliance_final_status.md)**
    - Comprehensive final status report
    - Item-by-item checklist with evidence
    - Category breakdowns and scoring
@@ -73,7 +73,7 @@ Arcane Tutor has achieved excellent legal compliance standing with all critical 
 
 ### 🎨 Outstanding Work
 
-10. **[ISSUE_TEMPLATE_CUSTOM_LOGO.md](ISSUE_TEMPLATE_CUSTOM_LOGO.md)**
+10. **[issue_template_custom_logo.md](issue_template_custom_logo.md)**
     - Issue template for custom logo
     - Design requirements and concepts
     - Implementation tasks
@@ -173,7 +173,7 @@ All critical legal requirements are met. The project can safely proceed with nor
 ### Optional Enhancements
 
 1. **Custom Logo** (Low Priority)
-   - See [ISSUE_TEMPLATE_CUSTOM_LOGO.md](ISSUE_TEMPLATE_CUSTOM_LOGO.md)
+   - See [issue_template_custom_logo.md](issue_template_custom_logo.md)
    - Cosmetic enhancement only
    - No legal impact
 
@@ -193,9 +193,9 @@ All critical legal requirements are met. The project can safely proceed with nor
 
 ### For Legal Questions
 
-1. Start with [SUMMARY_LEGAL_COMPLIANCE_REVIEW.md](SUMMARY_LEGAL_COMPLIANCE_REVIEW.md)
+1. Start with [summary_legal_compliance_review.md](summary_legal_compliance_review.md)
 2. Check [legal.md](legal.md) for specific policies
-3. Review [LEGAL_COMPLIANCE_FINAL_STATUS.md](LEGAL_COMPLIANCE_FINAL_STATUS.md) for details
+3. Review [legal_compliance_final_status.md](legal_compliance_final_status.md) for details
 
 ### For User Questions
 
