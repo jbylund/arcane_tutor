@@ -56,10 +56,10 @@ Arcane Tutor has successfully addressed all critical legal compliance requiremen
 ### Major Achievements ✅
 
 1. **Complete Legal Documentation Suite**
-   - [legal.md](legal.md) - Data sources and compliance
-   - [terms_of_service.md](terms_of_service.md) - User agreement
-   - [privacy_policy.md](privacy_policy.md) - Privacy practices
-   - [compliance_review.md](compliance_review.md) - Detailed status tracking
+   - [legal.md](../legal/legal.md) - Data sources and compliance
+   - [terms_of_service.md](../user/terms_of_service.md) - User agreement
+   - [privacy_policy.md](../user/privacy_policy.md) - Privacy practices
+   - [compliance_review.md](../legal/compliance_review.md) - Detailed status tracking
 
 2. **Visual Differentiation**
    - Blue gradient theme (Tolarian Academy inspired)
@@ -68,8 +68,8 @@ Arcane Tutor has successfully addressed all critical legal compliance requiremen
    - Proper font licensing documentation
 
 3. **User-Facing Content**
-   - [help.md](help.md) - Comprehensive user guide with tutorials
-   - [about.md](about.md) - Project mission and differentiation
+   - [help.md](../user/help.md) - Comprehensive user guide with tutorials
+   - [about.md](../user/about.md) - Project mission and differentiation
    - Complete search syntax documentation
    - Example queries and use cases
 
@@ -137,12 +137,12 @@ The project demonstrates excellent legal compliance with all critical requiremen
 ## Resources
 
 ### Internal Documentation
-- [legal.md](legal.md) - Comprehensive legal compliance
-- [terms_of_service.md](terms_of_service.md) - Service terms
-- [privacy_policy.md](privacy_policy.md) - Privacy practices
-- [compliance_review.md](compliance_review.md) - Detailed checklist
-- [about.md](about.md) - Project information
-- [help.md](help.md) - User documentation
+- [legal.md](../legal/legal.md) - Comprehensive legal compliance
+- [terms_of_service.md](../user/terms_of_service.md) - Service terms
+- [privacy_policy.md](../user/privacy_policy.md) - Privacy practices
+- [compliance_review.md](../legal/compliance_review.md) - Detailed checklist
+- [about.md](../user/about.md) - Project information
+- [help.md](../user/help.md) - User documentation
 
 ### External Policies
 - [Wizards Fan Content Policy](https://company.wizards.com/en/legal/fancontentpolicy)
@@ -154,7 +154,7 @@ The project demonstrates excellent legal compliance with all critical requiremen
 For legal compliance questions:
 - Open an issue on [GitHub](https://github.com/jbylund/arcane_tutor/issues)
 - Contact repository owner
-- Review [legal.md](legal.md) for details
+- Review [legal.md](../legal/legal.md) for details
 
 ---
 
