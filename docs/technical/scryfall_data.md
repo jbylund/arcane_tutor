@@ -1,6 +1,7 @@
 # Sample Scryfall Cards Reference
 
-This document provides reference examples of Magic: The Gathering cards and their corresponding Scryfall API data. These samples are useful for understanding the card data structure and testing the Scryfall OS implementation.
+This document provides reference examples of Magic: The Gathering cards and their corresponding Scryfall API data.
+These samples are useful for understanding the card data structure and testing the Scryfall OS implementation.
 
 ## Sample Cards Overview
 
@@ -120,10 +121,10 @@ Each JSON file contains the complete Scryfall API response for the card, includi
 These sample cards can be used for:
 
 1. **Testing Parser Functionality**: Use card names and attributes in search queries
-2. **Database Schema Validation**: Ensure all card fields are properly handled
-3. **API Response Format Verification**: Compare local API responses with official Scryfall data
-4. **Image Handling**: Test image URL processing and display
-5. **Legality System Testing**: Verify format legality tracking
+1. **Database Schema Validation**: Ensure all card fields are properly handled
+1. **API Response Format Verification**: Compare local API responses with official Scryfall data
+1. **Image Handling**: Test image URL processing and display
+1. **Legality System Testing**: Verify format legality tracking
 
 ## API Endpoints Referenced
 

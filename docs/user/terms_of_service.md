@@ -4,11 +4,14 @@
 
 ## 1. Introduction
 
-Welcome to Arcane Tutor. These Terms of Service ("Terms") govern your use of the Arcane Tutor website and services (collectively, the "Service"). By accessing or using the Service, you agree to be bound by these Terms.
+Welcome to Arcane Tutor.
+These Terms of Service ("Terms") govern your use of the Arcane Tutor website and services (collectively, the "Service").
+By accessing or using the Service, you agree to be bound by these Terms.
 
 ## 2. About Arcane Tutor
 
-Arcane Tutor is a free, open-source Magic: The Gathering card search engine. This Service is:
+Arcane Tutor is a free, open-source Magic: The Gathering card search engine.
+This Service is:
 
 - **Not a commercial service**: We do not sell any products or services
 - **Not affiliated with Wizards of the Coast**: This is unofficial Fan Content permitted under the Wizards of the Coast Fan Content Policy
@@ -20,11 +23,13 @@ For more details about our project and how we differ from Scryfall, see [about.m
 
 ### 3.1 Magic: The Gathering Content
 
-All Magic: The Gathering card names, artwork, and game content are © Wizards of the Coast LLC. We do not claim any ownership of Wizards of the Coast's intellectual property. This Service is permitted under the [Wizards of the Coast Fan Content Policy](https://company.wizards.com/en/legal/fancontentpolicy).
+All Magic: The Gathering card names, artwork, and game content are © Wizards of the Coast LLC. We do not claim any ownership of Wizards of the Coast's intellectual property.
+This Service is permitted under the [Wizards of the Coast Fan Content Policy](https://company.wizards.com/en/legal/fancontentpolicy).
 
 ### 3.2 Card Data
 
-Card data is sourced from [Scryfall's official bulk data API](https://scryfall.com/docs/api). We acknowledge Scryfall as the provider of this data and comply with their API Terms of Service.
+Card data is sourced from [Scryfall's official bulk data API](https://scryfall.com/docs/api).
+We acknowledge Scryfall as the provider of this data and comply with their API Terms of Service.
 
 ### 3.3 Service Code
 
@@ -32,7 +37,8 @@ The Arcane Tutor source code is open source and available on [GitHub](https://gi
 
 ## 4. Acceptable Use
 
-You agree to use the Service only for lawful purposes. You may not:
+You agree to use the Service only for lawful purposes.
+You may not:
 
 - Attempt to gain unauthorized access to our systems
 - Disrupt or interfere with the Service's operation
@@ -42,11 +48,13 @@ You agree to use the Service only for lawful purposes. You may not:
 
 ## 5. No User Accounts
 
-The Service does not require or offer user accounts. We do not collect or store personal user information beyond what is necessary for the Service to function (see our [Privacy Policy](../user/privacy_policy.md) for details).
+The Service does not require or offer user accounts.
+We do not collect or store personal user information beyond what is necessary for the Service to function (see our [Privacy Policy](../user/privacy_policy.md) for details).
 
 ## 6. Service Availability
 
-We provide the Service on an "as-is" and "as-available" basis. We make no guarantees about:
+We provide the Service on an "as-is" and "as-available" basis.
+We make no guarantees about:
 
 - Service uptime or availability
 - Data accuracy or completeness
@@ -71,7 +79,8 @@ TO THE MAXIMUM EXTENT PERMITTED BY LAW, ARCANE TUTOR AND ITS CONTRIBUTORS SHALL 
 
 ## 9. Third-Party Links and Content
 
-The Service may contain links to third-party websites or services (such as Scryfall, Wizards of the Coast, or GitHub). We are not responsible for:
+The Service may contain links to third-party websites or services (such as Scryfall, Wizards of the Coast, or GitHub).
+We are not responsible for:
 
 - The content, privacy policies, or practices of third-party sites
 - Any damages or losses caused by your use of third-party services
@@ -79,11 +88,15 @@ The Service may contain links to third-party websites or services (such as Scryf
 
 ## 10. Open Source Nature
 
-As an open-source project, the Service is developed and maintained by community contributors. The source code is available for review, modification, and distribution under the ISC License. Contributions are welcome via our [GitHub repository](https://github.com/jbylund/arcane_tutor).
+As an open-source project, the Service is developed and maintained by community contributors.
+The source code is available for review, modification, and distribution under the ISC License.
+Contributions are welcome via our [GitHub repository](https://github.com/jbylund/arcane_tutor).
 
 ## 11. Changes to Terms
 
-We reserve the right to modify these Terms at any time. Changes will be effective immediately upon posting to the Service. Your continued use of the Service after changes constitutes acceptance of the modified Terms.
+We reserve the right to modify these Terms at any time.
+Changes will be effective immediately upon posting to the Service.
+Your continued use of the Service after changes constitutes acceptance of the modified Terms.
 
 We will update the "Last Updated" date at the top of this document when changes are made.
 
@@ -126,4 +139,6 @@ For more information about our data sources and attribution, see [legal.md](../l
 
 **Magic: The Gathering™** is a trademark of Wizards of the Coast LLC, a subsidiary of Hasbro, Inc.
 
-This Service is unofficial Fan Content permitted under the Wizards of the Coast Fan Content Policy. Not approved/endorsed by Wizards of the Coast. Portions of the materials used are property of Wizards of the Coast. © Wizards of the Coast LLC.
+This Service is unofficial Fan Content permitted under the Wizards of the Coast Fan Content Policy.
+Not approved/endorsed by Wizards of the Coast.
+Portions of the materials used are property of Wizards of the Coast. © Wizards of the Coast LLC.

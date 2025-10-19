@@ -4,7 +4,8 @@
 
 ## 1. Introduction
 
-Arcane Tutor is committed to protecting your privacy. This Privacy Policy explains how we handle information when you use our Magic: The Gathering card search engine.
+Arcane Tutor is committed to protecting your privacy.
+This Privacy Policy explains how we handle information when you use our Magic: The Gathering card search engine.
 
 **Related Documentation:**
 - [terms_of_service.md](../user/terms_of_service.md) - User agreement and service terms
@@ -90,7 +91,8 @@ We do **NOT** use information for:
 
 ### 5.1 Data Sources
 
-We retrieve card data from **Scryfall's bulk data API**. When you use our Service:
+We retrieve card data from **Scryfall's bulk data API**.
+When you use our Service:
 
 - Your searches are processed on our servers
 - We do not send your queries directly to Scryfall
@@ -104,7 +106,8 @@ The Service contains links to external sites:
 - [Wizards of the Coast](https://company.wizards.com) - Magic: The Gathering owner
 - [GitHub](https://github.com/jbylund/arcane_tutor) - Source code repository
 
-These sites have their own privacy policies. We are not responsible for their practices.
+These sites have their own privacy policies.
+We are not responsible for their practices.
 
 ### 5.3 CDN and Font Services
 
@@ -127,7 +130,8 @@ Since we don't collect personal information, there is minimal risk of data breac
 
 ## 7. Children's Privacy
 
-The Service does not knowingly collect information from children under 13. The Service is not directed at children, and we do not market to children.
+The Service does not knowingly collect information from children under 13.
+The Service is not directed at children, and we do not market to children.
 
 ## 8. Your Rights and Choices
 
@@ -143,7 +147,8 @@ We do not track users, so "Do Not Track" browser settings do not affect the Serv
 
 ### 8.3 Data Access and Deletion
 
-Since we don't collect or store personal information, there is no data to access or delete. If you have concerns, you can:
+Since we don't collect or store personal information, there is no data to access or delete.
+If you have concerns, you can:
 
 - Clear your browser's local storage
 - Clear your browser cache
@@ -151,7 +156,9 @@ Since we don't collect or store personal information, there is no data to access
 
 ## 9. International Users
 
-The Service is hosted in the United States. If you access the Service from outside the U.S., your connection may be routed through international servers. We do not intentionally collect personal information from users in any jurisdiction.
+The Service is hosted in the United States.
+If you access the Service from outside the U.S., your connection may be routed through international servers.
+We do not intentionally collect personal information from users in any jurisdiction.
 
 ## 10. Changes to Privacy Policy
 
@@ -161,13 +168,15 @@ We may update this Privacy Policy to reflect:
 - Legal or regulatory requirements
 - Improvements to our practices
 
-Changes will be effective immediately upon posting. We will update the "Last Updated" date at the top of this document.
+Changes will be effective immediately upon posting.
+We will update the "Last Updated" date at the top of this document.
 
 Continued use of the Service after changes constitutes acceptance of the updated Privacy Policy.
 
 ## 11. Open Source Transparency
 
-As an open-source project, our code is publicly available on [GitHub](https://github.com/jbylund/arcane_tutor). You can:
+As an open-source project, our code is publicly available on [GitHub](https://github.com/jbylund/arcane_tutor).
+You can:
 
 - Review how the Service processes information
 - Verify our privacy practices
@@ -194,6 +203,8 @@ For detailed information about our data sources and compliance, see our [Legal C
 
 ---
 
-**Summary**: We don't collect personal information, don't have user accounts, don't use tracking cookies, and only store your theme preference locally in your browser. The Service is provided as-is for Magic: The Gathering fans to search for cards.
+**Summary**: We don't collect personal information, don't have user accounts, don't use tracking cookies, and only store your theme preference locally in your browser.
+The Service is provided as-is for Magic: The Gathering fans to search for cards.
 
-**Magic: The Gathering™** is a trademark of Wizards of the Coast LLC. This Service is unofficial Fan Content. Not approved/endorsed by Wizards of the Coast.
+**Magic: The Gathering™** is a trademark of Wizards of the Coast LLC. This Service is unofficial Fan Content.
+Not approved/endorsed by Wizards of the Coast.

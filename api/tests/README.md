@@ -7,9 +7,9 @@ This directory contains integration tests that use [testcontainers-python](https
 The integration tests are located in `test_integration_testcontainers.py` and provide true integration testing by:
 
 1. **Spinning up a real PostgreSQL container** using testcontainers
-2. **Loading minimal test schema and data** from the `fixtures/` directory
-3. **Testing actual database interactions** without mocks
-4. **Ensuring proper isolation** - each test class gets its own container
+1. **Loading minimal test schema and data** from the `fixtures/` directory
+1. **Testing actual database interactions** without mocks
+1. **Ensuring proper isolation** - each test class gets its own container
 
 ## Benefits over Mocked Tests
 
@@ -64,9 +64,9 @@ Current integration tests cover:
 ## Adding New Integration Tests
 
 1. Add new test methods to the `TestContainerIntegration` class
-2. Use the `api_resource_with_test_db` fixture for database-dependent tests
-3. Add any additional test data to `fixtures/test_data.sql` if needed
-4. Ensure tests are properly isolated and don't depend on external services
+1. Use the `api_resource_with_test_db` fixture for database-dependent tests
+1. Add any additional test data to `fixtures/test_data.sql` if needed
+1. Ensure tests are properly isolated and don't depend on external services
 
 ## Performance Considerations
 

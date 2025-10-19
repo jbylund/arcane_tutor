@@ -2,7 +2,8 @@
 
 ## Overview
 
-This issue tracks the design and implementation of a custom logo for Arcane Tutor. This is the final remaining item from the legal compliance checklist and represents a cosmetic enhancement that will further differentiate the project from Scryfall.
+This issue tracks the design and implementation of a custom logo for Arcane Tutor.
+This is the final remaining item from the legal compliance checklist and represents a cosmetic enhancement that will further differentiate the project from Scryfall.
 
 **Priority**: Low (cosmetic enhancement)  
 **Impact**: Not required for legal compliance  
@@ -13,7 +14,8 @@ This issue tracks the design and implementation of a custom logo for Arcane Tuto
 
 ## Background
 
-Arcane Tutor currently uses a text-only header displaying "Arcane Tutor" in the web interface. While this is legally compliant and clearly differentiates from Scryfall, a custom logo would enhance the project's visual identity and branding.
+Arcane Tutor currently uses a text-only header displaying "Arcane Tutor" in the web interface.
+While this is legally compliant and clearly differentiates from Scryfall, a custom logo would enhance the project's visual identity and branding.
 
 **Related Documentation**:
 - [legal_compliance_final_status.md](../legal/legal_compliance_final_status.md) - Final compliance review
@@ -27,25 +29,25 @@ Arcane Tutor currently uses a text-only header displaying "Arcane Tutor" in the 
 ### Legal Requirements
 
 1. **Original Design**: Logo must be 100% original, not copied or derived from Scryfall's branding
-2. **No Trademark Confusion**: Must not cause confusion with Scryfall or other MTG-related brands
-3. **Distinct from Scryfall**: Should have a clearly different visual style from Scryfall's logo
-4. **Proper Attribution**: If using any third-party elements (fonts, graphics), ensure proper licensing
+1. **No Trademark Confusion**: Must not cause confusion with Scryfall or other MTG-related brands
+1. **Distinct from Scryfall**: Should have a clearly different visual style from Scryfall's logo
+1. **Proper Attribution**: If using any third-party elements (fonts, graphics), ensure proper licensing
 
 ### Design Requirements
 
 1. **Consistent with Theme**: Should complement the blue gradient theme (Tolarian Academy inspired: #2b8fdf, #3da8f5)
-2. **Scalable**: Should work at multiple sizes (favicon, header, documentation)
-3. **Professional**: Should convey the project's focus on powerful card search capabilities
-4. **MTG-Themed**: Should evoke Magic: The Gathering without using copyrighted WotC artwork
-5. **Open Source Friendly**: Should be created with tools/methods that keep the source editable
+1. **Scalable**: Should work at multiple sizes (favicon, header, documentation)
+1. **Professional**: Should convey the project's focus on powerful card search capabilities
+1. **MTG-Themed**: Should evoke Magic: The Gathering without using copyrighted WotC artwork
+1. **Open Source Friendly**: Should be created with tools/methods that keep the source editable
 
 ### Technical Requirements
 
 1. **Format**: SVG (scalable vector graphics) for web use
-2. **Favicon**: Generate 16x16, 32x32, and 64x64 PNG versions for browser favicon
-3. **Header**: Appropriate size for web header (recommend max 200px height)
-4. **File Size**: Optimized for web delivery (SVG < 50KB, PNG favicon < 10KB each)
-5. **Accessibility**: Should have good contrast in both light and dark themes
+1. **Favicon**: Generate 16x16, 32x32, and 64x64 PNG versions for browser favicon
+1. **Header**: Appropriate size for web header (recommend max 200px height)
+1. **File Size**: Optimized for web delivery (SVG < 50KB, PNG favicon < 10KB each)
+1. **Accessibility**: Should have good contrast in both light and dark themes
 
 ---
 
@@ -58,12 +60,12 @@ Arcane Tutor currently uses a text-only header displaying "Arcane Tutor" in the 
    - Magical symbols or runes
    - Mystical energy effects
 
-2. **Tutor Reference**: Represent the "Tutor" aspect (MTG reference to tutoring/searching cards)
+1. **Tutor Reference**: Represent the "Tutor" aspect (MTG reference to tutoring/searching cards)
    - Magnifying glass searching through cards
    - Open book with card imagery
    - Library or study theme (aligns with Tolarian Academy inspiration)
 
-3. **Combined Concept**: Merge both aspects
+1. **Combined Concept**: Merge both aspects
    - Magical tome being searched through
    - Arcane symbols combined with search/discovery imagery
    - Blue/mystical energy representing both magic and search power
@@ -133,10 +135,10 @@ Arcane Tutor currently uses a text-only header displaying "Arcane Tutor" in the 
 
 **Implementation**:
 1. Create separate GitHub issue for design contest
-2. Define submission guidelines and requirements
-3. Set submission deadline (e.g., 2-4 weeks)
-4. Community voting or maintainer selection
-5. Award recognition to winning designer
+1. Define submission guidelines and requirements
+1. Set submission deadline (e.g., 2-4 weeks)
+1. Community voting or maintainer selection
+1. Award recognition to winning designer
 
 ### Option 2: Direct Design by Maintainer/Contributor
 
@@ -152,9 +154,9 @@ Arcane Tutor currently uses a text-only header displaying "Arcane Tutor" in the 
 
 **Implementation**:
 1. Maintainer or volunteer designs logo
-2. Share draft for feedback
-3. Iterate based on feedback
-4. Implement final design
+1. Share draft for feedback
+1. Iterate based on feedback
+1. Implement final design
 
 ### Option 3: Professional Designer (If Budget Available)
 
@@ -170,9 +172,9 @@ Arcane Tutor currently uses a text-only header displaying "Arcane Tutor" in the 
 
 **Implementation**:
 1. Write design brief
-2. Engage designer (freelance or agency)
-3. Review and iterate on concepts
-4. Finalize and implement
+1. Engage designer (freelance or agency)
+1. Review and iterate on concepts
+1. Finalize and implement
 
 ---
 
@@ -181,12 +183,12 @@ Arcane Tutor currently uses a text-only header displaying "Arcane Tutor" in the 
 A logo is considered complete when:
 
 1. ✅ Logo is original and distinct from Scryfall
-2. ✅ Logo is implemented in the web interface header
-3. ✅ Favicon is updated with logo-based icon
-4. ✅ Logo works well in both light and dark themes
-5. ✅ Logo is properly documented with licensing information
-6. ✅ Logo source files are committed to repository
-7. ✅ Compliance documentation updated to mark logo complete
+1. ✅ Logo is implemented in the web interface header
+1. ✅ Favicon is updated with logo-based icon
+1. ✅ Logo works well in both light and dark themes
+1. ✅ Logo is properly documented with licensing information
+1. ✅ Logo source files are committed to repository
+1. ✅ Compliance documentation updated to mark logo complete
 
 ---
 
@@ -235,9 +237,9 @@ A logo is considered complete when:
 ## Questions for Discussion
 
 1. Which design approach should we use (community contest, direct design, professional)?
-2. What design concept best represents "Arcane Tutor"?
-3. Should the logo include text ("Arcane Tutor") or be icon-only?
-4. What file formats do we need beyond SVG and PNG?
+1. What design concept best represents "Arcane Tutor"?
+1. Should the logo include text ("Arcane Tutor") or be icon-only?
+1. What file formats do we need beyond SVG and PNG?
 
 ---
 

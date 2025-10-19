@@ -4,21 +4,23 @@ This document describes how the Beleren font is used for displaying card titles 
 
 ## Overview
 
-The Beleren font is the official Magic: The Gathering typeface used on actual cards for **card names and type lines**. By using this font in the application, we make the card display more authentic and visually similar to physical Magic cards.
+The Beleren font is the official Magic: The Gathering typeface used on actual cards for **card names and type lines**.
+By using this font in the application, we make the card display more authentic and visually similar to physical Magic cards.
 
-The full Beleren Bold font is ~58KB. By subsetting it to include only Latin characters and common punctuation (the characters needed for English card text), we reduce the file size to ~25KB (WOFF2 format), a 56.7% reduction.
+The full Beleren Bold font is ~58KB.
+By subsetting it to include only Latin characters and common punctuation (the characters needed for English card text), we reduce the file size to ~25KB (WOFF2 format), a 56.7% reduction.
 
 ## Implementation
 
 The Beleren font subsetting follows the same pattern as the Mana font:
 
 1. **Font Source**: Beleren Bold from [@saeris/typeface-beleren-bold](https://github.com/Saeris/typeface-beleren-bold) npm package
-2. **Version**: 1.0.1
-3. **License**: MIT
-4. **Subsetting**: Latin characters (U+0020-017F) + smart quotes and punctuation
-5. **Formats**: WOFF2 (primary) and WOFF (fallback)
-6. **Delivery**: CloudFront CDN with 1-year cache headers
-7. **Loading Strategy**: `font-display: swap` to prevent FOIT (Flash of Invisible Text)
+1. **Version**: 1.0.1
+1. **License**: MIT
+1. **Subsetting**: Latin characters (U+0020-017F) + smart quotes and punctuation
+1. **Formats**: WOFF2 (primary) and WOFF (fallback)
+1. **Delivery**: CloudFront CDN with 1-year cache headers
+1. **Loading Strategy**: `font-display: swap` to prevent FOIT (Flash of Invisible Text)
 
 ## Typography Matching Physical MTG Cards
 
@@ -101,7 +103,8 @@ s3://your-bucket/cdn/fonts/beleren/beleren-subset.woff
 s3://your-bucket/cdn/fonts/beleren/beleren-subset.css
 ```
 
-**CORS Configuration**: The script sets up CORS rules to allow font loading from any origin. This is essential for fonts served from CloudFront/S3.
+**CORS Configuration**: The script sets up CORS rules to allow font loading from any origin.
+This is essential for fonts served from CloudFront/S3.
 
 ## HTML Integration
 
@@ -158,12 +161,12 @@ This covers all characters needed for English card text, including:
 
 After deployment, verify:
 1. Oracle text displays in Beleren font on card search results
-2. Oracle text displays in Beleren font in the card modal
-3. Network tab shows `beleren-subset.woff2` loading from CloudFront
-4. Font size is ~25KB (WOFF2) or ~37KB (WOFF)
-5. Lighthouse shows good performance score
-6. No FOIT (Flash of Invisible Text) occurs
-7. Font looks bold and matches Magic card oracle text style
+1. Oracle text displays in Beleren font in the card modal
+1. Network tab shows `beleren-subset.woff2` loading from CloudFront
+1. Font size is ~25KB (WOFF2) or ~37KB (WOFF)
+1. Lighthouse shows good performance score
+1. No FOIT (Flash of Invisible Text) occurs
+1. Font looks bold and matches Magic card oracle text style
 
 ## Comparison with Mana Font
 
@@ -178,13 +181,16 @@ After deployment, verify:
 
 ## Troubleshooting
 
-**Font not loading**: Check the browser console for CORS errors. Ensure the S3 bucket has proper CORS configuration.
+**Font not loading**: Check the browser console for CORS errors.
+Ensure the S3 bucket has proper CORS configuration.
 
 **Oracle text in wrong font**: Check that the CSS classes `.card-text` and `.modal-card-text` have `font-family: 'Beleren', sans-serif;` applied.
 
-**Font looks thin**: Ensure you're using Beleren **Bold** (font-weight: bold). The CSS should specify `font-weight: bold`.
+**Font looks thin**: Ensure you're using Beleren **Bold** (font-weight: bold).
+The CSS should specify `font-weight: bold`.
 
-**Large file size**: Verify the subsetting worked. The WOFF2 file should be ~25KB, not 58KB.
+**Large file size**: Verify the subsetting worked.
+The WOFF2 file should be ~25KB, not 58KB.
 
 **403 Forbidden**: Ensure your S3 bucket policy allows public read access:
 ```json
@@ -205,10 +211,10 @@ After deployment, verify:
 To update to a newer version of Beleren:
 
 1. Update `BELEREN_FONT_VERSION` in `scripts/subset_beleren_font.py`
-2. Re-run the subsetting script
-3. Upload the new files to CloudFront
-4. Update version in filenames if needed to bust caches
-5. Update this documentation
+1. Re-run the subsetting script
+1. Upload the new files to CloudFront
+1. Update version in filenames if needed to bust caches
+1. Update this documentation
 
 ## License
 

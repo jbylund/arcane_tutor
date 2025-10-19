@@ -32,7 +32,7 @@ print(f"Correlation: {result.position_correlation:.2f}")
 
 The script generates:
 1. **Console output** - Real-time progress and summary
-2. **Report file** - Detailed markdown report saved to `/tmp/scryfall_comparison_report.md`
+1. **Report file** - Detailed markdown report saved to `/tmp/scryfall_comparison_report.md`
 
 ### Key Metrics
 

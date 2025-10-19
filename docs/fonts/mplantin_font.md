@@ -4,20 +4,22 @@ This document describes how the MPlantin font is used for displaying oracle text
 
 ## Overview
 
-MPlantin (Plantin MT) is the font used on physical Magic: The Gathering cards for **oracle text**. By using this font in the application, we make the oracle text display authentic and visually similar to physical Magic cards.
+MPlantin (Plantin MT) is the font used on physical Magic: The Gathering cards for **oracle text**.
+By using this font in the application, we make the oracle text display authentic and visually similar to physical Magic cards.
 
-The original MPlantin OTF font is ~105KB. By subsetting it to include only Latin characters and common punctuation, we reduce the file size to ~33KB (WOFF2 format), a 68.7% reduction.
+The original MPlantin OTF font is ~105KB.
+By subsetting it to include only Latin characters and common punctuation, we reduce the file size to ~33KB (WOFF2 format), a 68.7% reduction.
 
 ## Implementation
 
 The MPlantin font subsetting follows the same pattern as the Mana and Beleren fonts:
 
 1. **Font Source**: MPlantin OTF from `fonts/mplantin.otf`
-2. **License**: Commercial font (not freely redistributable, but we host our own copy)
-3. **Subsetting**: Latin characters (U+0020-017F) + smart quotes and punctuation
-4. **Formats**: WOFF2 (primary) and WOFF (fallback)
-5. **Delivery**: CloudFront CDN with 1-year cache headers
-6. **Loading Strategy**: `font-display: swap` to prevent FOIT (Flash of Invisible Text)
+1. **License**: Commercial font (not freely redistributable, but we host our own copy)
+1. **Subsetting**: Latin characters (U+0020-017F) + smart quotes and punctuation
+1. **Formats**: WOFF2 (primary) and WOFF (fallback)
+1. **Delivery**: CloudFront CDN with 1-year cache headers
+1. **Loading Strategy**: `font-display: swap` to prevent FOIT (Flash of Invisible Text)
 
 ## Where It's Used
 
@@ -104,7 +106,8 @@ s3://your-bucket/cdn/fonts/mplantin/mplantin-subset.woff
 s3://your-bucket/cdn/fonts/mplantin/mplantin-subset.css
 ```
 
-**CORS Configuration**: The script sets up CORS rules to allow font loading from any origin. This is essential for fonts served from CloudFront/S3.
+**CORS Configuration**: The script sets up CORS rules to allow font loading from any origin.
+This is essential for fonts served from CloudFront/S3.
 
 ## HTML Integration
 
@@ -161,12 +164,12 @@ This covers all characters needed for English card text, including:
 
 After deployment, verify:
 1. Oracle text displays in MPlantin font on card search results
-2. Oracle text displays in MPlantin font in the card modal
-3. Network tab shows `mplantin-subset.woff2` loading from CloudFront
-4. Font size is ~33KB (WOFF2) or ~41KB (WOFF)
-5. Lighthouse shows good performance score
-6. No FOIT (Flash of Invisible Text) occurs
-7. Font looks serif/traditional and matches Magic card oracle text style
+1. Oracle text displays in MPlantin font in the card modal
+1. Network tab shows `mplantin-subset.woff2` loading from CloudFront
+1. Font size is ~33KB (WOFF2) or ~41KB (WOFF)
+1. Lighthouse shows good performance score
+1. No FOIT (Flash of Invisible Text) occurs
+1. Font looks serif/traditional and matches Magic card oracle text style
 
 ## Font Comparison
 
@@ -182,13 +185,16 @@ After deployment, verify:
 
 ## Troubleshooting
 
-**Font not loading**: Check the browser console for CORS errors. Ensure the S3 bucket has proper CORS configuration.
+**Font not loading**: Check the browser console for CORS errors.
+Ensure the S3 bucket has proper CORS configuration.
 
 **Oracle text in wrong font**: Check that the CSS classes `.card-text` and `.modal-card-text` have `font-family: 'MPlantin', Georgia, serif;` applied.
 
-**Font looks wrong**: Ensure the MPlantin font is loading from CDN. Check Network tab in DevTools.
+**Font looks wrong**: Ensure the MPlantin font is loading from CDN.
+Check Network tab in DevTools.
 
-**Large file size**: Verify the subsetting worked. The WOFF2 file should be ~33KB, not 105KB.
+**Large file size**: Verify the subsetting worked.
+The WOFF2 file should be ~33KB, not 105KB.
 
 **403 Forbidden**: Ensure your S3 bucket policy allows public read access:
 ```json
@@ -209,11 +215,13 @@ After deployment, verify:
 If the source MPlantin OTF file needs to be updated:
 
 1. Replace `fonts/mplantin.otf` with the new version
-2. Re-run the subsetting script: `make mplantin_font S3_BUCKET=your-bucket-name`
-3. Upload the new files to CloudFront
-4. Update version in filenames if needed to bust caches
-5. Update this documentation
+1. Re-run the subsetting script: `make mplantin_font S3_BUCKET=your-bucket-name`
+1. Upload the new files to CloudFront
+1. Update version in filenames if needed to bust caches
+1. Update this documentation
 
 ## License Note
 
-MPlantin (Plantin MT) is a commercial font by Monotype. The font file in this repository (`fonts/mplantin.otf`) is used under license for this project. The subsetting and web delivery infrastructure is our own implementation.
+MPlantin (Plantin MT) is a commercial font by Monotype.
+The font file in this repository (`fonts/mplantin.otf`) is used under license for this project.
+The subsetting and web delivery infrastructure is our own implementation.

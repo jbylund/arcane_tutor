@@ -2,7 +2,8 @@
 
 ## Quick Start
 
-Arcane Tutor is a powerful Magic: The Gathering card search engine. This guide will help you find exactly the cards you're looking for.
+Arcane Tutor is a powerful Magic: The Gathering card search engine.
+This guide will help you find exactly the cards you're looking for.
 
 ## Basic Searches
 
@@ -161,10 +162,10 @@ k:trample
 ## Tips for Better Searches
 
 1. **Use quotes** for exact phrases: `oracle:"draw three cards"`
-2. **Combine filters** to narrow results: `type:creature c:red cmc<=3 power>=2`
-3. **Use negation** to exclude cards: `type:creature NOT color:black`
-4. **Try shortcuts**: Use `t:` instead of `type:`, `c:` instead of `color:`
-5. **Experiment with operators**: `>=`, `<=`, `!=` all work for numeric searches
+1. **Combine filters** to narrow results: `type:creature c:red cmc<=3 power>=2`
+1. **Use negation** to exclude cards: `type:creature NOT color:black`
+1. **Try shortcuts**: Use `t:` instead of `type:`, `c:` instead of `color:`
+1. **Experiment with operators**: `>=`, `<=`, `!=` all work for numeric searches
 
 ## Sorting Results
 

@@ -2,7 +2,8 @@
 
 ## Project Mission
 
-Arcane Tutor is an open-source Magic: The Gathering card search engine designed to provide a fast, powerful, and transparent alternative for the MTG community. Our goal is to create a feature-rich search tool that respects intellectual property rights while offering unique capabilities and complete openness.
+Arcane Tutor is an open-source Magic: The Gathering card search engine designed to provide a fast, powerful, and transparent alternative for the MTG community.
+Our goal is to create a feature-rich search tool that respects intellectual property rights while offering unique capabilities and complete openness.
 
 ## Why Arcane Tutor Exists
 
@@ -19,10 +20,10 @@ We believe in:
 Arcane Tutor offers capabilities beyond traditional card search:
 
 1. **Arithmetic Expressions**: Search with math like `cmc+1<power` or `power-toughness=0`
-2. **No Pagination Limits**: Fetch more results than typical 175 card/page limits
-3. **Performance Optimizations**: Custom PostgreSQL schema for fast queries
-4. **Local Deployment**: Run your own instance via Docker
-5. **Extensibility**: Open source means you can add your own features
+1. **No Pagination Limits**: Fetch more results than typical 175 card/page limits
+1. **Performance Optimizations**: Custom PostgreSQL schema for fast queries
+1. **Local Deployment**: Run your own instance via Docker
+1. **Extensibility**: Open source means you can add your own features
 
 ### Alternative Implementation
 
@@ -35,7 +36,8 @@ While we use Scryfall's excellent card data (with attribution and compliance), A
 
 ## How We Differ from Scryfall
 
-Arcane Tutor is not a clone of Scryfall. Here's how we're different:
+Arcane Tutor is not a clone of Scryfall.
+Here's how we're different:
 
 ### Technical Differences
 - **Original Codebase**: 100% original code, no copied implementation
@@ -66,7 +68,8 @@ See [README.md](../README.md#code-organization) for detailed information about:
 
 ## Data Sources & Attribution
 
-Arcane Tutor uses card data from Scryfall's official bulk data API and serves card images via our own S3/CloudFront infrastructure. All Magic: The Gathering content is © Wizards of the Coast LLC and used under their Fan Content Policy.
+Arcane Tutor uses card data from Scryfall's official bulk data API and serves card images via our own S3/CloudFront infrastructure.
+All Magic: The Gathering content is © Wizards of the Coast LLC and used under their Fan Content Policy.
 
 For complete details on data sources, attribution, and intellectual property, see [docs/legal.md](../legal/legal.md).
 
@@ -101,7 +104,8 @@ See our compliance documentation:
 
 ## Contributing
 
-Arcane Tutor is community-driven and welcomes contributions. See [README.md](../README.md#developer-quick-start) for:
+Arcane Tutor is community-driven and welcomes contributions.
+See [README.md](../README.md#developer-quick-start) for:
 - Developer setup instructions
 - How to report issues
 - Pull request guidelines
@@ -125,7 +129,8 @@ See [legal.md](legal.md#scryfall-attribution) for detailed attribution.
 
 ## License
 
-Arcane Tutor code is licensed under the ISC License (see package.json). This license applies only to our original code - see [legal.md](legal.md#license) for details on third-party intellectual property.
+Arcane Tutor code is licensed under the ISC License (see package.json).
+This license applies only to our original code - see [legal.md](legal.md#license) for details on third-party intellectual property.
 
 ## Future Vision
 

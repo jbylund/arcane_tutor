@@ -74,7 +74,8 @@ print(f"Saved to {output_file}")
 
 ## Data Format
 
-The data is fetched directly from Gatherer's internal API by parsing the HTML responses. Each card includes detailed information such as:
+The data is fetched directly from Gatherer's internal API by parsing the HTML responses.
+Each card includes detailed information such as:
 
 - Card name
 - Mana cost

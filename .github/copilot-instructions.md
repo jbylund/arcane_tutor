@@ -1,6 +1,7 @@
 # Scryfall OS
 
-Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering card search engine. This project consists of a Python-based API service, a simple HTML/JavaScript web client, and a PostgreSQL database, designed to be deployed via Docker Compose.
+Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering card search engine.
+This project consists of a Python-based API service, a simple HTML/JavaScript web client, and a PostgreSQL database, designed to be deployed via Docker Compose.
 
 Always reference these instructions first and fallback to search or bash commands only when you encounter unexpected information that does not match the info here.
 
@@ -212,10 +213,10 @@ api/
 
 ### Development Workflow with Copilot
 1. **Setup environment**: Run `./.github/copilot-setup.sh` for automated setup
-2. **Make changes**: Use GitHub Copilot to assist with code generation
-3. **Test locally**: Run `python -m pytest -vvv` to ensure all 438 tests pass
-4. **Format code**: Run `python -m ruff check --fix --unsafe-fixes`
-5. **Commit changes**: CI will automatically test with Python 3.13 and uv
+1. **Make changes**: Use GitHub Copilot to assist with code generation
+1. **Test locally**: Run `python -m pytest -vvv` to ensure all 438 tests pass
+1. **Format code**: Run `python -m ruff check --fix --unsafe-fixes`
+1. **Commit changes**: CI will automatically test with Python 3.13 and uv
 
 ### Common Integration Points
 - **Parser development**: Focus on `api/parsing/` for Scryfall query syntax

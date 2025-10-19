@@ -7,7 +7,7 @@ This document describes the new functionality for detecting and importing missin
 The system provides two main components:
 
 1. **Script**: `scripts/find_missing_cards.py` - Automatically detects missing cards
-2. **API Endpoint**: `import_card_by_name` - Imports individual cards by name
+1. **API Endpoint**: `import_card_by_name` - Imports individual cards by name
 
 ## Script Usage
 
@@ -36,7 +36,7 @@ local_api_base = "http://localhost:8080"  # or "http://crestcourt.scryfall.com"
    - Creature vs non-creature cards
    - Required filters: `-is:dfc -is:adventure -is:split game:paper (f:m or f:l or f:c or f:v)`
 
-2. For each query:
+1. For each query:
    - Searches Scryfall API
    - Searches local database
    - Identifies missing cards
