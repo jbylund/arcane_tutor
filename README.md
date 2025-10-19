@@ -4,7 +4,7 @@
 
 *Web interface in dark mode showing cards with CMC less than 10, ordered by USD price descending*
 
-**Legal Notice**: Magic: The Gathering is trademark and property of Wizards of the Coast LLC, a subsidiary of Hasbro, Inc. This project is unofficial Fan Content permitted under the [Wizards of the Coast Fan Content Policy](https://company.wizards.com/en/legal/fancontentpolicy). Not approved/endorsed by Wizards of the Coast. Portions of the materials used are property of Wizards of the Coast. © Wizards of the Coast LLC. Card data sourced from [Scryfall](https://scryfall.com) with attribution. See [docs/LEGAL.md](docs/LEGAL.md) for full details.
+**Legal Notice**: Magic: The Gathering is trademark and property of Wizards of the Coast LLC, a subsidiary of Hasbro, Inc. This project is unofficial Fan Content permitted under the [Wizards of the Coast Fan Content Policy](https://company.wizards.com/en/legal/fancontentpolicy). Not approved/endorsed by Wizards of the Coast. Portions of the materials used are property of Wizards of the Coast. © Wizards of the Coast LLC. Card data sourced from [Scryfall](https://scryfall.com) with attribution. See [docs/legal.md](docs/legal.md) for full details.
 
 ## Table of Contents
 
@@ -133,7 +133,7 @@ arcane_tutor/
 
 - **[Scripts Documentation](scripts/README.md)** - Detailed information about utility scripts including the Scryfall comparison tool
 - **[API Tests Documentation](api/tests/README.md)** - Testing framework and integration test information
-- **[CI/CD Workflows](docs/workflows/README_CI_MONITOR.md)** - Continuous integration and monitoring documentation
+- **[CI/CD Workflows](docs/workflows/readme_ci_monitor.md)** - Continuous integration and monitoring documentation
 
 ## Developer Quick Start
 
@@ -309,14 +309,14 @@ All Magic: The Gathering card names, artwork, and game content are © Wizards of
 
 ### Legal Compliance
 
-For complete information about data sources, intellectual property attribution, and compliance with relevant policies, see [docs/LEGAL.md](docs/LEGAL.md).
+For complete information about data sources, intellectual property attribution, and compliance with relevant policies, see [docs/legal.md](docs/legal.md).
 
 **Key Compliance Documents:**
-- **[Legal Compliance Summary](docs/LEGAL_COMPLIANCE_SUMMARY.md)** - Quick status overview (93% complete - excellent standing)
-- **[Legal & Data Sources](docs/LEGAL.md)** - Attribution, IP rights, data sources
-- **[Terms of Service](docs/TERMS_OF_SERVICE.md)** - User agreement and service terms
-- **[Privacy Policy](docs/PRIVACY_POLICY.md)** - Data collection and privacy practices
-- **[Compliance Review](docs/COMPLIANCE_REVIEW.md)** - Detailed compliance checklist status
+- **[Legal Compliance Summary](docs/legal_compliance_summary.md)** - Quick status overview (93% complete - excellent standing)
+- **[Legal & Data Sources](docs/legal.md)** - Attribution, IP rights, data sources
+- **[Terms of Service](docs/terms_of_service.md)** - User agreement and service terms
+- **[Privacy Policy](docs/privacy_policy.md)** - Data collection and privacy practices
+- **[Compliance Review](docs/compliance_review.md)** - Detailed compliance checklist status
 
 **Compliance Status**: ✅ 93% Complete (42/45 items) - Excellent standing with all critical items addressed.
 

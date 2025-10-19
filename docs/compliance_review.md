@@ -18,15 +18,15 @@ This document provides a detailed review of the legal compliance checklist for S
 
 | Item | Status | Notes |
 |------|--------|-------|
-| Verify using official Wizards APIs/data sources | ✅ **COMPLETE** | Using Scryfall's official bulk data API (api.scryfall.com/bulk-data). See [LEGAL.md](LEGAL.md#primary-data-source) |
-| Review and comply with Scryfall's API terms | ✅ **COMPLETE** | Documented in [LEGAL.md](LEGAL.md#scryfall-api-terms-of-service), using bulk data appropriately |
-| Document proper attribution requirements | ✅ **COMPLETE** | Attribution added to [README.md](../README.md), [LEGAL.md](LEGAL.md), and UI footer |
-| Card images from official sources | ⚠️ **PARTIAL** | Using CloudFront CDN serving Scryfall-sourced images. Documented in [LEGAL.md](LEGAL.md#card-images) |
+| Verify using official Wizards APIs/data sources | ✅ **COMPLETE** | Using Scryfall's official bulk data API (api.scryfall.com/bulk-data). See [legal.md](legal.md#primary-data-source) |
+| Review and comply with Scryfall's API terms | ✅ **COMPLETE** | Documented in [legal.md](legal.md#scryfall-api-terms-of-service), using bulk data appropriately |
+| Document proper attribution requirements | ✅ **COMPLETE** | Attribution added to [README.md](../README.md), [legal.md](legal.md), and UI footer |
+| Card images from official sources | ⚠️ **PARTIAL** | Using CloudFront CDN serving Scryfall-sourced images. Documented in [legal.md](legal.md#card-images) |
 | Write original help documentation | ✅ **COMPLETE** | User-facing help guide created at [docs/help.md](help.md) |
 | Source rulings from official Wizards channels | 🔲 **N/A** | Not currently displaying rulings |
 
 ### Recommendations:
-1. ✅ **DONE**: Card image sources now documented in [LEGAL.md](LEGAL.md#card-images)
+1. ✅ **DONE**: Card image sources now documented in [legal.md](legal.md#card-images)
 2. ✅ **DONE**: User help documentation created at [docs/help.md](help.md)
 3. **Future**: Add card rulings sourced from official Wizards channels (when/if feature is added)
 
@@ -41,12 +41,12 @@ This document provides a detailed review of the legal compliance checklist for S
 | Original logo and branding | ❌ **TODO** | No custom logo, using text-only header |
 | Unique card display format | ✅ **COMPLETE** | Custom card grid and modal display |
 | Original iconography | ✅ **COMPLETE** | Custom theme toggle, minimal icons |
-| Different typography | ✅ **COMPLETE** | Using custom fonts (Beleren, MPlantin) served from own CDN. Documented in [LEGAL.md](LEGAL.md#font-assets) |
+| Different typography | ✅ **COMPLETE** | Using custom fonts (Beleren, MPlantin) served from own CDN. Documented in [legal.md](legal.md#font-assets) |
 
 ### Recommendations:
 1. ✅ **DONE**: Color scheme changed to blue gradient (Tolarian Academy theme)
 2. **Medium Priority**: Create custom logo/branding
-3. ✅ **DONE**: Fonts documented in [LEGAL.md](LEGAL.md#font-assets)
+3. ✅ **DONE**: Fonts documented in [legal.md](legal.md#font-assets)
 
 ---
 
@@ -82,17 +82,17 @@ This document provides a detailed review of the legal compliance checklist for S
 
 | Item | Status | Notes |
 |------|--------|-------|
-| Review Wizards' Fan Content Policy | ✅ **COMPLETE** | Documented compliance in [LEGAL.md](LEGAL.md#wizards-of-the-coast-fan-content-policy) |
-| Draft Terms of Service | ✅ **COMPLETE** | Formal TOS created at [docs/TERMS_OF_SERVICE.md](TERMS_OF_SERVICE.md) |
-| Draft Privacy Policy | ✅ **COMPLETE** | Formal privacy policy created at [docs/PRIVACY_POLICY.md](PRIVACY_POLICY.md) |
-| Proper trademark usage for MTG | ✅ **COMPLETE** | Using "Magic: The Gathering™" with proper attribution. See [LEGAL.md](LEGAL.md#magic-the-gathering) |
-| Attribution acknowledging Wizards as IP owner | ✅ **COMPLETE** | Added to [README.md](../README.md), [LEGAL.md](LEGAL.md), and UI footer |
-| Not infringing "Scryfall" trademark | ✅ **COMPLETE** | Clear differentiation with "Arcane Tutor" name and attribution. See [LEGAL.md](LEGAL.md#scryfall) |
+| Review Wizards' Fan Content Policy | ✅ **COMPLETE** | Documented compliance in [legal.md](legal.md#wizards-of-the-coast-fan-content-policy) |
+| Draft Terms of Service | ✅ **COMPLETE** | Formal TOS created at [docs/terms_of_service.md](terms_of_service.md) |
+| Draft Privacy Policy | ✅ **COMPLETE** | Formal privacy policy created at [docs/privacy_policy.md](privacy_policy.md) |
+| Proper trademark usage for MTG | ✅ **COMPLETE** | Using "Magic: The Gathering™" with proper attribution. See [legal.md](legal.md#magic-the-gathering) |
+| Attribution acknowledging Wizards as IP owner | ✅ **COMPLETE** | Added to [README.md](../README.md), [legal.md](legal.md), and UI footer |
+| Not infringing "Scryfall" trademark | ✅ **COMPLETE** | Clear differentiation with "Arcane Tutor" name and attribution. See [legal.md](legal.md#scryfall) |
 | Consider reaching out to Scryfall | ⏳ **OPTIONAL** | Optional future action |
 
 ### Recommendations:
-1. ✅ **DONE**: Formal Terms of Service created at [docs/TERMS_OF_SERVICE.md](TERMS_OF_SERVICE.md)
-2. ✅ **DONE**: Formal Privacy Policy created at [docs/PRIVACY_POLICY.md](PRIVACY_POLICY.md)
+1. ✅ **DONE**: Formal Terms of Service created at [docs/terms_of_service.md](terms_of_service.md)
+2. ✅ **DONE**: Formal Privacy Policy created at [docs/privacy_policy.md](privacy_policy.md)
 3. **Future**: Consider reaching out to Scryfall team for feedback (optional)
 
 ---
@@ -132,10 +132,10 @@ This document provides a detailed review of the legal compliance checklist for S
 
 | Item | Status | Notes |
 |------|--------|-------|
-| Create LEGAL.md | ✅ **COMPLETE** | Comprehensive legal documentation at [docs/LEGAL.md](LEGAL.md) |
+| Create legal.md | ✅ **COMPLETE** | Comprehensive legal documentation at [docs/legal.md](legal.md) |
 | Document attribution in README | ✅ **COMPLETE** | Added legal notice and attribution section in [README.md](../README.md) |
 | Explain how we differ from Scryfall | ✅ **COMPLETE** | Section added to [README.md](../README.md) and [about.md](about.md) |
-| Include Wizards copyright notices | ✅ **COMPLETE** | Added to [README.md](../README.md), [LEGAL.md](LEGAL.md), and UI footer |
+| Include Wizards copyright notices | ✅ **COMPLETE** | Added to [README.md](../README.md), [legal.md](legal.md), and UI footer |
 
 ### Status: **Complete** - All documentation tasks finished
 
@@ -146,7 +146,7 @@ This document provides a detailed review of the legal compliance checklist for S
 | Item | Status | Notes |
 |------|--------|-------|
 | Monitor growth for legal consultation | ⏳ **ONGOING** | Review quarterly as project scales |
-| Process for cease & desist requests | ⚠️ **PARTIAL** | Basic contact info in LEGAL.md, needs formal process |
+| Process for cease & desist requests | ⚠️ **PARTIAL** | Basic contact info in legal.md, needs formal process |
 | Regular compliance audits | ⏳ **ONGOING** | This review is first audit |
 
 ### Recommendations:
@@ -159,7 +159,7 @@ This document provides a detailed review of the legal compliance checklist for S
 ## Changes Implemented (January 2025)
 
 ### Files Created:
-- **LEGAL.md** - Comprehensive legal compliance documentation covering:
+- **legal.md** - Comprehensive legal compliance documentation covering:
   - Data sources and APIs
   - Intellectual property attribution
   - Compliance with WotC Fan Content Policy
@@ -173,7 +173,7 @@ This document provides a detailed review of the legal compliance checklist for S
 - Added legal notice at top with Wizards attribution
 - Added "Data Sources & Attribution" section
 - Added "How Scryfall OS Differs from Scryfall" section
-- Linked to LEGAL.md for complete compliance information
+- Linked to legal.md for complete compliance information
 
 #### api/index.html
 - Added footer with:
@@ -193,22 +193,22 @@ This document provides a detailed review of the legal compliance checklist for S
 ## Priority Action Items
 
 ### Critical (Do Immediately)
-1. ✅ **DONE**: Create [LEGAL.md](LEGAL.md) with data source documentation
+1. ✅ **DONE**: Create [legal.md](legal.md) with data source documentation
 2. ✅ **DONE**: Add Wizards attribution to UI
 3. ✅ **DONE**: Add Scryfall attribution to UI and documentation
 
 ### High Priority (Within 1-3 Months)
 1. ✅ **DONE**: Change color scheme to blue gradient (Tolarian Academy inspired)
-2. ✅ **DONE**: Draft formal [Terms of Service](TERMS_OF_SERVICE.md)
-3. ✅ **DONE**: Draft formal [Privacy Policy](PRIVACY_POLICY.md)
-4. ✅ **DONE**: Verify and document card image sources in [LEGAL.md](LEGAL.md#card-images)
+2. ✅ **DONE**: Draft formal [Terms of Service](terms_of_service.md)
+3. ✅ **DONE**: Draft formal [Privacy Policy](privacy_policy.md)
+4. ✅ **DONE**: Verify and document card image sources in [legal.md](legal.md#card-images)
 5. ✅ **DONE**: Create user-facing [help documentation](help.md)
 
 ### Medium Priority (Within 3-6 Months)
 1. ✅ **DONE**: Create [About page](about.md)
 2. ❌ **TODO**: Design custom logo
 3. ✅ **DONE**: Write tutorial content in [help.md](help.md)
-4. ✅ **DONE**: Document font assets in [LEGAL.md](LEGAL.md#font-assets)
+4. ✅ **DONE**: Document font assets in [legal.md](legal.md#font-assets)
 
 ### Low Priority (Future)
 1. ⏳ **Optional**: Reach out to Scryfall team
@@ -245,7 +245,7 @@ This document provides a detailed review of the legal compliance checklist for S
 1. ✅ **Strong Technical Differentiation**: Original codebase, algorithms, and database schema
 2. ✅ **Clear Attribution**: Proper acknowledgment of Wizards and Scryfall
 3. ✅ **Policy Compliance**: Operating within Wizards' Fan Content Policy
-4. ✅ **Transparent Documentation**: Comprehensive LEGAL.md and README updates
+4. ✅ **Transparent Documentation**: Comprehensive legal.md and README updates
 5. ✅ **Avoiding Red Flags**: No trademark confusion or layout copying
 
 ---
@@ -253,10 +253,10 @@ This document provides a detailed review of the legal compliance checklist for S
 ## Key Areas for Improvement
 
 1. ✅ **RESOLVED**: Color scheme changed to distinct blue gradient theme
-2. ✅ **RESOLVED**: Formal legal documents created ([TOS](TERMS_OF_SERVICE.md), [Privacy Policy](PRIVACY_POLICY.md))
+2. ✅ **RESOLVED**: Formal legal documents created ([TOS](terms_of_service.md), [Privacy Policy](privacy_policy.md))
 3. ✅ **RESOLVED**: User documentation completed ([help.md](help.md), [about.md](about.md))
 4. ❌ **Remaining**: Custom logo - currently using text-only header
-5. ✅ **RESOLVED**: Image sources documented in [LEGAL.md](LEGAL.md#card-images)
+5. ✅ **RESOLVED**: Image sources documented in [legal.md](legal.md#card-images)
 
 ---
 
@@ -265,7 +265,7 @@ This document provides a detailed review of the legal compliance checklist for S
 Arcane Tutor has achieved excellent legal compliance and differentiation from Scryfall. The technical implementation is fully compliant with original code and algorithms. Critical attribution and legal notices have been added to all user-facing surfaces.
 
 **Major Accomplishments:**
-1. ✅ Complete legal documentation suite ([LEGAL.md](LEGAL.md), [TOS](TERMS_OF_SERVICE.md), [Privacy Policy](PRIVACY_POLICY.md))
+1. ✅ Complete legal documentation suite ([legal.md](legal.md), [TOS](terms_of_service.md), [Privacy Policy](privacy_policy.md))
 2. ✅ Visual differentiation achieved (blue gradient theme, different layout)
 3. ✅ User-facing content completed ([help.md](help.md), [about.md](about.md))
 4. ✅ Proper attribution and compliance with all relevant policies
@@ -284,10 +284,10 @@ Arcane Tutor has achieved excellent legal compliance and differentiation from Sc
 ## Quick Reference Links
 
 For detailed compliance information, see:
-- **[LEGAL_COMPLIANCE_SUMMARY.md](LEGAL_COMPLIANCE_SUMMARY.md)** - Quick overview and status
-- [LEGAL.md](LEGAL.md) - Data sources, attribution, IP rights
-- [TERMS_OF_SERVICE.md](TERMS_OF_SERVICE.md) - User terms
-- [PRIVACY_POLICY.md](PRIVACY_POLICY.md) - Privacy practices
+- **[legal_compliance_summary.md](legal_compliance_summary.md)** - Quick overview and status
+- [legal.md](legal.md) - Data sources, attribution, IP rights
+- [terms_of_service.md](terms_of_service.md) - User terms
+- [privacy_policy.md](privacy_policy.md) - Privacy practices
 - [about.md](about.md) - Project mission and differentiation
 - [help.md](help.md) - User documentation
 - [README.md](../README.md) - Main project documentation

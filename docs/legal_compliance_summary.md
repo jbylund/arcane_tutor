@@ -56,10 +56,10 @@ Arcane Tutor has successfully addressed all critical legal compliance requiremen
 ### Major Achievements ✅
 
 1. **Complete Legal Documentation Suite**
-   - [LEGAL.md](LEGAL.md) - Data sources and compliance
-   - [TERMS_OF_SERVICE.md](TERMS_OF_SERVICE.md) - User agreement
-   - [PRIVACY_POLICY.md](PRIVACY_POLICY.md) - Privacy practices
-   - [COMPLIANCE_REVIEW.md](COMPLIANCE_REVIEW.md) - Detailed status tracking
+   - [legal.md](legal.md) - Data sources and compliance
+   - [terms_of_service.md](terms_of_service.md) - User agreement
+   - [privacy_policy.md](privacy_policy.md) - Privacy practices
+   - [compliance_review.md](compliance_review.md) - Detailed status tracking
 
 2. **Visual Differentiation**
    - Blue gradient theme (Tolarian Academy inspired)
@@ -137,10 +137,10 @@ The project demonstrates excellent legal compliance with all critical requiremen
 ## Resources
 
 ### Internal Documentation
-- [LEGAL.md](LEGAL.md) - Comprehensive legal compliance
-- [TERMS_OF_SERVICE.md](TERMS_OF_SERVICE.md) - Service terms
-- [PRIVACY_POLICY.md](PRIVACY_POLICY.md) - Privacy practices
-- [COMPLIANCE_REVIEW.md](COMPLIANCE_REVIEW.md) - Detailed checklist
+- [legal.md](legal.md) - Comprehensive legal compliance
+- [terms_of_service.md](terms_of_service.md) - Service terms
+- [privacy_policy.md](privacy_policy.md) - Privacy practices
+- [compliance_review.md](compliance_review.md) - Detailed checklist
 - [about.md](about.md) - Project information
 - [help.md](help.md) - User documentation
 
@@ -154,7 +154,7 @@ The project demonstrates excellent legal compliance with all critical requiremen
 For legal compliance questions:
 - Open an issue on [GitHub](https://github.com/jbylund/arcane_tutor/issues)
 - Contact repository owner
-- Review [LEGAL.md](LEGAL.md) for details
+- Review [legal.md](legal.md) for details
 
 ---
 
