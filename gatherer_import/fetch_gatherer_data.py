@@ -26,6 +26,45 @@ class GathererFetcher:
         self.session.mount("https://", HTTPAdapter(max_retries=retries))
         self.session.mount("http://", HTTPAdapter(max_retries=retries))
 
+    def _extract_items_from_response(self, page_text: str) -> list:
+        """Extract the items array from a Gatherer HTML response.
+
+        Args:
+            page_text: The HTML response text from Gatherer
+
+        Returns:
+            A list of items parsed from the embedded JSON in the response
+
+        Raises:
+            ValueError: If the items array cannot be found or parsed
+        """
+        # Extract the items array from the response
+        _, _, remainder = page_text.partition(r',\"items\":')
+        if not remainder:
+            msg = "No items array found in response"
+            raise ValueError(msg)
+
+        # Find the end of the array by counting brackets
+        bracket_count = 0
+        end_pos = 0
+        for i, char in enumerate(remainder):
+            if char == "[":
+                bracket_count += 1
+            elif char == "]":
+                bracket_count -= 1
+                if bracket_count == 0:
+                    end_pos = i + 1
+                    break
+
+        if end_pos == 0:
+            msg = "Could not find end of items array"
+            raise ValueError(msg)
+
+        items_array_str = remainder[:end_pos]
+        # Double JSON decode: the data is JSON-encoded within a JSON string
+        return json.loads(json.loads('"' + items_array_str + '"'))
+
+
     def fetch_all_sets(self) -> list:
         """Fetch the list of all sets from Gatherer."""
         url = f"{self.base_url}/sets"
@@ -45,32 +84,11 @@ class GathererFetcher:
                     break
                 raise
 
-            page_text = response.text
-
-            # Extract the items array from the response
-            _, _, remainder = page_text.partition(r',\"items\":')
-            if not remainder:
-                msg = "No remainder"
-                raise AssertionError(msg)
-
-            # Find the end of the array by counting brackets
-            bracket_count = 0
-            end_pos = 0
-            for i, char in enumerate(remainder):
-                if char == "[":
-                    bracket_count += 1
-                elif char == "]":
-                    bracket_count -= 1
-                    if bracket_count == 0:
-                        end_pos = i + 1
-                        break
-
-            if end_pos == 0:
-                # Couldn't find the end of the array
+            try:
+                sets_array = self._extract_items_from_response(response.text)
+            except ValueError:
+                # No more items, we've reached the end
                 break
-
-            sets_array_str = remainder[:end_pos]
-            sets_array = json.loads(json.loads('"' + sets_array_str + '"'))
 
             if not sets_array:
                 break
@@ -95,26 +113,8 @@ class GathererFetcher:
                 if e.response.status_code == HTTP_NOT_FOUND:
                     break
                 raise
-            page_text = response.text
-            _, _, remainder = page_text.partition(r',\"items\":')
-            if not remainder:
-                msg = "No remainder"
-                raise ValueError(msg)
 
-            # Find the end of the array by counting brackets
-            bracket_count = 0
-            end_pos = 0
-            for i, char in enumerate(remainder):
-                if char == "[":
-                    bracket_count += 1
-                elif char == "]":
-                    bracket_count -= 1
-                    if bracket_count == 0:
-                        end_pos = i + 1
-                        break
-
-            cards_array_str = remainder[:end_pos]
-            cards_array = json.loads(json.loads('"' + cards_array_str + '"'))
+            cards_array = self._extract_items_from_response(response.text)
             set_cards.extend(cards_array)
             page += 1
         return set_cards
