@@ -17,9 +17,11 @@ import secrets
 import time
 import urllib.parse
 from datetime import timedelta
+from functools import wraps
 from typing import TYPE_CHECKING, Any
 from typing import cast as typecast
 
+import cachetools.keys
 import falcon
 import orjson
 import psycopg
@@ -58,9 +60,11 @@ def cached(cache: Any, key: Any = None) -> Any:  # noqa: ANN401
     Always creates the cached function, but checks settings at call time
     to determine whether to use the cache or call the original function.
     """
+    key = key or cachetools.keys.hashkey
     def decorator(func: Any) -> Any:  # noqa: ANN401
         cached_func = cachetools_cached(cache, key=key)(func)
 
+        @wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
             if settings.enable_cache:
                 return cached_func(*args, **kwargs)

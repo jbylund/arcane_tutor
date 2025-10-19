@@ -40,10 +40,11 @@ You can also build and run the client container separately:
 docker compose build client
 
 # Run the client with custom configuration
-docker run -e API_URL=http://apiservice:8080 \
-           -e QUERY_DELAY=0.5 \
-           -e BATCH_SIZE=100 \
-           scryfallos-client
+docker compose run --rm \
+    -e API_URL=http://apiservice:8080 \
+    -e BATCH_SIZE=100 \
+    -e QUERY_DELAY=0.5 \
+    client
 ```
 
 ### Local Execution

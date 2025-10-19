@@ -13,6 +13,7 @@ import time
 
 import requests
 
+logger = logging.getLogger(__name__)
 # Constants
 DEFAULT_API_URL = "http://apiservice:8080"
 DEFAULT_QUERY_DELAY = 1.0  # Delay between queries in seconds
@@ -176,27 +177,33 @@ def run_query(api_url: str, query: str, session: requests.Session) -> dict:
             params={"q": query, "limit": 100},
             timeout=30,
         )
-        elapsed = time.monotonic() - before
-        result["duration"] = 1000 * elapsed
-
         response.raise_for_status()
         data = response.json()
 
         result["success"] = True
-        result["card_count"] = len(data.get("cards", []))
+        card_count = len(data.get("cards", []))
+        result["card_count"] = card_count
+    except requests.RequestException as oops:
+        result["error"] = str(oops)
+    finally:
+        elapsed = time.monotonic() - before
+        elapsed_ms = 1000 * elapsed
+        result["elapsed_ms"] = elapsed_ms
 
+    if result["success"]:
         logging.info(
             "Query: '%s' | Duration: %.1fms | Cards: %d",
             query,
-            elapsed,
-            result["card_count"],
+            elapsed_ms,
+            card_count,
         )
-
-    except requests.RequestException as oops:
-        elapsed = time.monotonic() - before
-        result["duration"] = 1000 * elapsed
-        result["error"] = str(oops)
-        logging.error("Query failed: '%s' | Duration: %.1fms | Error: %s", query, elapsed, oops)
+    else:
+        logging.error(
+            "Query failed: '%s' | Duration: %.1fms | Error: %s",
+            query,
+            elapsed_ms,
+            result["error"],
+        )
 
     return result
 
@@ -224,16 +231,16 @@ def print_statistics(results: list[dict]) -> None:
 
         total_cards = sum(r["card_count"] for r in successful)
 
-        logging.info("=" * 60)
-        logging.info(f"Statistics for {total_queries} queries:")
-        logging.info(f"  Success rate: {success_rate:.1f}%")
-        logging.info(f"  Successful queries: {len(successful)}")
-        logging.info(f"  Failed queries: {len(failed)}")
-        logging.info(f"  Total cards returned: {total_cards}")
-        logging.info(f"  Average duration: {avg_duration:.3f}s")
-        logging.info(f"  Min duration: {min_duration:.3f}s")
-        logging.info(f"  Max duration: {max_duration:.3f}s")
-        logging.info("=" * 60)
+        logger.info("=" * 60)
+        logger.info("Statistics for %d queries:", total_queries)
+        logger.info("  Success rate: %.1f%%", success_rate)
+        logger.info("  Successful queries: %d", len(successful))
+        logger.info("  Failed queries: %d", len(failed))
+        logger.info("  Total cards returned: %d", total_cards)
+        logger.info("  Average duration: %.3fs", avg_duration)
+        logger.info("  Min duration: %.3fs", min_duration)
+        logger.info("  Max duration: %.3fs", max_duration)
+        logger.info("=" * 60)
 
 
 def main() -> None:
@@ -245,9 +252,9 @@ def main() -> None:
     query_delay = float(os.environ.get("QUERY_DELAY", DEFAULT_QUERY_DELAY))
     batch_size = int(os.environ.get("BATCH_SIZE", DEFAULT_BATCH_SIZE))
 
-    logging.info(f"Starting query runner against API: {api_url}")
-    logging.info(f"Query delay: {query_delay}s")
-    logging.info(f"Batch size: {batch_size}")
+    logger.info("Starting query runner against API: %s", api_url)
+    logger.info("Query delay: %ss", query_delay)
+    logger.info("Batch size: %d", batch_size)
 
     # Create a session for HTTP requests
     session = requests.Session()
@@ -257,7 +264,7 @@ def main() -> None:
 
     # Generate query pool
     query_pool = generate_random_queries()
-    logging.info(f"Generated {len(query_pool)} unique query patterns")
+    logger.info("Generated %d unique query patterns", len(query_pool))
 
     results = []
     query_count = 0
@@ -281,7 +288,7 @@ def main() -> None:
             time.sleep(query_delay)
 
     except KeyboardInterrupt:
-        logging.info("Shutting down query runner...")
+        logger.info("Shutting down query runner...")
         if results:
             print_statistics(results)
 
