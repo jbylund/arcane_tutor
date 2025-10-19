@@ -6,7 +6,8 @@ import pathlib
 
 import pytest
 
-from api.api_resource import ENABLE_CACHE, APIResource
+from api.api_resource import APIResource
+from api.settings import settings
 
 
 class TestReadSQL:
@@ -27,11 +28,30 @@ class TestReadSQL:
         assert hasattr(self.api_resource, "read_sql")
         assert callable(self.api_resource.read_sql)
 
-    @pytest.mark.skipif(not ENABLE_CACHE, reason="Caching tests require ENABLE_CACHE=true environment variable")
-    def test_read_sql_caching(self) -> None:
-        """Test that the read_sql method is cached when ENABLE_CACHE is true."""
-        # Verify that the method has a cache attribute (from @cached decorator)
-        assert hasattr(self.api_resource.read_sql, "cache")
+    def test_read_sql_caching_enabled(self) -> None:
+        """Test that the read_sql method is cached when caching is enabled."""
+        # Enable caching
+        original_setting = settings.enable_cache
+        try:
+            settings.enable_cache = True
+            # Verify that the method has a cache attribute (from @cached decorator)
+            assert hasattr(self.api_resource.read_sql, "cache")
+        finally:
+            settings.enable_cache = original_setting
+
+    def test_read_sql_caching_disabled(self) -> None:
+        """Test that the read_sql method still works when caching is disabled."""
+        # Disable caching
+        original_setting = settings.enable_cache
+        try:
+            settings.enable_cache = False
+            # Method should still have cache attribute but won't use it
+            assert hasattr(self.api_resource.read_sql, "cache")
+            # Verify method still works
+            sql_content = self.api_resource.read_sql("get_cards")
+            assert "SELECT" in sql_content
+        finally:
+            settings.enable_cache = original_setting
 
     def test_read_sql_loads_correct_file(self) -> None:
         """Test that read_sql loads the correct SQL file content."""

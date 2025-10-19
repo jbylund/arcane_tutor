@@ -32,6 +32,7 @@ from api.card_processing import preprocess_card
 from api.enums import CardOrdering, PreferOrder, SortDirection, UniqueOn
 from api.parsing import generate_sql_query, parse_scryfall_query
 from api.parsing.card_query_nodes import extract_frame_data_from_raw_card, mana_cost_str_to_dict
+from api.settings import settings
 from api.tagger_client import TaggerClient
 from api.utils import db_utils, error_monitoring, multiprocessing_utils
 from api.utils.timer import Timer
@@ -49,26 +50,6 @@ logger = logging.getLogger(__name__)
 # pylint: disable=c-extension-no-member
 NOT_FOUND = 404
 BACKFILL = IMPORT_EXPORT = True
-
-
-class Settings:
-    """Simple settings class for runtime configuration."""
-
-    def __init__(self) -> None:
-        """Initialize settings from environment variables."""
-        self._enable_cache = os.environ.get("ENABLE_CACHE", "false").lower() in ("true", "1", "yes")
-
-    @property
-    def enable_cache(self) -> bool:
-        """Check if caching is enabled."""
-        return self._enable_cache
-
-
-# Global settings instance
-settings = Settings()
-
-# For backward compatibility
-ENABLE_CACHE = settings.enable_cache
 
 
 def cached(cache: Any, key: Any = None) -> Any:  # noqa: ANN401
@@ -152,7 +133,7 @@ class APIResource:
                 self.action_map[method_name] = make_type_converting_wrapper(method)
         self.action_map["index"] = make_type_converting_wrapper(self.index_html)
         self._query_cache = LRUCache(maxsize=1_000)
-        if not ENABLE_CACHE:
+        if not settings.enable_cache:
             self._query_cache = TTLCache(maxsize=1, ttl=0)
         self._session = requests.Session()
         self._import_guard: LockType = import_guard

@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 import pytest
 from testcontainers.postgres import PostgresContainer
 
+from api.settings import settings
+
 if TYPE_CHECKING:
     from collections.abc import Generator
 
@@ -44,6 +46,9 @@ def postgres_container_fixture() -> Generator[None]:
     container.stop()
 
 @pytest.fixture
-def enable_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+def enable_cache() -> None:
     """Fixture to enable caching for specific tests."""
-    monkeypatch.setenv("ENABLE_CACHE", "true")
+    original_setting = settings.enable_cache
+    settings.enable_cache = True
+    yield
+    settings.enable_cache = original_setting
