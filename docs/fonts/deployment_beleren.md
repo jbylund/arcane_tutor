@@ -5,8 +5,8 @@ Quick guide to deploy the Beleren font to production.
 ## Prerequisites
 
 1. AWS credentials configured (`aws configure`)
-2. S3 bucket set up with public read access
-3. CloudFront distribution pointing to the S3 bucket
+1. S3 bucket set up with public read access
+1. CloudFront distribution pointing to the S3 bucket
 
 ## Deployment Steps
 
@@ -36,13 +36,13 @@ https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/beleren/beleren-subset.css
 ### 3. Test
 
 1. Open your Scryfall OS instance
-2. Search for any card
-3. Check that:
+1. Search for any card
+1. Check that:
    - Card titles display in bold Beleren font
    - Type lines display in bold Beleren font
    - Oracle text displays in serif font (MPlantin/Georgia)
-4. Verify in browser DevTools that font loads from CDN
-5. Check that font file is ~25KB (WOFF2)
+1. Verify in browser DevTools that font loads from CDN
+1. Check that font file is ~25KB (WOFF2)
 
 ## What Gets Uploaded
 
@@ -57,8 +57,8 @@ https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/beleren/beleren-subset.css
 The script automatically configures:
 
 1. **CORS Rules** - Allows font loading from any origin
-2. **Cache Headers** - `Cache-Control: public, max-age=31536000, immutable`
-3. **Content Types** - Proper MIME types for each file
+1. **Cache Headers** - `Cache-Control: public, max-age=31536000, immutable`
+1. **Content Types** - Proper MIME types for each file
 
 Ensure your S3 bucket has this policy:
 
@@ -87,9 +87,9 @@ make beleren_font S3_BUCKET=your-bucket-name
 ### Font not displaying
 
 1. Check browser console for errors
-2. Verify CSS is loaded: View Source → look for `beleren-subset.css` link
-3. Verify font files are accessible (visit URLs directly)
-4. Check that:
+1. Verify CSS is loaded: View Source → look for `beleren-subset.css` link
+1. Verify font files are accessible (visit URLs directly)
+1. Check that:
    - `.card-name` and `.card-type` have `font-family: 'Beleren', sans-serif;`
    - `.card-text` has `font-family: 'MPlantin', 'Plantin MT Pro', 'Plantin', Georgia, serif;`
 
@@ -129,8 +129,8 @@ Then manually configure CORS on the S3 bucket.
 To revert to sans-serif:
 
 1. Remove the Beleren font link from `api/index.html`
-2. Remove `font-family: 'Beleren', sans-serif;` from CSS classes
-3. Deploy updated `index.html`
+1. Remove `font-family: 'Beleren', sans-serif;` from CSS classes
+1. Deploy updated `index.html`
 
 The font files can remain on CDN (they won't be loaded if not referenced).
 
@@ -145,6 +145,6 @@ The font files can remain on CDN (they won't be loaded if not referenced).
 
 After deployment:
 1. Monitor CloudFront logs for font file requests
-2. Check Lighthouse performance score
-3. Gather user feedback on appearance
-4. Consider adding Beleren SmallCaps variant if needed
+1. Check Lighthouse performance score
+1. Gather user feedback on appearance
+1. Consider adding Beleren SmallCaps variant if needed

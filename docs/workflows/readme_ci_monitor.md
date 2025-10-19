@@ -4,7 +4,8 @@ This document describes the CI Monitor workflow that automatically checks the he
 
 ## Overview
 
-The CI Monitor workflow (`.github/workflows/ci-monitor.yml`) runs every 3 hours to check if CI checks are passing on the most recent commit to the main branch. If any CI checks have failed, it automatically creates a GitHub issue assigned to @copilot with details about the failures.
+The CI Monitor workflow (`.github/workflows/ci-monitor.yml`) runs every 3 hours to check if CI checks are passing on the most recent commit to the main branch.
+If any CI checks have failed, it automatically creates a GitHub issue assigned to @copilot with details about the failures.
 
 ## Features
 
@@ -17,10 +18,10 @@ The CI Monitor workflow (`.github/workflows/ci-monitor.yml`) runs every 3 hours 
 ## How It Works
 
 1. **Check Main Branch**: Gets the latest commit SHA from the main branch
-2. **Scan Workflows**: Examines recent runs of all repository workflows (except CI Monitor itself)
-3. **Detect Failures**: Identifies any workflow runs that failed on the latest main commit
-4. **Create Issues**: If failures are detected and no existing CI failure issue exists, creates a new issue
-5. **Provide Details**: Includes failed workflow names, failure types, and links to detailed logs
+1. **Scan Workflows**: Examines recent runs of all repository workflows (except CI Monitor itself)
+1. **Detect Failures**: Identifies any workflow runs that failed on the latest main commit
+1. **Create Issues**: If failures are detected and no existing CI failure issue exists, creates a new issue
+1. **Provide Details**: Includes failed workflow names, failure types, and links to detailed logs
 
 ## Issue Format
 
@@ -45,7 +46,7 @@ The automated CI monitor has detected failing checks on the main branch.
 **Failed Checks:**
 
 - **Lint** (workflow)
-  - [View details](https://github.com/jbylund/scryfallos/actions/runs/17803973764)
+  - [View details](https://github.com/jbylund/arcane_tutor/actions/runs/17803973764)
 
 **What to do:**
 1. Review the failing checks above
@@ -70,12 +71,12 @@ The workflow is configured in `.github/workflows/ci-monitor.yml` with:
 When a CI failure issue is created:
 
 1. **Review**: Check the linked workflow runs to understand the failures
-2. **Fix Locally**: 
+1. **Fix Locally**: 
    - For linting: `python -m ruff check --fix --unsafe-fixes`
    - For tests: `python -m pytest -vvv` and fix failing tests
-3. **Commit**: Push fixes to the main branch
-4. **Verify**: Ensure CI passes on the new commit
-5. **Close**: Close the issue once CI is healthy
+1. **Commit**: Push fixes to the main branch
+1. **Verify**: Ensure CI passes on the new commit
+1. **Close**: Close the issue once CI is healthy
 
 ## Benefits
 
@@ -96,8 +97,8 @@ The CI Monitor currently tracks these workflows:
 
 The workflow can be tested by:
 1. Manually triggering via GitHub Actions UI
-2. Introducing intentional CI failures on main branch
-3. Verifying issue creation and content accuracy
+1. Introducing intentional CI failures on main branch
+1. Verifying issue creation and content accuracy
 
 The workflow has been designed to handle edge cases like:
 - No existing issues with `ci-failure` label

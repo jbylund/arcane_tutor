@@ -1,8 +1,13 @@
-# Scryfall OS
+# Arcane Tutor
 
-![Scryfall OS Web Interface](scryfallos-screenshot.png)
+![Web Interface](screenshot.png)
 
-*Scryfall OS web interface in dark mode showing cards with CMC less than 10, ordered by USD price descending*
+*Web interface in dark mode showing cards with CMC less than 10, ordered by USD price descending*
+
+**Legal Notice**: Magic: The Gathering is trademark and property of Wizards of the Coast LLC, a subsidiary of Hasbro, Inc. This project is unofficial Fan Content permitted under the [Wizards of the Coast Fan Content Policy](https://company.wizards.com/en/legal/fancontentpolicy).
+Not approved/endorsed by Wizards of the Coast.
+Portions of the materials used are property of Wizards of the Coast. © Wizards of the Coast LLC. Card data sourced from [Scryfall](https://scryfall.com) with attribution.
+See [docs/legal.md](docs/legal/legal.md) for full details.
 
 ## Table of Contents
 
@@ -17,11 +22,11 @@
 
 ## Project Overview
 
-Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering card search engine.
+Arcane Tutor is an open source implementation of Scryfall, a Magic: The Gathering card search engine.
 
-### Scryfall OS vs Official Scryfall
+### Arcane Tutor vs Official Scryfall
 
-| Feature                    | Syntax                                        | Scryfall | Scryfall OS | Description                                               |
+| Feature                    | Syntax                                        | Scryfall | Arcane Tutor | Description                                               |
 |----------------------------|-----------------------------------------------|----------|-------------|-----------------------------------------------------------|
 | **Basic Search**           | `name:`, `oracle:`                            | ✔        | ✔           | Full substring search with pattern matching               |
 | **Type Search**            | `type:`, `t:`                                 | ✔        | ✔           | Exact matching with intelligent autocomplete              |
@@ -52,7 +57,7 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 | **Arithmetic Expressions** | `cmc+1<power`, `power-toughness=0`            | ✘        | ✔           | Advanced mathematical expressions                         |
 
 
-### Scryfall OS Unique Features
+### Arcane Tutor Unique Features
 
 - **Arithmetic operations** - Mathematical expressions like `cmc+1<power`
 - **Typeahead search with intelligent completion** - Enhanced UX for query building
@@ -82,7 +87,7 @@ Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering
 
 ### Missing Functionality - Complexity vs Impact Grid
 
-Based on [comprehensive functionality analysis](docs/scryfall_functionality_analysis.md), here's the updated priority matrix:
+Based on [comprehensive functionality analysis](docs/technical/scryfall_functionality_analysis.md), here's the updated priority matrix:
 
 | **Complexity** | **Low Impact**                | **Medium Impact**                                                                            | **High Impact** |
 | -------------- | ------------------------------|----------------------------------------------------------------------------------------------| ----------------|
@@ -100,7 +105,7 @@ Based on [comprehensive functionality analysis](docs/scryfall_functionality_anal
 ## Code Organization
 
 ```
-scryfallos/
+arcane_tutor/
 ├── api/                         # Python API service (main application)
 │   ├── db/                      # Database schema and migrations
 │   ├── middlewares/             # HTTP middleware components
@@ -108,7 +113,7 @@ scryfallos/
 │   │   ├── tests/               # Parser unit tests (100+ tests)
 │   │   ├── nodes.py             # AST node definitions
 │   │   ├── parsing_f.py         # Main parser with pyparsing
-│   │   └── scryfall_nodes.py    # Scryfall-specific node types
+│   │   └── card_query_nodes.py  # Card-specific query node types
 │   ├── sql/                     # SQL query templates
 │   ├── tests/                   # Integration and API tests
 │   ├── api_resource.py          # Falcon web framework resources
@@ -132,7 +137,7 @@ scryfallos/
 - **[Client Query Runner](client/README.md)** - Query runner client for testing and index analysis
 - **[Scripts Documentation](scripts/README.md)** - Detailed information about utility scripts including the Scryfall comparison tool
 - **[API Tests Documentation](api/tests/README.md)** - Testing framework and integration test information
-- **[CI/CD Workflows](docs/workflows/README_CI_MONITOR.md)** - Continuous integration and monitoring documentation
+- **[CI/CD Workflows](docs/workflows/readme_ci_monitor.md)** - Continuous integration and monitoring documentation
 
 ## Developer Quick Start
 
@@ -148,8 +153,8 @@ scryfallos/
 1. **Clone and Install Dependencies**
 
    ```bash
-   git clone git@github.com:jbylund/scryfallos.git
-   cd scryfallos
+   git clone git@github.com:jbylund/arcane_tutor.git
+   cd arcane_tutor
 
    # Install core dependencies
    python -m pip install --upgrade pip
@@ -191,6 +196,30 @@ make build_images     # Build Docker images (~30-60 seconds)
 make up              # Start PostgreSQL and API services
 ```
 
+#### Environment Variables
+
+The following environment variables can be configured:
+
+**API Service:**
+- `ENABLE_CACHE` - Enable/disable API response caching (default: `false`)
+  - Set to `true`, `1`, or `yes` to enable caching
+  - Improves performance for repeated queries
+  - Can be set in docker-compose.yml or exported before starting services
+
+**Client Service:**
+- `API_URL` - URL of the API service (default: `http://apiservice:8080`)
+- `QUERY_DELAY` - Delay between queries in seconds (default: `1.0`)
+- `BATCH_SIZE` - Number of queries before reporting statistics (default: `50`)
+
+Example with caching enabled:
+```bash
+# Set environment variable
+export ENABLE_CACHE=true
+
+# Start services
+make up
+```
+
 #### Local Development
 
 ```bash
@@ -217,11 +246,13 @@ npx prettier --write api/index.html        # Format frontend code
 
 #### Query Runner Client (for Index Analysis)
 
-```bash
-# Start the query runner client to test indexes
-docker compose --profile client up client
+The client container runs automatically when you start all services with `make up` or `docker compose up`.
 
-# Or run locally
+```bash
+# Client runs automatically with all services
+make up
+
+# Or run locally for development
 python -m client.query_runner
 
 # See client/README.md for more details
@@ -289,7 +320,8 @@ The bulk import includes built-in rate limiting:
 
 ### Query Parameters
 
-The search endpoint supports comprehensive Scryfall syntax. See [syntax analysis](docs/scryfall_syntax_analysis.md) for complete documentation.
+The search endpoint supports comprehensive Scryfall syntax.
+See [syntax analysis](docs/technical/scryfall_syntax_analysis.md) for complete documentation.
 
 ## Development Notes
 
@@ -302,4 +334,47 @@ The search endpoint supports comprehensive Scryfall syntax. See [syntax analysis
 1. **Features**: Implement highest-priority missing functionality from grid above
 1. **Testing**: Expand API comparison coverage and add performance benchmarks
 
-For detailed technical analysis, see [functionality analysis documentation](docs/scryfall_functionality_analysis.md).
+For detailed technical analysis, see [functionality analysis documentation](docs/technical/scryfall_functionality_analysis.md).
+
+## Data Sources & Attribution
+
+### Card Data
+
+Arcane Tutor uses card data from [Scryfall's official bulk data API](https://api.scryfall.com/bulk-data).
+We are grateful to Scryfall for maintaining comprehensive, high-quality Magic: The Gathering card information and making it available to the community.
+
+**Data Attribution**: Card data provided by [Scryfall](https://scryfall.com).
+Arcane Tutor is an independent implementation and is not affiliated with, endorsed by, or sponsored by Scryfall.
+
+### Intellectual Property
+
+All Magic: The Gathering card names, artwork, and game content are © Wizards of the Coast LLC. This project respects all intellectual property rights and operates under the [Wizards of the Coast Fan Content Policy](https://company.wizards.com/en/legal/fancontentpolicy).
+
+**Important**: This is unofficial Fan Content.
+Not approved/endorsed by Wizards of the Coast.
+
+### Legal Compliance
+
+For complete information about data sources, intellectual property attribution, and compliance with relevant policies, see [docs/legal.md](docs/legal/legal.md).
+
+**Key Compliance Documents:**
+- **[Legal Compliance Summary](docs/legal/legal_compliance_summary.md)** - Quick status overview (93% complete - excellent standing)
+- **[Legal & Data Sources](docs/legal/legal.md)** - Attribution, IP rights, data sources
+- **[Terms of Service](docs/user/terms_of_service.md)** - User agreement and service terms
+- **[Privacy Policy](docs/user/privacy_policy.md)** - Data collection and privacy practices
+- **[Compliance Review](docs/legal/compliance_review.md)** - Detailed compliance checklist status
+
+**Compliance Status**: ✅ 93% Complete (42/45 items) - Excellent standing with all critical items addressed.
+
+## How Arcane Tutor Differs from Scryfall
+
+While we use Scryfall's data, Arcane Tutor is a distinct implementation:
+
+- **Original codebase**: All code written from scratch (no copied code from Scryfall)
+- **Different database schema**: Custom PostgreSQL schema optimized for our use cases  
+- **Unique features**: Arithmetic expressions in queries, larger data fetch capabilities
+- **Independent search algorithms**: Original query parser and search ranking
+- **Different visual design**: Custom UI layout and styling
+- **Open source**: Transparent, community-driven development
+
+Our goal is to provide an open-source alternative that respects both Wizards of the Coast's intellectual property and Scryfall's valuable contribution to the MTG community.

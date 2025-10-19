@@ -12,6 +12,7 @@ import pytest
 import requests
 
 from api.api_resource import APIResource
+from api.settings import settings
 
 
 def create_test_card(  # noqa: PLR0913
@@ -253,7 +254,7 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
     def test_handle_returns_early_if_response_complete(self) -> None:
         """Test _handle returns early if response is already complete."""
         mock_req = MagicMock()
-        mock_req.uri = "/test"
+        mock_req.path = mock_req.relative_uri = "/test"
         mock_resp = MagicMock()
         mock_resp.complete = True
 
@@ -264,7 +265,7 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
     def test_handle_processes_valid_paths(self) -> None:
         """Test _handle processes valid paths correctly."""
         mock_req = MagicMock()
-        mock_req.uri = "/get_pid"
+        mock_req.uri = mock_req.path = mock_req.relative_uri = "/get_pid"
         mock_req.params = {}
         mock_resp = MagicMock()
         mock_resp.complete = False
@@ -278,7 +279,7 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
     def test_handle_raises_not_found_for_invalid_paths(self) -> None:
         """Test _handle raises HTTPNotFound for invalid paths."""
         mock_req = MagicMock()
-        mock_req.uri = "/nonexistent"
+        mock_req.uri = mock_req.path = mock_req.relative_uri = "/nonexistent"
         mock_req.params = {}
         mock_resp = MagicMock()
         mock_resp.complete = False
@@ -289,7 +290,7 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
     def test_handle_handles_type_errors(self) -> None:
         """Test _handle handles TypeError exceptions."""
         mock_req = MagicMock()
-        mock_req.uri = "/search"
+        mock_req.uri = mock_req.path = mock_req.relative_uri = "/search"
         mock_req.params = {"invalid_param": "value"}
         mock_resp = MagicMock()
         mock_resp.complete = False
@@ -309,7 +310,7 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
     def test_handle_handles_general_exceptions(self) -> None:
         """Test _handle handles general exceptions."""
         mock_req = MagicMock()
-        mock_req.uri = "/search"
+        mock_req.uri = mock_req.path = mock_req.relative_uri = "/search"
         mock_req.params = {}
         mock_resp = MagicMock()
         mock_resp.complete = False
@@ -465,9 +466,18 @@ class TestAPIResourceCaching(unittest.TestCase):
 
     def setUp(self) -> None:
         """Set up test fixtures."""
+        # Store original cache setting
+        self.original_cache_setting = settings.enable_cache
+        # Enable caching for these tests
+        settings.enable_cache = True
+        # Now create the APIResource with caching enabled
         self.mock_conn_pool = MagicMock()
         self.api_resource = APIResource()
         self.api_resource._conn_pool = self.mock_conn_pool
+
+    def tearDown(self) -> None:
+        """Restore original cache setting."""
+        settings.enable_cache = self.original_cache_setting
 
     def test_query_cache_clears_after_successful_load(self) -> None:
         """Test that query cache clears after successful card loading."""

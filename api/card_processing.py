@@ -6,7 +6,7 @@ import functools
 import re
 from typing import TYPE_CHECKING, Any
 
-from api.parsing.scryfall_nodes import calculate_devotion, mana_cost_str_to_dict
+from api.parsing.card_query_nodes import calculate_devotion, mana_cost_str_to_dict
 
 if TYPE_CHECKING:
     from collections.abc import Callable

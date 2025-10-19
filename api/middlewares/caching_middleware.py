@@ -36,7 +36,7 @@ class CachingMiddleware:
             "ACCEPT-ENCODING",
         ]
         return (
-            req.uri,
+            req.relative_uri,
             tuple(sorted(req.params.items())),
             tuple(sorted({k: req.headers.get(k) for k in cached_headers}.items())),
         )
@@ -58,9 +58,9 @@ class CachingMiddleware:
             resp.media = cached_value.media
             resp._headers.update(cached_value._headers)
             resp.status = cached_value.status
-            logger.info("Cache hit: %s / %s response_id: %d", req.url, resp.status, id(resp))
+            logger.info("Cache hit: %s / %s response_id: %d", req.relative_uri, resp.status, id(resp))
             return
-        logger.info("Cache miss: %s / %s", req.url, cache_key)
+        logger.info("Cache miss: %s / %s", req.relative_uri, cache_key)
 
     def process_response(
         self: CachingMiddleware,
@@ -83,4 +83,4 @@ class CachingMiddleware:
         if cached_val is None:
             resp.complete = True
             self.cache[cache_key] = resp
-            logger.info("Cache updated: %s / %s", req.url, cache_key)
+            logger.info("Cache updated: %s / %s", req.relative_uri, cache_key)
