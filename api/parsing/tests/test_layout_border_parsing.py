@@ -6,9 +6,9 @@ from typing import Any
 
 import pytest
 
+from api.parsing.card_query_nodes import CardAttributeNode, CardBinaryOperatorNode
 from api.parsing.nodes import AndNode, Query
 from api.parsing.parsing_f import parse_scryfall_query
-from api.parsing.scryfall_nodes import ScryfallAttributeNode, ScryfallBinaryOperatorNode
 
 
 class TestLayoutBorderParsing:
@@ -41,8 +41,8 @@ class TestLayoutBorderParsing:
 
         assert isinstance(result, Query)
         binary_op = result.root
-        assert isinstance(binary_op, ScryfallBinaryOperatorNode)
-        assert isinstance(binary_op.lhs, ScryfallAttributeNode)
+        assert isinstance(binary_op, CardBinaryOperatorNode)
+        assert isinstance(binary_op.lhs, CardAttributeNode)
         assert binary_op.lhs.attribute_name == expected_attr
         assert binary_op.operator == ":"
         assert binary_op.rhs.value == expected_value
@@ -75,7 +75,7 @@ class TestLayoutBorderParsing:
 
         assert isinstance(result, Query)
         binary_op = result.root
-        assert isinstance(binary_op, ScryfallBinaryOperatorNode)
+        assert isinstance(binary_op, CardBinaryOperatorNode)
         assert binary_op.lhs.attribute_name == "card_layout"
         assert binary_op.rhs.value == "double_faced_token"
 
@@ -86,7 +86,7 @@ class TestLayoutBorderParsing:
 
         assert isinstance(result, Query)
         binary_op = result.root
-        assert isinstance(binary_op, ScryfallBinaryOperatorNode)
+        assert isinstance(binary_op, CardBinaryOperatorNode)
         assert binary_op.lhs.attribute_name == "card_border"
         assert binary_op.rhs.value == "borderless"
 
@@ -101,7 +101,7 @@ class TestLayoutBorderParsing:
         # but we should have all three conditions
         def extract_attributes(node: Any) -> list[tuple[str, Any]]:
             """Recursively extract all attribute nodes from a parse tree."""
-            if isinstance(node, ScryfallBinaryOperatorNode) and hasattr(node.lhs, "attribute_name"):
+            if isinstance(node, CardBinaryOperatorNode) and hasattr(node.lhs, "attribute_name"):
                 return [(node.lhs.attribute_name, node.rhs.value)]
             if isinstance(node, AndNode):
                 attrs = []
