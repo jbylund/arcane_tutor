@@ -165,10 +165,6 @@ def run_query(api_url: str, query: str, session: requests.Session) -> dict:
     before = time.monotonic()
     result = {
         "query": query,
-        "success": False,
-        "duration": 0.0,
-        "card_count": 0,
-        "error": None,
     }
 
     try:
@@ -184,6 +180,7 @@ def run_query(api_url: str, query: str, session: requests.Session) -> dict:
         card_count = len(data.get("cards", []))
         result["card_count"] = card_count
     except requests.RequestException as oops:
+        result["success"] = False
         result["error"] = str(oops)
     finally:
         elapsed = time.monotonic() - before
@@ -224,7 +221,7 @@ def print_statistics(results: list[dict]) -> None:
     success_rate = (len(successful) / total_queries * 100) if total_queries > 0 else 0
 
     if successful:
-        durations = [r["duration"] for r in successful]
+        durations = [r["elapsed_ms"] for r in successful]
         avg_duration = sum(durations) / len(durations)
         min_duration = min(durations)
         max_duration = max(durations)
@@ -237,9 +234,9 @@ def print_statistics(results: list[dict]) -> None:
         logger.info("  Successful queries: %d", len(successful))
         logger.info("  Failed queries: %d", len(failed))
         logger.info("  Total cards returned: %d", total_cards)
-        logger.info("  Average duration: %.3fs", avg_duration)
-        logger.info("  Min duration: %.3fs", min_duration)
-        logger.info("  Max duration: %.3fs", max_duration)
+        logger.info("  Average duration: %.3fms", avg_duration)
+        logger.info("  Min duration: %.3fms", min_duration)
+        logger.info("  Max duration: %.3fms", max_duration)
         logger.info("=" * 60)
 
 

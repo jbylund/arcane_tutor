@@ -666,7 +666,6 @@ class APIResource:
                     cmc,
                     collector_number,
                     edhrec_rank,
-                    image_location_uuid,
                     mana_cost_text,
                     oracle_text,
                     set_name,
