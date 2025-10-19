@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-This document provides a detailed review of the legal compliance checklist for Scryfall OS, tracking our efforts to ensure proper differentiation from Scryfall while maintaining compliance with Wizards of the Coast's policies.
+This document provides a detailed review of the legal compliance checklist for Arcane Tutor, tracking our efforts to ensure proper differentiation from Scryfall while maintaining compliance with Wizards of the Coast's policies.
 
 **Overall Compliance Status**: **Good Progress** - Critical items addressed, several areas require future work.
 
