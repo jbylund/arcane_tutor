@@ -3,8 +3,8 @@
 import pytest
 
 from api import parsing
+from api.parsing.card_query_nodes import get_legality_comparison_object
 from api.parsing.parsing_f import generate_sql_query
-from api.parsing.scryfall_nodes import get_legality_comparison_object
 
 
 @pytest.mark.parametrize(
