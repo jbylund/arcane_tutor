@@ -12,17 +12,17 @@ The original parser contained three rules for handling arithmetic expressions:
    arithmetic_expr = arithmetic_term + arithmetic_op + arithmetic_term + ZeroOrMore(arithmetic_op + arithmetic_term)
    ```
 
-2. **`arithmetic_comparison`** (line 238-240): Comparisons where LHS is an arithmetic expression
+1. **`arithmetic_comparison`** (line 238-240): Comparisons where LHS is an arithmetic expression
    ```python
    arithmetic_comparison = arithmetic_expr + attrop + (arithmetic_expr | numeric_attr_word | literal_number)
    ```
 
-3. **`value_arithmetic_comparison`** (line 242-246): Comparisons where LHS is a simple value (**REDUNDANT**)
+1. **`value_arithmetic_comparison`** (line 242-246): Comparisons where LHS is a simple value (**REDUNDANT**)
    ```python
    value_arithmetic_comparison = (numeric_attr_word | literal_number) + attrop + (arithmetic_expr | numeric_attr_word | literal_number)
    ```
 
-4. **`numeric_condition`** (line 260): Simple numeric comparisons
+1. **`numeric_condition`** (line 260): Simple numeric comparisons
    ```python
    numeric_condition = numeric_attr_word + attrop + (literal_number | arithmetic_expr | numeric_attr_word)
    ```
@@ -55,7 +55,7 @@ The `value_arithmetic_comparison` and `numeric_condition` rules had significant 
 ### Changes Made
 
 1. **Removed** `value_arithmetic_comparison` rule entirely (lines 242-246)
-2. **Further Consolidated** `arithmetic_comparison` and `numeric_condition` into a single `unified_numeric_comparison` rule:
+1. **Further Consolidated** `arithmetic_comparison` and `numeric_condition` into a single `unified_numeric_comparison` rule:
    ```python
    # Before (2 separate rules):
    arithmetic_comparison = arithmetic_expr + attrop + (arithmetic_expr | numeric_attr_word | literal_number)
@@ -64,8 +64,8 @@ The `value_arithmetic_comparison` and `numeric_condition` rules had significant 
    # After (1 unified rule):
    unified_numeric_comparison = (arithmetic_expr | numeric_attr_word | literal_number) + attrop + (arithmetic_expr | numeric_attr_word | literal_number)
    ```
-3. **Updated** parser precedence to ensure comparisons are matched before standalone arithmetic expressions
-4. **Added** comprehensive documentation explaining the consolidation
+1. **Updated** parser precedence to ensure comparisons are matched before standalone arithmetic expressions
+1. **Added** comprehensive documentation explaining the consolidation
 
 ### Rule Coverage After Final Consolidation
 
@@ -98,18 +98,20 @@ The single `unified_numeric_comparison` rule now handles all 9 possible combinat
 ## Benefits of Consolidation
 
 1. **Reduced Complexity**: Eliminated one redundant parser rule
-2. **Clearer Logic**: Parser precedence is now more straightforward
-3. **Maintainability**: Fewer rules to maintain and debug
-4. **Performance**: Slightly reduced parsing overhead
-5. **No Functionality Loss**: All original parsing capabilities preserved
+1. **Clearer Logic**: Parser precedence is now more straightforward
+1. **Maintainability**: Fewer rules to maintain and debug
+1. **Performance**: Slightly reduced parsing overhead
+1. **No Functionality Loss**: All original parsing capabilities preserved
 
 ## Essential Rules Summary
 
 After complete consolidation, the essential arithmetic rules are:
 
 1. **`arithmetic_expr`** - Parses arithmetic expressions (`cmc+power`)
-2. **`unified_numeric_comparison`** - Handles ALL numeric comparisons with any combination of arithmetic expressions, numeric attributes, and literals
+1. **`unified_numeric_comparison`** - Handles ALL numeric comparisons with any combination of arithmetic expressions, numeric attributes, and literals
 
 ## Conclusion
 
-The consolidation successfully eliminates ALL redundancy while maintaining full functionality. We reduced three overlapping rules (`arithmetic_comparison`, `value_arithmetic_comparison`, and `numeric_condition`) down to a single, comprehensive `unified_numeric_comparison` rule that handles every possible numeric comparison pattern. This represents the maximum possible consolidation while preserving all parsing capabilities.
+The consolidation successfully eliminates ALL redundancy while maintaining full functionality.
+We reduced three overlapping rules (`arithmetic_comparison`, `value_arithmetic_comparison`, and `numeric_condition`) down to a single, comprehensive `unified_numeric_comparison` rule that handles every possible numeric comparison pattern.
+This represents the maximum possible consolidation while preserving all parsing capabilities.

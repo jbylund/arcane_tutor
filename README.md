@@ -4,7 +4,10 @@
 
 *Web interface in dark mode showing cards with CMC less than 10, ordered by USD price descending*
 
-**Legal Notice**: Magic: The Gathering is trademark and property of Wizards of the Coast LLC, a subsidiary of Hasbro, Inc. This project is unofficial Fan Content permitted under the [Wizards of the Coast Fan Content Policy](https://company.wizards.com/en/legal/fancontentpolicy). Not approved/endorsed by Wizards of the Coast. Portions of the materials used are property of Wizards of the Coast. © Wizards of the Coast LLC. Card data sourced from [Scryfall](https://scryfall.com) with attribution. See [docs/legal.md](docs/legal/legal.md) for full details.
+**Legal Notice**: Magic: The Gathering is trademark and property of Wizards of the Coast LLC, a subsidiary of Hasbro, Inc. This project is unofficial Fan Content permitted under the [Wizards of the Coast Fan Content Policy](https://company.wizards.com/en/legal/fancontentpolicy).
+Not approved/endorsed by Wizards of the Coast.
+Portions of the materials used are property of Wizards of the Coast. © Wizards of the Coast LLC. Card data sourced from [Scryfall](https://scryfall.com) with attribution.
+See [docs/legal.md](docs/legal/legal.md) for full details.
 
 ## Table of Contents
 
@@ -291,7 +294,8 @@ The bulk import includes built-in rate limiting:
 
 ### Query Parameters
 
-The search endpoint supports comprehensive Scryfall syntax. See [syntax analysis](docs/technical/scryfall_syntax_analysis.md) for complete documentation.
+The search endpoint supports comprehensive Scryfall syntax.
+See [syntax analysis](docs/technical/scryfall_syntax_analysis.md) for complete documentation.
 
 ## Development Notes
 
@@ -310,15 +314,18 @@ For detailed technical analysis, see [functionality analysis documentation](docs
 
 ### Card Data
 
-Arcane Tutor uses card data from [Scryfall's official bulk data API](https://api.scryfall.com/bulk-data). We are grateful to Scryfall for maintaining comprehensive, high-quality Magic: The Gathering card information and making it available to the community.
+Arcane Tutor uses card data from [Scryfall's official bulk data API](https://api.scryfall.com/bulk-data).
+We are grateful to Scryfall for maintaining comprehensive, high-quality Magic: The Gathering card information and making it available to the community.
 
-**Data Attribution**: Card data provided by [Scryfall](https://scryfall.com). Arcane Tutor is an independent implementation and is not affiliated with, endorsed by, or sponsored by Scryfall.
+**Data Attribution**: Card data provided by [Scryfall](https://scryfall.com).
+Arcane Tutor is an independent implementation and is not affiliated with, endorsed by, or sponsored by Scryfall.
 
 ### Intellectual Property
 
 All Magic: The Gathering card names, artwork, and game content are © Wizards of the Coast LLC. This project respects all intellectual property rights and operates under the [Wizards of the Coast Fan Content Policy](https://company.wizards.com/en/legal/fancontentpolicy).
 
-**Important**: This is unofficial Fan Content. Not approved/endorsed by Wizards of the Coast.
+**Important**: This is unofficial Fan Content.
+Not approved/endorsed by Wizards of the Coast.
 
 ### Legal Compliance
 

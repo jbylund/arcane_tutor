@@ -19,8 +19,8 @@ This page displays all mana symbols used in Scryfall OS in a comprehensive table
 The page shows three columns for each symbol:
 
 1. **Raw Mana Symbol**: The actual symbol text (e.g., `{W/U}`, `{R}`, `{T}`)
-2. **Emoji Representation**: The emoji/unicode character used in tooltips and text-only contexts
-3. **Symbol Representation**: The visual icon from the Mana font (should display as a styled icon)
+1. **Emoji Representation**: The emoji/unicode character used in tooltips and text-only contexts
+1. **Symbol Representation**: The visual icon from the Mana font (should display as a styled icon)
 
 ### Filters
 
@@ -67,7 +67,7 @@ Live counters show:
    python -m http.server 8888
    ```
 
-2. Open your browser to:
+1. Open your browser to:
    ```
    http://localhost:8888/mana-symbols-test.html
    ```
@@ -87,21 +87,21 @@ If the third column (Symbol Representation) shows empty spaces:
    https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mana/mana-subset.css
    ```
 
-2. **Check Browser Console**: Look for any errors related to loading the CSS or font files
+1. **Check Browser Console**: Look for any errors related to loading the CSS or font files
 
-3. **Verify Font Classes**: The CSS classes follow the pattern `ms ms-{symbol} ms-cost`
+1. **Verify Font Classes**: The CSS classes follow the pattern `ms ms-{symbol} ms-cost`
    - Example: `{W/U}` uses class `ms ms-wu ms-cost`
 
-4. **Test in Different Browsers**: Some browsers may have issues with web fonts
+1. **Test in Different Browsers**: Some browsers may have issues with web fonts
 
 ### Adding New Symbols
 
 When adding a new mana symbol to the application:
 
 1. Update `manaMap` or `hybridMap` in `api/index.html`
-2. Update `manaTextMap` in `api/index.html` with the emoji representation
-3. Update the corresponding maps in `api/mana-symbols-test.html`
-4. Verify the symbol displays correctly on the test page
+1. Update `manaTextMap` in `api/index.html` with the emoji representation
+1. Update the corresponding maps in `api/mana-symbols-test.html`
+1. Verify the symbol displays correctly on the test page
 
 ## Technical Details
 

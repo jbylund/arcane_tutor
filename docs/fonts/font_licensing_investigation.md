@@ -76,12 +76,12 @@ copies or substantial portions of the Software.
 
 1. **Commercial Font**: MPlantin (Plantin MT) is a commercial font owned by Monotype, not a free or open-source font.
 
-2. **Redistribution**: The font file `fonts/mplantin.otf` is checked into the repository, which may violate licensing terms if we don't have redistribution rights.
+1. **Redistribution**: The font file `fonts/mplantin.otf` is checked into the repository, which may violate licensing terms if we don't have redistribution rights.
 
-3. **Documentation Claims**: The file [docs/mplantin_font.md](../fonts/mplantin_font.md) states:
+1. **Documentation Claims**: The file [docs/mplantin_font.md](../fonts/mplantin_font.md) states:
    > "MPlantin (Plantin MT) is a commercial font by Monotype. The font file in this repository (`fonts/mplantin.otf`) is used under license for this project."
 
-4. **License Verification Needed**: We need to verify:
+1. **License Verification Needed**: We need to verify:
    - Do we actually have a valid license for MPlantin?
    - Does the license permit redistribution in open-source projects?
    - Does the license permit web font subsetting and hosting?
@@ -105,9 +105,9 @@ copies or substantial portions of the Software.
 
 **Legal Risks**:
 1. **Copyright Infringement**: Distributing a commercial font without proper license
-2. **License Violation**: Using font beyond scope of any existing license
-3. **Trademark Issues**: Potential issues with Monotype's intellectual property
-4. **Repository Liability**: All users cloning the repository may be receiving unlicensed content
+1. **License Violation**: Using font beyond scope of any existing license
+1. **Trademark Issues**: Potential issues with Monotype's intellectual property
+1. **Repository Liability**: All users cloning the repository may be receiving unlicensed content
 
 **Impact on Compliance**:
 - This could affect our overall legal compliance standing
@@ -126,13 +126,13 @@ copies or substantial portions of the Software.
    - [ ] Verify web font subsetting and hosting is permitted
    - [ ] Document license details if valid
 
-2. **If No Valid License: Remove MPlantin**
+1. **If No Valid License: Remove MPlantin**
    - [ ] Remove `fonts/mplantin.otf` from repository
    - [ ] Update `.gitignore` to prevent future commits
    - [ ] Remove font from git history (optional, for clean slate)
    - [ ] Update documentation to remove MPlantin references
 
-3. **Find Alternative Solution**
+1. **Find Alternative Solution**
 
    Choose one of these options:
 
@@ -165,17 +165,17 @@ copies or substantial portions of the Software.
 
 **Rationale**:
 1. **Immediate Compliance**: No licensing issues
-2. **No Cost**: Free for all users
-3. **Simplest Implementation**: Just update CSS
-4. **Good UX**: Georgia is a high-quality serif font
-5. **Cross-Platform**: Available on all systems
-6. **Performance**: No font download needed
+1. **No Cost**: Free for all users
+1. **Simplest Implementation**: Just update CSS
+1. **Good UX**: Georgia is a high-quality serif font
+1. **Cross-Platform**: Available on all systems
+1. **Performance**: No font download needed
 
 **Implementation**:
 1. Remove `fonts/mplantin.otf`
-2. Update CSS to: `font-family: Georgia, 'Palatino Linotype', 'Book Antiqua', Palatino, serif;`
-3. Remove MPlantin documentation
-4. Update legal documentation to reflect font changes
+1. Update CSS to: `font-family: Georgia, 'Palatino Linotype', 'Book Antiqua', Palatino, serif;`
+1. Remove MPlantin documentation
+1. Update legal documentation to reflect font changes
 
 ---
 
@@ -301,11 +301,11 @@ This provides:
 
 **Benefits**:
 1. ✅ Immediate legal compliance
-2. ✅ No licensing costs
-3. ✅ Simpler implementation
-4. ✅ Better performance (no font download)
-5. ✅ Universal compatibility
-6. ✅ Maintains professional appearance
+1. ✅ No licensing costs
+1. ✅ Simpler implementation
+1. ✅ Better performance (no font download)
+1. ✅ Universal compatibility
+1. ✅ Maintains professional appearance
 
 **Action Required**: Repository maintainer should decide on approach and implement changes.
 
