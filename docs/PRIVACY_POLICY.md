@@ -4,7 +4,12 @@
 
 ## 1. Introduction
 
-Scryfall OS ("we," "our," or "Service") is committed to protecting your privacy. This Privacy Policy explains how we handle information when you use our Magic: The Gathering card search engine.
+Arcane Tutor is committed to protecting your privacy. This Privacy Policy explains how we handle information when you use our Magic: The Gathering card search engine.
+
+**Related Documentation:**
+- [TERMS_OF_SERVICE.md](TERMS_OF_SERVICE.md) - User agreement and service terms
+- [LEGAL.md](LEGAL.md) - Data sources and legal compliance
+- [about.md](about.md) - Project information
 
 **Key Points:**
 - We do not require user accounts

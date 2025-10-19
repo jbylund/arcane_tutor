@@ -2,13 +2,19 @@
 
 ## Overview
 
-Scryfall OS is an open-source Magic: The Gathering card search engine that respects intellectual property rights and complies with relevant policies and guidelines.
+Arcane Tutor is an open-source Magic: The Gathering card search engine that respects intellectual property rights and complies with relevant policies and guidelines.
+
+**Related Documentation:**
+- [TERMS_OF_SERVICE.md](TERMS_OF_SERVICE.md) - User agreement and service terms
+- [PRIVACY_POLICY.md](PRIVACY_POLICY.md) - Data collection and privacy practices
+- [COMPLIANCE_REVIEW.md](COMPLIANCE_REVIEW.md) - Detailed compliance status and checklist
+- [about.md](about.md) - Project mission and how we differ from Scryfall
 
 ## Data Sources
 
 ### Primary Data Source
 
-Scryfall OS uses card data from **Scryfall's official bulk data API** (https://api.scryfall.com/bulk-data), which provides comprehensive Magic: The Gathering card information.
+Arcane Tutor uses card data from **Scryfall's official bulk data API** (https://api.scryfall.com/bulk-data), which provides comprehensive Magic: The Gathering card information.
 
 - **Data Provider**: Scryfall (https://scryfall.com)
 - **API Documentation**: https://scryfall.com/docs/api
@@ -40,7 +46,7 @@ Magic: The Gathering is a trademark of Wizards of the Coast LLC, a subsidiary of
 
 **All card data, names, artwork, and game content are:**
 - © Wizards of the Coast LLC
-- Portions of Scryfall OS are unofficial Fan Content permitted under the Wizards of the Coast Fan Content Policy
+- Portions of Arcane Tutor are unofficial Fan Content permitted under the Wizards of the Coast Fan Content Policy
 - Not approved/endorsed by Wizards of the Coast
 - Portions of the materials used are property of Wizards of the Coast. © Wizards of the Coast LLC.
 
@@ -51,7 +57,7 @@ We acknowledge and thank Scryfall (https://scryfall.com) for:
 - Maintaining high-quality card information
 - Supporting the Magic: The Gathering community
 
-Scryfall OS is an **independent implementation** and is **not affiliated with, endorsed by, or sponsored by Scryfall**.
+Arcane Tutor is an **independent implementation** and is **not affiliated with, endorsed by, or sponsored by Scryfall**.
 
 ## Compliance with Policies
 
@@ -73,7 +79,7 @@ We comply with Scryfall's API Terms of Service:
 
 ## Differentiation from Scryfall
 
-Scryfall OS is intentionally designed to be different from Scryfall:
+Arcane Tutor is intentionally designed to be different from Scryfall:
 
 ### Technical Differences
 - **Original codebase**: All code is written from scratch
@@ -88,7 +94,7 @@ Scryfall OS is intentionally designed to be different from Scryfall:
 - **Original iconography**: Custom theme toggle and UI elements
 
 ### Naming and Branding
-- **Project name**: "Scryfall OS" clearly indicates "Open Source" implementation
+- **Project name**: "Arcane Tutor" - a unique name that doesn't claim to be Scryfall
 - **No trademark confusion**: We do not claim to be Scryfall or use their branding
 - **Clear attribution**: We acknowledge Scryfall as a data source
 
@@ -109,13 +115,13 @@ We use the trademark "Magic: The Gathering™" in accordance with Wizards of the
 
 ### "Scryfall"
 We acknowledge "Scryfall" as a trademark/brand:
-- Our use of "Scryfall OS" indicates an open-source implementation
+- Our project name "Arcane Tutor" is unique and doesn't cause confusion
 - We are not affiliated with or endorsed by Scryfall
 - We do not claim to be Scryfall or use their exact branding
 
 ## User Privacy
 
-Currently, Scryfall OS:
+Currently, Arcane Tutor:
 - Does not collect personal information
 - Does not use cookies for tracking
 - Uses localStorage only for theme preference
@@ -125,7 +131,7 @@ A formal Privacy Policy will be added as the project evolves.
 
 ## Terms of Service
 
-Users of Scryfall OS should understand:
+Users of Arcane Tutor should understand:
 - This is provided "as-is" without warranty
 - Card data accuracy depends on upstream sources (Scryfall)
 - This is a community project not endorsed by Wizards of the Coast
