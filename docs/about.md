@@ -68,7 +68,7 @@ See [README.md](../README.md#code-organization) for detailed information about:
 
 Arcane Tutor uses card data from Scryfall's official bulk data API and serves card images via our own S3/CloudFront infrastructure. All Magic: The Gathering content is © Wizards of the Coast LLC and used under their Fan Content Policy.
 
-For complete details on data sources, attribution, and intellectual property, see [docs/LEGAL.md](LEGAL.md).
+For complete details on data sources, attribution, and intellectual property, see [docs/legal.md](legal.md).
 
 ## Project Status
 
@@ -92,10 +92,12 @@ For complete details on data sources, attribution, and intellectual property, se
 We take compliance seriously with original code, proper attribution, and adherence to all relevant policies.
 
 See our compliance documentation:
-- [LEGAL.md](LEGAL.md) - Data sources, attribution, and IP rights
-- [TERMS_OF_SERVICE.md](TERMS_OF_SERVICE.md) - User terms
-- [PRIVACY_POLICY.md](PRIVACY_POLICY.md) - Privacy practices
-- [COMPLIANCE_REVIEW.md](COMPLIANCE_REVIEW.md) - Detailed compliance status
+- [legal.md](legal.md) - Data sources, attribution, and IP rights
+- [terms_of_service.md](terms_of_service.md) - User terms
+- [privacy_policy.md](privacy_policy.md) - Privacy practices
+- [compliance_review.md](compliance_review.md) - Detailed compliance status (93% complete)
+
+**Compliance Status**: ✅ Excellent standing - All critical legal and compliance items addressed.
 
 ## Contributing
 
@@ -112,7 +114,7 @@ We are deeply grateful to:
 - **Wizards of the Coast** for creating Magic: The Gathering and supporting fan content
 - **Open Source Community** for the tools that make this possible
 
-See [LEGAL.md](LEGAL.md#scryfall-attribution) for detailed attribution.
+See [legal.md](legal.md#scryfall-attribution) for detailed attribution.
 
 ## Contact & Support
 
@@ -123,7 +125,7 @@ See [LEGAL.md](LEGAL.md#scryfall-attribution) for detailed attribution.
 
 ## License
 
-Arcane Tutor code is licensed under the ISC License (see package.json). This license applies only to our original code - see [LEGAL.md](LEGAL.md#license) for details on third-party intellectual property.
+Arcane Tutor code is licensed under the ISC License (see package.json). This license applies only to our original code - see [legal.md](legal.md#license) for details on third-party intellectual property.
 
 ## Future Vision
 

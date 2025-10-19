@@ -178,6 +178,8 @@ Use the dropdown menus to sort your results:
 
 - **Full Syntax Reference**: See [docs/scryfall_syntax_analysis.md](scryfall_syntax_analysis.md) for complete technical documentation
 - **Functionality Analysis**: Check [docs/scryfall_functionality_analysis.md](scryfall_functionality_analysis.md) for detailed feature list
+- **About Arcane Tutor**: Learn about the project at [about.md](about.md)
+- **Legal & Compliance**: Review our [legal.md](legal.md) for data sources and attribution
 - **GitHub Issues**: Report problems or request features at [github.com/jbylund/arcane_tutor](https://github.com/jbylund/arcane_tutor/issues)
 
 ## Examples to Try
@@ -210,4 +212,4 @@ type:creature cmc<=6 power>=8
 
 ---
 
-**About**: Learn more about [Arcane Tutor](about.md), our [legal compliance](LEGAL.md), and [data sources](LEGAL.md#data-sources).
+**About**: Learn more about [Arcane Tutor](about.md), our [legal compliance](legal.md), and [data sources](legal.md#data-sources).

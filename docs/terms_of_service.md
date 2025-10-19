@@ -4,15 +4,17 @@
 
 ## 1. Introduction
 
-Welcome to Scryfall OS. These Terms of Service ("Terms") govern your use of the Scryfall OS website and services (collectively, the "Service"). By accessing or using the Service, you agree to be bound by these Terms.
+Welcome to Arcane Tutor. These Terms of Service ("Terms") govern your use of the Arcane Tutor website and services (collectively, the "Service"). By accessing or using the Service, you agree to be bound by these Terms.
 
-## 2. About Scryfall OS
+## 2. About Arcane Tutor
 
-Scryfall OS is a free, open-source Magic: The Gathering card search engine. This Service is:
+Arcane Tutor is a free, open-source Magic: The Gathering card search engine. This Service is:
 
 - **Not a commercial service**: We do not sell any products or services
 - **Not affiliated with Wizards of the Coast**: This is unofficial Fan Content permitted under the Wizards of the Coast Fan Content Policy
 - **Not affiliated with Scryfall**: We are an independent open-source implementation using publicly available data
+
+For more details about our project and how we differ from Scryfall, see [about.md](about.md).
 
 ## 3. Intellectual Property
 
@@ -26,7 +28,7 @@ Card data is sourced from [Scryfall's official bulk data API](https://scryfall.c
 
 ### 3.3 Service Code
 
-The Scryfall OS source code is open source and available on [GitHub](https://github.com/jbylund/arcane_tutor) under the ISC License.
+The Arcane Tutor source code is open source and available on [GitHub](https://github.com/jbylund/arcane_tutor) under the ISC License.
 
 ## 4. Acceptable Use
 
@@ -36,11 +38,11 @@ You agree to use the Service only for lawful purposes. You may not:
 - Disrupt or interfere with the Service's operation
 - Use the Service to violate any applicable laws or regulations
 - Use automated tools to excessively scrape or download data (please use our API responsibly)
-- Misrepresent your affiliation with Scryfall OS, Wizards of the Coast, or Scryfall
+- Misrepresent your affiliation with Arcane Tutor, Wizards of the Coast, or Scryfall
 
 ## 5. No User Accounts
 
-The Service does not require or offer user accounts. We do not collect or store personal user information beyond what is necessary for the Service to function (see our [Privacy Policy](PRIVACY_POLICY.md) for details).
+The Service does not require or offer user accounts. We do not collect or store personal user information beyond what is necessary for the Service to function (see our [Privacy Policy](privacy_policy.md) for details).
 
 ## 6. Service Availability
 
@@ -65,7 +67,7 @@ We do not warrant that:
 
 ## 8. Limitation of Liability
 
-TO THE MAXIMUM EXTENT PERMITTED BY LAW, SCRYFALL OS AND ITS CONTRIBUTORS SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR ANY LOSS OF PROFITS OR REVENUES, WHETHER INCURRED DIRECTLY OR INDIRECTLY, OR ANY LOSS OF DATA, USE, GOODWILL, OR OTHER INTANGIBLE LOSSES.
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, ARCANE TUTOR AND ITS CONTRIBUTORS SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR ANY LOSS OF PROFITS OR REVENUES, WHETHER INCURRED DIRECTLY OR INDIRECTLY, OR ANY LOSS OF DATA, USE, GOODWILL, OR OTHER INTANGIBLE LOSSES.
 
 ## 9. Third-Party Links and Content
 
@@ -101,14 +103,14 @@ If any provision of these Terms is found to be invalid or unenforceable, the rem
 
 ## 15. Entire Agreement
 
-These Terms, together with our [Privacy Policy](PRIVACY_POLICY.md) and [Legal Compliance Documentation](LEGAL.md), constitute the entire agreement between you and Scryfall OS regarding the Service.
+These Terms, together with our [Privacy Policy](privacy_policy.md) and [Legal Compliance Documentation](legal.md), constitute the entire agreement between you and Arcane Tutor regarding the Service.
 
 ## 16. Contact
 
 For questions about these Terms or the Service, please:
 
 - Open an issue on our [GitHub repository](https://github.com/jbylund/arcane_tutor/issues)
-- Review our [Legal Compliance Documentation](LEGAL.md)
+- Review our [Legal Compliance Documentation](legal.md)
 
 ## 17. Acknowledgments
 
@@ -117,6 +119,8 @@ We acknowledge and respect:
 - **Wizards of the Coast LLC** for creating Magic: The Gathering
 - **Scryfall** for providing comprehensive card data APIs
 - The open-source community for their contributions
+
+For more information about our data sources and attribution, see [legal.md](legal.md).
 
 ---
 
