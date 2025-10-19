@@ -120,7 +120,7 @@ arcane_tutor/
 │   ├── api_worker.py            # Multi-process worker implementation
 │   ├── entrypoint.py            # API server entry point and CLI
 │   └── index.html               # Web frontend (single-file app)
-├── client/                      # Client-side assets (minimal)
+├── client/                      # Query runner client for index analysis
 ├── configs/                     # Configuration files
 ├── docs/                        # Project documentation and analysis
 ├── requirements/                # Requirements files
@@ -134,6 +134,7 @@ arcane_tutor/
 
 ### Specialized Documentation
 
+- **[Client Query Runner](client/README.md)** - Query runner client for testing and index analysis
 - **[Scripts Documentation](scripts/README.md)** - Detailed information about utility scripts including the Scryfall comparison tool
 - **[API Tests Documentation](api/tests/README.md)** - Testing framework and integration test information
 - **[CI/CD Workflows](docs/workflows/readme_ci_monitor.md)** - Continuous integration and monitoring documentation
@@ -195,6 +196,30 @@ make build_images     # Build Docker images (~30-60 seconds)
 make up              # Start PostgreSQL and API services
 ```
 
+#### Environment Variables
+
+The following environment variables can be configured:
+
+**API Service:**
+- `ENABLE_CACHE` - Enable/disable API response caching (default: `false`)
+  - Set to `true`, `1`, or `yes` to enable caching
+  - Improves performance for repeated queries
+  - Can be set in docker-compose.yml or exported before starting services
+
+**Client Service:**
+- `API_URL` - URL of the API service (default: `http://apiservice:8080`)
+- `QUERY_DELAY` - Delay between queries in seconds (default: `1.0`)
+- `BATCH_SIZE` - Number of queries before reporting statistics (default: `50`)
+
+Example with caching enabled:
+```bash
+# Set environment variable
+export ENABLE_CACHE=true
+
+# Start services
+make up
+```
+
 #### Local Development
 
 ```bash
@@ -217,6 +242,20 @@ make test-integration # Integration tests (requires Docker)
 make lint            # Run ruff and pylint
 python -m ruff check --fix --unsafe-fixes  # Auto-fix style issues
 npx prettier --write api/index.html        # Format frontend code
+```
+
+#### Query Runner Client (for Index Analysis)
+
+The client container runs automatically when you start all services with `make up` or `docker compose up`.
+
+```bash
+# Client runs automatically with all services
+make up
+
+# Or run locally for development
+python -m client.query_runner
+
+# See client/README.md for more details
 ```
 
 ### Development Tips

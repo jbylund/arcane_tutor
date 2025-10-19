@@ -85,9 +85,6 @@ class ApiWorker(multiprocessing.Process):
         from api.api_resource import APIResource  # pylint: disable=import-outside-toplevel
         from api.middlewares import CachingMiddleware, CompressionMiddleware, TimingMiddleware
 
-        if CachingMiddleware is None:
-            msg = "CachingMiddleware is not available"
-            raise RuntimeError(msg)
         api = falcon.App(
             middleware=[
                 TimingMiddleware(),
