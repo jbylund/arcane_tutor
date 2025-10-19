@@ -1,3 +1,29 @@
+[project]
+name = "scryfallos"
+version = "1.0.0"
+description = "An open-source Magic: The Gathering card search engine"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.13"
+authors = [
+    {name = "Scryfall OS Contributors"}
+]
+keywords = ["magic", "mtg", "card search", "scryfall"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Games/Entertainment :: Board Games",
+]
+
+[project.urls]
+Homepage = "https://github.com/jbylund/arcane_tutor"
+Repository = "https://github.com/jbylund/arcane_tutor"
+Issues = "https://github.com/jbylund/arcane_tutor/issues"
+Documentation = "https://github.com/jbylund/arcane_tutor/blob/main/README.md"
+
 [tool.ruff]
 line-length = 120
 exclude = [".venv", "venv", "build", "dist", "migrations"]
