@@ -27,11 +27,9 @@ class TestReadSQL:
         assert hasattr(self.api_resource, "read_sql")
         assert callable(self.api_resource.read_sql)
 
+    @pytest.mark.skipif(not ENABLE_CACHE, reason="Caching tests require ENABLE_CACHE=true environment variable")
     def test_read_sql_caching(self) -> None:
         """Test that the read_sql method is cached when ENABLE_CACHE is true."""
-        if not ENABLE_CACHE:
-            pytest.skip("Caching tests require ENABLE_CACHE=true environment variable")
-
         # Verify that the method has a cache attribute (from @cached decorator)
         assert hasattr(self.api_resource.read_sql, "cache")
 

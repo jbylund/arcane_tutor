@@ -38,16 +38,15 @@ A dedicated container that generates random queries to test API performance and 
 - Generates 144 unique query patterns
 - Configurable query rate and batch size
 - Statistics reporting
-- Uses Docker Compose profiles for optional deployment
+- Runs automatically with all services
 
 **Usage:**
 ```bash
-# Start with client
-docker compose --profile client up
+# Client runs automatically with all services
+docker compose up
 
-# Or start client separately
-docker compose up -d postgres apiservice
-docker compose --profile client up client
+# Or with make
+make up
 ```
 
 **Configuration:**
@@ -59,14 +58,15 @@ docker compose --profile client up client
 
 ### Cache Implementation
 
-- Modified `api/api_resource.py` to read `ENABLE_CACHE` from environment
-- Updated `cached()` decorator to respect the flag
-- Cache tests automatically skip when caching is disabled
+- Created `Settings` class for runtime configuration
+- Modified `api/api_resource.py` with Settings class
+- Updated `cached()` decorator to always create cached function and check settings at runtime
+- Cache tests use `@pytest.mark.skipif` decorator
 - All 687 tests pass with caching enabled
 
 ### Client Container
 
-- Defined in `docker-compose.yml` with `profiles: [client]`
+- Defined in `docker-compose.yml` (runs automatically with all services)
 - Built from `client/Dockerfile`
 - Runs `client/query_runner.py` module
 - 16 unit tests covering query generation
@@ -100,8 +100,8 @@ The client generates diverse queries covering:
 Run the client to generate load and analyze PostgreSQL index usage:
 
 ```bash
-# Start services with client
-docker compose --profile client up
+# Start services (client runs automatically)
+docker compose up
 
 # In another terminal, check index usage
 make dbconn
@@ -114,8 +114,7 @@ Enable caching to test performance improvements:
 
 ```bash
 export ENABLE_CACHE=true
-docker compose up -d postgres apiservice
-docker compose --profile client up client
+docker compose up
 
 # Monitor query performance in client logs
 ```

@@ -460,21 +460,15 @@ class TestAPIResourceErrorHandling(unittest.TestCase):
             self.api_resource.discover_tags_from_graphql()
 
 
+@pytest.mark.skipif(not ENABLE_CACHE, reason="Caching tests require ENABLE_CACHE=true environment variable")
 class TestAPIResourceCaching(unittest.TestCase):
-    """Test caching functionality in APIResource.
-
-    Note: These tests require ENABLE_CACHE=true environment variable to be set.
-    """
+    """Test caching functionality in APIResource."""
 
     def setUp(self) -> None:
         """Set up test fixtures."""
         self.mock_conn_pool = MagicMock()
         self.api_resource = APIResource()
         self.api_resource._conn_pool = self.mock_conn_pool
-
-        # Skip tests if caching is not enabled
-        if not ENABLE_CACHE:
-            self.skipTest("Caching tests require ENABLE_CACHE=true environment variable")
 
     def test_query_cache_clears_after_successful_load(self) -> None:
         """Test that query cache clears after successful card loading."""

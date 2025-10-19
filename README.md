@@ -246,11 +246,13 @@ npx prettier --write api/index.html        # Format frontend code
 
 #### Query Runner Client (for Index Analysis)
 
-```bash
-# Start the query runner client to test indexes
-docker compose --profile client up client
+The client container runs automatically when you start all services with `make up` or `docker compose up`.
 
-# Or run locally
+```bash
+# Client runs automatically with all services
+make up
+
+# Or run locally for development
 python -m client.query_runner
 
 # See client/README.md for more details

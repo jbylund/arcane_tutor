@@ -50,14 +50,44 @@ logger = logging.getLogger(__name__)
 NOT_FOUND = 404
 BACKFILL = IMPORT_EXPORT = True
 
-ENABLE_CACHE = os.environ.get("ENABLE_CACHE", "false").lower() in ("true", "1", "yes")
+
+class Settings:
+    """Simple settings class for runtime configuration."""
+
+    def __init__(self) -> None:
+        """Initialize settings from environment variables."""
+        self._enable_cache = os.environ.get("ENABLE_CACHE", "false").lower() in ("true", "1", "yes")
+
+    @property
+    def enable_cache(self) -> bool:
+        """Check if caching is enabled."""
+        return self._enable_cache
+
+
+# Global settings instance
+settings = Settings()
+
+# For backward compatibility
+ENABLE_CACHE = settings.enable_cache
+
 
 def cached(cache: Any, key: Any = None) -> Any:  # noqa: ANN401
-    """Decorator that respects the ENABLE_CACHE flag."""
+    """Decorator that respects the settings.enable_cache flag at runtime.
+
+    Always creates the cached function, but checks settings at call time
+    to determine whether to use the cache or call the original function.
+    """
     def decorator(func: Any) -> Any:  # noqa: ANN401
-        if ENABLE_CACHE:
-            return cachetools_cached(cache, key=key)(func)
-        return func
+        cached_func = cachetools_cached(cache, key=key)(func)
+
+        def wrapper(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            if settings.enable_cache:
+                return cached_func(*args, **kwargs)
+            return func(*args, **kwargs)
+
+        # Copy attributes from cached_func for compatibility
+        wrapper.cache = cache  # type: ignore[attr-defined]
+        return wrapper
     return decorator
 
 def set_cache_header(falcon_response: falcon.Response | None, duration: timedelta) -> None:

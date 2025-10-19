@@ -60,8 +60,6 @@ services:
         volumes:
             - ./data/api:/data/api
     client:
-        profiles:
-        - client
         build:
             context: ./
             dockerfile: ./client/Dockerfile
