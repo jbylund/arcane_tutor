@@ -196,6 +196,30 @@ make build_images     # Build Docker images (~30-60 seconds)
 make up              # Start PostgreSQL and API services
 ```
 
+#### Environment Variables
+
+The following environment variables can be configured:
+
+**API Service:**
+- `ENABLE_CACHE` - Enable/disable API response caching (default: `false`)
+  - Set to `true`, `1`, or `yes` to enable caching
+  - Improves performance for repeated queries
+  - Can be set in docker-compose.yml or exported before starting services
+
+**Client Service:**
+- `API_URL` - URL of the API service (default: `http://apiservice:8080`)
+- `QUERY_DELAY` - Delay between queries in seconds (default: `1.0`)
+- `BATCH_SIZE` - Number of queries before reporting statistics (default: `50`)
+
+Example with caching enabled:
+```bash
+# Set environment variable
+export ENABLE_CACHE=true
+
+# Start services
+make up
+```
+
 #### Local Development
 
 ```bash

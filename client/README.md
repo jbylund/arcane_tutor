@@ -21,8 +21,8 @@ The client uses a Docker Compose profile and must be explicitly enabled:
 # Start all services including the client
 docker compose --profile client up
 
-# Or start the client separately after services are running
-docker compose up -d  # Start API and database
+# Or start just the API and database first, then add the client
+docker compose up -d postgres apiservice  # Start API and database
 docker compose --profile client up client  # Start client in foreground
 
 # View client logs
