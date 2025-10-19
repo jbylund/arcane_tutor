@@ -210,4 +210,4 @@ type:creature cmc<=6 power>=8
 
 ---
 
-**Note**: Arcane Tutor uses card data from [Scryfall](https://scryfall.com). This is an independent open-source implementation. Card data is © Wizards of the Coast LLC.
+**About**: Learn more about [Arcane Tutor](about.md), our [legal compliance](LEGAL.md), and [data sources](LEGAL.md#data-sources).

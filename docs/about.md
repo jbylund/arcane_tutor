@@ -58,34 +58,17 @@ Arcane Tutor is not a clone of Scryfall. Here's how we're different:
 
 ## Technology Stack
 
-- **Backend**: Python 3.13+ with Falcon web framework
-- **Database**: PostgreSQL 17+ with optimized indexing
-- **Web Server**: bjoern WSGI server for performance
-- **Frontend**: Single-page HTML/JavaScript application
-- **Deployment**: Docker and Docker Compose support
+See [README.md](../README.md#code-organization) for detailed information about:
+- Backend architecture (Python, Falcon, bjoern)
+- Database design (PostgreSQL with optimized schema)
+- Frontend implementation
+- Deployment options (Docker)
 
 ## Data Sources & Attribution
 
-### Card Data
-We use card data from **Scryfall's official bulk data API** with proper attribution:
-- Data Provider: [Scryfall](https://scryfall.com)
-- Usage: Bulk data exports for card information
-- Compliance: We follow Scryfall's API Terms of Service
+Arcane Tutor uses card data from Scryfall's official bulk data API and serves card images via our own S3/CloudFront infrastructure. All Magic: The Gathering content is © Wizards of the Coast LLC and used under their Fan Content Policy.
 
-### Card Images
-Card images are processed from Scryfall's images and served via our own S3/CloudFront infrastructure:
-- Source: Derived from Scryfall's PNG images
-- Storage: Amazon S3 bucket
-- Delivery: CloudFront CDN at `d1hot9ps2xugbc.cloudfront.net`
-- Rights: All card artwork © Wizards of the Coast LLC
-
-### Intellectual Property
-All Magic: The Gathering card names, artwork, and game content are:
-- © Wizards of the Coast LLC
-- Used under [Wizards' Fan Content Policy](https://company.wizards.com/en/legal/fancontentpolicy)
-- Not approved/endorsed by Wizards of the Coast
-
-**Arcane Tutor is unofficial Fan Content permitted under the Fan Content Policy.**
+For complete details on data sources, attribution, and intellectual property, see [docs/LEGAL.md](LEGAL.md).
 
 ## Project Status
 
@@ -106,51 +89,30 @@ All Magic: The Gathering card names, artwork, and game content are:
 
 ## Legal & Compliance
 
-We take compliance seriously:
+We take compliance seriously with original code, proper attribution, and adherence to all relevant policies.
 
-- ✅ **Original Code**: All code written from scratch
-- ✅ **Proper Attribution**: Clear acknowledgment of Wizards and Scryfall
-- ✅ **Fan Content Policy**: Operating within Wizards' guidelines
-- ✅ **Terms of Service**: Documented in [docs/TERMS_OF_SERVICE.md](TERMS_OF_SERVICE.md)
-- ✅ **Privacy Policy**: Documented in [docs/PRIVACY_POLICY.md](PRIVACY_POLICY.md)
-- ✅ **Legal Documentation**: Comprehensive [docs/LEGAL.md](LEGAL.md)
-
-See [docs/COMPLIANCE_REVIEW.md](COMPLIANCE_REVIEW.md) for detailed compliance status.
+See our compliance documentation:
+- [LEGAL.md](LEGAL.md) - Data sources, attribution, and IP rights
+- [TERMS_OF_SERVICE.md](TERMS_OF_SERVICE.md) - User terms
+- [PRIVACY_POLICY.md](PRIVACY_POLICY.md) - Privacy practices
+- [COMPLIANCE_REVIEW.md](COMPLIANCE_REVIEW.md) - Detailed compliance status
 
 ## Contributing
 
-Arcane Tutor is community-driven and welcomes contributions:
-
-- **Report Issues**: [GitHub Issues](https://github.com/jbylund/arcane_tutor/issues)
-- **Submit Pull Requests**: Code improvements and bug fixes
-- **Documentation**: Help improve guides and examples
-- **Testing**: Add test cases and validation
-
-See [README.md](../README.md) for developer setup instructions.
+Arcane Tutor is community-driven and welcomes contributions. See [README.md](../README.md#developer-quick-start) for:
+- Developer setup instructions
+- How to report issues
+- Pull request guidelines
+- Testing procedures
 
 ## Acknowledgments
 
-### Scryfall
-We are deeply grateful to [Scryfall](https://scryfall.com) for:
-- Maintaining comprehensive card data
-- Providing public bulk data APIs
-- Supporting the Magic community
-- Setting the standard for card search
+We are deeply grateful to:
+- **[Scryfall](https://scryfall.com)** for comprehensive card data and public APIs
+- **Wizards of the Coast** for creating Magic: The Gathering and supporting fan content
+- **Open Source Community** for the tools that make this possible
 
-**Arcane Tutor is not affiliated with, endorsed by, or sponsored by Scryfall.** We are an independent open-source implementation.
-
-### Wizards of the Coast
-Magic: The Gathering™ is a trademark of Wizards of the Coast LLC. We thank Wizards for:
-- Creating the amazing game of Magic
-- Supporting fan content through their Fan Content Policy
-- Maintaining game data and rulings
-
-### Open Source Community
-Built with excellent open-source tools:
-- Python, PostgreSQL, Falcon
-- pyparsing for DSL parsing
-- Docker for deployment
-- And many other libraries (see requirements/)
+See [LEGAL.md](LEGAL.md#scryfall-attribution) for detailed attribution.
 
 ## Contact & Support
 
@@ -161,12 +123,7 @@ Built with excellent open-source tools:
 
 ## License
 
-Arcane Tutor code is licensed under the ISC License (see package.json).
-
-**Note**: This license applies only to our original code and does not grant rights to:
-- Wizards of the Coast's intellectual property
-- Scryfall's data or branding
-- Third-party fonts or assets
+Arcane Tutor code is licensed under the ISC License (see package.json). This license applies only to our original code - see [LEGAL.md](LEGAL.md#license) for details on third-party intellectual property.
 
 ## Future Vision
 
