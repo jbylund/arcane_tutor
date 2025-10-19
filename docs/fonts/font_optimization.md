@@ -4,7 +4,8 @@ This document describes how to optimize the Mana font for faster loading and bet
 
 ## Overview
 
-The Mana font is used to display Magic: The Gathering mana symbols in the application. The full font is ~200-300KB and contains hundreds of glyphs for set symbols, planeswalker loyalty, and other symbols we don't use.
+The Mana font is used to display Magic: The Gathering mana symbols in the application.
+The full font is ~200-300KB and contains hundreds of glyphs for set symbols, planeswalker loyalty, and other symbols we don't use.
 
 By subsetting the font to include only the 64 mana symbols we actually use, we can reduce the font size to ~20-40KB, significantly improving:
 - Initial page load time
@@ -97,7 +98,8 @@ s3://your-bucket/cdn/fonts/mana/mana-subset.woff
 s3://your-bucket/cdn/fonts/mana/mana-subset.css
 ```
 
-**CORS Configuration**: The script sets up CORS rules to allow font loading from any origin. This is essential for fonts served from CloudFront/S3.
+**CORS Configuration**: The script sets up CORS rules to allow font loading from any origin.
+This is essential for fonts served from CloudFront/S3.
 
 ### 3. Update index.html
 
@@ -161,25 +163,26 @@ After implementing this optimization, you should see:
 If you need to add new mana symbols in the future:
 
 1. Add the symbol classes to the `USED_SYMBOLS` list in `scripts/subset_mana_font.py`
-2. Add the corresponding CSS in the `generate_css()` function
-3. Re-run the subsetting script
-4. Upload the new files to CloudFront
-5. Update the version number in filenames if needed to bust caches
+1. Add the corresponding CSS in the `generate_css()` function
+1. Re-run the subsetting script
+1. Upload the new files to CloudFront
+1. Update the version number in filenames if needed to bust caches
 
 ## Testing
 
 After deployment, verify:
 1. Mana symbols display correctly on the page
-2. Network tab shows the subsetted font loading from CloudFront
-3. Font size is significantly reduced
-4. Lighthouse shows improved performance score
-5. No FOIT (Flash of Invisible Text) occurs
+1. Network tab shows the subsetted font loading from CloudFront
+1. Font size is significantly reduced
+1. Lighthouse shows improved performance score
+1. No FOIT (Flash of Invisible Text) occurs
 
 ## Troubleshooting
 
-**CORS Missing / Font blocked**: This is the most common issue. The script configures CORS automatically, but if you uploaded manually:
+**CORS Missing / Font blocked**: This is the most common issue.
+The script configures CORS automatically, but if you uploaded manually:
 1. Re-run the script with `--s3-bucket` to configure CORS automatically
-2. Or manually configure CORS on your S3 bucket:
+1. Or manually configure CORS on your S3 bucket:
    - Go to S3 bucket → Permissions → CORS
    - Add this configuration:
    ```json
@@ -193,15 +196,19 @@ After deployment, verify:
      }
    ]
    ```
-3. If using CloudFront, ensure it forwards the `Origin` header to S3
+1. If using CloudFront, ensure it forwards the `Origin` header to S3
 
-**Symbols not displaying**: Check the browser console for font loading errors. Verify the CDN URL is correct and files are accessible.
+**Symbols not displaying**: Check the browser console for font loading errors.
+Verify the CDN URL is correct and files are accessible.
 
-**Font looks different**: Ensure you're using the same version of the Mana font. Update the `MANA_FONT_VERSION` in the script if needed.
+**Font looks different**: Ensure you're using the same version of the Mana font.
+Update the `MANA_FONT_VERSION` in the script if needed.
 
-**Large file size**: Verify the subsetting actually worked by checking the file sizes. The WOFF2 file should be under 50KB.
+**Large file size**: Verify the subsetting actually worked by checking the file sizes.
+The WOFF2 file should be under 50KB.
 
-**403 Forbidden**: Ensure your S3 bucket policy allows public read access for the files. The bucket should have a policy like:
+**403 Forbidden**: Ensure your S3 bucket policy allows public read access for the files.
+The bucket should have a policy like:
 ```json
 {
   "Version": "2012-10-17",

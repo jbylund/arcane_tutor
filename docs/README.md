@@ -70,9 +70,9 @@ Technical implementation details and development documentation.
 
 When adding new documentation:
 1. Place it in the appropriate topical directory
-2. Update this README with a link to the new document
-3. Use relative links within documentation
-4. Follow existing naming conventions (lowercase with underscores)
+1. Update this README with a link to the new document
+1. Use relative links within documentation
+1. Follow existing naming conventions (lowercase with underscores)
 
 ---
 
