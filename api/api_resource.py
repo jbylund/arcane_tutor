@@ -30,7 +30,7 @@ from psycopg import Connection, Cursor
 from api.card_processing import preprocess_card
 from api.enums import CardOrdering, PreferOrder, SortDirection, UniqueOn
 from api.parsing import generate_sql_query, parse_scryfall_query
-from api.parsing.scryfall_nodes import extract_frame_data_from_raw_card, mana_cost_str_to_dict
+from api.parsing.card_query_nodes import extract_frame_data_from_raw_card, mana_cost_str_to_dict
 from api.tagger_client import TaggerClient
 from api.utils import db_utils, error_monitoring, multiprocessing_utils
 from api.utils.timer import Timer

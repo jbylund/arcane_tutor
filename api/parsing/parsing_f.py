@@ -25,6 +25,7 @@ from pyparsing import (
     oneOf,
 )
 
+from api.parsing.card_query_nodes import to_card_query_ast
 from api.parsing.db_info import (
     COLOR_ATTRIBUTES,
     COLOR_NAME_TO_CODE,
@@ -50,7 +51,6 @@ from api.parsing.nodes import (
     RegexValueNode,
     StringValueNode,
 )
-from api.parsing.scryfall_nodes import to_scryfall_ast
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -507,7 +507,7 @@ def parse_scryfall_query(query: str) -> Query:
         A Scryfall-specific Query AST.
     """
     generic_query = parse_search_query(query)
-    return to_scryfall_ast(generic_query)
+    return to_card_query_ast(generic_query)
 
 @cachetools.cached(cache={})
 def get_parse_expr() -> ParserElement:  # noqa: C901, PLR0915
@@ -909,6 +909,6 @@ def is_operator(token: str) -> bool:
 
 def generate_sql_query(parsed_query: Query) -> tuple[str, dict]:
     """Generate a SQL WHERE clause string from a parsed Query AST."""
-    scryfall_ast = to_scryfall_ast(parsed_query)
+    scryfall_ast = to_card_query_ast(parsed_query)
     query_context = {}
     return scryfall_ast.to_sql(query_context), query_context

@@ -5,7 +5,7 @@ import uuid
 from typing import Any
 
 from api.card_processing import preprocess_card
-from api.parsing.scryfall_nodes import extract_frame_data_from_raw_card
+from api.parsing.card_query_nodes import extract_frame_data_from_raw_card
 
 
 def create_test_card(  # noqa: PLR0913

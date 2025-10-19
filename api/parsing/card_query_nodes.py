@@ -1,4 +1,4 @@
-"""Scryfall-specific AST nodes and query processing."""
+"""Card-specific AST nodes and query processing."""
 
 from __future__ import annotations
 
@@ -100,11 +100,11 @@ def get_rarity_number(rarity: str) -> int:
     return int_val
 
 
-class ScryfallAttributeNode(AttributeNode):
-    """Scryfall-specific attribute node with field mapping."""
+class CardAttributeNode(AttributeNode):
+    """Card-specific attribute node with field mapping."""
 
-    def __init__(self: ScryfallAttributeNode, attribute_name: str) -> None:
-        """Initialize a Scryfall attribute node.
+    def __init__(self: CardAttributeNode, attribute_name: str) -> None:
+        """Initialize a card attribute node.
 
         Args:
             attribute_name: The search attribute name to map to database column.
@@ -114,8 +114,8 @@ class ScryfallAttributeNode(AttributeNode):
         db_column_name = SEARCH_NAME_TO_DB_NAME.get(attribute_name.lower(), attribute_name)
         super().__init__(db_column_name)
 
-    def to_sql(self: ScryfallAttributeNode, context: dict) -> str:
-        """Generate SQL for Scryfall attribute node.
+    def to_sql(self: CardAttributeNode, context: dict) -> str:
+        """Generate SQL for card attribute node.
 
         Args:
             context: SQL parameter context.
@@ -323,11 +323,11 @@ def calculate_devotion(mana_cost_str: str) -> dict:
     }
 
 
-class ScryfallBinaryOperatorNode(BinaryOperatorNode):
-    """Scryfall-specific binary operator node with custom SQL generation."""
+class CardBinaryOperatorNode(BinaryOperatorNode):
+    """Card-specific binary operator node with custom SQL generation."""
 
-    def to_sql(self: ScryfallBinaryOperatorNode, context: dict) -> str:
-        """Generate SQL for Scryfall-specific binary operations.
+    def to_sql(self: CardBinaryOperatorNode, context: dict) -> str:
+        """Generate SQL for card-specific binary operations.
 
         Args:
             context: SQL parameter context (unused).
@@ -335,14 +335,14 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         Returns:
             SQL string for the binary operation.
         """
-        if isinstance(self.lhs, ScryfallAttributeNode):
-            return self._handle_scryfall_attribute(context)
+        if isinstance(self.lhs, CardAttributeNode):
+            return self._handle_card_attribute(context)
 
         # Fallback: use default logic
         return super().to_sql(context)
 
-    def _handle_scryfall_attribute(self: ScryfallBinaryOperatorNode, context: dict) -> str:
-        """Handle Scryfall attribute-specific SQL generation."""
+    def _handle_card_attribute(self: CardBinaryOperatorNode, context: dict) -> str:
+        """Handle card attribute-specific SQL generation."""
         attr = self.lhs.attribute_name
 
         # Special routing for collector numbers based on operator
@@ -395,7 +395,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         msg = f"Unknown field type: {field_type}"
         raise NotImplementedError(msg)
 
-    def _handle_colon_operator(self: ScryfallBinaryOperatorNode, context: dict, field_type: str, lhs_sql: str, attr: str) -> str:
+    def _handle_colon_operator(self: CardBinaryOperatorNode, context: dict, field_type: str, lhs_sql: str, attr: str) -> str:
         """Handle colon operator for different field types."""
         if field_type == FieldType.TEXT:
             # Handle fields that need exact matching instead of pattern matching
@@ -414,7 +414,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         msg = f"Unknown field type: {field_type}"
         raise NotImplementedError(msg)
 
-    def _handle_collector_number(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+    def _handle_collector_number(self: CardBinaryOperatorNode, context: dict) -> str:
         """Handle collector number routing based on operator type.
 
         Routes to appropriate column based on operator:
@@ -450,7 +450,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
             self.operator = "="
         return super().to_sql(context)
 
-    def _handle_mana_cost_comparison(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+    def _handle_mana_cost_comparison(self: CardBinaryOperatorNode, context: dict) -> str:
         """Handle mana cost comparisons with approximate matching."""
         attr = self.lhs.attribute_name
         mana_cost_str = self.rhs.value
@@ -476,7 +476,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         # Fallback to text pattern matching
         return self._handle_text_field_pattern_matching(context, self.lhs.to_sql(context))
 
-    def _handle_mana_cost_approximate_comparison(self: ScryfallBinaryOperatorNode, context: dict, mana_cost_str: str) -> str:
+    def _handle_mana_cost_approximate_comparison(self: CardBinaryOperatorNode, context: dict, mana_cost_str: str) -> str:
         """Handle approximate mana cost comparisons using containment and CMC."""
         # Convert the query mana cost to dict for containment checking
         query_mana_dict = mana_cost_str_to_dict(mana_cost_str)
@@ -521,7 +521,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         msg = f"Unsupported mana cost operator: {self.operator}"
         raise ValueError(msg)
 
-    def _handle_date_search(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+    def _handle_date_search(self: CardBinaryOperatorNode, context: dict) -> str:
         """Handle date search queries.
 
         For 'date:' searches, compares against the full released_at date.
@@ -544,7 +544,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         context[pname] = search_value
         return f"(card.released_at {operator} %({pname})s)"
 
-    def _handle_year_search(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+    def _handle_year_search(self: CardBinaryOperatorNode, context: dict) -> str:
         """Handle year search queries.
 
         For 'year:' searches, converts to date range queries for better index usage.
@@ -610,7 +610,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         msg = f"Unsupported operator for year search: {operator}"
         raise ValueError(msg)
 
-    def _handle_text_field_pattern_matching(self: ScryfallBinaryOperatorNode, context: dict, lhs_sql: str) -> str:
+    def _handle_text_field_pattern_matching(self: CardBinaryOperatorNode, context: dict, lhs_sql: str) -> str:
         """Handle pattern matching for regular text fields."""
         # Check if RHS is a regex pattern
         if isinstance(self.rhs, RegexValueNode):
@@ -656,7 +656,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
     query ?& col AND not(col ?& query) # as array
     """
 
-    def _handle_jsonb_object(self: ScryfallBinaryOperatorNode, context: dict) -> str:  # noqa: PLR0912
+    def _handle_jsonb_object(self: CardBinaryOperatorNode, context: dict) -> str:  # noqa: PLR0912
         # Produce the query as a jsonb object
         lhs_sql = self.lhs.to_sql(context)
         attr = self.lhs.attribute_name
@@ -720,7 +720,7 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         msg = f"Unknown operator: {self.operator}"
         raise ValueError(msg)
 
-    def _handle_jsonb_array(self: ScryfallBinaryOperatorNode, context: dict) -> str:
+    def _handle_jsonb_array(self: CardBinaryOperatorNode, context: dict) -> str:
         # TODO: this should produce the query as an array, not jsonb
         rhs_val = self.rhs.value.strip().title()
         if self.lhs.attribute_name.lower() in ("card_types", "card_subtypes", "type"):
@@ -746,35 +746,36 @@ class ScryfallBinaryOperatorNode(BinaryOperatorNode):
         raise ValueError(msg)
 
 
-def to_scryfall_ast(node: QueryNode) -> QueryNode:
-    """Convert a generic query node to a Scryfall-specific AST node.
+def to_card_query_ast(node: QueryNode) -> QueryNode:
+    """Convert a generic query node to a card-specific AST node.
 
     Args:
         node: The query node to convert.
 
     Returns:
-        The corresponding Scryfall-specific node.
+        The corresponding card-specific node.
     """
-    # If already a Scryfall AST node, return as-is
-    if isinstance(node, ScryfallBinaryOperatorNode):
+    # If already a card query AST node, return as-is
+    if isinstance(node, CardBinaryOperatorNode):
         return node
-    if isinstance(node, ScryfallAttributeNode):
+    if isinstance(node, CardAttributeNode):
         return node
 
     if isinstance(node, BinaryOperatorNode):
-        return ScryfallBinaryOperatorNode(
-            to_scryfall_ast(node.lhs),
+        return CardBinaryOperatorNode(
+            to_card_query_ast(node.lhs),
             node.operator,
-            to_scryfall_ast(node.rhs),
+            to_card_query_ast(node.rhs),
         )
     if isinstance(node, AttributeNode):
-        return ScryfallAttributeNode(node.attribute_name)
+        return CardAttributeNode(node.attribute_name)
     if isinstance(node, AndNode):
-        return AndNode([to_scryfall_ast(op) for op in node.operands])
+        return AndNode([to_card_query_ast(op) for op in node.operands])
     if isinstance(node, OrNode):
-        return OrNode([to_scryfall_ast(op) for op in node.operands])
+        return OrNode([to_card_query_ast(op) for op in node.operands])
     if isinstance(node, NotNode):
-        return NotNode(to_scryfall_ast(node.operand))
+        return NotNode(to_card_query_ast(node.operand))
     if isinstance(node, Query):
-        return Query(to_scryfall_ast(node.root))
+        return Query(to_card_query_ast(node.root))
     return node
+

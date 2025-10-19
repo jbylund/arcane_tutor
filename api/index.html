@@ -7,14 +7,14 @@
       name="description"
       content="Search for Magic: The Gathering cards. Find MTG cards by name, type, text, mana cost, and more. Open source Scryfall implementation."
     />
-    <meta name="theme-color" content="#667eea" />
-    <meta property="og:title" content="Card Search - Scryfall OS" />
+    <meta name="theme-color" content="#2b8fdf" />
+    <meta property="og:title" content="Arcane Tutor - Magic: The Gathering Card Search" />
     <meta
       property="og:description"
       content="Search for Magic: The Gathering cards by name, type, text, mana cost, and more."
     />
     <meta property="og:type" content="website" />
-    <title>Card Search</title>
+    <title>Arcane Tutor - Magic: The Gathering Card Search</title>
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <link rel="preconnect" href="https://d1hot9ps2xugbc.cloudfront.net" />
     <link
@@ -62,22 +62,17 @@
     <style>
       :root {
         /* Default colors (fallback) */
-        --color-primary: #667eea;
-        --color-secondary: #764ba2;
+        --color-primary: #2b8fdf;
+        --color-secondary: #1a6bb5;
       }
 
       [data-theme='light'] {
-        /* Light Mode Colors */
-        --color-primary: #667eea;
-        --color-secondary: #764ba2;
-        --gradient-start-color: #8432e2;
-        --gradient-end-color: #4083ff;
-        --color-background: linear-gradient(
-          to bottom,
-          var(--gradient-start-color) 0%,
-          var(--gradient-end-color) 200vh,
-          var(--gradient-end-color) 100%
-        );
+        /* Light Mode Colors - Blue shades inspired by Tolarian Academy */
+        --color-primary: #2b8fdf;
+        --color-secondary: #1a6bb5;
+        --gradient-start-color: #4da6e8;
+        --gradient-end-color: #1e7dd4;
+        --color-background: linear-gradient(to bottom, var(--gradient-start-color) 0%, var(--gradient-end-color) 100%);
         --color-text-primary: #212529;
         --color-text-secondary: #6c757d;
         --color-text-inverted: #ffffff;
@@ -104,17 +99,12 @@
       }
 
       [data-theme='dark'] {
-        /* Dark Mode Colors */
-        --color-primary: #667eea;
-        --color-secondary: #764ba2;
-        --gradient-start-color: #1d1c25;
-        --gradient-end-color: #431e3f;
-        --color-background: linear-gradient(
-          to bottom,
-          var(--gradient-start-color) 0%,
-          var(--gradient-end-color) 200vh,
-          var(--gradient-end-color) 100%
-        );
+        /* Dark Mode Colors - Blue shades inspired by Tolarian Academy */
+        --color-primary: #3da8f5;
+        --color-secondary: #2591e6;
+        --gradient-start-color: #0d1829;
+        --gradient-end-color: #1a3a5c;
+        --color-background: linear-gradient(to bottom, var(--gradient-start-color) 0%, var(--gradient-end-color) 100%);
         --color-text-primary: #cecece;
         --color-text-secondary: #a8a8a8;
         --color-text-inverted: #bbbbbb;
@@ -149,19 +139,28 @@
       html {
         overflow-x: hidden;
         overscroll-behavior-y: none;
+        height: 100%;
       }
 
       body {
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        background: var(--color-background);
+        background-color: var(--gradient-end-color);
+        background-image: var(--color-background);
+        background-repeat: no-repeat;
+        background-size: 100% 200vh;
         min-height: 100vh;
         padding: 1em;
         overscroll-behavior-y: none;
+        display: flex;
+        flex-direction: column;
       }
 
       .container {
         max-width: 98vw;
         margin: 0 auto;
+        flex: 1 0 auto;
+        display: flex;
+        flex-direction: column;
       }
 
       .header {
@@ -592,6 +591,52 @@
         box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
       }
 
+      .footer {
+        margin-top: auto;
+        padding: 30px 20px;
+        text-align: center;
+        border-top: 1px solid rgba(255, 255, 255, 0.2);
+        color: var(--color-text-inverted);
+        flex-shrink: 0;
+      }
+
+      .footer-legal {
+        font-size: 0.85em;
+        line-height: 1.6;
+        margin-bottom: 12px;
+      }
+
+      .footer-attribution {
+        font-size: 0.85em;
+        line-height: 1.6;
+        margin-bottom: 12px;
+      }
+
+      .footer-attribution a {
+        color: var(--color-text-white);
+        text-decoration: underline;
+        font-weight: 500;
+      }
+
+      .footer-attribution a:hover {
+        text-decoration: underline;
+      }
+
+      .footer-links {
+        font-size: 0.85em;
+        margin-top: 15px;
+      }
+
+      .footer-links a {
+        color: var(--color-text-white);
+        text-decoration: underline;
+        padding: 0 8px;
+      }
+
+      .footer-links a:hover {
+        text-decoration: underline;
+      }
+
       @media (max-width: 1200px) {
         .container {
           max-width: 98vw;
@@ -628,6 +673,16 @@
           flex: 1;
           max-width: 140px;
           min-width: 90px;
+        }
+
+        .footer {
+          margin-top: 40px;
+          padding: 20px 10px;
+        }
+
+        .footer-legal,
+        .footer-attribution,
+        .footer-links {
           padding: 12px 15px;
           font-size: 0.95rem;
         }
@@ -1796,7 +1851,7 @@
         <button class="theme-toggle" id="themeToggle" aria-label="Toggle theme">
           <span id="themeIcon">☀️</span>
         </button>
-        <h1>Card Search</h1>
+        <h1>Arcane Tutor</h1>
         <p>Search for Magic: The Gathering cards</p>
       </div>
 
@@ -1847,6 +1902,40 @@
       <div id="results" class="results-container"></div>
       <div id="error" class="error-message" style="display: none"></div>
       <div id="noResults" class="no-results" style="display: none">No cards found matching your search.</div>
+
+      <footer class="footer">
+        <p class="footer-legal">
+          Magic: The Gathering™ is a trademark of Wizards of the Coast LLC, a subsidiary of Hasbro, Inc.
+          <br />
+          © Wizards of the Coast LLC. Not approved/endorsed by Wizards of the Coast.
+        </p>
+        <p class="footer-attribution">
+          Card data provided by <a href="https://scryfall.com" target="_blank" rel="noopener">Scryfall</a>.
+          <br />
+          Arcane Tutor is an independent open-source project, not affiliated with Scryfall.
+        </p>
+        <p class="footer-links">
+          <a href="https://github.com/jbylund/arcane_tutor" target="_blank" rel="noopener">GitHub</a>
+          ·
+          <a
+            href="https://github.com/jbylund/arcane_tutor/blob/main/docs/terms_of_service.md"
+            target="_blank"
+            rel="noopener"
+            >Terms of Service</a
+          >
+          ·
+          <a
+            href="https://github.com/jbylund/arcane_tutor/blob/main/docs/privacy_policy.md"
+            target="_blank"
+            rel="noopener"
+            >Privacy Policy</a
+          >
+          ·
+          <a href="https://company.wizards.com/en/legal/fancontentpolicy" target="_blank" rel="noopener"
+            >Wizards Fan Content Policy</a
+          >
+        </p>
+      </footer>
     </div>
 
     <!-- Modal for card details -->
