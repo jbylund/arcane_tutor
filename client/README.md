@@ -15,15 +15,14 @@ The client query runner serves several purposes:
 
 ### With Docker Compose (Recommended)
 
-The client uses a Docker Compose profile and must be explicitly enabled:
+The client runs automatically when you start all services:
 
 ```bash
 # Start all services including the client
-docker compose --profile client up
+docker compose up
 
-# Or start the client separately after services are running
-docker compose up -d  # Start API and database
-docker compose --profile client up client  # Start client in foreground
+# Or start in detached mode
+docker compose up -d
 
 # View client logs
 docker logs -f scryfallclient

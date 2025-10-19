@@ -32,6 +32,7 @@ from api.card_processing import preprocess_card
 from api.enums import CardOrdering, PreferOrder, SortDirection, UniqueOn
 from api.parsing import generate_sql_query, parse_scryfall_query
 from api.parsing.card_query_nodes import extract_frame_data_from_raw_card, mana_cost_str_to_dict
+from api.settings import settings
 from api.tagger_client import TaggerClient
 from api.utils import db_utils, error_monitoring, multiprocessing_utils
 from api.utils.timer import Timer
@@ -50,14 +51,24 @@ logger = logging.getLogger(__name__)
 NOT_FOUND = 404
 BACKFILL = IMPORT_EXPORT = True
 
-ENABLE_CACHE = False
 
-def cached(cache, key=None):
-    """Decorator that respects the ENABLE_CACHE flag."""
-    def decorator(func):
-        if ENABLE_CACHE:
-            return cachetools_cached(cache, key=key)(func)
-        return func
+def cached(cache: Any, key: Any = None) -> Any:  # noqa: ANN401
+    """Decorator that respects the settings.enable_cache flag at runtime.
+
+    Always creates the cached function, but checks settings at call time
+    to determine whether to use the cache or call the original function.
+    """
+    def decorator(func: Any) -> Any:  # noqa: ANN401
+        cached_func = cachetools_cached(cache, key=key)(func)
+
+        def wrapper(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            if settings.enable_cache:
+                return cached_func(*args, **kwargs)
+            return func(*args, **kwargs)
+
+        # Copy attributes from cached_func for compatibility
+        wrapper.cache = cache  # type: ignore[attr-defined]
+        return wrapper
     return decorator
 
 def set_cache_header(falcon_response: falcon.Response | None, duration: timedelta) -> None:
@@ -122,7 +133,7 @@ class APIResource:
                 self.action_map[method_name] = make_type_converting_wrapper(method)
         self.action_map["index"] = make_type_converting_wrapper(self.index_html)
         self._query_cache = LRUCache(maxsize=1_000)
-        if not ENABLE_CACHE:
+        if not settings.enable_cache:
             self._query_cache = TTLCache(maxsize=1, ttl=0)
         self._session = requests.Session()
         self._import_guard: LockType = import_guard

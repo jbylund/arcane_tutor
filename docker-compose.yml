@@ -51,6 +51,7 @@ services:
         - PGPASSWORD=${XPGPASSWORD}
         - PGUSER=${XPGUSER}
         - PYTHONUNBUFFERED=true
+        - ENABLE_CACHE=${ENABLE_CACHE:-true}
         external_links:
         - scryfallpostgres:${DOCKER_POSTGRES_HOST}
         ports:

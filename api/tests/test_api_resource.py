@@ -12,6 +12,7 @@ import pytest
 import requests
 
 from api.api_resource import APIResource
+from api.settings import settings
 
 
 def create_test_card(  # noqa: PLR0913
@@ -465,9 +466,18 @@ class TestAPIResourceCaching(unittest.TestCase):
 
     def setUp(self) -> None:
         """Set up test fixtures."""
+        # Store original cache setting
+        self.original_cache_setting = settings.enable_cache
+        # Enable caching for these tests
+        settings.enable_cache = True
+        # Now create the APIResource with caching enabled
         self.mock_conn_pool = MagicMock()
         self.api_resource = APIResource()
         self.api_resource._conn_pool = self.mock_conn_pool
+
+    def tearDown(self) -> None:
+        """Restore original cache setting."""
+        settings.enable_cache = self.original_cache_setting
 
     def test_query_cache_clears_after_successful_load(self) -> None:
         """Test that query cache clears after successful card loading."""
