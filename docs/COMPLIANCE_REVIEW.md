@@ -284,6 +284,7 @@ Arcane Tutor has achieved excellent legal compliance and differentiation from Sc
 ## Quick Reference Links
 
 For detailed compliance information, see:
+- **[LEGAL_COMPLIANCE_SUMMARY.md](LEGAL_COMPLIANCE_SUMMARY.md)** - Quick overview and status
 - [LEGAL.md](LEGAL.md) - Data sources, attribution, IP rights
 - [TERMS_OF_SERVICE.md](TERMS_OF_SERVICE.md) - User terms
 - [PRIVACY_POLICY.md](PRIVACY_POLICY.md) - Privacy practices

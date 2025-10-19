@@ -312,10 +312,11 @@ All Magic: The Gathering card names, artwork, and game content are © Wizards of
 For complete information about data sources, intellectual property attribution, and compliance with relevant policies, see [docs/LEGAL.md](docs/LEGAL.md).
 
 **Key Compliance Documents:**
+- **[Legal Compliance Summary](docs/LEGAL_COMPLIANCE_SUMMARY.md)** - Quick status overview (93% complete - excellent standing)
 - **[Legal & Data Sources](docs/LEGAL.md)** - Attribution, IP rights, data sources
 - **[Terms of Service](docs/TERMS_OF_SERVICE.md)** - User agreement and service terms
 - **[Privacy Policy](docs/PRIVACY_POLICY.md)** - Data collection and privacy practices
-- **[Compliance Review](docs/COMPLIANCE_REVIEW.md)** - Detailed compliance checklist status (93% complete)
+- **[Compliance Review](docs/COMPLIANCE_REVIEW.md)** - Detailed compliance checklist status
 
 **Compliance Status**: ✅ 93% Complete (42/45 items) - Excellent standing with all critical items addressed.
 
