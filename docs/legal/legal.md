@@ -5,11 +5,11 @@
 Arcane Tutor is an open-source Magic: The Gathering card search engine that respects intellectual property rights and complies with relevant policies and guidelines.
 
 **Related Documentation:**
-- **[legal_compliance_summary.md](legal_compliance_summary.md)** - Quick overview and recommendations
-- [terms_of_service.md](terms_of_service.md) - User agreement and service terms
-- [privacy_policy.md](privacy_policy.md) - Data collection and privacy practices
-- [compliance_review.md](compliance_review.md) - Detailed compliance status and checklist
-- [about.md](about.md) - Project mission and how we differ from Scryfall
+- **[legal_compliance_summary.md](../legal/legal_compliance_summary.md)** - Quick overview and recommendations
+- [terms_of_service.md](../user/terms_of_service.md) - User agreement and service terms
+- [privacy_policy.md](../user/privacy_policy.md) - Data collection and privacy practices
+- [compliance_review.md](../legal/compliance_review.md) - Detailed compliance status and checklist
+- [about.md](../user/about.md) - Project mission and how we differ from Scryfall
 
 ## Data Sources
 

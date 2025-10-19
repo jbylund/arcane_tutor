@@ -14,7 +14,7 @@ Arcane Tutor is a free, open-source Magic: The Gathering card search engine. Thi
 - **Not affiliated with Wizards of the Coast**: This is unofficial Fan Content permitted under the Wizards of the Coast Fan Content Policy
 - **Not affiliated with Scryfall**: We are an independent open-source implementation using publicly available data
 
-For more details about our project and how we differ from Scryfall, see [about.md](about.md).
+For more details about our project and how we differ from Scryfall, see [about.md](../user/about.md).
 
 ## 3. Intellectual Property
 
@@ -42,7 +42,7 @@ You agree to use the Service only for lawful purposes. You may not:
 
 ## 5. No User Accounts
 
-The Service does not require or offer user accounts. We do not collect or store personal user information beyond what is necessary for the Service to function (see our [Privacy Policy](privacy_policy.md) for details).
+The Service does not require or offer user accounts. We do not collect or store personal user information beyond what is necessary for the Service to function (see our [Privacy Policy](../user/privacy_policy.md) for details).
 
 ## 6. Service Availability
 
@@ -103,14 +103,14 @@ If any provision of these Terms is found to be invalid or unenforceable, the rem
 
 ## 15. Entire Agreement
 
-These Terms, together with our [Privacy Policy](privacy_policy.md) and [Legal Compliance Documentation](legal.md), constitute the entire agreement between you and Arcane Tutor regarding the Service.
+These Terms, together with our [Privacy Policy](../user/privacy_policy.md) and [Legal Compliance Documentation](../legal/legal.md), constitute the entire agreement between you and Arcane Tutor regarding the Service.
 
 ## 16. Contact
 
 For questions about these Terms or the Service, please:
 
 - Open an issue on our [GitHub repository](https://github.com/jbylund/arcane_tutor/issues)
-- Review our [Legal Compliance Documentation](legal.md)
+- Review our [Legal Compliance Documentation](../legal/legal.md)
 
 ## 17. Acknowledgments
 
@@ -120,7 +120,7 @@ We acknowledge and respect:
 - **Scryfall** for providing comprehensive card data APIs
 - The open-source community for their contributions
 
-For more information about our data sources and attribution, see [legal.md](legal.md).
+For more information about our data sources and attribution, see [legal.md](../legal/legal.md).
 
 ---
 
