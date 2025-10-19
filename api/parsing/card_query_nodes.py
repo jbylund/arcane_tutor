@@ -180,7 +180,7 @@ def extract_frame_data_from_raw_card(raw_card: dict) -> dict[str, bool]:
     following the same pattern as _preprocess_card method.
 
     Args:
-        raw_card: Raw card dictionary from card data API.
+        raw_card: Raw card dictionary from Scryfall API.
 
     Returns:
         Dictionary mapping frame data keys to True.
