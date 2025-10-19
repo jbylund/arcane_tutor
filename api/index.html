@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="Search for Magic: The Gathering cards. Find MTG cards by name, type, text, mana cost, and more. Open source Scryfall implementation."
+      content="Search for Magic: The Gathering cards. Open source MTG card search engine. Find cards by name, type, text, mana cost, and more. Not affiliated with Scryfall or Wizards of the Coast."
     />
     <meta name="theme-color" content="#667eea" />
     <meta property="og:title" content="Card Search - Scryfall OS" />
@@ -709,6 +709,81 @@
           min-width: 45px;
           height: 42px;
           font-size: 1rem;
+        }
+      }
+
+      /* Footer styles */
+      .footer {
+        max-width: 98vw;
+        margin: 60px auto 20px;
+        padding: 30px 20px;
+        border-top: 1px solid var(--color-border-light);
+        color: var(--color-text-secondary);
+        font-size: 0.85rem;
+        line-height: 1.6;
+      }
+
+      .footer-content {
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+      }
+
+      .footer-section {
+        margin-bottom: 10px;
+      }
+
+      .footer-section h3 {
+        font-size: 0.95rem;
+        margin: 0 0 10px 0;
+        color: var(--color-text-primary);
+        font-weight: 600;
+      }
+
+      .footer-section p {
+        margin: 5px 0;
+        color: var(--color-text-secondary);
+      }
+
+      .footer-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 15px;
+        margin-top: 10px;
+      }
+
+      .footer-links a {
+        color: var(--color-primary);
+        text-decoration: none;
+        transition: color 0.2s;
+      }
+
+      .footer-links a:hover {
+        color: var(--color-secondary);
+        text-decoration: underline;
+      }
+
+      .footer-legal {
+        font-size: 0.8rem;
+        color: var(--color-text-lighter);
+        margin-top: 20px;
+        padding-top: 20px;
+        border-top: 1px solid var(--color-border-light);
+      }
+
+      .footer-legal p {
+        margin: 8px 0;
+      }
+
+      @media (max-width: 768px) {
+        .footer {
+          padding: 20px 10px;
+          font-size: 0.8rem;
+        }
+
+        .footer-links {
+          flex-direction: column;
+          gap: 10px;
         }
       }
     </style>
@@ -1848,6 +1923,56 @@
       <div id="error" class="error-message" style="display: none"></div>
       <div id="noResults" class="no-results" style="display: none">No cards found matching your search.</div>
     </div>
+
+    <!-- Footer with legal notices -->
+    <footer class="footer">
+      <div class="footer-content">
+        <div class="footer-section">
+          <h3>About Scryfall OS</h3>
+          <p>
+            An open-source Magic: The Gathering card search engine. Not affiliated with Scryfall LLC or Wizards of the
+            Coast LLC.
+          </p>
+          <div class="footer-links">
+            <a href="https://github.com/jbylund/arcane_tutor" target="_blank" rel="noopener">GitHub Repository</a>
+            <a href="https://github.com/jbylund/arcane_tutor/blob/main/LEGAL.md" target="_blank" rel="noopener"
+              >Legal Information</a
+            >
+            <a
+              href="https://github.com/jbylund/arcane_tutor/blob/main/TERMS_OF_SERVICE.md"
+              target="_blank"
+              rel="noopener"
+              >Terms of Service</a
+            >
+            <a href="https://github.com/jbylund/arcane_tutor/blob/main/PRIVACY_POLICY.md" target="_blank" rel="noopener"
+              >Privacy Policy</a
+            >
+          </div>
+        </div>
+
+        <div class="footer-legal">
+          <p>
+            <strong>Wizards of the Coast Notice:</strong> Wizards of the Coast, Magic: The Gathering, and their logos
+            are trademarks of Wizards of the Coast LLC in the United States and other countries. © 1993-2025 Wizards.
+            All Rights Reserved.
+          </p>
+          <p>
+            Scryfall OS is unofficial Fan Content permitted under the Wizards of the Coast Fan Content Policy. Not
+            approved/endorsed by Wizards. Portions of the materials used are property of Wizards of the Coast LLC.
+            ©Wizards of the Coast LLC.
+          </p>
+          <p>
+            <strong>Scryfall Notice:</strong> This project uses data provided by
+            <a href="https://scryfall.com/" target="_blank" rel="noopener">Scryfall LLC</a>. We are not affiliated with
+            Scryfall LLC. Data is used in accordance with their terms of service.
+          </p>
+          <p>
+            <strong>Trademark Notice:</strong> MAGIC: THE GATHERING® is a trademark of Wizards of the Coast. Scryfall
+            OS is not affiliated with, endorsed, sponsored, or specifically approved by Wizards of the Coast LLC.
+          </p>
+        </div>
+      </div>
+    </footer>
 
     <!-- Modal for card details -->
     <div id="modalOverlay" class="modal-overlay">

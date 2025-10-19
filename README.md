@@ -7,6 +7,7 @@
 ## Table of Contents
 
 1. [Project Overview](#project-overview)
+   1. [Legal Notices and Disclaimers](#️-legal-notices-and-disclaimers)
 1. [Functionality Comparison](#functionality-comparison)
    1. [Recommended Development Priorities](#recommended-development-priorities)
 1. [Code Organization](#code-organization)
@@ -14,10 +15,21 @@
 1. [Card Tagging System](#card-tagging-system)
 1. [API Documentation](#api-documentation)
 1. [Development Notes](#development-notes)
+1. [Legal and Compliance](#legal-and-compliance)
 
 ## Project Overview
 
-Scryfall OS is an open source implementation of Scryfall, a Magic: The Gathering card search engine.
+Scryfall OS is an open source implementation of a Magic: The Gathering card search engine, inspired by Scryfall.
+
+### ⚖️ Legal Notices and Disclaimers
+
+**Not Affiliated with Wizards of the Coast**: Scryfall OS is unofficial Fan Content permitted under the Wizards of the Coast Fan Content Policy. Not approved/endorsed by Wizards. Portions of the materials used are property of Wizards of the Coast. ©Wizards of the Coast LLC.
+
+**Magic: The Gathering Trademarks**: Wizards of the Coast, Magic: The Gathering, and their logos are trademarks of Wizards of the Coast LLC in the United States and other countries. © 1993-2025 Wizards. All Rights Reserved.
+
+**Not Affiliated with Scryfall**: Scryfall OS is not affiliated with, endorsed by, or sponsored by Scryfall LLC. We use Scryfall's publicly available bulk data API in accordance with their terms of service. "Scryfall OS" indicates this is an "open source" implementation of similar search functionality.
+
+**For Complete Legal Information**: See [LEGAL.md](LEGAL.md), [Terms of Service](TERMS_OF_SERVICE.md), and [Privacy Policy](PRIVACY_POLICY.md).
 
 ### Scryfall OS vs Official Scryfall
 
@@ -290,3 +302,47 @@ The search endpoint supports comprehensive Scryfall syntax. See [syntax analysis
 1. **Testing**: Expand API comparison coverage and add performance benchmarks
 
 For detailed technical analysis, see [functionality analysis documentation](docs/scryfall_functionality_analysis.md).
+
+## Legal and Compliance
+
+### Intellectual Property Acknowledgments
+
+**Wizards of the Coast**: Wizards of the Coast, Magic: The Gathering, and their logos are trademarks of Wizards of the Coast LLC in the United States and other countries. © 1993-2025 Wizards. All Rights Reserved.
+
+**Full Legal Notice**: Scryfall OS is not affiliated with, endorsed, sponsored, or specifically approved by Wizards of the Coast LLC. Scryfall OS may use the trademarks and other intellectual property of Wizards of the Coast LLC, which is permitted under Wizards' Fan Content Policy. MAGIC: THE GATHERING® is a trademark of Wizards of the Coast. For more information about Wizards of the Coast or any of Wizards' trademarks or other intellectual property, please visit their website at www.wizards.com.
+
+**Scryfall Data**: This project uses data provided by [Scryfall LLC](https://scryfall.com/). We are not affiliated with Scryfall LLC. Card data is obtained through Scryfall's publicly available bulk data API in compliance with their terms of service.
+
+### Data Sources and Attribution
+
+- **Card Data**: Official Wizards of the Coast data via Scryfall's bulk data API
+- **Card Images**: Sourced from official Wizards servers and Scryfall's image CDN
+- **Price Data**: Aggregated from third-party market data sources via Scryfall
+
+See [LEGAL.md](LEGAL.md) for complete information about:
+- Our compliance with the Wizards of the Coast Fan Content Policy
+- Data sources and attribution requirements
+- Relationship to Scryfall and Wizards of the Coast
+- Font and asset usage
+- Third-party library licenses
+
+### Policies and Documentation
+
+- **[LEGAL.md](LEGAL.md)** - Complete legal documentation and compliance information
+- **[Terms of Service](TERMS_OF_SERVICE.md)** - Terms governing use of this service
+- **[Privacy Policy](PRIVACY_POLICY.md)** - How we handle data and privacy
+
+### Project License
+
+This project's original code is released under the MIT License. See [LICENSE](LICENSE) file for details.
+
+**Important**: The MIT License applies only to our original code, not to:
+- Magic: The Gathering content, trademarks, or copyrights (owned by Wizards of the Coast)
+- Data obtained from Scryfall (subject to their terms)
+- Third-party libraries (subject to their own licenses)
+
+### Contact
+
+For legal inquiries or concerns:
+- **GitHub Issues**: https://github.com/jbylund/arcane_tutor/issues
+- **Project Repository**: https://github.com/jbylund/arcane_tutor
