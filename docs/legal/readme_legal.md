@@ -18,62 +18,62 @@ Arcane Tutor has achieved excellent legal compliance standing with all critical 
 
 ### 📊 Status Reports
 
-1. **[summary_legal_compliance_review.md](summary_legal_compliance_review.md)** - **START HERE**
+1. **[summary_legal_compliance_review.md](../legal/summary_legal_compliance_review.md)** - **START HERE**
    - Executive summary of compliance review
    - What's complete vs. what remains
    - Instructions for next steps
    - Quick reference guide
 
-2. **[legal_compliance_final_status.md](legal_compliance_final_status.md)**
+2. **[legal_compliance_final_status.md](../legal/legal_compliance_final_status.md)**
    - Comprehensive final status report
    - Item-by-item checklist with evidence
    - Category breakdowns and scoring
    - Risk assessment and recommendations
 
-3. **[legal_compliance_summary.md](legal_compliance_summary.md)**
+3. **[legal_compliance_summary.md](../legal/legal_compliance_summary.md)**
    - Quick overview of compliance status
    - Major achievements highlighted
    - Compliance checklist reference
 
-4. **[compliance_review.md](compliance_review.md)**
+4. **[compliance_review.md](../legal/compliance_review.md)**
    - Detailed implementation status
    - Changes implemented
    - Priority action items
 
 ### 📜 Legal Documents
 
-5. **[legal.md](legal.md)**
+5. **[legal.md](../legal/legal.md)**
    - Data sources and APIs
    - Intellectual property attribution
    - Compliance with policies
    - Differentiation from Scryfall
 
-6. **[terms_of_service.md](terms_of_service.md)**
+6. **[terms_of_service.md](../user/terms_of_service.md)**
    - User agreement and service terms
    - Acceptable use policy
    - Disclaimers and limitations
 
-7. **[privacy_policy.md](privacy_policy.md)**
+7. **[privacy_policy.md](../user/privacy_policy.md)**
    - Data collection practices
    - User privacy and rights
    - Third-party services
 
 ### 📖 User Documentation
 
-8. **[about.md](about.md)**
+8. **[about.md](../user/about.md)**
    - Project mission and philosophy
    - How we differ from Scryfall
    - Technology stack
    - Contributing guidelines
 
-9. **[help.md](help.md)**
+9. **[help.md](../user/help.md)**
    - User guide and tutorials
    - Search syntax examples
    - Feature documentation
 
 ### 🎨 Outstanding Work
 
-10. **[issue_template_custom_logo.md](issue_template_custom_logo.md)**
+10. **[issue_template_custom_logo.md](../legal/issue_template_custom_logo.md)**
     - Issue template for custom logo
     - Design requirements and concepts
     - Implementation tasks
@@ -173,7 +173,7 @@ All critical legal requirements are met. The project can safely proceed with nor
 ### Optional Enhancements
 
 1. **Custom Logo** (Low Priority)
-   - See [issue_template_custom_logo.md](issue_template_custom_logo.md)
+   - See [issue_template_custom_logo.md](../legal/issue_template_custom_logo.md)
    - Cosmetic enhancement only
    - No legal impact
 
@@ -193,19 +193,19 @@ All critical legal requirements are met. The project can safely proceed with nor
 
 ### For Legal Questions
 
-1. Start with [summary_legal_compliance_review.md](summary_legal_compliance_review.md)
-2. Check [legal.md](legal.md) for specific policies
-3. Review [legal_compliance_final_status.md](legal_compliance_final_status.md) for details
+1. Start with [summary_legal_compliance_review.md](../legal/summary_legal_compliance_review.md)
+2. Check [legal.md](../legal/legal.md) for specific policies
+3. Review [legal_compliance_final_status.md](../legal/legal_compliance_final_status.md) for details
 
 ### For User Questions
 
-1. Check [about.md](about.md) for project info
-2. See [help.md](help.md) for usage
-3. Review [terms_of_service.md](terms_of_service.md) and [privacy_policy.md](privacy_policy.md)
+1. Check [about.md](../user/about.md) for project info
+2. See [help.md](../user/help.md) for usage
+3. Review [terms_of_service.md](../user/terms_of_service.md) and [privacy_policy.md](../user/privacy_policy.md)
 
 ### For Contributing
 
-1. Read [about.md](about.md) contributing section
+1. Read [about.md](../user/about.md) contributing section
 2. Review main [README.md](../README.md)
 3. Check compliance docs to understand project standards
 

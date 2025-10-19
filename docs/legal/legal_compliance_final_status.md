@@ -22,9 +22,9 @@ This document provides the final status of all items from the original Legal Com
 |------|--------|----------|-------|
 | ✅ Verify using official WotC APIs/data sources | **COMPLETE** | [legal.md](legal.md#primary-data-source) | Using Scryfall's official bulk data API (api.scryfall.com/bulk-data) |
 | ✅ Review and comply with Scryfall's API terms | **COMPLETE** | [legal.md](legal.md#scryfall-api-terms-of-service) | Documented compliance, using bulk data appropriately |
-| ✅ Document proper attribution requirements | **COMPLETE** | [README.md](../README.md), [legal.md](legal.md), UI footer | Attribution present in all user-facing locations |
+| ✅ Document proper attribution requirements | **COMPLETE** | [README.md](../README.md), [legal.md](../legal/legal.md), UI footer | Attribution present in all user-facing locations |
 | ✅ Card images from official sources | **COMPLETE** | [legal.md](legal.md#card-images) | Using CloudFront CDN with proper attribution |
-| ✅ Write original help documentation | **COMPLETE** | [help.md](help.md) | Comprehensive user-facing help guide with tutorials |
+| ✅ Write original help documentation | **COMPLETE** | [help.md](../user/help.md) | Comprehensive user-facing help guide with tutorials |
 | 🔲 Source rulings from official Wizards channels | **N/A** | - | Feature not currently implemented |
 
 **Category Status**: ✅ Complete (all applicable items done)
@@ -35,7 +35,7 @@ This document provides the final status of all items from the original Legal Com
 
 | Item | Status | Evidence | Notes |
 |------|--------|----------|-------|
-| ✅ Distinct color scheme | **COMPLETE** | [compliance_review.md](compliance_review.md) | Blue gradient theme (#2b8fdf, #3da8f5) - distinct from Scryfall's purple |
+| ✅ Distinct color scheme | **COMPLETE** | [compliance_review.md](../legal/compliance_review.md) | Blue gradient theme (#2b8fdf, #3da8f5) - distinct from Scryfall's purple |
 | ✅ Different layout structure | **COMPLETE** | api/index.html | Custom grid layout, different search controls |
 | ❌ Original logo and branding | **TODO** | - | Currently using text-only header "Arcane Tutor" |
 | ✅ Unique card display format | **COMPLETE** | api/index.html | Custom card grid and modal display |
@@ -52,7 +52,7 @@ This document provides the final status of all items from the original Legal Com
 
 | Item | Status | Evidence | Notes |
 |------|--------|----------|-------|
-| ✅ Original search syntax documentation | **COMPLETE** | [scryfall_functionality_analysis.md](scryfall_functionality_analysis.md) | Comprehensive documentation of search capabilities |
+| ✅ Original search syntax documentation | **COMPLETE** | [scryfall_functionality_analysis.md](../technical/scryfall_functionality_analysis.md) | Comprehensive documentation of search capabilities |
 | ✅ Unique feature set | **COMPLETE** | [README.md](../README.md) | Arithmetic expressions, larger data fetch, custom sorting |
 | ✅ Different URL/routing structure | **COMPLETE** | api/api_resource.py | Simple routing: /, /search, custom API endpoints |
 | ✅ Original advanced search interface | **COMPLETE** | api/index.html | Custom search controls and dropdowns |
@@ -81,10 +81,10 @@ This document provides the final status of all items from the original Legal Com
 | Item | Status | Evidence | Notes |
 |------|--------|----------|-------|
 | ✅ Review Wizards' Fan Content Policy | **COMPLETE** | [legal.md](legal.md#wizards-of-the-coast-fan-content-policy) | Full compliance documented |
-| ✅ Draft Terms of Service | **COMPLETE** | [terms_of_service.md](terms_of_service.md) | Formal TOS with all required sections |
-| ✅ Draft Privacy Policy | **COMPLETE** | [privacy_policy.md](privacy_policy.md) | Comprehensive privacy policy |
+| ✅ Draft Terms of Service | **COMPLETE** | [terms_of_service.md](../user/terms_of_service.md) | Formal TOS with all required sections |
+| ✅ Draft Privacy Policy | **COMPLETE** | [privacy_policy.md](../user/privacy_policy.md) | Comprehensive privacy policy |
 | ✅ Proper trademark usage for MTG | **COMPLETE** | [legal.md](legal.md#magic-the-gathering) | Using "Magic: The Gathering™" with proper attribution |
-| ✅ Attribution acknowledging Wizards as IP owner | **COMPLETE** | [README.md](../README.md), [legal.md](legal.md), UI footer | Present in all locations |
+| ✅ Attribution acknowledging Wizards as IP owner | **COMPLETE** | [README.md](../README.md), [legal.md](../legal/legal.md), UI footer | Present in all locations |
 | ✅ Not infringing "Scryfall" trademark | **COMPLETE** | [legal.md](legal.md#scryfall) | Clear differentiation with "Arcane Tutor" name |
 | ⏳ Consider reaching out to Scryfall | **OPTIONAL** | - | Optional future action for community relations |
 
@@ -96,9 +96,9 @@ This document provides the final status of all items from the original Legal Com
 
 | Item | Status | Evidence | Notes |
 |------|--------|----------|-------|
-| ✅ Original About page | **COMPLETE** | [about.md](about.md) | Comprehensive project mission and differentiation |
-| ✅ Unique help documentation | **COMPLETE** | [help.md](help.md) | User-facing help guide with tutorials |
-| ✅ Original tutorials | **COMPLETE** | [help.md](help.md) | Tutorial content included |
+| ✅ Original About page | **COMPLETE** | [about.md](../user/about.md) | Comprehensive project mission and differentiation |
+| ✅ Unique help documentation | **COMPLETE** | [help.md](../user/help.md) | User-facing help guide with tutorials |
+| ✅ Original tutorials | **COMPLETE** | [help.md](../user/help.md) | Tutorial content included |
 | ✅ Different naming conventions | **COMPLETE** | Throughout codebase | Using different terminology where possible |
 | ✅ Original README | **COMPLETE** | [README.md](../README.md) | Comprehensive, original documentation |
 
@@ -124,10 +124,10 @@ This document provides the final status of all items from the original Legal Com
 
 | Item | Status | Evidence | Notes |
 |------|--------|----------|-------|
-| ✅ Create LEGAL.md | **COMPLETE** | [legal.md](legal.md) | Comprehensive legal documentation |
+| ✅ Create LEGAL.md | **COMPLETE** | [legal.md](../legal/legal.md) | Comprehensive legal documentation |
 | ✅ Document attribution in README | **COMPLETE** | [README.md](../README.md) | Legal notice and attribution section present |
-| ✅ Explain how we differ from Scryfall | **COMPLETE** | [README.md](../README.md), [about.md](about.md) | Detailed differentiation sections |
-| ✅ Include Wizards copyright notices | **COMPLETE** | [README.md](../README.md), [legal.md](legal.md), UI footer | Present in all locations |
+| ✅ Explain how we differ from Scryfall | **COMPLETE** | [README.md](../README.md), [about.md](../user/about.md) | Detailed differentiation sections |
+| ✅ Include Wizards copyright notices | **COMPLETE** | [README.md](../README.md), [legal.md](../legal/legal.md), UI footer | Present in all locations |
 
 **Category Status**: ✅ Complete
 
@@ -256,13 +256,13 @@ Arcane Tutor has achieved **excellent legal compliance standing** with **93% com
 
 ## Related Documentation
 
-- **[legal_compliance_summary.md](legal_compliance_summary.md)** - Quick overview and executive summary
-- [compliance_review.md](compliance_review.md) - Detailed implementation status
-- [legal.md](legal.md) - Legal compliance and data sources
-- [terms_of_service.md](terms_of_service.md) - User terms
-- [privacy_policy.md](privacy_policy.md) - Privacy practices
-- [about.md](about.md) - Project mission and differentiation
-- [help.md](help.md) - User documentation
+- **[legal_compliance_summary.md](../legal/legal_compliance_summary.md)** - Quick overview and executive summary
+- [compliance_review.md](../legal/compliance_review.md) - Detailed implementation status
+- [legal.md](../legal/legal.md) - Legal compliance and data sources
+- [terms_of_service.md](../user/terms_of_service.md) - User terms
+- [privacy_policy.md](../user/privacy_policy.md) - Privacy practices
+- [about.md](../user/about.md) - Project mission and differentiation
+- [help.md](../user/help.md) - User documentation
 
 ---
 

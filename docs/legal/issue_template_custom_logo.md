@@ -16,9 +16,9 @@ This issue tracks the design and implementation of a custom logo for Arcane Tuto
 Arcane Tutor currently uses a text-only header displaying "Arcane Tutor" in the web interface. While this is legally compliant and clearly differentiates from Scryfall, a custom logo would enhance the project's visual identity and branding.
 
 **Related Documentation**:
-- [legal_compliance_final_status.md](legal_compliance_final_status.md) - Final compliance review
-- [compliance_review.md](compliance_review.md) - Detailed compliance status
-- [about.md](about.md) - Project mission and differentiation
+- [legal_compliance_final_status.md](../legal/legal_compliance_final_status.md) - Final compliance review
+- [compliance_review.md](../legal/compliance_review.md) - Detailed compliance status
+- [about.md](../user/about.md) - Project mission and differentiation
 
 ---
 
@@ -103,10 +103,10 @@ Arcane Tutor currently uses a text-only header displaying "Arcane Tutor" in the 
 ### Phase 3: Documentation
 
 - [ ] Add logo source files to repository (with editable format)
-- [ ] Document logo design in [about.md](about.md)
+- [ ] Document logo design in [about.md](../user/about.md)
 - [ ] Update README.md to show logo
 - [ ] Add logo usage guidelines (if needed for community use)
-- [ ] Update [legal.md](legal.md) with logo licensing information
+- [ ] Update [legal.md](../legal/legal.md) with logo licensing information
 
 ### Phase 4: Verification
 

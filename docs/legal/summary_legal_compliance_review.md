@@ -166,11 +166,11 @@ The single remaining item (custom logo) is a cosmetic enhancement that can be ad
 
 ## Related Documentation
 
-- [legal_compliance_final_status.md](legal_compliance_final_status.md) - Full detailed review
-- [issue_template_custom_logo.md](issue_template_custom_logo.md) - Ready-to-use issue template
-- [legal_compliance_summary.md](legal_compliance_summary.md) - Quick reference
-- [compliance_review.md](compliance_review.md) - Detailed status tracking
-- [legal.md](legal.md) - Legal compliance documentation
+- [legal_compliance_final_status.md](../legal/legal_compliance_final_status.md) - Full detailed review
+- [issue_template_custom_logo.md](../legal/issue_template_custom_logo.md) - Ready-to-use issue template
+- [legal_compliance_summary.md](../legal/legal_compliance_summary.md) - Quick reference
+- [compliance_review.md](../legal/compliance_review.md) - Detailed status tracking
+- [legal.md](../legal/legal.md) - Legal compliance documentation
 
 ---
 

@@ -68,7 +68,7 @@ See [README.md](../README.md#code-organization) for detailed information about:
 
 Arcane Tutor uses card data from Scryfall's official bulk data API and serves card images via our own S3/CloudFront infrastructure. All Magic: The Gathering content is © Wizards of the Coast LLC and used under their Fan Content Policy.
 
-For complete details on data sources, attribution, and intellectual property, see [docs/legal.md](legal.md).
+For complete details on data sources, attribution, and intellectual property, see [docs/legal.md](../legal/legal.md).
 
 ## Project Status
 
@@ -92,10 +92,10 @@ For complete details on data sources, attribution, and intellectual property, se
 We take compliance seriously with original code, proper attribution, and adherence to all relevant policies.
 
 See our compliance documentation:
-- [legal.md](legal.md) - Data sources, attribution, and IP rights
-- [terms_of_service.md](terms_of_service.md) - User terms
-- [privacy_policy.md](privacy_policy.md) - Privacy practices
-- [compliance_review.md](compliance_review.md) - Detailed compliance status (93% complete)
+- [legal.md](../legal/legal.md) - Data sources, attribution, and IP rights
+- [terms_of_service.md](../user/terms_of_service.md) - User terms
+- [privacy_policy.md](../user/privacy_policy.md) - Privacy practices
+- [compliance_review.md](../legal/compliance_review.md) - Detailed compliance status (93% complete)
 
 **Compliance Status**: ✅ Excellent standing - All critical legal and compliance items addressed.
 

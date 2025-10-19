@@ -27,7 +27,7 @@ This document investigates the licensing situation for all fonts used in Arcane 
 - Attribution is maintained in documentation
 - No legal concerns
 
-**Documentation**: [docs/font_optimization.md](font_optimization.md)
+**Documentation**: [docs/font_optimization.md](../fonts/font_optimization.md)
 
 ---
 
@@ -61,7 +61,7 @@ The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
 ```
 
-**Documentation**: [docs/beleren_font.md](beleren_font.md)
+**Documentation**: [docs/beleren_font.md](../fonts/beleren_font.md)
 
 ---
 
@@ -78,7 +78,7 @@ copies or substantial portions of the Software.
 
 2. **Redistribution**: The font file `fonts/mplantin.otf` is checked into the repository, which may violate licensing terms if we don't have redistribution rights.
 
-3. **Documentation Claims**: The file [docs/mplantin_font.md](mplantin_font.md) states:
+3. **Documentation Claims**: The file [docs/mplantin_font.md](../fonts/mplantin_font.md) states:
    > "MPlantin (Plantin MT) is a commercial font by Monotype. The font file in this repository (`fonts/mplantin.otf`) is used under license for this project."
 
 4. **License Verification Needed**: We need to verify:
@@ -313,10 +313,10 @@ This provides:
 
 ## Related Documentation
 
-- [font_optimization.md](font_optimization.md) - Mana font subsetting
-- [beleren_font.md](beleren_font.md) - Beleren font integration
-- [legal.md](legal.md) - Overall legal compliance
-- [legal_compliance_final_status.md](legal_compliance_final_status.md) - Compliance status
+- [font_optimization.md](../fonts/font_optimization.md) - Mana font subsetting
+- [beleren_font.md](../fonts/beleren_font.md) - Beleren font integration
+- [legal.md](../legal/legal.md) - Overall legal compliance
+- [legal_compliance_final_status.md](../legal/legal_compliance_final_status.md) - Compliance status
 
 ---
 
