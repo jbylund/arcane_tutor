@@ -1,6 +1,8 @@
 """Tests for the fetch_gatherer_data module."""
 
 import json
+from pathlib import Path
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
@@ -94,7 +96,7 @@ class TestFetchSet:
     """Tests for the fetch_set method."""
 
     @patch("gatherer_import.fetch_gatherer_data.requests.Session")
-    def test_fetch_set_single_page(self, mock_session_class) -> None:
+    def test_fetch_set_single_page(self, mock_session_class: Any) -> None:
         """Test fetching a set with cards on a single page."""
         mock_session = Mock()
         mock_session_class.return_value = mock_session
@@ -122,7 +124,7 @@ class TestFetchSet:
         assert result[1]["name"] == "Card 2"
 
     @patch("gatherer_import.fetch_gatherer_data.requests.Session")
-    def test_fetch_set_multiple_pages(self, mock_session_class) -> None:
+    def test_fetch_set_multiple_pages(self, mock_session_class: Any) -> None:
         """Test fetching a set with cards across multiple pages."""
         mock_session = Mock()
         mock_session_class.return_value = mock_session
@@ -157,7 +159,7 @@ class TestFetchSet:
         assert result[1]["name"] == "Card 2"
 
     @patch("gatherer_import.fetch_gatherer_data.requests.Session")
-    def test_fetch_set_http_error_non_404(self, mock_session_class) -> None:
+    def test_fetch_set_http_error_non_404(self, mock_session_class: Any) -> None:
         """Test that non-404 HTTP errors are re-raised."""
         mock_session = Mock()
         mock_session_class.return_value = mock_session
@@ -177,7 +179,7 @@ class TestFetchAllSets:
     """Tests for the fetch_all_sets method."""
 
     @patch("gatherer_import.fetch_gatherer_data.requests.Session")
-    def test_fetch_all_sets_single_page(self, mock_session_class) -> None:
+    def test_fetch_all_sets_single_page(self, mock_session_class: Any) -> None:
         """Test fetching all sets from a single page."""
         mock_session = Mock()
         mock_session_class.return_value = mock_session
@@ -206,7 +208,7 @@ class TestFetchAllSets:
         assert result == ["SET1", "SET2"]
 
     @patch("gatherer_import.fetch_gatherer_data.requests.Session")
-    def test_fetch_all_sets_multiple_pages(self, mock_session_class) -> None:
+    def test_fetch_all_sets_multiple_pages(self, mock_session_class: Any) -> None:
         """Test fetching all sets across multiple pages."""
         mock_session = Mock()
         mock_session_class.return_value = mock_session
@@ -238,7 +240,7 @@ class TestFetchAllSets:
         assert result == ["SET1", "SET2"]
 
     @patch("gatherer_import.fetch_gatherer_data.requests.Session")
-    def test_fetch_all_sets_stops_on_empty_page(self, mock_session_class) -> None:
+    def test_fetch_all_sets_stops_on_empty_page(self, mock_session_class: Any) -> None:
         """Test that fetching stops when an empty page is encountered."""
         mock_session = Mock()
         mock_session_class.return_value = mock_session
@@ -264,7 +266,7 @@ class TestFetchAllSets:
         assert result == ["SET1"]
 
     @patch("gatherer_import.fetch_gatherer_data.requests.Session")
-    def test_fetch_all_sets_stops_on_missing_items(self, mock_session_class) -> None:
+    def test_fetch_all_sets_stops_on_missing_items(self, mock_session_class: Any) -> None:
         """Test that fetching stops when items key is missing."""
         mock_session = Mock()
         mock_session_class.return_value = mock_session
@@ -294,7 +296,7 @@ class TestSaveSetToJson:
     """Tests for the save_set_to_json method."""
 
     @patch("gatherer_import.fetch_gatherer_data.GathererFetcher.fetch_set")
-    def test_save_set_to_json(self, mock_fetch_set, tmp_path) -> None:
+    def test_save_set_to_json(self, mock_fetch_set: Any, tmp_path: Path) -> None:
         """Test saving a set to a JSON file."""
         mock_cards = [{"id": 1, "name": "Card 1"}, {"id": 2, "name": "Card 2"}]
         mock_fetch_set.return_value = mock_cards
@@ -312,7 +314,7 @@ class TestSaveSetToJson:
         assert saved_data == mock_cards
 
     @patch("gatherer_import.fetch_gatherer_data.GathererFetcher.fetch_set")
-    def test_save_set_creates_directory(self, mock_fetch_set, tmp_path) -> None:
+    def test_save_set_creates_directory(self, mock_fetch_set: Any, tmp_path: Path) -> None:
         """Test that save_set_to_json creates the output directory if it doesn't exist."""
         mock_cards = [{"id": 1, "name": "Card 1"}]
         mock_fetch_set.return_value = mock_cards
