@@ -1,3 +1,5 @@
+name: arcane_tutor
+
 services:
     postgres:
         cap_add:
@@ -6,7 +8,7 @@ services:
         - /usr/local/bin/docker-entrypoint.sh
         - -c
         - config_file=/postgresql.conf
-        container_name: scryfallpostgres
+        container_name: ${PROJECTNAME}_postgres
         environment:
         - PGDATA=/data/pg
         - POSTGRES_DB=${XPGDATABASE}
@@ -47,13 +49,11 @@ services:
                 condition: service_healthy
         environment:
         - PGDATABASE=${XPGDATABASE}
-        - PGHOST=${DOCKER_POSTGRES_HOST}
+        - PGHOST=${PROJECTNAME}_postgres
         - PGPASSWORD=${XPGPASSWORD}
         - PGUSER=${XPGUSER}
         - PYTHONUNBUFFERED=true
-        - ENABLE_CACHE=${ENABLE_CACHE:-true}
-        external_links:
-        - scryfallpostgres:${DOCKER_POSTGRES_HOST}
+        - ENABLE_CACHE=${ENABLE_CACHE:-false}
         ports:
         - 18080:8080
         user: 1000:1000
@@ -69,7 +69,7 @@ services:
         - python
         - -m
         - client.query_runner
-        container_name: scryfallclient
+        container_name: query_runner
         depends_on:
             apiservice:
                 condition: service_started

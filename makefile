@@ -11,12 +11,11 @@ MAYBENORUN := $(shell if echo | xargs --no-run-if-empty >/dev/null 2>/dev/null; 
 BASE_COMPOSE := $(mkfile_dir)/docker-compose.yml
 LINTABLE_DIRS := .
 
-DOCKER_POSTGRES_HOST=postgres
-
 XPGDATABASE=magic
 XPGPASSWORD=foopassword
 XPGPORT=15432
 XPGUSER=foouser
+
 S3_BUCKET=biblioplex
 
 .PHONY: \

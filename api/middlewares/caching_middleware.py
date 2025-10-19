@@ -8,6 +8,8 @@ from typing import cast as typecast
 
 from cachetools import LRUCache
 
+from api.settings import settings
+
 if TYPE_CHECKING:
     from collections.abc import MutableMapping
 
@@ -48,6 +50,9 @@ class CachingMiddleware:
             req: The incoming request.
             resp: The response object to populate if cache hit.
         """
+        if not settings.enable_cache:
+            return
+
         cache_key = self._cache_key(req)
         cached_value: falcon.Response | None = self.cache.get(cache_key)
         if cached_value is not None:
@@ -77,6 +82,9 @@ class CachingMiddleware:
             resource: The resource that handled the request (unused).
             req_succeeded: Whether the request was successful (unused).
         """
+        if not settings.enable_cache:
+            return
+
         del resource, req_succeeded
         cache_key = self._cache_key(req)
         cached_val = self.cache.get(cache_key)
