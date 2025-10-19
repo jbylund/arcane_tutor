@@ -101,7 +101,8 @@ Arcane Tutor is intentionally designed to be different from Scryfall:
 
 ## License
 
-This project is licensed under the ISC License (see package.json). However, this license applies only to our original code and does not grant any rights to:
+This project is licensed under the ISC License (see package.json).
+However, this license applies only to our original code and does not grant any rights to:
 - Wizards of the Coast's intellectual property
 - Scryfall's data or branding
 - Third-party fonts or assets
@@ -165,4 +166,5 @@ Planned documentation improvements:
 
 **Last Updated**: January 2025
 
-This document reflects our good-faith effort to comply with all applicable policies and respect intellectual property rights. We welcome feedback and will address any concerns promptly.
+This document reflects our good-faith effort to comply with all applicable policies and respect intellectual property rights.
+We welcome feedback and will address any concerns promptly.

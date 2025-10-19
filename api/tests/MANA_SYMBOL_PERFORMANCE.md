@@ -10,7 +10,7 @@ This resulted in a **60.7x speedup** (98.35% performance improvement) with signi
 The original implementation had two major performance issues:
 
 1. **Repeated RegExp Creation**: For each mana symbol in the map (70+ symbols), a new RegExp object was created on every function call
-2. **Multiple String Replacements**: The `replace()` method was called multiple times (once per symbol), requiring multiple passes through the input string
+1. **Multiple String Replacements**: The `replace()` method was called multiple times (once per symbol), requiring multiple passes through the input string
 
 ### Original Implementation (forEach loops)
 
@@ -41,9 +41,9 @@ convertManaSymbols(manaCost, isModal = false) {
 The optimized implementation uses a simple, elegant approach:
 
 1. **Simple Regex Pattern**: Uses `/\{[^}]{1,5}\}/g` to match any content between braces (1-5 characters)
-2. **Map Lookup**: Checks if the matched symbol exists in the map before replacing
-3. **Cached Pattern**: The regex is created once during initialization
-4. **Low Complexity**: Much simpler than building a large alternation pattern
+1. **Map Lookup**: Checks if the matched symbol exists in the map before replacing
+1. **Cached Pattern**: The regex is created once during initialization
+1. **Low Complexity**: Much simpler than building a large alternation pattern
 
 ### Optimized Implementation (simple pattern with Map lookup)
 
@@ -92,8 +92,8 @@ Test performed with 10,000 iterations × 14 test cases (140,000 conversions tota
 We evaluated three different optimization approaches:
 
 1. **forEach loops** (original): Creates 70+ RegExp objects per call
-2. **Cached alternation**: Single regex with all symbols joined (`{W/U/P}|{W/U}|{W}|...`)
-3. **Simple pattern with Map** (chosen): Single regex `/\{[^}]{1,5}\}/g` with Map.get() lookup
+1. **Cached alternation**: Single regex with all symbols joined (`{W/U/P}|{W/U}|{W}|...`)
+1. **Simple pattern with Map** (chosen): Single regex `/\{[^}]{1,5}\}/g` with Map.get() lookup
 
 | Approach | Time (ms) | vs Original | Code Complexity |
 |----------|-----------|-------------|-----------------|
@@ -162,15 +162,15 @@ node test_mana_symbol_performance_comparison.js
 This test compares:
 
 1. Original forEach implementation
-2. Cached alternation pattern
-3. Simple pattern with map lookup (current implementation)
+1. Cached alternation pattern
+1. Simple pattern with map lookup (current implementation)
 
 ## Benefits
 
 1. **Faster Page Load**: Reduced CPU time for rendering card mana costs
-2. **Better UX**: Smoother scrolling and interactions when displaying many cards
-3. **Reduced Energy Usage**: Less CPU cycles means better battery life on mobile devices
-4. **Scalability**: Performance improvement is more pronounced with larger card lists
+1. **Better UX**: Smoother scrolling and interactions when displaying many cards
+1. **Reduced Energy Usage**: Less CPU cycles means better battery life on mobile devices
+1. **Scalability**: Performance improvement is more pronounced with larger card lists
 
 ## Implementation Notes
 
