@@ -50,11 +50,11 @@ logger = logging.getLogger(__name__)
 NOT_FOUND = 404
 BACKFILL = IMPORT_EXPORT = True
 
-ENABLE_CACHE = False
+ENABLE_CACHE = os.environ.get("ENABLE_CACHE", "false").lower() in ("true", "1", "yes")
 
-def cached(cache, key=None):
+def cached(cache: Any, key: Any = None) -> Any:  # noqa: ANN401
     """Decorator that respects the ENABLE_CACHE flag."""
-    def decorator(func):
+    def decorator(func: Any) -> Any:  # noqa: ANN401
         if ENABLE_CACHE:
             return cachetools_cached(cache, key=key)(func)
         return func

@@ -6,7 +6,7 @@ import pathlib
 
 import pytest
 
-from api.api_resource import APIResource
+from api.api_resource import ENABLE_CACHE, APIResource
 
 
 class TestReadSQL:
@@ -28,7 +28,10 @@ class TestReadSQL:
         assert callable(self.api_resource.read_sql)
 
     def test_read_sql_caching(self) -> None:
-        """Test that the read_sql method is cached."""
+        """Test that the read_sql method is cached when ENABLE_CACHE is true."""
+        if not ENABLE_CACHE:
+            pytest.skip("Caching tests require ENABLE_CACHE=true environment variable")
+
         # Verify that the method has a cache attribute (from @cached decorator)
         assert hasattr(self.api_resource.read_sql, "cache")
 

@@ -51,6 +51,7 @@ services:
         - PGPASSWORD=${XPGPASSWORD}
         - PGUSER=${XPGUSER}
         - PYTHONUNBUFFERED=true
+        - ENABLE_CACHE=${ENABLE_CACHE:-false}
         external_links:
         - scryfallpostgres:${DOCKER_POSTGRES_HOST}
         ports:
@@ -59,6 +60,8 @@ services:
         volumes:
             - ./data/api:/data/api
     client:
+        profiles:
+        - client
         build:
             context: ./
             dockerfile: ./client/Dockerfile

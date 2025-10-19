@@ -42,3 +42,8 @@ def postgres_container_fixture() -> Generator[None]:
     })
     yield
     container.stop()
+
+@pytest.fixture
+def enable_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fixture to enable caching for specific tests."""
+    monkeypatch.setenv("ENABLE_CACHE", "true")
