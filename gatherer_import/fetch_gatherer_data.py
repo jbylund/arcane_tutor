@@ -29,14 +29,13 @@ class GathererFetcher:
     def fetch_all_sets(self) -> list:
         """Fetch the list of all sets from Gatherer."""
         url = f"{self.base_url}/sets"
-        page = 0
+        # https://gatherer.wizards.com/sets?page=2
+        page = 1
         all_sets = []
+
 
         while True:
             response = self.session.get(url, params={
-                "filterBy": "any",
-                "sortBy": "SetReleaseDate",
-                "sortOrder": "Descending",
                 "page": page,
             })
             try:
@@ -51,8 +50,8 @@ class GathererFetcher:
             # Extract the items array from the response
             _, _, remainder = page_text.partition(r',\"items\":')
             if not remainder:
-                # No more items, we've reached the end
-                break
+                msg = "No remainder"
+                raise AssertionError(msg)
 
             # Find the end of the array by counting brackets
             bracket_count = 0
@@ -74,13 +73,14 @@ class GathererFetcher:
             sets_array = json.loads(json.loads('"' + sets_array_str + '"'))
 
             if not sets_array:
-                # Empty array means we've reached the end
                 break
 
             all_sets.extend(sets_array)
             page += 1
 
-        return all_sets
+        return [
+            r["setCode"] for r in all_sets
+        ]
 
     def fetch_set(self, set_name: str) -> list:
         """Fetch all cards from a specific set."""
@@ -138,7 +138,7 @@ class GathererFetcher:
 def main() -> None:
     """Example usage: fetch TDM set."""
     fetcher = GathererFetcher()
-    fetcher.fetch_set("TDM")
+    fetcher.fetch_all_sets()
 
 if __name__ == "__main__":
     main()
