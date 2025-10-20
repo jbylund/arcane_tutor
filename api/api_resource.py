@@ -32,6 +32,7 @@ from psycopg import Connection, Cursor
 
 from api.card_processing import preprocess_card
 from api.enums import CardOrdering, PreferOrder, SortDirection, UniqueOn
+from api.noscript_helpers import generate_results_count_html, generate_results_html
 from api.parsing import generate_sql_query, parse_scryfall_query
 from api.parsing.card_query_nodes import extract_frame_data_from_raw_card, mana_cost_str_to_dict
 from api.settings import settings
@@ -783,9 +784,30 @@ class APIResource:
                     unique=unique or UniqueOn.CARD,
                     prefer=prefer or PreferOrder.DEFAULT,
                 )
-                # Convert search results to JSON and embed in HTML
-                search_results_json = orjson.dumps(search_results).decode("utf-8")
-                # Inject the search results at the placeholder token
+
+                # Get cards from results
+                cards = search_results.get("cards", [])
+                total_cards = search_results.get("total_cards", len(cards))
+
+                # Generate server-side HTML for cards (for no-JS support)
+                results_html = generate_results_html(cards) if cards else ""
+                results_count_html = generate_results_count_html(total_cards, search_query) if cards else ""
+
+                # Inject the server-side rendered HTML
+                html_content = html_content.replace(
+                    "<!-- SERVER_SIDE_RESULTS -->",
+                    results_html,
+                )
+
+                # Inject the results count with proper display style
+                if results_count_html:
+                    html_content = html_content.replace(
+                        '<div id="resultsCount" class="results-count" style="display: none"><!-- SERVER_SIDE_RESULTS_COUNT --></div>',
+                        f'<div id="resultsCount" class="results-count" style="display: block">{results_count_html}</div>',
+                    )
+
+                # Convert search results to JSON and embed for JavaScript enhancement
+                search_results_json = orjson.dumps(search_results, option=orjson.OPT_INDENT_2).decode("utf-8")
                 embedded_data = f"""// Server-side embedded search results
       window.EMBEDDED_SEARCH_RESULTS = {search_results_json};
       """
