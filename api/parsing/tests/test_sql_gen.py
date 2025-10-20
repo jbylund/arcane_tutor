@@ -190,7 +190,7 @@ def test_color_identity_sql_translation(input_query: str, expected_sql: str, exp
     argnames=("input_query", "expected_sql", "expected_parameters"),
     argvalues=[
         (
-            "card_types:creature",
+            "type:creature",
             r"(%(p_list_WydDcmVhdHVyZSdd)s <@ card.card_types)",
             {"p_list_WydDcmVhdHVyZSdd": ["Creature"]},
         ),
@@ -241,8 +241,16 @@ def test_oracle_text_sql_translation(input_query: str, expected_sql: str, expect
     argvalues=[
         # Flavor text search tests
         ("flavor:exile", "(card.flavor_text ILIKE %(p_str_JWV4aWxlJQ)s)", {"p_str_JWV4aWxlJQ": "%exile%"}),
-        ("flavor:'ancient power'", "(card.flavor_text ILIKE %(p_str_JWFuY2llbnQlcG93ZXIl)s)", {"p_str_JWFuY2llbnQlcG93ZXIl": "%ancient%power%"}),
-        ('flavor:"ancient power"', "(card.flavor_text ILIKE %(p_str_JWFuY2llbnQlcG93ZXIl)s)", {"p_str_JWFuY2llbnQlcG93ZXIl": "%ancient%power%"}),
+        (
+            "flavor:'ancient power'",
+            "(card.flavor_text ILIKE %(p_str_JWFuY2llbnQlcG93ZXIl)s)",
+            {"p_str_JWFuY2llbnQlcG93ZXIl": "%ancient%power%"},
+        ),
+        (
+            'flavor:"ancient power"',
+            "(card.flavor_text ILIKE %(p_str_JWFuY2llbnQlcG93ZXIl)s)",
+            {"p_str_JWFuY2llbnQlcG93ZXIl": "%ancient%power%"},
+        ),
         ("flavor:magic", "(card.flavor_text ILIKE %(p_str_JW1hZ2ljJQ)s)", {"p_str_JW1hZ2ljJQ": "%magic%"}),
         # Test flavor search with complex phrases
         (
@@ -673,7 +681,11 @@ def test_rarity_case_insensitive() -> None:
     argvalues=[
         ("artist:moeller", r"(card.card_artist ILIKE %(p_str_JW1vZWxsZXIl)s)", {"p_str_JW1vZWxsZXIl": r"%moeller%"}),
         ("a:moeller", r"(card.card_artist ILIKE %(p_str_JW1vZWxsZXIl)s)", {"p_str_JW1vZWxsZXIl": r"%moeller%"}),
-        ('artist:"Christopher Moeller"', r"(card.card_artist ILIKE %(p_str_JUNocmlzdG9waGVyJU1vZWxsZXIl)s)", {"p_str_JUNocmlzdG9waGVyJU1vZWxsZXIl": r"%Christopher%Moeller%"}),
+        (
+            'artist:"Christopher Moeller"',
+            r"(card.card_artist ILIKE %(p_str_JUNocmlzdG9waGVyJU1vZWxsZXIl)s)",
+            {"p_str_JUNocmlzdG9waGVyJU1vZWxsZXIl": r"%Christopher%Moeller%"},
+        ),
         ("artist:nielsen", r"(card.card_artist ILIKE %(p_str_JW5pZWxzZW4l)s)", {"p_str_JW5pZWxzZW4l": r"%nielsen%"}),
         ("ARTIST:moeller", r"(card.card_artist ILIKE %(p_str_JW1vZWxsZXIl)s)", {"p_str_JW1vZWxsZXIl": r"%moeller%"}),
     ],
@@ -816,7 +828,9 @@ def test_collector_number_sql_translation(input_query: str, expected_sql_fragmen
         ),
     ],
 )
-def test_collector_number_numeric_comparison_sql_translation(input_query: str, expected_sql_fragment: str, expected_parameters: set) -> None:
+def test_collector_number_numeric_comparison_sql_translation(
+    input_query: str, expected_sql_fragment: str, expected_parameters: set,
+) -> None:
     """Test that collector number numeric comparisons generate correct SQL using the integer column."""
     parsed = parsing.parse_scryfall_query(input_query)
     context = {}
@@ -859,9 +873,9 @@ def test_standalone_numeric_query_parses() -> None:
 @pytest.mark.parametrize(
     argnames="semantically_invalid_query",
     argvalues=[
-        "name:bolt and 1",    # Valid parse but semantically invalid: AND between boolean and integer
-        "cmc=3 and 2",        # Valid parse but semantically invalid: AND between boolean and integer
-        "power>1 or 5",       # Valid parse but semantically invalid: OR between boolean and integer
+        "name:bolt and 1",  # Valid parse but semantically invalid: AND between boolean and integer
+        "cmc=3 and 2",  # Valid parse but semantically invalid: AND between boolean and integer
+        "power>1 or 5",  # Valid parse but semantically invalid: OR between boolean and integer
     ],
 )
 def test_semantically_invalid_queries_parse_but_fail_at_db_level(semantically_invalid_query: str) -> None:

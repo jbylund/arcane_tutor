@@ -39,7 +39,7 @@ class GathererFetcher:
             ValueError: If the items array cannot be found or parsed
         """
         # Extract the items array from the response
-        _, _, remainder = page_text.partition(r',\"items\":')
+        _, _, remainder = page_text.partition(r",\"items\":")
         if not remainder:
             msg = "No items array found in response"
             raise ValueError(msg)
@@ -64,7 +64,6 @@ class GathererFetcher:
         # Double JSON decode: the data is JSON-encoded within a JSON string
         return json.loads(json.loads('"' + items_array_str + '"'))
 
-
     def fetch_all_sets(self) -> list:
         """Fetch the list of all sets from Gatherer."""
         url = f"{self.base_url}/sets"
@@ -72,11 +71,13 @@ class GathererFetcher:
         page = 1
         all_sets = []
 
-
         while True:
-            response = self.session.get(url, params={
-                "page": page,
-            })
+            response = self.session.get(
+                url,
+                params={
+                    "page": page,
+                },
+            )
             try:
                 response.raise_for_status()
             except requests.HTTPError as e:
@@ -96,9 +97,7 @@ class GathererFetcher:
             all_sets.extend(sets_array)
             page += 1
 
-        return [
-            r["setCode"] for r in all_sets
-        ]
+        return [r["setCode"] for r in all_sets]
 
     def fetch_set(self, set_name: str) -> list:
         """Fetch all cards from a specific set."""
@@ -139,6 +138,7 @@ def main() -> None:
     """Example usage: fetch TDM set."""
     fetcher = GathererFetcher()
     fetcher.fetch_all_sets()
+
 
 if __name__ == "__main__":
     main()

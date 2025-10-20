@@ -61,6 +61,7 @@ def cached(cache: Any, key: Any = None) -> Any:  # noqa: ANN401
     to determine whether to use the cache or call the original function.
     """
     key = key or cachetools.keys.hashkey
+
     def decorator(func: Any) -> Any:  # noqa: ANN401
         cached_func = cachetools_cached(cache, key=key)(func)
 
@@ -73,7 +74,9 @@ def cached(cache: Any, key: Any = None) -> Any:  # noqa: ANN401
         # Copy attributes from cached_func for compatibility
         wrapper.cache = cache  # type: ignore[attr-defined]
         return wrapper
+
     return decorator
+
 
 def set_cache_header(falcon_response: falcon.Response | None, duration: timedelta) -> None:
     """Set the Cache-Control header on a Falcon response.
@@ -86,6 +89,7 @@ def set_cache_header(falcon_response: falcon.Response | None, duration: timedelt
         return
     seconds = int(duration.total_seconds())
     falcon_response.set_header("Cache-Control", f"public, max-age={seconds}")
+
 
 @cached(cache=LRUCache(maxsize=10_000))
 def get_where_clause(query: str) -> tuple[str, dict]:
@@ -117,7 +121,7 @@ class APIResource:
     """Class implementing request handling for our simple API."""
 
     def __init__(
-        self: APIResource,
+        self,
         *,
         import_guard: LockType = multiprocessing_utils.DEFAULT_LOCK,
         schema_setup_event: EventType = multiprocessing_utils.DEFAULT_EVENT,
@@ -152,7 +156,7 @@ class APIResource:
         self.setup_schema()
 
     @cached(cache={}, key=lambda _self, filename: filename)
-    def read_sql(self: APIResource, filename: str) -> str:
+    def read_sql(self, filename: str) -> str:
         """Read SQL content from a file with caching.
 
         Args:
@@ -167,11 +171,11 @@ class APIResource:
         with sql_file.open(encoding="utf-8") as f:
             return f.read().strip()
 
-    def _get_timer(self: APIResource, req: falcon.Request) -> Timer:
+    def _get_timer(self, req: falcon.Request) -> Timer:
         """Get the timer for the request."""
         return req.context.setdefault("timer", Timer())
 
-    def _handle(self: APIResource, req: falcon.Request, resp: falcon.Response) -> None:
+    def _handle(self, req: falcon.Request, resp: falcon.Response) -> None:
         """Handle a Falcon request and set the response.
 
         Args:
@@ -218,11 +222,7 @@ class APIResource:
                         "file": iframe.filename,
                         "function": iframe.function,
                         "line_no": iframe.lineno,
-                        "locals": {
-                            k: v
-                            for k, v in iframe.frame.f_locals.items()
-                            if error_monitoring.can_serialize(v)
-                        },
+                        "locals": {k: v for k, v in iframe.frame.f_locals.items() if error_monitoring.can_serialize(v)},
                     },
                 )
 
@@ -237,7 +237,7 @@ class APIResource:
             duration = (time.monotonic() - before) * 1000
             logger.info("Request duration: %.1f ms / %s", duration, resp.status)
 
-    def _raise_not_found(self: APIResource, **_: object) -> None:
+    def _raise_not_found(self, **_: object) -> None:
         """Raise a Falcon HTTPNotFound error with available routes."""
         routes = {}
 
@@ -290,7 +290,7 @@ class APIResource:
         )
 
     def _run_query(
-        self: APIResource,
+        self,
         *,
         query: str,
         params: dict[str, Any] | None = None,
@@ -357,7 +357,7 @@ class APIResource:
 
         return copy.deepcopy(result)
 
-    def get_pid(self: APIResource, **_: object) -> int:
+    def get_pid(self, **_: object) -> int:
         """Just return the pid of the process which served this request.
 
         Returns:
@@ -367,7 +367,7 @@ class APIResource:
         """
         return os.getpid()
 
-    def db_ready(self: APIResource, **_: object) -> bool:
+    def db_ready(self, **_: object) -> bool:
         """Return true if the db is ready.
 
         Returns:
@@ -381,7 +381,7 @@ class APIResource:
         existing_tables = {r["relname"] for r in records}
         return "migrations" in existing_tables
 
-    def get_data(self: APIResource) -> list[dict]:
+    def get_data(self) -> list[dict]:
         """Retrieve card data from cache or Scryfall API.
 
         Returns:
@@ -422,7 +422,7 @@ class APIResource:
             logger.error("Failed to write cache file: %s", cache_file_path)
         return response
 
-    def setup_schema(self: APIResource, *_: object, **__: object) -> None:
+    def setup_schema(self, *_: object, **__: object) -> None:
         """Set up the database schema and apply migrations as needed."""
         if self._schema_setup_event.is_set():
             logger.info("Schema already setup (fastpath) in pid %d", os.getpid())
@@ -484,7 +484,7 @@ class APIResource:
             self._schema_setup_event.set()
             logger.info("Schema setup complete in pid %d", os.getpid())
 
-    def _get_cards_to_insert(self: APIResource) -> list[dict[str, Any]]:
+    def _get_cards_to_insert(self) -> list[dict[str, Any]]:
         """Get the cards to insert into the database."""
         all_cards = self.get_data()
         scryfall_id_to_card = {}
@@ -496,8 +496,7 @@ class APIResource:
             scryfall_id_to_card[scryfall_id] = processed_card
         return list(scryfall_id_to_card.values())
 
-
-    def get_stats(self: APIResource, **_: object) -> dict[str, Any]:
+    def get_stats(self, **_: object) -> dict[str, Any]:
         """Get stats about the cards."""
         to_insert = self._get_cards_to_insert()
         key_frequency = collections.Counter()
@@ -505,8 +504,7 @@ class APIResource:
             key_frequency.update(k for k, v in card.items() if v not in [None, [], {}])
         return key_frequency.most_common()
 
-
-    def _setup_complete(self: APIResource) -> True:
+    def _setup_complete(self) -> True:
         """Return True if the setup is complete."""
         try:
             with self._conn_pool.connection() as conn:
@@ -521,7 +519,7 @@ class APIResource:
             return False
 
     @cached(cache={}, key=lambda _self, *_args, **_kwargs: None)
-    def import_data(self: APIResource, **_: object) -> None:
+    def import_data(self, **_: object) -> None:
         """Import data from Scryfall and insert into the database."""
         if self._setup_complete():
             # check without taking the lock
@@ -560,7 +558,7 @@ class APIResource:
             return None
 
     def search(  # noqa: PLR0913
-        self: APIResource,
+        self,
         *,
         falcon_response: falcon.Response | None = None,
         # search parameters
@@ -603,7 +601,7 @@ class APIResource:
         key=lambda _self, *args, **kwargs: (args, tuple(sorted(kwargs.items()))),
     )
     def _search(  # noqa: PLR0913
-        self: APIResource,
+        self,
         *,
         direction: SortDirection = SortDirection.ASC,
         limit: int = 100,
@@ -725,7 +723,7 @@ class APIResource:
             raise falcon.HTTPBadRequest(
                 title="Invalid Search Query",
                 description=f"The search query '{query}' contains invalid syntax. "
-                           "Arithmetic expressions like 'cmc+1' need to be part of a comparison (e.g., 'cmc+1>3').",
+                "Arithmetic expressions like 'cmc+1' need to be part of a comparison (e.g., 'cmc+1>3').",
             ) from err
 
         cards = result_bag.pop("result", [])
@@ -744,7 +742,7 @@ class APIResource:
         }
 
     def index_html(  # noqa: PLR0913
-        self: APIResource,
+        self,
         *,
         falcon_response: falcon.Response | None = None,
         q: str | None = None,
@@ -809,7 +807,7 @@ class APIResource:
         falcon_response.text = html_content
         falcon_response.content_type = "text/html"
 
-    def prefer_score_tuner(self: APIResource, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
+    def prefer_score_tuner(self, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
         """Return the prefer score tuner page.
 
         Args:
@@ -820,7 +818,7 @@ class APIResource:
         self._serve_static_file(filename="prefer_score_tuner.html", falcon_response=falcon_response)
         falcon_response.content_type = "text/html"
 
-    def favicon_ico(self: APIResource, *, falcon_response: falcon.Response | None = None) -> None:
+    def favicon_ico(self, *, falcon_response: falcon.Response | None = None) -> None:
         """Return the favicon.ico file.
 
         Args:
@@ -839,7 +837,7 @@ class APIResource:
         # Cache favicon for 7 days - it rarely changes
         set_cache_header(falcon_response, duration=timedelta(days=7))
 
-    def _serve_static_file(self: APIResource, *, filename: str, falcon_response: falcon.Response) -> None:
+    def _serve_static_file(self, *, filename: str, falcon_response: falcon.Response) -> None:
         """Serve a static file to the Falcon response.
 
         Args:
@@ -852,7 +850,7 @@ class APIResource:
         with pathlib.Path(full_filename).open() as f:
             falcon_response.text = f.read()
 
-    def get_migrations(self: APIResource, **_: object) -> list[dict[str, str]]:
+    def get_migrations(self, **_: object) -> list[dict[str, str]]:
         """Get the migrations from the filesystem.
 
         Returns:
@@ -862,20 +860,22 @@ class APIResource:
         """
         return db_utils.get_migrations()
 
-    def get_common_card_types(self: APIResource, falcon_response: falcon.Response | None = None, **_: object) -> list[dict[str, Any]]:
+    def get_common_card_types(
+        self, falcon_response: falcon.Response | None = None, **_: object,
+    ) -> list[dict[str, Any]]:
         """Get the common card types from the database."""
         set_cache_header(falcon_response, duration=timedelta(hours=1))
         return self._run_query(
             query=self.read_sql("get_common_card_types"),
         )["result"]
 
-    def get_common_keywords(self: APIResource, **_: object) -> list[dict[str, Any]]:
+    def get_common_keywords(self, **_: object) -> list[dict[str, Any]]:
         """Get the common keywords from the database."""
         return self._run_query(
             query=self.read_sql("get_common_keywords"),
         )["result"]
 
-    def backfill_prefer_scores(self: APIResource, **_: object) -> dict[str, Any]:
+    def backfill_prefer_scores(self, **_: object) -> dict[str, Any]:
         """Backfill prefer_score and prefer_score_components for all cards.
 
         This endpoint recalculates the prefer score for all existing cards based on:
@@ -914,7 +914,7 @@ class APIResource:
         }
 
     def update_tagged_cards(
-        self: APIResource,
+        self,
         *,
         tag: str,
         **_: object,
@@ -973,7 +973,7 @@ class APIResource:
             "message": f"Successfully updated {updated_count} cards with tag '{tag}'",
         }
 
-    def _add_is_tag_to_cards(self: APIResource, *, is_tag: str) -> dict[str, Any]:
+    def _add_is_tag_to_cards(self, *, is_tag: str) -> dict[str, Any]:
         """Add a specific is: tag to all cards matching that tag using Scryfall search.
 
         Args:
@@ -1028,7 +1028,7 @@ class APIResource:
             "message": f"Successfully updated {updated_count} cards with is:{is_tag}",
         }
 
-    def discover_tags_from_scryfall(self: APIResource, **_: object) -> list[str]:
+    def discover_tags_from_scryfall(self, **_: object) -> list[str]:
         """Discover all available tags from Scryfall tagger documentation.
 
         Returns:
@@ -1057,7 +1057,7 @@ class APIResource:
         logger.info("Discovered %d unique tags from Scryfall", len(unique_tags))
         return unique_tags
 
-    def discover_tags_from_graphql(self: APIResource, **_: object) -> list[str]:
+    def discover_tags_from_graphql(self, **_: object) -> list[str]:
         """Discover all available tags from Scryfall tagger using GraphQL API.
 
         This method uses the SearchTags GraphQL query to fetch all available tags.
@@ -1085,15 +1085,8 @@ class APIResource:
 
                 # Extract tag slugs from results
                 ignored_namespaces = ["artwork", "print"]
-                tags.update(
-                    tag["slug"] for tag in results
-                    if tag["namespace"] not in ignored_namespaces
-                )
-                non_artwork_tags = [
-                    tag
-                    for tag in results
-                    if tag["namespace"] not in ignored_namespaces
-                ]
+                tags.update(tag["slug"] for tag in results if tag["namespace"] not in ignored_namespaces)
+                non_artwork_tags = [tag for tag in results if tag["namespace"] not in ignored_namespaces]
                 logger.info("Discovered %d tags from GraphQL: %s", len(tags), non_artwork_tags)
                 page += 1
         except (KeyError, TypeError, ValueError) as e:
@@ -1105,7 +1098,7 @@ class APIResource:
         logger.info("Discovered %d unique tags from GraphQL", len(unique_tags))
         return unique_tags
 
-    def discover_is_tags_from_syntax(self: APIResource, **_: object) -> list[str]:
+    def discover_is_tags_from_syntax(self, **_: object) -> list[str]:
         """Discover all available is: tags from Scryfall syntax documentation.
 
         Returns:
@@ -1135,7 +1128,7 @@ class APIResource:
         logger.info("Discovered %d unique is: tags from Scryfall syntax", len(unique_is_tags))
         return unique_is_tags
 
-    def _get_tag_relationships(self: APIResource, *, tag: str) -> list[dict[str, str]]:
+    def _get_tag_relationships(self, *, tag: str) -> list[dict[str, str]]:
         """Fetch list of relationships for a specific tag using Scryfall tagger GraphQL API.
 
         Args:
@@ -1147,6 +1140,7 @@ class APIResource:
             list[dict]: List of relationships for the tag.
         """
         logger.info("Fetching relationships for %s", tag)
+
         def clean_tag(itag: dict) -> dict:
             return {
                 "name": itag["name"],
@@ -1160,11 +1154,7 @@ class APIResource:
             tag_data = self._tagger_client.fetch_tag(tag, include_taggings=False)
         except ValueError:
             return relationships
-        ancestry = [
-            clean_tag(parent["tag"])
-            for parent in tag_data.pop("ancestry")
-            if parent.get("tag")
-        ]
+        ancestry = [clean_tag(parent["tag"]) for parent in tag_data.pop("ancestry") if parent.get("tag")]
         children = [clean_tag(tag) for tag in tag_data.pop("childTags")]
         tag_data = clean_tag(tag_data)
 
@@ -1183,13 +1173,9 @@ class APIResource:
                 },
             )
         # remove the relationships where the parent and child are the same
-        return [
-            relationship
-            for relationship in relationships
-            if relationship["parent"]["slug"] != relationship["child"]["slug"]
-        ]
+        return [relationship for relationship in relationships if relationship["parent"]["slug"] != relationship["child"]["slug"]]
 
-    def _populate_tag_hierarchy(self: APIResource, *, tags: list[str]) -> dict[str, Any]:
+    def _populate_tag_hierarchy(self, *, tags: list[str]) -> dict[str, Any]:
         """Populate the tag hierarchy table with discovered tags.
 
         Args:
@@ -1252,7 +1238,8 @@ class APIResource:
                         {
                             "child_tag": r["child"]["slug"],
                             "parent_tag": r["parent"]["slug"],
-                        } for r in relationships
+                        }
+                        for r in relationships
                     ],
                 )
                 conn.commit()
@@ -1264,9 +1251,8 @@ class APIResource:
             "tags_processed": len(tags_in_random_order),
         }
 
-
     def discover_and_import_all_tags(
-        self: APIResource,
+        self,
         *,
         import_cards: bool = True,
         import_hierarchy: bool = False,
@@ -1293,11 +1279,13 @@ class APIResource:
         try:
             all_tags = self.discover_tags_from_scryfall()
         except ValueError as e:
-            result.update({
-                "success": False,
-                "error": str(e),
-                "message": "Failed to discover tags from Scryfall",
-            })
+            result.update(
+                {
+                    "success": False,
+                    "error": str(e),
+                    "message": "Failed to discover tags from Scryfall",
+                },
+            )
             return result
 
         if not all_tags:
@@ -1316,7 +1304,7 @@ class APIResource:
 
         return result
 
-    def import_all_is_tags(self: APIResource, **_: object) -> dict[str, Any]:
+    def import_all_is_tags(self, **_: object) -> dict[str, Any]:
         """Discover and import all is: tags from Scryfall syntax documentation.
 
         Returns:
@@ -1332,11 +1320,13 @@ class APIResource:
         try:
             all_is_tags = self.discover_is_tags_from_syntax()
         except ValueError as e:
-            result.update({
-                "success": False,
-                "error": str(e),
-                "message": "Failed to discover is: tags from Scryfall syntax",
-            })
+            result.update(
+                {
+                    "success": False,
+                    "error": str(e),
+                    "message": "Failed to discover is: tags from Scryfall syntax",
+                },
+            )
             return result
 
         if not all_is_tags:
@@ -1367,31 +1357,35 @@ class APIResource:
                     )
 
                 tag_result = self._add_is_tag_to_cards(is_tag=is_tag)
-                imported_tags.append({
-                    "is_tag": is_tag,
-                    "cards_updated": tag_result["cards_updated"],
-                    "total_cards_found": tag_result["total_cards_found"],
-                })
+                imported_tags.append(
+                    {
+                        "is_tag": is_tag,
+                        "cards_updated": tag_result["cards_updated"],
+                        "total_cards_found": tag_result["total_cards_found"],
+                    },
+                )
                 total_cards_updated += tag_result["cards_updated"]
 
             except ValueError as e:
                 logger.warning("Failed to import is: tag '%s': %s", is_tag, e)
                 failed_tags.append({"is_tag": is_tag, "error": str(e)})
 
-        result.update({
-            "duration": time.monotonic() - start_time,
-            "discovered_is_tags": len(all_is_tags),
-            "imported_is_tags": len(imported_tags),
-            "failed_is_tags": len(failed_tags),
-            "total_cards_updated": total_cards_updated,
-            "imported_tags": imported_tags,
-            "failed_tags": failed_tags,
-            "message": f"Successfully imported {len(imported_tags)} is: tags, {len(failed_tags)} failed",
-        })
+        result.update(
+            {
+                "duration": time.monotonic() - start_time,
+                "discovered_is_tags": len(all_is_tags),
+                "imported_is_tags": len(imported_tags),
+                "failed_is_tags": len(failed_tags),
+                "total_cards_updated": total_cards_updated,
+                "imported_tags": imported_tags,
+                "failed_tags": failed_tags,
+                "message": f"Successfully imported {len(imported_tags)} is: tags, {len(failed_tags)} failed",
+            },
+        )
 
         return result
 
-    def _update_all_card_taggings(self: APIResource) -> dict[str, Any]:
+    def _update_all_card_taggings(self) -> dict[str, Any]:
         """Update all card taggings."""
         logger.info("Updating all card taggings")
         tags = self._get_all_tags()
@@ -1411,13 +1405,13 @@ class APIResource:
             "tags_processed": len(tags),
         }
 
-    def _get_all_tags(self: APIResource) -> set[str]:
+    def _get_all_tags(self) -> set[str]:
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute("SELECT tag FROM magic.tags")
             return {r["tag"] for r in cursor.fetchall()}
 
     def import_card_by_name(
-        self: APIResource,
+        self,
         *,
         card_name: str,
         **_: object,
@@ -1457,7 +1451,7 @@ class APIResource:
         return self.import_cards_by_search(search_query=f'!"{card_name}"')
 
     def import_cards_by_search(
-        self: APIResource,
+        self,
         *,
         search_query: str,
         **_: object,
@@ -1509,8 +1503,7 @@ class APIResource:
 
         return load_result
 
-
-    def _scryfall_search(self: APIResource, *, query: str) -> list[dict[str, Any]]:
+    def _scryfall_search(self, *, query: str) -> list[dict[str, Any]]:
         """Search Scryfall API for cards matching the given query.
 
         This method handles pagination to get the complete list of cards and
@@ -1578,9 +1571,9 @@ class APIResource:
 
         return all_cards
 
-
     if BACKFILL:
-        def backfill_mana_cost_jsonb(self: APIResource, **_: object) -> dict[str, str]:
+
+        def backfill_mana_cost_jsonb(self, **_: object) -> dict[str, str]:
             """Backfill the mana_cost_jsonb column with the mana_cost_text column."""
             logger.info("Backfilling mana_cost_jsonb column with mana_cost_text column")
             with self._conn_pool.connection() as conn, conn.cursor() as cursor:
@@ -1602,14 +1595,15 @@ class APIResource:
                 "message": "Mana cost jsonb backfilled successfully",
             }
 
-        def backfill_card_frame_data(self: APIResource, **_: object) -> dict[str, Any]:
+        def backfill_card_frame_data(self, **_: object) -> dict[str, Any]:
             """Backfill the card_frame_data column from raw_card_blob frame data."""
             logger.info("Backfilling card_frame_data column from raw_card_blob")
             updated_count = 0
             with self._conn_pool.connection() as conn, conn.cursor() as cursor:
                 cursor = typecast("Cursor", cursor)
                 # Select unique combinations of frame and frame_effects for efficient batch processing
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT
                         raw_card_blob->>'frame' AS frame,
                         raw_card_blob->'frame_effects' AS frame_effects
@@ -1618,7 +1612,8 @@ class APIResource:
                     WHERE
                         (raw_card_blob ? 'frame' OR raw_card_blob ? 'frame_effects')
                     GROUP BY 1, 2
-                """)
+                """,
+                )
 
                 for row in cursor.fetchall():
                     # Build raw card data for frame extraction
@@ -1634,7 +1629,8 @@ class APIResource:
 
                     logger.info("Updating frame: frame_data=%s, row=%s", frame_data, row)
                     cursor.execute(
-                        query=rewrap("""
+                        query=rewrap(
+                            """
                             UPDATE
                                 magic.cards
                             SET
@@ -1642,7 +1638,8 @@ class APIResource:
                             WHERE
                                 raw_card_blob->>'frame' IS NOT DISTINCT FROM %(frame)s AND
                                 raw_card_blob->'frame_effects' IS NOT DISTINCT FROM %(frame_effects)s
-                        """).encode(),
+                        """,
+                        ).encode(),
                         params={
                             "frame": db_utils.maybe_json(row["frame"]),
                             "frame_data": db_utils.maybe_json(frame_data),
@@ -1659,9 +1656,9 @@ class APIResource:
                 "updated_count": updated_count,
             }
 
-
     if IMPORT_EXPORT:
-        def export_card_data(self: APIResource, **_: object) -> dict[str, Any]:
+
+        def export_card_data(self, **_: object) -> dict[str, Any]:
             """Export card data tables to JSON files for backup/re-import.
 
             Exports the three main tables:
@@ -1708,7 +1705,7 @@ class APIResource:
                     "message": f"Export failed: {e}",
                 }
 
-        def _export_cards_table(self: APIResource, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
+        def _export_cards_table(self, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
             """Export magic.cards table to JSON file."""
             cards_file = export_dir / "cards.json"
             logger.info("Exporting magic.cards table to %s file", cards_file)
@@ -1724,7 +1721,7 @@ class APIResource:
             logger.info("Exported magic.cards table to %s file", cards_file)
             return {"file": str(cards_file), "count": cards_count}
 
-        def _export_tags_table(self: APIResource, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
+        def _export_tags_table(self, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
             """Export magic.tags table to JSON file."""
             tags_file = export_dir / "tags.json"
             logger.info("Exporting tags table to %s file", tags_file)
@@ -1740,15 +1737,17 @@ class APIResource:
             logger.info("Exported tags table to %s file", tags_file)
             return {"file": str(tags_file), "count": tags_count}
 
-        def _export_tag_relationships_table(self: APIResource, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
+        def _export_tag_relationships_table(self, cursor: Cursor, export_dir: pathlib.Path) -> dict[str, Any]:
             """Export magic.tag_relationships table to JSON file."""
             relationships_file = export_dir / "tag_relationships.json"
             logger.info("Exporting tag_relationships table to %s file", relationships_file)
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT child_tag, parent_tag
                 FROM magic.tag_relationships
                 ORDER BY child_tag, parent_tag
-            """)
+            """,
+            )
 
             relationships_data = [dict(row) for row in cursor.fetchall()]
             relationships_count = len(relationships_data)
@@ -1760,7 +1759,7 @@ class APIResource:
             logger.info("Exported tag_relationships table to %s file", relationships_file)
             return {"file": str(relationships_file), "count": relationships_count}
 
-        def import_card_data(self: APIResource, *, timestamp: str | None = None, **_: object) -> dict[str, Any]:
+        def import_card_data(self, *, timestamp: str | None = None, **_: object) -> dict[str, Any]:
             """Import card data from JSON files, truncating existing data.
 
             Imports data from /data/api/exports/{timestamp}/ directory.
@@ -1812,7 +1811,7 @@ class APIResource:
                     "message": f"Import failed: {e}",
                 }
 
-        def _find_import_directory(self: APIResource, timestamp: str | None) -> tuple[pathlib.Path, str]:
+        def _find_import_directory(self, timestamp: str | None) -> tuple[pathlib.Path, str]:
             """Find and validate the import directory."""
             exports_dir = pathlib.Path("/data/api/exports")
             if not exports_dir.exists():
@@ -1838,7 +1837,7 @@ class APIResource:
 
             return import_dir, timestamp
 
-        def _validate_import_files(self: APIResource, import_dir: pathlib.Path) -> None:
+        def _validate_import_files(self, import_dir: pathlib.Path) -> None:
             """Validate that all required import files exist."""
             required_files = [
                 ("cards.json", import_dir / "cards.json"),
@@ -1852,7 +1851,7 @@ class APIResource:
                 msg = f"Missing required files: {', '.join(missing_files)}"
                 raise ValueError(msg)
 
-        def _perform_import(self: APIResource, cursor: Cursor, import_dir: pathlib.Path) -> dict[str, int]:
+        def _perform_import(self, cursor: Cursor, import_dir: pathlib.Path) -> dict[str, int]:
             """Perform the actual import operation."""
             # Delete data from tables in correct order (respecting foreign keys)
             logger.info("Deleting existing data")
@@ -1901,13 +1900,16 @@ class APIResource:
             # Import cards in batches using jsonb_populate_record
             for card_batch in itertools.batched(cards_data, page_size):
                 batch_json = orjson.dumps(card_batch).decode("utf-8")
-                cursor.execute("""
+                cursor.execute(
+                    """
                     INSERT INTO magic.cards
                     SELECT
                         (jsonb_populate_record(null::magic.cards, value)).*
                     FROM
                         jsonb_array_elements(%s::jsonb)
-                """, (batch_json,))
+                """,
+                    (batch_json,),
+                )
                 num_imported += cursor.rowcount
                 logger.info(
                     "Imported %s of %s cards (%.1f%%)",
@@ -1922,7 +1924,7 @@ class APIResource:
             return import_results
 
     def _load_cards_with_staging(
-        self: APIResource,
+        self,
         cards: list[dict[str, Any]],
     ) -> dict[str, Any]:
         """Load cards into the database using a randomly-named staging table.
@@ -1989,13 +1991,16 @@ class APIResource:
                     cursor.execute(f"CREATE TEMPORARY TABLE {staging_table_name} (card_blob jsonb)")
 
                     # Load cards into staging table using COPY for efficiency
-                    with cursor.copy(f"COPY {staging_table_name} (card_blob) FROM STDIN WITH (FORMAT csv, HEADER false)") as copy_filehandle:
+                    with cursor.copy(
+                        f"COPY {staging_table_name} (card_blob) FROM STDIN WITH (FORMAT csv, HEADER false)",
+                    ) as copy_filehandle:
                         writer = csv.writer(copy_filehandle, quoting=csv.QUOTE_ALL)
                         writer.writerows([orjson.dumps(card, option=orjson.OPT_SORT_KEYS).decode("utf-8")] for card in page)
 
                     target_sample_size = 10
                     random_threshold = 2 * target_sample_size / len(page)
-                    cursor.execute(f"""
+                    cursor.execute(
+                        f"""
                         SELECT
                             (jsonb_populate_record(null::magic.cards, card_blob)).*
                         FROM

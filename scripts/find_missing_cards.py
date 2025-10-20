@@ -61,11 +61,11 @@ def search_scryfall(query: str, session: requests.Session) -> set[str]:
     base_url = "https://api.scryfall.com/cards/search"
     # x
     extra_params = [
-            "-is:dfc",
-            "-is:adventure",
-            "-is:split",
-            "game:paper",
-            "(f:m or f:l or f:c or f:v)",
+        "-is:dfc",
+        "-is:adventure",
+        "-is:split",
+        "game:paper",
+        "(f:m or f:l or f:c or f:v)",
     ]
     extra_params_str = " ".join(extra_params)
     full_query = f"({query}) {extra_params_str}"
@@ -174,9 +174,11 @@ def main() -> None:
 
     # Create a session for HTTP requests
     session = requests.Session()
-    session.headers.update({
-        "User-Agent": "ScryfallosCardFinder/1.0",
-    })
+    session.headers.update(
+        {
+            "User-Agent": "ScryfallosCardFinder/1.0",
+        },
+    )
 
     logging.info("Starting missing card detection process...")
 

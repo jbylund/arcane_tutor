@@ -1,4 +1,5 @@
 """Script for taking full screenshots of the application."""
+
 from __future__ import annotations
 
 import argparse
@@ -18,8 +19,10 @@ if TYPE_CHECKING:
 MILLISECONDS = 1000
 logger = logging.getLogger(__name__)
 
+
 class ServerContext:
     """Context manager which manages a scryfall context."""
+
     def __init__(self) -> None:
         """Initialize the server context with default port and worker count."""
         self.port = 8080
@@ -45,7 +48,9 @@ class ServerContext:
         logger.info("Server is ready")
         return self
 
-    def __exit__(self, exc_type: type[BaseException] | None, exc_value: BaseException | None, traceback: TracebackType | None) -> None:
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc_value: BaseException | None, traceback: TracebackType | None,
+    ) -> None:
         """Exit the server context."""
         self.server_process.terminate()
         self.server_process.join(timeout=3)
@@ -56,6 +61,7 @@ class ServerContext:
             self.server_process.join(timeout=1)
 
         logger.info("Server cleanup completed")
+
 
 def main() -> None:
     """Main entrypoint for the full screenshot script."""
@@ -85,7 +91,7 @@ def main() -> None:
             page.goto(
                 url,
                 wait_until="networkidle",
-                timeout=30*MILLISECONDS,
+                timeout=30 * MILLISECONDS,
             )
             page.wait_for_timeout(20)  # give it a moment for JS to settle
 
@@ -94,7 +100,7 @@ def main() -> None:
                 full_page=args.full_page,
                 path=output_filename,
                 # quality=100, - no quality for png
-                timeout=30*MILLISECONDS,
+                timeout=30 * MILLISECONDS,
                 type="png",
             )
 

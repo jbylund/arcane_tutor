@@ -7,6 +7,7 @@ from enum import StrEnum
 
 class FieldType(StrEnum):
     """Enumeration of supported database field types."""
+
     JSONB_ARRAY = "jsonb_array"
     JSONB_OBJECT = "jsonb_object"
     NUMERIC = "numeric"
@@ -16,20 +17,21 @@ class FieldType(StrEnum):
 
 class ParserClass(StrEnum):
     """Enumeration of parser classes for different field types."""
-    NUMERIC = "numeric"      # Supports arithmetic operations (cmc, power, etc.)
-    MANA = "mana"           # Mana cost fields with special mana value parsing
-    RARITY = "rarity"       # Rarity fields with string-to-numeric conversion
-    LEGALITY = "legality"   # Format/legal fields with JSON handling
-    COLOR = "color"         # Color fields (card colors and color identity)
-    TEXT = "text"           # Simple text fields (name, artist, oracle text)
-    DATE = "date"           # Date fields with full date values
-    YEAR = "year"           # Year fields with 4-digit year values
+
+    NUMERIC = "numeric"  # Supports arithmetic operations (cmc, power, etc.)
+    MANA = "mana"  # Mana cost fields with special mana value parsing
+    RARITY = "rarity"  # Rarity fields with string-to-numeric conversion
+    LEGALITY = "legality"  # Format/legal fields with JSON handling
+    COLOR = "color"  # Color fields (card colors and color identity)
+    TEXT = "text"  # Simple text fields (name, artist, oracle text)
+    DATE = "date"  # Date fields with full date values
+    YEAR = "year"  # Year fields with 4-digit year values
 
 
 class FieldInfo:
     """Information about a database field and its search aliases."""
 
-    def __init__(self, db_column_name: str, field_type: FieldType, search_aliases: list[str], parser_class: ParserClass | None = None) -> None:
+    def __init__(self, *, db_column_name: str, field_type: FieldType, search_aliases: list[str], parser_class: ParserClass) -> None:
         """Initialize field information.
 
         Args:
@@ -46,43 +48,229 @@ class FieldInfo:
             parser_class = ParserClass.NUMERIC if field_type == FieldType.NUMERIC else ParserClass.TEXT
         self.parser_class = parser_class
 
+    def __repr__(self: FieldInfo) -> str:
+        """Return a string representation of the field info."""
+        return (
+            "FieldInfo("
+            f"db_column_name={self.db_column_name}, "
+            f"field_type={self.field_type}, "
+            f"search_aliases={self.search_aliases}, "
+            f"parser_class={self.parser_class}"
+            ")"
+        )
+
 
 DB_COLUMNS = [
-    FieldInfo("card_artist", FieldType.TEXT, ["artist", "a"], ParserClass.TEXT),
-    FieldInfo("card_colors", FieldType.JSONB_OBJECT, ["color", "colors", "c"], ParserClass.COLOR),
-    FieldInfo("card_color_identity", FieldType.JSONB_OBJECT, ["color_identity", "coloridentity", "id", "identity"], ParserClass.COLOR),
-    FieldInfo("card_frame_data", FieldType.JSONB_OBJECT, ["frame"], ParserClass.TEXT),
-    FieldInfo("card_keywords", FieldType.JSONB_OBJECT, ["keyword"], ParserClass.TEXT),
-    FieldInfo("card_name", FieldType.TEXT, ["name"], ParserClass.TEXT),
-    FieldInfo("card_subtypes", FieldType.JSONB_ARRAY, ["subtype", "subtypes"], ParserClass.TEXT),
-    FieldInfo("card_types", FieldType.JSONB_ARRAY, ["type", "types", "t"], ParserClass.TEXT),
-    FieldInfo("cmc", FieldType.NUMERIC, ["cmc", "mv", "manavalue"], ParserClass.NUMERIC),
-    FieldInfo("creature_power", FieldType.NUMERIC, ["power", "pow"], ParserClass.NUMERIC),
-    FieldInfo("creature_toughness", FieldType.NUMERIC, ["toughness", "tou"], ParserClass.NUMERIC),
-    FieldInfo("planeswalker_loyalty", FieldType.NUMERIC, ["loyalty", "loy"], ParserClass.NUMERIC),
-    FieldInfo("edhrec_rank", FieldType.NUMERIC, [], ParserClass.NUMERIC),
-    FieldInfo("mana_cost_jsonb", FieldType.JSONB_OBJECT, ["mana"], ParserClass.MANA),
-    FieldInfo("mana_cost_text", FieldType.TEXT, ["mana", "m"], ParserClass.MANA),
-    FieldInfo("devotion", FieldType.JSONB_OBJECT, ["devotion"], ParserClass.MANA),
-    FieldInfo("price_usd", FieldType.NUMERIC, ["usd"], ParserClass.NUMERIC),
-    FieldInfo("price_eur", FieldType.NUMERIC, ["eur"], ParserClass.NUMERIC),
-    FieldInfo("price_tix", FieldType.NUMERIC, ["tix"], ParserClass.NUMERIC),
-    FieldInfo("produced_mana", FieldType.JSONB_OBJECT, ["produces"], ParserClass.COLOR),
-    FieldInfo("raw_card_blob", FieldType.JSONB_OBJECT, [], ParserClass.TEXT),
-    FieldInfo("oracle_text", FieldType.TEXT, ["oracle", "o"], ParserClass.TEXT),
-    FieldInfo("flavor_text", FieldType.TEXT, ["flavor", "ft"], ParserClass.TEXT),
-    FieldInfo("card_oracle_tags", FieldType.JSONB_OBJECT, ["oracle_tags", "otag"], ParserClass.TEXT),
-    FieldInfo("card_is_tags", FieldType.JSONB_OBJECT, ["is"], ParserClass.TEXT),
-    FieldInfo("card_rarity_int", FieldType.NUMERIC, ["rarity", "r"], ParserClass.RARITY),
-    FieldInfo("card_set_code", FieldType.TEXT, ["set", "s"], ParserClass.TEXT),
-    FieldInfo("collector_number", FieldType.TEXT, ["number", "cn"], ParserClass.TEXT),
-    FieldInfo("collector_number_int", FieldType.NUMERIC, [], ParserClass.NUMERIC),  # No direct aliases - will be routed
-    FieldInfo("card_legalities", FieldType.JSONB_OBJECT, ["format", "f", "legal", "banned", "restricted"], ParserClass.LEGALITY),
-    FieldInfo("card_layout", FieldType.TEXT, ["layout"], ParserClass.TEXT),
-    FieldInfo("card_border", FieldType.TEXT, ["border"], ParserClass.TEXT),
-    FieldInfo("card_watermark", FieldType.TEXT, ["watermark"], ParserClass.TEXT),
-    FieldInfo("released_at", FieldType.DATE, ["date"], ParserClass.DATE),
-    FieldInfo("released_at", FieldType.DATE, ["year"], ParserClass.YEAR),
+    FieldInfo(
+        db_column_name="card_artist",
+        field_type=FieldType.TEXT,
+        search_aliases=["artist", "a"],
+        parser_class=ParserClass.TEXT,
+    ),
+    FieldInfo(
+        db_column_name="card_colors",
+        field_type=FieldType.JSONB_OBJECT,
+        search_aliases=["color", "colors", "c"],
+        parser_class=ParserClass.COLOR,
+    ),
+    FieldInfo(
+        db_column_name="card_color_identity",
+        field_type=FieldType.JSONB_OBJECT,
+        search_aliases=["color_identity", "coloridentity", "id", "identity"],
+        parser_class=ParserClass.COLOR,
+    ),
+    FieldInfo(
+        db_column_name="card_frame_data",
+        field_type=FieldType.JSONB_OBJECT,
+        search_aliases=["frame"],
+        parser_class=ParserClass.TEXT,
+    ),
+    FieldInfo(
+        db_column_name="card_keywords",
+        field_type=FieldType.JSONB_OBJECT,
+        search_aliases=["keyword"],
+        parser_class=ParserClass.TEXT,
+    ),
+    FieldInfo(
+        db_column_name="card_name",
+        field_type=FieldType.TEXT,
+        search_aliases=["name"],
+        parser_class=ParserClass.TEXT,
+    ),
+    FieldInfo(
+        db_column_name="card_subtypes",
+        field_type=FieldType.JSONB_ARRAY,
+        search_aliases=["subtype", "subtypes"],
+        parser_class=ParserClass.TEXT,
+    ),
+    FieldInfo(
+        db_column_name="card_types",
+        field_type=FieldType.JSONB_ARRAY,
+        search_aliases=["type", "types", "t"],
+        parser_class=ParserClass.TEXT,
+    ),
+    FieldInfo(
+        db_column_name="cmc",
+        field_type=FieldType.NUMERIC,
+        search_aliases=["cmc", "mv", "manavalue"],
+        parser_class=ParserClass.NUMERIC,
+    ),
+    FieldInfo(
+        db_column_name="creature_power",
+        field_type=FieldType.NUMERIC,
+        search_aliases=["power", "pow"],
+        parser_class=ParserClass.NUMERIC,
+    ),
+    FieldInfo(
+        db_column_name="creature_toughness",
+        field_type=FieldType.NUMERIC,
+        search_aliases=["toughness", "tou"],
+        parser_class=ParserClass.NUMERIC,
+    ),
+    FieldInfo(
+        db_column_name="planeswalker_loyalty",
+        field_type=FieldType.NUMERIC,
+        search_aliases=["loyalty", "loy"],
+        parser_class=ParserClass.NUMERIC,
+    ),
+    FieldInfo(
+        db_column_name="edhrec_rank",
+        field_type=FieldType.NUMERIC,
+        search_aliases=[],
+        parser_class=ParserClass.NUMERIC,
+    ),
+    FieldInfo(
+        db_column_name="mana_cost_jsonb",
+        field_type=FieldType.JSONB_OBJECT,
+        search_aliases=["mana"],
+        parser_class=ParserClass.MANA,
+    ),
+    FieldInfo(
+        db_column_name="mana_cost_text",
+        field_type=FieldType.TEXT,
+        search_aliases=["mana", "m"],
+        parser_class=ParserClass.MANA,
+    ),
+    FieldInfo(
+        db_column_name="devotion",
+        field_type=FieldType.JSONB_OBJECT,
+        search_aliases=["devotion"],
+        parser_class=ParserClass.MANA,
+    ),
+    FieldInfo(
+        db_column_name="price_usd",
+        field_type=FieldType.NUMERIC,
+        search_aliases=["usd"],
+        parser_class=ParserClass.NUMERIC,
+    ),
+    FieldInfo(
+        db_column_name="price_eur",
+        field_type=FieldType.NUMERIC,
+        search_aliases=["eur"],
+        parser_class=ParserClass.NUMERIC,
+    ),
+    FieldInfo(
+        db_column_name="price_tix",
+        field_type=FieldType.NUMERIC,
+        search_aliases=["tix"],
+        parser_class=ParserClass.NUMERIC,
+    ),
+    FieldInfo(
+        db_column_name="produced_mana",
+        field_type=FieldType.JSONB_OBJECT,
+        search_aliases=["produces"],
+        parser_class=ParserClass.COLOR,
+    ),
+    FieldInfo(
+        db_column_name="raw_card_blob",
+        field_type=FieldType.JSONB_OBJECT,
+        search_aliases=[],
+        parser_class=ParserClass.TEXT,
+    ),
+    FieldInfo(
+        db_column_name="oracle_text",
+        field_type=FieldType.TEXT,
+        search_aliases=["oracle", "o"],
+        parser_class=ParserClass.TEXT,
+    ),
+    FieldInfo(
+        db_column_name="flavor_text",
+        field_type=FieldType.TEXT,
+        search_aliases=["flavor", "ft"],
+        parser_class=ParserClass.TEXT,
+    ),
+    FieldInfo(
+        db_column_name="card_oracle_tags",
+        field_type=FieldType.JSONB_OBJECT,
+        search_aliases=["oracle_tags", "otag"],
+        parser_class=ParserClass.TEXT,
+    ),
+    FieldInfo(
+        db_column_name="card_is_tags",
+        field_type=FieldType.JSONB_OBJECT,
+        search_aliases=["is"],
+        parser_class=ParserClass.TEXT,
+    ),
+    FieldInfo(
+        db_column_name="card_rarity_int",
+        field_type=FieldType.NUMERIC,
+        search_aliases=["rarity", "r"],
+        parser_class=ParserClass.RARITY,
+    ),
+    FieldInfo(
+        db_column_name="card_set_code",
+        field_type=FieldType.TEXT,
+        search_aliases=["set", "s"],
+        parser_class=ParserClass.TEXT,
+    ),
+    FieldInfo(
+        db_column_name="collector_number",
+        field_type=FieldType.TEXT,
+        search_aliases=["number", "cn"],
+        parser_class=ParserClass.TEXT,
+    ),
+    FieldInfo(
+        db_column_name="collector_number_int",
+        field_type=FieldType.NUMERIC,
+        search_aliases=[],
+        parser_class=ParserClass.NUMERIC,
+    ),  # No direct aliases - will be routed
+    FieldInfo(
+        db_column_name="card_legalities",
+        field_type=FieldType.JSONB_OBJECT,
+        search_aliases=["format", "f", "legal", "banned", "restricted"],
+        parser_class=ParserClass.LEGALITY,
+    ),
+    FieldInfo(
+        db_column_name="card_layout",
+        field_type=FieldType.TEXT,
+        search_aliases=["layout"],
+        parser_class=ParserClass.TEXT,
+    ),
+    FieldInfo(
+        db_column_name="card_border",
+        field_type=FieldType.TEXT,
+        search_aliases=["border"],
+        parser_class=ParserClass.TEXT,
+    ),
+    FieldInfo(
+        db_column_name="card_watermark",
+        field_type=FieldType.TEXT,
+        search_aliases=["watermark"],
+        parser_class=ParserClass.TEXT,
+    ),
+    FieldInfo(
+        db_column_name="released_at",
+        field_type=FieldType.DATE,
+        search_aliases=["date"],
+        parser_class=ParserClass.DATE,
+    ),
+    FieldInfo(
+        db_column_name="released_at",
+        field_type=FieldType.DATE,
+        search_aliases=["year"],
+        parser_class=ParserClass.YEAR,
+    ),
 ]
 
 KNOWN_CARD_ATTRIBUTES = set()
@@ -100,7 +288,18 @@ TEXT_ATTRIBUTES = set()
 DATE_ATTRIBUTES = set()
 YEAR_ATTRIBUTES = set()
 
+
+ALIAS_TO_FIELD_INFOS: dict[str, list[FieldInfo]] = {}
+COLNAME_TO_FIELD_INFOS: dict[str, list[FieldInfo]] = {}
+PARSER_CLASS_TO_FIELD_INFOS: dict[ParserClass, list[FieldInfo]] = {}
+
 for col in DB_COLUMNS:
+    for ialias in col.search_aliases:
+        ALIAS_TO_FIELD_INFOS.setdefault(ialias.lower(), []).append(col)
+
+    COLNAME_TO_FIELD_INFOS.setdefault(col.db_column_name, []).append(col)
+    PARSER_CLASS_TO_FIELD_INFOS.setdefault(col.parser_class, []).append(col)
+
     KNOWN_CARD_ATTRIBUTES.add(col.db_column_name.lower())
     KNOWN_CARD_ATTRIBUTES.update(alias.lower() for alias in col.search_aliases)
     SEARCH_NAME_TO_DB_NAME[col.db_column_name.lower()] = col.db_column_name

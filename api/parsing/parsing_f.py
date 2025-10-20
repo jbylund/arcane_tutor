@@ -25,22 +25,15 @@ from pyparsing import (
     oneOf,
 )
 
-from api.parsing.card_query_nodes import to_card_query_ast
+from api.parsing.card_query_nodes import CardAttributeNode, to_card_query_ast
 from api.parsing.db_info import (
-    COLOR_ATTRIBUTES,
     COLOR_NAME_TO_CODE,
-    DATE_ATTRIBUTES,
     KNOWN_CARD_ATTRIBUTES,
-    LEGALITY_ATTRIBUTES,
-    MANA_ATTRIBUTES,
-    NUMERIC_ATTRIBUTES,
-    RARITY_ATTRIBUTES,
-    TEXT_ATTRIBUTES,
-    YEAR_ATTRIBUTES,
+    PARSER_CLASS_TO_FIELD_INFOS,
+    ParserClass,
 )
 from api.parsing.nodes import (
     AndNode,
-    AttributeNode,
     BinaryOperatorNode,
     ManaValueNode,
     NotNode,
@@ -172,21 +165,38 @@ def make_binary_operator_node(tokens: list[object]) -> BinaryOperatorNode:
     return BinaryOperatorNode(create_value_node(left), operator, create_value_node(right))
 
 
-def create_attribute_parser(attributes: list[str]) -> ParserElement:
+def create_attribute_parser(parser_class: ParserClass) -> ParserElement:
     """Factory function to create attribute parsers with consistent parse actions.
 
     Args:
-        attributes: List of attribute names to match
+        parser_class: The parser class to use for this attribute.
 
     Returns:
         Parser element that matches attributes and creates AttributeNode instances
     """
-    parser = make_regex_pattern(attributes)
-    parser.setParseAction(lambda tokens: AttributeNode(tokens[0]))
+    field_infos = PARSER_CLASS_TO_FIELD_INFOS[parser_class]
+
+    # get all the aliases...
+    aliases = set()
+    for field_info in field_infos:
+        aliases.update(a.lower() for a in field_info.search_aliases)
+    parser = make_regex_pattern(aliases)
+
+    def parse_action(tokens: list[str]) -> CardAttributeNode:
+        """Parse action for the attribute parser."""
+        matched_alias = tokens[0].lower()
+        return CardAttributeNode(
+            attribute_name=matched_alias,
+            matched_parser_class=parser_class,
+        )
+
+    parser.setParseAction(parse_action)
     return parser
 
 
-def create_condition_parser(attr_parser: ParserElement, value_parser: ParserElement, operators: ParserElement = DEFAULT_OPERATORS) -> ParserElement:
+def create_condition_parser(
+    attr_parser: ParserElement, value_parser: ParserElement, operators: ParserElement = DEFAULT_OPERATORS,
+) -> ParserElement:
     """Factory function to create condition parsers with consistent structure.
 
     Args:
@@ -263,7 +273,9 @@ def create_basic_parsers() -> dict[str, ParserElement]:
     # Use QuotedString with forward slash delimiter
     # unquoteResults=False keeps the original string with backslashes intact
     # convertWhitespaceEscapes=False prevents \n, \t, \b, etc. from being interpreted
-    regex_pattern = QuotedString("/", escChar="\\", unquoteResults=False, convertWhitespaceEscapes=False).setParseAction(make_regex_pattern_value)
+    regex_pattern = QuotedString("/", escChar="\\", unquoteResults=False, convertWhitespaceEscapes=False).setParseAction(
+        make_regex_pattern_value,
+    )
 
     # Word that doesn't match keywords
     def make_word(tokens: list[str]) -> str:
@@ -381,14 +393,14 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
     color_value = color_parsers["color_value"]
 
     # Create attribute parsers using factory functions
-    numeric_attr_word = create_attribute_parser(NUMERIC_ATTRIBUTES)
-    mana_attr_word = create_attribute_parser(MANA_ATTRIBUTES)
-    rarity_attr_word = create_attribute_parser(RARITY_ATTRIBUTES)
-    legality_attr_word = create_attribute_parser(LEGALITY_ATTRIBUTES)
-    color_attr_word = create_attribute_parser(COLOR_ATTRIBUTES)
-    text_attr_word = create_attribute_parser(TEXT_ATTRIBUTES)
-    date_attr_word = create_attribute_parser(DATE_ATTRIBUTES)
-    year_attr_word = create_attribute_parser(YEAR_ATTRIBUTES)
+    numeric_attr_word = create_attribute_parser(ParserClass.NUMERIC)
+    mana_attr_word = create_attribute_parser(ParserClass.MANA)
+    rarity_attr_word = create_attribute_parser(ParserClass.RARITY)
+    legality_attr_word = create_attribute_parser(ParserClass.LEGALITY)
+    color_attr_word = create_attribute_parser(ParserClass.COLOR)
+    text_attr_word = create_attribute_parser(ParserClass.TEXT)
+    date_attr_word = create_attribute_parser(ParserClass.DATE)
+    year_attr_word = create_attribute_parser(ParserClass.YEAR)
 
     # Build the grammar with proper precedence
     expr = Forward()
@@ -406,7 +418,11 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
 
     # Unified numeric comparison rule: handles all combinations of arithmetic expressions, numeric attributes, and literals
     # This consolidates the previous arithmetic_comparison and numeric_condition rules
-    unified_numeric_comparison = (arithmetic_expr | numeric_attr_word | literal_number) + DEFAULT_OPERATORS + (arithmetic_expr | numeric_attr_word | literal_number)
+    unified_numeric_comparison = (
+        (arithmetic_expr | numeric_attr_word | literal_number)
+        + DEFAULT_OPERATORS
+        + (arithmetic_expr | numeric_attr_word | literal_number)
+    )
     unified_numeric_comparison.setParseAction(make_binary_operator_node)
 
     # Create condition parsers using factory function where possible
@@ -438,19 +454,29 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
 
     # Attribute-to-attribute comparisons should be between attributes of the same parser class
     attr_attr_condition = (
-        (numeric_attr_word + DEFAULT_OPERATORS + numeric_attr_word) |
-        (mana_attr_word + DEFAULT_OPERATORS + mana_attr_word) |
-        (rarity_attr_word + DEFAULT_OPERATORS + rarity_attr_word) |
-        (legality_attr_word + DEFAULT_OPERATORS + legality_attr_word) |
-        (color_attr_word + DEFAULT_OPERATORS + color_attr_word) |
-        (text_attr_word + DEFAULT_OPERATORS + text_attr_word) |
-        (date_attr_word + DEFAULT_OPERATORS + date_attr_word) |
-        (year_attr_word + DEFAULT_OPERATORS + year_attr_word)
+        (numeric_attr_word + DEFAULT_OPERATORS + numeric_attr_word)
+        | (mana_attr_word + DEFAULT_OPERATORS + mana_attr_word)
+        | (rarity_attr_word + DEFAULT_OPERATORS + rarity_attr_word)
+        | (legality_attr_word + DEFAULT_OPERATORS + legality_attr_word)
+        | (color_attr_word + DEFAULT_OPERATORS + color_attr_word)
+        | (text_attr_word + DEFAULT_OPERATORS + text_attr_word)
+        | (date_attr_word + DEFAULT_OPERATORS + date_attr_word)
+        | (year_attr_word + DEFAULT_OPERATORS + year_attr_word)
     )
     attr_attr_condition.setParseAction(make_binary_operator_node)
 
     # Combine all conditions with clear precedence - no more special cases needed
-    condition = mana_condition | rarity_condition | legality_condition | color_condition | date_condition | year_condition | unified_numeric_comparison | text_condition | attr_attr_condition
+    condition = (
+        mana_condition
+        | rarity_condition
+        | legality_condition
+        | color_condition
+        | date_condition
+        | year_condition
+        | unified_numeric_comparison
+        | text_condition
+        | attr_attr_condition
+    )
 
     # Special rule for text attribute-colon-hyphenated-value to handle cases like "otag:dual-land" and "otag:40k-model"
     # Only text attributes should have hyphenated string values (not numeric, mana, rarity, or legality)
@@ -508,6 +534,7 @@ def parse_scryfall_query(query: str) -> Query:
     """
     generic_query = parse_search_query(query)
     return to_card_query_ast(generic_query)
+
 
 @cachetools.cached(cache={})
 def get_parse_expr() -> ParserElement:  # noqa: C901, PLR0915
@@ -568,7 +595,7 @@ def get_parse_expr() -> ParserElement:  # noqa: C901, PLR0915
     # Single word (implicit name search)
     def make_single_word(tokens: list[str]) -> BinaryOperatorNode:
         """For single words, always search in the name field."""
-        return BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode(tokens[0]))
+        return BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode(tokens[0]))
 
     single_word = word.setParseAction(make_single_word)
 
@@ -711,7 +738,7 @@ def parse_search_query(query: str) -> Query:
     original_query = query
     if query is None or not query.strip():
         # Return empty query
-        return Query(BinaryOperatorNode(AttributeNode("name"), ":", ""))
+        return Query(BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", ""))
 
     # Pre-process the query to handle implicit AND operations
     # Convert "a b" to "a AND b" when b is not an operator

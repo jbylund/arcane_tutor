@@ -65,10 +65,12 @@ class TestImportCardByName(unittest.TestCase):
         """Test that _scryfall_search returns card data for successful responses."""
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.content = orjson.dumps({
-            "data": [{"name": "Lightning Bolt", "cmc": 1}],
-            "has_more": False,
-        })
+        mock_response.content = orjson.dumps(
+            {
+                "data": [{"name": "Lightning Bolt", "cmc": 1}],
+                "has_more": False,
+            },
+        )
         mock_get.return_value = mock_response
 
         result = self.api_resource._scryfall_search(query="name:'Lightning Bolt'")
@@ -102,7 +104,9 @@ class TestImportCardByName(unittest.TestCase):
 
     @patch.object(APIResource, "_run_query")
     @patch.object(APIResource, "_scryfall_search")
-    def test_import_card_by_name_returns_not_found_for_missing_card(self, mock_search: MagicMock, mock_run_query: MagicMock) -> None:
+    def test_import_card_by_name_returns_not_found_for_missing_card(
+        self, mock_search: MagicMock, mock_run_query: MagicMock,
+    ) -> None:
         """Test that import_card_by_name returns not_found status when card doesn't exist in Scryfall."""
         # Mock _run_query to return no existing card
         mock_run_query.return_value = {"result": []}
@@ -118,7 +122,9 @@ class TestImportCardByName(unittest.TestCase):
 
     @patch.object(APIResource, "_run_query")
     @patch.object(APIResource, "_scryfall_search")
-    def test_import_card_by_name_returns_error_for_scryfall_exceptions(self, mock_search: MagicMock, mock_run_query: MagicMock) -> None:
+    def test_import_card_by_name_returns_error_for_scryfall_exceptions(
+        self, mock_search: MagicMock, mock_run_query: MagicMock,
+    ) -> None:
         """Test that import_card_by_name returns error status for Scryfall API exceptions."""
         # Mock _run_query to return no existing card
         mock_run_query.return_value = {"result": []}
@@ -136,7 +142,10 @@ class TestImportCardByName(unittest.TestCase):
     @patch.object(APIResource, "_scryfall_search")
     @patch("api.card_processing.preprocess_card")
     def test_import_card_by_name_returns_filtered_out_for_invalid_cards(
-        self, mock_preprocess: MagicMock, mock_search: MagicMock, mock_run_query: MagicMock,
+        self,
+        mock_preprocess: MagicMock,
+        mock_search: MagicMock,
+        mock_run_query: MagicMock,
     ) -> None:
         """Test that import_card_by_name returns filtered_out status for cards filtered during preprocessing."""
         # Mock _run_query to return no existing card
@@ -149,7 +158,13 @@ class TestImportCardByName(unittest.TestCase):
         mock_preprocess.return_value = None
 
         result = self.api_resource.import_card_by_name(card_name="TestCard")
-        assert result == {"status": "no_cards_after_preprocessing", "cards_loaded": 0, "sample_cards": [], "message": "No cards remaining after preprocessing", "search_query": '!"TestCard"'}
+        assert result == {
+            "status": "no_cards_after_preprocessing",
+            "cards_loaded": 0,
+            "sample_cards": [],
+            "message": "No cards remaining after preprocessing",
+            "search_query": '!"TestCard"',
+        }
 
 
 if __name__ == "__main__":

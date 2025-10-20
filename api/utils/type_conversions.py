@@ -14,9 +14,11 @@ def identity(x: str) -> str:
     """Identity function."""
     return x
 
+
 def convert_to_bool(x: str) -> bool:
     """Convert a string to a boolean."""
     return x.lower() in ("true", "1", "yes", "on", "t")
+
 
 def _convert_string_to_type(str_value: str | None, param_type: Any) -> Any:  # noqa: ANN401
     """Convert a string value to the specified type.
@@ -37,7 +39,6 @@ def _convert_string_to_type(str_value: str | None, param_type: Any) -> Any:  # n
         "PreferOrder": PreferOrder,
         "SortDirection": SortDirection,
         "UniqueOn": UniqueOn,
-
         # other stuffs
         "bool": convert_to_bool,
         "float": float,

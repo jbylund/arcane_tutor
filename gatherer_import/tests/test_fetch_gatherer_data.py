@@ -21,7 +21,7 @@ class TestExtractItemsFromResponse:
         # Create a mock response with embedded JSON array
         mock_items = [{"id": 1, "name": "Item 1"}, {"id": 2, "name": "Item 2"}]
         # Double-encode the items as they would be in the actual response
-        items_json = json.dumps(mock_items).replace('"', r'\"')
+        items_json = json.dumps(mock_items).replace('"', r"\"")
         mock_html = f'some html before,\\"items\\":{items_json} some html after'
 
         result = fetcher._extract_items_from_response(mock_html)
@@ -34,7 +34,7 @@ class TestExtractItemsFromResponse:
         """Test extracting an empty items array."""
         fetcher = GathererFetcher()
 
-        mock_html = r'some html before,\"items\":[] some html after'
+        mock_html = r"some html before,\"items\":[] some html after"
 
         result = fetcher._extract_items_from_response(mock_html)
 
@@ -48,7 +48,7 @@ class TestExtractItemsFromResponse:
             {"id": 1, "details": {"name": "Card 1", "type": "Creature"}},
             {"id": 2, "details": {"name": "Card 2", "type": "Instant"}},
         ]
-        items_json = json.dumps(mock_items).replace('"', r'\"')
+        items_json = json.dumps(mock_items).replace('"', r"\"")
         mock_html = f'prefix,\\"items\\":{items_json} suffix'
 
         result = fetcher._extract_items_from_response(mock_html)
@@ -83,7 +83,7 @@ class TestExtractItemsFromResponse:
             {"id": 1, "tags": ["tag1", "tag2"]},
             {"id": 2, "tags": ["tag3"]},
         ]
-        items_json = json.dumps(mock_items).replace('"', r'\"')
+        items_json = json.dumps(mock_items).replace('"', r"\"")
         mock_html = f'prefix,\\"items\\":{items_json} suffix'
 
         result = fetcher._extract_items_from_response(mock_html)
@@ -103,7 +103,7 @@ class TestFetchSet:
 
         # Mock response
         mock_cards = [{"id": 1, "name": "Card 1"}, {"id": 2, "name": "Card 2"}]
-        items_json = json.dumps(mock_cards).replace('"', r'\"')
+        items_json = json.dumps(mock_cards).replace('"', r"\"")
         mock_html = f'html,\\"items\\":{items_json} html'
 
         mock_response = Mock()
@@ -133,8 +133,8 @@ class TestFetchSet:
         page1_cards = [{"id": 1, "name": "Card 1"}]
         page2_cards = [{"id": 2, "name": "Card 2"}]
 
-        page1_json = json.dumps(page1_cards).replace('"', r'\"')
-        page2_json = json.dumps(page2_cards).replace('"', r'\"')
+        page1_json = json.dumps(page1_cards).replace('"', r"\"")
+        page2_json = json.dumps(page2_cards).replace('"', r"\"")
 
         mock_response1 = Mock()
         mock_response1.text = f'html,\\"items\\":{page1_json} html'
@@ -188,7 +188,7 @@ class TestFetchAllSets:
             {"setCode": "SET1", "name": "Set 1"},
             {"setCode": "SET2", "name": "Set 2"},
         ]
-        items_json = json.dumps(mock_sets).replace('"', r'\"')
+        items_json = json.dumps(mock_sets).replace('"', r"\"")
         mock_html = f'html,\\"items\\":{items_json} html'
 
         mock_response = Mock()
@@ -216,8 +216,8 @@ class TestFetchAllSets:
         page1_sets = [{"setCode": "SET1", "name": "Set 1"}]
         page2_sets = [{"setCode": "SET2", "name": "Set 2"}]
 
-        page1_json = json.dumps(page1_sets).replace('"', r'\"')
-        page2_json = json.dumps(page2_sets).replace('"', r'\"')
+        page1_json = json.dumps(page1_sets).replace('"', r"\"")
+        page2_json = json.dumps(page2_sets).replace('"', r"\"")
 
         mock_response1 = Mock()
         mock_response1.text = f'html,\\"items\\":{page1_json} html'
@@ -246,7 +246,7 @@ class TestFetchAllSets:
         mock_session_class.return_value = mock_session
 
         page1_sets = [{"setCode": "SET1", "name": "Set 1"}]
-        page1_json = json.dumps(page1_sets).replace('"', r'\"')
+        page1_json = json.dumps(page1_sets).replace('"', r"\"")
 
         mock_response1 = Mock()
         mock_response1.text = f'html,\\"items\\":{page1_json} html'
@@ -254,7 +254,7 @@ class TestFetchAllSets:
 
         # Second page has empty array
         mock_response2 = Mock()
-        mock_response2.text = r'html,\"items\":[] html'
+        mock_response2.text = r"html,\"items\":[] html"
         mock_response2.raise_for_status = Mock()
 
         mock_session.get.side_effect = [mock_response1, mock_response2]
@@ -272,7 +272,7 @@ class TestFetchAllSets:
         mock_session_class.return_value = mock_session
 
         page1_sets = [{"setCode": "SET1", "name": "Set 1"}]
-        page1_json = json.dumps(page1_sets).replace('"', r'\"')
+        page1_json = json.dumps(page1_sets).replace('"', r"\"")
 
         mock_response1 = Mock()
         mock_response1.text = f'html,\\"items\\":{page1_json} html'
