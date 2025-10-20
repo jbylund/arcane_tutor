@@ -771,6 +771,7 @@
       const UNIQUE_PRINTING = 'printing';
       class CardSearch {
         constructor() {
+          this.searchForm = document.querySelector('.search-container');
           this.searchInput = document.getElementById('searchInput');
           this.resultsContainer = document.getElementById('results');
           this.loadingIndicator = document.getElementById('loading');
@@ -781,6 +782,10 @@
           this.uniqueDropdown = document.getElementById('uniqueDropdown');
           this.preferDropdown = document.getElementById('preferDropdown');
           this.orderToggle = document.getElementById('orderToggle');
+          this.directionInput = document.getElementById('directionInput');
+
+          // Disable browser autocomplete when JavaScript is enabled
+          this.searchInput.setAttribute('autocomplete', 'off');
 
           this.debounceTimeout = null;
           this.debounceDelay = 140; // milliseconds
@@ -969,6 +974,7 @@
           this.uniqueDropdown.value = initialUnique;
           this.preferDropdown.value = initialPrefer;
           this.isAscending = initialDirection === 'asc';
+          this.directionInput.value = initialDirection;
           this.updateOrderToggleAppearance();
           this.updatePreferVisibility();
 
@@ -985,6 +991,16 @@
               this.performSearch(initialQuery);
             }
           }
+
+          // Prevent form submission when JavaScript is enabled
+          this.searchForm.addEventListener('submit', e => {
+            e.preventDefault();
+            const query = this.searchInput.value.trim();
+            if (query) {
+              clearTimeout(this.debounceTimeout);
+              this.performSearch(query);
+            }
+          });
 
           this.searchInput.addEventListener('input', e => {
             const query = e.target.value;
@@ -1772,6 +1788,7 @@
           const unique = this.uniqueDropdown.value;
           const prefer = this.preferDropdown.value;
           const direction = this.isAscending ? 'asc' : 'desc';
+          this.directionInput.value = direction;
           this.updateURL(query, order, direction, unique, prefer);
 
           // Trigger a new search with the current query and new order direction
@@ -1855,13 +1872,14 @@
         <p>Search for Magic: The Gathering cards</p>
       </div>
 
-      <div class="search-container">
+      <form method="GET" action="" class="search-container">
         <div class="search-box">
           <input
             type="text"
             class="search-input"
             placeholder="Search for cards by name, type, or text..."
             id="searchInput"
+            name="q"
           />
           <div class="loading" id="loading">
             <div class="spinner"></div>
@@ -1869,7 +1887,7 @@
         </div>
         <div class="order-controls">
           <label for="orderDropdown" class="dropdown-label">Order By:</label>
-          <select class="order-dropdown" id="orderDropdown">
+          <select class="order-dropdown" id="orderDropdown" name="orderby">
             <option value="edhrec">EDHREC</option>
             <option value="cmc">CMC</option>
             <option value="power">Power</option>
@@ -1878,13 +1896,13 @@
             <option value="usd">USD</option>
           </select>
           <label for="uniqueDropdown" class="dropdown-label">Unique Mode:</label>
-          <select class="order-dropdown" id="uniqueDropdown">
+          <select class="order-dropdown" id="uniqueDropdown" name="unique">
             <option value="card">Cards</option>
             <option value="artwork">Artwork</option>
             <option value="printing">Printings</option>
           </select>
           <label for="preferDropdown" class="dropdown-label">Prefer:</label>
-          <select class="order-dropdown" id="preferDropdown">
+          <select class="order-dropdown" id="preferDropdown" name="prefer">
             <option value="default">Default</option>
             <option value="oldest">Oldest</option>
             <option value="newest">Newest</option>
@@ -1892,14 +1910,15 @@
             <option value="usd-high">$ High</option>
             <option value="promo">Promo</option>
           </select>
-          <button class="order-toggle" id="orderToggle" title="Toggle ascending/descending">
+          <input type="hidden" name="direction" id="directionInput" value="asc" />
+          <button type="button" class="order-toggle" id="orderToggle" title="Toggle ascending/descending">
             <span class="arrow-up">↑</span>
           </button>
         </div>
-      </div>
+      </form>
 
-      <div id="resultsCount" class="results-count" style="display: none"></div>
-      <div id="results" class="results-container"></div>
+      <div id="resultsCount" class="results-count" style="display: none"><!-- SERVER_SIDE_RESULTS_COUNT --></div>
+      <div id="results" class="results-container"><!-- SERVER_SIDE_RESULTS --></div>
       <div id="error" class="error-message" style="display: none"></div>
       <div id="noResults" class="no-results" style="display: none">No cards found matching your search.</div>
 
