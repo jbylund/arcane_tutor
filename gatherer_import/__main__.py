@@ -1,4 +1,5 @@
 """Command-line interface for Gatherer import functionality."""
+
 import argparse
 import contextlib
 import json
@@ -23,13 +24,11 @@ def main() -> int:
     # fetch-set command
     fetch_parser = subparsers.add_parser("fetch-set", help="Fetch a specific set")
     fetch_parser.add_argument("set_code", help="Set code (e.g., TDM)")
-    fetch_parser.add_argument("--output", "-o", help="Output directory (default: gatherer_data)",
-                             default="gatherer_data")
+    fetch_parser.add_argument("--output", "-o", help="Output directory (default: gatherer_data)", default="gatherer_data")
 
     # fetch-all command
     fetch_all_parser = subparsers.add_parser("fetch-all", help="Fetch all sets")
-    fetch_all_parser.add_argument("--output", "-o", help="Output directory (default: gatherer_data)",
-                                  default="gatherer_data")
+    fetch_all_parser.add_argument("--output", "-o", help="Output directory (default: gatherer_data)", default="gatherer_data")
 
     args = parser.parse_args()
 

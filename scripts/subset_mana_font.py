@@ -26,6 +26,7 @@ import requests
 try:
     import boto3
     from botocore.exceptions import ClientError, NoCredentialsError
+
     HAS_BOTO3 = True
 except ImportError:
     HAS_BOTO3 = False
@@ -35,30 +36,77 @@ logger = logging.getLogger(__name__)
 # All the mana symbol classes used in index.html
 USED_SYMBOLS = [
     # Basic colors
-    "r", "g", "w", "u", "b", "c",
-
+    "r",
+    "g",
+    "w",
+    "u",
+    "b",
+    "c",
     # Numbers 0-16
-    "0", "1", "2", "3", "4", "5",
-    "6", "7", "8", "9", "10", "11",
-    "12", "13", "14", "15", "16",
-
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "13",
+    "14",
+    "15",
+    "16",
     # Variables
-    "x", "y", "z",
-
+    "x",
+    "y",
+    "z",
     # Special symbols
-    "tap", "untap", "energy", "phyrexian", "snow", "chaos", "pw", "infinity",
-
+    "tap",
+    "untap",
+    "energy",
+    "phyrexian",
+    "snow",
+    "chaos",
+    "pw",
+    "infinity",
     # 2-color hybrid
-    "wu", "ub", "br", "rg", "gw", "wb", "ur", "bg", "rw", "gu",
-
+    "wu",
+    "ub",
+    "br",
+    "rg",
+    "gw",
+    "wb",
+    "ur",
+    "bg",
+    "rw",
+    "gu",
     # Generic hybrid (2/)
-    "2w", "2u", "2b", "2r", "2g",
-
+    "2w",
+    "2u",
+    "2b",
+    "2r",
+    "2g",
     # Phyrexian hybrid
-    "wp", "up", "bp", "rp", "gp",
-
+    "wp",
+    "up",
+    "bp",
+    "rp",
+    "gp",
     # 3-color phyrexian
-    "wup", "wbp", "ubp", "urp", "brp", "bgp", "rwp", "rgp", "gwp", "gup",
+    "wup",
+    "wbp",
+    "ubp",
+    "urp",
+    "brp",
+    "bgp",
+    "rwp",
+    "rgp",
+    "gwp",
+    "gup",
 ]
 
 # Mana font repository
@@ -525,7 +573,6 @@ def upload_to_s3(
     try:
         s3_client = boto3.client("s3")
 
-
         with file_path.open("rb") as f:
             # Don't set ACL - rely on bucket policy for public access
             s3_client.put_object(
@@ -632,7 +679,6 @@ def main() -> None:
 
     load_env()
 
-
     # Check dependencies
     check_dependencies()
 
@@ -674,12 +720,10 @@ def main() -> None:
         if not args.skip_upload and args.s3_bucket:
             upload_fonts_to_cloudfront(args.output_dir, args.s3_bucket, args.s3_prefix)
 
-
         if args.skip_upload or not args.s3_bucket:
             pass
         else:
             pass
-
 
 
 if __name__ == "__main__":

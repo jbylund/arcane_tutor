@@ -1,4 +1,5 @@
 """Timer for timing nested code blocks."""
+
 from __future__ import annotations
 
 import copy
@@ -52,7 +53,7 @@ class Timer:
     def __exit__(self, exc_type: type | None, exc_value: object | None, traceback: TracebackType | None) -> None:
         """Calculate duration in milliseconds and restore state."""
         now = monotonic()
-        duration = (now - self.enter_times.pop())
+        duration = now - self.enter_times.pop()
         cur_ptr = self.ptrs[-1]
         ptr_metadata = cur_ptr.setdefault("_meta", {})
         key_duration = duration + ptr_metadata.get("duration", 0)

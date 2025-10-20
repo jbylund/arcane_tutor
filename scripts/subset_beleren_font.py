@@ -24,6 +24,7 @@ import requests
 try:
     import boto3
     from botocore.exceptions import ClientError, NoCredentialsError
+
     HAS_BOTO3 = True
 except ImportError:
     HAS_BOTO3 = False
@@ -43,7 +44,7 @@ UNICODE_RANGES = [
     "U+0100-017F",  # Latin Extended-A
     "U+2018-201F",  # Smart quotes
     "U+2013-2014",  # En dash, em dash
-    "U+2026",       # Ellipsis
+    "U+2026",  # Ellipsis
 ]
 
 

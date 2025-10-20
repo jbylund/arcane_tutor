@@ -42,12 +42,15 @@ class TestParsingErrorHandling:
         assert query in exc_info.value.description
         assert f'Failed to parse query: "{query}"' == exc_info.value.description
 
-    @pytest.mark.parametrize("query", [
-        "cmc=2 and id=",  # The original issue case
-        "name:test and",  # Trailing AND
-        "power>1 or",     # Trailing OR
-        "cmc=3 and ()",   # Empty parentheses
-    ])
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "cmc=2 and id=",  # The original issue case
+            "name:test and",  # Trailing AND
+            "power>1 or",  # Trailing OR
+            "cmc=3 and ()",  # Empty parentheses
+        ],
+    )
     def test_search_handles_parsing_error_various_cases(self, query: str) -> None:
         """Test that various parsing errors raise HTTPBadRequest."""
         with pytest.raises(falcon.HTTPBadRequest) as exc_info:

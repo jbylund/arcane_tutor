@@ -25,10 +25,11 @@ class TestTagging:
 
         # Method should have no required parameters (uses self and **kwargs only)
         sig = inspect.signature(APIResource.discover_tags_from_scryfall)
-        required_params = [p for p in sig.parameters.values()
-                          if p.default == inspect.Parameter.empty
-                          and p.name != "self"
-                          and p.kind != inspect.Parameter.VAR_KEYWORD]
+        required_params = [
+            p
+            for p in sig.parameters.values()
+            if p.default == inspect.Parameter.empty and p.name != "self" and p.kind != inspect.Parameter.VAR_KEYWORD
+        ]
         assert len(required_params) == 0
 
     def test_discover_tags_from_graphql_function_exists(self) -> None:
@@ -38,10 +39,11 @@ class TestTagging:
 
         # Method should have no required parameters (uses self and **kwargs only)
         sig = inspect.signature(APIResource.discover_tags_from_graphql)
-        required_params = [p for p in sig.parameters.values()
-                          if p.default == inspect.Parameter.empty
-                          and p.name != "self"
-                          and p.kind != inspect.Parameter.VAR_KEYWORD]
+        required_params = [
+            p
+            for p in sig.parameters.values()
+            if p.default == inspect.Parameter.empty and p.name != "self" and p.kind != inspect.Parameter.VAR_KEYWORD
+        ]
         assert len(required_params) == 0
 
     def test_get_tag_relationships_function_exists(self) -> None:

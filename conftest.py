@@ -1,8 +1,10 @@
 """Fixtures for the test suite."""
+
 from __future__ import annotations
 
 if True:
     import warnings
+
     warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 import logging
@@ -24,6 +26,7 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
+
 @pytest.fixture(scope="session", name="postgres_container", autouse=True)
 def postgres_container_fixture() -> Generator[None]:
     """Fixture to start and stop a postgres container for the session."""
@@ -35,15 +38,18 @@ def postgres_container_fixture() -> Generator[None]:
         dbname="testdb",
     ).with_bind_ports(5432, exposed_port)
     container.start()
-    os.environ.update({
-        "PGDATABASE": "testdb",
-        "PGHOST": container.get_container_host_ip(),
-        "PGPASSWORD": "testpass",
-        "PGPORT": str(container.get_exposed_port(5432)),
-        "PGUSER": "testuser",
-    })
+    os.environ.update(
+        {
+            "PGDATABASE": "testdb",
+            "PGHOST": container.get_container_host_ip(),
+            "PGPASSWORD": "testpass",
+            "PGPORT": str(container.get_exposed_port(5432)),
+            "PGUSER": "testuser",
+        },
+    )
     yield
     container.stop()
+
 
 @pytest.fixture
 def enable_cache() -> None:

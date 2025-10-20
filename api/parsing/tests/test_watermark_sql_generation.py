@@ -13,20 +13,23 @@ from api.parsing.parsing_f import parse_scryfall_query
 class TestWatermarkSQLGeneration:
     """Test that watermark searches generate exact equality SQL queries."""
 
-    @pytest.mark.parametrize(("query", "expected_column", "expected_value"), [
-        ("watermark:azorius", "card.card_watermark", "azorius"),
-        ("watermark:dimir", "card.card_watermark", "dimir"),
-        ("watermark:rakdos", "card.card_watermark", "rakdos"),
-        ("watermark:gruul", "card.card_watermark", "gruul"),
-        ("watermark:selesnya", "card.card_watermark", "selesnya"),
-        ("watermark:orzhov", "card.card_watermark", "orzhov"),
-        ("watermark:izzet", "card.card_watermark", "izzet"),
-        ("watermark:golgari", "card.card_watermark", "golgari"),
-        ("watermark:boros", "card.card_watermark", "boros"),
-        ("watermark:simic", "card.card_watermark", "simic"),
-        ("watermark:set", "card.card_watermark", "set"),
-        ("watermark:planeswalker", "card.card_watermark", "planeswalker"),
-    ])
+    @pytest.mark.parametrize(
+        ("query", "expected_column", "expected_value"),
+        [
+            ("watermark:azorius", "card.card_watermark", "azorius"),
+            ("watermark:dimir", "card.card_watermark", "dimir"),
+            ("watermark:rakdos", "card.card_watermark", "rakdos"),
+            ("watermark:gruul", "card.card_watermark", "gruul"),
+            ("watermark:selesnya", "card.card_watermark", "selesnya"),
+            ("watermark:orzhov", "card.card_watermark", "orzhov"),
+            ("watermark:izzet", "card.card_watermark", "izzet"),
+            ("watermark:golgari", "card.card_watermark", "golgari"),
+            ("watermark:boros", "card.card_watermark", "boros"),
+            ("watermark:simic", "card.card_watermark", "simic"),
+            ("watermark:set", "card.card_watermark", "set"),
+            ("watermark:planeswalker", "card.card_watermark", "planeswalker"),
+        ],
+    )
     def test_watermark_generate_exact_equality_sql(self, query: str, expected_column: str, expected_value: str) -> None:
         """Test that watermark searches generate exact equality SQL (not ILIKE)."""
         result = parse_scryfall_query(query)
@@ -108,20 +111,23 @@ class TestWatermarkSQLGeneration:
         for value in values:
             assert "%" not in str(value)
 
-    @pytest.mark.parametrize(("query", "expected_lowercase"), [
-        ("watermark:AZORIUS", "azorius"),
-        ("watermark:Dimir", "dimir"),
-        ("watermark:RAKDOS", "rakdos"),
-        ("watermark:Gruul", "gruul"),
-        ("watermark:SELESNYA", "selesnya"),
-        ("watermark:Orzhov", "orzhov"),
-        ("watermark:IZZET", "izzet"),
-        ("watermark:Golgari", "golgari"),
-        ("watermark:BOROS", "boros"),
-        ("watermark:Simic", "simic"),
-        ("watermark:SET", "set"),
-        ("watermark:PLANESWALKER", "planeswalker"),
-    ])
+    @pytest.mark.parametrize(
+        ("query", "expected_lowercase"),
+        [
+            ("watermark:AZORIUS", "azorius"),
+            ("watermark:Dimir", "dimir"),
+            ("watermark:RAKDOS", "rakdos"),
+            ("watermark:Gruul", "gruul"),
+            ("watermark:SELESNYA", "selesnya"),
+            ("watermark:Orzhov", "orzhov"),
+            ("watermark:IZZET", "izzet"),
+            ("watermark:Golgari", "golgari"),
+            ("watermark:BOROS", "boros"),
+            ("watermark:Simic", "simic"),
+            ("watermark:SET", "set"),
+            ("watermark:PLANESWALKER", "planeswalker"),
+        ],
+    )
     def test_case_insensitive_watermark_searches(self, query: str, expected_lowercase: str) -> None:
         """Test that watermark searches are case-insensitive."""
         result = parse_scryfall_query(query)

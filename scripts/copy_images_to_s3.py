@@ -45,6 +45,7 @@ SMALL_KEY = "220"
 
 ORIGINAL_KEY = "o"
 
+
 def setup_logging(verbose: bool = False) -> None:
     """Set up logging configuration."""
     level = logging.DEBUG if verbose else logging.INFO
@@ -157,10 +158,14 @@ def convert_to_webp(
         cmd = [
             "cwebp",
             str(input_path),
-            "-resize", str(width), "0",
-            "-q", str(quality),
+            "-resize",
+            str(width),
+            "0",
+            "-q",
+            str(quality),
             "-sharp_yuv",
-            "-o", str(output_path),
+            "-o",
+            str(output_path),
         ]
 
         subprocess.run(
@@ -334,6 +339,7 @@ class Args:
         verbose: Enable verbose logging output
         workers: Number of parallel worker processes for image processing
     """
+
     bucket: str = "biblioplex"
     set_code: str | None = None
     limit: int | None = None
@@ -341,6 +347,7 @@ class Args:
     dry_run: bool = False
     verbose: bool = False
     workers: int = 8
+
 
 def get_args() -> Args:
     """Parse command-line arguments and return Args dataclass.
@@ -403,6 +410,7 @@ def configure_env() -> None:
         env = json.load(f)
     os.environ.update(env)
 
+
 def check_cwebp() -> None:
     """Check if cwebp command is available and exit if not found."""
     try:
@@ -414,6 +422,7 @@ def check_cwebp() -> None:
             "  macOS: brew install webp",
         )
         sys.exit(1)
+
 
 def get_db_cards(args: Args) -> list[dict[str, Any]]:
     """Get all cards in the database."""
@@ -453,6 +462,7 @@ def get_s3_cards(args: Args) -> set[tuple[str, str, str]]:
     distinct_s3_cards = {(set_code, collector_number) for (set_code, collector_number, _size) in s3_cards}
     logger.info("Found %d image objects in S3, belonging to %d distinct cards", len(s3_cards), len(distinct_s3_cards))
     return s3_cards
+
 
 def main() -> None:
     """Main entry point for the script."""
@@ -511,7 +521,9 @@ def main() -> None:
                 fraction_complete = idx / len(cards_with_missing_images)
                 estimated_time_remaining = (elapsed_time / fraction_complete) - elapsed_time
                 estimated_remaining_duration = datetime.timedelta(seconds=round(estimated_time_remaining, 1))
-                logger.info("Progress: %d / %d cards processed (ETA: %s)", idx, len(cards_with_missing_images), estimated_remaining_duration)
+                logger.info(
+                    "Progress: %d / %d cards processed (ETA: %s)", idx, len(cards_with_missing_images), estimated_remaining_duration,
+                )
 
             if all(results.values()):
                 successful_cards += 1
@@ -520,7 +532,7 @@ def main() -> None:
     finally:
         # Properly clean up the pool to avoid weakref finalize errors
         pool.close()  # Prevent new tasks from being submitted
-        pool.join()   # Wait for all worker processes to finish
+        pool.join()  # Wait for all worker processes to finish
 
     logger.info(
         "Processing complete: %d successful, %d failed out of %d total",

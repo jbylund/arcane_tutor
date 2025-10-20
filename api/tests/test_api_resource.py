@@ -105,6 +105,7 @@ def create_test_card(  # noqa: PLR0913
 
     return card
 
+
 @pytest.fixture(name="patch_conn_pool")
 def patch_conn_pool_fixture() -> MagicMock:
     """Patch connection pool."""
@@ -112,6 +113,7 @@ def patch_conn_pool_fixture() -> MagicMock:
     with patch("api.api_resource.db_utils.make_pool") as mock_pool:
         mock_pool.return_value = mock_conn_pool
         yield mock_conn_pool
+
 
 class TestBaseAPIResourceTest:
 
@@ -124,6 +126,7 @@ class TestBaseAPIResourceTest:
         self_reference.mock_conn_pool = MagicMock()
         self_reference.api_resource = APIResource()
         self_reference.api_resource._conn_pool = self_reference.mock_conn_pool
+
 
 class TestAPIResourceInitializationNewStyle(TestBaseAPIResourceTest):
     """Test APIResource initialization and basic setup."""
@@ -144,7 +147,6 @@ class TestAPIResourceInitializationNewStyle(TestBaseAPIResourceTest):
         assert hasattr(api_resource, "_session")
         assert hasattr(api_resource, "_tagger_client")
 
-
     def test_initialization_with_custom_import_guard(self) -> None:
         """Test APIResource initialization with custom import guard."""
         custom_guard = multiprocessing.RLock()
@@ -156,8 +158,7 @@ class TestAPIResourceInitializationNewStyle(TestBaseAPIResourceTest):
         """Test that action_map includes all public methods."""
         api_resource = self.api_resource
         public_methods = [
-            method for method in dir(api_resource)
-            if not method.startswith("_") and callable(getattr(api_resource, method))
+            method for method in dir(api_resource) if not method.startswith("_") and callable(getattr(api_resource, method))
         ]
 
         for method in public_methods:
@@ -318,6 +319,7 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
         def raise_error(*args: Any, **kwargs: Any) -> Never:
             msg = "Test error"
             raise Exception(msg)
+
         # Mock search method to raise a general exception
         with patch.object(self.api_resource, "action_map", {"search": raise_error}):
             with patch("api.api_resource.error_monitoring.error_handler") as mock_error_handler:
@@ -612,6 +614,7 @@ class TestAPIResourceTagHierarchy(unittest.TestCase):
 
             # Mock _get_tag_relationships to return different relationships for each tag
             with patch.object(self.api_resource, "_get_tag_relationships") as mock_get_relationships:
+
                 def mock_relationships(tag: str) -> list:
                     if tag == "tag1":
                         return [

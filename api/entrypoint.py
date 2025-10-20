@@ -15,12 +15,14 @@ ALL_INTERFACES = "0.0.0.0"  # noqa: S104
 DEFAULT_PORT = 8080
 DEFAULT_WORKERS = 10
 
+
 def get_args() -> dict:
     """Argument parsing."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--workers", type=int, dest="num_workers", default=DEFAULT_WORKERS)
     return vars(parser.parse_args())
+
 
 def run_server(
     *,
@@ -101,6 +103,7 @@ def main() -> None:
         port=args["port"],
         num_workers=args["num_workers"],
     )
+
 
 if __name__ == "__main__":
     main()

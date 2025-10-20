@@ -1,4 +1,5 @@
 """Tests for card processing functions."""
+
 from __future__ import annotations
 
 import uuid
@@ -269,4 +270,3 @@ class TestCardProcessing:
         assert result is not None
         assert result["creature_power"] is None
         assert result["creature_toughness"] is None
-

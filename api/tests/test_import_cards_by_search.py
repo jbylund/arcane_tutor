@@ -92,8 +92,9 @@ class TestImportCardsBySearch(unittest.TestCase):
 
     def test_import_cards_by_search_handles_artist_search_example(self) -> None:
         """Test the example artist search mentioned in the issue."""
-        with patch.object(self.api_resource, "_scryfall_search") as mock_search, \
-             patch.object(self.api_resource, "_load_cards_with_staging") as mock_load:
+        with patch.object(self.api_resource, "_scryfall_search") as mock_search, patch.object(
+            self.api_resource, "_load_cards_with_staging",
+        ) as mock_load:
 
             # Mock Scryfall API to return Sun Titan cards by Todd Lockwood
             mock_search.return_value = [

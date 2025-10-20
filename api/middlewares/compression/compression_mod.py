@@ -32,7 +32,6 @@ def parse_q_list(
     # TODO: add client priority
 
 
-
 class CompressionMiddleware:
     """Middleware for handling response compression using various algorithms."""
 
@@ -79,7 +78,6 @@ class CompressionMiddleware:
             compressor.encoding,
         )
         return compressor
-
 
     def process_response(
         self: CompressionMiddleware,

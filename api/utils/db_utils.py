@@ -18,6 +18,7 @@ import psycopg_pool
 logger = logging.getLogger(__name__)
 CONFLICT = 409
 
+
 class UUIDToStringLoader(psycopg.adapt.Loader):
     """Loader that converts UUID data from PostgreSQL to strings."""
 
@@ -25,6 +26,7 @@ class UUIDToStringLoader(psycopg.adapt.Loader):
         """Convert UUID bytes to string representation."""
         # UUID data comes as bytes, convert to string
         return data.tobytes().decode("utf-8")
+
 
 def get_pg_creds() -> dict[str, str]:
     """Get postgres credentials from the environment."""
@@ -34,17 +36,23 @@ def get_pg_creds() -> dict[str, str]:
     unmapped = {k[2:].lower(): v for k, v in os.environ.items() if k.startswith("PG")}
     return {mapping.get(k, k): v for k, v in unmapped.items()}
 
+
 def get_testcontainers_creds() -> dict[str, str]:
     """Get postgres credentials from the testcontainers environment."""
     logger.warning("Using an ephemeral postgres container...")
     from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
+
     exposed_port = random.randint(1024, 49151)  # noqa: S311
-    container = PostgresContainer(
-        image="postgres:18",
-        username="testuser",
-        password="testpass",  # noqa: S106
-        dbname="testdb",
-    ).with_bind_ports(5432, exposed_port).with_name("postgres-test")
+    container = (
+        PostgresContainer(
+            image="postgres:18",
+            username="testuser",
+            password="testpass",  # noqa: S106
+            dbname="testdb",
+        )
+        .with_bind_ports(5432, exposed_port)
+        .with_name("postgres-test")
+    )
 
     connection_info = {
         "dbname": "testdb",
@@ -84,6 +92,7 @@ def configure_connection(conn: psycopg.Connection) -> None:
     # Register UUID loader to convert UUID data to strings
     # UUID type OID in PostgreSQL is 2950
     psycopg.adapters.register_loader(2950, UUIDToStringLoader)
+
 
 def make_pool() -> psycopg_pool.ConnectionPool:
     """Create and return a psycopg3 ConnectionPool for PostgreSQL connections."""
@@ -136,6 +145,7 @@ def get_migrations() -> list[dict[str, str]]:
             )
     return migrations
 
+
 def maybe_json(v: object) -> object:
     """Wrap a value in a Jsonb object if it is a list or dict."""
     if isinstance(v, list | dict):
@@ -146,6 +156,7 @@ def maybe_json(v: object) -> object:
 def orjson_dumps(obj: object) -> str:
     """Dump an object to a string using orjson."""
     return orjson.dumps(obj).decode("utf-8")
+
 
 # Register for dumping (adapting Python -> DB)
 psycopg.types.json.set_json_dumps(dumps=orjson_dumps)

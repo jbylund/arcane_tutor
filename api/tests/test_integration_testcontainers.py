@@ -29,7 +29,9 @@ class TestContainerIntegration:
             username="testuser",
             password="testpass",  # noqa: S106
             dbname="testdb",
-        ).with_bind_ports(5432, 5433)  # Bind internal 5432 to host 5433
+        ).with_bind_ports(
+            5432, 5433,
+        )  # Bind internal 5432 to host 5433
 
         with container as postgres:
             # Wait for database to be ready with proper health check
@@ -64,28 +66,26 @@ class TestContainerIntegration:
         msg = f"Database not ready within {timeout} seconds"
         raise RuntimeError(msg)
 
-
     @pytest.fixture(scope="class")
     def test_db_environment(self: TestContainerIntegration, postgres_container: PostgresContainer) -> Generator[None]:
         """Set up and restore environment variables for test database connection."""
         # Store original environment variables
-        original_env = {
-            key: os.environ.get(key)
-            for key in ["PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD"]
-        }
+        original_env = {key: os.environ.get(key) for key in ["PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD"]}
 
         try:
             # Set environment variables for test database
             host = postgres_container.get_container_host_ip()
             port = postgres_container.get_exposed_port(5432)
 
-            os.environ.update({
-                "PGHOST": host,
-                "PGPORT": str(port),
-                "PGDATABASE": "testdb",
-                "PGUSER": "testuser",
-                "PGPASSWORD": "testpass",
-            })
+            os.environ.update(
+                {
+                    "PGHOST": host,
+                    "PGPORT": str(port),
+                    "PGDATABASE": "testdb",
+                    "PGUSER": "testuser",
+                    "PGPASSWORD": "testpass",
+                },
+            )
 
             yield  # Test runs here with environment configured
 
@@ -121,8 +121,6 @@ class TestContainerIntegration:
         # Clean up connection pool
         if hasattr(api, "_conn_pool"):
             api._conn_pool.close()
-
-
 
     def test_database_ready(self: TestContainerIntegration, api_resource: APIResource) -> None:
         """Test that database is ready and migrations table exists."""
@@ -354,7 +352,9 @@ class TestContainerIntegration:
         for card in cards:
             if card["name"] == "Brainstorm":
                 brainstorm_found = True
-                assert card.get("card_artist") == "Willian Murai", f"Brainstorm should have 'Willian Murai' as artist, got: {card.get('card_artist')}"
+                assert (
+                    card.get("card_artist") == "Willian Murai"
+                ), f"Brainstorm should have 'Willian Murai' as artist, got: {card.get('card_artist')}"
                 break
 
         assert brainstorm_found, "Brainstorm should be found by artist search"

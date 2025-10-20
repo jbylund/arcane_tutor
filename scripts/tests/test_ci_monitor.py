@@ -34,9 +34,10 @@ class TestCIMonitor:
 
     def test_get_github_headers_missing_token(self) -> None:
         """Test error when GITHUB_TOKEN is missing."""
-        with mock.patch.dict(os.environ, {}, clear=True), \
-             pytest.raises(ValueError, match="GITHUB_TOKEN environment variable is required"):
-                get_github_headers()
+        with mock.patch.dict(os.environ, {}, clear=True), pytest.raises(
+            ValueError, match="GITHUB_TOKEN environment variable is required",
+        ):
+            get_github_headers()
 
     def test_get_repository_info_success(self) -> None:
         """Test repository info extraction from environment."""
@@ -47,9 +48,10 @@ class TestCIMonitor:
 
     def test_get_repository_info_missing(self) -> None:
         """Test error when GITHUB_REPOSITORY is missing."""
-        with mock.patch.dict(os.environ, {}, clear=True), \
-             pytest.raises(ValueError, match="GITHUB_REPOSITORY environment variable is required"):
-                get_repository_info()
+        with mock.patch.dict(os.environ, {}, clear=True), pytest.raises(
+            ValueError, match="GITHUB_REPOSITORY environment variable is required",
+        ):
+            get_repository_info()
 
     def test_format_issue_body(self) -> None:
         """Test issue body formatting."""
@@ -112,8 +114,10 @@ class TestCIMonitor:
         test_argv = [
             "ci_monitor.py",
             "--create-issue",
-            "--failed-checks", '[{"name": "test"}]',
-            "--commit-sha", "abc123",
+            "--failed-checks",
+            '[{"name": "test"}]',
+            "--commit-sha",
+            "abc123",
         ]
         with mock.patch("sys.argv", test_argv):
             args = get_args()
@@ -137,8 +141,7 @@ class TestCIMonitor:
         mock_check_ci.return_value = (True, [{"name": "test"}], "abc123")
 
         test_argv = ["ci_monitor.py", "--check-only"]
-        with mock.patch("sys.argv", test_argv), \
-             mock.patch("builtins.print"):  # Suppress output during test
+        with mock.patch("sys.argv", test_argv), mock.patch("builtins.print"):  # Suppress output during test
             main()
 
         mock_check_ci.assert_called_once_with("owner", "repo")
@@ -163,8 +166,7 @@ class TestCIMonitor:
         mock_create_issue.return_value = True
 
         test_argv = ["ci_monitor.py", "--check-and-create-issue"]
-        with mock.patch("sys.argv", test_argv), \
-             mock.patch("builtins.print"):  # Suppress output during test
+        with mock.patch("sys.argv", test_argv), mock.patch("builtins.print"):  # Suppress output during test
             main()
 
         mock_check_ci.assert_called_once_with("owner", "repo")
@@ -184,11 +186,12 @@ class TestCIMonitor:
         test_argv = [
             "ci_monitor.py",
             "--create-issue",
-            "--failed-checks", '[{"name": "test"}]',
-            "--commit-sha", "abc123",
+            "--failed-checks",
+            '[{"name": "test"}]',
+            "--commit-sha",
+            "abc123",
         ]
-        with mock.patch("sys.argv", test_argv), \
-             mock.patch("builtins.print"):  # Suppress output during test
+        with mock.patch("sys.argv", test_argv), mock.patch("builtins.print"):  # Suppress output during test
             main()
 
         mock_create_issue.assert_called_once_with("owner", "repo", [{"name": "test"}], "abc123")

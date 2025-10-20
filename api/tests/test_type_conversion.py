@@ -102,9 +102,9 @@ class TestTypeConversion:
 
     def test_action_map_uses_type_converting_wrappers(self) -> None:
         """Test that APIResource action map uses type converting wrappers."""
-        with patch("api.api_resource.db_utils.make_pool"), \
-             patch("api.api_resource.requests.Session"), \
-             patch("api.api_resource.TaggerClient"):
+        with patch("api.api_resource.db_utils.make_pool"), patch("api.api_resource.requests.Session"), patch(
+            "api.api_resource.TaggerClient",
+        ):
 
             api_resource = APIResource()
 
@@ -169,9 +169,9 @@ class TestTypeConversion:
 
     def test_discover_and_import_all_tags_handles_string_boolean_parameters(self) -> None:
         """Test that discover_and_import_all_tags properly handles string boolean parameters."""
-        with patch("api.api_resource.db_utils.make_pool"), \
-             patch("api.api_resource.requests.Session"), \
-             patch("api.api_resource.TaggerClient"):
+        with patch("api.api_resource.db_utils.make_pool"), patch("api.api_resource.requests.Session"), patch(
+            "api.api_resource.TaggerClient",
+        ):
 
             api_resource = APIResource()
 

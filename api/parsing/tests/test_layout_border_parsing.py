@@ -14,27 +14,30 @@ from api.parsing.parsing_f import parse_scryfall_query
 class TestLayoutBorderParsing:
     """Test parsing of layout and border search queries."""
 
-    @pytest.mark.parametrize(("query", "expected_attr", "expected_value"), [
-        ("layout:normal", "card_layout", "normal"),
-        ("layout:split", "card_layout", "split"),
-        ("layout:flip", "card_layout", "flip"),
-        ("layout:transform", "card_layout", "transform"),
-        ("layout:double_faced_token", "card_layout", "double_faced_token"),
-        ("layout:meld", "card_layout", "meld"),
-        ("layout:leveler", "card_layout", "leveler"),
-        ("layout:saga", "card_layout", "saga"),
-        ("layout:adventure", "card_layout", "adventure"),
-        ("layout:planar", "card_layout", "planar"),
-        ("layout:scheme", "card_layout", "scheme"),
-        ("layout:vanguard", "card_layout", "vanguard"),
-        ("layout:token", "card_layout", "token"),
-        ("layout:emblem", "card_layout", "emblem"),
-        ("border:black", "card_border", "black"),
-        ("border:white", "card_border", "white"),
-        ("border:borderless", "card_border", "borderless"),
-        ("border:silver", "card_border", "silver"),
-        ("border:gold", "card_border", "gold"),
-    ])
+    @pytest.mark.parametrize(
+        ("query", "expected_attr", "expected_value"),
+        [
+            ("layout:normal", "card_layout", "normal"),
+            ("layout:split", "card_layout", "split"),
+            ("layout:flip", "card_layout", "flip"),
+            ("layout:transform", "card_layout", "transform"),
+            ("layout:double_faced_token", "card_layout", "double_faced_token"),
+            ("layout:meld", "card_layout", "meld"),
+            ("layout:leveler", "card_layout", "leveler"),
+            ("layout:saga", "card_layout", "saga"),
+            ("layout:adventure", "card_layout", "adventure"),
+            ("layout:planar", "card_layout", "planar"),
+            ("layout:scheme", "card_layout", "scheme"),
+            ("layout:vanguard", "card_layout", "vanguard"),
+            ("layout:token", "card_layout", "token"),
+            ("layout:emblem", "card_layout", "emblem"),
+            ("border:black", "card_border", "black"),
+            ("border:white", "card_border", "white"),
+            ("border:borderless", "card_border", "borderless"),
+            ("border:silver", "card_border", "silver"),
+            ("border:gold", "card_border", "gold"),
+        ],
+    )
     def test_parse_layout_and_border_queries(self, query: str, expected_attr: str, expected_value: str) -> None:
         """Test parsing of layout and border search queries."""
         result = parse_scryfall_query(query)
@@ -96,6 +99,7 @@ class TestLayoutBorderParsing:
         result = parse_scryfall_query(query)
 
         assert isinstance(result, Query)
+
         # Should be nested AND operations
         # The exact structure may vary depending on parsing precedence,
         # but we should have all three conditions

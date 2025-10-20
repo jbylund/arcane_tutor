@@ -14,7 +14,6 @@ try:
 
     from honeybadger import honeybadger
 
-
     # Configure honeybadger if available
     honeybadger.configure(
         api_key="hbp_mHbJs4KJAOeUhK17Ixr0AzDC0gx8Zt2WG6kH",

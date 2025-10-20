@@ -38,5 +38,6 @@ class MockEvent:
         """Return True if the event is set."""
         return self._is_set
 
+
 DEFAULT_LOCK = MockLock()
 DEFAULT_EVENT = MockEvent()
