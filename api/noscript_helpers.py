@@ -272,4 +272,5 @@ def generate_results_count_html(total_cards: int, query: str) -> str:
         HTML string for results count
     """
     escaped_query = escape_html(query)
-    return f'Found {total_cards} cards matching "{escaped_query}"'
+    card_word = "card" if total_cards == 1 else "cards"
+    return f'Found {total_cards} {card_word} matching "{escaped_query}"'
