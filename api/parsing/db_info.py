@@ -274,20 +274,8 @@ DB_COLUMNS = [
 ]
 
 KNOWN_CARD_ATTRIBUTES = set()
-NUMERIC_ATTRIBUTES = set()
-NON_NUMERIC_ATTRIBUTES = set()
 SEARCH_NAME_TO_DB_NAME = {}
 DB_NAME_TO_FIELD_TYPE = {}
-
-# Parser class attribute groups for cleaner parsing logic
-MANA_ATTRIBUTES = set()
-RARITY_ATTRIBUTES = set()
-LEGALITY_ATTRIBUTES = set()
-COLOR_ATTRIBUTES = set()
-TEXT_ATTRIBUTES = set()
-DATE_ATTRIBUTES = set()
-YEAR_ATTRIBUTES = set()
-
 
 ALIAS_TO_FIELD_INFOS: dict[str, list[FieldInfo]] = {}
 COLNAME_TO_FIELD_INFOS: dict[str, list[FieldInfo]] = {}
@@ -304,43 +292,6 @@ for col in DB_COLUMNS:
     KNOWN_CARD_ATTRIBUTES.update(alias.lower() for alias in col.search_aliases)
     SEARCH_NAME_TO_DB_NAME[col.db_column_name.lower()] = col.db_column_name
     DB_NAME_TO_FIELD_TYPE[col.db_column_name] = col.field_type
-
-    # Separate numeric and non-numeric attributes (maintain backwards compatibility)
-    if col.field_type == FieldType.NUMERIC:
-        NUMERIC_ATTRIBUTES.add(col.db_column_name)
-        NUMERIC_ATTRIBUTES.update(col.search_aliases)
-    else:
-        NON_NUMERIC_ATTRIBUTES.add(col.db_column_name)
-        NON_NUMERIC_ATTRIBUTES.update(col.search_aliases)
-
-    # Group attributes by parser class for cleaner parsing logic
-    if col.parser_class == ParserClass.MANA:
-        MANA_ATTRIBUTES.add(col.db_column_name)
-        MANA_ATTRIBUTES.update(col.search_aliases)
-    elif col.parser_class == ParserClass.RARITY:
-        RARITY_ATTRIBUTES.add(col.db_column_name)
-        RARITY_ATTRIBUTES.update(col.search_aliases)
-    elif col.parser_class == ParserClass.LEGALITY:
-        LEGALITY_ATTRIBUTES.add(col.db_column_name)
-        LEGALITY_ATTRIBUTES.update(col.search_aliases)
-    elif col.parser_class == ParserClass.COLOR:
-        COLOR_ATTRIBUTES.add(col.db_column_name)
-        COLOR_ATTRIBUTES.update(col.search_aliases)
-    elif col.parser_class == ParserClass.TEXT:
-        TEXT_ATTRIBUTES.add(col.db_column_name)
-        TEXT_ATTRIBUTES.update(col.search_aliases)
-    elif col.parser_class == ParserClass.DATE:
-        DATE_ATTRIBUTES.add(col.db_column_name)
-        DATE_ATTRIBUTES.update(col.search_aliases)
-    elif col.parser_class == ParserClass.YEAR:
-        YEAR_ATTRIBUTES.add(col.db_column_name)
-        YEAR_ATTRIBUTES.update(col.search_aliases)
-    elif col.parser_class == ParserClass.NUMERIC:
-        # NUMERIC fields are already tracked in NUMERIC_ATTRIBUTES based on field_type
-        pass
-    else:
-        msg = f"Unknown parser class: {col.parser_class}"
-        raise ValueError(msg)
 
     for ialias in col.search_aliases:
         SEARCH_NAME_TO_DB_NAME[ialias.lower()] = col.db_column_name
