@@ -599,14 +599,14 @@ def test_parse_combined_legality_queries() -> None:
 @pytest.mark.parametrize(
     argnames=("test_input", "expected_ast"),
     argvalues=[
-        ("number:123", BinaryOperatorNode(CardAttributeNode("number", ParserClass.TEXT), ":", StringValueNode("123"))),
-        ("cn:45", BinaryOperatorNode(CardAttributeNode("cn", ParserClass.TEXT), ":", StringValueNode("45"))),
+        ("number:123", BinaryOperatorNode(CardAttributeNode("number", ParserClass.NUMERIC), ":", NumericValueNode(123))),
+        ("cn:45", BinaryOperatorNode(CardAttributeNode("cn", ParserClass.NUMERIC), ":", NumericValueNode(45))),
         ("number:1a", BinaryOperatorNode(CardAttributeNode("number", ParserClass.TEXT), ":", StringValueNode("1a"))),
         ("cn:100b", BinaryOperatorNode(CardAttributeNode("cn", ParserClass.TEXT), ":", StringValueNode("100b"))),
         ('number:"123"', BinaryOperatorNode(CardAttributeNode("number", ParserClass.TEXT), ":", StringValueNode("123"))),
         ("cn:'45a'", BinaryOperatorNode(CardAttributeNode("cn", ParserClass.TEXT), ":", StringValueNode("45a"))),
-        ("NUMBER:123", BinaryOperatorNode(CardAttributeNode("NUMBER", ParserClass.TEXT), ":", StringValueNode("123"))),
-        ("CN:45", BinaryOperatorNode(CardAttributeNode("CN", ParserClass.TEXT), ":", StringValueNode("45"))),
+        ("NUMBER:123", BinaryOperatorNode(CardAttributeNode("NUMBER", ParserClass.NUMERIC), ":", NumericValueNode(123))),
+        ("CN:45", BinaryOperatorNode(CardAttributeNode("CN", ParserClass.NUMERIC), ":", NumericValueNode(45))),
     ],
 )
 def test_parse_collector_number_searches(test_input: str, expected_ast: BinaryOperatorNode) -> None:
@@ -622,7 +622,7 @@ def test_parse_combined_collector_number_queries() -> None:
     result1 = parsing.parse_search_query(query1)
     expected1 = AndNode(
         [
-            BinaryOperatorNode(CardAttributeNode("number", ParserClass.TEXT), ":", StringValueNode("123")),
+            BinaryOperatorNode(CardAttributeNode("number", ParserClass.NUMERIC), ":", NumericValueNode(123)),
             BinaryOperatorNode(CardAttributeNode("set", ParserClass.TEXT), ":", StringValueNode("dom")),
         ],
     )
@@ -633,8 +633,8 @@ def test_parse_combined_collector_number_queries() -> None:
     result2 = parsing.parse_search_query(query2)
     expected2 = OrNode(
         [
-            BinaryOperatorNode(CardAttributeNode("cn", ParserClass.TEXT), ":", StringValueNode("1")),
-            BinaryOperatorNode(CardAttributeNode("cn", ParserClass.TEXT), ":", StringValueNode("2")),
+            BinaryOperatorNode(CardAttributeNode("cn", ParserClass.NUMERIC), ":", NumericValueNode(1)),
+            BinaryOperatorNode(CardAttributeNode("cn", ParserClass.NUMERIC), ":", NumericValueNode(2)),
         ],
     )
     assert result2.root == expected2

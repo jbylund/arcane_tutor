@@ -21,7 +21,6 @@ from pyparsing import (
     Word,
     ZeroOrMore,
     alphas,
-    nums,
     oneOf,
 )
 
@@ -239,9 +238,12 @@ def create_basic_parsers() -> dict[str, ParserElement]:
     # Basic operators and keywords
     attrop = DEFAULT_OPERATORS
     arithmetic_op = oneOf("+ - * /")
-    integer = Word(nums).setParseAction(lambda t: int(t[0]))
+    # Integer with word boundary - prevents partial matches like "1" from "1a" or "10" from "100b"
+    # Word boundary ensures the number is a complete token, not part of an alphanumeric string
+    integer = Regex(r"\b\d+\b").setParseAction(lambda t: int(t[0]))
     # Float must have a decimal point to distinguish from integer
-    float_number = Combine(Word(nums) + Literal(".") + Optional(Word(nums))).setParseAction(lambda t: float(t[0]))
+    # Also uses word boundary to prevent matching prefixes
+    float_number = Regex(r"\b\d+\.\d*\b").setParseAction(lambda t: float(t[0]))
     lparen = Literal("(").suppress()
     rparen = Literal(")").suppress()
 

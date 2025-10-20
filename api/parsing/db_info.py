@@ -232,7 +232,7 @@ DB_COLUMNS = [
     FieldInfo(
         db_column_name="collector_number_int",
         field_type=FieldType.NUMERIC,
-        search_aliases=[],
+        search_aliases=["number", "cn"],
         parser_class=ParserClass.NUMERIC,
     ),  # No direct aliases - will be routed
     FieldInfo(

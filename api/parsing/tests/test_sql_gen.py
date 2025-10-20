@@ -765,13 +765,13 @@ def test_legality_invalid_attribute() -> None:
     argvalues=[
         (
             "number:123",
-            "(card.collector_number = %(p_str_",
-            {"123"},
+            "(card.collector_number_int = %(p_int_",
+            {123},
         ),
         (
             "cn:45",
-            "(card.collector_number = %(p_str_",
-            {"45"},
+            "(card.collector_number_int = %(p_int_",
+            {45},
         ),
         (
             "number:1a",

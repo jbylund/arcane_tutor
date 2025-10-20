@@ -5,9 +5,9 @@ from __future__ import annotations
 import re
 
 from api.parsing.db_info import (
+    ALIAS_TO_FIELD_INFOS,
     CARD_SUPERTYPES,
     CARD_TYPES,
-    COLNAME_TO_FIELD_INFOS,
     COLOR_CODE_TO_NAME,
     COLOR_NAME_TO_CODE,
     DB_NAME_TO_FIELD_TYPE,
@@ -112,9 +112,22 @@ class CardAttributeNode(AttributeNode):
         """
         # Preserve original attribute name BEFORE mapping for specialized handling
         self.original_attribute = attribute_name.lower()
-        db_column_name = SEARCH_NAME_TO_DB_NAME.get(attribute_name.lower(), attribute_name)
         self.matched_parser_class = matched_parser_class
-        self.field_infos = [f for f in COLNAME_TO_FIELD_INFOS.get(db_column_name, []) if f.parser_class == matched_parser_class]
+
+        # Look up field infos by alias and parser class
+        # This handles cases where multiple columns share the same alias (e.g., collector_number and collector_number_int)
+        alias_field_infos = ALIAS_TO_FIELD_INFOS.get(attribute_name.lower(), [])
+        self.field_infos = [f for f in alias_field_infos if f.parser_class == matched_parser_class]
+
+        # Determine the database column name from the matched field info
+        # Use the LAST match to maintain backward compatibility with SEARCH_NAME_TO_DB_NAME behavior
+        # (which would overwrite earlier entries, resulting in the last one being used)
+        if self.field_infos:
+            db_column_name = self.field_infos[-1].db_column_name
+        else:
+            # Fallback to the old behavior if no field info found
+            db_column_name = SEARCH_NAME_TO_DB_NAME.get(attribute_name.lower(), attribute_name)
+
         super().__init__(db_column_name)
 
     def to_sql(self, context: dict) -> str:
@@ -127,8 +140,8 @@ class CardAttributeNode(AttributeNode):
             SQL string for the attribute reference.
         """
         del context
-        remapped = SEARCH_NAME_TO_DB_NAME.get(self.attribute_name, self.attribute_name)
-        return f"card.{remapped}"
+        # attribute_name is already set to the correct db_column_name in __init__
+        return f"card.{self.attribute_name}"
 
     def __repr__(self) -> str:
         """Return a string representation of the card attribute node."""
@@ -359,16 +372,12 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
         if not field_infos:
             msg = f"No field infos found for attribute: {attr} / {field_infos}"
             raise ValueError(msg)
-        if len(field_infos) > 1:
-            msg = f"Multiple field infos found for attribute: {attr} / {field_infos}"
-            raise ValueError(msg)
 
+        # Use the first field info for type determination
+        # Multiple field infos can exist for the same alias (e.g., mana_cost_text and mana_cost_jsonb)
+        # and special handling below will route to the correct one
         field_info = field_infos[0]
         field_type = field_info.field_type
-
-        # Special routing for collector numbers based on operator
-        if attr == "collector_number":
-            return self._handle_collector_number(context)
 
         # Special handling for mana attributes with comparison operators
         if attr in ("mana_cost_text", "mana_cost_jsonb") and isinstance(self.rhs, ManaValueNode | StringValueNode):
@@ -423,7 +432,7 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
         """Handle colon operator for different field types."""
         if field_type == FieldType.TEXT:
             # Handle fields that need exact matching instead of pattern matching
-            if attr in ("card_set_code", "card_layout", "card_border", "card_watermark"):
+            if attr in ("card_set_code", "card_layout", "card_border", "card_watermark", "collector_number"):
                 # For layout, border, and watermark fields, lowercase the search value for case-insensitive matching
                 if attr in ("card_layout", "card_border", "card_watermark") and hasattr(self.rhs, "value"):
                     self.rhs.value = self.rhs.value.lower()
@@ -437,42 +446,6 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
 
         msg = f"Unknown field type: {field_type}"
         raise NotImplementedError(msg)
-
-    def _handle_collector_number(self, context: dict) -> str:
-        """Handle collector number routing based on operator type.
-
-        Routes to appropriate column based on operator:
-        - ':' and '!=' operators use collector_number (text) with exact matching
-        - Comparison operators ('>', '>=', '<', '<=') use collector_number_int (numeric)
-        """
-        if self.operator in (":", "!=", "<>"):
-            # Use text column with exact matching
-            if self.operator == ":":
-                self.operator = "="
-            return super().to_sql(context)
-        if self.operator in (">", ">=", "<", "<="):
-            # Use numeric column for comparisons
-            # But first we need to update the lhs to point to the int column
-            original_attr = self.lhs.attribute_name
-            self.lhs.attribute_name = "collector_number_int"
-
-            # Convert string value to numeric if needed
-            if isinstance(self.rhs, StringValueNode):
-                try:
-                    numeric_value = int(self.rhs.value)
-                    self.rhs = NumericValueNode(numeric_value)
-                except ValueError as e:
-                    msg = f"Invalid collector number for numeric comparison: {self.rhs.value}"
-                    raise ValueError(msg) from e
-
-            result = super().to_sql(context)
-            # Restore original attribute name for potential reuse
-            self.lhs.attribute_name = original_attr
-            return result
-        # Default to text column for any other operators
-        if self.operator == ":":
-            self.operator = "="
-        return super().to_sql(context)
 
     def _handle_mana_cost_comparison(self, context: dict) -> str:
         """Handle mana cost comparisons with approximate matching."""

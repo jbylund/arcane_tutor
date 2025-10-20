@@ -16,12 +16,12 @@ class TestCollectorNumberIntegration:
         sql, params = generate_sql_query(parsed)
 
         # Should generate exact match query for text column
-        assert "card.collector_number =" in sql
+        assert "card.collector_number_int =" in sql
         assert len(params) == 1
 
         # Parameter should contain exact value (no wildcards)
         param_value = next(iter(params.values()))
-        assert param_value == "123"
+        assert param_value == 123
 
     def test_cn_search_integration(self) -> None:
         """Test that cn alias generates correct SQL end-to-end."""
@@ -68,7 +68,12 @@ class TestCollectorNumberIntegration:
         sql, params = generate_sql_query(parsed)
 
         # Should generate exact match query for text column
-        assert "card.collector_number =" in sql
+        try:
+            expected_pattern = int(expected_pattern)
+        except ValueError:
+            assert "card.collector_number =" in sql
+        else:
+            assert "card.collector_number_int =" in sql
         assert len(params) == 1
 
         # Parameter should match expected pattern
@@ -82,13 +87,13 @@ class TestCollectorNumberIntegration:
         sql, params = generate_sql_query(parsed)
 
         # Should generate queries for both collector_number and set
-        assert "card.collector_number =" in sql
+        assert "card.collector_number_int =" in sql
         assert "card.card_set_code =" in sql
         assert len(params) == 2
 
         # Should contain parameters for both conditions
         param_values = set(params.values())
-        assert "123" in param_values
+        assert 123 in param_values
         assert "dom" in param_values
 
     def test_collector_number_numeric_comparisons_integration(self) -> None:
