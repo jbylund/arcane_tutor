@@ -445,17 +445,12 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
         # TODO: need to use text or jsonb matching depending on the operator
         mana_cost_str = self.rhs.value
 
-        # TODO: could actually handle exact equality by doing
-        # jsonb + cmc test... and maybe that's better?
-        if self.operator == "=":
-            self.lhs.attribute_name = "mana_cost_text"
-
         # : means >=
         if self.operator == ":":
             self.operator = ">="
 
         # For comparison operators, we need both containment check and CMC check
-        if self.operator in ("<=", "<", ">=", ">"):
+        if self.operator in ("<=", "<", ">=", ">", "="):
             return self._handle_mana_cost_approximate_comparison(context, mana_cost_str)
         raise AssertionError(self)
 
@@ -475,6 +470,9 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
         # SQL fragments
         mana_jsonb_sql = "card.mana_cost_jsonb"
         cmc_sql = "card.cmc"
+
+        if self.operator == "=":
+            return f"({mana_jsonb_sql} = %({mana_param})s AND {cmc_sql} = %({cmc_param})s)"
 
         if self.operator == "<=":
             # Card costs <= query if:

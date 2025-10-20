@@ -775,6 +775,13 @@ def test_mana_cost_sql_generation() -> None:
     assert mana_cost_str_to_dict("{1}{G}") in context1.values()
     assert calculate_cmc("{1}{G}") in context1.values()
 
+    result1 = parsing.parse_scryfall_query("mana={1}{G}")
+    context1 = {}
+    sql1 = result1.to_sql(context1)
+    assert sql1 == "(card.mana_cost_jsonb = %(p_dict_eydHJzogWzFdfQ)s AND card.cmc = %(p_int_Mg)s)"
+    assert mana_cost_str_to_dict("{1}{G}") in context1.values()
+    assert calculate_cmc("{1}{G}") in context1.values()
+
     # Test <= operator generates containment + cmc check
     result2 = parsing.parse_scryfall_query("mana<={2}{R}{R}")
     context2 = {}
