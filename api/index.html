@@ -362,7 +362,7 @@
 
       .results-container {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(min(300px, 45vw), 1fr));
+        grid-template-columns: 1fr;
         gap: 0.5vw;
         margin-top: 30px;
       }
@@ -641,10 +641,6 @@
         .container {
           max-width: 98vw;
         }
-
-        .results-container {
-          grid-template-columns: repeat(auto-fit, minmax(min(280px, 40vw), 1fr));
-        }
       }
 
       @media (max-width: 768px) {
@@ -691,10 +687,6 @@
           padding: 12px 15px;
           min-width: 50px;
           height: 48px;
-        }
-
-        .results-container {
-          grid-template-columns: repeat(auto-fit, minmax(min(250px, 45vw), 1fr));
         }
 
         .card-image {
@@ -744,10 +736,6 @@
       }
 
       @media (max-width: 480px) {
-        .results-container {
-          grid-template-columns: repeat(2, 1fr);
-        }
-
         .card-image {
           max-width: 100%;
         }
@@ -1306,8 +1294,11 @@
 
           this.showResultsCount(totalCards, query, elapsed);
 
+          // Set max columns based on card count to prevent more columns than cards
+          this.updateGridColumns(cards.length);
+
           // Calculate number of columns in the first row for fetchpriority
-          const firstRowCount = this.calculateFirstRowCount();
+          const firstRowCount = this.calculateFirstRowCount(cards.length);
 
           this.resultsContainer.innerHTML = cards
             .map((card, index) => this.createCardHTML(card, index, index < firstRowCount))
@@ -1317,27 +1308,50 @@
           this.observeImages();
         }
 
-        calculateFirstRowCount() {
-          // Calculate how many cards fit in the first row based on viewport width
-          // Grid uses: repeat(auto-fit, minmax(min(300px, 45vw), 1fr))
+        calculateFirstRowCount(cardCount) {
+          // Calculate how many cards fit in the first row based on viewport width and card count
           const viewportWidth = window.innerWidth;
 
-          // Account for body padding (35px on each side from CSS)
-          const contentWidth = viewportWidth - 70;
-
-          // Media query breakpoints
-          if (viewportWidth <= 480) {
-            // Mobile: fixed 2 columns
-            return 2;
-          } else if (viewportWidth <= 768) {
-            // Tablet: minmax(min(250px, 45vw), 1fr)
-            const minWidth = Math.min(250, viewportWidth * 0.45);
-            return Math.floor(contentWidth / minWidth);
+          // Determine columns based on screen width breakpoints
+          let columnsFromWidth;
+          if (viewportWidth < 412) {
+            columnsFromWidth = 1;
+          } else if (viewportWidth < 762) {
+            columnsFromWidth = 2;
+          } else if (viewportWidth < 1410) {
+            columnsFromWidth = 3;
+          } else if (viewportWidth < 2608) {
+            columnsFromWidth = 4;
           } else {
-            // Desktop: minmax(min(300px, 45vw), 1fr)
-            const minWidth = Math.min(300, viewportWidth * 0.45);
-            return Math.floor(contentWidth / minWidth);
+            columnsFromWidth = 5;
           }
+
+          // Return the minimum of columns from width and card count
+          return Math.min(columnsFromWidth, cardCount);
+        }
+
+        updateGridColumns(cardCount) {
+          // Determine columns based on screen width breakpoints
+          const viewportWidth = window.innerWidth;
+          let columnsFromWidth;
+
+          if (viewportWidth < 412) {
+            columnsFromWidth = 1;
+          } else if (viewportWidth < 762) {
+            columnsFromWidth = 2;
+          } else if (viewportWidth < 1410) {
+            columnsFromWidth = 3;
+          } else if (viewportWidth < 2608) {
+            columnsFromWidth = 4;
+          } else {
+            columnsFromWidth = 5;
+          }
+
+          // Use the minimum of columns from width and card count
+          const actualColumns = Math.min(columnsFromWidth, cardCount);
+
+          // Set the grid-template-columns directly
+          this.resultsContainer.style.gridTemplateColumns = `repeat(${actualColumns}, 1fr)`;
         }
 
         buildImageUrl(card, size) {
