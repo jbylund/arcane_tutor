@@ -142,12 +142,6 @@ DB_COLUMNS = [
     FieldInfo(
         db_column_name="mana_cost_jsonb",
         field_type=FieldType.JSONB_OBJECT,
-        search_aliases=["mana"],
-        parser_class=ParserClass.MANA,
-    ),
-    FieldInfo(
-        db_column_name="mana_cost_text",
-        field_type=FieldType.TEXT,
         search_aliases=["mana", "m"],
         parser_class=ParserClass.MANA,
     ),

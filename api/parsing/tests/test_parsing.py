@@ -771,8 +771,9 @@ def test_mana_cost_sql_generation() -> None:
     result1 = parsing.parse_scryfall_query("mana:{1}{G}")
     context1 = {}
     sql1 = result1.to_sql(context1)
-    assert "(card.mana_cost_text =" in sql1
-    assert "{1}{G}" in context1.values()
+    assert sql1 == "(%(p_dict_eydHJzogWzFdfQ)s <@ card.mana_cost_jsonb AND card.cmc >= %(p_int_Mg)s)"
+    assert mana_cost_str_to_dict("{1}{G}") in context1.values()
+    assert calculate_cmc("{1}{G}") in context1.values()
 
     # Test <= operator generates containment + cmc check
     result2 = parsing.parse_scryfall_query("mana<={2}{R}{R}")
@@ -780,8 +781,8 @@ def test_mana_cost_sql_generation() -> None:
     sql2 = result2.to_sql(context2)
     assert "card.mana_cost_jsonb <@" in sql2
     assert "card.cmc <=" in sql2
-    assert {"R": [1, 2]} in context2.values()
-    assert 4 in context2.values()  # CMC of {2}{R}{R}
+    assert mana_cost_str_to_dict("{2}{R}{R}") in context2.values()
+    assert calculate_cmc("{2}{R}{R}") in context2.values()  # CMC of {2}{R}{R}
 
     # Test < operator includes inequality check
     result3 = parsing.parse_scryfall_query("mana<{1}{G}")

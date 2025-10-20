@@ -11,7 +11,6 @@ from api.parsing.db_info import (
     COLOR_CODE_TO_NAME,
     COLOR_NAME_TO_CODE,
     DB_NAME_TO_FIELD_TYPE,
-    SEARCH_NAME_TO_DB_NAME,
     FieldType,
     ParserClass,
 )
@@ -119,14 +118,8 @@ class CardAttributeNode(AttributeNode):
         alias_field_infos = ALIAS_TO_FIELD_INFOS.get(attribute_name.lower(), [])
         self.field_infos = [f for f in alias_field_infos if f.parser_class == matched_parser_class]
 
-        # Determine the database column name from the matched field info
-        # Use the LAST match to maintain backward compatibility with SEARCH_NAME_TO_DB_NAME behavior
-        # (which would overwrite earlier entries, resulting in the last one being used)
-        if self.field_infos:
-            db_column_name = self.field_infos[-1].db_column_name
-        else:
-            # Fallback to the old behavior if no field info found
-            db_column_name = SEARCH_NAME_TO_DB_NAME.get(attribute_name.lower(), attribute_name)
+        field_info, = self.field_infos
+        db_column_name = field_info.db_column_name
 
         super().__init__(db_column_name)
 
@@ -380,7 +373,7 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
         field_type = field_info.field_type
 
         # Special handling for mana attributes with comparison operators
-        if attr in ("mana_cost_text", "mana_cost_jsonb") and isinstance(self.rhs, ManaValueNode | StringValueNode):
+        if attr in ("mana_cost_text", "mana_cost_jsonb"):
             return self._handle_mana_cost_comparison(context)
 
         # Special handling for date/year searches
@@ -449,29 +442,23 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
 
     def _handle_mana_cost_comparison(self, context: dict) -> str:
         """Handle mana cost comparisons with approximate matching."""
-        attr = self.lhs.attribute_name
+        # TODO: need to use text or jsonb matching depending on the operator
         mana_cost_str = self.rhs.value
 
-        # For ":" and "=" operators, use text field matching for exact matches
-        if self.operator in (":", "="):
-            if attr == "mana_cost_text":
-                # Use text matching for exact mana cost matches
-                if self.operator == ":":
-                    self.operator = "="
-                return super().to_sql(context)
-            # For mana_cost_jsonb, convert to JSONB and use equality
-            mana_dict = mana_cost_str_to_dict(mana_cost_str)
-            pname = param_name(mana_dict)
-            context[pname] = mana_dict
-            lhs_sql = self.lhs.to_sql(context)
-            return f"({lhs_sql} = %({pname})s)"
+        # TODO: could actually handle exact equality by doing
+        # jsonb + cmc test... and maybe that's better?
+        if self.operator == "=":
+            self.lhs.attribute_name = "mana_cost_text"
+
+        # : means >=
+        if self.operator == ":":
+            self.operator = ">="
 
         # For comparison operators, we need both containment check and CMC check
         if self.operator in ("<=", "<", ">=", ">"):
             return self._handle_mana_cost_approximate_comparison(context, mana_cost_str)
+        raise AssertionError(self)
 
-        # Fallback to text pattern matching
-        return self._handle_text_field_pattern_matching(context, self.lhs.to_sql(context))
 
     def _handle_mana_cost_approximate_comparison(self, context: dict, mana_cost_str: str) -> str:
         """Handle approximate mana cost comparisons using containment and CMC."""
