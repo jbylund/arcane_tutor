@@ -69,9 +69,11 @@ class TestExportImportCardData:
         mock_conn.cursor.return_value.__exit__ = mock.Mock(return_value=None)
 
         # Mock helper methods to return empty results
-        with mock.patch.object(api_resource, "_export_cards_table", return_value={"file": "cards.json", "count": 0}), \
-             mock.patch.object(api_resource, "_export_tags_table", return_value={"file": "tags.json", "count": 0}), \
-             mock.patch.object(api_resource, "_export_tag_relationships_table", return_value={"file": "relations.json", "count": 0}):
+        with mock.patch.object(
+            api_resource, "_export_cards_table", return_value={"file": "cards.json", "count": 0},
+        ), mock.patch.object(api_resource, "_export_tags_table", return_value={"file": "tags.json", "count": 0}), mock.patch.object(
+            api_resource, "_export_tag_relationships_table", return_value={"file": "relations.json", "count": 0},
+        ):
 
             result = api_resource.export_card_data()
 
@@ -307,14 +309,27 @@ class TestExportImportCardData:
             with (import_dir / "tag_relationships.json").open("w", encoding="utf-8") as f:
                 f.write(orjson.dumps(relationships_data).decode("utf-8"))
 
-            cards_data = [{
-                "card_name": "Lightning Bolt", "cmc": 1, "mana_cost_text": "{R}",
-                "mana_cost_jsonb": {"R": 1}, "raw_card_blob": {"name": "Lightning Bolt"},
-                "card_types": ["Instant"], "card_subtypes": [], "card_colors": {"R": True},
-                "card_color_identity": {"R": True}, "card_keywords": {}, "oracle_text": "Deal 3 damage",
-                "edhrec_rank": None, "creature_power": None, "creature_power_text": None,
-                "creature_toughness": None, "creature_toughness_text": None, "card_oracle_tags": {},
-            }]
+            cards_data = [
+                {
+                    "card_name": "Lightning Bolt",
+                    "cmc": 1,
+                    "mana_cost_text": "{R}",
+                    "mana_cost_jsonb": {"R": 1},
+                    "raw_card_blob": {"name": "Lightning Bolt"},
+                    "card_types": ["Instant"],
+                    "card_subtypes": [],
+                    "card_colors": {"R": True},
+                    "card_color_identity": {"R": True},
+                    "card_keywords": {},
+                    "oracle_text": "Deal 3 damage",
+                    "edhrec_rank": None,
+                    "creature_power": None,
+                    "creature_power_text": None,
+                    "creature_toughness": None,
+                    "creature_toughness_text": None,
+                    "card_oracle_tags": {},
+                },
+            ]
             with (import_dir / "cards.json").open("w", encoding="utf-8") as f:
                 f.write(orjson.dumps(cards_data).decode("utf-8"))
 
@@ -335,8 +350,8 @@ class TestExportImportCardData:
         # Mock cursor
         mock_cursor = mock.Mock()
         mock_cursor.fetchone.side_effect = [
-            {"count": 5},   # tags count
-            {"count": 3},   # relationships count
+            {"count": 5},  # tags count
+            {"count": 3},  # relationships count
             {"count": 1000},  # cards count
         ]
         # Mock rowcount for progress tracking - simulate 750 cards per batch
@@ -361,25 +376,27 @@ class TestExportImportCardData:
             # Create 1000 test cards to test batch processing
             cards_data = []
             for i in range(1000):
-                cards_data.append({
-                    "card_name": f"Test Card {i}",
-                    "cmc": i % 10,
-                    "mana_cost_text": "{R}",
-                    "mana_cost_jsonb": {"R": 1},
-                    "raw_card_blob": {"name": f"Test Card {i}"},
-                    "card_types": ["Instant"],
-                    "card_subtypes": [],
-                    "card_colors": {"R": True},
-                    "card_color_identity": {"R": True},
-                    "card_keywords": {},
-                    "oracle_text": f"Test card {i}",
-                    "edhrec_rank": None,
-                    "creature_power": None,
-                    "creature_power_text": None,
-                    "creature_toughness": None,
-                    "creature_toughness_text": None,
-                    "card_oracle_tags": {},
-                })
+                cards_data.append(
+                    {
+                        "card_name": f"Test Card {i}",
+                        "cmc": i % 10,
+                        "mana_cost_text": "{R}",
+                        "mana_cost_jsonb": {"R": 1},
+                        "raw_card_blob": {"name": f"Test Card {i}"},
+                        "card_types": ["Instant"],
+                        "card_subtypes": [],
+                        "card_colors": {"R": True},
+                        "card_color_identity": {"R": True},
+                        "card_keywords": {},
+                        "oracle_text": f"Test card {i}",
+                        "edhrec_rank": None,
+                        "creature_power": None,
+                        "creature_power_text": None,
+                        "creature_toughness": None,
+                        "creature_toughness_text": None,
+                        "card_oracle_tags": {},
+                    },
+                )
             with (import_dir / "cards.json").open("w", encoding="utf-8") as f:
                 f.write(orjson.dumps(cards_data).decode("utf-8"))
 

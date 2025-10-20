@@ -118,7 +118,7 @@ class AttributeNode(LeafNode):
 
     def __init__(self: AttributeNode, attribute_name: str) -> None:
         """Initialize an AttributeNode with the attribute name."""
-        self.attribute_name = attribute_name
+        self.attribute_name = attribute_name.lower()
 
     def to_sql(self: AttributeNode, context: dict) -> str:
         """Serialize this attribute node to a SQL column reference."""

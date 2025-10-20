@@ -13,71 +13,94 @@ from api.parsing import (
     QueryNode,
     StringValueNode,
 )
-from api.parsing.card_query_nodes import calculate_cmc, mana_cost_str_to_dict
+from api.parsing.card_query_nodes import CardAttributeNode, calculate_cmc, mana_cost_str_to_dict
+from api.parsing.db_info import ParserClass
 
 
 @pytest.mark.parametrize(
     argnames=("test_input", "expected_ast"),
     argvalues=[
-        ("cmc=3", BinaryOperatorNode(AttributeNode("cmc"), "=", NumericValueNode(3))),
+        ("cmc=3", BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), "=", NumericValueNode(3))),
         (
             "cmc=3 power=3",
             AndNode(
                 [
-                    BinaryOperatorNode(AttributeNode("cmc"), "=", NumericValueNode(3)),
-                    BinaryOperatorNode(AttributeNode("power"), "=", NumericValueNode(3)),
+                    BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), "=", NumericValueNode(3)),
+                    BinaryOperatorNode(CardAttributeNode("power", ParserClass.NUMERIC), "=", NumericValueNode(3)),
                 ],
             ),
         ),
-        ("name:'power'", BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("power"))),
-        ('name:"power"', BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("power"))),
+        ("name:'power'", BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("power"))),
+        ('name:"power"', BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("power"))),
         (
             "cmc+cmc<power+toughness",
             BinaryOperatorNode(
-                BinaryOperatorNode(AttributeNode("cmc"), "+", AttributeNode("cmc")),
+                BinaryOperatorNode(
+                    CardAttributeNode("cmc", ParserClass.NUMERIC), "+", CardAttributeNode("cmc", ParserClass.NUMERIC),
+                ),
                 "<",
-                BinaryOperatorNode(AttributeNode("power"), "+", AttributeNode("toughness")),
+                BinaryOperatorNode(
+                    CardAttributeNode("power", ParserClass.NUMERIC), "+", CardAttributeNode("toughness", ParserClass.NUMERIC),
+                ),
             ),
         ),
         (
             "cmc+1<power",
-            BinaryOperatorNode(BinaryOperatorNode(AttributeNode("cmc"), "+", NumericValueNode(1)), "<", AttributeNode("power")),
+            BinaryOperatorNode(
+                BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), "+", NumericValueNode(1)),
+                "<",
+                CardAttributeNode("power", ParserClass.NUMERIC),
+            ),
         ),
         (
             "cmc<power+1",
-            BinaryOperatorNode(AttributeNode("cmc"), "<", BinaryOperatorNode(AttributeNode("power"), "+", NumericValueNode(1))),
+            BinaryOperatorNode(
+                CardAttributeNode("cmc", ParserClass.NUMERIC),
+                "<",
+                BinaryOperatorNode(CardAttributeNode("power", ParserClass.NUMERIC), "+", NumericValueNode(1)),
+            ),
         ),
         (
             "cmc+1<power+2",
             BinaryOperatorNode(
-                BinaryOperatorNode(AttributeNode("cmc"), "+", NumericValueNode(1)),
+                BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), "+", NumericValueNode(1)),
                 "<",
-                BinaryOperatorNode(AttributeNode("power"), "+", NumericValueNode(2)),
+                BinaryOperatorNode(CardAttributeNode("power", ParserClass.NUMERIC), "+", NumericValueNode(2)),
             ),
         ),
-        ("cmc+power", BinaryOperatorNode(AttributeNode("cmc"), "+", AttributeNode("power"))),
-        ("cmc-power", BinaryOperatorNode(AttributeNode("cmc"), "-", AttributeNode("power"))),
+        (
+            "cmc+power",
+            BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), "+", CardAttributeNode("power", ParserClass.NUMERIC)),
+        ),
+        (
+            "cmc-power",
+            BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), "-", CardAttributeNode("power", ParserClass.NUMERIC)),
+        ),
         (
             "cmc + 1 < power",
-            BinaryOperatorNode(BinaryOperatorNode(AttributeNode("cmc"), "+", NumericValueNode(1)), "<", AttributeNode("power")),
+            BinaryOperatorNode(
+                BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), "+", NumericValueNode(1)),
+                "<",
+                CardAttributeNode("power", ParserClass.NUMERIC),
+            ),
         ),
         # Test cases for the numeric < attribute bug
-        ("0<power", BinaryOperatorNode(NumericValueNode(0), "<", AttributeNode("power"))),
-        ("1<power", BinaryOperatorNode(NumericValueNode(1), "<", AttributeNode("power"))),
-        ("3>cmc", BinaryOperatorNode(NumericValueNode(3), ">", AttributeNode("cmc"))),
-        ("0<=toughness", BinaryOperatorNode(NumericValueNode(0), "<=", AttributeNode("toughness"))),
+        ("0<power", BinaryOperatorNode(NumericValueNode(0), "<", CardAttributeNode("power", ParserClass.NUMERIC))),
+        ("1<power", BinaryOperatorNode(NumericValueNode(1), "<", CardAttributeNode("power", ParserClass.NUMERIC))),
+        ("3>cmc", BinaryOperatorNode(NumericValueNode(3), ">", CardAttributeNode("cmc", ParserClass.NUMERIC))),
+        ("0<=toughness", BinaryOperatorNode(NumericValueNode(0), "<=", CardAttributeNode("toughness", ParserClass.NUMERIC))),
         # Test cases for pricing attributes
-        ("usd>10", BinaryOperatorNode(AttributeNode("usd"), ">", NumericValueNode(10))),
-        ("eur<=5", BinaryOperatorNode(AttributeNode("eur"), "<=", NumericValueNode(5))),
-        ("tix<1", BinaryOperatorNode(AttributeNode("tix"), "<", NumericValueNode(1))),
-        ("usd=2.5", BinaryOperatorNode(AttributeNode("usd"), "=", NumericValueNode(2.5))),
-        ("eur!=10", BinaryOperatorNode(AttributeNode("eur"), "!=", NumericValueNode(10))),
-        ("tix>=0.5", BinaryOperatorNode(AttributeNode("tix"), ">=", NumericValueNode(0.5))),
+        ("usd>10", BinaryOperatorNode(CardAttributeNode("usd", ParserClass.NUMERIC), ">", NumericValueNode(10))),
+        ("eur<=5", BinaryOperatorNode(CardAttributeNode("eur", ParserClass.NUMERIC), "<=", NumericValueNode(5))),
+        ("tix<1", BinaryOperatorNode(CardAttributeNode("tix", ParserClass.NUMERIC), "<", NumericValueNode(1))),
+        ("usd=2.5", BinaryOperatorNode(CardAttributeNode("usd", ParserClass.NUMERIC), "=", NumericValueNode(2.5))),
+        ("eur!=10", BinaryOperatorNode(CardAttributeNode("eur", ParserClass.NUMERIC), "!=", NumericValueNode(10))),
+        ("tix>=0.5", BinaryOperatorNode(CardAttributeNode("tix", ParserClass.NUMERIC), ">=", NumericValueNode(0.5))),
         # Test cases for loyalty attributes
-        ("loyalty=3", BinaryOperatorNode(AttributeNode("loyalty"), "=", NumericValueNode(3))),
-        ("loyalty>5", BinaryOperatorNode(AttributeNode("loyalty"), ">", NumericValueNode(5))),
-        ("loyalty<=7", BinaryOperatorNode(AttributeNode("loyalty"), "<=", NumericValueNode(7))),
-        ("loy:4", BinaryOperatorNode(AttributeNode("loy"), ":", NumericValueNode(4))),
+        ("loyalty=3", BinaryOperatorNode(CardAttributeNode("loyalty", ParserClass.NUMERIC), "=", NumericValueNode(3))),
+        ("loyalty>5", BinaryOperatorNode(CardAttributeNode("loyalty", ParserClass.NUMERIC), ">", NumericValueNode(5))),
+        ("loyalty<=7", BinaryOperatorNode(CardAttributeNode("loyalty", ParserClass.NUMERIC), "<=", NumericValueNode(7))),
+        ("loy:4", BinaryOperatorNode(CardAttributeNode("loy", ParserClass.NUMERIC), ":", NumericValueNode(4))),
     ],
 )
 def test_parse_to_nodes(test_input: str, expected_ast: QueryNode) -> None:
@@ -92,7 +115,7 @@ def test_parse_simple_condition() -> None:
     """Test parsing a simple condition."""
     query = "cmc:2"
     result = parsing.parse_search_query(query)
-    expected = BinaryOperatorNode(AttributeNode("cmc"), ":", NumericValueNode(2))
+    expected = BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), ":", NumericValueNode(2))
     assert result.root == expected
 
 
@@ -103,8 +126,8 @@ def test_parse_and_operation() -> None:
 
     assert result == AndNode(
         [
-            BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("a")),
-            BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("b")),
+            BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("a")),
+            BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("b")),
         ],
     )
 
@@ -115,8 +138,8 @@ def test_parse_or_operation() -> None:
     result = parsing.parse_search_query(query).root
     assert result == OrNode(
         [
-            BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("a")),
-            BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("b")),
+            BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("a")),
+            BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("b")),
         ],
     )
 
@@ -127,8 +150,8 @@ def test_parse_implicit_and() -> None:
     result = parsing.parse_search_query(query).root
     assert result == AndNode(
         [
-            BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("a")),
-            BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("b")),
+            BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("a")),
+            BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("b")),
         ],
     )
 
@@ -156,7 +179,7 @@ def test_parse_quoted_strings() -> None:
     """Test parsing quoted strings."""
     query = 'name:"Lightning Bolt"'
     observed_ast = parsing.parse_search_query(query)
-    expected_ast = BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("Lightning Bolt"))
+    expected_ast = BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("Lightning Bolt"))
     assert observed_ast.root == expected_ast
 
 
@@ -165,19 +188,19 @@ def test_parse_set_searches() -> None:
     # Test full 'set:' syntax
     query = "set:iko"
     result = parsing.parse_search_query(query)
-    expected = BinaryOperatorNode(AttributeNode("set"), ":", StringValueNode("iko"))
+    expected = BinaryOperatorNode(CardAttributeNode("set", ParserClass.TEXT), ":", StringValueNode("iko"))
     assert result.root == expected
 
     # Test 's:' shorthand
     query = "s:thb"
     result = parsing.parse_search_query(query)
-    expected = BinaryOperatorNode(AttributeNode("s"), ":", StringValueNode("thb"))
+    expected = BinaryOperatorNode(CardAttributeNode("s", ParserClass.TEXT), ":", StringValueNode("thb"))
     assert result.root == expected
 
     # Test case insensitivity
     query = "SET:m21"
     result = parsing.parse_search_query(query)
-    expected = BinaryOperatorNode(AttributeNode("SET"), ":", StringValueNode("m21"))
+    expected = BinaryOperatorNode(CardAttributeNode("SET", ParserClass.TEXT), ":", StringValueNode("m21"))
     assert result.root == expected
 
 
@@ -188,7 +211,7 @@ def test_parse_different_operators() -> None:
     for op in operators:
         query = f"cmc{op}3"
         result = parsing.parse_search_query(query)
-        expected = BinaryOperatorNode(AttributeNode("cmc"), op, NumericValueNode(3))
+        expected = BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), op, NumericValueNode(3))
         assert result.root == expected
 
 
@@ -201,7 +224,7 @@ def _generate_pricing_operator_test_cases() -> list[tuple[str, BinaryOperatorNod
     for attr in pricing_attrs:
         for op in operators:
             query = f"{attr}{op}5"
-            expected = BinaryOperatorNode(AttributeNode(attr), op, NumericValueNode(5))
+            expected = BinaryOperatorNode(CardAttributeNode(attr, ParserClass.NUMERIC), op, NumericValueNode(5))
             test_cases.append((query, expected))
 
     return test_cases
@@ -222,19 +245,23 @@ def test_parse_combined_pricing_queries() -> None:
     # Test combining pricing with other attributes
     query1 = "cmc<=3 usd<5"
     result1 = parsing.parse_search_query(query1)
-    expected1 = AndNode([
-        BinaryOperatorNode(AttributeNode("cmc"), "<=", NumericValueNode(3)),
-        BinaryOperatorNode(AttributeNode("usd"), "<", NumericValueNode(5)),
-    ])
+    expected1 = AndNode(
+        [
+            BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), "<=", NumericValueNode(3)),
+            BinaryOperatorNode(CardAttributeNode("usd", ParserClass.NUMERIC), "<", NumericValueNode(5)),
+        ],
+    )
     assert result1.root == expected1
 
     # Test combining multiple pricing attributes
     query2 = "usd>10 OR eur<5"
     result2 = parsing.parse_search_query(query2)
-    expected2 = OrNode([
-        BinaryOperatorNode(AttributeNode("usd"), ">", NumericValueNode(10)),
-        BinaryOperatorNode(AttributeNode("eur"), "<", NumericValueNode(5)),
-    ])
+    expected2 = OrNode(
+        [
+            BinaryOperatorNode(CardAttributeNode("usd", ParserClass.NUMERIC), ">", NumericValueNode(10)),
+            BinaryOperatorNode(CardAttributeNode("eur", ParserClass.NUMERIC), "<", NumericValueNode(5)),
+        ],
+    )
     assert result2.root == expected2
 
 
@@ -254,31 +281,31 @@ def test_name_vs_name_attribute() -> None:
     # This should create a BinaryOperatorNode for "name" (searching for cards with "name" in their name)
     query1 = "name"
     result1 = parsing.parse_search_query(query1)
-    expected = BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("name"))
+    expected = BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("name"))
     assert result1.root == expected
 
     # This should create a BinaryOperatorNode for name:value (same as bare word "value")
     query2 = "name:value"
     result2 = parsing.parse_search_query(query2)
-    expected = BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("value"))
+    expected = BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("value"))
     assert result2.root == expected
 
     # This should create a BinaryOperatorNode for cmc operations
     query3 = "cmc:3"
     result3 = parsing.parse_search_query(query3)
-    expected = BinaryOperatorNode(AttributeNode("cmc"), ":", NumericValueNode(3))
+    expected = BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), ":", NumericValueNode(3))
     assert result3.root == expected
 
     # This should create a BinaryOperatorNode for other attributes
     query4 = "oracle:flying"
     result4 = parsing.parse_search_query(query4)
-    expected = BinaryOperatorNode(AttributeNode("oracle"), ":", StringValueNode("flying"))
+    expected = BinaryOperatorNode(CardAttributeNode("oracle", ParserClass.TEXT), ":", StringValueNode("flying"))
     assert result4.root == expected
 
     # Test flavor text search
     query5 = "flavor:magic"
     result5 = parsing.parse_search_query(query5)
-    expected = BinaryOperatorNode(AttributeNode("flavor"), ":", StringValueNode("magic"))
+    expected = BinaryOperatorNode(CardAttributeNode("flavor", ParserClass.TEXT), ":", StringValueNode("magic"))
     assert result5.root == expected
 
 
@@ -300,8 +327,6 @@ def test_nary_operator_associativity(operator: str) -> None:
     assert result1 == result2
 
 
-
-
 class TestNodes:
     def test_node_equality(self) -> None:
         assert AttributeNode("name") == AttributeNode("name")
@@ -311,9 +336,20 @@ def test_arithmetic_vs_negation_ambiguity() -> None:
     """Test that the ambiguity between arithmetic and negation is resolved correctly."""
     # These should be treated as arithmetic operations (both sides are known attributes)
     arithmetic_cases = [
-        ("cmc-power", BinaryOperatorNode(AttributeNode("cmc"), "-", AttributeNode("power"))),
-        ("power-toughness", BinaryOperatorNode(AttributeNode("power"), "-", AttributeNode("toughness"))),
-        ("cmc+power", BinaryOperatorNode(AttributeNode("cmc"), "+", AttributeNode("power"))),
+        (
+            "cmc-power",
+            BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), "-", CardAttributeNode("power", ParserClass.NUMERIC)),
+        ),
+        (
+            "power-toughness",
+            BinaryOperatorNode(
+                CardAttributeNode("power", ParserClass.NUMERIC), "-", CardAttributeNode("toughness", ParserClass.NUMERIC),
+            ),
+        ),
+        (
+            "cmc+power",
+            BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), "+", CardAttributeNode("power", ParserClass.NUMERIC)),
+        ),
     ]
 
     for query, expected in arithmetic_cases:
@@ -326,8 +362,8 @@ def test_arithmetic_vs_negation_ambiguity() -> None:
             "cmc -flying",
             AndNode(
                 [
-                    BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("cmc")),
-                    NotNode(BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("flying"))),
+                    BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("cmc")),
+                    NotNode(BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("flying"))),
                 ],
             ),
         ),
@@ -335,8 +371,8 @@ def test_arithmetic_vs_negation_ambiguity() -> None:
             "power -goblin",
             AndNode(
                 [
-                    BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("power")),
-                    NotNode(BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("goblin"))),
+                    BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("power")),
+                    NotNode(BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("goblin"))),
                 ],
             ),
         ),
@@ -345,8 +381,6 @@ def test_arithmetic_vs_negation_ambiguity() -> None:
     for query, expected in negation_cases:
         result = parsing.parse_search_query(query)
         assert result.root == expected, f"Failed for query: {query}"
-
-
 
 
 def generate_arithmetic_parser_testcases() -> list[tuple[str, BinaryOperatorNode]]:
@@ -359,9 +393,12 @@ def generate_arithmetic_parser_testcases() -> list[tuple[str, BinaryOperatorNode
     expression_types = [
         ("1", NumericValueNode(1)),
         ("1+1", BinaryOperatorNode(NumericValueNode(1), "+", NumericValueNode(1))),
-        ("cmc+1", BinaryOperatorNode(AttributeNode("cmc"), "+", NumericValueNode(1))),
-        ("cmc+power", BinaryOperatorNode(AttributeNode("cmc"), "+", AttributeNode("power"))),
-        ("power", AttributeNode("power")),
+        ("cmc+1", BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), "+", NumericValueNode(1))),
+        (
+            "cmc+power",
+            BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), "+", CardAttributeNode("power", ParserClass.NUMERIC)),
+        ),
+        ("power", CardAttributeNode("power", ParserClass.NUMERIC)),
     ]
 
     query_ast_pairs = []
@@ -398,9 +435,9 @@ def test_arithmetic_parser_consolidation(query: str, expected_ast: BinaryOperato
 @pytest.mark.parametrize(
     argnames="invalid_query",
     argvalues=[
-        "name:test and",      # Trailing AND with no right operand
-        "power>1 or",         # Trailing OR with no right operand
-        "cmc=3 and ()",       # Empty parentheses after AND
+        "name:test and",  # Trailing AND with no right operand
+        "power>1 or",  # Trailing OR with no right operand
+        "cmc=3 and ()",  # Empty parentheses after AND
     ],
 )
 def test_invalid_queries_with_trailing_content_fail(invalid_query: str) -> None:
@@ -419,9 +456,9 @@ def test_invalid_queries_with_trailing_content_fail(invalid_query: str) -> None:
 @pytest.mark.parametrize(
     argnames="semantically_invalid_query",
     argvalues=[
-        "name:bolt and 1",    # Valid parse but semantically invalid: AND between boolean and integer
-        "cmc=3 and 2",        # Valid parse but semantically invalid: AND between boolean and integer
-        "power>1 or 5",       # Valid parse but semantically invalid: OR between boolean and integer
+        "name:bolt and 1",  # Valid parse but semantically invalid: AND between boolean and integer
+        "cmc=3 and 2",  # Valid parse but semantically invalid: AND between boolean and integer
+        "power>1 or 5",  # Valid parse but semantically invalid: OR between boolean and integer
     ],
 )
 def test_semantically_invalid_queries_parse_but_fail_at_db_level(semantically_invalid_query: str) -> None:
@@ -456,17 +493,17 @@ def test_standalone_numeric_query_parses() -> None:
     assert parsed_query_float.root.value == 2.5
 
 
-
-
-
 @pytest.mark.parametrize(
     argnames=("input_query", "expected_ast"),
     argvalues=[
-        ("artist:moeller", BinaryOperatorNode(AttributeNode("artist"), ":", StringValueNode("moeller"))),
-        ("a:moeller", BinaryOperatorNode(AttributeNode("a"), ":", StringValueNode("moeller"))),
-        ('artist:"Christopher Moeller"', BinaryOperatorNode(AttributeNode("artist"), ":", StringValueNode("Christopher Moeller"))),
-        ("artist:nielsen", BinaryOperatorNode(AttributeNode("artist"), ":", StringValueNode("nielsen"))),
-        ("ARTIST:moeller", BinaryOperatorNode(AttributeNode("ARTIST"), ":", StringValueNode("moeller"))),
+        ("artist:moeller", BinaryOperatorNode(CardAttributeNode("artist", ParserClass.TEXT), ":", StringValueNode("moeller"))),
+        ("a:moeller", BinaryOperatorNode(CardAttributeNode("a", ParserClass.TEXT), ":", StringValueNode("moeller"))),
+        (
+            'artist:"Christopher Moeller"',
+            BinaryOperatorNode(CardAttributeNode("artist", ParserClass.TEXT), ":", StringValueNode("Christopher Moeller")),
+        ),
+        ("artist:nielsen", BinaryOperatorNode(CardAttributeNode("artist", ParserClass.TEXT), ":", StringValueNode("nielsen"))),
+        ("ARTIST:moeller", BinaryOperatorNode(CardAttributeNode("ARTIST", ParserClass.TEXT), ":", StringValueNode("moeller"))),
     ],
 )
 def test_parse_artist_searches(input_query: str, expected_ast: BinaryOperatorNode) -> None:
@@ -475,40 +512,57 @@ def test_parse_artist_searches(input_query: str, expected_ast: BinaryOperatorNod
     assert result.root == expected_ast
 
 
-
-
 def test_parse_combined_artist_queries() -> None:
     """Test parsing combined queries with artist attributes."""
     # Test combining artist with other attributes
     query1 = "cmc<=3 artist:moeller"
     result1 = parsing.parse_search_query(query1)
-    expected1 = AndNode([
-        BinaryOperatorNode(AttributeNode("cmc"), "<=", NumericValueNode(3)),
-        BinaryOperatorNode(AttributeNode("artist"), ":", StringValueNode("moeller")),
-    ])
+    expected1 = AndNode(
+        [
+            BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), "<=", NumericValueNode(3)),
+            BinaryOperatorNode(CardAttributeNode("artist", ParserClass.TEXT), ":", StringValueNode("moeller")),
+        ],
+    )
     assert result1.root == expected1
 
     # Test combining multiple text attributes including artist
     query2 = "name:lightning OR artist:moeller"
     result2 = parsing.parse_search_query(query2)
-    expected2 = OrNode([
-        BinaryOperatorNode(AttributeNode("name"), ":", StringValueNode("lightning")),
-        BinaryOperatorNode(AttributeNode("artist"), ":", StringValueNode("moeller")),
-    ])
+    expected2 = OrNode(
+        [
+            BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("lightning")),
+            BinaryOperatorNode(CardAttributeNode("artist", ParserClass.TEXT), ":", StringValueNode("moeller")),
+        ],
+    )
     assert result2.root == expected2
 
 
 @pytest.mark.parametrize(
     argnames=("test_input", "expected_ast"),
     argvalues=[
-        ("format:standard", BinaryOperatorNode(AttributeNode("format"), ":", StringValueNode("standard"))),
-        ("f:modern", BinaryOperatorNode(AttributeNode("f"), ":", StringValueNode("modern"))),
-        ("legal:legacy", BinaryOperatorNode(AttributeNode("legal"), ":", StringValueNode("legacy"))),
-        ("banned:standard", BinaryOperatorNode(AttributeNode("banned"), ":", StringValueNode("standard"))),
-        ("restricted:vintage", BinaryOperatorNode(AttributeNode("restricted"), ":", StringValueNode("vintage"))),
-        ('format:"Commander"', BinaryOperatorNode(AttributeNode("format"), ":", StringValueNode("Commander"))),
-        ("FORMAT:standard", BinaryOperatorNode(AttributeNode("FORMAT"), ":", StringValueNode("standard"))),
-        ("LEGAL:modern", BinaryOperatorNode(AttributeNode("LEGAL"), ":", StringValueNode("modern"))),
+        (
+            "format:standard",
+            BinaryOperatorNode(CardAttributeNode("format", ParserClass.LEGALITY), ":", StringValueNode("standard")),
+        ),
+        ("f:modern", BinaryOperatorNode(CardAttributeNode("f", ParserClass.LEGALITY), ":", StringValueNode("modern"))),
+        ("legal:legacy", BinaryOperatorNode(CardAttributeNode("legal", ParserClass.LEGALITY), ":", StringValueNode("legacy"))),
+        (
+            "banned:standard",
+            BinaryOperatorNode(CardAttributeNode("banned", ParserClass.LEGALITY), ":", StringValueNode("standard")),
+        ),
+        (
+            "restricted:vintage",
+            BinaryOperatorNode(CardAttributeNode("restricted", ParserClass.LEGALITY), ":", StringValueNode("vintage")),
+        ),
+        (
+            'format:"Commander"',
+            BinaryOperatorNode(CardAttributeNode("format", ParserClass.LEGALITY), ":", StringValueNode("Commander")),
+        ),
+        (
+            "FORMAT:standard",
+            BinaryOperatorNode(CardAttributeNode("FORMAT", ParserClass.LEGALITY), ":", StringValueNode("standard")),
+        ),
+        ("LEGAL:modern", BinaryOperatorNode(CardAttributeNode("LEGAL", ParserClass.LEGALITY), ":", StringValueNode("modern"))),
     ],
 )
 def test_parse_legality_searches(test_input: str, expected_ast: QueryNode) -> None:
@@ -517,40 +571,42 @@ def test_parse_legality_searches(test_input: str, expected_ast: QueryNode) -> No
     assert result.root == expected_ast
 
 
-
-
 def test_parse_combined_legality_queries() -> None:
     """Test parsing of complex queries combining legality searches."""
     # Test AND combination
     query1 = "format:standard banned:modern"
     result1 = parsing.parse_search_query(query1)
-    expected1 = AndNode([
-        BinaryOperatorNode(AttributeNode("format"), ":", StringValueNode("standard")),
-        BinaryOperatorNode(AttributeNode("banned"), ":", StringValueNode("modern")),
-    ])
+    expected1 = AndNode(
+        [
+            BinaryOperatorNode(CardAttributeNode("format", ParserClass.LEGALITY), ":", StringValueNode("standard")),
+            BinaryOperatorNode(CardAttributeNode("banned", ParserClass.LEGALITY), ":", StringValueNode("modern")),
+        ],
+    )
     assert result1.root == expected1
 
     # Test OR combination
     query2 = "legal:legacy or restricted:vintage"
     result2 = parsing.parse_search_query(query2)
-    expected2 = OrNode([
-        BinaryOperatorNode(AttributeNode("legal"), ":", StringValueNode("legacy")),
-        BinaryOperatorNode(AttributeNode("restricted"), ":", StringValueNode("vintage")),
-    ])
+    expected2 = OrNode(
+        [
+            BinaryOperatorNode(CardAttributeNode("legal", ParserClass.LEGALITY), ":", StringValueNode("legacy")),
+            BinaryOperatorNode(CardAttributeNode("restricted", ParserClass.LEGALITY), ":", StringValueNode("vintage")),
+        ],
+    )
     assert result2.root == expected2
 
 
 @pytest.mark.parametrize(
     argnames=("test_input", "expected_ast"),
     argvalues=[
-        ("number:123", BinaryOperatorNode(AttributeNode("number"), ":", StringValueNode("123"))),
-        ("cn:45", BinaryOperatorNode(AttributeNode("cn"), ":", StringValueNode("45"))),
-        ("number:1a", BinaryOperatorNode(AttributeNode("number"), ":", StringValueNode("1a"))),
-        ("cn:100b", BinaryOperatorNode(AttributeNode("cn"), ":", StringValueNode("100b"))),
-        ('number:"123"', BinaryOperatorNode(AttributeNode("number"), ":", StringValueNode("123"))),
-        ("cn:'45a'", BinaryOperatorNode(AttributeNode("cn"), ":", StringValueNode("45a"))),
-        ("NUMBER:123", BinaryOperatorNode(AttributeNode("NUMBER"), ":", StringValueNode("123"))),
-        ("CN:45", BinaryOperatorNode(AttributeNode("CN"), ":", StringValueNode("45"))),
+        ("number:123", BinaryOperatorNode(CardAttributeNode("number", ParserClass.NUMERIC), ":", NumericValueNode(123))),
+        ("cn:45", BinaryOperatorNode(CardAttributeNode("cn", ParserClass.NUMERIC), ":", NumericValueNode(45))),
+        ("number:1a", BinaryOperatorNode(CardAttributeNode("number", ParserClass.TEXT), ":", StringValueNode("1a"))),
+        ("cn:100b", BinaryOperatorNode(CardAttributeNode("cn", ParserClass.TEXT), ":", StringValueNode("100b"))),
+        ('number:"123"', BinaryOperatorNode(CardAttributeNode("number", ParserClass.TEXT), ":", StringValueNode("123"))),
+        ("cn:'45a'", BinaryOperatorNode(CardAttributeNode("cn", ParserClass.TEXT), ":", StringValueNode("45a"))),
+        ("NUMBER:123", BinaryOperatorNode(CardAttributeNode("NUMBER", ParserClass.NUMERIC), ":", NumericValueNode(123))),
+        ("CN:45", BinaryOperatorNode(CardAttributeNode("CN", ParserClass.NUMERIC), ":", NumericValueNode(45))),
     ],
 )
 def test_parse_collector_number_searches(test_input: str, expected_ast: BinaryOperatorNode) -> None:
@@ -559,38 +615,40 @@ def test_parse_collector_number_searches(test_input: str, expected_ast: BinaryOp
     assert observed.root == expected_ast
 
 
-
-
 def test_parse_combined_collector_number_queries() -> None:
     """Test parsing of complex queries combining collector number searches."""
     # Test AND combination
     query1 = "number:123 set:dom"
     result1 = parsing.parse_search_query(query1)
-    expected1 = AndNode([
-        BinaryOperatorNode(AttributeNode("number"), ":", StringValueNode("123")),
-        BinaryOperatorNode(AttributeNode("set"), ":", StringValueNode("dom")),
-    ])
+    expected1 = AndNode(
+        [
+            BinaryOperatorNode(CardAttributeNode("number", ParserClass.NUMERIC), ":", NumericValueNode(123)),
+            BinaryOperatorNode(CardAttributeNode("set", ParserClass.TEXT), ":", StringValueNode("dom")),
+        ],
+    )
     assert result1.root == expected1
 
     # Test OR combination
     query2 = "cn:1 or cn:2"
     result2 = parsing.parse_search_query(query2)
-    expected2 = OrNode([
-        BinaryOperatorNode(AttributeNode("cn"), ":", StringValueNode("1")),
-        BinaryOperatorNode(AttributeNode("cn"), ":", StringValueNode("2")),
-    ])
+    expected2 = OrNode(
+        [
+            BinaryOperatorNode(CardAttributeNode("cn", ParserClass.NUMERIC), ":", NumericValueNode(1)),
+            BinaryOperatorNode(CardAttributeNode("cn", ParserClass.NUMERIC), ":", NumericValueNode(2)),
+        ],
+    )
     assert result2.root == expected2
 
 
 @pytest.mark.parametrize(
     argnames=("test_input", "expected_ast"),
     argvalues=[
-        ("mana:{1}{G}", BinaryOperatorNode(AttributeNode("mana"), ":", parsing.ManaValueNode("{1}{G}"))),
-        ("m:{2}{R}{G}", BinaryOperatorNode(AttributeNode("m"), ":", parsing.ManaValueNode("{2}{R}{G}"))),
-        ("mana:{W/U}", BinaryOperatorNode(AttributeNode("mana"), ":", parsing.ManaValueNode("{W/U}"))),
-        ("m:{X}{X}{W}", BinaryOperatorNode(AttributeNode("m"), ":", parsing.ManaValueNode("{X}{X}{W}"))),
-        ("mana:{0}", BinaryOperatorNode(AttributeNode("mana"), ":", parsing.ManaValueNode("{0}"))),
-        ("m:{15}", BinaryOperatorNode(AttributeNode("m"), ":", parsing.ManaValueNode("{15}"))),
+        ("mana:{1}{G}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("{1}{G}"))),
+        ("m:{2}{R}{G}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{2}{R}{G}"))),
+        ("mana:{W/U}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("{W/U}"))),
+        ("m:{X}{X}{W}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{X}{X}{W}"))),
+        ("mana:{0}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("{0}"))),
+        ("m:{15}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{15}"))),
     ],
 )
 def test_parse_mana_cost_searches(test_input: str, expected_ast: BinaryOperatorNode) -> None:
@@ -602,13 +660,13 @@ def test_parse_mana_cost_searches(test_input: str, expected_ast: BinaryOperatorN
 @pytest.mark.parametrize(
     argnames=("test_input", "expected_ast"),
     argvalues=[
-        ("mana=1{G}", BinaryOperatorNode(AttributeNode("mana"), "=", parsing.ManaValueNode("1{G}"))),
-        ("m:2{R}{G}", BinaryOperatorNode(AttributeNode("m"), ":", parsing.ManaValueNode("2{R}{G}"))),
-        ("mana=W{U/R}", BinaryOperatorNode(AttributeNode("mana"), "=", parsing.ManaValueNode("W{U/R}"))),
-        ("m:{2/W}G", BinaryOperatorNode(AttributeNode("m"), ":", parsing.ManaValueNode("{2/W}G"))),
-        ("mana:1WU", BinaryOperatorNode(AttributeNode("mana"), ":", parsing.ManaValueNode("1WU"))),
-        ("m=2RRG", BinaryOperatorNode(AttributeNode("m"), "=", parsing.ManaValueNode("2RRG"))),
-        ("mana:WU", BinaryOperatorNode(AttributeNode("mana"), ":", parsing.ManaValueNode("WU"))),
+        ("mana=1{G}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), "=", parsing.ManaValueNode("1{G}"))),
+        ("m:2{R}{G}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("2{R}{G}"))),
+        ("mana=W{U/R}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), "=", parsing.ManaValueNode("W{U/R}"))),
+        ("m:{2/W}G", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{2/W}G"))),
+        ("mana:1WU", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("1WU"))),
+        ("m=2RRG", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), "=", parsing.ManaValueNode("2RRG"))),
+        ("mana:WU", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("WU"))),
     ],
 )
 def test_parse_mixed_mana_notation(test_input: str, expected_ast: BinaryOperatorNode) -> None:
@@ -622,19 +680,23 @@ def test_parse_combined_mana_queries() -> None:
     # Test combining mana with other attributes
     query1 = "cmc<=3 mana:{1}{G}"
     result1 = parsing.parse_search_query(query1)
-    expected1 = parsing.AndNode([
-        BinaryOperatorNode(AttributeNode("cmc"), "<=", NumericValueNode(3)),
-        BinaryOperatorNode(AttributeNode("mana"), ":", parsing.ManaValueNode("{1}{G}")),
-    ])
+    expected1 = parsing.AndNode(
+        [
+            BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), "<=", NumericValueNode(3)),
+            BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("{1}{G}")),
+        ],
+    )
     assert result1.root == expected1
 
     # Test combining multiple mana attributes
     query2 = "mana:{W} OR m:{U}"
     result2 = parsing.parse_search_query(query2)
-    expected2 = parsing.OrNode([
-        BinaryOperatorNode(AttributeNode("mana"), ":", parsing.ManaValueNode("{W}")),
-        BinaryOperatorNode(AttributeNode("m"), ":", parsing.ManaValueNode("{U}")),
-    ])
+    expected2 = parsing.OrNode(
+        [
+            BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("{W}")),
+            BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{U}")),
+        ],
+    )
     assert result2.root == expected2
 
 
@@ -643,13 +705,13 @@ def test_mana_cost_with_comparison_operators() -> None:
     # Test colon operator (most common)
     query1 = "mana:{1}{G}"
     result1 = parsing.parse_search_query(query1)
-    expected1 = BinaryOperatorNode(AttributeNode("mana"), ":", parsing.ManaValueNode("{1}{G}"))
+    expected1 = BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("{1}{G}"))
     assert result1.root == expected1
 
     # Test equals operator
     query2 = "m={W}{U}"
     result2 = parsing.parse_search_query(query2)
-    expected2 = BinaryOperatorNode(AttributeNode("m"), "=", parsing.ManaValueNode("{W}{U}"))
+    expected2 = BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), "=", parsing.ManaValueNode("{W}{U}"))
     assert result2.root == expected2
 
 
@@ -681,25 +743,25 @@ def test_mana_cost_approximate_comparisons() -> None:
     # Test <= operator - use regular parser for AST structure validation
     query1 = "mana<={2}{R}{R}"
     result1 = parsing.parse_search_query(query1)
-    expected1 = BinaryOperatorNode(AttributeNode("mana"), "<=", parsing.ManaValueNode("{2}{R}{R}"))
+    expected1 = BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), "<=", parsing.ManaValueNode("{2}{R}{R}"))
     assert result1.root == expected1
 
     # Test < operator
     query2 = "m<{1}{G}"
     result2 = parsing.parse_search_query(query2)
-    expected2 = BinaryOperatorNode(AttributeNode("m"), "<", parsing.ManaValueNode("{1}{G}"))
+    expected2 = BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), "<", parsing.ManaValueNode("{1}{G}"))
     assert result2.root == expected2
 
     # Test >= operator (parsing test)
     query3 = "mana>={W}{U}"
     result3 = parsing.parse_search_query(query3)
-    expected3 = BinaryOperatorNode(AttributeNode("mana"), ">=", parsing.ManaValueNode("{W}{U}"))
+    expected3 = BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ">=", parsing.ManaValueNode("{W}{U}"))
     assert result3.root == expected3
 
     # Test > operator
     query4 = "m>{0}"
     result4 = parsing.parse_search_query(query4)
-    expected4 = BinaryOperatorNode(AttributeNode("m"), ">", parsing.ManaValueNode("{0}"))
+    expected4 = BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ">", parsing.ManaValueNode("{0}"))
     assert result4.root == expected4
 
 
@@ -709,8 +771,16 @@ def test_mana_cost_sql_generation() -> None:
     result1 = parsing.parse_scryfall_query("mana:{1}{G}")
     context1 = {}
     sql1 = result1.to_sql(context1)
-    assert "(card.mana_cost_text =" in sql1
-    assert "{1}{G}" in context1.values()
+    assert sql1 == "(%(p_dict_eydHJzogWzFdfQ)s <@ card.mana_cost_jsonb AND card.cmc >= %(p_int_Mg)s)"
+    assert mana_cost_str_to_dict("{1}{G}") in context1.values()
+    assert calculate_cmc("{1}{G}") in context1.values()
+
+    result1 = parsing.parse_scryfall_query("mana={1}{G}")
+    context1 = {}
+    sql1 = result1.to_sql(context1)
+    assert sql1 == "(card.mana_cost_jsonb = %(p_dict_eydHJzogWzFdfQ)s AND card.cmc = %(p_int_Mg)s)"
+    assert mana_cost_str_to_dict("{1}{G}") in context1.values()
+    assert calculate_cmc("{1}{G}") in context1.values()
 
     # Test <= operator generates containment + cmc check
     result2 = parsing.parse_scryfall_query("mana<={2}{R}{R}")
@@ -718,8 +788,8 @@ def test_mana_cost_sql_generation() -> None:
     sql2 = result2.to_sql(context2)
     assert "card.mana_cost_jsonb <@" in sql2
     assert "card.cmc <=" in sql2
-    assert {"R": [1, 2]} in context2.values()
-    assert 4 in context2.values()  # CMC of {2}{R}{R}
+    assert mana_cost_str_to_dict("{2}{R}{R}") in context2.values()
+    assert calculate_cmc("{2}{R}{R}") in context2.values()  # CMC of {2}{R}{R}
 
     # Test < operator includes inequality check
     result3 = parsing.parse_scryfall_query("mana<{1}{G}")
@@ -786,13 +856,22 @@ def test_mana_cost_dict_conversion() -> None:
 @pytest.mark.parametrize(
     argnames=("test_input", "expected_ast"),
     argvalues=[
-        ("devotion:{G}", BinaryOperatorNode(AttributeNode("devotion"), ":", parsing.ManaValueNode("{G}"))),
-        ("devotion={G}", BinaryOperatorNode(AttributeNode("devotion"), "=", parsing.ManaValueNode("{G}"))),
-        ("devotion>={G}", BinaryOperatorNode(AttributeNode("devotion"), ">=", parsing.ManaValueNode("{G}"))),
-        ("devotion>={G}{R}", BinaryOperatorNode(AttributeNode("devotion"), ">=", parsing.ManaValueNode("{G}{R}"))),
-        ("devotion<={W}{U}", BinaryOperatorNode(AttributeNode("devotion"), "<=", parsing.ManaValueNode("{W}{U}"))),
-        ("devotion>{B}", BinaryOperatorNode(AttributeNode("devotion"), ">", parsing.ManaValueNode("{B}"))),
-        ("devotion<{R}{G}{B}", BinaryOperatorNode(AttributeNode("devotion"), "<", parsing.ManaValueNode("{R}{G}{B}"))),
+        ("devotion:{G}", BinaryOperatorNode(CardAttributeNode("devotion", ParserClass.MANA), ":", parsing.ManaValueNode("{G}"))),
+        ("devotion={G}", BinaryOperatorNode(CardAttributeNode("devotion", ParserClass.MANA), "=", parsing.ManaValueNode("{G}"))),
+        ("devotion>={G}", BinaryOperatorNode(CardAttributeNode("devotion", ParserClass.MANA), ">=", parsing.ManaValueNode("{G}"))),
+        (
+            "devotion>={G}{R}",
+            BinaryOperatorNode(CardAttributeNode("devotion", ParserClass.MANA), ">=", parsing.ManaValueNode("{G}{R}")),
+        ),
+        (
+            "devotion<={W}{U}",
+            BinaryOperatorNode(CardAttributeNode("devotion", ParserClass.MANA), "<=", parsing.ManaValueNode("{W}{U}")),
+        ),
+        ("devotion>{B}", BinaryOperatorNode(CardAttributeNode("devotion", ParserClass.MANA), ">", parsing.ManaValueNode("{B}"))),
+        (
+            "devotion<{R}{G}{B}",
+            BinaryOperatorNode(CardAttributeNode("devotion", ParserClass.MANA), "<", parsing.ManaValueNode("{R}{G}{B}")),
+        ),
     ],
 )
 def test_parse_devotion_searches(test_input: str, expected_ast: BinaryOperatorNode) -> None:
@@ -854,14 +933,14 @@ def test_mana_cost_string_format_comparisons() -> None:
 @pytest.mark.parametrize(
     argnames=("test_input", "expected_ast"),
     argvalues=[
-        ("produces:g", BinaryOperatorNode(AttributeNode("produces"), ":", StringValueNode("g"))),
-        ("produces:wu", BinaryOperatorNode(AttributeNode("produces"), ":", StringValueNode("wu"))),
-        ("produces:wubrg", BinaryOperatorNode(AttributeNode("produces"), ":", StringValueNode("wubrg"))),
-        ("produces:c", BinaryOperatorNode(AttributeNode("produces"), ":", StringValueNode("c"))),
-        ("produces:G", BinaryOperatorNode(AttributeNode("produces"), ":", StringValueNode("G"))),
-        ("produces:WU", BinaryOperatorNode(AttributeNode("produces"), ":", StringValueNode("WU"))),
-        ('produces:"wu"', BinaryOperatorNode(AttributeNode("produces"), ":", StringValueNode("wu"))),
-        ("PRODUCES:g", BinaryOperatorNode(AttributeNode("PRODUCES"), ":", StringValueNode("g"))),
+        ("produces:g", BinaryOperatorNode(CardAttributeNode("produces", ParserClass.COLOR), ":", StringValueNode("g"))),
+        ("produces:wu", BinaryOperatorNode(CardAttributeNode("produces", ParserClass.COLOR), ":", StringValueNode("wu"))),
+        ("produces:wubrg", BinaryOperatorNode(CardAttributeNode("produces", ParserClass.COLOR), ":", StringValueNode("wubrg"))),
+        ("produces:c", BinaryOperatorNode(CardAttributeNode("produces", ParserClass.COLOR), ":", StringValueNode("c"))),
+        ("produces:G", BinaryOperatorNode(CardAttributeNode("produces", ParserClass.COLOR), ":", StringValueNode("G"))),
+        ("produces:WU", BinaryOperatorNode(CardAttributeNode("produces", ParserClass.COLOR), ":", StringValueNode("WU"))),
+        ('produces:"wu"', BinaryOperatorNode(CardAttributeNode("produces", ParserClass.COLOR), ":", StringValueNode("wu"))),
+        ("PRODUCES:g", BinaryOperatorNode(CardAttributeNode("PRODUCES", ParserClass.COLOR), ":", StringValueNode("g"))),
     ],
 )
 def test_parse_produces_searches(test_input: str, expected_ast: BinaryOperatorNode) -> None:
@@ -875,23 +954,27 @@ def test_parse_combined_produces_queries() -> None:
     # Test combining produces with other attributes
     query1 = "produces:g type:land"
     result1 = parsing.parse_search_query(query1)
-    expected1 = parsing.AndNode([
-        BinaryOperatorNode(AttributeNode("produces"), ":", StringValueNode("g")),
-        BinaryOperatorNode(AttributeNode("type"), ":", StringValueNode("land")),
-    ])
+    expected1 = parsing.AndNode(
+        [
+            BinaryOperatorNode(CardAttributeNode("produces", ParserClass.COLOR), ":", StringValueNode("g")),
+            BinaryOperatorNode(CardAttributeNode("type", ParserClass.TEXT), ":", StringValueNode("land")),
+        ],
+    )
     assert result1.root == expected1
 
     # Test OR with produces
     query2 = "produces:w OR produces:u"
     result2 = parsing.parse_search_query(query2)
-    expected2 = parsing.OrNode([
-        BinaryOperatorNode(AttributeNode("produces"), ":", StringValueNode("w")),
-        BinaryOperatorNode(AttributeNode("produces"), ":", StringValueNode("u")),
-    ])
+    expected2 = parsing.OrNode(
+        [
+            BinaryOperatorNode(CardAttributeNode("produces", ParserClass.COLOR), ":", StringValueNode("w")),
+            BinaryOperatorNode(CardAttributeNode("produces", ParserClass.COLOR), ":", StringValueNode("u")),
+        ],
+    )
     assert result2.root == expected2
 
     # Test produces with comparison operators
     query3 = "produces=wu"
     result3 = parsing.parse_search_query(query3)
-    expected3 = BinaryOperatorNode(AttributeNode("produces"), "=", StringValueNode("wu"))
+    expected3 = BinaryOperatorNode(CardAttributeNode("produces", ParserClass.COLOR), "=", StringValueNode("wu"))
     assert result3.root == expected3

@@ -38,18 +38,22 @@ retryer = tenacity.retry(
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class SearchResult:
     """Container for search result data."""
+
     query: str
     total_cards: int
     card_names: list[str]
     success: bool
     error_message: str | None = None
 
+
 @dataclass
 class ComparisonResult:
     """Container for comparison analysis."""
+
     query: str
     official_result: SearchResult
     local_result: SearchResult
@@ -61,6 +65,7 @@ class ComparisonResult:
     official_only_cards: list[tuple[str, int]]  # (card_name, position)
     local_total_cards: int
 
+
 class ScryfallAPIComparator:
     """Compares search results between official Scryfall and local implementation."""
 
@@ -69,9 +74,11 @@ class ScryfallAPIComparator:
         self.official_base_url = "https://api.scryfall.com"
         self.local_base_url = "https://scryfall.crestcourt.com"
         self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": "ScryfallOSComparison/1.0",
-        })
+        self.session.headers.update(
+            {
+                "User-Agent": "ScryfallOSComparison/1.0",
+            },
+        )
 
     def search_official_scryfall(self, query: str, limit: int = 100) -> SearchResult:
         """Search using official Scryfall API."""
@@ -187,7 +194,9 @@ class ScryfallAPIComparator:
 
         return sum(correlations) / len(correlations) if correlations else 0.0
 
-    def _find_unique_cards(self, official_cards: list[str], local_cards: list[str]) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
+    def _find_unique_cards(
+        self, official_cards: list[str], local_cards: list[str],
+    ) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
         """Find cards unique to each result set with their positions."""
         official_cards_set = set(official_cards)
         local_cards_set = set(local_cards)
@@ -210,18 +219,20 @@ class ScryfallAPIComparator:
 
         return local_only_cards, official_only_cards
 
-    def _determine_major_discrepancy(self, official_result: SearchResult, local_result: SearchResult,
-                                   result_count_diff: int, position_correlation: float) -> bool:
+    def _determine_major_discrepancy(
+        self, official_result: SearchResult, local_result: SearchResult, result_count_diff: int, position_correlation: float,
+    ) -> bool:
         """Determine if there's a major discrepancy between results."""
         return (
-            not official_result.success or
-            not local_result.success or
-            result_count_diff > max(official_result.total_cards, local_result.total_cards) * RESULT_DIFF_THRESHOLD or
-            position_correlation < CORRELATION_THRESHOLD_LOW
+            not official_result.success
+            or not local_result.success
+            or result_count_diff > max(official_result.total_cards, local_result.total_cards) * RESULT_DIFF_THRESHOLD
+            or position_correlation < CORRELATION_THRESHOLD_LOW
         )
 
-    def _generate_notes(self, official_result: SearchResult, local_result: SearchResult,
-                       result_count_diff: int, position_correlation: float) -> list[str]:
+    def _generate_notes(
+        self, official_result: SearchResult, local_result: SearchResult, result_count_diff: int, position_correlation: float,
+    ) -> list[str]:
         """Generate notes about the comparison."""
         notes = []
         if not official_result.success:
@@ -249,17 +260,24 @@ class ScryfallAPIComparator:
 
         # Find unique cards with their positions
         local_only_cards, official_only_cards = self._find_unique_cards(
-            official_result.card_names, local_result.card_names,
+            official_result.card_names,
+            local_result.card_names,
         )
 
         # Determine if there's a major discrepancy
         major_discrepancy = self._determine_major_discrepancy(
-            official_result, local_result, result_count_diff, position_correlation,
+            official_result,
+            local_result,
+            result_count_diff,
+            position_correlation,
         )
 
         # Generate notes
         notes = self._generate_notes(
-            official_result, local_result, result_count_diff, position_correlation,
+            official_result,
+            local_result,
+            result_count_diff,
+            position_correlation,
         )
 
         return ComparisonResult(
@@ -285,32 +303,25 @@ class ScryfallAPIComparator:
             "c:g",
             "cmc=3",
             "power>3",
-
             # Color searches
             "id:g",
             "c:rg",
             "color:white",
-
             # Complex searches
             "t:beast id:g",
             "cmc<=3 power>=2",
             "o:flying t:angel",
-
             # Keyword searches
             "keyword:flying",
             "keyword:trample",
             "keyword:vigilance",
-
             "otag:dual-land",
-
             # Artist searches
             "artist:moeller",
             "a:nielsen",
             "artist:guay",
-
             # Arithmetic expressions
             "power>toughness",
-
             # Edge cases
             'name:"Lightning Bolt"',
             "cmc=0",
@@ -374,6 +385,7 @@ class ScryfallAPIComparator:
 
         return report
 
+
 def main() -> None:
     """Main function to run the comparison."""
     logger.info("Starting Scryfall API comparison")
@@ -408,6 +420,7 @@ def main() -> None:
             logger.info(f"  - {result.query}: {', '.join(result.notes)}")
     else:
         logger.info("✅ No major discrepancies found!")
+
 
 if __name__ == "__main__":
     main()

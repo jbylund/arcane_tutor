@@ -80,8 +80,6 @@ class TestTaggingIntegration:
             timeout=30,
         )
 
-
-
     @patch("api.api_resource.APIResource.discover_tags_from_scryfall")
     @patch("api.api_resource.APIResource.update_tagged_cards")
     @patch("api.api_resource.APIResource._get_all_tags")
@@ -130,14 +128,12 @@ class TestTaggingIntegration:
         assert callable(api.action_map["discover_and_import_all_tags"])
         assert callable(api.action_map["update_tagged_cards"])
 
+    @pytest.mark.skip(reason="Skipping live test for now")
     def test_get_tag_relationships_live(self) -> None:
         """Test that get_tag_relationships works with a live tag."""
         api = APIResource()
         res = api._get_tag_relationships(tag="cast-trigger")
-        pairs = {
-            (r["parent"]["slug"], r["child"]["slug"])
-            for r in res
-        }
+        pairs = {(r["parent"]["slug"], r["child"]["slug"]) for r in res}
         assert pairs == {
             ("cast-trigger", "cast-trigger-other"),
             ("cast-trigger", "cast-trigger-self"),

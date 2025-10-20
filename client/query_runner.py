@@ -255,9 +255,11 @@ def main() -> None:
 
     # Create a session for HTTP requests
     session = requests.Session()
-    session.headers.update({
-        "User-Agent": "ScryfallosQueryRunner/1.0",
-    })
+    session.headers.update(
+        {
+            "User-Agent": "ScryfallosQueryRunner/1.0",
+        },
+    )
 
     # Generate query pool
     query_pool = generate_random_queries()

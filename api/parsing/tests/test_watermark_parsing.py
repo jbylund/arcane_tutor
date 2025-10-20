@@ -14,13 +14,16 @@ from api.parsing.parsing_f import parse_scryfall_query
 class TestWatermarkParsing:
     """Test parsing of watermark search queries."""
 
-    @pytest.mark.parametrize(("query", "expected_attr", "expected_value"), [
-        ("watermark:azorius", "card_watermark", "azorius"),
-        ("watermark:dimir", "card_watermark", "dimir"),
-        ("watermark:rakdos", "card_watermark", "rakdos"),
-        ("watermark:gruul", "card_watermark", "gruul"),
-        ("watermark:selesnya", "card_watermark", "selesnya"),
-    ])
+    @pytest.mark.parametrize(
+        ("query", "expected_attr", "expected_value"),
+        [
+            ("watermark:azorius", "card_watermark", "azorius"),
+            ("watermark:dimir", "card_watermark", "dimir"),
+            ("watermark:rakdos", "card_watermark", "rakdos"),
+            ("watermark:gruul", "card_watermark", "gruul"),
+            ("watermark:selesnya", "card_watermark", "selesnya"),
+        ],
+    )
     def test_parse_watermark_queries(self, query: str, expected_attr: str, expected_value: str) -> None:
         """Test parsing of watermark search queries."""
         result = parse_scryfall_query(query)
@@ -113,6 +116,7 @@ class TestWatermarkParsing:
         result = parse_scryfall_query(query)
 
         assert isinstance(result, Query)
+
         # Should be nested AND operations
         def extract_attributes(node: Any) -> list[tuple[str, Any]]:
             """Recursively extract all attribute nodes from a parse tree."""

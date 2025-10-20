@@ -122,6 +122,7 @@ class ApiWorker(multiprocessing.Process):
         logging.info("Starting worker with pid %d", os.getpid())
         try:
             import bjoern
+
             app = self.get_api(
                 import_guard=self.import_guard,
                 schema_setup_event=self.schema_setup_event,

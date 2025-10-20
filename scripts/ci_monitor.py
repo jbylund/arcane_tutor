@@ -20,6 +20,7 @@ Repository ID: R_kgDOJFq5kw
 Copilot ID: U_kgDODB1VSw
 """
 
+
 def get_github_headers() -> dict[str, str]:
     """Get headers for GitHub API requests."""
     token = os.environ.get("GITHUB_TOKEN")
@@ -165,7 +166,6 @@ def assign_issue_to_copilot_via_graphql(owner: str, repo: str, issue_number: int
         issue_id = data["data"]["repository"]["issue"]["id"]
         copilot_id = data["data"]["user"]["id"]
 
-
         # Now assign the issue to copilot-swe-agent
         mutation = """
         mutation($issueId: ID!, $assigneeIds: [ID!]!) {
@@ -269,12 +269,14 @@ def check_ci_status(owner: str, repo: str) -> tuple[bool, list[dict[str, Any]], 
                 # Check if this run is for the latest commit and failed
                 if latest_run["head_sha"] == latest_commit_sha and latest_run["conclusion"] == "failure":
                     has_failed = True
-                    failed_checks.append({
-                        "name": workflow["name"],
-                        "type": "workflow",
-                        "url": latest_run["html_url"],
-                        "conclusion": latest_run["conclusion"],
-                    })
+                    failed_checks.append(
+                        {
+                            "name": workflow["name"],
+                            "type": "workflow",
+                            "url": latest_run["html_url"],
+                            "conclusion": latest_run["conclusion"],
+                        },
+                    )
         except requests.RequestException as error:
             print(f"Error checking workflow {workflow['name']}: {error}")
 
@@ -425,6 +427,7 @@ Environment Variables:
     )
 
     return parser.parse_args()
+
 
 def main() -> None:
     """Main function to monitor CI status and manage issues."""

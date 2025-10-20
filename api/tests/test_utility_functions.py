@@ -55,4 +55,3 @@ def test_get_where_clause_caching() -> None:
 
     # Results should be identical (cached)
     assert result1 == result2
-

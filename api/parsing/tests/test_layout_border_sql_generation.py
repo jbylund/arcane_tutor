@@ -13,14 +13,17 @@ from api.parsing.parsing_f import parse_scryfall_query
 class TestLayoutBorderSQLGeneration:
     """Test that layout and border searches generate exact equality SQL queries."""
 
-    @pytest.mark.parametrize(("query", "expected_column", "expected_value"), [
-        ("layout:normal", "card.card_layout", "normal"),
-        ("layout:split", "card.card_layout", "split"),
-        ("layout:flip", "card.card_layout", "flip"),
-        ("border:black", "card.card_border", "black"),
-        ("border:white", "card.card_border", "white"),
-        ("border:borderless", "card.card_border", "borderless"),
-    ])
+    @pytest.mark.parametrize(
+        ("query", "expected_column", "expected_value"),
+        [
+            ("layout:normal", "card.card_layout", "normal"),
+            ("layout:split", "card.card_layout", "split"),
+            ("layout:flip", "card.card_layout", "flip"),
+            ("border:black", "card.card_border", "black"),
+            ("border:white", "card.card_border", "white"),
+            ("border:borderless", "card.card_border", "borderless"),
+        ],
+    )
     def test_layout_border_generate_exact_equality_sql(self, query: str, expected_column: str, expected_value: str) -> None:
         """Test that layout and border searches generate exact equality SQL (not ILIKE)."""
         result = parse_scryfall_query(query)
@@ -81,14 +84,17 @@ class TestLayoutBorderSQLGeneration:
         for value in values:
             assert "%" not in str(value)
 
-    @pytest.mark.parametrize(("query", "expected_lowercase"), [
-        ("layout:NORMAL", "normal"),
-        ("layout:Split", "split"),
-        ("layout:TRANSFORM", "transform"),
-        ("border:BLACK", "black"),
-        ("border:White", "white"),
-        ("border:BORDERLESS", "borderless"),
-    ])
+    @pytest.mark.parametrize(
+        ("query", "expected_lowercase"),
+        [
+            ("layout:NORMAL", "normal"),
+            ("layout:Split", "split"),
+            ("layout:TRANSFORM", "transform"),
+            ("border:BLACK", "black"),
+            ("border:White", "white"),
+            ("border:BORDERLESS", "borderless"),
+        ],
+    )
     def test_case_insensitive_layout_border_searches(self, query: str, expected_lowercase: str) -> None:
         """Test that layout and border searches are case-insensitive."""
         result = parse_scryfall_query(query)
