@@ -362,9 +362,33 @@
 
       .results-container {
         display: grid;
-        grid-template-columns: repeat(3, 1fr);
+        grid-template-columns: 1fr;
         gap: 0.5vw;
         margin-top: 30px;
+      }
+
+      @media (min-width: 410px) {
+        .results-container {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+
+      @media (min-width: 750px) {
+        .results-container {
+          grid-template-columns: repeat(3, 1fr);
+        }
+      }
+
+      @media (min-width: 1370px) {
+        .results-container {
+          grid-template-columns: repeat(4, 1fr);
+        }
+      }
+
+      @media (min-width: 2500px) {
+        .results-container {
+          grid-template-columns: repeat(5, 1fr);
+        }
       }
 
       .card-item {
@@ -1043,10 +1067,7 @@
 
           // Add resize listener to update columns dynamically
           window.addEventListener('resize', () => {
-            // Only update if we have cards displayed
-            if (this.currentCardCount > 0) {
-              this.updateGridColumns(this.currentCardCount);
-            }
+            this.updateGridColumns(this.currentCardCount);
           });
         }
 
@@ -1346,6 +1367,11 @@
         }
 
         updateGridColumns(cardCount) {
+          // Only update if we have cards displayed
+          if (cardCount === 0) {
+            return;
+          }
+
           // Determine columns based on screen width breakpoints
           const columnsFromWidth = this.getColumnsFromViewportWidth();
 
