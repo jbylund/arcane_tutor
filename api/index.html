@@ -1320,23 +1320,26 @@
           this.observeImages();
         }
 
-        calculateFirstRowCount(cardCount) {
-          // Calculate how many cards fit in the first row based on viewport width and card count
+        getColumnsFromViewportWidth() {
+          // Determine columns based on screen width breakpoints
           const viewportWidth = window.innerWidth;
 
-          // Determine columns based on screen width breakpoints
-          let columnsFromWidth;
-          if (viewportWidth < 412) {
-            columnsFromWidth = 1;
-          } else if (viewportWidth < 762) {
-            columnsFromWidth = 2;
-          } else if (viewportWidth < 1410) {
-            columnsFromWidth = 3;
-          } else if (viewportWidth < 2608) {
-            columnsFromWidth = 4;
+          if (viewportWidth < 410) {
+            return 1;
+          } else if (viewportWidth < 750) {
+            return 2;
+          } else if (viewportWidth < 1370) {
+            return 3;
+          } else if (viewportWidth < 2500) {
+            return 4;
           } else {
-            columnsFromWidth = 5;
+            return 5;
           }
+        }
+
+        calculateFirstRowCount(cardCount) {
+          // Calculate how many cards fit in the first row based on viewport width and card count
+          const columnsFromWidth = this.getColumnsFromViewportWidth();
 
           // Return the minimum of columns from width and card count
           return Math.min(columnsFromWidth, cardCount);
@@ -1344,20 +1347,7 @@
 
         updateGridColumns(cardCount) {
           // Determine columns based on screen width breakpoints
-          const viewportWidth = window.innerWidth;
-          let columnsFromWidth;
-
-          if (viewportWidth < 410) {
-            columnsFromWidth = 1;
-          } else if (viewportWidth < 750) {
-            columnsFromWidth = 2;
-          } else if (viewportWidth < 1370) {
-            columnsFromWidth = 3;
-          } else if (viewportWidth < 2500) {
-            columnsFromWidth = 4;
-          } else {
-            columnsFromWidth = 5;
-          }
+          const columnsFromWidth = this.getColumnsFromViewportWidth();
 
           // Use the minimum of columns from width and card count
           const actualColumns = Math.min(columnsFromWidth, cardCount);
