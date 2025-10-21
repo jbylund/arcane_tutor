@@ -782,6 +782,7 @@
           this.cardsData = new Map(); // Store card data by ID
           this.lastRequestedUrl = null; // Track the last requested URL to prevent duplicate requests
           this.isAscending = true; // Track order direction
+          this.currentCardCount = 0; // Track current number of cards displayed for resize handling
 
           // Autocomplete properties
           this.commonCardTypes = []; // Will store the common card types
@@ -1039,6 +1040,14 @@
           this.orderToggle.addEventListener('click', () => {
             this.toggleOrderDirection();
           });
+
+          // Add resize listener to update columns dynamically
+          window.addEventListener('resize', () => {
+            // Only update if we have cards displayed
+            if (this.currentCardCount > 0) {
+              this.updateGridColumns(this.currentCardCount);
+            }
+          });
         }
 
         handleSearch(query) {
@@ -1293,6 +1302,9 @@
           console.log('CardsData keys:', Array.from(this.cardsData.keys()));
 
           this.showResultsCount(totalCards, query, elapsed);
+
+          // Store card count for resize handling
+          this.currentCardCount = cards.length;
 
           // Set max columns based on card count to prevent more columns than cards
           this.updateGridColumns(cards.length);
@@ -1626,6 +1638,7 @@
             this.imageObserver.disconnect();
           }
           this.resultsContainer.innerHTML = '';
+          this.currentCardCount = 0; // Reset card count
           this.clearMessages();
         }
 
