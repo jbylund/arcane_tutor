@@ -355,6 +355,10 @@ def get_args() -> Args:
     Returns:
         Args object containing parsed command-line arguments
     """
+
+    def lowerstr(s: str) -> str:
+        return s.lower()
+
     parser = argparse.ArgumentParser(
         description="Copy card images to S3 with WebP conversion",
     )
@@ -367,6 +371,7 @@ def get_args() -> Args:
         "--set",
         dest="set_code",
         help="Process only cards from a specific set (e.g., 'iko')",
+        type=lowerstr,
     )
     parser.add_argument(
         "--limit",
@@ -447,7 +452,10 @@ def get_s3_cards(args: Args) -> set[tuple[str, str, str]]:
     s3resource = boto3.resource("s3")
     bucket = s3resource.Bucket(args.bucket)
     s3_cards = set()
-    for obj in bucket.objects.filter(Prefix="img/", MaxKeys=9999999):
+    prefix = "img/"
+    if args.set_code:
+        prefix += f"{args.set_code}/"
+    for obj in bucket.objects.filter(Prefix=prefix, MaxKeys=9999999):
         if not obj.key.endswith(".webp"):
             continue
         try:

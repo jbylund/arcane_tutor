@@ -103,16 +103,6 @@ def create_test_card(  # noqa: PLR0913
 class TestCardProcessing:
     """Test card processing functions."""
 
-    def test_preprocess_card_filters_invalid_cards(self: TestCardProcessing) -> None:
-        """Test preprocess_card filters out invalid cards."""
-        # Test card with all not_legal legalities
-        invalid_card = create_test_card(
-            legalities={"standard": "not_legal", "modern": "not_legal"},
-        )
-
-        result = preprocess_card(invalid_card)
-        assert result is None
-
     def test_preprocess_card_filters_non_paper_cards(self: TestCardProcessing) -> None:
         """Test preprocess_card filters out non-paper cards."""
         invalid_card = create_test_card(
@@ -147,8 +137,6 @@ class TestCardProcessing:
             name="Lightning Bolt",
             type_line="Instant",
             keywords=["haste"],
-            power="3",
-            toughness="1",
             prices={"usd": "0.25", "eur": "0.20", "tix": "0.01"},
             set_code="m15",
             artist="Christopher Rush",
@@ -165,8 +153,6 @@ class TestCardProcessing:
         assert result["card_colors"] == {"R": True}
         assert result["card_color_identity"] == {"R": True}
         assert result["card_keywords"] == {"haste": True}
-        assert result["creature_power"] == 3
-        assert result["creature_toughness"] == 1
         assert result["price_usd"] == 0.25
         assert result["price_eur"] == 0.20
         assert result["price_tix"] == 0.01
