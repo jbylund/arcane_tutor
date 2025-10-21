@@ -86,13 +86,13 @@ def extract_collector_number_int(collector_number: str | int | float | None) -> 
     return None  # Field will be null by default
 
 
-def preprocess_card(card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: PLR0915
+def preprocess_card(card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: PLR0915,C901,PLR0912
     """Preprocess a card to remove invalid cards and add necessary fields."""
-    # if set(card["legalities"].values()) == {"not_legal"}:
-        # return None
+    if set(card["legalities"].values()) == {"not_legal"}:
+        pass
     if "playtest" in card.get("promo_types", []):
         return None
-    if "paper" not in card["games"]:
+    if "paper" not in card.get("games", []):
         return None
     if "card_faces" in card:
         return None
@@ -116,11 +116,7 @@ def preprocess_card(card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: PLR
     card["planeswalker_loyalty"] = maybe_int(card.get("loyalty"))
 
     if card.get("power") is not None:
-        if "Creature" in card["card_types"]:
-            pass
-        elif "Vehicle" in card["card_subtypes"]:
-            pass
-        elif "Spacecraft" in card["card_subtypes"]:
+        if "Creature" in card["card_types"] or "Vehicle" in card["card_subtypes"] or "Spacecraft" in card["card_subtypes"]:
             pass
         else:
             return None
