@@ -1337,8 +1337,7 @@
             .map((card, index) => this.createCardHTML(card, index, index < firstRowCount))
             .join('');
 
-          // Observe all images for viewport-based loading
-          this.observeImages();
+          // No need to observe images - browser handles responsive images natively via srcset
         }
 
         getColumnsFromViewportWidth() {
@@ -1416,12 +1415,16 @@
             altText += this.escapeHtml(truncatedText);
           }
 
-          // Create placeholder image that will be replaced when in viewport
+          // Create responsive image with srcset and sizes for optimal image selection
           // Add fetchpriority="high" for first row cards to improve LCP
           // Add loading="lazy" for non-first-row images to improve initial load
           const fetchPriorityAttr = isFirstRow ? ' fetchpriority="high"' : '';
           const loadingAttr = isFirstRow ? '' : ' loading="lazy"';
-          const imageHtml = `<img class="card-image" data-small="${this.escapeHtml(imageSmall)}" data-normal="${this.escapeHtml(imageNormal)}" data-large="${this.escapeHtml(imageLarge)}" width="410" height="573" alt="${altText}" title="${altText}"${fetchPriorityAttr}${loadingAttr} />`;
+          // Sizes attribute tells the browser the image display width at different viewport sizes
+          // This allows the browser to select the optimal image from srcset
+          const sizesAttr =
+            '(max-width: 409px) min(100vw, 400px), (max-width: 749px) 48vw, (max-width: 1369px) 32vw, (max-width: 2499px) 24vw, 19vw';
+          const imageHtml = `<img class="card-image" srcset="${this.escapeHtml(imageSmall)} 220w, ${this.escapeHtml(imageNormal)} 410w, ${this.escapeHtml(imageLarge)} 745w" sizes="${sizesAttr}" src="${this.escapeHtml(imageNormal)}" width="410" height="573" alt="${altText}" title="${altText}"${fetchPriorityAttr}${loadingAttr} />`;
 
           return `
              <div class="card-item" data-card-id="${this.escapeHtml(cardId)}">
@@ -1550,68 +1553,13 @@
         };
 
         initImageObserver() {
-          // Create intersection observer to watch for images entering viewport
-          this.imageObserver = new IntersectionObserver(
-            entries => {
-              entries.forEach(entry => {
-                if (entry.isIntersecting) {
-                  const img = entry.target;
-                  this.loadImage(img);
-                  // Stop observing once image is loaded
-                  this.imageObserver.unobserve(img);
-                }
-              });
-            },
-            {
-              rootMargin: '150px', // Start loading 150px before entering viewport
-              threshold: 0.1,
-            }
-          );
-        }
-
-        loadImage(imgElement) {
-          const smallImageUrl = imgElement.getAttribute('data-small');
-          const normalImageUrl = imgElement.getAttribute('data-normal');
-
-          if (!smallImageUrl) return;
-
-          // Start with small image
-          imgElement.src = smallImageUrl;
-
-          // If normal image is available, upgrade after small image loads
-          if (normalImageUrl) {
-            imgElement.onload = () => {
-              this.upgradeToNormalImage(imgElement, normalImageUrl);
-            };
-          }
-        }
-
-        upgradeToNormalImage(imgElement, normalImageUrl) {
-          // Create a new image to preload the normal version
-          const normalImg = new Image();
-          normalImg.onload = () => {
-            // Once the normal image is loaded, replace the src
-            imgElement.src = normalImageUrl;
-            imgElement.removeAttribute('data-normal');
-            imgElement.removeAttribute('data-small');
-            imgElement.onload = null;
-          };
-          normalImg.onerror = () => {
-            // If normal image fails to load, keep the small image
-            console.warn('Failed to load normal image:', normalImageUrl);
-            imgElement.removeAttribute('data-normal');
-            imgElement.removeAttribute('data-small');
-            imgElement.onload = null;
-          };
-          normalImg.src = normalImageUrl;
+          // Responsive images with srcset are now used, so no custom image observer needed
+          // The browser natively handles selecting and loading the appropriate image size
+          this.imageObserver = null;
         }
 
         observeImages() {
-          // Find all images that haven't been loaded yet
-          const images = this.resultsContainer.querySelectorAll('img.card-image:not([src])');
-          images.forEach(img => {
-            this.imageObserver.observe(img);
-          });
+          // No longer needed - browser handles image loading via srcset and loading="lazy"
         }
 
         showLoading() {
@@ -1649,10 +1597,7 @@
         }
 
         clearResults() {
-          // Disconnect observer to clean up
-          if (this.imageObserver) {
-            this.imageObserver.disconnect();
-          }
+          // No observer to disconnect - browser handles responsive images natively
           this.resultsContainer.innerHTML = '';
           this.currentCardCount = 0; // Reset card count
           this.clearMessages();
