@@ -1509,14 +1509,19 @@
           const collectorNumber = card.collector_number || '';
           const manapoolUrl =
             setCode && collectorNumber
-              ? `https://manapool.com/card/${this.escapeHtml(setCode)}/${this.escapeHtml(collectorNumber)}?ref=arcane-tutor`
+              ? `https://manapool.com/card/${encodeURIComponent(setCode)}/${encodeURIComponent(collectorNumber)}?ref=arcane-tutor`
               : '';
 
-          const imageHtml = imageLarge
-            ? manapoolUrl
-              ? `<a href="${manapoolUrl}" target="_blank" rel="noopener noreferrer"><img class="modal-image" src="${this.escapeHtml(imageLarge)}" width="745" height="1040" alt="${this.escapeHtml(card.name || 'Card Image')}" /></a>`
-              : `<img class="modal-image" src="${this.escapeHtml(imageLarge)}" width="745" height="1040" alt="${this.escapeHtml(card.name || 'Card Image')}" />`
-            : '';
+          // Build image element
+          let imageHtml = '';
+          if (imageLarge) {
+            const imgTag = `<img class="modal-image" src="${this.escapeHtml(imageLarge)}" width="745" height="1040" alt="${this.escapeHtml(card.name || 'Card Image')}" />`;
+            if (manapoolUrl) {
+              imageHtml = `<a href="${this.escapeHtml(manapoolUrl)}" target="_blank" rel="noopener noreferrer">${imgTag}</a>`;
+            } else {
+              imageHtml = imgTag;
+            }
+          }
 
           modalContent.innerHTML = `
             <button class="modal-close" onclick="cardSearch.closeModal()">&times;</button>
