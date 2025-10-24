@@ -91,7 +91,7 @@ services:
       - *pg-conf
       - *pg-init
       - /tmp/pgdata/dev/:/data/pg
-      - ./data/postgres/logs_dev:/var/log/postgresql
+      - ./data/postgres/dev/logs/:/var/log/postgresql
     profiles:
       - dev
 
@@ -109,7 +109,7 @@ services:
     ports:
       - "28080:8080"
     volumes:
-      - ./data/api_dev:/data/api
+      - ./data/api/dev/:/data/api
     profiles:
       - dev
 
@@ -133,7 +133,7 @@ services:
       - *pg-conf
       - *pg-init
       - /tmp/pgdata/prod/:/data/pg
-      - ./data/postgres/logs_prod:/var/log/postgresql
+      - ./data/postgres/prod/logs/:/var/log/postgresql
     profiles:
       - prod
 
@@ -150,7 +150,7 @@ services:
     ports:
       - "18080:8080"
     volumes:
-      - ./data/api_prod:/data/api
+      - ./data/api/prod/:/data/api
     profiles:
       - prod
 
