@@ -145,7 +145,7 @@ dump_schema: # @doc dump database schema to file using container's pg_dump
 	docker exec $(PROJECTNAME)postgres $(shell find /usr/bin /opt/homebrew -name pg_dump) -U $(XPGUSER) -d $(XPGDATABASE) -s
 
 datadir:
-	mkdir -p data/api data/postgres/logs /tmp/pgdata
+	bash ./scripts/make_datadirs.sh
 
 reset:
 	rm -rvf data
