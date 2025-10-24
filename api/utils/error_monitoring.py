@@ -10,7 +10,6 @@ import orjson
 logger = logging.getLogger(__name__)
 
 
-logging.basicConfig(level=logging.INFO, force=True)
 
 # Try to import honeybadger, fall back to basic error handling if not available
 try:
