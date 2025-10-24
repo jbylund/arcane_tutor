@@ -62,6 +62,13 @@ SET prefer_score_components = JSONB_BUILD_OBJECT(
                 WHEN raw_card_blob -> 'games' ? 'paper' THEN 6
                 ELSE 0
             END
+    ),
+    'language', (
+        SELECT 
+            CASE 
+                WHEN raw_card_blob ->> 'lang' = 'en' THEN 40
+                ELSE 0
+            END
     )
 );
 
