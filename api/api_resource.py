@@ -772,64 +772,99 @@ class APIResource:
         with pathlib.Path(full_filename).open() as f:
             html_content = f.read()
 
-        # Check if we have a search query
-        search_query = query or q
-        if search_query:
-            # Run the search server-side and embed results in the HTML
-            try:
-                search_results = self._search(
-                    query=search_query,
-                    orderby=orderby or CardOrdering.EDHREC,
-                    direction=direction or SortDirection.ASC,
-                    unique=unique or UniqueOn.CARD,
-                    prefer=prefer or PreferOrder.DEFAULT,
-                )
-
-                # Get cards from results
-                cards = search_results.get("cards", [])
-                total_cards = search_results.get("total_cards", len(cards))
-
-                # Generate server-side HTML for cards (for no-JS support)
-                results_html = generate_results_html(cards) if cards else ""
-                results_count_html = generate_results_count_html(total_cards, search_query) if cards else ""
-
-                # Inject the server-side rendered HTML
-                html_content = html_content.replace(
-                    "<!-- SERVER_SIDE_RESULTS -->",
-                    results_html,
-                )
-
-                # Inject the results count with proper display style
-                if results_count_html:
-                    html_content = html_content.replace(
-                        '<div id="resultsCount" class="results-count" style="display: none"><!-- SERVER_SIDE_RESULTS_COUNT --></div>',
-                        f'<div id="resultsCount" class="results-count" style="display: block">{results_count_html}</div>',
-                    )
-
-                # Convert search results to JSON and embed for JavaScript enhancement
-                search_results_json = orjson.dumps(search_results, option=orjson.OPT_INDENT_2).decode("utf-8")
-                embedded_data = f"""// Server-side embedded search results
-      window.EMBEDDED_SEARCH_RESULTS = {search_results_json};
-      """
-                # Replace the placeholder token with the embedded data
-                html_content = html_content.replace(
-                    "<!-- SERVER_SIDE_EMBEDDED_DATA -->",
-                    embedded_data,
-                )
-                # Disable caching for pages with search results
-                set_cache_header(falcon_response, duration=timedelta(seconds=90))
-            except (ValueError, falcon.HTTPBadRequest, psycopg.errors.DatatypeMismatch) as err:
-                # If search fails, just serve the page without embedded results
-                logger.warning("Failed to embed search results: %s", err)
-                set_cache_header(falcon_response, duration=timedelta(hours=1))
-        else:
-            # Cache for 1 hour - improves repeat visit performance
-            set_cache_header(falcon_response, duration=timedelta(hours=1))
-
-        html_content = self.inject_common_card_types(html_content)
+        html_content = self.inject_search_results(
+            html_content=html_content,
+            falcon_response=falcon_response,
+            query=query or q,
+            orderby=orderby or CardOrdering.EDHREC,
+            direction=direction or SortDirection.ASC,
+            unique=unique or UniqueOn.CARD,
+            prefer=prefer or PreferOrder.DEFAULT,
+        )
+        html_content = self.inject_common_card_types(html_content=html_content)
 
         falcon_response.text = html_content
         falcon_response.content_type = "text/html"
+
+    def inject_search_results(  # noqa: PLR0913
+        self,
+        *,
+        html_content: str,
+        falcon_response: falcon.Response | None = None,
+        query: str | None = None,
+        orderby: CardOrdering | None = None,
+        direction: SortDirection | None = None,
+        unique: UniqueOn | None = None,
+        prefer: PreferOrder | None = None,
+    ) -> str:
+        """Inject search results into the HTML content.
+
+        Args:
+        ----
+            html_content (str): The HTML content to inject search results into.
+            falcon_response (falcon.Response): The Falcon response to write to.
+            query (str): The search query to run.
+            orderby (CardOrdering): The field to sort by.
+            direction (SortDirection): The sort direction.
+            unique (UniqueOn): The unique on field.
+            prefer (PreferOrder): The prefer order.
+
+        Returns:
+        -------
+            str: The HTML content with search results injected.
+        """
+        if not query:
+            # Cache for 1 hour - improves repeat visit performance
+            set_cache_header(falcon_response, duration=timedelta(hours=1))
+            return html_content
+        # Run the search server-side and embed results in the HTML
+        try:
+            search_results = self._search(
+                query=query,
+                orderby=orderby or CardOrdering.EDHREC,
+                direction=direction or SortDirection.ASC,
+                unique=unique or UniqueOn.CARD,
+                prefer=prefer or PreferOrder.DEFAULT,
+            )
+
+            # Get cards from results
+            cards = search_results.get("cards", [])
+            total_cards = search_results.get("total_cards", len(cards))
+
+            # Generate server-side HTML for cards (for no-JS support)
+            results_html = generate_results_html(cards) if cards else ""
+            results_count_html = generate_results_count_html(total_cards, query) if cards else ""
+
+            # Inject the server-side rendered HTML
+            html_content = html_content.replace(
+                "<!-- SERVER_SIDE_RESULTS -->",
+                results_html,
+            )
+
+            # Inject the results count with proper display style
+            if results_count_html:
+                html_content = html_content.replace(
+                    '<div id="resultsCount" class="results-count" style="display: none"><!-- SERVER_SIDE_RESULTS_COUNT --></div>',
+                    f'<div id="resultsCount" class="results-count" style="display: block">{results_count_html}</div>',
+                )
+
+            # Convert search results to JSON and embed for JavaScript enhancement
+            search_results_json = orjson.dumps(search_results, option=orjson.OPT_INDENT_2).decode("utf-8")
+            embedded_data = f"""// Server-side embedded search results
+    window.EMBEDDED_SEARCH_RESULTS = {search_results_json};
+    """
+            # Replace the placeholder token with the embedded data
+            html_content = html_content.replace(
+                "<!-- SERVER_SIDE_EMBEDDED_DATA -->",
+                embedded_data,
+            )
+            # Disable caching for pages with search results
+            set_cache_header(falcon_response, duration=timedelta(seconds=90))
+        except (ValueError, falcon.HTTPBadRequest, psycopg.errors.DatatypeMismatch) as err:
+            # If search fails, just serve the page without embedded results
+            logger.warning("Failed to embed search results: %s", err)
+            set_cache_header(falcon_response, duration=timedelta(hours=1))
+        return html_content
 
     def inject_common_card_types(self, html_content: str) -> str:
         """Inject common card types into the HTML content.
