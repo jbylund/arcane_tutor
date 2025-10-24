@@ -161,6 +161,8 @@ def convert_to_webp(
             "-resize",
             str(width),
             "0",
+            "-m", "6",
+            "-noalpha",
             "-q",
             str(quality),
             "-sharp_yuv",
@@ -206,7 +208,7 @@ def upload_to_s3(
     Returns:
         True if successful or skipped, False otherwise
     """
-    cache_duration = datetime.timedelta(days=20)
+    cache_duration = datetime.timedelta(days=105)
     duration_seconds = int(cache_duration.total_seconds())
     try:
         s3_client.upload_file(
