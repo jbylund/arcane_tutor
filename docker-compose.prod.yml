@@ -1,0 +1,86 @@
+name: arcane_tutor
+
+services:
+    postgres:
+        cap_add:
+        - ALL
+        command:
+        - /usr/local/bin/docker-entrypoint.sh
+        - -c
+        - config_file=/postgresql.conf
+        container_name: ${PROJECTNAME}_postgres
+        environment:
+        - ENV=prod
+        - PGDATA=/data/pg
+        - POSTGRES_DB=${XPGDATABASE}
+        - POSTGRES_PASSWORD=${XPGPASSWORD}
+        - POSTGRES_USER=${XPGUSER}
+        healthcheck:
+            test: ["CMD-SHELL", "psql -U ${XPGUSER} -d ${XPGDATABASE} -c 'SELECT 1'"]
+            interval: 100ms
+            timeout: 1s
+            retries: 5
+            start_period: 30s
+        image: registry.hub.docker.com/library/postgres:18
+        ports:
+        - 15432:5432
+        shm_size: 1024M
+        user: 1000:1000
+        volumes:
+        - ./configs/postgres/conf/pg_hba.conf:/pg_hba.conf
+        - ./configs/postgres/conf/postgresql.conf:/postgresql.conf
+        - ./configs/postgres/init/:/docker-entrypoint-initdb.d
+        - /tmp/pgdata/:/data/pg
+        - ./data/postgres/logs:/var/log/postgresql
+    apiservice:
+        build:
+            context: ./
+            dockerfile: ./api/Dockerfile
+        cap_add:
+        - ALL
+        command:
+        - dumb-init
+        - --
+        - python
+        - -m
+        - api.entrypoint
+        container_name: apiservice
+        depends_on:
+            postgres:
+                condition: service_healthy
+        environment:
+        - ENV=prod
+        - PGDATABASE=${XPGDATABASE}
+        - PGHOST=${PROJECTNAME}_postgres
+        - PGPASSWORD=${XPGPASSWORD}
+        - PGUSER=${XPGUSER}
+        - PYTHONUNBUFFERED=true
+        - ENABLE_CACHE=${ENABLE_CACHE:-false}
+        ports:
+        - 18080:8080
+        user: 1000:1000
+        volumes:
+            - ./data/api:/data/api
+    client:
+        build:
+            context: ./
+            dockerfile: ./client/Dockerfile
+        command:
+        - dumb-init
+        - --
+        # - python
+        # - -m
+        # - client.query_runner
+        - sleep
+        - infinity
+        container_name: query_runner
+        depends_on:
+            apiservice:
+                condition: service_started
+        environment:
+        - ENV=prod
+        - API_URL=http://apiservice:8080
+        - QUERY_DELAY=0.1
+        - BATCH_SIZE=50
+        - PYTHONUNBUFFERED=true
+        user: 1000:1000

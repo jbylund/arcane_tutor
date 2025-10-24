@@ -9,11 +9,14 @@ PROJECTNAME := arcane_tutor
 GIT_ROOT := $(shell git rev-parse --show-toplevel)
 MAYBENORUN := $(shell if echo | xargs --no-run-if-empty >/dev/null 2>/dev/null; then echo "--no-run-if-empty"; else echo ""; fi)
 BASE_COMPOSE := $(mkfile_dir)/docker-compose.yml
+DEV_COMPOSE := $(mkfile_dir)/docker-compose.dev.yml
+PROD_COMPOSE := $(mkfile_dir)/docker-compose.prod.yml
 LINTABLE_DIRS := .
 
 XPGDATABASE=magic
 XPGPASSWORD=foopassword
 XPGPORT=15432
+XPGPORT_DEV=25432
 XPGUSER=foouser
 
 S3_BUCKET=biblioplex
@@ -25,10 +28,14 @@ S3_BUCKET=biblioplex
 	/tmp/pip.conf \
 	beleren_font \
 	build_images \
+	build_images_dev \
+	build_images_prod \
 	check_env \
 	coverage \
 	dockerclean \
 	down \
+	down-dev \
+	down-prod \
 	ensure_black \
 	ensure_isort \
 	ensure_pylint \
@@ -36,14 +43,23 @@ S3_BUCKET=biblioplex
 	help \
 	hlep \
 	images \
+	images_dev \
+	images_prod \
 	lint \
 	mplantin_font \
 	pull_images \
+	pull_images_dev \
+	pull_images_prod \
 	reset \
 	test \
 	test-integration \
 	test-unit \
-	up
+	up \
+	up-dev \
+	up-prod \
+	up-detach \
+	up-detach-dev \
+	up-detach-prod
 
 help: # @doc show this help and exit
 	@python ./scripts/show_makefile_help.py $(mkfile_path)
@@ -53,23 +69,56 @@ hlep: help
 
 ###  Entry points
 
-up: datadir images down check_env # @doc start services
-	cd $(GIT_ROOT) && docker compose --file $(BASE_COMPOSE) up --remove-orphans --abort-on-container-exit
+up: up-dev # @doc start services in development mode (default)
 
-up-detach: datadir images down check_env
-	cd $(GIT_ROOT) && docker compose --file $(BASE_COMPOSE) up --remove-orphans --detach
+up-dev: datadir images_dev down-dev check_env # @doc start services in development mode
+	cd $(GIT_ROOT) && docker compose --file $(DEV_COMPOSE) up --remove-orphans --abort-on-container-exit
 
-down: # @doc stop all services
-	docker compose --file $(BASE_COMPOSE) down --remove-orphans > /dev/null
+up-prod: datadir images_prod down-prod check_env # @doc start services in production mode
+	cd $(GIT_ROOT) && docker compose --file $(PROD_COMPOSE) up --remove-orphans --abort-on-container-exit
 
-images: build_images pull_images # @doc refresh images
+up-detach: up-detach-dev # @doc start services in development mode (detached, default)
 
-build_images: # @doc refresh locally built images
+up-detach-dev: datadir images_dev down-dev check_env # @doc start services in development mode (detached)
+	cd $(GIT_ROOT) && docker compose --file $(DEV_COMPOSE) up --remove-orphans --detach
+
+up-detach-prod: datadir images_prod down-prod check_env # @doc start services in production mode (detached)
+	cd $(GIT_ROOT) && docker compose --file $(PROD_COMPOSE) up --remove-orphans --detach
+
+down: down-dev # @doc stop all services (development mode default)
+
+down-dev: # @doc stop development services
+	docker compose --file $(DEV_COMPOSE) down --remove-orphans > /dev/null
+
+down-prod: # @doc stop production services
+	docker compose --file $(PROD_COMPOSE) down --remove-orphans > /dev/null
+
+images: build_images pull_images # @doc refresh images (uses base compose)
+
+images_dev: build_images_dev pull_images_dev # @doc refresh images for development
+
+images_prod: build_images_prod pull_images_prod # @doc refresh images for production
+
+build_images: # @doc refresh locally built images (uses base compose)
 	cd $(GIT_ROOT) && \
 	docker compose --progress=plain --file $(BASE_COMPOSE) build
 
-pull_images: $(BASE_COMPOSE) # @doc pull images from remote repos
+build_images_dev: # @doc refresh locally built images for development
+	cd $(GIT_ROOT) && \
+	docker compose --progress=plain --file $(DEV_COMPOSE) build
+
+build_images_prod: # @doc refresh locally built images for production
+	cd $(GIT_ROOT) && \
+	docker compose --progress=plain --file $(PROD_COMPOSE) build
+
+pull_images: $(BASE_COMPOSE) # @doc pull images from remote repos (uses base compose)
 	true || docker compose --file $(BASE_COMPOSE) pull
+
+pull_images_dev: $(DEV_COMPOSE) # @doc pull images from remote repos for development
+	true || docker compose --file $(DEV_COMPOSE) pull
+
+pull_images_prod: $(PROD_COMPOSE) # @doc pull images from remote repos for production
+	true || docker compose --file $(PROD_COMPOSE) pull
 
 ensure_black: ensure_uv
 	@python -m black --version > /dev/null || \
@@ -122,11 +171,19 @@ dockerclean:
 	docker ps --all --format '{{.ID}}' | xargs $(MAYBENORUN) docker rm --force
 	docker images --format '{{.ID}}' | xargs $(MAYBENORUN) docker rmi --force
 
-dbconn: # @doc connect to the local database
+dbconn: # @doc connect to the local database (production)
 	@PGDATABASE=$(XPGDATABASE) \
 	PGHOST=127.0.0.1 \
 	PGPASSWORD=$(XPGPASSWORD) \
-	PGPORT=15432 \
+	PGPORT=$(XPGPORT) \
+	PGUSER=$(XPGUSER) \
+	psql
+
+dbconn-dev: # @doc connect to the local database (development)
+	@PGDATABASE=$(XPGDATABASE) \
+	PGHOST=127.0.0.1 \
+	PGPASSWORD=$(XPGPASSWORD) \
+	PGPORT=$(XPGPORT_DEV) \
 	PGUSER=$(XPGUSER) \
 	psql
 

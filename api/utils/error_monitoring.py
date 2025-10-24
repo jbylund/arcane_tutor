@@ -1,6 +1,7 @@
 """Error monitoring and exception tracking utilities."""
 
 import logging
+import os
 import pathlib
 
 import falcon
@@ -17,6 +18,7 @@ try:
     # Configure honeybadger if available
     honeybadger.configure(
         api_key="hbp_mHbJs4KJAOeUhK17Ixr0AzDC0gx8Zt2WG6kH",
+        environment=os.getenv("ENV", "development"),
         hostname=socket.gethostname(),
         project_root=str(pathlib.Path(__file__).parent.parent.parent),
         report_local_variables=True,
