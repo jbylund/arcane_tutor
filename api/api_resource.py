@@ -826,23 +826,31 @@ class APIResource:
             # Cache for 1 hour - improves repeat visit performance
             set_cache_header(falcon_response, duration=timedelta(hours=1))
 
-        # Always embed common card types for autocomplete functionality
-        try:
-            common_card_types = self.get_common_card_types()
-            common_card_types_json = orjson.dumps(common_card_types, option=orjson.OPT_INDENT_2).decode("utf-8")
-            embedded_common_types = f"""// Server-side embedded common card types
-      window.EMBEDDED_COMMON_CARD_TYPES = {common_card_types_json};
-      """
-            html_content = html_content.replace(
-                "<!-- SERVER_SIDE_COMMON_CARD_TYPES -->",
-                embedded_common_types,
-            )
-        except Exception as err:
-            # If embedding fails, log warning but don't fail the page load
-            logger.warning("Failed to embed common card types: %s", err)
+        html_content = self.inject_common_card_types(html_content)
 
         falcon_response.text = html_content
         falcon_response.content_type = "text/html"
+
+    def inject_common_card_types(self, html_content: str) -> str:
+        """Inject common card types into the HTML content.
+
+        Args:
+        ----
+            html_content (str): The HTML content to inject common card types into.
+
+        Returns:
+        -------
+            str: The HTML content with common card types injected.
+        """
+        common_card_types = self.get_common_card_types()
+        common_card_types_json = orjson.dumps(common_card_types, option=orjson.OPT_INDENT_2).decode("utf-8")
+        embedded_common_types = f"""// Server-side embedded common card types
+    window.EMBEDDED_COMMON_CARD_TYPES = {common_card_types_json};
+    """
+        return html_content.replace(
+            "<!-- SERVER_SIDE_COMMON_CARD_TYPES -->",
+            embedded_common_types,
+        )
 
     def prefer_score_tuner(self, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
         """Return the prefer score tuner page.

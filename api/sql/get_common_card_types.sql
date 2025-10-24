@@ -1,8 +1,18 @@
-WITH card_types AS (
+WITH distinct_cards AS (
+    SELECT DISTINCT ON (oracle_id)
+        card_types,
+        card_subtypes
+    FROM
+        magic.cards
+    WHERE
+        card_types IS NOT NULL OR
+        card_subtypes IS NOT NULL
+),
+card_types AS (
     SELECT
         jsonb_array_elements_text(card_types) as type_name
     FROM
-        magic.cards
+        distinct_cards
     WHERE
         card_types IS NOT NULL
 ),
@@ -10,7 +20,7 @@ card_subtypes AS (
     SELECT
         jsonb_array_elements_text(card_subtypes) as subtype_name
     FROM
-        magic.cards
+        distinct_cards
     WHERE
         card_subtypes IS NOT NULL
 ),

@@ -400,7 +400,7 @@ class TestAPIResourceStaticFileServing(unittest.TestCase):
         mock_common_types = [
             {"t": "Creature", "n": 1000},
             {"t": "Artifact", "n": 500},
-            {"t": "Enchantment", "n": 300}
+            {"t": "Enchantment", "n": 300},
         ]
         self.api_resource.get_common_card_types = MagicMock(return_value=mock_common_types)
 
