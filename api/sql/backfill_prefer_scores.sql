@@ -66,7 +66,7 @@ SET prefer_score_components = JSONB_BUILD_OBJECT(
     'language', (
         SELECT 
             CASE 
-                WHEN raw_card_blob ->> 'lang' = 'en' THEN 8
+                WHEN raw_card_blob ->> 'lang' = 'en' THEN 40
                 ELSE 0
             END
     )
