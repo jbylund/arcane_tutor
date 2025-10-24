@@ -15,6 +15,7 @@ XPGDATABASE=magic
 XPGPASSWORD=foopassword
 XPGPORT=15432
 XPGUSER=foouser
+HOSTNAME := $(shell hostname)
 
 S3_BUCKET=biblioplex
 
@@ -53,20 +54,30 @@ hlep: help
 
 ###  Entry points
 
-up: datadir images down check_env # @doc start services
-	cd $(GIT_ROOT) && docker compose --file $(BASE_COMPOSE) up --remove-orphans --abort-on-container-exit
+up_deps: datadir images check_env
 
-up-detach: datadir images down check_env
-	cd $(GIT_ROOT) && docker compose --file $(BASE_COMPOSE) up --remove-orphans --detach
+dev-up: up_deps # @doc start services
+	cd $(GIT_ROOT) && docker compose --profile=dev --file $(BASE_COMPOSE) up --remove-orphans --abort-on-container-exit
 
-down: # @doc stop all services
-	docker compose --file $(BASE_COMPOSE) down --remove-orphans > /dev/null
+prod-up: up_deps # @doc start services
+	cd $(GIT_ROOT) && docker compose --profile=prod --file $(BASE_COMPOSE) up --remove-orphans --abort-on-container-exit
+
+prod-up-detach: up_deps
+	cd $(GIT_ROOT) && docker compose --profile=prod --file $(BASE_COMPOSE) up --remove-orphans --detach
+
+down: dev-down prod-down
+
+dev-down: # @doc stop all services
+	docker compose --profile=dev --file $(BASE_COMPOSE) down --remove-orphans > /dev/null
+
+prod-down: # @doc stop all services
+	docker compose --profile=prod --file $(BASE_COMPOSE) down --remove-orphans > /dev/null
 
 images: build_images pull_images # @doc refresh images
 
 build_images: # @doc refresh locally built images
 	cd $(GIT_ROOT) && \
-	docker compose --progress=plain --file $(BASE_COMPOSE) build
+	docker compose --progress=plain --profile=dev --profile=prod --file $(BASE_COMPOSE) build
 
 pull_images: $(BASE_COMPOSE) # @doc pull images from remote repos
 	true || docker compose --file $(BASE_COMPOSE) pull
@@ -134,7 +145,7 @@ dump_schema: # @doc dump database schema to file using container's pg_dump
 	docker exec $(PROJECTNAME)postgres $(shell find /usr/bin /opt/homebrew -name pg_dump) -U $(XPGUSER) -d $(XPGDATABASE) -s
 
 datadir:
-	mkdir -p data/api data/postgres data/postgres/logs /tmp/pgdata
+	mkdir -p data/api data/postgres/logs /tmp/pgdata
 
 reset:
 	rm -rvf data
