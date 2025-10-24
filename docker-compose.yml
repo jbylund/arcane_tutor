@@ -66,9 +66,11 @@ services:
         command:
         - dumb-init
         - --
-        - python
-        - -m
-        - client.query_runner
+        # - python
+        # - -m
+        # - client.query_runner
+        - sleep
+        - infinity
         container_name: query_runner
         depends_on:
             apiservice:

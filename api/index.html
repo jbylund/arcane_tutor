@@ -70,8 +70,8 @@
         /* Light Mode Colors - Blue shades inspired by Tolarian Academy */
         --color-primary: #2b8fdf;
         --color-secondary: #1a6bb5;
-        --gradient-start-color: #4da6e8;
-        --gradient-end-color: #1e7dd4;
+        --gradient-start-color: #1e7dd4;
+        --gradient-end-color: #4da6e8;
         --color-background: linear-gradient(to bottom, var(--gradient-start-color) 0%, var(--gradient-end-color) 100%);
         --color-text-primary: #212529;
         --color-text-secondary: #6c757d;
@@ -102,8 +102,8 @@
         /* Dark Mode Colors - Blue shades inspired by Tolarian Academy */
         --color-primary: #3da8f5;
         --color-secondary: #2591e6;
-        --gradient-start-color: #0d1829;
-        --gradient-end-color: #1a3a5c;
+        --gradient-start-color: #1a3a5c;
+        --gradient-end-color: #0d1829;
         --color-background: linear-gradient(to bottom, var(--gradient-start-color) 0%, var(--gradient-end-color) 100%);
         --color-text-primary: #cecece;
         --color-text-secondary: #a8a8a8;
@@ -184,7 +184,7 @@
         justify-content: center;
         cursor: pointer;
         transition: all 0.3s ease;
-        font-size: 20px;
+        font-size: 23px;
         color: var(--color-text-primary);
         box-shadow: 0 2px 8px var(--color-shadow-light);
         z-index: 1000;
@@ -202,7 +202,7 @@
 
       .header h1 {
         font-family: 'Beleren', sans-serif;
-        font-size: 3rem;
+        font-size: 3.45rem;
         margin-bottom: 10px;
         text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
         cursor: pointer;
@@ -216,7 +216,7 @@
 
       .header p {
         font-family: 'MPlantin', Georgia, serif;
-        font-size: 1.2rem;
+        font-size: 1.38rem;
         opacity: 0.9;
       }
 
@@ -254,7 +254,7 @@
 
       .order-dropdown {
         padding: 15px 20px;
-        font-size: 1.1rem;
+        font-size: 1.27rem;
         border: none;
         border-radius: 25px;
         box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
@@ -285,7 +285,7 @@
 
       .order-toggle {
         padding: 15px 20px;
-        font-size: 1.2rem;
+        font-size: 1.38rem;
         border: none;
         border-radius: 25px;
         box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
@@ -319,7 +319,7 @@
       .search-input {
         width: 100%;
         padding: 15px 20px;
-        font-size: 1.1rem;
+        font-size: 1.27rem;
         border: none;
         border-radius: 25px;
         box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
@@ -398,6 +398,9 @@
         box-shadow: 0 10px 30px var(--color-shadow-light);
         transition: all 0.3s ease;
         cursor: pointer;
+        display: flex;
+        flex-direction: column;
+        height: 100%;
       }
 
       .card-item:hover {
@@ -405,30 +408,42 @@
         box-shadow: 0 20px 40px var(--color-shadow-medium);
       }
 
+      .card-name-mana-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+
       .card-name {
-        font-size: 1.3rem;
+        font-size: 1.50rem;
         font-weight: bold;
         color: var(--color-text-primary);
-        margin-bottom: 8px;
         font-family: 'Beleren', sans-serif;
+        flex: 1;
       }
 
       .card-mana {
-        font-size: 0.9rem;
+        font-size: 1.04rem;
         color: var(--color-text-primary);
-        margin-bottom: 8px;
         font-family: monospace;
+        text-align: right;
+      }
+
+      .ms-cost {
+        width: 1.35em;
+        height: 1.35em;
       }
 
       .mana-symbol {
         font-family: 'Mana';
-        font-size: 1.2em;
+        font-size: 1.00em;
         margin: 0 1px;
         display: inline-block;
       }
 
       .card-type {
-        font-size: 1rem;
+        font-size: 1.27rem;
         color: var(--color-text-primary);
         margin-bottom: 12px;
         font-style: italic;
@@ -436,7 +451,7 @@
       }
 
       .card-text {
-        font-size: 0.9rem;
+        font-size: 1.14rem;
         color: var(--color-text-primary);
         line-height: 1.4;
         margin-bottom: 10px;
@@ -444,10 +459,11 @@
       }
 
       .card-set {
-        font-size: 0.8rem;
+        font-size: 0.92rem;
         color: var(--color-text-secondary);
         text-transform: uppercase;
         letter-spacing: 1px;
+        margin-top: auto;
       }
 
       /* Modal styles */
@@ -469,8 +485,9 @@
         background: var(--color-modal-background);
         border-radius: 15px;
         padding: 1em;
-        max-width: 95vw;
+        max-width: 90vw;
         max-height: 90vh;
+        min-height: 60vh;
         overflow-y: auto;
         position: relative;
         box-shadow: 0 20px 60px var(--color-shadow-dark);
@@ -478,7 +495,10 @@
         display: flex;
         flex-direction: row;
         gap: 30px;
-        align-items: flex-start;
+        align-items: stretch;
+        width: fit-content;
+        max-width: 90vw;
+        aspect-ratio: 1.795; /* this aspect ratio would make the card 1/3rd the width */
       }
 
       @keyframes modalFadeIn {
@@ -498,7 +518,7 @@
         right: 20px;
         background: none;
         border: none;
-        font-size: 24px;
+        font-size: 28px;
         cursor: pointer;
         color: var(--color-text-secondary);
         width: 30px;
@@ -517,48 +537,58 @@
       }
 
       .modal-image {
-        max-width: 50vw;
-        max-height: 85vh;
-        width: auto;
-        height: auto;
         border-radius: 4%;
         box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        flex: 2 0 0;
+        height: auto;
+        max-width: 100%;
         object-fit: contain;
-        flex-shrink: 0;
+        width: auto;
       }
 
       .modal-card-info {
-        text-align: left;
-        flex: 1;
+        display: flex;
+        flex-direction: column;
+        flex: 3 0 0;
+        min-height: 0;
+        min-width: 0;
         overflow-y: auto;
         padding-right: 10px;
-        min-width: 0;
+        text-align: left;
+      }
+
+      .modal-card-name-mana-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 50px;
+        margin-bottom: 8px;
       }
 
       .modal-card-name {
-        font-size: 1.5rem;
+        font-size: 1.73rem;
         font-weight: bold;
         color: var(--color-text-light);
-        margin-bottom: 8px;
         font-family: 'Beleren', sans-serif;
+        flex: 1;
       }
 
       .modal-card-mana {
-        font-size: 1.1rem;
+        font-size: 1.27rem;
         color: var(--color-text-lighter);
-        margin-bottom: 8px;
         font-family: monospace;
+        text-align: right;
       }
 
       .modal-mana-symbol {
         font-family: 'Mana';
-        font-size: 1.3em;
+        font-size: 1.08em;
         margin: 0 1px;
         display: inline-block;
       }
 
       .modal-card-type {
-        font-size: 1.1rem;
+        font-size: 1.39rem;
         color: var(--color-text-lightest);
         margin-bottom: 12px;
         font-style: italic;
@@ -566,7 +596,7 @@
       }
 
       .modal-card-text {
-        font-size: 1rem;
+        font-size: 1.27rem;
         color: var(--color-text-lightest);
         line-height: 1.6;
         margin-bottom: 10px;
@@ -575,10 +605,11 @@
       }
 
       .modal-card-set {
-        font-size: 0.9rem;
+        font-size: 1.04rem;
         color: var(--color-modal-text);
         text-transform: uppercase;
         letter-spacing: 1px;
+        margin-top: auto;
       }
 
       .error-message {
@@ -593,7 +624,7 @@
       .no-results {
         text-align: center;
         color: var(--color-text-inverted);
-        font-size: 1.2rem;
+        font-size: 1.38rem;
         margin-top: 40px;
         opacity: 0.8;
       }
@@ -602,7 +633,7 @@
         color: var(--color-text-inverted);
         text-align: center;
         margin-bottom: 20px;
-        font-size: 1.1rem;
+        font-size: 1.27rem;
       }
 
       .card-image {
@@ -625,13 +656,13 @@
       }
 
       .footer-legal {
-        font-size: 0.85em;
+        font-size: 0.98em;
         line-height: 1.6;
         margin-bottom: 12px;
       }
 
       .footer-attribution {
-        font-size: 0.85em;
+        font-size: 0.98em;
         line-height: 1.6;
         margin-bottom: 12px;
       }
@@ -647,7 +678,7 @@
       }
 
       .footer-links {
-        font-size: 0.85em;
+        font-size: 0.98em;
         margin-top: 15px;
       }
 
@@ -669,13 +700,13 @@
 
       @media (max-width: 768px) {
         .header h1 {
-          font-size: 2rem;
+          font-size: 2.3rem;
         }
 
         .theme-toggle {
           width: 45px;
           height: 45px;
-          font-size: 18px;
+          font-size: 21px;
         }
 
         .search-container {
@@ -704,7 +735,7 @@
         .footer-attribution,
         .footer-links {
           padding: 12px 15px;
-          font-size: 0.95rem;
+          font-size: 1.09rem;
         }
 
         .order-toggle {
@@ -723,7 +754,7 @@
 
         .modal-content {
           padding: 1em;
-          max-width: 98vw;
+          max-width: 95vw;
           max-height: 90vh;
           flex-direction: column;
           gap: 20px;
@@ -739,16 +770,16 @@
         }
 
         .modal-card-name {
-          font-size: 1.3rem;
+          font-size: 1.50rem;
         }
 
         .modal-card-mana,
         .modal-card-type {
-          font-size: 1rem;
+          font-size: 1.27rem;
         }
 
         .modal-card-text {
-          font-size: 0.9rem;
+          font-size: 1.14rem;
         }
 
         .modal-card-info {
@@ -768,14 +799,14 @@
           max-width: 110px;
           min-width: 80px;
           padding: 10px 12px;
-          font-size: 0.9rem;
+          font-size: 1.04rem;
         }
 
         .order-toggle {
           padding: 10px 12px;
           min-width: 45px;
           height: 42px;
-          font-size: 1rem;
+          font-size: 1.15rem;
         }
       }
     </style>
@@ -1426,8 +1457,10 @@
           return `
              <div class="card-item" data-card-id="${this.escapeHtml(cardId)}">
                  ${imageHtml}
-                 <div class="card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
-                 ${card.mana_cost ? `<div class="card-mana">${this.convertManaSymbols(card.mana_cost, false)}</div>` : ''}
+                 <div class="card-name-mana-row">
+                     <div class="card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
+                     ${card.mana_cost ? `<div class="card-mana">${this.convertManaSymbols(card.mana_cost, false)}</div>` : ''}
+                 </div>
                  ${card.type_line ? `<div class="card-type">${this.escapeHtml(card.type_line)}</div>` : ''}
                  ${card.oracle_text ? `<div class="card-text">${this.formatOracleText(card.oracle_text.substring(0, 200), false)}${card.oracle_text.length > 200 ? '...' : ''}</div>` : ''}
                  ${card.set_name ? `<div class="card-set">${this.escapeHtml(card.set_name)}</div>` : ''}
@@ -1470,8 +1503,10 @@
             <button class="modal-close" onclick="cardSearch.closeModal()">&times;</button>
             ${imageHtml}
             <div class="modal-card-info">
-              <div class="modal-card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
-              ${card.mana_cost ? `<div class="modal-card-mana">${this.convertManaSymbols(card.mana_cost, true)}</div>` : ''}
+              <div class="modal-card-name-mana-row">
+                <div class="modal-card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
+                ${card.mana_cost ? `<div class="modal-card-mana">${this.convertManaSymbols(card.mana_cost, true)}</div>` : ''}
+              </div>
               ${card.type_line ? `<div class="modal-card-type">${this.escapeHtml(card.type_line)}</div>` : ''}
               ${card.oracle_text ? `<div class="modal-card-text">${this.formatOracleText(card.oracle_text, true)}</div>` : ''}
               ${card.set_name ? `<div class="modal-card-set">${this.escapeHtml(card.set_name)}</div>` : ''}
