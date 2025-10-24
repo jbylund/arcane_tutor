@@ -404,7 +404,7 @@ class APIResource:
         else:
             logger.info("Cache hit, %s found!", cache_file_path)
             return response
-        response = orjson.loads(self._session.get("https://api.scryfall.com/bulk-data", timeout=1).content)["data"]
+        response = orjson.loads(self._session.get("https://api.scryfall.com/bulk-data", timeout=5).content)["data"]
         by_type = {r["type"]: r for r in response}
         oracle_cards_download_uri = by_type[data_key]["download_uri"]
         logger.info("Downloading %s from %s", data_key, oracle_cards_download_uri)
