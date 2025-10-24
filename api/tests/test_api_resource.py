@@ -392,6 +392,34 @@ class TestAPIResourceStaticFileServing(unittest.TestCase):
         # Verify it sets appropriate cache control header (shorter for search results)
         mock_response.set_header.assert_called_with("Cache-Control", "public, max-age=90")
 
+    def test_index_html_embeds_common_card_types(self) -> None:
+        """Test index_html embeds common card types for autocomplete functionality."""
+        mock_response = MagicMock()
+
+        # Mock the get_common_card_types method to return test data
+        mock_common_types = [
+            {"t": "Creature", "n": 1000},
+            {"t": "Artifact", "n": 500},
+            {"t": "Enchantment", "n": 300}
+        ]
+        self.api_resource.get_common_card_types = MagicMock(return_value=mock_common_types)
+
+        self.api_resource.index_html(falcon_response=mock_response)
+
+        # Verify the response contains HTML content
+        assert mock_response.text is not None
+        assert len(mock_response.text) > 0
+        assert mock_response.content_type == "text/html"
+
+        # Verify that common card types are embedded in the HTML
+        assert "window.EMBEDDED_COMMON_CARD_TYPES" in mock_response.text
+        assert "Creature" in mock_response.text
+        assert "Artifact" in mock_response.text
+        assert "Enchantment" in mock_response.text
+
+        # Verify get_common_card_types was called
+        self.api_resource.get_common_card_types.assert_called_once()
+
     def test_favicon_ico_serves_binary_content(self) -> None:
         """Test favicon_ico serves binary content correctly."""
         mock_response = MagicMock()

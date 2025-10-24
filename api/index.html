@@ -1094,13 +1094,23 @@
         }
 
         async fetchCommonCardTypes() {
+          // Check for embedded common card types first (server-side injection)
+          if (window.EMBEDDED_COMMON_CARD_TYPES) {
+            this.commonCardTypes = window.EMBEDDED_COMMON_CARD_TYPES;
+            console.log('Loaded', this.commonCardTypes.length, 'common card types from embedded data');
+            // Clean up the embedded data to free memory
+            delete window.EMBEDDED_COMMON_CARD_TYPES;
+            return;
+          }
+
+          // Fallback to fetch request if embedded data not available
           try {
             const response = await fetch('/get_common_card_types');
             if (!response.ok) {
               throw new Error('Failed to fetch common card types');
             }
             this.commonCardTypes = await response.json();
-            console.log('Loaded', this.commonCardTypes.length, 'common card types');
+            console.log('Loaded', this.commonCardTypes.length, 'common card types from API');
           } catch (error) {
             console.error('Error fetching common card types:', error);
             this.commonCardTypes = [];
@@ -2008,6 +2018,7 @@
     </div>
     <script>
       <!-- SERVER_SIDE_EMBEDDED_DATA -->
+      <!-- SERVER_SIDE_COMMON_CARD_TYPES -->
       window.cardSearchMain && window.cardSearchMain();
     </script>
   </body>
