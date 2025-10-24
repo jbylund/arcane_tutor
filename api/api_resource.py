@@ -511,9 +511,9 @@ class APIResource:
             with self._conn_pool.connection() as conn:
                 conn = typecast("Connection", conn)
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT COUNT(*) AS num_cards FROM magic.cards")
+                    cursor.execute("SELECT SUM(1) AS num_cards FROM (SELECT card_name FROM magic.cards LIMIT 1)")
                     cards_found = cursor.fetchall()[0]["num_cards"]
-                    logger.info("Cards found: %d", cards_found)
+                    logger.info("Found %d cards in pid %d", cards_found, os.getpid())
                     return cards_found > 0
         except Exception as oops:
             logger.error("Error checking if setup is complete: %s", oops, exc_info=True)
