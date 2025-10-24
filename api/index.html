@@ -398,6 +398,9 @@
         box-shadow: 0 10px 30px var(--color-shadow-light);
         transition: all 0.3s ease;
         cursor: pointer;
+        display: flex;
+        flex-direction: column;
+        height: 100%;
       }
 
       .card-item:hover {
@@ -405,24 +408,31 @@
         box-shadow: 0 20px 40px var(--color-shadow-medium);
       }
 
+      .card-name-mana-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+
       .card-name {
         font-size: 1.495rem;
         font-weight: bold;
         color: var(--color-text-primary);
-        margin-bottom: 8px;
         font-family: 'Beleren', sans-serif;
+        flex: 1;
       }
 
       .card-mana {
         font-size: 1.035rem;
         color: var(--color-text-primary);
-        margin-bottom: 8px;
         font-family: monospace;
+        text-align: right;
       }
 
       .mana-symbol {
         font-family: 'Mana';
-        font-size: 1.38em;
+        font-size: 0.99636em;
         margin: 0 1px;
         display: inline-block;
       }
@@ -448,6 +458,7 @@
         color: var(--color-text-secondary);
         text-transform: uppercase;
         letter-spacing: 1px;
+        margin-top: auto;
       }
 
       /* Modal styles */
@@ -471,6 +482,7 @@
         padding: 1em;
         max-width: 95vw;
         max-height: 90vh;
+        min-height: 60vh;
         overflow-y: auto;
         position: relative;
         box-shadow: 0 20px 60px var(--color-shadow-dark);
@@ -478,7 +490,7 @@
         display: flex;
         flex-direction: row;
         gap: 30px;
-        align-items: flex-start;
+        align-items: stretch;
       }
 
       @keyframes modalFadeIn {
@@ -533,26 +545,37 @@
         overflow-y: auto;
         padding-right: 10px;
         min-width: 0;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+
+      .modal-card-name-mana-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 50px;
+        margin-bottom: 8px;
       }
 
       .modal-card-name {
         font-size: 1.725rem;
         font-weight: bold;
         color: var(--color-text-light);
-        margin-bottom: 8px;
         font-family: 'Beleren', sans-serif;
+        flex: 1;
       }
 
       .modal-card-mana {
         font-size: 1.265rem;
         color: var(--color-text-lighter);
-        margin-bottom: 8px;
         font-family: monospace;
+        text-align: right;
       }
 
       .modal-mana-symbol {
         font-family: 'Mana';
-        font-size: 1.495em;
+        font-size: 1.07939em;
         margin: 0 1px;
         display: inline-block;
       }
@@ -579,6 +602,7 @@
         color: var(--color-modal-text);
         text-transform: uppercase;
         letter-spacing: 1px;
+        margin-top: auto;
       }
 
       .error-message {
@@ -1426,8 +1450,10 @@
           return `
              <div class="card-item" data-card-id="${this.escapeHtml(cardId)}">
                  ${imageHtml}
-                 <div class="card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
-                 ${card.mana_cost ? `<div class="card-mana">${this.convertManaSymbols(card.mana_cost, false)}</div>` : ''}
+                 <div class="card-name-mana-row">
+                     <div class="card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
+                     ${card.mana_cost ? `<div class="card-mana">${this.convertManaSymbols(card.mana_cost, false)}</div>` : ''}
+                 </div>
                  ${card.type_line ? `<div class="card-type">${this.escapeHtml(card.type_line)}</div>` : ''}
                  ${card.oracle_text ? `<div class="card-text">${this.formatOracleText(card.oracle_text.substring(0, 200), false)}${card.oracle_text.length > 200 ? '...' : ''}</div>` : ''}
                  ${card.set_name ? `<div class="card-set">${this.escapeHtml(card.set_name)}</div>` : ''}
@@ -1470,8 +1496,10 @@
             <button class="modal-close" onclick="cardSearch.closeModal()">&times;</button>
             ${imageHtml}
             <div class="modal-card-info">
-              <div class="modal-card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
-              ${card.mana_cost ? `<div class="modal-card-mana">${this.convertManaSymbols(card.mana_cost, true)}</div>` : ''}
+              <div class="modal-card-name-mana-row">
+                <div class="modal-card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
+                ${card.mana_cost ? `<div class="modal-card-mana">${this.convertManaSymbols(card.mana_cost, true)}</div>` : ''}
+              </div>
               ${card.type_line ? `<div class="modal-card-type">${this.escapeHtml(card.type_line)}</div>` : ''}
               ${card.oracle_text ? `<div class="modal-card-text">${this.formatOracleText(card.oracle_text, true)}</div>` : ''}
               ${card.set_name ? `<div class="modal-card-set">${this.escapeHtml(card.set_name)}</div>` : ''}
