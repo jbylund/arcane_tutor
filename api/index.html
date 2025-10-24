@@ -430,6 +430,11 @@
         text-align: right;
       }
 
+      .ms-cost {
+        width: 1.35em;
+        height: 1.35em;
+      }
+
       .mana-symbol {
         font-family: 'Mana';
         font-size: 0.99636em;
@@ -480,7 +485,7 @@
         background: var(--color-modal-background);
         border-radius: 15px;
         padding: 1em;
-        max-width: 95vw;
+        max-width: 90vw;
         max-height: 90vh;
         min-height: 60vh;
         overflow-y: auto;
@@ -491,6 +496,9 @@
         flex-direction: row;
         gap: 30px;
         align-items: stretch;
+        width: fit-content;
+        max-width: 90vw;
+        aspect-ratio: 1.795;
       }
 
       @keyframes modalFadeIn {
@@ -529,25 +537,24 @@
       }
 
       .modal-image {
-        max-width: 50vw;
-        max-height: 85vh;
-        width: auto;
-        height: auto;
         border-radius: 4%;
         box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        flex: 2 0 0;
+        height: auto;
+        max-width: 100%;
         object-fit: contain;
-        flex-shrink: 0;
+        width: auto;
       }
 
       .modal-card-info {
-        text-align: left;
-        flex: 1;
-        overflow-y: auto;
-        padding-right: 10px;
-        min-width: 0;
         display: flex;
         flex-direction: column;
+        flex: 3 0 0;
         min-height: 0;
+        min-width: 0;
+        overflow-y: auto;
+        padding-right: 10px;
+        text-align: left;
       }
 
       .modal-card-name-mana-row {
@@ -747,7 +754,7 @@
 
         .modal-content {
           padding: 1em;
-          max-width: 98vw;
+          max-width: 95vw;
           max-height: 90vh;
           flex-direction: column;
           gap: 20px;
