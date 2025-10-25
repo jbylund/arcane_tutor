@@ -229,9 +229,16 @@ def create_card_html(card: dict, index: int) -> str:
             formatted = format_oracle_text(oracle_text, False)
             oracle_html = f'<div class="card-text">{formatted}</div>'
 
-    set_html = ""
-    if card.get("set_name"):
-        set_html = f'<div class="card-set">{escape_html(card["set_name"])}</div>'
+    set_power_html = ""
+    has_set = card.get("set_name")
+    has_power_toughness = card.get("power") is not None and card.get("toughness") is not None
+
+    if has_set or has_power_toughness:
+        set_part = f'<div class="card-set">{escape_html(card["set_name"])}</div>' if has_set else '<div class="card-set"></div>'
+        power_toughness_part = ""
+        if has_power_toughness:
+            power_toughness_part = f'<div class="card-power-toughness">{escape_html(str(card["power"]))} / {escape_html(str(card["toughness"]))}</div>'
+        set_power_html = f'<div class="card-set-power-row">{set_part}{power_toughness_part}</div>'
 
     return f"""
              <div class="card-item" data-card-id="{escape_html(card_id)}">
@@ -240,7 +247,7 @@ def create_card_html(card: dict, index: int) -> str:
                  {mana_html}
                  {type_html}
                  {oracle_html}
-                 {set_html}
+                 {set_power_html}
              </div>
          """
 
