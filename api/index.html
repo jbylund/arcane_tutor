@@ -536,10 +536,16 @@
         color: var(--color-hover-text);
       }
 
+      .modal-image-wrapper {
+        flex: 2 0 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
       .modal-image {
         border-radius: 4%;
         box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
-        flex: 2 0 0;
         height: auto;
         max-width: 100%;
         object-fit: contain;
@@ -1520,9 +1526,9 @@
             const imgTag = `<img class="modal-image" src="${this.escapeHtml(imageLarge)}" width="745" height="1040" alt="${this.escapeHtml(card.name || 'Card Image')}" />`;
             if (manapoolUrl) {
               // manapoolUrl is constructed from trusted database values, no escaping needed
-              imageHtml = `<a href="${manapoolUrl}" target="_blank" rel="noopener noreferrer">${imgTag}</a>`;
+              imageHtml = `<div class="modal-image-wrapper"><a href="${manapoolUrl}" target="_blank" rel="noopener noreferrer">${imgTag}</a></div>`;
             } else {
-              imageHtml = imgTag;
+              imageHtml = `<div class="modal-image-wrapper">${imgTag}</div>`;
             }
           }
 
