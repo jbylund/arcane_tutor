@@ -664,6 +664,8 @@ class APIResource:
                     card_set_code,
                     cmc,
                     collector_number,
+                    creature_power_text,
+                    creature_toughness_text,
                     edhrec_rank,
                     mana_cost_text,
                     oracle_text,
@@ -688,6 +690,8 @@ class APIResource:
                     card_set_code AS set_code,
                     cmc,
                     collector_number,
+                    creature_power_text AS power,
+                    creature_toughness_text AS toughness,
                     edhrec_rank,
                     mana_cost_text AS mana_cost,
                     oracle_text,
@@ -706,7 +710,7 @@ class APIResource:
             (
                 SELECT
                     COUNT(1) AS total_cards_count,
-                    null, null, null, null, null, null, null, null, null, null
+                    null, null, null, null, null, null, null, null, null, null, null, null
                 FROM
                     distinct_cards
             )"""

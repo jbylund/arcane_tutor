@@ -458,12 +458,27 @@
         font-family: 'MPlantin', Georgia, serif;
       }
 
+      .card-set-power-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: auto;
+      }
+
       .card-set {
         font-size: 0.92rem;
         color: var(--color-text-secondary);
         text-transform: uppercase;
         letter-spacing: 1px;
-        margin-top: auto;
+        flex: 1;
+      }
+
+      .card-power-toughness {
+        font-size: 1.04rem;
+        color: var(--color-text-primary);
+        font-family: 'Beleren', sans-serif;
+        font-weight: bold;
+        text-align: right;
       }
 
       /* Modal styles */
@@ -628,12 +643,27 @@
         font-family: 'MPlantin', Georgia, serif;
       }
 
+      .modal-card-set-power-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: auto;
+      }
+
       .modal-card-set {
         font-size: 1.04rem;
         color: var(--color-modal-text);
         text-transform: uppercase;
         letter-spacing: 1px;
-        margin-top: auto;
+        flex: 1;
+      }
+
+      .modal-card-power-toughness {
+        font-size: 1.27rem;
+        color: var(--color-modal-text);
+        font-family: 'Beleren', sans-serif;
+        font-weight: bold;
+        text-align: right;
       }
 
       .error-message {
@@ -1487,7 +1517,21 @@
                  </div>
                  ${card.type_line ? `<div class="card-type">${this.escapeHtml(card.type_line)}</div>` : ''}
                  ${card.oracle_text ? `<div class="card-text">${this.formatOracleText(card.oracle_text.substring(0, 200), false)}${card.oracle_text.length > 200 ? '...' : ''}</div>` : ''}
-                 ${card.set_name ? `<div class="card-set">${this.escapeHtml(card.set_name)}</div>` : ''}
+                 ${(() => {
+                   const hasPowerToughness =
+                     card.power !== null &&
+                     card.power !== undefined &&
+                     card.toughness !== null &&
+                     card.toughness !== undefined;
+                   return card.set_name || hasPowerToughness
+                     ? `
+                 <div class="card-set-power-row">
+                     ${card.set_name ? `<div class="card-set">${this.escapeHtml(card.set_name)}</div>` : '<div class="card-set"></div>'}
+                     ${hasPowerToughness ? `<div class="card-power-toughness">${this.escapeHtml(card.power)} / ${this.escapeHtml(card.toughness)}</div>` : ''}
+                 </div>
+                 `
+                     : '';
+                 })()}
              </div>
          `;
         }
@@ -1543,7 +1587,21 @@
               </div>
               ${card.type_line ? `<div class="modal-card-type">${this.escapeHtml(card.type_line)}</div>` : ''}
               ${card.oracle_text ? `<div class="modal-card-text">${this.formatOracleText(card.oracle_text, true)}</div>` : ''}
-              ${card.set_name ? `<div class="modal-card-set">${this.escapeHtml(card.set_name)}</div>` : ''}
+              ${(() => {
+                const hasPowerToughness =
+                  card.power !== null &&
+                  card.power !== undefined &&
+                  card.toughness !== null &&
+                  card.toughness !== undefined;
+                return card.set_name || hasPowerToughness
+                  ? `
+              <div class="modal-card-set-power-row">
+                ${card.set_name ? `<div class="modal-card-set">${this.escapeHtml(card.set_name)}</div>` : '<div class="modal-card-set"></div>'}
+                ${hasPowerToughness ? `<div class="modal-card-power-toughness">${this.escapeHtml(card.power)} / ${this.escapeHtml(card.toughness)}</div>` : ''}
+              </div>
+              `
+                  : '';
+              })()}
             </div>
           `;
 
