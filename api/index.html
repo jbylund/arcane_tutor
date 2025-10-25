@@ -1819,17 +1819,46 @@
 
         updateURL(query, order, direction, unique, prefer) {
           const url = new URL(window.location);
+
+          // Define default values
+          const defaults = {
+            orderby: 'edhrec',
+            direction: 'asc',
+            unique: 'card',
+            prefer: 'default'
+          };
+
           if (query.trim()) {
+            // Always include the query parameter
             url.searchParams.set('q', query);
-            url.searchParams.set('orderby', order);
-            url.searchParams.set('direction', direction);
-            url.searchParams.set('unique', unique);
-            if (unique !== UNIQUE_PRINTING) {
+
+            // Only include parameters that differ from defaults
+            if (order !== defaults.orderby) {
+              url.searchParams.set('orderby', order);
+            } else {
+              url.searchParams.delete('orderby');
+            }
+
+            if (direction !== defaults.direction) {
+              url.searchParams.set('direction', direction);
+            } else {
+              url.searchParams.delete('direction');
+            }
+
+            if (unique !== defaults.unique) {
+              url.searchParams.set('unique', unique);
+            } else {
+              url.searchParams.delete('unique');
+            }
+
+            // Handle prefer parameter - only include if unique is not 'printing' and prefer is not default
+            if (unique !== UNIQUE_PRINTING && prefer !== defaults.prefer) {
               url.searchParams.set('prefer', prefer);
             } else {
               url.searchParams.delete('prefer');
             }
           } else {
+            // Clear all parameters when no query
             url.searchParams.delete('q');
             url.searchParams.delete('orderby');
             url.searchParams.delete('direction');
