@@ -1510,22 +1510,14 @@
 
           // Create modal content
           const imageLarge = this.buildImageUrl(card, '745');
-          // Build manapool.com referral URL
-          // Set codes and collector numbers from our database are safe for URLs
-          // Just lowercase the set code as required
-          const setCode = card.set_code ? card.set_code.toLowerCase() : '';
-          const collectorNumber = card.collector_number || '';
-          const manapoolUrl =
-            setCode && collectorNumber
-              ? `https://manapool.com/card/${setCode}/${collectorNumber}?ref=arcane-tutor`
-              : '';
-
           // Build image element
           let imageHtml = '';
           if (imageLarge) {
             const imgTag = `<img class="modal-image" src="${this.escapeHtml(imageLarge)}" width="745" height="1040" alt="${this.escapeHtml(card.name || 'Card Image')}" />`;
-            if (manapoolUrl) {
-              // manapoolUrl is constructed from trusted database values, no escaping needed
+            if (card.set_code && card.collector_number) {
+              // Build manapool.com referral URL
+              // Set codes and collector numbers from our database are safe for URLs
+              const manapoolUrl = `https://manapool.com/card/${card.set_code.toLowerCase()}/${card.collector_number}?ref=arcane-tutor`;
               imageHtml = `<div class="modal-image-wrapper"><a href="${manapoolUrl}" target="_blank" rel="noopener noreferrer">${imgTag}</a></div>`;
             } else {
               imageHtml = `<div class="modal-image-wrapper">${imgTag}</div>`;
