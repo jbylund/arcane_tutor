@@ -498,7 +498,7 @@
         align-items: stretch;
         width: fit-content;
         max-width: 90vw;
-        aspect-ratio: 1.795; /* this aspect ratio would make the card 1/3rd the width */
+        aspect-ratio: 1.6;
       }
 
       @keyframes modalFadeIn {
@@ -537,10 +537,18 @@
       }
 
       .modal-image-wrapper {
-        flex: 2 0 0;
+        flex: 3 0 0;
         display: flex;
         align-items: center;
         justify-content: center;
+      }
+
+      .modal-image-link {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        height: 100%;
       }
 
       .modal-image {
@@ -548,6 +556,7 @@
         box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
         height: auto;
         max-width: 100%;
+        max-height: 100%;
         object-fit: contain;
         width: auto;
         cursor: pointer;
@@ -1518,7 +1527,7 @@
               // Build manapool.com referral URL
               // Set codes and collector numbers from our database are safe for URLs
               const manapoolUrl = `https://manapool.com/card/${card.set_code.toLowerCase()}/${card.collector_number}?ref=arcane-tutor`;
-              imageHtml = `<div class="modal-image-wrapper"><a href="${manapoolUrl}" target="_blank" rel="noopener noreferrer">${imgTag}</a></div>`;
+              imageHtml = `<div class="modal-image-wrapper"><a href="${manapoolUrl}" target="_blank" rel="noopener noreferrer" class="modal-image-link">${imgTag}</a></div>`;
             } else {
               imageHtml = `<div class="modal-image-wrapper">${imgTag}</div>`;
             }
