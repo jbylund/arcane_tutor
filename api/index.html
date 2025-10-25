@@ -498,7 +498,7 @@
         align-items: stretch;
         width: fit-content;
         max-width: 90vw;
-        aspect-ratio: 1.795; /* this aspect ratio would make the card 1/3rd the width */
+        aspect-ratio: 1.6;
       }
 
       @keyframes modalFadeIn {
@@ -536,14 +536,38 @@
         color: var(--color-hover-text);
       }
 
+      .modal-image-wrapper {
+        flex: 3 0 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .modal-image-link {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        height: 100%;
+      }
+
       .modal-image {
         border-radius: 4%;
         box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
-        flex: 2 0 0;
         height: auto;
         max-width: 100%;
+        max-height: 100%;
         object-fit: contain;
         width: auto;
+        cursor: pointer;
+        transition:
+          transform 0.2s ease,
+          box-shadow 0.2s ease;
+      }
+
+      .modal-image:hover {
+        transform: scale(1.02);
+        box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
       }
 
       .modal-card-info {
@@ -1495,9 +1519,19 @@
 
           // Create modal content
           const imageLarge = this.buildImageUrl(card, '745');
-          const imageHtml = imageLarge
-            ? `<img class="modal-image" src="${this.escapeHtml(imageLarge)}" width="745" height="1040" alt="${this.escapeHtml(card.name || 'Card Image')}" />`
-            : '';
+          // Build image element
+          let imageHtml = '';
+          if (imageLarge) {
+            const imgTag = `<img class="modal-image" src="${this.escapeHtml(imageLarge)}" width="745" height="1040" alt="${this.escapeHtml(card.name || 'Card Image')}" />`;
+            if (card.set_code && card.collector_number) {
+              // Build manapool.com referral URL
+              // Set codes and collector numbers from our database are safe for URLs
+              const manapoolUrl = `https://manapool.com/card/${card.set_code.toLowerCase()}/${card.collector_number}?ref=arcane-tutor`;
+              imageHtml = `<div class="modal-image-wrapper"><a href="${manapoolUrl}" target="_blank" rel="noopener noreferrer" class="modal-image-link">${imgTag}</a></div>`;
+            } else {
+              imageHtml = `<div class="modal-image-wrapper">${imgTag}</div>`;
+            }
+          }
 
           modalContent.innerHTML = `
             <button class="modal-close" onclick="cardSearch.closeModal()">&times;</button>
