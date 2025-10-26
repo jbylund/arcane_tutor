@@ -1096,6 +1096,12 @@
             const query = this.searchInput.value.trim();
             if (query) {
               clearTimeout(this.debounceTimeout);
+              // Push to history when explicitly submitting a search
+              const order = this.orderDropdown.value;
+              const unique = this.uniqueDropdown.value;
+              const prefer = this.preferDropdown.value;
+              const direction = this.isAscending ? 'asc' : 'desc';
+              this.updateURL(query, order, direction, unique, prefer, true);
               this.performSearch(query);
             }
           });
@@ -1103,18 +1109,27 @@
           this.searchInput.addEventListener('input', e => {
             const query = e.target.value;
             this.handleSearch(query);
-            // Update the URL as the user types
+            // Update the URL as the user types (using replaceState)
             const order = this.orderDropdown.value;
             const unique = this.uniqueDropdown.value;
             const prefer = this.preferDropdown.value;
             const direction = this.isAscending ? 'asc' : 'desc';
-            this.updateURL(query, order, direction, unique, prefer);
+            this.updateURL(query, order, direction, unique, prefer, false);
           });
 
           // Handle enter key for immediate search
           this.searchInput.addEventListener('keypress', e => {
             if (e.key === 'Enter') {
               clearTimeout(this.debounceTimeout);
+              // Push to history when explicitly pressing Enter
+              const query = e.target.value.trim();
+              if (query) {
+                const order = this.orderDropdown.value;
+                const unique = this.uniqueDropdown.value;
+                const prefer = this.preferDropdown.value;
+                const direction = this.isAscending ? 'asc' : 'desc';
+                this.updateURL(query, order, direction, unique, prefer, true);
+              }
               this.performSearch(e.target.value);
             }
           });
@@ -1153,6 +1168,11 @@
           // Add resize listener to update columns dynamically
           window.addEventListener('resize', () => {
             this.updateGridColumns(this.currentCardCount);
+          });
+
+          // Add popstate listener for browser back/forward navigation
+          window.addEventListener('popstate', () => {
+            this.restoreStateFromURL();
           });
         }
 
@@ -1875,7 +1895,7 @@
           }
         }
 
-        updateURL(query, order, direction, unique, prefer) {
+        updateURL(query, order, direction, unique, prefer, pushToHistory = false) {
           const url = new URL(window.location);
 
           // Define default values
@@ -1923,7 +1943,40 @@
             url.searchParams.delete('unique');
             url.searchParams.delete('prefer');
           }
-          window.history.replaceState({}, '', url);
+
+          // Use pushState for user actions (order change, etc.), replaceState for typing
+          if (pushToHistory) {
+            window.history.pushState({}, '', url);
+          } else {
+            window.history.replaceState({}, '', url);
+          }
+        }
+
+        restoreStateFromURL() {
+          // Read current URL parameters
+          const params = new URLSearchParams(window.location.search);
+          const query = params.get('q') || '';
+          const order = params.get('orderby') || 'edhrec';
+          const direction = params.get('direction') || 'asc';
+          const unique = params.get('unique') || 'card';
+          const prefer = params.get('prefer') || 'default';
+
+          // Update the UI controls to match URL params
+          this.searchInput.value = query;
+          this.orderDropdown.value = order;
+          this.uniqueDropdown.value = unique;
+          this.preferDropdown.value = prefer;
+          this.isAscending = direction === 'asc';
+          this.directionInput.value = direction;
+          this.updateOrderToggleAppearance();
+          this.updatePreferVisibility();
+
+          // Perform search if there's a query, otherwise clear results
+          if (query) {
+            this.performSearch(query);
+          } else {
+            this.clearResults();
+          }
         }
 
         updatePreferVisibility() {
@@ -1939,7 +1992,7 @@
           const unique = this.uniqueDropdown.value;
           const prefer = this.preferDropdown.value;
           const direction = this.isAscending ? 'asc' : 'desc';
-          this.updateURL(query, order, direction, unique, prefer);
+          this.updateURL(query, order, direction, unique, prefer, true);
 
           // Trigger a new search with the current query and new order
           if (query) {
@@ -1954,7 +2007,7 @@
           const unique = this.uniqueDropdown.value;
           const prefer = this.preferDropdown.value;
           const direction = this.isAscending ? 'asc' : 'desc';
-          this.updateURL(query, order, direction, unique, prefer);
+          this.updateURL(query, order, direction, unique, prefer, true);
 
           // Trigger a new search with the current query and new unique setting
           if (query) {
@@ -1969,7 +2022,7 @@
           const unique = this.uniqueDropdown.value;
           const prefer = this.preferDropdown.value;
           const direction = this.isAscending ? 'asc' : 'desc';
-          this.updateURL(query, order, direction, unique, prefer);
+          this.updateURL(query, order, direction, unique, prefer, true);
 
           // Trigger a new search with the current query and new prefer setting
           if (query) {
@@ -1988,7 +2041,7 @@
           const prefer = this.preferDropdown.value;
           const direction = this.isAscending ? 'asc' : 'desc';
           this.directionInput.value = direction;
-          this.updateURL(query, order, direction, unique, prefer);
+          this.updateURL(query, order, direction, unique, prefer, true);
 
           // Trigger a new search with the current query and new order direction
           if (query) {
