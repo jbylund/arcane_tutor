@@ -35,6 +35,7 @@ x-postgres: &postgres
 
 x-apiservice-env: &apiservice-env
   ENABLE_CACHE: ${ENABLE_CACHE:-false}
+  HONEYBADGER_API_KEY: ${HONEYBADGER_API_KEY:-}
   HOSTNAME: ${HOSTNAME}
   PGDATABASE: ${XPGDATABASE}
   PGPASSWORD: ${XPGPASSWORD}
@@ -45,6 +46,9 @@ x-apiservice: &apiservice
   build:
     context: ./
     dockerfile: ./api/Dockerfile
+    args:
+      GIT_SHA: ${GIT_SHA:-unknown}
+      GIT_BRANCH: ${GIT_BRANCH:-unknown}
   cap_add:
     - ALL
   command:

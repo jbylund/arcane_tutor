@@ -30,6 +30,7 @@ else:
 
     deployment_env = os.getenv("ENVIRONMENT", "unknown")
     hostname = os.getenv("HOSTNAME", socket.gethostname())
+    api_key = os.getenv("HONEYBADGER_API_KEY", "hbp_mHbJs4KJAOeUhK17Ixr0AzDC0gx8Zt2WG6kH")
 
     honeybadger_config = {
         "deployment_env": deployment_env,
@@ -41,7 +42,7 @@ else:
     }
     # Configure honeybadger if available
     honeybadger.configure(
-        api_key="hbp_mHbJs4KJAOeUhK17Ixr0AzDC0gx8Zt2WG6kH",
+        api_key=api_key,
         **honeybadger_config,
     )
 
