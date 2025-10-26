@@ -37,6 +37,7 @@ def report_deployment() -> None:
     git_branch = os.getenv("GIT_BRANCH", "unknown")
     deployment_env = os.getenv("ENVIRONMENT", "unknown")
     hostname = os.getenv("HOSTNAME", socket.gethostname())
+    repository = os.getenv("REPOSITORY_URL", "https://github.com/jbylund/arcane_tutor")
 
     # Format environment as {deployment_env}x{hostname}
     environment = f"{deployment_env}x{hostname}"
@@ -56,7 +57,7 @@ def report_deployment() -> None:
         "deploy": {
             "environment": environment,
             "revision": git_sha,
-            "repository": "https://github.com/jbylund/arcane_tutor",
+            "repository": repository,
             "local_username": os.getenv("USER", "docker"),
         },
     }
