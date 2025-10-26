@@ -7,6 +7,8 @@ mkfile_dir := $(shell dirname $(mkfile_path) )
 PROJECTNAME := arcane_tutor
 
 GIT_ROOT := $(shell git rev-parse --show-toplevel)
+GIT_SHA := $(shell git rev-parse HEAD 2>/dev/null || echo "unknown")
+GIT_BRANCH := $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
 MAYBENORUN := $(shell if echo | xargs --no-run-if-empty >/dev/null 2>/dev/null; then echo "--no-run-if-empty"; else echo ""; fi)
 BASE_COMPOSE := $(mkfile_dir)/docker-compose.yml
 LINTABLE_DIRS := .
@@ -54,7 +56,10 @@ hlep: help
 
 ###  Entry points
 
-up_deps: datadir images check_env
+up_deps: datadir images check_env .env
+
+.env: env.json
+	cat env.json | jq -r 'to_entries[] | "\(.key)=\(.value)"' | sort > $@
 
 dev-up: up_deps # @doc start services
 	cd $(GIT_ROOT) && docker compose --profile=dev --file $(BASE_COMPOSE) up --remove-orphans --abort-on-container-exit

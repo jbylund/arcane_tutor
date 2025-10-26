@@ -2,7 +2,6 @@
 
 import logging
 import os
-import pathlib
 
 import falcon
 import orjson
@@ -13,8 +12,8 @@ logger = logging.getLogger(__name__)
 
 # Try to import honeybadger, fall back to basic error handling if not available
 try:
-    from honeybadger import honeybadger
-except ImportError:
+    api_key = os.environ["HONEYBADGER_API_KEY"]
+except KeyError:
     # Fallback error handler when honeybadger is not available
     def error_handler(req: falcon.Request, exception: Exception) -> None:
         """Handle an error with basic logging when Honeybadger is not available.
@@ -26,10 +25,14 @@ except ImportError:
         del req  # Unused when honeybadger is not available
         logger.error("Error handling request: %s", exception, exc_info=True)
 else:
+    import pathlib
     import socket
+
+    from honeybadger import honeybadger
 
     deployment_env = os.getenv("ENVIRONMENT", "unknown")
     hostname = os.getenv("HOSTNAME", socket.gethostname())
+
 
     honeybadger_config = {
         "deployment_env": deployment_env,
@@ -39,11 +42,13 @@ else:
         "project_root": str(pathlib.Path(__file__).parent.parent.parent),
         "report_local_variables": True,
     }
-    # Configure honeybadger if available
-    honeybadger.configure(
-        api_key="hbp_mHbJs4KJAOeUhK17Ixr0AzDC0gx8Zt2WG6kH",
-        **honeybadger_config,
-    )
+
+    # Only configure honeybadger if API key is available
+    if api_key:
+        honeybadger.configure(
+            api_key=api_key,
+            **honeybadger_config,
+        )
 
     def error_handler(req: falcon.Request, exception: Exception) -> None:
         """Handle an error with Honeybadger error monitoring.
@@ -53,18 +58,19 @@ else:
             exception: The exception that occurred
         """
         logger.error("Error handling request: %s", exception, exc_info=True)
-        logger.error("Honeybadger config: %s", honeybadger_config)
-        honeybadger.notify(
-            exception=exception,
-            context={
-                "headers": req.headers,
-                "method": req.method,
-                "params": req.params,
-                "path": req.path,
-                "query_string": req.query_string,
-                "uri": req.uri,
-            },
-        )
+        if api_key:
+            logger.error("Honeybadger config: %s", honeybadger_config)
+            honeybadger.notify(
+                exception=exception,
+                context={
+                    "headers": req.headers,
+                    "method": req.method,
+                    "params": req.params,
+                    "path": req.path,
+                    "query_string": req.query_string,
+                    "uri": req.uri,
+                },
+            )
 
 
 def can_serialize(iobj: object) -> bool:

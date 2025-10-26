@@ -8,6 +8,7 @@ import signal
 from types import FrameType
 
 from api.api_worker import ApiWorker
+from api.utils.deployment_reporting import report_deployment
 
 logger = logging.getLogger("api")
 
@@ -98,6 +99,10 @@ def run_server(
 def main() -> None:
     """Main entrypoint for the api container."""
     logging.basicConfig(level=logging.INFO)
+
+    # Report deployment to Honeybadger if configured
+    report_deployment()
+
     args = get_args()
     run_server(
         port=args["port"],
