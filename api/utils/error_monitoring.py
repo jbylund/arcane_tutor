@@ -2,7 +2,6 @@
 
 import logging
 import os
-import pathlib
 
 import falcon
 import orjson
@@ -13,8 +12,8 @@ logger = logging.getLogger(__name__)
 
 # Try to import honeybadger, fall back to basic error handling if not available
 try:
-    from honeybadger import honeybadger
-except ImportError:
+    api_key = os.environ["HONEYBADGER_API_KEY"]
+except KeyError:
     # Fallback error handler when honeybadger is not available
     def error_handler(req: falcon.Request, exception: Exception) -> None:
         """Handle an error with basic logging when Honeybadger is not available.
@@ -26,11 +25,14 @@ except ImportError:
         del req  # Unused when honeybadger is not available
         logger.error("Error handling request: %s", exception, exc_info=True)
 else:
+    import pathlib
     import socket
+
+    from honeybadger import honeybadger
 
     deployment_env = os.getenv("ENVIRONMENT", "unknown")
     hostname = os.getenv("HOSTNAME", socket.gethostname())
-    api_key = os.getenv("HONEYBADGER_API_KEY")
+
 
     honeybadger_config = {
         "deployment_env": deployment_env,
