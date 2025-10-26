@@ -1110,8 +1110,11 @@
             const query = e.target.value;
             this.handleSearch(query);
             // Update the URL as the user types (using replaceState)
-            const params = this.getSearchParameters();
-            this.updateURL(query, params.order, params.direction, params.unique, params.prefer, false);
+            const order = this.orderDropdown.value;
+            const unique = this.uniqueDropdown.value;
+            const prefer = this.preferDropdown.value;
+            const direction = this.isAscending ? 'asc' : 'desc';
+            this.updateURL(query, order, direction, unique, prefer, false);
           });
 
           // Handle enter key for immediate search
@@ -1121,8 +1124,11 @@
               // Push to history when explicitly pressing Enter
               const query = e.target.value.trim();
               if (query) {
-                const params = this.getSearchParameters();
-                this.updateURL(params.query, params.order, params.direction, params.unique, params.prefer, true);
+                const order = this.orderDropdown.value;
+                const unique = this.uniqueDropdown.value;
+                const prefer = this.preferDropdown.value;
+                const direction = this.isAscending ? 'asc' : 'desc';
+                this.updateURL(query, order, direction, unique, prefer, true);
               }
               this.performSearch(e.target.value);
             }
