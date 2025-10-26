@@ -896,6 +896,9 @@
           // Autocomplete properties
           this.commonCardTypes = []; // Will store the common card types
 
+          // History management: track if last character was a "capping" character (space or close paren)
+          this.shouldPushNextInput = false;
+
           // Bind event handlers for proper 'this' context
           this.handlePopState = this.handlePopState.bind(this);
 
@@ -1102,6 +1105,7 @@
               // Push to history when explicitly submitting a search
               const params = this.getSearchParameters();
               this.updateURL(params.query, params.order, params.direction, params.unique, params.prefer, true);
+              this.shouldPushNextInput = false; // Reset flag after explicit push
               this.performSearch(query);
             }
           });
@@ -1109,12 +1113,20 @@
           this.searchInput.addEventListener('input', e => {
             const query = e.target.value;
             this.handleSearch(query);
-            // Update the URL as the user types (using replaceState)
+
+            // Determine if we should push or replace based on previous character
+            const pushToHistory = this.shouldPushNextInput;
+
+            // Check if the last character is a space or close paren to "cap" this entry
+            const lastChar = query.slice(-1);
+            this.shouldPushNextInput = lastChar === ' ' || lastChar === ')';
+
+            // Update the URL (push if after a capping char, otherwise replace)
             const order = this.orderDropdown.value;
             const unique = this.uniqueDropdown.value;
             const prefer = this.preferDropdown.value;
             const direction = this.isAscending ? 'asc' : 'desc';
-            this.updateURL(query, order, direction, unique, prefer, false);
+            this.updateURL(query, order, direction, unique, prefer, pushToHistory);
           });
 
           // Handle enter key for immediate search
@@ -1129,6 +1141,7 @@
                 const prefer = this.preferDropdown.value;
                 const direction = this.isAscending ? 'asc' : 'desc';
                 this.updateURL(query, order, direction, unique, prefer, true);
+                this.shouldPushNextInput = false; // Reset flag after explicit push
               }
               this.performSearch(e.target.value);
             }
@@ -1997,6 +2010,7 @@
           // Update URL with current state
           const params = this.getSearchParameters();
           this.updateURL(params.query, params.order, params.direction, params.unique, params.prefer, true);
+          this.shouldPushNextInput = false; // Reset flag after explicit push
 
           // Trigger a new search with the current query and new order
           if (params.query) {
@@ -2008,6 +2022,7 @@
           // Update URL with current state
           const params = this.getSearchParameters();
           this.updateURL(params.query, params.order, params.direction, params.unique, params.prefer, true);
+          this.shouldPushNextInput = false; // Reset flag after explicit push
 
           // Trigger a new search with the current query and new unique setting
           if (params.query) {
@@ -2019,6 +2034,7 @@
           // Update URL with current state
           const params = this.getSearchParameters();
           this.updateURL(params.query, params.order, params.direction, params.unique, params.prefer, true);
+          this.shouldPushNextInput = false; // Reset flag after explicit push
 
           // Trigger a new search with the current query and new prefer setting
           if (params.query) {
@@ -2034,6 +2050,7 @@
           const params = this.getSearchParameters();
           this.directionInput.value = params.direction;
           this.updateURL(params.query, params.order, params.direction, params.unique, params.prefer, true);
+          this.shouldPushNextInput = false; // Reset flag after explicit push
 
           // Trigger a new search with the current query and new order direction
           if (params.query) {
