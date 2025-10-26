@@ -896,6 +896,9 @@
           // Autocomplete properties
           this.commonCardTypes = []; // Will store the common card types
 
+          // Bind event handlers for proper 'this' context
+          this.handlePopState = this.handlePopState.bind(this);
+
           // Initialize cached regex patterns for mana symbol replacement (performance optimization)
           this.initManaSymbolPatterns();
 
@@ -1097,11 +1100,8 @@
             if (query) {
               clearTimeout(this.debounceTimeout);
               // Push to history when explicitly submitting a search
-              const order = this.orderDropdown.value;
-              const unique = this.uniqueDropdown.value;
-              const prefer = this.preferDropdown.value;
-              const direction = this.isAscending ? 'asc' : 'desc';
-              this.updateURL(query, order, direction, unique, prefer, true);
+              const params = this.getSearchParameters();
+              this.updateURL(params.query, params.order, params.direction, params.unique, params.prefer, true);
               this.performSearch(query);
             }
           });
@@ -1110,11 +1110,8 @@
             const query = e.target.value;
             this.handleSearch(query);
             // Update the URL as the user types (using replaceState)
-            const order = this.orderDropdown.value;
-            const unique = this.uniqueDropdown.value;
-            const prefer = this.preferDropdown.value;
-            const direction = this.isAscending ? 'asc' : 'desc';
-            this.updateURL(query, order, direction, unique, prefer, false);
+            const params = this.getSearchParameters();
+            this.updateURL(query, params.order, params.direction, params.unique, params.prefer, false);
           });
 
           // Handle enter key for immediate search
@@ -1124,11 +1121,8 @@
               // Push to history when explicitly pressing Enter
               const query = e.target.value.trim();
               if (query) {
-                const order = this.orderDropdown.value;
-                const unique = this.uniqueDropdown.value;
-                const prefer = this.preferDropdown.value;
-                const direction = this.isAscending ? 'asc' : 'desc';
-                this.updateURL(query, order, direction, unique, prefer, true);
+                const params = this.getSearchParameters();
+                this.updateURL(params.query, params.order, params.direction, params.unique, params.prefer, true);
               }
               this.performSearch(e.target.value);
             }
@@ -1171,9 +1165,12 @@
           });
 
           // Add popstate listener for browser back/forward navigation
-          window.addEventListener('popstate', () => {
-            this.restoreStateFromURL();
-          });
+          window.addEventListener('popstate', this.handlePopState);
+        }
+
+        handlePopState() {
+          // Called when browser back/forward button is pressed
+          this.restoreStateFromURL();
         }
 
         handleSearch(query) {
@@ -1813,13 +1810,8 @@
           this.clearResults();
 
           // Clear URL parameters
-          this.updateURL(
-            '',
-            this.orderDropdown.value,
-            this.isAscending ? 'asc' : 'desc',
-            this.uniqueDropdown.value,
-            this.preferDropdown.value
-          );
+          const params = this.getSearchParameters();
+          this.updateURL('', params.order, params.direction, params.unique, params.prefer, false);
 
           // Focus back on search input
           this.searchInput.focus();
@@ -1893,6 +1885,16 @@
           } else {
             this.orderToggle.classList.add('descending');
           }
+        }
+
+        getSearchParameters() {
+          return {
+            query: this.searchInput.value.trim(),
+            order: this.orderDropdown.value,
+            unique: this.uniqueDropdown.value,
+            prefer: this.preferDropdown.value,
+            direction: this.isAscending ? 'asc' : 'desc',
+          };
         }
 
         updateURL(query, order, direction, unique, prefer, pushToHistory = false) {
@@ -1987,46 +1989,34 @@
 
         handleOrderChange() {
           // Update URL with current state
-          const query = this.searchInput.value.trim();
-          const order = this.orderDropdown.value;
-          const unique = this.uniqueDropdown.value;
-          const prefer = this.preferDropdown.value;
-          const direction = this.isAscending ? 'asc' : 'desc';
-          this.updateURL(query, order, direction, unique, prefer, true);
+          const params = this.getSearchParameters();
+          this.updateURL(params.query, params.order, params.direction, params.unique, params.prefer, true);
 
           // Trigger a new search with the current query and new order
-          if (query) {
-            this.performSearch(query);
+          if (params.query) {
+            this.performSearch(params.query);
           }
         }
 
         handleUniqueChange() {
           // Update URL with current state
-          const query = this.searchInput.value.trim();
-          const order = this.orderDropdown.value;
-          const unique = this.uniqueDropdown.value;
-          const prefer = this.preferDropdown.value;
-          const direction = this.isAscending ? 'asc' : 'desc';
-          this.updateURL(query, order, direction, unique, prefer, true);
+          const params = this.getSearchParameters();
+          this.updateURL(params.query, params.order, params.direction, params.unique, params.prefer, true);
 
           // Trigger a new search with the current query and new unique setting
-          if (query) {
-            this.performSearch(query);
+          if (params.query) {
+            this.performSearch(params.query);
           }
         }
 
         handlePreferChange() {
           // Update URL with current state
-          const query = this.searchInput.value.trim();
-          const order = this.orderDropdown.value;
-          const unique = this.uniqueDropdown.value;
-          const prefer = this.preferDropdown.value;
-          const direction = this.isAscending ? 'asc' : 'desc';
-          this.updateURL(query, order, direction, unique, prefer, true);
+          const params = this.getSearchParameters();
+          this.updateURL(params.query, params.order, params.direction, params.unique, params.prefer, true);
 
           // Trigger a new search with the current query and new prefer setting
-          if (query) {
-            this.performSearch(query);
+          if (params.query) {
+            this.performSearch(params.query);
           }
         }
 
@@ -2035,17 +2025,13 @@
           this.updateOrderToggleAppearance();
 
           // Update URL with current state
-          const query = this.searchInput.value.trim();
-          const order = this.orderDropdown.value;
-          const unique = this.uniqueDropdown.value;
-          const prefer = this.preferDropdown.value;
-          const direction = this.isAscending ? 'asc' : 'desc';
-          this.directionInput.value = direction;
-          this.updateURL(query, order, direction, unique, prefer, true);
+          const params = this.getSearchParameters();
+          this.directionInput.value = params.direction;
+          this.updateURL(params.query, params.order, params.direction, params.unique, params.prefer, true);
 
           // Trigger a new search with the current query and new order direction
-          if (query) {
-            this.performSearch(query);
+          if (params.query) {
+            this.performSearch(params.query);
           }
         }
       }
