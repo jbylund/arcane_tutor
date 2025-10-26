@@ -35,12 +35,6 @@ def report_deployment() -> None:
     # Get deployment metadata
     git_sha = os.getenv("GIT_SHA", "unknown")
     git_branch = os.getenv("GIT_BRANCH", "unknown")
-    deployment_env = os.getenv("ENVIRONMENT", "unknown")
-    hostname = os.getenv("HOSTNAME", socket.gethostname())
-    repository = os.getenv("REPOSITORY_URL", "https://github.com/jbylund/arcane_tutor")
-
-    # Format environment as {deployment_env}x{hostname}
-    environment = f"{deployment_env}x{hostname}"
 
     # Skip if we don't have valid git metadata
     if git_sha == "unknown" or git_branch == "unknown":
@@ -50,6 +44,13 @@ def report_deployment() -> None:
             git_branch,
         )
         return
+
+    deployment_env = os.getenv("ENVIRONMENT", "unknown")
+    hostname = os.getenv("HOSTNAME", socket.gethostname())
+    repository = os.getenv("REPOSITORY_URL", "https://github.com/jbylund/arcane_tutor")
+
+    # Format environment as {deployment_env}-{hostname}
+    environment = f"{deployment_env}-{hostname}"
 
     # Prepare deployment data
     deployment_data = {

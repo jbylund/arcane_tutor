@@ -56,7 +56,10 @@ hlep: help
 
 ###  Entry points
 
-up_deps: datadir images check_env
+up_deps: datadir images check_env .env
+
+.env: env.json
+	cat env.json | jq -r 'to_entries[] | "\(.key)=\(.value)"' | sort > $@
 
 dev-up: up_deps # @doc start services
 	cd $(GIT_ROOT) && docker compose --profile=dev --file $(BASE_COMPOSE) up --remove-orphans --abort-on-container-exit
