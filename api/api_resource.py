@@ -2090,3 +2090,37 @@ class APIResource:
                 "sample_cards": [],
                 "message": f"Error loading cards: {e}",
             }
+
+    def random_search(self, *, num_cards: int = 1, **_: object) -> list[dict[str, Any]]:
+        """Return a single random card."""
+        query_sql = """
+        WITH query_uuid_cte AS (
+            SELECT gen_random_uuid() AS query_uuid
+        )
+        SELECT
+            card_artist,
+            card_name AS name,
+            card_set_code AS set_code,
+            cmc,
+            collector_number,
+            creature_power_text AS power,
+            creature_toughness_text AS toughness,
+            edhrec_rank,
+            mana_cost_text AS mana_cost,
+            oracle_text,
+            set_name,
+            type_line
+        FROM
+            magic.cards
+        WHERE
+            scryfall_id >= (SELECT query_uuid FROM query_uuid_cte)
+        ORDER BY
+            scryfall_id
+        LIMIT 1
+        """
+        results = []
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            while len(results) < num_cards:
+                cursor.execute(query_sql)
+                results.extend(dict(r) for r in cursor.fetchall())
+        return results
