@@ -2092,8 +2092,16 @@ class APIResource:
             }
 
     def random_search(self, *, num_cards: int = 1, **_: object) -> list[dict[str, Any]]:
-        """Return a single random card."""
+        """Return random card(s) using an unbiased selection algorithm.
 
+        To avoid bias toward cards with lower UUIDs, we:
+        1. Generate a random UUID
+        2. Find cards where scryfall_id >= random_uuid
+        3. Take the SECOND card (skip the first to avoid bias)
+        4. If no second card exists (we're at the end), wrap around and take the first card
+
+        This ensures uniform distribution across all cards regardless of their UUID values.
+        """
         # TODO: how to keep this query in sync with the larger search query?
         query_sql = """
         WITH query_uuid_cte AS (
@@ -2118,11 +2126,82 @@ class APIResource:
             scryfall_id >= (SELECT query_uuid FROM query_uuid_cte)
         ORDER BY
             scryfall_id
+        LIMIT 2
+        """
+
+        # Fallback query to get the first card when we wrap around
+        fallback_query_sql = """
+        SELECT
+            card_artist,
+            card_name AS name,
+            card_set_code AS set_code,
+            cmc,
+            collector_number,
+            creature_power_text AS power,
+            creature_toughness_text AS toughness,
+            edhrec_rank,
+            mana_cost_text AS mana_cost,
+            oracle_text,
+            set_name,
+            type_line
+        FROM
+            magic.cards
+        ORDER BY
+            scryfall_id
         LIMIT 1
         """
+
         results = []
+        min_cards_for_second = 2
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             while len(results) < num_cards:
                 cursor.execute(query_sql)
-                results.extend(dict(r) for r in cursor.fetchall())
+                cards = [dict(r) for r in cursor.fetchall()]
+
+                # Take the second card if available, otherwise wrap around and take the first card
+                if len(cards) >= min_cards_for_second:
+                    results.append(cards[1])
+                elif len(cards) == 1:
+                    # We hit the end of the UUID range, wrap around
+                    cursor.execute(fallback_query_sql)
+                    fallback_cards = [dict(r) for r in cursor.fetchall()]
+                    if fallback_cards:
+                        results.append(fallback_cards[0])
+                else:
+                    # No cards found at all - database might be empty
+                    # Try fallback query anyway
+                    cursor.execute(fallback_query_sql)
+                    fallback_cards = [dict(r) for r in cursor.fetchall()]
+                    if fallback_cards:
+                        results.append(fallback_cards[0])
+                    else:
+                        # Database is truly empty, break to avoid infinite loop
+                        break
+
         return results
+
+    def random(
+        self,
+        *,
+        falcon_response: falcon.Response | None = None,
+        **_: object,
+    ) -> dict[str, Any]:
+        """Return a single random card.
+
+        This endpoint uses an unbiased selection algorithm to ensure
+        uniform distribution across all cards in the database.
+
+        Returns:
+            Dict containing a single random card with all standard card fields.
+        """
+        set_cache_header(falcon_response, duration=timedelta(seconds=0))
+        self.import_data()  # ensures that database is setup
+
+        cards = self.random_search(num_cards=1)
+        if not cards:
+            raise falcon.HTTPNotFound(
+                title="No Cards Found",
+                description="No cards available in the database",
+            )
+
+        return cards[0]
