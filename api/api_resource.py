@@ -2093,6 +2093,8 @@ class APIResource:
 
     def random_search(self, *, num_cards: int = 1, **_: object) -> list[dict[str, Any]]:
         """Return a single random card."""
+
+        # TODO: how to keep this query in sync with the larger search query?
         query_sql = """
         WITH query_uuid_cte AS (
             SELECT gen_random_uuid() AS query_uuid
