@@ -511,7 +511,7 @@ class APIResource:
             with self._conn_pool.connection() as conn:
                 conn = typecast("Connection", conn)
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT SUM(1) AS num_cards FROM (SELECT card_name FROM magic.cards LIMIT 1)")
+                    cursor.execute("SELECT COUNT(1) AS num_cards FROM (SELECT card_name FROM magic.cards LIMIT 1)")
                     cards_found = cursor.fetchall()[0]["num_cards"]
                     logger.info("Found %d cards in pid %d", cards_found, os.getpid())
                     return cards_found > 0
@@ -2093,11 +2093,42 @@ class APIResource:
 
     def random_search(self, *, num_cards: int = 1, **_: object) -> list[dict[str, Any]]:
         """Return a single random card."""
-
         # TODO: how to keep this query in sync with the larger search query?
         query_sql = """
         WITH query_uuid_cte AS (
             SELECT gen_random_uuid() AS query_uuid
+        ),
+        limit_cte AS (
+            SELECT 100 AS limit_value
+        ),
+        full_batch_of_cards_cte AS (
+            (
+                SELECT
+                    1 AS source_id,
+                    *
+                FROM
+                    magic.cards
+                WHERE
+                    scryfall_id >= (SELECT query_uuid FROM query_uuid_cte)
+                ORDER BY
+                    scryfall_id ASC
+                LIMIT (SELECT limit_value FROM limit_cte)
+            )
+            UNION
+            (
+                SELECT
+                    2 AS source_id,
+                    *
+                FROM
+                    magic.cards
+                ORDER BY
+                    scryfall_id ASC
+                LIMIT (SELECT limit_value FROM limit_cte)
+            )
+            ORDER BY
+                source_id ASC,
+                scryfall_id ASC
+            LIMIT (SELECT limit_value FROM limit_cte)
         )
         SELECT
             card_artist,
@@ -2113,11 +2144,9 @@ class APIResource:
             set_name,
             type_line
         FROM
-            magic.cards
-        WHERE
-            scryfall_id >= (SELECT query_uuid FROM query_uuid_cte)
+            full_batch_of_cards_cte
         ORDER BY
-            scryfall_id
+            RANDOM()
         LIMIT 1
         """
         results = []
