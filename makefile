@@ -7,6 +7,8 @@ mkfile_dir := $(shell dirname $(mkfile_path) )
 PROJECTNAME := arcane_tutor
 
 GIT_ROOT := $(shell git rev-parse --show-toplevel)
+GIT_SHA := $(shell git rev-parse HEAD 2>/dev/null || echo "unknown")
+GIT_BRANCH := $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
 MAYBENORUN := $(shell if echo | xargs --no-run-if-empty >/dev/null 2>/dev/null; then echo "--no-run-if-empty"; else echo ""; fi)
 BASE_COMPOSE := $(mkfile_dir)/docker-compose.yml
 LINTABLE_DIRS := .
@@ -15,6 +17,7 @@ XPGDATABASE=magic
 XPGPASSWORD=foopassword
 XPGPORT=15432
 XPGUSER=foouser
+HOSTNAME := $(shell hostname)
 
 S3_BUCKET=biblioplex
 
@@ -53,20 +56,33 @@ hlep: help
 
 ###  Entry points
 
-up: datadir images down check_env # @doc start services
-	cd $(GIT_ROOT) && docker compose --file $(BASE_COMPOSE) up --remove-orphans --abort-on-container-exit
+up_deps: datadir images check_env .env
 
-up-detach: datadir images down check_env
-	cd $(GIT_ROOT) && docker compose --file $(BASE_COMPOSE) up --remove-orphans --detach
+.env: env.json
+	cat env.json | jq -r 'to_entries[] | "\(.key)=\(.value)"' | sort > $@
 
-down: # @doc stop all services
-	docker compose --file $(BASE_COMPOSE) down --remove-orphans > /dev/null
+dev-up: up_deps # @doc start services
+	cd $(GIT_ROOT) && docker compose --profile=dev --file $(BASE_COMPOSE) up --remove-orphans --abort-on-container-exit
+
+prod-up: up_deps # @doc start services
+	cd $(GIT_ROOT) && docker compose --profile=prod --file $(BASE_COMPOSE) up --remove-orphans --abort-on-container-exit
+
+prod-up-detach: up_deps
+	cd $(GIT_ROOT) && docker compose --profile=prod --file $(BASE_COMPOSE) up --remove-orphans --detach
+
+down: dev-down prod-down
+
+dev-down: # @doc stop all services
+	docker compose --profile=dev --file $(BASE_COMPOSE) down --remove-orphans > /dev/null
+
+prod-down: # @doc stop all services
+	docker compose --profile=prod --file $(BASE_COMPOSE) down --remove-orphans > /dev/null
 
 images: build_images pull_images # @doc refresh images
 
 build_images: # @doc refresh locally built images
 	cd $(GIT_ROOT) && \
-	docker compose --progress=plain --file $(BASE_COMPOSE) build
+	docker compose --progress=plain --profile=dev --profile=prod --file $(BASE_COMPOSE) build
 
 pull_images: $(BASE_COMPOSE) # @doc pull images from remote repos
 	true || docker compose --file $(BASE_COMPOSE) pull
@@ -134,7 +150,7 @@ dump_schema: # @doc dump database schema to file using container's pg_dump
 	docker exec $(PROJECTNAME)postgres $(shell find /usr/bin /opt/homebrew -name pg_dump) -U $(XPGUSER) -d $(XPGDATABASE) -s
 
 datadir:
-	mkdir -p data/api data/postgres data/postgres/logs /tmp/pgdata
+	bash ./scripts/make_datadirs.sh
 
 reset:
 	rm -rvf data

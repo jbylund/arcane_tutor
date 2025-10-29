@@ -1,5 +1,9 @@
 FROM ubuntu:latest
 
+# Build arguments for git metadata
+ARG GIT_SHA=unknown
+ARG GIT_BRANCH=unknown
+
 RUN apt-get update -qqq && apt-get install -qqq -y \
     build-essential \
     curl \
@@ -28,3 +32,7 @@ RUN python -m uv pip install --quiet --system --upgrade --break-system-packages 
 RUN mkdir -p /app
 COPY ./api /app/api
 WORKDIR /app
+
+# Set git metadata as environment variables
+ENV GIT_SHA=${GIT_SHA}
+ENV GIT_BRANCH=${GIT_BRANCH}
