@@ -511,7 +511,7 @@ class APIResource:
             with self._conn_pool.connection() as conn:
                 conn = typecast("Connection", conn)
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT SUM(1) AS num_cards FROM (SELECT card_name FROM magic.cards LIMIT 1)")
+                    cursor.execute("SELECT COUNT(1) AS num_cards FROM (SELECT card_name FROM magic.cards LIMIT 1)")
                     cards_found = cursor.fetchall()[0]["num_cards"]
                     logger.info("Found %d cards in pid %d", cards_found, os.getpid())
                     return cards_found > 0
@@ -2090,3 +2090,75 @@ class APIResource:
                 "sample_cards": [],
                 "message": f"Error loading cards: {e}",
             }
+
+    def random_search(self, *, num_cards: int = 1, **_: object) -> list[dict[str, Any]]:
+        """Return one or more random cards.
+
+        Args:
+            num_cards: The number of random cards to return (default is 1).
+
+        Returns:
+            A list of dictionaries, each representing a random card.
+        """
+        # TODO: how to keep this query in sync with the larger search query?
+        query_sql = """
+        WITH query_uuid_cte AS (
+            SELECT gen_random_uuid() AS query_uuid
+        ),
+        limit_cte AS (
+            SELECT 100 AS limit_value
+        ),
+        full_batch_of_cards_cte AS (
+            (
+                SELECT
+                    1 AS source_id,
+                    *
+                FROM
+                    magic.cards
+                WHERE
+                    scryfall_id >= (SELECT query_uuid FROM query_uuid_cte)
+                ORDER BY
+                    scryfall_id ASC
+                LIMIT (SELECT limit_value FROM limit_cte)
+            )
+            UNION
+            (
+                SELECT
+                    2 AS source_id,
+                    *
+                FROM
+                    magic.cards
+                ORDER BY
+                    scryfall_id ASC
+                LIMIT (SELECT limit_value FROM limit_cte)
+            )
+            ORDER BY
+                source_id ASC,
+                scryfall_id ASC
+            LIMIT (SELECT limit_value FROM limit_cte)
+        )
+        SELECT
+            card_artist,
+            card_name AS name,
+            card_set_code AS set_code,
+            cmc,
+            collector_number,
+            creature_power_text AS power,
+            creature_toughness_text AS toughness,
+            edhrec_rank,
+            mana_cost_text AS mana_cost,
+            oracle_text,
+            set_name,
+            type_line
+        FROM
+            full_batch_of_cards_cte
+        ORDER BY
+            RANDOM()
+        LIMIT 1
+        """
+        results = []
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            while len(results) < num_cards:
+                cursor.execute(query_sql)
+                results.extend(dict(r) for r in cursor.fetchall())
+        return results
