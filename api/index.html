@@ -43,6 +43,8 @@
       href="https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/beleren/beleren-subset.css"
       rel="stylesheet"
       type="text/css"
+      media="print"
+      onload="this.media='all'"
     />
     <noscript>
       <link
@@ -66,6 +68,36 @@
       />
     </noscript>
     <style>
+      /* Font fallback adjustments to prevent layout shift when web fonts load
+       * Metrics calculated from actual font files using fontTools
+       * Beleren: x-height 500/1000, Liberation Sans: x-height 1082/2048
+       * MPlantin: x-height 455/1000, Liberation Serif: x-height 940/2048
+       */
+
+      /* Beleren fallback: Use Arial/Liberation Sans Bold with adjusted metrics */
+      @font-face {
+        font-family: 'Beleren Fallback';
+        src: local('Arial Bold'), local('Liberation Sans Bold');
+        font-weight: bold;
+        font-style: normal;
+        size-adjust: 94.6%;
+        ascent-override: 96.2%;
+        descent-override: 89.9%;
+        line-gap-override: 23.9%;
+      }
+
+      /* MPlantin fallback: Use Georgia/Liberation Serif with adjusted metrics */
+      @font-face {
+        font-family: 'MPlantin Fallback';
+        src: local('Georgia'), local('Liberation Serif');
+        font-weight: normal;
+        font-style: normal;
+        size-adjust: 99.1%;
+        ascent-override: 99.9%;
+        descent-override: 88.2%;
+        line-gap-override: 28.7%;
+      }
+
       :root {
         /* Default colors (fallback) */
         --color-primary: #2b8fdf;
@@ -207,7 +239,7 @@
       }
 
       .header h1 {
-        font-family: 'Beleren', sans-serif;
+        font-family: 'Beleren', 'Beleren Fallback', sans-serif;
         font-size: 3.45rem;
         margin-bottom: 10px;
         text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
@@ -221,7 +253,7 @@
       }
 
       .header p {
-        font-family: 'MPlantin', Georgia, serif;
+        font-family: 'MPlantin', 'MPlantin Fallback', Georgia, serif;
         font-size: 1.38rem;
         opacity: 0.9;
       }
@@ -425,7 +457,7 @@
         font-size: 1.5rem;
         font-weight: bold;
         color: var(--color-text-primary);
-        font-family: 'Beleren', sans-serif;
+        font-family: 'Beleren', 'Beleren Fallback', sans-serif;
         flex: 1;
       }
 
@@ -453,7 +485,7 @@
         color: var(--color-text-primary);
         margin-bottom: 12px;
         font-style: italic;
-        font-family: 'Beleren', sans-serif;
+        font-family: 'Beleren', 'Beleren Fallback', sans-serif;
       }
 
       .card-text {
@@ -461,7 +493,7 @@
         color: var(--color-text-primary);
         line-height: 1.4;
         margin-bottom: 10px;
-        font-family: 'MPlantin', Georgia, serif;
+        font-family: 'MPlantin', 'MPlantin Fallback', Georgia, serif;
       }
 
       .card-set-power-row {
@@ -482,7 +514,7 @@
       .card-power-toughness {
         font-size: 1.04rem;
         color: var(--color-text-primary);
-        font-family: 'Beleren', sans-serif;
+        font-family: 'Beleren', 'Beleren Fallback', sans-serif;
         font-weight: bold;
         text-align: right;
       }
@@ -614,7 +646,7 @@
         font-size: 1.73rem;
         font-weight: bold;
         color: var(--color-text-light);
-        font-family: 'Beleren', sans-serif;
+        font-family: 'Beleren', 'Beleren Fallback', sans-serif;
         flex: 1;
       }
 
@@ -637,7 +669,7 @@
         color: var(--color-text-lightest);
         margin-bottom: 12px;
         font-style: italic;
-        font-family: 'Beleren', sans-serif;
+        font-family: 'Beleren', 'Beleren Fallback', sans-serif;
       }
 
       .modal-card-text {
@@ -646,7 +678,7 @@
         line-height: 1.6;
         margin-bottom: 10px;
         text-align: left;
-        font-family: 'MPlantin', Georgia, serif;
+        font-family: 'MPlantin', 'MPlantin Fallback', Georgia, serif;
       }
 
       .modal-card-set-power-row {
@@ -667,7 +699,7 @@
       .modal-card-power-toughness {
         font-size: 1.27rem;
         color: var(--color-modal-text);
-        font-family: 'Beleren', sans-serif;
+        font-family: 'Beleren', 'Beleren Fallback', sans-serif;
         font-weight: bold;
         text-align: right;
       }
