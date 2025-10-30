@@ -689,6 +689,10 @@
         margin-bottom: 20px;
         font-size: 1.27rem;
       }
+      #statusMessage {
+        min-height: 2.8rem;
+        margin-bottom: 20px;
+      }
 
       .card-image {
         display: block;
@@ -872,9 +876,7 @@
           this.searchInput = document.getElementById('searchInput');
           this.resultsContainer = document.getElementById('results');
           this.loadingIndicator = document.getElementById('loading');
-          this.errorMessage = document.getElementById('error');
-          this.noResultsMessage = document.getElementById('noResults');
-          this.resultsCount = document.getElementById('resultsCount');
+          this.statusMessage = document.getElementById('statusMessage');
           this.orderDropdown = document.getElementById('orderDropdown');
           this.uniqueDropdown = document.getElementById('uniqueDropdown');
           this.preferDropdown = document.getElementById('preferDropdown');
@@ -1185,7 +1187,7 @@
               throw new Error('Failed to fetch common card types');
             }
             this.commonCardTypes = await response.json();
-            console.log('Loaded', this.commonCardTypes.length, 'common card types');
+            console.debug('Loaded', this.commonCardTypes.length, 'common card types');
           } catch (error) {
             console.error('Error fetching common card types:', error);
             this.commonCardTypes = [];
@@ -1381,7 +1383,6 @@
             console.error('Search error:', error);
             this.showError(`Failed to search: ${error.message}`);
           } finally {
-            this.hideLoading();
             this.currentController = null;
           }
         }
@@ -1400,12 +1401,12 @@
           this.cardsData.clear();
           cards.forEach((card, index) => {
             const cardId = index.toString();
-            console.log('Storing card with ID:', cardId, 'Card data:', card);
+            console.debug('Storing card with ID:', cardId, 'Card data:', card);
             this.cardsData.set(cardId, card);
           });
 
-          console.log('Total cards stored in cardsData:', this.cardsData.size);
-          console.log('CardsData keys:', Array.from(this.cardsData.keys()));
+          console.debug('Total cards stored in cardsData:', this.cardsData.size);
+          console.debug('CardsData keys:', Array.from(this.cardsData.keys()));
 
           this.showResultsCount(totalCards, query, elapsed);
 
@@ -1479,8 +1480,8 @@
           const imageLarge = this.buildImageUrl(card, '745');
 
           // Debug logging
-          console.log('Creating card HTML for:', card);
-          console.log('Card ID will be:', cardId);
+          console.debug('Creating card HTML for:', card);
+          console.debug('Card ID will be:', cardId);
 
           // Create descriptive alt text with card name, mana cost, and oracle text
           let altText = this.escapeHtml(card.name || 'Unknown Card');
@@ -1742,27 +1743,36 @@
         }
 
         showLoading() {
-          this.loadingIndicator.style.display = 'block';
-        }
-
-        hideLoading() {
-          this.loadingIndicator.style.display = 'none';
+          console.debug('Showing loading');
+          // Do not toggle card/result visibility; only update the status container
+          if (this.statusMessage) {
+            this.statusMessage.innerHTML = '<div class="results-count">Loading…</div>';
+          }
+          this.clearResultsContainer();
         }
 
         showError(message) {
-          this.errorMessage.textContent = message;
-          this.errorMessage.style.display = 'block';
-          this.resultsContainer.innerHTML = '';
-          this.resultsCount.style.display = 'none';
+          console.log('Showing error:', message);
+          if (this.statusMessage) {
+            this.statusMessage.innerHTML = `<div class="error-message">${this.escapeHtml(message)}</div>`;
+          }
+          this.clearResultsContainer();
         }
 
         showNoResults() {
-          this.noResultsMessage.style.display = 'block';
+          console.log('Showing no results');
+          if (this.statusMessage) {
+            this.statusMessage.innerHTML = '<div class="no-results">No cards found matching your search.</div>';
+          }
+          this.clearResultsContainer();
+        }
+
+        clearResultsContainer() {
           this.resultsContainer.innerHTML = '';
-          this.resultsCount.style.display = 'none';
         }
 
         showResultsCount(count, query, elapsed) {
+          console.log('Showing results count:', count, query, elapsed);
           const formattedCount = count.toLocaleString();
           const uniqueValue = this.uniqueDropdown.value;
           const itemType = uniqueValue + (count !== 1 ? 's' : '');
@@ -1771,8 +1781,9 @@
           if (typeof elapsed === 'number') {
             msg += ` (completed in ${elapsed}ms)`;
           }
-          this.resultsCount.textContent = msg;
-          this.resultsCount.style.display = 'block';
+          if (this.statusMessage) {
+            this.statusMessage.innerHTML = `<div class="results-count">${this.escapeHtml(msg)}</div>`;
+          }
         }
 
         clearResults() {
@@ -1806,9 +1817,9 @@
         }
 
         clearMessages() {
-          this.errorMessage.style.display = 'none';
-          this.noResultsMessage.style.display = 'none';
-          this.resultsCount.style.display = 'none';
+          if (this.statusMessage) {
+            this.statusMessage.innerHTML = '';
+          }
         }
 
         escapeHtml(text) {
@@ -2116,10 +2127,8 @@
         </div>
       </form>
 
-      <div id="resultsCount" class="results-count" style="display: none"><!-- SERVER_SIDE_RESULTS_COUNT --></div>
+      <div id="statusMessage" aria-live="polite"><!-- SERVER_SIDE_RESULTS_COUNT --></div>
       <div id="results" class="results-container"><!-- SERVER_SIDE_RESULTS --></div>
-      <div id="error" class="error-message" style="display: none"></div>
-      <div id="noResults" class="no-results" style="display: none">No cards found matching your search.</div>
 
       <footer class="footer">
         <p class="footer-legal">
