@@ -543,10 +543,10 @@
       }
 
       .modal-close {
-        position: absolute;
-        top: 15px;
-        right: 20px;
-        background: none;
+        position: sticky;
+        top: 0;
+        align-self: flex-end;
+        background: var(--color-modal-background);
         border: none;
         font-size: 28px;
         cursor: pointer;
@@ -559,6 +559,8 @@
         border-radius: 50%;
         transition: all 0.2s ease;
         z-index: 10;
+        flex-shrink: 0;
+        margin-bottom: 10px;
       }
 
       .modal-close:hover {
@@ -1606,9 +1608,9 @@
           }
 
           modalContent.innerHTML = `
-            <button class="modal-close" onclick="cardSearch.closeModal()">&times;</button>
             ${imageHtml}
             <div class="modal-card-info">
+              <button class="modal-close" onclick="cardSearch.closeModal()">&times;</button>
               <div class="modal-card-name-mana-row">
                 <div class="modal-card-name">${this.escapeHtml(card.name || 'Unknown Card')}</div>
                 ${card.mana_cost ? `<div class="modal-card-mana">${this.convertManaSymbols(card.mana_cost, true)}</div>` : ''}
