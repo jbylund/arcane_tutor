@@ -518,7 +518,7 @@
         max-width: 90vw;
         max-height: 90vh;
         min-height: 60vh;
-        overflow-y: auto;
+        overflow: hidden;
         position: relative;
         box-shadow: 0 20px 60px var(--color-shadow-dark);
         animation: modalFadeIn 0.3s ease-out;
@@ -546,7 +546,7 @@
         position: absolute;
         top: 15px;
         right: 20px;
-        background: none;
+        background: var(--color-modal-background);
         border: none;
         font-size: 28px;
         cursor: pointer;
@@ -876,6 +876,15 @@
           overflow-y: visible;
           flex-shrink: 0;
           padding-bottom: 20px;
+        }
+
+        .modal-close {
+          position: sticky;
+          top: 0;
+          align-self: flex-end;
+          margin-left: auto;
+          margin-bottom: -30px;
+          z-index: 100;
         }
       }
 
@@ -1639,6 +1648,12 @@
 
           // Show modal
           modalOverlay.style.display = 'flex';
+
+          // Reset scroll position to top for both modal content and card info
+          // (different elements scroll on different viewport sizes)
+          modalContent.scrollTop = 0;
+          const modalCardInfo = modalContent.querySelector('.modal-card-info');
+          modalCardInfo.scrollTop = 0;
 
           // Prevent background scrolling more comprehensively
           this.preventBackgroundScroll();
