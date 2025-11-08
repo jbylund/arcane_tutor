@@ -1649,6 +1649,12 @@
           // Show modal
           modalOverlay.style.display = 'flex';
 
+          // Reset scroll position to top for both modal content and card info
+          // (different elements scroll on different viewport sizes)
+          modalContent.scrollTop = 0;
+          const modalCardInfo = modalContent.querySelector('.modal-card-info');
+          modalCardInfo.scrollTop = 0;
+
           // Prevent background scrolling more comprehensively
           this.preventBackgroundScroll();
 
