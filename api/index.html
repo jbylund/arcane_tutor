@@ -832,14 +832,17 @@
         .modal-content {
           padding: 1em;
           max-width: 95vw;
+          height: 90vh;
           max-height: 90vh;
+          min-height: auto;
+          aspect-ratio: auto;
           flex-direction: column;
           gap: 20px;
           overflow-y: auto;
         }
 
         .modal-image {
-          max-width: min(350px, 70vw);
+          max-width: min(450px, 85vw);
           max-height: none;
           margin-bottom: 0;
           align-self: center;
@@ -852,6 +855,7 @@
 
         .modal-card-name-mana-row {
           text-align: left;
+          margin-top: 0;
         }
 
         .modal-card-mana,
