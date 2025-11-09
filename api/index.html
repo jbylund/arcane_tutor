@@ -170,9 +170,16 @@
         flex-direction: column;
       }
 
+      .spacer {
+        flex-shrink: 0;
+      }
+
+      .spacer-30 {
+        height: 30px;
+      }
+
       .header {
         text-align: center;
-        margin-bottom: 40px;
         color: var(--color-text-inverted);
         position: relative;
       }
@@ -210,7 +217,7 @@
       .header h1 {
         font-family: 'Beleren', sans-serif;
         font-size: clamp(2.3rem, 4.2vw, 3.4rem);
-        margin-bottom: 10px;
+        margin-bottom: 0;
         text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
         cursor: pointer;
         transition: all 0.3s ease;
@@ -228,7 +235,6 @@
       }
 
       .search-container {
-        margin-bottom: 40px;
         display: flex;
         justify-content: center;
         align-items: center;
@@ -379,7 +385,7 @@
         display: grid;
         grid-template-columns: 1fr;
         gap: 0.5vw;
-        margin-top: 30px;
+        margin-top: 0;
       }
 
       @media (min-width: 410px) {
@@ -687,26 +693,26 @@
         padding: 15px;
         border-radius: 10px;
         text-align: center;
-        margin-top: 20px;
+        margin-top: 0;
       }
 
       .no-results {
         text-align: center;
         color: var(--color-text-inverted);
         font-size: 1.38rem;
-        margin-top: 40px;
+        margin-top: 0;
         opacity: 0.8;
       }
 
       .results-count {
         color: var(--color-text-inverted);
         text-align: center;
-        margin-bottom: 20px;
+        margin-bottom: 0;
         font-size: 1.27rem;
       }
+
       #statusMessage {
-        min-height: 2.8rem;
-        margin-bottom: 20px;
+        margin-bottom: 0;
       }
 
       .card-image {
@@ -2128,6 +2134,8 @@
         <p>Search for Magic: The Gathering cards</p>
       </div>
 
+      <div class="spacer spacer-30"></div>
+
       <form method="GET" action="" class="search-container">
         <div class="search-box">
           <input
@@ -2173,7 +2181,10 @@
         </div>
       </form>
 
+      <div class="spacer spacer-30"></div>
+
       <div id="statusMessage" aria-live="polite"><!-- SERVER_SIDE_RESULTS_COUNT --></div>
+      <div class="spacer spacer-30"></div>
       <div id="results" class="results-container"><!-- SERVER_SIDE_RESULTS --></div>
 
       <footer class="footer">
