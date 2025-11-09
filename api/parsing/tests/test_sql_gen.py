@@ -700,6 +700,41 @@ def test_artist_sql_translation(input_query: str, expected_sql: str, expected_pa
 
 
 @pytest.mark.parametrize(
+    argnames=("input_query", "expected_sql", "expected_parameters"),
+    argvalues=[
+        # Test case-insensitive exact name matching with = operator
+        ("name=shock", r"(card.card_name ILIKE %(p_str_c2hvY2s)s)", {"p_str_c2hvY2s": "shock"}),
+        ("name=Shock", r"(card.card_name ILIKE %(p_str_U2hvY2s)s)", {"p_str_U2hvY2s": "Shock"}),
+        ("name=SHOCK", r"(card.card_name ILIKE %(p_str_U0hPQ0s)s)", {"p_str_U0hPQ0s": "SHOCK"}),
+        (
+            "name='Lightning Bolt'",
+            r"(card.card_name ILIKE %(p_str_TGlnaHRuaW5nIEJvbHQ)s)",
+            {"p_str_TGlnaHRuaW5nIEJvbHQ": "Lightning Bolt"},
+        ),
+        (
+            "name='lightning bolt'",
+            r"(card.card_name ILIKE %(p_str_bGlnaHRuaW5nIGJvbHQ)s)",
+            {"p_str_bGlnaHRuaW5nIGJvbHQ": "lightning bolt"},
+        ),
+        # Test that : operator still works with pattern matching
+        ("name:shock", r"(card.card_name ILIKE %(p_str_JXNob2NrJQ)s)", {"p_str_JXNob2NrJQ": r"%shock%"}),
+        ("name:lightning", r"(card.card_name ILIKE %(p_str_JWxpZ2h0bmluZyU)s)", {"p_str_JWxpZ2h0bmluZyU": r"%lightning%"}),
+    ],
+)
+def test_name_case_insensitive_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
+    """Test that name searches with = operator are case-insensitive.
+    
+    Per issue request, name=shock should match "Shock" case-insensitively.
+    This uses ILIKE which can leverage the existing trigram index on card_name.
+    """
+    parsed = parsing.parse_scryfall_query(input_query)
+    context = {}
+    observed_sql = parsed.to_sql(context)
+    assert observed_sql == expected_sql, f"\nExpected: {expected_sql}\nObserved: {observed_sql}"
+    assert context == expected_parameters, f"\nExpected params: {expected_parameters}\nObserved params: {context}"
+
+
+@pytest.mark.parametrize(
     argnames=("input_query", "expected_parameters"),
     argvalues=[
         # Basic format search (format: means legal in format)

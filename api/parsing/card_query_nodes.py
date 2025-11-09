@@ -398,7 +398,7 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
             return self._handle_colon_operator(context, field_type, lhs_sql, attr)
 
         if field_type == FieldType.TEXT:
-            return super().to_sql(context)
+            return self._handle_text_field_comparison(context, lhs_sql, attr)
 
         msg = f"Unknown field type: {field_type}"
         raise NotImplementedError(msg)
@@ -621,6 +621,34 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
         _param_name = param_name(pattern)
         context[_param_name] = pattern
         return f"({lhs_sql} ILIKE %({_param_name})s)"
+
+    def _handle_text_field_comparison(self, context: dict, lhs_sql: str, attr: str) -> str:
+        """Handle comparison operators for text fields.
+
+        For TEXT fields, all string comparisons should be case-insensitive to match user expectations.
+        For example, name=shock should match "Shock", "SHOCK", "shock", etc.
+
+        This uses ILIKE for case-insensitive matching, which can leverage the existing trigram index.
+        """
+        # Handle fields that need exact matching with case-insensitive comparison
+        if attr in ("card_set_code", "card_layout", "card_border", "card_watermark", "collector_number"):
+            # For layout, border, and watermark fields, lowercase the search value for case-insensitive matching
+            if attr in ("card_layout", "card_border", "card_watermark") and hasattr(self.rhs, "value"):
+                self.rhs.value = self.rhs.value.lower()
+            # For these fields, use direct = comparison (already normalized)
+            return super().to_sql(context)
+
+        # For all other text fields (like card_name, oracle_text, flavor_text, card_artist),
+        # use case-insensitive comparison with ILIKE
+        if self.operator == "=" and isinstance(self.rhs, StringValueNode):
+            # Convert = to ILIKE for case-insensitive exact matching
+            txt_val = self.rhs.value
+            _param_name = param_name(txt_val)
+            context[_param_name] = txt_val
+            return f"({lhs_sql} ILIKE %({_param_name})s)"
+
+        # For other operators (!=, <, >, etc.), use default behavior
+        return super().to_sql(context)
 
     """
     col = query
