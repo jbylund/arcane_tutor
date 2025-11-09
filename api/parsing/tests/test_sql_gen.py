@@ -719,13 +719,18 @@ def test_artist_sql_translation(input_query: str, expected_sql: str, expected_pa
         # Test that : operator still works with pattern matching
         ("name:shock", r"(card.card_name ILIKE %(p_str_JXNob2NrJQ)s)", {"p_str_JXNob2NrJQ": r"%shock%"}),
         ("name:lightning", r"(card.card_name ILIKE %(p_str_JWxpZ2h0bmluZyU)s)", {"p_str_JWxpZ2h0bmluZyU": r"%lightning%"}),
+        # Test other text fields with = operator (should also be case-insensitive)
+        ("oracle=flying", r"(card.oracle_text ILIKE %(p_str_Zmx5aW5n)s)", {"p_str_Zmx5aW5n": "flying"}),
+        ("artist=Nielsen", r"(card.card_artist ILIKE %(p_str_TmllbHNlbg)s)", {"p_str_TmllbHNlbg": "Nielsen"}),
+        ("flavor=magic", r"(card.flavor_text ILIKE %(p_str_bWFnaWM)s)", {"p_str_bWFnaWM": "magic"}),
     ],
 )
 def test_name_case_insensitive_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
-    """Test that name searches with = operator are case-insensitive.
-    
+    """Test that text field searches with = operator are case-insensitive.
+
     Per issue request, name=shock should match "Shock" case-insensitively.
     This uses ILIKE which can leverage the existing trigram index on card_name.
+    This also applies to other text fields like oracle_text, flavor_text, and card_artist.
     """
     parsed = parsing.parse_scryfall_query(input_query)
     context = {}
