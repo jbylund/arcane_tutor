@@ -163,7 +163,7 @@
 
       .container {
         width: 100%;
-        max-width: 98vw;
+        max-width: 100%;
         margin: 0 auto;
         flex: 1 0 auto;
         display: flex;
@@ -384,8 +384,9 @@
       .results-container {
         display: grid;
         grid-template-columns: 1fr;
-        gap: 0.5vw;
+        gap: 15px;
         margin-top: 0;
+        width: 100%;
       }
 
       @media (min-width: 410px) {
@@ -422,6 +423,8 @@
         display: flex;
         flex-direction: column;
         height: 100%;
+        width: 100%;
+        min-width: 0;
       }
 
       .card-item:hover {
@@ -719,7 +722,7 @@
         display: block;
         width: 100%;
         height: auto;
-        max-width: min(400px, 35vw);
+        max-width: 100%;
         margin: 0 auto 10px auto;
         border-radius: 5.5% / 4%;
         box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
@@ -773,7 +776,7 @@
 
       @media (max-width: 1200px) {
         .container {
-          max-width: 98vw;
+          max-width: 100%;
         }
       }
 
@@ -824,7 +827,7 @@
         }
 
         .card-image {
-          max-width: min(400px, 35vw);
+          max-width: 100%;
         }
 
         body {
