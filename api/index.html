@@ -209,7 +209,7 @@
 
       .header h1 {
         font-family: 'Beleren', sans-serif;
-        font-size: 3.45rem;
+        font-size: clamp(2.3rem, calc(2.3rem + 1.15 * ((100vw - 48rem) / 27)), 3.45rem);
         margin-bottom: 10px;
         text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
         cursor: pointer;
@@ -772,10 +772,6 @@
       }
 
       @media (max-width: 768px) {
-        .header h1 {
-          font-size: 2.3rem;
-        }
-
         .theme-toggle {
           width: 45px;
           height: 45px;
