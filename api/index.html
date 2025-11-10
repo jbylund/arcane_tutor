@@ -732,13 +732,16 @@
       }
 
       .card-image {
-        display: block;
-        width: 100%;
-        height: auto;
-        max-width: min(100%, 745px);
-        margin: 0 auto 10px auto;
+        aspect-ratio: 63 / 88;
         border-radius: 5.5% / 4%;
         box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+        display: block;
+        height: auto;
+        margin: 0 auto 10px auto;
+        max-height: min(100vh, 1041px);
+        max-width: min(100%, 745px);
+        object-fit: contain;
+        width: 100%;
       }
 
       .footer {
