@@ -744,24 +744,20 @@
       }
 
       .footer {
-        margin-top: auto;
-        padding: 30px 20px;
-        text-align: center;
         border-top: 1px solid rgba(255, 255, 255, 0.2);
         color: var(--color-text-inverted);
         flex-shrink: 0;
+        font-size: 0.85em;
+        line-height: 1.4;
+        margin-top: auto;
+        padding: 12px 15px;
+        text-align: center;
       }
 
-      .footer-legal {
-        font-size: 0.98em;
-        line-height: 1.6;
-        margin-bottom: 12px;
-      }
-
-      .footer-attribution {
-        font-size: 0.98em;
-        line-height: 1.6;
-        margin-bottom: 12px;
+      .footer-legal,
+      .footer-attribution,
+      .footer-links {
+        padding: 0.6ex 0.2em;
       }
 
       .footer-attribution a {
@@ -772,11 +768,6 @@
 
       .footer-attribution a:hover {
         text-decoration: underline;
-      }
-
-      .footer-links {
-        font-size: 0.98em;
-        margin-top: 15px;
       }
 
       .footer-links a {
@@ -823,18 +814,6 @@
           min-width: 90px;
         }
 
-        .footer {
-          margin-top: 40px;
-          padding: 20px 10px;
-        }
-
-        .footer-legal,
-        .footer-attribution,
-        .footer-links {
-          padding: 12px 15px;
-          font-size: 1.09rem;
-        }
-
         .order-toggle {
           padding: 12px 15px;
           min-width: 50px;
@@ -843,10 +822,6 @@
 
         .card-image {
           max-width: 100%;
-        }
-
-        body {
-          padding: 15px;
         }
 
         .modal-content {
@@ -2212,9 +2187,8 @@
           © Wizards of the Coast LLC. Not approved/endorsed by Wizards of the Coast.
         </p>
         <p class="footer-attribution">
-          Card data provided by <a href="https://scryfall.com" target="_blank" rel="noopener">Scryfall</a>.
-          <br />
-          Arcane Tutor is an independent open-source project, not affiliated with Scryfall.
+          Card data provided by <a href="https://scryfall.com" target="_blank" rel="noopener">Scryfall</a>. Not
+          affiliated with Scryfall.
         </p>
         <p class="footer-links">
           <a href="https://github.com/jbylund/arcane_tutor" target="_blank" rel="noopener">GitHub</a>
