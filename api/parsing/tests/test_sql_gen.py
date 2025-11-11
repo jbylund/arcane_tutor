@@ -529,6 +529,17 @@ def test_case_insensitive_attributes(input_query: str, expected_sql: str, expect
             r"(card.card_set_code = %(p_str_bTIx)s)",
             {"p_str_bTIx": "m21"},
         ),
+        # test capitalization handling
+        (
+            "set=BLB",
+            r"(card.card_set_code = %(p_str_Ymxi)s)",
+            {"p_str_Ymxi": "blb"},
+        ),
+        (
+            "s=BLB",
+            r"(card.card_set_code = %(p_str_Ymxi)s)",
+            {"p_str_Ymxi": "blb"},
+        ),
     ],
 )
 def test_set_search_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
@@ -688,6 +699,9 @@ def test_rarity_case_insensitive() -> None:
         ),
         ("artist:nielsen", r"(card.card_artist ILIKE %(p_str_JW5pZWxzZW4l)s)", {"p_str_JW5pZWxzZW4l": r"%nielsen%"}),
         ("ARTIST:moeller", r"(card.card_artist ILIKE %(p_str_JW1vZWxsZXIl)s)", {"p_str_JW1vZWxsZXIl": r"%moeller%"}),
+        ('artist="todd lockwood"', r"(card.card_artist = %(p_str_VG9kZCBMb2Nrd29vZA)s)", {"p_str_VG9kZCBMb2Nrd29vZA": r"Todd Lockwood"}),
+        ('artist="TODD LOCKWOOD"', r"(card.card_artist = %(p_str_VG9kZCBMb2Nrd29vZA)s)", {"p_str_VG9kZCBMb2Nrd29vZA": r"Todd Lockwood"}),
+        ('a="TODD LOCKWOOD"', r"(card.card_artist = %(p_str_VG9kZCBMb2Nrd29vZA)s)", {"p_str_VG9kZCBMb2Nrd29vZA": r"Todd Lockwood"}),
     ],
 )
 def test_artist_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
@@ -999,3 +1013,13 @@ def test_frame_sql_translation(input_query: str, expected_sql: str, expected_par
     observed_sql = parsed.to_sql(observed_params)
     assert observed_sql == expected_sql, f"\nExpected: {expected_sql}\nObserved: {observed_sql}"
     assert observed_params == expected_parameters, f"\nExpected params: {expected_parameters}\nObserved params: {observed_params}"
+
+
+
+def test_name_titlecasing() -> None:
+    """Test that name is titlecased."""
+    parsed = parsing.parse_scryfall_query(""" name="Urza's Saga" """.strip())
+    observed_params = {}
+    observed_sql = parsed.to_sql(observed_params)
+    assert observed_params == {"p_str_VXJ6YSdzIFNhZ2E": r"Urza's Saga"}
+    assert observed_sql == r"(card.card_name = %(p_str_VXJ6YSdzIFNhZ2E)s)"
