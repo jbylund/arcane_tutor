@@ -113,7 +113,7 @@ services:
         condition: service_healthy
     environment:
       <<: *apiservice-env
-      ENABLE_CACHE: false
+      ENABLE_CACHE: true
       ENVIRONMENT: dev
       PGHOST: ${PROJECTNAME}_postgres_dev
     ports:
@@ -157,6 +157,7 @@ services:
       <<: *apiservice-env
       PGHOST: ${PROJECTNAME}_postgres_prod
       ENVIRONMENT: prod
+      ENABLE_CACHE: true
     ports:
       - "18080:8080"
     volumes:
