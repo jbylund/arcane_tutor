@@ -9,4 +9,5 @@ pyparsing
 requests
 tenacity
 testcontainers[postgres]
+titlecase
 zstandard

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from titlecase import titlecase
+
 from api.parsing.db_info import (
     ALIAS_TO_FIELD_INFOS,
     CARD_SUPERTYPES,
@@ -398,10 +400,21 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
             return self._handle_colon_operator(context, field_type, lhs_sql, attr)
 
         if field_type == FieldType.TEXT:
-            return super().to_sql(context)
+            return self._handle_text_comparison(context, attr)
 
         msg = f"Unknown field type: {field_type}"
         raise NotImplementedError(msg)
+
+    def _handle_text_comparison(self, context: dict, attr: str) -> str:
+        """Handle text comparisons."""
+        # artist is titlecased
+        # card name is titlecased
+        # set is lowercased
+        if attr in ("card_artist", "card_name"):
+            self.rhs.value = titlecase(self.rhs.value)
+        elif attr in ("set", "card_set_code"):
+            self.rhs.value = self.rhs.value.lower()
+        return super().to_sql(context)
 
     def _handle_rarity_comparison(self, context: dict) -> str:
         # Special handling for rarity - convert text values to numeric
