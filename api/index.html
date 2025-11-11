@@ -163,7 +163,7 @@
 
       .container {
         width: 100%;
-        max-width: 98vw;
+        max-width: 100%;
         margin: 0 auto;
         flex: 1 0 auto;
         display: flex;
@@ -384,8 +384,9 @@
       .results-container {
         display: grid;
         grid-template-columns: 1fr;
-        gap: 0.5vw;
+        gap: 15px;
         margin-top: 0;
+        width: 100%;
       }
 
       @media (min-width: 410px) {
@@ -422,6 +423,9 @@
         display: flex;
         flex-direction: column;
         height: 100%;
+        width: 100%;
+        min-width: 0;
+        overflow: hidden;
       }
 
       .card-item:hover {
@@ -434,6 +438,7 @@
         justify-content: space-between;
         align-items: center;
         margin-bottom: 8px;
+        min-width: 0;
       }
 
       .card-name {
@@ -442,6 +447,9 @@
         color: var(--color-text-primary);
         font-family: 'Beleren', sans-serif;
         flex: 1;
+        min-width: 0;
+        overflow-wrap: break-word;
+        word-break: break-word;
       }
 
       .card-mana {
@@ -469,6 +477,8 @@
         margin-bottom: 12px;
         font-style: italic;
         font-family: 'Beleren', sans-serif;
+        overflow-wrap: break-word;
+        word-break: break-word;
       }
 
       .card-text {
@@ -477,6 +487,8 @@
         line-height: 1.4;
         margin-bottom: 10px;
         font-family: 'MPlantin', Georgia, serif;
+        overflow-wrap: break-word;
+        word-break: break-word;
       }
 
       .card-set-power-row {
@@ -484,6 +496,7 @@
         justify-content: space-between;
         align-items: center;
         margin-top: auto;
+        min-width: 0;
       }
 
       .card-set {
@@ -492,6 +505,9 @@
         text-transform: uppercase;
         letter-spacing: 1px;
         flex: 1;
+        min-width: 0;
+        overflow-wrap: break-word;
+        word-break: break-word;
       }
 
       .card-power-toughness {
@@ -716,13 +732,15 @@
       }
 
       .card-image {
-        display: block;
-        width: 100%;
-        height: auto;
-        max-width: min(400px, 35vw);
-        margin: 0 auto 10px auto;
+        aspect-ratio: 745 / 1041;
         border-radius: 5.5% / 4%;
         box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+        display: block;
+        margin: 0 auto 10px auto;
+        max-height: min(100vh, 1041px);
+        max-width: min(100%, 745px, calc(min(100vh, 1041px) * 745 / 1041));
+        object-fit: contain;
+        width: 100%;
       }
 
       .footer {
@@ -773,7 +791,7 @@
 
       @media (max-width: 1200px) {
         .container {
-          max-width: 98vw;
+          max-width: 100%;
         }
       }
 
@@ -824,7 +842,7 @@
         }
 
         .card-image {
-          max-width: min(400px, 35vw);
+          max-width: 100%;
         }
 
         body {
@@ -1553,7 +1571,7 @@
           // Add loading="lazy" for non-first-row images to improve initial load
           const fetchPriorityAttr = isFirstRow ? ' fetchpriority="high"' : '';
           const loadingAttr = isFirstRow ? '' : ' loading="lazy"';
-          const imageHtml = `<img class="card-image" data-small="${this.escapeHtml(imageSmall)}" data-normal="${this.escapeHtml(imageNormal)}" data-large="${this.escapeHtml(imageLarge)}" width="410" height="573" alt="${altText}" title="${altText}"${fetchPriorityAttr}${loadingAttr} />`;
+          const imageHtml = `<img class="card-image" data-small="${this.escapeHtml(imageSmall)}" data-normal="${this.escapeHtml(imageNormal)}" data-large="${this.escapeHtml(imageLarge)}" alt="${altText}" title="${altText}"${fetchPriorityAttr}${loadingAttr} />`;
 
           return `
              <div class="card-item" data-card-id="${this.escapeHtml(cardId)}">
