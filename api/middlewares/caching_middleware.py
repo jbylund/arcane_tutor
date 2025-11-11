@@ -19,6 +19,31 @@ logger = logging.getLogger(__name__)
 
 CacheKey = tuple[str, tuple[tuple, ...], tuple[tuple, ...]]
 
+# Try to import SharedMemoryLRUCache, but fall back gracefully if it fails
+try:
+    from api.middlewares.shared_memory_cache import SharedMemoryLRUCache
+
+    _SHARED_MEMORY_AVAILABLE = True
+except ImportError:
+    _SHARED_MEMORY_AVAILABLE = False
+    SharedMemoryLRUCache = None  # type: ignore[assignment, misc]
+
+
+def _create_default_cache() -> MutableMapping:
+    """Create the default cache instance.
+
+    Returns:
+        A cache instance (SharedMemoryLRUCache if available, otherwise LRUCache).
+    """
+    if _SHARED_MEMORY_AVAILABLE and SharedMemoryLRUCache is not None:
+        try:
+            # Use a named shared memory block so all workers can share it
+            return SharedMemoryLRUCache(maxsize=10_000, name="arcane_tutor_cache")
+        except Exception as e:
+            logger.warning("Failed to create shared memory cache, falling back to LRUCache: %s", e)
+            return LRUCache(maxsize=10_000)
+    return LRUCache(maxsize=10_000)
+
 
 class CachingMiddleware:
     """Middleware to cache the request and response."""
@@ -27,10 +52,11 @@ class CachingMiddleware:
         """Initialize the caching middleware with an optional cache instance.
 
         Args:
-            cache: Optional cache instance. If None, creates an LRUCache with maxsize 10,000.
+            cache: Optional cache instance. If None, creates a SharedMemoryLRUCache
+                (if available) or LRUCache with maxsize 10,000.
         """
         if cache is None:
-            cache = LRUCache(maxsize=10_000)
+            cache = _create_default_cache()
         self.cache: MutableMapping[CacheKey, falcon.Response] = cache
 
     def _cache_key(self: CachingMiddleware, req: falcon.Request) -> CacheKey:
