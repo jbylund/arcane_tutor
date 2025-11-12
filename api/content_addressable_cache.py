@@ -605,8 +605,16 @@ class ContentAddressableCache:
 
     def __iter__(self) -> Iterator[bytes]:
         """Iterate over keys in cache."""
+        return iter(self.keys())
+
+    def keys(self) -> list[bytes]:
+        """Get a list of all keys in the cache.
+
+        Returns:
+            List of all keys in the cache.
+        """
         if not self._lock.acquire(timeout=self.lock_timeout):
-            return iter([])
+            return []
 
         try:
             keys = []
@@ -624,7 +632,7 @@ class ContentAddressableCache:
                         key = self._read_blob(key_addr)
                         keys.append(key)
 
-            return iter(keys)
+            return keys
         finally:
             self._lock.release()
 

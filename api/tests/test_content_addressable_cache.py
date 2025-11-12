@@ -169,6 +169,30 @@ def test_iteration() -> None:
         cache.close()
 
 
+def test_keys_method() -> None:
+    """Test the keys() method."""
+    expected = set()
+    cache = ContentAddressableCache(maxsize=10)
+    try:
+        for idx in range(3):
+            key = f"key{idx}".encode()
+            value = f"value{idx}".encode()
+            cache[key] = value
+            expected.add(key)
+
+        keys = cache.keys()
+        assert isinstance(keys, list)
+        assert len(keys) == 3
+        for key in expected:
+            assert key in keys
+
+        # Should return same as list(cache)
+        assert set(keys) == set(cache)
+        assert set(keys) == expected
+    finally:
+        cache.close()
+
+
 def test_content_deduplication() -> None:
     """Test that multiple keys can share the same content."""
     cache = ContentAddressableCache(maxsize=10)
