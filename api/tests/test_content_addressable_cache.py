@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import multiprocessing
-import time
 
 import pytest
 
@@ -193,6 +192,65 @@ def test_keys_method() -> None:
         cache.close()
 
 
+def test_content_items() -> None:
+    """Test iterating over content fingerprint and content blob pairs."""
+    cache = ContentAddressableCache(maxsize=10)
+    try:
+        # Store some items
+        cache[b"key1"] = b"value1"
+        cache[b"key2"] = b"value2"
+        cache[b"key3"] = b"value1"  # Same value as key1
+
+        # Get all content items
+        content_items = list(cache.content_items())
+
+        # Should have 2 unique content blobs (value1 and value2)
+        assert len(content_items) == 2
+
+        # Verify structure: each item is (fingerprint, content_bytes)
+        for fingerprint, content_bytes in content_items:
+            assert isinstance(fingerprint, bytes)
+            assert len(fingerprint) == 16  # 128-bit fingerprint
+            assert isinstance(content_bytes, bytes)
+            assert content_bytes in (b"value1", b"value2")
+
+        # Verify fingerprints are unique
+        fingerprints = [fp for fp, _ in content_items]
+        assert len(fingerprints) == len(set(fingerprints))
+
+        # Verify content deduplication: value1 should appear once
+        contents = [content for _, content in content_items]
+        assert b"value1" in contents
+        assert b"value2" in contents
+        assert contents.count(b"value1") == 1  # Only stored once
+    finally:
+        cache.close()
+
+
+def test_content_items_memory_efficient() -> None:
+    """Test that content_items() doesn't load all content into memory at once."""
+    cache = ContentAddressableCache(maxsize=100)
+    try:
+        # Store many items with some duplicates
+        for i in range(50):
+            cache[f"key_{i}".encode()] = f"value_{i % 10}".encode()  # Only 10 unique values
+
+        # Iterate and count - should be able to process one at a time
+        count = 0
+        seen_fingerprints = set()
+        for fingerprint, content_bytes in cache.content_items():
+            count += 1
+            seen_fingerprints.add(fingerprint)
+            # Verify we're getting content one at a time (not all at once)
+            assert isinstance(content_bytes, bytes)
+
+        # Should have 10 unique content blobs (0-9)
+        assert count == 10
+        assert len(seen_fingerprints) == 10
+    finally:
+        cache.close()
+
+
 def test_content_deduplication() -> None:
     """Test that multiple keys can share the same content."""
     cache = ContentAddressableCache(maxsize=10)
@@ -232,7 +290,7 @@ def test_content_deduplication_storage() -> None:
         # Each key adds: 1 (type) + 4 (length) + key_len, aligned to 8 bytes
         # Content is only stored once
         key_entry_size = (1 + 4 + len(b"key1") + 7) & ~7  # Aligned
-        content_entry_size = (1 + 4 + len(shared_value) + 7) & ~7  # Aligned
+        (1 + 4 + len(shared_value) + 7) & ~7  # Aligned
 
         # After first insert: key1 + content
         # After second insert: key1 + content + key2 (content reused)
@@ -266,7 +324,7 @@ def test_key_deduplication() -> None:
     cache = ContentAddressableCache(maxsize=10)
     try:
         cache[b"key1"] = b"value1"
-        initial_len = len(cache)
+        len(cache)
 
         # Update with different value
         cache[b"key1"] = b"value2"

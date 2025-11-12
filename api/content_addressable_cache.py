@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import logging
 import struct
-from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from multiprocessing import RLock
 from multiprocessing.shared_memory import SharedMemory
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
 
 try:
     import xxhash
@@ -19,6 +22,11 @@ except ImportError:
     xxhash = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+
+class CouldNotLock(Exception):
+    """Exception raised when lock acquisition fails or times out."""
+
 
 # Constants
 # Magic number to validate shared memory contains our cache structure
@@ -196,6 +204,25 @@ class ContentAddressableCache:
     def _write_header_field(self, offset: int, fmt: str, value: Any) -> None:
         """Write a field to the header."""
         struct.pack_into(fmt, memoryview(self._shm.buf), offset, value)
+
+    @contextmanager
+    def _locked(self):
+        """Context manager for acquiring lock with timeout.
+
+        Yields:
+            None
+
+        Raises:
+            CouldNotLock: If lock acquisition times out.
+        """
+        acquired = self._lock.acquire(timeout=self.lock_timeout)
+        if not acquired:
+            msg = "Failed to acquire lock"
+            raise CouldNotLock(msg)
+        try:
+            yield
+        finally:
+            self._lock.release()
 
     def _get_blob_pool_next(self) -> int:
         """Get the next append pointer for blob pool."""
@@ -390,10 +417,9 @@ class ContentAddressableCache:
             Blob data bytes.
         """
         buf = memoryview(self._shm.buf)
-        blob_type = struct.unpack_from("B", buf, address)[0]
+        struct.unpack_from("B", buf, address)[0]
         length = struct.unpack_from(">I", buf, address + 1)[0]
-        data = bytes(buf[address + 5 : address + 5 + length])
-        return data
+        return bytes(buf[address + 5 : address + 5 + length])
 
     def _get_blob_type(self, address: int) -> int:
         """Get blob type at address."""
@@ -410,12 +436,9 @@ class ContentAddressableCache:
 
         Raises:
             KeyError: If key not found.
+            CouldNotLock: If lock acquisition fails.
         """
-        if not self._lock.acquire(timeout=self.lock_timeout):
-            msg = "Failed to acquire lock"
-            raise RuntimeError(msg)
-
-        try:
+        with self._locked():
             key_hash, _ = self.hash_func(key)
             slot = self._find_key_slot(key_hash, key)
             if slot is None:
@@ -424,7 +447,7 @@ class ContentAddressableCache:
             # Read entry
             buf = memoryview(self._shm.buf)
             offset = self._key_table_start + slot * KEY_HASH_ENTRY_SIZE
-            key_addr = struct.unpack_from(">Q", buf, offset + 8)[0]
+            struct.unpack_from(">Q", buf, offset + 8)[0]
             fingerprint = bytes(buf[offset + 16 : offset + 32])
 
             # Find content
@@ -440,8 +463,6 @@ class ContentAddressableCache:
                 raise KeyError(key)
 
             return self._read_blob(content_addr)
-        finally:
-            self._lock.release()
 
     def __setitem__(self, key: bytes, value: bytes) -> None:
         """Set value for key.
@@ -449,15 +470,14 @@ class ContentAddressableCache:
         Args:
             key: Key bytes.
             value: Value bytes.
+
+        Raises:
+            CouldNotLock: If lock acquisition fails.
         """
-        if not self._lock.acquire(timeout=self.lock_timeout):
-            msg = "Failed to acquire lock"
-            raise RuntimeError(msg)
+        key_hash, _ = self.hash_func(key)
+        _, value_fp = self.hash_func(value)
 
-        try:
-            key_hash, _ = self.hash_func(key)
-            _, value_fp = self.hash_func(value)
-
+        with self._locked():
             # Check if key exists
             key_slot = self._find_key_slot(key_hash, key)
             if key_slot is not None:
@@ -527,9 +547,6 @@ class ContentAddressableCache:
                 # Update item count
                 self._set_current_items(self._get_current_items() + 1)
 
-        finally:
-            self._lock.release()
-
     def _evict_lru(self) -> None:
         """Evict least recently used item (simple: evict first item found)."""
         # Simple LRU: for now, just evict the first item we find
@@ -557,12 +574,9 @@ class ContentAddressableCache:
 
         Raises:
             KeyError: If key not found.
+            CouldNotLock: If lock acquisition fails.
         """
-        if not self._lock.acquire(timeout=self.lock_timeout):
-            msg = "Failed to acquire lock"
-            raise RuntimeError(msg)
-
-        try:
+        with self._locked():
             key_hash, _ = self.hash_func(key)
             slot = self._find_key_slot(key_hash, key)
             if slot is None:
@@ -574,8 +588,6 @@ class ContentAddressableCache:
             buf[offset : offset + KEY_HASH_ENTRY_SIZE] = b"\x00" * KEY_HASH_ENTRY_SIZE
 
             self._set_current_items(self._get_current_items() - 1)
-        finally:
-            self._lock.release()
 
     def __contains__(self, key: bytes) -> bool:
         """Check if key is in cache.
@@ -585,15 +597,13 @@ class ContentAddressableCache:
 
         Returns:
             True if key exists, False otherwise.
-        """
-        if not self._lock.acquire(timeout=self.lock_timeout):
-            return False
 
-        try:
+        Raises:
+            CouldNotLock: If lock acquisition fails.
+        """
+        with self._locked():
             key_hash, _ = self.hash_func(key)
             return self._find_key_slot(key_hash, key) is not None
-        finally:
-            self._lock.release()
 
     def __len__(self) -> int:
         """Get number of items in cache.
@@ -612,19 +622,18 @@ class ContentAddressableCache:
 
         Returns:
             List of all keys in the cache.
-        """
-        if not self._lock.acquire(timeout=self.lock_timeout):
-            return []
 
-        try:
+        Raises:
+            CouldNotLock: If lock acquisition fails.
+        """
+        with self._locked():
             keys = []
             buf = memoryview(self._shm.buf)
             start = self._key_table_start
-            entry_size = KEY_HASH_ENTRY_SIZE
             table_size = self._key_table_size
 
             for slot in range(table_size):
-                offset = start + slot * entry_size
+                offset = start + slot * KEY_HASH_ENTRY_SIZE
                 entry_hash = struct.unpack_from(">Q", buf, offset)[0]
                 if entry_hash != 0:
                     key_addr = struct.unpack_from(">Q", buf, offset + 8)[0]
@@ -633,8 +642,46 @@ class ContentAddressableCache:
                         keys.append(key)
 
             return keys
-        finally:
-            self._lock.release()
+
+    def content_items(self) -> Iterator[tuple[bytes, bytes]]:
+        """Iterate over content fingerprint and content blob pairs.
+
+        Yields tuples of (fingerprint, content_bytes) without loading all
+        content into memory at once.
+
+        Yields:
+            Tuple of (content_fingerprint, content_bytes).
+
+        Raises:
+            CouldNotLock: If lock acquisition fails.
+        """
+        with self._locked():
+            buf = memoryview(self._shm.buf)
+            start = self._content_table_start
+            entry_size = CONTENT_FP_ENTRY_SIZE
+            table_size = self._content_table_size
+
+            for slot in range(table_size):
+                offset = start + slot * entry_size
+                fingerprint = bytes(buf[offset : offset + 16])
+
+                # Check if slot is empty (all zeros)
+                if fingerprint == b"\x00" * 16:
+                    continue
+
+                # Get content address
+                content_addr = struct.unpack_from(">Q", buf, offset + 16)[0]
+                if content_addr == 0:
+                    continue
+
+                # Verify it's a content blob
+                if self._get_blob_type(content_addr) != BLOB_TYPE_CONTENT:
+                    continue
+
+                # Read content blob
+                content_bytes = self._read_blob(content_addr)
+
+                yield (fingerprint, content_bytes)
 
     def get(self, key: bytes, default: bytes | None = None) -> bytes | None:
         """Get value for key with default.
@@ -652,12 +699,12 @@ class ContentAddressableCache:
             return default
 
     def clear(self) -> None:
-        """Clear all items from cache."""
-        if not self._lock.acquire(timeout=self.lock_timeout):
-            msg = "Failed to acquire lock"
-            raise RuntimeError(msg)
+        """Clear all items from cache.
 
-        try:
+        Raises:
+            CouldNotLock: If lock acquisition fails.
+        """
+        with self._locked():
             # Clear hash tables
             buf = memoryview(self._shm.buf)
             key_table_size = self._get_key_table_size()
@@ -671,8 +718,6 @@ class ContentAddressableCache:
             self._set_current_items(0)
             self._set_blob_pool_next(self._blob_pool_start)
             self._write_header_field(40, ">Q", 0)  # blob_pool_used
-        finally:
-            self._lock.release()
 
     def close(self) -> None:
         """Close and cleanup shared memory."""
