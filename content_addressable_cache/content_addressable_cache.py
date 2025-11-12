@@ -657,7 +657,9 @@ class ContentAddressableCache:
 
         # Evict the oldest slot
         offset = start + oldest_slot * entry_size
-        buf[offset : offset + entry_size] = b"\x00" * entry_size
+        # Mark entry as tombstone (deleted) instead of clearing
+        buf[offset : offset + KEY_HASH_WIDTH] = TOMBSTONE
+        buf[offset + KEY_HASH_WIDTH : offset + entry_size] = b"\x00" * (entry_size - KEY_HASH_WIDTH)
         self._set_current_items(self._get_current_items() - 1)
 
     def __delitem__(self, key: bytes) -> None:
