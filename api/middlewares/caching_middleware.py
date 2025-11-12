@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
-from typing import cast as typecast
+from typing import TYPE_CHECKING, Any
 
 from cachetools import LRUCache
 
@@ -19,6 +18,15 @@ logger = logging.getLogger(__name__)
 
 CacheKey = tuple[str, tuple[tuple, ...], tuple[tuple, ...]]
 
+
+def serialize_response(resp: falcon.Response) -> dict[str, Any]:
+    """Serialize the response to a bytes object."""
+    return {
+        "data": resp.data,
+        "media": resp.media,
+        "headers": resp._headers,
+        "status": resp.status,
+    }
 
 class CachingMiddleware:
     """Middleware to cache the request and response."""
@@ -54,16 +62,14 @@ class CachingMiddleware:
             return
 
         cache_key = self._cache_key(req)
-        cached_value: falcon.Response | None = self.cache.get(cache_key)
+        cached_value = self.cache.get(cache_key)
         if cached_value is not None:
-            if TYPE_CHECKING:
-                cached_value = typecast("falcon.Response", cached_value)
             resp.complete = True
-            resp.data = cached_value.data
-            resp.media = cached_value.media
-            resp._headers.update(cached_value._headers)
-            resp.status = cached_value.status
-            logger.info("Cache hit: %s / %s response_id: %d", req.relative_uri, resp.status, id(resp))
+            resp.data = cached_value["data"]
+            resp.media = cached_value["media"]
+            resp.status = cached_value["status"]
+            resp._headers.update(cached_value["headers"])
+            logger.info("Cache hit: %s / %s", req.relative_uri, resp.status)
             return
         logger.info("Cache miss: %s / %s", req.relative_uri, cache_key)
 
@@ -87,8 +93,8 @@ class CachingMiddleware:
 
         del resource, req_succeeded
         cache_key = self._cache_key(req)
-        cached_val = self.cache.get(cache_key)
-        if cached_val is None:
-            resp.complete = True
-            self.cache[cache_key] = resp
+        if cache_key in self.cache:
+            pass  # was already present
+        else:
+            self.cache[cache_key] = serialize_response(resp)
             logger.info("Cache updated: %s / %s", req.relative_uri, cache_key)
