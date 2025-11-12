@@ -15,13 +15,14 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
+    from types import TracebackType
 
 import xxhash
 
 logger = logging.getLogger(__name__)
 
 
-class CouldNotLock(Exception):
+class CouldNotLockError(Exception):
     """Exception raised when lock acquisition fails or times out."""
 
 
@@ -191,28 +192,28 @@ class ContentAddressableCache:
         self._content_table_start = struct.unpack_from(">Q", buf, 72)[0]
         self._content_table_size = struct.unpack_from(">Q", buf, 80)[0]
 
-    def _read_header_field(self, offset: int, fmt: str) -> Any:
+    def _read_header_field(self, offset: int, fmt: str) -> Any:  # noqa: ANN401
         """Read a field from the header."""
         return struct.unpack_from(fmt, memoryview(self._shm.buf), offset)[0]
 
-    def _write_header_field(self, offset: int, fmt: str, value: Any) -> None:
+    def _write_header_field(self, offset: int, fmt: str, value: Any) -> None:  # noqa: ANN401
         """Write a field to the header."""
         struct.pack_into(fmt, memoryview(self._shm.buf), offset, value)
 
     @contextmanager
-    def _locked(self):
+    def _locked(self) -> Iterator[None]:
         """Context manager for acquiring lock with timeout.
 
         Yields:
             None
 
         Raises:
-            CouldNotLock: If lock acquisition times out.
+            CouldNotLockError: If lock acquisition times out.
         """
         acquired = self._lock.acquire(timeout=self.lock_timeout)
         if not acquired:
             msg = "Failed to acquire lock"
-            raise CouldNotLock(msg)
+            raise CouldNotLockError(msg)
         try:
             yield
         finally:
@@ -434,7 +435,7 @@ class ContentAddressableCache:
 
         Raises:
             KeyError: If key not found.
-            CouldNotLock: If lock acquisition fails.
+            CouldNotLockError: If lock acquisition fails.
         """
         with self._locked():
             key_hash = self.hash_func(key)
@@ -470,7 +471,7 @@ class ContentAddressableCache:
             value: Value bytes.
 
         Raises:
-            CouldNotLock: If lock acquisition fails.
+            CouldNotLockError: If lock acquisition fails.
         """
         key_hash = self.hash_func(key)
         value_fp = self.hash_func(value)
@@ -572,7 +573,7 @@ class ContentAddressableCache:
 
         Raises:
             KeyError: If key not found.
-            CouldNotLock: If lock acquisition fails.
+            CouldNotLockError: If lock acquisition fails.
         """
         with self._locked():
             key_hash = self.hash_func(key)
@@ -597,7 +598,7 @@ class ContentAddressableCache:
             True if key exists, False otherwise.
 
         Raises:
-            CouldNotLock: If lock acquisition fails.
+            CouldNotLockError: If lock acquisition fails.
         """
         with self._locked():
             key_hash = self.hash_func(key)
@@ -622,7 +623,7 @@ class ContentAddressableCache:
             List of all keys in the cache.
 
         Raises:
-            CouldNotLock: If lock acquisition fails.
+            CouldNotLockError: If lock acquisition fails.
         """
         with self._locked():
             keys = []
@@ -651,7 +652,7 @@ class ContentAddressableCache:
             Tuple of (content_fingerprint, content_bytes).
 
         Raises:
-            CouldNotLock: If lock acquisition fails.
+            CouldNotLockError: If lock acquisition fails.
         """
         with self._locked():
             buf = memoryview(self._shm.buf)
@@ -700,7 +701,7 @@ class ContentAddressableCache:
         """Clear all items from cache.
 
         Raises:
-            CouldNotLock: If lock acquisition fails.
+            CouldNotLockError: If lock acquisition fails.
         """
         with self._locked():
             # Clear hash tables
@@ -727,6 +728,11 @@ class ContentAddressableCache:
         """Context manager entry."""
         return self
 
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         """Context manager exit."""
         self.close()

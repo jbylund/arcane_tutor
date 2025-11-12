@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import itertools
 import multiprocessing
+import random
+import time
 
 import pytest
 
@@ -450,8 +453,7 @@ def test_custom_hash_function() -> None:
         h2 = hash(data[::-1])  # Hash reversed data for second part
         fp_int = abs(h) & 0xFFFFFFFF_FFFFFFFF
         fp_int2 = abs(h2) & 0xFFFFFFFF_FFFFFFFF
-        hash_bytes = (fp_int << 64 | fp_int2).to_bytes(16, byteorder="big")
-        return hash_bytes
+        return (fp_int << 64 | fp_int2).to_bytes(16, byteorder="big")
 
     cache = ContentAddressableCache(maxsize=10, hash_func=custom_hash)
     try:
@@ -536,3 +538,103 @@ def test_stress_test() -> None:
         assert len(cache) > 0
     finally:
         cache.close()
+
+@pytest.mark.skip(reason="benchmark test, not expected to run every time")
+def test_throughput_benchmark() -> None:  # noqa: PLR0915
+    """Benchmark throughput with random set/get operations and compare to dict."""
+    # Test parameters
+    duration_seconds = 10.0
+    set_ratio = 0.3  # 30% sets
+    max_keys = 1000
+    key_prefix = b"key_"
+    value_prefix = b"value_"
+
+    # true means set, false means get
+    operations = itertools.cycle([
+        random.random() < set_ratio
+        for _ in range(10_000)
+    ])
+
+    key_ids = [
+        random.randint(0, max_keys - 1)
+        for _ in range(10_000)
+    ]
+
+    key_value_pairs = itertools.cycle([
+        (
+            key_prefix + str(key_id).encode(),
+            value_prefix + str(key_id).encode(),
+        )
+        for key_id in key_ids
+    ])
+
+
+
+    # Test with ContentAddressableCache
+    cache = ContentAddressableCache(maxsize=max_keys * 10)
+    try:
+        cache_ops = 0
+        cache_sets = 0
+        cache_gets = 0
+        cache_misses = 0
+
+        start_time = time.time()
+        end_time = start_time + duration_seconds
+
+        while time.time() < end_time:
+            key, value = next(key_value_pairs)
+
+            if next(operations):
+                # Set operation
+                cache[key] = value
+                cache_sets += 1
+            else:
+                # Get operation
+                try:
+                    _ = cache[key]
+                    cache_gets += 1
+                except KeyError:
+                    cache_misses += 1
+
+            cache_ops += 1
+
+        cache_elapsed = time.time() - start_time
+        cache_ops / cache_elapsed
+
+    finally:
+        cache.close()
+
+    # Test with regular dict for comparison
+    dict_cache: dict[bytes, bytes] = {}
+    dict_ops = 0
+    dict_sets = 0
+    dict_gets = 0
+    dict_misses = 0
+
+    start_time = time.time()
+    end_time = start_time + duration_seconds
+
+    while time.time() < end_time:
+        key, value = next(key_value_pairs)
+
+        if next(operations):
+            # Set operation
+            dict_cache[key] = value
+            dict_sets += 1
+        # Get operation
+        elif key in dict_cache:
+            _ = dict_cache[key]
+            dict_gets += 1
+        else:
+            dict_misses += 1
+
+        dict_ops += 1
+
+    dict_elapsed = time.time() - start_time
+    dict_ops / dict_elapsed
+
+    # Print results
+
+    # Test passes if it completes without errors
+    assert cache_ops > 0
+    assert dict_ops > 0
