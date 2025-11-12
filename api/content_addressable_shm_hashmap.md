@@ -77,21 +77,23 @@ Offset  Size    Field                    Description
 ```
 Offset  Size    Field              Description
 ─────────────────────────────────────────────────
-0x0000   8      key_hash           Hash of the key (64-bit)
-0x0008   8      key_address        Offset to key in blob pool (64-bit)
-0x0010   16     content_fingerprint  Content fingerprint (128-bit, 16 bytes)
+0x0000   16     key_hash           Hash of the key (128-bit)
+0x0010   8      key_address        Offset to key in blob pool (64-bit)
+0x0018   16     content_fingerprint  Content fingerprint (128-bit, 16 bytes)
+0x0028   8      timestamp          Last access timestamp (64-bit, nanoseconds since epoch)
 ```
 
-**Total Entry Size**: `8 + 8 + 16 = 32` bytes (key_hash: 8, key_address: 8, content_fingerprint: 16)
+**Total Entry Size**: `16 + 8 + 16 + 8 = 48` bytes (key_hash: 16, key_address: 8, content_fingerprint: 16, timestamp: 8)
 
 **Implementation**: **Open addressing with linear probing** (DECIDED)
 - If slot is occupied, probe next slot sequentially
 - Compare actual key bytes to handle hash collisions
-- Tombstone markers for deleted entries (or just mark as empty)
+- Tombstone markers (`0xFF` repeated 16 times) for deleted entries to preserve linear probe chains
 
 **Decisions**:
 - **Content fingerprint size**: 16 bytes (128-bit) - good balance of collision resistance and size
-- **Key hash**: 64-bit (8 bytes) - sufficient for key lookup
+- **Key hash**: 128-bit (16 bytes) - matches content fingerprint size, provides better distribution
+- **Timestamp**: 64-bit (8 bytes) - nanoseconds since epoch, used for approximated LRU eviction
 - **Hash algorithm**: User-provided hash function, default to xxhash (DECIDED)
   - Same hash function used for both key hashing and content fingerprinting
   - xxhash is fast, deterministic, and provides good distribution
@@ -201,7 +203,7 @@ Offset  Size    Field              Description
 **Key Hash Collisions**: **Open addressing with linear probing** (DECIDED)
 - If slot occupied, check next slot sequentially
 - Compare actual key bytes to verify match
-- Use tombstone markers for deleted entries (or mark as empty)
+- Use tombstone markers (`0xFF` repeated 16 times) for deleted entries to preserve linear probe chains
 
 **Content Fingerprint Collisions**: Extremely rare with 128-bit fingerprint, but should verify content bytes match on collision.
 
@@ -244,41 +246,61 @@ Offset  Size    Field              Description
 ## Reference Counting & Garbage Collection
 
 ### Lazy Deletion Strategy
-When a key is evicted:
-1. Remove entry from `key_hash -> (key_address, content_fingerprint)` map
-2. Leave key data in variable-width key storage (marked as deleted or just unreferenced)
-3. Leave content data in variable-width content storage (may still be referenced by other keys)
+When a key is deleted or evicted:
+1. Mark entry in key hash table as tombstone (`0xFF` repeated 16 times) to preserve linear probe chains
+2. Leave key data in blob pool (marked as unreferenced)
+3. Leave content data in blob pool (may still be referenced by other keys via content fingerprint)
 
-### Sweep Operation
-Periodically (or on-demand) compact storage:
-1. Scan all entries in `key_hash -> (key_address, content_fingerprint)` map
-2. Collect set of all referenced:
-   - `key_addresses` (keys that are still in use)
-   - `content_fingerprints` (content that is still referenced - any count > 0)
-3. Scan `content_fingerprint -> content_address` map:
-   - Remove entries where fingerprint NOT in referenced set (0 references)
-   - Keep entries where fingerprint IS in referenced set (1+ references, exact count doesn't matter)
-   - Mark unreferenced content storage slots as free
-4. Compact variable-width storage:
-   - Remove unreferenced keys from key storage
-   - Remove unreferenced content from content storage
-   - Defragment by moving remaining items to fill gaps
+### Compaction Operation (IMPLEMENTED)
+The `compact()` method performs in-place compaction of the blob pool:
+
+1. **Collect referenced addresses**:
+   - Scan key hash table (skipping empty slots and tombstones) to collect:
+     - All referenced `key_addresses`
+     - All referenced `content_fingerprints` (from key entries)
+   - Scan content fingerprint table to collect:
+     - All `content_addresses` for fingerprints that are referenced
+
+2. **Validate and collect blob metadata**:
+   - For each referenced address, read blob header to get size
+   - Validate addresses are within blob pool bounds
+   - Skip invalid blobs (out of bounds, invalid length, etc.)
+
+3. **Sort and move blobs**:
+   - Sort all referenced blobs by their old address
+   - Move blobs sequentially to fill gaps, starting from the beginning of the pool
+   - Build address mapping (old_addr -> new_addr) as blobs are moved
+
+4. **Update hash table addresses**:
+   - Update all `key_address` values in key hash table using address mapping
+   - Update all `content_address` values in content fingerprint table using address mapping
+
+5. **Cleanup**:
+   - Zero out the remainder of the blob pool (from new_ptr to end) in chunks
+   - Reset `blob_pool_next` pointer to new_ptr
+   - Update `blob_pool_used` counter
 
 **Note**: Content deduplication is automatic - if multiple keys reference the same content fingerprint,
-the fingerprint will appear in the referenced set (from step 2), so the content will be preserved
-regardless of how many keys point to it. We only need to distinguish 0 references (delete) vs >0 references (keep).
+the fingerprint will appear in the referenced set, so the content will be preserved and moved once
+during compaction. The compaction process handles both keys and content in a single unified blob pool.
 
-### Questions:
-- When to trigger sweep? (background thread, on-demand, threshold-based?)
-- How to handle concurrent access during sweep? (read-only mode, copy-on-write?)
-- Tombstone markers in maps vs. just absence? (helps distinguish "never existed" from "deleted but not swept")
+**Trigger**: Compaction is on-demand via `compact()` method. It can be called manually or triggered
+when blob pool usage exceeds a threshold.
+
+### Tombstone Handling
+- Tombstones are used in the key hash table to mark deleted entries
+- Tombstones preserve linear probe chains for other keys that may have probed past the deleted entry
+- During compaction, tombstones are skipped when collecting referenced addresses
+- Tombstones can be reused for new insertions (treated as empty slots for insertion purposes)
 
 ## Memory Allocation Strategy
 
-### Variable-Width Storage Pools
-Need two separate storage pools:
-- **Key storage pool**: Variable-width key data
-- **Content storage pool**: Variable-width content data
+### Variable-Width Storage Pool
+**Implementation**: Single unified blob storage pool for both keys and content (see "Storage Pool Design: Single Unified Blob Pool" section above).
+
+- **Unified blob pool**: Variable-width storage for both keys and content
+- **Type discrimination**: Each entry has 1-byte type field to distinguish keys from content
+- **Sequential allocation**: Append-only allocation from single pool
 
 ### Allocation Approaches
 
@@ -306,12 +328,13 @@ Need two separate storage pools:
 - **Pros**: Better fit than single free list, can reuse space
 - **Cons**: More complex than append-only, still has fragmentation
 
-### Recommendation: Sequential Append-Only + Periodic Compaction
-Given the lazy deletion + sweep approach, sequential allocation fits well:
+### Recommendation: Sequential Append-Only + Periodic Compaction (IMPLEMENTED)
+Given the lazy deletion + compaction approach, sequential allocation fits well:
 - Fast inserts: just append to end of pool
-- Sweep handles cleanup: compact and reset append pointer
+- Compaction handles cleanup: compact and reset append pointer
 - Simple: no free list management needed
 - Works well with LRU: evictions are infrequent, compaction can happen on same schedule
+- **Implementation**: Uses single unified blob pool with sequential append-only allocation
 
 ### Address Representation
 **Recommendation: `start + length`**
@@ -885,50 +908,81 @@ This section documents changes made during implementation that differ from the o
 
 **Design**: LRU eviction with proper tracking of least recently used items.
 
-**Implementation**: Simple eviction that removes the first item found in the hash table (not true LRU).
+**Implementation**: Approximated LRU eviction using random sampling (similar to Redis's approximated LRU algorithm).
+
+**Details**:
+- Each key hash table entry includes an 8-byte timestamp (nanoseconds since epoch)
+- Timestamps are updated on both `__getitem__` (read) and `__setitem__` (write) operations
+- When eviction is needed, the `_evict_lru()` method:
+  1. Randomly samples slots from the key hash table (default: 10 samples, configurable)
+  2. Skips empty slots and tombstones
+  3. Finds the slot with the oldest timestamp among the sampled slots
+  4. Evicts that slot by clearing the entry
+- This is an approximation because it doesn't check all entries, only a random sample
 
 **Rationale**:
-- Initial implementation focuses on core functionality
-- True LRU requires additional tracking (timestamps, doubly-linked list, etc.)
-- Marked with TODO for future implementation
+- True LRU would require checking all entries (O(n)), which is expensive for large caches
+- Approximated LRU with sampling provides good-enough eviction behavior with O(samples) complexity
+- Similar approach used by Redis, which has proven effective in practice
+- Timestamps are stored inline in hash table entries (8 bytes overhead per entry)
 
 **Impact**:
-- Eviction behavior is not optimal (may evict frequently used items)
-- Performance may be suboptimal for cache workloads that benefit from true LRU
-- Should be addressed before production use
+- Eviction behavior is good but not perfect (may occasionally evict recently used items if they're not in the sample)
+- Performance is good (O(samples) instead of O(n) for true LRU)
+- Suitable for production use, though true LRU could be added as an optimization if needed
 
 ### 6. Reference Counting and Garbage Collection
 
 **Design**: Reference counting for content blobs to track how many keys reference each content fingerprint. Sweep operation to remove unreferenced content.
 
-**Implementation**: Reference counting not implemented. Content blobs are never freed, even when no keys reference them.
+**Implementation**: Explicit reference counting not implemented, but compaction handles cleanup of unreferenced blobs.
+
+**Details**:
+- Content blobs are not explicitly reference-counted
+- Instead, compaction collects all referenced content fingerprints from the key hash table
+- Only content blobs whose fingerprints appear in referenced set are preserved during compaction
+- Unreferenced content blobs are automatically removed during compaction
 
 **Rationale**:
-- Simplifies initial implementation
-- Blob pool uses append-only allocation
-- Compaction/migration not yet implemented to handle cleanup
+- Explicit reference counting would require additional metadata and complexity
+- Compaction-based cleanup is simpler and sufficient for most use cases
+- Compaction can be run periodically or on-demand to reclaim space
 
 **Impact**:
-- **Memory leak**: Orphaned content blobs accumulate over time
-- Blob pool will fill up with unreferenced content
-- Critical issue that should be addressed before production use
+- Orphaned content blobs accumulate until compaction is run
+- Compaction must be called periodically to prevent blob pool from filling up
+- Not a memory leak per se, but requires periodic compaction for long-running workloads
+- Suitable for production use with periodic compaction
 
 ### 7. Migration and Compaction
 
 **Design**: Migration-based compaction strategy with segment versioning, process coordination, and atomic segment switching.
 
-**Implementation**: Migration and compaction not implemented.
+**Implementation**: In-place compaction is implemented via `compact()` method. Migration-based compaction with segment versioning is not implemented.
+
+**Compaction Implementation**:
+- **In-place compaction**: The `compact()` method performs in-place defragmentation of the blob pool
+- **Process**: Collects referenced addresses, sorts them, moves blobs sequentially, updates hash table addresses, zeros remainder
+- **Thread-safe**: Requires exclusive lock (blocks all operations during compaction)
+- **On-demand**: Must be called explicitly; no automatic triggering
+- **Handles both keys and content**: Single unified blob pool is compacted
+
+**Migration Not Implemented**:
+- No segment versioning or process coordination
+- No way to resize cache or migrate to new segment
+- Cache size is fixed at initialization
 
 **Rationale**:
-- Complex feature deferred to focus on core cache functionality
-- Requires coordination between processes
-- Can be added as future enhancement
+- In-place compaction is simpler than migration-based approach
+- Sufficient for reclaiming space from deleted/orphaned items
+- Migration would require complex process coordination
+- Can be added as future enhancement if needed
 
 **Impact**:
-- No way to reclaim space from deleted/orphaned items
-- No way to resize cache or migrate to new segment
-- Cache will eventually fill up and fail inserts
-- Must rely on eviction to manage capacity (but eviction is also incomplete)
+- Space can be reclaimed via `compact()` method
+- Compaction must be called periodically or on-demand
+- Cache size cannot be changed after initialization
+- Suitable for production use with periodic compaction
 
 ### 8. Hash Table Load Factor Enforcement
 
@@ -975,13 +1029,42 @@ This section documents changes made during implementation that differ from the o
 
 **Impact**: Code is more maintainable and self-documenting.
 
-### Summary of Critical Gaps
+### 11. Tombstone Markers
 
-The following features from the design are **not yet implemented** and should be prioritized:
+**Design**: Mentioned tombstone markers for deleted entries but didn't specify implementation details.
 
-1. **Reference Counting**: Content blobs leak memory when keys are deleted
-2. **True LRU Eviction**: Current eviction is not optimal
-3. **Migration/Compaction**: No way to reclaim space or resize cache
-4. **Load Factor Enforcement**: No automatic resizing when tables fill up
+**Implementation**: Tombstone markers implemented using `0xFF` repeated 16 times (matching `KEY_HASH_WIDTH`).
 
-These gaps limit the cache's usefulness for long-running production workloads but don't prevent basic functionality for development and testing.
+**Details**:
+- When a key is deleted, the hash field is set to `TOMBSTONE` (`b"\xFF" * 16`)
+- Rest of the entry is zeroed out
+- Tombstones preserve linear probe chains for other keys
+- Tombstones are treated as occupied for probing but available for insertion
+- Tombstones are skipped during iteration and compaction
+
+**Rationale**:
+- Prevents breaking linear probe chains when entries are deleted
+- Essential for correctness of hash table operations with linear probing
+- Allows reuse of deleted slots for new insertions
+
+**Impact**: Correct deletion behavior in hash tables with linear probing.
+
+### Summary of Implementation Status
+
+**Implemented Features**:
+1. ✅ **Approximated LRU Eviction**: Random sampling with timestamp tracking
+2. ✅ **In-Place Compaction**: Defragmentation of blob pool with address remapping
+3. ✅ **Tombstone Markers**: Proper deletion handling for linear probing hash tables
+4. ✅ **Timestamp Tracking**: Last access time stored in key hash table entries
+
+**Not Yet Implemented** (Future Enhancements):
+1. **Migration-Based Compaction**: Segment versioning and process coordination for resizing
+2. **Load Factor Enforcement**: Automatic resizing when tables fill up
+3. **Automatic Compaction Triggering**: Background thread or threshold-based compaction
+4. **True LRU Eviction**: Check all entries instead of sampling (may not be necessary)
+
+**Production Readiness**:
+The cache is suitable for production use with the following considerations:
+- Periodic compaction should be scheduled to reclaim space
+- Cache size should be sized appropriately at initialization (cannot be resized)
+- Approximated LRU provides good eviction behavior for most workloads
