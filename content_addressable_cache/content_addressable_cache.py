@@ -11,12 +11,12 @@ import random
 import struct
 import time
 from contextlib import contextmanager
-from multiprocessing import RLock
 from multiprocessing.shared_memory import SharedMemory
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
+    from multiprocessing import RLock
     from types import TracebackType
 
 import xxhash
@@ -119,12 +119,15 @@ class ContentAddressableCache:
         if maxsize <= 0:
             msg = "maxsize must be positive"
             raise ValueError(msg)
+        if lock is None:
+            msg = "lock must be provided"
+            raise ValueError(msg)
 
         self.maxsize = maxsize
         self.load_factor = load_factor
         self.hash_func = hash_func or _default_hash
         self.lock_timeout = lock_timeout
-        self._lock = lock if lock is not None else RLock()
+        self._lock = lock
 
         # Calculate sizes
         max_items = maxsize
