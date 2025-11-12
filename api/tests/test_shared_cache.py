@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import multiprocessing
+import random
 import time
 from collections.abc import MutableMapping
 
@@ -33,6 +34,33 @@ def _worker_reader_writer(cache: SharedLRUCache, process_id: int) -> None:
     for i in range(10):
         with contextlib.suppress(Exception):
             _ = cache.get(f"proc_{process_id}_key_{i}")
+
+
+def _worker_stress_test(cache: SharedLRUCache, num_operations: int, seed: int | None = None) -> None:
+    """Worker that performs random reads and writes to stress test concurrency.
+
+    Args:
+        cache: The shared cache to operate on.
+        num_operations: Number of operations to perform.
+        seed: Optional random seed for reproducibility.
+    """
+    if seed is not None:
+        random.seed(seed)
+
+    write_fraction = 0.3
+    for _ in range(num_operations):
+        # Random key between 1 and 1000
+        key = random.randint(1, 1000)
+
+        # Randomly choose read or write (70% write, 30% read)
+        if random.random() < write_fraction:
+            # Write operation
+            value = random.randint(1, 1000)
+            cache[key] = value
+        else:
+            # Read operation
+            with contextlib.suppress(KeyError):
+                _ = cache[key]
 
 
 class TestSharedLRUCacheBasicOperations:
@@ -368,6 +396,45 @@ class TestSharedLRUCacheMultiprocessing:
         assert len(cache) > 0
 
         manager.shutdown()
+
+    def test_stress_test_random_reads_writes(self) -> None:
+        """Stress test with multiple processes performing random reads and writes."""
+        # Use a reasonable cache size that's smaller than the key space to test eviction
+        cache = SharedLRUCache(maxsize=int(1000 * .9))
+
+        num_processes = 10
+        operations_per_process = 10_000
+
+        # Start multiple processes with different seeds for variety
+        processes = []
+        for i in range(num_processes):
+            # Use process ID as seed for some determinism while still having variety
+            process = multiprocessing.Process(
+                target=_worker_stress_test,
+                args=(cache, operations_per_process, i * 42),
+            )
+            processes.append(process)
+            process.start()
+
+        # Wait for all processes to complete
+        for process in processes:
+            process.join()
+
+        # After stress test, verify cache is in a valid state
+        # Cache should have some items (exact count depends on eviction)
+        assert len(cache) <= cache.maxsize
+
+        # Verify we can still read and write after stress test
+        cache["stress_test_key"] = "stress_test_value"
+        assert cache["stress_test_key"] == "stress_test_value"
+
+        # Verify some random keys might still be in cache (or might have been evicted)
+        # Just check that operations don't raise exceptions
+        for key in range(1, 11):
+            with contextlib.suppress(KeyError):
+                _ = cache[key]
+
+        cache.shutdown()
 
 
 class TestSharedLRUCacheDropInReplacement:
