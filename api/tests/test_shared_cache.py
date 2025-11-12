@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import multiprocessing
 import time
+from collections.abc import MutableMapping
 
 import pytest
 
@@ -345,10 +347,8 @@ class TestSharedLRUCacheMultiprocessing:
 
             # Read some items (including from other processes)
             for i in range(10):
-                try:
+                with contextlib.suppress(Exception):
                     _ = cache.get(f"proc_{process_id}_key_{i}")
-                except Exception:  # noqa: S110
-                    pass  # Ignore errors from concurrent access
 
         # Start multiple processes
         processes = []
@@ -386,8 +386,6 @@ class TestSharedLRUCacheDropInReplacement:
 
     def test_can_be_used_as_mutablemapping(self) -> None:
         """Test that cache can be used where MutableMapping is expected."""
-        from collections.abc import MutableMapping
-
         cache = SharedLRUCache(maxsize=10)
         assert isinstance(cache, MutableMapping)
 

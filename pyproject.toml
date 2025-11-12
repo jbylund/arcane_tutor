@@ -17,7 +17,7 @@ ignore = [
     "S608",
     "SIM117",
 ]
-per-file-ignores = {"**/tests/**/*.py" = ["ANN401", "ARG001", "D101", "D102", "D103", "PLR2004", "PT004", "S101"], "conftest.py" = ["ANN401", "ARG001", "D101", "D102", "D103", "PLR2004", "PT004", "S101"], "api_worker.py" = ["PLC0415"], "**/scripts/**/*.py" = ["T201", "S603", "S607", "PTH123"]}
+per-file-ignores = {"**/tests/**/*.py" = ["ANN401", "ARG001", "D101", "D102", "D103", "PLR2004", "PT004", "S101"], "conftest.py" = ["ANN401", "ARG001", "D101", "D102", "D103", "PLR2004", "PT004", "S101"], "api_worker.py" = ["PLC0415"], "shared_cache.py" = ["ANN401", "BLE001"], "**/scripts/**/*.py" = ["T201", "S603", "S607", "PTH123"]}
 
 
 [tool.ruff.lint.pydocstyle]

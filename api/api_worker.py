@@ -6,7 +6,7 @@ import json
 import logging
 import multiprocessing
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import falcon
 import falcon.media
@@ -15,6 +15,7 @@ import orjson
 from api.utils import multiprocessing_utils
 
 if TYPE_CHECKING:
+    from collections.abc import MutableMapping
     from multiprocessing.synchronize import Event as EventType
     from multiprocessing.synchronize import RLock as LockType
 
@@ -55,6 +56,7 @@ class ApiWorker(multiprocessing.Process):
         debug: bool = False,
         import_guard: LockType = multiprocessing_utils.DEFAULT_LOCK,
         schema_setup_event: EventType = multiprocessing_utils.DEFAULT_EVENT,
+        shared_cache: MutableMapping[Any, Any] | None = None,
     ) -> None:
         """Initialize the API worker process.
 
@@ -64,6 +66,7 @@ class ApiWorker(multiprocessing.Process):
             exit_flag (multiprocessing.Event | None): An optional event to signal process exit.
             import_guard (multiprocessing.RLock): An optional lock to synchronize imports.
             schema_setup_event (multiprocessing.Event): Event denoting schema setup has been completed.
+            shared_cache: An optional shared cache instance that will be used by CachingMiddleware.
             debug (bool): Whether to run in debug mode.
         """
         super().__init__()
@@ -73,10 +76,21 @@ class ApiWorker(multiprocessing.Process):
         self.import_guard = import_guard
         self.debug = debug
         self.schema_setup_event = schema_setup_event
+        self.shared_cache = shared_cache
 
     @classmethod
-    def get_api(cls: type[ApiWorker], import_guard: LockType, schema_setup_event: EventType) -> falcon.App:
+    def get_api(
+        cls: type[ApiWorker],
+        import_guard: LockType,
+        schema_setup_event: EventType,
+        shared_cache: MutableMapping[Any, Any] | None = None,
+    ) -> falcon.App:
         """Create and configure the Falcon API application.
+
+        Args:
+            import_guard: Lock for synchronizing imports.
+            schema_setup_event: Event denoting schema setup completion.
+            shared_cache: Optional shared cache instance for CachingMiddleware.
 
         Returns:
             falcon.App: The configured Falcon application instance.
@@ -88,7 +102,7 @@ class ApiWorker(multiprocessing.Process):
         api = falcon.App(
             middleware=[
                 TimingMiddleware(),
-                CachingMiddleware(),  # important that this is first
+                CachingMiddleware(cache=shared_cache),  # important that this is first
                 CompressionMiddleware(),
             ],
         )
@@ -126,6 +140,7 @@ class ApiWorker(multiprocessing.Process):
             app = self.get_api(
                 import_guard=self.import_guard,
                 schema_setup_event=self.schema_setup_event,
+                shared_cache=self.shared_cache,
             )  # Get the Falcon app
             bjoern.run(
                 wsgi_app=app,

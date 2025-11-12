@@ -6,10 +6,10 @@ shared between multiple processes using the lru-dict package with multiprocessin
 
 from __future__ import annotations
 
-import multiprocessing
-from collections.abc import MutableMapping
+import contextlib
+from collections.abc import Iterator, MutableMapping
 from multiprocessing.managers import SyncManager
-from typing import Any, Iterator
+from typing import Any
 
 from lru import LRU
 
@@ -244,8 +244,5 @@ class SharedLRUCache(MutableMapping):
     def __del__(self: SharedLRUCache) -> None:
         """Clean up the manager if we own it."""
         if hasattr(self, "_owned_manager") and self._owned_manager and hasattr(self, "_manager"):
-            try:
+            with contextlib.suppress(Exception):
                 self._manager.shutdown()
-            except Exception:  # noqa: S110
-                # Ignore errors during cleanup
-                pass
