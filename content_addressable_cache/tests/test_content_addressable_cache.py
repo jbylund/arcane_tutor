@@ -14,6 +14,12 @@ import xxhash
 from content_addressable_cache.content_addressable_cache import BLOB_TYPE_CONTENT, ContentAddressableCache
 
 
+# Helper function to create a lock for single-process tests
+def _create_lock() -> multiprocessing.RLock:
+    """Create a new RLock for single-process test usage."""
+    return multiprocessing.RLock()
+
+
 # Module-level worker functions for multiprocessing tests
 def _worker_add_item(cache: ContentAddressableCache) -> None:
     """Worker function to add item to cache."""
@@ -37,9 +43,26 @@ def _worker_reader(process_id: int, cache: ContentAddressableCache) -> None:
             assert value == f"value_{i}".encode()
 
 
+def _worker_create_cache(shm_name: str, lock: multiprocessing.RLock) -> None:
+    """Worker that creates its own cache instance with shared memory and lock."""
+    from multiprocessing.shared_memory import SharedMemory
+
+    # Attach to existing shared memory
+    shm = SharedMemory(name=shm_name)
+    # Create cache with same shared memory and lock
+    cache = ContentAddressableCache(maxsize=100, shared_memory=shm, lock=lock)
+    try:
+        # Worker can read parent's data
+        assert cache[b"parent_key"] == b"parent_value"
+        # Worker can write its own data
+        cache[b"worker_key"] = b"worker_value"
+    finally:
+        cache.close()
+
+
 def test_basic_set_get() -> None:
     """Test basic set and get operations."""
-    cache = ContentAddressableCache(maxsize=10)
+    cache = ContentAddressableCache(maxsize=10, lock=_create_lock())
     try:
         cache[b"key1"] = b"value1"
         assert cache[b"key1"] == b"value1"
@@ -50,7 +73,7 @@ def test_basic_set_get() -> None:
 
 def test_multiple_keys() -> None:
     """Test multiple keys."""
-    cache = ContentAddressableCache(maxsize=10)
+    cache = ContentAddressableCache(maxsize=10, lock=_create_lock())
     try:
         cache[b"key1"] = b"value1"
         cache[b"key2"] = b"value2"
@@ -66,7 +89,7 @@ def test_multiple_keys() -> None:
 
 def test_update_existing_key() -> None:
     """Test updating an existing key."""
-    cache = ContentAddressableCache(maxsize=10)
+    cache = ContentAddressableCache(maxsize=10, lock=_create_lock())
     try:
         cache[b"key1"] = b"value1"
         cache[b"key1"] = b"value2"
@@ -79,7 +102,7 @@ def test_update_existing_key() -> None:
 
 def test_key_not_found() -> None:
     """Test KeyError when key not found."""
-    cache = ContentAddressableCache(maxsize=10)
+    cache = ContentAddressableCache(maxsize=10, lock=_create_lock())
     try:
         with pytest.raises(KeyError):
             _ = cache[b"nonexistent"]
@@ -89,7 +112,7 @@ def test_key_not_found() -> None:
 
 def test_get_with_default() -> None:
     """Test get method with default value."""
-    cache = ContentAddressableCache(maxsize=10)
+    cache = ContentAddressableCache(maxsize=10, lock=_create_lock())
     try:
         cache[b"key1"] = b"value1"
 
@@ -102,7 +125,7 @@ def test_get_with_default() -> None:
 
 def test_delete_key() -> None:
     """Test deleting a key."""
-    cache = ContentAddressableCache(maxsize=10)
+    cache = ContentAddressableCache(maxsize=10, lock=_create_lock())
     try:
         cache[b"key1"] = b"value1"
         cache[b"key2"] = b"value2"
@@ -118,7 +141,7 @@ def test_delete_key() -> None:
 
 def test_delete_nonexistent_key() -> None:
     """Test KeyError when deleting nonexistent key."""
-    cache = ContentAddressableCache(maxsize=10)
+    cache = ContentAddressableCache(maxsize=10, lock=_create_lock())
     try:
         with pytest.raises(KeyError):
             del cache[b"nonexistent"]
@@ -128,7 +151,7 @@ def test_delete_nonexistent_key() -> None:
 
 def test_contains() -> None:
     """Test 'in' operator."""
-    cache = ContentAddressableCache(maxsize=10)
+    cache = ContentAddressableCache(maxsize=10, lock=_create_lock())
     try:
         cache[b"key1"] = b"value1"
 
@@ -140,7 +163,7 @@ def test_contains() -> None:
 
 def test_clear() -> None:
     """Test clear method."""
-    cache = ContentAddressableCache(maxsize=10)
+    cache = ContentAddressableCache(maxsize=10, lock=_create_lock())
     try:
         cache[b"key1"] = b"value1"
         cache[b"key2"] = b"value2"
@@ -158,7 +181,7 @@ def test_clear() -> None:
 
 def test_iteration() -> None:
     """Test iterating over keys."""
-    cache = ContentAddressableCache(maxsize=10)
+    cache = ContentAddressableCache(maxsize=10, lock=_create_lock())
     try:
         cache[b"key1"] = b"value1"
         cache[b"key2"] = b"value2"
@@ -176,7 +199,7 @@ def test_iteration() -> None:
 def test_keys_method() -> None:
     """Test the keys() method."""
     expected = set()
-    cache = ContentAddressableCache(maxsize=10)
+    cache = ContentAddressableCache(maxsize=10, lock=_create_lock())
     try:
         for idx in range(3):
             key = f"key{idx}".encode()
@@ -199,7 +222,7 @@ def test_keys_method() -> None:
 
 def test_content_items() -> None:
     """Test iterating over content fingerprint and content blob pairs."""
-    cache = ContentAddressableCache(maxsize=10)
+    cache = ContentAddressableCache(maxsize=10, lock=_create_lock())
     try:
         # Store some items
         cache[b"key1"] = b"value1"
@@ -234,7 +257,7 @@ def test_content_items() -> None:
 
 def test_content_items_memory_efficient() -> None:
     """Test that content_items() doesn't load all content into memory at once."""
-    cache = ContentAddressableCache(maxsize=100)
+    cache = ContentAddressableCache(maxsize=100, lock=_create_lock())
     try:
         # Store many items with some duplicates
         for i in range(50):
@@ -258,7 +281,7 @@ def test_content_items_memory_efficient() -> None:
 
 def test_content_deduplication() -> None:
     """Test that multiple keys can share the same content."""
-    cache = ContentAddressableCache(maxsize=10)
+    cache = ContentAddressableCache(maxsize=10, lock=_create_lock())
     try:
         # Same value for different keys
         cache[b"key1"] = b"shared_value"
@@ -283,7 +306,7 @@ def test_content_deduplication() -> None:
 
 def test_content_deduplication_storage() -> None:
     """Test that storing same value under different keys only stores one copy in blob pool."""
-    cache = ContentAddressableCache(maxsize=10)
+    cache = ContentAddressableCache(maxsize=10, lock=_create_lock())
     try:
         # Store same value under multiple keys
         shared_value = b"shared_value_12345"
@@ -330,7 +353,7 @@ def test_content_deduplication_storage() -> None:
 
 def test_key_deduplication() -> None:
     """Test that reusing same key doesn't create duplicate."""
-    cache = ContentAddressableCache(maxsize=10)
+    cache = ContentAddressableCache(maxsize=10, lock=_create_lock())
     try:
         cache[b"key1"] = b"value1"
         assert len(cache) == 1
@@ -346,7 +369,7 @@ def test_key_deduplication() -> None:
 
 def test_lru_eviction() -> None:
     """Test LRU eviction when cache is full."""
-    cache = ContentAddressableCache(maxsize=3)
+    cache = ContentAddressableCache(maxsize=3, lock=_create_lock())
     try:
         # Fill cache
         cache[b"key1"] = b"value1"
@@ -366,19 +389,21 @@ def test_lru_eviction() -> None:
 
 def test_context_manager() -> None:
     """Test context manager usage."""
-    with ContentAddressableCache(maxsize=10) as cache:
+    with ContentAddressableCache(maxsize=10, lock=_create_lock()) as cache:
         cache[b"key1"] = b"value1"
         assert cache[b"key1"] == b"value1"
 
 
 def test_multiprocessing_shared() -> None:
     """Test that cache can be shared between processes."""
-    cache = ContentAddressableCache(maxsize=100)
+    # Create shared lock for multiprocessing
+    shared_lock = multiprocessing.RLock()
+    cache = ContentAddressableCache(maxsize=100, lock=shared_lock)
     try:
         # Add item in main process
         cache[b"main_key"] = b"main_value"
 
-        # Create worker process
+        # Create worker process - pass cache with shared lock
         process = multiprocessing.Process(target=_worker_add_item, args=(cache,))
         process.start()
         process.join()
@@ -394,7 +419,9 @@ def test_multiprocessing_shared() -> None:
 
 def test_multiple_processes_concurrent() -> None:
     """Test multiple processes accessing cache concurrently."""
-    cache = ContentAddressableCache(maxsize=100)
+    # Create shared lock for multiprocessing
+    shared_lock = multiprocessing.RLock()
+    cache = ContentAddressableCache(maxsize=100, lock=shared_lock)
     try:
         # Start multiple processes
         processes = []
@@ -419,7 +446,7 @@ def test_multiple_processes_concurrent() -> None:
 
 def test_large_values() -> None:
     """Test with large values."""
-    cache = ContentAddressableCache(maxsize=10)
+    cache = ContentAddressableCache(maxsize=10, lock=_create_lock())
     try:
         large_value = b"x" * 10000
         cache[b"key1"] = large_value
@@ -430,7 +457,7 @@ def test_large_values() -> None:
 
 def test_empty_key() -> None:
     """Test with empty key."""
-    cache = ContentAddressableCache(maxsize=10)
+    cache = ContentAddressableCache(maxsize=10, lock=_create_lock())
     try:
         cache[b""] = b"value"
         assert cache[b""] == b"value"
@@ -440,7 +467,7 @@ def test_empty_key() -> None:
 
 def test_empty_value() -> None:
     """Test with empty value."""
-    cache = ContentAddressableCache(maxsize=10)
+    cache = ContentAddressableCache(maxsize=10, lock=_create_lock())
     try:
         cache[b"key"] = b""
         assert cache[b"key"] == b""
@@ -461,7 +488,7 @@ def test_custom_hash_function() -> None:
         fp_int2 = abs(h2) & 0xFFFFFFFF_FFFFFFFF
         return (fp_int << 64 | fp_int2).to_bytes(16, byteorder="big")
 
-    cache = ContentAddressableCache(maxsize=10, hash_func=custom_hash)
+    cache = ContentAddressableCache(maxsize=10, lock=_create_lock(), hash_func=custom_hash)
     try:
         cache[b"key1"] = b"value1"
         assert cache[b"key1"] == b"value1"
@@ -489,7 +516,7 @@ def test_hash_collision() -> None:
         # For other keys, use normal hash
         return xxhash.xxh128_digest(data)
 
-    cache = ContentAddressableCache(maxsize=10, hash_func=collision_hash)
+    cache = ContentAddressableCache(maxsize=10, lock=_create_lock(), hash_func=collision_hash)
     try:
         # Store different values for keys that hash to the same value
         cache[b"key1"] = b"value1"
@@ -523,7 +550,7 @@ def test_hash_collision() -> None:
 
 def test_approximated_lru_eviction() -> None:
     """Test that approximated LRU eviction evicts least recently used keys."""
-    cache = ContentAddressableCache(maxsize=5)
+    cache = ContentAddressableCache(maxsize=5, lock=_create_lock())
     try:
         # Fill cache with 5 items, using different values to avoid content deduplication
         for i in range(5):
@@ -590,20 +617,20 @@ def test_approximated_lru_eviction() -> None:
 def test_invalid_maxsize() -> None:
     """Test that invalid maxsize raises error."""
     with pytest.raises(ValueError, match="maxsize must be positive"):
-        ContentAddressableCache(maxsize=0)
+        ContentAddressableCache(maxsize=0, lock=_create_lock())
 
     with pytest.raises(ValueError, match="maxsize must be positive"):
-        ContentAddressableCache(maxsize=-1)
+        ContentAddressableCache(maxsize=-1, lock=_create_lock())
 
 
 def test_reuse_existing_shared_memory() -> None:
     """Test reusing existing shared memory."""
-    cache1 = ContentAddressableCache(maxsize=10)
+    cache1 = ContentAddressableCache(maxsize=10, lock=_create_lock())
     try:
         cache1[b"key1"] = b"value1"
 
-        # Create second cache using same shared memory
-        cache2 = ContentAddressableCache(maxsize=10, shared_memory=cache1._shm)
+        # Create second cache using same shared memory and lock
+        cache2 = ContentAddressableCache(maxsize=10, shared_memory=cache1._shm, lock=cache1._lock)
         try:
             # Should see the same data
             assert cache2[b"key1"] == b"value1"
@@ -616,7 +643,9 @@ def test_reuse_existing_shared_memory() -> None:
 
 def test_concurrent_reads() -> None:
     """Test that multiple processes can read concurrently."""
-    cache = ContentAddressableCache(maxsize=100)
+    # Create shared lock for multiprocessing
+    shared_lock = multiprocessing.RLock()
+    cache = ContentAddressableCache(maxsize=100, lock=shared_lock)
     try:
         # Pre-populate cache
         for i in range(50):
@@ -636,9 +665,35 @@ def test_concurrent_reads() -> None:
         cache.close()
 
 
+def test_multiprocessing_with_explicit_lock_sharing() -> None:
+    """Test proper multiprocessing pattern with explicit lock and shared memory sharing."""
+    # Create shared lock and cache in parent process
+    # Use Manager to create a lock that can be shared across processes
+    manager = multiprocessing.Manager()
+    shared_lock = manager.RLock()
+    cache1 = ContentAddressableCache(maxsize=100, lock=shared_lock)
+    try:
+        # Add some initial data
+        cache1[b"parent_key"] = b"parent_value"
+
+        # Start worker process, passing shared memory name and lock
+        process = multiprocessing.Process(
+            target=_worker_create_cache,
+            args=(cache1._shm.name, shared_lock),
+        )
+        process.start()
+        process.join()
+
+        # Parent should see worker's data (thanks to shared lock)
+        assert cache1[b"parent_key"] == b"parent_value"
+        assert cache1[b"worker_key"] == b"worker_value"
+    finally:
+        cache1.close()
+
+
 def test_stress_test() -> None:
     """Stress test with many operations."""
-    cache = ContentAddressableCache(maxsize=1000)
+    cache = ContentAddressableCache(maxsize=1000, lock=_create_lock())
     try:
         # Write many items
         for i in range(500):
@@ -695,7 +750,7 @@ def test_throughput_benchmark() -> None:  # noqa: PLR0915
 
 
     # Test with ContentAddressableCache
-    cache = ContentAddressableCache(maxsize=max_keys * 10)
+    cache = ContentAddressableCache(maxsize=max_keys * 10, lock=_create_lock())
     try:
         cache_ops = 0
         cache_sets = 0
@@ -766,7 +821,7 @@ def test_throughput_benchmark() -> None:  # noqa: PLR0915
 
 def test_compaction() -> None:
     """Test that compaction removes unreferenced blobs and defragments pool."""
-    cache = ContentAddressableCache(maxsize=100)
+    cache = ContentAddressableCache(maxsize=100, lock=_create_lock())
     try:
         # Add some items
         cache[b"key1"] = b"value1"
@@ -813,7 +868,7 @@ def test_compaction() -> None:
 
 def test_compaction_preserves_content_deduplication() -> None:
     """Test that compaction preserves content deduplication."""
-    cache = ContentAddressableCache(maxsize=100)
+    cache = ContentAddressableCache(maxsize=100, lock=_create_lock())
     try:
         # Add multiple keys with same value (content deduplication)
         shared_value = b"shared_content_12345"
@@ -844,7 +899,7 @@ def test_compaction_preserves_content_deduplication() -> None:
 
 def test_compaction_with_many_items() -> None:
     """Test compaction with many items and deletions."""
-    cache = ContentAddressableCache(maxsize=1000)
+    cache = ContentAddressableCache(maxsize=1000, lock=_create_lock())
     try:
         # Add many items
         for i in range(50):
@@ -881,7 +936,7 @@ def test_blob_pool_full() -> None:
     """Test that _append_blob raises RuntimeError when blob pool is full."""
     # Create a small cache to fill up quickly
     # Use a very small maxsize to get a small blob pool
-    cache = ContentAddressableCache(maxsize=100)
+    cache = ContentAddressableCache(maxsize=100, lock=_create_lock())
     initial_empty_used = cache._get_blob_pool_used()
     try:
         # Keep appending UUIDs until we get a RuntimeError

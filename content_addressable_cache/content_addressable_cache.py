@@ -91,7 +91,9 @@ class ContentAddressableCache:
 
     def __init__(
         self,
+        *,
         maxsize: int,
+        lock: RLock,
         shared_memory: SharedMemory | None = None,
         load_factor: float = DEFAULT_LOAD_FACTOR,
         hash_func: Callable[[bytes], bytes] | None = None,
@@ -103,6 +105,10 @@ class ContentAddressableCache:
 
         Args:
             maxsize: Maximum number of cache entries.
+            lock: RLock to use for synchronization. Required for proper cross-process
+                synchronization. For multiprocessing scenarios where multiple processes
+                share the same SharedMemory, pass the same lock instance to all cache
+                instances to ensure proper cross-process synchronization.
             shared_memory: Existing SharedMemory to use, or None to create new.
             load_factor: Hash table load factor threshold (0.0-1.0).
             hash_func: Hash function returning 128-bit hash as bytes.
@@ -118,7 +124,7 @@ class ContentAddressableCache:
         self.load_factor = load_factor
         self.hash_func = hash_func or _default_hash
         self.lock_timeout = lock_timeout
-        self._lock = RLock()
+        self._lock = lock if lock is not None else RLock()
 
         # Calculate sizes
         max_items = maxsize
