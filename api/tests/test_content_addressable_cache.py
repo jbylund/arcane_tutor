@@ -268,6 +268,11 @@ def test_content_deduplication() -> None:
         assert cache[b"key3"] == b"shared_value"
         assert len(cache) == 3
 
+        stored_content_blobs = {
+            content_bytes for _, content_bytes in cache.content_items()
+        }
+        assert {b"shared_value"} == stored_content_blobs
+
         # All should return same value
         assert cache[b"key1"] == cache[b"key2"] == cache[b"key3"]
     finally:
@@ -293,7 +298,6 @@ def test_content_deduplication_storage() -> None:
         # Each key adds: 1 (type) + 4 (length) + key_len, aligned to 8 bytes
         # Content is only stored once
         key_entry_size = (1 + 4 + len(b"key1") + 7) & ~7  # Aligned
-        (1 + 4 + len(shared_value) + 7) & ~7  # Aligned
 
         # After first insert: key1 + content
         # After second insert: key1 + content + key2 (content reused)
@@ -327,7 +331,7 @@ def test_key_deduplication() -> None:
     cache = ContentAddressableCache(maxsize=10)
     try:
         cache[b"key1"] = b"value1"
-        len(cache)
+        assert len(cache) == 1
 
         # Update with different value
         cache[b"key1"] = b"value2"
