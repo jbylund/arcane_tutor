@@ -40,6 +40,9 @@ KEY_HASH_ENTRY_SIZE = KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH  # 16 + 
 CONTENT_FP_ENTRY_SIZE = CONTENT_FP_WIDTH + ADDRESS_WIDTH  # 16 + 8 = 24
 BLOB_TYPE_KEY = 0x01
 BLOB_TYPE_CONTENT = 0x02
+BLOB_TYPE_WIDTH = 1  # 1 byte for blob type discriminator
+BLOB_LENGTH_WIDTH = 4  # 4 bytes (uint32) for blob length
+BLOB_HEADER_SIZE = BLOB_TYPE_WIDTH + BLOB_LENGTH_WIDTH  # 5 bytes total header
 ALIGNMENT = 8
 DEFAULT_LOAD_FACTOR = 0.65
 DEFAULT_LOCK_TIMEOUT = 60.0
@@ -239,12 +242,16 @@ class ContentAddressableCache:
         """Set current number of items."""
         self._write_header_field(96, ">Q", value)
 
-    def _find_key_slot(self, key_hash: bytes, key_bytes: bytes) -> int | None:
+    def _find_key_slot(self, key_bytes: bytes) -> int | None:
         """Find slot for key in hash table using linear probing.
+
+        Args:
+            key_bytes: The key bytes to find.
 
         Returns:
             Slot index if found, None if not found.
         """
+        key_hash = self.hash_func(key_bytes)
         buf = memoryview(self._shm.buf)
         start = self._key_table_start
         entry_size = KEY_HASH_ENTRY_SIZE
@@ -385,8 +392,13 @@ class ContentAddressableCache:
         next_ptr = self._get_blob_pool_next()
         start = self._blob_pool_start
 
-        # Calculate entry size: 1 (type) + 4 (length) + data + alignment
-        entry_size = _align(1 + 4 + len(data), ALIGNMENT)
+        # Validate blob pool pointer is within bounds
+        if next_ptr < start or next_ptr >= start + self._blob_pool_size:
+            msg = f"Blob pool pointer out of bounds: {next_ptr} (start={start}, size={self._blob_pool_size})"
+            raise RuntimeError(msg)
+
+        # Calculate entry size: header (type + length) + data + alignment
+        entry_size = _align(BLOB_HEADER_SIZE + len(data), ALIGNMENT)
 
         # Check if we have space
         if next_ptr + entry_size > start + self._blob_pool_size:
@@ -396,11 +408,13 @@ class ContentAddressableCache:
         # Write entry
         offset = next_ptr
         struct.pack_into("B", buf, offset, blob_type)
-        struct.pack_into(">I", buf, offset + 1, len(data))
-        buf[offset + 5 : offset + 5 + len(data)] = data
+        struct.pack_into(">I", buf, offset + BLOB_TYPE_WIDTH, len(data))
+        buf[offset + BLOB_HEADER_SIZE : offset + BLOB_HEADER_SIZE + len(data)] = data
 
         # Update next pointer
         self._set_blob_pool_next(next_ptr + entry_size)
+        # Update blob pool usage counter (read-modify-write is safe because
+        # _append_blob is only called from within methods that hold the lock)
         used = self._read_header_field(40, ">Q") + entry_size
         self._write_header_field(40, ">Q", used)
 
@@ -417,8 +431,8 @@ class ContentAddressableCache:
         """
         buf = memoryview(self._shm.buf)
         struct.unpack_from("B", buf, address)[0]
-        length = struct.unpack_from(">I", buf, address + 1)[0]
-        return bytes(buf[address + 5 : address + 5 + length])
+        length = struct.unpack_from(">I", buf, address + BLOB_TYPE_WIDTH)[0]
+        return bytes(buf[address + BLOB_HEADER_SIZE : address + BLOB_HEADER_SIZE + length])
 
     def _get_blob_type(self, address: int) -> int:
         """Get blob type at address."""
@@ -438,15 +452,16 @@ class ContentAddressableCache:
             CouldNotLockError: If lock acquisition fails.
         """
         with self._locked():
-            key_hash = self.hash_func(key)
-            slot = self._find_key_slot(key_hash, key)
+            slot = self._find_key_slot(key)
             if slot is None:
                 raise KeyError(key)
 
             # Read entry
             buf = memoryview(self._shm.buf)
             offset = self._key_table_start + slot * KEY_HASH_ENTRY_SIZE
-            struct.unpack_from(">Q", buf, offset + KEY_HASH_WIDTH)[0]
+            key_addr = struct.unpack_from(">Q", buf, offset + KEY_HASH_WIDTH)[0]
+            if key_addr == 0:
+                raise KeyError(key)
             fingerprint = bytes(buf[offset + KEY_HASH_WIDTH + ADDRESS_WIDTH : offset + KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH])
 
             # Find content
@@ -473,12 +488,11 @@ class ContentAddressableCache:
         Raises:
             CouldNotLockError: If lock acquisition fails.
         """
-        key_hash = self.hash_func(key)
         value_fp = self.hash_func(value)
 
         with self._locked():
             # Check if key exists
-            key_slot = self._find_key_slot(key_hash, key)
+            key_slot = self._find_key_slot(key)
             if key_slot is not None:
                 # Key exists, update content fingerprint
                 buf = memoryview(self._shm.buf)
@@ -532,6 +546,7 @@ class ContentAddressableCache:
                     content_addr = struct.unpack_from(">Q", buf, content_offset + CONTENT_FP_WIDTH)[0]
 
                 # Insert into key table
+                key_hash = self.hash_func(key)
                 key_slot = self._find_empty_key_slot(key_hash)
                 if key_slot is None:
                     msg = "Key hash table full"
@@ -576,8 +591,7 @@ class ContentAddressableCache:
             CouldNotLockError: If lock acquisition fails.
         """
         with self._locked():
-            key_hash = self.hash_func(key)
-            slot = self._find_key_slot(key_hash, key)
+            slot = self._find_key_slot(key)
             if slot is None:
                 raise KeyError(key)
 
@@ -601,8 +615,7 @@ class ContentAddressableCache:
             CouldNotLockError: If lock acquisition fails.
         """
         with self._locked():
-            key_hash = self.hash_func(key)
-            return self._find_key_slot(key_hash, key) is not None
+            return self._find_key_slot(key) is not None
 
     def __len__(self) -> int:
         """Get number of items in cache.
