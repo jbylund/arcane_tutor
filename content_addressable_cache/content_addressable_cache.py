@@ -470,6 +470,20 @@ class ContentAddressableCache:
         """Get blob type at address."""
         return struct.unpack_from("B", memoryview(self._shm.buf), address)[0]
 
+    def _read_fingerprint_from_key_entry(self, offset: int) -> bytes:
+        """Read content fingerprint from key hash table entry.
+
+        Args:
+            offset: Byte offset of the key hash table entry.
+
+        Returns:
+            Content fingerprint bytes.
+        """
+        buf = memoryview(self._shm.buf)
+        fp_start = offset + KEY_HASH_WIDTH + ADDRESS_WIDTH
+        fp_end = fp_start + CONTENT_FP_WIDTH
+        return bytes(buf[fp_start:fp_end])
+
     def _update_timestamp(self, slot: int) -> None:
         """Update access timestamp for key at given slot.
 
@@ -505,7 +519,7 @@ class ContentAddressableCache:
             key_addr = struct.unpack_from(">Q", buf, offset + KEY_HASH_WIDTH)[0]
             if key_addr == 0:
                 raise KeyError(key)
-            fingerprint = bytes(buf[offset + KEY_HASH_WIDTH + ADDRESS_WIDTH : offset + KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH])
+            fingerprint = self._read_fingerprint_from_key_entry(offset)
 
             # Find content
             content_slot = self._find_content_slot(fingerprint)
