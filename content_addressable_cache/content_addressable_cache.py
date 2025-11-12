@@ -89,7 +89,7 @@ class ContentAddressableCache:
         lock_timeout: Timeout for lock acquisition in seconds (default 60.0).
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         maxsize: int,

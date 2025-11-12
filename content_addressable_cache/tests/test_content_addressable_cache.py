@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import logging
 import multiprocessing
 import random
 import time
@@ -45,7 +46,7 @@ def _worker_reader(process_id: int, cache: ContentAddressableCache) -> None:
 
 def _worker_create_cache(shm_name: str, lock: multiprocessing.RLock) -> None:
     """Worker that creates its own cache instance with shared memory and lock."""
-    from multiprocessing.shared_memory import SharedMemory
+    from multiprocessing.shared_memory import SharedMemory  # noqa: PLC0415
 
     # Attach to existing shared memory
     shm = SharedMemory(name=shm_name)
@@ -778,7 +779,7 @@ def test_throughput_benchmark() -> None:  # noqa: PLR0915
             cache_ops += 1
 
         cache_elapsed = time.time() - start_time
-        cache_ops / cache_elapsed
+        cache_ops_per_sec = cache_ops / cache_elapsed
 
     finally:
         cache.close()
@@ -810,9 +811,29 @@ def test_throughput_benchmark() -> None:  # noqa: PLR0915
         dict_ops += 1
 
     dict_elapsed = time.time() - start_time
-    dict_ops / dict_elapsed
+    dict_ops_per_sec = dict_ops / dict_elapsed
 
-    # Print results
+    # Log results
+    logger = logging.getLogger(__name__)
+    logger.info("=" * 80)
+    logger.info("Throughput Benchmark Results")
+    logger.info("=" * 80)
+    logger.info("ContentAddressableCache:")
+    logger.info("  Operations: %d (%.2f ops/sec)", cache_ops, cache_ops_per_sec)
+    logger.info("  Sets: %d (%.1f%%)", cache_sets, 100.0 * cache_sets / cache_ops if cache_ops > 0 else 0)
+    logger.info("  Gets: %d (%.1f%%)", cache_gets, 100.0 * cache_gets / cache_ops if cache_ops > 0 else 0)
+    logger.info("  Misses: %d (%.1f%%)", cache_misses, 100.0 * cache_misses / cache_ops if cache_ops > 0 else 0)
+    logger.info("  Elapsed: %.2f seconds", cache_elapsed)
+    logger.info("")
+    logger.info("dict (for comparison):")
+    logger.info("  Operations: %d (%.2f ops/sec)", dict_ops, dict_ops_per_sec)
+    logger.info("  Sets: %d (%.1f%%)", dict_sets, 100.0 * dict_sets / dict_ops if dict_ops > 0 else 0)
+    logger.info("  Gets: %d (%.1f%%)", dict_gets, 100.0 * dict_gets / dict_ops if dict_ops > 0 else 0)
+    logger.info("  Misses: %d (%.1f%%)", dict_misses, 100.0 * dict_misses / dict_ops if dict_ops > 0 else 0)
+    logger.info("  Elapsed: %.2f seconds", dict_elapsed)
+    logger.info("")
+    logger.info("Performance Ratio: %.2fx (dict is faster)", dict_ops_per_sec / cache_ops_per_sec if cache_ops_per_sec > 0 else 0)
+    logger.info("=" * 80)
 
     # Test passes if it completes without errors
     assert cache_ops > 0
