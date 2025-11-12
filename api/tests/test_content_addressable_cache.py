@@ -761,3 +761,116 @@ def test_throughput_benchmark() -> None:  # noqa: PLR0915
     # Test passes if it completes without errors
     assert cache_ops > 0
     assert dict_ops > 0
+
+
+def test_compaction() -> None:
+    """Test that compaction removes unreferenced blobs and defragments pool."""
+    cache = ContentAddressableCache(maxsize=100)
+    try:
+        # Add some items
+        cache[b"key1"] = b"value1"
+        cache[b"key2"] = b"value2"
+        cache[b"key3"] = b"value3"
+        cache[b"key4"] = b"shared_value"  # Same value as key5
+        cache[b"key5"] = b"shared_value"  # Same value as key4 (content deduplication)
+
+        # Get initial blob pool usage
+        initial_used = cache._get_blob_pool_used()
+        initial_next = cache._get_blob_pool_next()
+
+        # Delete some keys to create fragmentation
+        del cache[b"key1"]
+        del cache[b"key3"]
+
+        # Blob pool should still show same usage (lazy deletion)
+        after_delete_used = cache._get_blob_pool_used()
+        assert after_delete_used == initial_used
+
+        # Compact
+        cache.compact()
+
+        # After compaction, blob pool usage should be reduced
+        after_compact_used = cache._get_blob_pool_used()
+        after_compact_next = cache._get_blob_pool_next()
+
+        # Usage should be less than before (unreferenced blobs removed)
+        assert after_compact_used < initial_used
+        assert after_compact_next < initial_next
+
+        # All remaining items should still be accessible
+        assert cache[b"key2"] == b"value2"
+        assert cache[b"key4"] == b"shared_value"
+        assert cache[b"key5"] == b"shared_value"
+        assert len(cache) == 3
+
+        # Deleted items should not be accessible
+        assert b"key1" not in cache
+        assert b"key3" not in cache
+    finally:
+        cache.close()
+
+
+def test_compaction_preserves_content_deduplication() -> None:
+    """Test that compaction preserves content deduplication."""
+    cache = ContentAddressableCache(maxsize=100)
+    try:
+        # Add multiple keys with same value (content deduplication)
+        shared_value = b"shared_content_12345"
+        cache[b"key1"] = shared_value
+        cache[b"key2"] = shared_value
+        cache[b"key3"] = shared_value
+
+        # Get content items before compaction
+        content_items_before = list(cache.content_items())
+        assert len(content_items_before) == 1  # Only one unique content
+
+        # Delete one key
+        del cache[b"key1"]
+
+        # Compact
+        cache.compact()
+
+        # Content should still be deduplicated (key2 and key3 share it)
+        content_items_after = list(cache.content_items())
+        assert len(content_items_after) == 1  # Still only one unique content
+
+        # Remaining keys should still work
+        assert cache[b"key2"] == shared_value
+        assert cache[b"key3"] == shared_value
+    finally:
+        cache.close()
+
+
+def test_compaction_with_many_items() -> None:
+    """Test compaction with many items and deletions."""
+    cache = ContentAddressableCache(maxsize=1000)
+    try:
+        # Add many items
+        for i in range(50):
+            cache[f"key_{i}".encode()] = f"value_{i}".encode()
+
+        initial_used = cache._get_blob_pool_used()
+        assert len(cache) == 50
+
+        # Delete every other item
+        for i in range(0, 50, 2):
+            del cache[f"key_{i}".encode()]
+
+        assert len(cache) == 25
+
+        # Compact
+        cache.compact()
+
+        # Usage should be reduced
+        after_compact_used = cache._get_blob_pool_used()
+        assert after_compact_used < initial_used
+
+        # Remaining items should work
+        for i in range(1, 50, 2):
+            assert cache[f"key_{i}".encode()] == f"value_{i}".encode()
+
+        # Deleted items should not work
+        for i in range(0, 50, 2):
+            assert f"key_{i}".encode() not in cache
+    finally:
+        cache.close()

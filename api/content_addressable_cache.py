@@ -47,6 +47,11 @@ BLOB_TYPE_CONTENT = 0x02
 BLOB_TYPE_WIDTH = 1  # 1 byte for blob type discriminator
 BLOB_LENGTH_WIDTH = 4  # 4 bytes (uint32) for blob length
 BLOB_HEADER_SIZE = BLOB_TYPE_WIDTH + BLOB_LENGTH_WIDTH  # 5 bytes total header
+# Empty slot markers for hash tables
+EMPTY_KEY_HASH = b"\x00" * KEY_HASH_WIDTH  # 16 bytes of 0x00
+EMPTY_CONTENT_FP = b"\x00" * CONTENT_FP_WIDTH  # 16 bytes of 0x00
+# Tombstone marker for deleted hash table entries (all 0xFF bytes)
+TOMBSTONE = b"\xFF" * KEY_HASH_WIDTH  # 16 bytes of 0xFF
 ALIGNMENT = 8
 DEFAULT_LOAD_FACTOR = 0.65
 DEFAULT_LOCK_TIMEOUT = 60.0
@@ -270,9 +275,17 @@ class ContentAddressableCache:
             offset = start + slot * entry_size
             entry_hash = bytes(buf[offset : offset + KEY_HASH_WIDTH])
 
-            if entry_hash == b"\x00" * KEY_HASH_WIDTH:
-                # Empty slot
+            if entry_hash == EMPTY_KEY_HASH:
+                # Empty slot (never occupied) - key not found
                 return None
+
+            if entry_hash == TOMBSTONE:
+                # Tombstone (deleted entry) - continue probing
+                slot = (slot + 1) % table_size
+                if slot == initial_slot:
+                    # Table full
+                    return None
+                continue
 
             if entry_hash == key_hash:
                 # Hash matches, check actual key
@@ -309,8 +322,8 @@ class ContentAddressableCache:
             offset = start + slot * entry_size
             entry_hash = bytes(buf[offset : offset + KEY_HASH_WIDTH])
 
-            if entry_hash == b"\x00" * KEY_HASH_WIDTH:
-                # Empty slot found
+            if entry_hash in (EMPTY_KEY_HASH, TOMBSTONE):
+                # Empty slot or tombstone - can use for insertion
                 return slot
 
             # Linear probe
@@ -339,7 +352,7 @@ class ContentAddressableCache:
             offset = start + slot * entry_size
             stored_fp = buf[offset : offset + CONTENT_FP_WIDTH]
 
-            if stored_fp == b"\x00" * CONTENT_FP_WIDTH:
+            if stored_fp == EMPTY_CONTENT_FP:
                 # Empty slot
                 return None
 
@@ -373,7 +386,7 @@ class ContentAddressableCache:
             offset = start + slot * entry_size
             stored_fp = buf[offset : offset + CONTENT_FP_WIDTH]
 
-            if stored_fp == b"\x00" * CONTENT_FP_WIDTH:
+            if stored_fp == EMPTY_CONTENT_FP:
                 # Empty slot found
                 return slot
 
@@ -611,10 +624,10 @@ class ContentAddressableCache:
             slots_to_test = range(table_size)
 
         for slot in slots_to_test:
-            # Check if slot is filled
+            # Check if slot is filled (skip empty slots and tombstones)
             offset = start + slot * entry_size
             entry_hash = bytes(buf[offset : offset + KEY_HASH_WIDTH])
-            if entry_hash != b"\x00" * KEY_HASH_WIDTH:
+            if entry_hash not in (EMPTY_KEY_HASH, TOMBSTONE):
                 valid_slots.append(slot)
                 if len(valid_slots) >= samples:
                     break
@@ -648,10 +661,15 @@ class ContentAddressableCache:
             if slot is None:
                 raise KeyError(key)
 
-            # Clear entry (lazy deletion)
+            # Mark entry as tombstone (deleted) instead of clearing
+            # This preserves the linear probe chain for other keys
             buf = memoryview(self._shm.buf)
             offset = self._key_table_start + slot * KEY_HASH_ENTRY_SIZE
-            buf[offset : offset + KEY_HASH_ENTRY_SIZE] = b"\x00" * KEY_HASH_ENTRY_SIZE
+            # Set hash to tombstone marker, clear the rest
+            buf[offset : offset + KEY_HASH_WIDTH] = TOMBSTONE
+            buf[offset + KEY_HASH_WIDTH : offset + KEY_HASH_ENTRY_SIZE] = b"\x00" * (
+                KEY_HASH_ENTRY_SIZE - KEY_HASH_WIDTH
+            )
 
             self._set_current_items(self._get_current_items() - 1)
 
@@ -700,7 +718,8 @@ class ContentAddressableCache:
             for slot in range(table_size):
                 offset = start + slot * KEY_HASH_ENTRY_SIZE
                 entry_hash = bytes(buf[offset : offset + KEY_HASH_WIDTH])
-                if entry_hash != b"\x00" * KEY_HASH_WIDTH:
+                # Skip empty slots and tombstones
+                if entry_hash not in (EMPTY_KEY_HASH, TOMBSTONE):
                     key_addr = struct.unpack_from(">Q", buf, offset + KEY_HASH_WIDTH)[0]
                     if key_addr != 0:
                         key = self._read_blob(key_addr)
@@ -731,7 +750,7 @@ class ContentAddressableCache:
                 fingerprint = bytes(buf[offset : offset + CONTENT_FP_WIDTH])
 
                 # Check if slot is empty (all zeros)
-                if fingerprint == b"\x00" * CONTENT_FP_WIDTH:
+                if fingerprint == EMPTY_CONTENT_FP:
                     continue
 
                 # Get content address
@@ -762,6 +781,154 @@ class ContentAddressableCache:
             return self[key]
         except KeyError:
             return default
+
+    def compact(self) -> None: # noqa: C901, PLR0915, PLR0912
+        """Compact the blob pool by removing unreferenced blobs and defragmenting.
+
+        This method:
+        1. Collects all referenced blob addresses from hash tables
+        2. Sorts addresses and moves blobs sequentially to fill gaps
+        3. Updates all addresses in hash tables to point to new locations
+        4. Zeros out the remainder and resets blob pool pointers
+
+        Raises:
+            CouldNotLockError: If lock acquisition fails.
+        """
+        with self._locked():
+            buf = memoryview(self._shm.buf)
+            start = self._blob_pool_start
+            pool_size = self._blob_pool_size
+
+            # Step 1: Collect all referenced addresses
+            referenced_key_addrs: set[int] = set()
+            referenced_content_fps: set[bytes] = set()
+
+            # Scan key hash table
+            key_table_start = self._key_table_start
+            key_table_size = self._key_table_size
+            for slot in range(key_table_size):
+                offset = key_table_start + slot * KEY_HASH_ENTRY_SIZE
+                entry_hash = bytes(buf[offset : offset + KEY_HASH_WIDTH])
+                # Skip empty slots and tombstones
+                if entry_hash not in (EMPTY_KEY_HASH, TOMBSTONE):
+                    key_addr = struct.unpack_from(">Q", buf, offset + KEY_HASH_WIDTH)[0]
+                    if key_addr != 0:
+                        referenced_key_addrs.add(key_addr)
+                        # Get content fingerprint
+                        fp_offset = offset + KEY_HASH_WIDTH + ADDRESS_WIDTH
+                        content_fp = bytes(buf[fp_offset : fp_offset + CONTENT_FP_WIDTH])
+                        if content_fp != EMPTY_CONTENT_FP:
+                            referenced_content_fps.add(content_fp)
+
+            # Collect referenced content addresses
+            referenced_content_addrs: set[int] = set()
+            content_table_start = self._content_table_start
+            content_table_size = self._content_table_size
+            for slot in range(content_table_size):
+                offset = content_table_start + slot * CONTENT_FP_ENTRY_SIZE
+                fingerprint = bytes(buf[offset : offset + CONTENT_FP_WIDTH])
+                if fingerprint != EMPTY_CONTENT_FP and fingerprint in referenced_content_fps:
+                    content_addr = struct.unpack_from(">Q", buf, offset + CONTENT_FP_WIDTH)[0]
+                    if content_addr != 0:
+                        referenced_content_addrs.add(content_addr)
+
+            # Step 2: Collect all referenced addresses with their sizes
+            all_referenced_addrs = referenced_key_addrs | referenced_content_addrs
+            referenced_blobs: list[tuple[int, int]] = []  # (old_addr, entry_size)
+            skipped_addrs: set[int] = set()
+
+            for addr in all_referenced_addrs:
+                try:
+                    # Validate address is within blob pool bounds
+                    if addr < start or addr >= start + pool_size:
+                        logger.warning("Referenced address %d is out of blob pool bounds", addr)
+                        skipped_addrs.add(addr)
+                        continue
+                    length = struct.unpack_from(">I", buf, addr + BLOB_TYPE_WIDTH)[0]
+                    # Validate length is reasonable
+                    if length > pool_size:
+                        logger.warning("Blob at %d has invalid length %d", addr, length)
+                        skipped_addrs.add(addr)
+                        continue
+                    entry_size = _align(BLOB_HEADER_SIZE + length, ALIGNMENT)
+                    # Validate entry doesn't exceed pool bounds
+                    if addr + entry_size > start + pool_size:
+                        logger.warning("Blob at %d (size %d) exceeds pool bounds", addr, entry_size)
+                        skipped_addrs.add(addr)
+                        continue
+                    referenced_blobs.append((addr, entry_size))
+                except (struct.error, IndexError) as e:
+                    # Invalid blob, skip
+                    logger.warning("Failed to read blob at %d: %s", addr, e)
+                    skipped_addrs.add(addr)
+                    continue
+
+            # If we skipped any addresses, they won't be in addr_map, so their addresses won't be updated
+            # This could cause issues, but they're likely invalid blobs anyway
+            if skipped_addrs:
+                logger.warning("Skipped %d invalid blob addresses during compaction", len(skipped_addrs))
+
+            # Step 3: Sort by address and move sequentially to fill gaps
+            referenced_blobs.sort(key=lambda x: x[0])  # Sort by old address
+            addr_map: dict[int, int] = {}  # old_addr -> new_addr
+            new_ptr = start
+
+            for old_addr, entry_size in referenced_blobs:
+                # Always update address mapping
+                addr_map[old_addr] = new_ptr
+
+                if new_ptr != old_addr:
+                    # Copy blob to new location
+                    # Safe because we process in sorted order:
+                    # - If new_ptr < old_addr: writing before reading (safe)
+                    # - If new_ptr > old_addr: we've already processed everything <= old_addr (safe)
+                    old_contents = buf[old_addr : old_addr + entry_size]
+                    buf[new_ptr : new_ptr + entry_size] = old_contents
+
+                new_ptr += entry_size
+
+            # Step 4: Update all addresses in hash tables
+            # Update key addresses in key hash table
+            for slot in range(key_table_size):
+                offset = key_table_start + slot * KEY_HASH_ENTRY_SIZE
+                entry_hash = bytes(buf[offset : offset + KEY_HASH_WIDTH])
+                # Skip empty slots and tombstones
+                if entry_hash not in (EMPTY_KEY_HASH, TOMBSTONE):
+                    key_addr = struct.unpack_from(">Q", buf, offset + KEY_HASH_WIDTH)[0]
+                    if key_addr != 0:
+                        if key_addr in addr_map:
+                            struct.pack_into(">Q", buf, offset + KEY_HASH_WIDTH, addr_map[key_addr])
+                        else:
+                            # Address not in addr_map - this shouldn't happen for valid keys
+                            # It means the blob wasn't in referenced_blobs (couldn't read size or invalid)
+                            logger.warning(
+                                "Key address %d in hash table not found in addr_map during compaction",
+                                key_addr,
+                            )
+
+            # Update content addresses in content fingerprint table
+            for slot in range(content_table_size):
+                offset = content_table_start + slot * CONTENT_FP_ENTRY_SIZE
+                fingerprint = bytes(buf[offset : offset + CONTENT_FP_WIDTH])
+                if fingerprint != EMPTY_CONTENT_FP:
+                    content_addr = struct.unpack_from(">Q", buf, offset + CONTENT_FP_WIDTH)[0]
+                    if content_addr != 0 and content_addr in addr_map:
+                        struct.pack_into(">Q", buf, offset + CONTENT_FP_WIDTH, addr_map[content_addr])
+
+            # Step 5: Zero out remainder and reset pointers
+            if new_ptr < start + pool_size:
+                # Zero out in chunks to avoid creating large bytes object in memory
+                chunk_size = 8192  # 8KB chunks
+                zero_chunk = b"\x00" * chunk_size
+                current = new_ptr
+                while current < start + pool_size:
+                    chunk_len = min(chunk_size, start + pool_size - current)
+                    buf[current : current + chunk_len] = zero_chunk[:chunk_len]
+                    current += chunk_len
+
+            # Update pointers
+            self._set_blob_pool_next(new_ptr)
+            self._write_header_field(40, ">Q", new_ptr - start)  # blob_pool_used
 
     def clear(self) -> None:
         """Clear all items from cache.
