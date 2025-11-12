@@ -11,7 +11,7 @@ import uuid
 import pytest
 import xxhash
 
-from api.content_addressable_cache import BLOB_TYPE_CONTENT, ContentAddressableCache
+from content_addressable_cache.content_addressable_cache import BLOB_TYPE_CONTENT, ContentAddressableCache
 
 
 # Module-level worker functions for multiprocessing tests

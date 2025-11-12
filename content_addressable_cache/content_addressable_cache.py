@@ -96,6 +96,8 @@ class ContentAddressableCache:
         load_factor: float = DEFAULT_LOAD_FACTOR,
         hash_func: Callable[[bytes], bytes] | None = None,
         lock_timeout: float = DEFAULT_LOCK_TIMEOUT,
+        avg_key_size: int = 200,
+        avg_value_size: int = 2000,
     ) -> None:
         """Initialize the cache.
 
@@ -105,6 +107,8 @@ class ContentAddressableCache:
             load_factor: Hash table load factor threshold (0.0-1.0).
             hash_func: Hash function returning 128-bit hash as bytes.
             lock_timeout: Timeout for lock acquisition in seconds.
+            avg_key_size: Average size of a key in bytes.
+            avg_value_size: Average size of a value in bytes.
         """
         if maxsize <= 0:
             msg = "maxsize must be positive"
@@ -117,10 +121,11 @@ class ContentAddressableCache:
         self._lock = RLock()
 
         # Calculate sizes
-        key_table_size = int(maxsize / load_factor) * KEY_HASH_ENTRY_SIZE
-        content_table_size = int(maxsize / load_factor) * CONTENT_FP_ENTRY_SIZE
-        # Estimate blob pool: assume avg 200 bytes key + 2000 bytes content
-        blob_pool_size = int(maxsize * (200 + 2000) * 1.5)
+        max_items = maxsize
+        num_slots = int(max_items / load_factor)
+        key_table_size = num_slots * KEY_HASH_ENTRY_SIZE
+        content_table_size = num_slots * CONTENT_FP_ENTRY_SIZE
+        blob_pool_size = int(max_items * (avg_key_size + avg_value_size))
         total_size = HEADER_SIZE + key_table_size + content_table_size + blob_pool_size
 
         if shared_memory is None:
