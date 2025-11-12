@@ -10,4 +10,5 @@ requests
 tenacity
 testcontainers[postgres]
 titlecase
+xxhash
 zstandard
