@@ -10,6 +10,29 @@ import pytest
 from api.content_addressable_cache import ContentAddressableCache
 
 
+# Module-level worker functions for multiprocessing tests
+def _worker_add_item(cache: ContentAddressableCache) -> None:
+    """Worker function to add item to cache."""
+    cache[b"worker_key"] = b"worker_value"
+
+
+def _worker_add_multiple_items(worker_id: int, cache: ContentAddressableCache) -> None:
+    """Worker function to add multiple items to cache."""
+    for i in range(10):
+        key = f"worker_{worker_id}_key_{i}".encode()
+        value = f"worker_{worker_id}_value_{i}".encode()
+        cache[key] = value
+
+
+def _worker_reader(process_id: int, cache: ContentAddressableCache) -> None:
+    """Worker function to read from cache."""
+    for i in range(50):
+        key = f"key_{i}".encode()
+        if key in cache:
+            value = cache[key]
+            assert value == f"value_{i}".encode()
+
+
 def test_basic_set_get() -> None:
     """Test basic set and get operations."""
     cache = ContentAddressableCache(maxsize=10)
@@ -166,6 +189,54 @@ def test_content_deduplication() -> None:
         cache.close()
 
 
+def test_content_deduplication_storage() -> None:
+    """Test that storing same value under different keys only stores one copy in blob pool."""
+    cache = ContentAddressableCache(maxsize=10)
+    try:
+        # Store same value under multiple keys
+        shared_value = b"shared_value_12345"
+        cache[b"key1"] = shared_value
+        used_after_one = cache._get_blob_pool_used()
+
+        cache[b"key2"] = shared_value
+        used_after_two = cache._get_blob_pool_used()
+
+        cache[b"key3"] = shared_value
+        used_after_three = cache._get_blob_pool_used()
+
+        # Blob pool usage should only increase by key storage (not content storage)
+        # Each key adds: 1 (type) + 4 (length) + key_len, aligned to 8 bytes
+        # Content is only stored once
+        key_entry_size = (1 + 4 + len(b"key1") + 7) & ~7  # Aligned
+        content_entry_size = (1 + 4 + len(shared_value) + 7) & ~7  # Aligned
+
+        # After first insert: key1 + content
+        # After second insert: key1 + content + key2 (content reused)
+        # After third insert: key1 + content + key2 + key3 (content reused)
+        expected_after_two = used_after_one + key_entry_size
+        expected_after_three = used_after_two + key_entry_size
+
+        # Allow some tolerance for alignment differences
+        assert abs(used_after_two - expected_after_two) <= 8
+        assert abs(used_after_three - expected_after_three) <= 8
+
+        # Now store different values - should use more space
+        cache[b"key4"] = b"different_value_1"
+        used_after_different1 = cache._get_blob_pool_used()
+        cache[b"key5"] = b"different_value_2"
+        used_after_different2 = cache._get_blob_pool_used()
+
+        # Each different value should add both key and content
+        diff1 = used_after_different1 - used_after_three
+        diff2 = used_after_different2 - used_after_different1
+
+        # Should be significantly more than just a key (includes content)
+        assert diff1 > key_entry_size
+        assert diff2 > key_entry_size
+    finally:
+        cache.close()
+
+
 def test_key_deduplication() -> None:
     """Test that reusing same key doesn't create duplicate."""
     cache = ContentAddressableCache(maxsize=10)
@@ -216,11 +287,8 @@ def test_multiprocessing_shared() -> None:
         # Add item in main process
         cache[b"main_key"] = b"main_value"
 
-        def worker(cache: ContentAddressableCache) -> None:
-            cache[b"worker_key"] = b"worker_value"
-
         # Create worker process
-        process = multiprocessing.Process(target=worker, args=(cache,))
+        process = multiprocessing.Process(target=_worker_add_item, args=(cache,))
         process.start()
         process.join()
 
@@ -237,16 +305,10 @@ def test_multiple_processes_concurrent() -> None:
     """Test multiple processes accessing cache concurrently."""
     cache = ContentAddressableCache(maxsize=100)
     try:
-        def worker(worker_id: int, cache: ContentAddressableCache) -> None:
-            for i in range(10):
-                key = f"worker_{worker_id}_key_{i}".encode()
-                value = f"worker_{worker_id}_value_{i}".encode()
-                cache[key] = value
-
         # Start multiple processes
         processes = []
         for i in range(3):
-            process = multiprocessing.Process(target=worker, args=(i, cache))
+            process = multiprocessing.Process(target=_worker_add_multiple_items, args=(i, cache))
             processes.append(process)
             process.start()
 
@@ -300,8 +362,15 @@ def test_custom_hash_function() -> None:
 
     def custom_hash(data: bytes) -> tuple[int, bytes]:
         """Simple custom hash."""
-        key_hash = hash(data) & 0xFFFFFFFF_FFFFFFFF
-        fingerprint = hash(data).to_bytes(16, byteorder="big")
+        # Handle negative hash values by masking
+        h = hash(data)
+        key_hash = h & 0xFFFFFFFF_FFFFFFFF
+        # For fingerprint, use absolute value and pad to 16 bytes
+        fp_int = abs(h) & 0xFFFFFFFF_FFFFFFFF
+        # Use two different hash calls to get 128 bits
+        h2 = hash(data[::-1])  # Hash reversed data for second part
+        fp_int2 = abs(h2) & 0xFFFFFFFF_FFFFFFFF
+        fingerprint = (fp_int << 64 | fp_int2).to_bytes(16, byteorder="big")
         return key_hash, fingerprint
 
     cache = ContentAddressableCache(maxsize=10, hash_func=custom_hash)
@@ -347,18 +416,10 @@ def test_concurrent_reads() -> None:
         for i in range(50):
             cache[f"key_{i}".encode()] = f"value_{i}".encode()
 
-        def reader(process_id: int, cache: ContentAddressableCache) -> None:
-            """Read from cache."""
-            for i in range(50):
-                key = f"key_{i}".encode()
-                if key in cache:
-                    value = cache[key]
-                    assert value == f"value_{i}".encode()
-
         # Start multiple reader processes
         processes = []
         for i in range(5):
-            process = multiprocessing.Process(target=reader, args=(i, cache))
+            process = multiprocessing.Process(target=_worker_reader, args=(i, cache))
             processes.append(process)
             process.start()
 

@@ -201,6 +201,10 @@ class ContentAddressableCache:
         """Get the next append pointer for blob pool."""
         return self._read_header_field(48, ">Q")
 
+    def _get_blob_pool_used(self) -> int:
+        """Get the bytes used in blob pool (for testing)."""
+        return self._read_header_field(40, ">Q")
+
     def _set_blob_pool_next(self, value: int) -> None:
         """Set the next append pointer for blob pool."""
         self._write_header_field(48, ">Q", value)
@@ -480,7 +484,11 @@ class ContentAddressableCache:
                 # Update fingerprint in key table
                 buf[offset + 16 : offset + 32] = value_fp
             else:
-                # New key - append to blob pool
+                # New key - check if we need to evict first
+                if self._get_current_items() >= self.maxsize:
+                    self._evict_lru()
+
+                # Append key to blob pool
                 key_addr = self._append_blob(BLOB_TYPE_KEY, key)
 
                 # Find or create content
@@ -518,10 +526,6 @@ class ContentAddressableCache:
 
                 # Update item count
                 self._set_current_items(self._get_current_items() + 1)
-
-                # Check if we need to evict
-                if self._get_current_items() > self.maxsize:
-                    self._evict_lru()
 
         finally:
             self._lock.release()
