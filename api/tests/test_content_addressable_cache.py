@@ -6,11 +6,12 @@ import itertools
 import multiprocessing
 import random
 import time
+import uuid
 
 import pytest
 import xxhash
 
-from api.content_addressable_cache import ContentAddressableCache
+from api.content_addressable_cache import BLOB_TYPE_CONTENT, ContentAddressableCache
 
 
 # Module-level worker functions for multiprocessing tests
@@ -872,5 +873,35 @@ def test_compaction_with_many_items() -> None:
         # Deleted items should not work
         for i in range(0, 50, 2):
             assert f"key_{i}".encode() not in cache
+    finally:
+        cache.close()
+
+
+def test_blob_pool_full() -> None:
+    """Test that _append_blob raises RuntimeError when blob pool is full."""
+    # Create a small cache to fill up quickly
+    # Use a very small maxsize to get a small blob pool
+    cache = ContentAddressableCache(maxsize=100)
+    initial_empty_used = cache._get_blob_pool_used()
+    try:
+        # Keep appending UUIDs until we get a RuntimeError
+        # Use the lock context manager since _append_blob expects to be called within a lock
+        with pytest.raises(RuntimeError, match="Blob pool full"):  # noqa: PT012
+            with cache._locked():
+                for _ in range(14_000):
+                    # Generate a UUID as bytes (16 bytes)
+                    uuid_bytes = uuid.uuid4().bytes
+                    cache._append_blob(BLOB_TYPE_CONTENT, uuid_bytes)
+        full_used = cache._get_blob_pool_used()
+        cache.compact()
+        re_empty_used = cache._get_blob_pool_used()
+        assert initial_empty_used == re_empty_used
+        assert re_empty_used < full_used
+        # then re-add a bunch of items
+        with cache._locked():
+            for _ in range(100):
+                # Generate a UUID as bytes (16 bytes)
+                uuid_bytes = uuid.uuid4().bytes
+                cache._append_blob(BLOB_TYPE_CONTENT, uuid_bytes)
     finally:
         cache.close()
