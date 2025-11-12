@@ -16,10 +16,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
-try:
-    import xxhash
-except ImportError:
-    xxhash = None  # type: ignore[assignment]
+import xxhash
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +32,10 @@ MAGIC_BASE = 0x4AB8_6639_3C4D_0000
 VERSION = 1
 MAGIC = MAGIC_BASE | VERSION  # 0x4AB8_6639_3C4D_0001
 HEADER_SIZE = 512
-KEY_HASH_WIDTH = 8  # 64-bit key hash in bytes
+KEY_HASH_WIDTH = 16  # 128-bit key hash in bytes
 CONTENT_FP_WIDTH = 16  # 128-bit content fingerprint in bytes
 ADDRESS_WIDTH = 8  # 64-bit address in bytes
-KEY_HASH_ENTRY_SIZE = KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH  # 8 + 8 + 16 = 32
+KEY_HASH_ENTRY_SIZE = KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH  # 16 + 8 + 16 = 40
 CONTENT_FP_ENTRY_SIZE = CONTENT_FP_WIDTH + ADDRESS_WIDTH  # 16 + 8 = 24
 BLOB_TYPE_KEY = 0x01
 BLOB_TYPE_CONTENT = 0x02
@@ -57,19 +54,13 @@ def _align(size: int, alignment: int = ALIGNMENT) -> int:
     return (size + alignment - 1) & ~(alignment - 1)
 
 
-def _default_hash(data: bytes) -> tuple[int, bytes]:
+def _default_hash(data: bytes) -> bytes:
     """Default hash function using xxhash.
 
     Returns:
-        Tuple of (64-bit hash for keys, 128-bit fingerprint for content)
+        128-bit hash as bytes.
     """
-    # Use xxhash for both
-    key_hash = xxhash.xxh64(data).intdigest()
-    # For 128-bit fingerprint, use two different seeds
-    fp1 = xxhash.xxh64(data, seed=0).intdigest()
-    fp2 = xxhash.xxh64(data, seed=1).intdigest()
-    fingerprint = (fp1 << 64 | fp2).to_bytes(16, byteorder="big")
-    return key_hash, fingerprint
+    return xxhash.xxh128_digest(data)
 
 
 class ContentAddressableCache:
@@ -90,7 +81,7 @@ class ContentAddressableCache:
         maxsize: int,
         shared_memory: SharedMemory | None = None,
         load_factor: float = DEFAULT_LOAD_FACTOR,
-        hash_func: Callable[[bytes], tuple[int, bytes]] | None = None,
+        hash_func: Callable[[bytes], bytes] | None = None,
         lock_timeout: float = DEFAULT_LOCK_TIMEOUT,
     ) -> None:
         """Initialize the cache.
@@ -99,7 +90,7 @@ class ContentAddressableCache:
             maxsize: Maximum number of cache entries.
             shared_memory: Existing SharedMemory to use, or None to create new.
             load_factor: Hash table load factor threshold (0.0-1.0).
-            hash_func: Hash function returning (key_hash, content_fingerprint).
+            hash_func: Hash function returning 128-bit hash as bytes.
             lock_timeout: Timeout for lock acquisition in seconds.
         """
         if maxsize <= 0:
@@ -247,7 +238,7 @@ class ContentAddressableCache:
         """Set current number of items."""
         self._write_header_field(96, ">Q", value)
 
-    def _find_key_slot(self, key_hash: int, key_bytes: bytes) -> int | None:
+    def _find_key_slot(self, key_hash: bytes, key_bytes: bytes) -> int | None:
         """Find slot for key in hash table using linear probing.
 
         Returns:
@@ -258,14 +249,16 @@ class ContentAddressableCache:
         entry_size = KEY_HASH_ENTRY_SIZE
         table_size = self._key_table_size
 
-        slot = key_hash % table_size
+        # Use first 8 bytes for slot calculation
+        slot_hash = int.from_bytes(key_hash[:ADDRESS_WIDTH], byteorder="big")
+        slot = slot_hash % table_size
         initial_slot = slot
 
         while True:
             offset = start + slot * entry_size
-            entry_hash = struct.unpack_from(">Q", buf, offset)[0]
+            entry_hash = bytes(buf[offset : offset + KEY_HASH_WIDTH])
 
-            if entry_hash == 0:
+            if entry_hash == b"\x00" * KEY_HASH_WIDTH:
                 # Empty slot
                 return None
 
@@ -284,7 +277,7 @@ class ContentAddressableCache:
                 # Table full
                 return None
 
-    def _find_empty_key_slot(self, key_hash: int) -> int | None:
+    def _find_empty_key_slot(self, key_hash: bytes) -> int | None:
         """Find empty slot for key using linear probing.
 
         Returns:
@@ -295,14 +288,16 @@ class ContentAddressableCache:
         entry_size = KEY_HASH_ENTRY_SIZE
         table_size = self._key_table_size
 
-        slot = key_hash % table_size
+        # Use first 8 bytes for slot calculation
+        slot_hash = int.from_bytes(key_hash[:ADDRESS_WIDTH], byteorder="big")
+        slot = slot_hash % table_size
         initial_slot = slot
 
         while True:
             offset = start + slot * entry_size
-            entry_hash = struct.unpack_from(">Q", buf, offset)[0]
+            entry_hash = bytes(buf[offset : offset + KEY_HASH_WIDTH])
 
-            if entry_hash == 0:
+            if entry_hash == b"\x00" * KEY_HASH_WIDTH:
                 # Empty slot found
                 return slot
 
@@ -324,7 +319,7 @@ class ContentAddressableCache:
         table_size = self._content_table_size
 
         # Use first 8 bytes of fingerprint as hash for slot calculation
-        slot_hash = int.from_bytes(fingerprint[:KEY_HASH_WIDTH], byteorder="big")
+        slot_hash = int.from_bytes(fingerprint[:ADDRESS_WIDTH], byteorder="big")
         slot = slot_hash % table_size
         initial_slot = slot
 
@@ -357,7 +352,7 @@ class ContentAddressableCache:
         entry_size = CONTENT_FP_ENTRY_SIZE
         table_size = self._content_table_size
 
-        slot_hash = int.from_bytes(fingerprint[:8], byteorder="big")
+        slot_hash = int.from_bytes(fingerprint[:ADDRESS_WIDTH], byteorder="big")
         slot = slot_hash % table_size
         initial_slot = slot
 
@@ -442,7 +437,7 @@ class ContentAddressableCache:
             CouldNotLock: If lock acquisition fails.
         """
         with self._locked():
-            key_hash, _ = self.hash_func(key)
+            key_hash = self.hash_func(key)
             slot = self._find_key_slot(key_hash, key)
             if slot is None:
                 raise KeyError(key)
@@ -477,8 +472,8 @@ class ContentAddressableCache:
         Raises:
             CouldNotLock: If lock acquisition fails.
         """
-        key_hash, _ = self.hash_func(key)
-        _, value_fp = self.hash_func(value)
+        key_hash = self.hash_func(key)
+        value_fp = self.hash_func(value)
 
         with self._locked():
             # Check if key exists
@@ -543,7 +538,7 @@ class ContentAddressableCache:
 
                 buf = memoryview(self._shm.buf)
                 offset = self._key_table_start + key_slot * KEY_HASH_ENTRY_SIZE
-                struct.pack_into(">Q", buf, offset, key_hash)
+                buf[offset : offset + KEY_HASH_WIDTH] = key_hash
                 struct.pack_into(">Q", buf, offset + KEY_HASH_WIDTH, key_addr)
                 buf[offset + KEY_HASH_WIDTH + ADDRESS_WIDTH : offset + KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH] = value_fp
 
@@ -561,8 +556,8 @@ class ContentAddressableCache:
 
         for slot in range(table_size):
             offset = start + slot * entry_size
-            entry_hash = struct.unpack_from(">Q", buf, offset)[0]
-            if entry_hash != 0:
+            entry_hash = bytes(buf[offset : offset + KEY_HASH_WIDTH])
+            if entry_hash != b"\x00" * KEY_HASH_WIDTH:
                 # Found an entry - evict it
                 # Clear the entry
                 buf[offset : offset + entry_size] = b"\x00" * entry_size
@@ -580,7 +575,7 @@ class ContentAddressableCache:
             CouldNotLock: If lock acquisition fails.
         """
         with self._locked():
-            key_hash, _ = self.hash_func(key)
+            key_hash = self.hash_func(key)
             slot = self._find_key_slot(key_hash, key)
             if slot is None:
                 raise KeyError(key)
@@ -605,7 +600,7 @@ class ContentAddressableCache:
             CouldNotLock: If lock acquisition fails.
         """
         with self._locked():
-            key_hash, _ = self.hash_func(key)
+            key_hash = self.hash_func(key)
             return self._find_key_slot(key_hash, key) is not None
 
     def __len__(self) -> int:
@@ -637,8 +632,8 @@ class ContentAddressableCache:
 
             for slot in range(table_size):
                 offset = start + slot * KEY_HASH_ENTRY_SIZE
-                entry_hash = struct.unpack_from(">Q", buf, offset)[0]
-                if entry_hash != 0:
+                entry_hash = bytes(buf[offset : offset + KEY_HASH_WIDTH])
+                if entry_hash != b"\x00" * KEY_HASH_WIDTH:
                     key_addr = struct.unpack_from(">Q", buf, offset + KEY_HASH_WIDTH)[0]
                     if key_addr != 0:
                         key = self._read_blob(key_addr)

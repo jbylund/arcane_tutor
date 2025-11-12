@@ -442,18 +442,16 @@ def test_empty_value() -> None:
 def test_custom_hash_function() -> None:
     """Test with custom hash function."""
 
-    def custom_hash(data: bytes) -> tuple[int, bytes]:
-        """Simple custom hash."""
+    def custom_hash(data: bytes) -> bytes:
+        """Simple custom hash returning 128-bit hash."""
         # Handle negative hash values by masking
         h = hash(data)
-        key_hash = h & 0xFFFFFFFF_FFFFFFFF
-        # For fingerprint, use absolute value and pad to 16 bytes
-        fp_int = abs(h) & 0xFFFFFFFF_FFFFFFFF
         # Use two different hash calls to get 128 bits
         h2 = hash(data[::-1])  # Hash reversed data for second part
+        fp_int = abs(h) & 0xFFFFFFFF_FFFFFFFF
         fp_int2 = abs(h2) & 0xFFFFFFFF_FFFFFFFF
-        fingerprint = (fp_int << 64 | fp_int2).to_bytes(16, byteorder="big")
-        return key_hash, fingerprint
+        hash_bytes = (fp_int << 64 | fp_int2).to_bytes(16, byteorder="big")
+        return hash_bytes
 
     cache = ContentAddressableCache(maxsize=10, hash_func=custom_hash)
     try:
