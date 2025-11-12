@@ -464,7 +464,6 @@ class ContentAddressableCache:
             Blob data bytes.
         """
         buf = memoryview(self._shm.buf)
-        struct.unpack_from("B", buf, address)[0]
         length = struct.unpack_from(">I", buf, address + BLOB_TYPE_WIDTH)[0]
         return bytes(buf[address + BLOB_HEADER_SIZE : address + BLOB_HEADER_SIZE + length])
 
