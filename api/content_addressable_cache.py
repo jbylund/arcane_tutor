@@ -35,8 +35,11 @@ MAGIC_BASE = 0x4AB8_6639_3C4D_0000
 VERSION = 1
 MAGIC = MAGIC_BASE | VERSION  # 0x4AB8_6639_3C4D_0001
 HEADER_SIZE = 512
-KEY_HASH_ENTRY_SIZE = 32  # 8 (hash) + 8 (addr) + 16 (fingerprint)
-CONTENT_FP_ENTRY_SIZE = 24  # 16 (fingerprint) + 8 (addr)
+KEY_HASH_WIDTH = 8  # 64-bit key hash in bytes
+CONTENT_FP_WIDTH = 16  # 128-bit content fingerprint in bytes
+ADDRESS_WIDTH = 8  # 64-bit address in bytes
+KEY_HASH_ENTRY_SIZE = KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH  # 8 + 8 + 16 = 32
+CONTENT_FP_ENTRY_SIZE = CONTENT_FP_WIDTH + ADDRESS_WIDTH  # 16 + 8 = 24
 BLOB_TYPE_KEY = 0x01
 BLOB_TYPE_CONTENT = 0x02
 ALIGNMENT = 8
@@ -268,7 +271,7 @@ class ContentAddressableCache:
 
             if entry_hash == key_hash:
                 # Hash matches, check actual key
-                key_addr = struct.unpack_from(">Q", buf, offset + 8)[0]
+                key_addr = struct.unpack_from(">Q", buf, offset + KEY_HASH_WIDTH)[0]
                 if key_addr != 0:
                     # Read and compare key
                     stored_key = self._read_blob(key_addr)
@@ -321,15 +324,15 @@ class ContentAddressableCache:
         table_size = self._content_table_size
 
         # Use first 8 bytes of fingerprint as hash for slot calculation
-        slot_hash = int.from_bytes(fingerprint[:8], byteorder="big")
+        slot_hash = int.from_bytes(fingerprint[:KEY_HASH_WIDTH], byteorder="big")
         slot = slot_hash % table_size
         initial_slot = slot
 
         while True:
             offset = start + slot * entry_size
-            stored_fp = buf[offset : offset + 16]
+            stored_fp = buf[offset : offset + CONTENT_FP_WIDTH]
 
-            if stored_fp == b"\x00" * 16:
+            if stored_fp == b"\x00" * CONTENT_FP_WIDTH:
                 # Empty slot
                 return None
 
@@ -360,9 +363,9 @@ class ContentAddressableCache:
 
         while True:
             offset = start + slot * entry_size
-            stored_fp = buf[offset : offset + 16]
+            stored_fp = buf[offset : offset + CONTENT_FP_WIDTH]
 
-            if stored_fp == b"\x00" * 16:
+            if stored_fp == b"\x00" * CONTENT_FP_WIDTH:
                 # Empty slot found
                 return slot
 
@@ -447,8 +450,8 @@ class ContentAddressableCache:
             # Read entry
             buf = memoryview(self._shm.buf)
             offset = self._key_table_start + slot * KEY_HASH_ENTRY_SIZE
-            struct.unpack_from(">Q", buf, offset + 8)[0]
-            fingerprint = bytes(buf[offset + 16 : offset + 32])
+            struct.unpack_from(">Q", buf, offset + KEY_HASH_WIDTH)[0]
+            fingerprint = bytes(buf[offset + KEY_HASH_WIDTH + ADDRESS_WIDTH : offset + KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH])
 
             # Find content
             content_slot = self._find_content_slot(fingerprint)
@@ -456,7 +459,7 @@ class ContentAddressableCache:
                 raise KeyError(key)
 
             content_offset = self._content_table_start + content_slot * CONTENT_FP_ENTRY_SIZE
-            content_addr = struct.unpack_from(">Q", buf, content_offset + 16)[0]
+            content_addr = struct.unpack_from(">Q", buf, content_offset + CONTENT_FP_WIDTH)[0]
 
             # Verify content type
             if self._get_blob_type(content_addr) != BLOB_TYPE_CONTENT:
@@ -484,7 +487,7 @@ class ContentAddressableCache:
                 # Key exists, update content fingerprint
                 buf = memoryview(self._shm.buf)
                 offset = self._key_table_start + key_slot * KEY_HASH_ENTRY_SIZE
-                key_addr = struct.unpack_from(">Q", buf, offset + 8)[0]
+                key_addr = struct.unpack_from(">Q", buf, offset + KEY_HASH_WIDTH)[0]
 
                 # Check if content already exists
                 content_slot = self._find_content_slot(value_fp)
@@ -498,11 +501,11 @@ class ContentAddressableCache:
                         raise RuntimeError(msg)
                     # Insert into content table
                     content_offset = self._content_table_start + content_slot * CONTENT_FP_ENTRY_SIZE
-                    buf[content_offset : content_offset + 16] = value_fp
-                    struct.pack_into(">Q", buf, content_offset + 16, content_addr)
+                    buf[content_offset : content_offset + CONTENT_FP_WIDTH] = value_fp
+                    struct.pack_into(">Q", buf, content_offset + CONTENT_FP_WIDTH, content_addr)
 
                 # Update fingerprint in key table
-                buf[offset + 16 : offset + 32] = value_fp
+                buf[offset + KEY_HASH_WIDTH + ADDRESS_WIDTH : offset + KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH] = value_fp
             else:
                 # New key - check if we need to evict first
                 if self._get_current_items() >= self.maxsize:
@@ -524,13 +527,13 @@ class ContentAddressableCache:
                     # Insert into content table
                     buf = memoryview(self._shm.buf)
                     content_offset = self._content_table_start + content_slot * CONTENT_FP_ENTRY_SIZE
-                    buf[content_offset : content_offset + 16] = value_fp
-                    struct.pack_into(">Q", buf, content_offset + 16, content_addr)
+                    buf[content_offset : content_offset + CONTENT_FP_WIDTH] = value_fp
+                    struct.pack_into(">Q", buf, content_offset + CONTENT_FP_WIDTH, content_addr)
                 else:
                     # Content exists - reuse address
                     buf = memoryview(self._shm.buf)
                     content_offset = self._content_table_start + content_slot * CONTENT_FP_ENTRY_SIZE
-                    content_addr = struct.unpack_from(">Q", buf, content_offset + 16)[0]
+                    content_addr = struct.unpack_from(">Q", buf, content_offset + CONTENT_FP_WIDTH)[0]
 
                 # Insert into key table
                 key_slot = self._find_empty_key_slot(key_hash)
@@ -541,8 +544,8 @@ class ContentAddressableCache:
                 buf = memoryview(self._shm.buf)
                 offset = self._key_table_start + key_slot * KEY_HASH_ENTRY_SIZE
                 struct.pack_into(">Q", buf, offset, key_hash)
-                struct.pack_into(">Q", buf, offset + 8, key_addr)
-                buf[offset + 16 : offset + 32] = value_fp
+                struct.pack_into(">Q", buf, offset + KEY_HASH_WIDTH, key_addr)
+                buf[offset + KEY_HASH_WIDTH + ADDRESS_WIDTH : offset + KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH] = value_fp
 
                 # Update item count
                 self._set_current_items(self._get_current_items() + 1)
@@ -636,7 +639,7 @@ class ContentAddressableCache:
                 offset = start + slot * KEY_HASH_ENTRY_SIZE
                 entry_hash = struct.unpack_from(">Q", buf, offset)[0]
                 if entry_hash != 0:
-                    key_addr = struct.unpack_from(">Q", buf, offset + 8)[0]
+                    key_addr = struct.unpack_from(">Q", buf, offset + KEY_HASH_WIDTH)[0]
                     if key_addr != 0:
                         key = self._read_blob(key_addr)
                         keys.append(key)
@@ -663,14 +666,14 @@ class ContentAddressableCache:
 
             for slot in range(table_size):
                 offset = start + slot * entry_size
-                fingerprint = bytes(buf[offset : offset + 16])
+                fingerprint = bytes(buf[offset : offset + CONTENT_FP_WIDTH])
 
                 # Check if slot is empty (all zeros)
-                if fingerprint == b"\x00" * 16:
+                if fingerprint == b"\x00" * CONTENT_FP_WIDTH:
                     continue
 
                 # Get content address
-                content_addr = struct.unpack_from(">Q", buf, offset + 16)[0]
+                content_addr = struct.unpack_from(">Q", buf, offset + CONTENT_FP_WIDTH)[0]
                 if content_addr == 0:
                     continue
 
