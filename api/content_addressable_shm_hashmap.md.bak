@@ -1,0 +1,585 @@
+# Content Addressable Storage Shared Memory Cache Plan
+
+Need multiple mappings to deduplicate.
+
+hash of key // fixed width
+content fingerprint // fixed width
+key // variable width
+key address // fixed width - address of key in shared memory
+content // variable width
+content address // fixed width - address of content in shared memory
+
+addresses expressed as start, end, or start + length?
+
+hash of key -> (
+    key address, // fixed width
+    content fingerprint, // fixed width
+)
+
+# all maps should be fixed width on both sides
+content fingerprint -> content_address
+
+This provides cheap deduplication of content (values) in the cache.
+
+Look at how the ShareableList is implemented in https://github.com/python/cpython/blob/main/Lib/multiprocessing/shared_memory.py#L259
+
+We can make the (key, fingerprint) fixed width.
+
+But the key itself is variable length, so we need a third mapping of key hash -> key.
+
+How do we handle the case where two keys have the same hash?
+We hash the key and from that get the key address.
+We can then compare the key address with the key we are inserting to see if it is the same key or if we probe the next address.
+
+## Reference Counting & Garbage Collection
+
+### Lazy Deletion Strategy
+When a key is evicted:
+1. Remove entry from `key_hash -> (key_address, content_fingerprint)` map
+2. Leave key data in variable-width key storage (marked as deleted or just unreferenced)
+3. Leave content data in variable-width content storage (may still be referenced by other keys)
+
+### Sweep Operation
+Periodically (or on-demand) compact storage:
+1. Scan all entries in `key_hash -> (key_address, content_fingerprint)` map
+2. Collect set of all referenced:
+   - `key_addresses` (keys that are still in use)
+   - `content_fingerprints` (content that is still referenced - any count > 0)
+3. Scan `content_fingerprint -> content_address` map:
+   - Remove entries where fingerprint NOT in referenced set (0 references)
+   - Keep entries where fingerprint IS in referenced set (1+ references, exact count doesn't matter)
+   - Mark unreferenced content storage slots as free
+4. Compact variable-width storage:
+   - Remove unreferenced keys from key storage
+   - Remove unreferenced content from content storage
+   - Defragment by moving remaining items to fill gaps
+
+**Note**: Content deduplication is automatic - if multiple keys reference the same content fingerprint,
+the fingerprint will appear in the referenced set (from step 2), so the content will be preserved
+regardless of how many keys point to it. We only need to distinguish 0 references (delete) vs >0 references (keep).
+
+### Questions:
+- When to trigger sweep? (background thread, on-demand, threshold-based?)
+- How to handle concurrent access during sweep? (read-only mode, copy-on-write?)
+- Tombstone markers in maps vs. just absence? (helps distinguish "never existed" from "deleted but not swept")
+
+## Memory Allocation Strategy
+
+### Variable-Width Storage Pools
+Need two separate storage pools:
+- **Key storage pool**: Variable-width key data
+- **Content storage pool**: Variable-width content data
+
+### Allocation Approaches
+
+#### Option 1: Sequential Append-Only (Simplest)
+- Allocate sequentially from a growing pool
+- No free list management during normal operation
+- Fragmentation handled during sweep/compaction
+- **Pros**: Simple, fast allocation (just increment pointer), no fragmentation during inserts
+- **Cons**: Requires periodic compaction, can't reuse freed space immediately
+
+#### Option 2: Free List (Traditional)
+- Maintain free list of freed blocks by size
+- Allocate from free list if available, otherwise append
+- **Pros**: Can reuse freed space immediately
+- **Cons**: More complex, fragmentation from variable sizes, need to track free blocks
+
+#### Option 3: Buddy System
+- Allocate in power-of-2 sizes
+- Split/merge blocks as needed
+- **Pros**: Reduces external fragmentation, fast allocation
+- **Cons**: Internal fragmentation (waste), more complex
+
+#### Option 4: Segregated Free Lists
+- Multiple free lists for different size ranges (e.g., <64B, 64-256B, 256-1KB, >1KB)
+- **Pros**: Better fit than single free list, can reuse space
+- **Cons**: More complex than append-only, still has fragmentation
+
+### Recommendation: Sequential Append-Only + Periodic Compaction
+Given the lazy deletion + sweep approach, sequential allocation fits well:
+- Fast inserts: just append to end of pool
+- Sweep handles cleanup: compact and reset append pointer
+- Simple: no free list management needed
+- Works well with LRU: evictions are infrequent, compaction can happen on same schedule
+
+### Address Representation
+**Recommendation: `start + length`**
+- More compact than `start + end` (saves 4-8 bytes per address)
+- Easier bounds checking: `end = start + length`
+- Alignment: Consider 8-byte alignment for performance (round up length to multiple of 8)
+
+### Memory Layout Structure
+```
+[Header/Metadata Region]
+  - Total size
+  - Key pool start/end
+  - Content pool start/end
+  - Hash table metadata
+  - Append pointers (key_next, content_next)
+
+[Hash Table Region]
+  - key_hash -> (key_address, content_fingerprint) table
+  - content_fingerprint -> content_address table
+
+[Key Storage Pool]
+  - Sequential variable-width key data
+  - Format: [length: 4 bytes][key_bytes: variable]
+
+[Content Storage Pool]
+  - Sequential variable-width content data
+  - Format: [length: 4 bytes][content_bytes: variable]
+```
+
+### SharedMemory Constraints (Python multiprocessing.SharedMemory)
+**Critical**: `multiprocessing.SharedMemory` creates a **fixed-size** block of memory:
+- Size must be specified at creation time
+- **Cannot be resized** after creation
+- Uses memory-mapped files (on most platforms)
+- Persists across process restarts if using named shared memory
+
+**Implications for our design**:
+1. **Fixed-size allocation**: Must pre-allocate entire shared memory block
+2. **No dynamic growth**: Can't expand - must create new larger SharedMemory and migrate (complex)
+3. **OOM handling critical**: When pool fills, must either:
+   - Evict LRU items (preferred - fits LRU semantics)
+   - Trigger compaction to free space
+   - Fail the insert (last resort)
+4. **High water mark essential**: Need to track usage to know when compaction/eviction needed
+5. **Size calculation**: Must estimate total size needed upfront:
+   - Hash table sizes (based on max items)
+   - Key storage pool size (estimate average key size)
+   - Content storage pool size (estimate average content size, account for deduplication savings)
+
+### Size Estimation Strategy
+```
+Total Size = Header + Hash Tables + Key Pool + Content Pool
+
+Header: ~256 bytes (metadata, pointers, counters)
+Hash Tables:
+  - key_hash table: max_items * entry_size (e.g., 8 bytes hash + 16 bytes (addr + fingerprint))
+  - content_fingerprint table: estimated_unique_content * entry_size
+Key Pool: max_items * avg_key_size * overhead_factor (1.5-2x for growth)
+Content Pool: max_items * avg_content_size * dedup_factor (0.5-1.0x, depends on dedup ratio)
+```
+
+### Migration-Based Compaction Strategy
+Instead of in-place compaction, use a **migration approach** with new SharedMemory segments:
+
+**Process**:
+1. When pool becomes nearly full (threshold reached), create **new SharedMemory segment**
+2. **Compact & copy** data into new segment:
+   - Only copy referenced keys and content (from sweep operation)
+   - Defragment by packing sequentially
+   - Update all addresses to point to new locations
+3. **Update metadata** with name of new segment (atomic update)
+4. **Other processes** detect metadata change and switch to new segment
+5. **Old segment** can be cleaned up after all processes migrate
+
+**Benefits**:
+- **Non-blocking**: Compaction happens in new segment, old segment still readable
+- **Better concurrency**: Processes can continue reading from old segment during compaction
+- **Atomic migration**: Metadata update is single atomic operation
+- **No in-place mutation**: Safer, less risk of corruption during compaction
+
+**Challenges**:
+- **Coordination**: How do processes coordinate migration?
+- **Transition period**: Both segments exist simultaneously (memory overhead)
+- **Metadata atomicity**: Need atomic way to update segment name/pointer
+- **Process discovery**: How do processes discover new segment?
+- **Cleanup**: When is it safe to delete old segment?
+
+### Migration Coordination Options
+
+#### Option 1: Version Number in Metadata
+- Header contains `segment_version` (monotonically increasing)
+- Header contains `segment_name` (current active segment)
+- Process doing compaction:
+  1. Creates new segment with `version = current_version + 1`
+  2. Compacts data into new segment
+  3. Atomically updates `segment_version` and `segment_name` in header
+- Other processes:
+  - Check `segment_version` on each operation (or periodically)
+  - If version changed, attach to new segment and release old one
+
+#### Option 2: Separate Coordination Segment
+- Small shared memory segment just for coordination
+- Contains pointer/name to current active segment
+- Processes check this segment periodically or on each operation
+- Atomic updates via compare-and-swap or lock
+
+#### Option 3: File-Based Coordination
+- Use a small file or lock file to coordinate
+- Contains current segment name
+- Processes read file to discover current segment
+- Atomic file update (rename operation)
+
+### High Water Mark Tracking
+Maintain in header:
+- `key_pool_used`: Current bytes used in key pool
+- `content_pool_used`: Current bytes used in content pool
+- `key_pool_size`: Total size of key pool
+- `content_pool_size`: Total size of content pool
+- `segment_version`: Version number for migration coordination
+- `segment_name`: Name of current active SharedMemory segment
+
+Trigger migration/compaction when: `used / size > threshold` (e.g., 0.8 or 0.9)
+
+### Migration Process Details
+1. **Compaction trigger**: Process detects high water mark exceeded
+2. **Lock acquisition**: Acquire exclusive lock (only one process compacts at a time)
+3. **Create new segment**: Allocate new SharedMemory with same or larger size
+4. **Sweep & compact**:
+   - Run sweep to identify referenced items
+   - Copy referenced keys and content to new segment sequentially
+   - Update hash tables with new addresses
+5. **Atomic update**: Update header with new `segment_version` and `segment_name`
+6. **Release lock**: Other processes can now migrate
+7. **Cleanup**: After all processes migrate (or timeout), delete old segment
+
+### Process Migration on Read/Write
+Each process checks segment version:
+- **On cache operations**: Check if `segment_version` changed
+- **If changed**:
+  - Attach to new SharedMemory segment
+  - Release reference to old segment
+  - Continue operation with new segment
+- **Optimization**: Could check periodically in background thread instead of on every operation
+
+### Questions:
+- What's a reasonable default size? (e.g., 100MB, 500MB, 1GB?)
+- Should size be configurable at initialization?
+- How to handle the case where size estimate is too small? (fail fast vs. graceful degradation)
+- Alignment requirements? (8-byte for better performance on most CPUs)
+
+## Locking & Concurrency Strategy
+
+### Operations That Need Protection
+1. **Read operations**:
+   - Lookup in hash tables
+   - Read from key/content storage pools
+   - Check segment version
+2. **Write operations**:
+   - Insert new key/value
+   - Update hash table entries
+   - Append to storage pools
+   - Update append pointers
+   - LRU eviction
+3. **Migration operations**:
+   - Creating new segment
+   - Compacting data
+   - Updating segment metadata
+   - Process migration
+
+### Lock Granularity Options
+
+#### Option 1: Single Global Lock (Simplest)
+- One lock protects all operations
+- **Pros**: Simple, no deadlock risk, easy to reason about
+- **Cons**: Poor concurrency, all operations serialize
+- **Use case**: Low contention, simple implementation
+
+#### Option 2: Read-Write Lock (Better for Read-Heavy)
+- Single RWLock: multiple readers OR one writer
+- **Pros**: Allows concurrent reads, simple
+- **Cons**: Writes still serialize, migration blocks everything
+- **Use case**: Read-heavy workloads (typical for caches)
+
+#### Option 3: Per-Bucket Locks (Fine-Grained)
+- Separate lock for each hash table bucket
+- **Pros**: High concurrency, operations on different buckets don't block
+- **Cons**: More complex, more memory overhead, potential deadlocks
+- **Use case**: High contention, many concurrent operations
+
+#### Option 4: Separate Locks per Region
+- Lock for hash tables
+- Lock for key pool
+- Lock for content pool
+- Lock for metadata/header
+- **Pros**: Better granularity than global, simpler than per-bucket
+- **Cons**: Need to acquire multiple locks (deadlock risk), more complex
+- **Use case**: Moderate contention, want some parallelism
+
+### Recommended: Read-Write Lock (Option 2)
+For a cache with read-heavy workload:
+- **Read operations**: Acquire read lock (shared)
+- **Write operations**: Acquire write lock (exclusive)
+- **Migration**: Acquire write lock (exclusive, blocks all operations)
+
+**Rationale**:
+- Caches are typically read-heavy (80-90% reads)
+- Read-write lock allows concurrent reads
+- Simpler than fine-grained locking
+- Migration is infrequent, so blocking is acceptable
+
+### Lock Implementation Options
+
+#### Python multiprocessing.Lock / RLock
+- **Pros**: Built-in, cross-platform, process-safe
+- **Cons**: May have overhead, not optimized for shared memory
+
+#### Python multiprocessing.Semaphore
+- Can implement RWLock with semaphores
+- **Pros**: Flexible, built-in
+- **Cons**: Need to implement RWLock logic yourself
+
+#### Custom RWLock in SharedMemory
+- Implement RWLock directly in shared memory header
+- Use atomic operations (if available) or locks
+- **Pros**: Fast, no extra objects
+- **Cons**: More complex, need to implement correctly
+
+#### Third-party: `readerwriterlock` or similar
+- External library for RWLock
+- **Pros**: Well-tested, optimized
+- **Cons**: Extra dependency
+
+### Lock Acquisition Patterns
+
+#### Read Operation (GET)
+```
+1. Acquire read lock
+2. Check segment version (if changed, migrate)
+3. Hash key -> lookup in hash table
+4. Read key from storage (validate address)
+5. Read content fingerprint -> lookup content
+6. Read content from storage
+7. Release read lock
+```
+
+#### Write Operation (SET)
+```
+1. Acquire write lock
+2. Check segment version (if changed, migrate)
+3. Check high water mark (trigger migration if needed)
+4. Hash key -> probe hash table
+5. If key exists: update content fingerprint
+6. If new key:
+   - Append key to key pool
+   - Hash content -> check if content exists
+   - If new content: append to content pool
+   - Insert/update hash table entries
+7. Update append pointers
+8. If at capacity: evict LRU items
+9. Release write lock
+```
+
+#### Migration Operation (Blocking - **CHOSEN APPROACH**)
+**Decision**: Use blocking migration for initial implementation. Simpler, fewer edge cases, migration is infrequent.
+
+```
+1. Acquire write lock (exclusive, blocks all operations)
+2. Create new SharedMemory segment
+3. Run sweep to identify referenced items
+4. Copy referenced keys into new key segment
+5. Copy referenced content blobs into new content segment
+6. Update hash tables with new addresses
+7. Atomically update segment_version and segment_name in header
+8. Release write lock
+9. (Background) Cleanup old segment after timeout
+```
+
+**Characteristics**:
+- **All operations blocked** during migration (reads and writes)
+- **Simple**: No queue management, no consistency issues
+- **Safe**: No race conditions, no lost writes
+- **Acceptable**: Migration is infrequent, so brief blocking is fine
+
+#### Migration Operation (Non-Blocking with Write Queue - Advanced)
+```
+1. Set migration_in_progress flag (atomic)
+2. Create new SharedMemory segment
+3. Run sweep to identify referenced items (reads can continue from old segment)
+4. Copy referenced keys into new key segment
+5. Copy referenced content blobs into new content blob segment
+6. Acquire write lock (briefly, for atomic update)
+7. Atomically update segment_version and segment_name
+8. Backfill changes from write queue into new segment
+9. Clear migration_in_progress flag
+10. Release write lock
+11. (Background) Cleanup old segment after timeout
+```
+
+**During Migration**:
+- **Reads**: Continue from old segment (no lock needed, just check migration flag)
+- **Writes**: Queue operations (key, value, operation type) instead of applying immediately
+- **Queue location**: Could be in-memory per-process, or small shared memory segment
+
+### Write-Queue Migration: Trade-offs Analysis
+
+#### Benefits
+1. **Non-blocking reads**: Reads continue during migration (better user experience)
+2. **Better throughput**: Migration doesn't block read operations
+3. **Write batching**: Queued writes can be applied efficiently in batch
+4. **Lower latency**: Read operations don't wait for migration
+
+#### Downsides & Challenges
+
+1. **Write Queue Storage**
+   - Where to store the queue? Options:
+     - **Per-process in-memory**: Simple, but lost if process crashes
+     - **Shared memory queue**: Survives crashes, but needs coordination
+     - **Size limits**: What if queue fills up? Need backpressure
+   - **Memory overhead**: Queue consumes memory during migration
+
+2. **Consistency & Ordering**
+   - **Read-after-write**: If write is queued, subsequent read from same process might not see it (reads from old segment)
+   - **Cross-process consistency**: Process A queues write, Process B reads - won't see queued write
+   - **Ordering**: Need to preserve write order when backfilling
+   - **Solution**: Could check queue on reads, but adds complexity
+
+3. **Queue Size Management**
+   - **Bounded queue**: Limit size, block writes when full (defeats purpose)
+   - **Unbounded queue**: Risk of OOM if migration is slow
+   - **Backpressure**: Need strategy when queue is full
+
+4. **Race Conditions**
+   - **Read during migration**: Reads old segment, but write might be queued
+   - **Multiple migrations**: What if migration is triggered while another is in progress?
+   - **Process crash**: Queued writes might be lost
+
+5. **Backfill Complexity**
+   - **Ordering**: Must apply writes in order (FIFO)
+   - **Deduplication**: If same key written multiple times, only need last value
+   - **Conflict resolution**: What if queued write conflicts with migrated data?
+   - **Performance**: Backfill might be slow if queue is large
+
+6. **Migration Detection**
+   - **Flag checking**: Every read/write needs to check `migration_in_progress`
+   - **Atomic flag**: Need atomic read/write for flag (memory barrier)
+   - **False positives**: Flag might be set but migration not started yet
+
+7. **Edge Cases**
+   - **Migration during high write rate**: Queue might grow very large
+   - **Long-running migration**: Queue accumulates, memory pressure
+   - **Process dies during migration**: Queued writes lost (if per-process queue)
+
+#### Implementation Considerations
+
+**Write Queue Design Options**:
+
+**Option A: Per-Process Queue (Simplest)**
+- Each process maintains its own queue in local memory (e.g., `collections.deque`)
+- **Pros**: Simple, no coordination needed, fast (no serialization)
+- **Cons**: Lost on process crash, each process backfills separately
+
+**Option B: Shared Memory Queue**
+- Single queue in shared memory for all processes (custom implementation)
+- **Pros**: Survives crashes, centralized
+- **Cons**: Needs locking, coordination, size management, complex to implement
+
+**Option C: Hybrid - Per-Process with Shared Coordination**
+- Each process has local queue, but shared metadata tracks migration
+- **Pros**: Balance of simplicity and coordination
+- **Cons**: Still lose per-process queues on crash
+
+**Option D: multiprocessing.Queue (Python Built-in)**
+- Use Python's `multiprocessing.Queue` for write queue
+- **Pros**:
+  - Built-in, well-tested, process-safe
+  - Handles serialization automatically (pickle)
+  - Can be bounded (maxsize parameter)
+  - Blocking/non-blocking operations (`put_nowait`, `get_nowait`)
+  - Thread-safe operations
+- **Cons**:
+  - **Serialization overhead**: Pickling keys/values adds CPU and memory cost
+  - **Separate mechanism**: Different from shared memory (uses pipes/sockets internally)
+  - **Consumer coordination**: Need to decide which process consumes from queue
+  - **Performance**: May be slower than in-memory queue due to IPC overhead
+  - **Size limits**: Bounded queue blocks when full (need backpressure strategy)
+
+**multiprocessing.Queue Implementation Details**:
+
+**Setup**:
+- Create queue once, share reference between processes (via manager or passed at init)
+- Queue can be bounded: `queue = multiprocessing.Queue(maxsize=1000)`
+- Or unbounded: `queue = multiprocessing.Queue()`
+
+**During Migration**:
+- **Writers** (all processes): `queue.put((key, value, operation_type), block=False)`
+  - Use `block=False` to avoid blocking, handle `queue.Full` exception
+- **Consumer** (migrating process): `queue.get(block=False)` until empty
+  - Apply writes to new segment during backfill
+
+**Coordination**:
+- Queue needs to be accessible to all processes
+- Could store queue reference in shared state or pass via manager
+- Migrating process is responsible for consuming queue
+
+**Backpressure**:
+- If queue is full and `put_nowait` fails:
+  - **Option 1**: Block and wait (defeats non-blocking purpose)
+  - **Option 2**: Drop writes (data loss, not ideal)
+  - **Option 3**: Fall back to blocking migration (safety valve)
+  - **Option 4**: Increase queue size or trigger migration earlier
+
+**Recommendation for multiprocessing.Queue**:
+- **Good choice if**: Serialization overhead is acceptable, want built-in safety
+- **Consider**: Bounded queue with reasonable size (e.g., 1000-10000 items)
+- **Watch out for**: Pickle performance with large/complex objects
+- **Alternative**: Could use `multiprocessing.SimpleQueue` (simpler, but unbounded)
+
+**Read Consistency Strategy**:
+- **Option 1**: Accept inconsistency - reads from old segment, writes queued (simplest)
+- **Option 2**: Check queue on reads - if key in queue, use queued value (more complex)
+- **Option 3**: Block reads for keys that are being written (defeats purpose)
+
+**Decision**: **Use blocking migration (Option 1 - Blocking)**
+
+**Rationale**:
+- Simpler implementation with fewer edge cases
+- Migration is infrequent (triggered at high water mark, e.g., 80-90% full)
+- Brief blocking during migration is acceptable for cache use case
+- Can optimize later with write-queue if migration becomes a bottleneck
+- Avoids complexity of queue management, consistency issues, and backfill logic
+
+**Future optimization**: If migration blocking becomes an issue, can implement write-queue approach (Option 2) with `multiprocessing.Queue` or per-process queues.
+
+### Concurrency Considerations
+
+#### Memory Ordering / Visibility
+- Shared memory updates may not be immediately visible to other processes
+- **Solution**: Use memory barriers or rely on lock acquire/release (which provide barriers)
+- Python's multiprocessing locks should handle this, but verify
+
+#### Lock-Free Alternatives (Advanced)
+Could use lock-free data structures:
+- Atomic compare-and-swap for hash table updates
+- Lock-free hash tables
+- **Pros**: No lock contention, potentially faster
+- **Cons**: Much more complex, harder to debug, may not be worth it for cache
+
+#### Deadlock Prevention
+If using multiple locks:
+- Always acquire in same order (e.g., hash_table_lock -> pool_lock)
+- Use timeout on lock acquisition
+- Consider lock ordering protocol
+
+### Migration Coordination Locking
+- **Migration lock**: Separate lock (or use write lock) to ensure only one process migrates
+- **Process discovery**: May need separate coordination mechanism
+- **Version checking**: Should be lock-free or very fast (atomic read)
+
+### Performance Optimizations
+
+#### Lock-Free Reads (Optimistic)
+- Read without lock, validate after (compare-and-swap style)
+- If validation fails, retry with lock
+- **Trade-off**: Complexity vs. performance
+
+#### Lock Elision
+- For read operations, could use version numbers to detect conflicts
+- Only acquire lock if version changes during operation
+- **Trade-off**: More complex, may not be worth it
+
+#### Background Migration Check
+- Instead of checking version on every operation, check in background thread
+- Reduces overhead on hot path
+- **Trade-off**: Slight delay in migration detection (usually acceptable)
+
+### Questions:
+- Should we use Python's built-in multiprocessing locks or implement custom?
+- How to handle lock timeout? (prevent deadlock if process crashes while holding lock)
+- Should migration be blocking or can we allow reads during migration?
+- Do we need separate locks for key pool vs content pool, or is one RWLock sufficient?
+- How to handle process crashes while holding lock? (timeout, watchdog, or accept risk)
