@@ -8,6 +8,7 @@ import random
 import time
 
 import pytest
+import xxhash
 
 from api.content_addressable_cache import ContentAddressableCache
 
@@ -463,6 +464,58 @@ def test_custom_hash_function() -> None:
     try:
         cache[b"key1"] = b"value1"
         assert cache[b"key1"] == b"value1"
+    finally:
+        cache.close()
+
+
+def test_hash_collision() -> None:
+    """Test that hash collisions are handled correctly by comparing actual key bytes."""
+    # Create a hash function that returns the same hash for different keys
+    collision_count = {"key1": 0, "key2": 0}
+
+    def collision_hash(data: bytes) -> bytes:
+        """Hash function that returns same value for key1 and key2."""
+        # Count calls to verify both keys are being hashed
+        if data == b"key1":
+            collision_count["key1"] += 1
+        elif data == b"key2":
+            collision_count["key2"] += 1
+
+        # Return the same hash for both key1 and key2 to force collision
+        if data in (b"key1", b"key2"):
+            # Return a fixed hash value for both keys
+            return b"\x00" * 15 + b"\x01"  # Fixed hash for collision test
+        # For other keys, use normal hash
+        return xxhash.xxh128_digest(data)
+
+    cache = ContentAddressableCache(maxsize=10, hash_func=collision_hash)
+    try:
+        # Store different values for keys that hash to the same value
+        cache[b"key1"] = b"value1"
+        cache[b"key2"] = b"value2"
+
+        # Verify both keys are stored
+        assert len(cache) == 2
+
+        # Verify we can retrieve the correct value for each key
+        assert cache[b"key1"] == b"value1"
+        assert cache[b"key2"] == b"value2"
+
+        # Verify they are different
+        assert cache[b"key1"] != cache[b"key2"]
+
+        # Verify both keys are in the cache
+        assert b"key1" in cache
+        assert b"key2" in cache
+
+        # Update one key and verify the other is unaffected
+        cache[b"key1"] = b"updated_value1"
+        assert cache[b"key1"] == b"updated_value1"
+        assert cache[b"key2"] == b"value2"  # Should be unchanged
+
+        # Verify hash function was called for both keys
+        assert collision_count["key1"] > 0
+        assert collision_count["key2"] > 0
     finally:
         cache.close()
 
