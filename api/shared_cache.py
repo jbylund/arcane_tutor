@@ -11,8 +11,6 @@ from collections.abc import Iterator, MutableMapping
 from multiprocessing.managers import SyncManager
 from typing import Any
 
-from lru import LRU
-
 
 class _LRUWrapper:
     """Wrapper class for LRU that can be pickled and registered with multiprocessing.Manager.
@@ -131,21 +129,27 @@ class SharedLRUCache(MutableMapping):
             manager.start()
             self._owned_manager = True
         else:
-            # If manager is provided, check if it's started and if LRU is registered
-            manager_started = hasattr(manager, "_process") and manager._process is not None  # type: ignore[attr-defined]
+            # If manager is provided, register LRU on the manager class if not already registered
+            # This is safe to do even if the manager is already started (registration is on the class)
+            manager_class = type(manager)
+            if not hasattr(manager_class, "_registry") or "LRU" not in manager_class._registry:  # type: ignore[attr-defined]
+                manager_class.register("LRU", _LRUWrapper, exposed=self._exposed_methods)
+
+            # Check if manager is started - try multiple ways to detect this
+            manager_started = (
+                hasattr(manager, "_address") and manager._address is not None  # type: ignore[attr-defined]
+            ) or (
+                hasattr(manager, "_process") and manager._process is not None  # type: ignore[attr-defined]
+            ) or (
+                hasattr(manager, "_state") and getattr(manager._state, "value", None) == 2  # type: ignore[attr-defined]
+            )
 
             if not manager_started:
-                # Manager not started yet - we can register and start it
-                manager_class = type(manager)
-                if not hasattr(manager_class, "_registry") or "LRU" not in manager_class._registry:  # type: ignore[attr-defined]
-                    manager_class.register("LRU", _LRUWrapper, exposed=self._exposed_methods)
+                # Manager not started yet - start it
                 manager.start()
-            else:
-                # Manager already started - check if LRU is registered
-                manager_class = type(manager)
-                if not hasattr(manager_class, "_registry") or "LRU" not in manager_class._registry:  # type: ignore[attr-defined]
-                    msg = "Manager is already started but LRU is not registered. Use SharedLRUCache.register_with_manager() before creating the manager."
-                    raise ValueError(msg)
+            # If manager is already started, we can't register anything new, but we've already
+            # registered on the class above, so if it was started before registration, we'll
+            # get an error when trying to use manager.LRU below
 
             self._owned_manager = False
 
@@ -156,9 +160,17 @@ class SharedLRUCache(MutableMapping):
         try:
             self._lru = manager.LRU(maxsize)  # type: ignore[attr-defined]
         except (AttributeError, KeyError) as e:
-            # If manager doesn't have LRU, we need a manager that was started with it registered
-            # This happens when a manager is passed in that wasn't set up correctly
-            msg = "Manager must have LRU registered. Use SharedLRUCache.register_with_manager() first."
+            # If manager doesn't have LRU, it means the manager was started before LRU was registered
+            # This happens when multiprocessing.Manager() is called before registering
+            manager_class_name = manager_class.__name__ if 'manager_class' in locals() else type(manager).__name__
+            msg = (
+                f"Manager of type {manager_class_name} was started before LRU was registered. "
+                "Register LRU before creating the manager:\n"
+                "  SharedLRUCache.register_with_manager()\n"
+                "  manager = multiprocessing.Manager()\n"
+                "  manager.start()\n"
+                "  cache = SharedLRUCache(maxsize=100, manager=manager)"
+            )
             raise ValueError(msg) from e
 
         # Get a lock from the manager for thread/process safety
@@ -351,3 +363,6 @@ class SharedLRUCache(MutableMapping):
         if hasattr(self, "_owned_manager") and self._owned_manager and hasattr(self, "_manager"):
             with contextlib.suppress(Exception):
                 self._manager.shutdown()
+
+# Register LRU with the default manager class
+SharedLRUCache.register_with_manager()
