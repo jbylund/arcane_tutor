@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
 from typing import TYPE_CHECKING
 from typing import cast as typecast
 
@@ -28,17 +29,20 @@ except ImportError:
     _SHARED_MEMORY_AVAILABLE = False
     SharedMemoryLRUCache = None  # type: ignore[assignment, misc]
 
-
-def _create_default_cache() -> MutableMapping:
+def _create_default_cache(cache_lock: multiprocessing.synchronize.RLock | None = None) -> MutableMapping:
     """Create the default cache instance.
 
+    Args:
+        cache_lock: Optional multiprocessing.RLock for shared memory cache synchronization.
+            If provided and SharedMemoryLRUCache is available, uses it. Otherwise falls back to LRUCache.
+
     Returns:
-        A cache instance (SharedMemoryLRUCache if available, otherwise LRUCache).
+        A cache instance (SharedMemoryLRUCache if available and lock provided, otherwise LRUCache).
     """
-    if _SHARED_MEMORY_AVAILABLE and SharedMemoryLRUCache is not None:
+    if _SHARED_MEMORY_AVAILABLE and SharedMemoryLRUCache is not None and cache_lock is not None:
         try:
             # Use a named shared memory block so all workers can share it
-            return SharedMemoryLRUCache(maxsize=10_000, name="arcane_tutor_cache")
+            return SharedMemoryLRUCache(maxsize=10_000, name="arcane_tutor_cache", lock=cache_lock)
         except Exception as e:
             logger.warning("Failed to create shared memory cache, falling back to LRUCache: %s", e)
             return LRUCache(maxsize=10_000)
@@ -48,15 +52,21 @@ def _create_default_cache() -> MutableMapping:
 class CachingMiddleware:
     """Middleware to cache the request and response."""
 
-    def __init__(self: CachingMiddleware, cache: MutableMapping | None = None) -> None:
+    def __init__(
+        self: CachingMiddleware,
+        cache: MutableMapping | None = None,
+        cache_lock: multiprocessing.synchronize.RLock | None = None,
+    ) -> None:
         """Initialize the caching middleware with an optional cache instance.
 
         Args:
             cache: Optional cache instance. If None, creates a SharedMemoryLRUCache
-                (if available) or LRUCache with maxsize 10,000.
+                (if available and cache_lock provided) or LRUCache with maxsize 10,000.
+            cache_lock: Optional multiprocessing.RLock for shared memory cache synchronization.
+                Only used if cache is None and SharedMemoryLRUCache is available.
         """
         if cache is None:
-            cache = _create_default_cache()
+            cache = _create_default_cache(cache_lock)
         self.cache: MutableMapping[CacheKey, falcon.Response] = cache
 
     def _cache_key(self: CachingMiddleware, req: falcon.Request) -> CacheKey:

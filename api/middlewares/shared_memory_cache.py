@@ -35,7 +35,8 @@ DATA_ENTRY_HEADER_SIZE = 4
 # - bytes 12-15: data_offset (uint32) - current position in data section
 # - bytes 16-19: index_offset (uint32) - where index section starts
 # - bytes 20-23: data_start_offset (uint32) - where data section starts
-# - bytes 24-255: reserved
+# - bytes 24-27: lock_pid (uint32) - process ID holding the lock, 0 = unlocked
+# - bytes 28-255: reserved
 METADATA_SIZE = 256
 FILL_FACTOR_THRESHOLD = 0.75  # Resize index when this full
 INITIAL_INDEX_CAPACITY = 2**12
@@ -53,6 +54,8 @@ class SharedMemoryLRUCache(MutableMapping):
 
     def __init__(
         self,
+        *,
+        lock: RLock,
         maxsize: int = 10_000,
         cache_size_bytes: int = DEFAULT_CACHE_SIZE,
         name: str | None = None,
@@ -63,14 +66,20 @@ class SharedMemoryLRUCache(MutableMapping):
             maxsize: Maximum number of entries in the cache (for LRU eviction).
             cache_size_bytes: Size of the shared memory buffer in bytes.
             name: Optional name for the shared memory block. If None, a unique name is generated.
+            lock: multiprocessing.RLock to use for synchronization. Required for proper
+                synchronization across processes. The lock should be created in the main process
+                and passed to all worker processes.
         """
+        if lock is None:
+            raise ValueError(
+                "lock is required for SharedMemoryLRUCache. "
+                "Create a multiprocessing.RLock in the main process and pass it to all worker processes."
+            )
         self.maxsize = maxsize
         self.cache_size_bytes = cache_size_bytes
-        self._lock = RLock()
+        self._lock = lock
         self._shm_name = name
         self._shm: shared_memory.SharedMemory = self._initialize_shared_memory()
-
-        self._initialize_shared_memory()
 
     def _initialize_shared_memory(self) -> shared_memory.SharedMemory:
         """Initialize or attach to shared memory."""

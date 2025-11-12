@@ -13,10 +13,10 @@ from cachetools import LRUCache
 from api.middlewares.shared_memory_cache import SharedMemoryLRUCache
 
 
-def _worker_process(cache_name: str, worker_id: int, results: dict) -> None:
+def _worker_process(cache_name: str, worker_id: int, results: dict, lock: multiprocessing.synchronize.RLock) -> None:
     """Worker process function for multi-process testing."""
     try:
-        cache = SharedMemoryLRUCache(maxsize=100, name=cache_name)
+        cache = SharedMemoryLRUCache(maxsize=100, name=cache_name, lock=lock)
 
         # Worker 0 writes a value
         if worker_id == 0:
@@ -58,7 +58,8 @@ class TestSharedMemoryLRUCache:
     def test_basic_get_set(self) -> None:
         """Test basic get and set operations."""
         cache_name = f"test_cache_{uuid.uuid4().hex[:8]}"
-        with SharedMemoryLRUCache(maxsize=100, name=cache_name) as cache:
+        lock = multiprocessing.RLock()
+        with SharedMemoryLRUCache(maxsize=100, name=cache_name, lock=lock) as cache:
             # Test setting and getting a simple value
             cache["key1"] = "value1"
             assert cache["key1"] == "value1"
@@ -77,7 +78,8 @@ class TestSharedMemoryLRUCache:
     def test_get_with_default(self) -> None:
         """Test get method with default value."""
         cache_name = f"test_cache_{uuid.uuid4().hex[:8]}"
-        with SharedMemoryLRUCache(maxsize=100, name=cache_name) as cache:
+        lock = multiprocessing.RLock()
+        with SharedMemoryLRUCache(maxsize=100, name=cache_name, lock=lock) as cache:
             assert cache.get("nonexistent") is None
             assert cache.get("nonexistent", "default") == "default"
 
@@ -89,7 +91,8 @@ class TestSharedMemoryLRUCache:
     def test_contains(self) -> None:
         """Test __contains__ method."""
         cache_name = f"test_cache_{uuid.uuid4().hex[:8]}"
-        with SharedMemoryLRUCache(maxsize=100, name=cache_name) as cache:
+        lock = multiprocessing.RLock()
+        with SharedMemoryLRUCache(maxsize=100, name=cache_name, lock=lock) as cache:
             assert "key1" not in cache
             cache["key1"] = "value1"
             assert "key1" in cache
@@ -99,7 +102,8 @@ class TestSharedMemoryLRUCache:
     def test_delete(self) -> None:
         """Test deleting items from cache."""
         cache_name = f"test_cache_{uuid.uuid4().hex[:8]}"
-        with SharedMemoryLRUCache(maxsize=100, name=cache_name) as cache:
+        lock = multiprocessing.RLock()
+        with SharedMemoryLRUCache(maxsize=100, name=cache_name, lock=lock) as cache:
             cache["key1"] = "value1"
             cache["key2"] = "value2"
 
@@ -118,7 +122,8 @@ class TestSharedMemoryLRUCache:
     def test_len(self) -> None:
         """Test __len__ method."""
         cache_name = f"test_cache_{uuid.uuid4().hex[:8]}"
-        with SharedMemoryLRUCache(maxsize=100, name=cache_name) as cache:
+        lock = multiprocessing.RLock()
+        with SharedMemoryLRUCache(maxsize=100, name=cache_name, lock=lock) as cache:
             assert len(cache) == 0
 
             cache["key1"] = "value1"
@@ -134,7 +139,8 @@ class TestSharedMemoryLRUCache:
     def test_lru_eviction(self) -> None:
         """Test LRU eviction when cache is full."""
         cache_name = f"test_cache_{uuid.uuid4().hex[:8]}"
-        with SharedMemoryLRUCache(maxsize=3, name=cache_name) as cache:
+        lock = multiprocessing.RLock()
+        with SharedMemoryLRUCache(maxsize=3, name=cache_name, lock=lock) as cache:
             # Fill the cache
             cache["key1"] = "value1"
             cache["key2"] = "value2"
@@ -163,7 +169,8 @@ class TestSharedMemoryLRUCache:
     def test_clear(self) -> None:
         """Test clearing the cache."""
         cache_name = f"test_cache_{uuid.uuid4().hex[:8]}"
-        with SharedMemoryLRUCache(maxsize=100, name=cache_name) as cache:
+        lock = multiprocessing.RLock()
+        with SharedMemoryLRUCache(maxsize=100, name=cache_name, lock=lock) as cache:
             cache["key1"] = "value1"
             cache["key2"] = "value2"
             assert len(cache) == 2
@@ -177,7 +184,8 @@ class TestSharedMemoryLRUCache:
     def test_pop(self) -> None:
         """Test pop method."""
         cache_name = f"test_cache_{uuid.uuid4().hex[:8]}"
-        with SharedMemoryLRUCache(maxsize=100, name=cache_name) as cache:
+        lock = multiprocessing.RLock()
+        with SharedMemoryLRUCache(maxsize=100, name=cache_name, lock=lock) as cache:
             cache["key1"] = "value1"
             cache["key2"] = "value2"
 
@@ -198,7 +206,8 @@ class TestSharedMemoryLRUCache:
     def test_falcon_response_serialization(self) -> None:
         """Test that objects with falcon.Response-like structure can be cached."""
         cache_name = f"test_cache_{uuid.uuid4().hex[:8]}"
-        with SharedMemoryLRUCache(maxsize=100, name=cache_name) as cache:
+        lock = multiprocessing.RLock()
+        with SharedMemoryLRUCache(maxsize=100, name=cache_name, lock=lock) as cache:
             # Create a response-like object
             resp1 = MockResponse()
 
@@ -221,14 +230,17 @@ class TestSharedMemoryLRUCache:
         manager = multiprocessing.Manager()
         results = manager.dict()
 
+        # Create a shared lock in the main process
+        shared_lock = multiprocessing.RLock()
+
         # Create the cache in the main process first
-        with SharedMemoryLRUCache(maxsize=100, name=cache_name) as cache:
+        with SharedMemoryLRUCache(maxsize=100, name=cache_name, lock=shared_lock) as cache:
             cache.close()  # Close but don't unlink - workers need it
 
             # Start multiple worker processes
             processes = []
             for i in range(3):
-                p = multiprocessing.Process(target=_worker_process, args=(cache_name, i, results))
+                p = multiprocessing.Process(target=_worker_process, args=(cache_name, i, results, shared_lock))
                 p.start()
                 processes.append(p)
 
@@ -255,7 +267,8 @@ class TestSharedMemoryLRUCache:
     def test_cache_info(self) -> None:
         """Test cache_info method."""
         cache_name = f"test_cache_{uuid.uuid4().hex[:8]}"
-        with SharedMemoryLRUCache(maxsize=100, name=cache_name) as cache:
+        lock = multiprocessing.RLock()
+        with SharedMemoryLRUCache(maxsize=100, name=cache_name, lock=lock) as cache:
             info = cache.cache_info()
             assert info.maxsize == 100
             assert info.currsize == 0
@@ -268,8 +281,9 @@ class TestSharedMemoryLRUCache:
     def test_context_manager(self) -> None:
         """Test using cache as a context manager."""
         cache_name = f"test_cache_{uuid.uuid4().hex[:8]}"
+        lock = multiprocessing.RLock()
 
-        with SharedMemoryLRUCache(maxsize=100, name=cache_name) as cache:
+        with SharedMemoryLRUCache(maxsize=100, name=cache_name, lock=lock) as cache:
             cache["key1"] = "value1"
             assert cache["key1"] == "value1"
 
@@ -280,7 +294,8 @@ class TestSharedMemoryLRUCache:
     def test_large_value(self) -> None:
         """Test caching large values."""
         cache_name = f"test_cache_{uuid.uuid4().hex[:8]}"
-        with SharedMemoryLRUCache(maxsize=100, cache_size_bytes=1024 * 1024, name=cache_name) as cache:  # 1MB cache
+        lock = multiprocessing.RLock()
+        with SharedMemoryLRUCache(maxsize=100, cache_size_bytes=1024 * 1024, name=cache_name, lock=lock) as cache:  # 1MB cache
             # Create a moderately large value (100KB)
             large_value = b"x" * (100 * 1024)
             cache["large_key"] = large_value
@@ -300,7 +315,8 @@ class TestSharedMemoryLRUCachePerformance:
 
         # Setup SharedMemoryLRUCache
         cache_name = f"test_cache_{uuid.uuid4().hex[:8]}"
-        with SharedMemoryLRUCache(maxsize=cache_size, name=cache_name) as shm_cache:
+        lock = multiprocessing.RLock()
+        with SharedMemoryLRUCache(maxsize=cache_size, name=cache_name, lock=lock) as shm_cache:
             # Populate cache
             for i in range(cache_size):
                 dict_cache[f"key_{i}"] = f"value_{i}"
@@ -336,7 +352,8 @@ class TestSharedMemoryLRUCachePerformance:
 
         # Setup SharedMemoryLRUCache
         cache_name = f"test_cache_{uuid.uuid4().hex[:8]}"
-        with SharedMemoryLRUCache(maxsize=cache_size, name=cache_name) as shm_cache:
+        lock = multiprocessing.RLock()
+        with SharedMemoryLRUCache(maxsize=cache_size, name=cache_name, lock=lock) as shm_cache:
             # Time SharedMemoryLRUCache sets
             start = time.perf_counter()
             for i in range(num_operations):
@@ -370,7 +387,8 @@ class TestSharedMemoryLRUCachePerformance:
 
         # Setup SharedMemoryLRUCache
         cache_name = f"test_cache_{uuid.uuid4().hex[:8]}"
-        with SharedMemoryLRUCache(maxsize=cache_size, name=cache_name) as shm_cache:
+        lock = multiprocessing.RLock()
+        with SharedMemoryLRUCache(maxsize=cache_size, name=cache_name, lock=lock) as shm_cache:
             # Pre-populate
             for i in range(cache_size // 2):
                 shm_cache[f"key_{i}"] = f"value_{i}"
@@ -425,7 +443,8 @@ class TestSharedMemoryLRUCachePerformance:
 
         # Setup SharedMemoryLRUCache
         cache_name = f"test_cache_{uuid.uuid4().hex[:8]}"
-        with SharedMemoryLRUCache(maxsize=cache_size, name=cache_name) as shm_cache:
+        lock = multiprocessing.RLock()
+        with SharedMemoryLRUCache(maxsize=cache_size, name=cache_name, lock=lock) as shm_cache:
             # Time SharedMemoryLRUCache operations
             start = time.perf_counter()
             for i in range(num_operations):

@@ -55,6 +55,7 @@ class ApiWorker(multiprocessing.Process):
         debug: bool = False,
         import_guard: LockType = multiprocessing_utils.DEFAULT_LOCK,
         schema_setup_event: EventType = multiprocessing_utils.DEFAULT_EVENT,
+        cache_lock: LockType | None = None,
     ) -> None:
         """Initialize the API worker process.
 
@@ -64,7 +65,7 @@ class ApiWorker(multiprocessing.Process):
             exit_flag (multiprocessing.Event | None): An optional event to signal process exit.
             import_guard (multiprocessing.RLock): An optional lock to synchronize imports.
             schema_setup_event (multiprocessing.Event): Event denoting schema setup has been completed.
-            debug (bool): Whether to run in debug mode.
+            cache_lock (multiprocessing.RLock | None): Optional lock for shared memory cache synchronization.
         """
         super().__init__()
         self.host = host
@@ -73,10 +74,21 @@ class ApiWorker(multiprocessing.Process):
         self.import_guard = import_guard
         self.debug = debug
         self.schema_setup_event = schema_setup_event
+        self.cache_lock = cache_lock
 
     @classmethod
-    def get_api(cls: type[ApiWorker], import_guard: LockType, schema_setup_event: EventType) -> falcon.App:
+    def get_api(
+        cls: type[ApiWorker],
+        import_guard: LockType,
+        schema_setup_event: EventType,
+        cache_lock: LockType | None = None,
+    ) -> falcon.App:
         """Create and configure the Falcon API application.
+
+        Args:
+            import_guard: Lock to synchronize imports.
+            schema_setup_event: Event denoting schema setup has been completed.
+            cache_lock: Optional lock for shared memory cache synchronization.
 
         Returns:
             falcon.App: The configured Falcon application instance.
@@ -88,7 +100,7 @@ class ApiWorker(multiprocessing.Process):
         api = falcon.App(
             middleware=[
                 TimingMiddleware(),
-                CachingMiddleware(),  # important that this is first
+                CachingMiddleware(cache_lock=cache_lock),  # important that this is first
                 CompressionMiddleware(),
             ],
         )
@@ -126,6 +138,7 @@ class ApiWorker(multiprocessing.Process):
             app = self.get_api(
                 import_guard=self.import_guard,
                 schema_setup_event=self.schema_setup_event,
+                cache_lock=self.cache_lock,
             )  # Get the Falcon app
             bjoern.run(
                 wsgi_app=app,

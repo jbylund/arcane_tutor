@@ -54,6 +54,7 @@ def run_server(
     # Create shared objects for all workers
     import_guard = multiprocessing.RLock()
     schema_setup_event = multiprocessing.Event()
+    cache_lock = multiprocessing.RLock()
 
     # start workers
     for _ in range(num_workers):
@@ -63,6 +64,7 @@ def run_server(
             import_guard=import_guard,
             port=port,
             schema_setup_event=schema_setup_event,
+            cache_lock=cache_lock,
         )
         workers.append(iworker)
 
