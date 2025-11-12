@@ -7,9 +7,12 @@ shared between multiple processes using the lru-dict package with multiprocessin
 from __future__ import annotations
 
 import contextlib
+import logging
 from collections.abc import Iterator, MutableMapping
 from multiprocessing.managers import SyncManager
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class _LRUWrapper:
@@ -19,7 +22,7 @@ class _LRUWrapper:
     pickling issues with the C extension module.
     """
 
-    def __init__(self: _LRUWrapper, maxsize: int) -> None:
+    def __init__(self, maxsize: int) -> None:
         """Initialize the wrapper with a maxsize, creating the LRU instance.
 
         Args:
@@ -30,47 +33,47 @@ class _LRUWrapper:
 
         self._lru = LRU(maxsize)
 
-    def __getitem__(self: _LRUWrapper, key: Any) -> Any:
+    def __getitem__(self, key: Any) -> Any:
         """Get an item from the cache."""
         return self._lru[key]
 
-    def __setitem__(self: _LRUWrapper, key: Any, value: Any) -> None:
+    def __setitem__(self, key: Any, value: Any) -> None:
         """Set an item in the cache."""
         self._lru[key] = value
 
-    def __delitem__(self: _LRUWrapper, key: Any) -> None:
+    def __delitem__(self, key: Any) -> None:
         """Delete an item from the cache."""
         del self._lru[key]
 
-    def __contains__(self: _LRUWrapper, key: Any) -> bool:
+    def __contains__(self, key: Any) -> bool:
         """Check if a key is in the cache."""
         return key in self._lru
 
-    def __len__(self: _LRUWrapper) -> int:
+    def __len__(self) -> int:
         """Get the number of items in the cache."""
         return len(self._lru)
 
-    def get(self: _LRUWrapper, key: Any, default: Any = None) -> Any:
+    def get(self, key: Any, default: Any = None) -> Any:
         """Get an item from the cache with a default value."""
         return self._lru.get(key, default)
 
-    def clear(self: _LRUWrapper) -> None:
+    def clear(self) -> None:
         """Remove all items from the cache."""
         self._lru.clear()
 
-    def pop(self: _LRUWrapper, key: Any, default: Any = None) -> Any:
+    def pop(self, key: Any, default: Any = None) -> Any:
         """Remove and return an item from the cache."""
         return self._lru.pop(key, default)
 
-    def keys(self: _LRUWrapper) -> list[Any]:
+    def keys(self) -> list[Any]:
         """Get a list of all keys in the cache."""
         return list(self._lru.keys())
 
-    def values(self: _LRUWrapper) -> list[Any]:
+    def values(self) -> list[Any]:
         """Get a list of all values in the cache."""
         return list(self._lru.values())
 
-    def items(self: _LRUWrapper) -> list[tuple[Any, Any]]:
+    def items(self) -> list[tuple[Any, Any]]:
         """Get a list of all (key, value) pairs in the cache."""
         return list(self._lru.items())
 
@@ -105,7 +108,7 @@ class SharedLRUCache(MutableMapping):
         "items",
     )
 
-    def __init__(self: SharedLRUCache, maxsize: int, manager: SyncManager | None = None) -> None:
+    def __init__(self, maxsize: int, manager: SyncManager | None = None) -> None:
         """Initialize the SharedLRUCache.
 
         Args:
@@ -113,6 +116,7 @@ class SharedLRUCache(MutableMapping):
             manager: Optional multiprocessing.Manager instance with LRU registered. If None,
                     a new manager is created and LRU is registered automatically.
         """
+        logger.info("Creating shared cache with maxsize=%d", maxsize)
         if maxsize <= 0:
             msg = "maxsize must be positive"
             raise ValueError(msg)
@@ -198,7 +202,7 @@ class SharedLRUCache(MutableMapping):
         if not hasattr(manager_class, "_registry") or "LRU" not in manager_class._registry:  # type: ignore[attr-defined]
             manager_class.register("LRU", _LRUWrapper, exposed=SharedLRUCache._exposed_methods)
 
-    def __getitem__(self: SharedLRUCache, key: Any) -> Any:
+    def __getitem__(self, key: Any) -> Any:
         """Get an item from the cache.
 
         Args:
@@ -213,7 +217,7 @@ class SharedLRUCache(MutableMapping):
         with self._lock:
             return self._lru[key]
 
-    def __setitem__(self: SharedLRUCache, key: Any, value: Any) -> None:
+    def __setitem__(self, key: Any, value: Any) -> None:
         """Set an item in the cache, evicting LRU items if necessary.
 
         Args:
@@ -223,7 +227,7 @@ class SharedLRUCache(MutableMapping):
         with self._lock:
             self._lru[key] = value
 
-    def __delitem__(self: SharedLRUCache, key: Any) -> None:
+    def __delitem__(self, key: Any) -> None:
         """Delete an item from the cache.
 
         Args:
@@ -235,7 +239,7 @@ class SharedLRUCache(MutableMapping):
         with self._lock:
             del self._lru[key]
 
-    def __contains__(self: SharedLRUCache, key: Any) -> bool:
+    def __contains__(self, key: Any) -> bool:
         """Check if a key is in the cache.
 
         Args:
@@ -247,7 +251,7 @@ class SharedLRUCache(MutableMapping):
         with self._lock:
             return key in self._lru
 
-    def __len__(self: SharedLRUCache) -> int:
+    def __len__(self) -> int:
         """Get the number of items in the cache.
 
         Returns:
@@ -256,7 +260,7 @@ class SharedLRUCache(MutableMapping):
         with self._lock:
             return len(self._lru)
 
-    def __iter__(self: SharedLRUCache) -> Iterator[Any]:
+    def __iter__(self) -> Iterator[Any]:
         """Iterate over the keys in the cache.
 
         Returns:
@@ -266,7 +270,7 @@ class SharedLRUCache(MutableMapping):
             # Create a snapshot of keys to avoid issues with concurrent modifications
             return iter(list(self._lru.keys()))
 
-    def get(self: SharedLRUCache, key: Any, default: Any = None) -> Any:
+    def get(self, key: Any, default: Any = None) -> Any:
         """Get an item from the cache with a default value.
 
         Args:
@@ -279,12 +283,12 @@ class SharedLRUCache(MutableMapping):
         with self._lock:
             return self._lru.get(key, default)
 
-    def clear(self: SharedLRUCache) -> None:
+    def clear(self) -> None:
         """Remove all items from the cache."""
         with self._lock:
             self._lru.clear()
 
-    def pop(self: SharedLRUCache, key: Any, default: Any = None) -> Any:
+    def pop(self, key: Any, default: Any = None) -> Any:
         """Remove and return an item from the cache.
 
         Args:
@@ -297,7 +301,7 @@ class SharedLRUCache(MutableMapping):
         with self._lock:
             return self._lru.pop(key, default)
 
-    def keys(self: SharedLRUCache) -> list[Any]:
+    def keys(self) -> list[Any]:
         """Get a list of all keys in the cache.
 
         Returns:
@@ -306,7 +310,7 @@ class SharedLRUCache(MutableMapping):
         with self._lock:
             return list(self._lru.keys())
 
-    def values(self: SharedLRUCache) -> list[Any]:
+    def values(self) -> list[Any]:
         """Get a list of all values in the cache.
 
         Returns:
@@ -315,7 +319,7 @@ class SharedLRUCache(MutableMapping):
         with self._lock:
             return list(self._lru.values())
 
-    def items(self: SharedLRUCache) -> list[tuple[Any, Any]]:
+    def items(self) -> list[tuple[Any, Any]]:
         """Get a list of all (key, value) pairs in the cache.
 
         Returns:
@@ -324,7 +328,7 @@ class SharedLRUCache(MutableMapping):
         with self._lock:
             return list(self._lru.items())
 
-    def __repr__(self: SharedLRUCache) -> str:
+    def __repr__(self) -> str:
         """Return a string representation of the cache.
 
         Returns:
@@ -333,7 +337,7 @@ class SharedLRUCache(MutableMapping):
         with self._lock:
             return f"SharedLRUCache(maxsize={self.maxsize}, size={len(self._lru)})"
 
-    def __getstate__(self: SharedLRUCache) -> dict[str, Any]:
+    def __getstate__(self) -> dict[str, Any]:
         """Support pickling for multiprocessing.
 
         Returns:
@@ -347,7 +351,7 @@ class SharedLRUCache(MutableMapping):
             "_owned_manager": False,  # Don't try to manage manager lifecycle after unpickling
         }
 
-    def __setstate__(self: SharedLRUCache, state: dict[str, Any]) -> None:
+    def __setstate__(self, state: dict[str, Any]) -> None:
         """Support unpickling for multiprocessing.
 
         Args:
@@ -359,11 +363,15 @@ class SharedLRUCache(MutableMapping):
         self._owned_manager = state["_owned_manager"]
         self._manager = None  # Manager reference is not needed after unpickling
 
-    def __del__(self: SharedLRUCache) -> None:
+    def __del__(self) -> None:
         """Clean up the manager if we own it."""
         if hasattr(self, "_owned_manager") and self._owned_manager and hasattr(self, "_manager"):
             with contextlib.suppress(Exception):
                 self._manager.shutdown()
+
+    def shutdown(self) -> None:
+        """Shutdown the manager if we own it."""
+        self.__del__()
 
 # Register LRU with the default manager class
 SharedLRUCache.register_with_manager()

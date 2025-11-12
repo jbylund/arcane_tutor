@@ -5,7 +5,6 @@ import logging
 import multiprocessing
 import os
 import signal
-from multiprocessing.managers import SyncManager
 from types import FrameType
 
 from api.api_worker import ApiWorker
@@ -59,11 +58,7 @@ def run_server(
 
     # Create a shared cache manager and cache instance for all workers
     logger.info("Creating shared cache manager and cache instance...")
-    SharedLRUCache.register_with_manager(SyncManager)
-    cache_manager = SyncManager()
-    cache_manager.start()
-    shared_cache = SharedLRUCache(maxsize=10_000, manager=cache_manager)
-    logger.info("Shared cache created with maxsize=10,000")
+    shared_cache = SharedLRUCache(maxsize=10_000)
 
     # start workers
     for _ in range(num_workers):
@@ -105,7 +100,7 @@ def run_server(
         graceful_shutdown(signal.SIGINT, None)
 
     # Cleanup
-    cache_manager.shutdown()
+    shared_cache.shutdown()
     logger.info("Main server process exiting")
 
 
