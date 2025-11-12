@@ -7,7 +7,9 @@ multiprocessing.SharedMemory and content-addressable storage.
 from __future__ import annotations
 
 import logging
+import random
 import struct
+import time
 from contextlib import contextmanager
 from multiprocessing import RLock
 from multiprocessing.shared_memory import SharedMemory
@@ -36,8 +38,10 @@ HEADER_SIZE = 512
 KEY_HASH_WIDTH = 16  # 128-bit key hash in bytes
 CONTENT_FP_WIDTH = 16  # 128-bit content fingerprint in bytes
 ADDRESS_WIDTH = 8  # 64-bit address in bytes
-KEY_HASH_ENTRY_SIZE = KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH  # 16 + 8 + 16 = 40
+TIMESTAMP_WIDTH = 8  # 64-bit timestamp in bytes (nanoseconds since epoch)
+KEY_HASH_ENTRY_SIZE = KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH + TIMESTAMP_WIDTH  # 16 + 8 + 16 + 8 = 48
 CONTENT_FP_ENTRY_SIZE = CONTENT_FP_WIDTH + ADDRESS_WIDTH  # 16 + 8 = 24
+DEFAULT_LRU_SAMPLES = 10  # Number of keys to sample for approximated LRU eviction
 BLOB_TYPE_KEY = 0x01
 BLOB_TYPE_CONTENT = 0x02
 BLOB_TYPE_WIDTH = 1  # 1 byte for blob type discriminator
@@ -439,6 +443,17 @@ class ContentAddressableCache:
         """Get blob type at address."""
         return struct.unpack_from("B", memoryview(self._shm.buf), address)[0]
 
+    def _update_timestamp(self, slot: int) -> None:
+        """Update access timestamp for key at given slot.
+
+        Args:
+            slot: Key hash table slot index.
+        """
+        buf = memoryview(self._shm.buf)
+        offset = self._key_table_start + slot * KEY_HASH_ENTRY_SIZE
+        timestamp_offset = offset + KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH
+        struct.pack_into(">Q", buf, timestamp_offset, time.time_ns())
+
     def __getitem__(self, key: bytes) -> bytes:
         """Get value for key.
 
@@ -477,9 +492,12 @@ class ContentAddressableCache:
             if self._get_blob_type(content_addr) != BLOB_TYPE_CONTENT:
                 raise KeyError(key)
 
+            # Update access timestamp
+            self._update_timestamp(slot)
+
             return self._read_blob(content_addr)
 
-    def __setitem__(self, key: bytes, value: bytes) -> None:
+    def __setitem__(self, key: bytes, value: bytes) -> None: # noqa: PLR0915
         """Set value for key.
 
         Args:
@@ -517,6 +535,8 @@ class ContentAddressableCache:
 
                 # Update fingerprint in key table
                 buf[offset + KEY_HASH_WIDTH + ADDRESS_WIDTH : offset + KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH] = value_fp
+                # Update access timestamp
+                self._update_timestamp(key_slot)
             else:
                 # New key - check if we need to evict first
                 if self._get_current_items() >= self.maxsize:
@@ -558,28 +578,60 @@ class ContentAddressableCache:
                 buf[offset : offset + KEY_HASH_WIDTH] = key_hash
                 struct.pack_into(">Q", buf, offset + KEY_HASH_WIDTH, key_addr)
                 buf[offset + KEY_HASH_WIDTH + ADDRESS_WIDTH : offset + KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH] = value_fp
+                # Set initial timestamp
+                timestamp_offset = offset + KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH
+                struct.pack_into(">Q", buf, timestamp_offset, time.time_ns())
 
                 # Update item count
                 self._set_current_items(self._get_current_items() + 1)
 
-    def _evict_lru(self) -> None:
-        """Evict least recently used item (simple: evict first item found)."""
-        # Simple LRU: for now, just evict the first item we find
-        # TODO: Implement proper LRU tracking
+    def _evict_lru(self, samples: int = DEFAULT_LRU_SAMPLES) -> None:
+        """Evict least recently used item using approximated LRU.
+
+        Samples N random keys and evicts the one with the oldest timestamp.
+        This is similar to Redis's approximated LRU algorithm.
+
+        Args:
+            samples: Number of keys to sample (default 10).
+        """
         buf = memoryview(self._shm.buf)
         start = self._key_table_start
         entry_size = KEY_HASH_ENTRY_SIZE
         table_size = self._key_table_size
 
-        for slot in range(table_size):
+        # Calculate maximum slots to test before giving up
+        max_slots_to_test = int(samples / DEFAULT_LOAD_FACTOR * 2)
+
+        # Randomly sample slots until we find enough filled ones or hit the limit
+        valid_slots: list[int] = []
+
+        try:
+            slots_to_test = random.sample(range(table_size), max_slots_to_test)
+        except ValueError:
+            slots_to_test = range(table_size)
+
+        for slot in slots_to_test:
+            # Check if slot is filled
             offset = start + slot * entry_size
             entry_hash = bytes(buf[offset : offset + KEY_HASH_WIDTH])
             if entry_hash != b"\x00" * KEY_HASH_WIDTH:
-                # Found an entry - evict it
-                # Clear the entry
-                buf[offset : offset + entry_size] = b"\x00" * entry_size
-                self._set_current_items(self._get_current_items() - 1)
-                return
+                valid_slots.append(slot)
+                if len(valid_slots) >= samples:
+                    break
+
+        if not valid_slots:
+            return  # No items to evict
+
+        def slot_timestamp(slot: int) -> int:
+            offset = start + slot * entry_size + KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH
+            return struct.unpack_from(">Q", buf, offset)[0]
+
+        oldest_slot = min(valid_slots, key=slot_timestamp)
+
+        # Evict the oldest slot
+        offset = start + oldest_slot * entry_size
+        buf[offset : offset + entry_size] = b"\x00" * entry_size
+        self._set_current_items(self._get_current_items() - 1)
 
     def __delitem__(self, key: bytes) -> None:
         """Delete key from cache.

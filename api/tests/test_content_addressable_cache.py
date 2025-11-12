@@ -520,6 +520,72 @@ def test_hash_collision() -> None:
         cache.close()
 
 
+def test_approximated_lru_eviction() -> None:
+    """Test that approximated LRU eviction evicts least recently used keys."""
+    cache = ContentAddressableCache(maxsize=5)
+    try:
+        # Fill cache with 5 items, using different values to avoid content deduplication
+        for i in range(5):
+            cache[f"key{i}".encode()] = f"value{i}_unique_{i}".encode()
+
+        assert len(cache) == 5
+
+        # Access some keys to update their timestamps
+        # Access key0, key1, key2 (making them more recently used)
+        _ = cache[b"key0"]
+        _ = cache[b"key1"]
+        _ = cache[b"key2"]
+        # Small delay to ensure timestamps differ
+        time.sleep(0.001)
+
+        # Add a new key, which should trigger eviction
+        # Since we sample 10 keys and evict the oldest, key3 or key4 should be evicted
+        # (not key0, key1, key2 which were recently accessed)
+        cache[b"key5"] = b"value5_unique"
+
+        # Verify we still have 5 items
+        assert len(cache) == 5
+
+        # Verify recently accessed keys are still present
+        assert b"key0" in cache
+        assert b"key1" in cache
+        assert b"key2" in cache
+        assert b"key5" in cache
+
+        # Verify one of the non-accessed keys was evicted
+        # (key3 or key4, but not both)
+        evicted_count = 0
+        if b"key3" not in cache:
+            evicted_count += 1
+        if b"key4" not in cache:
+            evicted_count += 1
+
+        assert evicted_count == 1, "Exactly one of key3 or key4 should be evicted"
+
+        # Test that repeatedly accessing the same key prevents its eviction
+        # Clear and refill cache
+        cache.clear()
+        for i in range(5):
+            cache[f"key{i}".encode()] = f"value{i}_unique_{i}".encode()
+
+        # Continuously access key0 to keep it hot
+        for _ in range(10):
+            _ = cache[b"key0"]
+            time.sleep(0.0001)
+
+        # Add a new key (should evict one of the non-accessed keys)
+        cache[b"key6"] = b"value6_unique"
+
+        # key0 should still be present (was accessed most recently)
+        assert b"key0" in cache
+        assert b"key6" in cache
+
+        # Verify cache size is still maxsize
+        assert len(cache) == 5
+    finally:
+        cache.close()
+
+
 def test_invalid_maxsize() -> None:
     """Test that invalid maxsize raises error."""
     with pytest.raises(ValueError, match="maxsize must be positive"):
