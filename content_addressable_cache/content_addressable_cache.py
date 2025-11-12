@@ -39,6 +39,8 @@ KEY_HASH_WIDTH = 16  # 128-bit key hash in bytes
 CONTENT_FP_WIDTH = 16  # 128-bit content fingerprint in bytes
 ADDRESS_WIDTH = 8  # 64-bit address in bytes
 TIMESTAMP_WIDTH = 8  # 64-bit timestamp in bytes (nanoseconds since epoch)
+FINGERPRINT_OFFSET = KEY_HASH_WIDTH + ADDRESS_WIDTH
+TIMESTAMP_OFFSET = KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH
 KEY_HASH_ENTRY_SIZE = KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH + TIMESTAMP_WIDTH  # 16 + 8 + 16 + 8 = 48
 CONTENT_FP_ENTRY_SIZE = CONTENT_FP_WIDTH + ADDRESS_WIDTH  # 16 + 8 = 24
 DEFAULT_LRU_SAMPLES = 10  # Number of keys to sample for approximated LRU eviction
@@ -478,7 +480,7 @@ class ContentAddressableCache:
         """
         buf = memoryview(self._shm.buf)
         offset = self._key_table_start + slot * KEY_HASH_ENTRY_SIZE
-        timestamp_offset = offset + KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH
+        timestamp_offset = offset + TIMESTAMP_OFFSET
         struct.pack_into(">Q", buf, timestamp_offset, time.time_ns())
 
     def __getitem__(self, key: bytes) -> bytes:
@@ -505,7 +507,7 @@ class ContentAddressableCache:
             key_addr = struct.unpack_from(">Q", buf, offset + KEY_HASH_WIDTH)[0]
             if key_addr == 0:
                 raise KeyError(key)
-            fingerprint = bytes(buf[offset + KEY_HASH_WIDTH + ADDRESS_WIDTH : offset + KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH])
+            fingerprint = bytes(buf[offset + FINGERPRINT_OFFSET : offset + TIMESTAMP_OFFSET])
 
             # Find content
             content_slot = self._find_content_slot(fingerprint)
@@ -561,7 +563,7 @@ class ContentAddressableCache:
                     struct.pack_into(">Q", buf, content_offset + CONTENT_FP_WIDTH, content_addr)
 
                 # Update fingerprint in key table
-                buf[offset + KEY_HASH_WIDTH + ADDRESS_WIDTH : offset + KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH] = value_fp
+                buf[offset + FINGERPRINT_OFFSET : offset + TIMESTAMP_OFFSET] = value_fp
                 # Update access timestamp
                 self._update_timestamp(key_slot)
             else:
@@ -604,9 +606,9 @@ class ContentAddressableCache:
                 offset = self._key_table_start + key_slot * KEY_HASH_ENTRY_SIZE
                 buf[offset : offset + KEY_HASH_WIDTH] = key_hash
                 struct.pack_into(">Q", buf, offset + KEY_HASH_WIDTH, key_addr)
-                buf[offset + KEY_HASH_WIDTH + ADDRESS_WIDTH : offset + KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH] = value_fp
+                buf[offset + FINGERPRINT_OFFSET : offset + TIMESTAMP_OFFSET] = value_fp
                 # Set initial timestamp
-                timestamp_offset = offset + KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH
+                timestamp_offset = offset + TIMESTAMP_OFFSET
                 struct.pack_into(">Q", buf, timestamp_offset, time.time_ns())
 
                 # Update item count
@@ -650,7 +652,7 @@ class ContentAddressableCache:
             return  # No items to evict
 
         def slot_timestamp(slot: int) -> int:
-            offset = start + slot * entry_size + KEY_HASH_WIDTH + ADDRESS_WIDTH + CONTENT_FP_WIDTH
+            offset = start + slot * entry_size + TIMESTAMP_OFFSET
             return struct.unpack_from(">Q", buf, offset)[0]
 
         oldest_slot = min(valid_slots, key=slot_timestamp)
@@ -831,7 +833,7 @@ class ContentAddressableCache:
                     if key_addr != 0:
                         referenced_key_addrs.add(key_addr)
                         # Get content fingerprint
-                        fp_offset = offset + KEY_HASH_WIDTH + ADDRESS_WIDTH
+                        fp_offset = offset + FINGERPRINT_OFFSET
                         content_fp = bytes(buf[fp_offset : fp_offset + CONTENT_FP_WIDTH])
                         if content_fp != EMPTY_CONTENT_FP:
                             referenced_content_fps.add(content_fp)
