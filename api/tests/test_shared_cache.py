@@ -12,6 +12,29 @@ import pytest
 from api.shared_cache import SharedLRUCache
 
 
+def _worker_add_item(cache: SharedLRUCache, key: str, value: str) -> None:
+    """Worker function to add item to cache."""
+    cache[key] = value
+
+
+def _worker_add_multiple_items(cache: SharedLRUCache, worker_id: int, num_items: int) -> None:
+    """Worker function to add multiple items to cache."""
+    for i in range(num_items):
+        cache[f"worker_{worker_id}_item_{i}"] = f"value_{i}"
+
+
+def _worker_reader_writer(cache: SharedLRUCache, process_id: int) -> None:
+    """Worker that both reads and writes."""
+    # Write some items
+    for i in range(10):
+        cache[f"proc_{process_id}_key_{i}"] = f"value_{i}"
+
+    # Read some items (including from other processes)
+    for i in range(10):
+        with contextlib.suppress(Exception):
+            _ = cache.get(f"proc_{process_id}_key_{i}")
+
+
 class TestSharedLRUCacheBasicOperations:
     """Test basic dictionary operations of SharedLRUCache."""
 
@@ -279,15 +302,11 @@ class TestSharedLRUCacheMultiprocessing:
         manager = multiprocessing.Manager()
         cache = SharedLRUCache(maxsize=10, manager=manager)
 
-        def worker(cache: SharedLRUCache, key: str, value: str) -> None:
-            """Worker function to add item to cache."""
-            cache[key] = value
-
         # Add item in main process
         cache["main_key"] = "main_value"
 
         # Add item in child process
-        process = multiprocessing.Process(target=worker, args=(cache, "child_key", "child_value"))
+        process = multiprocessing.Process(target=_worker_add_item, args=(cache, "child_key", "child_value"))
         process.start()
         process.join()
 
@@ -304,18 +323,13 @@ class TestSharedLRUCacheMultiprocessing:
         manager = multiprocessing.Manager()
         cache = SharedLRUCache(maxsize=100, manager=manager)
 
-        def worker(cache: SharedLRUCache, worker_id: int, num_items: int) -> None:
-            """Worker function to add multiple items to cache."""
-            for i in range(num_items):
-                cache[f"worker_{worker_id}_item_{i}"] = f"value_{i}"
-
         # Start multiple processes
         processes = []
         num_workers = 3
         items_per_worker = 5
 
         for worker_id in range(num_workers):
-            process = multiprocessing.Process(target=worker, args=(cache, worker_id, items_per_worker))
+            process = multiprocessing.Process(target=_worker_add_multiple_items, args=(cache, worker_id, items_per_worker))
             processes.append(process)
             process.start()
 
@@ -339,21 +353,10 @@ class TestSharedLRUCacheMultiprocessing:
         manager = multiprocessing.Manager()
         cache = SharedLRUCache(maxsize=50, manager=manager)
 
-        def reader_writer(cache: SharedLRUCache, process_id: int) -> None:
-            """Worker that both reads and writes."""
-            # Write some items
-            for i in range(10):
-                cache[f"proc_{process_id}_key_{i}"] = f"value_{i}"
-
-            # Read some items (including from other processes)
-            for i in range(10):
-                with contextlib.suppress(Exception):
-                    _ = cache.get(f"proc_{process_id}_key_{i}")
-
         # Start multiple processes
         processes = []
         for i in range(3):
-            process = multiprocessing.Process(target=reader_writer, args=(cache, i))
+            process = multiprocessing.Process(target=_worker_reader_writer, args=(cache, i))
             processes.append(process)
             process.start()
 

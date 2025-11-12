@@ -14,6 +14,69 @@ from typing import Any
 from lru import LRU
 
 
+class _LRUWrapper:
+    """Wrapper class for LRU that can be pickled and registered with multiprocessing.Manager.
+
+    This wrapper creates the actual LRU instance in the manager process, avoiding
+    pickling issues with the C extension module.
+    """
+
+    def __init__(self: _LRUWrapper, maxsize: int) -> None:
+        """Initialize the wrapper with a maxsize, creating the LRU instance.
+
+        Args:
+            maxsize: Maximum number of items the cache can hold.
+        """
+        # Import here so it happens in the manager process
+        from lru import LRU  # noqa: PLC0415
+
+        self._lru = LRU(maxsize)
+
+    def __getitem__(self: _LRUWrapper, key: Any) -> Any:
+        """Get an item from the cache."""
+        return self._lru[key]
+
+    def __setitem__(self: _LRUWrapper, key: Any, value: Any) -> None:
+        """Set an item in the cache."""
+        self._lru[key] = value
+
+    def __delitem__(self: _LRUWrapper, key: Any) -> None:
+        """Delete an item from the cache."""
+        del self._lru[key]
+
+    def __contains__(self: _LRUWrapper, key: Any) -> bool:
+        """Check if a key is in the cache."""
+        return key in self._lru
+
+    def __len__(self: _LRUWrapper) -> int:
+        """Get the number of items in the cache."""
+        return len(self._lru)
+
+    def get(self: _LRUWrapper, key: Any, default: Any = None) -> Any:
+        """Get an item from the cache with a default value."""
+        return self._lru.get(key, default)
+
+    def clear(self: _LRUWrapper) -> None:
+        """Remove all items from the cache."""
+        self._lru.clear()
+
+    def pop(self: _LRUWrapper, key: Any, default: Any = None) -> Any:
+        """Remove and return an item from the cache."""
+        return self._lru.pop(key, default)
+
+    def keys(self: _LRUWrapper) -> list[Any]:
+        """Get a list of all keys in the cache."""
+        return list(self._lru.keys())
+
+    def values(self: _LRUWrapper) -> list[Any]:
+        """Get a list of all values in the cache."""
+        return list(self._lru.values())
+
+    def items(self: _LRUWrapper) -> list[tuple[Any, Any]]:
+        """Get a list of all (key, value) pairs in the cache."""
+        return list(self._lru.items())
+
+
 class SharedLRUCache(MutableMapping):
     """Thread-safe and process-safe LRU cache using lru-dict and multiprocessing.Manager.
 
@@ -60,36 +123,52 @@ class SharedLRUCache(MutableMapping):
 
         # Use provided manager or create a new one
         if manager is None:
-            # Register LRU with SyncManager if not already registered
-            SyncManager.register("LRU", LRU, exposed=self._exposed_methods)
+            # Register _LRUWrapper with SyncManager if not already registered
+            SyncManager.register("LRU", _LRUWrapper, exposed=self._exposed_methods)
 
             # Create a new manager
             manager = SyncManager()
             manager.start()
             self._owned_manager = True
         else:
+            # If manager is provided, check if it's started and if LRU is registered
+            manager_started = hasattr(manager, "_process") and manager._process is not None  # type: ignore[attr-defined]
+
+            if not manager_started:
+                # Manager not started yet - we can register and start it
+                manager_class = type(manager)
+                if not hasattr(manager_class, "_registry") or "LRU" not in manager_class._registry:  # type: ignore[attr-defined]
+                    manager_class.register("LRU", _LRUWrapper, exposed=self._exposed_methods)
+                manager.start()
+            else:
+                # Manager already started - check if LRU is registered
+                manager_class = type(manager)
+                if not hasattr(manager_class, "_registry") or "LRU" not in manager_class._registry:  # type: ignore[attr-defined]
+                    msg = "Manager is already started but LRU is not registered. Use SharedLRUCache.register_with_manager() before creating the manager."
+                    raise ValueError(msg)
+
             self._owned_manager = False
 
         self._manager = manager
 
-        # Create the shared LRU instance
+        # Create the shared LRU instance via the wrapper
         # Note: The manager needs to have LRU registered before we can call it
         try:
             self._lru = manager.LRU(maxsize)  # type: ignore[attr-defined]
-        except (AttributeError, KeyError):
+        except (AttributeError, KeyError) as e:
             # If manager doesn't have LRU, we need a manager that was started with it registered
             # This happens when a manager is passed in that wasn't set up correctly
             msg = "Manager must have LRU registered. Use SharedLRUCache.register_with_manager() first."
-            raise ValueError(msg) from None
+            raise ValueError(msg) from e
 
         # Get a lock from the manager for thread/process safety
         self._lock = manager.RLock()
 
     @staticmethod
     def register_with_manager(manager_class: type[SyncManager] = SyncManager) -> None:
-        """Register the LRU class with a manager class.
+        """Register the LRU wrapper class with a manager class.
 
-        This is a convenience method to register LRU with a custom manager class before
+        This is a convenience method to register _LRUWrapper with a custom manager class before
         instantiating it. This is useful when you want to use a custom manager with multiple
         worker processes.
 
@@ -104,7 +183,7 @@ class SharedLRUCache(MutableMapping):
             >>> cache = SharedLRUCache(maxsize=100, manager=manager)
         """
         if not hasattr(manager_class, "_registry") or "LRU" not in manager_class._registry:  # type: ignore[attr-defined]
-            manager_class.register("LRU", LRU, exposed=SharedLRUCache._exposed_methods)
+            manager_class.register("LRU", _LRUWrapper, exposed=SharedLRUCache._exposed_methods)
 
     def __getitem__(self: SharedLRUCache, key: Any) -> Any:
         """Get an item from the cache.
@@ -240,6 +319,32 @@ class SharedLRUCache(MutableMapping):
         """
         with self._lock:
             return f"SharedLRUCache(maxsize={self.maxsize}, size={len(self._lru)})"
+
+    def __getstate__(self: SharedLRUCache) -> dict[str, Any]:
+        """Support pickling for multiprocessing.
+
+        Returns:
+            State dictionary containing only picklable attributes.
+        """
+        # Only pickle the proxy objects and maxsize, not the manager itself
+        return {
+            "_lru": self._lru,
+            "_lock": self._lock,
+            "maxsize": self.maxsize,
+            "_owned_manager": False,  # Don't try to manage manager lifecycle after unpickling
+        }
+
+    def __setstate__(self: SharedLRUCache, state: dict[str, Any]) -> None:
+        """Support unpickling for multiprocessing.
+
+        Args:
+            state: State dictionary from __getstate__.
+        """
+        self._lru = state["_lru"]
+        self._lock = state["_lock"]
+        self.maxsize = state["maxsize"]
+        self._owned_manager = state["_owned_manager"]
+        self._manager = None  # Manager reference is not needed after unpickling
 
     def __del__(self: SharedLRUCache) -> None:
         """Clean up the manager if we own it."""
