@@ -3,6 +3,7 @@ brotli
 cachetools
 falcon
 honeybadger
+lru-dict
 orjson
 psycopg[binary,pool]
 pyparsing
