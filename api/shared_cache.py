@@ -135,13 +135,14 @@ class SharedLRUCache(MutableMapping):
             if not hasattr(manager_class, "_registry") or "LRU" not in manager_class._registry:  # type: ignore[attr-defined]
                 manager_class.register("LRU", _LRUWrapper, exposed=self._exposed_methods)
 
+            running_state = 2
             # Check if manager is started - try multiple ways to detect this
             manager_started = (
                 hasattr(manager, "_address") and manager._address is not None  # type: ignore[attr-defined]
             ) or (
                 hasattr(manager, "_process") and manager._process is not None  # type: ignore[attr-defined]
             ) or (
-                hasattr(manager, "_state") and getattr(manager._state, "value", None) == 2  # type: ignore[attr-defined]
+                hasattr(manager, "_state") and getattr(manager._state, "value", None) == running_state  # type: ignore[attr-defined]
             )
 
             if not manager_started:
@@ -162,7 +163,7 @@ class SharedLRUCache(MutableMapping):
         except (AttributeError, KeyError) as e:
             # If manager doesn't have LRU, it means the manager was started before LRU was registered
             # This happens when multiprocessing.Manager() is called before registering
-            manager_class_name = manager_class.__name__ if 'manager_class' in locals() else type(manager).__name__
+            manager_class_name = manager_class.__name__ if "manager_class" in locals() else type(manager).__name__
             msg = (
                 f"Manager of type {manager_class_name} was started before LRU was registered. "
                 "Register LRU before creating the manager:\n"
