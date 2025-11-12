@@ -815,3 +815,173 @@ If using multiple locks:
 - **Timeout with retry**: Default approach (balanced)
 
 **Decision**: Use timeout on lock acquisition with configurable timeout value (default TBD, e.g., 60 seconds)
+
+## Implementation Changes from Design
+
+This section documents changes made during implementation that differ from the original design document.
+
+### 1. Key Hash Size
+
+**Design**: Key hash was specified as 64-bit (8 bytes) for key lookup.
+
+**Implementation**: Key hash uses 128-bit (16 bytes) via `xxhash.xxh128_digest()`, matching the content fingerprint size. The full 128-bit hash is used for slot calculation in the hash table, providing better distribution than using only 64 bits. The full 128-bit hash is stored in the key hash table entry.
+
+**Rationale**:
+- Simplifies implementation by using the same hash function output for both keys and content
+- Provides better collision resistance by using all 128 bits for slot calculation
+- Better hash distribution reduces clustering in hash tables
+- Entry size increased from 32 bytes to 40 bytes (16 + 8 + 16)
+
+**Impact**: Key hash table entries are 40 bytes instead of 32 bytes, requiring more memory but providing significantly better hash distribution and reduced collision clustering.
+
+### 2. Memory Layout Order
+
+**Design**: Layout order was: Header → Hash Tables → Blob Pool
+
+**Implementation**: Layout order is: Header → Blob Pool → Hash Tables
+
+**Rationale**:
+- Allows blob pool to grow from the start of available space
+- Hash tables are fixed-size and placed after the variable-size blob pool
+- Simplifies size calculation: blob pool size = total_size - header - hash_tables
+
+**Impact**: No functional impact, but affects memory layout visualization.
+
+### 3. Header Fields
+
+**Design**: Header included:
+- `segment_name` (64 bytes, UTF-8, null-terminated) at offset 0x0010
+- `lock_offset` at offset 0x00C8 for in-segment lock
+
+**Implementation**:
+- `segment_name` field not implemented (segment_version is stored but migration not implemented)
+- Lock is separate `multiprocessing.RLock`, not stored in-segment
+- Header uses simpler layout with only implemented fields
+
+**Rationale**:
+- Migration/compaction not yet implemented, so segment_name not needed
+- Separate lock is simpler and avoids in-segment lock complexity
+- Reduces header size and complexity
+
+**Impact**:
+- Header is smaller (512 bytes, with reserved space for future use)
+- Migration functionality not available (future work)
+- Lock coordination is simpler but requires separate lock object
+
+### 4. Lock Timeout
+
+**Design**: Lock timeout was marked as "TBD" (to be determined).
+
+**Implementation**: Default lock timeout is 60.0 seconds, configurable via `lock_timeout` parameter.
+
+**Rationale**:
+- 60 seconds provides reasonable timeout for normal operations and migration
+- Prevents deadlock if process crashes while holding lock
+- Configurable to allow adjustment for different use cases
+
+**Impact**: Operations will raise `CouldNotLockError` if lock cannot be acquired within timeout period.
+
+### 5. LRU Eviction
+
+**Design**: LRU eviction with proper tracking of least recently used items.
+
+**Implementation**: Simple eviction that removes the first item found in the hash table (not true LRU).
+
+**Rationale**:
+- Initial implementation focuses on core functionality
+- True LRU requires additional tracking (timestamps, doubly-linked list, etc.)
+- Marked with TODO for future implementation
+
+**Impact**:
+- Eviction behavior is not optimal (may evict frequently used items)
+- Performance may be suboptimal for cache workloads that benefit from true LRU
+- Should be addressed before production use
+
+### 6. Reference Counting and Garbage Collection
+
+**Design**: Reference counting for content blobs to track how many keys reference each content fingerprint. Sweep operation to remove unreferenced content.
+
+**Implementation**: Reference counting not implemented. Content blobs are never freed, even when no keys reference them.
+
+**Rationale**:
+- Simplifies initial implementation
+- Blob pool uses append-only allocation
+- Compaction/migration not yet implemented to handle cleanup
+
+**Impact**:
+- **Memory leak**: Orphaned content blobs accumulate over time
+- Blob pool will fill up with unreferenced content
+- Critical issue that should be addressed before production use
+
+### 7. Migration and Compaction
+
+**Design**: Migration-based compaction strategy with segment versioning, process coordination, and atomic segment switching.
+
+**Implementation**: Migration and compaction not implemented.
+
+**Rationale**:
+- Complex feature deferred to focus on core cache functionality
+- Requires coordination between processes
+- Can be added as future enhancement
+
+**Impact**:
+- No way to reclaim space from deleted/orphaned items
+- No way to resize cache or migrate to new segment
+- Cache will eventually fill up and fail inserts
+- Must rely on eviction to manage capacity (but eviction is also incomplete)
+
+### 8. Hash Table Load Factor Enforcement
+
+**Design**: When load factor exceeds 65%, trigger migration/compaction to resize hash tables.
+
+**Implementation**: Load factor is used only for initial size calculation. No enforcement or resizing when load factor is exceeded.
+
+**Rationale**:
+- Migration not implemented, so resizing not possible
+- Hash tables are fixed-size based on initial maxsize
+- Will fail inserts when tables are full (via RuntimeError)
+
+**Impact**:
+- Cache may fail with "Key hash table full" or "Content hash table full" errors
+- No automatic resizing or compaction
+- Must size cache appropriately upfront
+
+### 9. Blob Pool Bounds Validation
+
+**Design**: No explicit mention of bounds checking for blob pool pointer.
+
+**Implementation**: Added validation in `_append_blob()` to check that `next_ptr` is within valid bounds before use.
+
+**Rationale**:
+- Defensive programming to catch corruption early
+- Prevents memory corruption or crashes from invalid pointers
+- Provides better error messages for debugging
+
+**Impact**: Better error handling and safety, but adds small overhead to append operations.
+
+### 10. Constants Extraction
+
+**Design**: Magic numbers used throughout (e.g., blob type width, length width).
+
+**Implementation**: Extracted magic numbers into named constants:
+- `BLOB_TYPE_WIDTH = 1`
+- `BLOB_LENGTH_WIDTH = 4`
+- `BLOB_HEADER_SIZE = BLOB_TYPE_WIDTH + BLOB_LENGTH_WIDTH`
+
+**Rationale**:
+- Improves code maintainability
+- Makes blob format explicit and self-documenting
+- Easier to modify if format changes
+
+**Impact**: Code is more maintainable and self-documenting.
+
+### Summary of Critical Gaps
+
+The following features from the design are **not yet implemented** and should be prioritized:
+
+1. **Reference Counting**: Content blobs leak memory when keys are deleted
+2. **True LRU Eviction**: Current eviction is not optimal
+3. **Migration/Compaction**: No way to reclaim space or resize cache
+4. **Load Factor Enforcement**: No automatic resizing when tables fill up
+
+These gaps limit the cache's usefulness for long-running production workloads but don't prevent basic functionality for development and testing.

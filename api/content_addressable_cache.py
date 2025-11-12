@@ -257,8 +257,8 @@ class ContentAddressableCache:
         entry_size = KEY_HASH_ENTRY_SIZE
         table_size = self._key_table_size
 
-        # Use first 8 bytes for slot calculation
-        slot_hash = int.from_bytes(key_hash[:ADDRESS_WIDTH], byteorder="big")
+        # Use full 128-bit hash for slot calculation
+        slot_hash = int.from_bytes(key_hash, byteorder="big")
         slot = slot_hash % table_size
         initial_slot = slot
 
@@ -296,8 +296,8 @@ class ContentAddressableCache:
         entry_size = KEY_HASH_ENTRY_SIZE
         table_size = self._key_table_size
 
-        # Use first 8 bytes for slot calculation
-        slot_hash = int.from_bytes(key_hash[:ADDRESS_WIDTH], byteorder="big")
+        # Use full 128-bit hash for slot calculation
+        slot_hash = int.from_bytes(key_hash, byteorder="big")
         slot = slot_hash % table_size
         initial_slot = slot
 
@@ -326,8 +326,8 @@ class ContentAddressableCache:
         entry_size = CONTENT_FP_ENTRY_SIZE
         table_size = self._content_table_size
 
-        # Use first 8 bytes of fingerprint as hash for slot calculation
-        slot_hash = int.from_bytes(fingerprint[:ADDRESS_WIDTH], byteorder="big")
+        # Use full 128-bit fingerprint for slot calculation
+        slot_hash = int.from_bytes(fingerprint, byteorder="big")
         slot = slot_hash % table_size
         initial_slot = slot
 
@@ -360,7 +360,8 @@ class ContentAddressableCache:
         entry_size = CONTENT_FP_ENTRY_SIZE
         table_size = self._content_table_size
 
-        slot_hash = int.from_bytes(fingerprint[:ADDRESS_WIDTH], byteorder="big")
+        # Use full 128-bit fingerprint for slot calculation
+        slot_hash = int.from_bytes(fingerprint, byteorder="big")
         slot = slot_hash % table_size
         initial_slot = slot
 
