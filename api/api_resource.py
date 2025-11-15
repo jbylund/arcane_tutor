@@ -55,19 +55,13 @@ NOT_FOUND = 404
 BACKFILL = IMPORT_EXPORT = True
 
 
-# Create a compatibility wrapper for cachetools.keys.hashkey
-def hashkey(*args: Any, **kwargs: Any) -> int:  # noqa: ANN401
-    """Compatibility wrapper for cachetools.keys.hashkey using cachebox.make_hash_key."""
-    return cachebox.make_hash_key(args, kwargs)
-
-
 def cached(cache: Any, key: Any = None) -> Any:  # noqa: ANN401
     """Decorator that respects the settings.enable_cache flag at runtime.
 
     Always creates the cached function, but checks settings at call time
     to determine whether to use the cache or call the original function.
     """
-    key_maker = key or hashkey
+    key_maker = key or cachebox.make_hash_key
 
     def decorator(func: Any) -> Any:  # noqa: ANN401
         cached_func = cachebox_cached(cache, key_maker=key_maker)(func)
