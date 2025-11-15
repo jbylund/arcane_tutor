@@ -21,13 +21,13 @@ from functools import wraps
 from typing import TYPE_CHECKING, Any
 from typing import cast as typecast
 
-import cachetools.keys
+import cachebox
 import falcon
 import orjson
 import psycopg
 import requests
-from cachetools import LRUCache, TTLCache
-from cachetools import cached as cachetools_cached
+from cachebox import LRUCache, TTLCache
+from cachebox import cached as cachebox_cached
 from psycopg import Connection, Cursor
 
 from api.card_processing import preprocess_card
@@ -55,16 +55,22 @@ NOT_FOUND = 404
 BACKFILL = IMPORT_EXPORT = True
 
 
+# Create a compatibility wrapper for cachetools.keys.hashkey
+def hashkey(*args: Any, **kwargs: Any) -> int:  # noqa: ANN401
+    """Compatibility wrapper for cachetools.keys.hashkey using cachebox.make_hash_key."""
+    return cachebox.make_hash_key(args, kwargs)
+
+
 def cached(cache: Any, key: Any = None) -> Any:  # noqa: ANN401
     """Decorator that respects the settings.enable_cache flag at runtime.
 
     Always creates the cached function, but checks settings at call time
     to determine whether to use the cache or call the original function.
     """
-    key = key or cachetools.keys.hashkey
+    key_maker = key or hashkey
 
     def decorator(func: Any) -> Any:  # noqa: ANN401
-        cached_func = cachetools_cached(cache, key=key)(func)
+        cached_func = cachebox_cached(cache, key_maker=key_maker)(func)
 
         @wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
@@ -143,7 +149,8 @@ class APIResource:
         self.action_map["index"] = make_type_converting_wrapper(self.index_html)
         self._query_cache = LRUCache(maxsize=1_000)
         if not settings.enable_cache:
-            self._query_cache = TTLCache(maxsize=1, ttl=0)
+            # cachebox doesn't support ttl=0, so we use a minimal cache when disabled
+            self._query_cache = LRUCache(maxsize=1)
         self._session = requests.Session()
         self._import_guard: LockType = import_guard
         self._schema_setup_event: EventType = schema_setup_event
