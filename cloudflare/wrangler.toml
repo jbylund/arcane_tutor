@@ -1,0 +1,27 @@
+# Cloudflare Workers configuration file
+# See: https://developers.cloudflare.com/workers/wrangler/configuration/
+
+name = "arcane-tutor-redirect"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# Uncomment and configure if you need environment variables
+# [vars]
+# API_URL = "https://your-api.example.com"
+
+# Uncomment if you need secrets (use `wrangler secret put <KEY>`)
+# [secrets]
+# API_KEY = "your-secret-key"
+
+# Routes configuration
+# Uncomment and configure routes to attach this worker to specific domains
+# [[routes]]
+# pattern = "example.com/*"
+# zone_name = "example.com"
+
+# Or use route patterns
+# routes = [
+#   { pattern = "example.com/*", zone_name = "example.com" },
+#   { pattern = "*.example.com/*", zone_name = "example.com" }
+# ]
+

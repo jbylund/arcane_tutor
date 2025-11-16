@@ -1,0 +1,17 @@
+{
+  "name": "arcane-tutor-redirect-worker",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker for country/region-specific domain redirects",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240117.0",
+    "typescript": "^5.3.3",
+    "wrangler": "^3.19.0"
+  }
+}
+
