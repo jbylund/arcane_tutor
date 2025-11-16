@@ -36,3 +36,6 @@ WORKDIR /app
 # Set git metadata as environment variables
 ENV GIT_SHA=${GIT_SHA}
 ENV GIT_BRANCH=${GIT_BRANCH}
+
+# Disable core dumps
+RUN echo "ulimit -c 0" >> /etc/profile
