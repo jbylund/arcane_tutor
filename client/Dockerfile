@@ -22,4 +22,7 @@ RUN mkdir -p /app/client
 COPY ./client/query_runner.py /app/client/
 WORKDIR /app
 
+# Disable core dumps
+RUN echo "ulimit -c 0" >> /etc/profile
+
 CMD ["dumb-init", "--", "python", "-m", "client.query_runner"]
