@@ -130,6 +130,24 @@ class TestCardProcessing:
         result = preprocess_card(invalid_card)
         assert result is None
 
+    def test_preprocess_card_filters_card_type(self: TestCardProcessing) -> None:
+        """Test preprocess_card filters out cards with Card type."""
+        invalid_card = create_test_card(
+            type_line="Card",
+        )
+
+        result = preprocess_card(invalid_card)
+        assert result is None
+
+    def test_preprocess_card_filters_token_type(self: TestCardProcessing) -> None:
+        """Test preprocess_card filters out cards with Token type."""
+        invalid_card = create_test_card(
+            type_line="Token Creature — Goblin",
+        )
+
+        result = preprocess_card(invalid_card)
+        assert result is None
+
     def test_preprocess_card_processes_valid_card(self: TestCardProcessing) -> None:
         """Test preprocess_card processes valid cards correctly."""
         valid_card = create_test_card(
