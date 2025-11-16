@@ -157,7 +157,7 @@ class APIResource:
         logger.info("Worker with pid %d has conn pool %s", os.getpid(), self._conn_pool)
         self.setup_schema()
 
-    @cached(cache={}, key=lambda _self, filename: filename)
+    @cached(cache={}, key=lambda args, kwds: args[1] if len(args) > 1 else kwds.get("filename"))
     def read_sql(self, filename: str) -> str:
         """Read SQL content from a file with caching.
 
@@ -520,7 +520,7 @@ class APIResource:
             logger.error("Error checking if setup is complete: %s", oops, exc_info=True)
             return False
 
-    @cached(cache={}, key=lambda _self, *_args, **_kwargs: None)
+    @cached(cache={}, key=lambda _args, _kwds: None)
     def import_data(self, **_: object) -> None:
         """Import data from Scryfall and insert into the database."""
         if self._setup_complete():
@@ -600,7 +600,7 @@ class APIResource:
 
     @cached(
         cache=TTLCache(maxsize=1000, ttl=60),
-        key=lambda _self, *args, **kwargs: (args, tuple(sorted(kwargs.items()))),
+        key=lambda args, kwds: (args, tuple(sorted(kwds.items()))),
     )
     def _search(  # noqa: PLR0913
         self,
