@@ -111,6 +111,10 @@ def preprocess_card(card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: PLR
     card["card_types"] = card_types
     card["card_subtypes"] = card_subtypes
 
+    # Filter out unplayable cards: Cards and Tokens
+    if "Card" in card_types or "Token" in card_types:
+        return None
+
     card["creature_power"] = maybe_int(card.get("power"))
     card["creature_toughness"] = maybe_int(card.get("toughness"))
     card["planeswalker_loyalty"] = maybe_int(card.get("loyalty"))
