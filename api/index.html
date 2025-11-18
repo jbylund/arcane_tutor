@@ -1234,7 +1234,7 @@
 
         async fetchCommonCardTypes() {
           // Use the promise that was started at the very top of the page (before CSS parsing)
-          this.commonCardTypes = await window.commonCardTypesPromise;
+          this.commonCardTypes = await (window.commonCardTypesPromise || Promise.resolve([]));
           console.debug('Loaded', this.commonCardTypes.length, 'common card types');
         }
 
