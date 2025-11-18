@@ -183,7 +183,7 @@ def create_card_html(card: dict, index: int) -> str:
     """
     card_id = str(index)
 
-    # Build image URLs for srcset - using 4 sizes uniformly spread between 280 and 745
+    # Build image URLs for srcset - using 4 sizes with uniform ratio (~1.386) between 280 and 745
     image_280 = build_image_url(card, "280")
     image_388 = build_image_url(card, "388")
     image_538 = build_image_url(card, "538")
