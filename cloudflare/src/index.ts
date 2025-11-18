@@ -16,11 +16,17 @@ const awsRegions = [
     { region: "ap-southeast-1", url: "https://dynamodb.ap-southeast-1.amazonaws.com/" },
 ] as const;
 
+// Cache latency results for 60 seconds to avoid measuring on every request
+const CACHE_TTL = 60 * 1000; // 60 seconds in milliseconds
+
 // Environment interface (for Cloudflare Workers bindings)
 interface Env {
     // Add any environment variables here
     // For example: API_URL: string;
 }
+
+// Cache for latency results (stored in memory, per worker instance)
+let cachedResult: { region: string; timestamp: number } | null = null;
 
 /**
  * Measure latency to a URL by making a HEAD request
@@ -52,6 +58,7 @@ async function measureLatency(url: string, timeoutMs: number = 5000): Promise<nu
 /**
  * Find the region with the lowest latency
  * Measures latency to all regions in parallel
+ * Defaults to the first region if all measurements fail
  */
 async function findFastestRegion(): Promise<string> {
     // Measure latency to all regions in parallel
@@ -67,6 +74,11 @@ async function findFastestRegion(): Promise<string> {
         current.latency < prev.latency ? current : prev
     );
     
+    // If all regions timed out (all have Infinity latency), default to us-east-1
+    if (fastest.latency === Infinity) {
+        return "us-east-1";
+    }
+    
     return fastest.region;
 }
 
@@ -77,8 +89,21 @@ export default {
     async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
         const url = new URL(request.url);
         
-        // Find the fastest region based on latency
-        const fastestRegion = await findFastestRegion();
+        // Check if we have a cached result that's still valid
+        let fastestRegion: string;
+        const now = Date.now();
+        
+        if (cachedResult && (now - cachedResult.timestamp) < CACHE_TTL) {
+            // Use cached result
+            fastestRegion = cachedResult.region;
+        } else {
+            // Measure latency and cache the result
+            fastestRegion = await findFastestRegion();
+            cachedResult = {
+                region: fastestRegion,
+                timestamp: now,
+            };
+        }
         
         // Redirect to the region-specific subdomain
         const redirectUrl = `https://${fastestRegion}.${hostname}${url.pathname}${url.search}`;

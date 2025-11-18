@@ -14,14 +14,15 @@ compatibility_date = "2024-01-01"
 # API_KEY = "your-secret-key"
 
 # Routes configuration
-# Uncomment and configure routes to attach this worker to specific domains
-# [[routes]]
-# pattern = "example.com/*"
-# zone_name = "example.com"
+# Attach this worker to your domain
+# Option 1: Single route pattern (uncomment to use)
+[[routes]]
+pattern = "arcane-tutor.com/*"
+zone_name = "arcane-tutor.com"
 
-# Or use route patterns
+# Option 2: Multiple route patterns (uncomment to use instead of Option 1)
 # routes = [
-#   { pattern = "example.com/*", zone_name = "example.com" },
-#   { pattern = "*.example.com/*", zone_name = "example.com" }
+#   { pattern = "arcane-tutor.com/*", zone_name = "arcane-tutor.com" },
+#   { pattern = "*.arcane-tutor.com/*", zone_name = "arcane-tutor.com" }
 # ]
 
