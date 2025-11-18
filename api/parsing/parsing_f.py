@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-import cachetools
+import cachebox
 from pyparsing import (
     CaselessKeyword,
     Combine,
@@ -538,7 +538,7 @@ def parse_scryfall_query(query: str) -> Query:
     return to_card_query_ast(generic_query)
 
 
-@cachetools.cached(cache={})
+@cachebox.cached(cache={})
 def get_parse_expr() -> ParserElement:  # noqa: C901, PLR0915
     """Create and return the main parser expression for Scryfall search queries.
 

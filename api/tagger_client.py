@@ -7,7 +7,7 @@ import time
 
 import requests
 import tenacity
-from cachetools import TTLCache, cachedmethod
+from cachebox import TTLCache, cached
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ class TaggerClient:
         match = re.search(pattern, html_content)
         return match.group(1) if match else None
 
-    @cachedmethod(
+    @cached(
         cache=lambda self: self._auth_cache,
     )
     def authenticate(self) -> bool:

@@ -1,6 +1,6 @@
 boto3
 brotli
-cachetools
+cachebox
 falcon
 honeybadger
 orjson
