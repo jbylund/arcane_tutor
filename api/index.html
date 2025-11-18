@@ -3,6 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Start fetching common card types immediately (as early as possible in head) -->
+    <script>
+      // Start fetching as early as possible - before any other resources block execution
+      window.commonCardTypesPromise = fetch('/get_common_card_types')
+        .then(response => {
+          if (!response.ok) throw new Error('Failed to fetch common card types');
+          return response.json();
+        })
+        .catch(error => {
+          console.error('Error fetching common card types:', error);
+          return [];
+        });
+    </script>
     <meta
       name="description"
       content="Search for Magic: The Gathering cards. Find MTG cards by name, type, text, mana cost, and more. Open source Scryfall implementation."
@@ -1220,17 +1233,9 @@
         }
 
         async fetchCommonCardTypes() {
-          try {
-            const response = await fetch('/get_common_card_types');
-            if (!response.ok) {
-              throw new Error('Failed to fetch common card types');
-            }
-            this.commonCardTypes = await response.json();
-            console.debug('Loaded', this.commonCardTypes.length, 'common card types');
-          } catch (error) {
-            console.error('Error fetching common card types:', error);
-            this.commonCardTypes = [];
-          }
+          // Use the promise that was started at the very top of the page (before CSS parsing)
+          this.commonCardTypes = await window.commonCardTypesPromise;
+          console.debug('Loaded', this.commonCardTypes.length, 'common card types');
         }
 
         autoCompleteQuery(query) {
