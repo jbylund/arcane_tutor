@@ -21,20 +21,19 @@ from functools import wraps
 from typing import TYPE_CHECKING, Any
 from typing import cast as typecast
 
-import cachetools.keys
+import cachebox
 import falcon
 import orjson
 import psycopg
 import requests
-from cachetools import LRUCache, TTLCache
-from cachetools import cached as cachetools_cached
+from cachebox import LRUCache, TTLCache
+from cachebox import cached as cachebox_cached
 from psycopg import Connection, Cursor
 
 from api.card_processing import preprocess_card
 from api.enums import CardOrdering, PreferOrder, SortDirection, UniqueOn
 from api.noscript_helpers import generate_results_count_html, generate_results_html
 from api.parsing import generate_sql_query, parse_scryfall_query
-from api.parsing.card_query_nodes import extract_frame_data_from_raw_card, mana_cost_str_to_dict
 from api.settings import settings
 from api.tagger_client import TaggerClient
 from api.utils import db_utils, error_monitoring, multiprocessing_utils
@@ -52,7 +51,7 @@ logger = logging.getLogger(__name__)
 
 # pylint: disable=c-extension-no-member
 NOT_FOUND = 404
-BACKFILL = IMPORT_EXPORT = True
+IMPORT_EXPORT = True
 
 
 def cached(cache: Any, key: Any = None) -> Any:  # noqa: ANN401
@@ -61,10 +60,10 @@ def cached(cache: Any, key: Any = None) -> Any:  # noqa: ANN401
     Always creates the cached function, but checks settings at call time
     to determine whether to use the cache or call the original function.
     """
-    key = key or cachetools.keys.hashkey
+    key_maker = key or cachebox.make_hash_key
 
     def decorator(func: Any) -> Any:  # noqa: ANN401
-        cached_func = cachetools_cached(cache, key=key)(func)
+        cached_func = cachebox_cached(cache, key_maker=key_maker)(func)
 
         @wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
@@ -143,7 +142,8 @@ class APIResource:
         self.action_map["index"] = make_type_converting_wrapper(self.index_html)
         self._query_cache = LRUCache(maxsize=1_000)
         if not settings.enable_cache:
-            self._query_cache = TTLCache(maxsize=1, ttl=0)
+            # cachebox doesn't support ttl=0, so we use a minimal cache when disabled
+            self._query_cache = LRUCache(maxsize=1)
         self._session = requests.Session()
         self._import_guard: LockType = import_guard
         self._schema_setup_event: EventType = schema_setup_event
@@ -156,7 +156,7 @@ class APIResource:
         logger.info("Worker with pid %d has conn pool %s", os.getpid(), self._conn_pool)
         self.setup_schema()
 
-    @cached(cache={}, key=lambda _self, filename: filename)
+    @cached(cache={}, key=lambda args, kwds: args[1] if len(args) > 1 else kwds.get("filename"))
     def read_sql(self, filename: str) -> str:
         """Read SQL content from a file with caching.
 
@@ -519,7 +519,7 @@ class APIResource:
             logger.error("Error checking if setup is complete: %s", oops, exc_info=True)
             return False
 
-    @cached(cache={}, key=lambda _self, *_args, **_kwargs: None)
+    @cached(cache={}, key=lambda _args, _kwds: None)
     def import_data(self, **_: object) -> None:
         """Import data from Scryfall and insert into the database."""
         if self._setup_complete():
@@ -599,7 +599,7 @@ class APIResource:
 
     @cached(
         cache=TTLCache(maxsize=1000, ttl=60),
-        key=lambda _self, *args, **kwargs: (args, tuple(sorted(kwargs.items()))),
+        key=lambda args, kwds: (args, tuple(sorted(kwds.items()))),
     )
     def _search(  # noqa: PLR0913
         self,
@@ -1596,91 +1596,6 @@ class APIResource:
             raise ValueError(msg) from oops
 
         return all_cards
-
-    if BACKFILL:
-
-        def backfill_mana_cost_jsonb(self, **_: object) -> dict[str, str]:
-            """Backfill the mana_cost_jsonb column with the mana_cost_text column."""
-            logger.info("Backfilling mana_cost_jsonb column with mana_cost_text column")
-            with self._conn_pool.connection() as conn, conn.cursor() as cursor:
-                cursor = typecast("Cursor", cursor)
-                cursor.execute("SELECT mana_cost_text FROM magic.cards GROUP BY mana_cost_text")
-                for mana_cost_text in cursor.fetchall():
-                    mana_cost_text = typecast("dict", mana_cost_text)
-                    mana_cost_jsonb = mana_cost_str_to_dict(mana_cost_text["mana_cost_text"])
-                    cursor.execute(
-                        query="UPDATE magic.cards SET mana_cost_jsonb = %(mana_cost_jsonb)s WHERE mana_cost_text = %(mana_cost_text)s",
-                        params={
-                            "mana_cost_jsonb": db_utils.maybe_json(mana_cost_jsonb),
-                            "mana_cost_text": mana_cost_text["mana_cost_text"],
-                        },
-                    )
-                conn.commit()
-            return {
-                "status": "success",
-                "message": "Mana cost jsonb backfilled successfully",
-            }
-
-        def backfill_card_frame_data(self, **_: object) -> dict[str, Any]:
-            """Backfill the card_frame_data column from raw_card_blob frame data."""
-            logger.info("Backfilling card_frame_data column from raw_card_blob")
-            updated_count = 0
-            with self._conn_pool.connection() as conn, conn.cursor() as cursor:
-                cursor = typecast("Cursor", cursor)
-                # Select unique combinations of frame and frame_effects for efficient batch processing
-                cursor.execute(
-                    """
-                    SELECT
-                        raw_card_blob->>'frame' AS frame,
-                        raw_card_blob->'frame_effects' AS frame_effects
-                    FROM
-                        magic.cards
-                    WHERE
-                        (raw_card_blob ? 'frame' OR raw_card_blob ? 'frame_effects')
-                    GROUP BY 1, 2
-                """,
-                )
-
-                for row in cursor.fetchall():
-                    # Build raw card data for frame extraction
-                    raw_card = {}
-                    if row["frame"] is not None:
-                        raw_card["frame"] = row["frame"]
-                    if row["frame_effects"] is not None:
-                        raw_card["frame_effects"] = row["frame_effects"]
-
-                    frame_data = extract_frame_data_from_raw_card(raw_card)
-                    if frame_data is None:
-                        continue
-
-                    logger.info("Updating frame: frame_data=%s, row=%s", frame_data, row)
-                    cursor.execute(
-                        query=rewrap(
-                            """
-                            UPDATE
-                                magic.cards
-                            SET
-                                card_frame_data = %(frame_data)s
-                            WHERE
-                                raw_card_blob->>'frame' IS NOT DISTINCT FROM %(frame)s AND
-                                raw_card_blob->'frame_effects' IS NOT DISTINCT FROM %(frame_effects)s
-                        """,
-                        ).encode(),
-                        params={
-                            "frame": db_utils.maybe_json(row["frame"]),
-                            "frame_data": db_utils.maybe_json(frame_data),
-                            "frame_effects": db_utils.maybe_json(row["frame_effects"]),
-                        },
-                    )
-                    updated_count += cursor.rowcount
-
-                conn.commit()
-
-            return {
-                "status": "success",
-                "message": f"Card frame data backfilled successfully. Updated {updated_count} cards.",
-                "updated_count": updated_count,
-            }
 
     if IMPORT_EXPORT:
 

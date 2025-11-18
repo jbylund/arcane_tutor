@@ -33,6 +33,8 @@ x-postgres: &postgres
     start_period: 30s
   image: registry.hub.docker.com/library/postgres:18
   shm_size: 1024M
+  ulimits:
+    core: 0
   user: 1000:1000
 
 x-apiservice-env: &apiservice-env
@@ -69,6 +71,8 @@ x-apiservice: &apiservice
     timeout: 1s
     retries: 3
     start_period: 40s
+  ulimits:
+    core: 0
   user: 1000:1000
 
 x-client: &client
@@ -87,6 +91,8 @@ x-client: &client
     BATCH_SIZE: 50
     PYTHONUNBUFFERED: true
     QUERY_DELAY: 0.1
+  ulimits:
+    core: 0
   user: 1000:1000
 
 services:
