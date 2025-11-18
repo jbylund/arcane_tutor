@@ -69,6 +69,22 @@ SET prefer_score_components = JSONB_BUILD_OBJECT(
                 WHEN raw_card_blob ->> 'lang' = 'en' THEN 40
                 ELSE 0
             END
+    ),
+    'legendary_frame', (
+        SELECT 
+            CASE 
+                WHEN raw_card_blob -> 'frame_effects' ? 'legendary' THEN 5
+                ELSE 0
+            END
+    ),
+    'finish', (
+        SELECT 
+            CASE 
+                WHEN raw_card_blob -> 'finishes' ? 'nonfoil' THEN 10
+                WHEN raw_card_blob -> 'finishes' ? 'foil' THEN 5
+                WHEN raw_card_blob -> 'finishes' ? 'etched' THEN 0
+                ELSE 0
+            END
     )
 );
 
