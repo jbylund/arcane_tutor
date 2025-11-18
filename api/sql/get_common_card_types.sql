@@ -32,9 +32,10 @@ with_min_count AS (
     HAVING count(1) >= 5
 )
 SELECT
-    type_name AS t,
+    type_name,
     num_occurrences AS n
 FROM
     with_min_count
 ORDER BY
-    type_name
+    num_occurrences DESC,
+    type_name ASC

@@ -888,12 +888,14 @@ class APIResource:
 
     def get_common_card_types(
         self, falcon_response: falcon.Response | None = None, **_: object,
-    ) -> list[dict[str, Any]]:
-        """Get the common card types from the database."""
+    ) -> list[str]:
+        """Get the common card types from the database, ordered by frequency (descending)."""
         set_cache_header(falcon_response, duration=timedelta(hours=1))
-        return self._run_query(
+        result = self._run_query(
             query=self.read_sql("get_common_card_types"),
         )["result"]
+        # Extract type_name values from result rows (each row is a dict with 'type_name' key)
+        return [row["type_name"] for row in result]
 
     def get_common_keywords(self, **_: object) -> list[dict[str, Any]]:
         """Get the common keywords from the database."""

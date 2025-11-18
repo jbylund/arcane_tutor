@@ -1255,10 +1255,10 @@
             return query;
           }
 
-          // Find the most common type that starts with this prefix
-          const bestMatch = this.commonCardTypes
-            .filter(type => type.t.toLowerCase().startsWith(prefix))
-            .sort((a, b) => b.n - a.n)[0]; // Get the most frequent match
+          // Find the first type that starts with this prefix (already ordered by frequency)
+          const bestMatch = this.commonCardTypes.find(type =>
+            type.toLowerCase().startsWith(prefix)
+          );
 
           if (!bestMatch) {
             return query; // No match found, return original
@@ -1268,19 +1268,19 @@
           const originalPrefix = typeMatch[1];
 
           // Create completion that matches the user's capitalization pattern
-          let completedType = bestMatch.t;
+          let completedType = bestMatch;
           if (originalPrefix.length > 0) {
             // Preserve the capitalization pattern of the user's input
             if (originalPrefix === originalPrefix.toUpperCase()) {
               // All caps -> all caps
-              completedType = bestMatch.t.toUpperCase();
+              completedType = bestMatch.toUpperCase();
             } else if (originalPrefix === originalPrefix.toLowerCase()) {
               // All lowercase -> all lowercase
-              completedType = bestMatch.t.toLowerCase();
+              completedType = bestMatch.toLowerCase();
             } else {
               // Mixed case -> take whatever they've typed so far
               // and append the rest of the completion
-              completedType = originalPrefix + bestMatch.t.slice(originalPrefix.length);
+              completedType = originalPrefix + bestMatch.slice(originalPrefix.length);
             }
           }
 
