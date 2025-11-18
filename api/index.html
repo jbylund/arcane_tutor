@@ -6,7 +6,7 @@
     <!-- Start fetching common card types immediately (as early as possible in head) -->
     <script>
       // Start fetching as early as possible - before any other resources block execution
-      (function() {
+      (function () {
         if (!window.commonCardTypesPromise) {
           window.commonCardTypesPromise = fetch('/get_common_card_types')
             .then(response => {
