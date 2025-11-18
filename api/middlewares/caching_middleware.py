@@ -6,7 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 from typing import cast as typecast
 
-from cachetools import LRUCache
+from cachebox import LRUCache
 
 from api.settings import settings
 

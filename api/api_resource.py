@@ -21,13 +21,13 @@ from functools import wraps
 from typing import TYPE_CHECKING, Any
 from typing import cast as typecast
 
-import cachetools.keys
+import cachebox
 import falcon
 import orjson
 import psycopg
 import requests
-from cachetools import LRUCache, TTLCache
-from cachetools import cached as cachetools_cached
+from cachebox import LRUCache, TTLCache
+from cachebox import cached as cachebox_cached
 from psycopg import Connection, Cursor
 
 from api.card_processing import preprocess_card
@@ -60,10 +60,10 @@ def cached(cache: Any, key: Any = None) -> Any:  # noqa: ANN401
     Always creates the cached function, but checks settings at call time
     to determine whether to use the cache or call the original function.
     """
-    key = key or cachetools.keys.hashkey
+    key_maker = key or cachebox.make_hash_key
 
     def decorator(func: Any) -> Any:  # noqa: ANN401
-        cached_func = cachetools_cached(cache, key=key)(func)
+        cached_func = cachebox_cached(cache, key_maker=key_maker)(func)
 
         @wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
@@ -142,7 +142,8 @@ class APIResource:
         self.action_map["index"] = make_type_converting_wrapper(self.index_html)
         self._query_cache = LRUCache(maxsize=1_000)
         if not settings.enable_cache:
-            self._query_cache = TTLCache(maxsize=1, ttl=0)
+            # cachebox doesn't support ttl=0, so we use a minimal cache when disabled
+            self._query_cache = LRUCache(maxsize=1)
         self._session = requests.Session()
         self._import_guard: LockType = import_guard
         self._schema_setup_event: EventType = schema_setup_event
@@ -155,7 +156,7 @@ class APIResource:
         logger.info("Worker with pid %d has conn pool %s", os.getpid(), self._conn_pool)
         self.setup_schema()
 
-    @cached(cache={}, key=lambda _self, filename: filename)
+    @cached(cache={}, key=lambda args, kwds: args[1] if len(args) > 1 else kwds.get("filename"))
     def read_sql(self, filename: str) -> str:
         """Read SQL content from a file with caching.
 
@@ -518,7 +519,7 @@ class APIResource:
             logger.error("Error checking if setup is complete: %s", oops, exc_info=True)
             return False
 
-    @cached(cache={}, key=lambda _self, *_args, **_kwargs: None)
+    @cached(cache={}, key=lambda _args, _kwds: None)
     def import_data(self, **_: object) -> None:
         """Import data from Scryfall and insert into the database."""
         if self._setup_complete():
@@ -598,7 +599,7 @@ class APIResource:
 
     @cached(
         cache=TTLCache(maxsize=1000, ttl=60),
-        key=lambda _self, *args, **kwargs: (args, tuple(sorted(kwargs.items()))),
+        key=lambda args, kwds: (args, tuple(sorted(kwds.items()))),
     )
     def _search(  # noqa: PLR0913
         self,
