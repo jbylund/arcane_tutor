@@ -204,7 +204,8 @@ class APIResource:
         action = self.action_map.get(path, self._raise_not_found)
         before = time.monotonic()
         try:
-            res = action(falcon_response=resp, **req.params)
+            # Pass request object for methods that need it (e.g., POST body)
+            res = action(falcon_response=resp, falcon_request=req, **req.params)
             resp.media = res
         except TypeError as oops:
             logger.error("Error handling request: %s", oops, exc_info=True)
@@ -2077,3 +2078,270 @@ class APIResource:
                 cursor.execute(query_sql)
                 results.extend(dict(r) for r in cursor.fetchall())
         return results
+
+    def webp_quality_test_html(
+        self,
+        *,
+        falcon_response: falcon.Response | None = None,
+        **_: object,
+    ) -> None:
+        """Return the WebP quality testing page.
+
+        Args:
+            falcon_response: The Falcon response to write to.
+        """
+        if falcon_response is None:
+            return
+        full_filename = pathlib.Path(__file__).parent / "webp_quality_test.html"
+        with pathlib.Path(full_filename).open(encoding="utf-8") as f:
+            html_content = f.read()
+        falcon_response.text = html_content
+        falcon_response.content_type = "text/html"
+        set_cache_header(falcon_response, timedelta(hours=1))
+
+    def webp_quality_get_card(
+        self,
+        *,
+        size: str = "280",
+        falcon_response: falcon.Response | None = None,
+        **_: object,
+    ) -> dict[str, Any]:
+        """Get a random card from Scryfall and generate WebP images for quality testing.
+
+        Args:
+            size: Image size (280, 388, 538, or 745)
+            falcon_response: The Falcon response (unused)
+
+        Returns:
+            Dict with image URLs and test information
+        """
+        import subprocess
+        import tempfile
+        import base64
+
+        try:
+            # Fetch random card from Scryfall
+            scryfall_url = "https://api.scryfall.com/cards/random"
+            response = self._session.get(scryfall_url, timeout=30)
+            response.raise_for_status()
+            card_data = response.json()
+
+            # Get PNG URL
+            image_uris = card_data.get("image_uris", {})
+            png_url = image_uris.get("png")
+            if not png_url:
+                # Try alternative image sources
+                png_url = image_uris.get("large") or image_uris.get("normal")
+            if not png_url:
+                return {"error": "No PNG image URL found for card"}
+
+            # Download PNG
+            img_response = self._session.get(png_url, timeout=30, stream=True)
+            img_response.raise_for_status()
+
+            # Parse size
+            size_int = int(size)
+            if size_int not in (280, 388, 538, 745):
+                return {"error": f"Invalid size: {size}. Must be 280, 388, 538, or 745"}
+
+            # Randomly select a test quality between 30 and 80 (in intervals of 5)
+            test_quality = random.choice(range(30, 81, 5))
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = pathlib.Path(temp_dir)
+                png_path = temp_path / "original.png"
+
+                # Save PNG
+                with png_path.open("wb") as f:
+                    for chunk in img_response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+
+                # Generate WebP at 85% quality
+                high_quality_path = temp_path / "high.webp"
+                cmd_high = [
+                    "cwebp",
+                    str(png_path),
+                    "-resize",
+                    str(size_int),
+                    "0",
+                    "-m",
+                    "6",
+                    "-noalpha",
+                    "-q",
+                    "85",
+                    "-sharp_yuv",
+                    "-o",
+                    str(high_quality_path),
+                ]
+                subprocess.run(cmd_high, capture_output=True, check=True, timeout=30)
+
+                # Generate WebP at test quality
+                test_quality_path = temp_path / "test.webp"
+                cmd_test = [
+                    "cwebp",
+                    str(png_path),
+                    "-resize",
+                    str(size_int),
+                    "0",
+                    "-m",
+                    "6",
+                    "-noalpha",
+                    "-q",
+                    str(test_quality),
+                    "-sharp_yuv",
+                    "-o",
+                    str(test_quality_path),
+                ]
+                subprocess.run(cmd_test, capture_output=True, check=True, timeout=30)
+
+                # Read and encode images as base64 data URLs
+                with high_quality_path.open("rb") as f:
+                    high_quality_data = base64.b64encode(f.read()).decode("utf-8")
+                with test_quality_path.open("rb") as f:
+                    test_quality_data = base64.b64encode(f.read()).decode("utf-8")
+
+                return {
+                    "size": size,
+                    "test_quality": test_quality,
+                    "high_quality_url": f"data:image/webp;base64,{high_quality_data}",
+                    "test_quality_url": f"data:image/webp;base64,{test_quality_data}",
+                    "card_name": card_data.get("name", "Unknown"),
+                    "scryfall_id": card_data.get("id", ""),
+                }
+        except subprocess.CalledProcessError as e:
+            logger.error(f"cwebp error: {e.stderr}")
+            return {"error": f"Image conversion failed: {e.stderr.decode() if e.stderr else str(e)}"}
+        except subprocess.TimeoutExpired:
+            return {"error": "Image conversion timed out"}
+        except FileNotFoundError:
+            return {"error": "cwebp not found. Please install webp tools."}
+        except requests.RequestException as e:
+            logger.error(f"Request error: {e}")
+            return {"error": f"Failed to fetch card: {str(e)}"}
+        except Exception as e:
+            logger.error(f"Unexpected error: {e}", exc_info=True)
+            return {"error": f"Unexpected error: {str(e)}"}
+
+    def webp_quality_submit(
+        self,
+        *,
+        falcon_response: falcon.Response | None = None,
+        falcon_request: falcon.Request | None = None,
+        **params: object,
+    ) -> dict[str, Any]:
+        """Submit a quality test result.
+
+        Args:
+            falcon_response: The Falcon response (unused)
+            falcon_request: The Falcon request object
+            params: Request parameters
+
+        Returns:
+            Success status
+        """
+        try:
+            import json
+
+            # Get request body from falcon_request.media (auto-parsed JSON)
+            # or fall back to reading the stream
+            if falcon_request is not None:
+                try:
+                    data = falcon_request.media
+                except Exception:
+                    # If media parsing fails, read the stream manually
+                    body_bytes = falcon_request.bounded_stream.read()
+                    data = json.loads(body_bytes.decode("utf-8"))
+            else:
+                # Fallback: try to get from params
+                body = params.get("body")
+                if isinstance(body, bytes):
+                    body = body.decode("utf-8")
+                if isinstance(body, str):
+                    data = json.loads(body)
+                else:
+                    data = body if body else {}
+
+            size = int(data.get("size", 0))
+            test_quality = int(data.get("test_quality", 0))
+            picked_quality = int(data.get("picked_quality", 0))
+            card_name = str(data.get("card_name", ""))
+            scryfall_id = str(data.get("scryfall_id", ""))
+
+            if size not in (280, 388, 538, 745):
+                return {"error": "Invalid size"}
+            if test_quality not in range(30, 81, 5):
+                return {"error": "Invalid test quality"}
+            if picked_quality not in (85, test_quality):
+                return {"error": "Invalid picked quality"}
+            if not card_name:
+                return {"error": "Missing card_name"}
+            if not scryfall_id:
+                return {"error": "Missing scryfall_id"}
+
+            # Save to database
+            with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO magic.webp_quality_test_results
+                    (card_name, scryfall_id, image_width, test_quality, picked_quality, correct)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        card_name,
+                        scryfall_id,
+                        size,
+                        test_quality,
+                        picked_quality,
+                        picked_quality == 85,  # correct if they picked 85
+                    ),
+                )
+                conn.commit()
+
+            return {"success": True}
+        except Exception as e:
+            logger.error(f"Error submitting result: {e}", exc_info=True)
+            return {"error": str(e)}
+
+    def webp_quality_stats(
+        self,
+        *,
+        falcon_response: falcon.Response | None = None,
+        **_: object,
+    ) -> dict[str, Any]:
+        """Get quality test statistics.
+
+        Args:
+            falcon_response: The Falcon response (unused)
+
+        Returns:
+            Statistics dictionary grouped by size and test_quality
+        """
+        stats = {"stats": {}}
+
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    image_width,
+                    test_quality,
+                    COUNT(*) as total,
+                    SUM(CASE WHEN correct THEN 1 ELSE 0 END) as correct
+                FROM magic.webp_quality_test_results
+                GROUP BY image_width, test_quality
+                ORDER BY image_width, test_quality DESC
+                """
+            )
+
+            for row in cursor:
+                size_str = str(row["image_width"])
+                quality_str = str(row["test_quality"])
+
+                if size_str not in stats["stats"]:
+                    stats["stats"][size_str] = {}
+
+                stats["stats"][size_str][quality_str] = {
+                    "total": row["total"],
+                    "correct": row["correct"],
+                }
+
+        return stats

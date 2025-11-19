@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebP Quality Test - Arcane Tutor</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+        background: #1a1a1a;
+        color: #e0e0e0;
+        padding: 20px;
+        line-height: 1.6;
+      }
+
+      .container {
+        max-width: 1400px;
+        margin: 0 auto;
+      }
+
+      h1 {
+        text-align: center;
+        margin-bottom: 30px;
+        color: #2b8fdf;
+      }
+
+      .controls {
+        text-align: center;
+        margin-bottom: 30px;
+      }
+
+      .size-selector {
+        margin-bottom: 20px;
+      }
+
+      .size-selector label {
+        margin-right: 15px;
+        font-weight: bold;
+      }
+
+      .size-selector select {
+        padding: 8px 15px;
+        font-size: 16px;
+        background: #2a2a2a;
+        color: #e0e0e0;
+        border: 1px solid #444;
+        border-radius: 4px;
+      }
+
+      button {
+        padding: 10px 20px;
+        font-size: 16px;
+        background: #2b8fdf;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        margin: 0 5px;
+      }
+
+      button:hover {
+        background: #1e6fa8;
+      }
+
+      button:disabled {
+        background: #555;
+        cursor: not-allowed;
+      }
+
+      .test-area {
+        display: flex;
+        gap: 20px;
+        justify-content: center;
+        margin-bottom: 30px;
+        flex-wrap: wrap;
+      }
+
+      .image-container {
+        flex: 1;
+        min-width: 300px;
+        max-width: 500px;
+        text-align: center;
+      }
+
+      .image-container h3 {
+        margin-bottom: 15px;
+        color: #888;
+      }
+
+      .image-container.selected h3 {
+        color: #2b8fdf;
+        font-weight: bold;
+      }
+
+      .image-container img {
+        width: 100%;
+        height: auto;
+        border: 3px solid #444;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: border-color 0.2s;
+      }
+
+      .image-container.selected img {
+        border-color: #2b8fdf;
+        box-shadow: 0 0 15px rgba(43, 143, 223, 0.5);
+      }
+
+      .image-container img:hover {
+        border-color: #666;
+      }
+
+      .image-container.selected img:hover {
+        border-color: #2b8fdf;
+      }
+
+      .info {
+        text-align: center;
+        margin-bottom: 20px;
+        padding: 15px;
+        background: #2a2a2a;
+        border-radius: 8px;
+      }
+
+      .info p {
+        margin: 5px 0;
+      }
+
+      .stats {
+        margin-top: 40px;
+        padding: 20px;
+        background: #2a2a2a;
+        border-radius: 8px;
+      }
+
+      .stats h2 {
+        margin-bottom: 20px;
+        color: #2b8fdf;
+      }
+
+      .stats-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 15px;
+      }
+
+      .stats-table th,
+      .stats-table td {
+        padding: 10px;
+        text-align: left;
+        border-bottom: 1px solid #444;
+      }
+
+      .stats-table th {
+        background: #333;
+        color: #2b8fdf;
+        font-weight: bold;
+      }
+
+      .stats-table tr:hover {
+        background: #333;
+      }
+
+      .quality-bar {
+        display: inline-block;
+        height: 20px;
+        background: #2b8fdf;
+        border-radius: 4px;
+        min-width: 2px;
+      }
+
+      .loading {
+        text-align: center;
+        padding: 40px;
+        color: #888;
+      }
+
+      .error {
+        text-align: center;
+        padding: 20px;
+        background: #5a1a1a;
+        border: 1px solid #aa4444;
+        border-radius: 8px;
+        color: #ffaaaa;
+        margin-bottom: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>WebP Quality Detection Test</h1>
+
+      <div class="controls">
+        <div class="size-selector">
+          <label for="size-select">Image Size:</label>
+          <select id="size-select">
+            <option value="280">280px (Small)</option>
+            <option value="388">388px (Medium)</option>
+            <option value="538">538px (Large)</option>
+            <option value="745">745px (XLarge)</option>
+          </select>
+        </div>
+        <button id="new-card-btn">Get New Card</button>
+        <button id="show-stats-btn">Show Statistics</button>
+      </div>
+
+      <div id="error-message" class="error" style="display: none;"></div>
+
+      <div id="test-area" class="test-area" style="display: none;">
+        <div class="image-container" id="image-a">
+          <h3>Image A</h3>
+          <img id="img-a" src="" alt="Image A" />
+        </div>
+        <div class="image-container" id="image-b">
+          <h3>Image B</h3>
+          <img id="img-b" src="" alt="Image B" />
+        </div>
+      </div>
+
+      <div id="info" class="info" style="display: none;">
+        <p><strong>Which image has higher quality?</strong></p>
+        <p>Click on the image you think looks better.</p>
+        <p id="current-quality"></p>
+      </div>
+
+      <div id="loading" class="loading">Click "Get New Card" to start testing</div>
+
+      <div id="stats" class="stats" style="display: none;">
+        <h2>Statistics</h2>
+        <p>Detection rate: percentage of times users correctly identified the higher quality (85%) image</p>
+        <table class="stats-table">
+          <thead>
+            <tr>
+              <th>Quality Level</th>
+              <th>Tests</th>
+              <th>Correct</th>
+              <th>Detection Rate</th>
+              <th>Visual</th>
+            </tr>
+          </thead>
+          <tbody id="stats-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <script>
+      let currentTest = null;
+      let selectedImage = null;
+
+      const sizeSelect = document.getElementById('size-select');
+      const newCardBtn = document.getElementById('new-card-btn');
+      const showStatsBtn = document.getElementById('show-stats-btn');
+      const testArea = document.getElementById('test-area');
+      const loading = document.getElementById('loading');
+      const info = document.getElementById('info');
+      const errorMessage = document.getElementById('error-message');
+      const stats = document.getElementById('stats');
+      const statsBody = document.getElementById('stats-body');
+      const imgA = document.getElementById('img-a');
+      const imgB = document.getElementById('img-b');
+      const imageAContainer = document.getElementById('image-a');
+      const imageBContainer = document.getElementById('image-b');
+      const currentQualityP = document.getElementById('current-quality');
+
+      function showError(message) {
+        errorMessage.textContent = message;
+        errorMessage.style.display = 'block';
+      }
+
+      function hideError() {
+        errorMessage.style.display = 'none';
+      }
+
+      async function getNewCard() {
+        hideError();
+        loading.textContent = 'Loading random card...';
+        loading.style.display = 'block';
+        testArea.style.display = 'none';
+        info.style.display = 'none';
+        newCardBtn.disabled = true;
+
+        try {
+          const size = sizeSelect.value;
+          const response = await fetch(`/webp_quality_get_card?size=${size}`);
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+          const data = await response.json();
+
+          if (data.error) {
+            throw new Error(data.error);
+          }
+
+          currentTest = data;
+
+          // Randomly assign which image is A and which is B
+          const isAHighQuality = Math.random() < 0.5;
+
+          if (isAHighQuality) {
+            imgA.src = data.high_quality_url;
+            imgB.src = data.test_quality_url;
+            currentTest.image_a_is_high = true;
+          } else {
+            imgA.src = data.test_quality_url;
+            imgB.src = data.high_quality_url;
+            currentTest.image_a_is_high = false;
+          }
+
+          currentQualityP.textContent = `Testing quality level: ${data.test_quality}% (vs 85%)`;
+
+          loading.style.display = 'none';
+          testArea.style.display = 'flex';
+          info.style.display = 'block';
+
+          // Reset selection state for new test
+          selectedImage = null;
+          imageAContainer.classList.remove('selected');
+          imageBContainer.classList.remove('selected');
+        } catch (error) {
+          showError(`Error loading card: ${error.message}`);
+          loading.textContent = 'Error loading card. Click "Get New Card" to try again.';
+        } finally {
+          newCardBtn.disabled = false;
+        }
+      }
+
+      function selectImage(imageId) {
+        if (selectedImage) {
+          return; // Already selected
+        }
+
+        selectedImage = imageId;
+        const isA = imageId === 'image-a';
+
+        if (isA) {
+          imageAContainer.classList.add('selected');
+          imageBContainer.classList.remove('selected');
+        } else {
+          imageBContainer.classList.add('selected');
+          imageAContainer.classList.remove('selected');
+        }
+
+        // Submit the result
+        submitResult(isA);
+      }
+
+      async function submitResult(selectedA) {
+        if (!currentTest) {
+          return;
+        }
+
+        // Determine which quality was picked (85 or test_quality)
+        const pickedQuality = (selectedA && currentTest.image_a_is_high) ||
+                              (!selectedA && !currentTest.image_a_is_high)
+          ? 85
+          : currentTest.test_quality;
+
+        try {
+          const response = await fetch('/webp_quality_submit', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              size: currentTest.size,
+              test_quality: currentTest.test_quality,
+              picked_quality: pickedQuality,
+              card_name: currentTest.card_name,
+              scryfall_id: currentTest.scryfall_id,
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+
+          // Wait a moment to show the selection, then get a new card
+          setTimeout(() => {
+            getNewCard();
+          }, 1000);
+        } catch (error) {
+          showError(`Error submitting result: ${error.message}`);
+        }
+      }
+
+      async function showStatistics() {
+        try {
+          const response = await fetch('/webp_quality_stats');
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+          const data = await response.json();
+
+          statsBody.innerHTML = '';
+
+          const size = sizeSelect.value;
+          const sizeStats = data.stats[size] || {};
+
+          // Sort by quality level (descending)
+          const qualities = Object.keys(sizeStats)
+            .map(q => parseInt(q))
+            .sort((a, b) => b - a);
+
+          if (qualities.length === 0) {
+            statsBody.innerHTML = '<tr><td colspan="5" style="text-align: center;">No data yet. Start testing to collect statistics!</td></tr>';
+          } else {
+            qualities.forEach(quality => {
+              const stat = sizeStats[quality];
+              const detectionRate = stat.total > 0 ? (stat.correct / stat.total * 100).toFixed(1) : 0;
+              const barWidth = Math.max(2, detectionRate * 2);
+
+              const row = document.createElement('tr');
+              row.innerHTML = `
+                <td>${quality}%</td>
+                <td>${stat.total}</td>
+                <td>${stat.correct}</td>
+                <td>${detectionRate}%</td>
+                <td><div class="quality-bar" style="width: ${barWidth}px;"></div></td>
+              `;
+              statsBody.appendChild(row);
+            });
+          }
+
+          stats.style.display = 'block';
+        } catch (error) {
+          showError(`Error loading statistics: ${error.message}`);
+        }
+      }
+
+      // Event listeners
+      newCardBtn.addEventListener('click', getNewCard);
+      showStatsBtn.addEventListener('click', showStatistics);
+      imgA.addEventListener('click', () => selectImage('image-a'));
+      imgB.addEventListener('click', () => selectImage('image-b'));
+
+      // Update stats when size changes
+      sizeSelect.addEventListener('change', () => {
+        if (stats.style.display === 'block') {
+          showStatistics();
+        }
+      });
+    </script>
+  </body>
+</html>

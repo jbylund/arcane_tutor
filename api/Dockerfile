@@ -11,7 +11,9 @@ RUN apt-get update -qqq && apt-get install -qqq -y \
     libev-dev \
     libpq-dev \
     libpython3-dev \
-    python3 > /dev/null
+    python3 \
+    webp \
+    > /dev/null
 
 
 # python3-pip
