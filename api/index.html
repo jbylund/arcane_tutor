@@ -1114,9 +1114,6 @@
           // Fetch common card types first
           await this.fetchCommonCardTypes();
 
-          // Initialize intersection observer for lazy image loading BEFORE displaying any results
-          this.initImageObserver();
-
           // On page load, check for query params and restore state
           const params = new URLSearchParams(window.location.search);
           const initialQuery = params.get('q') || '';
@@ -1471,8 +1468,7 @@
             .map((card, index) => this.createCardHTML(card, index, index < firstRowCount))
             .join('');
 
-          // Observe all images for viewport-based loading
-          this.observeImages();
+          // Images now use native srcset, no need for JavaScript-based loading
         }
 
         getColumnsFromViewportWidth() {
@@ -1523,9 +1519,11 @@
         createCardHTML(card, index, isFirstRow = false) {
           const cardId = index.toString();
 
-          const imageSmall = this.buildImageUrl(card, '220');
-          const imageNormal = this.buildImageUrl(card, '410');
-          const imageLarge = this.buildImageUrl(card, '745');
+          // Build image URLs for srcset - using 4 sizes uniformly spread between 280 and 745
+          const image280 = this.buildImageUrl(card, '280');
+          const image388 = this.buildImageUrl(card, '388');
+          const image538 = this.buildImageUrl(card, '538');
+          const image745 = this.buildImageUrl(card, '745');
 
           // Debug logging
           console.debug('Creating card HTML for:', card);
@@ -1550,12 +1548,23 @@
             altText += this.escapeHtml(truncatedText);
           }
 
-          // Create placeholder image that will be replaced when in viewport
+          // Build srcset and sizes for responsive images
+          // sizes attribute matches the grid breakpoints:
+          // - < 410px: 1 column (100vw minus padding/gap)
+          // - 410-750px: 2 columns (50vw minus gap/padding)
+          // - 750-1370px: 3 columns (33.33vw minus gap/padding)
+          // - 1370-2500px: 4 columns (25vw minus gap/padding)
+          // - >= 2500px: 5 columns (20vw minus gap/padding)
+          const srcset = `${this.escapeHtml(image280)} 280w, ${this.escapeHtml(image388)} 388w, ${this.escapeHtml(image538)} 538w, ${this.escapeHtml(image745)} 745w`;
+          const sizes =
+            '(max-width: 410px) calc(100vw - 60px), (max-width: 750px) calc(50vw - 30px), (max-width: 1370px) calc(33.33vw - 25px), (max-width: 2500px) calc(25vw - 20px), calc(20vw - 15px)';
+
+          // Use 388px as default src (good middle ground for initial load)
           // Add fetchpriority="high" for first row cards to improve LCP
           // Add loading="lazy" for non-first-row images to improve initial load
           const fetchPriorityAttr = isFirstRow ? ' fetchpriority="high"' : '';
           const loadingAttr = isFirstRow ? '' : ' loading="lazy"';
-          const imageHtml = `<img class="card-image" data-small="${this.escapeHtml(imageSmall)}" data-normal="${this.escapeHtml(imageNormal)}" data-large="${this.escapeHtml(imageLarge)}" alt="${altText}" title="${altText}"${fetchPriorityAttr}${loadingAttr} />`;
+          const imageHtml = `<img class="card-image" src="${this.escapeHtml(image388)}" srcset="${srcset}" sizes="${sizes}" alt="${altText}" title="${altText}"${fetchPriorityAttr}${loadingAttr} />`;
 
           return `
              <div class="card-item" data-card-id="${this.escapeHtml(cardId)}">
@@ -1730,71 +1739,6 @@
             e.preventDefault();
           }
         };
-
-        initImageObserver() {
-          // Create intersection observer to watch for images entering viewport
-          this.imageObserver = new IntersectionObserver(
-            entries => {
-              entries.forEach(entry => {
-                if (entry.isIntersecting) {
-                  const img = entry.target;
-                  this.loadImage(img);
-                  // Stop observing once image is loaded
-                  this.imageObserver.unobserve(img);
-                }
-              });
-            },
-            {
-              rootMargin: '150px', // Start loading 150px before entering viewport
-              threshold: 0.1,
-            }
-          );
-        }
-
-        loadImage(imgElement) {
-          const smallImageUrl = imgElement.getAttribute('data-small');
-          const normalImageUrl = imgElement.getAttribute('data-normal');
-
-          if (!smallImageUrl) return;
-
-          // Start with small image
-          imgElement.src = smallImageUrl;
-
-          // If normal image is available, upgrade after small image loads
-          if (normalImageUrl) {
-            imgElement.onload = () => {
-              this.upgradeToNormalImage(imgElement, normalImageUrl);
-            };
-          }
-        }
-
-        upgradeToNormalImage(imgElement, normalImageUrl) {
-          // Create a new image to preload the normal version
-          const normalImg = new Image();
-          normalImg.onload = () => {
-            // Once the normal image is loaded, replace the src
-            imgElement.src = normalImageUrl;
-            imgElement.removeAttribute('data-normal');
-            imgElement.removeAttribute('data-small');
-            imgElement.onload = null;
-          };
-          normalImg.onerror = () => {
-            // If normal image fails to load, keep the small image
-            console.warn('Failed to load normal image:', normalImageUrl);
-            imgElement.removeAttribute('data-normal');
-            imgElement.removeAttribute('data-small');
-            imgElement.onload = null;
-          };
-          normalImg.src = normalImageUrl;
-        }
-
-        observeImages() {
-          // Find all images that haven't been loaded yet
-          const images = this.resultsContainer.querySelectorAll('img.card-image:not([src])');
-          images.forEach(img => {
-            this.imageObserver.observe(img);
-          });
-        }
 
         showLoading() {
           console.debug('Showing loading');

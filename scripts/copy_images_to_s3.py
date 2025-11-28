@@ -3,8 +3,8 @@
 This script:
 1. Fetches card data from the database (set_code, collector_number, image_location_uuid)
 2. Downloads PNG images from Scryfall
-3. Converts them to WebP at 3 different sizes (lg, med, sm)
-4. Uploads to S3: s3://biblioplex/setcode/collectornumber/{sm,med,lg}.webp
+3. Converts them to WebP at 4 different sizes (280, 388, 538, 745)
+4. Uploads to S3: s3://biblioplex/setcode/collectornumber/{280,388,538,745}.webp
 """
 
 import argparse
@@ -32,16 +32,19 @@ logger = logging.getLogger(__name__)
 
 # Image size configuration
 ORIGINAL_WIDTH = 745  # this seems to be the size of the pngs that scryfall returns
-LARGE_WIDTH = 745  # Full resolution width in pixels
-MEDIUM_WIDTH = 410  # Medium resolution width in pixels
-SMALL_WIDTH = 220  # Small resolution width in pixels
+# Four sizes uniformly spread between 280 and 745
+XLARGE_WIDTH = 745  # Full resolution width in pixels
+LARGE_WIDTH = 538   # Large resolution width in pixels
+MEDIUM_WIDTH = 388  # Medium resolution width in pixels
+SMALL_WIDTH = 280   # Small resolution width in pixels
 
 # WebP quality setting
 WEBP_QUALITY = 85
 
-LARGE_KEY = "745"
-MEDIUM_KEY = "410"
-SMALL_KEY = "220"
+XLARGE_KEY = "745"
+LARGE_KEY = "538"
+MEDIUM_KEY = "388"
+SMALL_KEY = "280"
 
 ORIGINAL_KEY = "o"
 
@@ -242,7 +245,7 @@ def process_card(
         dry_run: If True, skip actual downloads and uploads
 
     Returns:
-        Dict with success status for each size (sm, med, lg)
+        Dict with success status for each size (280, 388, 538, 745)
     """
     set_code = card["card_set_code"]
     collector_number = card["collector_number"]
@@ -250,15 +253,15 @@ def process_card(
 
     if not set_code or not collector_number or not png_url:
         logger.warning(f"Skipping card with missing data: {card}")
-        return {SMALL_KEY: False, MEDIUM_KEY: False, LARGE_KEY: False}
+        return {SMALL_KEY: False, MEDIUM_KEY: False, LARGE_KEY: False, XLARGE_KEY: False}
 
     logger.info("Processing %s/%s", set_code, collector_number)
 
     if dry_run:
         logger.info(f"[DRY RUN] Would process {set_code}/{collector_number}")
-        return {SMALL_KEY: True, MEDIUM_KEY: True, LARGE_KEY: True}
+        return {SMALL_KEY: True, MEDIUM_KEY: True, LARGE_KEY: True, XLARGE_KEY: True}
 
-    results = {SMALL_KEY: False, MEDIUM_KEY: False, LARGE_KEY: False}
+    results = {SMALL_KEY: False, MEDIUM_KEY: False, LARGE_KEY: False, XLARGE_KEY: False}
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
@@ -270,9 +273,10 @@ def process_card(
             return results
 
         sizes = {
-            LARGE_KEY: LARGE_WIDTH,
-            MEDIUM_KEY: MEDIUM_WIDTH,
             SMALL_KEY: SMALL_WIDTH,
+            MEDIUM_KEY: MEDIUM_WIDTH,
+            LARGE_KEY: LARGE_WIDTH,
+            XLARGE_KEY: XLARGE_WIDTH,
         }
 
         # Convert and upload each size
@@ -287,7 +291,7 @@ def process_card(
                 results[size_name] = True
 
     success_count = sum(results.values())
-    logger.info(f"Completed {set_code}/{collector_number}: {success_count}/3 sizes uploaded")
+    logger.info(f"Completed {set_code}/{collector_number}: {success_count}/4 sizes uploaded")
 
     return results
 
@@ -321,7 +325,7 @@ class CardProcessorPool:
             job_task: Dict of job task
 
         Returns:
-            Dict with success status for each size (sm, med, lg)
+            Dict with success status for each size (280, 388, 538, 745)
         """
         bucket = job_task.pop("bucket")
         dry_run = job_task.pop("dry_run")
@@ -445,7 +449,7 @@ def get_db_cards(args: Args) -> list[dict[str, Any]]:
         logger.warning("No cards found to process")
         return None
 
-    logger.info("Found %d cards in database, should create %d images", len(db_cards), len(db_cards) * 3)
+    logger.info("Found %d cards in database, should create %d images", len(db_cards), len(db_cards) * 4)
     return db_cards
 
 
@@ -493,7 +497,7 @@ def main() -> None:
         set_code = icard["card_set_code"]
         collector_number = icard["collector_number"]
         missing_for_card = []
-        for size in [SMALL_KEY, MEDIUM_KEY, LARGE_KEY]:
+        for size in [SMALL_KEY, MEDIUM_KEY, LARGE_KEY, XLARGE_KEY]:
             key = (set_code, collector_number, size)
             if key not in s3_cards:
                 missing_for_card.append(size)
