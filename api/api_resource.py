@@ -776,6 +776,9 @@ class APIResource:
         with pathlib.Path(full_filename).open() as f:
             html_content = f.read()
 
+        # Always use minified version
+        html_content = html_content.replace("<!-- APP_JS_PATH -->", "/app.min.js")
+
         # Check if we have a search query
         search_query = query or q
         if search_query:
@@ -889,6 +892,20 @@ class APIResource:
         self._serve_static_file(filename="app.js", falcon_response=falcon_response)
         falcon_response.content_type = "application/javascript"
         # Cache JavaScript for 1 hour - it changes infrequently
+        set_cache_header(falcon_response, duration=timedelta(hours=1))
+
+    def app_min_js(self, *, falcon_response: falcon.Response | None = None) -> None:
+        """Return the app.min.js file.
+
+        Args:
+        ----
+            falcon_response (falcon.Response): The Falcon response to write to.
+        """
+        if falcon_response is None:
+            return
+        self._serve_static_file(filename="app.min.js", falcon_response=falcon_response)
+        falcon_response.content_type = "application/javascript"
+        # Cache minified JavaScript for 1 hour - it changes infrequently
         set_cache_header(falcon_response, duration=timedelta(hours=1))
 
     def _serve_static_file(self, *, filename: str, falcon_response: falcon.Response) -> None:
