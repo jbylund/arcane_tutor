@@ -35,7 +35,6 @@ x-postgres: &postgres
   shm_size: 1024M
   ulimits:
     core: 0
-  user: 1000:1000
 
 x-apiservice-env: &apiservice-env
   ENABLE_CACHE: ${ENABLE_CACHE:-false}
