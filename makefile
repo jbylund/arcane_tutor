@@ -19,6 +19,9 @@ XPGPORT=15432
 XPGUSER=foouser
 HOSTNAME := $(shell hostname)
 
+html_files := $(shell find . -type f -name "*.html")
+js_files := $(shell find . -type f -name "*.js")
+
 S3_BUCKET=biblioplex
 
 .PHONY: \
@@ -117,8 +120,8 @@ lint: ruff_lint prettier_lint # @doc lint all python files
 prettier_lint: /tmp/prettier.stamp
 	true
 
-/tmp/prettier.stamp: api/index.html
-	npx prettier --write api/index.html
+/tmp/prettier.stamp: $(html_files) $(js_files)
+	npx prettier --write $(html_files) $(js_files)
 	touch /tmp/prettier.stamp
 
 ruff_fix: ensure_ruff

@@ -863,6 +863,34 @@ class APIResource:
         # Cache favicon for 7 days - it rarely changes
         set_cache_header(falcon_response, duration=timedelta(days=7))
 
+    def styles_css(self, *, falcon_response: falcon.Response | None = None) -> None:
+        """Return the styles.css file.
+
+        Args:
+        ----
+            falcon_response (falcon.Response): The Falcon response to write to.
+        """
+        if falcon_response is None:
+            return
+        self._serve_static_file(filename="styles.css", falcon_response=falcon_response)
+        falcon_response.content_type = "text/css"
+        # Cache CSS for 1 hour - it changes infrequently
+        set_cache_header(falcon_response, duration=timedelta(hours=1))
+
+    def app_js(self, *, falcon_response: falcon.Response | None = None) -> None:
+        """Return the app.js file.
+
+        Args:
+        ----
+            falcon_response (falcon.Response): The Falcon response to write to.
+        """
+        if falcon_response is None:
+            return
+        self._serve_static_file(filename="app.js", falcon_response=falcon_response)
+        falcon_response.content_type = "application/javascript"
+        # Cache JavaScript for 1 hour - it changes infrequently
+        set_cache_header(falcon_response, duration=timedelta(hours=1))
+
     def _serve_static_file(self, *, filename: str, falcon_response: falcon.Response) -> None:
         """Serve a static file to the Falcon response.
 
