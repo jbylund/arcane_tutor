@@ -806,22 +806,34 @@ def test_mana_cost_sql_generation() -> None:
     assert "card.mana_cost_jsonb <>" in sql5
 
 
-def test_mana_cost_cmc_calculation() -> None:
+@pytest.mark.parametrize(
+    argnames=("mana_cost", "expected_cmc"),
+    argvalues=[
+        # Test basic braced costs
+        ("{1}{G}", 2),
+        ("{2}{R}{R}", 4),
+        ("{W}{U}", 2),
+        ("{0}", 0),
+        ("{15}", 15),
+        # Test hybrid costs (each counts as 1)
+        ("{W/U}", 1),
+        ("{2/W}", 1),
+        ("{W/U/P}", 1),
+        # Test X costs (X counts as 0 for CMC calculation)
+        ("{X}{X}{W}", 1),
+        # Test unbraced format
+        ("1WU", 3),  # 1 generic + W + U
+        ("2RRG", 5),  # 2 generic + R + R + G
+        ("WU", 2),  # W + U
+        ("11R", 12),  # 11 generic + R (consecutive digits as multi-digit)
+        # Test mixed format
+        ("1{G}", 2),
+        ("W{U/R}", 2),
+    ],
+)
+def test_mana_cost_cmc_calculation(mana_cost: str, expected_cmc: int) -> None:
     """Test CMC calculation for various mana costs."""
-    # Test basic costs
-    assert calculate_cmc("{1}{G}") == 2
-    assert calculate_cmc("{2}{R}{R}") == 4
-    assert calculate_cmc("{W}{U}") == 2
-    assert calculate_cmc("{0}") == 0
-    assert calculate_cmc("{15}") == 15
-
-    # Test hybrid costs (each counts as 1)
-    assert calculate_cmc("{W/U}") == 1
-    assert calculate_cmc("{2/W}") == 1
-    assert calculate_cmc("{W/U/P}") == 1
-
-    # Test X costs (X counts as 0 for CMC calculation)
-    assert calculate_cmc("{X}{X}{W}") == 1
+    assert calculate_cmc(mana_cost) == expected_cmc
 
 
 @pytest.mark.parametrize(
