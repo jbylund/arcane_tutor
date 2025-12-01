@@ -836,24 +836,35 @@ def test_mana_cost_cmc_calculation(mana_cost: str, expected_cmc: int) -> None:
     assert calculate_cmc(mana_cost) == expected_cmc
 
 
-def test_mana_cost_dict_conversion() -> None:
+@pytest.mark.parametrize(
+    argnames=("mana_cost_str", "expected_dict"),
+    argvalues=[
+        # Basic conversions (braced format)
+        ("{1}{G}", {"G": [1]}),
+        ("{2}{R}{R}", {"R": [1, 2]}),
+        ("{W}{U}", {"W": [1], "U": [1]}),
+        ("{0}", {}),
+        # Complex symbols (they should still count as single symbols)
+        ("{W/U}", {"W/U": [1]}),
+        ("{2/W}", {"2/W": [1]}),
+        ("{X}{X}{W}", {"X": [1, 2], "W": [1]}),
+        # Case sensitivity - lowercase should be converted to uppercase
+        ("{g}{g}{g}", {"G": [1, 2, 3]}),
+        ("{r}{u}{b}", {"R": [1], "U": [1], "B": [1]}),
+        ("{w/u}", {"W/U": [1]}),
+        ("{2/w}", {"2/W": [1]}),
+        # Unbraced format
+        ("1WU", {"W": [1], "U": [1]}),
+        ("2RRG", {"R": [1, 2], "G": [1]}),
+        ("WU", {"W": [1], "U": [1]}),
+        # Mixed format (braced and unbraced)
+        ("1{G}", {"G": [1]}),
+        ("W{U/R}", {"W": [1], "U/R": [1]}),
+    ],
+)
+def test_mana_cost_dict_conversion(mana_cost_str: str, expected_dict: dict) -> None:
     """Test mana cost to dict conversion."""
-    # Test basic conversions
-    assert mana_cost_str_to_dict("{1}{G}") == {"G": [1]}
-    assert mana_cost_str_to_dict("{2}{R}{R}") == {"R": [1, 2]}
-    assert mana_cost_str_to_dict("{W}{U}") == {"W": [1], "U": [1]}
-    assert mana_cost_str_to_dict("{0}") == {}
-
-    # Test complex symbols (they should still count as single symbols)
-    assert mana_cost_str_to_dict("{W/U}") == {"W/U": [1]}
-    assert mana_cost_str_to_dict("{2/W}") == {"2/W": [1]}
-    assert mana_cost_str_to_dict("{X}{X}{W}") == {"X": [1, 2], "W": [1]}
-
-    # Test case sensitivity - lowercase should be converted to uppercase
-    assert mana_cost_str_to_dict("{g}{g}{g}") == {"G": [1, 2, 3]}
-    assert mana_cost_str_to_dict("{r}{u}{b}") == {"R": [1], "U": [1], "B": [1]}
-    assert mana_cost_str_to_dict("{w/u}") == {"W/U": [1]}
-    assert mana_cost_str_to_dict("{2/w}") == {"2/W": [1]}
+    assert mana_cost_str_to_dict(mana_cost_str) == expected_dict
 
 
 @pytest.mark.parametrize(
