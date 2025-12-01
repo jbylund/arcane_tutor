@@ -98,6 +98,12 @@ DB_COLUMNS = [
         parser_class=ParserClass.TEXT,
     ),
     FieldInfo(
+        db_column_name="face_name",
+        field_type=FieldType.TEXT,
+        search_aliases=["face", "facename"],
+        parser_class=ParserClass.TEXT,
+    ),
+    FieldInfo(
         db_column_name="card_subtypes",
         field_type=FieldType.JSONB_ARRAY,
         search_aliases=["subtype", "subtypes"],

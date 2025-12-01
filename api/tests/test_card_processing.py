@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import pathlib
 import uuid
 from typing import Any
 
 from api.card_processing import preprocess_card
 from api.parsing.card_query_nodes import extract_frame_data_from_raw_card
+
+# Project root directory for accessing sample data
+_PROJECT_ROOT = pathlib.Path(__file__).parent.parent.parent
+_SAMPLE_DATA_DIR = _PROJECT_ROOT / "docs" / "sample_data"
 
 
 def create_test_card(  # noqa: PLR0913
@@ -110,16 +116,23 @@ class TestCardProcessing:
         )
 
         result = preprocess_card(invalid_card)
-        assert result is None
+        assert result == []
 
-    def test_preprocess_card_filters_card_faces(self: TestCardProcessing) -> None:
-        """Test preprocess_card filters out cards with card_faces."""
-        invalid_card = create_test_card(
-            card_faces=[{"name": "Front"}, {"name": "Back"}],  # Has card_faces
+    def test_preprocess_card_processes_double_faced_cards(self: TestCardProcessing) -> None:
+        """Test preprocess_card processes cards with card_faces (DFCs) correctly."""
+        dfc_card = create_test_card(
+            card_faces=[{"name": "Front", "type_line": "Creature — Human"}, {"name": "Back", "type_line": "Creature — Werewolf"}],
         )
 
-        result = preprocess_card(invalid_card)
-        assert result is None
+        result = preprocess_card(dfc_card)
+        # DFCs should return 2 cards (one per face)
+        assert len(result) == 2
+        assert result[0]["face_idx"] == 1
+        assert result[0]["face_name"] == "Front"
+        assert result[0]["card_name"] == "Test Card"
+        assert result[1]["face_idx"] == 2
+        assert result[1]["face_name"] == "Back"
+        assert result[1]["card_name"] == "Test Card"
 
     def test_preprocess_card_filters_funny_sets(self: TestCardProcessing) -> None:
         """Test preprocess_card filters out funny set types."""
@@ -128,7 +141,7 @@ class TestCardProcessing:
         )
 
         result = preprocess_card(invalid_card)
-        assert result is None
+        assert result == []
 
     def test_preprocess_card_filters_card_type(self: TestCardProcessing) -> None:
         """Test preprocess_card filters out cards with Card type."""
@@ -137,7 +150,7 @@ class TestCardProcessing:
         )
 
         result = preprocess_card(invalid_card)
-        assert result is None
+        assert result == []
 
     def test_preprocess_card_filters_token_type(self: TestCardProcessing) -> None:
         """Test preprocess_card filters out cards with Token type."""
@@ -146,7 +159,7 @@ class TestCardProcessing:
         )
 
         result = preprocess_card(invalid_card)
-        assert result is None
+        assert result == []
 
     def test_preprocess_card_processes_valid_card(self: TestCardProcessing) -> None:
         """Test preprocess_card processes valid cards correctly."""
@@ -164,7 +177,8 @@ class TestCardProcessing:
 
         result = preprocess_card(valid_card)
 
-        assert result is not None
+        assert len(result) == 1
+        result = result[0]
         assert result["card_types"] == ["Instant"]
         # card_subtypes is now always present, set to empty array when no subtypes
         assert result["card_subtypes"] == []
@@ -185,7 +199,8 @@ class TestCardProcessing:
 
         result = preprocess_card(card_with_frame)
 
-        assert result is not None
+        assert len(result) == 1
+        result = result[0]
         expected_frame_data = {"2015": True, "Showcase": True, "Legendary": True}
         assert result["card_frame_data"] == expected_frame_data
 
@@ -201,7 +216,8 @@ class TestCardProcessing:
 
         result = preprocess_card(card_without_frame)
 
-        assert result is not None
+        assert len(result) == 1
+        result = result[0]
         assert result["card_frame_data"] == {}  # Should be empty object when no frame data present
 
     def test_extract_frame_data_from_raw_card_with_frame_and_effects(self: TestCardProcessing) -> None:
@@ -250,7 +266,8 @@ class TestCardProcessing:
 
         result = preprocess_card(minimal_card)
 
-        assert result is not None
+        assert len(result) == 1
+        result = result[0]
         assert result["card_colors"] == {}
         assert result["card_color_identity"] == {}
         assert result["card_keywords"] == {}
@@ -271,6 +288,39 @@ class TestCardProcessing:
 
         result = preprocess_card(card)
 
-        assert result is not None
+        assert len(result) == 1
+        result = result[0]
         assert result["creature_power"] is None
         assert result["creature_toughness"] is None
+
+    def test_preprocess_hound_tamer_dfc(self: TestCardProcessing) -> None:
+        """Test preprocess_card processes Hound Tamer DFC sample data correctly."""
+        sample_file = _SAMPLE_DATA_DIR / "hound_tamer.json"
+        with sample_file.open() as f:
+            hound_tamer = json.load(f)
+
+        result = preprocess_card(hound_tamer)
+
+        # Should return 2 faces
+        assert len(result) == 2
+
+        # Check front face
+        front = result[0]
+        assert front["face_idx"] == 1
+        assert front["face_name"] == "Hound Tamer"
+        assert front["card_name"] == "Hound Tamer // Untamed Pup"
+        assert front["creature_power"] == 3
+        assert front["creature_toughness"] == 3
+        assert "Creature" in front["card_types"]
+        assert front["cmc"] == 3
+
+        # Check back face
+        back = result[1]
+        assert back["face_idx"] == 2
+        assert back["face_name"] == "Untamed Pup"
+        assert back["card_name"] == "Hound Tamer // Untamed Pup"
+        assert back["creature_power"] == 4
+        assert back["creature_toughness"] == 4
+        assert "Creature" in back["card_types"]
+        # CMC is inherited from the card (3), even though back face has no mana cost
+        assert back["cmc"] == 3

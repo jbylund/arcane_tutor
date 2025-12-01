@@ -2,7 +2,7 @@
 
 -- Insert some test cards
 INSERT INTO magic.cards (
-    scryfall_id, card_name, cmc, mana_cost_text, mana_cost_jsonb, raw_card_blob,
+    scryfall_id, card_name, face_name, face_idx, cmc, mana_cost_text, mana_cost_jsonb, raw_card_blob,
     card_types, card_subtypes, card_colors, card_color_identity, card_keywords,
     oracle_text, creature_power, creature_toughness, card_oracle_tags, collector_number, collector_number_int,
     released_at
@@ -10,6 +10,8 @@ INSERT INTO magic.cards (
 (
     '00000000-0000-0000-0000-000000000001',
     'Lightning Bolt',
+    'Lightning Bolt',
+    1,
     1,
     '{R}',
     '{"R": 1}',
@@ -30,6 +32,8 @@ INSERT INTO magic.cards (
 (
     '00000000-0000-0000-0000-000000000002',
     'Serra Angel',
+    'Serra Angel',
+    1,
     5,
     '{3}{W}{W}',
     '{"3": 3, "W": 2}',
@@ -50,6 +54,8 @@ INSERT INTO magic.cards (
 (
     '00000000-0000-0000-0000-000000000003',
     'Black Lotus',
+    'Black Lotus',
+    1,
     0,
     '{0}',
     '{}',
@@ -66,7 +72,7 @@ INSERT INTO magic.cards (
     '1',
     1,
     '2024-02-23'
-) ON CONFLICT (scryfall_id) DO NOTHING;
+) ON CONFLICT (scryfall_id, face_idx) DO NOTHING;
 
 -- Insert test tags
 INSERT INTO magic.tags (tag) VALUES
