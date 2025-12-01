@@ -643,30 +643,21 @@ def test_parse_combined_collector_number_queries() -> None:
 @pytest.mark.parametrize(
     argnames=("test_input", "expected_ast"),
     argvalues=[
-        ("mana:{1}{G}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("{1}{G}"))),
-        ("m:{2}{R}{G}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{2}{R}{G}"))),
-        ("mana:{W/U}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("{W/U}"))),
-        ("m:{X}{X}{W}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{X}{X}{W}"))),
-        ("mana:{0}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("{0}"))),
-        ("m:{15}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{15}"))),
-    ],
-)
-def test_parse_mana_cost_searches(test_input: str, expected_ast: BinaryOperatorNode) -> None:
-    """Test parsing mana cost searches with full curly-brace notation."""
-    observed = parsing.parse_search_query(test_input)
-    assert observed.root == expected_ast
-
-
-@pytest.mark.parametrize(
-    argnames=("test_input", "expected_ast"),
-    argvalues=[
-        ("mana=1{G}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), "=", parsing.ManaValueNode("1{G}"))),
         ("m:2{R}{G}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("2{R}{G}"))),
-        ("mana=W{U/R}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), "=", parsing.ManaValueNode("W{U/R}"))),
+        ("m:{15}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{15}"))),
+        ("m:{1}g{1}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{1}G{1}"))),
+        ("m:{1}{g}{1}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{1}{G}{1}"))),
         ("m:{2/W}G", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{2/W}G"))),
-        ("mana:1WU", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("1WU"))),
+        ("m:{2}{R}{G}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{2}{R}{G}"))),
+        ("m:{X}{X}{W}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{X}{X}{W}"))),
         ("m=2RRG", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), "=", parsing.ManaValueNode("2RRG"))),
+        ("mana:1WU", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("1WU"))),
         ("mana:WU", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("WU"))),
+        ("mana:{0}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("{0}"))),
+        ("mana:{1}{G}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("{1}{G}"))),
+        ("mana:{W/U}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("{W/U}"))),
+        ("mana=1{G}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), "=", parsing.ManaValueNode("1{G}"))),
+        ("mana=W{U/R}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), "=", parsing.ManaValueNode("W{U/R}"))),
     ],
 )
 def test_parse_mixed_mana_notation(test_input: str, expected_ast: BinaryOperatorNode) -> None:
@@ -815,42 +806,65 @@ def test_mana_cost_sql_generation() -> None:
     assert "card.mana_cost_jsonb <>" in sql5
 
 
-def test_mana_cost_cmc_calculation() -> None:
+@pytest.mark.parametrize(
+    argnames=("mana_cost", "expected_cmc"),
+    argvalues=[
+        # Test basic braced costs
+        ("{1}{G}", 2),
+        ("{2}{R}{R}", 4),
+        ("{W}{U}", 2),
+        ("{0}", 0),
+        ("{15}", 15),
+        # Test hybrid costs (each counts as 1)
+        ("{W/U}", 1),
+        ("{2/W}", 1),
+        ("{W/U/P}", 1),
+        # Test X costs (X counts as 0 for CMC calculation)
+        ("{X}{X}{W}", 1),
+        # Test unbraced format
+        ("1WU", 3),  # 1 generic + W + U
+        ("2RRG", 5),  # 2 generic + R + R + G
+        ("WU", 2),  # W + U
+        ("11R", 12),  # 11 generic + R (consecutive digits as multi-digit)
+        # Test mixed format
+        ("1{G}", 2),
+        ("W{U/R}", 2),
+    ],
+)
+def test_mana_cost_cmc_calculation(mana_cost: str, expected_cmc: int) -> None:
     """Test CMC calculation for various mana costs."""
-    # Test basic costs
-    assert calculate_cmc("{1}{G}") == 2
-    assert calculate_cmc("{2}{R}{R}") == 4
-    assert calculate_cmc("{W}{U}") == 2
-    assert calculate_cmc("{0}") == 0
-    assert calculate_cmc("{15}") == 15
-
-    # Test hybrid costs (each counts as 1)
-    assert calculate_cmc("{W/U}") == 1
-    assert calculate_cmc("{2/W}") == 1
-    assert calculate_cmc("{W/U/P}") == 1
-
-    # Test X costs (X counts as 0 for CMC calculation)
-    assert calculate_cmc("{X}{X}{W}") == 1
+    assert calculate_cmc(mana_cost) == expected_cmc
 
 
-def test_mana_cost_dict_conversion() -> None:
+@pytest.mark.parametrize(
+    argnames=("mana_cost_str", "expected_dict"),
+    argvalues=[
+        # Basic conversions (braced format)
+        ("{1}{G}", {"G": [1]}),
+        ("{2}{R}{R}", {"R": [1, 2]}),
+        ("{W}{U}", {"W": [1], "U": [1]}),
+        ("{0}", {}),
+        # Complex symbols (they should still count as single symbols)
+        ("{W/U}", {"W/U": [1]}),
+        ("{2/W}", {"2/W": [1]}),
+        ("{X}{X}{W}", {"X": [1, 2], "W": [1]}),
+        # Case sensitivity - lowercase should be converted to uppercase
+        ("{g}{g}{g}", {"G": [1, 2, 3]}),
+        ("{r}{u}{b}", {"R": [1], "U": [1], "B": [1]}),
+        ("{w/u}", {"W/U": [1]}),
+        ("{2/w}", {"2/W": [1]}),
+        # Unbraced format
+        ("1WU", {"W": [1], "U": [1]}),
+        ("2RRG", {"R": [1, 2], "G": [1]}),
+        ("WU", {"W": [1], "U": [1]}),
+        # Mixed format (braced and unbraced)
+        ("1{G}", {"G": [1]}),
+        ("W{U/R}", {"W": [1], "U/R": [1]}),
+    ],
+)
+def test_mana_cost_dict_conversion(mana_cost_str: str, expected_dict: dict) -> None:
     """Test mana cost to dict conversion."""
-    # Test basic conversions
-    assert mana_cost_str_to_dict("{1}{G}") == {"G": [1]}
-    assert mana_cost_str_to_dict("{2}{R}{R}") == {"R": [1, 2]}
-    assert mana_cost_str_to_dict("{W}{U}") == {"W": [1], "U": [1]}
-    assert mana_cost_str_to_dict("{0}") == {}
-
-    # Test complex symbols (they should still count as single symbols)
-    assert mana_cost_str_to_dict("{W/U}") == {"W/U": [1]}
-    assert mana_cost_str_to_dict("{2/W}") == {"2/W": [1]}
-    assert mana_cost_str_to_dict("{X}{X}{W}") == {"X": [1, 2], "W": [1]}
-
-    # Test case sensitivity - lowercase should be converted to uppercase
-    assert mana_cost_str_to_dict("{g}{g}{g}") == {"G": [1, 2, 3]}
-    assert mana_cost_str_to_dict("{r}{u}{b}") == {"R": [1], "U": [1], "B": [1]}
-    assert mana_cost_str_to_dict("{w/u}") == {"W/U": [1]}
-    assert mana_cost_str_to_dict("{2/w}") == {"2/W": [1]}
+    assert mana_cost_str_to_dict(mana_cost_str) == expected_dict
 
 
 @pytest.mark.parametrize(
@@ -905,29 +919,31 @@ def test_devotion_sql_generation() -> None:
     assert "R" in str(context3.values())
 
 
-def test_mana_cost_string_format_comparisons() -> None:
-    """Test mana cost comparisons work with both {X} and X string formats."""
-    # Test that both formats parse correctly and generate SQL
-    queries_to_test = [
+@pytest.mark.parametrize(
+    argnames=("query", "description"),
+    argvalues=[
         ("mana>{g}{g}{g}", "Braced format should work"),
         ("mana>ggg", "Unbraced format should work"),
         ("m>GGG", "Uppercase unbraced should work"),
         ("mana<=ggg", "Less than or equal with unbraced"),
         ("mana<ggg", "Less than with unbraced"),
         ("mana>=ggg", "Greater than or equal with unbraced"),
-    ]
+    ],
+)
+def test_mana_cost_string_format_comparisons(query: str, description: str) -> None:
+    """Test mana cost comparisons work with both {X} and X string formats."""
+    # Test that both formats parse correctly and generate SQL
+    # Test that parsing works
+    result = parsing.parse_scryfall_query(query)
+    assert result is not None, f"Failed to parse {query}"
 
-    for query, _description in queries_to_test:
-        # Test that parsing works
-        result = parsing.parse_scryfall_query(query)
-        assert result is not None, f"Failed to parse {query}"
-
-        # Test that SQL generation works (should not raise NotImplementedError)
-        context = {}
-        sql = result.to_sql(context)
-        assert sql is not None, f"Failed to generate SQL for {query}"
-        assert "card.mana_cost_jsonb" in sql, f"Should use JSONB containment for {query}"
-        assert "card.cmc" in sql, f"Should use CMC check for {query}"
+    # Test that SQL generation works (should not raise NotImplementedError)
+    context = {}
+    sql = result.to_sql(context)
+    assert sql is not None, f"Failed to generate SQL for {query}"
+    assert "card.mana_cost_jsonb" in sql, f"Should use JSONB containment for {query}"
+    assert "card.cmc" in sql, f"Should use CMC check for {query}"
+    assert context == {"p_dict_eydHJzogWzEsIDIsIDNdfQ": {"G": [1, 2, 3]}, "p_int_Mw": 3}
 
 
 @pytest.mark.parametrize(
