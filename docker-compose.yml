@@ -95,6 +95,10 @@ x-client: &client
     core: 0
   user: 1000:1000
 
+volumes:
+  pgdata-dev:
+  pgdata-prod:
+
 services:
   # Development environment services
   postgres-dev:
@@ -106,7 +110,7 @@ services:
       - *pg-hba
       - *pg-conf
       - *pg-init
-      - /tmp/pgdata/dev/:/data/pg
+      - pgdata-dev:/data/pg
       - ./data/postgres/dev/logs/:/var/log/postgresql
     profiles:
       - dev
@@ -148,7 +152,7 @@ services:
       - *pg-hba
       - *pg-conf
       - *pg-init
-      - /tmp/pgdata/prod/:/data/pg
+      - pgdata-prod:/data/pg
       - ./data/postgres/prod/logs/:/var/log/postgresql
     profiles:
       - prod
