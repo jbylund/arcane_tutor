@@ -772,7 +772,7 @@ class APIResource:
 
         """
         # Read the HTML file
-        full_filename = pathlib.Path(__file__).parent / "index.html"
+        full_filename = pathlib.Path(__file__).parent / "static" / "index.html"
         with pathlib.Path(full_filename).open() as f:
             html_content = f.read()
 
@@ -853,7 +853,7 @@ class APIResource:
         """
         if falcon_response is None:
             return
-        full_filename = pathlib.Path(__file__).parent / "favicon.ico"
+        full_filename = pathlib.Path(__file__).parent / "static" / "favicon.ico"
         with pathlib.Path(full_filename).open(mode="rb") as f:
             falcon_response.data = contents = f.read()
         falcon_response.content_type = "image/vnd.microsoft.icon"
@@ -872,7 +872,7 @@ class APIResource:
             falcon_response (falcon.Response): The Falcon response to write to.
 
         """
-        full_filename = pathlib.Path(__file__).parent / filename
+        full_filename = pathlib.Path(__file__).parent / "static" / filename
         with pathlib.Path(full_filename).open() as f:
             falcon_response.text = f.read()
 
