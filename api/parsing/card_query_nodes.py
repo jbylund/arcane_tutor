@@ -31,6 +31,9 @@ from api.parsing.nodes import (
     param_name,
 )
 
+# Valid simple mana symbols (colored, colorless, and special)
+SIMPLE_MANA_SYMBOLS = frozenset("WUBRGCXYZ")
+
 """
 
 # equality is the one where order not mattering is nice
@@ -302,6 +305,9 @@ def normalize_mana_cost_to_braced(mana_cost_str: str) -> str:
 
     Returns:
         The normalized mana cost string in braced notation (e.g., "{G}{G}", "{1}{G}").
+
+    Raises:
+        ValueError: If the mana cost string contains malformed braced symbols (missing closing brace).
     """
     mana_cost_str = mana_cost_str.upper()
     result = []
@@ -312,8 +318,8 @@ def normalize_mana_cost_to_braced(mana_cost_str: str) -> str:
             # Already braced, copy until closing brace
             end = mana_cost_str.find("}", i)
             if end == -1:
-                result.append(mana_cost_str[i:])
-                break
+                msg = f"Malformed mana cost: missing closing brace in '{mana_cost_str}'"
+                raise ValueError(msg)
             result.append(mana_cost_str[i : end + 1])
             i = end + 1
         elif char.isdigit():
@@ -322,7 +328,7 @@ def normalize_mana_cost_to_braced(mana_cost_str: str) -> str:
             while i < len(mana_cost_str) and mana_cost_str[i].isdigit():
                 i += 1
             result.append("{" + mana_cost_str[num_start:i] + "}")
-        elif char in "WUBRGCXYZ":
+        elif char in SIMPLE_MANA_SYMBOLS:
             # Single mana symbol
             result.append("{" + char + "}")
             i += 1

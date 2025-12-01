@@ -899,6 +899,16 @@ def test_normalize_mana_cost_to_braced(input_str: str, expected: str) -> None:
     assert normalize_mana_cost_to_braced(input_str) == expected
 
 
+def test_normalize_mana_cost_malformed_brace() -> None:
+    """Test that malformed mana cost strings with missing closing braces raise errors."""
+    with pytest.raises(ValueError, match="Malformed mana cost: missing closing brace"):
+        normalize_mana_cost_to_braced("{G")
+    with pytest.raises(ValueError, match="Malformed mana cost: missing closing brace"):
+        normalize_mana_cost_to_braced("1{G")
+    with pytest.raises(ValueError, match="Malformed mana cost: missing closing brace"):
+        normalize_mana_cost_to_braced("{W/U")
+
+
 @pytest.mark.parametrize(
     argnames=("unbraced_query", "braced_query"),
     argvalues=[

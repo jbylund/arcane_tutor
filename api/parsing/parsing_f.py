@@ -24,7 +24,7 @@ from pyparsing import (
     oneOf,
 )
 
-from api.parsing.card_query_nodes import CardAttributeNode, to_card_query_ast
+from api.parsing.card_query_nodes import SIMPLE_MANA_SYMBOLS, CardAttributeNode, to_card_query_ast
 from api.parsing.db_info import (
     COLOR_NAME_TO_CODE,
     KNOWN_CARD_ATTRIBUTES,
@@ -328,9 +328,13 @@ def create_mana_parsers() -> dict[str, ParserElement]:
     # Simple symbols don't need braces: W, U, B, R, G, C, 1, 2, etc.
     # Complex symbols (with alternatives) must use braces: {W/U}, {2/W}, {W/U/P}
 
+    # Build regex pattern from SIMPLE_MANA_SYMBOLS constant (supports both upper and lowercase)
+    mana_chars = "".join(SIMPLE_MANA_SYMBOLS) + "".join(SIMPLE_MANA_SYMBOLS).lower()
+    simple_mana_pattern = f"[0-9{mana_chars}]"
+
     # Individual mana components
     curly_mana_symbol = Regex(r"\{[^}]+\}")  # Complex symbols in braces: {W/U}, {2/W}
-    simple_mana_symbol = Regex(r"[0-9WUBRGCXYZwubrgcxyz]")  # Simple symbols without braces (case-insensitive)
+    simple_mana_symbol = Regex(simple_mana_pattern)  # Simple symbols without braces (case-insensitive)
 
     # Mixed mana pattern: any combination of simple and complex symbols
     # Examples: {1}{G}, 1{G}, 2RR, W{U/R}, {2/W}G, etc.
