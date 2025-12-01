@@ -643,30 +643,21 @@ def test_parse_combined_collector_number_queries() -> None:
 @pytest.mark.parametrize(
     argnames=("test_input", "expected_ast"),
     argvalues=[
-        ("mana:{1}{G}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("{1}{G}"))),
-        ("m:{2}{R}{G}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{2}{R}{G}"))),
-        ("mana:{W/U}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("{W/U}"))),
-        ("m:{X}{X}{W}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{X}{X}{W}"))),
-        ("mana:{0}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("{0}"))),
-        ("m:{15}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{15}"))),
-    ],
-)
-def test_parse_mana_cost_searches(test_input: str, expected_ast: BinaryOperatorNode) -> None:
-    """Test parsing mana cost searches with full curly-brace notation."""
-    observed = parsing.parse_search_query(test_input)
-    assert observed.root == expected_ast
-
-
-@pytest.mark.parametrize(
-    argnames=("test_input", "expected_ast"),
-    argvalues=[
-        ("mana=1{G}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), "=", parsing.ManaValueNode("1{G}"))),
         ("m:2{R}{G}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("2{R}{G}"))),
-        ("mana=W{U/R}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), "=", parsing.ManaValueNode("W{U/R}"))),
+        ("m:{15}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{15}"))),
+        ("m:{1}g{1}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{1}G{1}"))),
+        ("m:{1}{g}{1}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{1}{G}{1}"))),
         ("m:{2/W}G", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{2/W}G"))),
-        ("mana:1WU", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("1WU"))),
+        ("m:{2}{R}{G}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{2}{R}{G}"))),
+        ("m:{X}{X}{W}", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ":", parsing.ManaValueNode("{X}{X}{W}"))),
         ("m=2RRG", BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), "=", parsing.ManaValueNode("2RRG"))),
+        ("mana:1WU", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("1WU"))),
         ("mana:WU", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("WU"))),
+        ("mana:{0}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("{0}"))),
+        ("mana:{1}{G}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("{1}{G}"))),
+        ("mana:{W/U}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("{W/U}"))),
+        ("mana=1{G}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), "=", parsing.ManaValueNode("1{G}"))),
+        ("mana=W{U/R}", BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), "=", parsing.ManaValueNode("W{U/R}"))),
     ],
 )
 def test_parse_mixed_mana_notation(test_input: str, expected_ast: BinaryOperatorNode) -> None:
@@ -905,29 +896,31 @@ def test_devotion_sql_generation() -> None:
     assert "R" in str(context3.values())
 
 
-def test_mana_cost_string_format_comparisons() -> None:
-    """Test mana cost comparisons work with both {X} and X string formats."""
-    # Test that both formats parse correctly and generate SQL
-    queries_to_test = [
+@pytest.mark.parametrize(
+    argnames=("query", "description"),
+    argvalues=[
         ("mana>{g}{g}{g}", "Braced format should work"),
         ("mana>ggg", "Unbraced format should work"),
         ("m>GGG", "Uppercase unbraced should work"),
         ("mana<=ggg", "Less than or equal with unbraced"),
         ("mana<ggg", "Less than with unbraced"),
         ("mana>=ggg", "Greater than or equal with unbraced"),
-    ]
+    ],
+)
+def test_mana_cost_string_format_comparisons(query: str, description: str) -> None:
+    """Test mana cost comparisons work with both {X} and X string formats."""
+    # Test that both formats parse correctly and generate SQL
+    # Test that parsing works
+    result = parsing.parse_scryfall_query(query)
+    assert result is not None, f"Failed to parse {query}"
 
-    for query, _description in queries_to_test:
-        # Test that parsing works
-        result = parsing.parse_scryfall_query(query)
-        assert result is not None, f"Failed to parse {query}"
-
-        # Test that SQL generation works (should not raise NotImplementedError)
-        context = {}
-        sql = result.to_sql(context)
-        assert sql is not None, f"Failed to generate SQL for {query}"
-        assert "card.mana_cost_jsonb" in sql, f"Should use JSONB containment for {query}"
-        assert "card.cmc" in sql, f"Should use CMC check for {query}"
+    # Test that SQL generation works (should not raise NotImplementedError)
+    context = {}
+    sql = result.to_sql(context)
+    assert sql is not None, f"Failed to generate SQL for {query}"
+    assert "card.mana_cost_jsonb" in sql, f"Should use JSONB containment for {query}"
+    assert "card.cmc" in sql, f"Should use CMC check for {query}"
+    assert context == {"p_dict_eydHJzogWzEsIDIsIDNdfQ": {"G": [1, 2, 3]}, "p_int_Mw": 3}
 
 
 @pytest.mark.parametrize(
