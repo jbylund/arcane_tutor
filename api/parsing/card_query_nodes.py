@@ -290,10 +290,58 @@ def get_legality_comparison_object(val: str, attr: str) -> dict[str, str]:
     return {format_name: status}
 
 
+def normalize_mana_cost_to_braced(mana_cost_str: str) -> str:
+    """Normalize a mana cost string to braced notation.
+
+    Converts unbraced mana symbols to braced notation for consistent processing.
+    Handles mixed notation like "1G" -> "{1}{G}" and "GG" -> "{G}{G}".
+    Also handles multi-digit numbers like "10" -> "{10}".
+
+    Args:
+        mana_cost_str: The mana cost string to normalize (e.g., "gg", "1G", "{1}{G}").
+
+    Returns:
+        The normalized mana cost string in braced notation (e.g., "{G}{G}", "{1}{G}").
+    """
+    mana_cost_str = mana_cost_str.upper()
+    result = []
+    i = 0
+    while i < len(mana_cost_str):
+        char = mana_cost_str[i]
+        if char == "{":
+            # Already braced, copy until closing brace
+            end = mana_cost_str.find("}", i)
+            if end == -1:
+                result.append(mana_cost_str[i:])
+                break
+            result.append(mana_cost_str[i : end + 1])
+            i = end + 1
+        elif char.isdigit():
+            # Collect consecutive digits to handle multi-digit numbers like "10"
+            num_start = i
+            while i < len(mana_cost_str) and mana_cost_str[i].isdigit():
+                i += 1
+            result.append("{" + mana_cost_str[num_start:i] + "}")
+        elif char in "WUBRGCXYZ":
+            # Single mana symbol
+            result.append("{" + char + "}")
+            i += 1
+        else:
+            # Skip unknown characters
+            i += 1
+    return "".join(result)
+
+
 def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
-    """Convert a mana cost string to a dictionary of colored symbols and their counts."""
+    """Convert a mana cost string to a dictionary of colored symbols and their counts.
+
+    Handles both braced notation like "{G}{G}" and unbraced notation like "GG".
+    """
+    # Normalize to braced notation first
+    normalized = normalize_mana_cost_to_braced(mana_cost_str)
+
     colored_symbol_counts = {}
-    for mana_symbol in re.findall(r"{([^}]*)}", mana_cost_str.upper()):
+    for mana_symbol in re.findall(r"{([^}]*)}", normalized):
         try:
             int(mana_symbol)
         except ValueError:
@@ -307,9 +355,15 @@ def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
 
 
 def calculate_cmc(mana_cost_str: str) -> int:
-    """Calculate the converted mana cost from a mana cost string."""
+    """Calculate the converted mana cost from a mana cost string.
+
+    Handles both braced notation like "{G}{G}" and unbraced notation like "GG".
+    """
+    # Normalize to braced notation first
+    normalized = normalize_mana_cost_to_braced(mana_cost_str)
+
     cmc = 0
-    for mana_symbol in re.findall(r"{([^}]*)}", mana_cost_str):
+    for mana_symbol in re.findall(r"{([^}]*)}", normalized):
         try:
             # Generic mana symbols add to CMC
             cmc += int(mana_symbol)

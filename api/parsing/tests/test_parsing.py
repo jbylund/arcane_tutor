@@ -13,7 +13,12 @@ from api.parsing import (
     QueryNode,
     StringValueNode,
 )
-from api.parsing.card_query_nodes import CardAttributeNode, calculate_cmc, mana_cost_str_to_dict
+from api.parsing.card_query_nodes import (
+    CardAttributeNode,
+    calculate_cmc,
+    mana_cost_str_to_dict,
+    normalize_mana_cost_to_braced,
+)
 from api.parsing.db_info import ParserClass
 
 
@@ -851,6 +856,116 @@ def test_mana_cost_dict_conversion() -> None:
     assert mana_cost_str_to_dict("{r}{u}{b}") == {"R": [1], "U": [1], "B": [1]}
     assert mana_cost_str_to_dict("{w/u}") == {"W/U": [1]}
     assert mana_cost_str_to_dict("{2/w}") == {"2/W": [1]}
+
+    # Test unbraced notation - issue: mana=gg should be same as mana={g}{g}
+    assert mana_cost_str_to_dict("GG") == {"G": [1, 2]}
+    assert mana_cost_str_to_dict("gg") == {"G": [1, 2]}
+    assert mana_cost_str_to_dict("1G") == {"G": [1]}
+    assert mana_cost_str_to_dict("1g") == {"G": [1]}
+    assert mana_cost_str_to_dict("11G") == {"G": [1]}
+    assert mana_cost_str_to_dict("11g") == {"G": [1]}
+    assert mana_cost_str_to_dict("10GG") == {"G": [1, 2]}
+    assert mana_cost_str_to_dict("10gg") == {"G": [1, 2]}
+
+    # Test mixed notation
+    assert mana_cost_str_to_dict("{1}g") == {"G": [1]}
+    assert mana_cost_str_to_dict("{1}G") == {"G": [1]}
+    assert mana_cost_str_to_dict("{11}g") == {"G": [1]}
+
+
+@pytest.mark.parametrize(
+    argnames=("input_str", "expected"),
+    argvalues=[
+        ("gg", "{G}{G}"),
+        ("GG", "{G}{G}"),
+        ("1g", "{1}{G}"),
+        ("1G", "{1}{G}"),
+        ("11g", "{11}{G}"),
+        ("11G", "{11}{G}"),
+        ("10gg", "{10}{G}{G}"),
+        ("{g}{g}", "{G}{G}"),
+        ("{1}{g}", "{1}{G}"),
+        ("{1}g", "{1}{G}"),
+        ("{1}G", "{1}{G}"),
+        ("{11}g", "{11}{G}"),
+        ("{11}{g}", "{11}{G}"),
+        ("wubrg", "{W}{U}{B}{R}{G}"),
+        ("{W/U}", "{W/U}"),
+        ("1{W/U}", "{1}{W/U}"),
+    ],
+)
+def test_normalize_mana_cost_to_braced(input_str: str, expected: str) -> None:
+    """Test normalization of mana cost strings to braced notation."""
+    assert normalize_mana_cost_to_braced(input_str) == expected
+
+
+@pytest.mark.parametrize(
+    argnames=("unbraced_query", "braced_query"),
+    argvalues=[
+        ("mana=gg", "mana={g}{g}"),
+        ("mana=GG", "mana={G}{G}"),
+        ("mana=11g", "mana={11}{g}"),
+        ("mana={1}g", "mana={1}{G}"),
+        ("mana:10gg", "mana:{10}{g}{g}"),
+        ("mana=1gg", "mana={1}{g}{g}"),
+        ("mana:wubrg", "mana:{w}{u}{b}{r}{g}"),
+    ],
+)
+def test_mana_notation_equivalence(unbraced_query: str, braced_query: str) -> None:
+    """Test that unbraced and braced mana notation produce identical SQL.
+
+    This test verifies the issue fix where mana=gg should be the same as mana={g}{g}.
+    """
+    result1 = parsing.parse_scryfall_query(unbraced_query)
+    result2 = parsing.parse_scryfall_query(braced_query)
+
+    context1 = {}
+    context2 = {}
+
+    sql1 = result1.to_sql(context1)
+    sql2 = result2.to_sql(context2)
+
+    assert sql1 == sql2, f"SQL mismatch:\n  {unbraced_query}: {sql1}\n  {braced_query}: {sql2}"
+    assert context1 == context2, f"Parameter mismatch:\n  {unbraced_query}: {context1}\n  {braced_query}: {context2}"
+
+
+@pytest.mark.parametrize(
+    argnames=("unbraced_value", "braced_value"),
+    argvalues=[
+        ("gg", "{G}{G}"),
+        ("GG", "{G}{G}"),
+        ("11g", "{11}{G}"),
+        ("{1}g", "{1}{G}"),
+        ("10gg", "{10}{G}{G}"),
+        ("1gg", "{1}{G}{G}"),
+        ("wubrg", "{W}{U}{B}{R}{G}"),
+    ],
+)
+def test_mana_cmc_calculation_equivalence(unbraced_value: str, braced_value: str) -> None:
+    """Test that unbraced and braced mana costs calculate identical CMC."""
+    assert calculate_cmc(unbraced_value) == calculate_cmc(braced_value), (
+        f"CMC mismatch: {unbraced_value}={calculate_cmc(unbraced_value)} vs {braced_value}={calculate_cmc(braced_value)}"
+    )
+
+
+@pytest.mark.parametrize(
+    argnames=("unbraced_value", "braced_value"),
+    argvalues=[
+        ("gg", "{G}{G}"),
+        ("GG", "{G}{G}"),
+        ("11g", "{11}{G}"),
+        ("{1}g", "{1}{G}"),
+        ("10gg", "{10}{G}{G}"),
+        ("1gg", "{1}{G}{G}"),
+        ("wubrg", "{W}{U}{B}{R}{G}"),
+    ],
+)
+def test_mana_dict_conversion_equivalence(unbraced_value: str, braced_value: str) -> None:
+    """Test that unbraced and braced mana costs convert to identical dicts."""
+    assert mana_cost_str_to_dict(unbraced_value) == mana_cost_str_to_dict(braced_value), (
+        f"Dict mismatch: {unbraced_value}={mana_cost_str_to_dict(unbraced_value)} vs "
+        f"{braced_value}={mana_cost_str_to_dict(braced_value)}"
+    )
 
 
 @pytest.mark.parametrize(

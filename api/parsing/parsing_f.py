@@ -330,7 +330,7 @@ def create_mana_parsers() -> dict[str, ParserElement]:
 
     # Individual mana components
     curly_mana_symbol = Regex(r"\{[^}]+\}")  # Complex symbols in braces: {W/U}, {2/W}
-    simple_mana_symbol = Regex(r"[0-9WUBRGCXYZ]")  # Simple symbols without braces: W, 1, 2
+    simple_mana_symbol = Regex(r"[0-9WUBRGCXYZwubrgcxyz]")  # Simple symbols without braces (case-insensitive)
 
     # Mixed mana pattern: any combination of simple and complex symbols
     # Examples: {1}{G}, 1{G}, 2RR, W{U/R}, {2/W}G, etc.
