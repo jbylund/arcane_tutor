@@ -290,38 +290,77 @@ def get_legality_comparison_object(val: str, attr: str) -> dict[str, str]:
     return {format_name: status}
 
 
+
 def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
-    """Convert a mana cost string to a dictionary of colored symbols and their counts."""
+    """Convert a mana cost string to a dictionary of colored symbols and their counts.
+
+    Supports both braced format ({W}{U}), unbraced format (WU or wu), and mixed format (R{G}).
+    """
     colored_symbol_counts = {}
-    for mana_symbol in re.findall(r"{([^}]*)}", mana_cost_str.upper()):
+    mana_cost_upper = mana_cost_str.upper()
+
+    # First, extract all braced symbols
+    braced_symbols = re.findall(r"{([^}]*)}", mana_cost_upper)
+    for mana_symbol in braced_symbols:
         try:
             int(mana_symbol)
         except ValueError:
             colored_symbol_counts[mana_symbol] = colored_symbol_counts.get(mana_symbol, 0) + 1
         else:
             pass
+
+    # Then, process unbraced characters (replace braced sections with space to prevent merging)
+    # We don't care about digits here, only colored symbols
+    unbraced_part = re.sub(r"{[^}]*}", " ", mana_cost_upper)
+    for char in unbraced_part:
+        # Only count color characters (W, U, B, R, G, C)
+        if char in "WUBRGC":
+            colored_symbol_counts[char] = colored_symbol_counts.get(char, 0) + 1
+
     as_dict = {}
     for colored_symbol, count in colored_symbol_counts.items():
         as_dict[colored_symbol] = list(range(1, count + 1))
     return as_dict
 
 
+
 def calculate_cmc(mana_cost_str: str) -> int:
-    """Calculate the converted mana cost from a mana cost string."""
+    """Calculate the converted mana cost from a mana cost string.
+
+    Supports both braced format ({W}{U}), unbraced format (WU or wu), and mixed format (R{G} or 1{r}1).
+    Consecutive digits are treated as a single multi-digit number (e.g., "11R" is {11}{R}, not {1}{1}{R}).
+    """
     cmc = 0
-    for mana_symbol in re.findall(r"{([^}]*)}", mana_cost_str):
+    mana_cost_upper = mana_cost_str.upper()
+
+    # First, process all braced symbols
+    braced_symbols = re.findall(r"{([^}]*)}", mana_cost_upper)
+    for mana_symbol in braced_symbols:
         try:
             # Generic mana symbols add to CMC
             cmc += int(mana_symbol)
         except ValueError:
             # X costs count as 0 for CMC calculation
-            if mana_symbol.upper() == "X":
+            if mana_symbol == "X":
                 continue
             # Colored mana symbols (W, U, B, R, G, etc.) each count as 1
             # Handle hybrid symbols like {W/U} as 1
             # Handle Phyrexian symbols like {W/P} as 1
             # For simplicity, any non-numeric, non-X symbol counts as 1
             cmc += 1
+
+    # Then, process unbraced part (after removing braced sections)
+    # Replace braced sections with a space to prevent adjacent digits from merging
+    unbraced_part = re.sub(r"{[^}]*}", " ", mana_cost_upper)
+    # Match either: sequences of digits OR single color characters
+    for token in re.findall(r"\d+|[WUBRGC]", unbraced_part):
+        if token.isdigit():
+            # Multi-digit generic mana (e.g., "11" in "11R")
+            cmc += int(token)
+        elif token in "WUBRGC":
+            # Color character counts as 1
+            cmc += 1
+
     return cmc
 
 
