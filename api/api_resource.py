@@ -140,6 +140,13 @@ class APIResource:
             if callable(method):
                 self.action_map[method_name] = make_type_converting_wrapper(method)
         self.action_map["index"] = make_type_converting_wrapper(self.index_html)
+
+        # add static file serving actions
+        self.action_map["static/app_js"] = self.app_js
+        self.action_map["static/app_min_js"] = self.app_min_js
+        self.action_map["static/favicon_ico"] = self.favicon_ico
+        self.action_map["static/styles_css"] = self.styles_css
+
         self._query_cache = LRUCache(maxsize=1_000)
         if not settings.enable_cache:
             # cachebox doesn't support ttl=0, so we use a minimal cache when disabled
@@ -201,7 +208,10 @@ class APIResource:
             id(resp),
         )
         path = path.replace(".", "_")
-        action = self.action_map.get(path, self._raise_not_found)
+        action = self.action_map.get(
+            path,
+            self._raise_not_found,
+        )
         before = time.monotonic()
         try:
             res = action(falcon_response=resp, **req.params)
@@ -209,7 +219,8 @@ class APIResource:
         except TypeError as oops:
             logger.error("Error handling request: %s", oops, exc_info=True)
             raise falcon.HTTPBadRequest(description=str(oops)) from oops
-        except falcon.HTTPError:
+        except falcon.HTTPError as oops:
+            logger.error("Error handling request for %s: %s", path, oops, exc_info=True)
             raise
         except Exception as oops:
             logger.error("Error handling request: %s", oops, exc_info=True)
@@ -772,7 +783,7 @@ class APIResource:
 
         """
         # Read the HTML file
-        full_filename = pathlib.Path(__file__).parent / "index.html"
+        full_filename = pathlib.Path(__file__).parent / "static" / "index.html"
         with pathlib.Path(full_filename).open() as f:
             html_content = f.read()
 
@@ -853,7 +864,7 @@ class APIResource:
         """
         if falcon_response is None:
             return
-        full_filename = pathlib.Path(__file__).parent / "favicon.ico"
+        full_filename = pathlib.Path(__file__).parent / "static" / "favicon.ico"
         with pathlib.Path(full_filename).open(mode="rb") as f:
             falcon_response.data = contents = f.read()
         falcon_response.content_type = "image/vnd.microsoft.icon"
@@ -862,6 +873,48 @@ class APIResource:
         falcon_response.headers["content-length"] = content_length
         # Cache favicon for 7 days - it rarely changes
         set_cache_header(falcon_response, duration=timedelta(days=7))
+
+    def styles_css(self, *, falcon_response: falcon.Response | None = None) -> None:
+        """Return the styles.css file.
+
+        Args:
+        ----
+            falcon_response (falcon.Response): The Falcon response to write to.
+        """
+        if falcon_response is None:
+            return
+        self._serve_static_file(filename="styles.css", falcon_response=falcon_response)
+        falcon_response.content_type = "text/css"
+        # Cache CSS for 1 hour - it changes infrequently
+        set_cache_header(falcon_response, duration=timedelta(hours=1))
+
+    def app_js(self, *, falcon_response: falcon.Response | None = None) -> None:
+        """Return the app.js file.
+
+        Args:
+        ----
+            falcon_response (falcon.Response): The Falcon response to write to.
+        """
+        if falcon_response is None:
+            return
+        self._serve_static_file(filename="app.js", falcon_response=falcon_response)
+        falcon_response.content_type = "application/javascript"
+        # Cache JavaScript for 1 hour - it changes infrequently
+        set_cache_header(falcon_response, duration=timedelta(hours=1))
+
+    def app_min_js(self, *, falcon_response: falcon.Response | None = None) -> None:
+        """Return the app.min.js file.
+
+        Args:
+        ----
+            falcon_response (falcon.Response): The Falcon response to write to.
+        """
+        if falcon_response is None:
+            return
+        self._serve_static_file(filename="app.min.js", falcon_response=falcon_response)
+        falcon_response.content_type = "application/javascript"
+        # Cache minified JavaScript for 1 hour - it changes infrequently
+        set_cache_header(falcon_response, duration=timedelta(hours=1))
 
     def _serve_static_file(self, *, filename: str, falcon_response: falcon.Response) -> None:
         """Serve a static file to the Falcon response.
@@ -872,9 +925,19 @@ class APIResource:
             falcon_response (falcon.Response): The Falcon response to write to.
 
         """
-        full_filename = pathlib.Path(__file__).parent / filename
-        with pathlib.Path(full_filename).open() as f:
-            falcon_response.text = f.read()
+        full_filename = pathlib.Path(__file__).parent / "static" / filename
+        try:
+            with pathlib.Path(full_filename).open() as f:
+                falcon_response.text = f.read()
+        except FileNotFoundError:
+            falcon_response.status = falcon.HTTP_404
+            falcon_response.text = f"File not found: {filename}"
+        except PermissionError:
+            falcon_response.status = falcon.HTTP_403
+            falcon_response.text = f"Permission denied: {filename}"
+        except OSError as e:
+            falcon_response.status = falcon.HTTP_500
+            falcon_response.text = f"Error reading file {filename}: {e}"
 
     def get_migrations(self, **_: object) -> list[dict[str, str]]:
         """Get the migrations from the filesystem.

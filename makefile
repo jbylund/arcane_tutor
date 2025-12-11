@@ -19,6 +19,9 @@ XPGPORT=15432
 XPGUSER=foouser
 HOSTNAME := $(shell hostname)
 
+html_files := $(shell find . -type f -name "*.html")
+js_files := $(shell find . -type f -name "*.js")
+
 S3_BUCKET=biblioplex
 
 .PHONY: \
@@ -29,6 +32,7 @@ S3_BUCKET=biblioplex
 	beleren_font \
 	build_images \
 	check_env \
+	compare-minification \
 	coverage \
 	dockerclean \
 	down \
@@ -56,7 +60,7 @@ hlep: help
 
 ###  Entry points
 
-up_deps: datadir images check_env .env
+up_deps: datadir images check_env .env app.min.js
 
 .env: env.json
 	cat env.json | jq -r 'to_entries[] | "\(.key)=\(.value)"' | sort > $@
@@ -117,8 +121,8 @@ lint: ruff_lint prettier_lint # @doc lint all python files
 prettier_lint: /tmp/prettier.stamp
 	true
 
-/tmp/prettier.stamp: api/index.html
-	npx prettier --write api/index.html
+/tmp/prettier.stamp: $(html_files) $(js_files)
+	npx prettier --write $(html_files) $(js_files)
 	touch /tmp/prettier.stamp
 
 ruff_fix: ensure_ruff
@@ -203,3 +207,14 @@ mplantin_font: font-dependencies # @doc subset and optimize the MPlantin font fo
 		--cdn-url https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mplantin \
 		--s3-bucket $(S3_BUCKET) \
 		--s3-prefix cdn/fonts/mplantin
+
+compare-minification: # @doc compare file sizes: uncompressed, compressed, minified, and minified+compressed
+	@echo "Installing minifier dependencies..."
+	@npm install --no-save cssnano-cli terser > /dev/null 2>&1 || true
+	@python scripts/compare_minification.py
+
+app.min.js: api/static/app.js # @doc minify app.js (used in both dev and prod)
+	@echo "Minifying app.js..."
+	@npm install --no-save terser > /dev/null 2>&1 || true
+	@npx terser api/static/app.js --compress --mangle --output api/static/app.min.js
+	@echo "Created api/static/app.min.js"
