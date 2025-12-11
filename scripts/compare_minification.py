@@ -94,13 +94,13 @@ def compare_file(filepath: Path, file_type: str) -> None:
     original_size = len(original_data)
 
     # 1. Original (uncompressed)
-    print(f"\n1. Original (uncompressed):")
+    print("\n1. Original (uncompressed):")
     print(f"   Size: {format_size(original_size)} ({original_size:,} bytes)")
 
     # 2. Compressed with zstd
     compressed_data = compress_with_zstd(original_data, level=4)
     compressed_size = len(compressed_data)
-    print(f"\n2. Compressed (zstd level 4):")
+    print("\n2. Compressed (zstd level 4):")
     print(f"   Size: {format_size(compressed_size)} ({compressed_size:,} bytes)")
     print(f"   Reduction: {format_percentage(original_size, compressed_size)}")
 
@@ -115,14 +115,14 @@ def compare_file(filepath: Path, file_type: str) -> None:
 
         minified_data = minified_path.read_bytes()
         minified_size = len(minified_data)
-        print(f"\n3. Minified:")
+        print("\n3. Minified:")
         print(f"   Size: {format_size(minified_size)} ({minified_size:,} bytes)")
         print(f"   Reduction: {format_percentage(original_size, minified_size)}")
 
         # 4. Minified + compressed
         minified_compressed_data = compress_with_zstd(minified_data, level=4)
         minified_compressed_size = len(minified_compressed_data)
-        print(f"\n4. Minified + Compressed (zstd level 4):")
+        print("\n4. Minified + Compressed (zstd level 4):")
         print(f"   Size: {format_size(minified_compressed_size)} ({minified_compressed_size:,} bytes)")
         print(f"   Reduction vs original: {format_percentage(original_size, minified_compressed_size)}")
         print(f"   Reduction vs compressed: {format_percentage(compressed_size, minified_compressed_size)}")

@@ -140,6 +140,13 @@ class APIResource:
             if callable(method):
                 self.action_map[method_name] = make_type_converting_wrapper(method)
         self.action_map["index"] = make_type_converting_wrapper(self.index_html)
+
+        # add static file serving actions
+        self.action_map["static/app.js"] = self.app_js
+        self.action_map["static/app.min.js"] = self.app_min_js
+        self.action_map["static/favicon.ico"] = self.favicon_ico
+        self.action_map["static/styles.css"] = self.styles_css
+
         self._query_cache = LRUCache(maxsize=1_000)
         if not settings.enable_cache:
             # cachebox doesn't support ttl=0, so we use a minimal cache when disabled
@@ -872,7 +879,7 @@ class APIResource:
         """
         if falcon_response is None:
             return
-        self._serve_static_file(filename="styles.css", falcon_response=falcon_response)
+        self._serve_static_file(filename="static/styles.css", falcon_response=falcon_response)
         falcon_response.content_type = "text/css"
         # Cache CSS for 1 hour - it changes infrequently
         set_cache_header(falcon_response, duration=timedelta(hours=1))
@@ -886,7 +893,7 @@ class APIResource:
         """
         if falcon_response is None:
             return
-        self._serve_static_file(filename="app.js", falcon_response=falcon_response)
+        self._serve_static_file(filename="static/app.js", falcon_response=falcon_response)
         falcon_response.content_type = "application/javascript"
         # Cache JavaScript for 1 hour - it changes infrequently
         set_cache_header(falcon_response, duration=timedelta(hours=1))
@@ -900,7 +907,7 @@ class APIResource:
         """
         if falcon_response is None:
             return
-        self._serve_static_file(filename="app.min.js", falcon_response=falcon_response)
+        self._serve_static_file(filename="static/app.min.js", falcon_response=falcon_response)
         falcon_response.content_type = "application/javascript"
         # Cache minified JavaScript for 1 hour - it changes infrequently
         set_cache_header(falcon_response, duration=timedelta(hours=1))
