@@ -60,7 +60,7 @@ hlep: help
 
 ###  Entry points
 
-up_deps: datadir images check_env .env
+up_deps: datadir images check_env .env app.min.js
 
 .env: env.json
 	cat env.json | jq -r 'to_entries[] | "\(.key)=\(.value)"' | sort > $@

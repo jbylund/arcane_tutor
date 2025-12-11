@@ -776,9 +776,6 @@ class APIResource:
         with pathlib.Path(full_filename).open() as f:
             html_content = f.read()
 
-        # Always use minified version
-        html_content = html_content.replace("<!-- APP_JS_PATH -->", "/app.min.js")
-
         # Check if we have a search query
         search_query = query or q
         if search_query:
@@ -918,9 +915,18 @@ class APIResource:
 
         """
         full_filename = pathlib.Path(__file__).parent / "static" / filename
-        with pathlib.Path(full_filename).open() as f:
-            falcon_response.text = f.read()
-
+        try:
+            with pathlib.Path(full_filename).open() as f:
+                falcon_response.text = f.read()
+        except FileNotFoundError:
+            falcon_response.status = falcon.HTTP_404
+            falcon_response.text = f"File not found: {filename}"
+        except PermissionError:
+            falcon_response.status = falcon.HTTP_403
+            falcon_response.text = f"Permission denied: {filename}"
+        except OSError as e:
+            falcon_response.status = falcon.HTTP_500
+            falcon_response.text = f"Error reading file {filename}: {e}"
     def get_migrations(self, **_: object) -> list[dict[str, str]]:
         """Get the migrations from the filesystem.
 
