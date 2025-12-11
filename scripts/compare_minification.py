@@ -132,9 +132,11 @@ def compare_file(filepath: Path, file_type: str) -> None:
         print(f"\n3. Minified: ERROR - {e}")
         print(f"4. Minified + Compressed: SKIPPED")
     finally:
-        # Cleanup temporary file if it exists
-        if minified_path.exists():
+        # Cleanup temporary file
+        try:
             minified_path.unlink()
+        except OSError as e:
+            print(f"Warning: Failed to cleanup temporary file {minified_path}: {e}", file=sys.stderr)
 
 
 def main() -> None:
