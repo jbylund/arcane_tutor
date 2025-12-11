@@ -110,7 +110,7 @@
         font-weight: bold;
       }
 
-      input[type="range"] {
+      input[type='range'] {
         width: 100%;
         height: 6px;
         border-radius: 3px;
@@ -119,7 +119,7 @@
         -webkit-appearance: none;
       }
 
-      input[type="range"]::-webkit-slider-thumb {
+      input[type='range']::-webkit-slider-thumb {
         -webkit-appearance: none;
         width: 18px;
         height: 18px;
@@ -128,7 +128,7 @@
         cursor: pointer;
       }
 
-      input[type="range"]::-moz-range-thumb {
+      input[type='range']::-moz-range-thumb {
         width: 18px;
         height: 18px;
         border-radius: 50%;
@@ -192,7 +192,9 @@
         border: 2px solid #dee2e6;
         border-radius: 8px;
         padding: 10px;
-        transition: transform 0.2s, box-shadow 0.2s;
+        transition:
+          transform 0.2s,
+          box-shadow 0.2s;
         position: relative;
         display: flex;
         flex-direction: column;
@@ -351,19 +353,18 @@
   <body>
     <div class="container">
       <h1>Prefer Score Tuner</h1>
-      <p class="subtitle">
-        Adjust scoring parameters and see how different printings of iconic Magic cards are ranked
-      </p>
+      <p class="subtitle">Adjust scoring parameters and see how different printings of iconic Magic cards are ranked</p>
 
       <div class="instructions">
         <h3>How it works</h3>
         <p>
-          This tool fetches actual card printings from the Scryfall API and calculates scores client-side based on your adjustments.
-          Use the sliders below to modify scoring weights and see the rankings update in real-time.
+          This tool fetches actual card printings from the Scryfall API and calculates scores client-side based on your
+          adjustments. Use the sliders below to modify scoring weights and see the rankings update in real-time.
         </p>
         <p>
-          <strong>Artwork scoring:</strong> Counts how many printings share the same illustration_id within the fetched results,
-          then applies the formula: <code>multiplier * ln(count) / ln(40)</code> where multiplier is adjustable via slider.
+          <strong>Artwork scoring:</strong> Counts how many printings share the same illustration_id within the fetched
+          results, then applies the formula: <code>multiplier * ln(count) / ln(40)</code> where multiplier is adjustable
+          via slider.
         </p>
       </div>
 
@@ -506,26 +507,38 @@
       </div>
 
       <div class="card-input-section">
-        <label for="card-name-input" style="font-weight: 600; margin-bottom: 8px; display: block;">Enter Card Name:</label>
-        <div style="display: flex; gap: 10px; align-items: center;">
-          <input 
-            type="text" 
-            id="card-name-input" 
+        <label for="card-name-input" style="font-weight: 600; margin-bottom: 8px; display: block"
+          >Enter Card Name:</label
+        >
+        <div style="display: flex; gap: 10px; align-items: center">
+          <input
+            type="text"
+            id="card-name-input"
             placeholder="e.g., Lightning Bolt, Dark Ritual, Sol Ring..."
-            style="flex: 1; padding: 10px; border: 2px solid #dee2e6; border-radius: 6px; font-size: 1em;"
-            onkeypress="if(event.key === 'Enter') loadCard()"
+            style="flex: 1; padding: 10px; border: 2px solid #dee2e6; border-radius: 6px; font-size: 1em"
+            onkeypress="if (event.key === 'Enter') loadCard();"
           />
-          <button onclick="loadCard()" style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 1em; font-weight: 600;">
+          <button
+            onclick="loadCard()"
+            style="
+              padding: 10px 20px;
+              background: #667eea;
+              color: white;
+              border: none;
+              border-radius: 6px;
+              cursor: pointer;
+              font-size: 1em;
+              font-weight: 600;
+            "
+          >
             Load Card
           </button>
         </div>
       </div>
 
-      <div id="loading" class="loading" style="display: none;">
-        Loading card printings from Scryfall...
-      </div>
+      <div id="loading" class="loading" style="display: none">Loading card printings from Scryfall...</div>
 
-      <div id="error" style="display: none;"></div>
+      <div id="error" style="display: none"></div>
 
       <div id="cards-container"></div>
     </div>
@@ -539,9 +552,9 @@
         const loading = document.getElementById('loading');
         const errorDiv = document.getElementById('error');
         const container = document.getElementById('cards-container');
-        
+
         const cardName = input.value.trim();
-        
+
         if (!cardName) {
           errorDiv.innerHTML = '<div class="error">Please enter a card name</div>';
           errorDiv.style.display = 'block';
@@ -551,7 +564,7 @@
         loading.style.display = 'block';
         errorDiv.style.display = 'none';
         container.innerHTML = '';
-        
+
         // Clear existing card data
         Object.keys(cardData).forEach(key => delete cardData[key]);
 
@@ -568,7 +581,7 @@
 
       async function loadCardPrintings(cardName) {
         const container = document.getElementById('cards-container');
-        
+
         // Use Scryfall API to get all printings with full data
         const query = encodeURIComponent(`name:"${cardName}"`);
         const url = `https://api.scryfall.com/cards/search?q=${query}&unique=prints`;
@@ -580,7 +593,7 @@
           }
 
           const data = await response.json();
-          
+
           if (!data.data || data.data.length === 0) {
             return;
           }
@@ -598,12 +611,10 @@
             // Extract frame effects to check for extended art
             const frameEffects = card.frame_effects || [];
             const hasExtendedArt = frameEffects.includes('extendedart');
-            
+
             // Get the count of printings with this illustration_id
-            const printingsWithIllustration = card.illustration_id 
-              ? illustrationCounts[card.illustration_id] 
-              : 1;
-            
+            const printingsWithIllustration = card.illustration_id ? illustrationCounts[card.illustration_id] : 1;
+
             return {
               name: card.name,
               set_name: card.set_name,
@@ -621,7 +632,7 @@
               released_at: card.released_at,
               image_status: card.image_status,
               games: card.games || [],
-              hasPaper: (card.games || []).includes('paper')
+              hasPaper: (card.games || []).includes('paper'),
             };
           });
 
@@ -639,7 +650,6 @@
 
           // Create section for this card
           renderCardSection(cardName);
-
         } catch (error) {
           console.error(`Error loading ${cardName}:`, error);
         }
@@ -648,14 +658,16 @@
       function renderCardSection(cardName) {
         const container = document.getElementById('cards-container');
         const cards = cardData[cardName];
-        
+
         if (!cards || cards.length === 0) return;
 
         // Calculate scores and sort
-        const scoredCards = cards.map(card => ({
-          ...card,
-          ...calculateScore(card)
-        })).sort((a, b) => b.score - a.score);
+        const scoredCards = cards
+          .map(card => ({
+            ...card,
+            ...calculateScore(card),
+          }))
+          .sort((a, b) => b.score - a.score);
 
         // Create section
         const section = document.createElement('div');
@@ -689,11 +701,9 @@
 
         const setName = card.set_name || 'Unknown Set';
         const artist = card.artist || 'Unknown';
-        
+
         // Use Scryfall's image_uris
-        const imageUrl = card.image_uris && card.image_uris.normal 
-          ? card.image_uris.normal
-          : '';
+        const imageUrl = card.image_uris && card.image_uris.normal ? card.image_uris.normal : '';
 
         const maxScore = 500;
         const percentage = (card.score / maxScore) * 100;
@@ -789,10 +799,10 @@
 
         // Rarity score (using rarity from Scryfall)
         const rarityMap = {
-          'common': params.rarityCommon,
-          'uncommon': params.rarityUncommon,
-          'rare': params.rarityRare,
-          'mythic': params.rarityMythic
+          common: params.rarityCommon,
+          uncommon: params.rarityUncommon,
+          rare: params.rarityRare,
+          mythic: params.rarityMythic,
         };
         breakdown.rarity = rarityMap[card.rarity] || 0;
         score += breakdown.rarity;
@@ -823,7 +833,7 @@
 
         return {
           score: Math.round(100 * score) / 100,
-          breakdown
+          breakdown,
         };
       }
 
@@ -843,7 +853,7 @@
           extendedArt: parseInt(document.getElementById('extended-art').value),
           artworkCap: parseInt(document.getElementById('artwork-cap').value),
           highresScan: parseInt(document.getElementById('highres-scan').value),
-          paperGame: parseInt(document.getElementById('paper-game').value)
+          paperGame: parseInt(document.getElementById('paper-game').value),
         };
       }
 
@@ -852,10 +862,12 @@
         if (!cards || cards.length === 0) return;
 
         // Calculate new scores and sort
-        const scoredCards = cards.map(card => ({
-          ...card,
-          ...calculateScore(card)
-        })).sort((a, b) => b.score - a.score);
+        const scoredCards = cards
+          .map(card => ({
+            ...card,
+            ...calculateScore(card),
+          }))
+          .sort((a, b) => b.score - a.score);
 
         // Update the grid with new scores and rankings
         const section = document.getElementById(`section-${cardName.replace(/\s+/g, '-')}`);
@@ -878,7 +890,8 @@
         // Update displayed values
         document.getElementById('border-black-val').textContent = document.getElementById('border-black').value;
         document.getElementById('border-white-val').textContent = document.getElementById('border-white').value;
-        document.getElementById('border-borderless-val').textContent = document.getElementById('border-borderless').value;
+        document.getElementById('border-borderless-val').textContent =
+          document.getElementById('border-borderless').value;
         document.getElementById('frame-2015-val').textContent = document.getElementById('frame-2015').value;
         document.getElementById('frame-2003-val').textContent = document.getElementById('frame-2003').value;
         document.getElementById('frame-1997-val').textContent = document.getElementById('frame-1997').value;

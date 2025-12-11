@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Start fetching common card types immediately (as early as possible in head) -->
+    <script>
+      // Start fetching as early as possible - before any other resources block execution
+      (function () {
+        if (!window.commonCardTypesPromise) {
+          window.commonCardTypesPromise = fetch('/get_common_card_types')
+            .then(response => {
+              if (!response.ok) throw new Error('Failed to fetch common card types');
+              return response.json();
+            })
+            .catch(error => {
+              console.error('Error fetching common card types:', error);
+              return [];
+            });
+        }
+      })();
+    </script>
+    <meta
+      name="description"
+      content="Search for Magic: The Gathering cards. Find MTG cards by name, type, text, mana cost, and more. Open source Scryfall implementation."
+    />
+    <meta name="theme-color" content="#2b8fdf" />
+    <meta property="og:title" content="Arcane Tutor - Magic: The Gathering Card Search" />
+    <meta
+      property="og:description"
+      content="Search for Magic: The Gathering cards by name, type, text, mana cost, and more."
+    />
+    <meta property="og:type" content="website" />
+    <title>Arcane Tutor - Magic: The Gathering Card Search</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico" />
+    <link rel="preconnect" href="https://d1hot9ps2xugbc.cloudfront.net" />
+    <link rel="preconnect" href="https://d1hot9ps2xugbc.cloudfront.net" crossorigin />
+    <link
+      rel="preload"
+      as="font"
+      type="font/woff2"
+      href="https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/beleren/beleren-subset.woff2"
+      crossorigin
+    />
+    <link
+      href="https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mana/mana-subset.css"
+      rel="stylesheet"
+      type="text/css"
+      media="print"
+      onload="this.media = 'all'"
+    />
+    <noscript>
+      <link
+        href="https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mana/mana-subset.css"
+        rel="stylesheet"
+        type="text/css"
+      />
+    </noscript>
+    <link
+      href="https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/beleren/beleren-subset.css"
+      rel="stylesheet"
+      type="text/css"
+    />
+    <noscript>
+      <link
+        href="https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/beleren/beleren-subset.css"
+        rel="stylesheet"
+        type="text/css"
+      />
+    </noscript>
+    <link
+      href="https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mplantin/mplantin-subset.css"
+      rel="stylesheet"
+      type="text/css"
+      media="print"
+      onload="this.media = 'all'"
+    />
+    <noscript>
+      <link
+        href="https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mplantin/mplantin-subset.css"
+        rel="stylesheet"
+        type="text/css"
+      />
+    </noscript>
+    <link href="/static/styles.css" rel="stylesheet" type="text/css" />
+    <script src="/static/app.min.js"></script>
+    <script>
+      <!-- SERVER_SIDE_EMBEDDED_DATA -->
+      window.cardSearchMain && window.cardSearchMain();
+    </script>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <button class="theme-toggle" id="themeToggle" aria-label="Toggle theme">
+          <span id="themeIcon">☀️</span>
+        </button>
+        <h1>Arcane Tutor</h1>
+        <p>Search for Magic: The Gathering cards</p>
+      </div>
+
+      <div class="spacer spacer-30"></div>
+
+      <form method="GET" action="" class="search-container">
+        <div class="search-box">
+          <input
+            type="text"
+            class="search-input"
+            placeholder="Search for cards by name, type, or text..."
+            id="searchInput"
+            name="q"
+          />
+          <div class="loading" id="loading">
+            <div class="spinner"></div>
+          </div>
+        </div>
+        <div class="order-controls">
+          <label for="orderDropdown" class="dropdown-label">Order By:</label>
+          <select class="order-dropdown" id="orderDropdown" name="orderby">
+            <option value="edhrec">EDHREC</option>
+            <option value="cmc">CMC</option>
+            <option value="power">Power</option>
+            <option value="toughness">Toughness</option>
+            <option value="rarity">Rarity</option>
+            <option value="usd">USD</option>
+          </select>
+          <label for="uniqueDropdown" class="dropdown-label">Unique Mode:</label>
+          <select class="order-dropdown" id="uniqueDropdown" name="unique">
+            <option value="card">Cards</option>
+            <option value="artwork">Artwork</option>
+            <option value="printing">Printings</option>
+          </select>
+          <label for="preferDropdown" class="dropdown-label">Prefer:</label>
+          <select class="order-dropdown" id="preferDropdown" name="prefer">
+            <option value="default">Default</option>
+            <option value="oldest">Oldest</option>
+            <option value="newest">Newest</option>
+            <option value="usd-low">$ Low</option>
+            <option value="usd-high">$ High</option>
+            <option value="promo">Promo</option>
+          </select>
+          <input type="hidden" name="direction" id="directionInput" value="asc" />
+          <button type="button" class="order-toggle" id="orderToggle" title="Toggle ascending/descending">
+            <span class="arrow-up">↑</span>
+          </button>
+        </div>
+      </form>
+
+      <div class="spacer spacer-30"></div>
+
+      <div id="statusMessage" aria-live="polite"><!-- SERVER_SIDE_RESULTS_COUNT --></div>
+      <div class="spacer spacer-30"></div>
+      <div id="results" class="results-container"><!-- SERVER_SIDE_RESULTS --></div>
+
+      <footer class="footer">
+        <p class="footer-legal">
+          Magic: The Gathering™ is a trademark of Wizards of the Coast LLC, a subsidiary of Hasbro, Inc.
+          <br />
+          © Wizards of the Coast LLC. Not approved/endorsed by Wizards of the Coast.
+        </p>
+        <p class="footer-attribution">
+          Card data provided by <a href="https://scryfall.com" target="_blank" rel="noopener">Scryfall</a>. Not
+          affiliated with Scryfall.
+        </p>
+        <p class="footer-links">
+          <a href="https://github.com/jbylund/arcane_tutor" target="_blank" rel="noopener">GitHub</a>
+          ·
+          <a
+            href="https://github.com/jbylund/arcane_tutor/blob/main/docs/terms_of_service.md"
+            target="_blank"
+            rel="noopener"
+            >Terms of Service</a
+          >
+          ·
+          <a
+            href="https://github.com/jbylund/arcane_tutor/blob/main/docs/privacy_policy.md"
+            target="_blank"
+            rel="noopener"
+            >Privacy Policy</a
+          >
+          ·
+          <a href="https://company.wizards.com/en/legal/fancontentpolicy" target="_blank" rel="noopener"
+            >Wizards Fan Content Policy</a
+          >
+        </p>
+      </footer>
+    </div>
+
+    <!-- Modal for card details -->
+    <div id="modalOverlay" class="modal-overlay">
+      <div id="modalContent" class="modal-content">
+        <!-- Modal content will be dynamically inserted here -->
+      </div>
+    </div>
+    <script>
+      <!-- SERVER_SIDE_EMBEDDED_DATA -->
+      window.cardSearchMain && window.cardSearchMain();
+    </script>
+  </body>
+</html>

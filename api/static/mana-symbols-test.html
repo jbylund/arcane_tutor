@@ -195,12 +195,14 @@
           font-size: 1.8rem;
         }
 
-        th, td {
+        th,
+        td {
           padding: 0.5rem;
           font-size: 0.9rem;
         }
 
-        .symbol-emoji, .symbol-font {
+        .symbol-emoji,
+        .symbol-font {
           font-size: 1.2rem;
         }
       }
@@ -214,15 +216,11 @@
       </p>
 
       <div class="stats">
-        <div class="stats-item">
-          <span class="stats-label">Total Symbols:</span> <span id="total-count">0</span>
-        </div>
+        <div class="stats-item"><span class="stats-label">Total Symbols:</span> <span id="total-count">0</span></div>
         <div class="stats-item">
           <span class="stats-label">Regular Symbols:</span> <span id="regular-count">0</span>
         </div>
-        <div class="stats-item">
-          <span class="stats-label">Hybrid Symbols:</span> <span id="hybrid-count">0</span>
-        </div>
+        <div class="stats-item"><span class="stats-label">Hybrid Symbols:</span> <span id="hybrid-count">0</span></div>
       </div>
 
       <div class="filter-section">
@@ -439,7 +437,7 @@
         const tbody = document.getElementById('symbols-tbody');
         tbody.innerHTML = '';
 
-        symbolsToRender.forEach((item) => {
+        symbolsToRender.forEach(item => {
           const row = document.createElement('tr');
           row.dataset.type = item.type;
           row.dataset.isPhyrexian = item.isPhyrexian;
@@ -457,8 +455,8 @@
         });
 
         // Update counts
-        const regularCount = symbolsToRender.filter((s) => s.type === 'regular').length;
-        const hybridCount = symbolsToRender.filter((s) => s.type === 'hybrid').length;
+        const regularCount = symbolsToRender.filter(s => s.type === 'regular').length;
+        const hybridCount = symbolsToRender.filter(s => s.type === 'hybrid').length;
         document.getElementById('total-count').textContent = symbolsToRender.length;
         document.getElementById('regular-count').textContent = regularCount;
         document.getElementById('hybrid-count').textContent = hybridCount;
@@ -470,18 +468,18 @@
 
         // Apply type filter
         if (filterType === 'regular') {
-          filtered = filtered.filter((s) => s.type === 'regular');
+          filtered = filtered.filter(s => s.type === 'regular');
         } else if (filterType === 'hybrid') {
-          filtered = filtered.filter((s) => s.type === 'hybrid');
+          filtered = filtered.filter(s => s.type === 'hybrid');
         } else if (filterType === 'phyrexian') {
-          filtered = filtered.filter((s) => s.isPhyrexian);
+          filtered = filtered.filter(s => s.isPhyrexian);
         }
 
         // Apply search filter
         if (searchTerm) {
           const term = searchTerm.toLowerCase();
           filtered = filtered.filter(
-            (s) =>
+            s =>
               s.symbol.toLowerCase().includes(term) ||
               s.emoji.toLowerCase().includes(term) ||
               s.cssClass.toLowerCase().includes(term)
@@ -495,10 +493,10 @@
       let currentFilter = 'all';
       const searchBox = document.getElementById('search-box');
 
-      document.querySelectorAll('.filter-button').forEach((button) => {
+      document.querySelectorAll('.filter-button').forEach(button => {
         button.addEventListener('click', () => {
           // Update active state
-          document.querySelectorAll('.filter-button').forEach((btn) => btn.classList.remove('active'));
+          document.querySelectorAll('.filter-button').forEach(btn => btn.classList.remove('active'));
           button.classList.add('active');
 
           // Apply filter
@@ -507,7 +505,7 @@
         });
       });
 
-      searchBox.addEventListener('input', (e) => {
+      searchBox.addEventListener('input', e => {
         filterSymbols(currentFilter, e.target.value);
       });
 

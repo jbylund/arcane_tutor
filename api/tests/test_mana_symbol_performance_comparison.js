@@ -125,7 +125,7 @@ class ManaConverterCached {
     if (!manaCost) return '';
     const symbolClass = isModal ? 'modal-mana-symbol' : 'mana-symbol';
     this.regex.lastIndex = 0;
-    return manaCost.replace(this.regex, (match) => {
+    return manaCost.replace(this.regex, match => {
       return `<span class="${symbolClass} ${this.allSymbols[match]}"></span>`;
     });
   }
@@ -149,7 +149,7 @@ class ManaConverterSimple {
     if (!manaCost) return '';
     const symbolClass = isModal ? 'modal-mana-symbol' : 'mana-symbol';
     this.regex.lastIndex = 0;
-    return manaCost.replace(this.regex, (match) => {
+    return manaCost.replace(this.regex, match => {
       const replacement = this.allSymbols.get(match);
       if (replacement === undefined) {
         return match;
@@ -177,11 +177,11 @@ for (const testCase of testCases) {
   const forEachResult = convertManaSymbols_ForEach(testCase);
   const cachedResult = convertManaSymbols_Cached(testCase);
   const simpleResult = convertManaSymbols_Simple(testCase);
-  
+
   forEachResults.push(forEachResult);
   cachedResults.push(cachedResult);
   simpleResults.push(simpleResult);
-  
+
   if (forEachResult !== cachedResult || forEachResult !== simpleResult) {
     allCorrect = false;
     console.log(`❌ FAILED for: ${testCase}`);
@@ -244,13 +244,13 @@ const simpleTime = Number(endSimple - startSimple) / 1_000_000;
 console.log(`\nResults (${iterations} iterations × ${testCases.length} test cases):\n`);
 
 // Calculate improvements
-const cachedVsForEach = ((forEachTime - cachedTime) / forEachTime * 100).toFixed(2);
+const cachedVsForEach = (((forEachTime - cachedTime) / forEachTime) * 100).toFixed(2);
 const cachedSpeedup = (forEachTime / cachedTime).toFixed(2);
 
-const simpleVsForEach = ((forEachTime - simpleTime) / forEachTime * 100).toFixed(2);
+const simpleVsForEach = (((forEachTime - simpleTime) / forEachTime) * 100).toFixed(2);
 const simpleSpeedup = (forEachTime / simpleTime).toFixed(2);
 
-const cachedVsSimple = ((simpleTime - cachedTime) / simpleTime * 100).toFixed(2);
+const cachedVsSimple = (((simpleTime - cachedTime) / simpleTime) * 100).toFixed(2);
 const cachedVsSimpleSpeedup = (simpleTime / cachedTime).toFixed(2);
 
 console.log(`Option 1 - forEach loops (original):          ${forEachTime.toFixed(2)}ms`);
@@ -265,7 +265,7 @@ console.log('Comparison between optimized versions:');
 if (cachedTime < simpleTime) {
   console.log(`  Option 2 is \x1b[32m${cachedVsSimple}% faster than Option 3 (${cachedVsSimpleSpeedup}x)\x1b[0m`);
 } else {
-  const simpleVsCached = ((cachedTime - simpleTime) / cachedTime * 100).toFixed(2);
+  const simpleVsCached = (((cachedTime - simpleTime) / cachedTime) * 100).toFixed(2);
   const simpleVsCachedSpeedup = (cachedTime / simpleTime).toFixed(2);
   console.log(`  Option 3 is \x1b[32m${simpleVsCached}% faster than Option 2 (${simpleVsCachedSpeedup}x)\x1b[0m`);
 }
