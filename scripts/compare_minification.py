@@ -64,13 +64,14 @@ def minify_js(input_path: Path, output_path: Path) -> None:
         print(f"Error minifying JS: {e.stderr.decode()}", file=sys.stderr)
         raise
 
+KIBI = 2**10
 
 def format_size(size_bytes: int) -> str:
     """Format size in human-readable format."""
     for unit in ["B", "KB", "MB"]:
-        if size_bytes < 1024.0:
+        if size_bytes < KIBI:
             return f"{size_bytes:.1f} {unit}"
-        size_bytes /= 1024.0
+        size_bytes /= KIBI
     return f"{size_bytes:.1f} GB"
 
 
@@ -105,7 +106,7 @@ def compare_file(filepath: Path, file_type: str) -> None:
     print(f"   Reduction: {format_percentage(original_size, compressed_size)}")
 
     # 3. Minified
-    temp_dir = Path("/tmp")
+    temp_dir = Path("/tmp")  # noqa: S108
     minified_path = temp_dir / f"{filepath.stem}.min{filepath.suffix}"
     try:
         if file_type == "css":
@@ -128,9 +129,6 @@ def compare_file(filepath: Path, file_type: str) -> None:
         print(f"   Reduction vs compressed: {format_percentage(compressed_size, minified_compressed_size)}")
         print(f"   Reduction vs minified: {format_percentage(minified_size, minified_compressed_size)}")
 
-    except Exception as e:
-        print(f"\n3. Minified: ERROR - {e}")
-        print(f"4. Minified + Compressed: SKIPPED")
     finally:
         # Cleanup temporary file
         try:

@@ -142,10 +142,10 @@ class APIResource:
         self.action_map["index"] = make_type_converting_wrapper(self.index_html)
 
         # add static file serving actions
-        self.action_map["static/app.js"] = self.app_js
-        self.action_map["static/app.min.js"] = self.app_min_js
-        self.action_map["static/favicon.ico"] = self.favicon_ico
-        self.action_map["static/styles.css"] = self.styles_css
+        self.action_map["static/app_js"] = self.app_js
+        self.action_map["static/app_min_js"] = self.app_min_js
+        self.action_map["static/favicon_ico"] = self.favicon_ico
+        self.action_map["static/styles_css"] = self.styles_css
 
         self._query_cache = LRUCache(maxsize=1_000)
         if not settings.enable_cache:
@@ -208,7 +208,10 @@ class APIResource:
             id(resp),
         )
         path = path.replace(".", "_")
-        action = self.action_map.get(path, self._raise_not_found)
+        action = self.action_map.get(
+            path,
+            self._raise_not_found,
+        )
         before = time.monotonic()
         try:
             res = action(falcon_response=resp, **req.params)
@@ -216,7 +219,8 @@ class APIResource:
         except TypeError as oops:
             logger.error("Error handling request: %s", oops, exc_info=True)
             raise falcon.HTTPBadRequest(description=str(oops)) from oops
-        except falcon.HTTPError:
+        except falcon.HTTPError as oops:
+            logger.error("Error handling request for %s: %s", path, oops, exc_info=True)
             raise
         except Exception as oops:
             logger.error("Error handling request: %s", oops, exc_info=True)
@@ -879,7 +883,7 @@ class APIResource:
         """
         if falcon_response is None:
             return
-        self._serve_static_file(filename="static/styles.css", falcon_response=falcon_response)
+        self._serve_static_file(filename="styles.css", falcon_response=falcon_response)
         falcon_response.content_type = "text/css"
         # Cache CSS for 1 hour - it changes infrequently
         set_cache_header(falcon_response, duration=timedelta(hours=1))
@@ -893,7 +897,7 @@ class APIResource:
         """
         if falcon_response is None:
             return
-        self._serve_static_file(filename="static/app.js", falcon_response=falcon_response)
+        self._serve_static_file(filename="app.js", falcon_response=falcon_response)
         falcon_response.content_type = "application/javascript"
         # Cache JavaScript for 1 hour - it changes infrequently
         set_cache_header(falcon_response, duration=timedelta(hours=1))
@@ -907,7 +911,7 @@ class APIResource:
         """
         if falcon_response is None:
             return
-        self._serve_static_file(filename="static/app.min.js", falcon_response=falcon_response)
+        self._serve_static_file(filename="app.min.js", falcon_response=falcon_response)
         falcon_response.content_type = "application/javascript"
         # Cache minified JavaScript for 1 hour - it changes infrequently
         set_cache_header(falcon_response, duration=timedelta(hours=1))
@@ -934,6 +938,7 @@ class APIResource:
         except OSError as e:
             falcon_response.status = falcon.HTTP_500
             falcon_response.text = f"Error reading file {filename}: {e}"
+
     def get_migrations(self, **_: object) -> list[dict[str, str]]:
         """Get the migrations from the filesystem.
 
