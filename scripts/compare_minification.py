@@ -128,12 +128,13 @@ def compare_file(filepath: Path, file_type: str) -> None:
         print(f"   Reduction vs compressed: {format_percentage(compressed_size, minified_compressed_size)}")
         print(f"   Reduction vs minified: {format_percentage(minified_size, minified_compressed_size)}")
 
-        # Cleanup
-        minified_path.unlink()
-
     except Exception as e:
         print(f"\n3. Minified: ERROR - {e}")
         print(f"4. Minified + Compressed: SKIPPED")
+    finally:
+        # Cleanup temporary file if it exists
+        if minified_path.exists():
+            minified_path.unlink()
 
 
 def main() -> None:
