@@ -26,7 +26,11 @@ from api.parsing.parsing_f import generate_sql_query
             {"p_int_Mg": 2},
         ),
         # Test field-specific : operator behavior
-        ("name:lightning", r"(card.card_name ILIKE %(p_str_JWxpZ2h0bmluZyU)s)", {"p_str_JWxpZ2h0bmluZyU": r"%lightning%"}),
+        (
+            "name:lightning",
+            r"(card.card_name ILIKE %(p_str_JWxpZ2h0bmluZyU)s)",
+            {"p_str_JWxpZ2h0bmluZyU": r"%lightning%"},
+        ),
         (
             "name:'lightning bolt'",
             r"(card.card_name ILIKE %(p_str_JWxpZ2h0bmluZyVib2x0JQ)s)",
@@ -216,8 +220,16 @@ def test_full_sql_translation_jsonb_card_types(input_query: str, expected_sql: s
     argvalues=[
         # Oracle text search tests
         ("oracle:flying", "(card.oracle_text ILIKE %(p_str_JWZseWluZyU)s)", {"p_str_JWZseWluZyU": "%flying%"}),
-        ("oracle:'gain life'", "(card.oracle_text ILIKE %(p_str_JWdhaW4lbGlmZSU)s)", {"p_str_JWdhaW4lbGlmZSU": "%gain%life%"}),
-        ('oracle:"gain life"', "(card.oracle_text ILIKE %(p_str_JWdhaW4lbGlmZSU)s)", {"p_str_JWdhaW4lbGlmZSU": "%gain%life%"}),
+        (
+            "oracle:'gain life'",
+            "(card.oracle_text ILIKE %(p_str_JWdhaW4lbGlmZSU)s)",
+            {"p_str_JWdhaW4lbGlmZSU": "%gain%life%"},
+        ),
+        (
+            'oracle:"gain life"',
+            "(card.oracle_text ILIKE %(p_str_JWdhaW4lbGlmZSU)s)",
+            {"p_str_JWdhaW4lbGlmZSU": "%gain%life%"},
+        ),
         ("oracle:haste", "(card.oracle_text ILIKE %(p_str_JWhhc3RlJQ)s)", {"p_str_JWhhc3RlJQ": "%haste%"}),
         # Test oracle search with complex phrases
         (
@@ -699,9 +711,21 @@ def test_rarity_case_insensitive() -> None:
         ),
         ("artist:nielsen", r"(card.card_artist ILIKE %(p_str_JW5pZWxzZW4l)s)", {"p_str_JW5pZWxzZW4l": r"%nielsen%"}),
         ("ARTIST:moeller", r"(card.card_artist ILIKE %(p_str_JW1vZWxsZXIl)s)", {"p_str_JW1vZWxsZXIl": r"%moeller%"}),
-        ('artist="todd lockwood"', r"(card.card_artist = %(p_str_VG9kZCBMb2Nrd29vZA)s)", {"p_str_VG9kZCBMb2Nrd29vZA": r"Todd Lockwood"}),
-        ('artist="TODD LOCKWOOD"', r"(card.card_artist = %(p_str_VG9kZCBMb2Nrd29vZA)s)", {"p_str_VG9kZCBMb2Nrd29vZA": r"Todd Lockwood"}),
-        ('a="TODD LOCKWOOD"', r"(card.card_artist = %(p_str_VG9kZCBMb2Nrd29vZA)s)", {"p_str_VG9kZCBMb2Nrd29vZA": r"Todd Lockwood"}),
+        (
+            'artist="todd lockwood"',
+            r"(card.card_artist = %(p_str_VG9kZCBMb2Nrd29vZA)s)",
+            {"p_str_VG9kZCBMb2Nrd29vZA": r"Todd Lockwood"},
+        ),
+        (
+            'artist="TODD LOCKWOOD"',
+            r"(card.card_artist = %(p_str_VG9kZCBMb2Nrd29vZA)s)",
+            {"p_str_VG9kZCBMb2Nrd29vZA": r"Todd Lockwood"},
+        ),
+        (
+            'a="TODD LOCKWOOD"',
+            r"(card.card_artist = %(p_str_VG9kZCBMb2Nrd29vZA)s)",
+            {"p_str_VG9kZCBMb2Nrd29vZA": r"Todd Lockwood"},
+        ),
     ],
 )
 def test_artist_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
@@ -843,7 +867,9 @@ def test_collector_number_sql_translation(input_query: str, expected_sql_fragmen
     ],
 )
 def test_collector_number_numeric_comparison_sql_translation(
-    input_query: str, expected_sql_fragment: str, expected_parameters: set,
+    input_query: str,
+    expected_sql_fragment: str,
+    expected_parameters: set,
 ) -> None:
     """Test that collector number numeric comparisons generate correct SQL using the integer column."""
     parsed = parsing.parse_scryfall_query(input_query)
@@ -1013,7 +1039,6 @@ def test_frame_sql_translation(input_query: str, expected_sql: str, expected_par
     observed_sql = parsed.to_sql(observed_params)
     assert observed_sql == expected_sql, f"\nExpected: {expected_sql}\nObserved: {observed_sql}"
     assert observed_params == expected_parameters, f"\nExpected params: {expected_parameters}\nObserved params: {observed_params}"
-
 
 
 def test_name_titlecasing() -> None:

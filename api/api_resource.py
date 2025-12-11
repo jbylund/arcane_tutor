@@ -950,7 +950,9 @@ class APIResource:
         return db_utils.get_migrations()
 
     def get_common_card_types(
-        self, falcon_response: falcon.Response | None = None, **_: object,
+        self,
+        falcon_response: falcon.Response | None = None,
+        **_: object,
     ) -> list[dict[str, Any]]:
         """Get the common card types from the database."""
         set_cache_header(falcon_response, duration=timedelta(hours=1))

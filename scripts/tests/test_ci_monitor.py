@@ -34,8 +34,12 @@ class TestCIMonitor:
 
     def test_get_github_headers_missing_token(self) -> None:
         """Test error when GITHUB_TOKEN is missing."""
-        with mock.patch.dict(os.environ, {}, clear=True), pytest.raises(
-            ValueError, match="GITHUB_TOKEN environment variable is required",
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            pytest.raises(
+                ValueError,
+                match="GITHUB_TOKEN environment variable is required",
+            ),
         ):
             get_github_headers()
 
@@ -48,8 +52,12 @@ class TestCIMonitor:
 
     def test_get_repository_info_missing(self) -> None:
         """Test error when GITHUB_REPOSITORY is missing."""
-        with mock.patch.dict(os.environ, {}, clear=True), pytest.raises(
-            ValueError, match="GITHUB_REPOSITORY environment variable is required",
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            pytest.raises(
+                ValueError,
+                match="GITHUB_REPOSITORY environment variable is required",
+            ),
         ):
             get_repository_info()
 

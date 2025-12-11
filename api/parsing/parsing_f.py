@@ -194,7 +194,9 @@ def create_attribute_parser(parser_class: ParserClass) -> ParserElement:
 
 
 def create_condition_parser(
-    attr_parser: ParserElement, value_parser: ParserElement, operators: ParserElement = DEFAULT_OPERATORS,
+    attr_parser: ParserElement,
+    value_parser: ParserElement,
+    operators: ParserElement = DEFAULT_OPERATORS,
 ) -> ParserElement:
     """Factory function to create condition parsers with consistent structure.
 

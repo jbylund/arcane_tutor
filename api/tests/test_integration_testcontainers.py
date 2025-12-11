@@ -30,7 +30,8 @@ class TestContainerIntegration:
             password="testpass",  # noqa: S106
             dbname="testdb",
         ).with_bind_ports(
-            5432, 5433,
+            5432,
+            5433,
         )  # Bind internal 5432 to host 5433
 
         with container as postgres:
@@ -352,9 +353,9 @@ class TestContainerIntegration:
         for card in cards:
             if card["name"] == "Brainstorm":
                 brainstorm_found = True
-                assert (
-                    card.get("card_artist") == "Willian Murai"
-                ), f"Brainstorm should have 'Willian Murai' as artist, got: {card.get('card_artist')}"
+                assert card.get("card_artist") == "Willian Murai", (
+                    f"Brainstorm should have 'Willian Murai' as artist, got: {card.get('card_artist')}"
+                )
                 break
 
         assert brainstorm_found, "Brainstorm should be found by artist search"

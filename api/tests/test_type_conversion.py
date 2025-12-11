@@ -16,7 +16,12 @@ class TestTypeConversion:
         """Test that make_type_converting_wrapper properly converts string arguments to expected types."""
 
         def test_func(a: int, b: bool = True, c: str = "default") -> dict[str, Any]:
-            return {"a": a, "b": b, "c": c, "types": {"a": type(a).__name__, "b": type(b).__name__, "c": type(c).__name__}}
+            return {
+                "a": a,
+                "b": b,
+                "c": c,
+                "types": {"a": type(a).__name__, "b": type(b).__name__, "c": type(c).__name__},
+            }
 
         wrapped = make_type_converting_wrapper(test_func)
 
@@ -102,10 +107,13 @@ class TestTypeConversion:
 
     def test_action_map_uses_type_converting_wrappers(self) -> None:
         """Test that APIResource action map uses type converting wrappers."""
-        with patch("api.api_resource.db_utils.make_pool"), patch("api.api_resource.requests.Session"), patch(
-            "api.api_resource.TaggerClient",
+        with (
+            patch("api.api_resource.db_utils.make_pool"),
+            patch("api.api_resource.requests.Session"),
+            patch(
+                "api.api_resource.TaggerClient",
+            ),
         ):
-
             api_resource = APIResource()
 
             # Check that discover_and_import_all_tags is wrapped
@@ -169,10 +177,13 @@ class TestTypeConversion:
 
     def test_discover_and_import_all_tags_handles_string_boolean_parameters(self) -> None:
         """Test that discover_and_import_all_tags properly handles string boolean parameters."""
-        with patch("api.api_resource.db_utils.make_pool"), patch("api.api_resource.requests.Session"), patch(
-            "api.api_resource.TaggerClient",
+        with (
+            patch("api.api_resource.db_utils.make_pool"),
+            patch("api.api_resource.requests.Session"),
+            patch(
+                "api.api_resource.TaggerClient",
+            ),
         ):
-
             api_resource = APIResource()
 
             # Test directly with the actual method

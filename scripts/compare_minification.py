@@ -64,7 +64,9 @@ def minify_js(input_path: Path, output_path: Path) -> None:
         print(f"Error minifying JS: {e.stderr.decode()}", file=sys.stderr)
         raise
 
+
 KIBI = 2**10
+
 
 def format_size(size_bytes: int) -> str:
     """Format size in human-readable format."""

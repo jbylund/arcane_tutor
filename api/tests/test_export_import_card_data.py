@@ -69,12 +69,19 @@ class TestExportImportCardData:
         mock_conn.cursor.return_value.__exit__ = mock.Mock(return_value=None)
 
         # Mock helper methods to return empty results
-        with mock.patch.object(
-            api_resource, "_export_cards_table", return_value={"file": "cards.json", "count": 0},
-        ), mock.patch.object(api_resource, "_export_tags_table", return_value={"file": "tags.json", "count": 0}), mock.patch.object(
-            api_resource, "_export_tag_relationships_table", return_value={"file": "relations.json", "count": 0},
+        with (
+            mock.patch.object(
+                api_resource,
+                "_export_cards_table",
+                return_value={"file": "cards.json", "count": 0},
+            ),
+            mock.patch.object(api_resource, "_export_tags_table", return_value={"file": "tags.json", "count": 0}),
+            mock.patch.object(
+                api_resource,
+                "_export_tag_relationships_table",
+                return_value={"file": "relations.json", "count": 0},
+            ),
         ):
-
             result = api_resource.export_card_data()
 
         # Verify directory creation was called

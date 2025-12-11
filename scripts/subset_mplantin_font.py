@@ -10,6 +10,7 @@ This script:
 Requirements:
     pip install fonttools brotli boto3
 """
+
 from __future__ import annotations
 
 import argparse

@@ -294,9 +294,7 @@ def test_content_deduplication() -> None:
         assert cache[b"key3"] == b"shared_value"
         assert len(cache) == 3
 
-        stored_content_blobs = {
-            content_bytes for _, content_bytes in cache.content_items()
-        }
+        stored_content_blobs = {content_bytes for _, content_bytes in cache.content_items()}
         assert {b"shared_value"} == stored_content_blobs
 
         # All should return same value
@@ -719,6 +717,7 @@ def test_stress_test() -> None:
     finally:
         cache.close()
 
+
 @pytest.mark.skip(reason="benchmark test, not expected to run every time")
 def test_throughput_benchmark() -> None:  # noqa: PLR0915
     """Benchmark throughput with random set/get operations and compare to dict."""
@@ -730,25 +729,19 @@ def test_throughput_benchmark() -> None:  # noqa: PLR0915
     value_prefix = b"value_"
 
     # true means set, false means get
-    operations = itertools.cycle([
-        random.random() < set_ratio
-        for _ in range(10_000)
-    ])
+    operations = itertools.cycle([random.random() < set_ratio for _ in range(10_000)])
 
-    key_ids = [
-        random.randint(0, max_keys - 1)
-        for _ in range(10_000)
-    ]
+    key_ids = [random.randint(0, max_keys - 1) for _ in range(10_000)]
 
-    key_value_pairs = itertools.cycle([
-        (
-            key_prefix + str(key_id).encode(),
-            value_prefix + str(key_id).encode(),
-        )
-        for key_id in key_ids
-    ])
-
-
+    key_value_pairs = itertools.cycle(
+        [
+            (
+                key_prefix + str(key_id).encode(),
+                value_prefix + str(key_id).encode(),
+            )
+            for key_id in key_ids
+        ]
+    )
 
     # Test with ContentAddressableCache
     cache = ContentAddressableCache(maxsize=max_keys * 10, lock=_create_lock())
@@ -832,7 +825,10 @@ def test_throughput_benchmark() -> None:  # noqa: PLR0915
     logger.info("  Misses: %d (%.1f%%)", dict_misses, 100.0 * dict_misses / dict_ops if dict_ops > 0 else 0)
     logger.info("  Elapsed: %.2f seconds", dict_elapsed)
     logger.info("")
-    logger.info("Performance Ratio: %.2fx (dict is faster)", dict_ops_per_sec / cache_ops_per_sec if cache_ops_per_sec > 0 else 0)
+    logger.info(
+        "Performance Ratio: %.2fx (dict is faster)",
+        dict_ops_per_sec / cache_ops_per_sec if cache_ops_per_sec > 0 else 0,
+    )
     logger.info("=" * 80)
 
     # Test passes if it completes without errors

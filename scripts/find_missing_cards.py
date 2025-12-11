@@ -190,7 +190,7 @@ def main() -> None:
     total_imported = 0
 
     for i, query in enumerate(queries):
-        logging.info(f"Processing query {i+1}/{len(queries)}: {query}")
+        logging.info(f"Processing query {i + 1}/{len(queries)}: {query}")
 
         try:
             # Search both APIs

@@ -34,9 +34,9 @@ logger = logging.getLogger(__name__)
 ORIGINAL_WIDTH = 745  # this seems to be the size of the pngs that scryfall returns
 # Four sizes uniformly spread between 280 and 745
 XLARGE_WIDTH = 745  # Full resolution width in pixels
-LARGE_WIDTH = 538   # Large resolution width in pixels
+LARGE_WIDTH = 538  # Large resolution width in pixels
 MEDIUM_WIDTH = 388  # Medium resolution width in pixels
-SMALL_WIDTH = 280   # Small resolution width in pixels
+SMALL_WIDTH = 280  # Small resolution width in pixels
 
 # WebP quality setting
 WEBP_QUALITY = 85
@@ -164,7 +164,8 @@ def convert_to_webp(
             "-resize",
             str(width),
             "0",
-            "-m", "6",
+            "-m",
+            "6",
             "-noalpha",
             "-q",
             str(quality),
@@ -428,9 +429,7 @@ def check_cwebp() -> None:
         subprocess.run(["cwebp", "-version"], capture_output=True, check=True, timeout=5)
     except (subprocess.CalledProcessError, FileNotFoundError):
         logger.error(
-            "cwebp not found. Please install webp tools:\n"
-            "  Ubuntu/Debian: sudo apt-get install webp\n"
-            "  macOS: brew install webp",
+            "cwebp not found. Please install webp tools:\n  Ubuntu/Debian: sudo apt-get install webp\n  macOS: brew install webp",
         )
         sys.exit(1)
 
@@ -536,7 +535,10 @@ def main() -> None:
                 estimated_time_remaining = (elapsed_time / fraction_complete) - elapsed_time
                 estimated_remaining_duration = datetime.timedelta(seconds=round(estimated_time_remaining, 1))
                 logger.info(
-                    "Progress: %d / %d cards processed (ETA: %s)", idx, len(cards_with_missing_images), estimated_remaining_duration,
+                    "Progress: %d / %d cards processed (ETA: %s)",
+                    idx,
+                    len(cards_with_missing_images),
+                    estimated_remaining_duration,
                 )
 
             if all(results.values()):

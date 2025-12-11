@@ -239,7 +239,7 @@ class NaryOperatorNode(QueryNode):
 
     def __repr__(self: NaryOperatorNode) -> str:
         """Return a string representation of the n-ary operator node."""
-        return f'{self.__class__.__name__}({", ".join(repr(op) for op in self.operands)})'
+        return f"{self.__class__.__name__}({', '.join(repr(op) for op in self.operands)})"
 
     def __eq__(self: NaryOperatorNode, other: object) -> bool:
         """Check equality with another NaryOperatorNode based on operands."""
