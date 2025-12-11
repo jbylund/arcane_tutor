@@ -78,7 +78,10 @@ class TestImportCardByName(unittest.TestCase):
         assert result == [{"name": "Lightning Bolt", "cmc": 1}]
         mock_get.assert_called_once_with(
             "https://api.scryfall.com/cards/search",
-            params={"q": "(name:'Lightning Bolt') (f:m or f:l or f:c or f:v) game:paper unique:prints", "format": "json"},
+            params={
+                "q": "(name:'Lightning Bolt') (f:m or f:l or f:c or f:v) game:paper unique:prints",
+                "format": "json",
+            },
             timeout=30,
         )
 
@@ -105,7 +108,9 @@ class TestImportCardByName(unittest.TestCase):
     @patch.object(APIResource, "_run_query")
     @patch.object(APIResource, "_scryfall_search")
     def test_import_card_by_name_returns_not_found_for_missing_card(
-        self, mock_search: MagicMock, mock_run_query: MagicMock,
+        self,
+        mock_search: MagicMock,
+        mock_run_query: MagicMock,
     ) -> None:
         """Test that import_card_by_name returns not_found status when card doesn't exist in Scryfall."""
         # Mock _run_query to return no existing card
@@ -123,7 +128,9 @@ class TestImportCardByName(unittest.TestCase):
     @patch.object(APIResource, "_run_query")
     @patch.object(APIResource, "_scryfall_search")
     def test_import_card_by_name_returns_error_for_scryfall_exceptions(
-        self, mock_search: MagicMock, mock_run_query: MagicMock,
+        self,
+        mock_search: MagicMock,
+        mock_run_query: MagicMock,
     ) -> None:
         """Test that import_card_by_name returns error status for Scryfall API exceptions."""
         # Mock _run_query to return no existing card

@@ -195,7 +195,9 @@ class ScryfallAPIComparator:
         return sum(correlations) / len(correlations) if correlations else 0.0
 
     def _find_unique_cards(
-        self, official_cards: list[str], local_cards: list[str],
+        self,
+        official_cards: list[str],
+        local_cards: list[str],
     ) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
         """Find cards unique to each result set with their positions."""
         official_cards_set = set(official_cards)
@@ -220,7 +222,11 @@ class ScryfallAPIComparator:
         return local_only_cards, official_only_cards
 
     def _determine_major_discrepancy(
-        self, official_result: SearchResult, local_result: SearchResult, result_count_diff: int, position_correlation: float,
+        self,
+        official_result: SearchResult,
+        local_result: SearchResult,
+        result_count_diff: int,
+        position_correlation: float,
     ) -> bool:
         """Determine if there's a major discrepancy between results."""
         return (
@@ -231,7 +237,11 @@ class ScryfallAPIComparator:
         )
 
     def _generate_notes(
-        self, official_result: SearchResult, local_result: SearchResult, result_count_diff: int, position_correlation: float,
+        self,
+        official_result: SearchResult,
+        local_result: SearchResult,
+        result_count_diff: int,
+        position_correlation: float,
     ) -> list[str]:
         """Generate notes about the comparison."""
         notes = []
@@ -353,9 +363,9 @@ class ScryfallAPIComparator:
 
 ## Summary
 - Total queries tested: {total_queries}
-- Official API success rate: {successful_official}/{total_queries} ({successful_official/total_queries*100:.1f}%)
-- Local API success rate: {successful_local}/{total_queries} ({successful_local/total_queries*100:.1f}%)
-- Major discrepancies: {major_discrepancies}/{total_queries} ({major_discrepancies/total_queries*100:.1f}%)
+- Official API success rate: {successful_official}/{total_queries} ({successful_official / total_queries * 100:.1f}%)
+- Local API success rate: {successful_local}/{total_queries} ({successful_local / total_queries * 100:.1f}%)
+- Major discrepancies: {major_discrepancies}/{total_queries} ({major_discrepancies / total_queries * 100:.1f}%)
 
 ## Detailed Results
 """

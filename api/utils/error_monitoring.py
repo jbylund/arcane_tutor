@@ -9,7 +9,6 @@ import orjson
 logger = logging.getLogger(__name__)
 
 
-
 # Try to import honeybadger, fall back to basic error handling if not available
 try:
     api_key = os.environ["HONEYBADGER_API_KEY"]
@@ -32,7 +31,6 @@ else:
 
     deployment_env = os.getenv("ENVIRONMENT", "unknown")
     hostname = os.getenv("HOSTNAME", socket.gethostname())
-
 
     honeybadger_config = {
         "deployment_env": deployment_env,

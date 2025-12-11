@@ -53,7 +53,9 @@ class TestDeploymentReporting:
             ("stage", "staging-host", "stage-staging-host"),
         ],
     )
-    def test_successful_deployment_reporting(self, mock_post: Any, caplog: Any, environment: str, hostname: str, expected_environment: str) -> None:
+    def test_successful_deployment_reporting(
+        self, mock_post: Any, caplog: Any, environment: str, hostname: str, expected_environment: str
+    ) -> None:
         """Test successful deployment reporting to Honeybadger."""
         # Setup mock response
         mock_response = MagicMock()

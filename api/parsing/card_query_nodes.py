@@ -120,7 +120,7 @@ class CardAttributeNode(AttributeNode):
         alias_field_infos = ALIAS_TO_FIELD_INFOS.get(attribute_name.lower(), [])
         self.field_infos = [f for f in alias_field_infos if f.parser_class == matched_parser_class]
 
-        field_info, = self.field_infos
+        (field_info,) = self.field_infos
         db_column_name = field_info.db_column_name
 
         super().__init__(db_column_name)
@@ -290,7 +290,6 @@ def get_legality_comparison_object(val: str, attr: str) -> dict[str, str]:
     return {format_name: status}
 
 
-
 def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
     """Convert a mana cost string to a dictionary of colored symbols and their counts.
 
@@ -321,7 +320,6 @@ def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
     for colored_symbol, count in colored_symbol_counts.items():
         as_dict[colored_symbol] = list(range(1, count + 1))
     return as_dict
-
 
 
 def calculate_cmc(mana_cost_str: str) -> int:
@@ -506,7 +504,6 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
             return self._handle_mana_cost_approximate_comparison(context, mana_cost_str)
         raise AssertionError(self)
 
-
     def _handle_mana_cost_approximate_comparison(self, context: dict, mana_cost_str: str) -> str:
         """Handle approximate mana cost comparisons using containment and CMC."""
         # Convert the query mana cost to dict for containment checking
@@ -603,7 +600,8 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
         # Only accept 4-digit year values
         year_str_length = 4
         if (isinstance(search_value, str) and len(search_value) == year_str_length and search_value.isdigit()) or isinstance(
-            search_value, int | float,
+            search_value,
+            int | float,
         ):
             year_value = int(search_value)
         else:

@@ -26,9 +26,13 @@ class TestPreferOrder(unittest.TestCase):
     def test_search_accepts_prefer_parameter(self) -> None:
         """Test that search method accepts prefer parameter."""
         # Mock the database operations
-        with patch.object(self.api_resource, "_conn_pool") as mock_pool, patch.object(
-            self.api_resource, "_setup_complete",
-        ) as mock_setup:
+        with (
+            patch.object(self.api_resource, "_conn_pool") as mock_pool,
+            patch.object(
+                self.api_resource,
+                "_setup_complete",
+            ) as mock_setup,
+        ):
             mock_setup.return_value = True
             mock_conn = MagicMock()
             mock_cursor = MagicMock()
@@ -51,9 +55,13 @@ class TestPreferOrder(unittest.TestCase):
 
     def test_search_prefer_parameter_in_sql_query(self) -> None:
         """Test that prefer parameter affects SQL query generation."""
-        with patch.object(self.api_resource, "_conn_pool") as mock_pool, patch.object(
-            self.api_resource, "_setup_complete",
-        ) as mock_setup:
+        with (
+            patch.object(self.api_resource, "_conn_pool") as mock_pool,
+            patch.object(
+                self.api_resource,
+                "_setup_complete",
+            ) as mock_setup,
+        ):
             mock_setup.return_value = True
             mock_conn = MagicMock()
             mock_cursor = MagicMock()

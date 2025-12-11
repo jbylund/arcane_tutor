@@ -6,6 +6,7 @@ import re
 
 MAX_ORACLE_TEXT_LENGTH = 200
 
+
 def escape_html(text: str) -> str:
     """Escape HTML special characters.
 
@@ -17,13 +18,7 @@ def escape_html(text: str) -> str:
     -------
         HTML-escaped text
     """
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&#39;")
-    )
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;")
 
 
 def convert_mana_symbols(text: str, is_modal: bool = False) -> str:
@@ -258,7 +253,9 @@ def create_card_html(card: dict, index: int) -> str:
         set_part = f'<div class="card-set">{escape_html(card["set_name"])}</div>' if has_set else '<div class="card-set"></div>'
         power_toughness_part = ""
         if has_power_toughness:
-            power_toughness_part = f'<div class="card-power-toughness">{escape_html(str(card["power"]))} / {escape_html(str(card["toughness"]))}</div>'
+            power_toughness_part = (
+                f'<div class="card-power-toughness">{escape_html(str(card["power"]))} / {escape_html(str(card["toughness"]))}</div>'
+            )
         set_power_html = f'<div class="card-set-power-row">{set_part}{power_toughness_part}</div>'
 
     return f"""

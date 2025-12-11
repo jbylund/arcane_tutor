@@ -53,7 +53,7 @@ BLOB_HEADER_SIZE = BLOB_TYPE_WIDTH + BLOB_LENGTH_WIDTH  # 5 bytes total header
 EMPTY_KEY_HASH = b"\x00" * KEY_HASH_WIDTH  # 16 bytes of 0x00
 EMPTY_CONTENT_FP = b"\x00" * CONTENT_FP_WIDTH  # 16 bytes of 0x00
 # Tombstone marker for deleted hash table entries (all 0xFF bytes)
-TOMBSTONE = b"\xFF" * KEY_HASH_WIDTH  # 16 bytes of 0xFF
+TOMBSTONE = b"\xff" * KEY_HASH_WIDTH  # 16 bytes of 0xFF
 ALIGNMENT = 8
 DEFAULT_LOAD_FACTOR = 0.65
 DEFAULT_LOCK_TIMEOUT = 60.0
@@ -525,7 +525,7 @@ class ContentAddressableCache:
 
             return self._read_blob(content_addr)
 
-    def __setitem__(self, key: bytes, value: bytes) -> None: # noqa: PLR0915
+    def __setitem__(self, key: bytes, value: bytes) -> None:  # noqa: PLR0915
         """Set value for key.
 
         Args:
@@ -684,9 +684,7 @@ class ContentAddressableCache:
             offset = self._key_table_start + slot * KEY_HASH_ENTRY_SIZE
             # Set hash to tombstone marker, clear the rest
             buf[offset : offset + KEY_HASH_WIDTH] = TOMBSTONE
-            buf[offset + KEY_HASH_WIDTH : offset + KEY_HASH_ENTRY_SIZE] = b"\x00" * (
-                KEY_HASH_ENTRY_SIZE - KEY_HASH_WIDTH
-            )
+            buf[offset + KEY_HASH_WIDTH : offset + KEY_HASH_ENTRY_SIZE] = b"\x00" * (KEY_HASH_ENTRY_SIZE - KEY_HASH_WIDTH)
 
             self._set_current_items(self._get_current_items() - 1)
 
@@ -799,7 +797,7 @@ class ContentAddressableCache:
         except KeyError:
             return default
 
-    def compact(self) -> None: # noqa: C901, PLR0915, PLR0912
+    def compact(self) -> None:  # noqa: C901, PLR0915, PLR0912
         """Compact the blob pool by removing unreferenced blobs and defragmenting.
 
         This method:
@@ -959,9 +957,7 @@ class ContentAddressableCache:
             key_table_size = self._get_key_table_size()
             content_table_size = self._get_content_table_size()
             buf[self._key_table_start : self._key_table_start + key_table_size] = b"\x00" * key_table_size
-            buf[
-                self._content_table_start : self._content_table_start + content_table_size
-            ] = b"\x00" * content_table_size
+            buf[self._content_table_start : self._content_table_start + content_table_size] = b"\x00" * content_table_size
 
             # Reset counters
             self._set_current_items(0)

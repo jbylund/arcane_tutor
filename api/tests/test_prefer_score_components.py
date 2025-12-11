@@ -61,15 +61,13 @@ class TestPreferScoreComponents(unittest.TestCase):
         # Test ordering for legendary frame: normal frame (0) < legendary frame (5)
         normal_frame_score = 0
         legendary_frame_score = 5
-        assert normal_frame_score < legendary_frame_score, \
-            "Legendary frame should be preferred over normal frame"
+        assert normal_frame_score < legendary_frame_score, "Legendary frame should be preferred over normal frame"
 
         # Test ordering for finishes: etched < foil < nonfoil
         etched_score = 0
         foil_score = 5
         nonfoil_score = 10
-        assert etched_score < foil_score < nonfoil_score, \
-            "Finish ordering should be: etched < foil < nonfoil"
+        assert etched_score < foil_score < nonfoil_score, "Finish ordering should be: etched < foil < nonfoil"
 
 
 if __name__ == "__main__":

@@ -116,7 +116,6 @@ def patch_conn_pool_fixture() -> MagicMock:
 
 
 class TestBaseAPIResourceTest:
-
     @pytest.fixture(autouse=True)
     def setUp(self, request: pytest.FixtureRequest, patch_conn_pool: MagicMock) -> None:
         """Set up test fixtures."""

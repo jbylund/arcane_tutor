@@ -127,6 +127,7 @@ prettier_lint: /tmp/prettier.stamp
 
 ruff_fix: ensure_ruff
 	find . -type f -name "*.py" | xargs python -m ruff check --fix --unsafe-fixes >/dev/null 2>/dev/null || true
+	find . -type f -name "*.py" | xargs python -m ruff format
 
 ruff_lint: ruff_fix
 	find . -type f -name "*.py" | xargs python -m ruff check --fix --unsafe-fixes
