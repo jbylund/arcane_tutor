@@ -776,9 +776,6 @@ class APIResource:
         with pathlib.Path(full_filename).open() as f:
             html_content = f.read()
 
-        # Always use minified version
-        html_content = html_content.replace("<!-- APP_JS_PATH -->", "/app.min.js")
-
         # Check if we have a search query
         search_query = query or q
         if search_query:
