@@ -116,7 +116,6 @@ def patch_conn_pool_fixture() -> MagicMock:
 
 
 class TestBaseAPIResourceTest:
-
     @pytest.fixture(autouse=True)
     def setUp(self, request: pytest.FixtureRequest, patch_conn_pool: MagicMock) -> None:
         """Set up test fixtures."""
@@ -536,7 +535,7 @@ class TestAPIResourceCaching(unittest.TestCase):
             assert "test_key" not in self.api_resource._search.cache
 
     def test_cache_clear_method_works(self) -> None:
-        """Test that cache.clear() method works for cachetools caches."""
+        """Test that cache.clear() method works for cachebox caches."""
         # Test query cache clearing
         self.api_resource._query_cache["test_key"] = "test_value"
         assert "test_key" in self.api_resource._query_cache

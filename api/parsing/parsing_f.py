@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-import cachetools
+import cachebox
 from pyparsing import (
     CaselessKeyword,
     Combine,
@@ -194,7 +194,9 @@ def create_attribute_parser(parser_class: ParserClass) -> ParserElement:
 
 
 def create_condition_parser(
-    attr_parser: ParserElement, value_parser: ParserElement, operators: ParserElement = DEFAULT_OPERATORS,
+    attr_parser: ParserElement,
+    value_parser: ParserElement,
+    operators: ParserElement = DEFAULT_OPERATORS,
 ) -> ParserElement:
     """Factory function to create condition parsers with consistent structure.
 
@@ -330,7 +332,7 @@ def create_mana_parsers() -> dict[str, ParserElement]:
 
     # Individual mana components
     curly_mana_symbol = Regex(r"\{[^}]+\}")  # Complex symbols in braces: {W/U}, {2/W}
-    simple_mana_symbol = Regex(r"[0-9WUBRGCXYZ]")  # Simple symbols without braces: W, 1, 2
+    simple_mana_symbol = Regex(r"[0-9WUBRGCXYZwubrgcxyz]")  # Simple symbols without braces: W, 1, 2
 
     # Mixed mana pattern: any combination of simple and complex symbols
     # Examples: {1}{G}, 1{G}, 2RR, W{U/R}, {2/W}G, etc.
@@ -538,7 +540,7 @@ def parse_scryfall_query(query: str) -> Query:
     return to_card_query_ast(generic_query)
 
 
-@cachetools.cached(cache={})
+@cachebox.cached(cache={})
 def get_parse_expr() -> ParserElement:  # noqa: C901, PLR0915
     """Create and return the main parser expression for Scryfall search queries.
 

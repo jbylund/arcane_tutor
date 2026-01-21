@@ -6,3 +6,6 @@ venv
 *venv*
 env.json
 gatherer_data/
+.env
+prof
+*.min.js

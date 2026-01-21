@@ -26,7 +26,11 @@ from api.parsing.parsing_f import generate_sql_query
             {"p_int_Mg": 2},
         ),
         # Test field-specific : operator behavior
-        ("name:lightning", r"(card.card_name ILIKE %(p_str_JWxpZ2h0bmluZyU)s)", {"p_str_JWxpZ2h0bmluZyU": r"%lightning%"}),
+        (
+            "name:lightning",
+            r"(card.card_name ILIKE %(p_str_JWxpZ2h0bmluZyU)s)",
+            {"p_str_JWxpZ2h0bmluZyU": r"%lightning%"},
+        ),
         (
             "name:'lightning bolt'",
             r"(card.card_name ILIKE %(p_str_JWxpZ2h0bmluZyVib2x0JQ)s)",
@@ -216,8 +220,16 @@ def test_full_sql_translation_jsonb_card_types(input_query: str, expected_sql: s
     argvalues=[
         # Oracle text search tests
         ("oracle:flying", "(card.oracle_text ILIKE %(p_str_JWZseWluZyU)s)", {"p_str_JWZseWluZyU": "%flying%"}),
-        ("oracle:'gain life'", "(card.oracle_text ILIKE %(p_str_JWdhaW4lbGlmZSU)s)", {"p_str_JWdhaW4lbGlmZSU": "%gain%life%"}),
-        ('oracle:"gain life"', "(card.oracle_text ILIKE %(p_str_JWdhaW4lbGlmZSU)s)", {"p_str_JWdhaW4lbGlmZSU": "%gain%life%"}),
+        (
+            "oracle:'gain life'",
+            "(card.oracle_text ILIKE %(p_str_JWdhaW4lbGlmZSU)s)",
+            {"p_str_JWdhaW4lbGlmZSU": "%gain%life%"},
+        ),
+        (
+            'oracle:"gain life"',
+            "(card.oracle_text ILIKE %(p_str_JWdhaW4lbGlmZSU)s)",
+            {"p_str_JWdhaW4lbGlmZSU": "%gain%life%"},
+        ),
         ("oracle:haste", "(card.oracle_text ILIKE %(p_str_JWhhc3RlJQ)s)", {"p_str_JWhhc3RlJQ": "%haste%"}),
         # Test oracle search with complex phrases
         (
@@ -529,6 +541,17 @@ def test_case_insensitive_attributes(input_query: str, expected_sql: str, expect
             r"(card.card_set_code = %(p_str_bTIx)s)",
             {"p_str_bTIx": "m21"},
         ),
+        # test capitalization handling
+        (
+            "set=BLB",
+            r"(card.card_set_code = %(p_str_Ymxi)s)",
+            {"p_str_Ymxi": "blb"},
+        ),
+        (
+            "s=BLB",
+            r"(card.card_set_code = %(p_str_Ymxi)s)",
+            {"p_str_Ymxi": "blb"},
+        ),
     ],
 )
 def test_set_search_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
@@ -688,6 +711,21 @@ def test_rarity_case_insensitive() -> None:
         ),
         ("artist:nielsen", r"(card.card_artist ILIKE %(p_str_JW5pZWxzZW4l)s)", {"p_str_JW5pZWxzZW4l": r"%nielsen%"}),
         ("ARTIST:moeller", r"(card.card_artist ILIKE %(p_str_JW1vZWxsZXIl)s)", {"p_str_JW1vZWxsZXIl": r"%moeller%"}),
+        (
+            'artist="todd lockwood"',
+            r"(card.card_artist = %(p_str_VG9kZCBMb2Nrd29vZA)s)",
+            {"p_str_VG9kZCBMb2Nrd29vZA": r"Todd Lockwood"},
+        ),
+        (
+            'artist="TODD LOCKWOOD"',
+            r"(card.card_artist = %(p_str_VG9kZCBMb2Nrd29vZA)s)",
+            {"p_str_VG9kZCBMb2Nrd29vZA": r"Todd Lockwood"},
+        ),
+        (
+            'a="TODD LOCKWOOD"',
+            r"(card.card_artist = %(p_str_VG9kZCBMb2Nrd29vZA)s)",
+            {"p_str_VG9kZCBMb2Nrd29vZA": r"Todd Lockwood"},
+        ),
     ],
 )
 def test_artist_sql_translation(input_query: str, expected_sql: str, expected_parameters: dict) -> None:
@@ -736,6 +774,59 @@ def test_artist_sql_translation(input_query: str, expected_sql: str, expected_pa
         (
             'format:"Historic Brawl"',
             {"historic brawl": "legal"},
+        ),
+        # Single letter format codes
+        (
+            "f:m",
+            {"modern": "legal"},
+        ),
+        (
+            "f:s",
+            {"standard": "legal"},
+        ),
+        (
+            "f:l",
+            {"legacy": "legal"},
+        ),
+        (
+            "f:p",
+            {"pauper": "legal"},
+        ),
+        (
+            "f:c",
+            {"commander": "legal"},
+        ),
+        (
+            "f:v",
+            {"vintage": "legal"},
+        ),
+        (
+            "f:h",
+            {"historic": "legal"},
+        ),
+        # Single letter format codes with format: prefix
+        (
+            "format:m",
+            {"modern": "legal"},
+        ),
+        # Single letter format codes with legal: prefix
+        (
+            "legal:s",
+            {"standard": "legal"},
+        ),
+        # Single letter format codes with banned: prefix
+        (
+            "banned:m",
+            {"modern": "banned"},
+        ),
+        # Case insensitive single letter format codes
+        (
+            "f:M",
+            {"modern": "legal"},
+        ),
+        (
+            "f:S",
+            {"standard": "legal"},
         ),
     ],
 )
@@ -829,7 +920,9 @@ def test_collector_number_sql_translation(input_query: str, expected_sql_fragmen
     ],
 )
 def test_collector_number_numeric_comparison_sql_translation(
-    input_query: str, expected_sql_fragment: str, expected_parameters: set,
+    input_query: str,
+    expected_sql_fragment: str,
+    expected_parameters: set,
 ) -> None:
     """Test that collector number numeric comparisons generate correct SQL using the integer column."""
     parsed = parsing.parse_scryfall_query(input_query)
@@ -999,3 +1092,12 @@ def test_frame_sql_translation(input_query: str, expected_sql: str, expected_par
     observed_sql = parsed.to_sql(observed_params)
     assert observed_sql == expected_sql, f"\nExpected: {expected_sql}\nObserved: {observed_sql}"
     assert observed_params == expected_parameters, f"\nExpected params: {expected_parameters}\nObserved params: {observed_params}"
+
+
+def test_name_titlecasing() -> None:
+    """Test that name is titlecased."""
+    parsed = parsing.parse_scryfall_query(""" name="Urza's Saga" """.strip())
+    observed_params = {}
+    observed_sql = parsed.to_sql(observed_params)
+    assert observed_params == {"p_str_VXJ6YSdzIFNhZ2E": r"Urza's Saga"}
+    assert observed_sql == r"(card.card_name = %(p_str_VXJ6YSdzIFNhZ2E)s)"

@@ -18,6 +18,8 @@ x-postgres: &postgres
     - /usr/local/bin/docker-entrypoint.sh
     - -c
     - config_file=/postgresql.conf
+  env_file:
+    - .env
   environment:
     PGDATA: /data/pg
     POSTGRES_DB: ${XPGDATABASE}
@@ -31,10 +33,12 @@ x-postgres: &postgres
     start_period: 30s
   image: registry.hub.docker.com/library/postgres:18
   shm_size: 1024M
-  user: 1000:1000
+  ulimits:
+    core: 0
 
 x-apiservice-env: &apiservice-env
   ENABLE_CACHE: ${ENABLE_CACHE:-false}
+  HONEYBADGER_API_KEY: ${HONEYBADGER_API_KEY:-}
   HOSTNAME: ${HOSTNAME}
   PGDATABASE: ${XPGDATABASE}
   PGPASSWORD: ${XPGPASSWORD}
@@ -45,6 +49,9 @@ x-apiservice: &apiservice
   build:
     context: ./
     dockerfile: ./api/Dockerfile
+    args:
+      GIT_SHA: ${GIT_SHA:-unknown}
+      GIT_BRANCH: ${GIT_BRANCH:-unknown}
   cap_add:
     - ALL
   command:
@@ -53,14 +60,18 @@ x-apiservice: &apiservice
     - python
     - -m
     - api.entrypoint
+  env_file:
+    - .env
   environment:
     <<: *apiservice-env
   healthcheck:
-    test: ["CMD", "curl", "--fail", "localhost:8080/get_pid"]
+    test: ["CMD", "curl", "--fail", "--user-agent", "healthcheck", "localhost:8080/get_pid"]
     interval: 5s
     timeout: 1s
     retries: 3
     start_period: 40s
+  ulimits:
+    core: 0
   user: 1000:1000
 
 x-client: &client
@@ -72,12 +83,20 @@ x-client: &client
     - --
     - sleep
     - infinity
+  env_file:
+    - .env
   environment:
     API_URL: http://apiservice:8080
     BATCH_SIZE: 50
     PYTHONUNBUFFERED: true
     QUERY_DELAY: 0.1
+  ulimits:
+    core: 0
   user: 1000:1000
+
+volumes:
+  pgdata-dev:
+  pgdata-prod:
 
 services:
   # Development environment services
@@ -90,7 +109,7 @@ services:
       - *pg-hba
       - *pg-conf
       - *pg-init
-      - /tmp/pgdata/dev/:/data/pg
+      - pgdata-dev:/data/pg
       - ./data/postgres/dev/logs/:/var/log/postgresql
     profiles:
       - dev
@@ -103,7 +122,7 @@ services:
         condition: service_healthy
     environment:
       <<: *apiservice-env
-      ENABLE_CACHE: false
+      ENABLE_CACHE: true
       ENVIRONMENT: dev
       PGHOST: ${PROJECTNAME}_postgres_dev
     ports:
@@ -132,7 +151,7 @@ services:
       - *pg-hba
       - *pg-conf
       - *pg-init
-      - /tmp/pgdata/prod/:/data/pg
+      - pgdata-prod:/data/pg
       - ./data/postgres/prod/logs/:/var/log/postgresql
     profiles:
       - prod
@@ -147,6 +166,7 @@ services:
       <<: *apiservice-env
       PGHOST: ${PROJECTNAME}_postgres_prod
       ENVIRONMENT: prod
+      ENABLE_CACHE: true
     ports:
       - "18080:8080"
     volumes:

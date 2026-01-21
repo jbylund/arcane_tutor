@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from titlecase import titlecase
+
 from api.parsing.db_info import (
     ALIAS_TO_FIELD_INFOS,
     CARD_SUPERTYPES,
@@ -11,6 +13,7 @@ from api.parsing.db_info import (
     COLOR_CODE_TO_NAME,
     COLOR_NAME_TO_CODE,
     DB_NAME_TO_FIELD_TYPE,
+    FORMAT_CODE_TO_NAME,
     FieldType,
     ParserClass,
 )
@@ -118,7 +121,7 @@ class CardAttributeNode(AttributeNode):
         alias_field_infos = ALIAS_TO_FIELD_INFOS.get(attribute_name.lower(), [])
         self.field_infos = [f for f in alias_field_infos if f.parser_class == matched_parser_class]
 
-        field_info, = self.field_infos
+        (field_info,) = self.field_infos
         db_column_name = field_info.db_column_name
 
         super().__init__(db_column_name)
@@ -274,6 +277,9 @@ def get_legality_comparison_object(val: str, attr: str) -> dict[str, str]:
     # Normalize format name to lowercase
     format_name = val.strip().lower()
 
+    # Map single letter format codes to full format names
+    format_name = FORMAT_CODE_TO_NAME.get(format_name, format_name)
+
     # Map search attribute to legality status
     if attr in ("format", "f", "legal"):
         status = "legal"
@@ -289,15 +295,31 @@ def get_legality_comparison_object(val: str, attr: str) -> dict[str, str]:
 
 
 def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
-    """Convert a mana cost string to a dictionary of colored symbols and their counts."""
+    """Convert a mana cost string to a dictionary of colored symbols and their counts.
+
+    Supports both braced format ({W}{U}), unbraced format (WU or wu), and mixed format (R{G}).
+    """
     colored_symbol_counts = {}
-    for mana_symbol in re.findall(r"{([^}]*)}", mana_cost_str.upper()):
+    mana_cost_upper = mana_cost_str.upper()
+
+    # First, extract all braced symbols
+    braced_symbols = re.findall(r"{([^}]*)}", mana_cost_upper)
+    for mana_symbol in braced_symbols:
         try:
             int(mana_symbol)
         except ValueError:
             colored_symbol_counts[mana_symbol] = colored_symbol_counts.get(mana_symbol, 0) + 1
         else:
             pass
+
+    # Then, process unbraced characters (replace braced sections with space to prevent merging)
+    # We don't care about digits here, only colored symbols
+    unbraced_part = re.sub(r"{[^}]*}", " ", mana_cost_upper)
+    for char in unbraced_part:
+        # Only count color characters (W, U, B, R, G, C)
+        if char in "WUBRGC":
+            colored_symbol_counts[char] = colored_symbol_counts.get(char, 0) + 1
+
     as_dict = {}
     for colored_symbol, count in colored_symbol_counts.items():
         as_dict[colored_symbol] = list(range(1, count + 1))
@@ -305,21 +327,42 @@ def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
 
 
 def calculate_cmc(mana_cost_str: str) -> int:
-    """Calculate the converted mana cost from a mana cost string."""
+    """Calculate the converted mana cost from a mana cost string.
+
+    Supports both braced format ({W}{U}), unbraced format (WU or wu), and mixed format (R{G} or 1{r}1).
+    Consecutive digits are treated as a single multi-digit number (e.g., "11R" is {11}{R}, not {1}{1}{R}).
+    """
     cmc = 0
-    for mana_symbol in re.findall(r"{([^}]*)}", mana_cost_str):
+    mana_cost_upper = mana_cost_str.upper()
+
+    # First, process all braced symbols
+    braced_symbols = re.findall(r"{([^}]*)}", mana_cost_upper)
+    for mana_symbol in braced_symbols:
         try:
             # Generic mana symbols add to CMC
             cmc += int(mana_symbol)
         except ValueError:
             # X costs count as 0 for CMC calculation
-            if mana_symbol.upper() == "X":
+            if mana_symbol == "X":
                 continue
             # Colored mana symbols (W, U, B, R, G, etc.) each count as 1
             # Handle hybrid symbols like {W/U} as 1
             # Handle Phyrexian symbols like {W/P} as 1
             # For simplicity, any non-numeric, non-X symbol counts as 1
             cmc += 1
+
+    # Then, process unbraced part (after removing braced sections)
+    # Replace braced sections with a space to prevent adjacent digits from merging
+    unbraced_part = re.sub(r"{[^}]*}", " ", mana_cost_upper)
+    # Match either: sequences of digits OR single color characters
+    for token in re.findall(r"\d+|[WUBRGC]", unbraced_part):
+        if token.isdigit():
+            # Multi-digit generic mana (e.g., "11" in "11R")
+            cmc += int(token)
+        elif token in "WUBRGC":
+            # Color character counts as 1
+            cmc += 1
+
     return cmc
 
 
@@ -398,10 +441,21 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
             return self._handle_colon_operator(context, field_type, lhs_sql, attr)
 
         if field_type == FieldType.TEXT:
-            return super().to_sql(context)
+            return self._handle_text_comparison(context, attr)
 
         msg = f"Unknown field type: {field_type}"
         raise NotImplementedError(msg)
+
+    def _handle_text_comparison(self, context: dict, attr: str) -> str:
+        """Handle text comparisons."""
+        # artist is titlecased
+        # card name is titlecased
+        # set is lowercased
+        if attr in ("card_artist", "card_name"):
+            self.rhs.value = titlecase(self.rhs.value)
+        elif attr in ("set", "card_set_code"):
+            self.rhs.value = self.rhs.value.lower()
+        return super().to_sql(context)
 
     def _handle_rarity_comparison(self, context: dict) -> str:
         # Special handling for rarity - convert text values to numeric
@@ -453,7 +507,6 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
         if self.operator in ("<=", "<", ">=", ">", "="):
             return self._handle_mana_cost_approximate_comparison(context, mana_cost_str)
         raise AssertionError(self)
-
 
     def _handle_mana_cost_approximate_comparison(self, context: dict, mana_cost_str: str) -> str:
         """Handle approximate mana cost comparisons using containment and CMC."""
@@ -551,7 +604,8 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
         # Only accept 4-digit year values
         year_str_length = 4
         if (isinstance(search_value, str) and len(search_value) == year_str_length and search_value.isdigit()) or isinstance(
-            search_value, int | float,
+            search_value,
+            int | float,
         ):
             year_value = int(search_value)
         else:

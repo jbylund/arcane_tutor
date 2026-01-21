@@ -1,6 +1,6 @@
 boto3
 brotli
-cachetools
+cachebox
 falcon
 honeybadger
 orjson
@@ -9,4 +9,6 @@ pyparsing
 requests
 tenacity
 testcontainers[postgres]
+titlecase
+xxhash
 zstandard

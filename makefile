@@ -7,6 +7,8 @@ mkfile_dir := $(shell dirname $(mkfile_path) )
 PROJECTNAME := arcane_tutor
 
 GIT_ROOT := $(shell git rev-parse --show-toplevel)
+GIT_SHA := $(shell git rev-parse HEAD 2>/dev/null || echo "unknown")
+GIT_BRANCH := $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
 MAYBENORUN := $(shell if echo | xargs --no-run-if-empty >/dev/null 2>/dev/null; then echo "--no-run-if-empty"; else echo ""; fi)
 BASE_COMPOSE := $(mkfile_dir)/docker-compose.yml
 LINTABLE_DIRS := .
@@ -16,6 +18,9 @@ XPGPASSWORD=foopassword
 XPGPORT=15432
 XPGUSER=foouser
 HOSTNAME := $(shell hostname)
+
+html_files := $(shell find . -type f -name "*.html")
+js_files := $(shell find . -type f -name "*.js")
 
 S3_BUCKET=biblioplex
 
@@ -27,6 +32,7 @@ S3_BUCKET=biblioplex
 	beleren_font \
 	build_images \
 	check_env \
+	compare-minification \
 	coverage \
 	dockerclean \
 	down \
@@ -54,7 +60,10 @@ hlep: help
 
 ###  Entry points
 
-up_deps: datadir images check_env
+up_deps: datadir images check_env .env app.min.js
+
+.env: env.json
+	cat env.json | jq -r 'to_entries[] | "\(.key)=\(.value)"' | sort > $@
 
 dev-up: up_deps # @doc start services
 	cd $(GIT_ROOT) && docker compose --profile=dev --file $(BASE_COMPOSE) up --remove-orphans --abort-on-container-exit
@@ -112,12 +121,13 @@ lint: ruff_lint prettier_lint # @doc lint all python files
 prettier_lint: /tmp/prettier.stamp
 	true
 
-/tmp/prettier.stamp: api/index.html
-	npx prettier --write api/index.html
+/tmp/prettier.stamp: $(html_files) $(js_files)
+	npx prettier --write $(html_files) $(js_files)
 	touch /tmp/prettier.stamp
 
 ruff_fix: ensure_ruff
 	find . -type f -name "*.py" | xargs python -m ruff check --fix --unsafe-fixes >/dev/null 2>/dev/null || true
+	find . -type f -name "*.py" | xargs python -m ruff format
 
 ruff_lint: ruff_fix
 	find . -type f -name "*.py" | xargs python -m ruff check --fix --unsafe-fixes
@@ -198,3 +208,14 @@ mplantin_font: font-dependencies # @doc subset and optimize the MPlantin font fo
 		--cdn-url https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mplantin \
 		--s3-bucket $(S3_BUCKET) \
 		--s3-prefix cdn/fonts/mplantin
+
+compare-minification: # @doc compare file sizes: uncompressed, compressed, minified, and minified+compressed
+	@echo "Installing minifier dependencies..."
+	@npm install --no-save cssnano-cli terser > /dev/null 2>&1 || true
+	@python scripts/compare_minification.py
+
+app.min.js: api/static/app.js # @doc minify app.js (used in both dev and prod)
+	@echo "Minifying app.js..."
+	@npm install --no-save terser > /dev/null 2>&1 || true
+	@npx terser api/static/app.js --compress --mangle --output api/static/app.min.js
+	@echo "Created api/static/app.min.js"
