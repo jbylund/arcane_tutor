@@ -13,6 +13,7 @@ from api.parsing.db_info import (
     COLOR_CODE_TO_NAME,
     COLOR_NAME_TO_CODE,
     DB_NAME_TO_FIELD_TYPE,
+    FORMAT_CODE_TO_NAME,
     FieldType,
     ParserClass,
 )
@@ -275,6 +276,9 @@ def get_legality_comparison_object(val: str, attr: str) -> dict[str, str]:
     """
     # Normalize format name to lowercase
     format_name = val.strip().lower()
+
+    # Map single letter format codes to full format names
+    format_name = FORMAT_CODE_TO_NAME.get(format_name, format_name)
 
     # Map search attribute to legality status
     if attr in ("format", "f", "legal"):

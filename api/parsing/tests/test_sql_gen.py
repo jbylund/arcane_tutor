@@ -775,6 +775,59 @@ def test_artist_sql_translation(input_query: str, expected_sql: str, expected_pa
             'format:"Historic Brawl"',
             {"historic brawl": "legal"},
         ),
+        # Single letter format codes
+        (
+            "f:m",
+            {"modern": "legal"},
+        ),
+        (
+            "f:s",
+            {"standard": "legal"},
+        ),
+        (
+            "f:l",
+            {"legacy": "legal"},
+        ),
+        (
+            "f:p",
+            {"pauper": "legal"},
+        ),
+        (
+            "f:c",
+            {"commander": "legal"},
+        ),
+        (
+            "f:v",
+            {"vintage": "legal"},
+        ),
+        (
+            "f:h",
+            {"historic": "legal"},
+        ),
+        # Single letter format codes with format: prefix
+        (
+            "format:m",
+            {"modern": "legal"},
+        ),
+        # Single letter format codes with legal: prefix
+        (
+            "legal:s",
+            {"standard": "legal"},
+        ),
+        # Single letter format codes with banned: prefix
+        (
+            "banned:m",
+            {"modern": "banned"},
+        ),
+        # Case insensitive single letter format codes
+        (
+            "f:M",
+            {"modern": "legal"},
+        ),
+        (
+            "f:S",
+            {"standard": "legal"},
+        ),
     ],
 )
 def test_legality_search_sql_translation(input_query: str, expected_parameters: dict) -> None:
