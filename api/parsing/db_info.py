@@ -321,3 +321,15 @@ COLOR_CODE_TO_NAME = {
 }
 
 COLOR_NAME_TO_CODE = {v: k for k, v in COLOR_CODE_TO_NAME.items()}
+
+FORMAT_CODE_TO_NAME = {
+    "m": "modern",
+    "s": "standard",
+    "l": "legacy",
+    "p": "pauper",
+    "c": "commander",
+    "v": "vintage",
+    "h": "historic",
+}
+
+FORMAT_NAME_TO_CODE = {v: k for k, v in FORMAT_CODE_TO_NAME.items()}
