@@ -819,6 +819,15 @@ def test_artist_sql_translation(input_query: str, expected_sql: str, expected_pa
             "banned:m",
             {"modern": "banned"},
         ),
+        # Case insensitive single letter format codes
+        (
+            "f:M",
+            {"modern": "legal"},
+        ),
+        (
+            "f:S",
+            {"standard": "legal"},
+        ),
     ],
 )
 def test_legality_search_sql_translation(input_query: str, expected_parameters: dict) -> None:
