@@ -8,6 +8,7 @@ This script:
    s3://biblioplex/img/{set_code}/{collector_number}/{face}/{width}.webp
    (for now, single-faced cards use face = "1")
 """
+from __future__ import annotations
 
 import argparse
 import datetime
@@ -453,7 +454,7 @@ def check_cwebp() -> None:
         sys.exit(1)
 
 
-def get_db_cards(args: Args) -> list[dict[str, Any]]:
+def get_db_cards(args: Args) -> set[tuple[str, str, str, str]]:
     """Get all cards in the database."""
     logger.info("Connecting to database...")
     conn = get_database_connection()
@@ -468,14 +469,37 @@ def get_db_cards(args: Args) -> list[dict[str, Any]]:
         return None
 
     logger.info("Found %d cards in database, should create %d images", len(db_cards), len(db_cards) * 4)
-    return db_cards
+    # (set_code, collector_number, face_idx, size)
+    cards_as_keys = set(
+        (
+            card["card_set_code"],
+            card["collector_number"],
+            card["face_idx"],
+            size,
+        )
+        for card in db_cards
+        for size in [SMALL_KEY, MEDIUM_KEY, LARGE_KEY, XLARGE_KEY]
+    )
+    return cards_as_keys
 
 
-def get_s3_cards(args: Args) -> set[tuple[str, str, str]]:
-    """Get all cards in S3."""
+def get_s3_cards(args: Args) -> set[tuple[str, str, str, str]]:
+    """Get all cards in S3.
+
+    Args:
+        args: Command-line arguments
+
+    Returns:
+        Set of tuples containing (set_code, collector_number, face_idx, size)
+    """
+    s3_cards = set()
+    if not args.skip_existing:
+        # no point in populating if we're not going to use it
+        return s3_cards
+
     s3resource = boto3.resource("s3")
     bucket = s3resource.Bucket(args.bucket)
-    s3_cards = set()
+
     prefix = "img/"
     if args.set_code:
         prefix += f"{args.set_code}/"
@@ -489,11 +513,11 @@ def get_s3_cards(args: Args) -> set[tuple[str, str, str]]:
             _img, _slash, obj_key = obj.key.partition("/")
             parts = obj_key.split("/")
             try:
-                set_code, collector_number, _face, size_webp = parts
+                set_code, collector_number, face_idx, size_webp = parts
             except ValueError:
                 continue
             size = size_webp.partition(".")[0]
-            s3_cards.add((set_code, collector_number, size))
+            s3_cards.add((set_code, collector_number, face_idx, size))
         except ValueError:
             continue
 
@@ -501,6 +525,20 @@ def get_s3_cards(args: Args) -> set[tuple[str, str, str]]:
     logger.info("Found %d image objects in S3, belonging to %d distinct cards", len(s3_cards), len(distinct_s3_cards))
     return s3_cards
 
+
+def hash_groupby(
+    iterable, key_fn
+):
+    """Group by a key function.
+
+    This differs from itertools.groupby (https://docs.python.org/3/library/itertools.html#itertools.groupby)
+    in that it does not require that the iterable be sorted by the key function and it
+    returns a dict mapping key values to the items in the iterable that have that key value.
+    """
+    groups = {}
+    for item in iterable:
+        groups.setdefault(key_fn(item), []).append(item)
+    return groups
 
 def main() -> None:
     """Main entry point for the script."""
@@ -540,7 +578,6 @@ def main() -> None:
                 },
             )
     logger.info("Found %d cards with missing images", len(cards_with_missing_images))
-    return
 
     # Process cards in parallel
     logger.info("Processing cards using %d worker processes", args.workers)

@@ -24,14 +24,9 @@ Card images are stored in a face-aware hierarchy to support double-faced and mul
 s3://biblioplex/img/{set_code}/{collector_number}/{face}/{width}.webp
 ```
 
-For single-faced cards, `face` is `"1"`. The image processing pipeline also writes
-legacy, face-agnostic objects at:
+For single-faced cards, `face` is `"1"`. For double-faced cards, faces are numbered `"1"` and `"2"`.
 
-```
-s3://biblioplex/img/{set_code}/{collector_number}/{width}.webp
-```
-
-**Example paths (primary, face-aware):**
+**Example paths:**
 - `s3://biblioplex/img/iko/1/1/220.webp` (small, face 1)
 - `s3://biblioplex/img/iko/1/1/410.webp` (medium, face 1)
 - `s3://biblioplex/img/iko/1/1/745.webp` (large, face 1)
@@ -58,7 +53,7 @@ Images are accessible via CloudFront at:
 https://d1hot9ps2xugbc.cloudfront.net/img/{set_code}/{collector_number}/{face}/{width}.webp
 ```
 
-**Example URLs (primary, face-aware):**
+**Example URLs:**
 - `https://d1hot9ps2xugbc.cloudfront.net/img/iko/1/1/220.webp`
 - `https://d1hot9ps2xugbc.cloudfront.net/img/iko/1/1/410.webp`
 - `https://d1hot9ps2xugbc.cloudfront.net/img/iko/1/1/745.webp`
@@ -102,11 +97,13 @@ Content-Type: image/webp
 ## Usage in Application
 
 ### URL Generation
-The application is in the process of migrating from a legacy URL structure (without
-the face segment) to the face-aware layout. During migration, both forms may be in use:
+The application generates image URLs using the face-aware structure:
 
-- Legacy (face-agnostic): `https://d1hot9ps2xugbc.cloudfront.net/img/{set_code}/{collector_number}/{width}.webp`
-- Face-aware (preferred going forward): `https://d1hot9ps2xugbc.cloudfront.net/img/{set_code}/{collector_number}/{face}/{width}.webp`
+```
+https://d1hot9ps2xugbc.cloudfront.net/img/{set_code}/{collector_number}/{face}/{width}.webp
+```
+
+The `face` parameter defaults to `"1"` for single-faced cards and is set to `"1"` or `"2"` for double-faced cards based on the card's face data.
 
 ## Management Scripts
 
@@ -192,7 +189,7 @@ python scripts/copy_images_to_s3.py --limit 100
 aws s3 ls s3://biblioplex/img/
 
 # Test CloudFront
-curl -I https://d1hot9ps2xugbc.cloudfront.net/img/iko/1/220.webp
+curl -I https://d1hot9ps2xugbc.cloudfront.net/img/iko/1/1/220.webp
 
 # Verify cwebp installation
 cwebp -version
