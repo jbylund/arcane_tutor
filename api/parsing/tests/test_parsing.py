@@ -1096,3 +1096,114 @@ def test_parse_combined_produces_queries() -> None:
     result3 = parsing.parse_search_query(query3)
     expected3 = BinaryOperatorNode(CardAttributeNode("produces", ParserClass.COLOR), "=", StringValueNode("wu"))
     assert result3.root == expected3
+
+
+@pytest.mark.parametrize(
+    argnames=("test_input", "expected_ast"),
+    argvalues=[
+        # Simple hyphenated words in name search (implicit)
+        (
+            "dual-land",
+            BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("dual-land")),
+        ),
+        # Hyphenated word with explicit name attribute
+        (
+            "name:test-word",
+            BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("test-word")),
+        ),
+        # Hyphenated term in oracle tag attribute
+        (
+            "otag:dual-land",
+            BinaryOperatorNode(CardAttributeNode("otag", ParserClass.TEXT), ":", StringValueNode("dual-land")),
+        ),
+        # Hyphenated term in oracle_tags (full alias)
+        (
+            "oracle_tags:dual-land",
+            BinaryOperatorNode(CardAttributeNode("oracle_tags", ParserClass.TEXT), ":", StringValueNode("dual-land")),
+        ),
+        # Hyphenated term in 'is' attribute
+        (
+            "is:modal-dfc",
+            BinaryOperatorNode(CardAttributeNode("is", ParserClass.TEXT), ":", StringValueNode("modal-dfc")),
+        ),
+        # Numeric prefix with hyphen (40k-model)
+        (
+            "otag:40k-model",
+            BinaryOperatorNode(CardAttributeNode("otag", ParserClass.TEXT), ":", StringValueNode("40k-model")),
+        ),
+        # Complex hyphenated term with multiple hyphens
+        (
+            "otag:cycle-shm-common-hybrid-1-drop",
+            BinaryOperatorNode(
+                CardAttributeNode("otag", ParserClass.TEXT),
+                ":",
+                StringValueNode("cycle-shm-common-hybrid-1-drop"),
+            ),
+        ),
+        # Hyphenated word integrated with other query features
+        (
+            "otag:dual-land cmc=3",
+            AndNode(
+                [
+                    BinaryOperatorNode(CardAttributeNode("otag", ParserClass.TEXT), ":", StringValueNode("dual-land")),
+                    BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), "=", NumericValueNode(3)),
+                ],
+            ),
+        ),
+        # Multiple hyphenated words in same query
+        (
+            "otag:dual-land is:modal-dfc",
+            AndNode(
+                [
+                    BinaryOperatorNode(CardAttributeNode("otag", ParserClass.TEXT), ":", StringValueNode("dual-land")),
+                    BinaryOperatorNode(CardAttributeNode("is", ParserClass.TEXT), ":", StringValueNode("modal-dfc")),
+                ],
+            ),
+        ),
+        # Hyphenated word with quoted syntax (should also work)
+        (
+            'otag:"dual-land"',
+            BinaryOperatorNode(CardAttributeNode("otag", ParserClass.TEXT), ":", StringValueNode("dual-land")),
+        ),
+        # Simple multi-hyphen word
+        (
+            "a-b-c",
+            BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("a-b-c")),
+        ),
+    ],
+)
+def test_parse_hyphenated_words(test_input: str, expected_ast: QueryNode) -> None:
+    """Test that hyphenated words parse correctly into the expected AST structure.
+
+    This test verifies that the parser correctly handles hyphenated words in various contexts:
+    - Simple hyphenated words in name searches
+    - Hyphenated words in attribute values (otag, is, etc.)
+    - Words with numeric prefixes followed by hyphens
+    - Complex hyphenated terms with multiple hyphens
+    - Integration with other query features
+    """
+    observed = parsing.parse_search_query(test_input).root
+
+    # Compare the full AST structure
+    assert observed == expected_ast, f"\nExpected: {expected_ast}\nObserved: {observed}"
+
+
+@pytest.mark.parametrize(
+    argnames="invalid_query",
+    argvalues=[
+        "word-",  # Standalone word ending with hyphen
+        "-",  # Standalone hyphen
+    ],
+)
+def test_hyphenated_words_edge_cases_fail(invalid_query: str) -> None:
+    """Test that standalone words ending with hyphens fail to parse.
+
+    Standalone words cannot end with hyphens - this should raise a ValueError.
+    Note that:
+    - A leading hyphen is interpreted as the negation operator (NOT), not as part of the word.
+      For example, "-flying" is parsed as NOT applied to "flying", not as a word starting with a hyphen.
+    - Attribute values (e.g., 'name:test-', 'otag:test-') use different parsing rules and DO allow
+      trailing hyphens since they use string_value_word which accepts any hyphen placement.
+    """
+    with pytest.raises(ValueError, match="Failed to parse query"):
+        parsing.parse_search_query(invalid_query)
