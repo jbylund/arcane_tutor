@@ -27,16 +27,18 @@ s3://biblioplex/img/{set_code}/{collector_number}/{face}/{width}.webp
 For single-faced cards, `face` is `"1"`. For double-faced cards, faces are numbered `"1"` and `"2"`.
 
 **Example paths:**
-- `s3://biblioplex/img/iko/1/1/220.webp` (small, face 1)
-- `s3://biblioplex/img/iko/1/1/410.webp` (medium, face 1)
-- `s3://biblioplex/img/iko/1/1/745.webp` (large, face 1)
+- `s3://biblioplex/img/iko/1/1/280.webp` (small, face 1)
+- `s3://biblioplex/img/iko/1/1/388.webp` (medium, face 1)
+- `s3://biblioplex/img/iko/1/1/538.webp` (large, face 1)
+- `s3://biblioplex/img/iko/1/1/745.webp` (extra large, face 1)
 
 ### Image Sizes and Quality
 
 | Size Key | Width (px) | Use Case | Quality |
 |----------|------------|----------|---------|
-| `220` | 220px | Thumbnails, small displays | 85% WebP |
-| `410` | 410px | Medium displays, mobile | 85% WebP |
+| `280` | 280px | Small displays, thumbnails | 85% WebP |
+| `388` | 388px | Medium displays, mobile | 85% WebP |
+| `538` | 538px | Large displays, tablets | 85% WebP |
 | `745` | 745px | Full resolution, desktop | 85% WebP |
 
 ## CloudFront Distribution
@@ -54,8 +56,9 @@ https://d1hot9ps2xugbc.cloudfront.net/img/{set_code}/{collector_number}/{face}/{
 ```
 
 **Example URLs:**
-- `https://d1hot9ps2xugbc.cloudfront.net/img/iko/1/1/220.webp`
-- `https://d1hot9ps2xugbc.cloudfront.net/img/iko/1/1/410.webp`
+- `https://d1hot9ps2xugbc.cloudfront.net/img/iko/1/1/280.webp`
+- `https://d1hot9ps2xugbc.cloudfront.net/img/iko/1/1/388.webp`
+- `https://d1hot9ps2xugbc.cloudfront.net/img/iko/1/1/538.webp`
 - `https://d1hot9ps2xugbc.cloudfront.net/img/iko/1/1/745.webp`
 
 ## Image Processing Pipeline
@@ -68,7 +71,7 @@ https://d1hot9ps2xugbc.cloudfront.net/img/{set_code}/{collector_number}/{face}/{
 ### Processing Steps
 1. **Fetch**: Download PNG from Scryfall using `png_url` from database
 2. **Convert**: Use `cwebp` tool to convert PNG → WebP
-3. **Resize**: Generate 3 sizes (220px, 410px, 745px)
+3. **Resize**: Generate 4 sizes (280px, 388px, 538px, 745px)
 4. **Upload**: Store in S3 with proper headers
 
 ### Technical Details
@@ -137,7 +140,7 @@ python scripts/copy_images_to_s3.py --limit 100
 ### Storage Efficiency
 - **Format**: WebP provides ~25-35% size reduction vs PNG
 - **Quality**: 85% quality maintains visual fidelity
-- **Sizes**: 3 optimized sizes prevent over-downloading
+- **Sizes**: 4 optimized sizes prevent over-downloading
 
 ### Delivery Performance
 - **CDN**: CloudFront provides global edge caching
@@ -189,7 +192,7 @@ python scripts/copy_images_to_s3.py --limit 100
 aws s3 ls s3://biblioplex/img/
 
 # Test CloudFront
-curl -I https://d1hot9ps2xugbc.cloudfront.net/img/iko/1/1/220.webp
+curl -I https://d1hot9ps2xugbc.cloudfront.net/img/iko/1/1/280.webp
 
 # Verify cwebp installation
 cwebp -version
