@@ -20,7 +20,7 @@ XPGUSER=foouser
 HOSTNAME := $(shell hostname)
 
 html_files := $(shell find . -type f -name "*.html")
-js_files := $(shell find . -type f -name "*.js")
+js_files := $(shell find . -type f -name "*.js" | grep -v node_modules)
 
 S3_BUCKET=biblioplex
 
@@ -144,12 +144,13 @@ dockerclean:
 	docker images --format '{{.ID}}' | xargs $(MAYBENORUN) docker rmi --force
 
 dbconn: # @doc connect to the local database
+
 	@PGDATABASE=$(XPGDATABASE) \
 	PGHOST=127.0.0.1 \
 	PGPASSWORD=$(XPGPASSWORD) \
-	PGPORT=15432 \
+	PGPORT=25432 \
 	PGUSER=$(XPGUSER) \
-	psql
+	$(shell find /usr/bin /opt/homebrew -name psql)
 
 dump_schema: # @doc dump database schema to file using container's pg_dump
 	docker exec $(PROJECTNAME)postgres $(shell find /usr/bin /opt/homebrew -name pg_dump) -U $(XPGUSER) -d $(XPGDATABASE) -s
