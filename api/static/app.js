@@ -586,7 +586,8 @@ class CardSearch {
   }
 
   buildImageUrl(card, size) {
-    return `https://d1hot9ps2xugbc.cloudfront.net/img/${card.set_code}/${card.collector_number}/${size}.webp`;
+    const face = card.face_idx || 1;
+    return `https://d1hot9ps2xugbc.cloudfront.net/img/${card.set_code}/${card.collector_number}/${face}/${size}.webp`;
   }
 
   createCardHTML(card, index, isFirstRow = false) {
