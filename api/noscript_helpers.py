@@ -155,7 +155,7 @@ def build_image_url(card: dict, size: str) -> str:
     Args:
     ----
         card: Card dictionary with set_code, collector_number, and optionally face_idx
-        size: Image size (220, 410, or 745)
+        size: Image size (280, 388, 538, or 745)
 
     Returns:
     -------
