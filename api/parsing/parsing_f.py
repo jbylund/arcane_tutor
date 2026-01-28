@@ -18,9 +18,7 @@ from pyparsing import (
     ParserElement,
     QuotedString,
     Regex,
-    Word,
     ZeroOrMore,
-    alphas,
     oneOf,
 )
 
@@ -288,9 +286,15 @@ def create_basic_parsers() -> dict[str, ParserElement]:
         if word_str.upper() in ["AND", "OR"]:
             msg = f"Reserved keyword '{word_str}' cannot be used as a search term. Use quotes if you want to search for this word literally."
             raise ValueError(msg)
+        # Validate that word doesn't start or end with hyphen
+        if word_str.startswith("-") or word_str.endswith("-"):
+            msg = f"Word '{word_str}' cannot start or end with a hyphen. Use quotes if you want to search for this word literally."
+            raise ValueError(msg)
         return word_str
 
-    word = Word(alphas + "_").setParseAction(make_word)
+    # Word parser that accepts hyphens when between alphanumeric characters
+    # Pattern: starts with alphanumeric/underscore, can contain hyphens in the middle, ends with alphanumeric/underscore
+    word = Regex(r"[a-zA-Z_][a-zA-Z0-9_-]*[a-zA-Z0-9_]|[a-zA-Z_]").setParseAction(make_word)
 
     # Create a literal number parser for numeric constants
     # Note: float_number must come before integer to match decimal numbers
@@ -827,17 +831,35 @@ def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
             tokens.append(char)
             i += 1
         elif char == "-":
-            # Check if this hyphen is part of an attribute value
+            # Check if this hyphen is part of a hyphenated word
+            # It's part of a word if:
+            # 1. We're in attribute value context, OR
+            # 2. The previous token ends with alphanumeric AND the next character is alphanumeric
             in_attr_value_context = tokens and tokens[-1] in [":", "=", "!=", ">", "<", ">=", "<="]
-            if in_attr_value_context:
-                # In attribute value context, treat hyphen as part of the word
-                word_end = i
-                # Go back to find the start of this word (should be right after the colon)
-                # Continue reading the full hyphenated word
-                while word_end < len(query) and (query[word_end].isalnum() or query[word_end] in "_-"):
-                    word_end += 1
-                tokens.append(query[i:word_end])
-                i = word_end
+            prev_token_ends_alnum = tokens and tokens[-1] and tokens[-1][-1].isalnum()
+            next_char_is_alnum = i + 1 < len(query) and query[i + 1].isalnum()
+
+            if in_attr_value_context or (prev_token_ends_alnum and next_char_is_alnum):
+                # This hyphen is part of a word
+                if in_attr_value_context:
+                    # In attribute value context, continue reading from the hyphen position
+                    word_end = i
+                    while word_end < len(query) and (query[word_end].isalnum() or query[word_end] in "_-"):
+                        word_end += 1
+                    tokens.append(query[i:word_end])
+                    i = word_end
+                else:
+                    # We need to extend the previous token to include the hyphen
+                    # Remove the last token, then reconstruct the full hyphenated word
+                    prev_token = tokens.pop()
+                    # Continue reading from the hyphen position
+                    word_end = i
+                    while word_end < len(query) and (query[word_end].isalnum() or query[word_end] in "_-"):
+                        word_end += 1
+                    # Combine previous token with hyphen and rest of word
+                    hyphenated_word = prev_token + query[i:word_end]
+                    tokens.append(hyphenated_word)
+                    i = word_end
             else:
                 # Handle negation as a separate token
                 tokens.append(char)
@@ -874,9 +896,16 @@ def preprocess_implicit_and(query: str) -> str:  # noqa: C901, PLR0915, PLR0912
                 while word_end < len(query) and (query[word_end].isdigit() or query[word_end] == "."):
                     word_end += 1
             else:
-                # Regular word context, only alphanumeric and underscore
-                while word_end < len(query) and (query[word_end].isalnum() or query[word_end] == "_"):
-                    word_end += 1
+                # Regular word context, include alphanumeric, underscore, and hyphens (when followed by alphanumeric)
+                while word_end < len(query):
+                    if query[word_end].isalnum() or query[word_end] == "_":
+                        word_end += 1
+                    elif query[word_end] == "-" and word_end + 1 < len(query) and query[word_end + 1].isalnum():
+                        # Hyphen is part of word if followed by alphanumeric
+                        word_end += 1
+                    else:
+                        # Stop at non-word character
+                        break
 
             tokens.append(query[i:word_end])
             i = word_end
