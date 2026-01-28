@@ -568,6 +568,9 @@ class APIResource:
                     rate,
                 )
 
+                # update prefer scores after loading cards
+                self.backfill_prefer_scores()
+
                 # Return the sample cards as before
                 return result["sample_cards"]
             logger.error("Failed to import data: %s", result["message"])
