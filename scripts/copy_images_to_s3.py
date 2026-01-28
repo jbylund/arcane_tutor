@@ -4,7 +4,9 @@ This script:
 1. Fetches card data from the database (set_code, collector_number, image_location_uuid)
 2. Downloads PNG images from Scryfall
 3. Converts them to WebP at 4 different sizes (280, 388, 538, 745)
-4. Uploads to S3: s3://biblioplex/setcode/collectornumber/{280,388,538,745}.webp
+4. Uploads to S3 using a face-aware path structure:
+   s3://biblioplex/img/{set_code}/{collector_number}/{face}/{width}.webp
+   (for now, single-faced cards use face = "1")
 """
 
 import argparse
@@ -48,6 +50,10 @@ SMALL_KEY = "280"
 
 ORIGINAL_KEY = "o"
 
+# Default face index for single-faced cards.
+# Double-faced cards will eventually use face "1" and "2" for their respective faces.
+DEFAULT_FACE = "1"
+
 
 def setup_logging(verbose: bool = False) -> None:
     """Set up logging configuration."""
@@ -80,7 +86,11 @@ def fetch_cards_from_db(
         set_code: Filter by specific set code (None for all sets)
 
     Returns:
-        List of dictionaries containing card_set_code, collector_number, and image_location_uuid
+        List of dictionaries containing
+             card_set_code,
+             collector_number,
+             png_url,
+             face_idx
     """
     with conn.cursor() as cursor:
         where_clause = ""
@@ -92,20 +102,27 @@ def fetch_cards_from_db(
             conditions.append("card_set_code = %s")
             params.append(set_code)
 
-        if conditions:
-            where_clause = "WHERE " + " AND ".join(conditions)
+        if not conditions:
+            conditions.append("TRUE")
 
-        limit_clause = f"LIMIT {limit}" if limit else ""
+        where_clause = " AND ".join(conditions)
 
         query = f"""
             SELECT
                 card_set_code,
                 collector_number,
-                raw_card_blob->'image_uris'->>'png' as png_url
-            FROM magic.cards
-            {where_clause}
-            ORDER BY card_set_code, collector_number_int NULLS LAST, collector_number
-            {limit_clause}
+                raw_card_blob->'image_uris'->>'png' as png_url,
+                (raw_card_blob->>'face_idx')::int as face_idx
+            FROM
+                magic.cards
+            WHERE
+                {where_clause}
+            ORDER BY
+                card_set_code,
+                collector_number_int NULLS LAST,
+                collector_number
+            LIMIT
+                {json.dumps(limit)}
         """
 
         cursor.execute(query, params)
@@ -287,7 +304,9 @@ def process_card(
             if not convert_to_webp(png_path, webp_path, width):
                 continue
 
-            s3_key = f"img/{set_code}/{collector_number}/{size_name}.webp"
+            # Face-aware key structure: img/{set_code}/{collector_number}/{face}/{size}.webp
+            s3_key = f"img/{set_code}/{collector_number}/{DEFAULT_FACE}/{size_name}.webp"
+
             if upload_to_s3(s3_client, webp_path, bucket, s3_key):
                 results[size_name] = True
 
@@ -460,13 +479,19 @@ def get_s3_cards(args: Args) -> set[tuple[str, str, str]]:
     prefix = "img/"
     if args.set_code:
         prefix += f"{args.set_code}/"
+
     for obj in bucket.objects.filter(Prefix=prefix, MaxKeys=9999999):
         if not obj.key.endswith(".webp"):
             continue
+
         try:
-            # discard the img/ prefix
-            _, _, obj_key = obj.key.partition("/")
-            set_code, collector_number, size_webp = obj_key.split("/")
+            # Discard the img/ prefix
+            _img, _slash, obj_key = obj.key.partition("/")
+            parts = obj_key.split("/")
+            try:
+                set_code, collector_number, _face, size_webp = parts
+            except ValueError:
+                continue
             size = size_webp.partition(".")[0]
             s3_cards.add((set_code, collector_number, size))
         except ValueError:
@@ -493,25 +518,29 @@ def main() -> None:
 
     cards_with_missing_images = []
     for icard in db_cards:
-        set_code = icard["card_set_code"]
         collector_number = icard["collector_number"]
+        face_idx = icard["face_idx"]
+        set_code = icard["card_set_code"]
+
         missing_for_card = []
         for size in [SMALL_KEY, MEDIUM_KEY, LARGE_KEY, XLARGE_KEY]:
-            key = (set_code, collector_number, size)
+            key = (set_code, collector_number, face_idx, size)
             if key not in s3_cards:
                 missing_for_card.append(size)
         if missing_for_card:
             cards_with_missing_images.append(
                 {
+                    "bucket": args.bucket,
                     "card_set_code": set_code,
                     "collector_number": collector_number,
+                    "dry_run": args.dry_run,
+                    "face_idx": face_idx,
                     "png_url": icard["png_url"],
                     "sizes": missing_for_card,
-                    "bucket": args.bucket,
-                    "dry_run": args.dry_run,
                 },
             )
     logger.info("Found %d cards with missing images", len(cards_with_missing_images))
+    return
 
     # Process cards in parallel
     logger.info("Processing cards using %d worker processes", args.workers)

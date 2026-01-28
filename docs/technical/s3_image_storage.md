@@ -18,14 +18,23 @@ Scryfall PNG → Processing Script → S3 Bucket → CloudFront CDN → Applicat
 - **Access**: Public read access for CloudFront
 
 ### Image Path Structure
+Card images are stored in a face-aware hierarchy to support double-faced and multi-faced cards:
+
+```
+s3://biblioplex/img/{set_code}/{collector_number}/{face}/{width}.webp
+```
+
+For single-faced cards, `face` is `"1"`. The image processing pipeline also writes
+legacy, face-agnostic objects at:
+
 ```
 s3://biblioplex/img/{set_code}/{collector_number}/{width}.webp
 ```
 
-**Example paths:**
-- `s3://biblioplex/img/iko/1/220.webp` (small)
-- `s3://biblioplex/img/iko/1/410.webp` (medium)
-- `s3://biblioplex/img/iko/1/745.webp` (large)
+**Example paths (primary, face-aware):**
+- `s3://biblioplex/img/iko/1/1/220.webp` (small, face 1)
+- `s3://biblioplex/img/iko/1/1/410.webp` (medium, face 1)
+- `s3://biblioplex/img/iko/1/1/745.webp` (large, face 1)
 
 ### Image Sizes and Quality
 
@@ -44,14 +53,15 @@ s3://biblioplex/img/{set_code}/{collector_number}/{width}.webp
 
 ### Public URLs
 Images are accessible via CloudFront at:
+
 ```
-https://d1hot9ps2xugbc.cloudfront.net/img/{set_code}/{collector_number}/{width}.webp
+https://d1hot9ps2xugbc.cloudfront.net/img/{set_code}/{collector_number}/{face}/{width}.webp
 ```
 
-**Example URLs:**
-- `https://d1hot9ps2xugbc.cloudfront.net/img/iko/1/220.webp`
-- `https://d1hot9ps2xugbc.cloudfront.net/img/iko/1/410.webp`
-- `https://d1hot9ps2xugbc.cloudfront.net/img/iko/1/745.webp`
+**Example URLs (primary, face-aware):**
+- `https://d1hot9ps2xugbc.cloudfront.net/img/iko/1/1/220.webp`
+- `https://d1hot9ps2xugbc.cloudfront.net/img/iko/1/1/410.webp`
+- `https://d1hot9ps2xugbc.cloudfront.net/img/iko/1/1/745.webp`
 
 ## Image Processing Pipeline
 
@@ -92,19 +102,11 @@ Content-Type: image/webp
 ## Usage in Application
 
 ### URL Generation
-The application generates image URLs using the `build_image_url()` function:
+The application is in the process of migrating from a legacy URL structure (without
+the face segment) to the face-aware layout. During migration, both forms may be in use:
 
-```python
-def build_image_url(card: dict, size: str) -> str:
-    """Build the CloudFront URL for a card image."""
-    return f"https://d1hot9ps2xugbc.cloudfront.net/img/{card['set_code']}/{card['collector_number']}/{size}.webp"
-```
-
-### Frontend Integration
-JavaScript code generates URLs dynamically:
-```javascript
-return `https://d1hot9ps2xugbc.cloudfront.net/img/${card.set_code}/${card.collector_number}/${size}.webp`;
-```
+- Legacy (face-agnostic): `https://d1hot9ps2xugbc.cloudfront.net/img/{set_code}/{collector_number}/{width}.webp`
+- Face-aware (preferred going forward): `https://d1hot9ps2xugbc.cloudfront.net/img/{set_code}/{collector_number}/{face}/{width}.webp`
 
 ## Management Scripts
 
