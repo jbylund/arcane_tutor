@@ -8,6 +8,7 @@ This script:
    s3://biblioplex/img/{set_code}/{collector_number}/{face}/{width}.webp
    (for now, single-faced cards use face = "1")
 """
+
 from __future__ import annotations
 
 import argparse
@@ -469,8 +470,7 @@ def get_db_cards(args: Args) -> set[tuple[str, str, str, str]]:
         return None
 
     logger.info("Found %d cards in database, should create %d images", len(db_cards), len(db_cards) * 4)
-    # (set_code, collector_number, face_idx, size)
-    cards_as_keys = set(
+    return {
         (
             card["card_set_code"],
             card["collector_number"],
@@ -479,8 +479,7 @@ def get_db_cards(args: Args) -> set[tuple[str, str, str, str]]:
         )
         for card in db_cards
         for size in [SMALL_KEY, MEDIUM_KEY, LARGE_KEY, XLARGE_KEY]
-    )
-    return cards_as_keys
+    }
 
 
 def get_s3_cards(args: Args) -> set[tuple[str, str, str, str]]:
@@ -525,20 +524,6 @@ def get_s3_cards(args: Args) -> set[tuple[str, str, str, str]]:
     logger.info("Found %d image objects in S3, belonging to %d distinct cards", len(s3_cards), len(distinct_s3_cards))
     return s3_cards
 
-
-def hash_groupby(
-    iterable, key_fn
-):
-    """Group by a key function.
-
-    This differs from itertools.groupby (https://docs.python.org/3/library/itertools.html#itertools.groupby)
-    in that it does not require that the iterable be sorted by the key function and it
-    returns a dict mapping key values to the items in the iterable that have that key value.
-    """
-    groups = {}
-    for item in iterable:
-        groups.setdefault(key_fn(item), []).append(item)
-    return groups
 
 def main() -> None:
     """Main entry point for the script."""
