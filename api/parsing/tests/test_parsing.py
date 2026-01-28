@@ -1192,7 +1192,7 @@ def test_parse_hyphenated_words(test_input: str, expected_ast: QueryNode) -> Non
     argnames="invalid_query",
     argvalues=[
         "word-",  # Standalone word ending with hyphen
-        "-",  # Single hyphen alone (after accounting for it being a negation operator)
+        "-",  # Standalone hyphen
     ],
 )
 def test_hyphenated_words_edge_cases_fail(invalid_query: str) -> None:
@@ -1200,7 +1200,8 @@ def test_hyphenated_words_edge_cases_fail(invalid_query: str) -> None:
 
     Standalone words cannot end with hyphens - this should raise a ValueError.
     Note that:
-    - Words starting with hyphens are interpreted as negation operators, not as invalid words.
+    - A leading hyphen is interpreted as the negation operator (NOT), not as part of the word.
+      For example, "-flying" is parsed as NOT applied to "flying", not as a word starting with a hyphen.
     - Attribute values (e.g., 'name:test-', 'otag:test-') use different parsing rules and DO allow
       trailing hyphens since they use string_value_word which accepts any hyphen placement.
     """
