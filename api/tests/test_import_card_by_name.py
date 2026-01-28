@@ -162,7 +162,7 @@ class TestImportCardByName(unittest.TestCase):
         mock_search.return_value = [{"name": "TestCard", "legalities": {"standard": "not_legal"}}]
 
         # Mock preprocessing to return None (filtered out)
-        mock_preprocess.return_value = None
+        mock_preprocess.return_value = []
 
         result = self.api_resource.import_card_by_name(card_name="TestCard")
         assert result == {

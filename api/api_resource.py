@@ -497,16 +497,20 @@ class APIResource:
             logger.info("Schema setup complete in pid %d", os.getpid())
 
     def _get_cards_to_insert(self) -> list[dict[str, Any]]:
-        """Get the cards to insert into the database."""
+        """Get the cards to insert into the database.
+
+        For DFCs (Double-Faced Cards), each face is returned as a separate dictionary.
+        The deduplication key is (scryfall_id, face_idx) to support multiple faces per printing.
+        """
         all_cards = self.get_data()
-        scryfall_id_to_card = {}
+        key_to_card: dict[tuple[str, int], dict[str, Any]] = {}
         for card in all_cards:
-            processed_card = preprocess_card(card)
-            if processed_card is None:
-                continue
-            scryfall_id = processed_card["scryfall_id"]
-            scryfall_id_to_card[scryfall_id] = processed_card
-        return list(scryfall_id_to_card.values())
+            processed_cards = preprocess_card(card)
+            for processed_card in processed_cards:
+                scryfall_id = processed_card["scryfall_id"]
+                face_idx = processed_card.get("face_idx", 1)
+                key_to_card[(scryfall_id, face_idx)] = processed_card
+        return list(key_to_card.values())
 
     def get_stats(self, **_: object) -> dict[str, Any]:
         """Get stats about the cards."""
@@ -1971,7 +1975,10 @@ class APIResource:
         # for cards, so that we import only one card of each name
         # but we use frame, printing time, etc. to get the best instance
         # of that card (likely the one with the highest quality artwork)
-        cards = list(filter(None, (preprocess_card(icard) for icard in cards)))
+        processed_cards = []
+        for icard in cards:
+            processed_cards.extend(preprocess_card(icard))
+        cards = processed_cards
 
         if not cards:
             return {

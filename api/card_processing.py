@@ -86,21 +86,60 @@ def extract_collector_number_int(collector_number: str | int | float | None) -> 
     return None  # Field will be null by default
 
 
-def preprocess_card(card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: PLR0915,C901,PLR0912
-    """Preprocess a card to remove invalid cards and add necessary fields."""
+def preprocess_card(card: dict[str, Any]) -> list[dict[str, Any]]:  # noqa: PLR0915,C901,PLR0912
+    """Preprocess a card to remove invalid cards and add necessary fields.
+
+    For Double-Faced Cards (DFCs), returns multiple dictionaries (one per face).
+    For single-faced cards, returns a list with one dictionary.
+    Returns an empty list for invalid/filtered cards.
+    """
     if set(card["legalities"].values()) == {"not_legal"}:
         pass
     if "playtest" in card.get("promo_types", []):
-        return None
+        return []
     if "paper" not in card.get("games", []):
-        return None
-    if "card_faces" in card:
-        return None
+        return []
     if card.get("set_type") == "funny":
-        return None
+        return []
+
+    # Filter out unplayable cards: Cards and Tokens
+    type_line = card.get("type_line")
+    if type_line:
+        card_types, card_subtypes = parse_type_line(type_line)
+        if "Card" in card_types or "Token" in card_types:
+            return []
 
     if "raw_card_blob" in card:
-        return card
+        # Already processed, don't need to re-process
+        return [card]
+
+    # Lift the card name before processing faces, because it shouldn't be clobbered by card_faces
+    if "card_name" not in card:
+        # Non-recursive case: first time seeing this card
+        card["card_name"] = card.get("name")
+    else:
+        # Recursive case: processing a face
+        card["face_name"] = card.get("name")
+
+    # Handle cards with card_faces (DFCs)
+    card_faces = card.get("card_faces")
+    if card_faces:
+        for creature_attribute in ["creature_power", "creature_toughness"]:
+            card.pop(creature_attribute, None)
+            card.pop(f"{creature_attribute}_text", None)
+        processed_faces = []
+        for face_idx, face_data in enumerate(card_faces, start=1):
+            # Merge card-level data with face-specific data
+            # Precedence: face_idx override > face_data (name, type_line, etc.) > card (legalities, games, etc.)
+            merged = copy.deepcopy(card) | face_data | {"face_idx": face_idx}
+            merged.pop("card_faces", None)  # Don't keep recursing
+            processed_faces_for_face = preprocess_card(merged)
+            processed_faces.extend(processed_faces_for_face)
+        return processed_faces
+
+    # Single face case - set defaults
+    card.setdefault("face_name", card.get("name"))
+    card.setdefault("face_idx", 1)
 
     # Store the original card data before modifications for raw_card_blob
     raw_card_data = copy.deepcopy(card)
@@ -111,19 +150,19 @@ def preprocess_card(card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: PLR
     card["card_types"] = card_types
     card["card_subtypes"] = card_subtypes
 
-    # Filter out unplayable cards: Cards and Tokens
-    if "Card" in card_types or "Token" in card_types:
-        return None
-
-    card["creature_power"] = maybe_int(card.get("power"))
-    card["creature_toughness"] = maybe_int(card.get("toughness"))
     card["planeswalker_loyalty"] = maybe_int(card.get("loyalty"))
-
-    if card.get("power") is not None:
-        if "Creature" in card["card_types"] or "Vehicle" in card["card_subtypes"] or "Spacecraft" in card["card_subtypes"]:
-            pass
-        else:
-            return None
+    if "Creature" in card_types or {"Vehicle", "Spacecraft"} & set(card_subtypes):
+        card["creature_power"] = maybe_int(card.get("power"))
+        card["creature_toughness"] = maybe_int(card.get("toughness"))
+        card["creature_power_text"] = card.get("power")
+        card["creature_toughness_text"] = card.get("toughness")
+    else:
+        # Non-creature face with power/toughness - clean up these fields instead of rejecting
+        # The pop calls set these to None implicitly, and we explicitly reset creature_power/toughness
+        card.pop("creature_power_text", None)
+        card.pop("creature_toughness_text", None)
+        card["creature_power"] = None
+        card["creature_toughness"] = None
 
     # objects of keys to true
     card["card_colors"] = dict.fromkeys(card["colors"], True)
@@ -167,10 +206,10 @@ def preprocess_card(card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: PLR
     card["devotion"] = calculate_devotion(mana_cost_text)
 
     # Map field names to match database column names for jsonb_populate_record
-    card["card_name"] = card.get("name")
+    # Don't overwrite card_name if already set (for DFCs, it's set before processing faces)
+    if "card_name" not in card:
+        card["card_name"] = card.get("name")
     card["mana_cost_text"] = card.get("mana_cost")
-    card["creature_power_text"] = card.get("power")
-    card["creature_toughness_text"] = card.get("toughness")
     card["planeswalker_loyalty_text"] = card.get("loyalty")
     card["card_artist"] = card.get("artist")
 
@@ -196,4 +235,4 @@ def preprocess_card(card: dict[str, Any]) -> None | dict[str, Any]:  # noqa: PLR
     for key in ["produced_mana", "card_oracle_tags", "card_is_tags"]:
         card.setdefault(key, {})
 
-    return card
+    return [card]
