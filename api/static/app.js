@@ -8,6 +8,7 @@ class CardSearch {
     this.resultsContainer = document.getElementById('results');
     this.loadingIndicator = document.getElementById('loading');
     this.statusMessage = document.getElementById('statusMessage');
+    this.queryExplanation = document.getElementById('queryExplanation');
     this.orderDropdown = document.getElementById('orderDropdown');
     this.uniqueDropdown = document.getElementById('uniqueDropdown');
     this.preferDropdown = document.getElementById('preferDropdown');
@@ -540,11 +541,15 @@ class CardSearch {
     // Assume the API returns an array of cards or an object with a cards array
     const cards = Array.isArray(data) ? data : data.cards || [];
     const totalCards = data.total_cards || cards.length;
+    const queryExplanation = data.query_explanation || '';
 
     if (cards.length === 0) {
       this.showNoResults();
       return;
     }
+
+    // Display query explanation if available
+    this.showQueryExplanation(queryExplanation);
 
     // Clear previous card data and store new cards
     this.cardsData.clear();
@@ -888,6 +893,21 @@ class CardSearch {
     }
   }
 
+  showQueryExplanation(explanation) {
+    if (!this.queryExplanation) {
+      return;
+    }
+
+    if (explanation && explanation.trim()) {
+      // Display the explanation
+      this.queryExplanation.textContent = explanation;
+      this.queryExplanation.style.display = 'block';
+    } else {
+      // Hide the explanation if empty
+      this.queryExplanation.style.display = 'none';
+    }
+  }
+
   clearResults() {
     // Disconnect observer to clean up
     if (this.imageObserver) {
@@ -896,6 +916,10 @@ class CardSearch {
     this.resultsContainer.innerHTML = '';
     this.currentCardCount = 0; // Reset card count
     this.clearMessages();
+    // Clear query explanation
+    if (this.queryExplanation) {
+      this.queryExplanation.style.display = 'none';
+    }
   }
 
   clearSearch() {
