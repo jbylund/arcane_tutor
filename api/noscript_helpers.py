@@ -154,14 +154,17 @@ def build_image_url(card: dict, size: str) -> str:
 
     Args:
     ----
-        card: Card dictionary with set_code and collector_number
-        size: Image size (220, 410, or 745)
+        card: Card dictionary with set_code, collector_number, and optionally face_idx
+        size: Image size (280, 388, 538, or 745)
 
     Returns:
     -------
         Image URL
     """
-    return f"https://d1hot9ps2xugbc.cloudfront.net/img/{card['set_code']}/{card['collector_number']}/{size}.webp"
+    face = card.get("face_idx", 1)
+    set_code = card["set_code"]
+    collector_number = card["collector_number"]
+    return f"https://d1hot9ps2xugbc.cloudfront.net/img/{set_code}/{collector_number}/{face}/{size}.webp"
 
 
 def create_card_html(card: dict, index: int) -> str:

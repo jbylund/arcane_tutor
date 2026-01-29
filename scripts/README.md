@@ -104,10 +104,11 @@ python -m scripts.copy_images_to_s3 --dry-run --limit 10 --verbose
 
 ### Image Sizes
 
-Generates three WebP versions per card:
-- **lg** (745px): Full resolution
-- **med** (~404px): Medium resolution (sqrt(220 * 745))
-- **sm** (220px): Thumbnail
+Generates four WebP versions per card:
+- **745px**: Full resolution
+- **538px**: Large resolution
+- **388px**: Medium resolution
+- **280px**: Small resolution
 
 ### S3 Structure
 
