@@ -34,6 +34,41 @@ from api.utils.db_utils import configure_connection, get_pg_creds
 
 logger = logging.getLogger(__name__)
 
+
+@dataclass(frozen=True)
+class Image:
+    """Represents a card image with its identifying attributes.
+
+    This class is used to uniquely identify card images in both the database
+    and S3 storage. The frozen=True makes it immutable and hashable.
+
+    Attributes:
+        set_code: The Magic set code (e.g., 'iko', 'thb')
+        collector_number: The collector number within the set (e.g., '123', '42a')
+        face_idx: The face index for multi-faced cards (e.g., '1', '2')
+        size: The image size key (e.g., '280', '388', '538', '745')
+    """
+
+    set_code: str
+    collector_number: str
+    face_idx: str
+    size: str
+
+    def __hash__(self) -> int:
+        """Return hash of the Image for use in sets and dicts."""
+        return hash((self.set_code, self.collector_number, self.face_idx, self.size))
+
+    def __eq__(self, other: object) -> bool:
+        """Check equality with another Image."""
+        if not isinstance(other, Image):
+            return NotImplemented
+        return (
+            self.set_code == other.set_code
+            and self.collector_number == other.collector_number
+            and self.face_idx == other.face_idx
+            and self.size == other.size
+        )
+
 # Image size configuration
 ORIGINAL_WIDTH = 745  # this seems to be the size of the pngs that scryfall returns
 # Four sizes uniformly spread between 280 and 745
@@ -455,8 +490,12 @@ def check_cwebp() -> None:
         sys.exit(1)
 
 
-def get_db_cards(args: Args) -> set[tuple[str, str, str, str]]:
-    """Get all cards in the database."""
+def get_db_cards(args: Args) -> set[Image]:
+    """Get all cards in the database.
+
+    Returns:
+        Set of Image objects representing all card images that should exist
+    """
     logger.info("Connecting to database...")
     conn = get_database_connection()
 
@@ -467,29 +506,29 @@ def get_db_cards(args: Args) -> set[tuple[str, str, str, str]]:
 
     if not db_cards:
         logger.warning("No cards found to process")
-        return None
+        return set()
 
     logger.info("Found %d cards in database, should create %d images", len(db_cards), len(db_cards) * 4)
     return {
-        (
-            card["card_set_code"],
-            card["collector_number"],
-            card["face_idx"],
-            size,
+        Image(
+            set_code=card["card_set_code"],
+            collector_number=card["collector_number"],
+            face_idx=str(card["face_idx"]) if card["face_idx"] is not None else DEFAULT_FACE,
+            size=size,
         )
         for card in db_cards
         for size in [SMALL_KEY, MEDIUM_KEY, LARGE_KEY, XLARGE_KEY]
     }
 
 
-def get_s3_cards(args: Args) -> set[tuple[str, str, str, str]]:
+def get_s3_cards(args: Args) -> set[Image]:
     """Get all cards in S3.
 
     Args:
         args: Command-line arguments
 
     Returns:
-        Set of tuples containing (set_code, collector_number, face_idx, size)
+        Set of Image objects representing images already in S3
     """
     s3_cards = set()
     if not args.skip_existing:
@@ -516,11 +555,16 @@ def get_s3_cards(args: Args) -> set[tuple[str, str, str, str]]:
             except ValueError:
                 continue
             size = size_webp.partition(".")[0]
-            s3_cards.add((set_code, collector_number, face_idx, size))
+            s3_cards.add(Image(
+                set_code=set_code,
+                collector_number=collector_number,
+                face_idx=face_idx,
+                size=size,
+            ))
         except ValueError:
             continue
 
-    distinct_s3_cards = {(set_code, collector_number) for (set_code, collector_number, _size) in s3_cards}
+    distinct_s3_cards = {(img.set_code, img.collector_number) for img in s3_cards}
     logger.info("Found %d image objects in S3, belonging to %d distinct cards", len(s3_cards), len(distinct_s3_cards))
     return s3_cards
 
@@ -536,32 +580,61 @@ def main() -> None:
     check_cwebp()
     configure_env()
 
-    db_cards = get_db_cards(args)
-    s3_cards = get_s3_cards(args)
+    # Get Image objects representing what should exist in DB and what exists in S3
+    db_images = get_db_cards(args)
+    s3_images = get_s3_cards(args)
 
+    # Fetch raw card data from database to get png_url
+    logger.info("Connecting to database for card details...")
+    conn = get_database_connection()
+    db_cards = fetch_cards_from_db(conn, limit=args.limit, set_code=args.set_code)
+    conn.close()
+
+    # Group missing images by card to build work items
+    # Map from (set_code, collector_number, face_idx) -> card dict
+    card_lookup = {}
+    for card in db_cards:
+        key = (
+            card["card_set_code"],
+            card["collector_number"],
+            str(card["face_idx"]) if card["face_idx"] is not None else DEFAULT_FACE,
+        )
+        card_lookup[key] = card
+
+    # Find which images are missing from S3
+    missing_images = db_images - s3_images
+
+    # Group missing images by card
     cards_with_missing_images = []
-    for icard in db_cards:
-        collector_number = icard["collector_number"]
-        face_idx = icard["face_idx"]
-        set_code = icard["card_set_code"]
+    missing_by_card = {}  # (set_code, collector_number, face_idx) -> list of missing sizes
 
-        missing_for_card = []
-        for size in [SMALL_KEY, MEDIUM_KEY, LARGE_KEY, XLARGE_KEY]:
-            key = (set_code, collector_number, face_idx, size)
-            if key not in s3_cards:
-                missing_for_card.append(size)
-        if missing_for_card:
-            cards_with_missing_images.append(
-                {
-                    "bucket": args.bucket,
-                    "card_set_code": set_code,
-                    "collector_number": collector_number,
-                    "dry_run": args.dry_run,
-                    "face_idx": face_idx,
-                    "png_url": icard["png_url"],
-                    "sizes": missing_for_card,
-                },
-            )
+    for img in missing_images:
+        card_key = (img.set_code, img.collector_number, img.face_idx)
+        if card_key not in missing_by_card:
+            missing_by_card[card_key] = []
+        missing_by_card[card_key].append(img.size)
+
+    # Build work items for cards with missing images
+    for card_key, missing_sizes in missing_by_card.items():
+        set_code, collector_number, face_idx = card_key
+        card_data = card_lookup.get(card_key)
+
+        if card_data is None:
+            logger.warning(f"Card {set_code}/{collector_number} face {face_idx} not found in database")
+            continue
+
+        cards_with_missing_images.append(
+            {
+                "bucket": args.bucket,
+                "card_set_code": set_code,
+                "collector_number": collector_number,
+                "dry_run": args.dry_run,
+                "face_idx": face_idx,
+                "png_url": card_data["png_url"],
+                "sizes": missing_sizes,
+            },
+        )
+
     logger.info("Found %d cards with missing images", len(cards_with_missing_images))
 
     # Process cards in parallel
