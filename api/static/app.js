@@ -26,8 +26,6 @@ class CardSearch {
     this.isAscending = true; // Track order direction
     this.currentCardCount = 0; // Track current number of cards displayed for resize handling
 
-    // History / back-forward: arrival time and "saved" flag in history.state
-
     // Autocomplete properties
     this.commonCardTypes = []; // Will store the common card types
 
