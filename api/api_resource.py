@@ -654,9 +654,17 @@ class APIResource:
 
         timer = Timer()
 
+        # Generate explanation for the query
+        query_explanation = ""
+        parsed_query = None
         try:
             with timer("get_where_clause"):
-                where_clause, params = get_where_clause(query)
+                parsed_query = parse_scryfall_query(query)
+                where_clause, params = generate_sql_query(parsed_query)
+                # Generate explanation after successful parsing
+                if query:  # Only generate explanation if there's a query
+                    from api.parsing import explain_query
+                    query_explanation = explain_query(parsed_query)
         except ValueError as err:
             # Handle parsing errors from parse_scryfall_query
             logger.info("ValueError caught for query '%s', raising BadRequest", query)
@@ -782,6 +790,7 @@ class APIResource:
             "compiled": query_sql,
             "params": params,
             "query": query,
+            "query_explanation": query_explanation,
             "outer_timings": timer.get_timings(),
             "inner_timings": result_bag.pop("timings"),
             "total_cards": total_cards,
