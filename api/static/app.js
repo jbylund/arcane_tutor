@@ -1,4 +1,6 @@
 const UNIQUE_PRINTING = 'printing';
+const DWELL_MS = 2500; // milliseconds user must stay on results before adding a history entry
+
 class CardSearch {
   constructor() {
     this.searchForm = document.querySelector('.search-container');
@@ -206,6 +208,9 @@ class CardSearch {
 
     if (initialQuery) {
       this.searchInput.value = initialQuery;
+      // Record arrival time so we only push this state when leaving if they stayed > DWELL_MS
+      const initialUrl = this.buildCurrentSearchUrl();
+      window.history.replaceState({ arrivalTime: Date.now() }, '', initialUrl);
       // Check if we have embedded search results from the server
       if (window.EMBEDDED_SEARCH_RESULTS) {
         // Use the embedded results directly without making an API call
@@ -217,6 +222,32 @@ class CardSearch {
         this.performSearch(initialQuery);
       }
     }
+
+    // Back/forward: restore search state from URL and re-fetch results
+    window.addEventListener('popstate', () => {
+      const params = new URLSearchParams(window.location.search);
+      const q = params.get('q') || '';
+      const orderby = params.get('orderby') || 'edhrec';
+      const direction = params.get('direction') || 'asc';
+      const unique = params.get('unique') || 'card';
+      const prefer = params.get('prefer') || 'default';
+
+      this.searchInput.value = q;
+      this.orderDropdown.value = orderby;
+      this.uniqueDropdown.value = unique;
+      this.preferDropdown.value = prefer;
+      this.isAscending = direction === 'asc';
+      this.directionInput.value = direction;
+      this.updateOrderToggleAppearance();
+      this.updatePreferVisibility();
+
+      if (q) {
+        this.performSearch(q);
+      } else {
+        this.clearResults();
+        this.lastRequestedUrl = null;
+      }
+    });
 
     // Prevent form submission when JavaScript is enabled
     this.searchForm.addEventListener('submit', e => {
@@ -541,7 +572,9 @@ class CardSearch {
       .map((card, index) => this.createCardHTML(card, index, index < firstRowCount))
       .join('');
 
-    // Images now use native srcset, no need for JavaScript-based loading
+    // Record arrival time; we only push this state when leaving if they stayed > DWELL_MS and it's not already saved (updateURL)
+    const url = this.buildCurrentSearchUrl();
+    window.history.replaceState({ arrivalTime: Date.now() }, '', url);
   }
 
   getColumnsFromViewportWidth() {
@@ -841,7 +874,7 @@ class CardSearch {
   }
 
   showResultsCount(count, query, elapsed) {
-    console.log('Showing results count:', count, query, elapsed);
+    console.log(`Showing results: count: ${count}, query: ${query}, elapsed: ${elapsed}`);
     const formattedCount = count.toLocaleString();
     const uniqueValue = this.uniqueDropdown.value;
     const itemType = uniqueValue + (count !== 1 ? 's' : '');
@@ -955,10 +988,12 @@ class CardSearch {
     }
   }
 
-  updateURL(query, order, direction, unique, prefer) {
+  /**
+   * Build search URL from (query, order, direction, unique, prefer).
+   * Used for replaceState and pushState.
+   */
+  buildSearchUrlFromParams(query, order, direction, unique, prefer) {
     const url = new URL(window.location);
-
-    // Define default values
     const defaults = {
       orderby: 'edhrec',
       direction: 'asc',
@@ -966,44 +1001,57 @@ class CardSearch {
       prefer: 'default',
     };
 
-    if (query.trim()) {
-      // Always include the query parameter
-      url.searchParams.set('q', query);
-
-      // Only include parameters that differ from defaults
-      if (order !== defaults.orderby) {
-        url.searchParams.set('orderby', order);
-      } else {
-        url.searchParams.delete('orderby');
-      }
-
-      if (direction !== defaults.direction) {
-        url.searchParams.set('direction', direction);
-      } else {
-        url.searchParams.delete('direction');
-      }
-
-      if (unique !== defaults.unique) {
-        url.searchParams.set('unique', unique);
-      } else {
-        url.searchParams.delete('unique');
-      }
-
-      // Handle prefer parameter - only include if unique is not 'printing' and prefer is not default
-      if (unique !== UNIQUE_PRINTING && prefer !== defaults.prefer) {
-        url.searchParams.set('prefer', prefer);
-      } else {
-        url.searchParams.delete('prefer');
-      }
+    if (query && query.trim()) {
+      url.searchParams.set('q', query.trim());
+      if (order !== defaults.orderby) url.searchParams.set('orderby', order);
+      else url.searchParams.delete('orderby');
+      if (direction !== defaults.direction) url.searchParams.set('direction', direction);
+      else url.searchParams.delete('direction');
+      if (unique !== defaults.unique) url.searchParams.set('unique', unique);
+      else url.searchParams.delete('unique');
+      if (unique !== UNIQUE_PRINTING && prefer !== defaults.prefer) url.searchParams.set('prefer', prefer);
+      else url.searchParams.delete('prefer');
     } else {
-      // Clear all parameters when no query
       url.searchParams.delete('q');
       url.searchParams.delete('orderby');
       url.searchParams.delete('direction');
       url.searchParams.delete('unique');
       url.searchParams.delete('prefer');
     }
-    window.history.replaceState({}, '', url);
+    return url.href;
+  }
+
+  /** Current search URL from form state (for dwell timer and updateURL). */
+  buildCurrentSearchUrl() {
+    const query = this.searchInput.value.trim();
+    const order = this.orderDropdown.value;
+    const direction = this.isAscending ? 'asc' : 'desc';
+    const unique = this.uniqueDropdown.value;
+    const prefer = this.preferDropdown.value;
+    return this.buildSearchUrlFromParams(query, order, direction, unique, prefer);
+  }
+
+  updateURL(query, order, direction, unique, prefer) {
+    const newUrl = this.buildSearchUrlFromParams(query, order, direction, unique, prefer);
+    const state = window.history.state;
+    const arrivalTime = state && state.arrivalTime;
+    const alreadySaved = state && state.saved === true;
+    let stayTime = 0;
+    if (typeof arrivalTime === 'number') {
+      stayTime = Date.now() - arrivalTime;
+    }
+    const stayedLongEnough = stayTime > DWELL_MS;
+    const isNewUrl = newUrl !== window.location.href;
+    if (!alreadySaved && stayedLongEnough && isNewUrl) {
+      const pushedUrl = window.location.href;
+      window.history.pushState({ arrivalTime: arrivalTime, saved: true }, '', pushedUrl);
+      console.log(`+Pushing ${pushedUrl} to history`);
+    } else {
+      console.log(
+        `-Not pushing history: stayTime: ${stayTime}, newUrl: ${newUrl}, window.location.href: ${window.location.href}`
+      );
+    }
+    window.history.replaceState({ arrivalTime: Date.now() }, '', newUrl);
   }
 
   updatePreferVisibility() {
