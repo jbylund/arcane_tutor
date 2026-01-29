@@ -34,7 +34,7 @@ from psycopg import Connection, Cursor
 from api.card_processing import preprocess_card
 from api.enums import CardOrdering, PreferOrder, SortDirection, UniqueOn
 from api.noscript_helpers import generate_results_count_html, generate_results_html
-from api.parsing import generate_sql_query, parse_scryfall_query
+from api.parsing import explain_query, generate_sql_query, parse_scryfall_query
 from api.scryfall_bulk_data_fetcher import BulkDataKey, ScryfallBulkDataFetcher
 from api.settings import settings
 from api.tagger_client import TaggerClient
@@ -663,7 +663,6 @@ class APIResource:
                 where_clause, params = generate_sql_query(parsed_query)
                 # Generate explanation after successful parsing
                 if query:  # Only generate explanation if there's a query
-                    from api.parsing import explain_query
                     query_explanation = explain_query(parsed_query)
         except ValueError as err:
             # Handle parsing errors from parse_scryfall_query

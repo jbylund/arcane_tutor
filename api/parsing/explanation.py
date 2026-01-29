@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from api.parsing.card_query_nodes import CardAttributeNode
 from api.parsing.db_info import (
-    ALIAS_TO_FIELD_INFOS,
     COLOR_CODE_TO_NAME,
     FORMAT_CODE_TO_NAME,
 )
@@ -61,7 +60,7 @@ def explain_query(query_node: QueryNode) -> str:
     return str(query_node)
 
 
-def _explain_binary_operator(node: BinaryOperatorNode) -> str:
+def _explain_binary_operator(node: BinaryOperatorNode) -> str:  # noqa: PLR0912, PLR0911, C901
     """Explain a binary operator node.
 
     Args:
@@ -132,9 +131,8 @@ def _explain_binary_operator(node: BinaryOperatorNode) -> str:
         elif db_column_name == "card_artist":
             if node.operator in (":", "="):
                 return f"the artist contains {rhs_str}"
-        elif db_column_name == "card_set_code":
-            if node.operator in (":", "="):
-                return f"the set contains {rhs_str}"
+        elif db_column_name == "card_set_code" and node.operator in (":", "="):
+            return f"the set contains {rhs_str}"
 
     # Default format: lhs operator rhs
     return f"{lhs_str} {operator_str} {rhs_str}"
@@ -204,7 +202,7 @@ def _explain_operator(operator: str) -> str:
         ":": "contains",
         "+": "+",
         "-": "-",
-        "*": "×",
+        "*": "×",  # noqa: RUF001
         "/": "÷",
     }
     return operator_map.get(operator, operator)
@@ -230,13 +228,14 @@ def _explain_value(value_node: StringValueNode, context_node: QueryNode | None =
             if len(value) == 1 and value.lower() in COLOR_CODE_TO_NAME:
                 return COLOR_CODE_TO_NAME[value.lower()].capitalize()
             # Try to expand multi-letter color codes (e.g., "ug" -> "Blue/Green")
-            if len(value) <= 5 and all(c.lower() in COLOR_CODE_TO_NAME for c in value):
+            # Max 5 colors (WUBRG)
+            max_colors = 5
+            if len(value) <= max_colors and all(c.lower() in COLOR_CODE_TO_NAME for c in value):
                 color_names = [COLOR_CODE_TO_NAME[c.lower()].capitalize() for c in value.lower()]
                 return "/".join(color_names)
 
         # If context is a format-related attribute, try to expand format codes
-        if db_column_name == "card_legalities":
-            if value.lower() in FORMAT_CODE_TO_NAME:
-                return FORMAT_CODE_TO_NAME[value.lower()].capitalize()
+        if db_column_name == "card_legalities" and value.lower() in FORMAT_CODE_TO_NAME:
+            return FORMAT_CODE_TO_NAME[value.lower()].capitalize()
 
     return value
