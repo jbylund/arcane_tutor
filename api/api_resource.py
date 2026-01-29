@@ -554,6 +554,7 @@ class APIResource:
                 rate,
             )
             self.backfill_prefer_scores()
+            self._last_import_time.value = time.time()
             return result["sample_cards"]
         logger.error("Failed to import data: %s", result["message"])
         return None

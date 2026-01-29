@@ -1,6 +1,7 @@
 """Test cases for prefer order functionality."""
 
 import multiprocessing
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -14,7 +15,7 @@ class TestPreferOrder(unittest.TestCase):
     def setUp(self) -> None:
         """Set up test fixtures."""
         self.api_resource = APIResource(
-            last_import_time=multiprocessing.Value("d", 0.0, lock=True),
+            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
         )
 
         def always_true() -> bool:
