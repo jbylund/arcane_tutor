@@ -26,8 +26,7 @@ class CardSearch {
     this.isAscending = true; // Track order direction
     this.currentCardCount = 0; // Track current number of cards displayed for resize handling
 
-    // History / back-forward: arrival time in history.state, checked when navigating away
-    this.isRestoringFromHistory = false;
+    // History / back-forward: arrival time and "saved" flag in history.state
 
     // Autocomplete properties
     this.commonCardTypes = []; // Will store the common card types
@@ -228,7 +227,6 @@ class CardSearch {
 
     // Back/forward: restore search state from URL and re-fetch results
     window.addEventListener('popstate', () => {
-      this.isRestoringFromHistory = true;
       const params = new URLSearchParams(window.location.search);
       const q = params.get('q') || '';
       const orderby = params.get('orderby') || 'edhrec';
@@ -250,7 +248,6 @@ class CardSearch {
       } else {
         this.clearResults();
         this.lastRequestedUrl = null;
-        this.isRestoringFromHistory = false;
       }
     });
 
@@ -548,7 +545,6 @@ class CardSearch {
 
     if (cards.length === 0) {
       this.showNoResults();
-      if (this.isRestoringFromHistory) this.isRestoringFromHistory = false;
       return;
     }
 
@@ -578,11 +574,7 @@ class CardSearch {
       .map((card, index) => this.createCardHTML(card, index, index < firstRowCount))
       .join('');
 
-    // Record arrival time; we only push this state when leaving if they stayed > DWELL_MS (checked in updateURL)
-    if (this.isRestoringFromHistory) {
-      this.isRestoringFromHistory = false;
-      return;
-    }
+    // Record arrival time; we only push this state when leaving if they stayed > DWELL_MS and it's not already saved (updateURL)
     const url = this.buildCurrentSearchUrl();
     window.history.replaceState({ arrivalTime: Date.now() }, '', url);
   }
@@ -1043,17 +1035,22 @@ class CardSearch {
 
   updateURL(query, order, direction, unique, prefer) {
     const newUrl = this.buildSearchUrlFromParams(query, order, direction, unique, prefer);
-    // If we've been on this state long enough and we're navigating away, push it so Back returns here
     const state = window.history.state;
     const arrivalTime = state && state.arrivalTime;
-    const stayedLongEnough = typeof arrivalTime === 'number' && Date.now() - arrivalTime > DWELL_MS;
-    if (stayedLongEnough && newUrl !== window.location.href) {
+    const alreadySaved = state && state.saved === true;
+    let stayTime = 0;
+    if (typeof arrivalTime === 'number') {
+      stayTime = Date.now() - arrivalTime;
+    }
+    const stayedLongEnough = stayTime > DWELL_MS;
+    const isNewUrl = newUrl !== window.location.href;
+    if (!alreadySaved && stayedLongEnough && isNewUrl) {
       const pushedUrl = window.location.href;
-      window.history.pushState({ arrivalTime: arrivalTime }, '', pushedUrl);
+      window.history.pushState({ arrivalTime: arrivalTime, saved: true }, '', pushedUrl);
       console.log(`+Pushing ${pushedUrl} to history`);
     } else {
-      console.debug(
-        `-Not pushing history: arrivalTime: ${arrivalTime}, stayedLongEnough: ${stayedLongEnough}, newUrl: ${newUrl}, window.location.href: ${window.location.href}`
+      console.log(
+        `-Not pushing history: stayTime: ${stayTime}, newUrl: ${newUrl}, window.location.href: ${window.location.href}`
       );
     }
     window.history.replaceState({ arrivalTime: Date.now() }, '', newUrl);
