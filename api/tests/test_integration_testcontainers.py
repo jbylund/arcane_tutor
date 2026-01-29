@@ -103,7 +103,16 @@ class TestContainerIntegration:
         """Create APIResource instance, set up database schema and test data, then yield the configured instance."""
         # Create APIResource instance
         schema_setup_event = multiprocessing.Event()
-        api = APIResource(schema_setup_event=schema_setup_event)
+        api = APIResource(
+            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+            schema_setup_event=schema_setup_event,
+        )
+
+        def always_true() -> bool:
+            return True
+
+        api._setup_complete = always_true
+        api._import_recent = always_true
 
         # Set up the schema using real migrations
         api.setup_schema()

@@ -2,6 +2,8 @@
 
 # ruff: noqa: PT011
 
+import multiprocessing
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -18,7 +20,9 @@ class TestImportCardByName(unittest.TestCase):
     def setUp(self) -> None:
         """Set up test fixtures."""
         self.mock_conn_pool = MagicMock()
-        self.api_resource = APIResource()
+        self.api_resource = APIResource(
+            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+        )
         self.api_resource._conn_pool = self.mock_conn_pool
 
     def test_import_card_by_name_validates_input(self) -> None:
