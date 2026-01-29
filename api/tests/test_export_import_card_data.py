@@ -1,8 +1,10 @@
 """Tests for card data export/import functionality."""
 
 import inspect
+import multiprocessing
 import pathlib
 import tempfile
+import time
 from unittest import mock
 
 import orjson
@@ -11,38 +13,44 @@ import pytest
 from api.api_resource import APIResource
 
 
+def get_api_resource() -> APIResource:
+    return APIResource(
+        last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+    )
+
+
 class TestExportImportCardData:
     """Test suite for export_card_data and import_card_data methods."""
 
     def test_export_card_data_method_exists(self) -> None:
         """Test that export_card_data method exists and is callable."""
-        api_resource = APIResource()
+        api_resource = get_api_resource()
         assert hasattr(api_resource, "export_card_data")
         assert callable(api_resource.export_card_data)
 
     def test_import_card_data_method_exists(self) -> None:
         """Test that import_card_data method exists and is callable."""
-        api_resource = APIResource()
+        api_resource = get_api_resource()
         assert hasattr(api_resource, "import_card_data")
         assert callable(api_resource.import_card_data)
 
     def test_export_helper_methods_exist(self) -> None:
         """Test that helper methods for export exist."""
-        api_resource = APIResource()
+        api_resource = get_api_resource()
         assert hasattr(api_resource, "_export_cards_table")
         assert hasattr(api_resource, "_export_tags_table")
         assert hasattr(api_resource, "_export_tag_relationships_table")
 
     def test_import_helper_methods_exist(self) -> None:
         """Test that helper methods for import exist."""
-        api_resource = APIResource()
+        api_resource = get_api_resource()
         assert hasattr(api_resource, "_find_import_directory")
         assert hasattr(api_resource, "_validate_import_files")
         assert hasattr(api_resource, "_perform_import")
 
     def test_action_map_includes_export_import_endpoints(self) -> None:
         """Test that the action map includes the new export/import endpoints."""
-        api_resource = APIResource()
+        api_resource = get_api_resource()
         assert "export_card_data" in api_resource.action_map
         assert "import_card_data" in api_resource.action_map
 
@@ -54,7 +62,7 @@ class TestExportImportCardData:
         mock_path.return_value.__truediv__.return_value = mock_export_dir
 
         # Create API resource and mock its connection pool
-        api_resource = APIResource()
+        api_resource = get_api_resource()
         mock_conn = mock.Mock()
         mock_cursor = mock.Mock()
         api_resource._conn_pool = mock.Mock()
@@ -91,7 +99,7 @@ class TestExportImportCardData:
     @mock.patch("api.api_resource.pathlib.Path")
     def test_find_import_directory_with_timestamp(self, mock_path: mock.Mock) -> None:
         """Test _find_import_directory with specific timestamp."""
-        api_resource = APIResource()
+        api_resource = get_api_resource()
 
         # Mock the exports directory and specific timestamp directory
         mock_exports_dir = mock.Mock()
@@ -109,7 +117,7 @@ class TestExportImportCardData:
     @mock.patch("api.api_resource.pathlib.Path")
     def test_find_import_directory_no_exports_dir(self, mock_path: mock.Mock) -> None:
         """Test _find_import_directory when exports directory doesn't exist."""
-        api_resource = APIResource()
+        api_resource = get_api_resource()
 
         mock_exports_dir = mock.Mock()
         mock_exports_dir.exists.return_value = False
@@ -121,7 +129,7 @@ class TestExportImportCardData:
     @mock.patch("api.api_resource.pathlib.Path")
     def test_find_import_directory_timestamp_not_found(self, mock_path: mock.Mock) -> None:
         """Test _find_import_directory when specific timestamp directory doesn't exist."""
-        api_resource = APIResource()
+        api_resource = get_api_resource()
 
         mock_exports_dir = mock.Mock()
         mock_timestamp_dir = mock.Mock()
@@ -136,7 +144,7 @@ class TestExportImportCardData:
     @mock.patch("api.api_resource.pathlib.Path")
     def test_find_import_directory_latest(self, mock_path: mock.Mock) -> None:
         """Test _find_import_directory finds latest when no timestamp specified."""
-        api_resource = APIResource()
+        api_resource = get_api_resource()
 
         # Mock directory structure
         mock_exports_dir = mock.Mock()
@@ -161,7 +169,7 @@ class TestExportImportCardData:
 
     def test_validate_import_files_all_present(self) -> None:
         """Test _validate_import_files when all required files are present."""
-        api_resource = APIResource()
+        api_resource = get_api_resource()
 
         with tempfile.TemporaryDirectory() as temp_dir:
             import_dir = pathlib.Path(temp_dir)
@@ -176,7 +184,7 @@ class TestExportImportCardData:
 
     def test_validate_import_files_missing_files(self) -> None:
         """Test _validate_import_files when some files are missing."""
-        api_resource = APIResource()
+        api_resource = get_api_resource()
 
         with tempfile.TemporaryDirectory() as temp_dir:
             import_dir = pathlib.Path(temp_dir)
@@ -189,7 +197,7 @@ class TestExportImportCardData:
 
     def test_export_cards_table(self) -> None:
         """Test _export_cards_table helper method."""
-        api_resource = APIResource()
+        api_resource = get_api_resource()
 
         # Mock cursor with sample data - create a dict-like mock row
         mock_row = {
@@ -234,7 +242,7 @@ class TestExportImportCardData:
 
     def test_export_tags_table(self) -> None:
         """Test _export_tags_table helper method."""
-        api_resource = APIResource()
+        api_resource = get_api_resource()
 
         # Mock cursor with sample data
         mock_row1 = {"tag": "haste"}
@@ -263,7 +271,7 @@ class TestExportImportCardData:
 
     def test_export_tag_relationships_table(self) -> None:
         """Test _export_tag_relationships_table helper method."""
-        api_resource = APIResource()
+        api_resource = get_api_resource()
 
         # Mock cursor with sample data
         mock_row1 = {"child_tag": "haste", "parent_tag": "keyword"}
@@ -292,7 +300,7 @@ class TestExportImportCardData:
 
     def test_perform_import(self) -> None:
         """Test _perform_import helper method."""
-        api_resource = APIResource()
+        api_resource = get_api_resource()
 
         # Mock cursor
         mock_cursor = mock.Mock()
@@ -352,7 +360,7 @@ class TestExportImportCardData:
 
     def test_perform_import_large_batch(self) -> None:
         """Test _perform_import with larger dataset to verify batch processing."""
-        api_resource = APIResource()
+        api_resource = get_api_resource()
 
         # Mock cursor
         mock_cursor = mock.Mock()
@@ -419,7 +427,7 @@ class TestExportImportCardData:
 
     def test_export_import_integration_structure(self) -> None:
         """Test that export/import methods have compatible interfaces."""
-        api_resource = APIResource()
+        api_resource = get_api_resource()
 
         # Check method signatures are compatible
         export_sig = inspect.signature(api_resource.export_card_data)

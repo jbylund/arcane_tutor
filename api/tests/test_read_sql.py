@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import multiprocessing
 import pathlib
+import time
 
 import pytest
 
@@ -15,7 +17,9 @@ class TestReadSQL:
 
     def setup_method(self) -> None:
         """Set up test fixtures."""
-        self.api_resource = APIResource()
+        self.api_resource = APIResource(
+            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+        )
 
     def teardown_method(self) -> None:
         """Clean up test fixtures."""

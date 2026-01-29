@@ -7,6 +7,8 @@ throwing generic server errors.
 
 from __future__ import annotations
 
+import multiprocessing
+import time
 from unittest.mock import patch
 
 import falcon
@@ -20,7 +22,14 @@ class TestParsingErrorHandling:
 
     def setup_method(self) -> None:
         """Set up test fixtures."""
-        self.api_resource = APIResource()
+        self.api_resource = APIResource(
+            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+        )
+
+        def always_true() -> bool:
+            return True
+
+        self.api_resource._setup_complete = always_true
 
     def teardown_method(self) -> None:
         """Clean up test fixtures."""

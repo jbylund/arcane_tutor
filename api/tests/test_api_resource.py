@@ -2,6 +2,7 @@
 
 import multiprocessing
 import os
+import time
 import unittest
 import uuid
 from typing import Any, Never
@@ -123,7 +124,9 @@ class TestBaseAPIResourceTest:
         self_reference = request.instance
 
         self_reference.mock_conn_pool = MagicMock()
-        self_reference.api_resource = APIResource()
+        self_reference.api_resource = APIResource(
+            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+        )
         self_reference.api_resource._conn_pool = self_reference.mock_conn_pool
 
 
@@ -149,7 +152,10 @@ class TestAPIResourceInitializationNewStyle(TestBaseAPIResourceTest):
     def test_initialization_with_custom_import_guard(self) -> None:
         """Test APIResource initialization with custom import guard."""
         custom_guard = multiprocessing.RLock()
-        api_resource = APIResource(import_guard=custom_guard)
+        api_resource = APIResource(
+            import_guard=custom_guard,
+            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+        )
 
         assert api_resource._import_guard == custom_guard
 
@@ -170,7 +176,9 @@ class TestAPIResourceCoreMethods(unittest.TestCase):
     def setUp(self) -> None:
         """Set up test fixtures."""
         self.mock_conn_pool = MagicMock()
-        self.api_resource = APIResource()
+        self.api_resource = APIResource(
+            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+        )
         self.api_resource._conn_pool = self.mock_conn_pool
 
     def test_get_pid_returns_process_id(self) -> None:
@@ -239,7 +247,9 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
     def setUp(self) -> None:
         """Set up test fixtures."""
         self.mock_conn_pool = MagicMock()
-        self.api_resource = APIResource()
+        self.api_resource = APIResource(
+            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+        )
         self.api_resource._conn_pool = self.mock_conn_pool
 
     def test_raise_not_found_raises_http_not_found(self) -> None:
@@ -335,7 +345,9 @@ class TestAPIResourceStaticFileServing(unittest.TestCase):
     def setUp(self) -> None:
         """Set up test fixtures."""
         self.mock_conn_pool = MagicMock()
-        self.api_resource = APIResource()
+        self.api_resource = APIResource(
+            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+        )
         self.api_resource._conn_pool = self.mock_conn_pool
 
     def test_serve_static_file_reads_file_content(self) -> None:
@@ -416,7 +428,9 @@ class TestAPIResourceErrorHandling(unittest.TestCase):
     def setUp(self) -> None:
         """Set up test fixtures."""
         self.mock_conn_pool = MagicMock()
-        self.api_resource = APIResource()
+        self.api_resource = APIResource(
+            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+        )
         self.api_resource._conn_pool = self.mock_conn_pool
 
     def test_update_tagged_cards_validates_tag_parameter(self) -> None:
@@ -473,7 +487,9 @@ class TestAPIResourceCaching(unittest.TestCase):
         settings.enable_cache = True
         # Now create the APIResource with caching enabled
         self.mock_conn_pool = MagicMock()
-        self.api_resource = APIResource()
+        self.api_resource = APIResource(
+            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+        )
         self.api_resource._conn_pool = self.mock_conn_pool
 
     def tearDown(self) -> None:
@@ -556,7 +572,9 @@ class TestAPIResourceTagHierarchy(unittest.TestCase):
 
     def setUp(self) -> None:
         """Set up test fixtures."""
-        self.api_resource = APIResource()
+        self.api_resource = APIResource(
+            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+        )
 
     def test_populate_tag_hierarchy_with_empty_tags(self) -> None:
         """Test _populate_tag_hierarchy with empty tag list."""

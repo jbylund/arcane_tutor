@@ -53,6 +53,7 @@ def run_server(
 
     # Create shared objects for all workers
     import_guard = multiprocessing.RLock()
+    last_import_time = multiprocessing.Value("d", 0.0, lock=True)
     schema_setup_event = multiprocessing.Event()
 
     # start workers
@@ -61,6 +62,7 @@ def run_server(
             exit_flag=exit_flag,
             host=ALL_INTERFACES,
             import_guard=import_guard,
+            last_import_time=last_import_time,
             port=port,
             schema_setup_event=schema_setup_event,
         )

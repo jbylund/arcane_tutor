@@ -1,5 +1,7 @@
 """Integration tests for tagging functionality."""
 
+import multiprocessing
+import time
 from collections.abc import Generator
 from unittest.mock import MagicMock, patch
 
@@ -67,7 +69,9 @@ class TestTaggingIntegration:
         """
         mock_session.get.return_value = mock_response
 
-        api = APIResource()
+        api = APIResource(
+            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+        )
         tags = api.discover_tags_from_scryfall()
 
         # Should extract tag names from the URLs
@@ -97,7 +101,9 @@ class TestTaggingIntegration:
         mock_discover_tags.return_value = tags
         mock_get_all_tags.return_value = set(tags)
 
-        api = APIResource()
+        api = APIResource(
+            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+        )
         result = api.discover_and_import_all_tags(
             import_cards=True,
             import_hierarchy=False,
@@ -118,7 +124,9 @@ class TestTaggingIntegration:
 
     def test_action_map_includes_new_endpoints(self) -> None:
         """Test that new endpoints are available in the action map."""
-        api = APIResource()
+        api = APIResource(
+            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+        )
 
         # Check that new endpoints are available
         assert "discover_and_import_all_tags" in api.action_map
