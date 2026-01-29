@@ -29,6 +29,10 @@ class QueryNode(ABC):
     def to_sql(self: QueryNode, context: dict) -> str:
         """Convert this node to a SQL WHERE clause string representation."""
 
+    @abstractmethod
+    def to_human_explanation(self: QueryNode) -> str:
+        """Convert this node to a human-readable explanation."""
+
 
 class LeafNode(QueryNode):
     """Abstract base class for leaf nodes in the AST.
@@ -70,6 +74,10 @@ class StringValueNode(ValueNode):
         context[_param_name] = self.value
         return f"%({_param_name})s"
 
+    def to_human_explanation(self: StringValueNode) -> str:
+        """Convert to human-readable explanation."""
+        return str(self.value)
+
 
 class NumericValueNode(ValueNode):
     """Represents a numeric value node in the AST."""
@@ -83,6 +91,10 @@ class NumericValueNode(ValueNode):
         _param_name = param_name(self.value)
         context[_param_name] = self.value
         return f"%({_param_name})s"
+
+    def to_human_explanation(self: NumericValueNode) -> str:
+        """Convert to human-readable explanation."""
+        return str(self.value)
 
 
 class ManaValueNode(ValueNode):
@@ -98,6 +110,10 @@ class ManaValueNode(ValueNode):
         context[_param_name] = self.value
         return f"%({_param_name})s"
 
+    def to_human_explanation(self: ManaValueNode) -> str:
+        """Convert to human-readable explanation."""
+        return str(self.value)
+
 
 class RegexValueNode(ValueNode):
     r"""Represents a regex pattern value node, such as /^{T}:/ or /\spp/."""
@@ -112,6 +128,10 @@ class RegexValueNode(ValueNode):
         context[_param_name] = self.value
         return f"%({_param_name})s"
 
+    def to_human_explanation(self: RegexValueNode) -> str:
+        """Convert to human-readable explanation."""
+        return str(self.value)
+
 
 class AttributeNode(LeafNode):
     """Represents an attribute of a card, such as 'cmc' or 'power'."""
@@ -124,6 +144,11 @@ class AttributeNode(LeafNode):
         """Serialize this attribute node to a SQL column reference."""
         del context
         return f"card.{self.attribute_name}"
+
+    def to_human_explanation(self: AttributeNode) -> str:
+        """Convert to human-readable explanation."""
+        # This is a simple fallback; CardAttributeNode will override with better logic
+        return self.attribute_name.replace("_", " ")
 
     def __eq__(self: AttributeNode, other: object) -> bool:
         """Check equality with another AttributeNode based on attribute name.
@@ -185,6 +210,31 @@ class BinaryOperatorNode(QueryNode):
             sql_operator = "="
         return f"({self.lhs.to_sql(context)} {sql_operator} {self.rhs.to_sql(context)})"
 
+    def to_human_explanation(self: BinaryOperatorNode) -> str:
+        """Convert to human-readable explanation."""
+        # Get explanations from left and right
+        lhs_str = self.lhs.to_human_explanation()
+        rhs_str = self.rhs.to_human_explanation()
+
+        # Get operator explanation
+        operator_map = {
+            "=": "is",
+            "!=": "is not",
+            ">": ">",
+            "<": "<",
+            ">=": "≥",
+            "<=": "≤",
+            ":": "contains",
+            "+": "+",
+            "-": "-",
+            "*": "×",  # noqa: RUF001
+            "/": "÷",
+        }
+        operator_str = operator_map.get(self.operator, self.operator)
+
+        # Default format
+        return f"{lhs_str} {operator_str} {rhs_str}"
+
     def __repr__(self: BinaryOperatorNode) -> str:
         """Return a string representation of the binary operator node."""
         return f"{self.__class__.__name__}({self.lhs}, {self.operator}, {self.rhs})"
@@ -237,6 +287,22 @@ class NaryOperatorNode(QueryNode):
         """
         raise NotImplementedError
 
+    def to_human_explanation(self: NaryOperatorNode) -> str:
+        """Convert to human-readable explanation."""
+        if not self.operands:
+            return ""
+        if len(self.operands) == 1:
+            return self.operands[0].to_human_explanation()
+        parts = [op.to_human_explanation() for op in self.operands]
+        return self._join_explanations(parts)
+
+    def _join_explanations(self: NaryOperatorNode, parts: list[str]) -> str:
+        """Join explanation parts with the appropriate connector.
+
+        To be implemented by subclasses.
+        """
+        raise NotImplementedError
+
     def __repr__(self: NaryOperatorNode) -> str:
         """Return a string representation of the n-ary operator node."""
         return f"{self.__class__.__name__}({', '.join(repr(op) for op in self.operands)})"
@@ -263,6 +329,10 @@ class AndNode(NaryOperatorNode):
         """Return the SQL result for an empty AND (always TRUE)."""
         return "TRUE"
 
+    def _join_explanations(self: AndNode, parts: list[str]) -> str:
+        """Join explanation parts with 'and'."""
+        return " and ".join(parts)
+
 
 class OrNode(NaryOperatorNode):
     """Represents an OR operation between multiple conditions."""
@@ -274,6 +344,10 @@ class OrNode(NaryOperatorNode):
     def _empty_result(self: OrNode) -> str:
         """Return the SQL result for an empty OR (always FALSE)."""
         return "FALSE"
+
+    def _join_explanations(self: OrNode, parts: list[str]) -> str:
+        """Join explanation parts with 'or' and wrap in parentheses."""
+        return f"({' or '.join(parts)})"
 
 
 class NotNode(QueryNode):
@@ -287,6 +361,11 @@ class NotNode(QueryNode):
         """Serialize this NOT node to a SQL expression."""
         operand_sql = self.operand.to_sql(context)
         return f"NOT ({operand_sql})"
+
+    def to_human_explanation(self: NotNode) -> str:
+        """Convert to human-readable explanation."""
+        operand_explanation = self.operand.to_human_explanation()
+        return f"not ({operand_explanation})"
 
     def __repr__(self: NotNode) -> str:
         """Return a string representation of the NOT node."""
@@ -313,6 +392,10 @@ class Query(QueryNode):
     def to_sql(self: Query, context: dict) -> str:
         """Serialize this query to a SQL string."""
         return self.root.to_sql(context)
+
+    def to_human_explanation(self: Query) -> str:
+        """Convert to human-readable explanation."""
+        return self.root.to_human_explanation()
 
     def __repr__(self: Query) -> str:
         """Return a string representation of the Query node."""
