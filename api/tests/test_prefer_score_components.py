@@ -14,6 +14,15 @@ def calculate_finish_score(finishes: list[str]) -> int:
     return 0
 
 
+def calculate_artwork_set_score(card_set_code: str | None) -> int:
+    """Calculate artwork set score based on card set code."""
+    # List of sets with black/white artwork that should not receive bonus
+    bw_artwork_sets = ("dbl",)
+    if card_set_code not in bw_artwork_sets:
+        return 20
+    return 0
+
+
 class TestPreferScoreComponents(unittest.TestCase):
     """Test cases for prefer score components."""
 
@@ -68,6 +77,24 @@ class TestPreferScoreComponents(unittest.TestCase):
         foil_score = 5
         nonfoil_score = 10
         assert etched_score < foil_score < nonfoil_score, "Finish ordering should be: etched < foil < nonfoil"
+
+        # Test ordering for artwork sets: black/white artwork (0) < full-color artwork (20)
+        bw_artwork_score = 0
+        color_artwork_score = 20
+        assert bw_artwork_score < color_artwork_score, "Full-color artwork should be preferred over black/white artwork"
+
+    def test_artwork_set_component_logic(self) -> None:
+        """Test that artwork set scoring logic is correct."""
+        # Test case 1: Card from dbl set (black/white artwork) should get score of 0
+        assert calculate_artwork_set_score("dbl") == 0, "Card from dbl set should get score of 0"
+
+        # Test case 2: Card from regular set (full-color artwork) should get score of 20
+        assert calculate_artwork_set_score("iko") == 20, "Card from iko set should get score of 20"
+        assert calculate_artwork_set_score("thb") == 20, "Card from thb set should get score of 20"
+        assert calculate_artwork_set_score("m21") == 20, "Card from m21 set should get score of 20"
+
+        # Test case 3: Card with no set code should get score of 20 (prefer over black/white sets)
+        assert calculate_artwork_set_score(None) == 20, "Card with no set code should get score of 20"
 
 
 if __name__ == "__main__":

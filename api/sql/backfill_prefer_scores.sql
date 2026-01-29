@@ -85,6 +85,13 @@ SET prefer_score_components = JSONB_BUILD_OBJECT(
                 WHEN raw_card_blob -> 'finishes' ? 'etched' THEN 0
                 ELSE 0
             END
+    ),
+    'artwork_set', (
+        SELECT 
+            CASE 
+                WHEN card_set_code NOT IN ('dbl') THEN 20
+                ELSE 0
+            END
     )
 );
 
