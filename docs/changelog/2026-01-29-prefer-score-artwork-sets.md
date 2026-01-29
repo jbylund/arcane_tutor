@@ -42,7 +42,7 @@ WHEN card_set_code NOT IN ('dbl') THEN 20
 If future sets also use black/white artwork, they can be easily added to the exclusion list:
 
 ```sql
-WHEN card_set_code NOT IN ('dbl', 'other_bw_set') THEN 20
+WHEN card_set_code IS NULL OR card_set_code NOT IN ('dbl', 'other_bw_set') THEN 20
 ```
 
 ## Technical Details

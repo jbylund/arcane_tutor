@@ -18,7 +18,8 @@ def calculate_artwork_set_score(card_set_code: str | None) -> int:
     """Calculate artwork set score based on card set code."""
     # List of sets with black/white artwork that should not receive bonus
     bw_artwork_sets = ("dbl",)
-    if card_set_code not in bw_artwork_sets:
+    # Explicitly handle NULL set codes to match SQL behavior
+    if card_set_code is None or card_set_code not in bw_artwork_sets:
         return 20
     return 0
 
