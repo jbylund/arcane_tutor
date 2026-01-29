@@ -15,6 +15,7 @@ import orjson
 from api.utils import multiprocessing_utils
 
 if TYPE_CHECKING:
+    from multiprocessing.sharedctypes import Synchronized
     from multiprocessing.synchronize import Event as EventType
     from multiprocessing.synchronize import RLock as LockType
 
@@ -54,6 +55,7 @@ class ApiWorker(multiprocessing.Process):
         exit_flag: EventType | None = None,
         debug: bool = False,
         import_guard: LockType = multiprocessing_utils.DEFAULT_LOCK,
+        last_import_time: Synchronized | None = None,
         schema_setup_event: EventType = multiprocessing_utils.DEFAULT_EVENT,
     ) -> None:
         """Initialize the API worker process.
@@ -63,6 +65,7 @@ class ApiWorker(multiprocessing.Process):
             port (int): The port to listen on. Defaults to 8080.
             exit_flag (multiprocessing.Event | None): An optional event to signal process exit.
             import_guard (multiprocessing.RLock): An optional lock to synchronize imports.
+            last_import_time (Synchronized | None): Shared value for last bulk import timestamp (Unix time).
             schema_setup_event (multiprocessing.Event): Event denoting schema setup has been completed.
             debug (bool): Whether to run in debug mode.
         """
@@ -71,11 +74,17 @@ class ApiWorker(multiprocessing.Process):
         self.port = port
         self.exit_flag = exit_flag
         self.import_guard = import_guard
+        self.last_import_time = last_import_time
         self.debug = debug
         self.schema_setup_event = schema_setup_event
 
     @classmethod
-    def get_api(cls: type[ApiWorker], import_guard: LockType, schema_setup_event: EventType) -> falcon.App:
+    def get_api(
+        cls: type[ApiWorker],
+        import_guard: LockType,
+        last_import_time: Synchronized | None,
+        schema_setup_event: EventType,
+    ) -> falcon.App:
         """Create and configure the Falcon API application.
 
         Returns:
@@ -95,6 +104,7 @@ class ApiWorker(multiprocessing.Process):
         api.set_error_serializer(json_error_serializer)  # Use custom JSON error serializer
         sink = APIResource(
             import_guard=import_guard,
+            last_import_time=last_import_time,
             schema_setup_event=schema_setup_event,
         )  # Create the main API resource
         api.add_sink(sink._handle, prefix="/")  # Route all requests to the sink handler
@@ -125,6 +135,7 @@ class ApiWorker(multiprocessing.Process):
 
             app = self.get_api(
                 import_guard=self.import_guard,
+                last_import_time=self.last_import_time,
                 schema_setup_event=self.schema_setup_event,
             )  # Get the Falcon app
             bjoern.run(

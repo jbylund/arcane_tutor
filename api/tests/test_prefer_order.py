@@ -1,5 +1,7 @@
 """Test cases for prefer order functionality."""
 
+import multiprocessing
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -12,7 +14,14 @@ class TestPreferOrder(unittest.TestCase):
 
     def setUp(self) -> None:
         """Set up test fixtures."""
-        self.api_resource = APIResource()
+        self.api_resource = APIResource(
+            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+        )
+
+        def always_true() -> bool:
+            return True
+
+        self.api_resource._import_recent = always_true
 
     def test_prefer_order_enum_values(self) -> None:
         """Test that PreferOrder enum has all expected values."""

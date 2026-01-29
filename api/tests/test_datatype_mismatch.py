@@ -7,6 +7,8 @@ instead of throwing DatatypeMismatch exceptions.
 
 from __future__ import annotations
 
+import multiprocessing
+import time
 from unittest.mock import patch
 
 import falcon
@@ -21,7 +23,14 @@ class TestDatatypeMismatchHandling:
 
     def setup_method(self) -> None:
         """Set up test fixtures."""
-        self.api_resource = APIResource()
+        self.api_resource = APIResource(
+            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+        )
+
+        def always_true() -> bool:
+            return True
+
+        self.api_resource._setup_complete = always_true
 
     def teardown_method(self) -> None:
         """Clean up test fixtures."""
@@ -32,7 +41,9 @@ class TestDatatypeMismatchHandling:
     def test_search_handles_datatype_mismatch(self) -> None:
         """Test that DatatypeMismatch in search raises HTTPBadRequest."""
         # Mock the _run_query method to raise DatatypeMismatch
-        with patch.object(self.api_resource, "_run_query") as mock_run_query:
+        with (
+            patch.object(self.api_resource, "_run_query") as mock_run_query,
+        ):
             mock_run_query.side_effect = psycopg.errors.DatatypeMismatch(
                 'column "cmc" must appear in the GROUP BY clause or be used in an aggregate function',
             )
@@ -49,7 +60,9 @@ class TestDatatypeMismatchHandling:
     def test_search_handles_datatype_mismatch_main_query_only(self) -> None:
         """Test that DatatypeMismatch is only caught on the main query."""
         # Mock _run_query to fail on first call (main query)
-        with patch.object(self.api_resource, "_run_query") as mock_run_query:
+        with (
+            patch.object(self.api_resource, "_run_query") as mock_run_query,
+        ):
             mock_run_query.side_effect = psycopg.errors.DatatypeMismatch(
                 "WHERE clause must be type boolean, not type integer",
             )

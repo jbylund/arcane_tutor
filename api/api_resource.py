@@ -9,6 +9,7 @@ import datetime
 import inspect
 import itertools
 import logging
+import multiprocessing
 import os
 import pathlib
 import random
@@ -34,6 +35,7 @@ from api.card_processing import preprocess_card
 from api.enums import CardOrdering, PreferOrder, SortDirection, UniqueOn
 from api.noscript_helpers import generate_results_count_html, generate_results_html
 from api.parsing import generate_sql_query, parse_scryfall_query
+from api.scryfall_bulk_data_fetcher import BulkDataKey, ScryfallBulkDataFetcher
 from api.settings import settings
 from api.tagger_client import TaggerClient
 from api.utils import db_utils, error_monitoring, multiprocessing_utils
@@ -41,6 +43,7 @@ from api.utils.timer import Timer
 from api.utils.type_conversions import _get_type_name, make_type_converting_wrapper
 
 if TYPE_CHECKING:
+    from multiprocessing.sharedctypes import Synchronized
     from multiprocessing.synchronize import Event as EventType
     from multiprocessing.synchronize import RLock as LockType
 
@@ -52,6 +55,9 @@ logger = logging.getLogger(__name__)
 # pylint: disable=c-extension-no-member
 NOT_FOUND = 404
 IMPORT_EXPORT = True
+MIN_IMPORT_INTERVAL = 300
+IMPORT_LOCK_TIMEOUT = 2
+MIN_IMPORT_CARDS = 90_000
 
 
 def cached(cache: Any, key: Any = None) -> Any:  # noqa: ANN401
@@ -124,12 +130,14 @@ class APIResource:
         self,
         *,
         import_guard: LockType = multiprocessing_utils.DEFAULT_LOCK,
+        last_import_time: Synchronized | None = None,
         schema_setup_event: EventType = multiprocessing_utils.DEFAULT_EVENT,
     ) -> None:
         """Initialize an APIResource object, set up connection pool and action map.
 
         Sets up the database connection pool and action mapping for the API.
         """
+        self._bulk_data_fetcher = ScryfallBulkDataFetcher()
         self._conn_pool: psycopg_pool.ConnectionPool = db_utils.make_pool()
         # Create action map with type-converting wrappers for all public methods
         self.action_map = {}
@@ -153,6 +161,7 @@ class APIResource:
             self._query_cache = LRUCache(maxsize=1)
         self._session = requests.Session()
         self._import_guard: LockType = import_guard
+        self._last_import_time: Synchronized = last_import_time or multiprocessing.Value("d", 0.0, lock=True)
         self._schema_setup_event: EventType = schema_setup_event
 
         version = datetime.datetime.now(tz=datetime.UTC).strftime("%Y%m%d")
@@ -162,6 +171,7 @@ class APIResource:
         self._tagger_client = TaggerClient()
         logger.info("Worker with pid %d has conn pool %s", os.getpid(), self._conn_pool)
         self.setup_schema()
+        self.import_data()  # ensures that database is setup
 
     @cached(cache={}, key=lambda args, kwds: args[1] if len(args) > 1 else kwds.get("filename"))
     def read_sql(self, filename: str) -> str:
@@ -401,38 +411,7 @@ class APIResource:
             Any: The card data (likely a list of dicts).
 
         """
-        data_key = "default_cards"
-        cache_dir_path = pathlib.Path("/data/api")
-        if not cache_dir_path.exists():
-            cache_dir_path = pathlib.Path("/tmp/api")  # noqa: S108
-            cache_dir_path.mkdir(parents=True, exist_ok=True)
-        cache_file_path = cache_dir_path / f"{data_key}.json"
-        try:
-            with cache_file_path.open() as f:
-                response = orjson.loads(f.read())
-        except FileNotFoundError:
-            logger.info("Cache miss, %s not found!", cache_file_path)
-        else:
-            logger.info("Cache hit, %s found!", cache_file_path)
-            return response
-        response = orjson.loads(self._session.get("https://api.scryfall.com/bulk-data", timeout=5).content)["data"]
-        by_type = {r["type"]: r for r in response}
-        oracle_cards_download_uri = by_type[data_key]["download_uri"]
-        logger.info("Downloading %s from %s", data_key, oracle_cards_download_uri)
-        before = time.monotonic()
-        response = orjson.loads(self._session.get(oracle_cards_download_uri, timeout=30).content)
-        logger.info("Downloaded %s from %s in %.3f seconds", data_key, oracle_cards_download_uri, time.monotonic() - before)
-        try:
-            with cache_file_path.open("w") as f:
-                f.write(
-                    orjson.dumps(
-                        response,
-                        option=orjson.OPT_SORT_KEYS | orjson.OPT_INDENT_2,
-                    ).decode("utf-8"),
-                )
-        except FileNotFoundError:
-            logger.error("Failed to write cache file: %s", cache_file_path)
-        return response
+        return self._bulk_data_fetcher.get_data_for_key(data_key=BulkDataKey.DEFAULT_CARDS)
 
     def setup_schema(self, *_: object, **__: object) -> None:
         """Set up the database schema and apply migrations as needed."""
@@ -508,7 +487,7 @@ class APIResource:
             processed_cards = preprocess_card(card)
             for processed_card in processed_cards:
                 scryfall_id = processed_card["scryfall_id"]
-                face_idx = processed_card.get("face_idx", 1)
+                face_idx = processed_card["face_idx"]
                 key_to_card[(scryfall_id, face_idx)] = processed_card
         return list(key_to_card.values())
 
@@ -520,61 +499,100 @@ class APIResource:
             key_frequency.update(k for k, v in card.items() if v not in [None, [], {}])
         return key_frequency.most_common()
 
+    @cached(cache=TTLCache(maxsize=1, ttl=60), key=lambda _args, _kwds: None)
     def _setup_complete(self) -> True:
         """Return True if the setup is complete."""
         try:
             with self._conn_pool.connection() as conn:
                 conn = typecast("Connection", conn)
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT COUNT(1) AS num_cards FROM (SELECT card_name FROM magic.cards LIMIT 1)")
+                    cursor.execute("SELECT COUNT(1) AS num_cards FROM magic.cards")
                     cards_found = cursor.fetchall()[0]["num_cards"]
                     logger.info("Found %d cards in pid %d", cards_found, os.getpid())
-                    return cards_found > 0
+                    return cards_found > MIN_IMPORT_CARDS
         except Exception as oops:
             logger.error("Error checking if setup is complete: %s", oops, exc_info=True)
             return False
 
-    @cached(cache={}, key=lambda _args, _kwds: None)
+    def _import_recent(self) -> bool:
+        """Return True if a bulk import completed in the last 5 minutes (or setup is complete when no shared timestamp)."""
+        if self._last_import_time is None:
+            return self._setup_complete()
+        # Unlocked read: c_double is atomic on typical platforms; avoids lock contention on fast path
+        t = self._last_import_time.get_obj().value
+        if not t:
+            logger.info("No import recorded...")
+            return False
+        time_since_import = time.time() - t
+        retval = time_since_import < MIN_IMPORT_INTERVAL
+        logger.info("Last import was %d seconds ago, %s", time_since_import, retval)
+        return retval
+
+    def _run_import_under_lock(self) -> None:
+        """Run the import flow; caller must hold the import lock."""
+        if self._import_recent():
+            logger.info("Import recent slowpath...")
+            return None
+        self.setup_schema()
+
+        to_insert = self._get_cards_to_insert()
+
+        before = time.monotonic()
+
+        result = self._load_cards_with_staging(to_insert)
+
+        after_transfer = time.monotonic()
+
+        if result["status"] == "success":
+            if self._last_import_time is not None:
+                self._last_import_time.value = time.time()
+            total_time = after_transfer - before
+            rate = len(to_insert) / total_time if total_time > 0 else 0
+            logger.info(
+                "Loaded %d cards in %.2f seconds, rate: %.2f cards/s...",
+                result["cards_loaded"],
+                total_time,
+                rate,
+            )
+            self.backfill_prefer_scores()
+            self._last_import_time.value = time.time()
+            return result["sample_cards"]
+        logger.error("Failed to import data: %s", result["message"])
+        return None
+
+    @cached(
+        cache=TTLCache(maxsize=1, ttl=MIN_IMPORT_INTERVAL),
+        key=lambda _args, _kwds: None,
+    )
     def import_data(self, **_: object) -> None:
         """Import data from Scryfall and insert into the database."""
-        if self._setup_complete():
-            # check without taking the lock
-            # so the majority of the time we will never have to take the lock
-            logger.info("Setup complete fastpath...")
+        before = time.monotonic()
+        if self._import_recent():
+            after = time.monotonic()
+            total_time = after - before
+            logger.info("Import recent fastpath took %.2f seconds in pid %d", total_time, os.getpid())
+            # check without taking the lock so the majority of the time we never take the lock
             return None
 
-        with self._import_guard:
+        logger.info("Hitting slowpath in pid %d", os.getpid())
+
+        import_lock = self._last_import_time.get_lock()
+
+        acquired = import_lock.acquire(timeout=IMPORT_LOCK_TIMEOUT)
+        if not acquired:
             if self._setup_complete():
-                logger.info("Setup complete slowpath...")
-                return None
-            self.setup_schema()
-
-            to_insert = self._get_cards_to_insert()
-
-            before = time.monotonic()
-
-            # Use the consolidated loading method
-            result = self._load_cards_with_staging(to_insert)
-
-            after_transfer = time.monotonic()
-
-            if result["status"] == "success":
-                total_time = after_transfer - before
-                rate = len(to_insert) / total_time if total_time > 0 else 0
                 logger.info(
-                    "Loaded %d cards in %.2f seconds, rate: %.2f cards/s...",
-                    result["cards_loaded"],
-                    total_time,
-                    rate,
+                    "Timed out waiting %.0fs for import lock; setup complete, skipping in pid %d",
+                    IMPORT_LOCK_TIMEOUT,
+                    os.getpid(),
                 )
-
-                # update prefer scores after loading cards
-                self.backfill_prefer_scores()
-
-                # Return the sample cards as before
-                return result["sample_cards"]
-            logger.error("Failed to import data: %s", result["message"])
-            return None
+                return None
+            # acquire with no timeout...
+            import_lock.acquire()
+        try:
+            return self._run_import_under_lock()
+        finally:
+            import_lock.release()
 
     def search(  # noqa: PLR0913
         self,
@@ -605,7 +623,6 @@ class APIResource:
             Dict containing search results and metadata.
         """
         set_cache_header(falcon_response, duration=timedelta(seconds=90))
-        self.import_data()  # ensures that database is setup
         return self._search(
             query=query or q,
             orderby=orderby,
@@ -629,6 +646,12 @@ class APIResource:
         query: str | None = None,
         unique: UniqueOn = UniqueOn.CARD,
     ) -> dict[str, Any]:
+        if not self._setup_complete():
+            raise falcon.HTTPServiceUnavailable(
+                title="Service Unavailable",
+                description="Setup is not complete, please try again later.",
+            ) from None
+
         timer = Timer()
 
         try:
@@ -1972,12 +1995,6 @@ class APIResource:
 
         self.setup_schema()
 
-        # TODO:
-        # this is a little bit of a spray and pray method
-        # what I want to do is implement a priority ordering
-        # for cards, so that we import only one card of each name
-        # but we use frame, printing time, etc. to get the best instance
-        # of that card (likely the one with the highest quality artwork)
         processed_cards = []
         for icard in cards:
             processed_cards.extend(preprocess_card(icard))
@@ -2001,7 +2018,7 @@ class APIResource:
                 cursor.execute(f"set statement_timeout = {statement_timeout}")
 
                 page_size = 6000
-                cards_loaded = 0
+                cards_loaded = cards_sent = 0
                 for page in itertools.batched(cards, page_size):
                     # Create staging table with unique name
                     cursor.execute(f"CREATE TEMPORARY TABLE {staging_table_name} (card_blob jsonb)")
@@ -2040,11 +2057,17 @@ class APIResource:
                     # could we update the on conflict to replace?
 
                     cursor.execute(insert_query)
+                    cards_sent += len(page)
                     cards_loaded += cursor.rowcount
 
                     # Drop the staging table
                     cursor.execute(f"DROP TABLE {staging_table_name}")
-                    logger.info("%d of %d cards loaded", cards_loaded, len(cards))
+                    logger.info(
+                        "%d cards loaded, %d cards sent, of %d cards",
+                        cards_loaded,
+                        cards_sent,
+                        len(cards),
+                    )
 
                 conn.commit()
 

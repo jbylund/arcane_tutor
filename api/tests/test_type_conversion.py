@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import multiprocessing
+import time
 from typing import Any
 from unittest.mock import patch
 
@@ -114,7 +116,9 @@ class TestTypeConversion:
                 "api.api_resource.TaggerClient",
             ),
         ):
-            api_resource = APIResource()
+            api_resource = APIResource(
+                last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+            )
 
             # Check that discover_and_import_all_tags is wrapped
             assert "discover_and_import_all_tags" in api_resource.action_map
@@ -184,7 +188,9 @@ class TestTypeConversion:
                 "api.api_resource.TaggerClient",
             ),
         ):
-            api_resource = APIResource()
+            api_resource = APIResource(
+                last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+            )
 
             # Test directly with the actual method
             original_method = api_resource.discover_and_import_all_tags
