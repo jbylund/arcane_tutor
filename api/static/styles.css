@@ -315,34 +315,10 @@ body {
 
 .results-container {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 15px;
   margin-top: 0;
   width: 100%;
-}
-
-@media (min-width: 410px) {
-  .results-container {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
-
-@media (min-width: 750px) {
-  .results-container {
-    grid-template-columns: repeat(3, 1fr);
-  }
-}
-
-@media (min-width: 1370px) {
-  .results-container {
-    grid-template-columns: repeat(4, 1fr);
-  }
-}
-
-@media (min-width: 2500px) {
-  .results-container {
-    grid-template-columns: repeat(5, 1fr);
-  }
 }
 
 .card-item {

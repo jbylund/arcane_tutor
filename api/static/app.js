@@ -24,7 +24,6 @@ class CardSearch {
     this.cardsData = new Map(); // Store card data by ID
     this.lastRequestedUrl = null; // Track the last requested URL to prevent duplicate requests
     this.isAscending = true; // Track order direction
-    this.currentCardCount = 0; // Track current number of cards displayed for resize handling
 
     // Autocomplete properties
     this.commonCardTypes = []; // Will store the common card types
@@ -308,11 +307,6 @@ class CardSearch {
     this.orderToggle.addEventListener('click', () => {
       this.toggleOrderDirection();
     });
-
-    // Add resize listener to update columns dynamically
-    window.addEventListener('resize', () => {
-      this.updateGridColumns(this.currentCardCount);
-    });
   }
 
   handleSearch(query) {
@@ -559,12 +553,6 @@ class CardSearch {
 
     this.showResultsCount(totalCards, query, elapsed);
 
-    // Store card count for resize handling
-    this.currentCardCount = cards.length;
-
-    // Set max columns based on card count to prevent more columns than cards
-    this.updateGridColumns(cards.length);
-
     // Calculate number of columns in the first row for fetchpriority
     const firstRowCount = this.calculateFirstRowCount(cards.length);
 
@@ -577,45 +565,19 @@ class CardSearch {
     window.history.replaceState({ arrivalTime: Date.now() }, '', url);
   }
 
-  getColumnsFromViewportWidth() {
-    // Determine columns based on screen width breakpoints
-    const viewportWidth = window.innerWidth;
-
-    if (viewportWidth < 410) {
-      return 1;
-    } else if (viewportWidth < 750) {
-      return 2;
-    } else if (viewportWidth < 1370) {
-      return 3;
-    } else if (viewportWidth < 2500) {
-      return 4;
-    } else {
-      return 5;
-    }
-  }
-
   calculateFirstRowCount(cardCount) {
-    // Calculate how many cards fit in the first row based on viewport width and card count
-    const columnsFromWidth = this.getColumnsFromViewportWidth();
+    // Calculate how many cards fit in the first row based on viewport width
+    // With grid-template-columns: repeat(auto-fit, minmax(240px, 1fr))
+    // Each column needs at least 240px plus gap (15px)
+    const containerWidth = this.resultsContainer.clientWidth || window.innerWidth - 30; // fallback with padding
+    const minColumnWidth = 240;
+    const gap = 15;
 
-    // Return the minimum of columns from width and card count
-    return Math.min(columnsFromWidth, cardCount);
-  }
+    // Calculate approximate columns: floor((containerWidth + gap) / (minColumnWidth + gap))
+    const approximateColumns = Math.max(1, Math.floor((containerWidth + gap) / (minColumnWidth + gap)));
 
-  updateGridColumns(cardCount) {
-    // Only update if we have cards displayed
-    if (cardCount === 0) {
-      return;
-    }
-
-    // Determine columns based on screen width breakpoints
-    const columnsFromWidth = this.getColumnsFromViewportWidth();
-
-    // Use the minimum of columns from width and card count
-    const actualColumns = Math.min(columnsFromWidth, cardCount);
-
-    // Set the grid-template-columns directly
-    this.resultsContainer.style.gridTemplateColumns = `repeat(${actualColumns}, 1fr)`;
+    // Return the minimum of columns that fit and card count
+    return Math.min(approximateColumns, cardCount);
   }
 
   buildImageUrl(card, size) {
@@ -656,15 +618,12 @@ class CardSearch {
     }
 
     // Build srcset and sizes for responsive images
-    // sizes attribute matches the grid breakpoints:
-    // - < 410px: 1 column (100vw minus padding/gap)
-    // - 410-750px: 2 columns (50vw minus gap/padding)
-    // - 750-1370px: 3 columns (33.33vw minus gap/padding)
-    // - 1370-2500px: 4 columns (25vw minus gap/padding)
-    // - >= 2500px: 5 columns (20vw minus gap/padding)
+    // With auto-fit grid using minmax(240px, 1fr), each column is at least 240px
+    // and grows to fill available space. We approximate the column width based on viewport.
+    // sizes attribute provides hint to browser for selecting appropriate image width
     const srcset = `${this.escapeHtml(image280)} 280w, ${this.escapeHtml(image388)} 388w, ${this.escapeHtml(image538)} 538w, ${this.escapeHtml(image745)} 745w`;
     const sizes =
-      '(max-width: 410px) calc(100vw - 60px), (max-width: 750px) calc(50vw - 30px), (max-width: 1370px) calc(33.33vw - 25px), (max-width: 2500px) calc(25vw - 20px), calc(20vw - 15px)';
+      '(max-width: 540px) calc(100vw - 50px), (max-width: 800px) calc(50vw - 40px), (max-width: 1200px) calc(33.33vw - 35px), (max-width: 1800px) calc(25vw - 30px), calc(20vw - 25px)';
 
     // Use 388px as default src (good middle ground for initial load)
     // Add fetchpriority="high" for first row cards to improve LCP
