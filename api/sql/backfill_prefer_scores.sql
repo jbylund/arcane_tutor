@@ -89,7 +89,7 @@ SET prefer_score_components = JSONB_BUILD_OBJECT(
     'artwork_set', (
         SELECT 
             CASE 
-                WHEN card_set_code NOT IN ('dbl') THEN 20
+                WHEN card_set_code IS NULL OR card_set_code NOT IN ('dbl') THEN 20
                 ELSE 0
             END
     )

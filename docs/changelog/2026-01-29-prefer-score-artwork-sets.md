@@ -66,7 +66,7 @@ Located in `api/sql/backfill_prefer_scores.sql`:
 'artwork_set', (
     SELECT 
         CASE 
-            WHEN card_set_code NOT IN ('dbl') THEN 20
+            WHEN card_set_code IS NULL OR card_set_code NOT IN ('dbl') THEN 20
             ELSE 0
         END
 )
@@ -80,12 +80,12 @@ The component reads from the `card_set_code` column in the `magic.cards` table:
 
 ## Testing
 
-- **4 new unit tests** validating component scoring logic
+- **New test method** `test_artwork_set_component_logic` with multiple assertions
 - Tests verify:
   - Cards from 'dbl' set get 0 points
   - Cards from other sets (iko, thb, m21) get 20 points
   - Cards with no set code get 20 points (preferred over black/white sets)
-  - Overall preference ordering: black/white artwork < full-color artwork
+  - Overall preference ordering in `test_preference_ordering`
 
 ## Migration
 
