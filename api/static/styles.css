@@ -315,6 +315,9 @@ body {
 
 .results-container {
   display: grid;
+  /* Using auto-fit (not auto-fill) so empty columns collapse when there are fewer cards than columns.
+     This matches the previous JS behavior where 2 cards on wide screen = 2 wide columns, not 2 narrow + 3 empty.
+     Note: prefer_score_tuner.html uses auto-fill for its printings-grid, which is appropriate for that use case. */
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 15px;
   margin-top: 0;

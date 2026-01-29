@@ -618,12 +618,12 @@ class CardSearch {
     }
 
     // Build srcset and sizes for responsive images
-    // With auto-fit grid using minmax(240px, 1fr), each column is at least 240px
-    // and grows to fill available space. We approximate the column width based on viewport.
-    // sizes attribute provides hint to browser for selecting appropriate image width
+    // With auto-fit grid using minmax(240px, 1fr), columns transition at:
+    // 495px (1->2 cols), 750px (2->3 cols), 1005px (3->4 cols), 1260px (4->5 cols), 1515px (5->6 cols)
+    // sizes attribute approximates column width for optimal image selection
     const srcset = `${this.escapeHtml(image280)} 280w, ${this.escapeHtml(image388)} 388w, ${this.escapeHtml(image538)} 538w, ${this.escapeHtml(image745)} 745w`;
     const sizes =
-      '(max-width: 540px) calc(100vw - 50px), (max-width: 800px) calc(50vw - 40px), (max-width: 1200px) calc(33.33vw - 35px), (max-width: 1800px) calc(25vw - 30px), calc(20vw - 25px)';
+      '(max-width: 495px) calc(100vw - 50px), (max-width: 750px) calc(50vw - 40px), (max-width: 1005px) calc(33.33vw - 35px), (max-width: 1260px) calc(25vw - 30px), (max-width: 1515px) calc(20vw - 25px), calc(16.67vw - 20px)';
 
     // Use 388px as default src (good middle ground for initial load)
     // Add fetchpriority="high" for first row cards to improve LCP
