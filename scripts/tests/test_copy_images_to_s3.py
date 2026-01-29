@@ -4,12 +4,59 @@ import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import pytest
 import requests
 
 from scripts.copy_images_to_s3 import (
+    Image,
     download_image,
     fetch_cards_from_db,
 )
+
+
+def test_image_class_equality() -> None:
+    """Test Image class equality."""
+    img1 = Image(set_code="iko", collector_number="123", face_idx="1", size="280")
+    img2 = Image(set_code="iko", collector_number="123", face_idx="1", size="280")
+    img3 = Image(set_code="iko", collector_number="123", face_idx="2", size="280")
+    img4 = Image(set_code="thb", collector_number="123", face_idx="1", size="280")
+
+    # Same images should be equal
+    assert img1 == img2
+
+    # Different face_idx should not be equal
+    assert img1 != img3
+
+    # Different set_code should not be equal
+    assert img1 != img4
+
+
+def test_image_class_hash() -> None:
+    """Test Image class hashing for use in sets."""
+    img1 = Image(set_code="iko", collector_number="123", face_idx="1", size="280")
+    img2 = Image(set_code="iko", collector_number="123", face_idx="1", size="280")
+    img3 = Image(set_code="iko", collector_number="123", face_idx="2", size="280")
+
+    # Same images should have same hash
+    assert hash(img1) == hash(img2)
+
+    # Can be used in sets
+    image_set = {img1, img2, img3}
+    assert len(image_set) == 2  # img1 and img2 are duplicates
+
+    # Can check membership
+    assert img1 in image_set
+    assert img2 in image_set
+    assert img3 in image_set
+
+
+def test_image_class_immutability() -> None:
+    """Test that Image class is immutable."""
+    img = Image(set_code="iko", collector_number="123", face_idx="1", size="280")
+
+    # Attempting to modify should raise an error
+    with pytest.raises(AttributeError):
+        img.set_code = "thb"  # type: ignore
 
 
 def test_download_image_success() -> None:
