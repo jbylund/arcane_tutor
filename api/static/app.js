@@ -250,6 +250,7 @@ class CardSearch {
       } else {
         this.clearResults();
         this.lastRequestedUrl = null;
+        this.isRestoringFromHistory = false;
       }
     });
 
