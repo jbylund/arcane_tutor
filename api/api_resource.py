@@ -34,6 +34,7 @@ from api.card_processing import preprocess_card
 from api.enums import CardOrdering, PreferOrder, SortDirection, UniqueOn
 from api.noscript_helpers import generate_results_count_html, generate_results_html
 from api.parsing import generate_sql_query, parse_scryfall_query
+from api.scryfall_bulk_data_fetcher import BulkDataKey, ScryfallBulkDataFetcher
 from api.settings import settings
 from api.tagger_client import TaggerClient
 from api.utils import db_utils, error_monitoring, multiprocessing_utils
@@ -130,6 +131,7 @@ class APIResource:
 
         Sets up the database connection pool and action mapping for the API.
         """
+        self._bulk_data_fetcher = ScryfallBulkDataFetcher()
         self._conn_pool: psycopg_pool.ConnectionPool = db_utils.make_pool()
         # Create action map with type-converting wrappers for all public methods
         self.action_map = {}
@@ -401,38 +403,7 @@ class APIResource:
             Any: The card data (likely a list of dicts).
 
         """
-        data_key = "default_cards"
-        cache_dir_path = pathlib.Path("/data/api")
-        if not cache_dir_path.exists():
-            cache_dir_path = pathlib.Path("/tmp/api")  # noqa: S108
-            cache_dir_path.mkdir(parents=True, exist_ok=True)
-        cache_file_path = cache_dir_path / f"{data_key}.json"
-        try:
-            with cache_file_path.open() as f:
-                response = orjson.loads(f.read())
-        except FileNotFoundError:
-            logger.info("Cache miss, %s not found!", cache_file_path)
-        else:
-            logger.info("Cache hit, %s found!", cache_file_path)
-            return response
-        response = orjson.loads(self._session.get("https://api.scryfall.com/bulk-data", timeout=5).content)["data"]
-        by_type = {r["type"]: r for r in response}
-        oracle_cards_download_uri = by_type[data_key]["download_uri"]
-        logger.info("Downloading %s from %s", data_key, oracle_cards_download_uri)
-        before = time.monotonic()
-        response = orjson.loads(self._session.get(oracle_cards_download_uri, timeout=30).content)
-        logger.info("Downloaded %s from %s in %.3f seconds", data_key, oracle_cards_download_uri, time.monotonic() - before)
-        try:
-            with cache_file_path.open("w") as f:
-                f.write(
-                    orjson.dumps(
-                        response,
-                        option=orjson.OPT_SORT_KEYS | orjson.OPT_INDENT_2,
-                    ).decode("utf-8"),
-                )
-        except FileNotFoundError:
-            logger.error("Failed to write cache file: %s", cache_file_path)
-        return response
+        return self._bulk_data_fetcher.get_data_for_key(data_key=BulkDataKey.DEFAULT_CARDS)
 
     def setup_schema(self, *_: object, **__: object) -> None:
         """Set up the database schema and apply migrations as needed."""
@@ -508,7 +479,7 @@ class APIResource:
             processed_cards = preprocess_card(card)
             for processed_card in processed_cards:
                 scryfall_id = processed_card["scryfall_id"]
-                face_idx = processed_card.get("face_idx", 1)
+                face_idx = processed_card["face_idx"]
                 key_to_card[(scryfall_id, face_idx)] = processed_card
         return list(key_to_card.values())
 
