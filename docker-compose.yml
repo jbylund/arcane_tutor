@@ -129,6 +129,7 @@ services:
       - "28080:8080"
     volumes:
       - ./data/api/dev/:/data/api
+      - ./api/static:/app/api/static
     profiles:
       - dev
 
@@ -171,6 +172,7 @@ services:
       - "18080:8080"
     volumes:
       - ./data/api/prod/:/data/api
+      - ./api/static:/app/api/static
     profiles:
       - prod
 
