@@ -15,6 +15,7 @@ import random
 import re
 import secrets
 import time
+import multiprocessing
 import urllib.parse
 from datetime import timedelta
 from functools import wraps
@@ -160,7 +161,7 @@ class APIResource:
             self._query_cache = LRUCache(maxsize=1)
         self._session = requests.Session()
         self._import_guard: LockType = import_guard
-        self._last_import_time: Synchronized | None = last_import_time
+        self._last_import_time: Synchronized = last_import_time or multiprocessing.Value("d", 0.0, lock=True)
         self._schema_setup_event: EventType = schema_setup_event
 
         version = datetime.datetime.now(tz=datetime.UTC).strftime("%Y%m%d")
@@ -498,7 +499,7 @@ class APIResource:
             key_frequency.update(k for k, v in card.items() if v not in [None, [], {}])
         return key_frequency.most_common()
 
-    @cached(cache={}, key=lambda _args, _kwds: None)
+    @cached(cache=TTLCache(maxsize=1, ttl=60), key=lambda _args, _kwds: None)
     def _setup_complete(self) -> True:
         """Return True if the setup is complete."""
         try:
