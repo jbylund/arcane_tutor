@@ -54,21 +54,6 @@ class Image:
     face_idx: str
     size: str
 
-    def __hash__(self) -> int:
-        """Return hash of the Image for use in sets and dicts."""
-        return hash((self.set_code, self.collector_number, self.face_idx, self.size))
-
-    def __eq__(self, other: object) -> bool:
-        """Check equality with another Image."""
-        if not isinstance(other, Image):
-            return NotImplemented
-        return (
-            self.set_code == other.set_code
-            and self.collector_number == other.collector_number
-            and self.face_idx == other.face_idx
-            and self.size == other.size
-        )
-
 # Image size configuration
 ORIGINAL_WIDTH = 745  # this seems to be the size of the pngs that scryfall returns
 # Four sizes uniformly spread between 280 and 745
@@ -490,11 +475,11 @@ def check_cwebp() -> None:
         sys.exit(1)
 
 
-def get_db_cards(args: Args) -> set[Image]:
-    """Get all cards in the database.
+def get_db_cards(args: Args) -> tuple[set[Image], list[dict[str, Any]]]:
+    """Get all cards from the database.
 
     Returns:
-        Set of Image objects representing all card images that should exist
+        Tuple of (set of Image objects, list of card dictionaries with full data)
     """
     logger.info("Connecting to database...")
     conn = get_database_connection()
@@ -506,10 +491,10 @@ def get_db_cards(args: Args) -> set[Image]:
 
     if not db_cards:
         logger.warning("No cards found to process")
-        return set()
+        return set(), []
 
     logger.info("Found %d cards in database, should create %d images", len(db_cards), len(db_cards) * 4)
-    return {
+    image_set = {
         Image(
             set_code=card["card_set_code"],
             collector_number=card["collector_number"],
@@ -519,6 +504,7 @@ def get_db_cards(args: Args) -> set[Image]:
         for card in db_cards
         for size in [SMALL_KEY, MEDIUM_KEY, LARGE_KEY, XLARGE_KEY]
     }
+    return image_set, db_cards
 
 
 def get_s3_cards(args: Args) -> set[Image]:
@@ -581,14 +567,8 @@ def main() -> None:
     configure_env()
 
     # Get Image objects representing what should exist in DB and what exists in S3
-    db_images = get_db_cards(args)
+    db_images, db_cards = get_db_cards(args)
     s3_images = get_s3_cards(args)
-
-    # Fetch raw card data from database to get png_url
-    logger.info("Connecting to database for card details...")
-    conn = get_database_connection()
-    db_cards = fetch_cards_from_db(conn, limit=args.limit, set_code=args.set_code)
-    conn.close()
 
     # Group missing images by card to build work items
     # Map from (set_code, collector_number, face_idx) -> card dict
@@ -620,7 +600,7 @@ def main() -> None:
         card_data = card_lookup.get(card_key)
 
         if card_data is None:
-            logger.warning(f"Card {set_code}/{collector_number} face {face_idx} not found in database")
+            logger.warning("Card %s/%s face %s not found in database", set_code, collector_number, face_idx)
             continue
 
         cards_with_missing_images.append(

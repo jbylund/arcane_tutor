@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import pytest
 import requests
 
 from scripts.copy_images_to_s3 import (
@@ -54,12 +55,8 @@ def test_image_class_immutability() -> None:
     img = Image(set_code="iko", collector_number="123", face_idx="1", size="280")
 
     # Attempting to modify should raise an error
-    try:
+    with pytest.raises(AttributeError):
         img.set_code = "thb"  # type: ignore
-        msg = "Should not be able to modify frozen dataclass"
-        raise AssertionError(msg)
-    except AttributeError:
-        pass  # Expected
 
 
 def test_download_image_success() -> None:
