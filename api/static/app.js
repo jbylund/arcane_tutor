@@ -1052,7 +1052,7 @@ class CardSearch {
       window.history.pushState({ arrivalTime: arrivalTime }, '', pushedUrl);
       console.log(`+Pushing ${pushedUrl} to history`);
     } else {
-      console.log(
+      console.debug(
         `-Not pushing history: arrivalTime: ${arrivalTime}, stayedLongEnough: ${stayedLongEnough}, newUrl: ${newUrl}, window.location.href: ${window.location.href}`
       );
     }
