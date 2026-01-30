@@ -1007,6 +1007,11 @@ class APIResource:
         - Extended art (12 points if present)
         - Highres scan (8 points if image_status='highres_scan')
         - Has paper (6 points if 'paper' in games array)
+        - Language (English: 40 points)
+        - Legendary frame (5 points if 'legendary' in frame_effects)
+        - Non-showcase (10 points if 'showcase' not in frame_effects)
+        - Finish (nonfoil: 10, foil: 5, etched: 0)
+        - Artwork set (full-color: 20, black/white: 0)
 
         Returns:
             Dict with status and count of cards updated
