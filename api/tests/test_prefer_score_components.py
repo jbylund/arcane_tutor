@@ -24,6 +24,15 @@ def calculate_artwork_set_score(card_set_code: str | None) -> int:
     return 0
 
 
+def calculate_non_showcase_score(frame_effects: list[str] | None) -> int:
+    """Calculate non-showcase score based on frame_effects list."""
+    # Give bonus if frame_effects does not contain 'showcase'
+    # Cards with no frame_effects or empty array are considered non-showcase
+    if frame_effects is None or "showcase" not in frame_effects:
+        return 10
+    return 0
+
+
 class TestPreferScoreComponents(unittest.TestCase):
     """Test cases for prefer score components."""
 
@@ -84,6 +93,11 @@ class TestPreferScoreComponents(unittest.TestCase):
         color_artwork_score = 20
         assert bw_artwork_score < color_artwork_score, "Full-color artwork should be preferred over black/white artwork"
 
+        # Test ordering for showcase: showcase (0) < non-showcase (10)
+        showcase_score = 0
+        non_showcase_score = 10
+        assert showcase_score < non_showcase_score, "Non-showcase cards should be preferred over showcase cards"
+
     def test_artwork_set_component_logic(self) -> None:
         """Test that artwork set scoring logic is correct."""
         # Test case 1: Card from dbl set (black/white artwork) should get score of 0
@@ -96,6 +110,20 @@ class TestPreferScoreComponents(unittest.TestCase):
 
         # Test case 3: Card with no set code should get score of 20 (prefer over black/white sets)
         assert calculate_artwork_set_score(None) == 20, "Card with no set code should get score of 20"
+
+    def test_non_showcase_component_logic(self) -> None:
+        """Test that non-showcase scoring logic is correct."""
+        # Test case 1: Card with showcase frame effect should get score of 0
+        assert calculate_non_showcase_score(["showcase"]) == 0, "Showcase card should get score of 0"
+        assert calculate_non_showcase_score(["showcase", "legendary"]) == 0, "Showcase card with other effects should get score of 0"
+
+        # Test case 2: Card without showcase frame effect should get score of 10
+        assert calculate_non_showcase_score(["legendary"]) == 10, "Non-showcase card should get score of 10"
+        assert calculate_non_showcase_score(["etched"]) == 10, "Non-showcase card with other effects should get score of 10"
+
+        # Test case 3: Card with no frame_effects should get score of 10
+        assert calculate_non_showcase_score(None) == 10, "Card with no frame_effects should get score of 10"
+        assert calculate_non_showcase_score([]) == 10, "Card with empty frame_effects should get score of 10"
 
 
 if __name__ == "__main__":

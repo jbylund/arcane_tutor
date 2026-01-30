@@ -77,6 +77,13 @@ SET prefer_score_components = JSONB_BUILD_OBJECT(
                 ELSE 0
             END
     ),
+    'non_showcase', (
+        SELECT 
+            CASE 
+                WHEN NOT (COALESCE(raw_card_blob -> 'frame_effects', '[]'::jsonb) ? 'showcase') THEN 10
+                ELSE 0
+            END
+    ),
     'finish', (
         SELECT 
             CASE 
