@@ -445,19 +445,15 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
 
         # Get left and right explanations
         lhs_str = self.lhs.to_human_explanation()
-        rhs_str = self._explain_value(self.rhs, self.lhs) if isinstance(self.rhs, (StringValueNode, NumericValueNode, ManaValueNode, RegexValueNode)) else self.rhs.to_human_explanation()
+        rhs_str = self._explain_value(self.rhs, self.lhs) if isinstance(self.rhs, ValueNode) else self.rhs.to_human_explanation()
 
         # Get operator explanation
         operator_map = {
             "=": "is",
             "!=": "is not",
-            ">": ">",
-            "<": "<",
             ">=": "≥",
             "<=": "≤",
             ":": "contains",
-            "+": "+",
-            "-": "-",
             "*": "×",  # noqa: RUF001
             "/": "÷",
         }

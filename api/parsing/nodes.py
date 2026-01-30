@@ -60,6 +60,10 @@ class ValueNode(LeafNode):
         """Return a hash based on the class name and value."""
         return hash((self.__class__.__name__, self.value))
 
+    def to_human_explanation(self: ValueNode) -> str:
+        """Convert to human-readable explanation."""
+        return str(self.value)
+
 
 class StringValueNode(ValueNode):
     """Represents a string value node, such as 'flying' or 'Lightning Bolt'."""
@@ -73,10 +77,6 @@ class StringValueNode(ValueNode):
         _param_name = param_name(self.value)
         context[_param_name] = self.value
         return f"%({_param_name})s"
-
-    def to_human_explanation(self: StringValueNode) -> str:
-        """Convert to human-readable explanation."""
-        return str(self.value)
 
 
 class NumericValueNode(ValueNode):
@@ -92,10 +92,6 @@ class NumericValueNode(ValueNode):
         context[_param_name] = self.value
         return f"%({_param_name})s"
 
-    def to_human_explanation(self: NumericValueNode) -> str:
-        """Convert to human-readable explanation."""
-        return str(self.value)
-
 
 class ManaValueNode(ValueNode):
     """Represents a mana cost value node, such as '{1}{G}' or 'WU'."""
@@ -110,10 +106,6 @@ class ManaValueNode(ValueNode):
         context[_param_name] = self.value
         return f"%({_param_name})s"
 
-    def to_human_explanation(self: ManaValueNode) -> str:
-        """Convert to human-readable explanation."""
-        return str(self.value)
-
 
 class RegexValueNode(ValueNode):
     r"""Represents a regex pattern value node, such as /^{T}:/ or /\spp/."""
@@ -127,10 +119,6 @@ class RegexValueNode(ValueNode):
         _param_name = param_name(self.value)
         context[_param_name] = self.value
         return f"%({_param_name})s"
-
-    def to_human_explanation(self: RegexValueNode) -> str:
-        """Convert to human-readable explanation."""
-        return str(self.value)
 
 
 class AttributeNode(LeafNode):
@@ -220,13 +208,9 @@ class BinaryOperatorNode(QueryNode):
         operator_map = {
             "=": "is",
             "!=": "is not",
-            ">": ">",
-            "<": "<",
             ">=": "≥",
             "<=": "≤",
             ":": "contains",
-            "+": "+",
-            "-": "-",
             "*": "×",  # noqa: RUF001
             "/": "÷",
         }
