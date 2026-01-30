@@ -272,12 +272,23 @@ class NaryOperatorNode(QueryNode):
         raise NotImplementedError
 
     def to_human_explanation(self: NaryOperatorNode) -> str:
-        """Convert to human-readable explanation."""
+        """Convert to human-explanation."""
         if not self.operands:
             return ""
         if len(self.operands) == 1:
             return self.operands[0].to_human_explanation()
-        parts = [op.to_human_explanation() for op in self.operands]
+
+        # Get explanations for each operand
+        parts = []
+        for op in self.operands:
+            explanation = op.to_human_explanation()
+            # If this is an OrNode and the operand is an AndNode with multiple parts,
+            # we need to ensure proper grouping with parentheses
+            if isinstance(self, OrNode) and isinstance(op, AndNode) and len(op.operands) > 1:
+                # The AndNode will join with " and " but needs parens in OR context
+                explanation = f"({explanation})"
+            parts.append(explanation)
+
         return self._join_explanations(parts)
 
     def _join_explanations(self: NaryOperatorNode, parts: list[str]) -> str:
