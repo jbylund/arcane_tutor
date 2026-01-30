@@ -1,6 +1,5 @@
 """Query parsing and AST generation for Scryfall search queries."""
 
-from api.parsing.explanation import explain_query
 from api.parsing.nodes import (
     AndNode,
     AttributeNode,
@@ -29,5 +28,5 @@ node_types = [
     RegexValueNode,
     StringValueNode,
 ]
-functions = [parse_search_query, generate_sql_query, parse_scryfall_query, balance_partial_query, explain_query]
+functions = [parse_search_query, generate_sql_query, parse_scryfall_query, balance_partial_query]
 __all__ = [x.__name__ for x in node_types + functions]

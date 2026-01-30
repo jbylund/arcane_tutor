@@ -502,12 +502,9 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
 
     def _explain_value(self, value_node: ValueNode, context_node: CardAttributeNode) -> str:
         """Explain a value node, expanding codes based on context."""
-        if isinstance(value_node, NumericValueNode):
-            return str(value_node.value)
-        if isinstance(value_node, (ManaValueNode, RegexValueNode)):
-            return str(value_node.value)
+        # For non-StringValueNode types, just return the string value
         if not isinstance(value_node, StringValueNode):
-            return str(value_node)
+            return str(value_node.value)
 
         value = value_node.value.strip()
 

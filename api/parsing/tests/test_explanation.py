@@ -3,7 +3,6 @@
 import pytest
 
 from api.parsing import parse_scryfall_query
-from api.parsing.explanation import explain_query
 
 
 @pytest.mark.parametrize(
@@ -58,14 +57,14 @@ from api.parsing.explanation import explain_query
 def test_explain_query(query_str: str, expected_explanation: str) -> None:
     """Test that query explanation generates expected human-readable strings."""
     parsed_query = parse_scryfall_query(query_str)
-    explanation = explain_query(parsed_query)
+    explanation = parsed_query.to_human_explanation()
     assert explanation == expected_explanation
 
 
 def test_explain_empty_query() -> None:
     """Test that empty queries produce empty explanations."""
     parsed_query = parse_scryfall_query("")
-    explanation = explain_query(parsed_query)
+    explanation = parsed_query.to_human_explanation()
     # Empty query should produce empty explanation
     assert explanation == ""
 
@@ -73,7 +72,7 @@ def test_explain_empty_query() -> None:
 def test_explain_multiple_and_conditions() -> None:
     """Test explanation with multiple AND conditions."""
     parsed_query = parse_scryfall_query("power>3 toughness>3 cmc=5")
-    explanation = explain_query(parsed_query)
+    explanation = parsed_query.to_human_explanation()
     assert "the power > 3" in explanation
     assert "the toughness > 3" in explanation
     assert "the mana value is 5" in explanation
@@ -83,7 +82,7 @@ def test_explain_multiple_and_conditions() -> None:
 def test_explain_nested_or_and_and() -> None:
     """Test explanation with nested OR and AND."""
     parsed_query = parse_scryfall_query("(power>3 or toughness>3) and cmc=5")
-    explanation = explain_query(parsed_query)
+    explanation = parsed_query.to_human_explanation()
     assert "power > 3 or" in explanation
     assert "toughness > 3" in explanation
     assert "and" in explanation
@@ -99,7 +98,7 @@ def test_explain_color_combinations() -> None:
     ]
     for query_str, expected_colors in test_cases:
         parsed_query = parse_scryfall_query(query_str)
-        explanation = explain_query(parsed_query)
+        explanation = parsed_query.to_human_explanation()
         assert expected_colors in explanation
 
 
@@ -115,5 +114,5 @@ def test_explain_format_expansion() -> None:
     ]
     for query_str, expected_format in test_cases:
         parsed_query = parse_scryfall_query(query_str)
-        explanation = explain_query(parsed_query)
+        explanation = parsed_query.to_human_explanation()
         assert expected_format in explanation
