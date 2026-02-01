@@ -1,6 +1,6 @@
 # Arcane Tutor
 
-![Web Interface](screenshot.png)
+![Web Interface](screenshot.webp)
 
 *Web interface in dark mode showing cards with CMC less than 10, ordered by USD price descending*
 
@@ -371,7 +371,7 @@ For complete information about data sources, intellectual property attribution, 
 While we use Scryfall's data, Arcane Tutor is a distinct implementation:
 
 - **Original codebase**: All code written from scratch (no copied code from Scryfall)
-- **Different database schema**: Custom PostgreSQL schema optimized for our use cases  
+- **Different database schema**: Custom PostgreSQL schema optimized for our use cases
 - **Unique features**: Arithmetic expressions in queries, larger data fetch capabilities
 - **Independent search algorithms**: Original query parser and search ranking
 - **Different visual design**: Custom UI layout and styling
