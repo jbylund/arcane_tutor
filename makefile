@@ -62,6 +62,9 @@ hlep: help
 
 up_deps: datadir images check_env .env app.min.js
 
+env.json: # @doc create env.json from template only if it does not exist (never overwrite)
+	@test -f env.json || echo '{}' > env.json
+
 .env: env.json
 	cat env.json | jq -r 'to_entries[] | "\(.key)=\(.value)"' | sort > $@
 
