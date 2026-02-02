@@ -79,7 +79,6 @@ Arcane Tutor is an open source implementation of Scryfall, a Magic: The Gatherin
 
 ### Recommended Development Priorities
 
-1. Implement a default prefer order
 1. Support for double faced cards
 1. More comprehensive tagging info - per card, per card-printing, per artwork
 1. `cube:`, `papersets:`
@@ -89,16 +88,15 @@ Arcane Tutor is an open source implementation of Scryfall, a Magic: The Gatherin
 
 Based on [comprehensive functionality analysis](docs/technical/scryfall_functionality_analysis.md), here's the updated priority matrix:
 
-| **Complexity** | **Low Impact**                | **Medium Impact**                                                                            | **High Impact** |
-| -------------- | ------------------------------|----------------------------------------------------------------------------------------------| ----------------|
-| **Low**        | **Cube Inclusion** (`cube:`)  |                                                                                              |                 |
-| **Medium**     |                               | **Reprint Info** (`papersets:`) - [Scryfall Docs](https://scryfall.com/docs/syntax#reprints) |                 |
-| **High**       |                               |                                                                                              |                 |
+| **Complexity**   | **Lower impact**             | **Higher impact**                                                                             |
+| ---------------- | -----------------------------|-----------------------------------------------------------------------------------------------|
+| **Simpler**      | **Cube Inclusion** (`cube:`) |                                                                                               |
+| **More complex** |                              | **Reprint Info** (`papersets:`) - [Scryfall Docs](https://scryfall.com/docs/syntax#reprints)  |
 
 ### Implementation Status
 
 - **Current API Success Rate**: 100% for supported features (enhanced coverage with flavor text search)
-- **Test Coverage**: 622 total tests including 426 parser tests with comprehensive validation
+- **Test Coverage**: 779 total tests including 544 parser tests with comprehensive validation
 - **Performance**: Optimized PostgreSQL with proper indexing including full-text search capabilities
 - **Data Quality**: Regular comparison testing against official Scryfall API
 
@@ -110,7 +108,7 @@ arcane_tutor/
 │   ├── db/                      # Database schema and migrations
 │   ├── middlewares/             # HTTP middleware components
 │   ├── parsing/                 # Query parser implementation
-│   │   ├── tests/               # Parser unit tests (100+ tests)
+│   │   ├── tests/               # Parser unit tests (544 tests)
 │   │   ├── nodes.py             # AST node definitions
 │   │   ├── parsing_f.py         # Main parser with pyparsing
 │   │   └── card_query_nodes.py  # Card-specific query node types
@@ -172,7 +170,7 @@ arcane_tutor/
 1. **Validate Installation**
 
    ```bash
-   # Run test suite (should pass all 622 tests)
+   # Run test suite (should pass all 779 tests)
    python -m pytest -vvv
 
    # Verify linting
