@@ -652,7 +652,15 @@ class APIResource:
                 description="Setup is not complete, please try again later.",
             ) from None
 
-        if not isinstance(limit, (int, type(None))):
+        if limit is None:
+            pass
+        elif isinstance(limit, int):
+            if limit < 0:
+                raise falcon.HTTPBadRequest(
+                    title="Invalid Limit",
+                    description="Limit must be a positive integer.",
+                )
+        else:
             raise falcon.HTTPBadRequest(
                 title="Invalid Limit",
                 description="Limit must be an integer.",
