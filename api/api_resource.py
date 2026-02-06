@@ -652,6 +652,20 @@ class APIResource:
                 description="Setup is not complete, please try again later.",
             ) from None
 
+        if limit is None:
+            pass
+        elif isinstance(limit, int):
+            if limit < 0:
+                raise falcon.HTTPBadRequest(
+                    title="Invalid Limit",
+                    description="Limit must be a positive integer.",
+                )
+        else:
+            raise falcon.HTTPBadRequest(
+                title="Invalid Limit",
+                description="Limit must be an integer.",
+            )
+
         timer = Timer()
 
         try:
@@ -745,7 +759,7 @@ class APIResource:
                     edhrec_rank ASC NULLS LAST,
                     prefer_score DESC NULLS LAST
                 LIMIT
-                    {limit}
+                    %(limit)s
             )
             UNION ALL
             (
@@ -756,6 +770,7 @@ class APIResource:
                     distinct_cards
             )"""
 
+        params["limit"] = limit
         query_sql = rewrap(query_sql)
         logger.info("Full query: %s", query_sql)
         logger.info("Params: %s", params)
