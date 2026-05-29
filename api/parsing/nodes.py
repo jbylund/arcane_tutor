@@ -100,6 +100,13 @@ class NumericValueNode(ValueNode):
         context[_param_name] = self.value
         return f"%({_param_name})s"
 
+    def to_value_func(self: NumericValueNode) -> Callable[[list], float]:
+        """Return a function that always returns this constant value."""
+        value = self.value
+        def compute(_card: list) -> float:
+            return value
+        return compute
+
 
 class ManaValueNode(ValueNode):
     """Represents a mana cost value node, such as '{1}{G}' or 'WU'."""

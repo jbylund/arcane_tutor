@@ -181,6 +181,13 @@ class CardAttributeNode(AttributeNode):
         }
         return name_map.get(self.attribute_name, self.attribute_name.replace("_", " "))
 
+    def to_value_func(self) -> Callable[[list], float | None]:
+        """Return a function that reads this numeric attribute from a card list."""
+        field_idx = CardField[self.attribute_name]
+        def compute(card: list) -> float | None:
+            return card[field_idx]
+        return compute
+
     def __repr__(self) -> str:
         """Return a string representation of the card attribute node."""
         return (
@@ -518,12 +525,41 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
         # Fallback: use default logic
         return super().to_sql(context)
 
-    def to_filter_func(self) -> Callable[[dict], bool]:
-        """Return a function that tests a single card dict against this comparison."""
+    def to_filter_func(self) -> Callable[[list], bool]:
+        """Return a function that tests a single card list against this comparison."""
         if isinstance(self.lhs, CardAttributeNode):
             return self._filter_card_attribute()
+        if self.operator in self._NUMERIC_OPS:
+            return self._filter_arithmetic()
         msg = f"to_filter_func not implemented for lhs type: {type(self.lhs)}"
         raise NotImplementedError(msg)
+
+    def to_value_func(self) -> Callable[[list], float | None]:
+        """Return a function that evaluates this arithmetic expression to a number."""
+        arith_ops: dict[str, Callable] = {
+            "+": op.add, "-": op.sub, "*": op.mul, "/": op.truediv,
+        }
+        arith_fn = arith_ops[self.operator]
+        lhs_func = self.lhs.to_value_func()
+        rhs_func = self.rhs.to_value_func()
+        def compute(card: list) -> float | None:
+            lv = lhs_func(card)
+            rv = rhs_func(card)
+            if lv is None or rv is None:
+                return None
+            return arith_fn(lv, rv)
+        return compute
+
+    def _filter_arithmetic(self) -> Callable[[list], bool]:
+        """Handle comparisons where one side is an arithmetic expression, e.g. power+toughness>3."""
+        fn = self._NUMERIC_OPS[self.operator]
+        lhs_func = self.lhs.to_value_func()
+        rhs_func = self.rhs.to_value_func()
+        def check(card: list) -> bool:
+            lv = lhs_func(card)
+            rv = rhs_func(card)
+            return lv is not None and rv is not None and fn(lv, rv)
+        return check
 
     def _filter_card_attribute(self) -> Callable[[dict], bool]:
         attr = self.lhs.attribute_name
