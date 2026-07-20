@@ -2896,7 +2896,7 @@ fn plan_routing_ab() {
 
     // Measure one config: (legacy_ns, routed_ns, legacy_plan, routed_plan). Legacy
     // plan is computed once (untimed, deterministic); parity asserted.
-    let measure = |spec: &FuzzSpec, mode: Mode, mname: &str, uic: bool, limit: usize, offset: usize| -> (u64, u64, PhysicalPlan, PhysicalPlan) {
+    let measure = |spec: &FuzzSpec, mode: Mode, mname: &str, uic: bool, limit: usize, offset: usize| -> (u64, u64, PhysicalPlan, PhysicalPlan, usize) {
         let (lp_pe, mut lp_res) = split_planes(fuzz_bound_filter(spec, archived), planes, words, uic);
         let leg_plan = legacy_tree_plan(
             &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
@@ -2931,7 +2931,7 @@ fn plan_routing_ab() {
             routed_plan = chosen.unwrap_or(PhysicalPlan::GatheredScan);
         }
         assert_eq!(leg_total, rt_total, "parity mismatch: {mname} legacy={leg_total} routed={rt_total} ({})", fuzz_describe(spec));
-        (leg_best, rt_best, leg_plan, routed_plan)
+        (leg_best, rt_best, leg_plan, routed_plan, leg_total)
     };
     let pf = |p: PhysicalPlan| match p {
         PhysicalPlan::PrintingRangeScan => "P1", PhysicalPlan::PlanePopcountOrder => "P2",
@@ -2949,7 +2949,7 @@ fn plan_routing_ab() {
         let uic = matches!(mode, Mode::Card);
         let (mut faster, mut tie, mut slower, mut n, mut agree) = (0usize, 0usize, 0usize, 0usize, 0usize);
         let mut log_sum = 0.0f64;
-        let mut worst: Vec<(f64, String, &str, &str)> = Vec::new(); // (ratio, desc, leg, rout) for generated divergences/regressions
+        let mut worst: Vec<(f64, String, &str, &str, u64, u64, usize)> = Vec::new(); // (ratio, desc, leg, rout, leg_ns, rt_ns, total)
         let mut tally = |leg: u64, rt: u64, lp: PhysicalPlan, rp: PhysicalPlan| -> f64 {
             // Floor at 1ns: sub-µs configs can measure 0 (timer resolution), and
             // ln(0) would corrupt the geomean.
@@ -2964,28 +2964,36 @@ fn plan_routing_ab() {
         // Labeled calibration queries: full per-row detail.
         for (qlabel, spec) in &labeled {
             for &(plabel, limit, offset) in &pages {
-                let (leg, rt, lp, rp) = measure(spec, mode, mname, uic, limit, offset);
+                let (leg, rt, lp, rp, _tot) = measure(spec, mode, mname, uic, limit, offset);
                 let ratio = tally(leg, rt, lp, rp);
                 println!("{qlabel:<22} {mname:>5} {plabel:>7} {leg:>10} {rt:>10} {ratio:>6.2}x  {:>4} {:>4}", pf(lp), pf(rp));
             }
         }
-        // Generated corpus: summarized; collect the worst regressions / divergences.
+        // Generated corpus: we only care about PLAN DIVERGENCES (leg != rout) —
+        // same-plan ratio wobble is routing overhead/noise, not a routing mistake.
+        // Collect divergences with absolute ns so real costs (slow, big Δns) sort
+        // above fast-query noise (a "2×" on 300ns vs 600ns doesn't matter).
         for (desc, spec) in &generated {
             for &(_plabel, limit, offset) in &pages {
-                let (leg, rt, lp, rp) = measure(spec, mode, mname, uic, limit, offset);
-                let ratio = tally(leg, rt, lp, rp);
-                if ratio > 1.05 || lp != rp {
-                    worst.push((ratio, desc.clone(), pf(lp), pf(rp)));
+                let (leg, rt, lp, rp, tot) = measure(spec, mode, mname, uic, limit, offset);
+                tally(leg, rt, lp, rp);
+                if lp != rp {
+                    worst.push((rt as f64 / leg.max(1) as f64, desc.clone(), pf(lp), pf(rp), leg, rt, tot));
                 }
             }
         }
-        worst.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        // Sort by ABSOLUTE slowdown (routed − legacy ns): the divergences that cost
+        // real wall-clock, not the fast-query ratio outliers.
+        worst.sort_by(|a, b| (b.5 as i64 - b.4 as i64).cmp(&(a.5 as i64 - a.4 as i64)));
         let geomean = if n > 0 { (log_sum / n as f64).exp() } else { 1.0 };
+        let divergences = worst.len();
         println!(
-            "  -> {mname}: {n} configs | {faster} faster / {tie} tie / {slower} slower(>1.05x) | geomean {geomean:.3}x | plans agreed {agree}/{n}",
+            "  -> {mname}: {n} configs | geomean {geomean:.3}x (same-plan overhead) | plans agreed {agree}/{n} | {divergences} DIVERGENCES:",
         );
-        for (ratio, desc, lp, rp) in worst.iter().take(6) {
-            println!("       worst: {ratio:.2}x  leg={lp} rout={rp}  {desc}");
+        for (ratio, desc, lp, rp, leg_ns, rt_ns, tot) in worst.iter().take(10) {
+            let dns = *rt_ns as i64 - *leg_ns as i64;
+            let tag = if *leg_ns < 2_000 && *rt_ns < 2_000 { "  [fast/noise]" } else { "" };
+            println!("       {ratio:.2}x  Δ{dns:+}ns  leg={lp}({leg_ns}ns) rout={rp}({rt_ns}ns) total={tot}{tag}  {desc}");
         }
         println!();
     }
