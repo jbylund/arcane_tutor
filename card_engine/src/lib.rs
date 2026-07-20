@@ -4572,70 +4572,68 @@ fn run_query_routed<'a>(
         mk_feats(count, count, scan, if prep.all_match_known { 0 } else { verify_cost_tier(filter) })
     };
 
-    thread_local! {
-        static ROUTED_PLANE_BITMAP: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
-    }
-    ROUTED_PLANE_BITMAP.with(|cell| {
-        // Only borrowed-into for `Prep::Plane`; the borrow is cheap (no alloc) otherwise.
-        let mut bits = cell.borrow_mut();
+    // Scratch for the plane bitmap (`Prep::Plane` only). A fresh `Vec` allocates
+    // just once, on the plane branch's `eval_planes`; non-plane queries leave it
+    // empty (no alloc). Owned locally so the router body stays flat statements —
+    // no thread-local / `.with` closure wrapping the whole function.
+    let mut plane_bits: Vec<u64> = Vec::new();
 
-        // ── acquire: pick the count source, build features, materialize its artifact ──
-        let (feats, prep) = if PhysicalPlan::PlanePopcountOrder.applicable(filter, mode, cards, plane, sort_col, descending, indexes) {
-            // The ONE plane eval; its popcount IS the exact count. scan_units == count
-            // (Mode::Card breaks at first match); True residual ⇒ tier 0.
-            eval_planes(plane.expect("PlanePopcountOrder ⇒ plane"), &indexes.planes, &mut bits);
-            let count: u32 = bits.iter().map(|w| w.count_ones()).sum();
-            (mk_feats(count, count, count, 0), Prep::Plane)
-        } else if PhysicalPlan::PrintingRangeScan.applicable(filter, mode, cards, plane, sort_col, descending, indexes) {
-            // Bare range: exact k from the index (no scan). P3/P4 estimated unnarrowed
-            // (their broad regime — a narrow range makes P1 lose, and dispatch materializes).
-            let (idx, lo, hi) = bare_range_bounds(filter, indexes).expect("applicable ⇒ bare range");
-            let k = (idx.partition_point(|p| u32::from(p.0) < hi) - idx.partition_point(|p| u32::from(p.0) < lo)) as u32;
-            (mk_feats(k, n_cards, n_printings, verify_cost_tier(filter)), Prep::Range)
-        } else {
-            let prep = prepare_candidates(cards, offsets, strings, filter, plane, mode, indexes);
-            (candidate_feats(&prep, filter), Prep::Candidates(prep))
-        };
+    // ── acquire: pick the count source, build features, materialize its artifact ──
+    let (feats, prep) = if PhysicalPlan::PlanePopcountOrder.applicable(filter, mode, cards, plane, sort_col, descending, indexes) {
+        // The ONE plane eval; its popcount IS the exact count. scan_units == count
+        // (Mode::Card breaks at first match); True residual ⇒ tier 0.
+        eval_planes(plane.expect("PlanePopcountOrder ⇒ plane"), &indexes.planes, &mut plane_bits);
+        let count: u32 = plane_bits.iter().map(|w| w.count_ones()).sum();
+        (mk_feats(count, count, count, 0), Prep::Plane)
+    } else if PhysicalPlan::PrintingRangeScan.applicable(filter, mode, cards, plane, sort_col, descending, indexes) {
+        // Bare range: exact k from the index (no scan). P3/P4 estimated unnarrowed
+        // (their broad regime — a narrow range makes P1 lose, and dispatch materializes).
+        let (idx, lo, hi) = bare_range_bounds(filter, indexes).expect("applicable ⇒ bare range");
+        let k = (idx.partition_point(|p| u32::from(p.0) < hi) - idx.partition_point(|p| u32::from(p.0) < lo)) as u32;
+        (mk_feats(k, n_cards, n_printings, verify_cost_tier(filter)), Prep::Range)
+    } else {
+        let prep = prepare_candidates(cards, offsets, strings, filter, plane, mode, indexes);
+        (candidate_feats(&prep, filter), Prep::Candidates(prep))
+    };
 
-        // ── choose: cheapest applicable plan ──
-        let plan = choose(filter, &feats, false);
+    // ── choose: cheapest applicable plan ──
+    let plan = choose(filter, &feats, false);
 
-        // ── dispatch: run the winner, reusing the acquired artifact ──
-        match (plan, &prep) {
-            (PhysicalPlan::PlanePopcountOrder, Prep::Plane) => exec_plane_popcount_order_with_bitmap(
-                cards, printings, offsets, strings, prefer, sort_col, descending, limit, page_offset,
-                plane.expect("Prep::Plane ⇒ plane"), indexes, &bits,
-            ),
-            // P3/P4 reuse the plane bitmap as their candidate list — identical to what
-            // prepare_candidates yields for a True-residual plane query.
-            (p, Prep::Plane) => exec_from_candidates(
-                p, cards, printings, offsets, strings, filter,
-                &PreparedCandidates { candidate_cards: Some(bitmap_card_ids(&bits)), all_match_known: true },
-                plane, mode, prefer, sort_col, descending, limit, page_offset, indexes,
-            ),
-            (p, Prep::Candidates(prep)) => exec_from_candidates(
-                p, cards, printings, offsets, strings, filter, prep, plane, mode, prefer, sort_col, descending, limit, page_offset, indexes,
-            ),
-            (plan, Prep::Range) => {
-                // P1 walks if it won and its fastpath accepts. Otherwise (a materializing
-                // plan won the estimate, or P1's fastpath declined — rare, since cost
-                // seldom picks P1 when narrow) materialize now and run the best
-                // materializing plan on EXACT features.
-                let p1_page = (plan == PhysicalPlan::PrintingRangeScan)
-                    .then(|| printing_range_fastpath(cards, printings, offsets, strings, filter, indexes, sort_col, descending, limit, page_offset))
-                    .flatten();
-                match p1_page {
-                    Some(page) => page,
-                    None => {
-                        let prep = prepare_candidates(cards, offsets, strings, filter, plane, mode, indexes);
-                        let feats = candidate_feats(&prep, filter);
-                        let plan = choose(filter, &feats, true);
-                        exec_from_candidates(plan, cards, printings, offsets, strings, filter, &prep, plane, mode, prefer, sort_col, descending, limit, page_offset, indexes)
-                    }
+    // ── dispatch: run the winner, reusing the acquired artifact ──
+    match (plan, &prep) {
+        (PhysicalPlan::PlanePopcountOrder, Prep::Plane) => exec_plane_popcount_order_with_bitmap(
+            cards, printings, offsets, strings, prefer, sort_col, descending, limit, page_offset,
+            plane.expect("Prep::Plane ⇒ plane"), indexes, &plane_bits,
+        ),
+        // P3/P4 reuse the plane bitmap as their candidate list — identical to what
+        // prepare_candidates yields for a True-residual plane query.
+        (p, Prep::Plane) => exec_from_candidates(
+            p, cards, printings, offsets, strings, filter,
+            &PreparedCandidates { candidate_cards: Some(bitmap_card_ids(&plane_bits)), all_match_known: true },
+            plane, mode, prefer, sort_col, descending, limit, page_offset, indexes,
+        ),
+        (p, Prep::Candidates(prep)) => exec_from_candidates(
+            p, cards, printings, offsets, strings, filter, prep, plane, mode, prefer, sort_col, descending, limit, page_offset, indexes,
+        ),
+        (plan, Prep::Range) => {
+            // P1 walks if it won and its fastpath accepts. Otherwise (a materializing
+            // plan won the estimate, or P1's fastpath declined — rare, since cost
+            // seldom picks P1 when narrow) materialize now and run the best
+            // materializing plan on EXACT features.
+            let p1_page = (plan == PhysicalPlan::PrintingRangeScan)
+                .then(|| printing_range_fastpath(cards, printings, offsets, strings, filter, indexes, sort_col, descending, limit, page_offset))
+                .flatten();
+            match p1_page {
+                Some(page) => page,
+                None => {
+                    let prep = prepare_candidates(cards, offsets, strings, filter, plane, mode, indexes);
+                    let feats = candidate_feats(&prep, filter);
+                    let plan = choose(filter, &feats, true);
+                    exec_from_candidates(plan, cards, printings, offsets, strings, filter, &prep, plane, mode, prefer, sort_col, descending, limit, page_offset, indexes)
                 }
             }
         }
-    })
+    }
 }
 
 /// In-process force/dispatch entry point (#702 step 2): run `plan` for this
