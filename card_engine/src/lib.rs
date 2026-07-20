@@ -3729,7 +3729,7 @@ static STREAM_MIN_MATCHES: LazyLock<usize> = LazyLock::new(|| guard_env("CARD_EN
 /// only). Default OFF (`0`): `run_query` runs its byte-identical legacy decision
 /// tree (P1/P2 early-returns → `prepare_candidates` → `maybe_broad`-gated
 /// P3/P4). Set to non-zero to route card-mode queries through
-/// `run_query_card_routed`, which replaces the hand-tuned plan choice
+/// `run_query_routed`, which replaces the hand-tuned plan choice
 /// (`plane_popcount_order_applicable` early-return + the `STREAM_MIN_MATCHES`
 /// `maybe_broad` threshold) with `argmin cost::plan_cost` over the applicable
 /// plans on the *actual* materialized count — no estimator, no double work (the
@@ -4233,7 +4233,7 @@ fn exec_plane_popcount_order<'a>(
 
 /// The popcount-skip order phase of P2 with the plane bitmap *already evaluated*
 /// by the caller — the eval-owning split of `exec_plane_popcount_order`. The
-/// #702-step-5 routed path (`run_query_card_routed`) evaluates the plane once
+/// #702-step-5 routed path (`run_query_routed`) evaluates the plane once
 /// and reuses the same `&[u64]` here, so the plane is never evaluated twice on a
 /// routed query. Caller guarantees `plane_popcount_order_applicable` (a
 /// length-matched forward permutation and an inverse permutation both exist).
@@ -4379,15 +4379,16 @@ fn run_query<'a>(
         _          => Mode::Card,
     };
 
-    // #702 step 5 (A/B seam, default OFF): card-mode cost-based routing. When the
-    // toggle is on and this is a card query, replace the legacy decision tree
-    // below with `argmin cost::plan_cost` on the actual materialized count. The
-    // legacy body (P1/P2 early-returns → prepare_candidates → maybe_broad P3/P4)
-    // is byte-identical to before for the OFF path and every non-card mode.
-    if *PLAN_SELECT != 0 && matches!(mode, Mode::Card) {
+    // #702 step 5 (A/B seam, default OFF): cost-based plan routing for ALL modes.
+    // When the toggle is on, replace the legacy decision tree below with
+    // `argmin cost::plan_cost` (card/artwork/printing-non-range via
+    // materialize-then-route; printing bare-range adds P1 via exact range-k). The
+    // legacy body is byte-identical to before for the OFF path (the default), and
+    // `cost_route_matches_legacy` proves routed rows == legacy rows across modes.
+    if *PLAN_SELECT != 0 {
         let mut chosen: Option<PhysicalPlan> = None;
-        return run_query_card_routed(
-            cards, printings, offsets, strings, filter, plane, prefer, sort_col, descending, limit, page_offset, indexes, &mut chosen,
+        return run_query_routed(
+            cards, printings, offsets, strings, filter, plane, mode, prefer, sort_col, descending, limit, page_offset, indexes, &mut chosen,
         );
     }
 
@@ -4459,35 +4460,39 @@ fn scan_units(mode: Mode, candidate_cards: Option<&[u32]>, offsets: &AOffsets, n
     }
 }
 
-/// #702 step 5: cost-based plan routing for `Mode::Card`, gated behind
+/// #702 step 5: cost-based plan routing for ALL unique modes, gated behind
 /// `PLAN_SELECT` (default OFF; `run_query` calls this only when the toggle is
-/// on). Replaces the legacy plan CHOICE — the `plane_popcount_order_applicable`
-/// early-return and the `STREAM_MIN_MATCHES` `maybe_broad` threshold — with
-/// `argmin cost::plan_cost` over the applicable plans, scored on the **actual**
-/// materialized count (no estimator; the plan choice is a pure performance
-/// decision, so every plan returns identical rows). Two cases mirror the legacy
-/// tree, each evaluating the plane / candidate set **at most once** and reusing
-/// it in the chosen executor (the v1 double-eval regression is the invariant
-/// this structure exists to avoid):
+/// on). Replaces the legacy plan CHOICE — the P1/P2 early-returns and the
+/// `STREAM_MIN_MATCHES` `maybe_broad` threshold — with `argmin cost::plan_cost`
+/// over the applicable plans, scored on the **actual** count (no estimator; the
+/// plan choice is a pure performance decision, so every plan returns identical
+/// rows — proven by `cost_route_matches_legacy` across card/printing/artwork ×
+/// both prefers). Cases, each touching the plane / candidate set **at most once**:
 ///
-/// - **Case A** (`plane_popcount_order_applicable`: True residual + plane): the
-///   plane popcount IS the exact count. Evaluate the plane once into a local
-///   bitmap; the winning executor reuses that bitmap (P2 via
-///   `exec_plane_popcount_order_with_bitmap`, P3/P4 via `bitmap_card_ids` into a
-///   `PreparedCandidates`).
-/// - **Case B** (otherwise): `prepare_candidates` materializes the candidate
-///   list (its single plane eval), then the chosen executor reuses that `prep`.
+/// - **Case A** (`plane_popcount_order_applicable`, card-only: True residual +
+///   plane): the plane popcount IS the exact count. Evaluate the plane once into a
+///   local bitmap; the winning executor reuses it (P2 via
+///   `exec_plane_popcount_order_with_bitmap`, P3/P4 via `bitmap_card_ids`).
+/// - **Printing bare-range**: P1 (`PrintingRangeScan`) skips materialization
+///   entirely, so it can't be materialize-then-choose. Take the exact match count
+///   `k` from the range index (free binary search), cost P1 vs P3/P4 in their broad
+///   regime; if P1 wins and the fastpath accepts, return it — else fall through.
+/// - **Case B** (otherwise): `prepare_candidates` materializes once, then the
+///   chosen executor reuses that `prep`. `count` = candidate card count (the same
+///   broad/narrow proxy the tree keys on); `scan_units` makes the cost
+///   operating-space-correct for printing/artwork.
 ///
 /// `record_plan` receives the chosen plan (for tests / instrumentation);
 /// `run_query` passes `&mut None` and ignores it.
 #[allow(clippy::too_many_arguments)]
-fn run_query_card_routed<'a>(
+fn run_query_routed<'a>(
     cards: &'a [AOracleCard],
     printings: &'a [APrinting],
     offsets: &AOffsets,
     strings: &AStrings,
     filter: &mut FilterExpr,
     plane: Option<&PlaneExpr>,
+    mode: Mode,
     prefer: Prefer,
     sort_col: SortCol,
     descending: bool,
@@ -4496,7 +4501,6 @@ fn run_query_card_routed<'a>(
     indexes: &Archived<CardIndexes>,
     record_plan: &mut Option<PhysicalPlan>,
 ) -> (usize, Vec<(&'a AOracleCard, &'a APrinting)>) {
-    let mode = Mode::Card;
     let n_cards = cards.len() as u32;
     let n_printings = printings.len() as u32;
 
@@ -4569,8 +4573,53 @@ fn run_query_card_routed<'a>(
         });
     }
 
+    // ── Printing bare-range: P1 competes WITHOUT materializing. ──
+    // P1 (PrintingRangeScan) is the one plan whose whole benefit is skipping
+    // candidate materialization, so it can't be routed materialize-then-choose like
+    // the rest. Instead take the exact match count `k` from the range index's
+    // binary search (free — no scan), and cost P1 against P3/P4 estimated in their
+    // BROAD regime (unnarrowed: eval_domain=n_cards, scan_units=n_printings — the
+    // regime where P1 is even a contender; a narrow range makes P1's walk cost
+    // explode so it loses here and we fall through to the exact Case B anyway).
+    // If P1 wins AND the fastpath accepts, return it; otherwise fall through to
+    // Case B, which materializes and routes P3/P4 on exact features. Rows are
+    // identical either way (plan choice is perf-only).
+    if printing_range_scan_applicable(mode, plane, cards)
+        && let Some((idx, lo, hi)) = bare_range_bounds(filter, indexes)
+    {
+        let s = idx.partition_point(|p| u32::from(p.0) < lo);
+        let e = idx.partition_point(|p| u32::from(p.0) < hi);
+        let k = (e - s) as u32;
+        let feats = cost::PlanFeatures {
+            n_cards,
+            n_printings,
+            matches: k,
+            eval_domain: n_cards,
+            scan_units: n_printings,
+            residual_tier_ns100: verify_cost_tier(filter),
+            limit: limit as u32,
+            offset: page_offset as u32,
+        };
+        let plan = if streamed_select_applicable(cards, sort_col, descending, indexes) {
+            choose(&feats, &[PhysicalPlan::PrintingRangeScan, PhysicalPlan::StreamedSelect, PhysicalPlan::GatheredScan])
+        } else {
+            choose(&feats, &[PhysicalPlan::PrintingRangeScan, PhysicalPlan::GatheredScan])
+        };
+        if matches!(plan, PhysicalPlan::PrintingRangeScan)
+            && let Some(result) =
+                printing_range_fastpath(cards, printings, offsets, strings, filter, indexes, sort_col, descending, limit, page_offset)
+        {
+            *record_plan = Some(PhysicalPlan::PrintingRangeScan);
+            return result;
+        }
+        // P3/P4 won, or the fastpath declined (narrow / ordering band): fall through.
+    }
+
     // ── Case B: residual ≠ True (or no plane). Materialize candidates ONCE. ──
     let prep = prepare_candidates(cards, offsets, strings, filter, plane, mode, indexes);
+    // `count` = candidate CARD count, the same broad/narrow proxy the legacy tree's
+    // `maybe_broad` keys P3/P4 on (so the routed choice matches it across modes);
+    // scan_units makes the magnitude operating-space-correct.
     let count = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
     let tier = if prep.all_match_known { 0 } else { verify_cost_tier(filter) };
     let feats = cost::PlanFeatures {
@@ -4578,7 +4627,7 @@ fn run_query_card_routed<'a>(
         n_printings,
         matches: count,
         eval_domain: count,
-        scan_units: count, // Mode::Card: loop breaks at first match ⇒ scan_units == eval_domain
+        scan_units: scan_units(mode, prep.candidate_cards.as_deref(), offsets, n_printings, count),
         residual_tier_ns100: tier,
         limit: limit as u32,
         offset: page_offset as u32,

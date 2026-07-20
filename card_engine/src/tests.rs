@@ -5,7 +5,7 @@ use super::{
     assign_artwork_groups, build_bit_planes, build_divergent_ids, build_name_bigram_index, build_printing_to_card, flavor_fingerprint, flavor_match_sets,
     cards_of_printings, count_common_keywords, count_common_types,
     build_artist_index, build_range_index, range_candidates, narrow_candidates, rarity_candidates,
-    range_too_broad_to_narrow, run_query, run_query_with_plan, run_query_card_routed, prefer_from_str, PhysicalPlan, trigram_candidates, finalize_trigram_index, PrintingRangeIndex, NARROW_FLOOR,
+    range_too_broad_to_narrow, run_query, run_query_with_plan, run_query_routed, prefer_from_str, PhysicalPlan, trigram_candidates, finalize_trigram_index, PrintingRangeIndex, NARROW_FLOOR,
     gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
     walk_printing_page, aligned_page, bare_range_bounds, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
     prepare_candidates, verify_cost_tier, scan_units, Mode,
@@ -2702,21 +2702,24 @@ fn force_plan_differential_agreement() {
     }
 }
 
-/// #702 step 5: the cost-based card-mode router (`run_query_card_routed`) returns
-/// rows IDENTICAL to the legacy `run_query` decision tree — plan choice is a pure
-/// performance decision, so `total` and the emitted `scryfall_id` multiset must
-/// match exactly, whichever plan `argmin cost::plan_cost` selects. The legacy
-/// side is `run_query` with the toggle at its default (OFF); the routed side
-/// calls `run_query_card_routed` directly (independent of the env toggle). A
-/// non-degeneracy assertion at the end requires the router to have chosen at
-/// least two distinct plans across the corpus (a router that always picks one
-/// plan would pass the row check vacuously).
+/// #702 step 5: the cost-based router (`run_query_routed`) returns rows IDENTICAL
+/// to the legacy `run_query` decision tree across ALL unique modes — plan choice
+/// is a pure performance decision, so `total` and the emitted `scryfall_id`
+/// multiset must match exactly, whichever plan `argmin cost::plan_cost` selects.
+/// Swept over card/printing/artwork × both prefers (row selection differs under
+/// non-default prefer) × sort/dir × page depths, on a random fuzz corpus. This is
+/// the safety net that must be broad and green BEFORE the legacy tree is deleted.
+/// The legacy side is `run_query` at the default toggle (OFF); the routed side
+/// calls `run_query_routed` directly (toggle-independent). A non-degeneracy
+/// assertion requires ≥3 distinct plans chosen across the corpus.
 #[test]
 fn cost_route_matches_legacy() {
     use rand::SeedableRng;
     const CORPUS_CARDS: usize = 6_000;
     const MAX_DEPTH: u8 = 3;
-    const RANDOM_QUERIES: usize = 250;
+    // 80 random trees + the hand calibration set; the 6× fan-out below (3 modes ×
+    // 2 prefers) keeps total coverage high while holding suite time reasonable.
+    const RANDOM_QUERIES: usize = 80;
     // Card-level permutation sorts (so P2/P3 are eligible); asc + desc each.
     const SORTS: [&str; 2] = ["edhrec", "cmc"];
 
@@ -2750,50 +2753,65 @@ fn cost_route_matches_legacy() {
     let pages = [(full_limit, 0usize), (60usize, 0usize), (60usize, 500usize)];
     let mut seen = [0u32; 4];
 
+    // All three unique modes: card exercises P2/P3/P4, printing adds P1 (bare
+    // ranges), artwork is P3/P4. Both prefers, since row selection differs under
+    // non-default prefer (the existential-plane carveout).
+    const MODES: [&str; 3] = ["card", "printing", "artwork"];
+    const PREFERS: [&str; 2] = ["default", "usd"];
+
     for spec in &specs {
-        for &orderby in &SORTS {
-            for &descending in &[false, true] {
-                let direction = if descending { "desc" } else { "asc" };
-                let sort_col = orderby_to_col(orderby);
-                for &(limit, offset) in &pages {
-                    // Legacy side: run_query, toggle at default OFF → the byte-identical
-                    // decision tree. Fresh bound+split filter (prepare_candidates mutates it).
-                    let (le_pe, mut le_res) = split_planes(
-                        fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true,
-                    );
-                    let (legacy_total, legacy_page) = run_query(
-                        &archived.cards, &archived.printings, &archived.offsets, strings,
-                        &mut le_res, le_pe.as_ref(), "card", "default", orderby, direction, limit, offset, &archived.indexes,
-                    );
+        for &unique in &MODES {
+            let unique_is_card = unique == "card";
+            let mode_enum = match unique { "printing" => Mode::Printing, "artwork" => Mode::Artwork, _ => Mode::Card };
+            for &pref in &PREFERS {
+                for &orderby in &SORTS {
+                    for &descending in &[false, true] {
+                        let direction = if descending { "desc" } else { "asc" };
+                        let sort_col = orderby_to_col(orderby);
+                        for &(limit, offset) in &pages {
+                            // Legacy side: run_query, toggle at default OFF → the byte-identical
+                            // decision tree. Fresh bound+split filter (prepare_candidates mutates it).
+                            let (le_pe, mut le_res) = split_planes(
+                                fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, unique_is_card,
+                            );
+                            let (legacy_total, legacy_page) = run_query(
+                                &archived.cards, &archived.printings, &archived.offsets, strings,
+                                &mut le_res, le_pe.as_ref(), unique, pref, orderby, direction, limit, offset, &archived.indexes,
+                            );
 
-                    // Routed side: call run_query_card_routed directly (toggle-independent).
-                    let (ro_pe, mut ro_res) = split_planes(
-                        fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true,
-                    );
-                    let mut chosen = None;
-                    let (routed_total, routed_page) = run_query_card_routed(
-                        &archived.cards, &archived.printings, &archived.offsets, strings,
-                        &mut ro_res, ro_pe.as_ref(), prefer_from_str("default"), sort_col, descending, limit, offset,
-                        &archived.indexes, &mut chosen,
-                    );
-                    seen[plan_idx(chosen.expect("routed path records a chosen plan"))] += 1;
+                            // Routed side: call run_query_routed directly (toggle-independent).
+                            let (ro_pe, mut ro_res) = split_planes(
+                                fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, unique_is_card,
+                            );
+                            let mut chosen = None;
+                            let (routed_total, routed_page) = run_query_routed(
+                                &archived.cards, &archived.printings, &archived.offsets, strings,
+                                &mut ro_res, ro_pe.as_ref(), mode_enum, prefer_from_str(pref), sort_col, descending, limit, offset,
+                                &archived.indexes, &mut chosen,
+                            );
+                            seen[plan_idx(chosen.expect("routed path records a chosen plan"))] += 1;
 
-                    let ctx = format!(
-                        "filter={}, orderby={orderby}, dir={direction}, limit={limit}, offset={offset}, plan={:?}",
-                        fuzz_describe(spec), chosen,
-                    );
-                    assert_eq!(routed_total, legacy_total, "routed total disagrees with legacy: {ctx}");
-                    assert_eq!(
-                        id_multiset(&routed_page), id_multiset(&legacy_page),
-                        "routed rows disagree with legacy: {ctx}",
-                    );
+                            let ctx = format!(
+                                "filter={}, unique={unique}, prefer={pref}, orderby={orderby}, dir={direction}, limit={limit}, offset={offset}, plan={:?}",
+                                fuzz_describe(spec), chosen,
+                            );
+                            assert_eq!(routed_total, legacy_total, "routed total disagrees with legacy: {ctx}");
+                            assert_eq!(
+                                id_multiset(&routed_page), id_multiset(&legacy_page),
+                                "routed rows disagree with legacy: {ctx}",
+                            );
+                        }
+                    }
                 }
             }
         }
     }
 
+    // Non-degeneracy: the router must exercise ≥3 distinct plans across the corpus
+    // (P1 from printing ranges, plus the card/artwork P2/P3/P4 mix) — a router that
+    // collapsed to one plan would pass the row check vacuously.
     let distinct = seen.iter().filter(|&&c| c > 0).count();
-    assert!(distinct >= 2, "cost router degenerate — chose {distinct} distinct plan(s) (counts {seen:?}); expected >= 2");
+    assert!(distinct >= 3, "cost router degenerate — chose {distinct} distinct plan(s) (counts {seen:?}); expected >= 3");
 }
 
 /// #702 step 5 PAYOFF A/B: cost-based card-mode routing (`run_query_card_routed`)
@@ -2855,14 +2873,14 @@ fn plan_routing_ab() {
                 );
                 let ld = t0.elapsed().as_nanos() as u64;
                 black_box(&lp);
-                // Routed: bind (untimed) → time split + run_query_card_routed.
+                // Routed: bind (untimed) → time split + run_query_routed.
                 let full_r = fuzz_bound_filter(spec, archived);
                 let t1 = Instant::now();
                 let (ro_pe, mut ro_res) = split_planes(full_r, planes, words, true);
                 let mut chosen = None;
-                let (rt, rp) = run_query_card_routed(
+                let (rt, rp) = run_query_routed(
                     &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-                    &mut ro_res, ro_pe.as_ref(), prefer_from_str("default"), sort_col, false, limit, offset,
+                    &mut ro_res, ro_pe.as_ref(), Mode::Card, prefer_from_str("default"), sort_col, false, limit, offset,
                     &archived.indexes, &mut chosen,
                 );
                 let rd = t1.elapsed().as_nanos() as u64;
