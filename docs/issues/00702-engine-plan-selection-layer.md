@@ -208,6 +208,9 @@ seam (step 2) comes *before* calibration because you can't measure a plan's
 cost without being able to execute that specific plan — making plans
 individually addressable is the prerequisite for the run-all-plans harness.
 
+The target these steps converge on — the single router, in pseudocode — is
+[local-engine-unified-router-target.md](./local-engine-unified-router-target.md).
+
 1. **Estimator** — standalone, sound bounds, fuzz-validated, *unwired*.
    (Shipped: #704.)
 2. **Force-plan seam** — extract the four plan bodies into individually
