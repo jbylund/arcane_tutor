@@ -4547,27 +4547,29 @@ fn run_query_routed<'a>(
             .expect("GatheredScan is always applicable and materializing")
     };
 
-    // Features for the general candidate path, given a materialized `prep`. Shared
-    // by the acquire `Prep::Candidates` branch and the lazy-materialize dispatch.
+    // Cost features: the query-invariant fields filled once; the four that vary by
+    // count source passed in. Collapses each acquire branch's 8-field literal to one call.
+    let mk_feats = |matches: u32, eval_domain: u32, scan_units: u32, residual_tier_ns100: u32| cost::PlanFeatures {
+        n_cards,
+        n_printings,
+        matches,
+        eval_domain,
+        scan_units,
+        residual_tier_ns100,
+        limit: limit as u32,
+        offset: page_offset as u32,
+    };
+    // Features for the general candidate path (shared by the acquire branch and the
+    // lazy-materialize dispatch). `matches`/`eval_domain` = candidate CARD count, the
+    // broad/narrow proxy the P3/P4 crossover keys on. `scan_units` sums printing counts
+    // over the candidate cards (O(candidates) for narrowed printing/artwork — the ~1-2%
+    // overhead in plan_routing_ab), kept EXACT on purpose: an O(1) estimate would trade
+    // the model's honesty for a couple percent on already-fast queries — do not swap it
+    // for `eval_domain·n_printings/n_cards` without re-justifying.
     let candidate_feats = |prep: &PreparedCandidates, filter: &FilterExpr| -> cost::PlanFeatures {
-        // `count` = candidate CARD count, the broad/narrow proxy the P3/P4 crossover
-        // keys on. `scan_units` makes the magnitude operating-space-correct: it sums
-        // printing counts over the candidate cards (O(candidates) for narrowed
-        // printing/artwork — the ~1-2% overhead in plan_routing_ab). Kept EXACT on
-        // purpose: an O(1) `eval_domain·n_printings/n_cards` estimate would erase the
-        // overhead but trade the model's honesty for a couple percent on already-fast
-        // queries. Do not "optimize" this into the ratio without re-justifying.
         let count = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
-        cost::PlanFeatures {
-            n_cards,
-            n_printings,
-            matches: count,
-            eval_domain: count,
-            scan_units: scan_units(mode, prep.candidate_cards.as_deref(), offsets, n_printings, count),
-            residual_tier_ns100: if prep.all_match_known { 0 } else { verify_cost_tier(filter) },
-            limit: limit as u32,
-            offset: page_offset as u32,
-        }
+        let scan = scan_units(mode, prep.candidate_cards.as_deref(), offsets, n_printings, count);
+        mk_feats(count, count, scan, if prep.all_match_known { 0 } else { verify_cost_tier(filter) })
     };
 
     thread_local! {
@@ -4578,45 +4580,22 @@ fn run_query_routed<'a>(
         let mut bits = cell.borrow_mut();
 
         // ── acquire: pick the count source, build features, materialize its artifact ──
-        let (feats, prep) =
-            if PhysicalPlan::PlanePopcountOrder.applicable(filter, mode, cards, plane, sort_col, descending, indexes) {
-                // The ONE plane evaluation; its popcount IS the exact match count.
-                eval_planes(plane.expect("PlanePopcountOrder ⇒ plane"), &indexes.planes, &mut bits);
-                let count: u32 = bits.iter().map(|w| w.count_ones()).sum();
-                let feats = cost::PlanFeatures {
-                    n_cards,
-                    n_printings,
-                    matches: count,
-                    eval_domain: count,
-                    scan_units: count, // Mode::Card: loop breaks at first match ⇒ scan_units == eval_domain
-                    residual_tier_ns100: 0, // all_match_known: the walk runs no card_pass
-                    limit: limit as u32,
-                    offset: page_offset as u32,
-                };
-                (feats, Prep::Plane)
-            } else if PhysicalPlan::PrintingRangeScan.applicable(filter, mode, cards, plane, sort_col, descending, indexes) {
-                // Bare range: exact k from the index (no scan). P3/P4 estimated
-                // unnarrowed (their broad regime — where P1 is a contender; a narrow
-                // range makes P1's walk lose, and dispatch materializes below).
-                let (idx, lo, hi) = bare_range_bounds(filter, indexes).expect("applicable ⇒ bare range");
-                let s = idx.partition_point(|p| u32::from(p.0) < lo);
-                let e = idx.partition_point(|p| u32::from(p.0) < hi);
-                let feats = cost::PlanFeatures {
-                    n_cards,
-                    n_printings,
-                    matches: (e - s) as u32,
-                    eval_domain: n_cards,
-                    scan_units: n_printings,
-                    residual_tier_ns100: verify_cost_tier(filter),
-                    limit: limit as u32,
-                    offset: page_offset as u32,
-                };
-                (feats, Prep::Range)
-            } else {
-                let prep = prepare_candidates(cards, offsets, strings, filter, plane, mode, indexes);
-                let feats = candidate_feats(&prep, filter);
-                (feats, Prep::Candidates(prep))
-            };
+        let (feats, prep) = if PhysicalPlan::PlanePopcountOrder.applicable(filter, mode, cards, plane, sort_col, descending, indexes) {
+            // The ONE plane eval; its popcount IS the exact count. scan_units == count
+            // (Mode::Card breaks at first match); True residual ⇒ tier 0.
+            eval_planes(plane.expect("PlanePopcountOrder ⇒ plane"), &indexes.planes, &mut bits);
+            let count: u32 = bits.iter().map(|w| w.count_ones()).sum();
+            (mk_feats(count, count, count, 0), Prep::Plane)
+        } else if PhysicalPlan::PrintingRangeScan.applicable(filter, mode, cards, plane, sort_col, descending, indexes) {
+            // Bare range: exact k from the index (no scan). P3/P4 estimated unnarrowed
+            // (their broad regime — a narrow range makes P1 lose, and dispatch materializes).
+            let (idx, lo, hi) = bare_range_bounds(filter, indexes).expect("applicable ⇒ bare range");
+            let k = (idx.partition_point(|p| u32::from(p.0) < hi) - idx.partition_point(|p| u32::from(p.0) < lo)) as u32;
+            (mk_feats(k, n_cards, n_printings, verify_cost_tier(filter)), Prep::Range)
+        } else {
+            let prep = prepare_candidates(cards, offsets, strings, filter, plane, mode, indexes);
+            (candidate_feats(&prep, filter), Prep::Candidates(prep))
+        };
 
         // ── choose: cheapest applicable plan ──
         let plan = choose(filter, &feats, false);
