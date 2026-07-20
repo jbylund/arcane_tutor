@@ -234,25 +234,37 @@ card-mode routing on its own buys parity-for-principle only, so it should ship
 bundled with — or just before — the first frontier win below, never as "we
 replaced the tree with an equal-speed cost model."
 
-**The win is printing mode, via P1 (the idea-1/idea-2 crossover — the founding
-motivation).** The legacy tree takes the P1 range-walk fastpath *unconditionally*
-whenever it structurally applies (`printing_range_scan_applicable`: bare range,
-printing, no plane); it never costs the walk. But P1 walks the order-by
-permutation testing range membership, so a **narrow** range under a
-**misaligned** sort blind-walks ~O(n_printings) to fill a page where P4 gathers
-the few matches in O(matches) — the documented idea-1 bad tail. Cost-routing
-costs the walk (`(offset+limit)/match_rate · step`, already in `cost.rs`) and
-bails to P4 when it's pathological — precisely the case the tree *cannot*
-express. Two things make this tractable where card wasn't: the estimate is
-**cheap** (range `k` from the index's binary search, no plane eval, so no
-estimate-overhead tax), and it only needs the range `k`, not the full
-printing-space estimator. **Hypothesis, to confirm by measurement** — card mode
-taught that predicted misroutes don't always exist in the corpus; the mechanism
-is sound, whether real traffic hits it is empirical.
+**The printing-mode P1 win was hypothesized — and measurement falsified it.**
+The hypothesis: the tree's P1 gate (`range_too_broad_to_narrow`, a fixed
+`k/index_len > 0.25` ratio) ignores page depth and sort alignment, while P1's
+misaligned walk costs `(offset+limit)/match_rate`, so a *moderately*-broad range
+at a *deep* page should misroute onto P1's blind walk where the ratio can't see
+it. The `printing_range_route_probe` bench (src/tests.rs) tested exactly that —
+11 bare price/year ranges across the broad/narrow margin × offsets to 20000,
+printing mode, misaligned edhrec sort — comparing the tree's pick and the cost
+model's pick to empirical gold:
 
-**Artwork is expected to tie** like card: only P3/P4 apply (no P1, no P2), the
-same broad/narrow crossover the tree already sits on. Worth a confirming A/B,
-not a headline.
+> **54 scored rows: tree geomean regret 1.000× (gold on every row); model
+> 1.015×, strictly faster on 0.** P1 wins broad ranges at *every* depth tested,
+> including offset 20000 — because P3/P4 in printing mode both pay the full
+> O(n_cards) match phase, which dominates P1's blind-but-early-stopping walk. So
+> `range_too_broad_to_narrow` already sits at the P1/P4 crossover; depth doesn't
+> move it. The naive cost model was slightly *worse* — 2 deep rows (offset 20000)
+> where its `(offset+limit)/match_rate` walk term over-penalizes P1 and it routes
+> away at 1.32×/1.70×.
+
+So printing ranges tie too (the tree marginally ahead). Combined with the
+card-mode tie, **cost-based routing has now matched-or-slightly-lost to the
+hand-tuned tree everywhere measured** — the thresholds are genuinely well-placed.
+This is the load-bearing finding: #702 as a *speed* play has no evidence behind
+it on today's plans. What remains is (a) the purely structural argument (one cost
+rule vs scattered thresholds — but the cost model carries its own calibration
+burden, so this is not obviously a net simplification), and (b) whether a
+genuinely *unexpressed* decision exists that the tree cannot make at all — the
+place to look before spending more, not another mode of the same P1/P3/P4 menu.
+
+**Artwork not separately probed** — only P3/P4 apply (the same crossover the tree
+sits on in card mode), so absent a new signal it is expected to tie as well.
 
 ## Keeping costs/plans current as the engine changes
 

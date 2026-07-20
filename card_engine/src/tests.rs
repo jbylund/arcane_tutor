@@ -3274,6 +3274,176 @@ fn plan_cost_model_matches_gold() {
     );
 }
 
+/// #702 (printing-mode routing probe): does cost-based routing beat the LEGACY
+/// TREE on `unique=printing` bare-range queries? Card-mode routing only tied the
+/// tree (`plan_routing_ab`), so before building printing routing we test the
+/// hypothesis that the tree's P1 gate — `range_too_broad_to_narrow`, a fixed
+/// `k/index_len > 0.25` ratio that IGNORES page depth and sort alignment — misroutes
+/// where the true P1-vs-P4 crossover moves. P1's misaligned walk costs
+/// `(offset+limit)/match_rate`, so a *moderately*-broad range at a *deep* page is
+/// where a depth-blind ratio should mispredict.
+///
+/// For each range query × page depth (printing mode, edhrec sort = MISALIGNED, the
+/// case the walk pays for), measure P1/P3/P4 (min-of-N), then compare two pickers
+/// against empirical gold:
+///   - TREE: what `run_query` dispatches — P1 iff the fastpath fired
+///     (`run_query_with_plan(P1)` is `Some`), else P3/P4 via the `maybe_broad` gate.
+///   - MODEL: `argmin cost::plan_cost` on the TRUE features (matches = measured
+///     printing total; for a range query this is the index's exact `k`, so there is
+///     no estimation error to muddy the plan-choice question).
+/// Reports per-row regret (picked_ns/gold_ns) and geomean regret for each. A model
+/// geomean below the tree's — with the gap on deep+moderate rows — is the win that
+/// justifies printing routing; parity means printing ties too (report, don't build).
+///
+///     cargo test --release printing_range_route_probe -- --ignored --nocapture
+///
+/// Same corpus/timing discipline as `plan_cost_model_matches_gold`; needs real.store.
+#[test]
+#[ignore = "printing-route probe; needs real.store; cargo test --release printing_range_route_probe -- --ignored --nocapture"]
+fn printing_range_route_probe() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    use super::cost::{PlanFeatures, plan_cost};
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 5;
+    const ITERS: usize = 60;
+    const LIMIT: usize = 60;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found (see bench_verify_cost.rs docs to build it)");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch (stale — rebuild, see bench_verify_cost.rs)");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let n_cards = archived.cards.len() as u32;
+    let n_printings = archived.printings.len() as u32;
+    eprintln!("real.store: {n_cards} cards, {n_printings} printings (printing mode, edhrec sort = misaligned)\n");
+
+    // Bare price/year ranges spanning the broad/narrow margin; `total` reveals each
+    // one's true match_rate (of the priced/dated index) at run time.
+    let price = |op, val: f64| FuzzSpec::Leaf(FuzzLeaf::Price { op, val });
+    let year  = |op, y: i32|   FuzzSpec::Leaf(FuzzLeaf::Year { op, year: y });
+    let queries: Vec<(&str, FuzzSpec)> = vec![
+        ("usd<0.25", price(CmpOp::Lt, 0.25)),
+        ("usd<0.5",  price(CmpOp::Lt, 0.5)),
+        ("usd<1",    price(CmpOp::Lt, 1.0)),
+        ("usd<2",    price(CmpOp::Lt, 2.0)),
+        ("usd<5",    price(CmpOp::Lt, 5.0)),
+        ("usd<20",   price(CmpOp::Lt, 20.0)),
+        ("usd>=1",   price(CmpOp::Ge, 1.0)),
+        ("usd>=5",   price(CmpOp::Ge, 5.0)),
+        ("year>=2020", year(CmpOp::Ge, 2020)),
+        ("year>=2010", year(CmpOp::Ge, 2010)),
+        ("year>=2000", year(CmpOp::Ge, 2000)),
+    ];
+    // Shallow → progressively deeper: the depth axis the tree's ratio ignores.
+    let offsets = [0usize, 1_000, 5_000, 10_000, 20_000];
+    let all_plans = [PhysicalPlan::PrintingRangeScan, PhysicalPlan::PlanePopcountOrder, PhysicalPlan::StreamedSelect, PhysicalPlan::GatheredScan];
+    let labels = ["P1", "P2", "P3", "P4"];
+    let sort_col = orderby_to_col("edhrec");
+    let descending = false;
+
+    println!(
+        "{:<12} {:>7} {:>7}  {:>4} {:>9} {:>7}  {:>4} {:>9} {:>7}",
+        "query", "total", "offset", "gold", "gold_ns", "", "tree", "tree_ns", "t/g", // header spacing
+    );
+    println!(
+        "{:<12} {:>7} {:>7}  {:>4} {:>9} {:>7}  {:>4} {:>9} {:>7}",
+        "", "", "", "", "", "", "model", "model_ns", "m/g",
+    );
+
+    // geomean accumulators (sum of ln regret) over scored rows.
+    let (mut tree_ln, mut model_ln, mut n_scored, mut n_model_wins) = (0.0f64, 0.0f64, 0usize, 0usize);
+
+    for (qlabel, spec) in &queries {
+        for &offset in &offsets {
+            // ── Measure each applicable plan (min-of-N) ──
+            let mut ns = [None::<u64>; 4];
+            let mut total = 0usize;
+            for (pi, plan) in all_plans.iter().enumerate() {
+                let mut best = u64::MAX;
+                let mut applicable = false;
+                for it in 0..(WARMUP + ITERS) {
+                    let (pe, mut res) = split_planes(
+                        fuzz_bound_filter(spec, archived), &archived.indexes.planes,
+                        &archived.indexes.oracle_trigram.words, false, // unique_is_card=false (printing)
+                    );
+                    let t0 = Instant::now();
+                    let out = black_box(run_query_with_plan(
+                        *plan, &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
+                        &mut res, pe.as_ref(), "printing", "default", "edhrec", "asc", LIMIT, offset, &archived.indexes,
+                    ));
+                    let dt = t0.elapsed().as_nanos() as u64;
+                    match out {
+                        Some((t, _)) => { total = t; applicable = true; if it >= WARMUP { best = best.min(dt); } }
+                        None => break,
+                    }
+                }
+                if applicable { ns[pi] = Some(best); }
+            }
+
+            // Only score rows the page can actually reach — else every plan returns an
+            // empty page early and the comparison is meaningless.
+            if total <= offset + LIMIT { continue; }
+
+            // ── Features (true count = measured printing total = the index's k) ──
+            let (pe, mut res) = split_planes(
+                fuzz_bound_filter(spec, archived), &archived.indexes.planes,
+                &archived.indexes.oracle_trigram.words, false,
+            );
+            let prep = prepare_candidates(&archived.cards, &archived.offsets, &archived.strings, &mut res, pe.as_ref(), Mode::Printing, &archived.indexes);
+            let eval_domain = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
+            let residual_tier_ns100 = if prep.all_match_known { 0 } else { verify_cost_tier(&res) };
+            let feats = PlanFeatures {
+                n_cards, n_printings, matches: total as u32, eval_domain, residual_tier_ns100,
+                limit: LIMIT as u32, offset: offset as u32,
+            };
+
+            // ── Three pickers ──
+            let gold = (0..4).filter_map(|i| ns[i].map(|v| (v, i))).min_by_key(|(v, _)| *v);
+            let model = (0..4).filter(|&i| ns[i].is_some())
+                .map(|i| (plan_cost(all_plans[i], &feats), i))
+                .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            // TREE: P1 iff the fastpath fired (force-seam Some), else the P3/P4 maybe_broad gate.
+            let tree_i = if ns[0].is_some() {
+                0
+            } else {
+                let maybe_broad = prep.candidate_cards.as_ref().is_none_or(|v| v.len() > *STREAM_MIN_MATCHES);
+                if maybe_broad && streamed_select_applicable(&archived.cards, sort_col, descending, &archived.indexes) { 2 } else { 3 }
+            };
+
+            let (Some((gold_ns, gi)), Some((_, mi))) = (gold, model) else { continue };
+            let tree_ns = ns[tree_i].expect("tree pick was measured");
+            let model_ns = ns[mi].unwrap();
+            let tree_reg = tree_ns as f64 / gold_ns as f64;
+            let model_reg = model_ns as f64 / gold_ns as f64;
+            tree_ln += tree_reg.ln();
+            model_ln += model_reg.ln();
+            n_scored += 1;
+            if model_ns < tree_ns { n_model_wins += 1; }
+
+            println!(
+                "{:<12} {:>7} {:>7}  {:>4} {:>9} {:>7}  {:>4} {:>9} {:.2}x / {:.2}x  {}",
+                qlabel, total, offset,
+                labels[gi], gold_ns, "",
+                labels[tree_i], tree_ns, tree_reg, model_reg,
+                if model_ns < tree_ns { "<-- model faster" } else if mi == tree_i { "" } else { "(diff pick, ~tie)" },
+            );
+        }
+    }
+
+    let g = |ln: f64| (ln / n_scored.max(1) as f64).exp();
+    println!(
+        "\n{n_scored} scored rows | geomean regret  tree {:.3}x  model {:.3}x  | model strictly faster on {n_model_wins}/{n_scored}",
+        g(tree_ln), g(model_ln),
+    );
+    println!("(model geomean below tree, gap on deep+moderate rows => printing routing is a real win; parity => printing ties too)");
+}
+
 /// #702 step 4 (estimate-regret report): the payoff of the whole plan-selection
 /// sequence. Steps 1+3 give us a calibrated cost model and an estimator; this
 /// asks the load-bearing question directly — *if the router picked plans by
