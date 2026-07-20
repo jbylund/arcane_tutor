@@ -45,6 +45,15 @@
 //! `VISIT` constants was fit to hold card unchanged while correcting printing (see
 //! each constant's doc). Artwork rides the printing path (same all-printings scan);
 //! its confirming validation is still pending a bench run.
+//!
+//! A 1200-query designed refit (`plan_cost_refit`, weighted LSQ, 70/30 train/test)
+//! VALIDATED rather than beat these: P1's fitted STEP=4.14 ≈ 4.5 (test 1.38× ≈
+//! train); P3/P4 could NOT be fit — `SCAN` goes negative because `scan_units` and
+//! `matches` both scale with printing count in the workload, a STRUCTURAL
+//! collinearity no corpus size fixes (P2 stays data-starved: pure-plane queries are
+//! rare). The `_CARD_PASS`/`_SCAN`/`PUSH` split is a physical prior resolving what
+//! data alone cannot. Model sits at ~1.4× absolute (slow bucket), ordering-correct
+//! (argmin==gold 87/88) — the identifiable ceiling for this workload.
 
 use super::*;
 
