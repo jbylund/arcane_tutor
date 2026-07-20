@@ -7783,4 +7783,66 @@ fn printing_range_fastpath_gates_card_walk_at_stream_threshold() {
     }
 }
 
+/// #702 router timing: absolute `run_query` (the cost router) latency over the
+/// calibration set × modes × pages, min-of-N, on the real corpus. Used to A/B two
+/// versions of `run_query_routed` against each other (git-stash one, run, restore,
+/// run) since the tree-vs-router bench retired with the tree. Prints per-config ns
+/// and per-mode + grand totals (sum of the min times).
+///
+///     cargo test --release router_timing -- --ignored --nocapture
+#[test]
+#[ignore = "router timing; needs real.store; cargo test --release router_timing -- --ignored --nocapture"]
+fn router_timing() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 5;
+    const ITERS: usize = 50;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let planes = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+    let pages = [("shallow", 60usize, 0usize), ("deep", 60usize, 10_000usize)];
+    let modes = ["card", "printing", "artwork"];
+
+    let mut grand: u64 = 0;
+    for &mode in &modes {
+        let uic = mode == "card";
+        let mut mode_total: u64 = 0;
+        for (qlabel, spec) in &calibration_queries() {
+            for &(plabel, limit, offset) in &pages {
+                let mut best = u64::MAX;
+                for it in 0..(WARMUP + ITERS) {
+                    let full = fuzz_bound_filter(spec, archived);
+                    let t0 = Instant::now();
+                    let (_pe, mut res) = split_planes(full, planes, words, uic);
+                    let out = run_query(
+                        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
+                        &mut res, _pe.as_ref(), mode, "default", "edhrec", "asc", limit, offset, &archived.indexes,
+                    );
+                    let dt = t0.elapsed().as_nanos() as u64;
+                    black_box(&out.1);
+                    if it >= WARMUP {
+                        best = best.min(dt);
+                    }
+                }
+                mode_total += best;
+                println!("{qlabel:<22} {mode:>8} {plabel:>7} {best:>10}ns");
+            }
+        }
+        println!("  -> {mode} total: {mode_total}ns\n");
+        grand += mode_total;
+    }
+    println!("GRAND TOTAL (sum of per-config min ns): {grand}");
+}
+
 
