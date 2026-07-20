@@ -9,6 +9,7 @@ use super::{
     gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
     walk_printing_page, aligned_page, bare_range_bounds, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
     prepare_candidates, verify_cost_tier, scan_units, Mode,
+    AOracleCard, APrinting, AOffsets, AStrings, PlaneExpr,
     archive_header, archive_payload, ARCHIVE_HEADER_LEN, Mmap,
     bitmap_contains, bitmap_card_ids, compile_plane, eval_planes, split_planes,
     ArithOp, ArtistIndex, CardData, CardIndexes, Candidates, ColorField, NumExpr, NumField, RarityIndex,
@@ -2814,14 +2815,54 @@ fn cost_route_matches_legacy() {
     assert!(distinct >= 3, "cost router degenerate — chose {distinct} distinct plan(s) (counts {seen:?}); expected >= 3");
 }
 
-/// #702 step 5 PAYOFF A/B: cost-based card-mode routing (`run_query_card_routed`)
-/// vs the legacy decision tree (`run_query`, toggle default OFF), on the REAL
-/// corpus. Per query, times both from split through result (min-of-N), asserts
-/// equal totals (parity — plan choice is perf-only), and reports
-/// ratio = routed/legacy plus the routed plan. Both paths materialize once and
-/// reuse; the only difference is threshold-tree vs cost-argmin.
+/// The plan the LEGACY `run_query` decision tree would dispatch — mirrors its
+/// dispatch order EXACTLY (P1 fastpath → P2 popcount → maybe_broad P3/P4) so the
+/// A/B can show legacy-vs-routed plan side by side. Deterministic, so callers run
+/// it once per config outside the timing loop; it mutates `filter` (via
+/// `prepare_candidates`), so pass a freshly split residual.
+#[allow(clippy::too_many_arguments)]
+fn legacy_tree_plan(
+    cards: &[AOracleCard],
+    printings: &[APrinting],
+    offsets: &AOffsets,
+    strings: &AStrings,
+    filter: &mut FilterExpr,
+    plane: Option<&PlaneExpr>,
+    mode: Mode,
+    sort_col: SortCol,
+    descending: bool,
+    limit: usize,
+    page_offset: usize,
+    indexes: &Archived<CardIndexes>,
+) -> PhysicalPlan {
+    if printing_range_scan_applicable(mode, plane, cards)
+        && printing_range_fastpath(cards, printings, offsets, strings, filter, indexes, sort_col, descending, limit, page_offset).is_some()
+    {
+        return PhysicalPlan::PrintingRangeScan;
+    }
+    if plane_popcount_order_applicable(filter, mode, cards, plane, sort_col, descending, indexes) {
+        return PhysicalPlan::PlanePopcountOrder;
+    }
+    let prep = prepare_candidates(cards, offsets, strings, filter, plane, mode, indexes);
+    let maybe_broad = prep.candidate_cards.as_ref().is_none_or(|v| v.len() > *STREAM_MIN_MATCHES);
+    if maybe_broad && streamed_select_applicable(cards, sort_col, descending, indexes) {
+        PhysicalPlan::StreamedSelect
+    } else {
+        PhysicalPlan::GatheredScan
+    }
+}
+
+/// #702 step 5 PAYOFF A/B: cost-based routing (`run_query_routed`) vs the legacy
+/// decision tree (`run_query`, toggle default OFF), all unique modes, REAL corpus.
+/// Per config, times both from split through result (min-of-N), asserts equal
+/// totals (parity — plan choice is perf-only), and reports ratio = routed/legacy
+/// with BOTH plans (legacy_tree_plan vs the router's choice). The labeled
+/// calibration queries print in full; a large fuzzer corpus (AB_CORPUS_N, default
+/// 200, seed AB_SEED) is summarized per mode with a plan-agreement rate and the
+/// worst divergences.
 ///
 ///     cargo test --release plan_routing_ab -- --ignored --nocapture
+///     AB_CORPUS_N=500 cargo test --release plan_routing_ab -- --ignored --nocapture
 ///
 /// Needs real.store. Directional unless run on a quiesced machine.
 #[test]
@@ -2832,6 +2873,8 @@ fn plan_routing_ab() {
     const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
     const WARMUP: usize = 5;
     const ITERS: usize = 40;
+    let corpus_n: usize = std::env::var("AB_CORPUS_N").ok().and_then(|s| s.parse().ok()).unwrap_or(200);
+    let seed: u64 = std::env::var("AB_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(0xAB);
 
     let Ok(file) = std::fs::File::open(STORE_PATH) else {
         eprintln!("SKIP: {STORE_PATH} not found (see bench_verify_cost.rs docs)");
@@ -2843,74 +2886,109 @@ fn plan_routing_ab() {
         return;
     }
     let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
-    eprintln!("real.store: {} cards, {} printings; card mode\n", archived.cards.len(), archived.printings.len());
+    eprintln!("real.store: {} cards, {} printings; all modes; {corpus_n} generated + labeled queries\n", archived.cards.len(), archived.printings.len());
 
     let planes = &archived.indexes.planes;
     let words = &archived.indexes.oracle_trigram.words;
     let sort_col = orderby_to_col("edhrec");
     let pages = [("shallow", 60usize, 0usize), ("deep", 60usize, 10_000usize)];
+    let modes: [(&str, Mode); 3] = [("card", Mode::Card), ("printing", Mode::Printing), ("artwork", Mode::Artwork)];
 
+    // Measure one config: (legacy_ns, routed_ns, legacy_plan, routed_plan). Legacy
+    // plan is computed once (untimed, deterministic); parity asserted.
+    let measure = |spec: &FuzzSpec, mode: Mode, mname: &str, uic: bool, limit: usize, offset: usize| -> (u64, u64, PhysicalPlan, PhysicalPlan) {
+        let (lp_pe, mut lp_res) = split_planes(fuzz_bound_filter(spec, archived), planes, words, uic);
+        let leg_plan = legacy_tree_plan(
+            &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
+            &mut lp_res, lp_pe.as_ref(), mode, sort_col, false, limit, offset, &archived.indexes,
+        );
+        let (mut leg_best, mut rt_best) = (u64::MAX, u64::MAX);
+        let (mut leg_total, mut rt_total) = (0usize, 0usize);
+        let mut routed_plan = PhysicalPlan::GatheredScan;
+        for it in 0..(WARMUP + ITERS) {
+            let full_l = fuzz_bound_filter(spec, archived);
+            let t0 = Instant::now();
+            let (le_pe, mut le_res) = split_planes(full_l, planes, words, uic);
+            let (lt, lp) = run_query(
+                &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
+                &mut le_res, le_pe.as_ref(), mname, "default", "edhrec", "asc", limit, offset, &archived.indexes,
+            );
+            let ld = t0.elapsed().as_nanos() as u64;
+            black_box(&lp);
+            let full_r = fuzz_bound_filter(spec, archived);
+            let t1 = Instant::now();
+            let (ro_pe, mut ro_res) = split_planes(full_r, planes, words, uic);
+            let mut chosen = None;
+            let (rt, rp) = run_query_routed(
+                &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
+                &mut ro_res, ro_pe.as_ref(), mode, prefer_from_str("default"), sort_col, false, limit, offset,
+                &archived.indexes, &mut chosen,
+            );
+            let rd = t1.elapsed().as_nanos() as u64;
+            black_box(&rp);
+            if it >= WARMUP { leg_best = leg_best.min(ld); rt_best = rt_best.min(rd); }
+            leg_total = lt; rt_total = rt;
+            routed_plan = chosen.unwrap_or(PhysicalPlan::GatheredScan);
+        }
+        assert_eq!(leg_total, rt_total, "parity mismatch: {mname} legacy={leg_total} routed={rt_total} ({})", fuzz_describe(spec));
+        (leg_best, rt_best, leg_plan, routed_plan)
+    };
+    let pf = |p: PhysicalPlan| match p {
+        PhysicalPlan::PrintingRangeScan => "P1", PhysicalPlan::PlanePopcountOrder => "P2",
+        PhysicalPlan::StreamedSelect => "P3", PhysicalPlan::GatheredScan => "P4",
+    };
+
+    let labeled = calibration_queries();
+    let generated = generate_calibration_corpus(corpus_n, seed);
     println!(
-        "{:<22} {:>7} {:>10} {:>10} {:>7}  {:>9}  routed_plan",
-        "query", "page", "legacy_ns", "routed_ns", "ratio", "total",
+        "{:<22} {:>5} {:>7} {:>10} {:>10} {:>7}  {:>4} {:>4}",
+        "query", "mode", "page", "legacy_ns", "routed_ns", "ratio", "leg", "rout",
     );
-    let (mut faster, mut tie, mut slower, mut n) = (0usize, 0usize, 0usize, 0usize);
-    let mut log_sum = 0.0f64;
 
-    for (qlabel, spec) in &calibration_queries() {
-        for &(plabel, limit, offset) in &pages {
-            let (mut leg_best, mut rt_best) = (u64::MAX, u64::MAX);
-            let (mut leg_total, mut rt_total) = (0usize, 0usize);
-            let mut routed_plan = PhysicalPlan::GatheredScan;
-            for it in 0..(WARMUP + ITERS) {
-                // Legacy: bind (untimed) → time split + run_query (toggle OFF → tree).
-                let full_l = fuzz_bound_filter(spec, archived);
-                let t0 = Instant::now();
-                let (le_pe, mut le_res) = split_planes(full_l, planes, words, true);
-                let (lt, lp) = run_query(
-                    &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-                    &mut le_res, le_pe.as_ref(), "card", "default", "edhrec", "asc", limit, offset, &archived.indexes,
-                );
-                let ld = t0.elapsed().as_nanos() as u64;
-                black_box(&lp);
-                // Routed: bind (untimed) → time split + run_query_routed.
-                let full_r = fuzz_bound_filter(spec, archived);
-                let t1 = Instant::now();
-                let (ro_pe, mut ro_res) = split_planes(full_r, planes, words, true);
-                let mut chosen = None;
-                let (rt, rp) = run_query_routed(
-                    &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-                    &mut ro_res, ro_pe.as_ref(), Mode::Card, prefer_from_str("default"), sort_col, false, limit, offset,
-                    &archived.indexes, &mut chosen,
-                );
-                let rd = t1.elapsed().as_nanos() as u64;
-                black_box(&rp);
-                if it >= WARMUP {
-                    leg_best = leg_best.min(ld);
-                    rt_best = rt_best.min(rd);
-                }
-                leg_total = lt;
-                rt_total = rt;
-                routed_plan = chosen.unwrap_or(PhysicalPlan::GatheredScan);
-            }
-            assert_eq!(leg_total, rt_total, "parity mismatch: {qlabel} [{plabel}] legacy={leg_total} routed={rt_total}");
-            let ratio = rt_best as f64 / leg_best as f64;
+    for (mname, mode) in modes {
+        let uic = matches!(mode, Mode::Card);
+        let (mut faster, mut tie, mut slower, mut n, mut agree) = (0usize, 0usize, 0usize, 0usize, 0usize);
+        let mut log_sum = 0.0f64;
+        let mut worst: Vec<(f64, String, &str, &str)> = Vec::new(); // (ratio, desc, leg, rout) for generated divergences/regressions
+        let mut tally = |leg: u64, rt: u64, lp: PhysicalPlan, rp: PhysicalPlan| -> f64 {
+            // Floor at 1ns: sub-µs configs can measure 0 (timer resolution), and
+            // ln(0) would corrupt the geomean.
+            let ratio = rt.max(1) as f64 / leg.max(1) as f64;
             n += 1;
             log_sum += ratio.ln();
-            if ratio < 0.95 {
-                faster += 1;
-            } else if ratio > 1.05 {
-                slower += 1;
-            } else {
-                tie += 1;
+            if ratio < 0.95 { faster += 1; } else if ratio > 1.05 { slower += 1; } else { tie += 1; }
+            if lp == rp { agree += 1; }
+            ratio
+        };
+
+        // Labeled calibration queries: full per-row detail.
+        for (qlabel, spec) in &labeled {
+            for &(plabel, limit, offset) in &pages {
+                let (leg, rt, lp, rp) = measure(spec, mode, mname, uic, limit, offset);
+                let ratio = tally(leg, rt, lp, rp);
+                println!("{qlabel:<22} {mname:>5} {plabel:>7} {leg:>10} {rt:>10} {ratio:>6.2}x  {:>4} {:>4}", pf(lp), pf(rp));
             }
-            println!("{qlabel:<22} {plabel:>7} {leg_best:>10} {rt_best:>10} {ratio:>6.2}x  {rt_total:>9}  {routed_plan:?}");
         }
+        // Generated corpus: summarized; collect the worst regressions / divergences.
+        for (desc, spec) in &generated {
+            for &(_plabel, limit, offset) in &pages {
+                let (leg, rt, lp, rp) = measure(spec, mode, mname, uic, limit, offset);
+                let ratio = tally(leg, rt, lp, rp);
+                if ratio > 1.05 || lp != rp {
+                    worst.push((ratio, desc.clone(), pf(lp), pf(rp)));
+                }
+            }
+        }
+        worst.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        let geomean = if n > 0 { (log_sum / n as f64).exp() } else { 1.0 };
+        println!(
+            "  -> {mname}: {n} configs | {faster} faster / {tie} tie / {slower} slower(>1.05x) | geomean {geomean:.3}x | plans agreed {agree}/{n}",
+        );
+        for (ratio, desc, lp, rp) in worst.iter().take(6) {
+            println!("       worst: {ratio:.2}x  leg={lp} rout={rp}  {desc}");
+        }
+        println!();
     }
-    let geomean = if n > 0 { (log_sum / n as f64).exp() } else { 1.0 };
-    println!(
-        "\nA/B ({n} card-mode configs): {faster} routed-faster(<0.95x), {tie} tie, {slower} routed-slower(>1.05x)  |  geomean routed/legacy {geomean:.3}x",
-    );
 }
 
 /// #702 PR1 estimator accuracy report (NOT an assertion — a reporting tool).
