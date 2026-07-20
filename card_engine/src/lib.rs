@@ -4620,6 +4620,13 @@ fn run_query_routed<'a>(
     // `count` = candidate CARD count, the same broad/narrow proxy the legacy tree's
     // `maybe_broad` keys P3/P4 on (so the routed choice matches it across modes);
     // scan_units makes the magnitude operating-space-correct.
+    //
+    // `scan_units()` sums printing counts over the candidate cards — O(candidates)
+    // for narrowed printing/artwork queries, which the tree's length-comparison
+    // avoids (the ~1-2% Case-B overhead in plan_routing_ab). Kept EXACT on purpose:
+    // an O(1) `eval_domain·n_printings/n_cards` estimate would erase the overhead but
+    // trade the model's honesty for a couple percent on already-fast queries — not
+    // worth it. Do not "optimize" this into the ratio without re-justifying.
     let count = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
     let tier = if prep.all_match_known { 0 } else { verify_cost_tier(filter) };
     let feats = cost::PlanFeatures {
