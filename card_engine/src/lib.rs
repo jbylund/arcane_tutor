@@ -3975,17 +3975,17 @@ fn printing_range_fastpath<'a>(
     Some((k, walk_printing_page(cards, printings, offsets, strings, filter, sort_col, descending, limit, page_offset, perm)))
 }
 
-/// The four physical plans `run_query` can dispatch to (#702 step 2, the
-/// force-plan seam). Each has an applicability predicate (its correctness
-/// preconditions — the future `choose_plan` eligibility gates) and a callable
-/// executor. `run_query`'s default routing is unchanged: it still picks among
-/// these in exactly the same order, on exactly the same conditions; this enum
-/// only makes each plan *individually addressable* via `run_query_with_plan`.
+/// The physical plans the cost router (`run_query_routed`) chooses among. Each
+/// carries three declared properties — `applicable` (its correctness precondition),
+/// `cost::plan_cost` (its predicted runtime), and an executor — so the router is a
+/// generic argmin over `ALL.filter(applicable)`, not a hand-written decision tree.
+/// Adding a plan is: a variant here, an `applicable` arm, a `plan_cost` arm, and an
+/// executor arm in the router's dispatch. `run_query_with_plan` also makes each
+/// individually forceable (the differential/calibration test seam).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // variants only referenced through the (test-facing) force entry point
 enum PhysicalPlan {
     /// #695 bare-broad-range fast path under `unique=printing` (executor:
-    /// `printing_range_fastpath`).
+    /// `printing_range_fastpath`). The one non-materializing plan.
     PrintingRangeScan,
     /// #634 Step 2 plane-bitmap popcount-skip order phase (`run_query_streamed_popcount`).
     PlanePopcountOrder,
@@ -3993,6 +3993,55 @@ enum PhysicalPlan {
     StreamedSelect,
     /// The universal fallback: the gathered per-card loop + `select_page`.
     GatheredScan,
+}
+
+impl PhysicalPlan {
+    /// All plans, argmin-ordered so ties resolve deterministically toward the
+    /// cheaper-fixed-cost plan. The router filters this by `applicable`.
+    const ALL: [PhysicalPlan; 4] = [
+        PhysicalPlan::PrintingRangeScan,
+        PhysicalPlan::PlanePopcountOrder,
+        PhysicalPlan::StreamedSelect,
+        PhysicalPlan::GatheredScan,
+    ];
+
+    /// Whether this plan can *correctly* answer the query — its precondition, not a
+    /// perf judgment (that is `cost::plan_cost`). These predicates also encode prep
+    /// availability: `PlanePopcountOrder` is applicable exactly when the plane-bitmap
+    /// prep is available, `PrintingRangeScan` exactly when the range-estimate prep is,
+    /// so filtering `ALL` by `applicable` inside each prep branch yields the right
+    /// candidate set with no per-branch plan list.
+    #[allow(clippy::too_many_arguments)]
+    fn applicable(
+        self,
+        filter: &FilterExpr,
+        mode: Mode,
+        cards: &[AOracleCard],
+        plane: Option<&PlaneExpr>,
+        sort_col: SortCol,
+        descending: bool,
+        indexes: &Archived<CardIndexes>,
+    ) -> bool {
+        match self {
+            PhysicalPlan::PrintingRangeScan => {
+                printing_range_scan_applicable(mode, plane, cards) && bare_range_bounds(filter, indexes).is_some()
+            }
+            PhysicalPlan::PlanePopcountOrder => {
+                plane_popcount_order_applicable(filter, mode, cards, plane, sort_col, descending, indexes)
+            }
+            PhysicalPlan::StreamedSelect => streamed_select_applicable(cards, sort_col, descending, indexes),
+            PhysicalPlan::GatheredScan => gathered_scan_applicable(),
+        }
+    }
+
+    /// Whether the plan runs off the shared materialized prep (plane bitmap /
+    /// candidate list) — true for all but `PrintingRangeScan`, whose whole benefit
+    /// is answering *without* materializing. The router costs non-materializing
+    /// plans from a cheap estimate first (phase 1) and only materializes (phase 2)
+    /// when a materializing plan wins or the non-materializing one declines.
+    fn materializing(self) -> bool {
+        !matches!(self, PhysicalPlan::PrintingRangeScan)
+    }
 }
 
 /// The shared P3/P4 preparation product (see `prepare_candidates`): the
@@ -4393,26 +4442,60 @@ fn scan_units(mode: Mode, candidate_cards: Option<&[u32]>, offsets: &AOffsets, n
     }
 }
 
+/// Dispatch the two candidate-list executors (P3/P4) on a shared `prep`. Both
+/// phase-2 prep branches funnel their P3/P4 winner through here, so the executor
+/// call site exists once. `PlanePopcountOrder` is handled by its own bitmap
+/// executor and `PrintingRangeScan` never reaches here (non-materializing).
+#[allow(clippy::too_many_arguments)]
+fn exec_from_candidates<'a>(
+    plan: PhysicalPlan,
+    cards: &'a [AOracleCard],
+    printings: &'a [APrinting],
+    offsets: &AOffsets,
+    strings: &AStrings,
+    filter: &FilterExpr,
+    prep: &PreparedCandidates,
+    plane: Option<&PlaneExpr>,
+    mode: Mode,
+    prefer: Prefer,
+    sort_col: SortCol,
+    descending: bool,
+    limit: usize,
+    page_offset: usize,
+    indexes: &Archived<CardIndexes>,
+) -> (usize, Vec<(&'a AOracleCard, &'a APrinting)>) {
+    match plan {
+        PhysicalPlan::StreamedSelect => exec_streamed_select(
+            cards, printings, offsets, strings, filter, prep, plane, mode, prefer, sort_col, descending, limit, page_offset, indexes,
+        ),
+        PhysicalPlan::GatheredScan => exec_gathered_scan(
+            cards, printings, offsets, strings, filter, prep, plane, mode, prefer, sort_col, descending, limit, page_offset, indexes,
+        ),
+        other => unreachable!("exec_from_candidates only runs P3/P4, got {other:?}"),
+    }
+}
+
 /// #702: the single cost-based plan-selection layer for ALL unique modes — the
 /// whole of `run_query`'s dispatch (the hand-tuned decision tree it replaced is
-/// gone). Picks `argmin cost::plan_cost` over the applicable plans, scored on the
-/// **actual** count (no estimator; plan choice is a pure performance decision, so
-/// every plan returns identical rows — guaranteed by `force_plan_differential_agreement`,
-/// which checks each applicable plan against `GatheredScan` across all modes).
-/// Cases, each touching the plane / candidate set **at most once**:
+/// gone). The router is a generic `argmin cost::plan_cost` over
+/// `PhysicalPlan::ALL.filter(applicable)`; it never names a plan list, so adding a
+/// plan is declaring its `applicable`/`cost`/`materializing`/executor, not editing
+/// a dispatch. Plan choice is a pure performance decision — every plan returns
+/// identical rows (guaranteed by `force_plan_differential_agreement`).
 ///
-/// - **Case A** (`plane_popcount_order_applicable`, card-only: True residual +
-///   plane): the plane popcount IS the exact count. Evaluate the plane once into a
-///   local bitmap; the winning executor reuses it (P2 via
-///   `exec_plane_popcount_order_with_bitmap`, P3/P4 via `bitmap_card_ids`).
-/// - **Printing bare-range**: P1 (`PrintingRangeScan`) skips materialization
-///   entirely, so it can't be materialize-then-choose. Take the exact match count
-///   `k` from the range index (free binary search), cost P1 vs P3/P4 in their broad
-///   regime; if P1 wins and the fastpath accepts, return it — else fall through.
-/// - **Case B** (otherwise): `prepare_candidates` materializes once, then the
-///   chosen executor reuses that `prep`. `count` = candidate card count (the same
-///   broad/narrow proxy the tree keyed on); `scan_units` makes the cost
-///   operating-space-correct for printing/artwork.
+/// Two phases, because the *cost of costing* differs by plan:
+/// - **Phase 1 — non-materializing plans** (`!materializing()`; today just P1).
+///   These answer *without* a shared prep, so materializing to cost them is waste:
+///   cost them from a cheap estimate (the range index's exact `k`, P3/P4 in their
+///   unnarrowed broad regime). If the argmin picks a non-materializing plan and its
+///   executor accepts, return it. Otherwise a materializing plan won (or P1
+///   declined) → phase 2.
+/// - **Phase 2 — materialize a shared artifact, argmin the materializing plans.**
+///   The prep is query-structural: a True-residual plane (card) gives an exact
+///   plane bitmap the winner reuses; otherwise `prepare_candidates`. Applicability
+///   already encodes which prep is live (`PlanePopcountOrder` ⟺ plane-bitmap prep),
+///   so filtering `ALL` by `applicable && materializing` yields the right candidate
+///   set in each branch with no hand-written plan list.
 #[allow(clippy::too_many_arguments)]
 fn run_query_routed<'a>(
     cards: &'a [AOracleCard],
@@ -4432,26 +4515,56 @@ fn run_query_routed<'a>(
     let n_cards = cards.len() as u32;
     let n_printings = printings.len() as u32;
 
-    // argmin over a fixed candidate set. `plan_cost` is only defined for
-    // applicable plans, so the caller passes only those; GatheredScan is always
-    // present, so the min is never empty.
-    let choose = |feats: &cost::PlanFeatures, plans: &[PhysicalPlan]| -> PhysicalPlan {
-        *plans
-            .iter()
-            .min_by(|a, b| cost::plan_cost(**a, feats).partial_cmp(&cost::plan_cost(**b, feats)).expect("plan_cost is finite"))
-            .expect("at least GatheredScan is always a candidate")
+    // Generic argmin: the cheapest applicable plan, optionally restricted to
+    // materializing plans (phase 2). `filter` is passed per call (not captured) so
+    // it stays free for `prepare_candidates`'s `&mut` below. GatheredScan is always
+    // applicable and materializing, so the min is never empty.
+    let choose = |filter: &FilterExpr, feats: &cost::PlanFeatures, materializing_only: bool| -> PhysicalPlan {
+        PhysicalPlan::ALL
+            .into_iter()
+            .filter(|p| {
+                p.applicable(filter, mode, cards, plane, sort_col, descending, indexes) && (!materializing_only || p.materializing())
+            })
+            .min_by(|a, b| cost::plan_cost(*a, feats).partial_cmp(&cost::plan_cost(*b, feats)).expect("plan_cost is finite"))
+            .expect("GatheredScan is always applicable and materializing")
     };
 
-    // ── Case A: True residual + plane → the plane popcount is the exact count. ──
-    if plane_popcount_order_applicable(filter, mode, cards, plane, sort_col, descending, indexes) {
+    // ── Phase 1: non-materializing plans, costed from a cheap estimate. ──
+    if PhysicalPlan::PrintingRangeScan.applicable(filter, mode, cards, plane, sort_col, descending, indexes) {
+        let (idx, lo, hi) = bare_range_bounds(filter, indexes).expect("PrintingRangeScan applicable ⇒ bare range");
+        let s = idx.partition_point(|p| u32::from(p.0) < lo);
+        let e = idx.partition_point(|p| u32::from(p.0) < hi);
+        // Exact k from the index (no scan); P3/P4 estimated unnarrowed (the broad
+        // regime where P1 is a contender — a narrow range makes P1's walk cost
+        // explode, so it loses here and we fall to the exact phase 2 anyway).
+        let feats = cost::PlanFeatures {
+            n_cards,
+            n_printings,
+            matches: (e - s) as u32,
+            eval_domain: n_cards,
+            scan_units: n_printings,
+            residual_tier_ns100: verify_cost_tier(filter),
+            limit: limit as u32,
+            offset: page_offset as u32,
+        };
+        if !choose(filter, &feats, false).materializing()
+            && let Some(result) =
+                printing_range_fastpath(cards, printings, offsets, strings, filter, indexes, sort_col, descending, limit, page_offset)
+        {
+            return result;
+        }
+        // A materializing plan won the estimate, or the fastpath declined → phase 2.
+    }
+
+    // ── Phase 2a: True-residual + plane → exact popcount, reused by the winner. ──
+    if PhysicalPlan::PlanePopcountOrder.applicable(filter, mode, cards, plane, sort_col, descending, indexes) {
         let plane_expr = plane.expect("PlanePopcountOrder applicability guarantees a plane");
         thread_local! {
             static ROUTED_PLANE_BITMAP: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
         }
         return ROUTED_PLANE_BITMAP.with(|cell| {
             let mut bits = cell.borrow_mut();
-            // The ONE plane evaluation on this routed query; every dispatch arm
-            // below reuses `bits` — never re-evaluates the plane.
+            // The ONE plane evaluation; the chosen executor reuses `bits`.
             eval_planes(plane_expr, &indexes.planes, &mut bits);
             let count: u32 = bits.iter().map(|w| w.count_ones()).sum();
             let feats = cost::PlanFeatures {
@@ -4464,122 +4577,44 @@ fn run_query_routed<'a>(
                 limit: limit as u32,
                 offset: page_offset as u32,
             };
-            // P2 is applicable by definition here; add P3 when it is, and P4
-            // always. Stack array literals — no per-query heap allocation for the
-            // candidate set (the `Vec` was the routed path's only measurable
-            // overhead over the legacy tree in plan_routing_ab).
-            let plan = if streamed_select_applicable(cards, sort_col, descending, indexes) {
-                choose(&feats, &[PhysicalPlan::PlanePopcountOrder, PhysicalPlan::StreamedSelect, PhysicalPlan::GatheredScan])
-            } else {
-                choose(&feats, &[PhysicalPlan::PlanePopcountOrder, PhysicalPlan::GatheredScan])
-            };
-            match plan {
+            match choose(filter, &feats, true) {
                 PhysicalPlan::PlanePopcountOrder => exec_plane_popcount_order_with_bitmap(
                     cards, printings, offsets, strings, prefer, sort_col, descending, limit, page_offset, plane_expr, indexes, &bits,
                 ),
-                // P3/P4 reuse the same bitmap as the candidate card list. This is
-                // exactly what `prepare_candidates` produces for a True-residual
-                // plane query (Some(bitmap_card_ids(&bitmap)), all_match_known),
-                // so the rows are identical to the legacy path.
-                PhysicalPlan::StreamedSelect | PhysicalPlan::GatheredScan => {
-                    let prep = PreparedCandidates { candidate_cards: Some(bitmap_card_ids(&bits)), all_match_known: true };
-                    if matches!(plan, PhysicalPlan::StreamedSelect) {
-                        exec_streamed_select(
-                            cards, printings, offsets, strings, filter, &prep, plane, mode, prefer, sort_col, descending, limit,
-                            page_offset, indexes,
-                        )
-                    } else {
-                        exec_gathered_scan(
-                            cards, printings, offsets, strings, filter, &prep, plane, mode, prefer, sort_col, descending, limit,
-                            page_offset, indexes,
-                        )
-                    }
-                }
-                PhysicalPlan::PrintingRangeScan => unreachable!("PrintingRangeScan is printing-mode only"),
+                // P3/P4 reuse the bitmap as their candidate list — identical to what
+                // prepare_candidates produces for a True-residual plane query
+                // (Some(bitmap_card_ids), all_match_known).
+                other => exec_from_candidates(
+                    other, cards, printings, offsets, strings, filter,
+                    &PreparedCandidates { candidate_cards: Some(bitmap_card_ids(&bits)), all_match_known: true },
+                    plane, mode, prefer, sort_col, descending, limit, page_offset, indexes,
+                ),
             }
         });
     }
 
-    // ── Printing bare-range: P1 competes WITHOUT materializing. ──
-    // P1 (PrintingRangeScan) is the one plan whose whole benefit is skipping
-    // candidate materialization, so it can't be routed materialize-then-choose like
-    // the rest. Instead take the exact match count `k` from the range index's
-    // binary search (free — no scan), and cost P1 against P3/P4 estimated in their
-    // BROAD regime (unnarrowed: eval_domain=n_cards, scan_units=n_printings — the
-    // regime where P1 is even a contender; a narrow range makes P1's walk cost
-    // explode so it loses here and we fall through to the exact Case B anyway).
-    // If P1 wins AND the fastpath accepts, return it; otherwise fall through to
-    // Case B, which materializes and routes P3/P4 on exact features. Rows are
-    // identical either way (plan choice is perf-only).
-    if printing_range_scan_applicable(mode, plane, cards)
-        && let Some((idx, lo, hi)) = bare_range_bounds(filter, indexes)
-    {
-        let s = idx.partition_point(|p| u32::from(p.0) < lo);
-        let e = idx.partition_point(|p| u32::from(p.0) < hi);
-        let k = (e - s) as u32;
-        let feats = cost::PlanFeatures {
-            n_cards,
-            n_printings,
-            matches: k,
-            eval_domain: n_cards,
-            scan_units: n_printings,
-            residual_tier_ns100: verify_cost_tier(filter),
-            limit: limit as u32,
-            offset: page_offset as u32,
-        };
-        let plan = if streamed_select_applicable(cards, sort_col, descending, indexes) {
-            choose(&feats, &[PhysicalPlan::PrintingRangeScan, PhysicalPlan::StreamedSelect, PhysicalPlan::GatheredScan])
-        } else {
-            choose(&feats, &[PhysicalPlan::PrintingRangeScan, PhysicalPlan::GatheredScan])
-        };
-        if matches!(plan, PhysicalPlan::PrintingRangeScan)
-            && let Some(result) =
-                printing_range_fastpath(cards, printings, offsets, strings, filter, indexes, sort_col, descending, limit, page_offset)
-        {
-            return result;
-        }
-        // P3/P4 won, or the fastpath declined (narrow / ordering band): fall through.
-    }
-
-    // ── Case B: residual ≠ True (or no plane). Materialize candidates ONCE. ──
+    // ── Phase 2b: materialize candidates once, argmin the materializing plans. ──
     let prep = prepare_candidates(cards, offsets, strings, filter, plane, mode, indexes);
-    // `count` = candidate CARD count, the same broad/narrow proxy the legacy tree's
-    // `maybe_broad` keys P3/P4 on (so the routed choice matches it across modes);
-    // scan_units makes the magnitude operating-space-correct.
-    //
-    // `scan_units()` sums printing counts over the candidate cards — O(candidates)
-    // for narrowed printing/artwork queries, which the tree's length-comparison
-    // avoids (the ~1-2% Case-B overhead in plan_routing_ab). Kept EXACT on purpose:
-    // an O(1) `eval_domain·n_printings/n_cards` estimate would erase the overhead but
-    // trade the model's honesty for a couple percent on already-fast queries — not
-    // worth it. Do not "optimize" this into the ratio without re-justifying.
+    // `count` = candidate CARD count, the broad/narrow proxy the P3/P4 crossover keys
+    // on. `scan_units` makes the magnitude operating-space-correct: it sums printing
+    // counts over the candidate cards (O(candidates) for narrowed printing/artwork —
+    // the ~1-2% overhead in plan_routing_ab). Kept EXACT on purpose: an O(1)
+    // `eval_domain·n_printings/n_cards` estimate would erase the overhead but trade
+    // the model's honesty for a couple percent on already-fast queries — not worth
+    // it. Do not "optimize" this into the ratio without re-justifying.
     let count = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
-    let tier = if prep.all_match_known { 0 } else { verify_cost_tier(filter) };
     let feats = cost::PlanFeatures {
         n_cards,
         n_printings,
         matches: count,
         eval_domain: count,
         scan_units: scan_units(mode, prep.candidate_cards.as_deref(), offsets, n_printings, count),
-        residual_tier_ns100: tier,
+        residual_tier_ns100: if prep.all_match_known { 0 } else { verify_cost_tier(filter) },
         limit: limit as u32,
         offset: page_offset as u32,
     };
-    // Stack array literals — no per-query heap allocation (see Case A).
-    let plan = if streamed_select_applicable(cards, sort_col, descending, indexes) {
-        choose(&feats, &[PhysicalPlan::StreamedSelect, PhysicalPlan::GatheredScan])
-    } else {
-        choose(&feats, &[PhysicalPlan::GatheredScan])
-    };
-    if matches!(plan, PhysicalPlan::StreamedSelect) {
-        exec_streamed_select(
-            cards, printings, offsets, strings, filter, &prep, plane, mode, prefer, sort_col, descending, limit, page_offset, indexes,
-        )
-    } else {
-        exec_gathered_scan(
-            cards, printings, offsets, strings, filter, &prep, plane, mode, prefer, sort_col, descending, limit, page_offset, indexes,
-        )
-    }
+    let plan = choose(filter, &feats, true);
+    exec_from_candidates(plan, cards, printings, offsets, strings, filter, &prep, plane, mode, prefer, sort_col, descending, limit, page_offset, indexes)
 }
 
 /// In-process force/dispatch entry point (#702 step 2): run `plan` for this
