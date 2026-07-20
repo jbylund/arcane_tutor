@@ -4393,14 +4393,13 @@ fn scan_units(mode: Mode, candidate_cards: Option<&[u32]>, offsets: &AOffsets, n
     }
 }
 
-/// #702 step 5: cost-based plan routing for ALL unique modes, gated behind
-/// `PLAN_SELECT` (default OFF; `run_query` calls this only when the toggle is
-/// on). Replaces the legacy plan CHOICE — the P1/P2 early-returns and the
-/// `STREAM_MIN_MATCHES` `maybe_broad` threshold — with `argmin cost::plan_cost`
-/// over the applicable plans, scored on the **actual** count (no estimator; the
-/// plan choice is a pure performance decision, so every plan returns identical
-/// rows — proven by `cost_route_matches_legacy` across card/printing/artwork ×
-/// both prefers). Cases, each touching the plane / candidate set **at most once**:
+/// #702: the single cost-based plan-selection layer for ALL unique modes — the
+/// whole of `run_query`'s dispatch (the hand-tuned decision tree it replaced is
+/// gone). Picks `argmin cost::plan_cost` over the applicable plans, scored on the
+/// **actual** count (no estimator; plan choice is a pure performance decision, so
+/// every plan returns identical rows — guaranteed by `force_plan_differential_agreement`,
+/// which checks each applicable plan against `GatheredScan` across all modes).
+/// Cases, each touching the plane / candidate set **at most once**:
 ///
 /// - **Case A** (`plane_popcount_order_applicable`, card-only: True residual +
 ///   plane): the plane popcount IS the exact count. Evaluate the plane once into a

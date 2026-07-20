@@ -211,6 +211,19 @@ individually addressable is the prerequisite for the run-all-plans harness.
 The target these steps converge on — the single router, in pseudocode — is
 [local-engine-unified-router-target.md](./local-engine-unified-router-target.md).
 
+**Status (2026-07-20): LANDED.** Steps 1–5 done and, past the A/B, step 6's
+structural half too: `run_query` is now a 4-line string→enum adapter delegating to
+the one cost-based router `run_query_routed` (all modes); the legacy decision tree,
+the `CARD_ENGINE_PLAN_SELECT` toggle, and the `maybe_broad` routing threshold are
+deleted (377 LOC net). What step 6 did NOT retire, because they aren't tree-routing
+thresholds: `STREAM_MIN_MATCHES` (now the cost model's P3 small-total floor) and the
+7/8 narrowing cutoff + memoize gate (inside `prepare_candidates`, shared by the
+router). Correctness rests on the tree-independent durable tests
+(`force_plan_differential_agreement`, `fuzz_row_identity_matches_reference`). The
+value delivered is structural (one principled layer, extensible) at performance
+parity — not a speed win (see Results below); the one real speed win, idea-1/idea-2,
+remains deferred.
+
 1. **Estimator** — standalone, sound bounds, fuzz-validated, *unwired*.
    (Shipped: #704.)
 2. **Force-plan seam** — extract the four plan bodies into individually
@@ -241,13 +254,16 @@ all per-query noise; they run once per query, not per card.
 
 ## Results so far — and where the win actually is (2026-07-20)
 
-Steps 1–4 shipped (#704/#708/#709/#710). Step 5 is built for **card mode only**,
-toggle-gated (`CARD_ENGINE_PLAN_SELECT`, default off): `run_query_card_routed`
-materializes candidates once (single plane eval / one `prepare_candidates`,
-no double-eval) and routes `argmin plan_cost` on the *actual* count.
+Steps 1–4 shipped (#704/#708/#709/#710). The router (`run_query_routed`, all modes)
+materializes candidates once (single plane eval / one `prepare_candidates`, no
+double-eval) — or, for printing bare-ranges, takes the exact range-`k` without
+materializing — and routes `argmin plan_cost` on the *actual* count. It is now the
+default and only path (the legacy tree, toggle, and the tree-vs-router A/B benches
+were deleted with the landing above); the findings below were measured during the
+toggle-gated A/B and hold.
 
 **Card-mode routing is a tie, not a win.** A/B on the real corpus
-(`plan_routing_ab`, min-of-n): geomean routed/legacy **1.010×**, 41 tie / 3
+(then-`plan_routing_ab`, min-of-n): geomean routed/legacy **1.010×**, 41 tie / 3
 marginally-slower / 0 faster. Cost-routing *reproduces* the hand-tuned tree's
 plan choices — the tree's thresholds already sit at the cost crossovers — so
 there is no card-mode speed to win. The residual ~1% is the argmin's own f64

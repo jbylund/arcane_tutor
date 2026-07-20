@@ -2,15 +2,19 @@
 
 Companion to [00702-engine-plan-selection-layer.md](./00702-engine-plan-selection-layer.md).
 That doc argues *why* the scattered decision tree in `run_query` should become one
-plan-selection layer and sequences the work; this doc pins down *what the end state
-looks like* so the incremental PRs have a shared target to converge on.
+plan-selection layer and sequences the work; this doc pinned down *what the end state
+looks like* so the incremental PRs had a shared target to converge on.
 
-The organizing principle: **there is exactly one routing function**, plans are data
-(each carrying its own eligibility gate and cost formula), and mode
-(card/printing/artwork) is a *filter over the plan set* — never a branch in control
-flow. When this lands, the 7/8 cutoff, `STREAM_MIN_MATCHES`, the memoize gate, the
-`CARD_ENGINE_PLAN_SELECT` toggle, and the legacy `run_query` body are all deleted,
-subsumed into `applicable()` + `plan_cost()`.
+**Landed 2026-07-20** (`run_query_routed`, lib.rs). The organizing principle held:
+**there is exactly one routing function**, and mode (card/printing/artwork) is a
+*filter over the plan set* — never a branch in control flow. What actually got
+deleted: the `CARD_ENGINE_PLAN_SELECT` toggle, the legacy `run_query` decision-tree
+body (now a 4-line string→enum adapter delegating to `run_query_routed`), and the
+`maybe_broad` `STREAM_MIN_MATCHES` *routing* threshold. What deliberately STAYED,
+because they are not tree-routing thresholds: `STREAM_MIN_MATCHES` itself (now the
+cost model's P3 small-total floor, `cost.rs`), the 7/8 narrowing cutoff and the
+memoize gate (both inside `prepare_candidates`, shared by the router). Divergences
+from this sketch, learned by measurement, are noted inline below.
 
 ## Plans as data
 
@@ -104,6 +108,23 @@ fn run_query(q, mode, page):
     return execute(best, q, page, mat)              # reuses mat if the prefix ran
 ```
 
+**Divergence in the landed code (`run_query_routed`).** The clean
+`applicable()`-filter-then-`count_source()` shape above did NOT land verbatim.
+Because "how the discriminating count is obtained" is entangled with "which plan is
+being considered", the count-source distinction couldn't be a separate helper — it
+IS the branch structure. `run_query_routed` is three explicit cases instead:
+  1. **Card True-residual + plane** — eval the plane once, reuse its bitmap; argmin{P2,P3,P4}.
+  2. **Printing bare-range** — exact `k` from the range index (no materialization);
+     argmin{P1,P3,P4}; P1 wins ⇒ run fastpath, else fall through to (3).
+  3. **else** — `prepare_candidates` once; argmin{P3,P4}.
+Each case builds a small stack-array plan list and runs the argmin inline, rather
+than filtering a global `ALL_PLANS` by an `applicable()` predicate. The predicates
+(`plane_popcount_order_applicable`, `printing_range_scan_applicable`,
+`streamed_select_applicable`) exist and gate the cases, but as `if`-guards, not as a
+data-driven filter. Whether the cleaner `applicable()` + `count_source()` decomposition
+is worth pursuing (vs. the three cases being the honest shape of the problem) is an
+open design question — see the discussion in #702.
+
 ## Cost model
 
 One formula per plan, constants fit on the real corpus ([cost.rs](../../card_engine/src/cost.rs)).
@@ -155,12 +176,14 @@ fn plan_cost(plan, f) -> ns:
   idea-2 means a fifth `Plan` row (gate: `mode==Printing ∧ bare_range ∧ ¬aligned`) plus
   its cost formula — the "plans as data" test of this design.
 
-## Cost-model calibration scope (must fix before this lands)
+## Cost-model calibration scope (FIXED — was prerequisite)
 
-`plan_cost` is fit and validated for CARD mode only. In printing/artwork it
-under-predicts P3/P4 by ~3× (= `n_printings/n_cards`) because `eval_domain` counts
-CARDS while those plans scan all printings. A unified router that argmin's across modes
-with today's constants will mispredict (it already flips 2 deep printing rows). The fix
-is features-not-mode (see #702 "Is the cost model correct?"): the caller populates
-scan/emit counts in the plan's operating space, keeping one mode-agnostic formula. This
-is prerequisite work for the single `route()` above.
+`plan_cost` was originally fit and validated for CARD mode only, under-predicting
+printing/artwork P3/P4 by ~3× (= `n_printings/n_cards`) because `eval_domain` counted
+CARDS while those plans scan all printings. **Fixed** via features-not-mode
+(`PlanFeatures::scan_units`, see #702 "Is the cost model correct?"): the caller
+populates scan counts in the plan's operating space, one mode-agnostic formula.
+Printing fidelity 1.83×→1.50× (now on par with card), and the deep-printing routing
+mispicks are gone. A 1200-query designed refit confirmed the constants are at the
+identifiable ceiling (~1.4× absolute, ordering-correct); further tightening is blocked
+by structural collinearity, not effort — so this is done, not deferred.
