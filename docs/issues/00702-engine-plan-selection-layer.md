@@ -174,6 +174,33 @@ the cost curves are flat and only bites where they diverge steeply.
   Estimate tightness is thus a *derived* requirement, not a goal — the global
   "est == truth %" is the wrong target.
 
+### Is the cost model correct? Card mode yes, printing/artwork no (2026-07-20)
+
+A routing cost model needs correct *ordering* between plans, not accurate
+absolute predictions. The model achieves that **only in card mode** — where its
+constants were fit and where `plan_cost_model_matches_gold` validated the argmin.
+`printing_range_route_probe` exposed that in **printing mode it under-predicts
+P3/P4 by ~3×** (model/measured ≈ 0.3–0.5; P1 fidelity swings 0.1×–2.2×). The
+under-prediction factor is `n_printings/n_cards` (≈3.09): `eval_domain` counts
+CARDS, but a printing-mode P3/P4 visits every card *and scans all its printings*
+(~`n_printings` units) and emits printing rows, neither of which the card-fit
+formula prices. It survived validation only because P1's dominance on the broad
+printing ranges kept the misestimate from flipping the argmin — until the probe's
+deep pages, where it did (2 rows routed off gold-P1).
+
+**Design conclusion — enrich features, don't branch on mode.** The fix is not a
+`mode` argument to `plan_cost` (that hard-codes the mode→work mapping and every
+new plan/mode must be threaded through it). Mode is a *proxy* for two work
+quantities the features should state directly: units *scanned* and units *emitted*,
+each in the plan's operating space. The caller — which knows the mode — populates
+`eval_domain`/emit in that space, and one mode-agnostic formula then prices card,
+printing, and artwork alike (artwork's illustration-groups are just another count).
+An explicit `mode`/executor argument is warranted only if a genuinely different
+code path has a different *per-unit constant*, and even then a work-term is
+cleaner than a categorical switch. This is prerequisite work for a unified
+all-mode router — which, since card and printing both TIE the legacy tree, is a
+structural-unification goal, not a speed one.
+
 ## Scope / sequencing
 
 Everything validated against truth before anything reroutes. The force-plan

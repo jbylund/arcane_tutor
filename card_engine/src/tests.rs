@@ -3426,12 +3426,19 @@ fn printing_range_route_probe() {
             n_scored += 1;
             if model_ns < tree_ns { n_model_wins += 1; }
 
+            // Per-plan FIDELITY: modeled cost vs measured ns (model_ns/meas_ns).
+            // A faithful cost model has this ~constant across plans (argmin then
+            // reproduces gold); ratios that differ *by plan* are what flip picks.
+            let fid = |i: usize| ns[i].map(|meas| {
+                let mc = plan_cost(all_plans[i], &feats);
+                format!("{}:{:>7}/{:<7}={:.2}", labels[i], meas, mc as u64, mc / meas as f64)
+            }).unwrap_or_default();
+
             println!(
-                "{:<12} {:>7} {:>7}  {:>4} {:>9} {:>7}  {:>4} {:>9} {:.2}x / {:.2}x  {}",
+                "{:<12} {:>7} {:>7}  gold={:<3} tree={:<3}({:.2}x) model={:<3}({:.2}x)  | {}  {}  {}  {}",
                 qlabel, total, offset,
-                labels[gi], gold_ns, "",
-                labels[tree_i], tree_ns, tree_reg, model_reg,
-                if model_ns < tree_ns { "<-- model faster" } else if mi == tree_i { "" } else { "(diff pick, ~tie)" },
+                labels[gi], labels[tree_i], tree_reg, labels[mi], model_reg,
+                fid(0), fid(1), fid(2), fid(3),
             );
         }
     }

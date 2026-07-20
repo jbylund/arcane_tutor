@@ -30,6 +30,23 @@
 //! and plan structure do the deciding (see #702 "Cost model" §). Popcount (P2)
 //! and range-scan (P1) run only when the residual is `True`/absent, so they carry
 //! no verify term at all.
+//!
+//! ## Calibration scope: CARD MODE ONLY (printing/artwork under-predicted ~3×)
+//!
+//! The constants were fit to card-mode measurements, and the model is validated
+//! to gold only for card mode (`plan_cost_model_matches_gold`). In printing/artwork
+//! mode it systematically under-predicts P3/P4 — `printing_range_route_probe`
+//! (src/tests.rs) shows model/measured ≈ 0.3–0.5. Root cause: `eval_domain` counts
+//! CARDS, but a printing/artwork P3/P4 visits every card AND scans all its
+//! printings (~`n_printings` units), and there is no printing-scale emit term. The
+//! error factor ≈ `n_printings / n_cards` (≈3.09 on the real corpus). It did not
+//! surface in validation because P1 dominates the broad printing ranges so
+//! decisively the misestimate rarely flips the argmin. The right fix is NOT a
+//! `mode` branch here but richer FEATURES: the caller (which knows the mode)
+//! populates `eval_domain`/emit in the plan's operating space, keeping this formula
+//! mode-agnostic (artwork then falls out as another count). Out of scope until a
+//! unified all-mode router is pursued — which, given card+printing both TIE the
+//! legacy tree, is a structural-unification goal, not a speed one (see #702 doc).
 
 use super::*;
 
@@ -66,9 +83,15 @@ pub(crate) struct PlanFeatures {
 /// ns per permutation step walked. Fit from usd<5 printing shallow/deep
 /// (match_rate=0.734): (88708−666)ns over (13706−82) steps ≈ 6.5; year>=2020
 /// printing gave ≈3.5. The per-step cost is noisy (printing clustering along the
-/// sort order), so this is a representative middle value — exactness matters
-/// little here because P1, when applicable, wins its rows by 1-2 orders of
-/// magnitude over P3/P4.
+/// sort order), so this is a representative middle value.
+///
+/// CAUTION: `printing_range_route_probe` measures P1 fidelity swinging 0.10×–2.24×
+/// against this single constant — a walk step in printing mode scans a whole card's
+/// printings, whose count varies by query. The earlier claim that exactness "matters
+/// little because P1 wins by 1-2 orders of magnitude" is FALSE at depth: at offset
+/// 20000 P1 leads P3 by only ~2×, and that is exactly where this loose constant
+/// flips the argmin (the model routes off gold-P1). Sharpening P1 needs a per-step
+/// term keyed on printings-scanned, not a scalar — deferred with the printing model.
 const RANGE_WALK_STEP_NS: f64 = 4.5;
 /// Fixed P1 setup (binary searches + walk init). Fit from usd<5 printing shallow
 /// (666ns − 82 steps × RANGE_WALK_STEP_NS ≈ 150ns).
