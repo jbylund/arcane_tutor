@@ -3725,18 +3725,18 @@ fn push_card_matches(
 /// streaming's win grows fast (~1.8× by 8k), so the trigger stays put.
 static STREAM_MIN_MATCHES: LazyLock<usize> = LazyLock::new(|| guard_env("CARD_ENGINE_STREAM_MIN_MATCHES", 1_024));
 
-/// Kill-switch for #702 step 5 cost-based plan routing in `run_query` (card mode
-/// only). Default OFF (`0`): `run_query` runs its byte-identical legacy decision
-/// tree (P1/P2 early-returns → `prepare_candidates` → `maybe_broad`-gated
-/// P3/P4). Set to non-zero to route card-mode queries through
-/// `run_query_routed`, which replaces the hand-tuned plan choice
-/// (`plane_popcount_order_applicable` early-return + the `STREAM_MIN_MATCHES`
-/// `maybe_broad` threshold) with `argmin cost::plan_cost` over the applicable
-/// plans on the *actual* materialized count — no estimator, no double work (the
-/// plane / candidate set is evaluated at most once per query and reused by the
-/// chosen executor). Printing/artwork modes always stay on the legacy path.
-/// A/B seam per #702 §Scope step 5; the model it consumes is `src/cost.rs`.
-static PLAN_SELECT: LazyLock<usize> = LazyLock::new(|| guard_env("CARD_ENGINE_PLAN_SELECT", 0));
+/// Toggle for #702 cost-based plan routing in `run_query` (ALL unique modes).
+/// Default ON (`1`): `run_query` routes every query through `run_query_routed`,
+/// which replaces the hand-tuned plan choice (`plane_popcount_order_applicable`
+/// early-return + the `STREAM_MIN_MATCHES` `maybe_broad` threshold + the printing
+/// range fastpath gate) with `argmin cost::plan_cost` over the applicable plans on
+/// the *actual* count — no estimator, no double work (the plane / candidate set is
+/// evaluated at most once per query and reused by the chosen executor). Set to `0`
+/// to fall back to the byte-identical legacy decision tree (retained as the `else`
+/// branch until it is deleted). Row-for-row parity across card/printing/artwork ×
+/// both prefers is enforced by `cost_route_matches_legacy`; the cost model it
+/// consumes is `src/cost.rs`.
+static PLAN_SELECT: LazyLock<usize> = LazyLock::new(|| guard_env("CARD_ENGINE_PLAN_SELECT", 1));
 
 /// Whether run_query reorders And/Or children cheapest-verification-first
 /// before the evaluation walk (see FilterExpr::order_children_by_verify_cost).
