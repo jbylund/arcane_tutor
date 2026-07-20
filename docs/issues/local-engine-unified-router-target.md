@@ -32,8 +32,9 @@ enum Plan { PrintingRangeScan, PlanePopcountOrder, StreamedSelect, GatheredScan 
 fn applicable(plan, q, mode) -> bool:
     match plan:
         PrintingRangeScan  -> mode == Printing
-                              and q.filter.is_bare_range()       # single range pred
-                              and q.order.aligns_with(range col) # walk == order-by
+                              and q.filter.is_bare_range()       # single range pred, no plane
+                              # NOT order-alignment: the fastpath serves aligned
+                              # (index slice) and misaligned (perm walk) alike.
         PlanePopcountOrder -> mode == Card
                               and q.filter.reduces_to_plane()    # residual == True
         StreamedSelect     -> q.order.is_perm_backed()           # any mode
@@ -42,88 +43,96 @@ fn applicable(plan, q, mode) -> bool:
 
 The three modes collapse into this filter — there is no `if card … elif printing …`
 anywhere. Card gets `{P2, P3, P4}`, printing gets `{P1, P3, P4}`, artwork gets
-`{P3, P4}`, all by the same predicate evaluation.
+`{P3, P4}`, all by the same predicate evaluation. This is `PhysicalPlan::applicable`
+as landed (the P1 arm also checks `bare_range_bounds(filter).is_some()`).
 
-## Cardinality estimation
+## Cardinality estimation (built, but NOT wired into the landed router)
 
-Cheap, sound, per operating space. Bounds are a hard invariant (`truth ∈ [lo,hi]`);
-`est` is best-effort. See #702 "Cardinality estimation" for the algebra.
+A cheap, sound, per-operating-space estimator exists (#704): `Cardinality {lo, est,
+hi}`, bounds a hard invariant (`truth ∈ [lo,hi]`), composed via
+AND→independence / OR→Bonferroni / NOT→complement (see #702 "Cardinality
+estimation"). **The landed `run_query_routed` does not call it.** Materialize-then-
+route won over estimate-then-route (below), so the router derives features from
+*exact/cheap* counts in `acquire` — a plane's popcount, a range's binary-search `k`,
+a residual's candidate count — never `estimate_cardinality`. The estimator stays
+available for a future plan whose count is neither free-from-prep nor cheap-exact
+(where a sound estimate would be the only affordable input); today no plan needs it.
 
-```
-struct Card { lo, est, hi }
+## The count source — how features are obtained (as landed: exact, in `acquire`)
 
-# Recursion composes single-space triples (AND→independence, OR→Bonferroni,
-# NOT→complement). Text uses trigram-min posting; border/devotion use plane
-# popcounts; range uses the index's binary-search k. NO plane materialization.
-fn estimate(filter, space) -> Card
-```
-
-## The count source (the load-bearing part)
-
-This is the real design content, not the argmin. Getting the exact match count is
-sometimes **free** (a byproduct of prep the chosen plan needs anyway) and sometimes
-**speculative** (work the winner won't reuse). Estimate only when materializing would
-be wasted work.
+The load-bearing question is *how you get the count*, and the answer that landed is:
+**always an exact or cheap-exact count, from `acquire`, never the estimator.** The
+count is free-or-cheap for every plan the engine has: a True-residual plane's count
+IS its popcount; a bare range's is a binary-search `k`; a residual's is
+`prepare_candidates`. So the router routes on those directly.
 
 This is the lesson from the card-mode prototype: the naive "estimate → route →
 execute" pipeline was ~15% slower because estimating meant a plane eval the executor
-then *repeated*. The fix is to route on the exact count *when the prep is shared*, and
-fall back to the estimator only when no shared prefix exists.
+then *repeated* (#702 Results). Materialize-then-route avoids that double work — the
+count-deriving prep IS the execution input, reused. The one place nothing is
+materialized up front is the bare range (`Prep::Range`): its discriminating feature,
+`k`, is free from the index, so `PrintingRangeScan` is costed without materializing,
+and a materializing winner materializes lazily in dispatch (see "The one router").
+
+The earlier sketch imagined a `count_source()` that *estimated* when no shared prefix
+existed; that branch never landed, because the only no-shared-prefix case (the range)
+has an exact-`k` that is cheaper than any estimate. If idea-2 or a future plan ever
+introduces a case where the count is genuinely expensive to get exactly, *that* is
+when the estimator above gets wired in.
+
+## The one router (as landed: `run_query_routed`)
+
+Flat — three named steps, no early returns, no plan-named `if`-cascade:
 
 ```
-fn count_source(q, mode, plans) -> (Features, Option<Materialized>):
-    if plans share a candidate-prep prefix that the winner will reuse:
-        #  card+plane : one eval_planes → popcount = exact matches, keep bitmap
-        #  residual   : one prepare_candidates → exact count, keep candidate list
-        mat   = run_shared_prefix(q)              # done exactly once
-        feats = features_from(mat)                # EXACT matches, no estimate
-        return (feats, Some(mat))
-    else:
-        #  e.g. printing range: the discriminating feature is range-k, which the
-        #  index gives for free; the P1 walk vs P4 gather don't share a prefix,
-        #  so estimating is strictly cheaper than speculatively materializing.
-        est   = estimate(q.filter, mode.space)
-        feats = features_from(est)                # bounds-aware matches
-        return (feats, None)
+fn run_query_routed(q, mode, page):
+    # acquire: pick the count source (one of three, by query structure), build the
+    # cost features (mk_feats fills the query-invariant fields), materialize the
+    # shared artifact it implies. This 3-way IS the whole materialization story.
+    (feats, prep) =
+        if PlanePopcountOrder.applicable(q):    # True-residual plane (card)
+            eval the plane once → popcount is the exact count;   Prep::Plane
+        elif PrintingRangeScan.applicable(q):   # bare printing range
+            exact k from the range index (no scan);              Prep::Range
+        else:
+            prepare_candidates();                                Prep::Candidates
+
+    # choose: cheapest applicable plan — no hand-written plan list.
+    plan = argmin(PhysicalPlan::ALL.filter(|p| p.applicable(q)), |p| plan_cost(p, feats))
+
+    # dispatch: run the winner, reusing prep's artifact.
+    match (plan, prep):
+        (PlanePopcountOrder, Plane)  → popcount executor, reuse the bitmap
+        (P3|P4, Plane)               → candidate-list executor, bitmap AS the list
+        (P3|P4, Candidates(prep))    → candidate-list executor, reuse prep
+        (plan,  Range)               → P1 walks if it won & its fastpath accepts;
+                                        else materialize lazily + re-argmin on exact feats
 ```
 
-## The one router
+This realizes the "one routing function, plans-as-data" goal — per-plan knowledge
+lives on `PhysicalPlan` (`ALL`, `applicable`, `materializing`, `cost::plan_cost`, an
+executor arm), and `choose` is a generic argmin over `ALL.filter(applicable)` that
+never names a plan. Adding a plan is declaring those arms; only a genuinely new
+count source (a new `Prep` variant — e.g. idea-2's printing-space bitmap) touches
+acquire/dispatch.
 
-Replaces `run_query`'s decision tree entirely.
+Two honest departures from the earlier sketch, learned building it:
 
-```
-fn run_query(q, mode, page):
-    plans = [p for p in ALL_PLANS if applicable(p, q, mode)]
+- **The count source is not a separate `count_source()` — it's the acquire branch.**
+  *How* you get the count is entangled with *which* plan you weigh: a plane's count
+  IS its bitmap, a range's is a free binary search, a residual's is
+  `prepare_candidates`. Each yields a different-shaped artifact (`Prep`), so it can't
+  collapse to one uniform helper. The 3-way is isolated in acquire; that's as
+  factored as it goes.
+- **`Prep::Range` defers materialization** — the one irreducible bit of staging (the
+  original sketch's "phases"), now a `match` arm, not an early-return. It costs the
+  non-materializing `PrintingRangeScan` from a cheap estimate; if a materializing
+  plan wins there, dispatch materializes lazily and re-chooses on exact features.
+  That is the "don't pay to materialize a plan you won't run".
 
-    # Trivial escape: no cost math when there's nothing to decide. Keeps the
-    # sub-µs fast path free of estimator/argmin overhead — the queries the tree
-    # handled for free must stay free.
-    if plans == [GatheredScan]:
-        return execute(GatheredScan, q, page, mat=None)
-
-    (feats, mat) = count_source(q, mode, plans)
-
-    best = argmin(plans, |p| plan_cost(p, feats))   # cost.rs, per-plan formula
-
-    return execute(best, q, page, mat)              # reuses mat if the prefix ran
-```
-
-**Divergence in the landed code (`run_query_routed`).** The clean
-`applicable()`-filter-then-`count_source()` shape above did NOT land verbatim.
-Because "how the discriminating count is obtained" is entangled with "which plan is
-being considered", the count-source distinction couldn't be a separate helper — it
-IS the branch structure. `run_query_routed` is three explicit cases instead:
-  1. **Card True-residual + plane** — eval the plane once, reuse its bitmap; argmin{P2,P3,P4}.
-  2. **Printing bare-range** — exact `k` from the range index (no materialization);
-     argmin{P1,P3,P4}; P1 wins ⇒ run fastpath, else fall through to (3).
-  3. **else** — `prepare_candidates` once; argmin{P3,P4}.
-Each case builds a small stack-array plan list and runs the argmin inline, rather
-than filtering a global `ALL_PLANS` by an `applicable()` predicate. The predicates
-(`plane_popcount_order_applicable`, `printing_range_scan_applicable`,
-`streamed_select_applicable`) exist and gate the cases, but as `if`-guards, not as a
-data-driven filter. Whether the cleaner `applicable()` + `count_source()` decomposition
-is worth pursuing (vs. the three cases being the honest shape of the problem) is an
-open design question — see the discussion in #702.
+The sketch's "trivial escape" for `plans == [GatheredScan]` didn't land and wasn't
+needed: features come from acquire (not a separate estimator pass), so a single-plan
+argmin is already free.
 
 ## Cost model
 
@@ -134,26 +143,33 @@ took P1 unconditionally; here P1 competes and *loses* when its walk is pathologi
 motivation).
 
 ```
-fn plan_cost(plan, f) -> ns:
-    match plan:
+fn plan_cost(plan, f) -> ns:                                          # eval_domain = candidate CARDS
+    match plan:                                                       # scan_units  = rows scanned (operating space)
         PrintingRangeScan  -> (page_span / match_rate)·STEP + FIXED   # blind-walk tail
         PlanePopcountOrder -> matches·SCATTER + words·WORD + FIXED    # O(words) floor
-        StreamedSelect     -> eval_domain·(MATCH+tier) + small_total_floor + FIXED
-        GatheredScan       -> eval_domain·(VISIT+tier) + matches·PUSH + page + FIXED
+        StreamedSelect     -> eval_domain·CARD_PASS + scan_units·(SCAN+tier) + small_total_floor + FIXED
+        GatheredScan       -> eval_domain·CARD_PASS + scan_units·(SCAN+tier) + matches·PUSH + page·SELECT + FIXED
 ```
+
+The per-card `card_pass` and per-scanned-row `scan` terms are split (the `tier`
+verify cost rides `scan_units`, where it is paid): this is the operating-space fix
+(`scan_units`) that made the model correct for printing/artwork, not just card.
 
 ## Two things that are load-bearing and non-obvious
 
-1. **`count_source` is where the value is, not the argmin.** A CBO that estimates on
-   every query taxes the fast paths (the plane eval that gets repeated). The design
-   is free on those paths precisely because it routes on the exact count when the
-   prep is shared, and estimates only when the discriminating feature (range `k`) is
-   itself a free byproduct.
+1. **Routing on the exact count from `acquire` is where the value is, not the argmin.**
+   A CBO that estimates on every query taxes the fast paths (the plane eval that gets
+   repeated — the ~15% v1 regression). The landed design is free on those paths because
+   the count-deriving prep IS the execution input, reused: a plane's popcount, a
+   residual's candidate list. The one non-materializing plan (`PrintingRangeScan`) is
+   costed from the range index's free `k`, so *it* pays nothing up front either.
 
-2. **The trivial-escape line is what preserves latency parity.** Most card queries
-   have exactly one applicable plan after gating, or resolve fast enough that any f64
-   arithmetic shows up. Short-circuiting when there's nothing to decide is what keeps
-   the unified router from being a tax on the queries the tree handled for free.
+2. **`Prep::Range`'s lazy materialization is what preserves parity there.** Because P1
+   is costed from a cheap estimate, a materializing plan that wins the range case must
+   materialize *after* the argmin — the deferral means a broad range that P1 serves in
+   µs never pays `prepare_candidates`, while a range better served by P3/P4 materializes
+   exactly once. This is the sole surviving bit of "stage the decision, don't pay to
+   cost a plan you won't run" — now a `match` arm, not a control-flow phase.
 
 ## What each mode yields (measured 2026-07-20 — supersedes earlier hypotheses)
 
