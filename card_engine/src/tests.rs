@@ -3015,6 +3015,31 @@ fn calibration_queries() -> Vec<(&'static str, FuzzSpec)> {
     ]
 }
 
+/// A large, diverse calibration corpus generated via the #677 fuzzer — for the
+/// cost-model FIT/validation benches, where 22 hand-picked queries were too few
+/// and too collinear (`scan_units`/`matches`/`page_span` all rose together) to
+/// identify the per-plan constants. Random `fuzz_gen` spans predicate types,
+/// selectivities, and compounds (plane∧expensive-residual shapes decouple scan
+/// from match count), deduped by description. NOT used by the fast correctness
+/// test (`cost_route_matches_legacy` keeps the small hand set).
+fn generate_calibration_corpus(n: usize, seed: u64) -> Vec<(String, FuzzSpec)> {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(n);
+    let mut guard = 0usize;
+    while out.len() < n && guard < n * 50 {
+        guard += 1;
+        let depth = rng.random_range(1..=3u8);
+        let spec = fuzz_gen(&mut rng, depth);
+        let desc = fuzz_describe(&spec);
+        if seen.insert(desc.clone()) {
+            out.push((desc, spec));
+        }
+    }
+    out
+}
+
 /// #702 step 3 (cost calibration): time each *applicable* physical plan on the
 /// REAL corpus archive, across a spread of query selectivities × unique modes ×
 /// page depths, so the per-plan cost formulas can be fit to measured runtime and
@@ -3380,9 +3405,15 @@ fn plan_cost_refit() {
     use std::time::Instant;
     use super::cost::PlanFeatures;
     const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
-    const WARMUP: usize = 10;
-    const ITERS: usize = 150;
     const FLOOR_NS: u64 = 2_000; // fit only where model error > timing jitter
+    // Env-tunable (defaults sized for ~5-10 min of CPU on the real corpus). More
+    // queries beats more iters for identifiability: the fit averages timing noise
+    // across queries, so a big corpus with modest iters de-correlates features
+    // better than a small corpus hammered many times.
+    let corpus_n: usize = std::env::var("REFIT_CORPUS_N").ok().and_then(|s| s.parse().ok()).unwrap_or(1200);
+    let iters: usize = std::env::var("REFIT_ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(30);
+    let seed: u64 = std::env::var("REFIT_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(0xC057);
+    const WARMUP: usize = 5;
 
     let Ok(file) = std::fs::File::open(STORE_PATH) else {
         eprintln!("SKIP: {STORE_PATH} not found (see bench_verify_cost.rs docs to build it)");
@@ -3396,9 +3427,12 @@ fn plan_cost_refit() {
     let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
     let n_cards = archived.cards.len() as u32;
     let n_printings = archived.printings.len() as u32;
-    eprintln!("real.store: {n_cards} cards, {n_printings} printings — fitting slow(≥{FLOOR_NS}ns) rows\n");
 
-    let queries = calibration_queries();
+    let queries = generate_calibration_corpus(corpus_n, seed);
+    eprintln!(
+        "real.store: {n_cards} cards, {n_printings} printings | corpus {} queries × 2 modes × 2 pages, {iters} iters, fit slow(≥{FLOOR_NS}ns)\n",
+        queries.len(),
+    );
     let modes = ["card", "printing"];
     let pages = [("shallow", 60usize, 0usize), ("deep", 60usize, 10_000usize)];
     let all_plans = [PhysicalPlan::PrintingRangeScan, PhysicalPlan::PlanePopcountOrder, PhysicalPlan::StreamedSelect, PhysicalPlan::GatheredScan];
@@ -3409,10 +3443,13 @@ fn plan_cost_refit() {
         &["CARD_PASS", "SCAN", "EMIT", "FLOOR/card", "FIXED"],
         &["CARD_PASS", "SCAN", "PUSH", "SELECT", "FIXED"],
     ];
-    // Per-plan collected fit rows: (terms, y_minus_offset, y).
-    let mut rows: [Vec<(Vec<f64>, f64, f64)>; 4] = Default::default();
+    // Per-plan fit rows: (terms, y_minus_offset, y, is_train). 70/30 train/test by
+    // query index so held-out fidelity reveals overfitting (the 22-query trap).
+    let mut rows: [Vec<(Vec<f64>, f64, f64, bool)>; 4] = Default::default();
+    let t_start = Instant::now();
 
-    for (_qlabel, spec) in &queries {
+    for (qi, (_qlabel, spec)) in queries.iter().enumerate() {
+        let is_train = qi % 10 < 7;
         for &mode in &modes {
             let unique_is_card = mode == "card";
             let mode_enum = if unique_is_card { Mode::Card } else { Mode::Printing };
@@ -3422,7 +3459,7 @@ fn plan_cost_refit() {
                 for (pi, plan) in all_plans.iter().enumerate() {
                     let mut best = u64::MAX;
                     let mut applicable = false;
-                    for it in 0..(WARMUP + ITERS) {
+                    for it in 0..(WARMUP + iters) {
                         let (pe, mut res) = split_planes(
                             fuzz_bound_filter(spec, archived), &archived.indexes.planes,
                             &archived.indexes.oracle_trigram.words, unique_is_card,
@@ -3454,23 +3491,43 @@ fn plan_cost_refit() {
                     if let Some(meas) = ns[pi] {
                         if meas < FLOOR_NS { continue; }
                         let (terms, offset_ns) = cost_terms(*plan, &feats);
-                        rows[pi].push((terms, meas as f64 - offset_ns, meas as f64));
+                        rows[pi].push((terms, meas as f64 - offset_ns, meas as f64, is_train));
                     }
                 }
             }
         }
+        if qi % 100 == 99 {
+            eprintln!("  measured {}/{} queries ({:.0}s elapsed)", qi + 1, queries.len(), t_start.elapsed().as_secs_f64());
+        }
     }
 
-    // Per plan: weighted normal equations (w = 1/y²), solve, report.
+    eprintln!("\nmeasurement done in {:.0}s\n", t_start.elapsed().as_secs_f64());
+    // Geomean |ln(model/measured)| over a row subset for a given constant vector.
+    let fidelity = |plan_rows: &[(Vec<f64>, f64, f64, bool)], fit: &[f64], train: bool| -> (f64, usize) {
+        let mut ln = 0.0;
+        let mut n = 0usize;
+        for (terms, y_adj, y, is_train) in plan_rows {
+            if *is_train != train { continue; }
+            let fitted = terms.iter().zip(fit).map(|(t, c)| t * c).sum::<f64>() + (y - y_adj);
+            ln += (fitted / y).ln().abs();
+            n += 1;
+        }
+        (if n > 0 { (ln / n as f64).exp() } else { f64::NAN }, n)
+    };
+
+    // Per plan: weighted normal equations (w = 1/y²) on TRAIN rows; report fitted
+    // constants + train AND held-out-test fidelity (test ≈ train ⇒ genuine fit).
     for (pi, plan_rows) in rows.iter().enumerate() {
         let p = param_labels[pi].len();
-        if plan_rows.len() < p {
-            println!("{:<10}: only {} slow rows for {p} params — skip\n", plan_labels[pi], plan_rows.len());
+        let n_train = plan_rows.iter().filter(|r| r.3).count();
+        if n_train < p * 3 {
+            println!("{:<10}: only {n_train} train rows for {p} params — skip\n", plan_labels[pi]);
             continue;
         }
         let mut a = vec![vec![0.0f64; p]; p];
         let mut b = vec![0.0f64; p];
-        for (terms, y_adj, y) in plan_rows {
+        for (terms, y_adj, y, is_train) in plan_rows {
+            if !is_train { continue; }
             let w = 1.0 / (y * y);
             for i in 0..p {
                 for j in 0..p { a[i][j] += w * terms[i] * terms[j]; }
@@ -3481,22 +3538,20 @@ fn plan_cost_refit() {
             println!("{:<10}: normal equations singular (collinear) — keep current\n", plan_labels[pi]);
             continue;
         };
-        // after-fit slow-bucket fidelity (geomean |ln(model/measured)|); the
-        // "before" number is the slow bucket already reported by
-        // plan_cost_model_matches_gold. fitted = terms·fit + offset, offset = y - y_adj.
-        let mut after_ln = 0.0f64;
-        for (terms, y_adj, y) in plan_rows {
-            let fitted = terms.iter().zip(&fit).map(|(t, c)| t * c).sum::<f64>() + (y - y_adj);
-            after_ln += (fitted / y).ln().abs();
-        }
-        let n = plan_rows.len();
-        println!("{:<10}  ({} slow rows)  fitted constants:", plan_labels[pi], n);
+        let (train_fid, ntr) = fidelity(plan_rows, &fit, true);
+        let (test_fid, nte) = fidelity(plan_rows, &fit, false);
+        let neg = fit.iter().any(|&c| c < 0.0);
+        println!(
+            "{:<10}  fit on {ntr} train rows{}:",
+            plan_labels[pi],
+            if neg { "  [!] has NEGATIVE (unphysical) constants — overfit/collinear" } else { "" },
+        );
         for (lbl, c) in param_labels[pi].iter().zip(&fit) {
             println!("    {lbl:<11} = {c:>10.3}");
         }
-        println!("    slow-bucket fidelity after fit: {:.2}×\n", (after_ln / n as f64).exp());
+        println!("    fidelity: train {train_fid:.2}× ({ntr} rows)   TEST(held-out) {test_fid:.2}× ({nte} rows)\n");
     }
-    println!("(adopt sane, non-negative constants into cost.rs with provenance, then re-run plan_cost_model_matches_gold + plan_routing_ab to validate)");
+    println!("(adopt only constants that are NON-NEGATIVE and whose TEST fidelity ≈ train and beats the current ~1.4×; then re-run plan_cost_model_matches_gold + plan_routing_ab to validate)");
 }
 
 /// #702 (printing-mode routing probe): does cost-based routing beat the LEGACY
