@@ -293,6 +293,31 @@ place to look before spending more, not another mode of the same P1/P3/P4 menu.
 **Artwork not separately probed** — only P3/P4 apply (the same crossover the tree
 sits on in card mode), so absent a new signal it is expected to tie as well.
 
+**The one real win found: idea-1 vs idea-2 at depth (a genuinely *unexpressed*
+decision).** `idea1_vs_idea2_probe` (src/tests.rs) measured idea-1 (P1, built) against
+a cost-representative idea-2 kernel (range → printing existence bitmap → popcount-skip
+→ emit; the deferred #656 mechanism, timed without building it) on `unique=printing`
+broad ranges × page depth, edhrec (unrelated) sort — the one cell the sorted-range doc
+says the two genuinely compete. idea-2 is **flat in offset** (~19–54µs, scaling with `k`
+not depth); idea-1 grows ~`(offset+limit)/match_rate`. So there is a real crossover, and
+its depth scales inversely with match-rate:
+
+> `usd<0.25` (30%) & `usd>=1` (24%): idea-2 wins from offset **~500–2000**; mid-rate
+> (~50–65%) ~5000; high-rate (73–90%) ~10–20k. Ratios reach 35× at offset 20000.
+
+This is the first evidence *for* the cost-routing thesis: the idea-1/idea-2 winner is an
+offset×match_rate crossover — exactly what a cost comparison expresses and a fixed
+threshold cannot — and the tree cannot pick idea-2 at all because idea-2 does not exist.
+Caveats keeping this honest: (1) the kernel is an **optimistic lower bound** — a correct
+idea-2 needs bits in sort order (#656's printing permutation), adding scatter cost, so
+real crossovers land somewhat deeper; (2) absolute savings at *realistic* depth (offset
+500–2000) are ~50–170µs on already-sub-ms queries — the 35× ratios are all at offset
+20000, which nobody pages to; (3) deep-paged broad-range printing queries are a rare
+corner (though #656 flags it as a known ~1.07ms gap). **Decision pending:** build idea-2
+(#656 printing-space pager + permutation, with the NULL over-inclusion care that reverted
+#689) and cost-route idea-1/idea-2 — real work for a rare-but-known-gap win — vs leave it
+deferred. This is a prioritization call, not a technical unknown.
+
 ## Keeping costs/plans current as the engine changes
 
 The constants are fit to a point-in-time measurement, so the design has to say

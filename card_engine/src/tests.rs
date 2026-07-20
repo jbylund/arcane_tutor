@@ -3451,6 +3451,183 @@ fn printing_range_route_probe() {
     println!("(model geomean below tree, gap on deep+moderate rows => printing routing is a real win; parity => printing ties too)");
 }
 
+/// Cost-representative idea-2 kernel (see docs/issues/local-engine-sorted-range-fastpath.md):
+/// range binary-search → scatter the `k` matching printings into a printing-space existence
+/// bitmap → popcount-skip to `page_offset` → emit `limit` printings (resolving pid→card, the
+/// representative emit work). This times idea-2's WORK so it can be compared to idea-1's
+/// measured walk WITHOUT first building the deferred #656 printing-space pager — the whole
+/// point of the probe is to decide whether that build is worth funding.
+///
+/// The emitted page is deliberately NOT sort-correct: bits are scattered in pid order, not
+/// sort order. That does not affect the COST being measured — scatter is O(k), the popcount-skip
+/// scans the same number of words to reach the offset-th set bit, and emit touches `limit`
+/// printings — all independent of which bits are set where. A shipping idea-2 would need a
+/// printing permutation to make the page correct (that is #656); its cost is what this measures.
+/// Returns `(k, checksum)` (checksum defeats dead-code elimination of the emit) or `None` when
+/// `filter` is not a bare range.
+fn idea2_printing_cost_kernel(
+    filter: &FilterExpr,
+    archived: &Archived<CardData>,
+    page_offset: usize,
+    limit: usize,
+) -> Option<(usize, u64)> {
+    let (idx, lo, hi) = bare_range_bounds(filter, &archived.indexes)?;
+    let s = idx.partition_point(|p| u32::from(p.0) < lo);
+    let e = idx.partition_point(|p| u32::from(p.0) < hi);
+    let k = e - s;
+    let n_printings = archived.printings.len();
+    thread_local! {
+        static I2_BITS: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    I2_BITS.with(|cell| {
+        let mut bits = cell.borrow_mut();
+        bits.clear();
+        bits.resize(n_printings.div_ceil(64), 0);
+        // Scatter: O(k), one bit set per matching printing.
+        for t in s..e {
+            let pid = u32::from(idx[t].1);
+            bits[(pid >> 6) as usize] |= 1u64 << (pid & 63);
+        }
+        if k == 0 || page_offset >= k {
+            return Some((k, 0));
+        }
+        // Popcount-skip: accumulate word popcounts to the offset-th set bit — cheap
+        // O(words-to-offset) word ops, vs idea-1's per-card printing rescan.
+        let mut skip = page_offset;
+        let mut wi = 0usize;
+        while wi < bits.len() {
+            let wc = bits[wi].count_ones() as usize;
+            if skip < wc {
+                break;
+            }
+            skip -= wc;
+            wi += 1;
+        }
+        // Emit: walk `limit` set bits from the boundary word, resolving pid→card
+        // (printing_to_card) and touching the printing — representative emit work.
+        let ptc = &archived.indexes.printing_to_card;
+        let mut checksum = 0u64;
+        let mut emitted = 0usize;
+        'walk: while wi < bits.len() {
+            let mut w = bits[wi];
+            while w != 0 {
+                let bit = w.trailing_zeros();
+                w &= w - 1;
+                if skip > 0 {
+                    skip -= 1;
+                    continue;
+                }
+                let pid = (wi as u32) << 6 | bit;
+                let cid = u32::from(ptc[pid as usize]);
+                // The printing_to_card lookup is the emit's dominant per-row cost; fold
+                // cid+pid into a checksum so the walk isn't optimized away.
+                checksum ^= u64::from(cid).wrapping_mul(0x9E3779B9) ^ u64::from(pid);
+                emitted += 1;
+                if emitted == limit {
+                    break 'walk;
+                }
+            }
+            wi += 1;
+        }
+        Some((k, checksum))
+    })
+}
+
+/// #702 (idea-1 vs idea-2 probe): the ONE cell the design doc says the two mechanisms
+/// genuinely compete — `unique=printing`, broad range, unrelated (card-level) order-by —
+/// swept across page depth. idea-1 (P1, built) walks the card permutation at cost
+/// `(offset+limit)/match_rate`; idea-2 (range→printing bitmap→popcount-skip, NOT built —
+/// needs #656) is offset-independent-ish. This measures BOTH (idea-2 via the cost kernel
+/// above, so no #656 build is needed to decide whether #656 is worth building) and reports
+/// the crossover offset per query. A crossover at a realistic depth for realistic match-rates
+/// ⇒ idea-2 is worth building; a crossover only at extreme depth ⇒ leave it deferred.
+///
+///     cargo test --release idea1_vs_idea2_probe -- --ignored --nocapture
+///
+/// Same corpus/timing discipline as the other probes; needs real.store.
+#[test]
+#[ignore = "idea-1 vs idea-2 crossover probe; needs real.store; cargo test --release idea1_vs_idea2_probe -- --ignored --nocapture"]
+fn idea1_vs_idea2_probe() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 5;
+    const ITERS: usize = 60;
+    const LIMIT: usize = 60;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found (see bench_verify_cost.rs docs to build it)");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch (stale — rebuild, see bench_verify_cost.rs)");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let n_printings = archived.printings.len();
+    eprintln!("real.store: {} cards, {n_printings} printings (printing mode, edhrec sort = unrelated order-by)\n", archived.cards.len());
+
+    let price = |op, val: f64| FuzzSpec::Leaf(FuzzLeaf::Price { op, val });
+    let year  = |op, y: i32|   FuzzSpec::Leaf(FuzzLeaf::Year { op, year: y });
+    let queries: Vec<(&str, FuzzSpec)> = vec![
+        ("usd<0.25", price(CmpOp::Lt, 0.25)), ("usd<0.5", price(CmpOp::Lt, 0.5)),
+        ("usd<1", price(CmpOp::Lt, 1.0)), ("usd<2", price(CmpOp::Lt, 2.0)),
+        ("usd<5", price(CmpOp::Lt, 5.0)), ("usd<20", price(CmpOp::Lt, 20.0)),
+        ("usd>=1", price(CmpOp::Ge, 1.0)),
+        ("year>=2020", year(CmpOp::Ge, 2020)), ("year>=2010", year(CmpOp::Ge, 2010)),
+        ("year>=2000", year(CmpOp::Ge, 2000)),
+    ];
+    let offsets = [0usize, 500, 1_000, 2_000, 5_000, 10_000, 20_000];
+
+    println!("{:<12} {:>7} {:>7} {:>6}  {:>9} {:>9} {:>7}", "query", "total", "rate%", "offset", "i1(P1)_ns", "i2_ns", "i1/i2");
+
+    for (qlabel, spec) in &queries {
+        let mut crossover: Option<usize> = None;
+        for &offset in &offsets {
+            // idea-1: force P1 (min-of-N).
+            let mut i1 = u64::MAX;
+            let mut total = 0usize;
+            let mut applicable = false;
+            for it in 0..(WARMUP + ITERS) {
+                let (pe, mut res) = split_planes(fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, false);
+                let t0 = Instant::now();
+                let out = black_box(run_query_with_plan(
+                    PhysicalPlan::PrintingRangeScan, &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
+                    &mut res, pe.as_ref(), "printing", "default", "edhrec", "asc", LIMIT, offset, &archived.indexes,
+                ));
+                let dt = t0.elapsed().as_nanos() as u64;
+                match out { Some((t, _)) => { total = t; applicable = true; if it >= WARMUP { i1 = i1.min(dt); } } None => break }
+            }
+            if !applicable || total <= offset + LIMIT { continue; }
+
+            // idea-2: the cost kernel (min-of-N).
+            let mut i2 = u64::MAX;
+            for it in 0..(WARMUP + ITERS) {
+                let (_pe, res) = split_planes(fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, false);
+                let t0 = Instant::now();
+                let out = black_box(idea2_printing_cost_kernel(&res, archived, offset, LIMIT));
+                let dt = t0.elapsed().as_nanos() as u64;
+                if out.is_some() && it >= WARMUP { i2 = i2.min(dt); }
+            }
+
+            let rate = 100.0 * total as f64 / n_printings as f64;
+            let ratio = i1 as f64 / i2 as f64;
+            if ratio > 1.0 && crossover.is_none() { crossover = Some(offset); }
+            println!(
+                "{:<12} {:>7} {:>6.1} {:>6}  {:>9} {:>9} {:.2}x  {}",
+                qlabel, total, rate, offset, i1, i2, ratio,
+                if ratio > 1.0 { "<-- idea-2 faster" } else { "" },
+            );
+        }
+        match crossover {
+            Some(off) => println!("  => {qlabel}: idea-2 wins from offset ~{off}\n"),
+            None => println!("  => {qlabel}: idea-1 wins at every tested depth\n"),
+        }
+    }
+    println!("(crossover at a realistic depth for realistic match-rates => #656 idea-2 is worth building; only-extreme-depth => leave deferred)");
+}
+
 /// #702 step 4 (estimate-regret report): the payoff of the whole plan-selection
 /// sequence. Steps 1+3 give us a calibrated cost model and an estimator; this
 /// asks the load-bearing question directly — *if the router picked plans by
