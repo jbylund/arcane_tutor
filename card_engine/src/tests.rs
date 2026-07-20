@@ -3145,12 +3145,17 @@ fn plan_cost_model_matches_gold() {
     use std::time::Instant;
     use super::cost::{PlanFeatures, plan_cost};
     const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
-    const WARMUP: usize = 5;
-    const ITERS: usize = 60;
+    const WARMUP: usize = 10;
+    const ITERS: usize = 150;
     // Near-tie band: a model pick measuring within this factor of gold is
     // indifferent (a pass); above REAL_MISS it is a genuine misroute.
     const TIE: f64 = 1.15;
     const REAL_MISS: f64 = 1.30;
+    // Fidelity floor: below this measured ns, a plan's runtime is dominated by
+    // timing jitter (a 200ns query ±50ns reads as 1.25× off with a PERFECT model),
+    // so fit error and noise are inseparable. Reporting fidelity split at this
+    // floor isolates the model error we can actually reduce by re-fitting.
+    const FIDELITY_FLOOR_NS: u64 = 2_000;
 
     let Ok(file) = std::fs::File::open(STORE_PATH) else {
         eprintln!("SKIP: {STORE_PATH} not found (see bench_verify_cost.rs docs to build it)");
@@ -3187,8 +3192,9 @@ fn plan_cost_model_matches_gold() {
     // |ln(model/measured)| over every applicable plan measurement, plus the count
     // beyond 2×. Routing only needs ordering, but a model whose numbers *mean*
     // something is the maintainability goal — this quantifies how far off it is.
-    // Indexed [0]=card [1]=printing.
-    let (mut fid_ln, mut fid_n, mut fid_2x) = ([0.0f64; 2], [0usize; 2], [0usize; 2]);
+    // Indexed [mode 0=card 1=printing][bucket 0=fast(<floor) 1=slow(≥floor)] so the
+    // re-fittable model error (slow) is separated from irreducible jitter (fast).
+    let (mut fid_ln, mut fid_n, mut fid_2x) = ([[0.0f64; 2]; 2], [[0usize; 2]; 2], [[0usize; 2]; 2]);
 
     for (qlabel, spec) in &queries {
         for &mode in &modes {
@@ -3252,14 +3258,16 @@ fn plan_cost_model_matches_gold() {
                     .map(|i| (plan_cost(all_plans[i], &feats), i))
                     .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
-                // Absolute fidelity: model cost vs measured, per applicable plan.
+                // Absolute fidelity: model cost vs measured, per applicable plan,
+                // bucketed fast/slow at FIDELITY_FLOOR_NS.
                 let mode_ix = if unique_is_card { 0 } else { 1 };
                 for i in 0..4 {
                     if let Some(meas) = ns[i] {
                         let r = plan_cost(all_plans[i], &feats) / meas as f64;
-                        fid_ln[mode_ix] += r.ln().abs();
-                        fid_n[mode_ix] += 1;
-                        if !(0.5..=2.0).contains(&r) { fid_2x[mode_ix] += 1; }
+                        let b = (meas >= FIDELITY_FLOOR_NS) as usize;
+                        fid_ln[mode_ix][b] += r.ln().abs();
+                        fid_n[mode_ix][b] += 1;
+                        if !(0.5..=2.0).contains(&r) { fid_2x[mode_ix][b] += 1; }
                     }
                 }
 
@@ -3290,12 +3298,205 @@ fn plan_cost_model_matches_gold() {
         "\nagreement: {n_match} gold-match, {n_tie} near-tie(pass), {n_miss} real-miss  of {n_total}  ({:.1}% pass)",
         100.0 * (n_match + n_tie) as f64 / n_total as f64,
     );
-    let fid_geo = |i: usize| (fid_ln[i] / fid_n[i].max(1) as f64).exp();
-    println!(
-        "cost-model fidelity (geomean |model/measured|, want ~1.0):  card {:.2}× ({}/{} beyond 2×)   printing {:.2}× ({}/{} beyond 2×)",
-        fid_geo(0), fid_2x[0], fid_n[0], fid_geo(1), fid_2x[1], fid_n[1],
-    );
-    println!("(card is fit here so it flatters; printing gap ≈ n_printings/n_cards is the eval_domain-counts-cards bug — the features-not-mode fix)");
+    let geo = |m: usize, b: usize| (fid_ln[m][b] / fid_n[m][b].max(1) as f64).exp();
+    println!("\ncost-model fidelity (geomean |model/measured|, want ~1.0), split at {FIDELITY_FLOOR_NS}ns:");
+    for (m, name) in [(0, "card"), (1, "printing")] {
+        println!(
+            "  {name:<9} slow(≥floor, re-fittable) {:.2}× ({}/{} beyond 2×)   fast(<floor, jitter) {:.2}× ({}/{} beyond 2×)",
+            geo(m, 1), fid_2x[m][1], fid_n[m][1], geo(m, 0), fid_2x[m][0], fid_n[m][0],
+        );
+    }
+    println!("(slow-bucket geomean is the real model error; fast-bucket is dominated by sub-µs timing floor, not re-fittable)");
+}
+
+/// Solve `A c = b` (A is n×n, row-major) by Gaussian elimination with partial
+/// pivoting. `None` if singular (rank-deficient — collinear features). Small n.
+fn solve_normal_eqs(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
+    let n = b.len();
+    for col in 0..n {
+        let piv = (col..n).max_by(|&r1, &r2| a[r1][col].abs().partial_cmp(&a[r2][col].abs()).unwrap())?;
+        if a[piv][col].abs() < 1e-9 {
+            return None;
+        }
+        a.swap(col, piv);
+        b.swap(col, piv);
+        for r in 0..n {
+            if r == col {
+                continue;
+            }
+            let f = a[r][col] / a[col][col];
+            for c in col..n {
+                a[r][c] -= f * a[col][c];
+            }
+            b[r] -= f * b[col];
+        }
+    }
+    Some((0..n).map(|i| b[i] / a[i][i]).collect())
+}
+
+/// The cost formula's terms for `plan`, as `(free-param term vector, known offset)`
+/// — EXACTLY mirroring `cost::plan_cost` so a weighted least-squares fit of the
+/// term vector yields drop-in constants. Free params per plan (order = printed
+/// labels in `plan_cost_refit`):
+///   P1 [STEP, FIXED]; P2 [SCATTER, WORD, EMIT, FIXED];
+///   P3 [CARD_PASS, SCAN, EMIT, FLOOR/card, FIXED]; P4 [CARD_PASS, SCAN, PUSH, SELECT, FIXED].
+/// The verify `tier` rides `scan_units` with a fixed coefficient (1), so it is a
+/// known offset, not a fitted param.
+fn cost_terms(plan: PhysicalPlan, f: &super::cost::PlanFeatures) -> (Vec<f64>, f64) {
+    let n_cards = f64::from(f.n_cards);
+    let matches = f64::from(f.matches);
+    let eval_domain = f64::from(f.eval_domain);
+    let scan_units = f64::from(f.scan_units);
+    let tier_ns = f64::from(f.residual_tier_ns100) / 100.0;
+    let limit = f64::from(f.limit);
+    let page_span = f64::from((f.offset.saturating_add(f.limit)).min(f.matches));
+    let match_rate = (matches / f64::from(f.n_printings)).max(1.0e-6);
+    match plan {
+        PhysicalPlan::PrintingRangeScan => (vec![page_span / match_rate, 1.0], 0.0),
+        PhysicalPlan::PlanePopcountOrder => (vec![matches, n_cards / 64.0, limit, 1.0], 0.0),
+        PhysicalPlan::StreamedSelect => {
+            let floor = if u64::from(f.matches) <= *STREAM_MIN_MATCHES as u64 { n_cards } else { 0.0 };
+            (vec![eval_domain, scan_units, matches, floor, 1.0], scan_units * tier_ns)
+        }
+        PhysicalPlan::GatheredScan => (vec![eval_domain, scan_units, matches, page_span, 1.0], scan_units * tier_ns),
+    }
+}
+
+/// #702 (cost-model re-fit): the formulas are LINEAR in their constants, so fit
+/// them by weighted least squares (weight 1/measured² → minimizes *relative*
+/// error, what a ratio-based model wants) on the slow bucket (≥ floor, where model
+/// error is separable from timing jitter), across card+printing jointly (so the
+/// card_pass/scan split is identifiable — collinear within card alone). Prints the
+/// fitted constants + before/after slow-bucket fidelity so a human can adopt them
+/// into cost.rs with provenance. Reporting tool, not an assertion.
+///
+///     cargo test --release plan_cost_refit -- --ignored --nocapture
+///
+/// Same corpus/timing discipline as `plan_cost_model_matches_gold`; needs real.store.
+#[test]
+#[ignore = "cost-model re-fit; needs real.store; cargo test --release plan_cost_refit -- --ignored --nocapture"]
+fn plan_cost_refit() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    use super::cost::PlanFeatures;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 10;
+    const ITERS: usize = 150;
+    const FLOOR_NS: u64 = 2_000; // fit only where model error > timing jitter
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found (see bench_verify_cost.rs docs to build it)");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch (stale — rebuild, see bench_verify_cost.rs)");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let n_cards = archived.cards.len() as u32;
+    let n_printings = archived.printings.len() as u32;
+    eprintln!("real.store: {n_cards} cards, {n_printings} printings — fitting slow(≥{FLOOR_NS}ns) rows\n");
+
+    let queries = calibration_queries();
+    let modes = ["card", "printing"];
+    let pages = [("shallow", 60usize, 0usize), ("deep", 60usize, 10_000usize)];
+    let all_plans = [PhysicalPlan::PrintingRangeScan, PhysicalPlan::PlanePopcountOrder, PhysicalPlan::StreamedSelect, PhysicalPlan::GatheredScan];
+    let plan_labels = ["P1-range", "P2-popcnt", "P3-stream", "P4-gather"];
+    let param_labels: [&[&str]; 4] = [
+        &["STEP", "FIXED"],
+        &["SCATTER", "WORD", "EMIT", "FIXED"],
+        &["CARD_PASS", "SCAN", "EMIT", "FLOOR/card", "FIXED"],
+        &["CARD_PASS", "SCAN", "PUSH", "SELECT", "FIXED"],
+    ];
+    // Per-plan collected fit rows: (terms, y_minus_offset, y).
+    let mut rows: [Vec<(Vec<f64>, f64, f64)>; 4] = Default::default();
+
+    for (_qlabel, spec) in &queries {
+        for &mode in &modes {
+            let unique_is_card = mode == "card";
+            let mode_enum = if unique_is_card { Mode::Card } else { Mode::Printing };
+            for &(_plabel, limit, offset) in &pages {
+                let mut ns = [None::<u64>; 4];
+                let mut total = 0usize;
+                for (pi, plan) in all_plans.iter().enumerate() {
+                    let mut best = u64::MAX;
+                    let mut applicable = false;
+                    for it in 0..(WARMUP + ITERS) {
+                        let (pe, mut res) = split_planes(
+                            fuzz_bound_filter(spec, archived), &archived.indexes.planes,
+                            &archived.indexes.oracle_trigram.words, unique_is_card,
+                        );
+                        let t0 = Instant::now();
+                        let out = black_box(run_query_with_plan(
+                            *plan, &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
+                            &mut res, pe.as_ref(), mode, "default", "edhrec", "asc", limit, offset, &archived.indexes,
+                        ));
+                        let dt = t0.elapsed().as_nanos() as u64;
+                        match out { Some((t, _)) => { total = t; applicable = true; if it >= WARMUP { best = best.min(dt); } } None => break }
+                    }
+                    if applicable { ns[pi] = Some(best); }
+                }
+
+                let (pe, mut res) = split_planes(
+                    fuzz_bound_filter(spec, archived), &archived.indexes.planes,
+                    &archived.indexes.oracle_trigram.words, unique_is_card,
+                );
+                let prep = prepare_candidates(&archived.cards, &archived.offsets, &archived.strings, &mut res, pe.as_ref(), mode_enum, &archived.indexes);
+                let eval_domain = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
+                let feats = PlanFeatures {
+                    n_cards, n_printings, matches: total as u32, eval_domain,
+                    scan_units: scan_units(mode_enum, prep.candidate_cards.as_deref(), &archived.offsets, n_printings, eval_domain),
+                    residual_tier_ns100: if prep.all_match_known { 0 } else { verify_cost_tier(&res) },
+                    limit: limit as u32, offset: offset as u32,
+                };
+                for (pi, plan) in all_plans.iter().enumerate() {
+                    if let Some(meas) = ns[pi] {
+                        if meas < FLOOR_NS { continue; }
+                        let (terms, offset_ns) = cost_terms(*plan, &feats);
+                        rows[pi].push((terms, meas as f64 - offset_ns, meas as f64));
+                    }
+                }
+            }
+        }
+    }
+
+    // Per plan: weighted normal equations (w = 1/y²), solve, report.
+    for (pi, plan_rows) in rows.iter().enumerate() {
+        let p = param_labels[pi].len();
+        if plan_rows.len() < p {
+            println!("{:<10}: only {} slow rows for {p} params — skip\n", plan_labels[pi], plan_rows.len());
+            continue;
+        }
+        let mut a = vec![vec![0.0f64; p]; p];
+        let mut b = vec![0.0f64; p];
+        for (terms, y_adj, y) in plan_rows {
+            let w = 1.0 / (y * y);
+            for i in 0..p {
+                for j in 0..p { a[i][j] += w * terms[i] * terms[j]; }
+                b[i] += w * terms[i] * y_adj;
+            }
+        }
+        let Some(fit) = solve_normal_eqs(a, b) else {
+            println!("{:<10}: normal equations singular (collinear) — keep current\n", plan_labels[pi]);
+            continue;
+        };
+        // after-fit slow-bucket fidelity (geomean |ln(model/measured)|); the
+        // "before" number is the slow bucket already reported by
+        // plan_cost_model_matches_gold. fitted = terms·fit + offset, offset = y - y_adj.
+        let mut after_ln = 0.0f64;
+        for (terms, y_adj, y) in plan_rows {
+            let fitted = terms.iter().zip(&fit).map(|(t, c)| t * c).sum::<f64>() + (y - y_adj);
+            after_ln += (fitted / y).ln().abs();
+        }
+        let n = plan_rows.len();
+        println!("{:<10}  ({} slow rows)  fitted constants:", plan_labels[pi], n);
+        for (lbl, c) in param_labels[pi].iter().zip(&fit) {
+            println!("    {lbl:<11} = {c:>10.3}");
+        }
+        println!("    slow-bucket fidelity after fit: {:.2}×\n", (after_ln / n as f64).exp());
+    }
+    println!("(adopt sane, non-negative constants into cost.rs with provenance, then re-run plan_cost_model_matches_gold + plan_routing_ab to validate)");
 }
 
 /// #702 (printing-mode routing probe): does cost-based routing beat the LEGACY
