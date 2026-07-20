@@ -3183,6 +3183,12 @@ fn plan_cost_model_matches_gold() {
     );
 
     let (mut n_match, mut n_tie, mut n_miss) = (0usize, 0usize, 0usize);
+    // Per-mode ABSOLUTE fidelity of plan_cost vs measured ns: geomean of
+    // |ln(model/measured)| over every applicable plan measurement, plus the count
+    // beyond 2×. Routing only needs ordering, but a model whose numbers *mean*
+    // something is the maintainability goal — this quantifies how far off it is.
+    // Indexed [0]=card [1]=printing.
+    let (mut fid_ln, mut fid_n, mut fid_2x) = ([0.0f64; 2], [0usize; 2], [0usize; 2]);
 
     for (qlabel, spec) in &queries {
         for &mode in &modes {
@@ -3245,6 +3251,17 @@ fn plan_cost_model_matches_gold() {
                     .map(|i| (plan_cost(all_plans[i], &feats), i))
                     .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
+                // Absolute fidelity: model cost vs measured, per applicable plan.
+                let mode_ix = if unique_is_card { 0 } else { 1 };
+                for i in 0..4 {
+                    if let Some(meas) = ns[i] {
+                        let r = plan_cost(all_plans[i], &feats) / meas as f64;
+                        fid_ln[mode_ix] += r.ln().abs();
+                        fid_n[mode_ix] += 1;
+                        if !(0.5..=2.0).contains(&r) { fid_2x[mode_ix] += 1; }
+                    }
+                }
+
                 let (Some((gold_ns, gi)), Some((_, mi))) = (gold, model) else { continue };
                 let model_ns = ns[mi].unwrap();
                 let ratio = model_ns as f64 / gold_ns as f64;
@@ -3272,6 +3289,12 @@ fn plan_cost_model_matches_gold() {
         "\nagreement: {n_match} gold-match, {n_tie} near-tie(pass), {n_miss} real-miss  of {n_total}  ({:.1}% pass)",
         100.0 * (n_match + n_tie) as f64 / n_total as f64,
     );
+    let fid_geo = |i: usize| (fid_ln[i] / fid_n[i].max(1) as f64).exp();
+    println!(
+        "cost-model fidelity (geomean |model/measured|, want ~1.0):  card {:.2}× ({}/{} beyond 2×)   printing {:.2}× ({}/{} beyond 2×)",
+        fid_geo(0), fid_2x[0], fid_n[0], fid_geo(1), fid_2x[1], fid_n[1],
+    );
+    println!("(card is fit here so it flatters; printing gap ≈ n_printings/n_cards is the eval_domain-counts-cards bug — the features-not-mode fix)");
 }
 
 /// #702 (printing-mode routing probe): does cost-based routing beat the LEGACY

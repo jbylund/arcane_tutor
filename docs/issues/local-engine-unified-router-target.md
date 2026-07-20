@@ -134,13 +134,33 @@ fn plan_cost(plan, f) -> ns:
    arithmetic shows up. Short-circuiting when there's nothing to decide is what keeps
    the unified router from being a tax on the queries the tree handled for free.
 
-## What each mode is expected to yield
+## What each mode yields (measured 2026-07-20 — supersedes earlier hypotheses)
 
 - **Card** — tie. Cost-routing reproduces the tuned tree's choices (the thresholds
-  already sit at the cost crossovers). Value is structural, not speed. (Measured:
-  A/B geomean 1.010×, see #702.)
-- **Printing** — the win. The tree takes P1 unconditionally; cost-routing bails P1→P4
-  on the pathological narrow-misaligned tail the tree cannot express. Estimate is
-  cheap (range `k`). *Hypothesis pending measurement* — card mode taught that
-  predicted misroutes don't always exist in the corpus.
+  already sit at the cost crossovers). Value is structural, not speed. (A/B geomean
+  1.010×, see #702.)
+- **Printing (P1 vs P3/P4)** — tie, NOT the win once hypothesized. The tree's
+  `range_too_broad_to_narrow` ratio already sits at the P1/P4 crossover; P1 wins broad
+  ranges at *every* depth tested (P3/P4 pay a full O(n_cards) match phase). Measured:
+  tree gold 54/54, `printing_range_route_probe`. The earlier "tree takes P1
+  unconditionally → cost bails P1→P4" story was falsified — the tree *does* guard narrow.
 - **Artwork** — tie, like card (only P3/P4 apply). Confirming A/B, not a headline.
+- **The actual win — idea-1 vs idea-2 (a plan not yet in `applicable()`):** the tree
+  can't pick idea-2 (range → printing existence bitmap → popcount-skip) because it
+  isn't built (#656). idea-2 is offset-independent; idea-1 (P1) grows ~`(offset+limit)/
+  match_rate`, so they cross at a depth that scales inversely with match-rate (offset
+  ~500–2000 for low-selectivity broad ranges, deeper for high). This IS the cost-shaped,
+  tree-inexpressible decision the whole effort was aiming at — measured in
+  `idea1_vs_idea2_probe`, real but confined to deep-paged broad printing ranges. Adding
+  idea-2 means a fifth `Plan` row (gate: `mode==Printing ∧ bare_range ∧ ¬aligned`) plus
+  its cost formula — the "plans as data" test of this design.
+
+## Cost-model calibration scope (must fix before this lands)
+
+`plan_cost` is fit and validated for CARD mode only. In printing/artwork it
+under-predicts P3/P4 by ~3× (= `n_printings/n_cards`) because `eval_domain` counts
+CARDS while those plans scan all printings. A unified router that argmin's across modes
+with today's constants will mispredict (it already flips 2 deep printing rows). The fix
+is features-not-mode (see #702 "Is the cost model correct?"): the caller populates
+scan/emit counts in the plan's operating space, keeping one mode-agnostic formula. This
+is prerequisite work for the single `route()` above.
