@@ -3725,6 +3725,19 @@ fn push_card_matches(
 /// streaming's win grows fast (~1.8× by 8k), so the trigger stays put.
 static STREAM_MIN_MATCHES: LazyLock<usize> = LazyLock::new(|| guard_env("CARD_ENGINE_STREAM_MIN_MATCHES", 1_024));
 
+/// Kill-switch for #702 step 5 cost-based plan routing in `run_query` (card mode
+/// only). Default OFF (`0`): `run_query` runs its byte-identical legacy decision
+/// tree (P1/P2 early-returns → `prepare_candidates` → `maybe_broad`-gated
+/// P3/P4). Set to non-zero to route card-mode queries through
+/// `run_query_card_routed`, which replaces the hand-tuned plan choice
+/// (`plane_popcount_order_applicable` early-return + the `STREAM_MIN_MATCHES`
+/// `maybe_broad` threshold) with `argmin cost::plan_cost` over the applicable
+/// plans on the *actual* materialized count — no estimator, no double work (the
+/// plane / candidate set is evaluated at most once per query and reused by the
+/// chosen executor). Printing/artwork modes always stay on the legacy path.
+/// A/B seam per #702 §Scope step 5; the model it consumes is `src/cost.rs`.
+static PLAN_SELECT: LazyLock<usize> = LazyLock::new(|| guard_env("CARD_ENGINE_PLAN_SELECT", 0));
+
 /// Whether run_query reorders And/Or children cheapest-verification-first
 /// before the evaluation walk (see FilterExpr::order_children_by_verify_cost).
 /// Unlike the guards above this is a binary A/B switch, not a threshold:
@@ -4206,19 +4219,45 @@ fn exec_plane_popcount_order<'a>(
     plane_expr: &PlaneExpr,
     indexes: &Archived<CardIndexes>,
 ) -> (usize, Vec<(&'a AOracleCard, &'a APrinting)>) {
-    let perm = indexes.sort_perms.get(sort_col, descending).expect("PlanePopcountOrder applicability guarantees a permutation");
-    let inv_perm =
-        indexes.sort_perms.get_inv(sort_col, descending).expect("PlanePopcountOrder applicability guarantees an inverse permutation");
     thread_local! {
         static PLANE_BITMAP_POPCOUNT: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
     }
     PLANE_BITMAP_POPCOUNT.with(|cell| {
         let mut bitmap = cell.borrow_mut();
         eval_planes(plane_expr, &indexes.planes, &mut bitmap);
-        run_query_streamed_popcount(
-            cards, printings, offsets, prefer, limit, page_offset, perm, inv_perm, &bitmap, plane_expr, &indexes.planes, strings,
+        exec_plane_popcount_order_with_bitmap(
+            cards, printings, offsets, strings, prefer, sort_col, descending, limit, page_offset, plane_expr, indexes, &bitmap,
         )
     })
+}
+
+/// The popcount-skip order phase of P2 with the plane bitmap *already evaluated*
+/// by the caller — the eval-owning split of `exec_plane_popcount_order`. The
+/// #702-step-5 routed path (`run_query_card_routed`) evaluates the plane once
+/// and reuses the same `&[u64]` here, so the plane is never evaluated twice on a
+/// routed query. Caller guarantees `plane_popcount_order_applicable` (a
+/// length-matched forward permutation and an inverse permutation both exist).
+#[allow(clippy::too_many_arguments)]
+fn exec_plane_popcount_order_with_bitmap<'a>(
+    cards: &'a [AOracleCard],
+    printings: &'a [APrinting],
+    offsets: &AOffsets,
+    strings: &AStrings,
+    prefer: Prefer,
+    sort_col: SortCol,
+    descending: bool,
+    limit: usize,
+    page_offset: usize,
+    plane_expr: &PlaneExpr,
+    indexes: &Archived<CardIndexes>,
+    bitmap: &[u64],
+) -> (usize, Vec<(&'a AOracleCard, &'a APrinting)>) {
+    let perm = indexes.sort_perms.get(sort_col, descending).expect("PlanePopcountOrder applicability guarantees a permutation");
+    let inv_perm =
+        indexes.sort_perms.get_inv(sort_col, descending).expect("PlanePopcountOrder applicability guarantees an inverse permutation");
+    run_query_streamed_popcount(
+        cards, printings, offsets, prefer, limit, page_offset, perm, inv_perm, bitmap, plane_expr, &indexes.planes, strings,
+    )
 }
 
 /// P3 executor: streamed selection over the sort permutation. Caller guarantees
@@ -4340,6 +4379,18 @@ fn run_query<'a>(
         _          => Mode::Card,
     };
 
+    // #702 step 5 (A/B seam, default OFF): card-mode cost-based routing. When the
+    // toggle is on and this is a card query, replace the legacy decision tree
+    // below with `argmin cost::plan_cost` on the actual materialized count. The
+    // legacy body (P1/P2 early-returns → prepare_candidates → maybe_broad P3/P4)
+    // is byte-identical to before for the OFF path and every non-card mode.
+    if *PLAN_SELECT != 0 && matches!(mode, Mode::Card) {
+        let mut chosen: Option<PhysicalPlan> = None;
+        return run_query_card_routed(
+            cards, printings, offsets, strings, filter, plane, prefer, sort_col, descending, limit, page_offset, indexes, &mut chosen,
+        );
+    }
+
     // P1 PrintingRangeScan — PR 1 (docs/issues/local-engine-sorted-range-fastpath.md): a bare,
     // broad range predicate under unique=printing gets its total from the range index's binary
     // search and its page from an early-stopping permutation walk, skipping the O(n) count pass the
@@ -4385,6 +4436,146 @@ fn run_query<'a>(
     exec_gathered_scan(
         cards, printings, offsets, strings, filter, &prep, plane, mode, prefer, sort_col, descending, limit, page_offset, indexes,
     )
+}
+
+/// #702 step 5: cost-based plan routing for `Mode::Card`, gated behind
+/// `PLAN_SELECT` (default OFF; `run_query` calls this only when the toggle is
+/// on). Replaces the legacy plan CHOICE — the `plane_popcount_order_applicable`
+/// early-return and the `STREAM_MIN_MATCHES` `maybe_broad` threshold — with
+/// `argmin cost::plan_cost` over the applicable plans, scored on the **actual**
+/// materialized count (no estimator; the plan choice is a pure performance
+/// decision, so every plan returns identical rows). Two cases mirror the legacy
+/// tree, each evaluating the plane / candidate set **at most once** and reusing
+/// it in the chosen executor (the v1 double-eval regression is the invariant
+/// this structure exists to avoid):
+///
+/// - **Case A** (`plane_popcount_order_applicable`: True residual + plane): the
+///   plane popcount IS the exact count. Evaluate the plane once into a local
+///   bitmap; the winning executor reuses that bitmap (P2 via
+///   `exec_plane_popcount_order_with_bitmap`, P3/P4 via `bitmap_card_ids` into a
+///   `PreparedCandidates`).
+/// - **Case B** (otherwise): `prepare_candidates` materializes the candidate
+///   list (its single plane eval), then the chosen executor reuses that `prep`.
+///
+/// `record_plan` receives the chosen plan (for tests / instrumentation);
+/// `run_query` passes `&mut None` and ignores it.
+#[allow(clippy::too_many_arguments)]
+fn run_query_card_routed<'a>(
+    cards: &'a [AOracleCard],
+    printings: &'a [APrinting],
+    offsets: &AOffsets,
+    strings: &AStrings,
+    filter: &mut FilterExpr,
+    plane: Option<&PlaneExpr>,
+    prefer: Prefer,
+    sort_col: SortCol,
+    descending: bool,
+    limit: usize,
+    page_offset: usize,
+    indexes: &Archived<CardIndexes>,
+    record_plan: &mut Option<PhysicalPlan>,
+) -> (usize, Vec<(&'a AOracleCard, &'a APrinting)>) {
+    let mode = Mode::Card;
+    let n_cards = cards.len() as u32;
+    let n_printings = printings.len() as u32;
+
+    // argmin over a fixed candidate set. `plan_cost` is only defined for
+    // applicable plans, so the caller passes only those; GatheredScan is always
+    // present, so the min is never empty.
+    let choose = |feats: &cost::PlanFeatures, plans: &[PhysicalPlan]| -> PhysicalPlan {
+        *plans
+            .iter()
+            .min_by(|a, b| cost::plan_cost(**a, feats).partial_cmp(&cost::plan_cost(**b, feats)).expect("plan_cost is finite"))
+            .expect("at least GatheredScan is always a candidate")
+    };
+
+    // ── Case A: True residual + plane → the plane popcount is the exact count. ──
+    if plane_popcount_order_applicable(filter, mode, cards, plane, sort_col, descending, indexes) {
+        let plane_expr = plane.expect("PlanePopcountOrder applicability guarantees a plane");
+        thread_local! {
+            static ROUTED_PLANE_BITMAP: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
+        }
+        return ROUTED_PLANE_BITMAP.with(|cell| {
+            let mut bits = cell.borrow_mut();
+            // The ONE plane evaluation on this routed query; every dispatch arm
+            // below reuses `bits` — never re-evaluates the plane.
+            eval_planes(plane_expr, &indexes.planes, &mut bits);
+            let count: u32 = bits.iter().map(|w| w.count_ones()).sum();
+            let feats = cost::PlanFeatures {
+                n_cards,
+                n_printings,
+                matches: count,
+                eval_domain: count,
+                residual_tier_ns100: 0, // all_match_known: the walk runs no card_pass
+                limit: limit as u32,
+                offset: page_offset as u32,
+            };
+            // P2 is applicable by definition here; add P3 when it is, and P4
+            // always. Stack array literals — no per-query heap allocation for the
+            // candidate set (the `Vec` was the routed path's only measurable
+            // overhead over the legacy tree in plan_routing_ab).
+            let plan = if streamed_select_applicable(cards, sort_col, descending, indexes) {
+                choose(&feats, &[PhysicalPlan::PlanePopcountOrder, PhysicalPlan::StreamedSelect, PhysicalPlan::GatheredScan])
+            } else {
+                choose(&feats, &[PhysicalPlan::PlanePopcountOrder, PhysicalPlan::GatheredScan])
+            };
+            *record_plan = Some(plan);
+            match plan {
+                PhysicalPlan::PlanePopcountOrder => exec_plane_popcount_order_with_bitmap(
+                    cards, printings, offsets, strings, prefer, sort_col, descending, limit, page_offset, plane_expr, indexes, &bits,
+                ),
+                // P3/P4 reuse the same bitmap as the candidate card list. This is
+                // exactly what `prepare_candidates` produces for a True-residual
+                // plane query (Some(bitmap_card_ids(&bitmap)), all_match_known),
+                // so the rows are identical to the legacy path.
+                PhysicalPlan::StreamedSelect | PhysicalPlan::GatheredScan => {
+                    let prep = PreparedCandidates { candidate_cards: Some(bitmap_card_ids(&bits)), all_match_known: true };
+                    if matches!(plan, PhysicalPlan::StreamedSelect) {
+                        exec_streamed_select(
+                            cards, printings, offsets, strings, filter, &prep, plane, mode, prefer, sort_col, descending, limit,
+                            page_offset, indexes,
+                        )
+                    } else {
+                        exec_gathered_scan(
+                            cards, printings, offsets, strings, filter, &prep, plane, mode, prefer, sort_col, descending, limit,
+                            page_offset, indexes,
+                        )
+                    }
+                }
+                PhysicalPlan::PrintingRangeScan => unreachable!("PrintingRangeScan is printing-mode only"),
+            }
+        });
+    }
+
+    // ── Case B: residual ≠ True (or no plane). Materialize candidates ONCE. ──
+    let prep = prepare_candidates(cards, offsets, strings, filter, plane, mode, indexes);
+    let count = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
+    let tier = if prep.all_match_known { 0 } else { verify_cost_tier(filter) };
+    let feats = cost::PlanFeatures {
+        n_cards,
+        n_printings,
+        matches: count,
+        eval_domain: count,
+        residual_tier_ns100: tier,
+        limit: limit as u32,
+        offset: page_offset as u32,
+    };
+    // Stack array literals — no per-query heap allocation (see Case A).
+    let plan = if streamed_select_applicable(cards, sort_col, descending, indexes) {
+        choose(&feats, &[PhysicalPlan::StreamedSelect, PhysicalPlan::GatheredScan])
+    } else {
+        choose(&feats, &[PhysicalPlan::GatheredScan])
+    };
+    *record_plan = Some(plan);
+    if matches!(plan, PhysicalPlan::StreamedSelect) {
+        exec_streamed_select(
+            cards, printings, offsets, strings, filter, &prep, plane, mode, prefer, sort_col, descending, limit, page_offset, indexes,
+        )
+    } else {
+        exec_gathered_scan(
+            cards, printings, offsets, strings, filter, &prep, plane, mode, prefer, sort_col, descending, limit, page_offset, indexes,
+        )
+    }
 }
 
 /// In-process force/dispatch entry point (#702 step 2): run `plan` for this
