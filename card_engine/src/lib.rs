@@ -4438,6 +4438,27 @@ fn run_query<'a>(
     )
 }
 
+/// `cost::PlanFeatures::scan_units` for a query: the rows the per-row residual
+/// scan touches, in the plan's operating space. `Mode::Card` breaks at the first
+/// matching printing (≈ one row per candidate), so it is `eval_domain`;
+/// printing/artwork scan every printing of every candidate, so it is the printing
+/// count under those cards (`n_printings` when unnarrowed). The `Some` branch sums
+/// `offsets` ranges over the candidate cards — O(candidates), a routing-time cost
+/// only paid when a candidate list exists.
+#[allow(dead_code)] // consumed by the cost benches (tests.rs) and future all-mode routing
+fn scan_units(mode: Mode, candidate_cards: Option<&[u32]>, offsets: &AOffsets, n_printings: u32, eval_domain: u32) -> u32 {
+    match mode {
+        Mode::Card => eval_domain,
+        Mode::Printing | Mode::Artwork => match candidate_cards {
+            None => n_printings,
+            Some(v) => v
+                .iter()
+                .map(|&cid| u32::from(offsets[cid as usize + 1]) - u32::from(offsets[cid as usize]))
+                .sum(),
+        },
+    }
+}
+
 /// #702 step 5: cost-based plan routing for `Mode::Card`, gated behind
 /// `PLAN_SELECT` (default OFF; `run_query` calls this only when the toggle is
 /// on). Replaces the legacy plan CHOICE — the `plane_popcount_order_applicable`
@@ -4506,6 +4527,7 @@ fn run_query_card_routed<'a>(
                 n_printings,
                 matches: count,
                 eval_domain: count,
+                scan_units: count, // Mode::Card: loop breaks at first match ⇒ scan_units == eval_domain
                 residual_tier_ns100: 0, // all_match_known: the walk runs no card_pass
                 limit: limit as u32,
                 offset: page_offset as u32,
@@ -4556,6 +4578,7 @@ fn run_query_card_routed<'a>(
         n_printings,
         matches: count,
         eval_domain: count,
+        scan_units: count, // Mode::Card: loop breaks at first match ⇒ scan_units == eval_domain
         residual_tier_ns100: tier,
         limit: limit as u32,
         offset: page_offset as u32,

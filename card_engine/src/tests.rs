@@ -8,7 +8,7 @@ use super::{
     range_too_broad_to_narrow, run_query, run_query_with_plan, run_query_card_routed, prefer_from_str, PhysicalPlan, trigram_candidates, finalize_trigram_index, PrintingRangeIndex, NARROW_FLOOR,
     gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
     walk_printing_page, aligned_page, bare_range_bounds, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
-    prepare_candidates, verify_cost_tier, Mode,
+    prepare_candidates, verify_cost_tier, scan_units, Mode,
     archive_header, archive_payload, ARCHIVE_HEADER_LEN, Mmap,
     bitmap_contains, bitmap_card_ids, compile_plane, eval_planes, split_planes,
     ArithOp, ArtistIndex, CardData, CardIndexes, Candidates, ColorField, NumExpr, NumField, RarityIndex,
@@ -3239,6 +3239,7 @@ fn plan_cost_model_matches_gold() {
                     n_cards, n_printings,
                     matches: total as u32,
                     eval_domain,
+                    scan_units: scan_units(mode_enum, prep.candidate_cards.as_deref(), &archived.offsets, n_printings, eval_domain),
                     residual_tier_ns100,
                     limit: limit as u32,
                     offset: offset as u32,
@@ -3422,7 +3423,9 @@ fn printing_range_route_probe() {
             let eval_domain = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
             let residual_tier_ns100 = if prep.all_match_known { 0 } else { verify_cost_tier(&res) };
             let feats = PlanFeatures {
-                n_cards, n_printings, matches: total as u32, eval_domain, residual_tier_ns100,
+                n_cards, n_printings, matches: total as u32, eval_domain,
+                scan_units: scan_units(Mode::Printing, prep.candidate_cards.as_deref(), &archived.offsets, n_printings as u32, eval_domain),
+                residual_tier_ns100,
                 limit: LIMIT as u32, offset: offset as u32,
             };
 
@@ -3780,6 +3783,7 @@ fn plan_regret_report() {
                 n_cards, n_printings,
                 matches: est,
                 eval_domain: est.min(n_cards),
+                scan_units: est.min(n_cards), // card-mode regret report ⇒ scan_units == eval_domain
                 residual_tier_ns100: tier,
                 limit: limit as u32,
                 offset: offset as u32,
@@ -3906,7 +3910,8 @@ fn plan_regret_fuzz() {
 
         for &(limit, offset) in &pages {
             let mk = |matches: u32, evd: u32| PlanFeatures {
-                n_cards, n_printings, matches, eval_domain: evd, residual_tier_ns100: tier,
+                n_cards, n_printings, matches, eval_domain: evd, scan_units: evd, // card mode ⇒ scan_units == eval_domain
+                residual_tier_ns100: tier,
                 limit: limit as u32, offset: offset as u32,
             };
             let feats_true = mk(true_total, eval_domain);

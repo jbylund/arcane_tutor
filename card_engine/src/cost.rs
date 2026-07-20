@@ -31,22 +31,20 @@
 //! and range-scan (P1) run only when the residual is `True`/absent, so they carry
 //! no verify term at all.
 //!
-//! ## Calibration scope: CARD MODE ONLY (printing/artwork under-predicted ~3×)
+//! ## Calibration scope: operating-space via `scan_units` (card + printing)
 //!
-//! The constants were fit to card-mode measurements, and the model is validated
-//! to gold only for card mode (`plan_cost_model_matches_gold`). In printing/artwork
-//! mode it systematically under-predicts P3/P4 — `printing_range_route_probe`
-//! (src/tests.rs) shows model/measured ≈ 0.3–0.5. Root cause: `eval_domain` counts
-//! CARDS, but a printing/artwork P3/P4 visits every card AND scans all its
-//! printings (~`n_printings` units), and there is no printing-scale emit term. The
-//! error factor ≈ `n_printings / n_cards` (≈3.09 on the real corpus). It did not
-//! surface in validation because P1 dominates the broad printing ranges so
-//! decisively the misestimate rarely flips the argmin. The right fix is NOT a
-//! `mode` branch here but richer FEATURES: the caller (which knows the mode)
-//! populates `eval_domain`/emit in the plan's operating space, keeping this formula
-//! mode-agnostic (artwork then falls out as another count). Out of scope until a
-//! unified all-mode router is pursued — which, given card+printing both TIE the
-//! legacy tree, is a structural-unification goal, not a speed one (see #702 doc).
+//! The P3/P4 per-card work was originally fit on CARD mode alone, where the loop
+//! breaks at the first matching printing, and it under-predicted printing/artwork
+//! P3/P4 by ~`n_printings/n_cards` (≈3.09) because those modes scan EVERY printing
+//! of every candidate. The fix is `PlanFeatures::scan_units` (not a `mode` branch):
+//! the per-card `card_pass` term is driven by `eval_domain` (candidate cards) and
+//! the per-row residual scan + its verify `tier` by `scan_units` (rows scanned in
+//! the plan's operating space — `≈ eval_domain` for card, printings-under-candidates
+//! for printing/artwork). One mode-agnostic formula; the caller fills `scan_units`
+//! per mode via `scan_units()`. The `_CARD_PASS`/`_SCAN` split of the old lumped
+//! `VISIT` constants was fit to hold card unchanged while correcting printing (see
+//! each constant's doc). Artwork rides the printing path (same all-printings scan);
+//! its confirming validation is still pending a bench run.
 
 use super::*;
 
@@ -62,9 +60,17 @@ pub(crate) struct PlanFeatures {
     /// Result cardinality in the plan's operating space (card total for card
     /// mode, printing total for printing mode). Use measured truth here.
     pub matches: u32,
-    /// Cards the per-card work visits: the narrowed candidate count when
-    /// `prepare_candidates` produced a candidate list, else `n_cards`.
+    /// Candidate CARDS the loop iterates (one `card_pass` each): the narrowed
+    /// candidate count when `prepare_candidates` produced a list, else `n_cards`.
     pub eval_domain: u32,
+    /// Rows the per-row residual scan touches, in the plan's operating space — the
+    /// dominant P3/P4 driver. Card mode breaks at the first matching printing
+    /// (≈ one row per candidate), so `scan_units ≈ eval_domain`; printing/artwork
+    /// scan every printing of every candidate, so it is the printing count under
+    /// those cards (`≈ eval_domain · n_printings/n_cards`). This is the field that
+    /// makes the formula operating-space-correct without a `mode` branch (see the
+    /// module "Calibration scope" note); the caller fills it via `scan_units()`.
+    pub scan_units: u32,
     /// Per-card verify cost of the residual, ns×100 (`verify_cost_tier`); `0`
     /// when `all_match_known` (the walk skips `card_pass` entirely).
     pub residual_tier_ns100: u32,
@@ -126,12 +132,20 @@ const PLANE_POPCOUNT_FIXED_COST_NS: f64 = 200.0;
 // O(n_cards) FLOOR that makes P3 lose badly on narrow queries: a 5-row query
 // forced onto P3 measured ~52µs = n_cards × ~1.65ns.
 
-/// ns per card visited in the match phase (card_pass + count). Fit from broad
-/// queries where eval_domain drives P3 and it is nearly independent of match
-/// count across modes: t:creature card 17317 cards → 53542ns (3.09), printing
-/// 17317 → 52791ns (3.05); cmc>=0 card 31508 → 101541ns (3.22), printing 31508 →
-/// 97000ns (3.08). The residual verify tier adds on top (common-mode with P4).
-const STREAM_MATCH_PHASE_PER_CARD_NS: f64 = 3.0;
+/// P3 match phase, split into a per-CANDIDATE-CARD term (`card_pass`, driven by
+/// `eval_domain`) and a per-SCANNED-ROW term (`scan_units`, below). The old lumped
+/// `STREAM_MATCH_PHASE_PER_CARD_NS = 3.0` was fit on CARD mode, where the loop
+/// early-stops at the first matching printing (`scan_units ≈ eval_domain`) so the
+/// two terms are indistinguishable; the sum stays 3.0 there. Printing/artwork scan
+/// EVERY printing of each candidate (`scan_units ≈ eval_domain · n_printings/n_cards`),
+/// which the lumped constant under-priced ~2× (fidelity 0.5, the eval_domain-counts-
+/// cards bug). Split fit: card sum pins `CARD_PASS + SCAN = 3.0`; printing's ~2×
+/// under-prediction at ratio ~3.09 pins the split (`CARD_PASS + 3.09·SCAN ≈ 6.0`).
+const STREAM_CARD_PASS_NS: f64 = 1.56;
+/// ns per printing scanned in the match phase (residual test per row). See
+/// STREAM_CARD_PASS_NS for the split derivation. The residual verify `tier` rides
+/// this term (it is paid per scanned row), common-mode with P4's scan term.
+const STREAM_SCAN_PER_ROW_NS: f64 = 1.44;
 /// ns per match, for the permutation-walk emit. Small — P3 measured nearly flat
 /// in match count once eval_domain is fixed (see STREAM_MATCH_PHASE_PER_CARD_NS),
 /// so this is a minor term.
@@ -150,14 +164,16 @@ const STREAM_FIXED_COST_NS: f64 = 500.0;
 // Vec (O(matches)), then select_page quickselects the page. Visits eval_domain
 // cards, each paying the residual verify tier.
 
-/// ns per card visited in the gathered loop (card_pass + push). Fit with
-/// GATHER_PUSH_PER_MATCH_NS from all-match broad card queries where
-/// eval_domain==matches and tier=0, which pin the sum ≈ 6.3-6.9 (cmc>=0 31508 →
-/// 216667ns = 6.87; t:creature 17317 → 109834 = 6.34; color3 6606 → 40458 =
-/// 6.12). Split so the gathered loop's per-visit cost exceeds P3's
-/// STREAM_MATCH_PHASE_PER_CARD_NS — the measured P4/P3 ≈ 2× ratio on broad
-/// queries — with the remainder attributed to the per-match push.
-const GATHER_VISIT_PER_CARD_NS: f64 = 5.5;
+/// P4 gathered loop, split per-CANDIDATE-CARD (`card_pass`, `eval_domain`) and
+/// per-SCANNED-ROW (`scan_units`), same rationale as STREAM_CARD_PASS_NS. The old
+/// lumped `GATHER_VISIT_PER_CARD_NS = 5.5` was fit on card mode (all-match broad,
+/// eval_domain==matches, tier=0, sum ≈ 6.3-6.9 with GATHER_PUSH); card keeps
+/// `CARD_PASS + SCAN = 5.5`. Printing's ~2× under-prediction at ratio ~3.09 splits
+/// it (`CARD_PASS + 3.09·SCAN ≈ 11`).
+const GATHER_CARD_PASS_NS: f64 = 2.87;
+/// ns per printing scanned in the gathered loop (residual test per row); the verify
+/// `tier` rides this term, common-mode with P3's scan term. See GATHER_CARD_PASS_NS.
+const GATHER_SCAN_PER_ROW_NS: f64 = 2.63;
 /// ns per match pushed into the sort-key Vec + quickselected.
 const GATHER_PUSH_PER_MATCH_NS: f64 = 1.0;
 /// ns per page slot materialized. Fit from the deep-vs-shallow gap on broad
@@ -181,6 +197,7 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
     let n_printings = f64::from(f.n_printings);
     let matches = f64::from(f.matches);
     let eval_domain = f64::from(f.eval_domain);
+    let scan_units = f64::from(f.scan_units);
     let tier_ns = f64::from(f.residual_tier_ns100) / 100.0;
     let limit = f64::from(f.limit);
     let page_span = f64::from((f.offset.saturating_add(f.limit)).min(f.matches));
@@ -205,10 +222,17 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
             } else {
                 0.0
             };
-            eval_domain * (STREAM_MATCH_PHASE_PER_CARD_NS + tier_ns) + matches * STREAM_EMIT_PER_MATCH_NS + floor + STREAM_FIXED_COST_NS
+            // card_pass is per candidate card; the residual scan + its verify tier
+            // are per scanned printing (scan_units) — the operating-space split.
+            eval_domain * STREAM_CARD_PASS_NS
+                + scan_units * (STREAM_SCAN_PER_ROW_NS + tier_ns)
+                + matches * STREAM_EMIT_PER_MATCH_NS
+                + floor
+                + STREAM_FIXED_COST_NS
         }
         PhysicalPlan::GatheredScan => {
-            eval_domain * (GATHER_VISIT_PER_CARD_NS + tier_ns)
+            eval_domain * GATHER_CARD_PASS_NS
+                + scan_units * (GATHER_SCAN_PER_ROW_NS + tier_ns)
                 + matches * GATHER_PUSH_PER_MATCH_NS
                 + page_span * GATHER_SELECT_PER_PAGE_SLOT_NS
                 + GATHER_FIXED_COST_NS
