@@ -209,6 +209,51 @@ individually addressable is the prerequisite for the run-all-plans harness.
 Filter trees are tiny, so `choose_plan`, the estimator, and the cost model are
 all per-query noise; they run once per query, not per card.
 
+## Results so far — and where the win actually is (2026-07-20)
+
+Steps 1–4 shipped (#704/#708/#709/#710). Step 5 is built for **card mode only**,
+toggle-gated (`CARD_ENGINE_PLAN_SELECT`, default off): `run_query_card_routed`
+materializes candidates once (single plane eval / one `prepare_candidates`,
+no double-eval) and routes `argmin plan_cost` on the *actual* count.
+
+**Card-mode routing is a tie, not a win.** A/B on the real corpus
+(`plan_routing_ab`, min-of-n): geomean routed/legacy **1.010×**, 41 tie / 3
+marginally-slower / 0 faster. Cost-routing *reproduces* the hand-tuned tree's
+plan choices — the tree's thresholds already sit at the cost crossovers — so
+there is no card-mode speed to win. The residual ~1% is the argmin's own f64
+evals on sub-µs queries. An earlier estimate-*before*-materialize prototype was
+~15% slower (double plane eval + lo-cliff pessimism) and was abandoned for the
+materialize-then-route shape above.
+
+**This intermediate state is a deliberate structural *downgrade*.** The toggle,
+the routed path, and the legacy tree now coexist — strictly *more* branching
+than before. That is only justified as time-boxed scaffolding for the A/B, and
+is debt to be repaid per steps 5–6: the routed path is the seed of the single
+`route()`; the tree and thresholds get *deleted*, not accumulated. Landing
+card-mode routing on its own buys parity-for-principle only, so it should ship
+bundled with — or just before — the first frontier win below, never as "we
+replaced the tree with an equal-speed cost model."
+
+**The win is printing mode, via P1 (the idea-1/idea-2 crossover — the founding
+motivation).** The legacy tree takes the P1 range-walk fastpath *unconditionally*
+whenever it structurally applies (`printing_range_scan_applicable`: bare range,
+printing, no plane); it never costs the walk. But P1 walks the order-by
+permutation testing range membership, so a **narrow** range under a
+**misaligned** sort blind-walks ~O(n_printings) to fill a page where P4 gathers
+the few matches in O(matches) — the documented idea-1 bad tail. Cost-routing
+costs the walk (`(offset+limit)/match_rate · step`, already in `cost.rs`) and
+bails to P4 when it's pathological — precisely the case the tree *cannot*
+express. Two things make this tractable where card wasn't: the estimate is
+**cheap** (range `k` from the index's binary search, no plane eval, so no
+estimate-overhead tax), and it only needs the range `k`, not the full
+printing-space estimator. **Hypothesis, to confirm by measurement** — card mode
+taught that predicted misroutes don't always exist in the corpus; the mechanism
+is sound, whether real traffic hits it is empirical.
+
+**Artwork is expected to tie** like card: only P3/P4 apply (no P1, no P2), the
+same broad/narrow crossover the tree already sits on. Worth a confirming A/B,
+not a headline.
+
 ## Keeping costs/plans current as the engine changes
 
 The constants are fit to a point-in-time measurement, so the design has to say
