@@ -4,22 +4,35 @@ on:
   push:
     branches:
       - main
+  # Deliberately NO `paths:` filter — see .github/scripts/changed-paths.sh. This
+  # workflow always runs so its check is reported exactly once; the `changes` job
+  # decides whether the real work happens.
   pull_request:
-    paths:
-      - '**/*.py'
-      - '**/*.rs'
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
-      - 'requirements/**'
-      - '**/pyproject.toml'
-      - 'api/static/fixtures/**'
-      - '.github/workflows/unit-tests.yml'
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      relevant: ${{ steps.scope.outputs.changed }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Does this change touch Python or the Rust extensions?
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          .github/scripts/changed-paths.sh
+          '\.py$|\.rs$|(^|/)Cargo\.(toml|lock)$|^requirements/|(^|/)pyproject\.toml$|^api/static/fixtures/|^\.github/(workflows/unit-tests\.yml|scripts/changed-paths\.sh)$'
+
   test:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

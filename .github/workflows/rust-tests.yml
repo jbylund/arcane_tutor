@@ -4,18 +4,35 @@ on:
   push:
     branches:
       - main
+  # Deliberately NO `paths:` filter — see .github/scripts/changed-paths.sh. This
+  # workflow always runs so its check is reported exactly once; the `changes` job
+  # decides whether the real work happens.
   pull_request:
-    paths:
-      - '**/*.rs'
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
-      - '.github/workflows/rust-tests.yml'
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      relevant: ${{ steps.scope.outputs.changed }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Does this change touch Rust?
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          .github/scripts/changed-paths.sh
+          '\.rs$|(^|/)Cargo\.(toml|lock)$|^\.github/(workflows/rust-tests\.yml|scripts/changed-paths\.sh)$'
+
   rust-test:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -49,9 +66,9 @@ jobs:
       # useful signal, and `-D warnings` would otherwise abort the job before the
       # tests ever ran. --all-targets covers tests.rs and the bench modules, which
       # is where most of the backlog this gate was introduced with actually lived.
-      # These are steps in the existing job rather than a job of their own so no
-      # new required check is added (which would also need a rust-tests-skip.yml
-      # stub to keep no-Rust PRs from hanging on a check that never runs).
+      # These are steps in the existing job rather than a job of their own to keep
+      # the number of reported checks down; the `changes` gate above is what decides
+      # whether they run at all.
       - name: Clippy card_engine
         run: cargo clippy --manifest-path card_engine/Cargo.toml --all-targets -- -D warnings
 
