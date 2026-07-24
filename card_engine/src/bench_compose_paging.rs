@@ -26,8 +26,14 @@ use rkyv::Archived;
 
 use super::{
     archive_header, archive_payload, compose_printing_bits, gather_composed_page, walk_range_orderby_page, CardData, CmpOp, CollField,
-    FilterExpr, Mmap, Mode, Prefer, SortCol, ARCHIVE_HEADER_LEN,
+    FilterExpr, Mmap, Mode, Prefer, QueryCtx, QueryParams, SortCol, ARCHIVE_HEADER_LEN,
 };
+
+/// This bench's fixed query shape: `unique=printing`, `orderby=usd` ascending,
+/// one page of `LIMIT` — only the offset sweeps.
+fn bench_params(page_offset: usize) -> QueryParams {
+    QueryParams { mode: Mode::Printing, prefer: Prefer::Default, sort_col: SortCol::PriceUsd, descending: false, limit: LIMIT, page_offset }
+}
 
 const ITERS: usize = 200;
 const LIMIT: usize = 175; // a Scryfall page
@@ -59,6 +65,7 @@ fn bench_compose_paging() {
     let data = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
     let n_printings = data.printings.len();
     let (cards, printings, offsets, p2c) = (&data.cards, &data.printings, &data.offsets, &data.indexes.printing_to_card);
+    let ctx = QueryCtx::from(data);
     println!("\n{} printings, {} cards from {STORE_PATH}", n_printings, cards.len());
 
     let coll = |field, value: &str, negate: bool| -> FilterExpr {
@@ -96,13 +103,13 @@ fn bench_compose_paging() {
                     .map_or(0, |p| p.len())
             };
             let run_b = || {
-                gather_composed_page(Mode::Printing, cards, printings, offsets, &pbits, Prefer::Default, SortCol::PriceUsd, false, LIMIT, offset, u16::from(data.indexes.max_artwork_groups))
+                gather_composed_page(&ctx, &bench_params(offset), &pbits)
                     .len()
             };
             // Cross-check identical page (offset 0 only — A declines into the null-price tail at deep
             // offsets, where only B is defined; that decline is itself the finding for those rows).
             let a_page = walk_range_orderby_page(&data.indexes.price_usd, &pbits, cards, printings, p2c, SortCol::PriceUsd, false, total, LIMIT, offset);
-            let b_page = gather_composed_page(Mode::Printing, cards, printings, offsets, &pbits, Prefer::Default, SortCol::PriceUsd, false, LIMIT, offset, u16::from(data.indexes.max_artwork_groups));
+            let b_page = gather_composed_page(&ctx, &bench_params(offset), &pbits);
             if let Some(a_page) = &a_page {
                 let a_ids: Vec<u128> = a_page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect();
                 let b_ids: Vec<u128> = b_page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect();

@@ -9,7 +9,7 @@ use super::{
     PhysicalPlan, ComposePaging, trigram_candidates, finalize_trigram_index, PrintingRangeIndex, NARROW_FLOOR,
     gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
     walk_printing_page, aligned_page, bare_range_bounds, probe_range_k, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
-    prepare_candidates, verify_cost_tier, scan_units, Mode,
+    prepare_candidates, verify_cost_tier, scan_units, Mode, QueryCtx, QueryParams, Prefer,
     GatherSelect, select_page, GATHER_PRUNE_CHUNK, Match,
     archive_header, archive_payload, ARCHIVE_HEADER_LEN, Mmap,
     bitmap_contains, bitmap_card_ids, compile_plane, eval_planes, split_planes,
@@ -24,6 +24,30 @@ use std::sync::OnceLock;
 // Trait bringing random_range/random_bool/random into scope for the #677 fuzzer
 // helpers below (SmallRng's inherent methods live on this extension trait).
 use rand::RngExt;
+
+/// `QueryParams` for a test driving `explain`, whose only meaningful inputs are
+/// `mode` and `limit`/`offset`: `prefer` is not read by the cost model at all
+/// (`cost::PlanFeatures` has no such field), and `SortCol::EdhrecRank`/ascending
+/// is the default orderby these tests were written against.
+fn explain_params(mode: Mode, limit: usize) -> QueryParams {
+    QueryParams { mode, prefer: Prefer::Default, sort_col: SortCol::EdhrecRank, descending: false, limit, page_offset: 0 }
+}
+
+/// `QueryParams` from the enum-space inputs a kernel-level test drives directly
+/// (rather than through the string surface `QueryParams::from_strs` adapts).
+/// `prefer` is `Default` — the value every one of these call sites passed
+/// explicitly before the bundle.
+fn kernel_params(mode: Mode, sort_col: SortCol, descending: bool, limit: usize, page_offset: usize) -> QueryParams {
+    QueryParams { mode, prefer: Prefer::Default, sort_col, descending, limit, page_offset }
+}
+
+/// `QueryParams` for a test calling a function that reads only `mode` —
+/// `prepare_candidates` narrows and rewrites the filter without consulting the
+/// orderby or the page. The remaining fields are inert for such a call; if a
+/// callee ever starts reading them, that is a signal to pass real values here.
+fn mode_only_params(mode: Mode) -> QueryParams {
+    explain_params(mode, 100)
+}
 
 /// String-sorted permutation of the vocab ids, as reload_commit builds it.
 fn sorted_vocab_ids(vocab: &[String]) -> Vec<u16> {
@@ -687,10 +711,7 @@ fn rarity_shared_witness_declines_same_field_and_cross_field() {
     // mythic, so it must be zero, not a false positive from independently
     // narrowing each fact.
     let mut residual_check = cross_field;
-    let (total, _) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-        &mut residual_check, None, "card", "default", "edhrec", "asc", 100, 0, &archived.indexes,
-    );
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut residual_check, None, "card", "default", "edhrec", "asc", 100, 0);
     assert_eq!(total, 0, "no card in this fixture is both format-A-legal and mythic");
 }
 
@@ -1187,10 +1208,7 @@ fn legality_cross_status_shared_witness_falls_back_to_correct_result() {
     assert!(plane.is_none(), "shared-witness AND must not partially promote either leaf into the plane");
     assert!(matches!(residual, FilterExpr::And(_)), "both legality children must remain in the residual");
 
-    let (total, _) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-        &mut residual, plane.as_ref(), "card", "default", "edhrec", "asc", 100, 0, &archived.indexes,
-    );
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut residual, plane.as_ref(), "card", "default", "edhrec", "asc", 100, 0);
     assert_eq!(total, 0, "no single printing is both banned and restricted in C at once");
 }
 
@@ -1215,10 +1233,7 @@ fn banned_plane_row_selection_preserves_divergent_printing_correctness() {
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
 
     let run = |filter: &mut FilterExpr, unique: &str| {
-        run_query(
-            &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-            filter, None, unique, "default", "edhrec", "asc", 100, 0, &archived.indexes,
-        )
+        run_query(&QueryCtx::from(archived), filter, None, unique, "default", "edhrec", "asc", 100, 0)
     };
 
     // banned:C, unique=printing: exactly the one banned printing.
@@ -1264,10 +1279,7 @@ fn legal_plane_narrowing_preserves_divergent_printing_correctness() {
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
 
     let run = |filter: &mut FilterExpr, unique: &str| {
-        run_query(
-            &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-            filter, None, unique, "default", "edhrec", "asc", 100, 0, &archived.indexes,
-        )
+        run_query(&QueryCtx::from(archived), filter, None, unique, "default", "edhrec", "asc", 100, 0)
     };
 
     // f:A, unique=printing: exactly the one legal printing, not the not-legal one.
@@ -1390,10 +1402,7 @@ fn legality_plane_promotion_respects_mode_through_split_planes() {
             assert!(plane.is_none(), "unique=printing/artwork must decline the fold, not just patch around it");
             assert!(matches!(residual, FilterExpr::Legality { .. }), "the original Legality node must survive for per-printing verification");
         }
-        run_query(
-            &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-            &mut residual, plane.as_ref(), unique, "default", "edhrec", "asc", 100, 0, &archived.indexes,
-        )
+        run_query(&QueryCtx::from(archived), &mut residual, plane.as_ref(), unique, "default", "edhrec", "asc", 100, 0)
     };
 
     let (total, page) = run_mode("printing");
@@ -1442,10 +1451,7 @@ fn legality_compound_and_respects_row_selection_for_unique_card() {
     assert!(plane.is_some(), "format:A AND t:creature (one format, no shared-witness issue) must compile whole");
     assert!(matches!(residual, FilterExpr::True));
 
-    let (total, page) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-        &mut residual, plane.as_ref(), "card", "default", "edhrec", "asc", 100, 0, &archived.indexes,
-    );
+    let (total, page) = run_query(&QueryCtx::from(archived), &mut residual, plane.as_ref(), "card", "default", "edhrec", "asc", 100, 0);
     assert_eq!(total, 1);
     assert_eq!(
         u128::from(page[0].1.scryfall_id),
@@ -1489,10 +1495,7 @@ fn legality_and_date_residual_must_be_checked_together() {
         "date> isn't plane-compilable, so it must remain a real residual, not collapse to True"
     );
 
-    let (total, _) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-        &mut residual, plane.as_ref(), "card", "default", "edhrec", "asc", 100, 0, &archived.indexes,
-    );
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut residual, plane.as_ref(), "card", "default", "edhrec", "asc", 100, 0);
     assert_eq!(total, 0, "no single printing is both legal in A and released after the cutoff");
 }
 
@@ -2449,17 +2452,11 @@ fn fuzz_check_case(archived: &Archived<CardData>, spec: &FuzzSpec, ctx: &str, or
         // Full page (offset 0): total + every row satisfies. Unplaned = raw filter, plane = None;
         // plane path = split_planes + the promoted plane (unique_is_card matches the real caller).
         let mut plain = fuzz_bound_filter(spec, archived);
-        let (t0, p0) = run_query(
-            &archived.cards, &archived.printings, &archived.offsets, strings,
-            &mut plain, None, mode, "default", orderby, direction, full_limit, 0, &archived.indexes,
-        );
+        let (t0, p0) = run_query(&QueryCtx::from(archived), &mut plain, None, mode, "default", orderby, direction, full_limit, 0);
         let (pe, mut residual) = split_planes(
             fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, unique_is_card,
         );
-        let (t1, p1) = run_query(
-            &archived.cards, &archived.printings, &archived.offsets, strings,
-            &mut residual, pe.as_ref(), mode, "default", orderby, direction, full_limit, 0, &archived.indexes,
-        );
+        let (t1, p1) = run_query(&QueryCtx::from(archived), &mut residual, pe.as_ref(), mode, "default", orderby, direction, full_limit, 0);
 
         assert_eq!(t0, expected, "unplaned total mismatch (mode={mode}, orderby={orderby}, dir={direction}, {ctx})");
         assert_eq!(t1, expected, "plane-path total mismatch (mode={mode}, orderby={orderby}, dir={direction}, {ctx})");
@@ -2476,10 +2473,7 @@ fn fuzz_check_case(archived: &Archived<CardData>, spec: &FuzzSpec, ctx: &str, or
             let (full0, full1) = (ids(&p0), ids(&p1));
 
             let mut plain_pg = fuzz_bound_filter(spec, archived);
-            let (_, pg0) = run_query(
-                &archived.cards, &archived.printings, &archived.offsets, strings,
-                &mut plain_pg, None, mode, "default", orderby, direction, plimit, offset, &archived.indexes,
-            );
+            let (_, pg0) = run_query(&QueryCtx::from(archived), &mut plain_pg, None, mode, "default", orderby, direction, plimit, offset);
             assert_eq!(
                 ids(&pg0), full0[offset..offset + plimit].to_vec(),
                 "unplaned pagination slice mismatch (mode={mode}, orderby={orderby}, dir={direction}, offset={offset}, {ctx})",
@@ -2489,10 +2483,7 @@ fn fuzz_check_case(archived: &Archived<CardData>, spec: &FuzzSpec, ctx: &str, or
             let (pe_pg, mut residual_pg) = split_planes(
                 fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, unique_is_card,
             );
-            let (_, pg1) = run_query(
-                &archived.cards, &archived.printings, &archived.offsets, strings,
-                &mut residual_pg, pe_pg.as_ref(), mode, "default", orderby, direction, plimit, offset, &archived.indexes,
-            );
+            let (_, pg1) = run_query(&QueryCtx::from(archived), &mut residual_pg, pe_pg.as_ref(), mode, "default", orderby, direction, plimit, offset);
             assert_eq!(
                 ids(&pg1), full1[offset..offset + plimit].to_vec(),
                 "plane pagination slice mismatch (mode={mode}, orderby={orderby}, dir={direction}, offset={offset}, {ctx})",
@@ -2522,18 +2513,12 @@ fn fuzz_check_row_identity(
         }
     };
     let mut plain = fuzz_bound_filter(spec, archived);
-    let (_, p0) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, strings,
-        &mut plain, None, mode, "default", orderby, direction, limit, offset, &archived.indexes,
-    );
+    let (_, p0) = run_query(&QueryCtx::from(archived), &mut plain, None, mode, "default", orderby, direction, limit, offset);
     check(&p0, "unplaned");
     let (pe, mut residual) = split_planes(
         fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, mode == "card",
     );
-    let (_, p1) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, strings,
-        &mut residual, pe.as_ref(), mode, "default", orderby, direction, limit, offset, &archived.indexes,
-    );
+    let (_, p1) = run_query(&QueryCtx::from(archived), &mut residual, pe.as_ref(), mode, "default", orderby, direction, limit, offset);
     check(&p1, "plane path");
 }
 
@@ -2961,7 +2946,6 @@ fn force_plan_differential_agreement() {
 
     // >= any possible total, so the offset-0 page is the complete ordered result.
     let full_limit = archived.printings.len().max(1);
-    let strings = &archived.strings;
     // Same rows regardless of tie order.
     let id_multiset = |page: &[(&Archived<OracleCard>, &Archived<Printing>)]| -> Vec<u128> {
         let mut v: Vec<u128> = page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect();
@@ -2999,8 +2983,8 @@ fn force_plan_differential_agreement() {
                     fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, unique_is_card,
                 );
                 let (ref_total, ref_page) = run_query_with_plan(
-                    PhysicalPlan::GatheredScan, &archived.cards, &archived.printings, &archived.offsets, strings,
-                    &mut ref_res, ref_pe.as_ref(), mode, prefer, orderby, direction, full_limit, 0, &archived.indexes,
+                    PhysicalPlan::GatheredScan, &QueryCtx::from(archived),
+                    &QueryParams::from_strs(mode, prefer, orderby, direction, full_limit, 0), &mut ref_res, ref_pe.as_ref(),
                 )
                 .expect("GatheredScan is always applicable");
                 ran[plan_idx(PhysicalPlan::GatheredScan)] += 1;
@@ -3015,8 +2999,8 @@ fn force_plan_differential_agreement() {
                         fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, unique_is_card,
                     );
                     let out = run_query_with_plan(
-                        plan, &archived.cards, &archived.printings, &archived.offsets, strings,
-                        &mut res, pe.as_ref(), mode, prefer, orderby, direction, full_limit, 0, &archived.indexes,
+                        plan, &QueryCtx::from(archived),
+                        &QueryParams::from_strs(mode, prefer, orderby, direction, full_limit, 0), &mut res, pe.as_ref(),
                     );
                     let Some((total, page)) = out else { continue };
                     ran[plan_idx(plan)] += 1;
@@ -3074,8 +3058,7 @@ fn explain_reports_ranked_applicable_plans() {
                 fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, matches!(mode, Mode::Card),
             );
             let estimates: Vec<PlanEstimate> = explain(
-                &archived.cards, &archived.printings, &archived.offsets, &archived.strings, &mut filter, pe.as_ref(),
-                mode, SortCol::EdhrecRank, false, 60, 0, &archived.indexes,
+                &QueryCtx::from(archived), &explain_params(mode, 60), &mut filter, pe.as_ref(),
             );
 
             assert!(!estimates.is_empty(), "GatheredScan is always applicable ({mode_label}, {})", fuzz_describe(spec));
@@ -3119,14 +3102,13 @@ fn explain_analyze_matches_explain_and_times_every_plan() {
         bound.clone(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true,
     );
     let reference: Vec<PlanEstimate> = explain(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings, &mut ref_filter, ref_pe.as_ref(),
-        Mode::Card, SortCol::EdhrecRank, false, 60, 0, &archived.indexes,
+        &QueryCtx::from(archived), &explain_params(Mode::Card, 60), &mut ref_filter, ref_pe.as_ref(),
     );
 
     let (pe, filter) = split_planes(bound, &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
     let trials: Vec<PlanTrial> = explain_analyze(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings, &filter, pe.as_ref(),
-        "card", "default", "edhrec", "asc", 60, 0, &archived.indexes, NUM_WARMUPS, NUM_TRIALS,
+        &QueryCtx::from(archived), &QueryParams::from_strs("card", "default", "edhrec", "asc", 60, 0),
+        &filter, pe.as_ref(), NUM_WARMUPS, NUM_TRIALS,
     );
 
     assert_eq!(trials.len(), reference.len(), "explain_analyze must cover exactly the plans explain() reports");
@@ -3368,8 +3350,8 @@ fn plan_cost_calibration() {
                         );
                         let t0 = Instant::now();
                         let out = black_box(run_query_with_plan(
-                            *plan, &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-                            &mut res, pe.as_ref(), mode, "default", "edhrec", "asc", limit, offset, &archived.indexes,
+                            *plan, &QueryCtx::from(archived),
+                            &QueryParams::from_strs(mode, "default", "edhrec", "asc", limit, offset), &mut res, pe.as_ref(),
                         ));
                         let dt = t0.elapsed().as_nanos() as u64;
                         match out {
@@ -3491,8 +3473,8 @@ fn plan_cost_model_matches_gold() {
                         );
                         let t0 = Instant::now();
                         let out = black_box(run_query_with_plan(
-                            *plan, &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-                            &mut res, pe.as_ref(), mode, "default", "edhrec", "asc", limit, offset, &archived.indexes,
+                            *plan, &QueryCtx::from(archived),
+                            &QueryParams::from_strs(mode, "default", "edhrec", "asc", limit, offset), &mut res, pe.as_ref(),
                         ));
                         let dt = t0.elapsed().as_nanos() as u64;
                         match out {
@@ -3513,7 +3495,7 @@ fn plan_cost_model_matches_gold() {
                     &archived.indexes.oracle_trigram.words, unique_is_card,
                 );
                 let prep = prepare_candidates(
-                    &archived.cards, &archived.offsets, &archived.strings, &mut res, pe.as_ref(), mode_enum, &archived.indexes,
+                    &QueryCtx::from(archived), &mode_only_params(mode_enum), &mut res, pe.as_ref(),
                 );
                 let eval_domain = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
                 // Tier reflects the residual AFTER memoize (what the walk pays).
@@ -3733,8 +3715,8 @@ fn plan_cost_refit() {
                         );
                         let t0 = Instant::now();
                         let out = black_box(run_query_with_plan(
-                            *plan, &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-                            &mut res, pe.as_ref(), mode, "default", "edhrec", "asc", limit, offset, &archived.indexes,
+                            *plan, &QueryCtx::from(archived),
+                            &QueryParams::from_strs(mode, "default", "edhrec", "asc", limit, offset), &mut res, pe.as_ref(),
                         ));
                         let dt = t0.elapsed().as_nanos() as u64;
                         match out { Some((t, _)) => { total = t; applicable = true; if it >= WARMUP { best = best.min(dt); } } None => break }
@@ -3746,7 +3728,7 @@ fn plan_cost_refit() {
                     fuzz_bound_filter(spec, archived), &archived.indexes.planes,
                     &archived.indexes.oracle_trigram.words, unique_is_card,
                 );
-                let prep = prepare_candidates(&archived.cards, &archived.offsets, &archived.strings, &mut res, pe.as_ref(), mode_enum, &archived.indexes);
+                let prep = prepare_candidates(&QueryCtx::from(archived), &mode_only_params(mode_enum), &mut res, pe.as_ref());
                 let eval_domain = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
                 let feats = PlanFeatures {
                     n_cards, n_printings, matches: total as u32, eval_domain,
@@ -3922,8 +3904,8 @@ fn printing_range_route_probe() {
                     );
                     let t0 = Instant::now();
                     let out = black_box(run_query_with_plan(
-                        *plan, &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-                        &mut res, pe.as_ref(), "printing", "default", "edhrec", "asc", LIMIT, offset, &archived.indexes,
+                        *plan, &QueryCtx::from(archived),
+                        &QueryParams::from_strs("printing", "default", "edhrec", "asc", LIMIT, offset), &mut res, pe.as_ref(),
                     ));
                     let dt = t0.elapsed().as_nanos() as u64;
                     match out {
@@ -3943,7 +3925,7 @@ fn printing_range_route_probe() {
                 fuzz_bound_filter(spec, archived), &archived.indexes.planes,
                 &archived.indexes.oracle_trigram.words, false,
             );
-            let prep = prepare_candidates(&archived.cards, &archived.offsets, &archived.strings, &mut res, pe.as_ref(), Mode::Printing, &archived.indexes);
+            let prep = prepare_candidates(&QueryCtx::from(archived), &mode_only_params(Mode::Printing), &mut res, pe.as_ref());
             let eval_domain = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
             let residual_tier_ns100 = if prep.all_match_known { 0 } else { verify_cost_tier(&res) };
             let feats = PlanFeatures {
@@ -4144,8 +4126,8 @@ fn idea1_vs_idea2_probe() {
                 let (pe, mut res) = split_planes(fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, false);
                 let t0 = Instant::now();
                 let out = black_box(run_query_with_plan(
-                    PhysicalPlan::PrintingRangeScan, &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-                    &mut res, pe.as_ref(), "printing", "default", "edhrec", "asc", LIMIT, offset, &archived.indexes,
+                    PhysicalPlan::PrintingRangeScan, &QueryCtx::from(archived),
+                    &QueryParams::from_strs("printing", "default", "edhrec", "asc", LIMIT, offset), &mut res, pe.as_ref(),
                 ));
                 let dt = t0.elapsed().as_nanos() as u64;
                 match out { Some((t, _)) => { total = t; applicable = true; if it >= WARMUP { i1 = i1.min(dt); } } None => break }
@@ -4276,8 +4258,8 @@ fn plan_regret_report() {
                     );
                     let t0 = Instant::now();
                     let out = black_box(run_query_with_plan(
-                        *plan, &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-                        &mut res, pe.as_ref(), "card", "default", "edhrec", "asc", limit, offset, &archived.indexes,
+                        *plan, &QueryCtx::from(archived),
+                        &QueryParams::from_strs("card", "default", "edhrec", "asc", limit, offset), &mut res, pe.as_ref(),
                     ));
                     let dt = t0.elapsed().as_nanos() as u64;
                     match out {
@@ -4298,9 +4280,7 @@ fn plan_regret_report() {
                 fuzz_bound_filter(spec, archived), &archived.indexes.planes,
                 &archived.indexes.oracle_trigram.words, true,
             );
-            let prep = prepare_candidates(
-                &archived.cards, &archived.offsets, &archived.strings, &mut res, pe.as_ref(), Mode::Card, &archived.indexes,
-            );
+            let prep = prepare_candidates(&QueryCtx::from(archived), &mode_only_params(Mode::Card), &mut res, pe.as_ref());
             let tier = if prep.all_match_known { 0 } else { verify_cost_tier(&res) };
 
             // ── Router's belief: cardinality from `est`, structure `tier` actual. ──
@@ -4420,9 +4400,7 @@ fn plan_regret_fuzz() {
         let (pe, mut res) = split_planes(
             fuzz_bound_filter(&spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true,
         );
-        let prep = prepare_candidates(
-            &archived.cards, &archived.offsets, &archived.strings, &mut res, pe.as_ref(), Mode::Card, &archived.indexes,
-        );
+        let prep = prepare_candidates(&QueryCtx::from(archived), &mode_only_params(Mode::Card), &mut res, pe.as_ref());
         let eval_domain = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
         let tier = if prep.all_match_known { 0 } else { verify_cost_tier(&res) };
 
@@ -4532,10 +4510,7 @@ fn legality_shared_witness_and_falls_back_to_correct_result() {
     assert!(plane.is_none(), "shared-witness AND must not partially promote either leaf into the plane");
     assert!(matches!(residual, FilterExpr::And(_)), "both legality children must remain in the residual");
 
-    let (total, _) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-        &mut residual, plane.as_ref(), "card", "default", "edhrec", "asc", 100, 0, &archived.indexes,
-    );
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut residual, plane.as_ref(), "card", "default", "edhrec", "asc", 100, 0);
     assert_eq!(total, 0, "no single printing is legal in both A and B at once");
 }
 
@@ -4643,10 +4618,7 @@ fn run_query_walk_dedups_and_prefers() {
 
     let mut creatures = FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge };
     let mut run = |unique: &str, prefer: &str| {
-        run_query(
-            &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-            &mut creatures, None, unique, prefer, "edhrec", "asc", 100, 0, &archived.indexes,
-        )
+        run_query(&QueryCtx::from(archived), &mut creatures, None, unique, prefer, "edhrec", "asc", 100, 0)
     };
 
     // unique=card, default prefer: one result per matching card; the walk's
@@ -4688,10 +4660,7 @@ fn run_query_artwork_groups_shared_illustrations() {
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
 
     let mut all = FilterExpr::True;
-    let (total, page) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-        &mut all, None, "artwork", "default", "edhrec", "asc", 100, 0, &archived.indexes,
-    );
+    let (total, page) = run_query(&QueryCtx::from(archived), &mut all, None, "artwork", "default", "edhrec", "asc", 100, 0);
     assert_eq!(total, 3); // illustrations {1, 2, 4}
     // Group {printings 0, 2}: printing 0 has the higher prefer score (desc order)
     // and must be the group's representative.
@@ -5128,10 +5097,7 @@ fn all_match_promotion_never_fires_for_printing_space_tight_results() {
         op: CmpOp::Eq,
         rhs: NumExpr::Const(100.0),
     };
-    let (total, page) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-        &mut cn_eq_100, None, "printing", "default", "edhrec", "asc", 100, 0, &archived.indexes,
-    );
+    let (total, page) = run_query(&QueryCtx::from(archived), &mut cn_eq_100, None, "printing", "default", "edhrec", "asc", 100, 0);
     assert_eq!(total, 1, "cn=100 must match exactly one printing, not both of card 0's printings");
     assert_eq!(u128::from(page[0].1.scryfall_id), 1); // the cn=100 printing specifically
 
@@ -5142,10 +5108,7 @@ fn all_match_promotion_never_fires_for_printing_space_tight_results() {
         op: CmpOp::Eq,
         rhs: NumExpr::Const(100.0),
     };
-    let (total, page) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-        &mut cn_eq_100b, None, "card", "default", "edhrec", "asc", 100, 0, &archived.indexes,
-    );
+    let (total, page) = run_query(&QueryCtx::from(archived), &mut cn_eq_100b, None, "card", "default", "edhrec", "asc", 100, 0);
     assert_eq!(total, 1);
     assert_eq!(u128::from(page[0].0.oracle_id), 1);
 }
@@ -5173,10 +5136,7 @@ fn all_match_promotion_correct_for_card_space_exact_predicate() {
         op: CmpOp::Gt,
         rhs: NumExpr::Const(3.0),
     };
-    let (total, _) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-        &mut power_gt_3, None, "card", "default", "edhrec", "asc", 100, 0, &archived.indexes,
-    );
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut power_gt_3, None, "card", "default", "edhrec", "asc", 100, 0);
     assert_eq!(total, 1); // only card0 (power 5)
 
     let mut power_gt_3p = FilterExpr::NumericCmp {
@@ -5184,10 +5144,7 @@ fn all_match_promotion_correct_for_card_space_exact_predicate() {
         op: CmpOp::Gt,
         rhs: NumExpr::Const(3.0),
     };
-    let (total, _) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-        &mut power_gt_3p, None, "printing", "default", "edhrec", "asc", 100, 0, &archived.indexes,
-    );
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut power_gt_3p, None, "printing", "default", "edhrec", "asc", 100, 0);
     assert_eq!(total, 2); // card0's 2 printings, all matching (power is card-level)
 }
 
@@ -5237,10 +5194,7 @@ fn popcount_skip_tie_breaking_preserves_group_order_both_directions() {
     assert!(matches!(residual, FilterExpr::True), "t:creature must fully plane-consume");
 
     let mut run = |direction: &str| {
-        run_query(
-            &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-            &mut residual, plane.as_ref(), "card", "default", "cmc", direction, 100, 0, &archived.indexes,
-        )
+        run_query(&QueryCtx::from(archived), &mut residual, plane.as_ref(), "card", "default", "cmc", direction, 100, 0)
     };
 
     let (total, page) = run("asc");
@@ -5275,19 +5229,13 @@ fn popcount_skip_offset_lands_inside_tied_group() {
 
     // Full ascending order is [card3, card1, card0, card2, card4] (oracle ids
     // [4,2,1,3,5]); offset=2 must skip card3 and card1, landing on card0.
-    let (total, page) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-        &mut residual, plane.as_ref(), "card", "default", "cmc", "asc", 100, 2, &archived.indexes,
-    );
+    let (total, page) = run_query(&QueryCtx::from(archived), &mut residual, plane.as_ref(), "card", "default", "cmc", "asc", 100, 2);
     assert_eq!(total, 5);
     let order: Vec<u128> = page.iter().map(|(c, _)| u128::from(c.oracle_id)).collect();
     assert_eq!(order, vec![1, 3, 5]);
 
     // offset at exactly total must yield an empty page, not panic.
-    let (total, page) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-        &mut residual, plane.as_ref(), "card", "default", "cmc", "asc", 100, 5, &archived.indexes,
-    );
+    let (total, page) = run_query(&QueryCtx::from(archived), &mut residual, plane.as_ref(), "card", "default", "cmc", "asc", 100, 5);
     assert_eq!(total, 5);
     assert!(page.is_empty());
 }
@@ -5308,18 +5256,12 @@ fn popcount_skip_matches_non_popcount_path() {
     assert!(matches!(residual_true, FilterExpr::True));
 
     // Popcount path: plane present, residual True.
-    let (total_pc, page_pc) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-        &mut residual_true, plane.as_ref(), "card", "default", "cmc", "desc", 100, 1, &archived.indexes,
-    );
+    let (total_pc, page_pc) = run_query(&QueryCtx::from(archived), &mut residual_true, plane.as_ref(), "card", "default", "cmc", "desc", 100, 1);
 
     // Non-popcount path: same logical filter, but passed as a real predicate
     // (not pre-consumed to True) with no plane, forcing the counts-buffer path.
     let mut creature_raw = FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge };
-    let (total_old, page_old) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-        &mut creature_raw, None, "card", "default", "cmc", "desc", 100, 1, &archived.indexes,
-    );
+    let (total_old, page_old) = run_query(&QueryCtx::from(archived), &mut creature_raw, None, "card", "default", "cmc", "desc", 100, 1);
 
     assert_eq!(total_pc, total_old);
     let ids_pc: Vec<u128> = page_pc.iter().map(|(c, _)| u128::from(c.oracle_id)).collect();
@@ -5420,14 +5362,8 @@ fn streamed_selection_matches_gathered() {
                         // Fresh filter per store: run_query may memoize text
                         // predicates into store-specific string ids, so a
                         // filter must never outlive the store it ran against.
-                        let (tg, pg) = run_query(
-                            &gathered.cards, &gathered.printings, &gathered.offsets, &gathered.strings,
-                            &mut filt(), None, unique, prefer, orderby, direction, 10, offset, &gathered.indexes,
-                        );
-                        let (ts, ps) = run_query(
-                            &streamed.cards, &streamed.printings, &streamed.offsets, &streamed.strings,
-                            &mut filt(), None, unique, prefer, orderby, direction, 10, offset, &streamed.indexes,
-                        );
+                        let (tg, pg) = run_query(&QueryCtx::from(gathered), &mut filt(), None, unique, prefer, orderby, direction, 10, offset);
+                        let (ts, ps) = run_query(&QueryCtx::from(streamed), &mut filt(), None, unique, prefer, orderby, direction, 10, offset);
                         let ids = |v: &[(&super::AOracleCard, &super::APrinting)]| -> Vec<(u128, u128)> {
                             v.iter().map(|(c, p)| (u128::from(c.oracle_id), u128::from(p.scryfall_id))).collect()
                         };
@@ -5488,10 +5424,7 @@ fn artwork_group_ids_handle_more_than_64_groups() {
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     let mut filter = usd_cmp(CmpOp::Lt, 50.0);
-    let (total, page) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-        &mut filter, None, "artwork", "default", "edhrec", "asc", 100, 0, &archived.indexes,
-    );
+    let (total, page) = run_query(&QueryCtx::from(archived), &mut filter, None, "artwork", "default", "edhrec", "asc", 100, 0);
     assert_eq!(total, 69); // every group has >= 1 passing printing
     let chosen: Vec<u128> = page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect();
     // store_of assigns scryfall_id = printing index + 1, so printing 0 is
@@ -6117,21 +6050,7 @@ fn negated_range_narrowing() {
     // alone on a corpus this tiny.
     let usd_lt_5 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::PriceUsd), op: CmpOp::Lt, rhs: NumExpr::Const(5.0) };
     let mut compound = FilterExpr::And(vec![not_usd_lt_25, usd_lt_5]);
-    let (total, page) = super::run_query(
-        &archived.cards,
-        &archived.printings,
-        &archived.offsets,
-        &archived.strings,
-        &mut compound,
-        None,
-        "printing",
-        "default",
-        "edhrec",
-        "asc",
-        100,
-        0,
-        &archived.indexes,
-    );
+    let (total, page) = super::run_query(&QueryCtx::from(archived), &mut compound, None, "printing", "default", "edhrec", "asc", 100, 0);
     assert_eq!(total, 1);
     assert_eq!(page.len(), 1);
     let got_cents = page[0].1.price_usd.as_ref().map(|v| u32::from(*v));
@@ -6362,7 +6281,6 @@ fn orderby_walk_matches_gather_composed() {
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     let n_printings = archived.printings.len();
-    let mga = u16::from(archived.indexes.max_artwork_groups);
 
     let border = |v: &str| FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value: v.to_string() };
     let leg = || FilterExpr::Legality { shift: Some(0), expected: 0b01 };
@@ -6386,8 +6304,7 @@ fn orderby_walk_matches_gather_composed() {
                 for &offset in &[0usize, 50, 200] {
                     let limit = 100usize;
                     let gather = super::gather_composed_page(
-                        Mode::Printing, &archived.cards, &archived.printings, &archived.offsets, &pbits,
-                        super::Prefer::Default, sort_col, descending, limit, offset, mga,
+                        &QueryCtx::from(archived), &kernel_params(Mode::Printing, sort_col, descending, limit, offset), &pbits,
                     );
                     let walk = match sort_col {
                         SortCol::PriceUsd => super::walk_range_orderby_page(
@@ -6651,15 +6568,9 @@ fn run_query_plane_path_parity() {
     for make in &filters {
         for unique in ["card", "printing", "artwork"] {
             let mut plain = make();
-            let (t0, p0) = run_query(
-                &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-                &mut plain, None, unique, "default", "edhrec", "asc", 100, 0, &archived.indexes,
-            );
+            let (t0, p0) = run_query(&QueryCtx::from(archived), &mut plain, None, unique, "default", "edhrec", "asc", 100, 0);
             let (pe, mut residual) = split_planes(make(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
-            let (t1, p1) = run_query(
-                &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-                &mut residual, pe.as_ref(), unique, "default", "edhrec", "asc", 100, 0, &archived.indexes,
-            );
+            let (t1, p1) = run_query(&QueryCtx::from(archived), &mut residual, pe.as_ref(), unique, "default", "edhrec", "asc", 100, 0);
             assert_eq!(t0, t1, "totals must agree (unique={unique})");
             let ids = |page: &[(&super::AOracleCard, &super::APrinting)]| -> Vec<u128> {
                 page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect()
@@ -6934,15 +6845,9 @@ fn run_query_numeric_plane_path_parity() {
     for make in &filters {
         for unique in ["card", "printing", "artwork"] {
             let mut plain = make();
-            let (t0, p0) = run_query(
-                &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-                &mut plain, None, unique, "default", "edhrec", "asc", 100, 0, &archived.indexes,
-            );
+            let (t0, p0) = run_query(&QueryCtx::from(archived), &mut plain, None, unique, "default", "edhrec", "asc", 100, 0);
             let (pe, mut residual) = split_planes(make(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
-            let (t1, p1) = run_query(
-                &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-                &mut residual, pe.as_ref(), unique, "default", "edhrec", "asc", 100, 0, &archived.indexes,
-            );
+            let (t1, p1) = run_query(&QueryCtx::from(archived), &mut residual, pe.as_ref(), unique, "default", "edhrec", "asc", 100, 0);
             assert_eq!(t0, t1, "totals must agree (unique={unique})");
             let ids = |page: &[(&super::AOracleCard, &super::APrinting)]| -> Vec<u128> {
                 page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect()
@@ -7083,10 +6988,7 @@ fn run_query_memoizes_only_full_scans() {
     };
 
     let mut f = FilterExpr::Or(vec![oracle("draw"), broad_sibling()]);
-    let (total, _) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-        &mut f, None, "card", "default", "edhrec", "asc", 100, 0, &archived.indexes,
-    );
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut f, None, "card", "default", "edhrec", "asc", 100, 0);
     assert_eq!(total, 6, "every card matches the Or (empty keywords pass Le)");
     match &f {
         FilterExpr::Or(children) => assert!(
@@ -7098,10 +7000,7 @@ fn run_query_memoizes_only_full_scans() {
 
     // Narrowable single predicate: candidates exist, no rewrite.
     let mut g = oracle("draw");
-    let (total, _) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-        &mut g, None, "card", "default", "edhrec", "asc", 100, 0, &archived.indexes,
-    );
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut g, None, "card", "default", "edhrec", "asc", 100, 0);
     assert_eq!(total, 1);
     assert!(matches!(g, FilterExpr::TextContains { .. }), "narrowable query stays unrewritten");
 }
@@ -7475,19 +7374,13 @@ fn border_shared_witness_correctness() {
     );
 
     let mut f = and_both;
-    let (total, _) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-        &mut f, None, "card", "default", "edhrec", "asc", 100, 0, &archived.indexes,
-    );
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut f, None, "card", "default", "edhrec", "asc", 100, 0);
     assert_eq!(total, 0, "unplaned: no printing is both black and borderless");
 
     let (pe, mut residual) = split_planes(
         FilterExpr::And(vec![border("black"), border("borderless")]), bounds, words, true,
     );
-    let (total2, _) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-        &mut residual, pe.as_ref(), "card", "default", "edhrec", "asc", 100, 0, &archived.indexes,
-    );
+    let (total2, _) = run_query(&QueryCtx::from(archived), &mut residual, pe.as_ref(), "card", "default", "edhrec", "asc", 100, 0);
     assert_eq!(total2, 0, "planed: falls back to the same correct zero result, not a false positive from independent narrowing");
 }
 
@@ -7816,10 +7709,7 @@ fn adaptive_narrowing_run_query_parity() {
             })
             .count();
         let mut f2 = f;
-        let (total, _) = run_query(
-            &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-            &mut f2, None, "card", "default", "edhrec", "asc", 100, 0, &archived.indexes,
-        );
+        let (total, _) = run_query(&QueryCtx::from(archived), &mut f2, None, "card", "default", "edhrec", "asc", 100, 0);
         assert_eq!(total, brute, "narrowing must stay advisory-sound");
     }
 }
@@ -7856,10 +7746,7 @@ fn not_over_partial_and_is_blocked() {
         })
         .count();
     let mut f = FilterExpr::Not(Box::new(FilterExpr::And(vec![goblin(), unindexable()])));
-    let (total, _) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-        &mut f, None, "card", "default", "edhrec", "asc", 100, 0, &archived.indexes,
-    );
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut f, None, "card", "default", "edhrec", "asc", 100, 0);
     assert_eq!(total, brute);
     assert_eq!(total, 6, "every card matches -(goblin and name:q)");
 }
@@ -7883,10 +7770,7 @@ fn not_over_price_range_keeps_boundary_matches() {
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
 
     let mut f = FilterExpr::Not(Box::new(usd_cmp(CmpOp::Gt, 5.0)));
-    let (total, _) = run_query(
-        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-        &mut f, None, "card", "default", "edhrec", "asc", 100, 0, &archived.indexes,
-    );
+    let (total, _) = run_query(&QueryCtx::from(archived), &mut f, None, "card", "default", "edhrec", "asc", 100, 0);
     assert_eq!(total, 1, "the boundary-priced card matches -usd>5 and must not be complemented away");
 }
 
@@ -7978,10 +7862,7 @@ fn name_bigrams_compose_and_memoize() {
             })
             .count();
         let mut f2 = f;
-        let (total, _) = run_query(
-            &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-            &mut f2, None, "card", "default", "edhrec", "asc", 100, 0, &archived.indexes,
-        );
+        let (total, _) = run_query(&QueryCtx::from(archived), &mut f2, None, "card", "default", "edhrec", "asc", 100, 0);
         assert_eq!(total, brute);
     }
 
@@ -8284,10 +8165,7 @@ fn exact_name_narrows_tight() {
             .iter()
             .filter(|c| f.eval_card(c, &archived.strings) == Tri::True)
             .count();
-        let (total, _) = run_query(
-            &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-            f, None, "card", "default", "edhrec", "asc", 100, 0, &archived.indexes,
-        );
+        let (total, _) = run_query(&QueryCtx::from(archived), f, None, "card", "default", "edhrec", "asc", 100, 0);
         assert_eq!(total, brute, "totals parity for shape {i}");
     }
 }
@@ -8344,10 +8222,7 @@ fn order_name_sorts_and_paginates() {
 
     let run = |direction: &str, limit: usize, offset: usize| -> Vec<String> {
         let mut all = FilterExpr::True;
-        let (total, page) = run_query(
-            &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-            &mut all, None, "card", "default", "name", direction, limit, offset, &archived.indexes,
-        );
+        let (total, page) = run_query(&QueryCtx::from(archived), &mut all, None, "card", "default", "name", direction, limit, offset);
         assert_eq!(total, 6);
         page.iter().map(|(c, _)| c.card_name_lower.as_str().to_string()).collect()
     };
@@ -8361,10 +8236,7 @@ fn order_name_sorts_and_paginates() {
     // in both directions: card 3 (rank 20) before card 0 (rank 60).
     let ids = |direction: &str| -> Vec<u128> {
         let mut all = FilterExpr::True;
-        let (_, page) = run_query(
-            &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-            &mut all, None, "card", "default", "name", direction, 100, 0, &archived.indexes,
-        );
+        let (_, page) = run_query(&QueryCtx::from(archived), &mut all, None, "card", "default", "name", direction, 100, 0);
         page.iter()
             .filter(|(c, _)| c.card_name_lower.as_str() == "sol ring")
             .map(|(c, _)| u128::from(c.oracle_id))
@@ -8579,10 +8451,7 @@ fn verify_order_spellings_agree_end_to_end() {
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
 
     let run = |mut filter: FilterExpr| {
-        let (total, page) = run_query(
-            &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-            &mut filter, None, "card", "default", "edhrec", "asc", 100, 0, &archived.indexes,
-        );
+        let (total, page) = run_query(&QueryCtx::from(archived), &mut filter, None, "card", "default", "edhrec", "asc", 100, 0);
         let ids: Vec<u128> = page.iter().map(|(c, _)| u128::from(c.oracle_id)).collect();
         (total, ids)
     };
@@ -9114,9 +8983,7 @@ fn range_compose_kernel_costs() {
         // (3) grouped card walk: fill one page of best-representative rows in edhrec order.
         let (walk_ns, _) = bench(&mut || {
             let page = super::walk_grouped_page(
-                super::Mode::Card, &archived.cards, &archived.printings, offsets, &pbits,
-                super::Prefer::Default, super::SortCol::EdhrecRank, false, LIMIT, 0, perm,
-                u16::from(archived.indexes.max_artwork_groups),
+                &QueryCtx::from(archived), &kernel_params(Mode::Card, SortCol::EdhrecRank, false, LIMIT, 0), &pbits, perm,
             );
             page.len() as u64
         });
@@ -9292,7 +9159,7 @@ fn printing_range_walk_matches_naive_page() {
                 let perm = archived.indexes.sort_perms.get(sc, desc).expect("perm exists");
                 for &(off, lim) in &[(0usize, 10usize), (0, 100), (5, 20), (50, 50), (300, 25)] {
                     let got = walk_printing_page(
-                        &archived.cards, &archived.printings, &archived.offsets, &archived.strings, &leaf, sc, desc, lim, off, perm,
+                        &QueryCtx::from(archived), &kernel_params(Mode::Printing, sc, desc, lim, off), &leaf, perm,
                     );
                     let want = naive_printing_page(&archived, &leaf, sc, desc, off, lim);
                     assert_eq!(page_scryfall_ids(&got), want, "walk seed {seed} desc {desc} off {off} lim {lim}");
@@ -9369,8 +9236,7 @@ fn printing_range_fastpath_gates_card_walk_at_stream_threshold() {
         let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
         let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
         let leaf = usd_cmp(CmpOp::Lt, 50.0);
-        let ix = &archived.indexes;
-        let fp = |sc| printing_range_fastpath(&archived.cards, &archived.printings, &archived.offsets, &archived.strings, &leaf, ix, sc, false, 100, 0);
+        let fp = |sc| printing_range_fastpath(&QueryCtx::from(archived), &kernel_params(Mode::Printing, sc, false, 100, 0), &leaf);
         // Every printing is priced $1 < $50, so the true match count is n; when the fastpath fires
         // its reported total must equal it (total == k == match count), end to end.
         match fp(SortCol::EdhrecRank) {
@@ -9427,10 +9293,7 @@ fn router_timing() {
                     let full = fuzz_bound_filter(spec, archived);
                     let t0 = Instant::now();
                     let (_pe, mut res) = split_planes(full, planes, words, uic);
-                    let out = run_query(
-                        &archived.cards, &archived.printings, &archived.offsets, &archived.strings,
-                        &mut res, _pe.as_ref(), mode, "default", "edhrec", "asc", limit, offset, &archived.indexes,
-                    );
+                    let out = run_query(&QueryCtx::from(archived), &mut res, _pe.as_ref(), mode, "default", "edhrec", "asc", limit, offset);
                     let dt = t0.elapsed().as_nanos() as u64;
                     black_box(&out.1);
                     if it >= WARMUP {
