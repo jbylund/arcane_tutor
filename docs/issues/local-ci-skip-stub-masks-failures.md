@@ -115,9 +115,33 @@ End-to-end, on real PRs:
 | Files matching every pattern | #761 (workflows + script + doc) | one run per suite, all three real jobs `success` |
 | Docs-only | #762 (throwaway probe) | one run per suite, all three real jobs `conclusion=skipped`, workflow `success` |
 
-The docs-only case is the one this change could not verify from #761 alone — every file in #761 matches
-at least one pattern, so nothing there exercises the skip path. #762 existed only to close that gap and
-was closed afterward.
+The docs-only case is the one #761 could not verify on its own — every file in it matches at least one
+pattern, so nothing there exercises the skip path. #762 existed only to close that gap and was closed
+afterward.
+
+### Proving that `skipped` satisfies a required check
+
+This is the assumption the whole design rests on, and getting it wrong has a specific bad outcome:
+every docs-only PR becomes unmergeable, which is exactly the failure the stubs existed to prevent. So
+it was tested rather than assumed, and *before* the change landed on `main`.
+
+The obstacle: `checks_on_main` targets `~DEFAULT_BRANCH`, and #762's base was the feature branch, so
+main's rule could not gate it — while a docs-only PR *into* main would still have been evaluated by the
+old stub-based workflows, testing the wrong mechanism. Resolved with a throwaway second ruleset scoped
+to `refs/heads/ci-single-workflow-change-detection` requiring the same three checks, which put #762
+under a real requirement whose three checks were all `skipped`:
+
+```
+rust-test: skipped   python-test: skipped   js-test: skipped
+→ mergeable=MERGEABLE  mergeStateStatus=CLEAN
+```
+
+So rulesets do treat `skipped` as satisfying a required status check. The temporary ruleset was deleted
+afterward; `checks_on_main` is the only one remaining.
+
+Had it come out the other way, the fallback is a single always-running job with the `if:` moved onto
+each individual *step*: the job then always reports `success`, so the required check is always
+satisfied while no work happens when it isn't needed. More verbose, but immune to the question.
 
 ## Related
 
