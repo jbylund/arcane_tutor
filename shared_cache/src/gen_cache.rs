@@ -49,6 +49,11 @@ pub struct GenerationalSharedCache {
 /// Write CoordHeader + PageHeaders into a (possibly zeroed) mmap. Called under the flock
 /// in open() and also by invalidate() (which uses the spinlock instead). Having this as a
 /// free function lets both call sites avoid duplicating the layout arithmetic.
+// too_many_arguments: nine layout parameters that the two call sites (open() under the flock,
+// invalidate() under the spinlock) already hold as separate values. Bundling them into a
+// `Layout` struct is the right cleanup — the same treatment #757 gave the engine's query
+// layer — but it belongs in its own change, not a lint pass.
+#[allow(clippy::too_many_arguments)]
 fn write_init_headers(
     mmap: &mut MmapMut,
     n_pages: usize,
@@ -243,6 +248,10 @@ impl GenerationalSharedCache {
         }
     }
 
+    // too_many_arguments: the fields of the entry being written, pre-hashed by the caller so
+    // the probe loop above and this insert share one hash computation. Bundleable (see
+    // write_init_headers' note).
+    #[allow(clippy::too_many_arguments)]
     fn do_insert(
         &mut self,
         page_idx: usize,
@@ -656,6 +665,10 @@ impl GenerationalSharedCache {
         false
     }
 
+    // too_many_arguments: this is the crate's public cache-write surface and mirrors the HTTP
+    // response it stores (status/headers/body plus the counts and TTL). Grouping these would
+    // change the public API, so it is deliberately left alone here.
+    #[allow(clippy::too_many_arguments)]
     pub fn set(
         &mut self,
         key: &[u8],

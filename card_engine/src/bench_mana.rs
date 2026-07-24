@@ -279,9 +279,13 @@ fn bench_mana_representations() {
         })
         .collect();
 
-    // Query specs: (label, pips, cmc) — mana= uses all ops, devotion the
-    // color lanes only. Distribution-realistic shapes.
-    let mana_queries: &[(&str, &[(&str, u8)], f32)] = &[
+    // mana= uses all ops, devotion the color lanes only. Distribution-realistic shapes.
+    type ManaQuery<'a> = (
+        &'a str,              // label
+        &'a [(&'a str, u8)],  // pips, as (symbol, count) pairs
+        f32,                  // cmc
+    );
+    let mana_queries: &[ManaQuery] = &[
         ("mana ge {B}{B}", &[("B", 2)], 2.0),
         ("mana ge {W}", &[("W", 1)], 1.0),
         ("mana ge {R/G}", &[("R/G", 1)], 1.0),

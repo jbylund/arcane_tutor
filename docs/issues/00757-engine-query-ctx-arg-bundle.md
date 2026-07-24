@@ -237,7 +237,8 @@ docs rather than folded in here:
   Python-only. `cargo clippy --all-targets` emits 68 warnings today. That means the 25 `#[allow]`s
   this change sheds are being maintained by hand for a lint nothing enforces — so the payoff will
   quietly regress without a `-D warnings` gate. Highest-leverage cleanup in the crate, and a
-  prerequisite for this one's benefit sticking.
+  prerequisite for this one's benefit sticking. **Done** in
+  [local-engine-clippy-ci-gate.md](local-engine-clippy-ci-gate.md), stacked directly on this change.
 - **`lib.rs` is 8146 lines** and already carved by 30 `// ───` section banners that map cleanly onto
   modules. The split is close to mechanical: `mod tests` sits at the crate root
   ([lib.rs:8130](../../card_engine/src/lib.rs#L8130)) importing ~100 names via `use super::{…}`, and

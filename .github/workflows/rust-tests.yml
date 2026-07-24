@@ -23,6 +23,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Cache Cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
@@ -36,3 +38,16 @@ jobs:
 
       - name: Test shared_cache
         run: cargo test --manifest-path shared_cache/Cargo.toml
+
+      # Lint runs after the tests on purpose: a real test failure is the more
+      # useful signal, and `-D warnings` would otherwise abort the job before the
+      # tests ever ran. --all-targets covers tests.rs and the bench modules, which
+      # is where most of the backlog this gate was introduced with actually lived.
+      # These are steps in the existing job rather than a job of their own so no
+      # new required check is added (which would also need a rust-tests-skip.yml
+      # stub to keep no-Rust PRs from hanging on a check that never runs).
+      - name: Clippy card_engine
+        run: cargo clippy --manifest-path card_engine/Cargo.toml --all-targets -- -D warnings
+
+      - name: Clippy shared_cache
+        run: cargo clippy --manifest-path shared_cache/Cargo.toml --all-targets -- -D warnings

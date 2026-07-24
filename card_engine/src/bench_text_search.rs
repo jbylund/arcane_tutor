@@ -56,10 +56,10 @@ fn bench_text_search_contenders() {
     let mut texts: Vec<&str> = Vec::new();
     for card in data.cards.iter() {
         let gid = u32::from(card.oracle_text_lower_id);
-        if seen.insert(gid) {
-            if let Some(s) = str_at(&data.strings, gid) {
-                texts.push(s);
-            }
+        if seen.insert(gid)
+            && let Some(s) = str_at(&data.strings, gid)
+        {
+            texts.push(s);
         }
     }
     println!("\n{} distinct oracle texts from {STORE_PATH}", texts.len());

@@ -1024,16 +1024,16 @@ fn tokenize_words_ge4(text: &str, mut emit: impl FnMut(&str)) {
     for (i, &b) in bytes.iter().enumerate() {
         if is_word_byte(b) {
             start.get_or_insert(i);
-        } else if let Some(s) = start.take() {
-            if i - s >= 4 {
-                emit(&text[s..i]);
-            }
+        } else if let Some(s) = start.take()
+            && i - s >= 4
+        {
+            emit(&text[s..i]);
         }
     }
-    if let Some(s) = start {
-        if bytes.len() - s >= 4 {
-            emit(&text[s..]);
-        }
+    if let Some(s) = start
+        && bytes.len() - s >= 4
+    {
+        emit(&text[s..]);
     }
 }
 
@@ -1712,10 +1712,10 @@ pub(crate) fn flavor_fingerprint(s: &str) -> u128 {
             break;
         }
         for w in b.windows(n) {
-            if w.iter().all(|c| c.is_ascii_lowercase()) {
-                if let Some(&i) = map.get(w) {
-                    fp |= 1u128 << i;
-                }
+            if w.iter().all(|c| c.is_ascii_lowercase())
+                && let Some(&i) = map.get(w)
+            {
+                fp |= 1u128 << i;
             }
         }
     }
@@ -2237,10 +2237,10 @@ fn build_rarity_index(printings: &[Printing], offsets: &[u32]) -> RarityIndex {
         let range = offsets[card] as usize..offsets[card + 1] as usize;
         let mut mask: u8 = 0;
         for p in &printings[range] {
-            if let Some(r) = p.card_rarity_int {
-                if (r as usize) < idx.len() {
-                    mask |= 1 << r;
-                }
+            if let Some(r) = p.card_rarity_int
+                && (r as usize) < idx.len()
+            {
+                mask |= 1 << r;
             }
         }
         let mut bits = mask;
@@ -2369,6 +2369,7 @@ fn narrow_rarity(indexes: &Archived<CardIndexes>, n_cards: usize, op: CmpOp, val
 // (~31.5k), printing-level indexes post Printing indices (~97k). Candidates
 // carry their space (see Candidates) and convert at combine points.
 #[derive(Archive, Serialize, Deserialize)]
+#[derive(Default)]
 struct CardIndexes {
     name_trigram:   SortedTrigramIndex, // card space
     oracle_trigram: OracleTextIndex, // card space (via dense text ids)
@@ -2405,42 +2406,6 @@ struct CardIndexes {
     arith_tuple:    ArithTupleIndex,           // card space: joint (cmc,power,toughness,loyalty) postings for arith predicates (#743)
 }
 
-impl Default for CardIndexes {
-    fn default() -> Self {
-        CardIndexes {
-            name_trigram:   SortedTrigramIndex::default(),
-            oracle_trigram: OracleTextIndex::default(),
-            cmc:            Vec::new(),
-            power:          Vec::new(),
-            toughness:      Vec::new(),
-            rarity:         Default::default(),
-            subtypes:       HashMap::new(),
-            keywords:       HashMap::new(),
-            oracle_tags:    HashMap::new(),
-            art_tags:       HashMap::new(),
-            is_tags:        HashMap::new(),
-            frame_data:     HashMap::new(),
-            artists:        ArtistIndex::default(),
-            flavor:         FlavorIndex::default(),
-            set_codes:      HashMap::new(),
-            watermarks:     HashMap::new(),
-            released_at:    Vec::new(),
-            price_usd:      Vec::new(),
-            collector_number: Vec::new(),
-            sort_perms:     SortPermutations::default(),
-            artwork_groups: Vec::new(),
-            artwork_group_col: Vec::new(),
-            max_artwork_groups: 0,
-            printing_to_card: Vec::new(),
-            planes:         BitPlanes::default(),
-            border_printing: BorderPrintingPlanes::default(),
-            rarity_printing: RarityPrintingPlanes::default(),
-            name_bigrams:   NameBigramIndex::default(),
-            legal_divergent: Vec::new(),
-            arith_tuple:    ArithTupleIndex::default(),
-        }
-    }
-}
 
 #[derive(Archive, Serialize, Deserialize)]
 struct CardData {
@@ -3099,22 +3064,21 @@ fn narrow_rec(
         && !matches!(filter, FilterExpr::True)
         && u32::from(indexes.planes.n_cards) as usize == n_cards
         && n_cards > 0
+        && let Some(pe) = compile_plane(filter, &indexes.planes, &indexes.oracle_trigram.words)
     {
-        if let Some(pe) = compile_plane(filter, &indexes.planes, &indexes.oracle_trigram.words) {
-            let mut bits: Vec<u64> = Vec::new();
-            eval_planes(&pe, &indexes.planes, &mut bits);
-            // Legality's planes are existence projections, not true-for-
-            // every-printing facts (docs/issues/engine-legality-divergent-
-            // carveout.md) -- `tight`'s contract needs the latter (see
-            // `Narrowed`'s doc and the dedicated `Legality` arms below), so a
-            // compiled expression touching them can only narrow loosely here,
-            // same as if it had fallen through to those arms directly.
-            return if plane_expr_is_existential(&pe) {
-                Narrowed::loose(Candidates::CardBits(bits))
-            } else {
-                Narrowed::tight(Candidates::CardBits(bits))
-            };
-        }
+        let mut bits: Vec<u64> = Vec::new();
+        eval_planes(&pe, &indexes.planes, &mut bits);
+        // Legality's planes are existence projections, not true-for-
+        // every-printing facts (docs/issues/engine-legality-divergent-
+        // carveout.md) -- `tight`'s contract needs the latter (see
+        // `Narrowed`'s doc and the dedicated `Legality` arms below), so a
+        // compiled expression touching them can only narrow loosely here,
+        // same as if it had fallen through to those arms directly.
+        return if plane_expr_is_existential(&pe) {
+            Narrowed::loose(Candidates::CardBits(bits))
+        } else {
+            Narrowed::tight(Candidates::CardBits(bits))
+        };
     }
 
     match filter {
@@ -3598,11 +3562,11 @@ fn narrow_rec(
                 // is always sparse under a selective driver, so it only ever
                 // takes range_narrowed's cheap vec path. `continue`, not
                 // `break`: a later, smaller-k range child may still qualify.
-                if let Some(b) = best.filter(|&b| rank > 0 && b <= *AND_SKIP_THRESHOLD) {
-                    if !probe.is_some_and(|k| k < b || k <= *AND_PROBE_FLOOR) {
-                        every_child_included = false;
-                        continue;
-                    }
+                if let Some(b) = best.filter(|&b| rank > 0 && b <= *AND_SKIP_THRESHOLD)
+                    && !probe.is_some_and(|k| k < b || k <= *AND_PROBE_FLOOR)
+                {
+                    every_child_included = false;
+                    continue;
                 }
                 if rank == 2 && !(card_sets.is_empty() && printing_sets.is_empty()) {
                     every_child_included = false;
@@ -3810,10 +3774,10 @@ fn f32_sort_bits(v: f32) -> u32 {
 /// store order in `select_page`.
 fn sort_key_bits(card: &AOracleCard, p: &APrinting, sort_col: SortCol, descending: bool) -> u128 {
     let primary: Option<f32> = match sort_col {
-        SortCol::Cmc        => card.cmc.as_ref().map(|v| u8::from(*v) as f32),
-        SortCol::Power      => card.creature_power.as_ref().map(|v| i8::from(*v) as f32),
-        SortCol::Toughness  => card.creature_toughness.as_ref().map(|v| i8::from(*v) as f32),
-        SortCol::Rarity     => p.card_rarity_int.as_ref().map(|v| u8::from(*v) as f32),
+        SortCol::Cmc        => card.cmc.as_ref().map(|v| f32::from(*v)),
+        SortCol::Power      => card.creature_power.as_ref().map(|v| f32::from(*v)),
+        SortCol::Toughness  => card.creature_toughness.as_ref().map(|v| f32::from(*v)),
+        SortCol::Rarity     => p.card_rarity_int.as_ref().map(|v| f32::from(*v)),
         // Raw cents, not dollars -- order-preserving either way (this is a sort key, not an
         // exposed value), and cents fit exactly in f32 (max real price 514,202 cents, f32
         // represents any integer up to 2^24 exactly), so skip the /100.0 dollars conversion.
@@ -4106,6 +4070,9 @@ const ARTWORK_GROUP_WORDS: usize = 8;
 // `Mode::Printing`/`Artwork` below are unaffected -- their planes, if any,
 // were never folded to begin with when existential (`unique_is_card`).
 #[allow(clippy::too_many_arguments)]
+// needless_range_loop: `pid` is the printing's absolute id, used for `artwork_group_id`
+// lookups alongside the residual test — a slice iterator would lose the id.
+#[allow(clippy::needless_range_loop)]
 #[inline(always)]
 fn card_match_count(
     card: &AOracleCard,
@@ -4139,8 +4106,8 @@ fn card_match_count(
                 if all_match {
                     return u32::from(start < end);
                 }
-                for pid in start..end {
-                    if FilterExpr::residual_matches(card, &printings[pid], strings, residual, residual_is_or) {
+                for p in &printings[start..end] {
+                    if FilterExpr::residual_matches(card, p, strings, residual, residual_is_or) {
                         return 1;
                     }
                 }
@@ -4151,8 +4118,8 @@ fn card_match_count(
                     return (end - start) as u32;
                 }
                 let mut n = 0u32;
-                for pid in start..end {
-                    if FilterExpr::residual_matches(card, &printings[pid], strings, residual, residual_is_or) {
+                for p in &printings[start..end] {
+                    if FilterExpr::residual_matches(card, p, strings, residual, residual_is_or) {
                         n += 1;
                     }
                 }
@@ -4160,11 +4127,11 @@ fn card_match_count(
             }
             Mode::Artwork => {
                 seen_words.fill(0);
-                for pid in start..end {
-                    if !all_match && !FilterExpr::residual_matches(card, &printings[pid], strings, residual, residual_is_or) {
+                for p in &printings[start..end] {
+                    if !all_match && !FilterExpr::residual_matches(card, p, strings, residual, residual_is_or) {
                         continue;
                     }
-                    let gid = u16::from(printings[pid].artwork_group_id) as usize;
+                    let gid = u16::from(p.artwork_group_id) as usize;
                     seen_words[gid / 64] |= 1u64 << (gid % 64);
                 }
                 seen_words.iter().map(|w| w.count_ones()).sum()
@@ -4227,6 +4194,9 @@ fn card_match_count(
 /// this (their planes are never folded this way, see `unique_is_card`), and a
 /// card-invariant `all_match` needs no check (every printing already agrees).
 #[allow(clippy::too_many_arguments)]
+// needless_range_loop: `pid` is the printing's identity, not a cursor — it is pushed into
+// the emitted match tuple (`pid as u32`), so the loop needs the absolute index.
+#[allow(clippy::needless_range_loop)]
 #[inline(always)]
 fn push_card_matches(
     card: &AOracleCard,
@@ -4245,7 +4215,7 @@ fn push_card_matches(
     strings: &AStrings,
     existential_plane: Option<(&PlaneExpr, &Archived<BitPlanes>)>,
     out: &mut Vec<Match>,
-    group_best: &mut Vec<Option<(u32, f64)>>,
+    group_best: &mut [Option<(u32, f64)>],
     touched: &mut Vec<u16>,
 ) {
     match mode {
@@ -4535,6 +4505,8 @@ fn build_card_range_bits(
 /// within a card, printings order by `sort_key_bits` then pid — byte-identical to the streamed
 /// path's emission (`run_query_streamed`), just without the O(n) count pass, since the caller
 /// already has the exact `total` from the index.
+// needless_range_loop: `pid` is pushed into the match tuple, so the absolute index is the point.
+#[allow(clippy::needless_range_loop)]
 fn walk_printing_page<'a>(
     ctx: &QueryCtx<'a>,
     params: &QueryParams,
@@ -6078,6 +6050,9 @@ fn printing_bits_to_artwork_bits(
 /// Artwork semantics). Membership is the exact composed `pbits`, so there is no residual re-evaluation.
 /// The total is a separate `popcount` over the mode's result bitmap; this only builds the requested
 /// page. Forward walk (no popcount-skip) — deep-offset skip is the deferred [#730] optimization.
+// needless_range_loop: same shape as `gather_composed_page` — `pid` is both the membership
+// probe and the emitted row identity.
+#[allow(clippy::needless_range_loop)]
 fn walk_grouped_page<'a>(
     ctx: &QueryCtx<'a>,
     params: &QueryParams,
@@ -6812,6 +6787,8 @@ fn explain_analyze(
 /// True (e.g. `t:creature power>3`, residual = `power>3`) still go through
 /// `run_query_streamed`'s Step-1-improved-but-not-popcount path — extending
 /// this to non-True residuals is a reasonable fast-follow, not required here.
+// needless_range_loop: `pid` is the chosen printing's id, returned to the caller.
+#[allow(clippy::needless_range_loop)]
 fn run_query_streamed_popcount<'a>(
     ctx: &QueryCtx<'a>,
     params: &QueryParams,
@@ -7362,10 +7339,10 @@ impl QueryEngine {
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("stat shm: {e}")))?;
 
         let mut guard = self.cached_mmap.lock().unwrap();
-        if let Some(ref c) = *guard {
-            if c.inode == path_inode {
-                return Ok(Arc::clone(&c.mmap));
-            }
+        if let Some(ref c) = *guard
+            && c.inode == path_inode
+        {
+            return Ok(Arc::clone(&c.mmap));
         }
         // Inode changed (new reload) or first call: open and map the current file.
         let file = std::fs::File::open(&self.shm_path)
@@ -7441,8 +7418,11 @@ impl QueryEngine {
         // The lock file is separate so it persists across archive replacements.
         // Held until reload_commit()/reload_abort() drops the Staging.
         let lock_path = self.shm_path.with_extension("lock");
+        // truncate(false) is explicit, not incidental: nothing is ever written to this file — it
+        // exists only as an flock target — so opening it must never disturb whatever is already
+        // there, including for a worker that already holds it open.
         let lock_file = std::fs::OpenOptions::new()
-            .write(true).create(true).open(&lock_path)
+            .write(true).create(true).truncate(false).open(&lock_path)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("open lock: {e}")))?;
         // LOCK_EX blocks until we hold the lock; released automatically on drop.
         loop {
@@ -7479,7 +7459,7 @@ impl QueryEngine {
         })?;
         for item in db_rows.iter() {
             if let Ok(d) = item.cast::<PyDict>() {
-                staging.rows.push(card_from_pydict(&d, &mut staging.interner, &mut staging.vocab, &mut staging.artists, &mut staging.mana)?);
+                staging.rows.push(card_from_pydict(d, &mut staging.interner, &mut staging.vocab, &mut staging.artists, &mut staging.mana)?);
             }
         }
         Ok(())
@@ -7752,6 +7732,7 @@ impl QueryEngine {
         self.reload_commit()
     }
 
+    #[allow(clippy::too_many_arguments)] // the PyO3 keyword surface; `run_query` behind it takes 9
     #[pyo3(signature = (*, filters, unique="card", prefer="default", orderby="edhrec", direction="asc", limit=100, offset=0, fields=None))]
     fn query<'py>(
         &self,

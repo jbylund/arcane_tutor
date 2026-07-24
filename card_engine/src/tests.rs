@@ -136,12 +136,12 @@ fn test_trigram_index_archive_and_lookup() {
         .expect("access trigram index");
 
     // Key present -- length check
-    let abc = archived.get(&[b'a', b'b', b'c']).expect("abc must be present");
+    let abc = archived.get(b"abc").expect("abc must be present");
     assert_eq!(abc.len(), 3);
 
     // Key present -- value iteration (elements are rend::u32_le, not u32)
     let foo: Vec<u32> = archived
-        .get(&[b'f', b'o', b'o'])
+        .get(b"foo")
         .expect("foo must be present")
         .iter()
         .map(|x| u32::from(*x))
@@ -149,7 +149,7 @@ fn test_trigram_index_archive_and_lookup() {
     assert_eq!(foo, vec![10, 20, 30, 40]);
 
     // Key absent
-    assert!(archived.get(&[b'z', b'z', b'z']).is_none());
+    assert!(archived.get(b"zzz").is_none());
 }
 
 // Verify that HashMap<String, Vec<u32>> (the tag index value type) supports
@@ -2677,7 +2677,7 @@ fn arith_tuple_narrowing_matches_reference() {
                 assert!(is_arith_tuple_route(&mk()), "seed={seed} {label} {op:?}: must route to the tuple index");
                 for negated in [false, true] {
                     let filter = if negated { FilterExpr::Not(Box::new(mk())) } else { mk() };
-                    let ref_set = reference(&archived, &filter);
+                    let ref_set = reference(archived, &filter);
                     let ctx = format!("seed={seed} {label} {op:?} negated={negated}");
                     match narrow_candidates_exact(&filter, indexes, offsets, cards) {
                         (Some(Candidates::Cards(v)), tight) => {
@@ -2797,10 +2797,11 @@ fn gather_select_matches_reference() {
 /// result (always `Some`) as the reference, then for every other plan call
 /// `run_query_with_plan`; if it returns `Some` (it was applicable), assert
 /// against the reference on three axes at the full offset-0 page:
-///   - `total` equality,
-///   - `scryfall_id` multiset equality — same *rows*,
-///   - **2-key ordering** equality — the `(primary, edhrec_rank)` value
-///     sequence (top 64 bits of `sort_key_bits`).
+/// - `total` equality,
+/// - `scryfall_id` multiset equality — same *rows*,
+/// - **2-key ordering** equality — the `(primary, edhrec_rank)` value
+///   sequence (top 64 bits of `sort_key_bits`).
+///
 /// The 2-key value sequence is the ordering-parity contract (#702): plans agree
 /// on the two SQL-defined keys they're guaranteed to, and diverge only past
 /// them (key 3, prefer_score, and below — see the `PREFERS` comment below and
@@ -3571,6 +3572,9 @@ fn plan_cost_model_matches_gold() {
 
 /// Solve `A c = b` (A is n×n, row-major) by Gaussian elimination with partial
 /// pivoting. `None` if singular (rank-deficient — collinear features). Small n.
+// needless_range_loop: `c` indexes two different rows of `a` in the same statement; a slice
+// iterator would need split_at_mut and obscure the elimination step.
+#[allow(clippy::needless_range_loop)]
 fn solve_normal_eqs(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
     let n = b.len();
     for col in 0..n {
@@ -3692,9 +3696,15 @@ fn plan_cost_refit() {
         &["CARD_PASS", "SCAN", "EMIT", "FLOOR/card", "FIXED"],
         &["CARD_PASS", "SCAN", "PUSH", "SELECT", "FIXED"],
     ];
-    // Per-plan fit rows: (terms, y_minus_offset, y, is_train). 70/30 train/test by
-    // query index so held-out fidelity reveals overfitting (the 22-query trap).
-    let mut rows: [Vec<(Vec<f64>, f64, f64, bool)>; 4] = Default::default();
+    // One observation in a plan's least-squares fit. 70/30 train/test by query index so
+    // held-out fidelity reveals overfitting (the 22-query trap).
+    type FitRow = (
+        Vec<f64>, // design-matrix terms, one per cost coefficient being fitted
+        f64,      // measured ns minus the plan's fixed offset (the value actually regressed on)
+        f64,      // measured ns, unadjusted
+        bool,     // in the training split?
+    );
+    let mut rows: [Vec<FitRow>; 4] = Default::default();
     let t_start = Instant::now();
 
     for (qi, (_qlabel, spec)) in queries.iter().enumerate() {
@@ -3816,11 +3826,12 @@ fn plan_cost_refit() {
 /// For each range query × page depth (printing mode, edhrec sort = MISALIGNED, the
 /// case the walk pays for), measure P1/P3/P4 (min-of-N), then compare two pickers
 /// against empirical gold:
-///   - TREE: what `run_query` dispatches — P1 iff the fastpath fired
-///     (`run_query_with_plan(P1)` is `Some`), else P3/P4 via the `maybe_broad` gate.
-///   - MODEL: `argmin cost::plan_cost` on the TRUE features (matches = measured
-///     printing total; for a range query this is the index's exact `k`, so there is
-///     no estimation error to muddy the plan-choice question).
+/// - TREE: what `run_query` dispatches — P1 iff the fastpath fired
+///   (`run_query_with_plan(P1)` is `Some`), else P3/P4 via the `maybe_broad` gate.
+/// - MODEL: `argmin cost::plan_cost` on the TRUE features (matches = measured
+///   printing total; for a range query this is the index's exact `k`, so there is
+///   no estimation error to muddy the plan-choice question).
+///
 /// Reports per-row regret (picked_ns/gold_ns) and geomean regret for each. A model
 /// geomean below the tree's — with the gap on deep+moderate rows — is the win that
 /// justifies printing routing; parity means printing ties too (report, don't build).
@@ -5288,7 +5299,7 @@ fn frame_postings_thresholded_at_build() {
         }
     }
     let idx = build_thresholded_tag_index(&printings, &vocab.strings, |p| &p.card_frame_data);
-    assert!(idx.get("2015").is_none(), "dominant value must be dropped by the threshold");
+    assert!(!idx.contains_key("2015"), "dominant value must be dropped by the threshold");
     assert_eq!(idx.get("Showcase").map(|v| v.len()), Some(40));
 
     // Wired into narrowing: selective value narrows in printing space, the
@@ -7796,8 +7807,8 @@ fn name_bigrams_tiers_and_exactness() {
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     let idx = &archived.indexes.name_bigrams;
 
-    assert!(idx.plane_of.get(&[b'z', b'z']).is_some(), "4,096-name bigram must promote to a plane");
-    assert!(idx.postings.get(&[b'q', b'x']).is_some(), "64-name bigram stays a posting list");
+    assert!(idx.plane_of.get(b"zz").is_some(), "4,096-name bigram must promote to a plane");
+    assert!(idx.postings.get(b"qx").is_some(), "64-name bigram stays a posting list");
 
     let rec = |w: &str| {
         let f = FilterExpr::TextContains { field: TextSearchField::NameLower, word: w.to_string() };
@@ -8445,7 +8456,7 @@ fn verify_order_spellings_agree_end_to_end() {
         c.edhrec_rank = Some(i + 1);
         cards.push(c);
     }
-    let mut data = store_of(cards, &vec![2usize; 12], vocab);
+    let mut data = store_of(cards, &[2usize; 12], vocab);
     data.strings = strings.strings;
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
@@ -8657,6 +8668,8 @@ fn lanes_ge_matches_scalar_compare() {
 /// `n_cards` cards with populated edhrec/cmc sort keys, 1-4 printings each, prices heavily
 /// clustered onto a few hot values (so the price index has large equal-value tie buckets) plus
 /// ~15% NULL, and a real price range index built over them.
+// needless_range_loop: `i` is both the synthesized card id (`i as u128`) and the `ranks` index.
+#[allow(clippy::needless_range_loop)]
 fn printing_range_fixture(seed: u64, n_cards: usize) -> CardData {
     use rand::SeedableRng;
     let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
@@ -9096,8 +9109,13 @@ fn card_range_build_cost_split() {
     let idx = &archived.indexes.price_usd;
     let ptc = &archived.indexes.printing_to_card;
     let offsets = &archived.offsets;
-    let s = idx.partition_point(|p| u32::from(p.0) < 0); // usd<50 -> [0, 5000) cents
-    let e = idx.partition_point(|p| u32::from(p.0) < 5000);
+    // The benched range is `usd<50`: every price below HI_CENTS, over the value-sorted price index.
+    const HI_CENTS: u32 = 5_000;
+    // The low bound is 0 and prices are unsigned, so the slice starts at the front of the index by
+    // definition — no binary search needed. (The partition point this replaced tested `< 0`, always
+    // false: it returned the right answer, 0, but read as if it were searching for something.)
+    let s = 0usize;
+    let e = idx.partition_point(|p| u32::from(p.0) < HI_CENTS);
     let k = e - s;
 
     // A: scatter the price slice into a printing bitmap.
@@ -9161,7 +9179,7 @@ fn printing_range_walk_matches_naive_page() {
                     let got = walk_printing_page(
                         &QueryCtx::from(archived), &kernel_params(Mode::Printing, sc, desc, lim, off), &leaf, perm,
                     );
-                    let want = naive_printing_page(&archived, &leaf, sc, desc, off, lim);
+                    let want = naive_printing_page(archived, &leaf, sc, desc, off, lim);
                     assert_eq!(page_scryfall_ids(&got), want, "walk seed {seed} desc {desc} off {off} lim {lim}");
                 }
             }
@@ -9196,7 +9214,7 @@ fn printing_range_aligned_page_matches_naive_incl_tie_buckets() {
                         continue;
                     }
                     let got = aligned_page(idx, s, e, &archived.cards, &archived.printings, &archived.indexes.printing_to_card, desc, off, lim);
-                    let want = naive_printing_page(&archived, &leaf, SortCol::PriceUsd, desc, off, lim);
+                    let want = naive_printing_page(archived, &leaf, SortCol::PriceUsd, desc, off, lim);
                     assert_eq!(page_scryfall_ids(&got), want, "aligned seed {seed} desc {desc} off {off} lim {lim} k {k}");
                 }
             }

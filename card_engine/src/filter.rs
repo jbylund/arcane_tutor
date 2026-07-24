@@ -103,12 +103,12 @@ fn field_num(card: &AOracleCard, printing: Option<&APrinting>, f: NumField) -> N
         v.map_or(NumVal::Null, |cents| NumVal::Known(f64::from(cents) / 100.0))
     }
     match f {
-        NumField::Cmc                => known(card.cmc.as_ref().map(|v| u8::from(*v) as f32)),
-        NumField::Power              => known(card.creature_power.as_ref().map(|v| i8::from(*v) as f32)),
-        NumField::Toughness          => known(card.creature_toughness.as_ref().map(|v| i8::from(*v) as f32)),
-        NumField::Loyalty            => known(card.planeswalker_loyalty.as_ref().map(|v| u8::from(*v) as f32)),
+        NumField::Cmc                => known(card.cmc.as_ref().map(|v| f32::from(*v))),
+        NumField::Power              => known(card.creature_power.as_ref().map(|v| f32::from(*v))),
+        NumField::Toughness          => known(card.creature_toughness.as_ref().map(|v| f32::from(*v))),
+        NumField::Loyalty            => known(card.planeswalker_loyalty.as_ref().map(|v| f32::from(*v))),
         NumField::EdhrEc             => known(card.edhrec_rank.as_ref().map(|v| u32::from(*v) as f32)),
-        NumField::RarityInt          => printing.map_or(NumVal::PDep, |p| known(p.card_rarity_int.as_ref().map(|v| u8::from(*v) as f32))),
+        NumField::RarityInt          => printing.map_or(NumVal::PDep, |p| known(p.card_rarity_int.as_ref().map(|v| f32::from(*v)))),
         NumField::CollectorNumberInt => printing.map_or(NumVal::PDep, |p| known(p.collector_number_int.as_ref().map(|v| u16::from(*v) as f32))),
         NumField::PriceUsd           => printing.map_or(NumVal::PDep, |p| known_cents(p.price_usd.as_ref().map(|v| u32::from(*v)))),
         NumField::PriceEur           => printing.map_or(NumVal::PDep, |p| known_cents(p.price_eur.as_ref().map(|v| u32::from(*v)))),
@@ -291,9 +291,9 @@ pub(crate) enum ColorField {
 
 fn card_colors(card: &AOracleCard, f: ColorField) -> u8 {
     match f {
-        ColorField::Colors        => u8::from(card.card_colors),
-        ColorField::ColorIdentity => u8::from(card.card_color_identity),
-        ColorField::ProducedMana  => u8::from(card.produced_mana),
+        ColorField::Colors        => card.card_colors,
+        ColorField::ColorIdentity => card.card_color_identity,
+        ColorField::ProducedMana  => card.produced_mana,
     }
 }
 
@@ -325,6 +325,10 @@ fn collection<'a>(
     }
 }
 
+// enum_variant_names: the `Lower` suffix is load-bearing, not noise — these name the
+// case/accent-folded store columns (`card_name_lower`, `oracle_text_lower`, …) that search
+// actually reads, as distinct from the display columns of the same fields.
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum TextSearchField {
     NameLower,
@@ -1728,7 +1732,7 @@ fn build_binary(kw: &Value) -> Result<FilterExpr, String> {
     build_text_filter(attr, op, rhs)
 }
 
-fn rhs_value_str<'a>(rhs: &'a Value) -> &'a str {
+fn rhs_value_str(rhs: &Value) -> &str {
     rhs["kwargs"]["value"].as_str().unwrap_or("")
 }
 
