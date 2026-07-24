@@ -127,9 +127,9 @@ fn trigram_fully_unindexed_word_is_empty_not_unnarrowed() {
 #[test]
 fn test_trigram_index_archive_and_lookup() {
     let mut idx: HashMap<[u8; 3], Vec<u32>> = HashMap::new();
-    idx.insert([b'a', b'b', b'c'], vec![1, 2, 3]);
-    idx.insert([b'x', b'y', b'z'], vec![4, 5]);
-    idx.insert([b'f', b'o', b'o'], vec![10, 20, 30, 40]);
+    idx.insert(*b"abc", vec![1, 2, 3]);
+    idx.insert(*b"xyz", vec![4, 5]);
+    idx.insert(*b"foo", vec![10, 20, 30, 40]);
 
     let bytes = rkyv::to_bytes::<Error>(&idx).expect("serialize trigram index");
     let archived = rkyv::access::<rkyv::Archived<HashMap<[u8; 3], Vec<u32>>>, Error>(&bytes)

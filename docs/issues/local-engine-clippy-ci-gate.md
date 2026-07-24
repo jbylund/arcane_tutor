@@ -88,6 +88,46 @@ Two `cargo clippy --all-targets -- -D warnings` steps (one per crate) added to t
 `--all-targets` matters — most of the 68 warnings were in `tests.rs` and the bench modules, which a
 bare `cargo clippy` never compiles.
 
+## The gate needs a pinned toolchain
+
+First CI run of this branch failed, and the failure is instructive: `byte_char_slices` flagged three
+`[b'a', b'b', b'c']` array literals in `tests.rs`. Locally clean, because local clippy was **1.96.0**
+and CI's `dtolnay/rust-toolchain@stable` resolved to **1.97.0**, which added that lint.
+
+`-D warnings` on a floating `@stable` means every Rust release (~6 weeks) turns into a red build on
+whichever PR is open at the time, for code that didn't change — and it can't be reproduced locally
+until the contributor happens to update. So the toolchain is now **pinned to 1.97.1** in
+[rust-tests.yml](../../.github/workflows/rust-tests.yml). Bumping it becomes a deliberate PR where the
+new lints get reviewed on purpose, instead of a surprise on unrelated work.
+
+The three literals were fixed (`*b"abc"`), not suppressed. Verified against 1.97.1 locally after
+`rustup update stable`, so local and CI now agree exactly.
+
+## Separate pre-existing finding: the skip-stub pattern can mask a real failure
+
+Worth its own fix, and **not introduced here** — it affects the `unit-tests`/`js-tests` pairs the same
+way. On this PR, *both* Rust workflows ran:
+
+| Workflow | Steps | Result |
+| --- | --- | --- |
+| `rust-tests-skip.yml` | 3 | success |
+| `rust-tests.yml` | 11 | **failure** |
+
+Both declare `name: Rust Tests` with a job named `rust-test`, so they report a check of the same name.
+`gh pr checks 760` showed **4 passed, 0 failed** — it surfaced only the stub. The real failure was
+visible solely by listing workflow runs directly.
+
+The cause is that `paths-ignore` cannot express "no Rust files changed". It runs when *any* changed
+file falls outside the ignore list, so a PR touching both `.rs` and non-`.rs` files (this one changes
+`.rs` files *and* this doc) satisfies `rust-tests.yml`'s `paths` **and** `rust-tests-skip.yml`'s
+`paths-ignore`. Both fire; one is a no-op success. If `rust-test` is a required status check, its state
+is then ambiguous.
+
+`check-ci-sync.yml` doesn't catch this — it only verifies the two path lists mirror each other, which
+they correctly do. The fix is structural: one workflow with a change-detection job (`dorny/paths-filter`
+or a `git diff` step) gating the real steps, rather than two workflows racing to report the same check
+name. That changes CI semantics repo-wide, so it is deliberately not folded in here.
+
 ## Follow-up: `shared_cache` has the same arg-bundling smell
 
 The three `shared_cache` warnings are all `too_many_arguments`, and two of them are the same pattern
