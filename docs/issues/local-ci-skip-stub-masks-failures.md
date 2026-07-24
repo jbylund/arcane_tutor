@@ -124,3 +124,5 @@ was closed afterward.
 - [local-engine-clippy-ci-gate.md](local-engine-clippy-ci-gate.md) — the clippy gate whose red build
   this masked, and where the finding was first recorded. That gate is also what makes the masking
   consequential: before it, `rust-tests.yml` only ran `cargo test`.
+
+Probe: verifying the skip path reports a satisfied check (see #761).
