@@ -43,8 +43,9 @@ One workflow per suite:
 - **No `paths:` filter at all**, so the workflow always runs and its check is reported exactly once.
 - A `changes` job that calls [`.github/scripts/changed-paths.sh`](../../.github/scripts/changed-paths.sh)
   and outputs a boolean.
-- The real job (`rust-test` / `test` / `js-test`, names unchanged so existing required checks keep
-  matching) gains `needs: changes` and `if: needs.changes.outputs.relevant == 'true'`.
+- The real job (`rust-test` / `python-test` / `js-test`) gains `needs: changes` and
+  `if: needs.changes.outputs.relevant == 'true'`. The Python job was renamed from the bare `test` to
+  match its siblings — safe to do here because nothing referenced the old name (see below).
 
 The load-bearing detail: **a job skipped by `if:` reports a `skipped` conclusion, which branch
 protection counts as satisfied** — unlike a *workflow* skipped by `paths:`, which stays Pending. That
@@ -71,6 +72,32 @@ Two cases deliberately run the full suite rather than skipping:
 - **An empty file list**, whether a genuinely empty PR or an API hiccup. For a *test gate*, the safe
   direction is to run too much, not too little.
 
+## Nothing was actually required, and now it is
+
+Worth recording, because it changes how to read the original bug: the `checks_on_main` ruleset carried
+`deletion`, `non_fast_forward`, and `pull_request` (squash-only, 0 approvals) — and **no
+`required_status_checks` rule at all**. So the stubs' whole reason for existing ("keep a required check
+from hanging Pending") was not load-bearing in practice; nothing gated a merge on any check. The #760
+masking was still real — it misled `gh pr checks` and any human reading it — but it could not have let
+a red build through a gate, because there was no gate.
+
+Requiring the checks is the point of the pattern, though, so `required_status_checks` is now added for
+`rust-test`, `python-test`, and `js-test`, with the desired semantics being **success or not needed**.
+That works precisely because of the mechanism above: a job skipped by `if:` produces a check run with
+`status=completed, conclusion=skipped`, which rulesets accept — whereas a workflow skipped by `paths:`
+produces *no check run at all*, which is why it hung Pending.
+
+`changes` is deliberately **not** required: it is an implementation detail that always runs and always
+succeeds, so requiring it would add a name to the rule without adding a guarantee.
+
+### The job rename
+
+The Python job was `test`; it is now `python-test`, matching `js-test`/`rust-test`. This was free to do
+at this exact moment and would not have been later: with no `required_status_checks` rule yet, no
+config referenced the old name, and nothing else in the repo did either (checked `ci-monitor.yml`,
+`label-pr.yml`, `fix-lint.yml`, and the makefile). Renaming a check that a ruleset already requires
+silently leaves the rule pointing at a name nothing reports, which is a check that can never pass.
+
 ## Verification
 
 The three regexes were checked against 18 representative paths and reproduce the original `paths:`
@@ -80,6 +107,17 @@ should run everything).
 
 The script's four branches were exercised locally with a stubbed `gh`: match, no-match, mixed
 relevant+irrelevant (the case that produced two runs before, now one), and both fail-open paths.
+
+End-to-end, on real PRs:
+
+| Case | PR | Result |
+| --- | --- | --- |
+| Files matching every pattern | #761 (workflows + script + doc) | one run per suite, all three real jobs `success` |
+| Docs-only | #762 (throwaway probe) | one run per suite, all three real jobs `conclusion=skipped`, workflow `success` |
+
+The docs-only case is the one this change could not verify from #761 alone — every file in #761 matches
+at least one pattern, so nothing there exercises the skip path. #762 existed only to close that gap and
+was closed afterward.
 
 ## Related
 

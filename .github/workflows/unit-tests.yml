@@ -30,7 +30,9 @@ jobs:
           .github/scripts/changed-paths.sh
           '\.py$|\.rs$|(^|/)Cargo\.(toml|lock)$|^requirements/|(^|/)pyproject\.toml$|^api/static/fixtures/|^\.github/(workflows/unit-tests\.yml|scripts/changed-paths\.sh)$'
 
-  test:
+  # Named python-test (not `test`) to match js-test / rust-test — the three check
+  # names should read alike in the PR checks list and in the required-checks rule.
+  python-test:
     needs: changes
     if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-latest
