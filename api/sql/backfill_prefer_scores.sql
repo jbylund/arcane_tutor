@@ -90,6 +90,43 @@ WITH computed_components AS (
                     WHEN card_set_code IS NULL OR card_set_code NOT IN ('dbl') THEN 20
                     ELSE 0
                 END
+            ),
+            -- Bonus for artwork in Magic's core style, i.e. NOT a licensed crossover and
+            -- not a stylistic departure. Written as a bonus for being on-style rather than
+            -- a penalty for being off-style so every component stays non-negative, like the
+            -- rest of this table.
+            --
+            -- `external-ip` is the Scryfall tagger's parent tag over ~57 licensed
+            -- franchises (Fallout, Warhammer, Marvel, Doctor Who, Fortnite, ...).
+            -- `dungeons-and-dragons` and `the-lord-of-the-rings` are deliberately exempt:
+            -- external IP whose art matches Magic's high-fantasy look. Verified complete --
+            -- no artwork carries a sibling tag (arda, hobbit, abeir-toril, dnd-multiverse)
+            -- without also carrying its parent, so no Middle-earth or Forgotten Realms art
+            -- is demoted by accident.
+            --
+            -- The second clause covers stylistic departures that are not licensed universes:
+            -- anime, comic-style, line-art and word-art-title. Note it applies even to the
+            -- exempt IPs -- Drizzt Do'Urden (afr #338) is tagged dungeons-and-dragons AND
+            -- line-art, and is demoted, because a line-art rendering is a departure from the
+            -- painted core style whoever owns the IP. Confirmed against the artwork.
+            --
+            -- Evidence (docs/issues/00720-prefer-score-artwork-tuning.md): in 177 labelled
+            -- artwork comparisons where exactly one side was off-style, the on-style side
+            -- was chosen 177 times. Blind swap review across weights 6, 9 and 14 gave 78
+            -- "better" and 0 "worse" over 114 changed cards. Fixes both cards that opened
+            -- the issue -- Puresteel Paladin was showing its Fallout printing and Sword of
+            -- the Animist its Marvel one.
+            --
+            -- A year/era term was the obvious alternative and was rejected: it would
+            -- permanently penalise all future art, whereas a tag on the artwork generalises.
+            'art_style', (
+                CASE
+                    WHEN (
+                        card_art_tags ? 'external-ip'
+                        AND NOT (card_art_tags ?| ARRAY['dungeons-and-dragons', 'the-lord-of-the-rings'])
+                    ) OR card_art_tags ?| ARRAY['anime', 'comic-style', 'line-art', 'word-art-title'] THEN 0
+                    ELSE 14
+                END
             )
         ) AS new_components
     FROM magic.cards source
