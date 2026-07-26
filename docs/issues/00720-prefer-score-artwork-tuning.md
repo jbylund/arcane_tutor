@@ -216,11 +216,59 @@ stays non-negative, matching the rest of the table.
   (`ghirapur-grand-prix`, `cho-arrim` — set-specific Magic content, not style).
 - **Weight 14 is evidenced, not optimal.** Every step has been free; the stopping signal is the first
   "worse" verdict.
-- **`illustration_count`'s numerator is still wrong** — it counts rows, so finish variants and every
-  foreign-language printing inflate it. The original Pure Steel Paladin report remains unfixed.
+- **The printing count is filtered but not deduplicated.** One artwork can still take several credits
+  from a single set: Universes Beyond sets print four treatments of one picture, and 7th–10th Edition
+  model the foil as a separate `★` collector number. Collapsing to one credit per set was built and
+  reviewed and did **not** survive — see below.
 - **Feature/weight separation lives only in the Python tooling.** The SQL still fuses extraction and
   weights, so coefficient search needs the scripts. Lifting weights into config is the remaining
   refactor.
+
+## The second change: what the printing count counts
+
+`illustration_count` is a proxy for how canonical an artwork is, but its numerator counted every row
+sharing the illustration — including rows that are not printing events. Mark Poole's Birds of Paradise
+art counted 21: eight memorabilia (`30a` ×2, `ced`, `cei`, `ptc`, `wc00` ×2, `wc98`) and two
+foreign-language (`4bb`, `fbb`), leaving 11 real printings against Marcelo Vignali's 12. Filtering
+those three categories reverses which artwork the card shows.
+
+Border alone is not the discriminator: four of Poole's eight memorabilia rows are *black*-bordered, so
+a border test misses half. `set_type = 'memorabilia'` catches all eight. White borders are deliberately
+kept — `2ed`–`6ed` are real core sets, and dropping them would penalise the reprints the component
+should reward.
+
+Evidence: a 47-card blind swap review returned **11 better, 36 same, 0 worse**; a later 378-card review
+against production added 2 more with no regressions. It changes only the numerator — those printings
+can still be displayed.
+
+## Counting rules that were built and rejected
+
+- **One credit per set (dedup).** Principled — a set including an artwork twice is one editorial
+  decision — but reviewed at **28 better / 22 worse**. Losses concentrated 17–1 on 7th–10th Edition
+  `★` foils, where collapsing the foil twin removed the only thing separating a core-set artwork from
+  an older alternative. Never independently earned its place.
+- **Excluding `promo` sets.** Zeroes the count for 1,018 artworks that exist only as promos, telling
+  the score they were never printed. Rejected on that alone.
+- **Collapsing child sets into parents** (`blc`→`blb`). The largest effect measured — 16,357 duplicate
+  credits across 10,502 artworks — but `parent_set_code` is absent from our data and would need a
+  `magic.set_parents` table. Release date is a usable proxy (87 of 91 changes) but systematically fails
+  on late-released promos (`pltc` is 16 months after `ltr`). Deferred, not rejected.
+
+## Frame and finish: two corrections worth recording
+
+Reviewers of this work should know two hypotheses failed in instructive ways.
+
+**Frame weights cannot be moved one at a time.** The ladder is 1993=10, 1997=25, 2003=30, 2015=42, and
+every single-weight change perturbs two gaps. Raising `frame_2003` to widen 1997↔2003 also narrowed
+2003↔2015 and was reviewed at 8 better / 22 worse. Lowering `frame_1997` instead narrowed 1993↔1997,
+sending 161 of 179 swaps to the *oldest* frame. Only moving both old frames together isolates the gap.
+
+**Foil is not invisible, and confounded batches said it was.** Six accidental foil-vs-nonfoil pairs came
+back 6/6 "no difference", suggesting the `finish` component could be deleted. A deliberately controlled
+batch — same card, set, artwork, frame, border, rarity, scan quality, promo types and stamp, differing
+only in finish — returned **24 nonfoil, 0 foil, 26 same**. The earlier reading was small-sample noise.
+Only 162 such controlled pairs exist corpus-wide; everything else that looks like a foil pair is a
+special foil or a different promo product.
 
 ## Related
 

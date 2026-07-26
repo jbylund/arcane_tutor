@@ -5,6 +5,31 @@ WITH computed_components AS (
     SELECT
         scryfall_id,
         JSONB_BUILD_OBJECT(
+            -- How heavily this ARTWORK has been reprinted, as a proxy for how canonical it
+            -- is. The numerator counts rows sharing the illustration, so it must count only
+            -- real printing events -- three kinds of row are not:
+            --
+            --   non-English  the same printing already counted in its English row. Mark
+            --                Poole's Birds of Paradise art picked up 4bb (Spanish) and fbb
+            --                (French) on top of the English 4th Edition printing.
+            --   memorabilia  World Championship decks, Collectors' Edition and 30th
+            --                Anniversary: not tournament-legal, not real sets. Four of the
+            --                eight on that same artwork are BLACK-bordered (30a x2, ced,
+            --                cei), so a border test alone misses half of them.
+            --   gold/yellow  any remaining non-standard product Scryfall types as something
+            --                other than memorabilia.
+            --
+            -- Together these took Poole's art from 21 counted printings to 11, against
+            -- Marcelo Vignali's 12 -- reversing which artwork the site shows for that card.
+            --
+            -- White borders are deliberately NOT filtered: 2ed-6ed are white-bordered and
+            -- perfectly real, and dropping them would penalise exactly the core-set reprints
+            -- this component should reward.
+            --
+            -- Evidence (docs/issues/00720-prefer-score-artwork-tuning.md): a 47-card blind
+            -- swap review returned 11 better, 36 same, 0 worse, and a later 378-card review
+            -- against production added 2 more with no regressions. This changes only the
+            -- numerator -- it does not stop such printings being displayed.
             'illustration_count', (
                 SELECT
                     ROUND((23 * LN(1 + COUNT(*)) / LN(40))::numeric, 4)
@@ -12,7 +37,10 @@ WITH computed_components AS (
                 WHERE (
                     query_target_cards.illustration_id = source.illustration_id AND
                     query_target_cards.illustration_id IS NOT NULL AND
-                    query_target_cards.card_name = source.card_name
+                    query_target_cards.card_name = source.card_name AND
+                    query_target_cards.raw_card_blob ->> 'lang' = 'en' AND
+                    COALESCE(query_target_cards.raw_card_blob ->> 'set_type', '') <> 'memorabilia' AND
+                    COALESCE(query_target_cards.card_border, '') NOT IN ('gold', 'yellow')
                 )
             ),
             'rarity', (
