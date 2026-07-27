@@ -109,14 +109,13 @@ env.json: # @doc create env.json with generated local credentials if missing (ne
 .env: env.json
 	cat env.json | jq -r 'to_entries[] | "\(.key)=\(.value)"' | sort > $@
 
-# Usage: make dev-up, make prod-up, make dev-up-detach, make prod-down, etc.
-%-up: deps-%
+%-up: deps-% # @doc start an environment in the foreground, e.g. make dev-up
 	cd $(GIT_ROOT) && docker compose --project-name sylvan_$* --env-file .env --env-file envs/$* --file $(BASE_COMPOSE) up --remove-orphans --abort-on-container-exit
 
-%-up-detach: deps-%
+%-up-detach: deps-% # @doc start an environment in the background, e.g. make dev-up-detach
 	cd $(GIT_ROOT) && docker compose --project-name sylvan_$* --env-file .env --env-file envs/$* --file $(BASE_COMPOSE) up --remove-orphans --detach
 
-%-down: | .env
+%-down: | .env # @doc stop an environment, e.g. make dev-down
 	cd $(GIT_ROOT) && docker compose --project-name sylvan_$* --env-file .env --env-file envs/$* --file $(BASE_COMPOSE) down --remove-orphans
 
 status: | .env # @doc show container status for all environments
@@ -132,7 +131,7 @@ rolling-deploy: deps-blue deps-green # @doc rolling blue/green deploy — update
 	cd $(GIT_ROOT) && docker compose --project-name sylvan_green --env-file .env --env-file envs/green --file $(BASE_COMPOSE) up --remove-orphans --detach --wait
 	@echo "=== Rolling deploy complete ==="
 
-down: $(addsuffix -down,$(ENVS))
+down: $(addsuffix -down,$(ENVS)) # @doc stop every environment
 
 images: build_images pull_images # @doc refresh images
 
@@ -185,17 +184,16 @@ dockerclean:
 	docker ps --all --format '{{.ID}}' | xargs $(MAYBENORUN) docker rm --force
 	docker images --format '{{.ID}}' | xargs $(MAYBENORUN) docker rmi --force
 
-# Usage: make dbconn-dev, make dbconn-prod
-dbconn-%: psql-dotfiles | .env
+dbconn-%: psql-dotfiles | .env # @doc open psql against an environment, e.g. make dbconn-blue
 	cd $(GIT_ROOT) && docker compose --project-name sylvan_$* --env-file .env --env-file envs/$* --file $(BASE_COMPOSE) \
 	  exec -e PSQLRC=/var/lib/postgresql/.psqlrc -e PSQL_HISTORY=/var/lib/postgresql/.psql_history \
 	  postgres psql -U $(XPGUSER) -d $(XPGDATABASE) --host=localhost
 
-reset-%: | .env
+reset-%: | .env # @doc destroy an environment including its database volume
 	docker compose --project-name sylvan_$* --env-file .env --env-file envs/$* --file $(BASE_COMPOSE) down --volumes --remove-orphans
 	rm -rvf data/api/$* data/postgres/$*
 
-reset: $(addprefix reset-,$(ENVS))
+reset: $(addprefix reset-,$(ENVS)) # @doc destroy every environment including databases
 
 install_deps:
 	python -m uv pip install -r requirements/base.txt
