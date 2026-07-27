@@ -1,0 +1,177 @@
+# Reworking APIResource's Routing and Parameter Handling
+
+A plan, in independently shippable steps, for replacing `APIResource`'s hand-rolled routing and
+parameter coercion. Each step stands alone; none requires the next.
+
+The prompt for this was the admin route split, whose exposure analysis and fix design are tracked out
+of tree per [the `security-` convention](./README.md#unfixed-security-findings). This doc is only the
+architecture and the order of operations — it is deliberately written so it would read the same had
+nothing prompted it.
+
+## Current mechanics
+
+Falcon's router is **entirely unused**. `api/api_worker.py` installs one sink —
+`api.add_sink(sink._handle, prefix="/")` — and `_handle` does its own dispatch against an
+`action_map` built in `APIResource.__init__` by walking `dir(self)` and taking every public callable.
+Path segments beyond the action word are passed positionally, bounded by a precomputed
+`_action_positional_capacity`. Query parameters are coerced by `make_type_converting_wrapper`, which
+reads the handler's signature and converts each string via `_convert_string_to_type`.
+
+Two properties of that design are worth keeping, and shape everything below:
+
+- **Handlers are plain functions with typed keyword params.** Tests call them directly
+  (`api._search(query="name:opt")`) with no request/response objects, and internal callers use them as
+  ordinary methods — `__init__` calls `setup_schema()`, `_run_import_under_lock` calls
+  `backfill_prefer_scores()`. Falcon's native `on_get(self, req, resp)` convention would break both.
+- **Coercion and defaults come from the signature.** No schema to keep in sync, no per-handler parsing.
+
+## Measured problems
+
+Numbers taken 2026-07-27 on a 64 GB dev machine, against the 520-query engine corpus in
+`benchmarks/survey/` for the comparison baselines.
+
+### Coercion is the whole overhead
+
+| | |
+| --- | ---: |
+| plain call, no coercion | 0.1 μs |
+| coercion, logging suppressed | 4.4 μs |
+| coercion, INFO logging on (production level) | **20.9 μs** |
+| engine query, p50 | 61 μs |
+
+Per parameter, per request, `_convert_string_to_type` rebuilds a 10-entry `converter_map`, splits the
+annotation string on `|`, and emits a `logger.info` per successful conversion. `search` has nine
+parameters, so a p50 search spends ~21 μs coercing before it spends 61 μs answering, and ~16 μs of
+that is log formatting at the `logging.INFO` level `api_worker.py` sets.
+
+### Coercion is fail-open in four ways
+
+| input | current behavior |
+| --- | --- |
+| unconvertible enum (`orderby=nonsense`) | logs, passes the **raw string** to a handler annotated `CardOrdering` |
+| unconvertible int (`limit=abc`) | logs, passes the raw string |
+| unknown parameter (`?limt=5`) | silently dropped, no error |
+| wrong type from an internal caller | passed straight through |
+
+The clean 400s a black-box probe sees for bad input come from downstream checks like
+`_validate_limit`, not from this layer.
+
+### Coercion depends on a module-level import in the caller's file
+
+`_convert_string_to_type` does `param_type.__name__` and then `param_type.split("|")`, so it only works
+when annotations are **strings**:
+
+```python
+_convert_string_to_type("x", "str | None")   # -> 'x'
+_convert_string_to_type("x", str | None)     # -> AttributeError: 'types.UnionType' has no '__name__'
+```
+
+`api/api_resource.py` has `from __future__ import annotations`, which is the only reason this works. A
+new resource module without that import would 500 on the first request to any handler with an
+`X | None` parameter — and creating a new resource module is exactly what the admin split does.
+
+### Registration is fail-open and self-advertising
+
+`dir(self)` plus `callable()` means a method is routed unless someone remembers a leading underscore,
+which overloads `_` to mean both "private in Python" and "not HTTP-reachable" — so
+`setup_schema`, called from `__init__` and from tests, cannot be hidden without lying about its Python
+visibility. Because `_build_routes_listing` iterates the same `action_map`, anything registered is also
+published: a request to any unknown path returns all 37 route names.
+
+Scanning the *instance* also means any new public attribute can change the route table. A child
+resource stored as `self.admin` escapes registration only because it has no `__call__`.
+
+### The routing layer is not where the cost is
+
+| path | current dict dispatch | Falcon `CompiledRouter` |
+| --- | ---: | ---: |
+| `/search` (static) | 91 ns | 146 ns |
+| `/static/app_js` (nested static) | 88 ns | 256 ns |
+| `/card/eoc/104` (templated) | 232 ns | 254 ns |
+
+Falcon's router is genuinely slower than a bare dict — by tens to a couple hundred nanoseconds. Against
+a 20,900 ns coercion path and a 61,000 ns query, that is noise: adopting it spends ~100 ns to save
+~19,900 ns. Worth stating explicitly so the cheap layer does not attract the optimization effort.
+
+## Design decisions
+
+**Take Falcon's router, not its responder convention.** `add_route` gives URI templates with converters
+(`{limit:int}`), per-method responders, and 405s for unmapped methods — retiring the positional-split
+scheme that a previous dispatch rewrite broke. Register an adapter rather than an `on_get`, and handlers
+stay plain typed functions.
+
+**One decorator marks; it does not wrap.**
+
+```python
+@route(methods=("GET",), advertise=True, ignore_unknown_params=True)
+def search(self, *, query: str | None = None, limit: int = 100) -> dict[str, Any]: ...
+```
+
+It attaches a spec and returns the function unchanged. Wrapping would put a fail-open coercer between
+internal callers and handlers — `limit=[1,2,3]` from `_run_import_under_lock` would sail through instead
+of raising — and would add a frame to every traceback for no benefit. The existing code already gets
+this right by putting the wrapper in `action_map` while `self.method` stays plain; a wrapping decorator
+would be a regression.
+
+**Marking flips the default to fail-closed** while keeping declaration at the definition site, so adding
+a route stays one line. It frees `_` to mean only "private in Python", and gives `methods` and
+`advertise` a home. Registration scans `type(self)` for the marker, not `dir(self)`, so instance
+attributes can never become routes.
+
+**Resolve annotations and build a coercion plan once, at import.** `typing.get_type_hints()` gives real
+types instead of strings, which fixes the union crash and makes a precomputed plan possible:
+
+```python
+plan = ((name, converter, default), ...)     # built once
+for name, convert, default in plan:          # per request: no introspection, no dict rebuild
+    kwargs[name] = convert(params[name]) if name in params else default
+```
+
+An annotation with no converter becomes an **import-time** error rather than a silent pass-through.
+
+**Unconvertible values are a 400. Unknown parameters are per-route.** These are different failures: a
+bad `orderby` is a client sending a value the API does not accept, while an extra `utm_source` is a
+client sending something irrelevant. Strict is the default; public routes opt into
+`ignore_unknown_params=True` so tracking parameters and cache-busters keep working on `/search`.
+`DISALLOWED_QUERY_ARGS` then disappears — injected names like `falcon_response` are not *rejected*, they
+are simply never sourced from the query string.
+
+**Handlers stop needing `**_: object`.** Worth naming as a goal rather than a side effect: a path
+traversal in `read_sql` was inert *only because* it lacked `**_`, so injected kwargs raised `TypeError`
+first. Making that a designed property is most of the value here.
+
+## Sequencing
+
+Ordered so that each step is shippable, and so the steps with a measurable story come before the ones
+that move code.
+
+1. **Rewrite coercion.** Precomputed plan, annotations resolved at import, 400 on unconvertible, per-route
+   unknown-parameter policy, drop the per-conversion log line. Self-contained, has the only performance
+   story, and fixes a latent crash that the next step would otherwise trip over. No routes move.
+2. **Add `@route` and explicit registration.** Pure refactor: same routes, same paths, existing tests
+   untouched. Retires `dir(self)`, frees `_` to mean only "private in Python", and makes each route
+   declare which HTTP methods it accepts.
+3. **Move the admin handlers to a child resource.** The closure analysis for this — which methods and
+   handles are shared, which move — lives in the out-of-tree doc. Mounting is a loop over a child's
+   marked methods; resist extracting a `Router` abstraction until a second mount point exists.
+4. **Delist.** `advertise=False` for the child, and make the public listing opt-in so forgetting a flag
+   under-advertises rather than over-advertises.
+5. **Auth at the mount.** One check where dispatch enters the child, rather than a decorator on every
+   handler that someone forgets on the next one.
+
+## Out of scope
+
+**This does not decompose the god object.** `APIResource` will still own SQL generation, engine dispatch,
+import orchestration, static file serving, and HTML rendering after all five steps. Step 3 moves 22
+methods out, which helps, but routing hygiene is not architecture and nobody should expect the latter
+from this plan.
+
+## Open questions
+
+- Does `mount()` need to exist as a concept, or is it five lines at the one call site? Prefer the loop
+  until a second mount point argues otherwise.
+- Should the 404 route listing survive at all? It is useful for discovery and it is also the most
+  convenient enumeration of the surface. Opt-in advertising makes it defensible either way, but it is a
+  flag that has to be right.
+- `prefer_score_tuner` serves a static HTML page that adjusts **server-global** scoring weights. That
+  makes it a mutation with a UI rather than a developer tool. Delete instead of moving it?
