@@ -17,6 +17,7 @@ from testcontainers.postgres import PostgresContainer
 from api.api_resource import APIResource
 from api.enums import CardOrdering, ResponseShape, SortDirection
 from api.tests.helpers import search_kwargs
+from api.tests.support import override_attr
 from card_engine import QueryEngine
 
 if TYPE_CHECKING:
@@ -116,8 +117,8 @@ class TestContainerIntegration:
         def always_true() -> bool:
             return True
 
-        api._setup_complete = always_true
-        api._import_recent = always_true
+        override_attr(api, "_setup_complete", always_true)
+        override_attr(api, "_import_recent", always_true)
 
         # Set up the schema using real migrations
         api.setup_schema()

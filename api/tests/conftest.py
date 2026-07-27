@@ -10,6 +10,7 @@ import pytest
 
 from api.api_resource import APIResource
 from api.settings import settings
+from api.tests.support import override_attr
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -36,8 +37,8 @@ def api_resource(postgres_container: None) -> Generator[APIResource]:
         last_import_time=multiprocessing.Value("d", time.time(), lock=True),
         schema_setup_event=multiprocessing.Event(),
     )
-    api._setup_complete = lambda: True
-    api._import_recent = lambda: True
+    override_attr(api, "_setup_complete", lambda: True)
+    override_attr(api, "_import_recent", lambda: True)
     api.setup_schema()
     yield api
     api._conn_pool.close()

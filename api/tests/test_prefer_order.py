@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 from api.api_resource import APIResource
 from api.enums import CardOrdering, PreferOrder, SortDirection, UniqueOn
 from api.parsing import parse_scryfall_query
+from api.tests.support import override_attr
 from api.utils.timer import Timer
 
 
@@ -23,7 +24,7 @@ class TestPreferOrder(unittest.TestCase):
         def always_true() -> bool:
             return True
 
-        self.api_resource._import_recent = always_true
+        override_attr(self.api_resource, "_import_recent", always_true)
 
     def _search_sql(self, query: str, prefer: PreferOrder) -> dict:
         """Run _search_sql directly, bypassing engine dispatch."""

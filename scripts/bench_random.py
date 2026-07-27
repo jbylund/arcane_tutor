@@ -26,6 +26,7 @@ sys.path.insert(0, "/app")
 from api.api_resource import APIResource
 from api.enums import CardOrdering, PreferOrder, SortDirection, UniqueOn
 from api.parsing import parse_scryfall_query
+from api.tests.support import override_attr
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -41,8 +42,8 @@ REPEATS = 3  # independent timed windows per cell (report min to reduce noise)
 
 print("Connecting to DB and loading engine store…", flush=True)
 api = APIResource(last_import_time=multiprocessing.Value("d", time.time(), lock=True))
-api._import_recent = lambda: True
-api._setup_complete = lambda: True
+override_attr(api, "_import_recent", lambda: True)
+override_attr(api, "_setup_complete", lambda: True)
 api._reload_engine(force=True)
 total_printings = api._engine.size()
 print(f"Engine loaded: {total_printings:,} printings", flush=True)

@@ -12,6 +12,7 @@ import pytest
 from api.api_resource import APIResource
 from api.settings import settings
 from api.tests.helpers import search_kwargs
+from api.tests.support import override_attr
 
 
 def _make_api() -> APIResource:
@@ -23,7 +24,7 @@ class TestParsingErrorHandling:
 
     def setup_method(self) -> None:
         self.api_resource = _make_api()
-        self.api_resource._setup_complete = lambda: True
+        override_attr(self.api_resource, "_setup_complete", lambda: True)
 
     def teardown_method(self) -> None:
         if hasattr(self, "api_resource") and self.api_resource:
@@ -62,7 +63,7 @@ class TestSearchRouting:
 
     def setup_method(self) -> None:
         self.api_resource = _make_api()
-        self.api_resource._setup_complete = lambda: True
+        override_attr(self.api_resource, "_setup_complete", lambda: True)
         self.api_resource._engine = MagicMock()
 
     def teardown_method(self) -> None:
@@ -110,7 +111,7 @@ class TestSearchRouting:
         assert exc_info.value.title == "Invalid Limit"
 
     def test_raises_service_unavailable_when_setup_incomplete(self) -> None:
-        self.api_resource._setup_complete = lambda: False
+        override_attr(self.api_resource, "_setup_complete", lambda: False)
         with pytest.raises(falcon.HTTPServiceUnavailable) as exc_info:
             self.api_resource._search(query="name:opt")
         assert exc_info.value.title == "Service Unavailable"
@@ -195,7 +196,7 @@ class TestResultFieldSelection:
 
     def setup_method(self) -> None:
         self.api_resource = _make_api()
-        self.api_resource._setup_complete = lambda: True
+        override_attr(self.api_resource, "_setup_complete", lambda: True)
 
     def teardown_method(self) -> None:
         if hasattr(self, "api_resource") and self.api_resource:
@@ -227,7 +228,7 @@ class TestResultFieldRouting:
 
     def setup_method(self) -> None:
         self.api_resource = _make_api()
-        self.api_resource._setup_complete = lambda: True
+        override_attr(self.api_resource, "_setup_complete", lambda: True)
         self.api_resource._engine = MagicMock()
 
     def teardown_method(self) -> None:
@@ -256,7 +257,7 @@ class TestEngineFeatureGate:
         self.api_resource = APIResource(
             last_import_time=multiprocessing.Value("d", time.time(), lock=True),
         )
-        self.api_resource._setup_complete = lambda: True
+        override_attr(self.api_resource, "_setup_complete", lambda: True)
         self.api_resource._engine = MagicMock()
         self._saved_enable_engine = settings.enable_engine
 
