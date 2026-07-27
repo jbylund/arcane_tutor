@@ -20,9 +20,16 @@ BASE_COMPOSE := $(mkfile_dir)/docker-compose.yml
 ENVS := $(shell ls envs)
 LINTABLE_DIRS := .
 
-XPGDATABASE=magic
-XPGPASSWORD=foopassword
-XPGUSER=foouser
+# Local credentials come from env.json, created here on first run so that a fresh
+# clone has everything it needs to boot. Read them back into make variables (which
+# .EXPORT_ALL_VARIABLES puts in every recipe's environment) so the values compose
+# sees match .env exactly — compose gives the shell environment precedence over
+# --env-file, so any disagreement means env.json is silently ignored.
+$(shell $(GIT_ROOT)/scripts/gen_env_json.sh $(GIT_ROOT)/env.json)
+
+XPGDATABASE := $(shell jq -r '.XPGDATABASE' $(GIT_ROOT)/env.json)
+XPGPASSWORD := $(shell jq -r '.XPGPASSWORD' $(GIT_ROOT)/env.json)
+XPGUSER := $(shell jq -r '.XPGUSER' $(GIT_ROOT)/env.json)
 HOSTNAME := $(shell hostname)
 
 S3_BUCKET=biblioplex
@@ -89,8 +96,8 @@ up_deps: images check_env .env api/static/app.min.js configs/postgres/conf/postg
 deps-%: up_deps
 	mkdir -p $(GIT_ROOT)/data/api/$* && chmod 755 $(GIT_ROOT)/data/api/$*
 
-env.json: # @doc create env.json from template only if it does not exist (never overwrite)
-	@test -f env.json || echo '{}' > env.json
+env.json: # @doc create env.json with generated local credentials if missing (never overwrite)
+	@$(GIT_ROOT)/scripts/gen_env_json.sh $@
 
 .env: env.json
 	cat env.json | jq -r 'to_entries[] | "\(.key)=\(.value)"' | sort > $@
