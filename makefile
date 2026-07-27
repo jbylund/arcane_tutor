@@ -1,5 +1,8 @@
 ifndef MAKEFLAGS
-CPUS ?= $(shell nproc)
+# nproc is GNU coreutils and is absent on a stock macOS; sysctl is the BSD
+# equivalent. Without a fallback CPUS is empty, which turns the flags below into
+# a bare "-j -l" — unlimited parallel jobs with no load limit.
+CPUS ?= $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
 MAKEFLAGS += -j $(CPUS) -l $(CPUS) -s
 $(info Note: running on $(CPUS) CPU cores by default, use flag -j to override.)
 endif
@@ -11,6 +14,10 @@ SHELL:=/bin/bash
 mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
 mkfile_dir := $(shell dirname $(mkfile_path) )
 PROJECTNAME := sylvan_librarian
+
+# macOS ships python3 but no bare "python", so every recipe that shells out to
+# the interpreter has to go through this rather than assume a name.
+PYTHON := $(shell command -v python 2>/dev/null || command -v python3 2>/dev/null)
 
 GIT_ROOT := $(shell git rev-parse --show-toplevel)
 GIT_SHA := $(shell git rev-parse HEAD 2>/dev/null || echo "unknown")
@@ -41,7 +48,7 @@ requirements_sources := $(shell find requirements -type f -name "*.txt")
 PYTHON_DIRS := $(shell git ls-files "*.py" | cut -f 1 -d/ | sort -u)
 python_sources := $(shell find api client -type f -name "*.py")
 engine_sources := $(shell find card_engine/src -type f -name "*.rs") card_engine/Cargo.toml card_engine/Cargo.lock card_engine/pyproject.toml
-ENGINE_EXT_SUFFIX := $(shell python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
+ENGINE_EXT_SUFFIX := $(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 ENGINE_SO := card_engine/card_engine/card_engine$(ENGINE_EXT_SUFFIX)
 image_sources := $(python_sources) api/Dockerfile client/Dockerfile $(requirements_sources) $(BASE_COMPOSE)
 
@@ -79,13 +86,13 @@ IMAGE_TAG := $(BUILD_HASH)
 postgres-config: configs/postgres/conf/postgresql.conf # @doc generate postgresql.conf from template scaled to available memory
 
 configs/postgres/conf/postgresql.conf: configs/postgres/conf/postgresql.conf.template scripts/gen_postgres_conf.py
-	python scripts/gen_postgres_conf.py \
+	$(PYTHON) scripts/gen_postgres_conf.py \
 		--template $< \
 		--output $@ \
 		--env-output envs
 
 help: # @doc show this help and exit
-	@python ./scripts/show_makefile_help.py $(mkfile_path)
+	@$(PYTHON) ./scripts/show_makefile_help.py $(mkfile_path)
 
 hlep: help
 
@@ -120,7 +127,7 @@ env.json: # @doc create env.json with generated local credentials if missing (ne
 
 status: | .env # @doc show container status for all environments
 	@$(foreach env,$(ENVS), \
-	  python -c "import shutil; w=shutil.get_terminal_size().columns; print(' $(env) '.center(w, '='))" && \
+	  $(PYTHON) -c "import shutil; w=shutil.get_terminal_size().columns; print(' $(env) '.center(w, '='))" && \
 	  cd $(GIT_ROOT) && docker compose --project-name sylvan_$(env) --env-file .env --env-file envs/$(env) --file $(BASE_COMPOSE) ps --all ; \
 	)
 
@@ -147,17 +154,17 @@ pull_images: $(BASE_COMPOSE) | .env # @doc pull images from remote repos
 	true || docker compose --env-file .env --env-file envs/dev --file $(BASE_COMPOSE) pull
 
 ensure_pydocker: ensure_uv
-	@python -c "import docker" 2>/dev/null || \
-	python -m uv pip install docker
+	@$(PYTHON) -c "import docker" 2>/dev/null || \
+	$(PYTHON) -m uv pip install docker
 
 ensure_ruff: ensure_uv
-	@python -m ruff --version > /dev/null || \
-	python -m uv pip install ruff
+	@$(PYTHON) -m ruff --version > /dev/null || \
+	$(PYTHON) -m uv pip install ruff
 
 ensure_uv:
-	@python -m uv --version > /dev/null || \
-	python -m pip install uv || \
-	uv pip install --python "$$(command -v python)" uv
+	@$(PYTHON) -m uv --version > /dev/null || \
+	$(PYTHON) -m pip install uv || \
+	uv pip install --python "$(PYTHON)" uv
 
 lint: ruff_lint prettier_lint # @doc lint all python files
 	true
@@ -170,11 +177,11 @@ prettier_lint: /tmp/prettier.stamp
 	touch /tmp/prettier.stamp
 
 ruff_fix: ensure_ruff
-	find $(PYTHON_DIRS) -name "*.py" | xargs python -m ruff check --fix --unsafe-fixes >/dev/null 2>/dev/null || true
-	find $(PYTHON_DIRS) -name "*.py" | xargs python -m ruff format
+	find $(PYTHON_DIRS) -name "*.py" | xargs $(PYTHON) -m ruff check --fix --unsafe-fixes >/dev/null 2>/dev/null || true
+	find $(PYTHON_DIRS) -name "*.py" | xargs $(PYTHON) -m ruff format
 
 ruff_lint: ruff_fix
-	find $(PYTHON_DIRS) -name "*.py" | xargs python -m ruff check --fix --unsafe-fixes
+	find $(PYTHON_DIRS) -name "*.py" | xargs $(PYTHON) -m ruff check --fix --unsafe-fixes
 
 check_env: ensure_pydocker
 	true
@@ -196,10 +203,10 @@ reset-%: | .env # @doc destroy an environment including its database volume
 reset: $(addprefix reset-,$(ENVS)) # @doc destroy every environment including databases
 
 install_deps:
-	python -m uv pip install -r requirements/base.txt
+	$(PYTHON) -m uv pip install -r requirements/base.txt
 
 install_test_deps:
-	python -m uv pip install -r requirements/test.txt -r requirements/base.txt
+	$(PYTHON) -m uv pip install -r requirements/test.txt -r requirements/base.txt
 
 js-deps: # @doc update JavaScript dependencies and apply safe security fixes
 	npm update
@@ -208,46 +215,46 @@ js-deps: # @doc update JavaScript dependencies and apply safe security fixes
 engine: $(ENGINE_SO) # @doc build the Rust card engine extension if its sources changed
 
 $(ENGINE_SO): $(engine_sources)
-	@maturin --version > /dev/null 2>&1 || python -m uv pip install maturin
+	@maturin --version > /dev/null 2>&1 || $(PYTHON) -m uv pip install maturin
 	cd card_engine && PATH="$$HOME/.cargo/bin:$$PATH" maturin develop --release
 
 test tests: install_test_deps engine
-	python -m pytest -vvv --capture=no --durations=10
+	$(PYTHON) -m pytest -vvv --capture=no --durations=10
 
 test-integration: engine
-	python -m pytest api/tests/test_integration_testcontainers.py -vvv --exitfirst
+	$(PYTHON) -m pytest api/tests/test_integration_testcontainers.py -vvv --exitfirst
 
 test-unit: engine
-	python -m pytest -vvv --exitfirst --ignore=api/tests/test_integration_testcontainers.py
+	$(PYTHON) -m pytest -vvv --exitfirst --ignore=api/tests/test_integration_testcontainers.py
 
 coverage: # @doc generate HTML coverage report
-	python -m pytest --cov=. --cov-report=html --cov-report=term-missing --durations=10 -vvv
+	$(PYTHON) -m pytest --cov=. --cov-report=html --cov-report=term-missing --durations=10 -vvv
 
 test-profiling:
-	python -m pytest --profile-svg --durations=10 -vvv -k TestImportCardByName
+	$(PYTHON) -m pytest --profile-svg --durations=10 -vvv -k TestImportCardByName
 
 font-dependencies:
 	echo "Installing font subsetting dependencies..."
-	python -m uv pip install -r requirements/fonts.txt
+	$(PYTHON) -m uv pip install -r requirements/fonts.txt
 
 fonts: mana_font beleren_font mplantin_font
 
 mana_font: font-dependencies # @doc subset and optimize the Mana font for web delivery
-	python scripts/subset_mana_font.py \
+	$(PYTHON) scripts/subset_mana_font.py \
 		--output-dir data/fonts/mana \
 		--cdn-url https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mana \
 		--s3-bucket $(S3_BUCKET) \
 		--s3-prefix cdn/fonts/mana
 
 beleren_font: font-dependencies # @doc subset and optimize the Beleren font for web delivery
-	python scripts/subset_beleren_font.py \
+	$(PYTHON) scripts/subset_beleren_font.py \
 		--output-dir data/fonts/beleren \
 		--cdn-url https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/beleren \
 		--s3-bucket $(S3_BUCKET) \
 		--s3-prefix cdn/fonts/beleren
 
 mplantin_font: font-dependencies # @doc subset and optimize the MPlantin font for web delivery
-	python scripts/subset_mplantin_font.py \
+	$(PYTHON) scripts/subset_mplantin_font.py \
 		--input-font fonts/mplantin.otf \
 		--output-dir data/fonts/mplantin \
 		--cdn-url https://d1hot9ps2xugbc.cloudfront.net/cdn/fonts/mplantin \
@@ -257,7 +264,7 @@ mplantin_font: font-dependencies # @doc subset and optimize the MPlantin font fo
 compare-minification: # @doc compare file sizes: uncompressed, compressed, minified, and minified+compressed
 	@echo "Installing minifier dependencies..."
 	@npm install --no-save cssnano postcss postcss-cli terser > /dev/null 2>&1 || true
-	@python scripts/compare_minification.py
+	@$(PYTHON) scripts/compare_minification.py
 
 api/static/app.min.js: api/static/app.js # @doc minify app.js (used in both dev and prod)
 	@echo "Minifying $^..."
