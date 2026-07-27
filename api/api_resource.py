@@ -16,6 +16,13 @@ import threading
 import time
 import urllib.parse
 import uuid
+
+# Imported at runtime, not under TYPE_CHECKING, because route handlers annotate parameters with it and
+# ParamBinder resolves those annotations to real types at registration. Under TYPE_CHECKING the name is
+# absent at runtime and resolution fails, which is a startup error by design rather than a silent loss
+# of coercion. Ruff's TC003 wants it moved; the runtime-evaluated-decorators setting will make the noqa
+# unnecessary once handlers carry a route decorator.
+from collections.abc import Sequence  # noqa: TC003
 from datetime import timedelta
 from functools import lru_cache, wraps
 from typing import TYPE_CHECKING, Any
@@ -46,14 +53,15 @@ from api.tag_import import import_oracle_tags as _import_oracle_tags
 from api.utils import db_utils, error_monitoring, multiprocessing_utils
 from api.utils.generation_cache import GenerationCache
 from api.utils.http_utils import make_user_agent
+from api.utils.param_binding import ParamCoercionError, bind_params
 from api.utils.timer import Timer
-from api.utils.type_conversions import _get_type_name, make_type_converting_wrapper
+from api.utils.type_conversions import _get_type_name
 from card_engine import ENGINE_COLUMNS as _ENGINE_COLUMNS_FROM_MODULE
 from card_engine import QueryEngine as _QueryEngine
 from card_engine import QueryError as _QueryError
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator, Sequence
+    from collections.abc import Callable, Iterable, Iterator
     from multiprocessing.sharedctypes import Synchronized
     from multiprocessing.synchronize import Event as EventType
     from multiprocessing.synchronize import RLock as LockType
@@ -527,7 +535,7 @@ def _max_positional_args(func: Any) -> float:  # noqa: ANN401
     """Return how many positional args `func` accepts; inf if it takes *args.
 
     Computed once per registered action at APIResource.__init__ time (not per-request):
-    inspect.signature() follows a make_type_converting_wrapper wrapper's __wrapped__ link
+    inspect.signature() follows a bind_params wrapper's __wrapped__ link
     (set by functools.update_wrapper), so this sees the real underlying handler's signature.
     """
     try:
@@ -637,9 +645,9 @@ class APIResource:
                 continue
             method = getattr(self, method_name)
             if callable(method):
-                self.action_map[method_name] = make_type_converting_wrapper(method)
+                self.action_map[method_name] = bind_params(method)
                 self._action_positional_capacity[method_name] = _max_positional_args(method)
-        self.action_map["_root"] = make_type_converting_wrapper(self._root)
+        self.action_map["_root"] = bind_params(self._root)
         self._action_positional_capacity["_root"] = _max_positional_args(self._root)
 
         def redirect_to_root(**_: object) -> None:
@@ -746,6 +754,12 @@ class APIResource:
             params = {k: v for k, v in req.params.items() if k not in DISALLOWED_QUERY_ARGS}
             res = action(*action_args, falcon_response=resp, request_host=req.get_header("X-Proxy-Host") or req.host, **params)
             resp.media = res
+        except ParamCoercionError as oops:
+            # A value the client sent is not valid for the parameter it names. The message contains only
+            # the parameter name, the value the client already supplied, and — for enums — the accepted
+            # values, so it guides a fix without describing anything internal.
+            logger.info("Rejected %s: %s", path, oops)
+            raise falcon.HTTPBadRequest(title="Invalid Parameter", description=str(oops)) from oops
         except TypeError as oops:
             logger.error("Error handling request: %s", oops, exc_info=True)
             raise falcon.HTTPBadRequest(description=str(oops)) from oops
@@ -1796,6 +1810,7 @@ class APIResource:
 
     def get_catalog(
         self,
+        *,
         falcon_response: falcon.Response | None = None,
         **_: object,
     ) -> dict[str, dict[str, int]]:
