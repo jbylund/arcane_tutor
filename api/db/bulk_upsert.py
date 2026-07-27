@@ -101,6 +101,31 @@ def _dedupe_rows(rows: list[dict[str, Any]], key_cols: list[str]) -> list[dict[s
     return list(unique.values())
 
 
+def _quiet_statement_logging(cur: psycopg.Cursor) -> None:
+    """Suppress duration and plan logging for the statement this cursor is about to run.
+
+    The upsert passes a whole batch as one JSON array parameter, and no truncation setting can make
+    that readable in the log:
+
+    - `log_parameter_max_length` caps the `DETAIL: Parameters:` line, but `log_min_duration_statement`
+      still logs the statement text itself, which is ~12 KB of per-column CASE expressions.
+    - `auto_explain.log_parameter_max_length` caps auto_explain's own parameters line, but with
+      `log_verbose` on, the planner folds the parameter into a Const and EXPLAIN prints the expression
+      tree — so the entire array reappears inside `Function Call: jsonb_array_elements(...)`.
+
+    Both are SUSET, so a non-superuser role cannot set them. A failed SET would abort the surrounding
+    transaction and take the upsert with it, so this checks first rather than catching: on a managed
+    Postgres where the app role is not superuser, logging stays as configured and the upsert still runs.
+    """
+    cur.execute("SELECT current_setting('is_superuser') = 'on' AS ok")
+    row = cur.fetchone()
+    if not (row and row["ok"]):
+        return
+    # SET LOCAL: reverts at commit, so this never leaks to another statement on a pooled connection.
+    cur.execute("SET LOCAL log_min_duration_statement = -1")
+    cur.execute("SET LOCAL auto_explain.log_min_duration = -1")
+
+
 def bulk_upsert(  # noqa: PLR0913, PLR0917
     conn: psycopg.Connection,
     table: str,
@@ -208,6 +233,7 @@ def bulk_upsert(  # noqa: PLR0913, PLR0917
     )
 
     with conn.cursor(row_factory=dict_row) as cur:
+        _quiet_statement_logging(cur)
         cur.execute(stmt, [orjson.dumps(rows).decode()])
         counts = {"inserted": 0, "updated": 0, "unchanged": 0}
         for row in cur.fetchall():
