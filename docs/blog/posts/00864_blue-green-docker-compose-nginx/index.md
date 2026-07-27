@@ -1,9 +1,9 @@
 ---
-title: "Zero-Downtime Deploys with Blue/Green Docker Compose and nginx"
+title: "Zero-Downtime Deploys with Two Docker Compose Stacks and nginx"
 date: 2027-07-17
 publishDate: 2027-07-17
 tags: ["infrastructure", "docker", "nginx", "deployment"]
-summary: "Two identical Docker Compose stacks behind one nginx upstream. Deploy by bringing up the new stack, waiting for a health check to pass, swapping the nginx upstream with a reload, then tearing down the old one — no orchestrator required."
+summary: "Two identical Docker Compose stacks on one host, both live behind nginx. Deploying restarts them one at a time and waits for a health check in between, so one stack is always serving — even when the new containers re-import the entire card database."
 ---
 
 ## The Problem with In-Place Restarts
@@ -15,7 +15,12 @@ On a cold start, cache-miss requests each hit PostgreSQL — P95 latency measure
 The "downtime" was not just the restart itself.
 
 The fix I reached for was not Kubernetes, not Nomad, not Fly.io's built-in zero-downtime deploys.
-It was two Docker Compose stacks running on the same host, a few env files, and `nginx -s reload`.
+It was two Docker Compose stacks running on the same host, a few env files, and an nginx in front of both.
+
+A note on the names before going further: the two stacks are called `blue` and `green`, but this is not a blue/green deployment in the usual sense.
+There is no idle standby and no cutover.
+Both stacks serve traffic all the time, and a deploy restarts them one after the other — a rolling restart across two replicas that happen to have colour names.
+The distinction matters for what happens when a deploy goes wrong, which is the last section of this post.
 
 ## Two Stacks, One Host
 
@@ -30,12 +35,14 @@ API_PORT=18080
 APP_ENV=blue
 ENABLE_CACHE=true
 ENVIRONMENT=prod
+ENABLE_ENGINE=true
 
 # envs/green
 API_PORT=18081
 APP_ENV=green
 ENABLE_CACHE=true
 ENVIRONMENT=prod
+ENABLE_ENGINE=true
 ```
 
 Blue binds to `18080`, green binds to `18081`.
@@ -53,47 +60,69 @@ volumes:
 So `blue` reads from `data/api/blue/` and `green` reads from `data/api/green/`.
 Both sets of data stay on disk across restarts.
 
-## The nginx Upstream Swap
+## Both Stacks in One Upstream
 
-nginx sits in front of both stacks as a reverse proxy.
-`nginx -s reload` is the mechanism that makes the cutover zero-downtime.
-When you send that signal, nginx starts new worker processes with the updated configuration, waits for the old workers to finish their in-flight requests, then exits the old workers cleanly.
-Connections that arrive during the reload go to the new workers; connections already open drain through the old ones.
-No TCP resets, no connection errors.
-
-The upstream configuration on the host points to whichever stack is currently active:
+The interesting part is what the nginx configuration *does not* contain: any notion of which stack is current.
+Both are in the upstream, permanently.
 
 ```nginx
-upstream sylvan_api {
-    server 127.0.0.1:18080;   # blue — active
-    # server 127.0.0.1:18081;  # green
+upstream sylvan_librarian {
+    server atlas:18080 max_fails=3 fail_timeout=10s;  # blue
+    server atlas:18081 max_fails=3 fail_timeout=10s;  # green
+    keepalive 128;
+    keepalive_requests 1000;
 }
 ```
 
-To promote green, write a new config file with the ports swapped and call `nginx -s reload`:
+With no balancing directive, nginx round-robins, so in steady state each stack serves about half the traffic.
+There is no active server, no promotion step, and no config template.
+A deploy never touches this file and nginx is never reloaded.
 
-```bash
-ACTIVE_PORT=18081  # green's port
-sed "s/18080/${ACTIVE_PORT}/" /etc/nginx/conf.d/sylvan.conf.tmpl \
-    > /etc/nginx/conf.d/sylvan.conf
-nginx -s reload
-```
+What absorbs the restart is passive failure detection plus retry, and it depends on a detail of how the API starts.
 
-This swap is not yet wired into `make rolling-deploy` — it is a manual step that runs after `--wait` exits successfully.
-Adding it as the final Makefile step is straightforward; the snippet above is the full implementation.
+### The Port Simply Disappears
 
-The post-reload race window is benign: nginx does not start the reload until it has parsed and validated the new config.
-If parsing fails, the running workers continue uninterrupted with the old config.
-Requests that arrive while the new workers are starting land on old workers, which are still serving.
-There is no window where the upstream is unreachable.
+`APIResource.__init__` runs `setup_schema()` and `import_data()`, and only when the constructor returns does `bjoern.run()` bind the socket
+([api_resource.py](https://github.com/jbylund/sylvan_librarian/blob/bc903d2052aa7e62ac7cb4687d390bc5ee3f5c04/api/api_resource.py#L670-L671)).
+A stack that is rebuilding, or importing 97,000 cards on a fresh volume, is not listening on its port at all.
+It is not slow, and it is not returning errors — connections are refused outright.
+
+That is precisely the failure mode nginx handles best.
+When a request is routed to a stack that is down, the connection is refused, and `proxy_next_upstream` — which defaults to `error timeout` — retries it against the other server.
+The client gets a normal response, one extra round trip later.
+It never sees a failure.
+
+After `max_fails=3` refusals inside `fail_timeout=10s`, nginx marks that server unavailable and stops routing to it for ten seconds.
+All traffic goes to the surviving stack.
+Ten seconds later nginx tries it again; if the stack is still importing, that probe fails and the timer resets.
+
+So the total cost of a multi-minute restart is roughly one retried request every ten seconds, plus the three that were retried on the way in.
+That is the entire deploy penalty.
+
+### Why the Defaults Line Up
+
+There are two independent notions of health here, and it is worth being clear that they never talk to each other.
+`docker compose up --wait` gates the *deploy* on the container health check.
+nginx's view is passive: it learns a stack is unavailable only by failing a request to it.
+
+They happen to agree because the API refuses connections until it is genuinely ready.
+Had it bound the socket early and returned `503` while loading data — the more common shape for a service with a slow warmup — the default `proxy_next_upstream` would not have covered it, since `error timeout` does not include `http_503`.
+nginx would have cheerfully forwarded those `503`s to clients while considering the upstream perfectly healthy.
+Getting that wrong is easy, and the symptom is a deploy that looks clean in the logs and drops requests anyway.
+
+The `keepalive 128` pool is a throughput optimisation rather than part of the failover story, though it interacts with it: pooled connections to a stack that goes away are broken and those requests get retried like any other.
+Note that upstream keepalive only works if the `location` block also sets `proxy_http_version 1.1` and clears the `Connection` header.
 
 ## The Deploy Script
 
 `make rolling-deploy` (added in [PR #455](https://github.com/jbylund/sylvan_librarian/pull/455))
-brings both stacks up sequentially. The full target, anchored to the current commit:
+restarts the stacks one after the other. Because the image tag changes when the code does, `up`
+recreates blue's containers — stopping the old ones and starting the new — and `--wait` blocks until
+they are healthy before green is touched at all. The full target, anchored to the current commit
+(line breaks added for readability):
 
 ```makefile
-# https://github.com/jbylund/sylvan_librarian/blob/f3e11f809493ab330a9aa67a4acb8a13dbdcf090/makefile#L114-L119
+# https://github.com/jbylund/sylvan_librarian/blob/bc903d2052aa7e62ac7cb4687d390bc5ee3f5c04/makefile#L127-L132
 rolling-deploy: deps-blue deps-green
 	@echo "=== Deploying blue ==="
 	cd $(GIT_ROOT) && docker compose \
@@ -136,41 +165,37 @@ The API process takes roughly 40 seconds to load card data on first start — th
 
 ## Failure Modes and Rollback
 
-**The new stack never becomes healthy.** `docker compose up --wait` exits non-zero after the retry window.
-The old stack is still running and nginx still points at it — users see nothing.
-Tear down the new stack with `make green-down`, fix the problem, and redeploy.
-The old stack was never touched.
+**Blue never becomes healthy.** `docker compose up --wait` exits non-zero after the retry window, and make aborts the target before green is touched.
+Green is still running the previous build and still serving, so users see nothing.
+This is the case the design actually protects against, and it protects against it well: a deploy that fails to start cannot take the service down, because the failure is detected before the second stack is disturbed.
 
-**The new stack becomes healthy but the nginx swap fails.** Same recovery.
-The old stack is running, nginx still points at it.
-The new stack is idle and can be torn down.
+**A bug makes it through the health check.** The `/get_pid` probe confirms the process started and responded — it does not verify that search queries return correct results, that card data loaded cleanly, or that database connectivity is intact.
+A code bug that allows startup will reach production, and here the rolling restart is weaker than a true blue/green cutover.
+Once the deploy finishes, *both* stacks run the new code. There is no untouched old stack to fall back to, so rolling back means checking out the previous commit and running `make rolling-deploy` again — another full cycle, including a re-import if the data changed, rather than a config reload.
 
-**A bug makes it through health checks.** The `/get_pid` probe confirms the process started and responded — it does not verify that search queries return correct results, that card data loaded cleanly, or that database connectivity is intact.
-A code bug that allows startup can reach production.
-Rolling back takes about two seconds: swap the nginx upstream config back and reload.
-As long as the old stack has not been torn down, rollback is a one-liner.
+That asymmetry is the price of keeping both stacks live.
+A cutover deployment holds the previous version idle and can revert in seconds; this one spends that capacity on serving traffic instead, and accepts a slower rollback.
+For a read-heavy search API with a single operator, where the common failure is "the new build does not start" rather than "the new build is subtly wrong", that has been the right trade.
 
-That last point argues for keeping the old stack running for a short soak period — ten or fifteen minutes — before tearing it down.
-The cost is about 3 GB of RAM (one extra postgres process plus one API process) during that window.
+**Reduced capacity mid-deploy.** While one stack is restarting, the other carries all traffic alone, and it carries it with a cold cache once its turn comes.
+Deploys are best run when traffic is low.
 
 ## What This Skips
 
 This approach works well for a single-host deployment with a low deploy rate.
 Three things it does not handle:
 
-**Cross-host load balancing.** If the service runs on multiple machines, the nginx swap and health check polling would need to happen at the load balancer level, not per host.
+**Cross-host load balancing.** Both stacks are addressed as ports on one host. Spreading across machines would move the failover decision up to a load balancer, and passive detection scales poorly once a marked-down server is a whole machine.
 
 **Non-additive database migrations.** Both stacks share their postgres volume only within a project, but if a migration is not backward-compatible — a dropped column, a changed type — old and new code cannot run simultaneously against the same schema.
 The current deploy requires every migration to be additive (new columns with defaults, nothing dropped).
 
-**Database state rollback.** Swapping nginx backward rolls back the application code, not the data.
-Writes that arrived during the new stack's window are visible to the old code.
-For a read-heavy search API this is rarely an issue; it would matter for any endpoint that modifies state.
+**Fast rollback.** As above, a completed deploy leaves no previous version running, so reverting costs a second full deploy rather than a switch flip.
 
 For a self-hosted project where the operator controls the deploy window and traffic is predictable, those constraints are manageable.
-The gap between the complexity of running Kubernetes and the simplicity of `docker compose up --wait` + `nginx -s reload` is wide enough that the constraint list is worth accepting.
+The gap between the complexity of running Kubernetes and the simplicity of `docker compose up --wait` plus four lines of upstream config is wide enough that the constraint list is worth accepting.
 
-Two stacks, one nginx, a reload signal.
+Two stacks, one upstream, and a retry.
 No magic — just composition of primitives that already exist.
 
 ## Related
