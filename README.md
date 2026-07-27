@@ -219,11 +219,32 @@ takes them down one at a time: blue is stopped, rebuilt, restarted, and only onc
 does green follow. Because the other stack serves throughout, a deploy has no downtime even when the
 new containers need to re-import the card data from scratch.
 
+#### Binding and Reverse Proxies
+
+The API port binds to `127.0.0.1` by default, so a fresh stack is reachable from the host it runs on
+and nowhere else. This is deliberate: Docker publishes ports by inserting DNAT rules that are
+evaluated *before* the `INPUT` chain where `ufw` and `firewalld` operate, so a published port on
+`0.0.0.0` stays reachable even when the host firewall appears to deny it. Defaulting to loopback fails
+visibly instead of silently.
+
+Pick the line that matches your setup:
+
+- **Reverse proxy on the same host** (nginx, Caddy, or similar as a host process) — nothing to do.
+  Point the proxy at `127.0.0.1:${API_PORT}`.
+- **Reverse proxy in a container on the same Docker network** — delete the `ports:` block for
+  `apiservice` entirely and have the proxy reach `apiservice:8080` directly. No host port needed.
+- **Direct access with no proxy**, e.g. from elsewhere on your LAN — set `BIND_ADDR=0.0.0.0`, or a
+  specific interface address to narrow it. Note that this serves plain HTTP with no TLS, so prefer a
+  proxy if the stack is reachable from outside your network.
+
 #### Environment Variables
 
 The following environment variables can be configured:
 
 **API Service:**
+- `BIND_ADDR` - Host address the API port binds to (default: `127.0.0.1`)
+  - Set to `0.0.0.0` to expose the API on all interfaces, or a specific interface address
+  - See "Binding and Reverse Proxies" above before changing it
 - `ENABLE_ENGINE` - Enable/disable the in-memory Rust query engine (enabled in all environments)
   - When enabled, searches are served from the shared-memory card store with PostgreSQL as fallback
   - When disabled, all searches go through the SQL path

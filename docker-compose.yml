@@ -104,7 +104,11 @@ services:
           memory: 2813m
     memswap_limit: 2813m
     ports:
-      - "${API_PORT:-28080}:8080"
+      # Loopback by default: Docker's published ports are DNAT'd ahead of the INPUT chain, so a
+      # host firewall (ufw/firewalld) does NOT restrict them. Binding 0.0.0.0 would expose the API
+      # to anything that can route here while looking firewalled. Override with BIND_ADDR — see
+      # "Binding and reverse proxies" in the README.
+      - "${BIND_ADDR:-127.0.0.1}:${API_PORT:-28080}:8080"
     ulimits:
       core: 0
     user: 1000:1000
