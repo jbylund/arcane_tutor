@@ -31,9 +31,9 @@ def pretty_output(targets_to_docs: dict[str, str]) -> None:
     """Output target info to stdout."""
     if not targets_to_docs:
         return
-    len(max(targets_to_docs, key=len))
-    for _targetname, _targetdoc in sorted(targets_to_docs.items()):
-        pass
+    width = len(max(targets_to_docs, key=len))
+    for targetname, targetdoc in sorted(targets_to_docs.items()):
+        print(f"{targetname:<{width}}  {targetdoc}")
 
 
 def get_args() -> dict[str, str]:
