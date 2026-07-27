@@ -16,7 +16,14 @@ import falcon.testing
 import pytest
 
 import api.api_resource as api_resource_module
-from api.api_resource import FALLBACK_SITE_NAME, APIResource, _hostname_to_site_name, _split_words, hostname_to_site_name
+from api.api_resource import (
+    FALLBACK_SITE_NAME,
+    INTERNAL_ERROR_DESCRIPTION,
+    APIResource,
+    _hostname_to_site_name,
+    _split_words,
+    hostname_to_site_name,
+)
 from api.enums import ResponseShape
 from api.settings import settings
 
@@ -402,6 +409,39 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
 
                 # Should call error monitoring
                 mock_error_handler.assert_called_once()
+
+    def test_handle_500_body_carries_no_frame_data(self) -> None:
+        """Test an unhandled exception yields an opaque 500 body.
+
+        The frames at a throw site inside the query or import paths hold connection and query state,
+        so none of it may reach the client. Nothing upstream of this handler would catch the
+        regression, which is why it is asserted on the response rather than on the validation.
+        """
+        mock_req = MagicMock()
+        mock_req.uri = mock_req.path = mock_req.relative_uri = "/search"
+        mock_req.params = {}
+        mock_resp = MagicMock()
+        mock_resp.complete = False
+
+        # A local whose value must never appear in the response body.
+        def raise_error(*args: Any, **kwargs: Any) -> Never:
+            db_password = "correct-horse-battery-staple"
+            msg = f"Test error touching {db_password}"
+            raise RuntimeError(msg)
+
+        with patch.object(self.api_resource, "action_map", {"search": raise_error}):
+            with patch("api.api_resource.error_monitoring.error_handler"):
+                with pytest.raises(falcon.HTTPInternalServerError) as excinfo:
+                    self.api_resource._handle(mock_req, mock_resp)
+
+        description = excinfo.value.description
+        assert description == INTERNAL_ERROR_DESCRIPTION
+        # A dict description is how frame data used to travel; a plain string cannot carry it.
+        assert isinstance(description, str)
+
+        rendered = repr(excinfo.value.to_dict())
+        for leaked in ("db_password", "correct-horse-battery-staple", "stack_info", "locals", "line_no", __file__):
+            assert leaked not in rendered, f"{leaked!r} reached the 500 response body"
 
 
 class TestSearchResponseShape(TestBaseAPIResourceTest):

@@ -313,6 +313,12 @@ def _hostname_to_site_name(hostname: str) -> str:
 # Query parameters that must not be forwarded to action handlers.
 DISALLOWED_QUERY_ARGS: frozenset[str] = frozenset(["falcon_response", "request_host"])
 
+# Body for an unhandled exception. Fixed and content-free on purpose: the frames live at throw sites
+# inside query and import paths, so their locals can hold connection and query state. Diagnostics go
+# to the log and the error monitor, which are not attacker-readable; the client gets this and nothing
+# more. Callers must not append exception detail to it.
+INTERNAL_ERROR_DESCRIPTION = "An internal error occurred."
+
 # pylint: disable=c-extension-no-member
 NOT_FOUND = 404
 MIN_IMPORT_INTERVAL = 300
@@ -770,14 +776,11 @@ class APIResource:
                         "locals": {k: v for k, v in iframe.frame.f_locals.items() if error_monitoring.can_serialize(v)},
                     },
                 )
+            # Logged, never returned: exc_info above carries file/function/line, but not locals, and
+            # a self-hoster with no HONEYBADGER_API_KEY has nowhere else to read them.
+            logger.error("Stack detail for %s: %s", path, stack_info)
 
-            raise falcon.HTTPInternalServerError(
-                title="Server Error",
-                description={
-                    "exception": str(oops),
-                    "stack_info": stack_info,
-                },
-            ) from oops
+            raise falcon.HTTPInternalServerError(title="Server Error", description=INTERNAL_ERROR_DESCRIPTION) from oops
         finally:
             duration = (time.monotonic() - before) * 1000
             logger.info("Request duration: %.1f ms / %s", duration, resp.status)
