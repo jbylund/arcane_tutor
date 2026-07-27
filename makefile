@@ -67,6 +67,7 @@ IMAGE_TAG := $(BUILD_HASH)
 	lint \
 	mplantin_font \
 	postgres-config \
+	psql-dotfiles \
 	pull_images \
 	reset \
 	rolling-deploy \
@@ -93,8 +94,14 @@ hlep: help
 
 up_deps: images check_env .env api/static/app.min.js configs/postgres/conf/postgresql.conf
 
-deps-%: up_deps
+deps-%: up_deps psql-dotfiles
 	mkdir -p $(GIT_ROOT)/data/api/$* && chmod 755 $(GIT_ROOT)/data/api/$*
+
+# Both files are bind-mounted into the postgres container. Docker silently creates
+# a directory in place of a missing bind-mount source, so on a host that has never
+# run psql they turn into directories rather than files.
+psql-dotfiles:
+	@touch ~/.psqlrc ~/.psql_history
 
 env.json: # @doc create env.json with generated local credentials if missing (never overwrite)
 	@$(GIT_ROOT)/scripts/gen_env_json.sh $@
@@ -179,9 +186,7 @@ dockerclean:
 	docker images --format '{{.ID}}' | xargs $(MAYBENORUN) docker rmi --force
 
 # Usage: make dbconn-dev, make dbconn-prod
-dbconn-%:
-	test -f ~/.psqlrc || touch ~/.psqlrc
-	test -f ~/.psql_history || touch ~/.psql_history
+dbconn-%: psql-dotfiles
 	cd $(GIT_ROOT) && docker compose --project-name sylvan_$* --env-file .env --env-file envs/$* --file $(BASE_COMPOSE) \
 	  exec -e PSQLRC=/var/lib/postgresql/.psqlrc -e PSQL_HISTORY=/var/lib/postgresql/.psql_history \
 	  postgres psql -U $(XPGUSER) -d $(XPGDATABASE) --host=localhost
