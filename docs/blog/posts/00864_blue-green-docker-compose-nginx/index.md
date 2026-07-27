@@ -83,7 +83,7 @@ What absorbs the restart is passive failure detection plus retry, and it depends
 ### The Port Simply Disappears
 
 `APIResource.__init__` runs `setup_schema()` and `import_data()`, and only when the constructor returns does `bjoern.run()` bind the socket
-([api_resource.py](https://github.com/jbylund/sylvan_librarian/blob/bc903d2052aa7e62ac7cb4687d390bc5ee3f5c04/api/api_resource.py#L670-L671)).
+([api_resource.py](https://github.com/jbylund/sylvan_librarian/blob/413e328a85a86d59dc12a259275ce8565903b144/api/api_resource.py#L670-L671)).
 A stack that is rebuilding, or importing 97,000 cards on a fresh volume, is not listening on its port at all.
 It is not slow, and it is not returning errors — connections are refused outright.
 
@@ -122,7 +122,7 @@ they are healthy before green is touched at all. The full target, anchored to th
 (line breaks added for readability):
 
 ```makefile
-# https://github.com/jbylund/sylvan_librarian/blob/bc903d2052aa7e62ac7cb4687d390bc5ee3f5c04/makefile#L127-L132
+# https://github.com/jbylund/sylvan_librarian/blob/413e328a85a86d59dc12a259275ce8565903b144/makefile#L127-L132
 rolling-deploy: deps-blue deps-green
 	@echo "=== Deploying blue ==="
 	cd $(GIT_ROOT) && docker compose \
@@ -143,7 +143,7 @@ rolling-deploy: deps-blue deps-green
 
 The `--wait` flag blocks until every service in the stack passes its health check (or the retries are exhausted).
 The API health check probes `localhost:8080/get_pid`, which only succeeds after the process has fully started and is accepting connections
-([docker-compose.yml, lines 89–100](https://github.com/jbylund/sylvan_librarian/blob/f3e11f809493ab330a9aa67a4acb8a13dbdcf090/docker-compose.yml#L89-L100)):
+([docker-compose.yml, lines 89–100](https://github.com/jbylund/sylvan_librarian/blob/413e328a85a86d59dc12a259275ce8565903b144/docker-compose.yml#L89-L100)):
 
 ```yaml
 healthcheck:
