@@ -202,9 +202,17 @@ make dev-up          # Start PostgreSQL and API services (dev)
 make blue-up         # Start PostgreSQL and API services (blue, a production environment)
 ```
 
-The environments are `dev`, `blue`, and `green`, one file each in `envs/`. Blue and green are the
-production pair — `make rolling-deploy` updates blue, waits for it to report healthy, then updates
-green.
+#### Environments
+
+Three stacks share the one `docker-compose.yml`, told apart by `--project-name` and a file in
+`envs/`: `dev` on port 28080, plus the `blue` (18080) and `green` (18081) production pair. Each
+stack is complete and independent — its own PostgreSQL, its own volume, its own copy of the card
+data — so one can be torn down and rebuilt while the other keeps serving.
+
+Both production stacks normally run, with nginx routing to whichever is live. `make rolling-deploy`
+takes them down one at a time: blue is stopped, rebuilt, restarted, and only once it reports healthy
+does green follow. Because the other stack serves throughout, a deploy has no downtime even when the
+new containers need to re-import the card data from scratch.
 
 #### Environment Variables
 
