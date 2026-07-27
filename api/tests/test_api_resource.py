@@ -264,39 +264,6 @@ class TestAPIResourceCoreMethods(unittest.TestCase):
         assert isinstance(result, int)
         assert result == os.getpid()
 
-    def test_read_sql_reads_file_content(self) -> None:
-        """Test read_sql reads and returns SQL file content."""
-        # Test that the method exists and is callable
-        assert hasattr(self.api_resource, "read_sql")
-        assert callable(self.api_resource.read_sql)
-
-        # Test that it can be called (may fail due to missing files, but that's expected)
-        try:
-            result = self.api_resource.read_sql("nonexistent_file")
-            # If it succeeds, it should return a string
-            assert isinstance(result, str)
-        except FileNotFoundError:
-            # This is expected if the file doesn't exist
-            pass
-
-    def test_read_sql_caching(self) -> None:
-        """Test that read_sql uses caching."""
-        with patch("api.api_resource.pathlib.Path") as mock_path:
-            mock_sql_dir = MagicMock()
-            mock_sql_file = MagicMock()
-            mock_sql_file.open.return_value.__enter__.return_value.read.return_value = "SELECT * FROM test;"
-            mock_sql_dir.__truediv__.return_value = mock_sql_file
-            mock_path.return_value.parent = mock_sql_dir
-
-            # Call twice with same filename
-            result1 = self.api_resource.read_sql("test")
-            result2 = self.api_resource.read_sql("test")
-
-            # Results should be identical (cached)
-            assert result1 == result2
-            # Note: The @cached decorator may not be easily testable with mocks
-            # as it's implemented at the function level
-
 
 class TestAPIResourceRequestHandling(unittest.TestCase):
     """Test request handling methods."""

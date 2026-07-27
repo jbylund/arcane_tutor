@@ -1,77 +1,61 @@
-"""Tests for the read_sql method functionality."""
+"""Tests for db_utils.read_sql and the SQL files it loads."""
 
 from __future__ import annotations
 
-import multiprocessing
 import pathlib
-import time
 
 import pytest
 
-from api.api_resource import APIResource
-from api.settings import settings
+from api.utils import db_utils
+
+# Rejected stems. The guard is not just cosmetic: read_sql joins its argument onto a directory, so a
+# value with path components would escape it. ".." and "" are called out because `Path(x).name == x`
+# is true for both, so a name-only check would let them through.
+bad_stem_ids = {
+    "parent_traversal": "../db/2025-09-29-great-reset",
+    "bare_parent": "..",
+    "bare_dot": ".",
+    "empty": "",
+    "nested_path": "a/b",
+    "absolute": "/etc/passwd",
+    "dot_slash_prefix": "./get_cards",
+}
 
 
 class TestReadSQL:
-    """Test the read_sql method and SQL file integration."""
+    """Test read_sql and SQL file integration."""
 
-    def setup_method(self) -> None:
-        """Set up test fixtures."""
-        self.api_resource = APIResource(
-            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
-        )
-
-    def teardown_method(self) -> None:
-        """Clean up test fixtures."""
-        if hasattr(self, "api_resource") and self.api_resource:
-            # Close the connection pool to prevent thread pool warnings
-            self.api_resource._conn_pool.close()
-
-    def test_read_sql_method_exists(self) -> None:
-        """Test that the read_sql method exists."""
-        assert hasattr(self.api_resource, "read_sql")
-        assert callable(self.api_resource.read_sql)
-
-    def test_read_sql_caching_enabled(self) -> None:
-        """Test that the read_sql method is cached when caching is enabled."""
-        # Enable caching
-        original_setting = settings.enable_cache
-        try:
-            settings.enable_cache = True
-            # Verify that the method has a cache attribute (from @cached decorator)
-            assert hasattr(self.api_resource.read_sql, "cache")
-        finally:
-            settings.enable_cache = original_setting
-
-    def test_read_sql_caching_disabled(self) -> None:
-        """Test that the read_sql method still works when caching is disabled."""
-        # Disable caching
-        original_setting = settings.enable_cache
-        try:
-            settings.enable_cache = False
-            # Method should still have cache attribute but won't use it
-            assert hasattr(self.api_resource.read_sql, "cache")
-            # Verify method still works
-            sql_content = self.api_resource.read_sql("get_cards")
-            assert "SELECT" in sql_content
-        finally:
-            settings.enable_cache = original_setting
-
-    def test_read_sql_loads_correct_file(self) -> None:
-        """Test that read_sql loads the correct SQL file content."""
-        # Test loading one of our actual SQL files
-        sql_content = self.api_resource.read_sql("get_cards")
-
-        # Verify it contains expected SQL keywords
+    def test_loads_correct_file(self) -> None:
+        """Test read_sql returns the requested file's contents."""
+        sql_content = db_utils.read_sql("get_cards")
         assert "SELECT" in sql_content
         assert "FROM" in sql_content
         assert "magic.cards" in sql_content
         assert "card_name" in sql_content
 
-    def test_read_sql_file_not_found(self) -> None:
-        """Test that read_sql raises appropriate error for missing files."""
+    def test_memoized(self) -> None:
+        """Test repeated reads are served from the memo rather than the filesystem."""
+        db_utils.read_sql.cache_clear()
+        first = db_utils.read_sql("get_cards")
+        second = db_utils.read_sql("get_cards")
+        assert first == second
+        info = db_utils.read_sql.cache_info()
+        assert (info.hits, info.misses) == (1, 1)
+
+    def test_file_not_found(self) -> None:
+        """Test a valid stem with no matching file still raises."""
         with pytest.raises(FileNotFoundError):
-            self.api_resource.read_sql("nonexistent_query")
+            db_utils.read_sql("nonexistent_query")
+
+    @pytest.mark.parametrize(
+        argnames=["filename"],
+        argvalues=[[bad_stem_ids[name]] for name in sorted(bad_stem_ids)],
+        ids=sorted(bad_stem_ids),
+    )
+    def test_rejects_non_bare_stems(self, filename: str) -> None:
+        """Test anything other than a bare stem is rejected instead of joined onto the directory."""
+        with pytest.raises(ValueError, match="bare file stem"):
+            db_utils.read_sql(filename)
 
     def test_sql_files_exist(self) -> None:
         """Test that all expected SQL files exist."""
@@ -97,9 +81,8 @@ class TestReadSQL:
         ]
 
         for filename in expected_files:
-            sql_content = self.api_resource.read_sql(filename)
-            assert sql_content, f"SQL file {filename} should have content"
-            assert len(sql_content.strip()) > 0, f"SQL file {filename} should have non-empty content"
+            sql_content = db_utils.read_sql(filename)
+            assert sql_content.strip(), f"SQL file {filename} should have non-empty content"
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 """Database utility functions for the API."""
 
 import atexit
+import functools
 import hashlib
 import logging
 import os
@@ -132,6 +133,31 @@ def get_migrations() -> list[dict[str, str]]:
                 },
             )
     return migrations
+
+
+@functools.cache
+def read_sql(filename: str) -> str:
+    """Read a query from api/sql/<filename>.sql.
+
+    Memoized for the process lifetime: these files ship with the code and do not change at runtime.
+
+    Args:
+        filename: Bare stem of the file, without directory components or the .sql extension.
+
+    Returns:
+        The file's contents, stripped.
+
+    Raises:
+        ValueError: If filename is not a bare stem. Callers pass literals, so a value that could
+            traverse out of the directory is a bug rather than input to sanitize — reject it instead
+            of joining it. `Path(x).name == x` alone is not enough: `".."` and `""` both satisfy it.
+    """
+    if filename in {"", ".", ".."} or pathlib.Path(filename).name != filename:
+        msg = f"read_sql expects a bare file stem, got {filename!r}"
+        raise ValueError(msg)
+    sql_file = pathlib.Path(__file__).parent.parent / "sql" / f"{filename}.sql"
+    with sql_file.open(encoding="utf-8") as filehandle:
+        return filehandle.read().strip()
 
 
 class IntArray(list):
