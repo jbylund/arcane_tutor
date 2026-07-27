@@ -129,6 +129,34 @@ intent, so a reader can tell backlog from background at a glance:
   design study, or rejected-but-preserved approach that is *not* todo work and shouldn't be read as a
   backlog item (e.g. `reference-engine-printing-varying-plane-repair-pattern.md`). Promote to `local-`
   or a number only if it actually becomes planned work.
+- `security-slug.md` — **unfixed security findings**: the one exception to "all of it, tracked". This
+  repo is public, so committing a description of a live, unfixed vulnerability publishes a working
+  recipe against the running deployment — permanently, since removing the file later does not remove
+  it from history. `docs/issues/security-*` is gitignored to make that mechanical rather than a thing
+  to remember. **When the finding is fixed, rename it off the prefix** (to `local-`, a number, or
+  `done/`) and commit it — at that point the write-up is a useful record instead of a map, and it
+  should not stay invisible.
+
+  Two caveats that come with the gitignore. It protects against `git add -A` and `git clean -fd`, but
+  **not** `git clean -fdx`, which deletes ignored files. And these docs exist on one machine only, so
+  a finding worth keeping needs a home outside the working tree — see below.
+
+  **The design doc for the fix usually needs the prefix too, and the bar is not "did I omit the
+  specifics."** It is whether a reader could derive the attack from what remains. A doc explaining
+  *why* a boundary is missing generally shows *where* it is missing, so in practice these fail the
+  test even when written carefully — default to `security-` and rename once the fix lands. Only a
+  genuinely general architecture note, one that would read the same had no vulnerability prompted it,
+  belongs in-tree before the fix.
+
+  While fixing, keep commit messages boring and factual (`Refactor: Extract Router from APIResource`,
+  not `Fix: unauthenticated admin endpoints`). Commits on a public repo are visible in real time, and
+  a message that advertises the defect narrows the window between disclosure and deploy.
+
+  Findings split by blast radius, and it changes where they belong. A defect in code or compose that
+  **ships in the repo** affects everyone who deploys it, so it gates tagged releases (see
+  [#778](https://github.com/jbylund/sylvan_librarian/issues/778)) — fix before releasing and there is
+  never a vulnerable version to disclose. A misconfiguration of *our* host (nginx, a stray credential)
+  affects only us and needs no disclosure path at all.
 
 **Length and scope:** issue docs are not subject to the ~100-line length ideal in the global markdown
 rules — they are the deep source of truth, so length should match the material (measurements, rejected

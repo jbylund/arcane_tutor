@@ -11,3 +11,9 @@ gatherer_data/
 prof
 *.min.js
 configs/postgres/conf/postgresql.conf
+
+# Unfixed security findings — this repo is public, so committing these publishes a
+# working recipe against the live deployment. Rename off the prefix once fixed. See CLAUDE.md.
+docs/issues/security-*
+# Credential files (github.pat and friends) — .env and env.json are covered above.
+*.pat

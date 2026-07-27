@@ -57,6 +57,8 @@ placement decision, not merely the first of several.
 
 ## Phase 1 — releases and changelog (do now)
 
+**Prerequisite: review/address findings from the July 2026 security audit.**
+
 1. Write `CHANGELOG.md`. There is raw material in `docs/changelog/`, currently a set of dated
    per-change notes rather than a released-version history.
 2. Choose an initial version. The project is well past a `0.1`-shaped state, but calling it `1.0.0`
