@@ -87,6 +87,19 @@ def compute_pg_mem_limit_bytes(total_bytes: int) -> int:
     return raw["shared_buffers"] + raw["maintenance_work_mem"] + 256 * 1024 * 1024
 
 
+def _is_gitignored(path: Path) -> bool:
+    """Return True if git ignores path, False if tracked or if git cannot be consulted."""
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "--quiet", str(path)],
+            check=False,
+            capture_output=True,
+        )
+    except OSError:
+        return True  # No git available; nothing useful to warn about.
+    return result.returncode == 0
+
+
 def update_env_file(env_path: Path, key: str, value: str) -> None:
     """Update or append key=value in an env file, leaving all other lines untouched."""
     line = f"{key}={value}\n"
@@ -111,7 +124,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--template", required=True, help="path to postgresql.conf.template")
     parser.add_argument("--output", required=True, help="path to write postgresql.conf")
-    parser.add_argument("--env-output", help="directory of env files to update with POSTGRES_MEM_LIMIT (e.g. envs/)")
+    parser.add_argument(
+        "--env-output",
+        help=(
+            "path of the per-host env file to update with POSTGRES_MEM_LIMIT (e.g. .env). Must be a "
+            "gitignored file: the limit is derived from THIS host's memory and has to travel with the "
+            "postgresql.conf generated alongside it."
+        ),
+    )
     args = parser.parse_args()
 
     total_bytes = get_available_memory_bytes()
@@ -128,11 +148,17 @@ def main() -> None:
     if args.env_output:
         limit_mb = compute_pg_mem_limit_bytes(total_bytes) // (1024 * 1024)
         limit_str = f"{limit_mb}m"
-        env_dir = Path(args.env_output)
-        for env_file in sorted(env_dir.iterdir()):
-            if env_file.is_file():
-                update_env_file(env_file, "POSTGRES_MEM_LIMIT", limit_str)
-                print(f"  POSTGRES_MEM_LIMIT: {limit_str} -> {env_file}")
+        # One per-host file, not the tracked envs/ directory. POSTGRES_MEM_LIMIT has to agree with the
+        # shared_buffers in the postgresql.conf generated just above, and both are derived from this
+        # host's memory. Written into a tracked file, the next git checkout reverts it while the
+        # untracked conf survives — and make then considers the conf up to date and never regenerates,
+        # so the compose default silently applies to a conf that needs more. Compose reads .env before
+        # envs/<stack>, so this still wins for every stack.
+        env_file = Path(args.env_output)
+        update_env_file(env_file, "POSTGRES_MEM_LIMIT", limit_str)
+        print(f"  POSTGRES_MEM_LIMIT: {limit_str} -> {env_file}")
+        if not _is_gitignored(env_file):
+            print(f"  WARNING: {env_file} is tracked by git; a checkout will revert this value.")
 
 
 if __name__ == "__main__":

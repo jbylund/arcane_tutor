@@ -324,6 +324,14 @@ NOT_FOUND = 404
 MIN_IMPORT_INTERVAL = 300
 IMPORT_LOCK_TIMEOUT = 2
 MIN_IMPORT_CARDS = 90_000
+# Cards per bulk_upsert call during an import. The whole batch becomes ONE bind parameter: a JSON
+# array that Postgres must receive, cast to jsonb, expand with jsonb_array_elements, and join against
+# magic.cards. So this value sets the server-side peak for the statement, and the corpus grows over
+# time — a size that fit once does not stay fitting. Lowered from 6000 to 3000 after backends were
+# lost mid-statement during import; the extra round trips are not measurable against the import's
+# total, and it halves the logged parameter too (see log_parameter_max_length in the pg config).
+_UPSERT_PAGE_SIZE = 3_000
+
 # Rows per batch streamed into the engine during a reload. The reload's memory
 # floor is the Rust-side build (~305 MB), so the batch only needs to be small
 # relative to that: ~2k rows ≈ 18 MB of dicts. Smaller adds round trips for no
@@ -2497,7 +2505,7 @@ class APIResource:
     def _upsert_cards(
         self,
         cards: Iterable[dict[str, Any]],
-        page_size: int = 6000,
+        page_size: int = _UPSERT_PAGE_SIZE,
     ) -> dict[str, Any]:
         """Preprocess and upsert an iterable of raw card dicts into magic.cards.
 

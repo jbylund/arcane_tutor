@@ -815,6 +815,13 @@ log_statement = 'none'
 log_min_messages = notice
 log_min_error_statement = notice
 log_min_duration_statement = 15
+# Truncate logged bind parameters. The bulk-upsert path passes one JSON array per batch as a single
+# parameter — thousands of cards, tens of MB — and every such statement exceeds the 15ms threshold
+# above, so an untruncated -1 logs the whole payload for each batch. That costs the backend the memory
+# to format it, at the moment a bulk load already has memory pressure, and stderr goes to Docker's
+# json-file driver, which has no size cap here.
+log_parameter_max_length = 1024
+log_parameter_max_length_on_error = 1024
 log_connections = off
 log_disconnections = off
 log_duration = off

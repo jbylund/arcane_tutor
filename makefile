@@ -89,7 +89,7 @@ configs/postgres/conf/postgresql.conf: configs/postgres/conf/postgresql.conf.tem
 	$(PYTHON) scripts/gen_postgres_conf.py \
 		--template $< \
 		--output $@ \
-		--env-output envs
+		--env-output .env
 
 help: # @doc show this help and exit
 	@$(PYTHON) ./scripts/show_makefile_help.py $(mkfile_path)
