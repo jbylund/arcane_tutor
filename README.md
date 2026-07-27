@@ -233,18 +233,29 @@ Pick the line that matches your setup:
   Point the proxy at `127.0.0.1:${API_PORT}`.
 - **Reverse proxy in a container on the same Docker network** — delete the `ports:` block for
   `apiservice` entirely and have the proxy reach `apiservice:8080` directly. No host port needed.
-- **Direct access with no proxy**, e.g. from elsewhere on your LAN — set `BIND_ADDR=0.0.0.0`, or a
-  specific interface address to narrow it. Note that this serves plain HTTP with no TLS, so prefer a
-  proxy if the stack is reachable from outside your network.
+- **Direct access with no proxy**, e.g. from elsewhere on your LAN — set `BIND_ADDR=0.0.0.0` in the
+  stack's file under `envs/`, or a specific interface address to narrow it. Note that this serves
+  plain HTTP with no TLS, so prefer a proxy if the stack is reachable from outside your network.
 
 #### Environment Variables
 
 The following environment variables can be configured:
 
-**API Service:**
-- `BIND_ADDR` - Host address the API port binds to (default: `127.0.0.1`)
+**Docker Compose:**
+
+Read by Compose while it renders `docker-compose.yml`, not by the API process — inside its container
+the API always listens on `0.0.0.0:8080`, and these only decide how that socket is published to the
+host. Set them in the stack's file under `envs/` (`envs/dev`, `envs/blue`, `envs/green`) so the value
+applies every time that stack starts; exporting one in the shell overrides the file for a single
+`make <env>-up`.
+
+- `BIND_ADDR` - Host address the published API port binds to (default: `127.0.0.1`)
   - Set to `0.0.0.0` to expose the API on all interfaces, or a specific interface address
   - See "Binding and Reverse Proxies" above before changing it
+- `API_PORT` - Host port the API is published on (default: `28080`)
+  - Already set per environment: `dev` is 28080, `blue` 18080, `green` 18081
+
+**API Service:**
 - `ENABLE_ENGINE` - Enable/disable the in-memory Rust query engine (enabled in all environments)
   - When enabled, searches are served from the shared-memory card store with PostgreSQL as fallback
   - When disabled, all searches go through the SQL path
