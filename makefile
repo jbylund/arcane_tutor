@@ -116,10 +116,10 @@ env.json: # @doc create env.json with generated local credentials if missing (ne
 %-up-detach: deps-%
 	cd $(GIT_ROOT) && docker compose --project-name sylvan_$* --env-file .env --env-file envs/$* --file $(BASE_COMPOSE) up --remove-orphans --detach
 
-%-down:
+%-down: | .env
 	cd $(GIT_ROOT) && docker compose --project-name sylvan_$* --env-file .env --env-file envs/$* --file $(BASE_COMPOSE) down --remove-orphans
 
-status: # @doc show container status for all environments
+status: | .env # @doc show container status for all environments
 	@$(foreach env,$(ENVS), \
 	  python -c "import shutil; w=shutil.get_terminal_size().columns; print(' $(env) '.center(w, '='))" && \
 	  cd $(GIT_ROOT) && docker compose --project-name sylvan_$(env) --env-file .env --env-file envs/$(env) --file $(BASE_COMPOSE) ps --all ; \
@@ -138,13 +138,13 @@ images: build_images pull_images # @doc refresh images
 
 build_images: $(BUILD_STAMP) # @doc refresh locally built images
 
-$(BUILD_STAMP): $(image_sources)
+$(BUILD_STAMP): $(image_sources) | .env
 	mkdir -p $(BUILD_STAMP_DIR)
 	find $(BUILD_STAMP_DIR) -name "*.stamp" -mtime +3 -delete 2>/dev/null || true
 	cd $(GIT_ROOT) && docker compose --progress=plain --env-file .env --env-file envs/dev --file $(BASE_COMPOSE) build
 	touch $@
 
-pull_images: $(BASE_COMPOSE) # @doc pull images from remote repos
+pull_images: $(BASE_COMPOSE) | .env # @doc pull images from remote repos
 	true || docker compose --env-file .env --env-file envs/dev --file $(BASE_COMPOSE) pull
 
 ensure_pydocker: ensure_uv
@@ -186,12 +186,12 @@ dockerclean:
 	docker images --format '{{.ID}}' | xargs $(MAYBENORUN) docker rmi --force
 
 # Usage: make dbconn-dev, make dbconn-prod
-dbconn-%: psql-dotfiles
+dbconn-%: psql-dotfiles | .env
 	cd $(GIT_ROOT) && docker compose --project-name sylvan_$* --env-file .env --env-file envs/$* --file $(BASE_COMPOSE) \
 	  exec -e PSQLRC=/var/lib/postgresql/.psqlrc -e PSQL_HISTORY=/var/lib/postgresql/.psql_history \
 	  postgres psql -U $(XPGUSER) -d $(XPGDATABASE) --host=localhost
 
-reset-%:
+reset-%: | .env
 	docker compose --project-name sylvan_$* --env-file .env --env-file envs/$* --file $(BASE_COMPOSE) down --volumes --remove-orphans
 	rm -rvf data/api/$* data/postgres/$*
 
