@@ -888,6 +888,10 @@ auto_explain.log_triggers = on
 auto_explain.log_verbose = on
 auto_explain.log_nested_statements = on
 auto_explain.sample_rate = 1
+# Separate from the core log_parameter_max_length above and defaulting to -1, so capping that one
+# alone leaves auto_explain still dumping every bind parameter in full. The bulk-upsert path sends one
+# JSON array per batch as a single parameter, which is what made import logs unreadable.
+auto_explain.log_parameter_max_length = 1024
 
 # --- Query ID tracking ---
 compute_query_id = on
