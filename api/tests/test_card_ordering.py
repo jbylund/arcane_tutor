@@ -1,31 +1,26 @@
 """Tests for CardOrdering SQL wiring."""
 
-import multiprocessing
-import time
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from api.api_resource import APIResource
 from api.enums import CardOrdering, PreferOrder, SortDirection, UniqueOn
 from api.parsing import parse_scryfall_query
-from api.tests.support import override_attr
 from api.utils.timer import Timer
 
-
-@pytest.fixture(name="api_resource")
-def api_resource_fixture() -> APIResource:
-    api = APIResource(last_import_time=multiprocessing.Value("d", time.time(), lock=True))
-    override_attr(api, "_import_recent", lambda: True)
-    return api
+if TYPE_CHECKING:
+    from api.api_resource import APIResource
 
 
-def _compiled_sql(api_resource: APIResource, ordering: CardOrdering) -> str:
+def _compiled_sql(stub_api_resource: APIResource, ordering: CardOrdering) -> str:
     """Return the compiled SQL string via the SQL path directly."""
     parsed_query = parse_scryfall_query("cmc=1")
     with (
-        patch.object(api_resource, "_conn_pool") as mock_pool,
-        patch.object(api_resource, "_setup_complete", return_value=True),
+        patch.object(stub_api_resource, "_conn_pool") as mock_pool,
+        patch.object(stub_api_resource, "_setup_complete", return_value=True),
     ):
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = [{"total_cards_count": 0, "name": None}]
@@ -33,7 +28,7 @@ def _compiled_sql(api_resource: APIResource, ordering: CardOrdering) -> str:
         mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
         mock_pool.connection.return_value.__enter__.return_value = mock_conn
 
-        result = api_resource._search_sql(
+        result = stub_api_resource._search_sql(
             parsed_query=parsed_query,
             query="cmc=1",
             unique=UniqueOn.CARD,
@@ -58,7 +53,7 @@ def _compiled_sql(api_resource: APIResource, ordering: CardOrdering) -> str:
         (CardOrdering.USD, "price_usd"),
     ],
 )
-def test_orderby_column_in_compiled_sql(api_resource: APIResource, ordering: CardOrdering, expected_column: str) -> None:
+def test_orderby_column_in_compiled_sql(stub_api_resource: APIResource, ordering: CardOrdering, expected_column: str) -> None:
     """Every CardOrdering value should produce its mapped column in the compiled SQL."""
     needle = f", {expected_column} AS sort_value FROM magic.cards"
-    assert needle in _compiled_sql(api_resource, ordering)
+    assert needle in _compiled_sql(stub_api_resource, ordering)

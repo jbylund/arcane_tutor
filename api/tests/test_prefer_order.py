@@ -8,7 +8,6 @@ from unittest.mock import MagicMock, patch
 from api.api_resource import APIResource
 from api.enums import CardOrdering, PreferOrder, SortDirection, UniqueOn
 from api.parsing import parse_scryfall_query
-from api.tests.support import override_attr
 from api.utils.timer import Timer
 
 
@@ -16,15 +15,19 @@ class TestPreferOrder(unittest.TestCase):
     """Test cases for prefer order parameter."""
 
     def setUp(self) -> None:
-        """Set up test fixtures."""
+        """Set up test fixtures.
+
+        A unittest.TestCase cannot consume the `stub_api_resource` fixture, so this constructs its own.
+        `last_import_time` being now is what keeps __init__'s import_data() on its fast path; nothing
+        here calls an import path afterwards, so no suppression override is needed.
+        """
         self.api_resource = APIResource(
             last_import_time=multiprocessing.Value("d", time.time(), lock=True),
         )
 
-        def always_true() -> bool:
-            return True
-
-        override_attr(self.api_resource, "_import_recent", always_true)
+    def tearDown(self) -> None:
+        """Close the connection pool this test case opened."""
+        self.api_resource._conn_pool.close()
 
     def _search_sql(self, query: str, prefer: PreferOrder) -> dict:
         """Run _search_sql directly, bypassing engine dispatch."""

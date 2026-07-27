@@ -2,33 +2,28 @@
 
 from __future__ import annotations
 
-import multiprocessing
-import time
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import falcon
 import pytest
 
-from api.api_resource import APIResource
 from api.settings import settings
 from api.tests.helpers import search_kwargs
 from api.tests.support import override_attr
 
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
-def _make_api() -> APIResource:
-    return APIResource(last_import_time=multiprocessing.Value("d", time.time(), lock=True))
+    from api.api_resource import APIResource
 
 
 class TestParsingErrorHandling:
     """Parsing errors in _search are surfaced as HTTPBadRequest."""
 
-    def setup_method(self) -> None:
-        self.api_resource = _make_api()
-        override_attr(self.api_resource, "_setup_complete", lambda: True)
-
-    def teardown_method(self) -> None:
-        if hasattr(self, "api_resource") and self.api_resource:
-            self.api_resource._conn_pool.close()
+    @pytest.fixture(autouse=True)
+    def _api(self, stub_api_resource: APIResource) -> None:
+        self.api_resource = stub_api_resource
 
     def test_incomplete_query_raises_bad_request(self) -> None:
         query = "cmc=2 and id="
@@ -61,14 +56,10 @@ class TestSearchRouting:
     covered in TestEngineFeatureGate.
     """
 
-    def setup_method(self) -> None:
-        self.api_resource = _make_api()
-        override_attr(self.api_resource, "_setup_complete", lambda: True)
+    @pytest.fixture(autouse=True)
+    def _api(self, stub_api_resource: APIResource) -> None:
+        self.api_resource = stub_api_resource
         self.api_resource._engine = MagicMock()
-
-    def teardown_method(self) -> None:
-        if hasattr(self, "api_resource") and self.api_resource:
-            self.api_resource._conn_pool.close()
 
     def test_routes_to_sql_when_engine_empty(self) -> None:
         self.api_resource._engine.size.return_value = 0
@@ -135,12 +126,9 @@ class TestSearchRouting:
 class TestSearchSqlDirect:
     """_search_sql result structure and count-row extraction."""
 
-    def setup_method(self) -> None:
-        self.api_resource = _make_api()
-
-    def teardown_method(self) -> None:
-        if hasattr(self, "api_resource") and self.api_resource:
-            self.api_resource._conn_pool.close()
+    @pytest.fixture(autouse=True)
+    def _api(self, stub_api_resource: APIResource) -> None:
+        self.api_resource = stub_api_resource
 
     def _mock_run_query(self, cards: list[dict], total: int) -> dict:
         return {
@@ -169,13 +157,10 @@ class TestSearchSqlDirect:
 class TestSearchEngineDirect:
     """_search_engine forwards engine.query results verbatim."""
 
-    def setup_method(self) -> None:
-        self.api_resource = _make_api()
+    @pytest.fixture(autouse=True)
+    def _api(self, stub_api_resource: APIResource) -> None:
+        self.api_resource = stub_api_resource
         self.api_resource._engine = MagicMock()
-
-    def teardown_method(self) -> None:
-        if hasattr(self, "api_resource") and self.api_resource:
-            self.api_resource._conn_pool.close()
 
     def test_total_cards_and_cards_forwarded(self) -> None:
         mock_cards = [{"name": "Lightning Bolt"}, {"name": "Counterspell"}]
@@ -194,13 +179,9 @@ class TestSearchEngineDirect:
 class TestResultFieldSelection:
     """`fields=` validation on `_search`, independent of which backend serves the request."""
 
-    def setup_method(self) -> None:
-        self.api_resource = _make_api()
-        override_attr(self.api_resource, "_setup_complete", lambda: True)
-
-    def teardown_method(self) -> None:
-        if hasattr(self, "api_resource") and self.api_resource:
-            self.api_resource._conn_pool.close()
+    @pytest.fixture(autouse=True)
+    def _api(self, stub_api_resource: APIResource) -> None:
+        self.api_resource = stub_api_resource
 
     def test_unknown_field_raises_bad_request(self) -> None:
         with pytest.raises(falcon.HTTPBadRequest) as exc_info:
@@ -226,14 +207,10 @@ class TestResultFieldSelection:
 class TestResultFieldRouting:
     """The fields resolved by _search are threaded to whichever backend serves the request."""
 
-    def setup_method(self) -> None:
-        self.api_resource = _make_api()
-        override_attr(self.api_resource, "_setup_complete", lambda: True)
+    @pytest.fixture(autouse=True)
+    def _api(self, stub_api_resource: APIResource) -> None:
+        self.api_resource = stub_api_resource
         self.api_resource._engine = MagicMock()
-
-    def teardown_method(self) -> None:
-        if hasattr(self, "api_resource") and self.api_resource:
-            self.api_resource._conn_pool.close()
 
     def test_fields_passed_to_sql_path(self) -> None:
         self.api_resource._engine.size.return_value = 0
@@ -253,18 +230,13 @@ class TestResultFieldRouting:
 class TestEngineFeatureGate:
     """ENABLE_ENGINE gates the engine path: off (default) means the engine is inert."""
 
-    def setup_method(self) -> None:
-        self.api_resource = APIResource(
-            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
-        )
-        override_attr(self.api_resource, "_setup_complete", lambda: True)
+    @pytest.fixture(autouse=True)
+    def _api(self, stub_api_resource: APIResource) -> Generator[None]:
+        self.api_resource = stub_api_resource
         self.api_resource._engine = MagicMock()
-        self._saved_enable_engine = settings.enable_engine
-
-    def teardown_method(self) -> None:
-        settings.enable_engine = self._saved_enable_engine
-        if hasattr(self, "api_resource") and self.api_resource:
-            self.api_resource._conn_pool.close()
+        saved_enable_engine = settings.enable_engine
+        yield
+        settings.enable_engine = saved_enable_engine
 
     def _mock_result(self) -> dict:
         return {
