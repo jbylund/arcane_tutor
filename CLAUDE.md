@@ -41,7 +41,7 @@ make dev-up
 # Connect to local database (execs into the postgres container — no external port exposed)
 make dbconn-blue  # blue environment
 make dbconn-green # green environment
-# also: dbconn-dev, dbconn-prod
+# also: dbconn-dev
 ```
 
 ## Architecture

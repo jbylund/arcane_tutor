@@ -199,8 +199,12 @@ make dev-up          # Builds images, starts all services (dev environment)
 # Or step by step:
 make build_images     # Build Docker images (~30-60 seconds)
 make dev-up          # Start PostgreSQL and API services (dev)
-make prod-up         # Start PostgreSQL and API services (prod)
+make blue-up         # Start PostgreSQL and API services (blue, a production environment)
 ```
+
+The environments are `dev`, `blue`, and `green`, one file each in `envs/`. Blue and green are the
+production pair — `make rolling-deploy` updates blue, waits for it to report healthy, then updates
+green.
 
 #### Environment Variables
 
@@ -216,7 +220,7 @@ The following environment variables can be configured:
   - Can be set in docker-compose.yml or exported before starting services
 - `ENVIRONMENT` - Environment mode (default: `dev`)
   - Set to `prod` for production mode with restricted CORS
-  - Controlled via `APP_ENV` in `envs/dev` / `envs/prod`
+  - Controlled per environment in `envs/dev` / `envs/blue` / `envs/green`
 - `CDN_URL` - CDN URL for static assets (default: `https://d1hot9ps2xugbc.cloudfront.net`)
   - Override to use a different CDN provider
   - Used in Content-Security-Policy headers
@@ -233,9 +237,9 @@ The following environment variables can be configured:
 
 Example with caching enabled:
 ```bash
-# Caching is controlled per environment in envs/dev / envs/prod via ENABLE_CACHE
+# Caching is controlled per environment in envs/<name> via ENABLE_CACHE
 make dev-up   # ENABLE_CACHE=false (dev default)
-make prod-up  # ENABLE_CACHE=true (prod default)
+make blue-up  # ENABLE_CACHE=true (blue/green default)
 ```
 
 #### Local Development
@@ -264,7 +268,7 @@ npx prettier --write api/index.html        # Format frontend code
 
 #### Query Runner Client (for Index Analysis)
 
-The client container runs automatically when you start all services with `make dev-up` or `make prod-up`.
+The client container runs automatically when you start all services with `make dev-up` (or any other environment).
 
 ```bash
 # Client runs automatically with all services

@@ -3,4 +3,3 @@ APP_ENV=blue
 ENABLE_CACHE=true
 ENVIRONMENT=prod
 ENABLE_ENGINE=true
-SHARED_CACHE_PATH=/tmp/arcane_blue.cache
