@@ -2,7 +2,7 @@
 
 ![Web Interface](screenshot.webp)
 
-*Web interface in dark mode showing cards with CMC less than 10, ordered by USD price descending*
+*Web interface in dark mode: `t:beast` matching 525 cards, returned in 3 ms*
 
 **Legal Notice**: Magic: The Gathering is trademark and property of Wizards of the Coast LLC, a subsidiary of Hasbro, Inc. This project is unofficial Fan Content permitted under the [Wizards of the Coast Fan Content Policy](https://company.wizards.com/en/legal/fancontentpolicy).
 Not approved/endorsed by Wizards of the Coast.
