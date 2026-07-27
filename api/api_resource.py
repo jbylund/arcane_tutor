@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import collections
 import copy
 import datetime
 import hashlib
@@ -684,22 +683,6 @@ class APIResource:
         self.setup_schema()
         self.import_data()  # ensures that database is setup
 
-    @cached(cache={}, key=lambda *args, **kwds: args[1] if len(args) > 1 else kwds.get("filename"))
-    def read_sql(self, filename: str) -> str:
-        """Read SQL content from a file with caching.
-
-        Args:
-            filename: The name of the SQL file (without .sql extension)
-
-        Returns:
-            The SQL content as a string
-        """
-        sql_dir = pathlib.Path(__file__).parent / "sql"
-        sql_file = sql_dir / f"{filename}.sql"
-
-        with sql_file.open(encoding="utf-8") as f:
-            return f.read().strip()
-
     def _get_timer(self, req: falcon.Request) -> Timer:
         """Get the timer for the request."""
         return req.context.setdefault("timer", Timer())
@@ -947,14 +930,6 @@ class APIResource:
 
             self._schema_setup_event.set()
             logger.info("Schema setup complete in pid %d", os.getpid())
-
-    def get_stats(self, **_: object) -> dict[str, Any]:
-        """Get stats about the cards."""
-        key_frequency = collections.Counter()
-        for raw_card in self._bulk_data_fetcher.stream_data_for_key(BulkDataKey.DEFAULT_CARDS):
-            for processed in preprocess_card(raw_card):
-                key_frequency.update(k for k, v in processed.items() if v not in [None, [], {}])
-        return key_frequency.most_common()
 
     _SETUP_COMPLETE_TTL = 60 * 60  # 1 hour; also invalidated when _last_import_time changes
     _setup_complete_cache: tuple[bool, float, float] | None = None  # (result, expires_at, import_time)
@@ -1850,7 +1825,7 @@ class APIResource:
     def get_common_keywords(self, **_: object) -> list[dict[str, Any]]:
         """Get the common keywords from the database."""
         return self._run_query(
-            query=self.read_sql("get_common_keywords"),
+            query=db_utils.read_sql("get_common_keywords"),
         )["result"]
 
     def backfill_prefer_scores(self, **_: object) -> dict[str, Any]:
@@ -1875,7 +1850,7 @@ class APIResource:
         """
         logger.info("Starting prefer score backfill")
 
-        backfill_sql = self.read_sql("backfill_prefer_scores")
+        backfill_sql = db_utils.read_sql("backfill_prefer_scores")
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             statement_timeout = 120_000
             # Validate and set statement timeout
@@ -2013,7 +1988,7 @@ class APIResource:
         weights = {k: v / scale_factor for k, v in weights.items()}
         logger.info("Starting CubeCobra score backfill with weights: %s", weights)
 
-        backfill_sql = self.read_sql("backfill_cubecobra_scores")
+        backfill_sql = db_utils.read_sql("backfill_cubecobra_scores")
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             self._set_statement_timeout(cursor, 600_000)
             cursor.execute(backfill_sql, weights)
