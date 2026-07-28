@@ -69,9 +69,7 @@ logger = logging.getLogger(__name__)
 # pylint: disable=c-extension-no-member
 NOT_FOUND = 404
 
-
 MIN_IMPORT_INTERVAL = 300
-
 
 IMPORT_LOCK_TIMEOUT = 2
 
@@ -83,7 +81,6 @@ IMPORT_LOCK_TIMEOUT = 2
 # lost mid-statement during import; the extra round trips are not measurable against the import's
 # total, and it halves the logged parameter too (see log_parameter_max_length in the pg config).
 _UPSERT_PAGE_SIZE = 3_000
-
 
 # is: values Scryfall ships as BOOLEANS on every bulk card object, synced
 # in one set-based statement from raw_card_blob after each import (see
@@ -140,7 +137,6 @@ CUSTOM_IS_TAGS = [
     "default",
 ]
 
-
 LAND_IS_TAGS = [
     "bikeland",
     "bondland",
@@ -164,7 +160,6 @@ LAND_IS_TAGS = [
     "tricycleland",
     "triland",
 ]
-
 
 CARD_IS_TAGS = LAND_IS_TAGS + [  # noqa: RUF005
     "bear",  # easy to make custom, but also small
