@@ -9356,3 +9356,48 @@ fn regex_required_factors_extracts_only_guaranteed() {
     // a min≥1 repetition of a literal is still guaranteed
     assert_eq!(f("(?i)aaa+"), vec!["aaa".to_string()]);
 }
+
+/// The arith-tuple key budget is a tripwire for adding a high-cardinality field to
+/// `ArithTupleKey`, which would silently turn the 564-combination scan back into a per-card
+/// scan with extra indirection. Assert both halves: a realistic corpus sits well inside the
+/// budget, and a deliberately near-unique key space blows through it.
+///
+/// `debug_assert` only fires in debug builds, so the panicking half is gated — release runs
+/// skip it rather than failing.
+#[test]
+fn arith_tuple_key_budget_bounds_the_domain() {
+    use rand::SeedableRng;
+    const N: usize = 8_000;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(11);
+    let data = fuzz_store_n(&mut rng, N);
+    let keys = data.indexes.arith_tuple.keys.len();
+    let budget = super::arith_tuple_key_budget(N);
+    assert!(
+        keys <= budget,
+        "corpus-shaped fixture should sit inside the budget: {keys} keys over {N} cards, budget {budget}"
+    );
+    // The guard is only useful if it has real headroom over reality, not if it barely clears.
+    assert!(keys * 2 <= budget, "want >=2x headroom, got {keys} keys against budget {budget}");
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "arith tuple domain blew up")]
+fn arith_tuple_key_budget_catches_a_blown_domain() {
+    // Give every card a distinct cmc/power pair, which is what adding something like
+    // edhrec_rank to the key would effectively do.
+    let mut vocab = VocabInterner::new();
+    let cards: Vec<OracleCard> = (0..ARITH_TUPLE_BLOWUP_CARDS)
+        .map(|i| {
+            let mut c = stub_card(i as u128, TYPE_CREATURE, &[], &mut vocab);
+            c.cmc = Some((i % 251) as u8);
+            c.creature_power = Some((i / 251) as i8);
+            c
+        })
+        .collect();
+    let _ = super::build_arith_tuple_index(&cards);
+}
+
+/// Above `ARITH_TUPLE_GUARD_MIN_CARDS`, and large enough that an all-distinct key space
+/// clears `10*sqrt(n)+32` by a wide margin.
+const ARITH_TUPLE_BLOWUP_CARDS: usize = 6_000;

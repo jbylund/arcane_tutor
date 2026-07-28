@@ -1499,11 +1499,41 @@ struct ArithTupleIndex {
     n_cards: u32,
 }
 
+/// Distinct-combination budget for the tuple key, as a multiple of sqrt(cards).
+///
+/// The tuple route only beats a per-card scan while these four fields collapse the corpus
+/// hard, and nothing else in the code checks that. Distinct combinations grow sub-linearly
+/// in card count — measured 74, 109, 155, 210, 270, 350, 453 and 564 at 250 up to 31,508
+/// cards, so `keys / sqrt(cards)` peaks at 4.9 and falls to 3.2 as the corpus fills in the
+/// design space. That makes sqrt a deliberately loose envelope: real growth saturates
+/// toward the number of stat lines Magic prints while the bound keeps rising, so headroom
+/// widens over time rather than narrowing. A ratio of keys to cards would be the wrong
+/// shape — it is naturally ~0.30 at 250 cards and 0.018 at full corpus, so any bound
+/// calibrated on production data would fire on every small fixture.
+const ARITH_TUPLE_KEYS_PER_SQRT_CARD: usize = 10;
+
+/// Additive slack for small corpora, where a few hundred cards can legitimately be nearly
+/// all-distinct before the design space starts repeating itself.
+const ARITH_TUPLE_KEYS_SLACK: usize = 32;
+
+/// Below this the keys-to-cards relationship says nothing useful, so the budget is not
+/// checked at all. Above it the largest test fixtures still exercise the assertion.
+const ARITH_TUPLE_GUARD_MIN_CARDS: usize = 4_096;
+
+/// The `keys` ceiling this corpus size is allowed to produce, per
+/// `ARITH_TUPLE_KEYS_PER_SQRT_CARD`. Separate from the assertion so tests can assert
+/// against the same arithmetic instead of restating it.
+fn arith_tuple_key_budget(n_cards: usize) -> usize {
+    ARITH_TUPLE_KEYS_PER_SQRT_CARD * n_cards.isqrt() + ARITH_TUPLE_KEYS_SLACK
+}
+
 /// Intern each card's (cmc,power,toughness,loyalty) into a dense combination id and
 /// accumulate card postings under it. Cards are visited in ascending index order, so
 /// every postings row is naturally sorted. The id space is the number of distinct
 /// combinations (~564), far below any width concern — EdhrEc is excluded from the key
-/// precisely because it would blow this up to ~card-count distinct values (#743).
+/// precisely because it would blow this up to ~card-count distinct values (#743), and the
+/// `debug_assert` below is what makes that a test failure rather than a silent regression
+/// to a per-card scan with extra indirection.
 fn build_arith_tuple_index(cards: &[OracleCard]) -> ArithTupleIndex {
     let mut interner: HashMap<ArithTupleKey, usize> = HashMap::new();
     let mut keys: Vec<ArithTupleKey> = Vec::new();
@@ -1522,6 +1552,14 @@ fn build_arith_tuple_index(cards: &[OracleCard]) -> ArithTupleIndex {
         });
         postings[id].push(i as u32);
     }
+    debug_assert!(
+        cards.len() < ARITH_TUPLE_GUARD_MIN_CARDS || keys.len() <= arith_tuple_key_budget(cards.len()),
+        "arith tuple domain blew up: {} distinct combinations over {} cards, budget {} — is a \
+         high-cardinality field in ArithTupleKey?",
+        keys.len(),
+        cards.len(),
+        arith_tuple_key_budget(cards.len()),
+    );
     ArithTupleIndex { keys, postings, n_cards: cards.len() as u32 }
 }
 
