@@ -1200,11 +1200,21 @@ class TestMethodAwareCaching(TestBaseAPIResourceTest):
     def test_refused_post_does_not_poison_a_later_get(self) -> None:
         client = self._client()
         with self._cache_enabled():
-            assert client.simulate_post("/get_pid").status == falcon.HTTP_405
+            refused = client.simulate_post("/get_pid")
             after = client.simulate_get("/get_pid")
 
+        assert refused.status == falcon.HTTP_405
         assert after.status == falcon.HTTP_200
         assert after.headers.get("X-Cache") == "miss"
+
+        # The two properties this case depends on, asserted so that changing either one fails here
+        # rather than leaving the test passing for a reason it was not written to check.
+        # 1. The 405 is raised before the handler runs, so it carries none of get_pid's cache
+        #    headers and was therefore storable — that is what made poisoning possible at all.
+        assert "no-store" not in (refused.headers.get("Cache-Control") or "")
+        # 2. get_pid itself opts out of caching, so the route being poisoned is one that could
+        #    never have populated that key through its own successful response.
+        assert "no-store" in (after.headers.get("Cache-Control") or "")
 
     def test_get_is_still_cached_across_requests(self) -> None:
         # /robots.txt rather than /get_pid: get_pid sets Cache-Control: no-store, which is also why
