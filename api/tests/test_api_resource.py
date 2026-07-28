@@ -207,6 +207,22 @@ class TestAPIResourceInitializationNewStyle(TestBaseAPIResourceTest):
             assert method in registered
 
 
+# The URLs the fragments, index.html and root conventions actually request. app.min.js is a build
+# artifact — *.min.js is gitignored — so it is registered like the rest but only present once the
+# minifier has run, which is why the serving cases omit it.
+REAL_ASSET_URLS = [
+    "/favicon.ico",
+    "/static/favicon.ico",
+    "/robots.txt",
+    "/static/styles.css",
+    "/static/app.js",
+    "/static/app.min.js",
+    "/static/card.js",
+    "/static/social-preview.webp",
+]
+COMMITTED_ASSET_URLS = [url for url in REAL_ASSET_URLS if url != "/static/app.min.js"]
+
+
 class TestRequestDispatch(TestBaseAPIResourceTest):
     """_handle() routes both flat "static/x" action keys and positional path segments.
 
@@ -252,23 +268,14 @@ class TestRequestDispatch(TestBaseAPIResourceTest):
         with pytest.raises(falcon.HTTPNotFound):
             self._dispatch("/card/eoc/104/extra")
 
-    @pytest.mark.parametrize(
-        argnames=["path"],
-        argvalues=[
-            ("/favicon.ico",),
-            ("/static/favicon.ico",),
-            ("/robots.txt",),
-            ("/static/styles.css",),
-            ("/static/app.js",),
-            ("/static/app.min.js",),
-            ("/static/card.js",),
-            ("/static/social-preview.webp",),
-        ],
-    )
-    def test_static_asset_is_served_at_its_real_url(self, path: str) -> None:
+    @pytest.mark.parametrize(argnames=["path"], argvalues=[(url,) for url in REAL_ASSET_URLS])
+    def test_static_asset_is_registered_at_its_real_url(self, path: str) -> None:
         # Paths are declared rather than derived from method names, so they can hold dots and no
-        # path rewrite is needed. These are the URLs the fragments, index.html and root conventions
-        # actually request.
+        # path rewrite is needed.
+        assert path.lstrip("/") in self.api_resource.routes
+
+    @pytest.mark.parametrize(argnames=["path"], argvalues=[(url,) for url in COMMITTED_ASSET_URLS])
+    def test_static_asset_is_served_at_its_real_url(self, path: str) -> None:
         assert self._dispatch(path).status == falcon.HTTP_200
 
     @pytest.mark.parametrize(
