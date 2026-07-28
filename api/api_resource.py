@@ -712,7 +712,7 @@ class APIResource:
             path identifies nothing.
         """
         if path in self.routes:
-            # Flat routes like "static/favicon_ico" register their full slash-containing path as
+            # Flat routes like "static/favicon.ico" register their full slash-containing path as
             # the route key — check that exact match before treating "/" as an arg separator.
             return self.routes[path], []
 
@@ -746,7 +746,7 @@ class APIResource:
             id(resp),
         )
 
-        entry, action_args = self._resolve_action(path.replace(".", "_"))
+        entry, action_args = self._resolve_action(path)
         action = self._raise_not_found
         if entry is not None:
             # A route answers only the methods it declares. Checked after the path resolves, so a
@@ -1577,7 +1577,7 @@ class APIResource:
             "total_cards": total_cards,
         }
 
-    @route(paths=("index", "index_html"))
+    @route(paths=("index", "index.html"))
     def _redirect_to_root(self, **_: object) -> None:
         """Send the legacy index paths to /.
 
@@ -1687,7 +1687,7 @@ class APIResource:
         self._serve_static_file(filename="prefer_score_tuner.html", falcon_response=falcon_response)
         falcon_response.content_type = "text/html"
 
-    @route(paths=("favicon_ico", "static/favicon_ico"))
+    @route(paths=("favicon.ico", "static/favicon.ico"))
     def favicon_ico(self, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
         """Return the favicon.ico file.
 
@@ -1707,7 +1707,7 @@ class APIResource:
         # Cache favicon for 7 days - it rarely changes
         set_cache_header(falcon_response, duration=timedelta(days=7))
 
-    @route(paths=("social_preview_webp", "static/social-preview_webp"))
+    @route(paths=("static/social-preview.webp",))
     def social_preview_webp(self, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
         """Return the social preview image."""
         if falcon_response is None:
@@ -1720,7 +1720,7 @@ class APIResource:
         falcon_response.headers["content-length"] = len(contents)
         set_cache_header(falcon_response, duration=timedelta(days=30))
 
-    @route(paths=("styles_css", "static/styles_css"))
+    @route(paths=("static/styles.css",))
     def styles_css(self, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
         """Return the styles.css file.
 
@@ -1734,7 +1734,7 @@ class APIResource:
         falcon_response.content_type = "text/css"
         set_cache_header(falcon_response, duration=timedelta(days=30))
 
-    @route(paths=("app_js", "static/app_js"))
+    @route(paths=("static/app.js",))
     def app_js(self, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
         """Return the app.js file.
 
@@ -1749,7 +1749,7 @@ class APIResource:
         # Cache JavaScript for 1 hour - it changes infrequently
         set_cache_header(falcon_response, duration=timedelta(hours=1))
 
-    @route(paths=("app_min_js", "static/app_min_js"))
+    @route(paths=("static/app.min.js",))
     def app_min_js(self, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
         """Return the app.min.js file.
 
@@ -1763,7 +1763,7 @@ class APIResource:
         falcon_response.content_type = "application/javascript"
         set_cache_header(falcon_response, duration=timedelta(days=30))
 
-    @route()
+    @route(paths=("robots.txt",))
     def robots_txt(self, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
         """Return the robots.txt file."""
         if falcon_response is None:
@@ -1771,7 +1771,7 @@ class APIResource:
         self._serve_static_file(filename="robots.txt", falcon_response=falcon_response)
         falcon_response.content_type = "text/plain"
 
-    @route(paths=("card_js", "static/card_js"))
+    @route(paths=("static/card.js",))
     def card_js(self, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
         """Return the card.js file.
 

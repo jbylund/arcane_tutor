@@ -192,16 +192,19 @@ class TestAPIResourceInitializationNewStyle(TestBaseAPIResourceTest):
     def test_every_public_method_is_still_registered(self) -> None:
         """Test the marker migration left no previously-routed method behind.
 
-        Registration used to take every public callable. This pins that the same set is reachable
-        now that each one has to opt in; step 3 is where that stops being true on purpose.
+        Registration used to take every public callable. This pins that the same set is still
+        reachable now that each one has to opt in; step 3 is where that stops being true on purpose.
+        Checked by handler rather than by key, since a handler's path need not match its name — the
+        static assets are registered at the URLs they are actually requested at.
         """
         api_resource = self.api_resource
         public_methods = [
             method for method in dir(api_resource) if not method.startswith("_") and callable(getattr(api_resource, method))
         ]
+        registered = {entry.action.__wrapped__.__name__ for entry in api_resource.routes.values()}
 
         for method in public_methods:
-            assert method in api_resource.routes
+            assert method in registered
 
 
 class TestRequestDispatch(TestBaseAPIResourceTest):
@@ -249,6 +252,55 @@ class TestRequestDispatch(TestBaseAPIResourceTest):
         with pytest.raises(falcon.HTTPNotFound):
             self._dispatch("/card/eoc/104/extra")
 
+    @pytest.mark.parametrize(
+        argnames=["path"],
+        argvalues=[
+            ("/favicon.ico",),
+            ("/static/favicon.ico",),
+            ("/robots.txt",),
+            ("/static/styles.css",),
+            ("/static/app.js",),
+            ("/static/app.min.js",),
+            ("/static/card.js",),
+            ("/static/social-preview.webp",),
+        ],
+    )
+    def test_static_asset_is_served_at_its_real_url(self, path: str) -> None:
+        # Paths are declared rather than derived from method names, so they can hold dots and no
+        # path rewrite is needed. These are the URLs the fragments, index.html and root conventions
+        # actually request.
+        assert self._dispatch(path).status == falcon.HTTP_200
+
+    @pytest.mark.parametrize(
+        argnames=["path"],
+        argvalues=[
+            ("/favicon_ico",),
+            ("/static/favicon_ico",),
+            ("/robots_txt",),
+            ("/styles_css",),
+            ("/static/styles_css",),
+            ("/app_js",),
+            ("/static/app_js",),
+            ("/social_preview_webp",),
+            ("/index_html",),
+        ],
+    )
+    def test_underscore_spelling_is_no_longer_a_route(self, path: str) -> None:
+        # Artifacts of deriving route keys from Python identifiers. Nothing ever linked to them.
+        with pytest.raises(falcon.HTTPNotFound):
+            self._dispatch(path)
+
+    def test_one_handler_two_paths_shares_a_single_entry(self) -> None:
+        # The favicon is requested at the root by browser convention and under /static/ by the
+        # fragment, so it declares both; one @route means one entry behind both keys.
+        assert self.api_resource.routes["favicon.ico"] is self.api_resource.routes["static/favicon.ico"]
+
+    def test_dots_in_path_arguments_are_no_longer_rewritten(self) -> None:
+        # The rewrite applied to the whole path, not just the action word, so a dotted collector
+        # number reached the handler as 104_5.
+        _entry, action_args = self.api_resource._resolve_action("card/eoc/104.5")
+        assert action_args == ["eoc", "104.5"]
+
     def test_two_routes_claiming_one_path_fail_at_construction(self) -> None:
         # Registration is fail-closed both ways: an unmarked method is not routed, and a path two
         # methods both claim is a startup error rather than one silently shadowing the other.
@@ -259,13 +311,13 @@ class TestRequestDispatch(TestBaseAPIResourceTest):
         with pytest.raises(RuntimeError, match="claimed by both"):
             Colliding(last_import_time=multiprocessing.Value("d", time.time(), lock=True))
 
-    def test_index_paths_redirect_instead_of_erroring(self) -> None:
+    @pytest.mark.parametrize(argnames=["path"], argvalues=[("/index",), ("/index.html",)])
+    def test_index_path_redirects_instead_of_erroring(self, path: str) -> None:
         # falcon.HTTPMovedPermanently subclasses HTTPStatus, which is a sibling of HTTPError rather
         # than a subclass, so the generic `except Exception` swallowed the redirect and returned a
         # 500. Falcon turns the propagated signal into a 301.
-        for path in ("/index", "/index.html"):
-            with pytest.raises(falcon.HTTPMovedPermanently):
-                self._dispatch(path)
+        with pytest.raises(falcon.HTTPMovedPermanently):
+            self._dispatch(path)
 
     def test_keyword_only_injection_route_with_extra_segment_raises_not_found(self) -> None:
         # get_catalog's falcon_response is keyword-only, so the route has no positional capacity.
@@ -689,12 +741,9 @@ class TestAPIResourceStaticFileServing(unittest.TestCase):
         mock_response = MagicMock()
         mock_response.headers = {}
 
-        # One @route(paths=(...)) registers both the bare name and the static/ alias, so they are the
-        # same wrapper over the same handler. The alias used to be registered as the unwrapped method,
-        # which meant the two paths did not bind parameters the same way.
-        aliased = self.api_resource.routes["static/social-preview_webp"]
-        assert aliased is self.api_resource.routes["social_preview_webp"]
-        assert aliased.action.__wrapped__ == self.api_resource.social_preview_webp
+        # Reachable at the URL index.html's og:image actually points at, and only there.
+        entry = self.api_resource.routes["static/social-preview.webp"]
+        assert entry.action.__wrapped__ == self.api_resource.social_preview_webp
 
         self.api_resource.social_preview_webp(falcon_response=mock_response)
 
