@@ -33,6 +33,12 @@ CacheKey = bytes
 # X-Cache describes this request's cache outcome, so a stored "miss" must never be replayed.
 _UNCACHEABLE_HEADER_PREFIXES: tuple[str, ...] = ("access-control-", "x-cache")
 
+# Only the safe, idempotent methods are cached, and the method is part of the key. Both are needed:
+# a route answers only the methods it declares, so a response is method-dependent, and a POST that a
+# route refuses would otherwise store a 405 that the next GET to the same URL would be served.
+# Responses to POST/PUT/DELETE are not replayable in the first place.
+CACHEABLE_METHODS = frozenset({"GET", "HEAD"})
+
 
 def cacheable_headers(headers: Mapping[str, str]) -> list[tuple[str, str]]:
     """Return the subset of headers safe to replay on a cache hit for a different request."""
@@ -89,6 +95,7 @@ class CachingMiddleware:
         host = host.strip().lower() if isinstance(host, str) and host else None
         return orjson.dumps(
             (
+                req.method,
                 req.relative_uri,
                 tuple(sorted(req.params.items())),
                 tuple(sorted({k: req.headers.get(k) for k in cached_headers}.items())),
@@ -104,6 +111,8 @@ class CachingMiddleware:
             resp: The response object to populate if cache hit.
         """
         if not settings.enable_cache:
+            return
+        if req.method not in CACHEABLE_METHODS:
             return
 
         cache_key = self._cache_key(req)
@@ -141,6 +150,8 @@ class CachingMiddleware:
             req_succeeded: Whether the request was successful (unused).
         """
         if not settings.enable_cache:
+            return
+        if req.method not in CACHEABLE_METHODS:
             return
 
         del resource, req_succeeded

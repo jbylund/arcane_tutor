@@ -25,6 +25,7 @@ from api.api_resource import (
     hostname_to_site_name,
 )
 from api.enums import ResponseShape
+from api.middlewares.caching_middleware import CachingMiddleware
 from api.settings import settings
 from api.utils.routing import BoundRoute, RouteSpec, route
 
@@ -1174,3 +1175,45 @@ class TestCardSiteNameInjection(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMethodAwareCaching(TestBaseAPIResourceTest):
+    """A refused method must not poison the cache for a method the route does answer.
+
+    Before routes declared their methods, every method reached the same handler and returned the
+    same response, so a cache key without the method was harmless. Declaring methods makes a
+    response method-dependent: a POST to a GET-only route now 405s, and that 405 would be stored
+    under the key a subsequent GET looks up.
+    """
+
+    def _client(self) -> falcon.testing.TestClient:
+        app = falcon.App(middleware=[CachingMiddleware()])
+        app.add_sink(self.api_resource._handle, prefix="/")
+        return falcon.testing.TestClient(app)
+
+    @contextmanager
+    def _cache_enabled(self) -> Generator[None]:
+        with patch("api.middlewares.caching_middleware.settings") as mock_settings:
+            mock_settings.enable_cache = True
+            yield
+
+    def test_refused_post_does_not_poison_a_later_get(self) -> None:
+        client = self._client()
+        with self._cache_enabled():
+            assert client.simulate_post("/get_pid").status == falcon.HTTP_405
+            after = client.simulate_get("/get_pid")
+
+        assert after.status == falcon.HTTP_200
+        assert after.headers.get("X-Cache") == "miss"
+
+    def test_get_is_still_cached_across_requests(self) -> None:
+        # /robots.txt rather than /get_pid: get_pid sets Cache-Control: no-store, which is also why
+        # it makes a good poisoning case — the 405 is raised before the handler can set that header.
+        client = self._client()
+        with self._cache_enabled():
+            first = client.simulate_get("/robots.txt")
+            second = client.simulate_get("/robots.txt")
+
+        assert first.headers.get("X-Cache") == "miss"
+        assert second.headers.get("X-Cache") == "hit"
+        assert second.status == falcon.HTTP_200

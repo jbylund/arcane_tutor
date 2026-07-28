@@ -13,8 +13,9 @@ from api.middlewares.caching_middleware import CachedResponse, CachingMiddleware
 class TestCachingMiddleware:
     """Tests for caching middleware."""
 
-    def _make_req(self, path: str = "/search", uri: str = "/search?q=lightning+bolt") -> MagicMock:
+    def _make_req(self, path: str = "/search", uri: str = "/search?q=lightning+bolt", method: str = "GET") -> MagicMock:
         req = MagicMock()
+        req.method = method
         req.path = path
         req.relative_uri = uri
         req.params = {"q": "lightning bolt"}
@@ -30,9 +31,10 @@ class TestCachingMiddleware:
         resp.render_body.return_value = b"rendered body"
         return resp
 
-    def _cache_key(self, host: str | None = None) -> bytes:
+    def _cache_key(self, host: str | None = None, method: str = "GET") -> bytes:
         return orjson.dumps(
             (
+                method,
                 "/search?q=lightning+bolt",
                 (("q", "lightning bolt"),),
                 (("ACCEPT-ENCODING", None),),
@@ -236,3 +238,50 @@ class TestCachingMiddleware:
 
         assert cache[self._cache_key()] is cached
         resp.render_body.assert_not_called()
+
+    @pytest.mark.parametrize(argnames=["method"], argvalues=[("POST",), ("PUT",), ("PATCH",), ("DELETE",)])
+    def test_unsafe_method_response_is_not_cached(self, method: str) -> None:
+        """Responses to methods that are not safe and idempotent must never be stored."""
+        cache = {}
+        middleware = CachingMiddleware(cache=cache)
+        req = self._make_req(method=method)
+        resp = self._make_resp("200 OK")
+
+        with patch("api.middlewares.caching_middleware.settings") as mock_settings:
+            mock_settings.enable_cache = True
+            middleware.process_response(req, resp, None, True)
+
+        assert cache == {}
+
+    @pytest.mark.parametrize(argnames=["method"], argvalues=[("POST",), ("PUT",), ("PATCH",), ("DELETE",)])
+    def test_unsafe_method_does_not_consult_the_cache(self, method: str) -> None:
+        """An unsafe method must not be served a stored response, whatever is in the cache."""
+        cached = CachedResponse(status="200 OK", headers={}, body=b"cached body", result_count=0, total_cards=0)
+        cache = {self._cache_key(): cached, self._cache_key(method=method): cached}
+
+        middleware = CachingMiddleware(cache=cache)
+        req = self._make_req(method=method)
+        resp = MagicMock()
+
+        with patch("api.middlewares.caching_middleware.settings") as mock_settings:
+            mock_settings.enable_cache = True
+            middleware.process_request(req, resp)
+
+        assert req.context.get("cache_hit") is None
+        assert resp.complete is not True
+
+    def test_method_is_part_of_the_cache_key(self) -> None:
+        """The same URL under two methods must not share an entry.
+
+        A route answers only the methods it declares, so its response depends on the method: a
+        refused POST returns a 405 that must never be replayed to a GET of the same URL.
+        """
+        cache = {}
+        middleware = CachingMiddleware(cache=cache)
+
+        with patch("api.middlewares.caching_middleware.settings") as mock_settings:
+            mock_settings.enable_cache = True
+            middleware.process_response(self._make_req(method="GET"), self._make_resp(), None, True)
+            middleware.process_response(self._make_req(method="HEAD"), self._make_resp(), None, True)
+
+        assert sorted(cache) == sorted([self._cache_key(method="GET"), self._cache_key(method="HEAD")])
