@@ -8,14 +8,40 @@ of tree per [the `security-` convention](./README.md#unfixed-security-findings).
 architecture and the order of operations — it is deliberately written so it would read the same had
 nothing prompted it.
 
+## Status
+
+Steps 1 and 2 have shipped. The problems and decisions below are kept as written — they are the
+reasoning the shipped work rests on — but read them as the state of the code *before* those PRs.
+
+| step | status |
+| --- | --- |
+| 1. Rewrite coercion | shipped — #787 |
+| 2. `@route` and explicit registration | shipped — #789, with #791 following on |
+| 3. Move the admin handlers to a child resource | not started |
+| 4. Delist | not started |
+| 5. Auth at the mount | not started |
+
+Three things this doc commits to that the shipped code deliberately does **not** do:
+
+- **Falcon's router was not adopted.** See [Design decisions](#design-decisions), which has been
+  revised to record why the hand-rolled dispatch stayed.
+- **`DISALLOWED_QUERY_ARGS` still exists**, and handlers still declare `**_: object` — 27 of 28 do.
+  Both retire with per-route unknown-parameter enforcement, which step 2 declared but did not enforce.
+- **Nothing reads `advertise` or `ignore_unknown_params` yet.** They are on every `RouteSpec`; all 30
+  routes are still published in the 404 listing. Steps 4 and the unknown-parameter work consume them.
+
 ## Current mechanics
 
 Falcon's router is **entirely unused**. `api/api_worker.py` installs one sink —
-`api.add_sink(sink._handle, prefix="/")` — and `_handle` does its own dispatch against an
-`action_map` built in `APIResource.__init__` by walking `dir(self)` and taking every public callable.
-Path segments beyond the action word are passed positionally, bounded by a precomputed
-`_action_positional_capacity`. Query parameters are coerced by `make_type_converting_wrapper`, which
-reads the handler's signature and converts each string via `_convert_string_to_type`.
+`api.add_sink(sink._handle, prefix="/")` — and `_handle` does its own dispatch against a route table
+built in `APIResource.__init__`. Path segments beyond the action word are passed positionally, bounded
+by a precomputed positional capacity.
+
+Before step 2 that table came from walking `dir(self)` and taking every public callable; it is now
+built from methods carrying an `@route` marker, scanned off the class. Before step 1, query parameters
+were coerced by `make_type_converting_wrapper`, which read the handler's signature per call and
+converted each string via `_convert_string_to_type`; a `ParamBinder` now resolves each handler's
+annotations once at registration and binds against a fixed plan.
 
 Two properties of that design are worth keeping, and shape everything below:
 
@@ -46,15 +72,17 @@ that is log formatting at the `logging.INFO` level `api_worker.py` sets.
 
 ### Coercion is fail-open in four ways
 
-| input | current behavior |
-| --- | --- |
-| unconvertible enum (`orderby=nonsense`) | logs, passes the **raw string** to a handler annotated `CardOrdering` |
-| unconvertible int (`limit=abc`) | logs, passes the raw string |
-| unknown parameter (`?limt=5`) | silently dropped, no error |
-| wrong type from an internal caller | passed straight through |
+| input | behavior before step 1 | now |
+| --- | --- | --- |
+| unconvertible enum (`orderby=nonsense`) | logs, passes the **raw string** to a handler annotated `CardOrdering` | 400 |
+| unconvertible int (`limit=abc`) | logs, passes the raw string | 400 |
+| unknown parameter (`?limt=5`) | silently dropped, no error | **still dropped** |
+| wrong type from an internal caller | passed straight through | raises |
 
-The clean 400s a black-box probe sees for bad input come from downstream checks like
-`_validate_limit`, not from this layer.
+The clean 400s a black-box probe saw for bad input came from downstream checks like
+`_validate_limit`, not from this layer. Unknown parameters are the one row left: rejecting them needs
+a per-route opt-out so that `utm_*` and cache-busters keep working on public URLs, which is what
+`ignore_unknown_params` is for.
 
 ### Coercion depends on a module-level import in the caller's file
 
@@ -75,11 +103,15 @@ new resource module without that import would 500 on the first request to any ha
 `dir(self)` plus `callable()` means a method is routed unless someone remembers a leading underscore,
 which overloads `_` to mean both "private in Python" and "not HTTP-reachable" — so
 `setup_schema`, called from `__init__` and from tests, cannot be hidden without lying about its Python
-visibility. Because `_build_routes_listing` iterates the same `action_map`, anything registered is also
-published: a request to any unknown path returns all 37 route names.
+visibility. Because `_build_routes_listing` iterates the same table, anything registered is also
+published: a request to any unknown path returns every route name.
 
 Scanning the *instance* also means any new public attribute can change the route table. A child
 resource stored as `self.admin` escapes registration only because it has no `__call__`.
+
+Step 2 fixed the registration half: routes are marked, the scan is over the class, and a path claimed
+twice is a startup error. The self-advertising half is unchanged — all 30 routes are still listed, and
+`advertise` exists but is read by nothing until step 4.
 
 ### The routing layer is not where the cost is
 
@@ -95,10 +127,17 @@ a 20,900 ns coercion path and a 61,000 ns query, that is noise: adopting it spen
 
 ## Design decisions
 
-**Take Falcon's router, not its responder convention.** `add_route` gives URI templates with converters
-(`{limit:int}`), per-method responders, and 405s for unmapped methods — retiring the positional-split
-scheme that a previous dispatch rewrite broke. Register an adapter rather than an `on_get`, and handlers
-stay plain typed functions.
+**~~Take Falcon's router, not its responder convention.~~ Superseded — the dict dispatch stayed.**
+The argument was that `add_route` gives URI templates with converters (`{limit:int}`), per-method
+responders, and 405s for unmapped methods, retiring the positional-split scheme that a previous
+dispatch rewrite broke. Step 2 got the part that mattered — per-route declared methods and 405s — from
+the `@route` marker directly, in about ten lines of `_handle`, without adopting the router. What is
+left unclaimed is URI templates: the positional-split scheme and its precomputed capacity are still
+there.
+
+Adopting the router now would be a swap with no remaining behavioural payoff, against the measurement
+above showing it is the slower of the two. Revisit only if templated paths start carrying real
+structure — typed segments, or a path that the split cannot express.
 
 **One decorator marks; it does not wrap.**
 
@@ -145,15 +184,20 @@ first. Making that a designed property is most of the value here.
 Ordered so that each step is shippable, and so the steps with a measurable story come before the ones
 that move code.
 
-1. **Rewrite coercion.** Precomputed plan, annotations resolved at import, 400 on unconvertible, per-route
-   unknown-parameter policy, drop the per-conversion log line. Self-contained, has the only performance
-   story, and fixes a latent crash that the next step would otherwise trip over. No routes move.
-2. **Add `@route` and explicit registration.** Pure refactor: same routes, same paths, existing tests
-   untouched. Retires `dir(self)`, frees `_` to mean only "private in Python", and makes each route
-   declare which HTTP methods it accepts.
-3. **Move the admin handlers to a child resource.** The closure analysis for this — which methods and
-   handles are shared, which move — lives in the out-of-tree doc. Mounting is a loop over a child's
-   marked methods; resist extracting a `Router` abstraction until a second mount point exists.
+1. **Rewrite coercion.** *(shipped, #787)* Precomputed plan, annotations resolved at import, 400 on
+   unconvertible, drop the per-conversion log line. Self-contained, has the only performance story,
+   and fixes a latent crash that the next step would otherwise trip over. No routes move. The
+   per-route unknown-parameter policy slipped out of this step and is still unshipped — declaring it
+   needs the marker from step 2.
+2. **Add `@route` and explicit registration.** *(shipped, #789)* Pure refactor: same routes, same
+   paths, existing tests untouched. Retires `dir(self)`, frees `_` to mean only "private in Python",
+   and makes each route declare which HTTP methods it accepts. #791 followed on, registering the
+   static assets at the URLs they are actually requested at now that paths are declared rather than
+   derived from method names.
+3. **Move the admin handlers to a child resource.** *(next)* The closure analysis for this — which
+   methods and handles are shared, which move — lives in the out-of-tree doc. Mounting is a loop over
+   a child's marked methods; resist extracting a `Router` abstraction until a second mount point
+   exists.
 4. **Delist.** `advertise=False` for the child, and make the public listing opt-in so forgetting a flag
    under-advertises rather than over-advertises.
 5. **Auth at the mount.** One check where dispatch enters the child, rather than a decorator on every

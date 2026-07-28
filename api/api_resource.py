@@ -35,7 +35,6 @@ import orjson
 import psycopg
 import psycopg_pool
 import requests
-import tinycss2
 from cachebox import LRUCache, TTLCache
 from cachebox import cached as cachebox_cached
 from psycopg import Connection, Cursor
@@ -51,6 +50,7 @@ from api.settings import settings
 from api.tag_import import import_art_tags as _import_art_tags
 from api.tag_import import import_oracle_tags as _import_oracle_tags
 from api.utils import db_utils, error_monitoring, multiprocessing_utils
+from api.utils.css_utils import build_critical_css
 from api.utils.generation_cache import GenerationCache
 from api.utils.http_utils import make_user_agent
 from api.utils.param_binding import ParamCoercionError, bind_params
@@ -90,92 +90,6 @@ FALLBACK_SITE_NAME = "MTG Search"
 # Placeholder written into index.html/card.html wherever the site name belongs, so the substitution
 # below can't accidentally match unrelated copy that happens to contain "MTG Search".
 _SITE_NAME_PLACEHOLDER = "%%%SITENAME%%%"
-
-# Selectors extracted from styles.css and inlined in the HTML <style> block to prevent
-# layout shift on pages with server-side rendered results. Excludes hover/focus states,
-# animations, and modal styles (not visible on initial paint).
-_CRITICAL_SELECTORS = frozenset(
-    {
-        '[data-theme="light"]',
-        '[data-theme="dark"]',
-        "*",
-        "html",
-        "body",
-        ".container",
-        ".spacer",
-        ".spacer-30",
-        ".spacer-20",
-        ".header",
-        ".theme-toggle",
-        ".header h1",
-        ".header p",
-        ".search-container",
-        ".search-box",
-        ".search-input",
-        ".help-icon",
-        ".order-controls",
-        ".dropdown-label",
-        ".order-dropdown",
-        ".order-toggle",
-        ".arrow-up",
-        # Results grid — needed for SSR search result pages
-        ".results-container",
-        ".card-item",
-        ".card-image",
-        ".card-name-mana-row",
-        ".card-name",
-        ".card-mana",
-        ".ms-cost",
-        ".mana-symbol",
-        ".card-type",
-        ".card-text",
-        ".card-set-power-row",
-        ".card-set",
-        ".card-power-toughness",
-        ".results-count",
-        "#statusMessage",
-        # Footer — margin-top:auto positions it; missing this causes it to jump on styles load
-        ".footer",
-        ".footer-legal",  # also matches the comma rule .footer-legal, .footer-attribution, .footer-links
-        ".footer-attribution a",
-        ".footer-links a",
-    }
-)
-
-
-def _selector_is_critical(selector: str) -> bool:
-    """Return True if any part of a (possibly comma-separated) selector is critical."""
-    return any(part.strip() in _CRITICAL_SELECTORS for part in selector.split(","))
-
-
-def _build_critical_css() -> str:
-    """Extract and minify critical selectors from styles.css at startup."""
-    styles_path = _STATIC_DIR / "styles.css"
-    rules = tinycss2.parse_stylesheet(styles_path.read_text(), skip_comments=True, skip_whitespace=True)
-    parts: list[str] = []
-    for rule in rules:
-        if isinstance(rule, tinycss2.ast.QualifiedRule):
-            selector = tinycss2.serialize(rule.prelude).strip()
-            if _selector_is_critical(selector):
-                parts.append(tinycss2.serialize([rule]))
-        elif isinstance(rule, tinycss2.ast.AtRule) and rule.at_keyword == "media" and rule.content is not None:
-            inner = tinycss2.parse_rule_list(rule.content, skip_comments=True, skip_whitespace=True)
-            critical_inner = [
-                r
-                for r in inner
-                if isinstance(r, tinycss2.ast.QualifiedRule) and _selector_is_critical(tinycss2.serialize(r.prelude).strip())
-            ]
-            if critical_inner:
-                condition = tinycss2.serialize(rule.prelude).strip()
-                inner_css = tinycss2.serialize(critical_inner)
-                parts.append(f"@media {condition}{{{inner_css}}}")
-    raw = "".join(parts)
-    # Minify: collapse whitespace around punctuation and strip excess spaces
-    raw = re.sub(r"/\*.*?\*/", "", raw, flags=re.DOTALL)
-    raw = re.sub(r"\s+", " ", raw)
-    raw = re.sub(r"\s*([{};:,>])\s*", r"\1", raw)
-    raw = re.sub(r";\}", "}", raw)
-    return raw.strip()
 
 
 _STATIC_DIR = pathlib.Path(__file__).parent / "static"
@@ -634,7 +548,7 @@ class APIResource:
         Sets up the database connection pool and action mapping for the API.
         """
         self._bulk_data_fetcher = ScryfallBulkDataFetcher()
-        self._critical_css: str = _build_critical_css()
+        self._critical_css: str = build_critical_css(_STATIC_DIR / "styles.css")
         self._conn_pool: psycopg_pool.ConnectionPool = db_utils.make_pool()
         # Build the route table from methods marked with @route, scanning the class rather than this
         # instance so nothing assigned below can become a route. Each entry carries everything
