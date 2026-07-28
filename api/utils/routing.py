@@ -51,6 +51,26 @@ class RouteSpec:
     ignore_unknown_params: bool
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class BoundRoute:
+    """A route as registered on a live resource: what to call, and what it declared.
+
+    One entry per path, so everything dispatch needs is reached through a single lookup. These were
+    three dicts keyed by the same string, which could disagree — and did: the `static/` aliases had an
+    entry in one and not the others.
+
+    Attributes:
+        action: The wrapped handler to invoke, with request parameters bound to typed arguments.
+        positional_capacity: How many path segments beyond the action word the handler accepts.
+        spec: What the handler declared via @route. Carried whole rather than copied field by field,
+            so the flags later steps read arrive without another change here.
+    """
+
+    action: Callable[..., Any]
+    positional_capacity: float
+    spec: RouteSpec
+
+
 def route(
     *,
     methods: Sequence[str] = ("GET",),

@@ -54,7 +54,7 @@ from api.utils import db_utils, error_monitoring, multiprocessing_utils
 from api.utils.generation_cache import GenerationCache
 from api.utils.http_utils import make_user_agent
 from api.utils.param_binding import ParamCoercionError, bind_params
-from api.utils.routing import iter_marked_routes, route
+from api.utils.routing import BoundRoute, iter_marked_routes, route
 from api.utils.timer import Timer
 from api.utils.type_conversions import _get_type_name
 from card_engine import ENGINE_COLUMNS as _ENGINE_COLUMNS_FROM_MODULE
@@ -62,7 +62,7 @@ from card_engine import QueryEngine as _QueryEngine
 from card_engine import QueryError as _QueryError
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator
+    from collections.abc import Iterable, Iterator
     from multiprocessing.sharedctypes import Synchronized
     from multiprocessing.synchronize import Event as EventType
     from multiprocessing.synchronize import RLock as LockType
@@ -548,14 +548,15 @@ def _max_positional_args(func: Any) -> float:  # noqa: ANN401
     return float(sum(1 for p in params if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)))
 
 
-def _build_routes_listing(action_map: dict[str, Callable]) -> dict[str, dict[str, Any]]:
+def _build_routes_listing(route_table: dict[str, BoundRoute]) -> dict[str, dict[str, Any]]:
     """Build the {route: {doc, args, kwargs}} listing served in 404 responses.
 
-    Depends only on `action_map`'s contents, which are fixed once APIResource.__init__ finishes —
+    Depends only on the route table's contents, which are fixed once APIResource.__init__ finishes —
     computed once there rather than on every 404 (inspect.signature() per route isn't free).
     """
     routes = {}
-    for endpoint_name, wrapped_func in action_map.items():
+    for endpoint_name, entry in route_table.items():
+        wrapped_func = entry.action
         # Get the original function from the wrapper
         original_func = wrapped_func.__wrapped__ if hasattr(wrapped_func, "__wrapped__") else wrapped_func
 
@@ -635,28 +636,26 @@ class APIResource:
         self._bulk_data_fetcher = ScryfallBulkDataFetcher()
         self._critical_css: str = _build_critical_css()
         self._conn_pool: psycopg_pool.ConnectionPool = db_utils.make_pool()
-        # Build the action map from methods marked with @route, scanning the class rather than this
-        # instance so nothing assigned below can become a route. Alongside it,
-        # _action_positional_capacity records how many positional path-segment args (beyond the
-        # action word) each action accepts, and _action_methods which HTTP methods it answers —
-        # both computed once here rather than per-request in _handle.
-        self.action_map: dict[str, Callable] = {}
-        self._action_positional_capacity: dict[str, float] = {}
-        self._action_methods: dict[str, frozenset[str]] = {}
+        # Build the route table from methods marked with @route, scanning the class rather than this
+        # instance so nothing assigned below can become a route. Each entry carries everything
+        # dispatch needs — the wrapped handler, how many positional path segments it absorbs, and
+        # what it declared — computed once here rather than per-request in _handle.
+        self.routes: dict[str, BoundRoute] = {}
         for attr_name, spec in iter_marked_routes(type(self)):
             handler = getattr(self, attr_name)
-            bound = bind_params(handler)
-            capacity = _max_positional_args(handler)
+            entry = BoundRoute(
+                action=bind_params(handler),
+                positional_capacity=_max_positional_args(handler),
+                spec=spec,
+            )
             for path in spec.paths:
-                if path in self.action_map:
-                    msg = f"Route path {path!r} is claimed by both {self.action_map[path].__name__} and {attr_name}"
+                if path in self.routes:
+                    msg = f"Route path {path!r} is claimed by both {self.routes[path].action.__name__} and {attr_name}"
                     raise RuntimeError(msg)
-                self.action_map[path] = bound
-                self._action_positional_capacity[path] = capacity
-                self._action_methods[path] = spec.methods
+                self.routes[path] = entry
 
-        # Static once action_map is fully populated — see _build_routes_listing.
-        self._not_found_routes = _build_routes_listing(self.action_map)
+        # Static once the route table is fully populated — see _build_routes_listing.
+        self._not_found_routes = _build_routes_listing(self.routes)
 
         self._cache_generation: Synchronized = cache_generation or multiprocessing.Value("i", 0)
         self._query_cache: GenerationCache = GenerationCache(
@@ -701,30 +700,29 @@ class APIResource:
             raise ValueError(msg)
         cursor.execute(f"set statement_timeout = {statement_timeout}")
 
-    def _resolve_action(self, path: str) -> tuple[Callable, list[str], str | None]:
-        """Map a request path to the action that answers it.
+    def _resolve_action(self, path: str) -> tuple[BoundRoute | None, list[str]]:
+        """Map a request path to the route that answers it.
 
         Args:
             path: Request path, already stripped of surrounding slashes and with dots replaced by
                 underscores.
 
         Returns:
-            The action to call, the positional path segments to pass it, and the action_map key that
-            matched. The key is None when nothing matched, so the caller knows there are no declared
-            methods to enforce.
+            The matching route and the positional path segments to pass it, or (None, []) when the
+            path identifies nothing.
         """
-        if path in self.action_map:
+        if path in self.routes:
             # Flat routes like "static/favicon_ico" register their full slash-containing path as
-            # the action_map key — check that exact match before treating "/" as an arg separator.
-            return self.action_map[path], [], path
+            # the route key — check that exact match before treating "/" as an arg separator.
+            return self.routes[path], []
 
         action_word, *action_args = path.split("/")
-        action = self.action_map.get(action_word)
-        # A matched action that can't absorb this many trailing segments (e.g. /robots.txt/x)
+        entry = self.routes.get(action_word)
+        # A matched route that can't absorb this many trailing segments (e.g. /robots.txt/x)
         # means the path doesn't identify anything — 404, not a 400 from a TypeError inside it.
-        if action is None or len(action_args) > self._action_positional_capacity.get(action_word, 0):
-            return self._raise_not_found, [], None
-        return action, action_args, action_word
+        if entry is None or len(action_args) > entry.positional_capacity:
+            return None, []
+        return entry, action_args
 
     def _handle(self, req: falcon.Request, resp: falcon.Response) -> None:
         """Handle a Falcon request and set the response.
@@ -748,12 +746,14 @@ class APIResource:
             id(resp),
         )
 
-        action, action_args, matched_key = self._resolve_action(path.replace(".", "_"))
-
-        # A route answers only the methods it declares. Checked after the path resolves, so a path
-        # that identifies nothing stays a 404 rather than reporting which methods it would accept.
-        if matched_key is not None and req.method not in self._action_methods[matched_key]:
-            raise falcon.HTTPMethodNotAllowed(allowed_methods=sorted(self._action_methods[matched_key]))
+        entry, action_args = self._resolve_action(path.replace(".", "_"))
+        action = self._raise_not_found
+        if entry is not None:
+            # A route answers only the methods it declares. Checked after the path resolves, so a
+            # path that identifies nothing stays a 404 rather than reporting what it would accept.
+            if req.method not in entry.spec.methods:
+                raise falcon.HTTPMethodNotAllowed(allowed_methods=sorted(entry.spec.methods))
+            action = entry.action
 
         res = None
         before = time.monotonic()

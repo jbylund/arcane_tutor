@@ -26,7 +26,25 @@ from api.api_resource import (
 )
 from api.enums import ResponseShape
 from api.settings import settings
-from api.utils.routing import route
+from api.utils.routing import BoundRoute, RouteSpec, route
+
+
+def make_bound_route(action: object, *, path: str = "search", positional_capacity: float = 0.0) -> BoundRoute:
+    """Build a route table entry around a stub handler, for tests that patch the table wholesale.
+
+    Args:
+        action: The stub to dispatch to.
+        path: Path the stub claims.
+        positional_capacity: How many trailing path segments it absorbs.
+
+    Returns:
+        An entry shaped like the ones __init__ builds.
+    """
+    return BoundRoute(
+        action=action,
+        positional_capacity=positional_capacity,
+        spec=RouteSpec(paths=(path,), methods=frozenset({"GET", "HEAD"}), advertise=True, ignore_unknown_params=False),
+    )
 
 
 def create_test_card(  # noqa: PLR0913, PLR0917
@@ -152,9 +170,9 @@ class TestAPIResourceInitializationNewStyle(TestBaseAPIResourceTest):
         assert api_resource._conn_pool == self.mock_conn_pool
 
         # Check that action map is populated
-        assert "get_pid" in api_resource.action_map
-        assert "search" in api_resource.action_map
-        assert "index" in api_resource.action_map
+        assert "get_pid" in api_resource.routes
+        assert "search" in api_resource.routes
+        assert "index" in api_resource.routes
 
         # Check that caches are initialized
         assert hasattr(api_resource, "_query_cache")
@@ -170,15 +188,19 @@ class TestAPIResourceInitializationNewStyle(TestBaseAPIResourceTest):
 
         assert api_resource._import_guard == custom_guard
 
-    def test_action_map_includes_all_public_methods(self) -> None:
-        """Test that action_map includes all public methods."""
+    def test_every_public_method_is_still_registered(self) -> None:
+        """Test the marker migration left no previously-routed method behind.
+
+        Registration used to take every public callable. This pins that the same set is reachable
+        now that each one has to opt in; step 3 is where that stops being true on purpose.
+        """
         api_resource = self.api_resource
         public_methods = [
             method for method in dir(api_resource) if not method.startswith("_") and callable(getattr(api_resource, method))
         ]
 
         for method in public_methods:
-            assert method in api_resource.action_map
+            assert method in api_resource.routes
 
 
 class TestRequestDispatch(TestBaseAPIResourceTest):
@@ -248,7 +270,7 @@ class TestRequestDispatch(TestBaseAPIResourceTest):
         # get_catalog's falcon_response is keyword-only, so the route has no positional capacity.
         # While it was positional the segment was absorbed and then silently overwritten by the
         # injected response, so a path identifying nothing still returned 200.
-        assert self.api_resource._action_positional_capacity["get_catalog"] == 0
+        assert self.api_resource.routes["get_catalog"].positional_capacity == 0
         with pytest.raises(falcon.HTTPNotFound):
             self._dispatch("/get_catalog/foo")
 
@@ -269,8 +291,8 @@ class TestRequestDispatch(TestBaseAPIResourceTest):
         assert "limit" in exc_info.value.description
 
     def test_positional_capacity_computed_at_init_not_per_request(self) -> None:
-        assert self.api_resource._action_positional_capacity["get_pid"] == 0
-        assert self.api_resource._action_positional_capacity["card"] == 2
+        assert self.api_resource.routes["get_pid"].positional_capacity == 0
+        assert self.api_resource.routes["card"].positional_capacity == 2
 
     def test_not_found_routes_precomputed_not_rebuilt_per_request(self) -> None:
         # _not_found_routes is built once in __init__ (see _build_routes_listing) from the fixed
@@ -400,7 +422,7 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
             raise TypeError(msg)
 
         # Patch the action_map directly to include our mock
-        with patch.object(self.api_resource, "action_map", {"search": mock_action_that_raises_type_error}):
+        with patch.object(self.api_resource, "routes", {"search": make_bound_route(mock_action_that_raises_type_error)}):
             with pytest.raises(falcon.HTTPBadRequest):
                 self.api_resource._handle(mock_req, mock_resp)
 
@@ -418,7 +440,7 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
             raise Exception(msg)
 
         # Mock search method to raise a general exception
-        with patch.object(self.api_resource, "action_map", {"search": raise_error}):
+        with patch.object(self.api_resource, "routes", {"search": make_bound_route(raise_error)}):
             with patch("api.api_resource.error_monitoring.error_handler") as mock_error_handler:
                 with pytest.raises(falcon.HTTPInternalServerError):
                     self.api_resource._handle(mock_req, mock_resp)
@@ -446,7 +468,7 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
             msg = f"Test error touching {db_password}"
             raise RuntimeError(msg)
 
-        with patch.object(self.api_resource, "action_map", {"search": raise_error}):
+        with patch.object(self.api_resource, "routes", {"search": make_bound_route(raise_error)}):
             with patch("api.api_resource.error_monitoring.error_handler"):
                 with pytest.raises(falcon.HTTPInternalServerError) as excinfo:
                     self.api_resource._handle(mock_req, mock_resp)
@@ -669,9 +691,9 @@ class TestAPIResourceStaticFileServing(unittest.TestCase):
         # One @route(paths=(...)) registers both the bare name and the static/ alias, so they are the
         # same wrapper over the same handler. The alias used to be registered as the unwrapped method,
         # which meant the two paths did not bind parameters the same way.
-        aliased = self.api_resource.action_map["static/social-preview_webp"]
-        assert aliased is self.api_resource.action_map["social_preview_webp"]
-        assert aliased.__wrapped__ == self.api_resource.social_preview_webp
+        aliased = self.api_resource.routes["static/social-preview_webp"]
+        assert aliased is self.api_resource.routes["social_preview_webp"]
+        assert aliased.action.__wrapped__ == self.api_resource.social_preview_webp
 
         self.api_resource.social_preview_webp(falcon_response=mock_response)
 

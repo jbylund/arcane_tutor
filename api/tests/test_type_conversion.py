@@ -120,11 +120,11 @@ class TestTypeConversion:
             )
 
             # Check that import_oracle_tags is wrapped
-            assert "import_oracle_tags" in api_resource.action_map
+            assert "import_oracle_tags" in api_resource.routes
 
             # The wrapped function should be different from the original
             original_method = api_resource.import_oracle_tags
-            wrapped_method = api_resource.action_map["import_oracle_tags"]
+            wrapped_method = api_resource.routes["import_oracle_tags"].action
 
             # They should not be the same function object
             assert wrapped_method is not original_method
