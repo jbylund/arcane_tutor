@@ -24,13 +24,10 @@ from __future__ import annotations
 import enum
 import functools
 import inspect
-import logging
 import types
 import typing
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
-
-logger = logging.getLogger(__name__)
 
 
 class UnresolvableAnnotationError(TypeError):
@@ -87,6 +84,12 @@ def _convert_to_str_list(raw: str) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+# Longest client-supplied value echoed back in an error message. The message reaches both the 400 body
+# and an INFO log record, so an unbounded value lets one request amplify into a large response and a
+# large log line. Long enough to show a plausible mistake in full, short enough to be harmless.
+MAX_ECHOED_VALUE_LEN = 80
+
+
 class ParamCoercionError(ValueError):
     """A request parameter's value is not valid for the type its handler declares.
 
@@ -108,8 +111,17 @@ class ParamCoercionError(ValueError):
         self.value = value
         self.expected = expected
         self.allowed = allowed
-        detail = f" (expected one of: {', '.join(allowed)})" if allowed else f" (expected {expected})"
-        super().__init__(f"Invalid value for {param!r}: {value!r}{detail}")
+        detail = f" (expected {expected})"
+        if allowed:
+            detail = f" (expected one of: {', '.join(allowed)})"
+
+        # `value` is kept whole on the attribute for internal callers; only the rendered message, which
+        # is what gets reflected and logged, is bounded.
+        shown = value
+        if len(shown) > MAX_ECHOED_VALUE_LEN:
+            shown = shown[:MAX_ECHOED_VALUE_LEN] + "…"
+
+        super().__init__(f"Invalid value for {param!r}: {shown!r}{detail}")
 
 
 def _unwrap_optional(hint: Any) -> Any:  # noqa: ANN401

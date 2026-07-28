@@ -16,6 +16,7 @@ import pytest
 
 from api.enums import CardOrdering, PreferOrder, SortDirection, UniqueOn
 from api.utils.param_binding import (
+    MAX_ECHOED_VALUE_LEN,
     ParamBinder,
     ParamCoercionError,
     UnresolvableAnnotationError,
@@ -139,6 +140,19 @@ class TestRejection:
             ParamBinder(handler).bind((), {"orderby": "nonsense"})
         assert exc_info.value.allowed == tuple(member.value for member in CardOrdering)
         assert "cmc" in str(exc_info.value)
+
+    def test_long_values_are_truncated_in_the_message(self) -> None:
+        """Test an oversized value does not become an oversized 400 body and log line.
+
+        The message is both reflected to the client and logged at INFO, so it is bounded; the full
+        value stays on the attribute for internal callers.
+        """
+        raw = "x" * 5000
+        with pytest.raises(ParamCoercionError) as exc_info:
+            ParamBinder(handler).bind((), {"limit": raw})
+        assert exc_info.value.value == raw
+        assert len(str(exc_info.value)) < 2 * MAX_ECHOED_VALUE_LEN
+        assert str(exc_info.value).endswith("…' (expected int)")
 
     def test_unknown_string_parameters_are_tolerated(self) -> None:
         """Test query noise is dropped rather than rejected.

@@ -192,8 +192,8 @@ class TestRequestDispatch(TestBaseAPIResourceTest):
     inside the handler rather than being recognized as "no route matches this" beforehand.
     """
 
-    def _dispatch(self, path: str) -> falcon.Response:
-        req = falcon.Request(falcon.testing.create_environ(path=path))
+    def _dispatch(self, path: str, query_string: str = "") -> falcon.Response:
+        req = falcon.Request(falcon.testing.create_environ(path=path, query_string=query_string))
         resp = falcon.Response()
         self.api_resource._handle(req, resp)
         return resp
@@ -224,6 +224,30 @@ class TestRequestDispatch(TestBaseAPIResourceTest):
         # should 404 rather than reach the handler.
         with pytest.raises(falcon.HTTPNotFound):
             self._dispatch("/card/eoc/104/extra")
+
+    def test_keyword_only_injection_route_with_extra_segment_raises_not_found(self) -> None:
+        # get_catalog's falcon_response is keyword-only, so the route has no positional capacity.
+        # While it was positional the segment was absorbed and then silently overwritten by the
+        # injected response, so a path identifying nothing still returned 200.
+        assert self.api_resource._action_positional_capacity["get_catalog"] == 0
+        with pytest.raises(falcon.HTTPNotFound):
+            self._dispatch("/get_catalog/foo")
+
+    def test_unconvertible_enum_query_value_is_rejected(self) -> None:
+        # orderby is annotated CardOrdering. The raw string used to reach the handler unconverted;
+        # binding now rejects it before the handler runs.
+        with pytest.raises(falcon.HTTPBadRequest) as exc_info:
+            self._dispatch("/search", query_string="q=bolt&orderby=nonsense")
+        assert exc_info.value.title == "Invalid Parameter"
+        assert "orderby" in exc_info.value.description
+        assert "edhrec" in exc_info.value.description  # the message names what the enum accepts
+
+    def test_unconvertible_int_query_value_is_rejected(self) -> None:
+        # Not enum-specific: any declared type that a raw string cannot satisfy is a 400 now.
+        with pytest.raises(falcon.HTTPBadRequest) as exc_info:
+            self._dispatch("/search", query_string="q=bolt&limit=abc")
+        assert exc_info.value.title == "Invalid Parameter"
+        assert "limit" in exc_info.value.description
 
     def test_positional_capacity_computed_at_init_not_per_request(self) -> None:
         assert self.api_resource._action_positional_capacity["get_pid"] == 0
