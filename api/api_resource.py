@@ -54,6 +54,7 @@ from api.utils import db_utils, error_monitoring, multiprocessing_utils
 from api.utils.generation_cache import GenerationCache
 from api.utils.http_utils import make_user_agent
 from api.utils.param_binding import ParamCoercionError, bind_params
+from api.utils.routing import iter_marked_routes, route
 from api.utils.timer import Timer
 from api.utils.type_conversions import _get_type_name
 from card_engine import ENGINE_COLUMNS as _ENGINE_COLUMNS_FROM_MODULE
@@ -634,38 +635,25 @@ class APIResource:
         self._bulk_data_fetcher = ScryfallBulkDataFetcher()
         self._critical_css: str = _build_critical_css()
         self._conn_pool: psycopg_pool.ConnectionPool = db_utils.make_pool()
-        # Create action map with type-converting wrappers for all public methods. Alongside it,
+        # Build the action map from methods marked with @route, scanning the class rather than this
+        # instance so nothing assigned below can become a route. Alongside it,
         # _action_positional_capacity records how many positional path-segment args (beyond the
-        # action word) each action accepts, computed once here rather than per-request in
-        # _handle — see _max_positional_args.
-        self.action_map = {}
+        # action word) each action accepts, and _action_methods which HTTP methods it answers —
+        # both computed once here rather than per-request in _handle.
+        self.action_map: dict[str, Callable] = {}
         self._action_positional_capacity: dict[str, float] = {}
-        for method_name in dir(self):
-            if method_name.startswith("_"):
-                continue
-            method = getattr(self, method_name)
-            if callable(method):
-                self.action_map[method_name] = bind_params(method)
-                self._action_positional_capacity[method_name] = _max_positional_args(method)
-        self.action_map["_root"] = bind_params(self._root)
-        self._action_positional_capacity["_root"] = _max_positional_args(self._root)
-
-        def redirect_to_root(**_: object) -> None:
-            msg = "/"
-            raise falcon.HTTPMovedPermanently(msg)
-
-        self.action_map["index"] = redirect_to_root
-        self.action_map["index_html"] = redirect_to_root
-        self._action_positional_capacity["index"] = _max_positional_args(redirect_to_root)
-        self._action_positional_capacity["index_html"] = _max_positional_args(redirect_to_root)
-
-        # add static file serving actions
-        self.action_map["static/app_js"] = self.app_js
-        self.action_map["static/app_min_js"] = self.app_min_js
-        self.action_map["static/card_js"] = self.card_js
-        self.action_map["static/favicon_ico"] = self.favicon_ico
-        self.action_map["static/social-preview_webp"] = self.social_preview_webp
-        self.action_map["static/styles_css"] = self.styles_css
+        self._action_methods: dict[str, frozenset[str]] = {}
+        for attr_name, spec in iter_marked_routes(type(self)):
+            handler = getattr(self, attr_name)
+            bound = bind_params(handler)
+            capacity = _max_positional_args(handler)
+            for path in spec.paths:
+                if path in self.action_map:
+                    msg = f"Route path {path!r} is claimed by both {self.action_map[path].__name__} and {attr_name}"
+                    raise RuntimeError(msg)
+                self.action_map[path] = bound
+                self._action_positional_capacity[path] = capacity
+                self._action_methods[path] = spec.methods
 
         # Static once action_map is fully populated — see _build_routes_listing.
         self._not_found_routes = _build_routes_listing(self.action_map)
@@ -713,6 +701,31 @@ class APIResource:
             raise ValueError(msg)
         cursor.execute(f"set statement_timeout = {statement_timeout}")
 
+    def _resolve_action(self, path: str) -> tuple[Callable, list[str], str | None]:
+        """Map a request path to the action that answers it.
+
+        Args:
+            path: Request path, already stripped of surrounding slashes and with dots replaced by
+                underscores.
+
+        Returns:
+            The action to call, the positional path segments to pass it, and the action_map key that
+            matched. The key is None when nothing matched, so the caller knows there are no declared
+            methods to enforce.
+        """
+        if path in self.action_map:
+            # Flat routes like "static/favicon_ico" register their full slash-containing path as
+            # the action_map key — check that exact match before treating "/" as an arg separator.
+            return self.action_map[path], [], path
+
+        action_word, *action_args = path.split("/")
+        action = self.action_map.get(action_word)
+        # A matched action that can't absorb this many trailing segments (e.g. /robots.txt/x)
+        # means the path doesn't identify anything — 404, not a 400 from a TypeError inside it.
+        if action is None or len(action_args) > self._action_positional_capacity.get(action_word, 0):
+            return self._raise_not_found, [], None
+        return action, action_args, action_word
+
     def _handle(self, req: falcon.Request, resp: falcon.Response) -> None:
         """Handle a Falcon request and set the response.
 
@@ -735,19 +748,13 @@ class APIResource:
             id(resp),
         )
 
-        path = path.replace(".", "_")
-        if path in self.action_map:
-            # Flat routes like "static/favicon_ico" register their full slash-containing path as
-            # the action_map key — check that exact match before treating "/" as an arg separator.
-            action = self.action_map[path]
-            action_args: list[str] = []
-        else:
-            action_word, *action_args = path.split("/")
-            action = self.action_map.get(action_word, self._raise_not_found)
-            # A matched action that can't absorb this many trailing segments (e.g. /robots.txt/x)
-            # means the path doesn't identify anything — 404, not a 400 from a TypeError inside it.
-            if len(action_args) > self._action_positional_capacity.get(action_word, 0):
-                action, action_args = self._raise_not_found, []
+        action, action_args, matched_key = self._resolve_action(path.replace(".", "_"))
+
+        # A route answers only the methods it declares. Checked after the path resolves, so a path
+        # that identifies nothing stays a 404 rather than reporting which methods it would accept.
+        if matched_key is not None and req.method not in self._action_methods[matched_key]:
+            raise falcon.HTTPMethodNotAllowed(allowed_methods=sorted(self._action_methods[matched_key]))
+
         res = None
         before = time.monotonic()
         try:
@@ -765,6 +772,13 @@ class APIResource:
             raise falcon.HTTPBadRequest(description=str(oops)) from oops
         except falcon.HTTPError as oops:
             logger.error("Error handling request for %s: %s", path, oops, exc_info=True)
+            raise
+        except falcon.HTTPStatus:
+            # Not an error, so deliberately not folded into the HTTPError branch above and its
+            # error-level traceback. HTTPStatus is Falcon's "return this status as-is" signal — how a
+            # redirect and a 304 are expressed — and it is a sibling of HTTPError, not a subclass. It
+            # only has to reach Falcon, which the generic handler below would otherwise prevent by
+            # turning it into a 500.
             raise
         except Exception as oops:
             logger.error("Error handling request: %s", oops, exc_info=True)
@@ -872,6 +886,7 @@ class APIResource:
 
         return copy.deepcopy(result)
 
+    @route()
     def get_pid(self, *, falcon_response: falcon.Response | None = None, **_: object) -> int:
         """Just return the pid of the process which served this request.
 
@@ -883,6 +898,7 @@ class APIResource:
         set_no_store_header(falcon_response)
         return os.getpid()
 
+    @route()
     def setup_schema(self, *_: object, **__: object) -> None:
         """Set up the database schema and apply migrations as needed."""
         if self._schema_setup_event.is_set():
@@ -1127,6 +1143,7 @@ class APIResource:
     @cached(
         cache=TTLCache(maxsize=1, global_ttl=MIN_IMPORT_INTERVAL),
     )
+    @route()
     def import_data(self, **_: object) -> None:
         """Import data from Scryfall and insert into the database."""
         before = time.monotonic()
@@ -1180,6 +1197,7 @@ class APIResource:
                 )
         return resolved
 
+    @route()
     def search(  # noqa: PLR0913
         self,
         *,
@@ -1559,6 +1577,17 @@ class APIResource:
             "total_cards": total_cards,
         }
 
+    @route(paths=("index", "index_html"))
+    def _redirect_to_root(self, **_: object) -> None:
+        """Send the legacy index paths to /.
+
+        Raises:
+            falcon.HTTPMovedPermanently: Always; these paths exist only to redirect.
+        """
+        msg = "/"
+        raise falcon.HTTPMovedPermanently(msg)
+
+    @route()
     def _root(  # noqa: PLR0913
         self,
         *,
@@ -1646,6 +1675,7 @@ class APIResource:
         falcon_response.text = html_content
         falcon_response.content_type = "text/html"
 
+    @route()
     def prefer_score_tuner(self, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
         """Return the prefer score tuner page.
 
@@ -1657,6 +1687,7 @@ class APIResource:
         self._serve_static_file(filename="prefer_score_tuner.html", falcon_response=falcon_response)
         falcon_response.content_type = "text/html"
 
+    @route(paths=("favicon_ico", "static/favicon_ico"))
     def favicon_ico(self, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
         """Return the favicon.ico file.
 
@@ -1676,6 +1707,7 @@ class APIResource:
         # Cache favicon for 7 days - it rarely changes
         set_cache_header(falcon_response, duration=timedelta(days=7))
 
+    @route(paths=("social_preview_webp", "static/social-preview_webp"))
     def social_preview_webp(self, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
         """Return the social preview image."""
         if falcon_response is None:
@@ -1688,6 +1720,7 @@ class APIResource:
         falcon_response.headers["content-length"] = len(contents)
         set_cache_header(falcon_response, duration=timedelta(days=30))
 
+    @route(paths=("styles_css", "static/styles_css"))
     def styles_css(self, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
         """Return the styles.css file.
 
@@ -1701,6 +1734,7 @@ class APIResource:
         falcon_response.content_type = "text/css"
         set_cache_header(falcon_response, duration=timedelta(days=30))
 
+    @route(paths=("app_js", "static/app_js"))
     def app_js(self, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
         """Return the app.js file.
 
@@ -1715,6 +1749,7 @@ class APIResource:
         # Cache JavaScript for 1 hour - it changes infrequently
         set_cache_header(falcon_response, duration=timedelta(hours=1))
 
+    @route(paths=("app_min_js", "static/app_min_js"))
     def app_min_js(self, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
         """Return the app.min.js file.
 
@@ -1728,6 +1763,7 @@ class APIResource:
         falcon_response.content_type = "application/javascript"
         set_cache_header(falcon_response, duration=timedelta(days=30))
 
+    @route()
     def robots_txt(self, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
         """Return the robots.txt file."""
         if falcon_response is None:
@@ -1735,6 +1771,7 @@ class APIResource:
         self._serve_static_file(filename="robots.txt", falcon_response=falcon_response)
         falcon_response.content_type = "text/plain"
 
+    @route(paths=("card_js", "static/card_js"))
     def card_js(self, *, falcon_response: falcon.Response | None = None, **_: object) -> None:
         """Return the card.js file.
 
@@ -1748,6 +1785,7 @@ class APIResource:
         falcon_response.content_type = "application/javascript"
         set_cache_header(falcon_response, duration=timedelta(hours=1))
 
+    @route()
     def card(
         self,
         set_code: str = "",
@@ -1798,6 +1836,7 @@ class APIResource:
             falcon_response.status = falcon.HTTP_500
             falcon_response.text = f"Error reading file {filename}: {e}"
 
+    @route()
     def get_migrations(self, **_: object) -> list[dict[str, str]]:
         """Get the migrations from the filesystem.
 
@@ -1808,6 +1847,7 @@ class APIResource:
         """
         return db_utils.get_migrations()
 
+    @route()
     def get_catalog(
         self,
         *,
@@ -1837,12 +1877,14 @@ class APIResource:
             "keywords": dict(sorted(keyword_catalog.items())),
         }
 
+    @route()
     def get_common_keywords(self, **_: object) -> list[dict[str, Any]]:
         """Get the common keywords from the database."""
         return self._run_query(
             query=db_utils.read_sql("get_common_keywords"),
         )["result"]
 
+    @route()
     def backfill_prefer_scores(self, **_: object) -> dict[str, Any]:
         """Backfill prefer_score and prefer_score_components for all cards.
 
@@ -1977,6 +2019,7 @@ class APIResource:
 
         return total_updated
 
+    @route()
     def backfill_cubecobra_scores(self, **_: object) -> dict[str, Any]:
         """Backfill cubecobra_score for all cards.
 
@@ -2017,6 +2060,7 @@ class APIResource:
             "weights": weights,
         }
 
+    @route()
     def ingest_cubecobra(self, **_: object) -> dict[str, Any]:
         """Fetch card data from CubeCobra and store it in magic.cards.
 
@@ -2200,6 +2244,7 @@ class APIResource:
             "message": f"Successfully updated {updated_count} printings with is:{is_tag}",
         }
 
+    @route()
     def discover_is_tags_from_syntax(self, **_: object) -> list[str]:
         """Discover all available is: tags from Scryfall syntax documentation.
 
@@ -2230,14 +2275,17 @@ class APIResource:
         logger.info("Discovered %d unique is: tags from Scryfall syntax", len(unique_is_tags))
         return unique_is_tags
 
+    @route()
     def import_oracle_tags(self, **_: object) -> dict[str, Any]:
         """Import oracle tags from Scryfall bulk data into oracle_tags, oracle_tag_relationships, and card_oracle_tags."""
         return _import_oracle_tags(self._conn_pool, self._bulk_data_fetcher)
 
+    @route()
     def import_art_tags(self, **_: object) -> dict[str, Any]:
         """Import art tags from Scryfall bulk data into art_tags, art_tag_relationships, and card_art_tags."""
         return _import_art_tags(self._conn_pool, self._bulk_data_fetcher)
 
+    @route()
     def import_all_is_tags(self, **_: object) -> dict[str, Any]:
         """Discover and import all is: tags from Scryfall syntax documentation.
 
@@ -2319,6 +2367,7 @@ class APIResource:
 
         return result
 
+    @route()
     def import_card_by_name(
         self,
         *,
@@ -2359,6 +2408,7 @@ class APIResource:
         # Use import_cards_by_search with exact name query
         return self.import_cards_by_search(search_query=f'!"{card_name}"')
 
+    @route()
     def import_cards_by_search(
         self,
         *,
@@ -2588,6 +2638,7 @@ class APIResource:
         with self._cache_generation.get_lock():
             self._cache_generation.value += 1
 
+    @route()
     def random_search(
         self,
         *,

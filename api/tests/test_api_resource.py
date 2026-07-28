@@ -26,6 +26,7 @@ from api.api_resource import (
 )
 from api.enums import ResponseShape
 from api.settings import settings
+from api.utils.routing import route
 
 
 def create_test_card(  # noqa: PLR0913, PLR0917
@@ -225,6 +226,24 @@ class TestRequestDispatch(TestBaseAPIResourceTest):
         with pytest.raises(falcon.HTTPNotFound):
             self._dispatch("/card/eoc/104/extra")
 
+    def test_two_routes_claiming_one_path_fail_at_construction(self) -> None:
+        # Registration is fail-closed both ways: an unmarked method is not routed, and a path two
+        # methods both claim is a startup error rather than one silently shadowing the other.
+        class Colliding(APIResource):
+            @route(paths=("search",))
+            def shadows_search(self, **_: object) -> None: ...
+
+        with pytest.raises(RuntimeError, match="claimed by both"):
+            Colliding(last_import_time=multiprocessing.Value("d", time.time(), lock=True))
+
+    def test_index_paths_redirect_instead_of_erroring(self) -> None:
+        # falcon.HTTPMovedPermanently subclasses HTTPStatus, which is a sibling of HTTPError rather
+        # than a subclass, so the generic `except Exception` swallowed the redirect and returned a
+        # 500. Falcon turns the propagated signal into a 301.
+        for path in ("/index", "/index.html"):
+            with pytest.raises(falcon.HTTPMovedPermanently):
+                self._dispatch(path)
+
     def test_keyword_only_injection_route_with_extra_segment_raises_not_found(self) -> None:
         # get_catalog's falcon_response is keyword-only, so the route has no positional capacity.
         # While it was positional the segment was absorbed and then silently overwritten by the
@@ -312,6 +331,7 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
     def test_handle_returns_early_if_response_complete(self) -> None:
         """Test _handle returns early if response is already complete."""
         mock_req = MagicMock()
+        mock_req.method = "GET"
         mock_req.path = mock_req.relative_uri = "/test"
         mock_resp = MagicMock()
         mock_resp.complete = True
@@ -323,6 +343,7 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
     def test_handle_processes_valid_paths(self) -> None:
         """Test _handle processes valid paths correctly."""
         mock_req = MagicMock()
+        mock_req.method = "GET"
         mock_req.uri = mock_req.path = mock_req.relative_uri = "/get_pid"
         mock_req.params = {}
         mock_resp = MagicMock()
@@ -337,6 +358,7 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
     def test_handle_raises_not_found_for_invalid_paths(self) -> None:
         """Test _handle raises HTTPNotFound for invalid paths."""
         mock_req = MagicMock()
+        mock_req.method = "GET"
         mock_req.uri = mock_req.path = mock_req.relative_uri = "/nonexistent"
         mock_req.params = {}
         mock_resp = MagicMock()
@@ -348,6 +370,7 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
     def test_disallowed_query_params_do_not_cause_type_error(self) -> None:
         """Query params named after internal kwargs must be stripped before dispatch."""
         mock_req = MagicMock()
+        mock_req.method = "GET"
         mock_req.path = mock_req.relative_uri = "/"
         mock_req.params = {"falcon_response": "injected", "request_host": "evil.com"}
         mock_req.host = "localhost"
@@ -363,6 +386,7 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
     def test_handle_handles_type_errors(self) -> None:
         """Test _handle handles TypeError exceptions."""
         mock_req = MagicMock()
+        mock_req.method = "GET"
         mock_req.uri = mock_req.path = mock_req.relative_uri = "/search"
         mock_req.params = {"invalid_param": "value"}
         mock_resp = MagicMock()
@@ -383,6 +407,7 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
     def test_handle_handles_general_exceptions(self) -> None:
         """Test _handle handles general exceptions."""
         mock_req = MagicMock()
+        mock_req.method = "GET"
         mock_req.uri = mock_req.path = mock_req.relative_uri = "/search"
         mock_req.params = {}
         mock_resp = MagicMock()
@@ -409,6 +434,7 @@ class TestAPIResourceRequestHandling(unittest.TestCase):
         regression, which is why it is asserted on the response rather than on the validation.
         """
         mock_req = MagicMock()
+        mock_req.method = "GET"
         mock_req.uri = mock_req.path = mock_req.relative_uri = "/search"
         mock_req.params = {}
         mock_resp = MagicMock()
@@ -479,6 +505,7 @@ class TestSearchResponseShape(TestBaseAPIResourceTest):
     def test_handle_converts_shape_query_param(self) -> None:
         """The string 'columnar' from the query string is converted to the enum."""
         mock_req = MagicMock()
+        mock_req.method = "GET"
         mock_req.uri = mock_req.path = mock_req.relative_uri = "/search"
         mock_req.params = {"q": "test", "shape": "columnar"}
         mock_req.get_header.return_value = None
@@ -639,7 +666,13 @@ class TestAPIResourceStaticFileServing(unittest.TestCase):
         mock_response = MagicMock()
         mock_response.headers = {}
 
-        assert self.api_resource.action_map["static/social-preview_webp"] == self.api_resource.social_preview_webp
+        # One @route(paths=(...)) registers both the bare name and the static/ alias, so they are the
+        # same wrapper over the same handler. The alias used to be registered as the unwrapped method,
+        # which meant the two paths did not bind parameters the same way.
+        aliased = self.api_resource.action_map["static/social-preview_webp"]
+        assert aliased is self.api_resource.action_map["social_preview_webp"]
+        assert aliased.__wrapped__ == self.api_resource.social_preview_webp
+
         self.api_resource.social_preview_webp(falcon_response=mock_response)
 
         expected_contents = (pathlib.Path(__file__).parent.parent / "static" / "social-preview.webp").read_bytes()
