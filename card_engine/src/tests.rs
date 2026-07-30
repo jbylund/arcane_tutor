@@ -5,7 +5,7 @@ use super::{
     assign_artwork_groups, build_bit_planes, build_border_printing_planes, build_rarity_printing_planes, build_divergent_ids, build_name_bigram_index, build_printing_to_card, flavor_fingerprint, flavor_match_sets,
     cards_of_printings, count_common_keywords, count_common_types,
     build_artist_index, build_range_index, build_arith_tuple_index, is_arith_tuple_route, range_candidates, narrow_candidates, narrow_candidates_exact, rarity_candidates,
-    range_too_broad_to_narrow, run_query, run_query_with_plan, explain, explain_analyze, PlanEstimate, PlanTrial,
+    range_too_broad_to_narrow, run_query, run_query_with_plan, explain, explain_analyze, AcquireFacts, PlanEstimate, PlanTrial,
     PhysicalPlan, ComposePaging, trigram_candidates, finalize_trigram_index, PrintingRangeIndex, NARROW_FLOOR,
     gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
     walk_printing_page, aligned_page, bare_range_bounds, probe_range_k, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
@@ -3058,8 +3058,41 @@ fn explain_reports_ranked_applicable_plans() {
             let (pe, mut filter) = split_planes(
                 fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, matches!(mode, Mode::Card),
             );
-            let estimates: Vec<PlanEstimate> = explain(
+            let (facts, estimates): (AcquireFacts, Vec<PlanEstimate>) = explain(
                 &QueryCtx::from(archived), &explain_params(mode, 60), &mut filter, pe.as_ref(),
+            );
+
+            // The acquire facts every plan in this call shares. `eval_domain` is what a
+            // caller filters on to decide whether a query exercises a given code path,
+            // so it must be a real count in range, not a placeholder.
+            // The three `Prep::Range` labels are reported individually rather than as "range":
+            // that variant covers a bare range, a card-range popcount and a printing compose,
+            // and collapsing them made a compose look like a range index probe.
+            assert!(
+                matches!(
+                    facts.count_source,
+                    "plane" | "candidates" | "card_range_popcount" | "printing_range_scan" | "printing_compose"
+                ),
+                "unknown count_source {:?} ({mode_label}, {})", facts.count_source, fuzz_describe(spec),
+            );
+            assert_eq!(facts.n_cards, archived.cards.len() as u32, "n_cards must be the corpus size");
+            assert!(
+                facts.eval_domain <= facts.n_cards,
+                "eval_domain {} exceeds n_cards {} ({mode_label}, {})", facts.eval_domain, facts.n_cards, fuzz_describe(spec),
+            );
+            assert_eq!(facts.acquire_ns.len(), 1, "explain() reports exactly one acquire sample");
+            // `none` is legitimate for a candidate-acquired query — the residual narrowing can
+            // produce nothing and leave the plane bitmap as the whole candidate list, which is
+            // itself a "no sort happened" signal. What must hold is that the label is real, and
+            // that the two preps which materialize no candidate list never claim otherwise.
+            assert!(
+                matches!(facts.narrowed_repr, "none" | "cards" | "printings" | "card_bits" | "printing_bits"),
+                "unknown narrowed_repr {:?} ({mode_label}, {})", facts.narrowed_repr, fuzz_describe(spec),
+            );
+            assert!(
+                facts.count_source == "candidates" || facts.narrowed_repr == "none",
+                "{:?}-acquired query reported narrowed_repr {:?} ({mode_label}, {})",
+                facts.count_source, facts.narrowed_repr, fuzz_describe(spec),
             );
 
             assert!(!estimates.is_empty(), "GatheredScan is always applicable ({mode_label}, {})", fuzz_describe(spec));
@@ -3071,6 +3104,25 @@ fn explain_reports_ranked_applicable_plans() {
                 estimates.windows(2).all(|w| w[0].predicted_ns <= w[1].predicted_ns),
                 "explain() not sorted ascending ({mode_label}, {})", fuzz_describe(spec),
             );
+            // Exactly one plan is the router's pick, and it is the cheapest predicted — i.e. index
+            // 0 after the sort. A caller must never need to re-derive this.
+            assert_eq!(
+                estimates.iter().filter(|e| e.picked).count(), 1,
+                "exactly one plan must be marked picked ({mode_label}, {})", fuzz_describe(spec),
+            );
+            assert!(estimates[0].picked, "the picked plan must be index 0 ({mode_label}, {})", fuzz_describe(spec));
+            // The materialization term is REPORTED, never folded into predicted_ns — folding it in
+            // would change routing, which cost.rs's "Candidate materialization" section declines to
+            // do until the term is validated. Non-materializing plans must report exactly 0.
+            for e in &estimates {
+                assert!(e.materialize_ns >= 0.0 && e.materialize_ns.is_finite(), "bad materialize_ns for {:?}", e.plan);
+                let materializes = matches!(e.plan, PhysicalPlan::StreamedSelect | PhysicalPlan::GatheredScan);
+                assert_eq!(
+                    e.materialize_ns > 0.0, materializes,
+                    "{:?} materialize_ns {} contradicts whether it builds a candidate list",
+                    e.plan, e.materialize_ns,
+                );
+            }
             for e in &estimates {
                 assert!(e.predicted_ns.is_finite() && e.predicted_ns >= 0.0, "non-finite/negative predicted_ns for {:?}", e.plan);
             }
@@ -3102,20 +3154,36 @@ fn explain_analyze_matches_explain_and_times_every_plan() {
     let (ref_pe, mut ref_filter) = split_planes(
         bound.clone(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true,
     );
-    let reference: Vec<PlanEstimate> = explain(
+    let (ref_facts, reference): (AcquireFacts, Vec<PlanEstimate>) = explain(
         &QueryCtx::from(archived), &explain_params(Mode::Card, 60), &mut ref_filter, ref_pe.as_ref(),
     );
 
     let (pe, filter) = split_planes(bound, &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
-    let trials: Vec<PlanTrial> = explain_analyze(
+    let (facts, trials): (AcquireFacts, Vec<PlanTrial>) = explain_analyze(
         &QueryCtx::from(archived), &QueryParams::from_strs("card", "default", "edhrec", "asc", 60, 0),
         &filter, pe.as_ref(), NUM_WARMUPS, NUM_TRIALS,
     );
+
+    // The acquire facts describe the query, not the round, so they must agree with
+    // what explain() alone reported — except acquire_ns, which is a measurement:
+    // explain() takes one sample, explain_analyze re-samples once per recorded round.
+    assert_eq!(facts.count_source, ref_facts.count_source, "count_source must match explain()'s");
+    assert_eq!(facts.eval_domain, ref_facts.eval_domain, "eval_domain must match explain()'s");
+    assert_eq!(facts.matches, ref_facts.matches, "matches must match explain()'s");
+    assert_eq!(facts.acquire_ns.len(), NUM_TRIALS, "explain_analyze records one acquire sample per trial round");
+    // The routed row is what distinguishes a ranking error from a live defect, so it must be
+    // present for every recorded round — and absent from explain(), which executes nothing.
+    assert_eq!(facts.routed_ns.len(), NUM_TRIALS, "explain_analyze records one routed sample per trial round");
+    assert!(ref_facts.routed_ns.is_empty(), "explain() runs no query, so it reports no routed timing");
 
     assert_eq!(trials.len(), reference.len(), "explain_analyze must cover exactly the plans explain() reports");
     for (t, r) in trials.iter().zip(&reference) {
         assert_eq!(t.plan, r.plan, "plan order must match explain()'s ranking");
         assert_eq!(t.predicted_ns, r.predicted_ns, "predicted_ns must be identical to explain()'s for {:?}", t.plan);
+        // Carried through, not recomputed — a caller comparing explain against explain_analyze must
+        // see the same term and the same pick, or the two primitives are not describing one query.
+        assert_eq!(t.materialize_ns, r.materialize_ns, "materialize_ns must match explain()'s for {:?}", t.plan);
+        assert_eq!(t.picked, r.picked, "picked must match explain()'s for {:?}", t.plan);
         // A structurally-applicable plan's fastpath can legitimately decline at
         // runtime (empty trials_ns); when it doesn't decline, it must have run
         // exactly NUM_TRIALS times (warmups are discarded, never recorded).

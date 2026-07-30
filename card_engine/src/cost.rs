@@ -179,6 +179,58 @@ pub(crate) const RANGE_SCATTER_PER_PRINTING_NS: f64 = 0.36;
 /// compose's scatter but a cheaper op, which is exactly why a bare range routes here, not to compose.
 pub(crate) const CARD_RANGE_BUILD_PER_PRINTING_NS: f64 = 1.22;
 
+// ─── Candidate materialization ──────────────────────────────────────────────
+// `plan_cost` prices only what happens AFTER the acquire step: `eval_domain` and `matches` are its
+// inputs, not its outputs. The acquire step is therefore unpriced, and it is where the model's error
+// lives — over 40 sampled queries the median `(measured - predicted) / acquire_ns` is 1.09, so
+// adding the MEASURED acquire time roughly closes the gap.
+//
+// `materialize_cost` below is NOT that term, and does not close that gap. It prices one component of
+// acquire — the candidate `collect` + `sort_unstable` — which measurement puts at a median 5% of
+// acquire (quartiles 2%–40%, n=167 candidate-acquired queries): the rest is index walks, the
+// narrowing recursion, `memoize_text_predicates` and feature building. Adding it to `predicted_ns`
+// measurably makes absolute accuracy slightly WORSE (73.1% -> 74.9% mean error), because it is a
+// small piece of a large omission and does not change which plans compare equal.
+//
+// So it is REPORTED BY `explain`, NOT ADDED TO `plan_cost`, for three reasons: it is validated as
+// too small to help; it is identical for the plans that actually compete (`StreamedSelect` and
+// `GatheredScan` call the same `prepare_candidates`), so it cannot change an argmin; and its real
+// purpose is to price the bitmap-versus-sort question in
+// docs/issues/local-engine-candidate-materialize.md, which is what it does measure exactly.
+
+/// `Vec::with_capacity` plus the run walk, before any comparison work
+/// (`bench_candidate_materialize`, axis A).
+const MATERIALIZE_SORT_FIXED_NS: f64 = 143.0;
+/// pdqsort on `u32`, per candidate — **linear**, not `c·log2 c`. `sort_unstable` is a full pdqsort
+/// so it is asymptotically `n log n`, but measured per-element cost is flat across the sizes this
+/// engine sees (4.39 ns at 1,024 rising only to 5.09 at 31,508, where an `n log n` fit predicts
+/// 4.39 → 6.57). Fit on the rows bracketing the crossover. Re-fit rather than extrapolating past
+/// ~3M cards, where the log factor does start to show.
+const MATERIALIZE_SORT_PER_CAND_NS: f64 = 4.95;
+
+/// Modelled cost of producing the candidate list a materializing plan consumes, in ns. `0.0` for
+/// plans that never build one — those walk or read a plane bitmap directly, and charging them this
+/// would invert exactly the comparison the term is meant to inform.
+///
+/// Prices today's behavior: a `collect` + `sort_unstable`. It does **not** model the bitmap
+/// alternative that doc proposes; if that ships, this needs the domain term as well.
+///
+/// The match below is deliberately NOT `PhysicalPlan::materializing()`, which means something
+/// else — "runnable off a materialized prep", and so includes `PlanePopcountOrder`, which reads
+/// the plane bitmap directly and builds no candidate list. Charging it here would invert exactly
+/// the plane-against-materializing comparison this term exists to inform.
+pub(crate) fn materialize_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
+    match plan {
+        PhysicalPlan::StreamedSelect | PhysicalPlan::GatheredScan => {
+            MATERIALIZE_SORT_FIXED_NS + MATERIALIZE_SORT_PER_CAND_NS * f64::from(f.eval_domain)
+        }
+        PhysicalPlan::PrintingRangeScan
+        | PhysicalPlan::PrintingCompose
+        | PhysicalPlan::PlanePopcountOrder
+        | PhysicalPlan::CardRangePopcount => 0.0,
+    }
+}
+
 // ─── P3: StreamedSelect ─────────────────────────────────────────────────────
 // Match phase walks eval_domain cards computing per-card counts, then either
 // walks the sort permutation to the page (broad) OR — when total <=

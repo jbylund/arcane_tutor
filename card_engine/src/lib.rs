@@ -2648,6 +2648,24 @@ impl Candidates {
 
     /// The set as a bitmap over an n-element domain (scatters vec variants;
     /// space is unchanged — callers pass the domain size of the set's space).
+    /// Which representation the narrowing produced, for `explain` to report. A vec-shaped
+    /// result means some site built a sorted vec — a `collect` + `sort_unstable` ran. A
+    /// bits-shaped one means the narrowing stayed word-wise and never sorted.
+    ///
+    /// Read at the *top* of the narrowing, so it is a proxy rather than a census of sort
+    /// events: `or_all` can scatter a vec-shaped arm into bits, hiding a sort that did
+    /// happen, and a bits-shaped arm can be extracted into a vec by `and_all`. Exact
+    /// per-site accounting needs the shared materialization helper that
+    /// docs/issues/local-engine-candidate-materialize.md proposes.
+    fn repr_label(&self) -> &'static str {
+        match self {
+            Candidates::Cards(_) => "cards",
+            Candidates::Printings(_) => "printings",
+            Candidates::CardBits(_) => "card_bits",
+            Candidates::PrintingBits(_) => "printing_bits",
+        }
+    }
+
     fn into_bits(self, n: usize) -> Vec<u64> {
         match self {
             Candidates::Cards(v) | Candidates::Printings(v) => scatter_bits(v, n),
@@ -5720,6 +5738,11 @@ impl PhysicalPlan {
 struct PreparedCandidates {
     candidate_cards: Option<Vec<u32>>,
     all_match_known: bool,
+    /// `Candidates::repr_label` of what the narrowing returned, before this struct flattened
+    /// it to `candidate_cards`. Diagnostic only (`explain`) — nothing in execution reads it,
+    /// and it exists because a candidate *count* in some band does not imply the query paid
+    /// a sort to get there: a plane AND'd with a range reaches the same count word-wise.
+    narrowed_repr: &'static str,
 }
 
 impl PreparedCandidates {
@@ -5739,12 +5762,17 @@ impl PreparedCandidates {
 /// any) the chosen executor reuses. One of three "count sources", picked by query
 /// structure — this is the engine's whole materialization story in one enum.
 enum Prep {
-    /// Bare printing range: features come from the range index's exact `k` (a
-    /// binary search, no scan). Nothing is materialized — `PrintingRangeScan`
-    /// walks; a materializing winner materializes for itself in dispatch. `Plane`
-    /// carries no bitmap here because `run_query_routed` owns it locally
-    /// (`plane_bits: Vec<u64>`), passed by reference into dispatch.
-    Range,
+    /// "Cheap estimate acquired, nothing materialized." Despite the name this is **not**
+    /// range-index-specific: it is shared by `CardRangePopcount` (#725), `PrintingRangeScan`
+    /// (#695) and `PrintingCompose` (#724), and a plane-composable printing-space query like
+    /// `type:merfolk` at `unique=printing` lands here via compose with no range in sight. The
+    /// payload names which acquire actually ran, so `explain` can report it instead of the
+    /// variant name — reporting "range" for a compose sent one investigation down a wrong path.
+    ///
+    /// Nothing is materialized — the fast paths walk; a materializing winner materializes for
+    /// itself in dispatch. `Plane` carries no bitmap here because `run_query_routed` owns it
+    /// locally (`plane_bits: Vec<u64>`), passed by reference into dispatch.
+    Range(&'static str),
     /// True-residual plane (card): the exact match bitmap, owned by
     /// `run_query_routed`'s local `plane_bits` and passed by reference.
     /// `PlanePopcountOrder` reads it directly; P3/P4 read it as a candidate list.
@@ -5892,6 +5920,8 @@ fn prepare_candidates(ctx: &QueryCtx, params: &QueryParams, filter: &mut FilterE
     // directly instead of paying to materialize one of them first.
     let (raw_candidates, residual_exact): (Option<Candidates>, bool) =
         narrow_candidates_exact(filter, indexes, offsets, cards);
+    // Captured before the flattening below consumes it — see PreparedCandidates::narrowed_repr.
+    let narrowed_repr = raw_candidates.as_ref().map_or("none", Candidates::repr_label);
     // A present plane is always exact (that's what compile_plane guarantees),
     // so the whole original query is exact iff the residual is too — either
     // because split_planes consumed all of it (bare True) or narrow_rec
@@ -5978,7 +6008,7 @@ fn prepare_candidates(ctx: &QueryCtx, params: &QueryParams, filter: &mut FilterE
         }
     }
 
-    PreparedCandidates { candidate_cards, all_match_known }
+    PreparedCandidates { candidate_cards, all_match_known, narrowed_repr }
 }
 
 // ─── Plan executors ─────────────────────────────────────────────────────────
@@ -6495,7 +6525,7 @@ fn acquire_plan_features(
         // `project` pass — so the fused op wins the argmin and a bare range doesn't mis-route to compose.
         feats.scatter_printings = k;
         feats.project_printings = k;
-        (feats, Prep::Range)
+        (feats, Prep::Range("card_range_popcount"))
     } else if PhysicalPlan::PrintingRangeScan.applicable(ctx, params, filter, plane) {
         // Bare range: exact k from the index (no scan). P3/P4 estimated unnarrowed
         // (their broad regime — a narrow range makes P1 lose, and dispatch materializes).
@@ -6503,7 +6533,7 @@ fn acquire_plan_features(
         let k = (idx.partition_point(|p| u32::from(p.0) < hi) - idx.partition_point(|p| u32::from(p.0) < lo)) as u32;
         let mut feats = mk_plan_feats(ctx, params, k, n_cards, n_printings, verify_cost_tier(filter));
         feats.scatter_printings = k; // for costing a competing PrintingCompose (which would scatter k); P1 itself walks, so its own cost ignores this
-        (feats, Prep::Range)
+        (feats, Prep::Range("printing_range_scan"))
     } else if PhysicalPlan::PrintingCompose.applicable(ctx, params, filter, plane) {
         // Composable printing-space expr, any distinct-on. Estimate the counts cheaply — the fast path
         // composes once, only if this plan wins (never in acquire; a legality broadcast paid here and
@@ -6543,7 +6573,7 @@ fn acquire_plan_features(
         } else {
             ComposePaging::Gather
         };
-        (feats, Prep::Range)
+        (feats, Prep::Range("printing_compose"))
     } else {
         let prep = prepare_candidates(ctx, params, filter, plane);
         let feats = candidate_feats(ctx, params, &prep, filter);
@@ -6608,7 +6638,9 @@ fn run_query_routed<'a>(
         // prepare_candidates yields for a True-residual plane query.
         (p, Prep::Plane) => exec_from_candidates(
             p, ctx, params, filter,
-            &PreparedCandidates { candidate_cards: Some(bitmap_card_ids(&plane_bits)), all_match_known: true },
+            // `narrowed_repr` is diagnostic-only and this path is not reached via `explain`'s
+            // acquire (which reports `Prep::Plane` as "none"); the plane bitmap is the source.
+            &PreparedCandidates { candidate_cards: Some(bitmap_card_ids(&plane_bits)), all_match_known: true, narrowed_repr: "card_bits" },
             plane,
         ),
         (p, Prep::Candidates(prep)) => exec_from_candidates(p, ctx, params, filter, prep, plane),
@@ -6618,13 +6650,13 @@ fn run_query_routed<'a>(
         //   - CardRangePopcount builds its card bitmap from the (re-derived, ~free) range bounds now.
         //   - the printing-space fast paths walk (or, if they decline — sparse total — materialize).
         //   - a materializing plan (StreamedSelect/GatheredScan) that beat them narrows + runs.
-        (PhysicalPlan::CardRangePopcount, Prep::Range) => {
+        (PhysicalPlan::CardRangePopcount, Prep::Range(_)) => {
             let (idx, lo, hi) = bare_range_bounds(filter, ctx.indexes).expect("applicable ⇒ bare range");
             let (card_bits, range_pbits) =
                 build_card_range_bits(idx, lo, hi, ctx.indexes, ctx.cards.len(), ctx.printings.len());
             exec_card_range_popcount(ctx, params, &card_bits, &range_pbits)
         }
-        (plan, Prep::Range) => {
+        (plan, Prep::Range(_)) => {
             let fast_page = match plan {
                 PhysicalPlan::PrintingRangeScan => printing_range_fastpath(ctx, params, filter),
                 PhysicalPlan::PrintingCompose => printing_compose_fastpath(ctx, params, filter),
@@ -6714,6 +6746,94 @@ fn run_query_with_plan<'a>(
 pub(crate) struct PlanEstimate {
     pub(crate) plan: PhysicalPlan,
     pub(crate) predicted_ns: f64,
+    /// `cost::materialize_cost` for this plan — the candidate-production term `plan_cost` omits,
+    /// reported but deliberately NOT added to `predicted_ns`. `0.0` for plans that build no
+    /// candidate list. See `cost.rs`'s "Candidate materialization" section for why it stays out
+    /// of the routing decision.
+    pub(crate) materialize_ns: f64,
+    /// Whether this is the plan `run_query_routed` would run: the cheapest `predicted_ns`, which
+    /// after the ascending sort is index 0. Reported explicitly so a caller never has to
+    /// reconstruct the argmin — doing that over only the plans that *ran* (dropping runtime
+    /// decliners) silently diverges from what the router picks.
+    ///
+    /// One documented exception it cannot capture: for a `Prep::Range` acquire the router may
+    /// re-materialize and re-choose at dispatch, so the executed plan can still differ. See the
+    /// free `explain` fn's doc.
+    pub(crate) picked: bool,
+}
+
+/// What the acquire step itself did, which is per-QUERY rather than per-plan: every
+/// plan in the same `explain` call shares one of these. `plan_cost` prices only what
+/// happens *after* acquire — `eval_domain` and `matches` are its inputs, not its
+/// outputs — so a change to how candidates get materialized moves `acquire_ns` and
+/// leaves every `predicted_ns` untouched. That divergence is the point: it isolates
+/// the one term the cost model does not carry.
+pub(crate) struct AcquireFacts {
+    /// Which of `Prep`'s three count sources this query's structure selected. Only
+    /// `"candidates"` materializes a candidate list at all, so it is the first thing
+    /// to check before treating a query as a test case for materialization work.
+    pub(crate) count_source: &'static str,
+    /// `Candidates::repr_label` of what the narrowing produced — `cards`/`printings` mean a
+    /// sorted vec was built (some site ran a `collect` + `sort_unstable`), `card_bits`/
+    /// `printing_bits` mean it stayed word-wise. `none` means the residual narrowing produced
+    /// nothing: either no candidate list at all (`range`/`plane` acquire), or a candidate
+    /// acquire whose list came from the plane bitmap alone. Both are "no sort happened".
+    ///
+    /// Needed because a candidate *count* in a given band does not imply a sort was paid to
+    /// reach it: a plane AND'd with a range lands at the same count without sorting anything.
+    ///
+    /// A top-of-narrowing proxy, not a per-site census — see `Candidates::repr_label`.
+    pub(crate) narrowed_repr: &'static str,
+    /// Candidate cards the walk would iterate (`PlanFeatures::eval_domain`). For a
+    /// `"candidates"` query this IS the materialized candidate count; compare it
+    /// against `n_cards` — equal means nothing narrowed.
+    pub(crate) eval_domain: u32,
+    pub(crate) n_cards: u32,
+    /// Result cardinality in the plan's operating space.
+    pub(crate) matches: u32,
+    /// Raw per-sample wall time of the acquire step — narrowing and any
+    /// materialization included. Not pre-reduced, same rationale as
+    /// `PlanTrial::trials_ns`. `explain` reports a single sample; `explain_analyze`
+    /// reports one per round.
+    ///
+    /// Every sample deliberately pays the one-time `memoize_text_predicates`
+    /// rewrite, because each is taken from a pristine filter clone (see
+    /// `explain_analyze`'s doc for why that fairness discipline matters). So for a
+    /// text-predicate query this OVERSTATES what a warm repeated query spends in
+    /// acquire, by that one-time cost — it is a fair number to compare across
+    /// queries, not an end-to-end latency component.
+    pub(crate) acquire_ns: Vec<u64>,
+    /// Raw per-round wall time of `run_query_routed` — the whole real path: acquire, choose,
+    /// dispatch, *and* the lazy re-materialize-and-re-choose a `Prep::Range` query can do at
+    /// dispatch. Empty from `explain`, which runs nothing.
+    ///
+    /// This is the row that decides whether a ranking error is a live defect. `explain_analyze`'s
+    /// per-plan `trials_ns` come from `run_query_with_plan`, which forces a plan and therefore
+    /// bypasses that re-choose; so "the picked plan is slower than the best plan" does not by
+    /// itself mean the engine runs the slow one. Compare against this: routed ≈ best means the
+    /// re-choose rescued it, routed ≈ picked means it did not. Same discipline as `trials_ns`
+    /// (fresh clone per round, warmups discarded), so the three are directly comparable.
+    pub(crate) routed_ns: Vec<u64>,
+}
+
+impl Prep {
+    /// The `count_source` label `AcquireFacts` reports.
+    fn count_source(&self) -> &'static str {
+        match self {
+            Prep::Range(acquire) => acquire,
+            Prep::Plane => "plane",
+            Prep::Candidates(_) => "candidates",
+        }
+    }
+
+    /// The `narrowed_repr` label `AcquireFacts` reports. `Range` and `Plane` materialize no
+    /// candidate list at all, so they have no narrowing representation to report.
+    fn narrowed_repr(&self) -> &'static str {
+        match self {
+            Prep::Candidates(p) => p.narrowed_repr,
+            Prep::Range(_) | Prep::Plane => "none",
+        }
+    }
 }
 
 /// #745 primitive 1: every applicable plan's predicted cost for this query, ranked
@@ -6727,15 +6847,36 @@ pub(crate) struct PlanEstimate {
 /// dispatch would compute if that plan actually won and got lazily re-costed
 /// against a materialized candidate list (see `acquire_plan_features`'s
 /// `PrintingRangeScan`/`PrintingCompose` branches).
-fn explain(ctx: &QueryCtx, params: &QueryParams, filter: &mut FilterExpr, plane: Option<&PlaneExpr>) -> Vec<PlanEstimate> {
-    let (feats, _prep, _plane_bits) = acquire_plan_features(ctx, params, filter, plane);
+fn explain(ctx: &QueryCtx, params: &QueryParams, filter: &mut FilterExpr, plane: Option<&PlaneExpr>) -> (AcquireFacts, Vec<PlanEstimate>) {
+    let t0 = std::time::Instant::now();
+    let (feats, prep, _plane_bits) = acquire_plan_features(ctx, params, filter, plane);
+    let acquire_ns = t0.elapsed().as_nanos() as u64;
+    let facts = AcquireFacts {
+        count_source: prep.count_source(),
+        narrowed_repr: prep.narrowed_repr(),
+        eval_domain: feats.eval_domain,
+        n_cards: feats.n_cards,
+        matches: feats.matches,
+        acquire_ns: vec![acquire_ns],
+        routed_ns: Vec::new(), // explain runs nothing
+    };
     let mut estimates: Vec<PlanEstimate> = PhysicalPlan::ALL
         .into_iter()
         .filter(|p| p.applicable(ctx, params, filter, plane))
-        .map(|plan| PlanEstimate { plan, predicted_ns: cost::plan_cost(plan, &feats) })
+        .map(|plan| PlanEstimate {
+            plan,
+            predicted_ns: cost::plan_cost(plan, &feats),
+            materialize_ns: cost::materialize_cost(plan, &feats),
+            picked: false, // set below, once the ranking is known
+        })
         .collect();
     estimates.sort_by(|a, b| a.predicted_ns.partial_cmp(&b.predicted_ns).expect("plan_cost is finite"));
-    estimates
+    // The router's argmin is index 0 after the sort. Marked here rather than left for the caller
+    // to re-derive, which is where a caller filtering out runtime decliners gets it wrong.
+    if let Some(first) = estimates.first_mut() {
+        first.picked = true;
+    }
+    (facts, estimates)
 }
 
 /// One applicable plan's `explain_analyze` (#745) result: the same predicted cost
@@ -6746,6 +6887,11 @@ fn explain(ctx: &QueryCtx, params: &QueryParams, filter: &mut FilterExpr, plane:
 pub(crate) struct PlanTrial {
     pub(crate) plan: PhysicalPlan,
     pub(crate) predicted_ns: f64,
+    /// Both carried through from `PlanEstimate` unchanged — see its fields. `picked` in particular
+    /// is the router's choice, which is NOT necessarily the fastest `trials_ns`: that difference is
+    /// the whole point of docs/issues/local-engine-plan-misselection.md.
+    pub(crate) materialize_ns: f64,
+    pub(crate) picked: bool,
     pub(crate) trials_ns: Vec<u64>,
 }
 
@@ -6785,14 +6931,41 @@ fn explain_analyze(
     plane: Option<&PlaneExpr>,
     num_warmups: usize,
     num_trials: usize,
-) -> Vec<PlanTrial> {
+) -> (AcquireFacts, Vec<PlanTrial>) {
     // explain() needs `&mut` for its own (one-time) acquire-step mutation; clone so
     // the timing loop below starts from `filter`'s untouched, pristine state.
-    let estimates = explain(ctx, params, &mut filter.clone(), plane);
+    let (mut facts, estimates) = explain(ctx, params, &mut filter.clone(), plane);
+    // explain()'s single sample was taken outside the loop below, so it sits in a
+    // different cache/allocator state than the plan trials it would be compared
+    // against. Discard it and re-sample in-loop, one per round, on the same fresh
+    // clones and the same rotation the plans get.
+    facts.acquire_ns.clear();
 
     let n = estimates.len();
     let mut trials_ns: Vec<Vec<u64>> = vec![Vec::with_capacity(num_trials); n];
     for round in 0..(num_warmups + num_trials) {
+        // The acquire step alone, on the same pristine-clone discipline as the plan
+        // trials. Subtracting this from a materializing plan's `trials_ns` isolates
+        // that plan's execution from the narrowing they both pay — the one term
+        // `predicted_ns` omits. Not identical to what `run_query_with_plan` pays
+        // internally (`acquire_plan_features` also builds cost features around its
+        // `prepare_candidates` call), so treat it as a close proxy, not an exact split.
+        let mut acquire_filter = filter.clone();
+        let t_acq = std::time::Instant::now();
+        let acquired = acquire_plan_features(ctx, params, &mut acquire_filter, plane);
+        let acq_dt = t_acq.elapsed().as_nanos() as u64;
+        drop(acquired);
+        // The real routed path, including the dispatch-time re-choose that `run_query_with_plan`
+        // cannot exercise. See AcquireFacts::routed_ns for why this row is the load-bearing one.
+        let mut routed_filter = filter.clone();
+        let t_routed = std::time::Instant::now();
+        let routed = run_query_routed(ctx, params, &mut routed_filter, plane);
+        let routed_dt = t_routed.elapsed().as_nanos() as u64;
+        drop(routed);
+        if round >= num_warmups {
+            facts.acquire_ns.push(acq_dt);
+            facts.routed_ns.push(routed_dt);
+        }
         for i in 0..n {
             let idx = (i + round) % n;
             let plan = estimates[idx].plan;
@@ -6809,7 +6982,19 @@ fn explain_analyze(
         }
     }
 
-    estimates.into_iter().zip(trials_ns).map(|(e, trials_ns)| PlanTrial { plan: e.plan, predicted_ns: e.predicted_ns, trials_ns }).collect()
+    let trials =
+        estimates
+        .into_iter()
+        .zip(trials_ns)
+        .map(|(e, trials_ns)| PlanTrial {
+            plan: e.plan,
+            predicted_ns: e.predicted_ns,
+            materialize_ns: e.materialize_ns,
+            picked: e.picked,
+            trials_ns,
+        })
+        .collect();
+    (facts, trials)
 }
 
 /// #634 Step 2: popcount-skip order phase. Scoped to `unique=card` queries
@@ -7349,6 +7534,8 @@ fn plan_estimate_to_pydict<'py>(py: Python<'py>, e: &PlanEstimate) -> PyResult<B
     let d = PyDict::new(py);
     d.set_item("plan", format!("{:?}", e.plan))?;
     d.set_item("predicted_ns", e.predicted_ns)?;
+    d.set_item("materialize_ns", e.materialize_ns)?;
+    d.set_item("picked", e.picked)?;
     Ok(d)
 }
 
@@ -7356,7 +7543,23 @@ fn plan_trial_to_pydict<'py>(py: Python<'py>, t: &PlanTrial) -> PyResult<Bound<'
     let d = PyDict::new(py);
     d.set_item("plan", format!("{:?}", t.plan))?;
     d.set_item("predicted_ns", t.predicted_ns)?;
+    d.set_item("materialize_ns", t.materialize_ns)?;
+    d.set_item("picked", t.picked)?;
     d.set_item("trials_ns", t.trials_ns.clone())?;
+    Ok(d)
+}
+
+/// The acquire step's per-query facts, as both `explain` and `explain_analyze` report
+/// them under the `"acquire"` key.
+fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("count_source", f.count_source)?;
+    d.set_item("narrowed_repr", f.narrowed_repr)?;
+    d.set_item("eval_domain", f.eval_domain)?;
+    d.set_item("n_cards", f.n_cards)?;
+    d.set_item("matches", f.matches)?;
+    d.set_item("acquire_ns", f.acquire_ns.clone())?;
+    d.set_item("routed_ns", f.routed_ns.clone())?;
     Ok(d)
 }
 
@@ -7853,7 +8056,7 @@ impl QueryEngine {
         direction: &str,
         limit: usize,
         offset: usize,
-    ) -> PyResult<Bound<'py, PyList>> {
+    ) -> PyResult<Bound<'py, PyDict>> {
         let mmap = self.get_mmap()?;
         // Safety: see query()'s access_unchecked justification.
         let data = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
@@ -7872,10 +8075,13 @@ impl QueryEngine {
         // more per-card work. `explain_analyze` does take `prefer` and really runs the
         // plans, so its `trials_ns` reflect it even though its `predicted_ns` doesn't.
         let params = QueryParams::from_strs(unique, "default", orderby, direction, limit, offset);
-        let estimates = explain(&QueryCtx::from(data), &params, &mut filter_expr, plane_expr.as_ref());
+        let (facts, estimates) = explain(&QueryCtx::from(data), &params, &mut filter_expr, plane_expr.as_ref());
 
         let rows: Vec<Bound<PyDict>> = estimates.iter().map(|e| plan_estimate_to_pydict(py, e)).collect::<PyResult<Vec<_>>>()?;
-        PyList::new(py, rows)
+        let out = PyDict::new(py);
+        out.set_item("acquire", acquire_facts_to_pydict(py, &facts)?)?;
+        out.set_item("plans", PyList::new(py, rows)?)?;
+        Ok(out)
     }
 
     /// #745 primitive 2: run every applicable plan `num_warmups + num_trials`
@@ -7898,7 +8104,7 @@ impl QueryEngine {
         offset: usize,
         num_warmups: usize,
         num_trials: usize,
-    ) -> PyResult<Bound<'py, PyList>> {
+    ) -> PyResult<Bound<'py, PyDict>> {
         let mmap = self.get_mmap()?;
         // Safety: see query()'s access_unchecked justification.
         let data = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
@@ -7910,10 +8116,13 @@ impl QueryEngine {
         // conversion below stay on the GIL.
         let ctx = QueryCtx::from(data);
         let params = QueryParams::from_strs(unique, prefer, orderby, direction, limit, offset);
-        let trials = py.detach(|| explain_analyze(&ctx, &params, &filter_expr, plane_expr.as_ref(), num_warmups, num_trials));
+        let (facts, trials) = py.detach(|| explain_analyze(&ctx, &params, &filter_expr, plane_expr.as_ref(), num_warmups, num_trials));
 
         let rows: Vec<Bound<PyDict>> = trials.iter().map(|t| plan_trial_to_pydict(py, t)).collect::<PyResult<Vec<_>>>()?;
-        PyList::new(py, rows)
+        let out = PyDict::new(py);
+        out.set_item("acquire", acquire_facts_to_pydict(py, &facts)?)?;
+        out.set_item("plans", PyList::new(py, rows)?)?;
+        Ok(out)
     }
 
     fn size(&self) -> PyResult<usize> {
@@ -8047,3 +8256,5 @@ mod bench_word_dict_scan;
 mod bench_card_dedup;
 #[cfg(test)]
 mod bench_compose_paging;
+#[cfg(test)]
+mod bench_candidate_materialize;
