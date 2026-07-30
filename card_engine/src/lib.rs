@@ -7027,6 +7027,67 @@ fn exec_from_candidates<'a>(
     }
 }
 
+/// When a `Prep::Range` fast path declines at runtime, try its non-materializing sibling before
+/// paying `prepare_candidates`.
+///
+/// `run_query_routed`'s fallback re-chooses with `materializing_only = true`, and
+/// `PhysicalPlan::materializing()` excludes every fast path — so the sibling was unreachable even
+/// when it was applicable, would not decline, and was an order of magnitude cheaper. Measured on
+/// `usd>20` at `unique=printing`: `PrintingRangeScan` declines, the materializing fallback runs in
+/// ~105 µs, and `PrintingCompose` answers the same query in 2.3 µs.
+///
+/// Gated on the (now-fixed) cost model rather than tried unconditionally: only run the sibling when
+/// it prices below the cheapest materializing plan, so this can never make a query slower than the
+/// fallback it replaces on the model's own terms. Both paths are correct for any query either is
+/// applicable to — `force_plan_differential_agreement` holds every plan to identical results — so
+/// this changes only which correct plan runs.
+fn declined_sibling_fastpath<'a>(
+    declined: PhysicalPlan,
+    ctx: &QueryCtx<'a>,
+    params: &QueryParams,
+    filter: &FilterExpr,
+    plane: Option<&PlaneExpr>,
+    feats: &cost::PlanFeatures,
+    choose: &impl Fn(&FilterExpr, &cost::PlanFeatures, bool) -> PhysicalPlan,
+) -> Option<(usize, Vec<(&'a AOracleCard, &'a APrinting)>)> {
+    let sibling = match declined {
+        PhysicalPlan::PrintingRangeScan => PhysicalPlan::PrintingCompose,
+        PhysicalPlan::PrintingCompose => PhysicalPlan::PrintingRangeScan,
+        _ => return None, // a materializing plan won the estimate; it has no fast-path sibling
+    };
+    if !sibling.applicable(ctx, params, filter, plane) {
+        return None;
+    }
+    if cost::plan_cost(sibling, feats) >= cost::plan_cost(choose(filter, feats, true), feats) {
+        return None;
+    }
+    match sibling {
+        PhysicalPlan::PrintingRangeScan => printing_range_fastpath(ctx, params, filter),
+        PhysicalPlan::PrintingCompose => printing_compose_fastpath(ctx, params, filter),
+        _ => unreachable!("sibling is one of the two printing-space fast paths"),
+    }
+}
+
+/// Which paging strategy `printing_compose_fastpath` would run for this query, decided the same
+/// way the fastpath itself decides.
+///
+/// Every acquire branch that costs `PrintingCompose` as a competitor needs this, not just compose's
+/// own: `mk_plan_feats` defaults it to `Gather`, and `Gather` is the one branch of compose's cost
+/// whose page term is `O(eval_domain)`. A branch that leaves the default while also setting
+/// `eval_domain` to the unnarrowed universe charges a walk-shaped compose for a full-corpus gather
+/// — measured at 33x over-costed from the `PrintingRangeScan` acquire (~125 µs predicted against
+/// ~2.4 µs measured on `usd>20`/printing), which is enough to rank compose last and leave a 46x
+/// faster plan unused. See docs/issues/local-engine-plan-misselection.md.
+fn compose_paging_for(indexes: &Archived<CardIndexes>, n_cards: usize, mode: Mode, sort_col: SortCol, descending: bool) -> ComposePaging {
+    if indexes.sort_perms.get(sort_col, descending).is_some_and(|p| p.len() == n_cards) {
+        ComposePaging::Perm
+    } else if matches!(mode, Mode::Printing) && orderby_walk_available(sort_col) {
+        ComposePaging::OrderbyWalk
+    } else {
+        ComposePaging::Gather
+    }
+}
+
 /// Cost features: the query-invariant fields filled once; the four that vary by
 /// count source passed in. Collapses each acquire branch's 8-field literal to one call.
 fn mk_plan_feats(
@@ -7123,6 +7184,7 @@ fn acquire_plan_features(
         // `project` pass — so the fused op wins the argmin and a bare range doesn't mis-route to compose.
         feats.scatter_printings = k;
         feats.project_printings = k;
+        feats.compose_paging = compose_paging_for(indexes, cards.len(), mode, sort_col, descending);
         (feats, Prep::Range(CountSource::CardRangePopcount))
     } else if PhysicalPlan::PrintingRangeScan.applicable(ctx, params, filter, plane) {
         // Bare range: exact k from the index (no scan). P3/P4 estimated unnarrowed
@@ -7131,6 +7193,11 @@ fn acquire_plan_features(
         let k = (idx.partition_point(|p| u32::from(p.0) < hi) - idx.partition_point(|p| u32::from(p.0) < lo)) as u32;
         let mut feats = mk_plan_feats(ctx, params, k, n_cards, n_printings, verify_cost_tier(filter));
         feats.scatter_printings = k; // for costing a competing PrintingCompose (which would scatter k); P1 itself walks, so its own cost ignores this
+        // Also for costing that competing compose: `eval_domain`/`scan_units` above are the
+        // unnarrowed universe (right for P3/P4, which is what they are there for), so leaving
+        // `compose_paging` at its `Gather` default charged compose a full-corpus gather it would
+        // never run. Compose's page term only reads `eval_domain` in the Gather branch.
+        feats.compose_paging = compose_paging_for(indexes, cards.len(), mode, sort_col, descending);
         (feats, Prep::Range(CountSource::PrintingRangeScan))
     } else if PhysicalPlan::PrintingCompose.applicable(ctx, params, filter, plane) {
         // Composable printing-space expr, any distinct-on. Estimate the counts cheaply — the fast path
@@ -7164,13 +7231,7 @@ fn acquire_plan_features(
         feats.popcount_words = popcount_words as u32;
         // Which paging strategy the fastpath will actually use — decided the same way the fastpath
         // itself decides (permutation walk / #744 orderby walk / gather fallback).
-        feats.compose_paging = if indexes.sort_perms.get(sort_col, descending).is_some_and(|p| p.len() == cards.len()) {
-            ComposePaging::Perm
-        } else if matches!(mode, Mode::Printing) && orderby_walk_available(sort_col) {
-            ComposePaging::OrderbyWalk
-        } else {
-            ComposePaging::Gather
-        };
+        feats.compose_paging = compose_paging_for(indexes, cards.len(), mode, sort_col, descending);
         (feats, Prep::Range(CountSource::PrintingCompose))
     } else {
         let prep = prepare_candidates(ctx, params, filter, plane);
@@ -7262,7 +7323,7 @@ fn run_query_routed<'a>(
                 PhysicalPlan::PrintingCompose => printing_compose_fastpath(ctx, params, filter),
                 _ => None, // a materializing plan won the estimate — materialize + run it below
             };
-            match fast_page {
+            match fast_page.or_else(|| declined_sibling_fastpath(plan, ctx, params, filter, plane, &feats, &choose)) {
                 Some(page) => page,
                 None => {
                     let prep = prepare_candidates(ctx, params, filter, plane);
