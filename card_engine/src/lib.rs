@@ -6320,6 +6320,67 @@ fn exec_streamed_select<'a>(
 /// P4 executor: the universal gathered per-card loop + `select_page`. Runs any
 /// query (printing-keyed orderbys, stores without permutations, or anything the
 /// other plans decline). Caller has run `prepare_candidates`.
+/// Per-query execution counters and coarse phase timings, for checking the cost model against what
+/// the executors actually do rather than against a fitted curve.
+///
+/// Two distinct questions, and the model can fail either:
+/// - are the FEATURE COUNTS right? `cards_visited` / `printings_scanned` / `matches_pushed` are the
+///   real counts behind `eval_domain` / `scan_units` / `matches`. If a feature disagrees with its
+///   counter, no rate constant can rescue the term.
+/// - is the WORK WHERE THE MODEL SAYS? `ns_loop` + `ns_finish` should account for the whole executor.
+///   Whatever is left over is work no term describes, and re-fitting cannot find it.
+///
+/// Counters are plain locals in the hot loop and only published here at the end, so the loop pays
+/// nothing; the three `Instant::now()` pairs are per query, not per card.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct PhaseStats {
+    pub(crate) cards_visited: u64,
+    pub(crate) printings_scanned: u64,
+    pub(crate) matches_pushed: u64,
+    pub(crate) ns_loop: u64,
+    pub(crate) ns_finish: u64,
+    /// Wall time of the whole `run_query_with_plan` round these phases came from. Recorded so the
+    /// accounting compares like with like: `trials_ns` reports the MINIMUM across rounds, and
+    /// dividing phases from one round by the minimum of another silently reads as unmodelled work.
+    pub(crate) ns_round_total: u64,
+    /// Wall time of `prepare_candidates` for the two materializing plans, measured here rather than
+    /// inferred. No cost term describes it, and on range-acquired queries it is where a third of the
+    /// runtime was landing unaccounted.
+    pub(crate) ns_prepare: u64,
+}
+
+thread_local! {
+    static PHASE_STATS: std::cell::Cell<PhaseStats> = const { std::cell::Cell::new(PhaseStats {
+        cards_visited: 0, printings_scanned: 0, matches_pushed: 0, ns_loop: 0, ns_finish: 0, ns_round_total: 0, ns_prepare: 0,
+    }) };
+}
+
+thread_local! {
+    /// `prepare_candidates`' time for the run in progress, handed to the executor that follows it —
+    /// the two are separate calls in `run_query_with_plan`, and only the executor publishes stats.
+    static PENDING_PREPARE_NS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// `prepare_candidates`, timed. Only `run_query_with_plan`'s materializing arms use this; the routed
+/// path calls `prepare_candidates` directly, since its cost already shows up in `acquire_ns`.
+fn timed_prepare_candidates(
+    ctx: &QueryCtx,
+    params: &QueryParams,
+    filter: &mut FilterExpr,
+    plane: Option<&PlaneExpr>,
+) -> PreparedCandidates {
+    let t = std::time::Instant::now();
+    let prep = prepare_candidates(ctx, params, filter, plane);
+    PENDING_PREPARE_NS.with(|c| c.set(t.elapsed().as_nanos() as u64));
+    prep
+}
+
+/// Last executor run's phase stats, and clear them. `explain_analyze` reads this immediately after a
+/// timed run; anything else sees zeros.
+fn take_phase_stats() -> PhaseStats {
+    PHASE_STATS.with(|c| c.replace(PhaseStats::default()))
+}
+
 fn exec_gathered_scan<'a>(
     ctx: &QueryCtx<'a>,
     params: &QueryParams,
@@ -6347,7 +6408,12 @@ fn exec_gathered_scan<'a>(
     // the current card (reused buffer; see FilterExpr::card_pass).
     let mut residual: Vec<&FilterExpr> = Vec::new();
     let mut residual_is_or = false;
+    // Counters for the three features this plan's cost arm keys on, so they can be checked against
+    // what the loop really does. Plain locals — no atomics, no branch — published once at the end.
+    let (mut n_cards_visited, mut n_printings_scanned, mut n_matches_pushed) = (0u64, 0u64, 0u64);
+    let t_setup = std::time::Instant::now();
     for cid in card_ids {
+        n_cards_visited += 1;
         let card = &cards[cid as usize];
         // #634 Step 1: all_match_known means the narrowing already proved
         // every candidate matches — card_pass would just re-derive Tri::True
@@ -6361,18 +6427,35 @@ fn exec_gathered_scan<'a>(
         let start = u32::from(offsets[cid as usize]) as usize;
         let end   = u32::from(offsets[cid as usize + 1]) as usize;
         let before = sel.buf().len();
+        n_printings_scanned += (end - start) as u64;
         push_card_matches(
             card, cid, printings, &indexes.artwork_group_col, start, end, all_match, &residual, residual_is_or, mode, prefer,
             sort_col, descending, strings, existential_plane, sel.buf(), &mut group_best, &mut touched,
         );
+        n_matches_pushed += (sel.buf().len() - before) as u64;
         sel.absorb(before);
     }
+    let ns_loop = t_setup.elapsed().as_nanos() as u64;
 
+    let t_finish = std::time::Instant::now();
     let (total, page_ids) = sel.finish(page_offset, limit);
     let page = page_ids
         .into_iter()
         .map(|(cid, pid)| (&cards[cid as usize], &printings[pid as usize]))
         .collect();
+    let ns_finish = t_finish.elapsed().as_nanos() as u64;
+    let prep_ns = PENDING_PREPARE_NS.with(|c| c.replace(0));
+    PHASE_STATS.with(|c| {
+        c.set(PhaseStats {
+            cards_visited: n_cards_visited,
+            printings_scanned: n_printings_scanned,
+            matches_pushed: n_matches_pushed,
+            ns_loop, // includes setup: three small allocations, not worth its own timer
+            ns_finish,
+            ns_round_total: 0, // filled by explain_analyze, which owns the round timer
+            ns_prepare: prep_ns,
+        });
+    });
     (total, page)
 }
 
@@ -6728,12 +6811,12 @@ fn run_query_with_plan<'a>(
             if !streamed_select_applicable(cards, sort_col, descending, indexes) {
                 return None;
             }
-            let prep = prepare_candidates(ctx, params, filter, plane);
+            let prep = timed_prepare_candidates(ctx, params, filter, plane);
             Some(exec_streamed_select(ctx, params, filter, &prep, plane))
         }
         PhysicalPlan::GatheredScan => {
             debug_assert!(gathered_scan_applicable());
-            let prep = prepare_candidates(ctx, params, filter, plane);
+            let prep = timed_prepare_candidates(ctx, params, filter, plane);
             Some(exec_gathered_scan(ctx, params, filter, &prep, plane))
         }
     }
@@ -6893,6 +6976,11 @@ pub(crate) struct PlanTrial {
     pub(crate) materialize_ns: f64,
     pub(crate) picked: bool,
     pub(crate) trials_ns: Vec<u64>,
+    /// Execution counters and coarse phase timings from the last recorded run of this plan, when the
+    /// executor is instrumented (`GatheredScan` today). Zeros otherwise. See `PhaseStats`: the
+    /// counters check whether the cost arm's FEATURES match what the loop did, and the phase timings
+    /// check whether its TERMS account for the whole executor.
+    pub(crate) phases: PhaseStats,
 }
 
 /// #745 primitive 2: actually run every applicable plan via `run_query_with_plan`,
@@ -6943,6 +7031,7 @@ fn explain_analyze(
 
     let n = estimates.len();
     let mut trials_ns: Vec<Vec<u64>> = vec![Vec::with_capacity(num_trials); n];
+    let mut phases: Vec<PhaseStats> = vec![PhaseStats::default(); n];
     for round in 0..(num_warmups + num_trials) {
         // The acquire step alone, on the same pristine-clone discipline as the plan
         // trials. Subtracting this from a materializing plan's `trials_ns` isolates
@@ -6973,11 +7062,15 @@ fn explain_analyze(
             let t0 = std::time::Instant::now();
             let ran = run_query_with_plan(plan, ctx, params, &mut round_filter, plane);
             let dt = t0.elapsed().as_nanos() as u64;
+            // Read immediately: the next plan's run overwrites the thread-local.
+            let mut stats = take_phase_stats();
+            stats.ns_round_total = dt;
             // A structurally-applicable plan's fastpath can still decline at runtime
             // (e.g. PrintingCompose on a sparse total) — deterministic for this
             // query/data, so a decliner simply never accumulates trials.
             if ran.is_some() && round >= num_warmups {
                 trials_ns[idx].push(dt);
+                phases[idx] = stats;
             }
         }
     }
@@ -6986,12 +7079,14 @@ fn explain_analyze(
         estimates
         .into_iter()
         .zip(trials_ns)
-        .map(|(e, trials_ns)| PlanTrial {
+        .zip(phases)
+        .map(|((e, trials_ns), phases)| PlanTrial {
             plan: e.plan,
             predicted_ns: e.predicted_ns,
             materialize_ns: e.materialize_ns,
             picked: e.picked,
             trials_ns,
+            phases,
         })
         .collect();
     (facts, trials)
@@ -7168,7 +7263,13 @@ fn run_query_streamed<'a>(
     counts.resize(cards.len(), 0);
     let have_group_counts = artwork_groups.len() == cards.len();
     let mut total: usize = 0;
+    // Same counters GatheredScan publishes, so the two plans' arms can be checked the same way.
+    // Locals in the loop; published once at the end. See PhaseStats.
+    let (mut n_cards_visited, mut n_printings_scanned, mut n_matches_pushed) = (0u64, 0u64, 0u64);
+    let t_match = std::time::Instant::now();
     for cid in card_ids {
+        n_cards_visited += 1;
+        n_printings_scanned += (u32::from(offsets[cid as usize + 1]) - u32::from(offsets[cid as usize])) as u64;
         let card = &cards[cid as usize];
         // #634 Step 1: skip the redundant card_pass re-derivation of Tri::True
         // when the narrowing already proved every candidate matches. Gated
@@ -7200,10 +7301,30 @@ fn run_query_streamed<'a>(
         };
         counts[cid as usize] = c;
         total += c as usize;
+        n_matches_pushed += c as u64;
     }
+    let ns_match = t_match.elapsed().as_nanos() as u64;
+    // Publishing helper: the walk below has several early returns, and every one of them must leave
+    // the stats behind or the accounting silently attributes this plan's work to nothing.
+    let publish = |ns_finish: u64| {
+        let prep_ns = PENDING_PREPARE_NS.with(|c| c.replace(0));
+        PHASE_STATS.with(|c| {
+            c.set(PhaseStats {
+                cards_visited: n_cards_visited,
+                printings_scanned: n_printings_scanned,
+                matches_pushed: n_matches_pushed,
+                ns_loop: ns_match,
+                ns_finish,
+                ns_round_total: 0,
+                ns_prepare: prep_ns,
+            });
+        });
+    };
     if total == 0 || page_offset >= total {
+        publish(0);
         return (total, Vec::new());
     }
+    let t_emit = std::time::Instant::now();
 
     // artwork-mode emission scratch (#629), reused across cards below. Pre-sized to
     // max_artwork_groups so the grouping loop needs no per-printing resize check.
@@ -7237,6 +7358,7 @@ fn run_query_streamed<'a>(
             .into_iter()
             .map(|(cid, pid)| (&cards[cid as usize], &printings[pid as usize]))
             .collect();
+        publish(t_emit.elapsed().as_nanos() as u64);
         return (total, page);
     }
 
@@ -7279,6 +7401,7 @@ fn run_query_streamed<'a>(
         }
         skip = 0;
     }
+    publish(t_emit.elapsed().as_nanos() as u64);
     (total, page)
     }) // COUNTS.with
 }
@@ -7546,6 +7669,13 @@ fn plan_trial_to_pydict<'py>(py: Python<'py>, t: &PlanTrial) -> PyResult<Bound<'
     d.set_item("materialize_ns", t.materialize_ns)?;
     d.set_item("picked", t.picked)?;
     d.set_item("trials_ns", t.trials_ns.clone())?;
+    d.set_item("cards_visited", t.phases.cards_visited)?;
+    d.set_item("printings_scanned", t.phases.printings_scanned)?;
+    d.set_item("matches_pushed", t.phases.matches_pushed)?;
+    d.set_item("ns_loop", t.phases.ns_loop)?;
+    d.set_item("ns_finish", t.phases.ns_finish)?;
+    d.set_item("ns_round_total", t.phases.ns_round_total)?;
+    d.set_item("ns_prepare", t.phases.ns_prepare)?;
     Ok(d)
 }
 
