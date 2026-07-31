@@ -7,6 +7,7 @@ use super::{
     build_artist_index, build_range_index, build_arith_tuple_index, is_arith_tuple_route, range_candidates, narrow_candidates, narrow_candidates_exact, rarity_candidates,
     range_too_broad_to_narrow, run_query, run_query_with_plan, explain, explain_analyze, AcquireFacts, PlanEstimate, PlanTrial,
     acquire_plan_features, take_phase_stats, PagingTaken, CountSource, NarrowedRepr,
+    RangeCardCounts, build_range_card_counts,
     PhysicalPlan, ComposePaging, trigram_candidates, finalize_trigram_index, PrintingRangeIndex, NARROW_FLOOR,
     gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
     walk_printing_page, aligned_page, bare_range_bounds, probe_range_k, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
@@ -2365,6 +2366,15 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     data.indexes.released_at = build_range_index(&data.printings, |p| p.released_at_int);
     data.indexes.price_usd = build_range_index(&data.printings, |p| p.price_usd);
     data.indexes.collector_number = build_range_index(&data.printings, |p| p.collector_number_int.map(u32::from));
+    // The exact card-count tables ride on those indexes and must be rebuilt with them — leaving them
+    // at their empty defaults would make every range acquire silently fall back to the `k.min(n_cards)`
+    // proxy here while production used the table, so the fuzz differential would stop covering the
+    // path it is meant to cover.
+    let p2c = build_printing_to_card(&data.offsets);
+    let n_cards = data.cards.len();
+    data.indexes.released_at_cards = build_range_card_counts(&data.indexes.released_at, &p2c, n_cards);
+    data.indexes.price_usd_cards = build_range_card_counts(&data.indexes.price_usd, &p2c, n_cards);
+    data.indexes.collector_number_cards = build_range_card_counts(&data.indexes.collector_number, &p2c, n_cards);
     data.indexes.border_printing = build_border_printing_planes(&data.printings, &data.strings);
     data.indexes.rarity_printing = build_rarity_printing_planes(&data.printings);
     data
@@ -3031,6 +3041,72 @@ fn force_plan_differential_agreement() {
             ran[plan_idx(plan)] > 0,
             "plan {plan:?} was never exercised by the differential corpus — add coverage",
         );
+    }
+}
+
+/// The per-value card-count table must be EXACT, not close: every one-sided cut and every single
+/// value, on all three range indexes, checked against a brute-force distinct count over the store.
+///
+/// Exhaustive over the distinct values rather than sampled. There are only a few thousand per
+/// dimension — the same property that makes the table affordable — and this investigation's errors
+/// clustered at the ends of ranges, exactly where a sampled check would have missed them.
+#[test]
+fn range_card_counts_are_exact() {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(20_260_730);
+    let data = fuzz_store_n(&mut rng, 2_000);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let indexes = &archived.indexes;
+    let p2c = &indexes.printing_to_card;
+
+    for (name, idx, counts) in [
+        ("released_at", &indexes.released_at, &indexes.released_at_cards),
+        ("price_usd", &indexes.price_usd, &indexes.price_usd_cards),
+        ("collector_number", &indexes.collector_number, &indexes.collector_number_cards),
+    ] {
+        if idx.is_empty() {
+            continue;
+        }
+        assert_eq!(counts.values.len(), counts.below.len(), "{name}: parallel vectors");
+        assert_eq!(counts.values.len(), counts.at_or_above.len(), "{name}: parallel vectors");
+        assert_eq!(counts.values.len(), counts.at.len(), "{name}: parallel vectors");
+
+        // Brute force: distinct cards among printings whose value satisfies the predicate.
+        let distinct = |keep: &dyn Fn(u32) -> bool| -> u32 {
+            let mut seen = std::collections::HashSet::new();
+            for entry in idx.iter() {
+                if keep(u32::from(entry.0)) {
+                    seen.insert(u32::from(p2c[u32::from(entry.1) as usize]));
+                }
+            }
+            seen.len() as u32
+        };
+
+        for (i, value) in counts.values.iter().enumerate() {
+            let v = u32::from(*value);
+            assert_eq!(u32::from(counts.below[i]), distinct(&|x| x < v), "{name}: below[{i}] at {v}");
+            assert_eq!(u32::from(counts.at_or_above[i]), distinct(&|x| x >= v), "{name}: at_or_above[{i}] at {v}");
+            assert_eq!(u32::from(counts.at[i]), distinct(&|x| x == v), "{name}: at[{i}] at {v}");
+            // And through the lookup the acquire actually calls, for all three answerable shapes.
+            assert_eq!(counts.distinct_cards(0, v), Some(distinct(&|x| x < v)), "{name}: lookup `< {v}`");
+            assert_eq!(counts.distinct_cards(v, u32::MAX), Some(distinct(&|x| x >= v)), "{name}: lookup `>= {v}`");
+            assert_eq!(counts.distinct_cards(v, v + 1), Some(distinct(&|x| x == v)), "{name}: lookup `== {v}`");
+        }
+
+        // A range spanning several distinct values is the one shape the table declines, rather than
+        // answering it wrongly by subtracting neighbouring entries. It has to be genuinely interior:
+        // a multi-value range starting at the minimum is a prefix and IS answerable, which is what
+        // `below` is for.
+        if counts.values.len() >= 4 {
+            let (lo, hi) = (u32::from(counts.values[1]), u32::from(counts.values[3]));
+            assert_eq!(counts.distinct_cards(lo, hi), None, "{name}: multi-value interior must decline");
+            let span = u32::from(counts.values[2]);
+            assert!(
+                counts.distinct_cards(0, span).is_some(),
+                "{name}: a multi-value range from the bottom is a prefix and must still answer",
+            );
+        }
     }
 }
 
@@ -5576,6 +5652,10 @@ fn bench_checked_vs_unchecked_access() {
         released_at:    Vec::new(),
         price_usd:      Vec::new(),
         collector_number: Vec::new(),
+        // Empty to match the empty range indexes above; fuzz_store_n rebuilds all six together.
+        released_at_cards: RangeCardCounts::default(),
+        price_usd_cards: RangeCardCounts::default(),
+        collector_number_cards: RangeCardCounts::default(),
         sort_perms:     build_sort_permutations(&cards, &printings, &offsets),
         max_artwork_groups: artwork_groups.iter().copied().max().unwrap_or(0),
         artwork_groups,
