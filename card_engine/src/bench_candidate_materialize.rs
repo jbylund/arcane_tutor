@@ -33,6 +33,8 @@ use std::collections::BinaryHeap;
 use std::hint::black_box;
 use std::time::Instant;
 
+use super::cost::{MATERIALIZE_SORT_FIXED_NS as SORT_FIXED_NS, MATERIALIZE_SORT_PER_CAND_NS as SORT_PER_CAND_NS};
+
 const ITERS: usize = 60;
 
 /// Real corpus size, so one row of every table is the case the engine actually has.
@@ -157,10 +159,11 @@ fn bitmap_scatter(runs: &[Vec<u32>], domain: usize) -> Vec<u64> {
 // modelled from two numbers already in hand, and only the winning structure ever
 // gets built. These constants are fit against axis A and B above, not assumed.
 
-/// The sort model's constants are the ones `cost::materialize_cost` actually charges, imported
-/// rather than restated: this bench exists to check that model, and a private copy of its constants
-/// can drift out from under it without any test failing.
-use super::cost::{MATERIALIZE_SORT_FIXED_NS as SORT_FIXED_NS, MATERIALIZE_SORT_PER_CAND_NS as SORT_PER_CAND_NS};
+// The sort side's two constants are not defined here: `SORT_FIXED_NS` / `SORT_PER_CAND_NS` are
+// `cost::materialize_cost`'s own, imported at the top of the file rather than restated. This bench
+// exists to check that model, and a private copy of its constants can drift out from under it
+// without any test failing.
+
 /// The zeroed `vec![0u64; words]` allocation.
 const BITMAP_FIXED_NS: f64 = 200.0;
 /// Word scan on the extract pass. Fit beyond L1 (0.46–0.53 ns/word across axis B's
@@ -178,9 +181,19 @@ fn model_sort_ns(count: usize) -> f64 {
 /// solving `model_sort_ns(c) == model_bitmap_ns(c, domain)` for `c` gives an *affine*
 /// function of the word count. Reported next to the measured crossover so the shape of
 /// the boundary is checked, not just its value at a few domains.
+///
+/// The closed form only exists while the bitmap is cheaper PER CANDIDATE than the sort — that
+/// difference is the denominator. `SORT_PER_CAND_NS` is imported and flagged for a re-fit, so the
+/// tripwire below is live: re-fit it under `BITMAP_PER_CAND_NS` and there is no crossover at all
+/// (sort wins at every size), which this would otherwise print as a negative count.
 fn model_crossover(domain: usize) -> f64 {
+    let per_cand_gain = SORT_PER_CAND_NS - BITMAP_PER_CAND_NS;
+    debug_assert!(
+        per_cand_gain > 0.0,
+        "no crossover exists: sort is {SORT_PER_CAND_NS} ns/cand against the bitmap's {BITMAP_PER_CAND_NS}, so the bitmap never catches up",
+    );
     let words = domain.div_ceil(64) as f64;
-    (BITMAP_FIXED_NS - SORT_FIXED_NS + BITMAP_PER_WORD_NS * words) / (SORT_PER_CAND_NS - BITMAP_PER_CAND_NS)
+    (BITMAP_FIXED_NS - SORT_FIXED_NS + BITMAP_PER_WORD_NS * words) / per_cand_gain
 }
 
 fn model_bitmap_ns(count: usize, domain: usize) -> f64 {
@@ -206,19 +219,24 @@ const FINE_START: usize = 32;
 /// wins, or None if the bitmap never wins over the swept range.
 fn fine_crossover(domain: usize, runs_n: usize) -> Option<usize> {
     let mut count = FINE_START;
-    let mut streak: Vec<usize> = Vec::new();
+    // The first count of the current unbroken win streak, and its length. The crossover is the
+    // FIRST win of a confirmed streak, not the count that happened to confirm it.
+    let mut streak_start: Option<usize> = None;
+    let mut streak_len = 0usize;
     while count <= domain {
         let runs = make_runs(domain, count, runs_n);
         let total: usize = runs.iter().map(Vec::len).sum();
         let sort_ns = time_ns(|| concat_sort(&runs, total).len());
         let bitmap_ns = time_ns(|| bitmap_extract(&runs, total, domain).len());
         if bitmap_ns < sort_ns {
-            streak.push(total);
-            if streak.len() >= FINE_CONFIRM_STEPS {
-                return streak.first().copied();
+            streak_start = streak_start.or(Some(total));
+            streak_len += 1;
+            if streak_len >= FINE_CONFIRM_STEPS {
+                return streak_start;
             }
         } else {
-            streak.clear();
+            streak_start = None;
+            streak_len = 0;
         }
         count = (count * (100 + FINE_STEP_PCT) / 100).max(count + 1);
     }
@@ -385,6 +403,14 @@ fn bench_candidate_materialize_cost_model() {
 /// pdqsort, so asymptotically it is the latter — but the model only has to be right over
 /// the corpus sizes this engine sees. Per-element cost flat across the sweep says the log
 /// factor is not observable here; per-element cost rising like `log2 c` says it is.
+///
+/// Answer (minimum of 10 runs): faintly rising, far under `n log n`. 4.35 ns/elem at 1,024 to 5.08 at
+/// 31,508 — a 1.17x rise across 31x the size, where `n log n` demands 1.49x. Linear is the right
+/// model over this range, which is what `cost::MATERIALIZE_SORT_PER_CAND_NS` assumes.
+///
+/// **Run this more than once and take the minimum per column.** A single run on a machine doing
+/// anything else reads as flat ~5.0 at every size, which inverts the conclusion: the contention here
+/// is one-sided, so the max is contaminated while min and median agree to within 0.06 ns/elem.
 #[test]
 #[ignore = "micro-benchmark; synthetic inputs, no store needed"]
 fn bench_candidate_materialize_sort_shape() {

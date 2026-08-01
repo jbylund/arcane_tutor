@@ -16,7 +16,13 @@ Sampling is deliberately unbiased where the existing generator is not:
 
 Reports measured/predicted per (plan, acquire branch), plus what fraction of the time is
 `prepare_candidates` — which no cost term currently describes and which is 21-33% of a range-acquired
-query against 7-10% of a plane-acquired one.
+query against 7-10% of a plane-acquired one. That share is keyed by acquire branch as well as plan,
+because the range-vs-plane contrast is the whole point of the row.
+
+Finally, whether `PrintingCompose`'s predicted paging branch is the one that actually ran. Those two
+decisions are computed independently and nothing checked they agree until `paging_taken` existed;
+`card_engine`'s `compose_paging_prediction_matches_the_branch_taken` asserts it on a fuzz store, and
+this observes it over the real corpus, which reaches shapes the fuzz store does not.
 
     .venv/bin/python scripts/bench_cost_model_agreement.py --seconds 120
 """
@@ -48,6 +54,10 @@ ORDERBYS = ("edhrec", "cubecobra", "cmc", "power", "toughness", "rarity", "usd",
 LIMITS = (10, 100, 175)
 OFFSETS = (0, 0, 0, 100)  # mostly first-page, which is what real traffic asks for
 MIN_FOR_QUARTILES = 8
+# The three paging strategies `ComposePaging` predicts. `paging_taken` also reports `EmptyPage` and
+# `DeclineSparse`, which are run-time outcomes reached BEFORE any strategy runs — for those the
+# prediction is never exercised, so they are excluded rather than counted as disagreements.
+COMPOSE_STRATEGIES = ("Perm", "OrderbyWalk", "Gather")
 # The agreement bar this work is aiming at: every (plan, acquire) cell's median inside it.
 AGREE_LO, AGREE_HI = 0.8, 1.25
 
@@ -136,8 +146,19 @@ def main() -> None:
             measured = min(p["trials_ns"])
             agr.ratios[p["plan"], acq["count_source"]].append(measured / p["predicted_ns"])
             agr.by_unique[p["plan"], unique].append(measured / p["predicted_ns"])
+            # Keyed by acquire branch as well as plan: the whole point of this row is that the
+            # prepare share differs by HOW the query was acquired, so collapsing to the plan alone
+            # averages a range-acquired query together with a plane-acquired one and reports a
+            # number that describes neither.
             if p["ns_round_total"]:
-                agr.prep_frac[p["plan"]].append(p["ns_prepare"] / p["ns_round_total"])
+                agr.prep_frac[p["plan"], acq["count_source"]].append(p["ns_prepare"] / p["ns_round_total"])
+            # Did the compose fastpath take the branch the cost model predicted? The two decisions
+            # are computed independently, and nothing checked they agree until now -- the same shape
+            # as the Python cost mirror that drifted from cost.rs for two revisions.
+            # `card_engine`'s `compose_paging_prediction_matches_the_branch_taken` asserts this on a
+            # fuzz store; here it is observed over the real corpus, which reaches far more shapes.
+            if p["plan"] == "PrintingCompose" and p["paging_taken"] in COMPOSE_STRATEGIES:
+                agr.paging[acq["compose_paging"], p["paging_taken"]] += 1
 
     report(agr, args.seconds)
 
@@ -166,10 +187,32 @@ class Agreement:
 
     ratios: dict[tuple[str, str], list[float]] = dataclasses.field(default_factory=lambda: collections.defaultdict(list))
     by_unique: dict[tuple[str, str], list[float]] = dataclasses.field(default_factory=lambda: collections.defaultdict(list))
-    prep_frac: dict[str, list[float]] = dataclasses.field(default_factory=lambda: collections.defaultdict(list))
+    prep_frac: dict[tuple[str, str], list[float]] = dataclasses.field(default_factory=lambda: collections.defaultdict(list))
+    # (predicted ComposePaging, paging_taken) -> count. Off-diagonal cells are real drift between
+    # the cost model's branch prediction and the branch the fastpath ran.
+    paging: dict[tuple[str, str], int] = dataclasses.field(default_factory=lambda: collections.defaultdict(int))
     sampled: int = 0
     skipped: int = 0
     skip_reasons: dict[str, int] = dataclasses.field(default_factory=lambda: collections.defaultdict(int))
+
+
+def report_paging(agr: Agreement) -> None:
+    """Predicted compose paging branch against the branch that actually ran."""
+    if not agr.paging:
+        print("\nno PrintingCompose run reached a paging strategy; nothing to check")
+        return
+    total = sum(agr.paging.values())
+    wrong = {(pred, took): n for (pred, took), n in agr.paging.items() if pred != took}
+    print(f"\ncompose paging: predicted vs taken over {total:,} runs")
+    for strategy in COMPOSE_STRATEGIES:
+        n = agr.paging.get((strategy, strategy), 0)
+        print(f"  {strategy:<14}{n:>7,} agreed")
+    if wrong:
+        print(f"  {sum(wrong.values()):,} DISAGREEMENTS -- the cost model priced a branch that did not run:")
+        for (pred, took), n in sorted(wrong.items(), key=lambda kv: -kv[1]):
+            print(f"    predicted {pred:<12} took {took:<12}{n:>7,}")
+    else:
+        print("  0 disagreements.")
 
 
 def report(agr: Agreement, seconds: float) -> None:
@@ -181,12 +224,15 @@ def report(agr: Agreement, seconds: float) -> None:
     summarise("measured/predicted by acquire branch. 1.00 is agreement; >1 under-costed.", agr.ratios, "acquire")
     summarise("the same, split by distinct-on rather than acquire.", agr.by_unique, "unique")
 
-    print(f"\n{'plan':<20}{'n':>6}{'median prep share':>20}{'p90':>8}")
-    for plan, fracs in sorted(agr.prep_frac.items()):
+    print(f"\n{'plan':<20}{'acquire':<22}{'n':>6}{'median prep share':>20}{'p90':>8}")
+    for (plan, acquire), fracs in sorted(agr.prep_frac.items(), key=lambda kv: (kv[0][0], -len(kv[1]))):
         if len(fracs) < MIN_FOR_QUARTILES:
             continue
-        print(f"{plan:<20}{len(fracs):>6}{statistics.median(fracs):>19.0%}{statistics.quantiles(fracs, n=10)[8]:>8.0%}")
-    print("  prepare_candidates as a share of the plan's run.")
+        p90 = statistics.quantiles(fracs, n=10)[8]
+        print(f"{plan:<20}{acquire:<22}{len(fracs):>6}{statistics.median(fracs):>19.0%}{p90:>8.0%}")
+    print("  prepare_candidates as a share of the plan's run — the term no cost arm carries.")
+    print("  Only the two materializing plans call it; every other plan is absent, not zero.")
+    report_paging(agr)
 
 
 if __name__ == "__main__":

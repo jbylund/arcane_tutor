@@ -1348,4 +1348,20 @@ class TestExplain:
         # Card mode returns one row per matching card, so the pushes ARE the distinct-card total.
         assert gathered["matches_pushed"] <= acquire["n_cards"]
         # The phase split must account for the round, or a phase's cost is attributed to nothing.
+        # The three phases are disjoint sub-intervals of the round, so they can only sum to less
+        # than it -- the shortfall is the unmodelled remainder this instrumentation exists to size.
+        # NOT asserted individually as > 0: they are timings, and on a corpus this small
+        # `prepare_candidates` really does complete inside the clock's granularity and report 0.
         assert gathered["ns_round_total"] >= gathered["ns_loop"]
+        phases = gathered["ns_prepare"] + gathered["ns_loop"] + gathered["ns_finish"]
+        assert phases <= gathered["ns_round_total"], "phase split exceeds the round it came from"
+
+        # `result_total` is ground truth for the analyzed run itself, which is the whole reason it
+        # exists: before it, a harness wanting the true cardinality made a SECOND `query()` call and
+        # ASSUMED the two agreed. Check the assumption once here, since every plan is supposed to
+        # return the same total for one query -- that is a correctness invariant, not a measurement.
+        expected_total, _ = _run(engine, "t:creature", unique="card", orderby="edhrec", limit=50)
+        for row in result["plans"]:
+            if not row["trials_ns"]:
+                continue  # declined at runtime, so it produced no total
+            assert row["result_total"] == expected_total, f"{row['plan']} disagrees with query()'s total"

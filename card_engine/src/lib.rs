@@ -5522,6 +5522,7 @@ fn printing_compose_fastpath<'a>(
     let QueryCtx { cards, printings, offsets, indexes, .. } = *ctx;
     let QueryParams { mode, sort_col, descending, limit, page_offset, .. } = *params;
     if !is_printing_composable(filter, indexes) || !printing_compose_indexes_built(indexes) {
+        note_paging_taken("NotComposable");
         return None;
     }
     let perm = indexes.sort_perms.get(sort_col, descending).filter(|p| p.len() == cards.len());
@@ -5564,6 +5565,7 @@ fn printing_compose_fastpath<'a>(
             domain as f64 * (-(printing_matches as f64) / domain as f64).exp().mul_add(-1.0, 1.0)
         };
         if est > domain as f64 * *COMPOSE_GATHER_MAX_CARD_FRACTION {
+            note_paging_taken("DeclineBroad");
             return None;
         }
         // Small-total decline (mirrors the `Perm` branch's `total <= STREAM_MIN_MATCHES` below): in the
@@ -5577,6 +5579,7 @@ fn printing_compose_fastpath<'a>(
         // sparse `type:angel`/`type:goblin` card/usd (newly composable) from regressing onto this path:
         // the collection compose leaves are a printing-mode orderby-walk win, not a card-mode gather win.
         if (estimator::estimate_cardinality(filter, indexes, offsets).hi as usize) <= *STREAM_MIN_MATCHES {
+            note_paging_taken("DeclineSparseEstimate");
             return None;
         }
     }
@@ -5603,7 +5606,10 @@ fn printing_compose_fastpath<'a>(
     let page = match perm {
         Some(perm) => {
             if total <= *STREAM_MIN_MATCHES {
-                note_paging_taken("DeclineSparse");
+                // `Exact` to distinguish it from `DeclineSparseEstimate` above: same intent, but that
+                // one fires pre-compose off the estimator's upper bound, this one post-compose off
+                // the real total. A harness reading one label for both cannot tell which fired.
+                note_paging_taken("DeclineSparseExact");
                 return None; // sparse: the general path gathers + globally sorts, ordering ties differently
             }
             note_paging_taken("Perm");
@@ -6363,17 +6369,45 @@ pub(crate) struct PhaseStats {
     /// Which paging branch `printing_compose_fastpath` ACTUALLY took, against the `compose_paging`
     /// the cost model predicted it would.
     ///
-    /// `compose_paging_with_total` reimplements a decision the fastpath makes independently -- it
-    /// recomputes the permutation lookup, the orderby-walk test and the decline conditions on its
-    /// own -- and nothing checked that the two agree. That is the same shape as the Python cost
-    /// mirror which silently drifted from `cost.rs` for two revisions. Reporting the real branch
-    /// turns the assumption into something a harness can assert.
+    /// `acquire_plan_features`' `PrintingCompose` branch sets `feats.compose_paging` by
+    /// reimplementing a decision the fastpath makes independently -- it recomputes the permutation
+    /// lookup and the `orderby_walk_available` test on its own -- and nothing checked that the two
+    /// agree. That is the same shape as the Python cost mirror which silently drifted from `cost.rs`
+    /// for two revisions. Reporting the real branch turns the assumption into something a harness
+    /// can assert, which `compose_paging_prediction_matches_the_branch_taken` now does (and
+    /// `scripts/bench_cost_model_agreement.py` observes over the real corpus).
     ///
-    /// `""` for every other plan, and for a compose run that never reached the paging step.
+    /// The prediction is 3-way and this is 7-way, so they are not compared blindly. Every exit from
+    /// the fastpath records itself, which is what lets `""` mean exactly one thing:
+    /// - `Perm` / `OrderbyWalk` / `Gather` — a strategy ran, and it must be the predicted one. These
+    ///   are the only labels comparable against `compose_paging`.
+    /// - `EmptyPage` — the composed total was 0 or the offset was past it, so the fastpath returned
+    ///   before any strategy ran. The prediction is simply not exercised.
+    /// - `NotComposable` — the structural check failed (not a composable expr, or the compose
+    ///   indexes are not built).
+    /// - `DeclineBroad` — the `COMPOSE_GATHER_MAX_CARD_FRACTION` breadth gate.
+    /// - `DeclineSparseEstimate` / `DeclineSparseExact` — the two sparse declines, pre-compose off
+    ///   the estimator's upper bound and post-compose off the real total respectively.
+    ///
+    /// `""` therefore means the fastpath was never entered at all — every other plan, and a compose
+    /// plan that `run_query_with_plan` rejected before calling it. A declined compose always says
+    /// which gate declined it.
     pub(crate) paging_taken: &'static str,
 }
 
 thread_local! {
+    /// Scratch slot the instrumented executors publish into. **Only meaningful between a
+    /// `take_phase_stats()` and the next publish** — that window is the whole contract, and
+    /// `explain_analyze` is the only caller that establishes it.
+    ///
+    /// Nothing clears this on the production path, deliberately: a `Cell` write per query to reset
+    /// state no production reader consults would be cost for nobody. The consequence is that a live
+    /// worker thread carries whatever its last query left here indefinitely, and because both
+    /// publishers use `..c.get()` to preserve `paging_taken` across a partial write, a stale label
+    /// from an unrelated earlier query is inherited rather than overwritten.
+    ///
+    /// So a reader added outside `explain_analyze` gets an arbitrary earlier query's numbers, not
+    /// zeros and not the current query's. Take first, then run, then read.
     static PHASE_STATS: std::cell::Cell<PhaseStats> = const { std::cell::Cell::new(PhaseStats {
         cards_visited: 0, printings_scanned: 0, matches_pushed: 0, ns_loop: 0, ns_finish: 0, ns_round_total: 0, ns_prepare: 0,
         result_total: 0, paging_taken: "",
@@ -6411,7 +6445,8 @@ fn note_paging_taken(which: &'static str) {
 }
 
 /// Last executor run's phase stats, and clear them. `explain_analyze` reads this immediately after a
-/// timed run; anything else sees zeros.
+/// timed run, having cleared beforehand — see `PHASE_STATS` for why that order is the contract and
+/// why an unpaired read does NOT see zeros.
 fn take_phase_stats() -> PhaseStats {
     PHASE_STATS.with(|c| c.replace(PhaseStats::default()))
 }
@@ -6870,11 +6905,10 @@ fn run_query_with_plan<'a>(
 pub(crate) struct PlanEstimate {
     pub(crate) plan: PhysicalPlan,
     pub(crate) predicted_ns: f64,
-    /// `cost::materialize_cost` for this plan — the candidate-production term `plan_cost` omits,
-    /// reported but deliberately NOT added to `predicted_ns`. `0.0` for plans that build no
-    /// candidate list. See `cost.rs`'s "Candidate materialization" section for why it stays out
-    /// of the routing decision.
-    /// Modelled `collect` + `sort_unstable` cost for this plan's candidate list.
+    /// `cost::materialize_cost` for this plan: the modelled `collect` + `sort_unstable` cost of the
+    /// candidate list it consumes — the candidate-production term `plan_cost` omits. Reported but
+    /// deliberately NOT added to `predicted_ns`; `0.0` for plans that build no candidate list. See
+    /// `cost.rs`'s "Candidate materialization" section for why it stays out of the routing decision.
     ///
     /// Charged on `eval_domain`, which is the candidate count only under a `Candidates` acquire.
     /// Under `Prep::Range` the two materializing plans are estimated UNNARROWED
@@ -7018,10 +7052,20 @@ pub(crate) struct PlanTrial {
     pub(crate) materialize_ns: f64,
     pub(crate) picked: bool,
     pub(crate) trials_ns: Vec<u64>,
-    /// Execution counters and coarse phase timings from the last recorded run of this plan, when the
-    /// executor is instrumented (`GatheredScan` today). Zeros otherwise. See `PhaseStats`: the
-    /// counters check whether the cost arm's FEATURES match what the loop did, and the phase timings
-    /// check whether its TERMS account for the whole executor.
+    /// Execution counters and coarse phase timings from the last recorded run of this plan. See
+    /// `PhaseStats`: the counters check whether the cost arm's FEATURES match what the loop did, and
+    /// the phase timings check whether its TERMS account for the whole executor.
+    ///
+    /// Populated for the two materializing plans — `GatheredScan` (`exec_gathered_scan`) and
+    /// `StreamedSelect` (`run_query_streamed`, which publishes from all three of its return paths).
+    /// The four fast paths — `PrintingRangeScan`, `PrintingCompose`, `PlanePopcountOrder`,
+    /// `CardRangePopcount` — are NOT instrumented and report zeros, except `paging_taken`, which
+    /// `printing_compose_fastpath` sets on its own.
+    ///
+    /// A consumer must not read all-zero counters as "this plan did no work": `explain_analyze`
+    /// always fills `ns_round_total`, so `ns_round_total > 0 && ns_loop == 0` is the uninstrumented
+    /// case, and only `ns_round_total == 0` means the plan never ran at all (which `trials_ns`
+    /// already says, being empty).
     pub(crate) phases: PhaseStats,
 }
 

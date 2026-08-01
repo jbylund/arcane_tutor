@@ -6,6 +6,7 @@ use super::{
     cards_of_printings, count_common_keywords, count_common_types,
     build_artist_index, build_range_index, build_arith_tuple_index, is_arith_tuple_route, range_candidates, narrow_candidates, narrow_candidates_exact, rarity_candidates,
     range_too_broad_to_narrow, run_query, run_query_with_plan, explain, explain_analyze, AcquireFacts, PlanEstimate, PlanTrial,
+    acquire_plan_features, take_phase_stats,
     PhysicalPlan, ComposePaging, trigram_candidates, finalize_trigram_index, PrintingRangeIndex, NARROW_FLOOR,
     gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
     walk_printing_page, aligned_page, bare_range_bounds, probe_range_k, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
@@ -3199,6 +3200,146 @@ fn explain_analyze_matches_explain_and_times_every_plan() {
         trials.iter().any(|t| t.plan == PhysicalPlan::GatheredScan && t.trials_ns.len() == NUM_TRIALS),
         "GatheredScan is always applicable and never declines",
     );
+}
+
+/// `feats.compose_paging` must name the branch `printing_compose_fastpath` really takes.
+///
+/// The two decisions are made independently: `acquire_plan_features` recomputes the permutation
+/// lookup, the `orderby_walk_available` test and the decline conditions on its own, and the fastpath
+/// decides again at run time. Nothing checked that they agree — the same shape as the Python cost
+/// mirror that silently drifted from `cost.rs` for two revisions. `PhaseStats::paging_taken` exists
+/// to make the agreement checkable; this is the check.
+///
+/// The prediction is 3-way (`ComposePaging`) and `paging_taken` is 7-way, because a decline or an
+/// empty page reaches no strategy at all. Only the three strategy labels are comparable; the rest
+/// must still name the gate that fired, which is the other half of what this checks.
+///
+/// Swept at two corpus sizes on purpose, because the two regimes are mutually exclusive and each
+/// leaves the other's assertion unexercised:
+/// - 8,000 cards reaches `Gather`, which needs a card/artwork compose on `rarity`/`usd` (the two
+///   orderbys with no permutation) to thread between the `COMPOSE_GATHER_MAX_CARD_FRACTION` breadth
+///   gate and the pre-compose sparse decline. At 2,000 that band is too narrow to land in.
+/// - 2,000 cards reaches the declines, which at 8,000 stop firing entirely.
+#[test]
+fn compose_paging_prediction_matches_the_branch_taken() {
+    use rand::SeedableRng;
+    // Both regimes, because they are mutually exclusive -- see the doc above. At 8,000 no query
+    // declines at all; at 2,000 `Gather` is unreachable. One size leaves half the test asleep.
+    const CORPUS_SIZES: [usize; 2] = [2_000, 8_000];
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(745_003);
+
+    let specs = [
+        FuzzSpec::And(vec![fuzz_leaf_color(&mut rng), fuzz_leaf_type(&mut rng)]),
+        fuzz_leaf_type(&mut rng),
+        fuzz_leaf_color(&mut rng),
+        fuzz_leaf_rarity(&mut rng),
+        FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
+        FuzzSpec::And(vec![fuzz_leaf_type(&mut rng), fuzz_leaf_rarity(&mut rng)]),
+    ];
+    // Every orderby, because which one is set is exactly what picks the branch: a card-space
+    // permutation gives `Perm`, `usd`/`rarity` in printing mode give `OrderbyWalk` (#744), and
+    // anything else falls through to `Gather`.
+    let sort_cols = [
+        ("edhrec", SortCol::EdhrecRank), ("cmc", SortCol::Cmc), ("power", SortCol::Power),
+        ("toughness", SortCol::Toughness), ("rarity", SortCol::Rarity), ("usd", SortCol::PriceUsd),
+        ("cubecobra", SortCol::Cubecobra), ("name", SortCol::Name),
+    ];
+    let modes = [("card", Mode::Card), ("printing", Mode::Printing), ("artwork", Mode::Artwork)];
+    // Both, since the strategy branch keys off `sort_perms.get(sort_col, descending)`.
+    let directions = [false, true];
+    // A deep offset as well as the first page: `EmptyPage` is only reachable past the total.
+    let offsets = [0usize, 40, 10_000];
+
+    let (mut exercised, mut declined, mut empty) = (0usize, 0usize, 0usize);
+    let mut by_strategy = [0usize; 3]; // Perm / OrderbyWalk / Gather
+    for &n_cards in &CORPUS_SIZES {
+        let data = fuzz_store_n(&mut rng, n_cards);
+        let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+        let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+        let ctx = QueryCtx::from(archived);
+        for spec in &specs {
+            for &(mode_label, mode) in &modes {
+                for &(orderby, sort_col) in &sort_cols {
+                    for &descending in &directions {
+                        for &page_offset in &offsets {
+                            let params = kernel_params(mode, sort_col, descending, 60, page_offset);
+                            let bound = fuzz_bound_filter(spec, archived);
+                            let (pe, filter) = split_planes(
+                                bound, &archived.indexes.planes, &archived.indexes.oracle_trigram.words, matches!(mode, Mode::Card),
+                            );
+
+                            // The prediction, on its own clone -- acquire mutates the filter it reads.
+                            let mut acq_filter = filter.clone();
+                            let (feats, prep, _bits) = acquire_plan_features(&ctx, &params, &mut acq_filter, pe.as_ref());
+                            if prep.count_source() != "printing_compose" {
+                                continue; // not a compose acquire; compose_paging has no referent
+                            }
+                            let predicted = feats.compose_paging;
+
+                            // The branch really taken, on a pristine clone. Clear first: an earlier
+                            // iteration's label survives in the cell otherwise (see PHASE_STATS).
+                            let mut run_filter = filter.clone();
+                            take_phase_stats();
+                            let ran = run_query_with_plan(PhysicalPlan::PrintingCompose, &ctx, &params, &mut run_filter, pe.as_ref());
+                            let taken = take_phase_stats().paging_taken;
+
+                            let case = format!(
+                                    "n={n_cards} {mode_label}/{orderby}/desc={descending}/offset={page_offset} ({})",
+                                fuzz_describe(spec),
+                            );
+                            // A decline reached no paging strategy, so there is nothing to compare
+                            // against `compose_paging`. But it must still say WHICH gate declined it:
+                            // `""` would mean the fastpath was never entered, and this call entered it.
+                            // That is the silent hole the labels close -- before them, three of the four
+                            // decline sites returned without recording anything.
+                            if ran.is_none() {
+                                assert!(
+                                    matches!(taken, "NotComposable" | "DeclineBroad" | "DeclineSparseEstimate" | "DeclineSparseExact"),
+                                    "compose declined without recording which gate fired (got {taken:?}): {case}",
+                                );
+                                declined += 1;
+                                continue;
+                            }
+                            if taken == "EmptyPage" {
+                                empty += 1;
+                                continue; // returned before any paging strategy ran
+                            }
+                            let predicted_label = match predicted {
+                                ComposePaging::Perm => "Perm",
+                                ComposePaging::OrderbyWalk => "OrderbyWalk",
+                                ComposePaging::Gather => "Gather",
+                            };
+                            assert_eq!(
+                                taken, predicted_label,
+                                "cost model predicted {predicted_label} but the fastpath took {taken}: {case}",
+                            );
+                            exercised += 1;
+                            match predicted {
+                                ComposePaging::Perm => by_strategy[0] += 1,
+                                ComposePaging::OrderbyWalk => by_strategy[1] += 1,
+                                ComposePaging::Gather => by_strategy[2] += 1,
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Guard against the sweep silently covering nothing -- every `continue` above is a shape
+    // that skipped the assertion, and all of them skipping would still pass.
+    println!(
+        "compose paging: {exercised} strategy runs checked ({} Perm, {} OrderbyWalk, {} Gather), {declined} declined, {empty} empty-page",
+        by_strategy[0], by_strategy[1], by_strategy[2],
+    );
+    // All three strategies, not just a count: the agreement is only interesting where the two
+    // decisions could differ, and a sweep that reaches one branch 64 times checks one branch. This
+    // caught the sweep exercising `Gather` zero times at a smaller corpus size.
+    for (i, strategy) in ["Perm", "OrderbyWalk", "Gather"].iter().enumerate() {
+        assert!(by_strategy[i] > 0, "no compose query reached {strategy}; that branch is unchecked");
+    }
+    // And at least one decline, or the "every gate names itself" assertion never ran either.
+    assert!(declined > 0, "no compose query declined; the decline-label assertion is unexercised");
 }
 
 /// #702 PR1 estimator accuracy report (NOT an assertion — a reporting tool).

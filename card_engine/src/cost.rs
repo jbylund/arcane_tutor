@@ -60,7 +60,6 @@ use super::*;
 /// Cheap, per-query features the cost model consumes, built once per query by
 /// `run_query_routed`'s `acquire` step. All counts are exact or cheap-exact (plane
 /// popcount / range `k` / candidate count), never estimated.
-#[derive(Clone)]
 pub(crate) struct PlanFeatures {
     /// Distinct cards in the corpus (card-space universe).
     pub n_cards: u32,
@@ -202,17 +201,24 @@ pub(crate) const CARD_RANGE_BUILD_PER_PRINTING_NS: f64 = 1.22;
 /// `Vec::with_capacity` plus the run walk, before any comparison work
 /// (`bench_candidate_materialize`, axis A).
 pub(crate) const MATERIALIZE_SORT_FIXED_NS: f64 = 143.0;
-/// pdqsort on `u32`, per candidate — **linear**, not `c·log2 c`. `sort_unstable` is a full pdqsort
-/// so it is asymptotically `n log n`, but measured per-element cost is flat across the sizes this
-/// engine sees (4.39 ns at 1,024 rising only to 5.09 at 31,508, where an `n log n` fit predicts
-/// 4.39 → 6.57). Fit on the rows bracketing the crossover. Re-fit rather than extrapolating past
-/// ~3M cards, where the log factor does start to show.
+/// pdqsort on `u32`, per candidate — treated as **linear**, not `c·log2 c`. `sort_unstable` is a full
+/// pdqsort so it is asymptotically `n log n`, and the log factor is faintly visible over this range,
+/// but far too weak to model: per-element cost grows only 1.17x across a 31x size increase, where an
+/// `n log n` fit demands 1.49x.
 ///
-/// NOTE the per-element figures quoted above disagree with `bench_candidate_materialize`'s doc for
-/// the same axis-H measurement (it reports 5.09/4.93/4.92/5.06 at 1,024/4,096/16,384/31,508 against
-/// the 4.39 → 5.09 here). One of the two is stale; adjudicating it needs a re-run on a machine that
-/// is not clock-throttled, so it is flagged rather than silently reconciled. The VALUE is now shared
-/// with the bench either way, so only the prose can drift.
+/// Axis H, minimum of 10 runs (`bench_candidate_materialize_sort_shape`):
+///
+///     cands     1,024   4,096   8,192  16,384  31,508
+///     ns/elem    4.35    4.39    4.49    4.75    5.08
+///     n log n    4.35    4.83    5.11    5.40    6.50
+///
+/// Re-fit rather than extrapolating past ~3M cards, where the log factor does start to matter.
+///
+/// MEASUREMENT NOTE: take the MINIMUM across repeated runs, not a single run. Contention here is
+/// one-sided — across those 10 runs min and median agree to within 0.06 ns/elem at every point while
+/// the max reaches 5.73 — so one contaminated run reads as flat ~5.0 at every size and hides the
+/// trend completely. That artifact is what made an earlier draft of this doc quote figures that
+/// disagreed with the bench, and it is the reason to distrust any single-run number here.
 pub(crate) const MATERIALIZE_SORT_PER_CAND_NS: f64 = 4.95;
 
 /// Modelled cost of producing the candidate list a materializing plan consumes, in ns. `0.0` for
