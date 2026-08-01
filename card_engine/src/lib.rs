@@ -2646,8 +2646,6 @@ impl Candidates {
         }
     }
 
-    /// The set as a bitmap over an n-element domain (scatters vec variants;
-    /// space is unchanged — callers pass the domain size of the set's space).
     /// Which representation the narrowing produced, for `explain` to report. A vec-shaped
     /// result means some site built a sorted vec — a `collect` + `sort_unstable` ran. A
     /// bits-shaped one means the narrowing stayed word-wise and never sorted.
@@ -2666,6 +2664,8 @@ impl Candidates {
         }
     }
 
+    /// The set as a bitmap over an n-element domain (scatters vec variants;
+    /// space is unchanged — callers pass the domain size of the set's space).
     fn into_bits(self, n: usize) -> Vec<u64> {
         match self {
             Candidates::Cards(v) | Candidates::Printings(v) => scatter_bits(v, n),
@@ -6329,9 +6329,6 @@ fn exec_streamed_select<'a>(
     run_query_streamed(ctx, params, filter, prep.all_match_known, perm, prep.card_ids(ctx), existential_plane)
 }
 
-/// P4 executor: the universal gathered per-card loop + `select_page`. Runs any
-/// query (printing-keyed orderbys, stores without permutations, or anything the
-/// other plans decline). Caller has run `prepare_candidates`.
 /// Per-query execution counters and coarse phase timings, for checking the cost model against what
 /// the executors actually do rather than against a fitted curve.
 ///
@@ -6419,6 +6416,9 @@ fn take_phase_stats() -> PhaseStats {
     PHASE_STATS.with(|c| c.replace(PhaseStats::default()))
 }
 
+/// P4 executor: the universal gathered per-card loop + `select_page`. Runs any
+/// query (printing-keyed orderbys, stores without permutations, or anything the
+/// other plans decline). Caller has run `prepare_candidates`.
 fn exec_gathered_scan<'a>(
     ctx: &QueryCtx<'a>,
     params: &QueryParams,
@@ -6874,6 +6874,12 @@ pub(crate) struct PlanEstimate {
     /// reported but deliberately NOT added to `predicted_ns`. `0.0` for plans that build no
     /// candidate list. See `cost.rs`'s "Candidate materialization" section for why it stays out
     /// of the routing decision.
+    /// Modelled `collect` + `sort_unstable` cost for this plan's candidate list.
+    ///
+    /// Charged on `eval_domain`, which is the candidate count only under a `Candidates` acquire.
+    /// Under `Prep::Range` the two materializing plans are estimated UNNARROWED
+    /// (`eval_domain = n_cards`), so this figure has no referent there -- do not pool range-acquired
+    /// rows with candidate-acquired ones when reading it.
     pub(crate) materialize_ns: f64,
     /// Whether this is the plan `run_query_routed` would run: the cheapest `predicted_ns`, which
     /// after the ascending sort is index 0. Reported explicitly so a caller never has to
@@ -6912,13 +6918,6 @@ pub(crate) struct AcquireFacts {
     ///
     /// A top-of-narrowing proxy, not a per-site census — see `Candidates::repr_label`.
     pub(crate) narrowed_repr: &'static str,
-    /// Candidate cards the walk would iterate (`PlanFeatures::eval_domain`). For a
-    /// `"candidates"` query this IS the materialized candidate count; compare it
-    /// against `n_cards` — equal means nothing narrowed.
-    pub(crate) eval_domain: u32,
-    pub(crate) n_cards: u32,
-    /// Result cardinality in the plan's operating space.
-    pub(crate) matches: u32,
     /// Raw per-sample wall time of the acquire step — narrowing and any
     /// materialization included. Not pre-reduced, same rationale as
     /// `PlanTrial::trials_ns`. `explain` reports a single sample; `explain_analyze`
@@ -6982,10 +6981,7 @@ fn explain(ctx: &QueryCtx, params: &QueryParams, filter: &mut FilterExpr, plane:
     let facts = AcquireFacts {
         count_source: prep.count_source(),
         narrowed_repr: prep.narrowed_repr(),
-        eval_domain: feats.eval_domain,
-        n_cards: feats.n_cards,
-        matches: feats.matches,
-        feats: feats.clone(),
+        feats, // moved: `eval_domain`/`n_cards`/`matches` live here and nowhere else
         acquire_ns: vec![acquire_ns],
         routed_ns: Vec::new(), // explain runs nothing
     };
@@ -6994,8 +6990,8 @@ fn explain(ctx: &QueryCtx, params: &QueryParams, filter: &mut FilterExpr, plane:
         .filter(|p| p.applicable(ctx, params, filter, plane))
         .map(|plan| PlanEstimate {
             plan,
-            predicted_ns: cost::plan_cost(plan, &feats),
-            materialize_ns: cost::materialize_cost(plan, &feats),
+            predicted_ns: cost::plan_cost(plan, &facts.feats),
+            materialize_ns: cost::materialize_cost(plan, &facts.feats),
             picked: false, // set below, once the ranking is known
         })
         .collect();
@@ -7097,6 +7093,12 @@ fn explain_analyze(
         let routed = run_query_routed(ctx, params, &mut routed_filter, plane);
         let routed_dt = t_routed.elapsed().as_nanos() as u64;
         drop(routed);
+        // The routed run dispatches into the same executors the plan loop below times, so it
+        // publishes into PHASE_STATS too. Clear it here or the first plan examined this round --
+        // `idx = round % n`, which is NOT the picked plan once `round > 0` -- reads the routed run's
+        // counters as its own whenever it publishes nothing itself. Measured before this line: 49 of
+        // 600 queries had GatheredScan reporting a `paging_taken` only the compose fastpath sets.
+        take_phase_stats();
         if round >= num_warmups {
             facts.acquire_ns.push(acq_dt);
             facts.routed_ns.push(routed_dt);
@@ -7316,7 +7318,6 @@ fn run_query_streamed<'a>(
     let t_match = std::time::Instant::now();
     for cid in card_ids {
         n_cards_visited += 1;
-        n_printings_scanned += (u32::from(offsets[cid as usize + 1]) - u32::from(offsets[cid as usize])) as u64;
         let card = &cards[cid as usize];
         // #634 Step 1: skip the redundant card_pass re-derivation of Tri::True
         // when the narrowing already proved every candidate matches. Gated
@@ -7336,6 +7337,12 @@ fn run_query_streamed<'a>(
             };
         let start = u32::from(offsets[cid as usize]) as usize;
         let end   = u32::from(offsets[cid as usize + 1]) as usize;
+        // Counted HERE, below the `card_pass` continue above, because a card rejected there never has
+        // its printings touched. Counting at the top of the loop instead included them, so this plan
+        // and GatheredScan reported different `printings_scanned` for identical work whenever the
+        // narrowing was inexact -- and `scan_units` has one definition, so at most one could be the
+        // valid comparison.
+        n_printings_scanned += (end - start) as u64;
         // Every printing matches: card/printing counts are O(1) inside the
         // helper, and the artwork group count is a build-time constant.
         let c = if all_match && matches!(mode, Mode::Artwork) && have_group_counts {
@@ -7737,14 +7744,14 @@ fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<B
     let d = PyDict::new(py);
     d.set_item("count_source", f.count_source)?;
     d.set_item("narrowed_repr", f.narrowed_repr)?;
-    d.set_item("eval_domain", f.eval_domain)?;
-    d.set_item("n_cards", f.n_cards)?;
-    d.set_item("matches", f.matches)?;
     d.set_item("acquire_ns", f.acquire_ns.clone())?;
     d.set_item("routed_ns", f.routed_ns.clone())?;
     // The model's own inputs, so a calibration fit regresses on the same vector `plan_cost` reads.
     let g = &f.feats;
     for (k, v) in [
+        ("eval_domain", g.eval_domain),
+        ("n_cards", g.n_cards),
+        ("matches", g.matches),
         ("n_printings", g.n_printings),
         ("scan_units", g.scan_units),
         ("residual_tier_ns100", g.residual_tier_ns100),

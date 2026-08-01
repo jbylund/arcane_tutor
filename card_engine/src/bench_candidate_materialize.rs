@@ -60,7 +60,7 @@ fn time_ns(mut kernel: impl FnMut() -> usize) -> f64 {
 /// total, each run's ids scattered rather than contiguous.
 fn make_runs(domain: usize, count: usize, runs: usize) -> Vec<Vec<u32>> {
     assert!(count <= domain && runs >= 1);
-    // Deterministic LCG: reproducible without a dev-dependency.
+    // Deterministic xorshift64: reproducible without a dev-dependency.
     let mut state = 0x2545_F491_4F6C_DD1Du64;
     let mut next = move || {
         state ^= state << 13;
@@ -157,21 +157,10 @@ fn bitmap_scatter(runs: &[Vec<u32>], domain: usize) -> Vec<u64> {
 // modelled from two numbers already in hand, and only the winning structure ever
 // gets built. These constants are fit against axis A and B above, not assumed.
 
-/// `Vec::with_capacity` plus the run walk, before any comparison work.
-const SORT_FIXED_NS: f64 = 143.0;
-/// pdqsort on `u32`, per candidate — **linear**, not `c·log2 c`.
-///
-/// `sort_unstable` is a full pdqsort, so it is asymptotically `n log n`; this is not a
-/// claim otherwise. But over the three decades that matter here the measured per-element
-/// cost is flat — 5.09, 4.93, 4.92 and 5.06 ns at 1,024 / 4,096 / 16,384 / 31,508 (axis
-/// H) — where an `n log n` term fit to the same data predicts it rising from 3.6 to 5.4.
-/// So the log factor is not observable against per-element memory cost across this range,
-/// and a linear fit is both simpler and more accurate. Fit on the 64 and 1,024 rows of
-/// axis A, which brackets the crossover; it holds to ~6% out to 31,508.
-///
-/// This does NOT license extrapolating past the corpus sizes swept here. The log factor
-/// is real and will eventually show up; re-fit rather than trusting this beyond ~3M.
-const SORT_PER_CAND_NS: f64 = 4.95;
+/// The sort model's constants are the ones `cost::materialize_cost` actually charges, imported
+/// rather than restated: this bench exists to check that model, and a private copy of its constants
+/// can drift out from under it without any test failing.
+use super::cost::{MATERIALIZE_SORT_FIXED_NS as SORT_FIXED_NS, MATERIALIZE_SORT_PER_CAND_NS as SORT_PER_CAND_NS};
 /// The zeroed `vec![0u64; words]` allocation.
 const BITMAP_FIXED_NS: f64 = 200.0;
 /// Word scan on the extract pass. Fit beyond L1 (0.46–0.53 ns/word across axis B's

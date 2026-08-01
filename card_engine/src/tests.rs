@@ -3075,10 +3075,13 @@ fn explain_reports_ranked_applicable_plans() {
                 ),
                 "unknown count_source {:?} ({mode_label}, {})", facts.count_source, fuzz_describe(spec),
             );
-            assert_eq!(facts.n_cards, archived.cards.len() as u32, "n_cards must be the corpus size");
+            assert_eq!(facts.feats.n_cards, archived.cards.len() as u32, "n_cards must be the corpus size");
             assert!(
-                facts.eval_domain <= facts.n_cards,
-                "eval_domain {} exceeds n_cards {} ({mode_label}, {})", facts.eval_domain, facts.n_cards, fuzz_describe(spec),
+                facts.feats.eval_domain <= facts.feats.n_cards,
+                "eval_domain {} exceeds n_cards {} ({mode_label}, {})",
+                facts.feats.eval_domain,
+                facts.feats.n_cards,
+                fuzz_describe(spec),
             );
             assert_eq!(facts.acquire_ns.len(), 1, "explain() reports exactly one acquire sample");
             // `none` is legitimate for a candidate-acquired query — the residual narrowing can
@@ -3168,8 +3171,8 @@ fn explain_analyze_matches_explain_and_times_every_plan() {
     // what explain() alone reported — except acquire_ns, which is a measurement:
     // explain() takes one sample, explain_analyze re-samples once per recorded round.
     assert_eq!(facts.count_source, ref_facts.count_source, "count_source must match explain()'s");
-    assert_eq!(facts.eval_domain, ref_facts.eval_domain, "eval_domain must match explain()'s");
-    assert_eq!(facts.matches, ref_facts.matches, "matches must match explain()'s");
+    assert_eq!(facts.feats.eval_domain, ref_facts.feats.eval_domain, "eval_domain must match explain()'s");
+    assert_eq!(facts.feats.matches, ref_facts.feats.matches, "matches must match explain()'s");
     assert_eq!(facts.acquire_ns.len(), NUM_TRIALS, "explain_analyze records one acquire sample per trial round");
     // The routed row is what distinguishes a ranking error from a live defect, so it must be
     // present for every recorded round — and absent from explain(), which executes nothing.

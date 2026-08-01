@@ -121,8 +121,13 @@ def main() -> None:
             kw["filters"] = parse_scryfall_query(q)
             acq = engine.explain(**kw)["acquire"]
             res = engine.explain_analyze(prefer="default", num_warmups=NUM_WARMUPS, num_trials=NUM_TRIALS, **kw)
-        except Exception:  # noqa: BLE001 - a rejected query is a skipped sample
+        except Exception as exc:  # noqa: BLE001 - a rejected query is a skipped sample
+            # Counted BY TYPE, not just totalled. This harness's whole argument is that sampling bias
+            # hides the cells most likely to be wrong -- and a bare skip counter is that same bias: if
+            # explain_analyze started raising for every artwork query, the table below would look
+            # healthy over two thirds of the intended space with nothing to say so.
             agr.skipped += 1
+            agr.skip_reasons[type(exc).__name__] += 1
             continue
         agr.sampled += 1
         for p in res["plans"]:
@@ -164,11 +169,15 @@ class Agreement:
     prep_frac: dict[str, list[float]] = dataclasses.field(default_factory=lambda: collections.defaultdict(list))
     sampled: int = 0
     skipped: int = 0
+    skip_reasons: dict[str, int] = dataclasses.field(default_factory=lambda: collections.defaultdict(int))
 
 
 def report(agr: Agreement, seconds: float) -> None:
     """Agreement per acquire branch and per distinct-on, then the unpriced prepare share."""
     print(f"\n{agr.sampled:,} queries sampled ({agr.skipped:,} skipped) in {seconds:.0f}s")
+    if agr.skip_reasons:
+        breakdown = ", ".join(f"{name} x{n:,}" for name, n in sorted(agr.skip_reasons.items(), key=lambda kv: -kv[1]))
+        print(f"  skipped by reason: {breakdown}")
     summarise("measured/predicted by acquire branch. 1.00 is agreement; >1 under-costed.", agr.ratios, "acquire")
     summarise("the same, split by distinct-on rather than acquire.", agr.by_unique, "unique")
 

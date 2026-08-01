@@ -201,13 +201,19 @@ pub(crate) const CARD_RANGE_BUILD_PER_PRINTING_NS: f64 = 1.22;
 
 /// `Vec::with_capacity` plus the run walk, before any comparison work
 /// (`bench_candidate_materialize`, axis A).
-const MATERIALIZE_SORT_FIXED_NS: f64 = 143.0;
+pub(crate) const MATERIALIZE_SORT_FIXED_NS: f64 = 143.0;
 /// pdqsort on `u32`, per candidate — **linear**, not `c·log2 c`. `sort_unstable` is a full pdqsort
 /// so it is asymptotically `n log n`, but measured per-element cost is flat across the sizes this
 /// engine sees (4.39 ns at 1,024 rising only to 5.09 at 31,508, where an `n log n` fit predicts
 /// 4.39 → 6.57). Fit on the rows bracketing the crossover. Re-fit rather than extrapolating past
 /// ~3M cards, where the log factor does start to show.
-const MATERIALIZE_SORT_PER_CAND_NS: f64 = 4.95;
+///
+/// NOTE the per-element figures quoted above disagree with `bench_candidate_materialize`'s doc for
+/// the same axis-H measurement (it reports 5.09/4.93/4.92/5.06 at 1,024/4,096/16,384/31,508 against
+/// the 4.39 → 5.09 here). One of the two is stale; adjudicating it needs a re-run on a machine that
+/// is not clock-throttled, so it is flagged rather than silently reconciled. The VALUE is now shared
+/// with the bench either way, so only the prose can drift.
+pub(crate) const MATERIALIZE_SORT_PER_CAND_NS: f64 = 4.95;
 
 /// Modelled cost of producing the candidate list a materializing plan consumes, in ns. `0.0` for
 /// plans that never build one — those walk or read a plane bitmap directly, and charging them this

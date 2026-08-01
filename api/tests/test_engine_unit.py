@@ -1328,7 +1328,10 @@ class TestExplain:
         result = engine.explain_analyze(
             filters=filters,
             unique="card",
-            prefer="GatheredScan",
+            # `prefer` is the PRINTING preference, not a plan selector -- `prefer_from_str` maps
+            # anything unrecognised to `Prefer::Default`. explain_analyze times every applicable plan
+            # regardless, so the plan under test is looked up by name from the results below.
+            prefer="default",
             orderby="edhrec",
             direction="asc",
             limit=50,
