@@ -5597,13 +5597,16 @@ fn printing_compose_fastpath<'a>(
         }
     };
     if total == 0 || page_offset >= total {
+        note_paging_taken("EmptyPage");
         return Some((total, Vec::new()));
     }
     let page = match perm {
         Some(perm) => {
             if total <= *STREAM_MIN_MATCHES {
+                note_paging_taken("DeclineSparse");
                 return None; // sparse: the general path gathers + globally sorts, ordering ties differently
             }
+            note_paging_taken("Perm");
             walk_grouped_page(ctx, params, &pbits, perm)
         }
         // No permutation. #744: if the orderby has a printing-space value structure (usd/rarity,
@@ -5626,7 +5629,16 @@ fn printing_compose_fastpath<'a>(
             } else {
                 None
             };
-            walked.unwrap_or_else(|| gather_composed_page(ctx, params, &pbits))
+            match walked {
+                Some(rows) => {
+                    note_paging_taken("OrderbyWalk");
+                    rows
+                }
+                None => {
+                    note_paging_taken("Gather");
+                    gather_composed_page(ctx, params, &pbits)
+                }
+            }
         }
     };
     Some((total, page))
@@ -6347,11 +6359,27 @@ pub(crate) struct PhaseStats {
     /// inferred. No cost term describes it, and on range-acquired queries it is where a third of the
     /// runtime was landing unaccounted.
     pub(crate) ns_prepare: u64,
+    /// The result total this run returned. `explain_analyze` had no ground truth at all before: a
+    /// harness wanting the true cardinality made a SECOND `query()` call, which is a different
+    /// execution, so agreement with the analyzed run was assumed rather than observed.
+    pub(crate) result_total: u64,
+    /// Which paging branch `printing_compose_fastpath` ACTUALLY took, against the `compose_paging`
+    /// the cost model predicted it would.
+    ///
+    /// `compose_paging_with_total` reimplements a decision the fastpath makes independently -- it
+    /// recomputes the permutation lookup, the orderby-walk test and the decline conditions on its
+    /// own -- and nothing checked that the two agree. That is the same shape as the Python cost
+    /// mirror which silently drifted from `cost.rs` for two revisions. Reporting the real branch
+    /// turns the assumption into something a harness can assert.
+    ///
+    /// `""` for every other plan, and for a compose run that never reached the paging step.
+    pub(crate) paging_taken: &'static str,
 }
 
 thread_local! {
     static PHASE_STATS: std::cell::Cell<PhaseStats> = const { std::cell::Cell::new(PhaseStats {
         cards_visited: 0, printings_scanned: 0, matches_pushed: 0, ns_loop: 0, ns_finish: 0, ns_round_total: 0, ns_prepare: 0,
+        result_total: 0, paging_taken: "",
     }) };
 }
 
@@ -6373,6 +6401,16 @@ fn timed_prepare_candidates(
     let prep = prepare_candidates(ctx, params, filter, plane);
     PENDING_PREPARE_NS.with(|c| c.set(t.elapsed().as_nanos() as u64));
     prep
+}
+
+/// Record which paging branch the compose fastpath took. Reporting only -- see
+/// `PhaseStats::paging_taken` for why the predicted branch is not enough.
+fn note_paging_taken(which: &'static str) {
+    PHASE_STATS.with(|c| {
+        let mut st = c.get();
+        st.paging_taken = which;
+        c.set(st);
+    });
 }
 
 /// Last executor run's phase stats, and clear them. `explain_analyze` reads this immediately after a
@@ -6454,6 +6492,9 @@ fn exec_gathered_scan<'a>(
             ns_finish,
             ns_round_total: 0, // filled by explain_analyze, which owns the round timer
             ns_prepare: prep_ns,
+            // Keep whatever this run already recorded (e.g. the paging branch the fastpath took):
+            // a whole-struct set here would silently wipe it.
+            ..c.get()
         });
     });
     (total, page)
@@ -7070,6 +7111,7 @@ fn explain_analyze(
             // Read immediately: the next plan's run overwrites the thread-local.
             let mut stats = take_phase_stats();
             stats.ns_round_total = dt;
+            stats.result_total = ran.as_ref().map_or(0, |(total, _)| *total as u64);
             // A structurally-applicable plan's fastpath can still decline at runtime
             // (e.g. PrintingCompose on a sparse total) — deterministic for this
             // query/data, so a decliner simply never accumulates trials.
@@ -7322,6 +7364,7 @@ fn run_query_streamed<'a>(
                 ns_finish,
                 ns_round_total: 0,
                 ns_prepare: prep_ns,
+                ..c.get() // see the note at the other publisher
             });
         });
     };
@@ -7681,6 +7724,10 @@ fn plan_trial_to_pydict<'py>(py: Python<'py>, t: &PlanTrial) -> PyResult<Bound<'
     d.set_item("ns_finish", t.phases.ns_finish)?;
     d.set_item("ns_round_total", t.phases.ns_round_total)?;
     d.set_item("ns_prepare", t.phases.ns_prepare)?;
+    // Ground truth for this run, and which paging branch really ran. Both exist so a harness can
+    // check the model against what happened rather than against a second, separate execution.
+    d.set_item("result_total", t.phases.result_total)?;
+    d.set_item("paging_taken", t.phases.paging_taken)?;
     Ok(d)
 }
 
