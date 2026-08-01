@@ -6852,6 +6852,10 @@ pub(crate) struct PlanEstimate {
 /// leaves every `predicted_ns` untouched. That divergence is the point: it isolates
 /// the one term the cost model does not carry.
 pub(crate) struct AcquireFacts {
+    /// The full feature vector `cost::plan_cost` consumed for this query. Reported so a calibration
+    /// sweep can regress measured time on *exactly* the terms the model uses; fitting against
+    /// re-derived proxies instead means a feature error hides as a coefficient that will not settle.
+    pub(crate) feats: cost::PlanFeatures,
     /// Which of `Prep`'s three count sources this query's structure selected. Only
     /// `"candidates"` materializes a candidate list at all, so it is the first thing
     /// to check before treating a query as a test case for materialization work.
@@ -6940,6 +6944,7 @@ fn explain(ctx: &QueryCtx, params: &QueryParams, filter: &mut FilterExpr, plane:
         eval_domain: feats.eval_domain,
         n_cards: feats.n_cards,
         matches: feats.matches,
+        feats: feats.clone(),
         acquire_ns: vec![acquire_ns],
         routed_ns: Vec::new(), // explain runs nothing
     };
@@ -7690,6 +7695,22 @@ fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<B
     d.set_item("matches", f.matches)?;
     d.set_item("acquire_ns", f.acquire_ns.clone())?;
     d.set_item("routed_ns", f.routed_ns.clone())?;
+    // The model's own inputs, so a calibration fit regresses on the same vector `plan_cost` reads.
+    let g = &f.feats;
+    for (k, v) in [
+        ("n_printings", g.n_printings),
+        ("scan_units", g.scan_units),
+        ("residual_tier_ns100", g.residual_tier_ns100),
+        ("limit", g.limit),
+        ("offset", g.offset),
+        ("broadcast_printings", g.broadcast_printings),
+        ("scatter_printings", g.scatter_printings),
+        ("project_printings", g.project_printings),
+        ("popcount_words", g.popcount_words),
+    ] {
+        d.set_item(k, v)?;
+    }
+    d.set_item("compose_paging", format!("{:?}", g.compose_paging))?;
     Ok(d)
 }
 

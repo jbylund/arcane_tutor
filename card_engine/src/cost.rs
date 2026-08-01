@@ -60,6 +60,7 @@ use super::*;
 /// Cheap, per-query features the cost model consumes, built once per query by
 /// `run_query_routed`'s `acquire` step. All counts are exact or cheap-exact (plane
 /// popcount / range `k` / candidate count), never estimated.
+#[derive(Clone)]
 pub(crate) struct PlanFeatures {
     /// Distinct cards in the corpus (card-space universe).
     pub n_cards: u32,
