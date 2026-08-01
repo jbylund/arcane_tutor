@@ -6342,16 +6342,27 @@ fn exec_streamed_select<'a>(
 /// - are the FEATURE COUNTS right? `cards_visited` / `printings_scanned` / `matches_pushed` are the
 ///   real counts behind `eval_domain` / `scan_units` / `matches`. If a feature disagrees with its
 ///   counter, no rate constant can rescue the term.
-/// - is the WORK WHERE THE MODEL SAYS? `ns_loop` + `ns_finish` should account for the whole executor.
-///   Whatever is left over is work no term describes, and re-fitting cannot find it.
+/// - is the WORK WHERE THE MODEL SAYS? `ns_setup` + `ns_loop` + `ns_finish` should account for the
+///   whole executor. Whatever is left over is work no term describes, and re-fitting cannot find it.
 ///
 /// Counters are plain locals in the hot loop and only published here at the end, so the loop pays
-/// nothing; the three `Instant::now()` pairs are per query, not per card.
+/// nothing. The three phases are contiguous, so each boundary instant ends one and starts the next:
+/// four `Instant::now()` calls bound three phases, which is the same four clock reads the two
+/// phases cost before `ns_setup` was split out. Per query, not per card.
 #[derive(Default, Clone, Copy)]
 pub(crate) struct PhaseStats {
     pub(crate) cards_visited: u64,
     pub(crate) printings_scanned: u64,
     pub(crate) matches_pushed: u64,
+    /// Per-query scratch setup, before the match loop starts. Split out because it is neither
+    /// prepare nor match and it is NOT negligible: `run_query_streamed` zeroes an `n_cards`-long
+    /// counts buffer here (~126 kB on the real corpus) no matter how few candidates it is about to
+    /// visit, so on a selective query this can be most of the run. It used to fall outside every
+    /// timer and land silently in the unaccounted remainder.
+    ///
+    /// It is also the one phase here with an obvious cost term waiting for it: the dominant part
+    /// scales with `n_cards`, which `PlanFeatures` already carries.
+    pub(crate) ns_setup: u64,
     pub(crate) ns_loop: u64,
     pub(crate) ns_finish: u64,
     /// Wall time of the whole `run_query_with_plan` round these phases came from. Recorded so the
@@ -6409,8 +6420,8 @@ thread_local! {
     /// So a reader added outside `explain_analyze` gets an arbitrary earlier query's numbers, not
     /// zeros and not the current query's. Take first, then run, then read.
     static PHASE_STATS: std::cell::Cell<PhaseStats> = const { std::cell::Cell::new(PhaseStats {
-        cards_visited: 0, printings_scanned: 0, matches_pushed: 0, ns_loop: 0, ns_finish: 0, ns_round_total: 0, ns_prepare: 0,
-        result_total: 0, paging_taken: "",
+        cards_visited: 0, printings_scanned: 0, matches_pushed: 0, ns_setup: 0, ns_loop: 0, ns_finish: 0, ns_round_total: 0,
+        ns_prepare: 0, result_total: 0, paging_taken: "",
     }) };
 }
 
@@ -6461,6 +6472,8 @@ fn exec_gathered_scan<'a>(
     prep: &PreparedCandidates,
     plane: Option<&PlaneExpr>,
 ) -> (usize, Vec<(&'a AOracleCard, &'a APrinting)>) {
+    // First of the three phase boundaries — everything down to the match loop is `ns_setup`.
+    let t_start = std::time::Instant::now();
     let QueryCtx { cards, printings, offsets, strings, indexes } = *ctx;
     let QueryParams { mode, prefer, sort_col, descending, limit, page_offset } = *params;
     let all_match_known = prep.all_match_known;
@@ -6484,7 +6497,8 @@ fn exec_gathered_scan<'a>(
     // Counters for the three features this plan's cost arm keys on, so they can be checked against
     // what the loop really does. Plain locals — no atomics, no branch — published once at the end.
     let (mut n_cards_visited, mut n_printings_scanned, mut n_matches_pushed) = (0u64, 0u64, 0u64);
-    let t_setup = std::time::Instant::now();
+    // Ends `ns_setup` and starts `ns_loop` — one read, two phases.
+    let t_loop = std::time::Instant::now();
     for cid in card_ids {
         n_cards_visited += 1;
         let card = &cards[cid as usize];
@@ -6508,23 +6522,23 @@ fn exec_gathered_scan<'a>(
         n_matches_pushed += (sel.buf().len() - before) as u64;
         sel.absorb(before);
     }
-    let ns_loop = t_setup.elapsed().as_nanos() as u64;
-
+    // Ends `ns_loop` and starts `ns_finish`.
     let t_finish = std::time::Instant::now();
     let (total, page_ids) = sel.finish(page_offset, limit);
     let page = page_ids
         .into_iter()
         .map(|(cid, pid)| (&cards[cid as usize], &printings[pid as usize]))
         .collect();
-    let ns_finish = t_finish.elapsed().as_nanos() as u64;
+    let t_end = std::time::Instant::now();
     let prep_ns = PENDING_PREPARE_NS.with(|c| c.replace(0));
     PHASE_STATS.with(|c| {
         c.set(PhaseStats {
             cards_visited: n_cards_visited,
             printings_scanned: n_printings_scanned,
             matches_pushed: n_matches_pushed,
-            ns_loop, // includes setup: three small allocations, not worth its own timer
-            ns_finish,
+            ns_setup: (t_loop - t_start).as_nanos() as u64,
+            ns_loop: (t_finish - t_loop).as_nanos() as u64,
+            ns_finish: (t_end - t_finish).as_nanos() as u64,
             ns_round_total: 0, // filled by explain_analyze, which owns the round timer
             ns_prepare: prep_ns,
             // Keep whatever this run already recorded (e.g. the paging branch the fastpath took):
@@ -7056,6 +7070,11 @@ pub(crate) struct PlanTrial {
     /// `PhaseStats`: the counters check whether the cost arm's FEATURES match what the loop did, and
     /// the phase timings check whether its TERMS account for the whole executor.
     ///
+    /// The three phases are contiguous and disjoint, so `ns_setup + ns_loop + ns_finish` can only
+    /// be <= `ns_round_total`. The shortfall is real unmodelled work — `run_query_with_plan`'s own
+    /// dispatch and applicability checks sit outside all three — so treat it as a residual to size,
+    /// not as an invariant that should reach zero.
+    ///
     /// Populated for the two materializing plans — `GatheredScan` (`exec_gathered_scan`) and
     /// `StreamedSelect` (`run_query_streamed`, which publishes from all three of its return paths).
     /// The four fast paths — `PrintingRangeScan`, `PrintingCompose`, `PlanePopcountOrder`,
@@ -7334,6 +7353,9 @@ fn run_query_streamed<'a>(
     card_ids: Box<dyn Iterator<Item = u32> + '_>,
     existential_plane: Option<(&PlaneExpr, &Archived<BitPlanes>)>,
 ) -> (usize, Vec<(&'a AOracleCard, &'a APrinting)>) {
+    // First of the three phase boundaries — everything down to the match loop is `ns_setup`, which
+    // for this executor is dominated by the `counts` zeroing below. See `PhaseStats::ns_setup`.
+    let t_start = std::time::Instant::now();
     let QueryCtx { cards, printings, offsets, strings, indexes } = *ctx;
     let QueryParams { mode, prefer, sort_col, descending, limit, page_offset } = *params;
     let artwork_groups = &indexes.artwork_groups;
@@ -7359,7 +7381,8 @@ fn run_query_streamed<'a>(
     // Same counters GatheredScan publishes, so the two plans' arms can be checked the same way.
     // Locals in the loop; published once at the end. See PhaseStats.
     let (mut n_cards_visited, mut n_printings_scanned, mut n_matches_pushed) = (0u64, 0u64, 0u64);
-    let t_match = std::time::Instant::now();
+    // Ends `ns_setup` and starts `ns_loop` — one read, two phases.
+    let t_loop = std::time::Instant::now();
     for cid in card_ids {
         n_cards_visited += 1;
         let card = &cards[cid as usize];
@@ -7401,18 +7424,21 @@ fn run_query_streamed<'a>(
         total += c as usize;
         n_matches_pushed += c as u64;
     }
-    let ns_match = t_match.elapsed().as_nanos() as u64;
+    // Ends `ns_loop` and starts `ns_finish`.
+    let t_finish = std::time::Instant::now();
     // Publishing helper: the walk below has several early returns, and every one of them must leave
-    // the stats behind or the accounting silently attributes this plan's work to nothing.
-    let publish = |ns_finish: u64| {
+    // the stats behind or the accounting silently attributes this plan's work to nothing. Each takes
+    // the closing instant itself, so the emit phase is bounded without a second start marker.
+    let publish = |end: std::time::Instant| {
         let prep_ns = PENDING_PREPARE_NS.with(|c| c.replace(0));
         PHASE_STATS.with(|c| {
             c.set(PhaseStats {
                 cards_visited: n_cards_visited,
                 printings_scanned: n_printings_scanned,
                 matches_pushed: n_matches_pushed,
-                ns_loop: ns_match,
-                ns_finish,
+                ns_setup: (t_loop - t_start).as_nanos() as u64,
+                ns_loop: (t_finish - t_loop).as_nanos() as u64,
+                ns_finish: (end - t_finish).as_nanos() as u64,
                 ns_round_total: 0,
                 ns_prepare: prep_ns,
                 ..c.get() // see the note at the other publisher
@@ -7420,10 +7446,9 @@ fn run_query_streamed<'a>(
         });
     };
     if total == 0 || page_offset >= total {
-        publish(0);
+        publish(std::time::Instant::now());
         return (total, Vec::new());
     }
-    let t_emit = std::time::Instant::now();
 
     // artwork-mode emission scratch (#629), reused across cards below. Pre-sized to
     // max_artwork_groups so the grouping loop needs no per-printing resize check.
@@ -7457,7 +7482,7 @@ fn run_query_streamed<'a>(
             .into_iter()
             .map(|(cid, pid)| (&cards[cid as usize], &printings[pid as usize]))
             .collect();
-        publish(t_emit.elapsed().as_nanos() as u64);
+        publish(std::time::Instant::now());
         return (total, page);
     }
 
@@ -7500,7 +7525,7 @@ fn run_query_streamed<'a>(
         }
         skip = 0;
     }
-    publish(t_emit.elapsed().as_nanos() as u64);
+    publish(std::time::Instant::now());
     (total, page)
     }) // COUNTS.with
 }
@@ -7771,6 +7796,7 @@ fn plan_trial_to_pydict<'py>(py: Python<'py>, t: &PlanTrial) -> PyResult<Bound<'
     d.set_item("cards_visited", t.phases.cards_visited)?;
     d.set_item("printings_scanned", t.phases.printings_scanned)?;
     d.set_item("matches_pushed", t.phases.matches_pushed)?;
+    d.set_item("ns_setup", t.phases.ns_setup)?;
     d.set_item("ns_loop", t.phases.ns_loop)?;
     d.set_item("ns_finish", t.phases.ns_finish)?;
     d.set_item("ns_round_total", t.phases.ns_round_total)?;
