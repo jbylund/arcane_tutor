@@ -984,6 +984,80 @@ pub(crate) fn scan_oracle_words(idx: &Archived<OracleWordIndex>, needle: &str) -
     OracleWordScan { dense, sparse }
 }
 
+// ─── CSR tables ──────────────────────────────────────────────────────────────
+// Three indexes store an array-of-arrays as a CSR (compressed sparse row) pair —
+// oracle text → cards, artist → printings, flavor text → printings — flattened
+// into `offsets` (row boundaries, length n_rows + 1) plus a payload vec so each
+// archives as two contiguous zero-copy slices. Build and expand used to be
+// written out once per index; the convention lives here instead.
+
+/// A CSR row index. `u32` deliberately has no `Into<usize>` (usize may be 16-bit),
+/// so the widening is spelled once here rather than at every call site.
+trait CsrRow: Copy {
+    fn row(self) -> usize;
+}
+
+impl CsrRow for u16 {
+    fn row(self) -> usize {
+        self as usize
+    }
+}
+
+impl CsrRow for u32 {
+    fn row(self) -> usize {
+        self as usize
+    }
+}
+
+/// Concatenate the payload rows for `keys` and sort the result.
+///
+/// Each row is internally sorted (placement below walks store order), but rows are
+/// not ordered relative to each other (dense ids are first-seen order), so the
+/// concatenation needs one final sort — required both by `intersect_sorted` when
+/// And-combining with other candidate sets and by the query driver, which assumes
+/// candidates arrive in store order.
+fn expand_csr<K: CsrRow>(offsets: &AOffsets, values: &AOffsets, keys: &[K]) -> Vec<u32> {
+    let mut out: Vec<u32> = Vec::new();
+    for &k in keys {
+        let row = k.row();
+        let start = u32::from(offsets[row]) as usize;
+        let end = u32::from(offsets[row + 1]) as usize;
+        out.extend(values[start..end].iter().map(|x| u32::from(*x)));
+    }
+    out.sort_unstable();
+    out
+}
+
+/// Count → prefix-sum → place with a cursor. `row_of(i)` gives item `i`'s row, or
+/// `None` to omit it from the table entirely (an absent artist, a printing with no
+/// flavor text). Returns `(offsets, payload)`, the payload holding every included
+/// item index grouped by row and ascending within it.
+///
+/// `row_of` is called twice per item, once to count and once to place. Every caller
+/// is on the reload path, where this runs once over ~50k items, so a caller whose
+/// row lookup is a hash probe rather than a field read pays for the second probe
+/// there and nowhere else.
+fn build_csr(n_rows: usize, n_items: usize, row_of: impl Fn(usize) -> Option<usize>) -> (Vec<u32>, Vec<u32>) {
+    let mut offsets = vec![0u32; n_rows + 1];
+    for i in 0..n_items {
+        if let Some(row) = row_of(i) {
+            offsets[row + 1] += 1;
+        }
+    }
+    for i in 1..offsets.len() {
+        offsets[i] += offsets[i - 1];
+    }
+    let mut cursor = offsets.clone();
+    let mut payload = vec![0u32; offsets[n_rows] as usize];
+    for i in 0..n_items {
+        if let Some(row) = row_of(i) {
+            payload[cursor[row] as usize] = i as u32;
+            cursor[row] += 1;
+        }
+    }
+    (offsets, payload)
+}
+
 /// Oracle-text trigram index, deduplicated by distinct text.
 ///
 /// Distinct oracle cards still share text (~31.5k cards, ~28k distinct texts —
@@ -1085,19 +1159,9 @@ fn build_oracle_text_index(cards: &[OracleCard], strings: &[String]) -> OracleTe
     // CSR expansion table via counting sort: count cards per text, prefix-sum
     // the counts into row offsets, then place each card index in its row. Placement
     // walks cards in store order, so every row comes out sorted by card index.
-    let mut offsets: Vec<u32> = vec![0; n_texts + 1];
-    for &t in &text_id_of_card {
-        offsets[t as usize + 1] += 1;
-    }
-    for i in 1..offsets.len() {
-        offsets[i] += offsets[i - 1];
-    }
-    let mut cursor: Vec<u32> = offsets.clone();
-    let mut card_indices: Vec<u32> = vec![0; cards.len()];
-    for (card_idx, &t) in text_id_of_card.iter().enumerate() {
-        card_indices[cursor[t as usize] as usize] = card_idx as u32;
-        cursor[t as usize] += 1;
-    }
+    // Every card has a text id, so no row is ever omitted and `card_indices` ends up
+    // exactly `cards.len()` long.
+    let (offsets, card_indices) = build_csr(n_texts, text_id_of_card.len(), |i| Some(text_id_of_card[i] as usize));
 
     // Word dictionary split: #639's crossover, reused verbatim with domain =
     // n_texts (matching SortedTrigramIndex's oracle instance) to decide
@@ -1145,21 +1209,8 @@ fn build_oracle_text_index(cards: &[OracleCard], strings: &[String]) -> OracleTe
 }
 
 /// Expand surviving dense text ids to card indices via the CSR table.
-///
-/// Each row is internally sorted (placement above walks store order), but rows are
-/// not ordered relative to each other (dense ids are first-seen order), so the
-/// concatenation needs one final sort — required both by intersect_sorted() when
-/// And-combining with other candidate sets and by the query driver, which
-/// assumes candidates arrive in store order.
 fn expand_text_ids(idx: &Archived<OracleTextIndex>, text_ids: &[u32]) -> Vec<u32> {
-    let mut out: Vec<u32> = Vec::new();
-    for &t in text_ids {
-        let start = u32::from(idx.offsets[t as usize]) as usize;
-        let end = u32::from(idx.offsets[t as usize + 1]) as usize;
-        out.extend(idx.card_indices[start..end].iter().map(|x| u32::from(*x)));
-    }
-    out.sort_unstable();
-    out
+    expand_csr(&idx.offsets, &idx.card_indices, text_ids)
 }
 
 // ─── Name bigram index (#639 short-name narrowing) ──────────────────────────
@@ -1662,37 +1713,16 @@ fn build_thresholded_tag_index<T>(rows: &[T], vocab: &[String], get_ids: impl Fn
 }
 
 fn build_artist_index(printings: &[Printing], n_artists: usize) -> ArtistIndex {
-    let mut offsets = vec![0u32; n_artists + 1];
-    for p in printings {
-        if p.card_artist_vid != ARTIST_NONE {
-            offsets[p.card_artist_vid as usize + 1] += 1;
-        }
-    }
-    for i in 1..offsets.len() {
-        offsets[i] += offsets[i - 1];
-    }
-    let mut cursor = offsets.clone();
-    let mut out = vec![0u32; offsets[n_artists] as usize];
-    for (i, p) in printings.iter().enumerate() {
-        if p.card_artist_vid != ARTIST_NONE {
-            let a = p.card_artist_vid as usize;
-            out[cursor[a] as usize] = i as u32;
-            cursor[a] += 1;
-        }
-    }
+    let (offsets, out) = build_csr(n_artists, printings.len(), |i| {
+        let vid = printings[i].card_artist_vid;
+        (vid != ARTIST_NONE).then_some(vid as usize)
+    });
     ArtistIndex { offsets, printings: out }
 }
 
 /// Expand matching artist vocab ids to sorted printing ids via the CSR table.
 fn expand_artist_ids(idx: &Archived<ArtistIndex>, artist_ids: &[u16]) -> Vec<u32> {
-    let mut out: Vec<u32> = Vec::new();
-    for &a in artist_ids {
-        let start = u32::from(idx.offsets[a as usize]) as usize;
-        let end = u32::from(idx.offsets[a as usize + 1]) as usize;
-        out.extend(idx.printings[start..end].iter().map(|x| u32::from(*x)));
-    }
-    out.sort_unstable();
-    out
+    expand_csr(&idx.offsets, &idx.printings, artist_ids)
 }
 
 // ─── Flavor-text index ────────────────────────────────────────────────────────
@@ -1774,37 +1804,24 @@ pub(crate) struct FlavorIndex {
 }
 
 fn build_flavor_index(printings: &[Printing], strings: &[String]) -> FlavorIndex {
+    // Assign dense ids in first-seen printing order; `build_csr` does its own counting
+    // pass, so this one only needs to establish the numbering and how many rows there are.
     let mut dense_of: HashMap<u32, u32> = HashMap::new();
     let mut gids: Vec<u32> = Vec::new();
-    let mut counts: Vec<u32> = Vec::new();
     for p in printings {
         let gid = p.flavor_text_lower_id;
         if gid == NONE_STR {
             continue;
         }
-        let d = *dense_of.entry(gid).or_insert_with(|| {
+        dense_of.entry(gid).or_insert_with(|| {
             gids.push(gid);
-            counts.push(0);
             (gids.len() - 1) as u32
         });
-        counts[d as usize] += 1;
     }
-    let n = gids.len();
-    let mut offsets = vec![0u32; n + 1];
-    for i in 0..n {
-        offsets[i + 1] = offsets[i] + counts[i];
-    }
-    let mut cursor = offsets.clone();
-    let mut out = vec![0u32; offsets[n] as usize];
-    for (i, p) in printings.iter().enumerate() {
-        let gid = p.flavor_text_lower_id;
-        if gid == NONE_STR {
-            continue;
-        }
-        let d = dense_of[&gid] as usize;
-        out[cursor[d] as usize] = i as u32;
-        cursor[d] += 1;
-    }
+    let (offsets, out) = build_csr(gids.len(), printings.len(), |i| {
+        let gid = printings[i].flavor_text_lower_id;
+        (gid != NONE_STR).then(|| dense_of[&gid] as usize)
+    });
     let fingerprints = gids
         .iter()
         .map(|&g| {
@@ -1849,14 +1866,7 @@ pub(crate) fn flavor_match_sets(
 
 /// Expand matched dense flavor text ids to sorted printing ids via the CSR.
 fn expand_flavor_ids(idx: &Archived<FlavorIndex>, dense_ids: &[u32]) -> Vec<u32> {
-    let mut out: Vec<u32> = Vec::new();
-    for &d in dense_ids {
-        let start = u32::from(idx.offsets[d as usize]) as usize;
-        let end = u32::from(idx.offsets[d as usize + 1]) as usize;
-        out.extend(idx.printings[start..end].iter().map(|x| u32::from(*x)));
-    }
-    out.sort_unstable();
-    out
+    expand_csr(&idx.offsets, &idx.printings, dense_ids)
 }
 
 // ─── Sort permutations (streamed selection) ──────────────────────────────────
