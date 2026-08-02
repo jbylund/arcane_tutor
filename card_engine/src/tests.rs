@@ -2,7 +2,7 @@ use super::{
     and_child_rank, assign_name_ranks,
     build_numeric_index, build_oracle_text_index, build_tag_index, build_trigram_index,
     build_rarity_index, build_flavor_index, build_thresholded_tag_index, build_sort_permutations,
-    assign_artwork_groups, build_bit_planes, build_border_printing_planes, build_rarity_printing_planes, build_divergent_ids, build_name_bigram_index, build_printing_to_card, flavor_fingerprint, flavor_match_sets,
+    assign_artwork_groups, build_artwork_base_from, build_bit_planes, build_border_printing_planes, build_rarity_printing_planes, build_divergent_ids, build_name_bigram_index, build_printing_to_card, flavor_fingerprint, flavor_match_sets,
     cards_of_printings, count_common_keywords, count_common_types,
     build_artist_index, build_range_index, build_arith_tuple_index, is_arith_tuple_route, range_candidates, narrow_candidates, narrow_candidates_exact, rarity_candidates,
     range_too_broad_to_narrow, run_query, run_query_with_plan, explain, explain_analyze, AcquireFacts, PlanEstimate, PlanTrial,
@@ -272,9 +272,13 @@ fn store_of(cards: Vec<OracleCard>, printing_counts: &[usize], vocab: VocabInter
     // after store_of returns and must recompute via assign_artwork_groups
     // themselves (see artwork_group_counts_dedup_illustrations).
     let artwork_groups = assign_artwork_groups(&mut printings, &offsets);
+    // Same derivation reload_commit does, so a fixture store has the artwork-space offsets the
+    // compose fastpath reads rather than an empty vec.
+    let artwork_base = build_artwork_base_from(&artwork_groups);
     // Real planes and bigrams so narrowing tests see the same store shape
     // reload_commit builds (type narrowing goes through the planes since #637).
     let indexes = CardIndexes {
+        artwork_base,
         // No printing sets card_border_id away from NONE_STR at this point (any
         // border values a fixture wants get set after store_of returns, same as
         // border_planes_fixture_store already does), so an empty string table is
@@ -5643,8 +5647,10 @@ fn bench_checked_vs_unchecked_access() {
     offsets.push(printings.len() as u32);
     let strings = interner.strings;
     let artwork_groups = assign_artwork_groups(&mut printings, &offsets);
+    let artwork_base = build_artwork_base_from(&artwork_groups);
 
     let indexes = CardIndexes {
+        artwork_base,
         name_trigram:   build_trigram_index(&cards, |c| c.card_name_folded.as_str()),
         oracle_trigram: build_oracle_text_index(&cards, &strings),
         cmc:            build_numeric_index(&cards, |c| c.cmc.map(|v| v as i16)),

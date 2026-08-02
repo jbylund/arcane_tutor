@@ -2564,6 +2564,12 @@ struct CardIndexes {
     collector_number_cards: RangeCardCounts,
     sort_perms:     SortPermutations,          // card space (streamed selection)
     artwork_groups: Vec<u16>,                  // card space: distinct illustration groups
+    // card space, n_cards+1 entries: prefix sum of artwork_groups, so card c's artworks are the
+    // contiguous global ids [artwork_base[c], artwork_base[c+1]) and the last entry is n_artworks.
+    // Precomputed because it is a pure function of artwork_groups and therefore fixed at load: the
+    // compose fastpath rebuilt it on EVERY artwork query, an O(n_cards) pass measured at ~11-12 us.
+    // 126 KB of archive to take that off the hot path.
+    artwork_base: Vec<u32>,
     artwork_group_col: Vec<u16>,               // printing space: pid -> artwork_group_id (columnar; lets the gather skip read gid without touching the wide struct)
     max_artwork_groups: u16,                   // max distinct artwork groups of any single card; group_best is pre-sized to this so the hot loop needs no bounds/resize check
     // printing space: printing_id -> card_id, direct lookup. Replaces a
@@ -4268,6 +4274,7 @@ fn card_match_count(
     card: &AOracleCard,
     cid: u32,
     printings: &[APrinting],
+    artwork_group_col: &Archived<Vec<u16>>,
     start: usize,
     end: usize,
     all_match: bool,
@@ -4316,13 +4323,26 @@ fn card_match_count(
                 n
             }
             Mode::Artwork => {
+                // #737's skip-repped shortcut, which landed in the gather loop but not here. Read the
+                // group id FIRST -- from the columnar array, so an already-counted group never touches
+                // the wide APrinting struct -- and skip before the residual. This loop only COUNTS
+                // distinct groups, so once a bit is set no later printing of that group can change the
+                // answer and testing the residual again is pure waste. Strictly safer than the
+                // gather's version, which had to assume prefer-desc ordering to pick a representative;
+                // counting needs no ordering assumption and so has no custom-prefer carve-out.
                 seen_words.fill(0);
-                for p in &printings[start..end] {
-                    if !all_match && !FilterExpr::residual_matches(card, p, strings, residual, residual_is_or) {
+                for pid in start..end {
+                    let gid = u16::from(artwork_group_col[pid]) as usize;
+                    let (word, bit) = (gid / 64, 1u64 << (gid % 64));
+                    if seen_words[word] & bit != 0 {
                         continue;
                     }
-                    let gid = u16::from(p.artwork_group_id) as usize;
-                    seen_words[gid / 64] |= 1u64 << (gid % 64);
+                    if !all_match
+                        && !FilterExpr::residual_matches(card, &printings[pid], strings, residual, residual_is_or)
+                    {
+                        continue;
+                    }
+                    seen_words[word] |= bit;
                 }
                 seen_words.iter().map(|w| w.count_ones()).sum()
             }
@@ -4354,13 +4374,16 @@ fn card_match_count(
             n
         }
         Mode::Artwork => {
+            // Same skip-repped shortcut as the no-plane arm above, and it matters more here:
+            // `satisfies` evaluates a plane expression per printing on top of the residual.
             seen_words.fill(0);
             for pid in start..end {
-                if !satisfies(pid) {
+                let gid = u16::from(artwork_group_col[pid]) as usize;
+                let (word, bit) = (gid / 64, 1u64 << (gid % 64));
+                if seen_words[word] & bit != 0 || !satisfies(pid) {
                     continue;
                 }
-                let gid = u16::from(printings[pid].artwork_group_id) as usize;
-                seen_words[gid / 64] |= 1u64 << (gid % 64);
+                seen_words[word] |= bit;
             }
             seen_words.iter().map(|w| w.count_ones()).sum()
         }
@@ -4537,6 +4560,15 @@ fn push_card_matches(
         }
     }
 }
+
+/// Fraction of the printings under a candidate card that survive a residual, used to discount the
+/// operating-space result total when the narrowing is NOT tight. With `all_match_known` the count is
+/// exact (measured `matches_pushed / matches` = 1.00); without it, measured 0.38-0.42 for printing and
+/// 0.50-0.56 for artwork, stable across both materializing plans. Artwork sits higher because its
+/// groups collapse several printings into one, so a group survives if ANY of its printings does.
+static RESIDUAL_PASS_RATE_PRINTING: LazyLock<f64> = LazyLock::new(|| guard_env("CARD_ENGINE_RESIDUAL_PASS_RATE_PRINTING", 0.40));
+/// See `RESIDUAL_PASS_RATE_PRINTING`.
+static RESIDUAL_PASS_RATE_ARTWORK: LazyLock<f64> = LazyLock::new(|| guard_env("CARD_ENGINE_RESIDUAL_PASS_RATE_ARTWORK", 0.53));
 
 /// Below this many matches the gathered path is already microseconds and
 /// byte-identical to the pre-streaming behavior; above it, walking the
@@ -5727,9 +5759,11 @@ fn printing_compose_fastpath<'a>(
         Mode::Printing => pbits.iter().map(|w| w.count_ones() as usize).sum(),
         Mode::Card => printing_bits_to_card_bits(&pbits, offsets, cards.len()).iter().map(|w| w.count_ones() as usize).sum(),
         Mode::Artwork => {
-            let base = build_artwork_base(&indexes.artwork_groups);
-            let n_artworks = *base.last().expect("artwork_base has n_cards+1 entries") as usize;
-            printing_bits_to_artwork_bits(&pbits, printings, &indexes.printing_to_card, &base, n_artworks)
+            // Read straight off the archive. This used to prefix-sum `artwork_groups` here on every
+            // artwork query -- an O(n_cards) pass for a value that cannot change after load.
+            let base = &indexes.artwork_base;
+            let n_artworks = u32::from(*base.last().expect("artwork_base has n_cards+1 entries")) as usize;
+            printing_bits_to_artwork_bits(&pbits, printings, &indexes.printing_to_card, base, n_artworks)
                 .iter()
                 .map(|w| w.count_ones() as usize)
                 .sum()
@@ -6265,13 +6299,14 @@ fn exec_card_range_popcount<'a>(
 /// Prefix-sum the per-card distinct-artwork counts (`artwork_groups`) into artwork-space offsets: a
 /// card `c`'s distinct artworks are the contiguous global ids `[artwork_base[c], artwork_base[c+1])`,
 /// so global artwork id = `artwork_base[c] + artwork_group_id`. `artwork_base.last()` is `n_artworks`.
-/// Derived at query time from data already in the store — no stored global-id array (#724 PR 2b).
-fn build_artwork_base(artwork_groups: &Archived<Vec<u16>>) -> Vec<u32> {
+/// Built once at load and archived as `CardIndexes::artwork_base`; `build_artwork_base_from` is the
+/// load-time form over the counts before they are archived.
+fn build_artwork_base_from(artwork_groups: &[u16]) -> Vec<u32> {
     let mut base = Vec::with_capacity(artwork_groups.len() + 1);
     let mut acc = 0u32;
     base.push(0);
-    for c in artwork_groups.iter() {
-        acc += u32::from(u16::from(*c));
+    for c in artwork_groups {
+        acc += u32::from(*c);
         base.push(acc);
     }
     base
@@ -6285,7 +6320,9 @@ fn printing_bits_to_artwork_bits(
     pbits: &[u64],
     printings: &[APrinting],
     printing_to_card: &AOffsets,
-    artwork_base: &[u32],
+    // Archived, not a slice: this is `CardIndexes::artwork_base` read directly off the store rather
+    // than a Vec rebuilt per query.
+    artwork_base: &AOffsets,
     n_artworks: usize,
 ) -> Vec<u64> {
     let mut abits = vec![0u64; n_artworks.div_ceil(64)];
@@ -6296,7 +6333,7 @@ fn printing_bits_to_artwork_bits(
             w &= w - 1;
             let card = u32::from(printing_to_card[pid]) as usize;
             let gid = u16::from(printings[pid].artwork_group_id) as usize;
-            let aid = artwork_base[card] as usize + gid;
+            let aid = u32::from(artwork_base[card]) as usize + gid;
             abits[aid >> 6] |= 1u64 << (aid & 63);
         }
     }
@@ -7075,6 +7112,36 @@ fn declined_sibling_fastpath<'a>(
 /// `≈ domain·(1 − e^(−k/domain))` — doesn't saturate the same way and tracks the true count much
 /// better (checked against real totals: `cn<100` estimate 21,140 vs true 17,616; `usd<50` estimate
 /// 29,062 vs true 31,217; clearly separated, unlike the capped estimate's identical 31,508 for both).
+/// Distinct cards `k` matching printings are expected to touch, as balls into bins:
+/// `domain * (1 - e^(-k/domain))`. Unlike `k.min(domain)` this does not saturate -- `cn<100` (35,021
+/// printings) and `usd<50` (80,527) both cap to exactly 31,508 against true counts of 17,616 and
+/// 31,217, losing the entire signal between them.
+fn balls_into_bins(k: usize, domain: usize) -> usize {
+    if domain == 0 {
+        return 0;
+    }
+    let est = domain as f64 * (-(k as f64) / domain as f64).exp().mul_add(-1.0, 1.0);
+    (est.round() as usize).min(domain).max(usize::from(k > 0))
+}
+
+/// Distinct **artworks** an estimated printing set touches, projected in two stages.
+///
+/// A single `balls_into_bins` over the whole artwork corpus reads a median 1.38x against the truth,
+/// because it treats every artwork as an equally likely bin and ignores that matching printings
+/// cluster inside the candidate CARDS. Projecting into the candidate card set's own artwork capacity
+/// first reads 1.09x over 400 compose-acquired artwork queries, halving the log error (0.379 against
+/// 0.762 for the raw printing count this replaces).
+///
+/// Corrects BIAS only. The p90/p10 spread stays ~3.3 either way: how a card's matching printings fall
+/// across its artwork groups is not something a two-moment projection can see.
+fn artwork_estimate(printing_matches: usize, est_cards: usize, n_cards: usize, n_artworks: usize) -> usize {
+    if n_cards == 0 || n_artworks == 0 {
+        return 0;
+    }
+    let capacity = ((est_cards as f64) * (n_artworks as f64 / n_cards as f64)).round() as usize;
+    balls_into_bins(printing_matches, capacity.min(n_artworks))
+}
+
 fn compose_gather_declines(
     filter: &FilterExpr,
     indexes: &Archived<CardIndexes>,
@@ -7084,14 +7151,15 @@ fn compose_gather_declines(
     mode: Mode,
 ) -> Option<PagingTaken> {
     let (printing_matches, _, _) = compose_printing_estimate(filter, indexes, offsets, printings.len());
-    // Artwork's true domain is n_artworks (>= n_cards), but getting it exactly means building
-    // artwork_base here — real O(n_cards) work paid just to maybe decline. `cards.len()` is a cheap,
-    // conservative stand-in (n_artworks is always >= it, so this only ever makes the fraction look
-    // *more* broad than reality — errs toward declining, the same conservative lean
-    // `COMPOSE_GATHER_MAX_CARD_FRACTION` itself was calibrated with).
+    // Artwork's domain is n_artworks, not n_cards. That used to be approximated by `cards.len()`
+    // because the exact figure meant prefix-summing `artwork_groups` here -- real O(n_cards) work
+    // paid just to maybe decline. It is a stored index now, so read the truth: the stand-in is
+    // always <= the real domain, which inflates the matched FRACTION and made this gate decline
+    // more often than its calibration intends.
     let domain = match mode {
         Mode::Printing => printings.len(),
-        Mode::Card | Mode::Artwork => cards.len(),
+        Mode::Card => cards.len(),
+        Mode::Artwork => u32::from(*indexes.artwork_base.last().expect("artwork_base has n_cards+1 entries")) as usize,
     };
     let est = if matches!(mode, Mode::Printing) {
         printing_matches as f64 // exact in printing space already, no projection needed
@@ -7195,7 +7263,39 @@ fn mk_plan_feats(
 fn candidate_feats(ctx: &QueryCtx, params: &QueryParams, prep: &PreparedCandidates, filter: &FilterExpr) -> cost::PlanFeatures {
     let count = prep.candidate_cards.as_ref().map_or(ctx.n_cards(), |v| v.len() as u32);
     let scan = scan_units(params.mode, prep.candidate_cards.as_deref(), ctx.offsets, ctx.n_printings(), count);
-    mk_plan_feats(ctx, params, count, count, scan, if prep.all_match_known { 0 } else { verify_cost_tier(filter) })
+    // Result cardinality is in the plan's OPERATING space, so it is NOT the candidate card count in
+    // every mode. Passing `count` regardless under-counted printing mode by the printings-per-card
+    // ratio: measured `matches_pushed / matches` of 2.41 for printing and 1.15 for artwork against
+    // 1.00 for card. Both are exactly summable over the candidate list -- `scan` is the printing count
+    // (offset deltas, just above) and `artwork_groups` holds each card's distinct-artwork count.
+    //
+    // Exact only when the narrowing is tight: measured 1.00 on `all_match_known` rows against 0.38-0.56
+    // where a residual survives, because roughly half the printings under a candidate then fail it.
+    // Discount by the measured pass rate there; undiscounted it swapped a 2.4x under-count for a 2.6x
+    // over-count. Result after both: 1.00 tight, 0.91-1.00 with a residual.
+    let matches = match params.mode {
+        Mode::Card => count,
+        Mode::Printing | Mode::Artwork => {
+            let in_space = if matches!(params.mode, Mode::Printing) {
+                scan
+            } else {
+                prep.candidate_cards.as_ref().map_or_else(
+                    // Unnarrowed the whole corpus is a candidate, and `artwork_base.last()` is exactly
+                    // the corpus artwork total -- free now that it is a stored index.
+                    || u32::from(*ctx.indexes.artwork_base.last().expect("artwork_base has n_cards+1 entries")),
+                    |v| v.iter().map(|&cid| u32::from(u16::from(ctx.indexes.artwork_groups[cid as usize]))).sum(),
+                )
+            };
+            if prep.all_match_known {
+                in_space
+            } else {
+                let rate =
+                    if matches!(params.mode, Mode::Printing) { *RESIDUAL_PASS_RATE_PRINTING } else { *RESIDUAL_PASS_RATE_ARTWORK };
+                ((f64::from(in_space) * rate) as u32).max(count.min(in_space))
+            }
+        }
+    };
+    mk_plan_feats(ctx, params, matches, count, scan, if prep.all_match_known { 0 } else { verify_cost_tier(filter) })
 }
 
 /// The acquire step of `run_query_routed`'s three-step algorithm (see its doc
@@ -7246,7 +7346,20 @@ fn acquire_plan_features(
         let card_est = range_card_counts_for(indexes, idx)
             .and_then(|counts| counts.distinct_cards(lo, hi))
             .unwrap_or_else(|| k.min(n_cards));
-        let mut feats = mk_plan_feats(ctx, params, card_est, card_est, card_est, verify_cost_tier(filter));
+        // What the MATERIALIZING alternatives (P3/P4) scan depends on whether dispatch's narrowing
+        // survives. `range_narrowed` only hands back an enumerable printing list when the slice is
+        // under `MAX_NARROW_FRACTION` of the index; past that it degrades to a printing-space bitmap,
+        // which cannot yield card ids, so the scan walks the whole corpus and filters. Costing those
+        // plans at `card_est` regardless under-costs the degraded case by the full ratio between the
+        // two: measured 31,508 cards / 97,206 printings visited against a `card_est` of 12,450, a
+        // 3.2x gap no rate constant can absorb. The sibling `PrintingRangeScan` branch below assumes
+        // the opposite (always unnarrowed) and its cells agree to within 1% -- this makes both exact.
+        let (eval_domain, scan_units) = if range_too_broad_to_narrow(k as usize, idx.len()) {
+            (n_cards, n_printings)
+        } else {
+            (card_est, card_est)
+        };
+        let mut feats = mk_plan_feats(ctx, params, card_est, eval_domain, scan_units, verify_cost_tier(filter));
         // `k` rides `scatter_printings`: this plan's arm charges it as its FUSED one-pass build
         // (`CARD_RANGE_BUILD_PER_PRINTING_NS`), while a competing PrintingCompose costed off these shared
         // feats charges the same `k` as its cheaper scatter (`RANGE_SCATTER_…`) plus a separate
@@ -7282,15 +7395,46 @@ fn acquire_plan_features(
         // alternatives* should compose lose: a composable filter narrows via its indices, so they see
         // ~`matches` candidates (card mode also breaks at the first match ⇒ scan_units = eval_domain) —
         // the unnarrowed universe would over-cost them and mis-route (measured: `format:X format:Y`/card).
+        // EXACT distinct cards when the composed filter is a single one-sided range: the boundary
+        // table answers prefix/suffix/Eq shapes exactly, which beats any projection. It declines
+        // genuinely interior ranges, so a two-sided `usd>=a usd<=b` still falls back to the
+        // projection -- and those are the bulk of what reaches here, since `bare_range_bounds`
+        // matches one comparison, not an And of two. One-sided ranges DO land here in quantity:
+        // every artwork-mode one, plus card-mode ones whose orderby has no permutation.
+        let exact_cards = bare_range_bounds(filter, indexes)
+            .and_then(|(idx, lo, hi)| range_card_counts_for(indexes, idx).and_then(|counts| counts.distinct_cards(lo, hi)));
+        let est_cards = exact_cards.map_or_else(|| balls_into_bins(printing_matches, n_cards as usize), |n| n as usize);
+        // What the MATERIALIZING alternatives scan if compose loses. Every mode narrows -- a
+        // composable filter has an index for every leaf -- so all three are the NARROWED counts.
+        // Printing mode took the unnarrowed universe while card/artwork took a narrowed count; only
+        // one could be right, and the counters say narrowed: printing mode visited 0.08x the claimed
+        // `eval_domain` and scanned 0.14x the claimed `scan_units`. Over-costing both plans inflates
+        // the predicted GAP between them (P4 carries the larger per-row rates), which is what routing
+        // reads -- measured as a GatheredScan-vs-StreamedSelect gap ratio of 0.32 on this acquire.
+        let printings_per_card = (f64::from(n_printings) / f64::from(n_cards)).max(1.0);
+        let scan_all = |cards: usize| ((cards as f64) * printings_per_card) as usize;
         let (result_total, project, popcount_words, eval_domain, scan_units) = match mode {
-            Mode::Printing => (printing_matches, 0, (n_printings as usize).div_ceil(64), n_cards as usize, n_printings as usize),
+            Mode::Printing => (printing_matches, 0, (n_printings as usize).div_ceil(64), est_cards, scan_all(est_cards)),
             Mode::Card => {
-                let rt = printing_matches.min(n_cards as usize);
-                (rt, printing_matches, (n_cards as usize).div_ceil(64), rt, rt)
+                // Card mode's result total IS the distinct-card count, which is precisely what
+                // `est_cards` already holds. The estimated fallback used to be the saturating
+                // `printing_matches.min(n_cards)`, which reads a median 1.99x the deduped
+                // `matches_pushed` counter -- p10 1.01, so it is over on nearly every query. Two
+                // names for one quantity, one of them wrong.
+                (est_cards, printing_matches, (n_cards as usize).div_ceil(64), est_cards, scan_all(est_cards))
             }
             Mode::Artwork => {
-                let rt = printing_matches.min(n_cards as usize);
-                (printing_matches, printing_matches, (n_printings as usize).div_ceil(64), rt, printing_matches)
+                // `result_total` is consumed as a per-RESULT count (GatheredScan's push term,
+                // StreamedSelect's emit term), and `matches_pushed` is deduped: `f:modern`/artwork
+                // pushes 34,285, not the 68,687 printings it scans. Handing over the printing count
+                // over-charged every materializing alternative by ~2x on this acquire. The printing
+                // count stays where it belongs -- `project` (the printing->artwork pass) and
+                // `scan_units` both walk printings, as `printings_scanned` confirms.
+                let n_artworks = u32::from(*indexes.artwork_base.last().expect("artwork_base has n_cards+1 entries")) as usize;
+                let rt = artwork_estimate(printing_matches, est_cards, n_cards as usize, n_artworks);
+                // The bitmap `printing_bits_to_artwork_bits` popcounts is n_artworks bits wide, not
+                // n_printings -- 46,112 against 97,206 here, so this was 2.1x over as well.
+                (rt, printing_matches, n_artworks.div_ceil(64), est_cards, scan_all(est_cards))
             }
         };
         let mut feats = mk_plan_feats(ctx, params, result_total as u32, eval_domain as u32, scan_units as u32, verify_cost_tier(filter));
@@ -8108,7 +8252,8 @@ fn run_query_streamed<'a>(
             u32::from(u16::from(artwork_groups[cid as usize]))
         } else {
             card_match_count(
-                card, cid, printings, start, end, all_match, &residual, residual_is_or, mode, strings, existential_plane,
+                card, cid, printings, &indexes.artwork_group_col, start, end, all_match, &residual, residual_is_or, mode, strings,
+                existential_plane,
                 &mut seen_words,
             )
         };
@@ -8337,7 +8482,7 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 // current calendar date (20260723) and 20260724 were both already consumed by
 // earlier same-window archive changes (#737 columnar artwork_group_id, #741
 // watermark postings), so this takes the next distinct value — see the doc above.
-const ARCHIVE_FORMAT_VERSION: u32 = 20260730;
+const ARCHIVE_FORMAT_VERSION: u32 = 20260802;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -8817,6 +8962,8 @@ impl QueryEngine {
         // feed CardIndexes.artwork_groups below. Must run before printings is
         // borrowed by the builders in the CardIndexes literal.
         let artwork_group_counts = assign_artwork_groups(&mut printings, &offsets);
+        // Before the counts are moved into the struct below.
+        let artwork_base = build_artwork_base_from(&artwork_group_counts);
         // The range indexes and their exact card-count tables come out here rather than inside the
         // literal below, because the tables need `printing_to_card` — which the literal also wants,
         // so it is derived once and moved in.
@@ -8875,6 +9022,9 @@ impl QueryEngine {
             // production spot where assign_artwork_groups (above) has just filled it. Archived with
             // the store, so it is never recomputed post-load and cannot drift from the struct field.
             artwork_group_col: printings.iter().map(|p| p.artwork_group_id).collect(),
+            // Same reasoning as artwork_group_col: derived here, archived, never recomputed
+            // post-load, so it cannot drift from the counts it sums.
+            artwork_base,
             printing_to_card,
             planes:         build_bit_planes(&cards, &printings, &offsets, &strings),
             border_printing: build_border_printing_planes(&printings, &strings),
