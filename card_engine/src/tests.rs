@@ -9708,6 +9708,15 @@ fn bare_range_bounds_recognizes_leaves_and_rejects_rest() {
     assert!(bounds(&FilterExpr::And(vec![usd_cmp(CmpOp::Lt, 50.0)])).is_none());
     let cmc_lt = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Lt, rhs: NumExpr::Const(3.0) };
     assert!(bounds(&cmc_lt).is_none());
+    // The negated arm takes the same leaf grammar with the op negated: -usd<50 is usd>=50's
+    // bounds outright, no complement. Ne is the shape that doesn't reduce, from either side --
+    // written as Ne above, and reached as negate_op(Eq) here.
+    let not_usd_lt = FilterExpr::Not(Box::new(usd_cmp(CmpOp::Lt, 50.0)));
+    assert_eq!(bounds(&not_usd_lt), Some((5000, u32::MAX)));
+    assert!(bounds(&FilterExpr::Not(Box::new(usd_cmp(CmpOp::Eq, 50.0)))).is_none());
+    // One Not deep and no further: the inner Not is not a leaf, so a double negation falls
+    // through the leaf catch-all rather than cancelling to the bare comparison.
+    assert!(bounds(&FilterExpr::Not(Box::new(not_usd_lt))).is_none());
 }
 
 /// #724 de-risk: does `popcount` + a printing walk over a *precomputed* border plane beat today's
