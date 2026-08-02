@@ -1345,20 +1345,25 @@ fn intersect_operands(ops: Vec<TriOperand>) -> Vec<u32> {
         // every window happens to be a hot trigram (uncommon — a longer
         // needle usually has at least one rarer window, which is what lets
         // the sparse-seeded path below narrow well).
-        let mut acc = planes.swap_remove(0);
-        for p in &planes {
-            for (a, b) in acc.iter_mut().zip(p) {
+        let mut planes = planes.into_iter();
+        let mut acc = planes.next().expect("postings empty implies at least one plane");
+        for p in planes {
+            for (a, b) in acc.iter_mut().zip(&p) {
                 *a &= *b;
             }
         }
         return bitmap_card_ids(&acc);
     }
     postings.sort_by_key(Vec::len);
-    let mut result = postings.swap_remove(0);
+    // Ascending, and it stays ascending: `swap_remove(0)` seeded from the shortest as
+    // intended but left the *longest* at slot 0, so the merge chain below ran in
+    // descending-ish order — the expensive direction for an O(|a| + |b|) merge.
+    let mut postings = postings.into_iter();
+    let mut result = postings.next().expect("checked non-empty above");
     for p in &planes {
         result.retain(|&id| (p[(id >> 6) as usize] >> (id & 63)) & 1 != 0);
     }
-    for p in &postings {
+    for p in postings {
         if result.is_empty() {
             break;
         }
@@ -2852,10 +2857,14 @@ fn and_all(mut sets: Vec<Narrowed>) -> Option<Narrowed> {
     // word-wise, then combine by retaining the vec against the bitmap — the
     // sparse side never gets scattered, and the result stays a vec whenever
     // any input was one.
-    let vec_result = (!vecs.is_empty()).then(|| {
-        vecs.sort_unstable_by_key(Vec::len);
-        let mut result = vecs.swap_remove(0);
-        for v in vecs {
+    vecs.sort_unstable_by_key(Vec::len);
+    let mut vec_iter = vecs.into_iter();
+    // `next()` takes the shortest and leaves the rest ascending. `swap_remove(0)` also
+    // returned the shortest, but moved the *longest* into slot 0, so the merge chain then
+    // ran longest-first — the expensive direction for an O(|a| + |b|) merge, and the
+    // opposite of what the comment above says.
+    let vec_result = vec_iter.next().map(|mut result| {
+        for v in vec_iter {
             if result.is_empty() {
                 break;
             }
@@ -2863,10 +2872,10 @@ fn and_all(mut sets: Vec<Narrowed>) -> Option<Narrowed> {
         }
         result
     });
-    let bits_result = bit_sets.split_first().map(|(first, rest)| {
-        let mut acc = first.clone();
-        for b in rest {
-            and_bits_into(&mut acc, b);
+    let mut bit_iter = bit_sets.into_iter();
+    let bits_result = bit_iter.next().map(|mut acc| {
+        for b in bit_iter {
+            and_bits_into(&mut acc, &b);
         }
         acc
     });
@@ -3316,14 +3325,19 @@ fn narrow_rec(
             let words = &indexes.oracle_trigram.words;
             let scan = scan_oracle_words(words, word);
             let wpp = words_per_plane(n_cards);
+            // Concatenate then sort+dedup, rather than folding `union_sorted` once per
+            // matched dictionary word: the fold rebuilt the whole accumulator on every
+            // word, quadratic in total postings for a needle hitting many words. Same
+            // output — `union_sorted` dedups on equal, and so does this.
             let sparse_text_ids = |sparse: &[u32]| -> Vec<u32> {
                 let mut ids: Vec<u32> = Vec::new();
                 for &s in sparse {
                     let start = u32::from(words.sparse_offsets[s as usize]) as usize;
                     let end = u32::from(words.sparse_offsets[s as usize + 1]) as usize;
-                    let row: Vec<u32> = words.sparse_postings[start..end].iter().map(|x| u32::from(u16::from(*x))).collect();
-                    ids = union_sorted(ids, row);
+                    ids.extend(words.sparse_postings[start..end].iter().map(|x| u32::from(u16::from(*x))));
                 }
+                ids.sort_unstable();
+                ids.dedup();
                 ids
             };
             match (scan.dense.as_slice(), scan.sparse.as_slice()) {
@@ -3399,7 +3413,12 @@ fn narrow_rec(
                     trigram_candidates(&indexes.oracle_trigram.trigrams, f)
                 };
                 let Some(cand) = cand else { continue }; // factor not trigram-indexable: skip, keep the rest
-                acc = Some(acc.map_or(cand.clone(), |prev| intersect_sorted(&prev, &cand)));
+                // A `match`, not `map_or`: the first factor takes ownership of its
+                // candidates instead of cloning the whole vec to hand `map_or` a default.
+                acc = Some(match acc {
+                    None => cand,
+                    Some(prev) => intersect_sorted(&prev, &cand),
+                });
             }
             let acc = acc?; // no factor produced candidates ⇒ general path (full scan)
             let ids = if is_name { acc } else { expand_text_ids(&indexes.oracle_trigram, &acc) };
@@ -3734,8 +3753,11 @@ fn narrow_rec(
             // satisfy the skipped children, and a complement taken over a
             // falsely-tight set would drop real matches of the negation.
             let mut every_child_included = true;
+            // Smallest set pushed so far, maintained as they are pushed. Recomputing it
+            // per child meant popcounting every accumulated bitmap again on every
+            // iteration — O(children² × words) for a value that only ever shrinks.
+            let mut best: Option<usize> = None;
             for (rank, probe, c) in ranked {
-                let best = card_sets.iter().chain(printing_sets.iter()).map(|n| n.set.len()).min();
                 // A driver this selective already bounds the candidate set the
                 // residual re-verifies, so a costlier (rank>0) child usually
                 // narrows nothing the driver's verification doesn't already do
@@ -3766,10 +3788,12 @@ fn narrow_rec(
                     // intersection; skipping it is advisory-sound and avoids
                     // paying its projection/materialization for ~nothing.
                     let domain = if n.set.is_printing_space() { n_printings } else { n_cards };
-                    if n.set.len() > domain - domain / 4 {
+                    let len = n.set.len();
+                    if len > domain - domain / 4 {
                         every_child_included = false;
                         continue;
                     }
+                    best = Some(best.map_or(len, |b| b.min(len)));
                     if n.set.is_printing_space() { printing_sets.push(n) } else { card_sets.push(n) }
                 } else {
                     every_child_included = false;
@@ -9411,6 +9435,8 @@ mod bench_text_search;
 mod bench_iter_dispatch;
 #[cfg(test)]
 mod bench_posting_intersect;
+#[cfg(test)]
+mod bench_intersect_order;
 #[cfg(test)]
 mod bench_word_dict_scan;
 #[cfg(test)]
