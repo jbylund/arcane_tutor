@@ -210,20 +210,33 @@ projection over the same `pbits` again. Pass the card bits (or the derived candi
 loop, and `Candidates::len()` popcounts an entire bitmap. That is O(children² × words). Track the
 running minimum as sets are pushed.
 
+Measured (`bench_and_best.rs`, #811): 1.5x at two bitmap children, 2.5x at four, 3.5x at six —
+50 ns to 1.9 μs per And node at realistic widths, and nothing at all when every child is
+vec-shaped, since `Vec::len` was never the problem.
+
 ### 15. `and_all` clones a whole bitmap for nothing
 
 [2719-2725](../../card_engine/src/lib.rs#L2719):
 `bit_sets.split_first().map(|(first, rest)| { let mut acc = first.clone(); … })` — on an owned
 `Vec<Vec<u64>>`. `into_iter()` takes ownership instead.
 
+Measured (`bench_narrow_alloc.rs` section A, #811): 1.06-1.45x, i.e. 60-130 ns per `and_all` that
+sees bitmaps. Biggest at two printing-space operands (414 → 286 ns), shrinking as the AND chain
+grows and the saved memcpy becomes a smaller share.
+
 ### 16. Two avoidable allocations in narrowing
 
-- The oracle-word sparse expansion chains `union_sorted` once per matched dictionary word
+- ~~The oracle-word sparse expansion chains `union_sorted` once per matched dictionary word
   ([3172-3181](../../card_engine/src/lib.rs#L3172)) — quadratic in total postings for a needle that
-  hits many words. Collect, then `sort_unstable` + `dedup`: linearithmic and shorter.
-- The regex-factor arm clones the candidate vec on the first factor:
-  `acc.map_or(cand.clone(), …)` ([3255](../../card_engine/src/lib.rs#L3255)). A plain `match`
-  avoids it.
+  hits many words. Collect, then `sort_unstable` + `dedup`: linearithmic and shorter.~~
+  **Measured and rejected** (#811): the fold beats sort+dedup by 2-5x for the 98.8% of needles
+  that match ≤ 7 dictionary words, and only loses past ~24. Kept as a threshold proposal in
+  [local-engine-sparse-union-threshold.md](local-engine-sparse-union-threshold.md);
+  `bench_narrow_alloc.rs` section B holds the numbers.
+- The regex-factor arm clones the candidate vec — `acc.map_or(cand.clone(), …)`
+  ([3255](../../card_engine/src/lib.rs#L3255)). Note `map_or` takes its default **by value**, so
+  this clones on *every* factor, not just the first. A plain `match` avoids it: 2-3x on
+  single-factor regexes, 1.05-1.08x on multi-factor ones (`bench_narrow_alloc.rs` section C).
 
 ## Batch E — comment density
 

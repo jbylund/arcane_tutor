@@ -3325,19 +3325,21 @@ fn narrow_rec(
             let words = &indexes.oracle_trigram.words;
             let scan = scan_oracle_words(words, word);
             let wpp = words_per_plane(n_cards);
-            // Concatenate then sort+dedup, rather than folding `union_sorted` once per
-            // matched dictionary word: the fold rebuilt the whole accumulator on every
-            // word, quadratic in total postings for a needle hitting many words. Same
-            // output — `union_sorted` dedups on equal, and so does this.
+            // Folds `union_sorted` once per matched dictionary word, so it is quadratic in
+            // total postings — but only in the *step count*, and the needle population does
+            // not reach the regime where that matters: 98.8% of eligible dictionary words
+            // match at most 7 words, where the fold beats concatenate-then-sort+dedup by
+            // 2-5x (bench_narrow_alloc.rs, section B). Sort+dedup only pulls ahead past
+            // ~20-30 matched words, which 0.2% of needles reach — see
+            // docs/issues/local-engine-sparse-union-threshold.md before rewriting this.
             let sparse_text_ids = |sparse: &[u32]| -> Vec<u32> {
                 let mut ids: Vec<u32> = Vec::new();
                 for &s in sparse {
                     let start = u32::from(words.sparse_offsets[s as usize]) as usize;
                     let end = u32::from(words.sparse_offsets[s as usize + 1]) as usize;
-                    ids.extend(words.sparse_postings[start..end].iter().map(|x| u32::from(u16::from(*x))));
+                    let row: Vec<u32> = words.sparse_postings[start..end].iter().map(|x| u32::from(u16::from(*x))).collect();
+                    ids = union_sorted(ids, row);
                 }
-                ids.sort_unstable();
-                ids.dedup();
                 ids
             };
             match (scan.dense.as_slice(), scan.sparse.as_slice()) {
@@ -9437,6 +9439,10 @@ mod bench_iter_dispatch;
 mod bench_posting_intersect;
 #[cfg(test)]
 mod bench_intersect_order;
+#[cfg(test)]
+mod bench_and_best;
+#[cfg(test)]
+mod bench_narrow_alloc;
 #[cfg(test)]
 mod bench_word_dict_scan;
 #[cfg(test)]
