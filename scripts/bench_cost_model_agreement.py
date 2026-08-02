@@ -63,6 +63,13 @@ MIN_FOR_QUARTILES = 8
 # all of them run-time outcomes reached BEFORE any strategy runs. The prediction is never exercised
 # there, so they are excluded rather than counted as disagreements.
 COMPOSE_STRATEGIES = ("Perm", "OrderbyWalk", "Gather")
+# `GatherWalkDeclined` is a strategy outcome, so it IS counted — but it is not a disagreement. Acquire
+# never composes, so it can only test that an orderby walk is AVAILABLE, never that it will succeed;
+# the walk declines on the null-value tail or a page past the value structure and falls into the
+# gather. `compose_paging` is therefore an upper bound on `OrderbyWalk` and exact everywhere else.
+# Tracked separately because the rate is the interesting number: it is how often the engine pays a
+# walk attempt AND a full gather while being priced as a walk.
+WALK_DECLINED = "GatherWalkDeclined"
 # The acquire branch that actually PREDICTS `compose_paging`. Every other branch leaves the
 # `mk_plan_feats` default of `Gather` untouched — see `report_paging` for why that is a different
 # defect rather than a prediction that missed.
@@ -142,8 +149,13 @@ def main() -> None:
         }
         try:
             kw["filters"] = parse_scryfall_query(q)
-            acq = engine.explain(**kw)["acquire"]
+            # `explain_analyze` runs `explain` internally and returns the same `acquire` dict, so a
+            # separate `engine.explain(**kw)` call here would be a second full acquire per sample for
+            # fields we already have. This loop is budgeted in wall-clock seconds, so dropping it buys
+            # samples directly. (`acquire_ns` is the one field that differs -- re-sampled per round
+            # rather than once -- and nothing below reads it.)
             res = engine.explain_analyze(prefer="default", num_warmups=NUM_WARMUPS, num_trials=NUM_TRIALS, **kw)
+            acq = res["acquire"]
         except Exception as exc:  # noqa: BLE001 - a rejected query is a skipped sample
             # Counted BY TYPE, not just totalled. This harness's whole argument is that sampling bias
             # hides the cells most likely to be wrong -- and a bare skip counter is that same bias: if
@@ -165,11 +177,11 @@ def main() -> None:
             # number that describes neither. Restricted to the plans that HAVE a prepare phase --
             # `ns_round_total` alone admits every plan that ran, and the uninstrumented ones would
             # then contribute a run of 0.0 that reads as "spends no time preparing".
+            #
+            # The setup phase rides the same guard: also instrumented for both materializing plans,
+            # and for `StreamedSelect` it is an O(n_cards) counts zeroing that no cost term carries.
             if p["ns_round_total"] and p["plan"] in MATERIALIZING_PLANS:
                 agr.prep_frac[p["plan"], acq["count_source"]].append(p["ns_prepare"] / p["ns_round_total"])
-            # The setup phase, on the same footing. Instrumented for both materializing plans, and
-            # for `StreamedSelect` it is an O(n_cards) counts zeroing that no cost term carries.
-            if p["ns_round_total"] and p["plan"] in MATERIALIZING_PLANS:
                 agr.setup_frac[p["plan"], acq["count_source"]].append(p["ns_setup"] / p["ns_round_total"])
             # Did the compose fastpath take the branch the cost model predicted? The two decisions
             # are computed independently, and nothing checked they agree until now -- the same shape
@@ -181,7 +193,7 @@ def main() -> None:
             # acquire. Under any other branch it is the untouched `mk_plan_feats` default, so an
             # off-diagonal cell there means a competing compose was mispriced, not that a prediction
             # drifted -- different defect, different fix, and pooling them reports neither.
-            if p["plan"] == "PrintingCompose" and p["paging_taken"] in COMPOSE_STRATEGIES:
+            if p["plan"] == "PrintingCompose" and p["paging_taken"] in (*COMPOSE_STRATEGIES, WALK_DECLINED):
                 agr.paging[acq["count_source"], acq["compose_paging"], p["paging_taken"]] += 1
 
     report(agr, args.seconds)
@@ -232,6 +244,14 @@ def report_paging(agr: Agreement) -> None:
     decides again at run time. An off-diagonal cell is drift between two independent implementations
     of one decision, and the fix is to share it.
 
+    With one cell excepted, and it is excepted on structure rather than tolerance. The two
+    *availability* tests are identical by construction and cannot disagree; what acquire cannot see is
+    whether the walk it predicts will SUCCEED, since knowing that means composing, which acquire
+    deliberately never does. A walk that declines falls into the gather and reports
+    `GatherWalkDeclined`, so `compose_paging` is an upper bound on `OrderbyWalk` and exact elsewhere.
+    That cell gets its own line rather than being pooled either way — it is not drift, but it is not
+    free either: those runs pay the walk attempt and the gather while priced as a walk.
+
     Under any other acquire nothing predicted anything — `compose_paging` is the `mk_plan_feats`
     default of `Gather`, which `cost.rs` nonetheless prices a COMPETING `PrintingCompose` with. An
     off-diagonal cell there means the competitor was costed with an arm it never runs, and the fix is
@@ -249,6 +269,13 @@ def report_paging(agr: Agreement) -> None:
         print(f"\ncompose paging under {acquire} acquire: {subject}, {total:,} runs")
         for strategy in COMPOSE_STRATEGIES:
             print(f"  {strategy:<14}{cells.get((strategy, strategy), 0):>7,} agreed")
+        # Structural, not drift: a predicted walk that declined into the gather. Reported on its own
+        # line with a rate, because that rate is the size of a real (small) under-costing — those runs
+        # pay the walk attempt AND the gather while priced as a walk — and folding it into either the
+        # agreed count or the disagreement count would hide it.
+        declined = cells.pop(("OrderbyWalk", WALK_DECLINED), 0)
+        if declined:
+            print(f"  {'walk declined':<14}{declined:>7,} ({declined / total:.1%}) predicted OrderbyWalk, fell back to gather")
         wrong = {key: n for key, n in cells.items() if key[0] != key[1]}
         if not wrong:
             print("  0 disagreements.")
