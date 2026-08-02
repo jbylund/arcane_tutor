@@ -50,13 +50,21 @@ if TYPE_CHECKING:
 
 MODES = ("realistic", "uniform")
 
-# Range fields mapped to the corpus column each draws its thresholds from.
+# Range fields mapped to the corpus column each draws its thresholds from. `eur`/`tix` are sparser
+# than `usd` (not every printing is priced in every currency), which is the point: they exercise a
+# different density of the same index, and there is live work on exactly that
+# (local-engine-eur-tix-range-index.md). Rows missing a column are skipped when the corpus is read,
+# so a sparse column still yields quantiles over the values that exist.
 RANGE_COLUMNS: dict[str, str] = {
     "usd": "price_usd",
+    "eur": "price_eur",
+    "tix": "price_tix",
     "cn": "collector_number_int",
     "year": "released_at",
     "date": "released_at",
 }
+# Rendered to two decimal places; everything else in RANGE_COLUMNS is an integer or a date.
+PRICE_FIELDS = frozenset({"usd", "eur", "tix"})
 RANGE_OPS = ("<", "<=", ">", ">=", ":")
 
 # Predicate families and their relative weight in `realistic`; `uniform` uses all-ones.
@@ -185,6 +193,13 @@ class QuerySampler:
         self.mode = mode
         self.realistic = mode == "realistic"
         self._read_corpus(corpus)
+        # Only range fields whose column actually carried values in this corpus. `eur`/`tix` are
+        # sparse and an export can omit them entirely; sampling a field with no quantiles to draw
+        # from would raise deep inside `range_predicate` instead of simply not being offered.
+        self.range_fields = [f for f, col in RANGE_COLUMNS.items() if col in self.sorted]
+        if not self.range_fields:
+            msg = f"corpus {corpus} has no usable range column; need one of {sorted(set(RANGE_COLUMNS.values()))}"
+            raise ValueError(msg)
         self.families = self._weights(REALISTIC_FAMILY_WEIGHTS)
         self.uniques = self._weights(REALISTIC_UNIQUE_WEIGHTS)
         self.orderbys = self._weights(REALISTIC_ORDERBY_WEIGHTS)
@@ -263,7 +278,7 @@ class QuerySampler:
 
     def _render(self, field: str, raw: float) -> str:
         """A sampled column value back into query syntax for `field`."""
-        if field == "usd":
+        if field in PRICE_FIELDS:
             return f"{raw:.2f}"
         if field == "cn":
             return str(int(raw))
@@ -273,13 +288,13 @@ class QuerySampler:
 
     def range_predicate(self, rng: random.Random) -> str:
         """One-sided range whose threshold sits at a uniformly-drawn quantile of its column."""
-        field = rng.choice(list(RANGE_COLUMNS))
+        field = rng.choice(self.range_fields)
         value = self._render(field, self.quantile(RANGE_COLUMNS[field], rng.random()))
         return f"{field}{rng.choice(RANGE_OPS)}{value}"
 
     def bounded_predicate(self, rng: random.Random) -> str:
         """A two-sided range (`usd>=a usd<=b`), the shape one-sided sampling never produces."""
-        field = rng.choice([f for f in RANGE_COLUMNS if f != "year"])
+        field = rng.choice([f for f in self.range_fields if f != "year"])
         column = RANGE_COLUMNS[field]
         lo_p, hi_p = sorted((rng.random(), rng.random()))
         lo = self._render(field, self.quantile(column, lo_p))

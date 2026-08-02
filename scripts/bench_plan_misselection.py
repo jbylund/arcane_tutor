@@ -51,6 +51,8 @@ ORDERBY_VALUES = frozenset(
     {"edhrec", "cubecobra", "cmc", "power", "toughness", "rarity", "name", "released", "set", "color", "usd", "artist", "review"}
 )
 DEFAULT_ORDERBY = "edhrec"
+# Overridable so the harness runs from a git worktree, which has no benchmarks/ tree of its own.
+WILD_CORPUS = REPO_ROOT / "benchmarks/wild-queries/wild-corpus.jsonl"
 # Above the shared costbench default, with a reason: enough rounds that a bimodal plan shows both
 # modes (00648's measurement-traps section) while keeping a 200-query sweep to a couple of minutes.
 NUM_WARMUPS = 3
@@ -67,7 +69,9 @@ MIN_FOR_QUARTILES = 4
 LIVE_DEFECT_FLOOR_US = 5.0
 
 
-def load_queries(source: str, sample: int, seed: int, corpus: pathlib.Path) -> list[tuple[str, str, str]]:
+def load_queries(
+    source: str, sample: int, seed: int, corpus: pathlib.Path, wild_corpus: pathlib.Path
+) -> list[tuple[str, str, str]]:
     """(query, unique, orderby) triples from the requested source, sampled deterministically.
 
     `wild-operators` is the default and stays the wild corpus: real Scryfall traffic is the right
@@ -86,7 +90,7 @@ def load_queries(source: str, sample: int, seed: int, corpus: pathlib.Path) -> l
         return [(sampler.query(rng), sampler.unique(rng), sampler.orderby(rng)) for _ in range(sample)]
 
     rows = []
-    for line in (REPO_ROOT / "benchmarks/wild-queries/wild-corpus.jsonl").open():
+    for line in wild_corpus.open():
         row = json.loads(line)
         unique = UNIQUE_FROM_SCRYFALL.get(row.get("unique", "card"))
         if unique is None or not OP_RE.search(row["q"]):
@@ -182,11 +186,14 @@ def main() -> None:
     parser.add_argument("--trials", type=int, default=NUM_TRIALS, help="timed rounds per plan; lower for large sweeps")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--corpus", type=pathlib.Path, default=REPO_ROOT / "benchmarks/bitplanes/corpus.jsonl")
+    parser.add_argument(
+        "--wild-corpus", type=pathlib.Path, default=WILD_CORPUS, help="real-traffic corpus for --source wild-operators"
+    )
     parser.add_argument("--shm-path", type=pathlib.Path, default=None)
     args = parser.parse_args()
 
     engine = load_engine(args.corpus, args.shm_path or args.corpus.with_suffix(".misselect.store"))
-    queries = load_queries(args.source, args.sample, args.seed, args.corpus)
+    queries = load_queries(args.source, args.sample, args.seed, args.corpus, args.wild_corpus)
     if args.calibration:
         calibration(engine, queries, args.trials)
         return

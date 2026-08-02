@@ -69,6 +69,7 @@ WARMUP = 3
 WINDOW_S = 0.3
 MAX_ITERS = 1000
 
+# Overridable so the survey runs from a git worktree, which has no benchmarks/ tree of its own.
 WILD_CORPUS = REPO_ROOT / "benchmarks/wild-queries/wild-corpus.jsonl"
 # Fraction of the wild sample drawn from bare name lookups. They dominate the
 # wild corpus by weight but are a single engine code path, so they get one
@@ -83,7 +84,7 @@ _WILD_UNIQUE = {"card": "card", "prints": "printing", "art": "artwork"}
 _ENGINE_ORDERS = {"cmc", "power", "rarity", "toughness", "usd", "cubecobra", "edhrec", "name"}
 
 
-def sample_wild(rng: random.Random, count: int) -> list[dict]:
+def sample_wild(rng: random.Random, count: int, wild_corpus: pathlib.Path = WILD_CORPUS) -> list[dict]:
     """Sample `count` wild queries, weight-proportionally without replacement.
 
     Name lookups get WILD_NAME_LOOKUP_FRACTION of the slots; operator queries
@@ -92,7 +93,7 @@ def sample_wild(rng: random.Random, count: int) -> list[dict]:
     """
     ops: list[dict] = []
     names: list[dict] = []
-    with WILD_CORPUS.open() as fh:
+    with wild_corpus.open() as fh:
         for line in fh:
             row = json.loads(line)
             (ops if _OP_RE.search(row["q"]) else names).append(row)
@@ -269,13 +270,16 @@ def main() -> None:
     parser.add_argument("--out", type=pathlib.Path, required=True, help="CSV output path")
     parser.add_argument("--count", type=int, default=400, help="number of queries to generate")
     parser.add_argument("--wild", type=int, default=120, help="number of wild-corpus queries to sample")
+    parser.add_argument(
+        "--wild-corpus", type=pathlib.Path, default=WILD_CORPUS, help="real-traffic corpus the --wild slots draw from"
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
     specs = generate(rng, args.count)
     if args.wild:
-        specs.extend(sample_wild(rng, args.wild))
+        specs.extend(sample_wild(rng, args.wild, args.wild_corpus))
     args.out.parent.mkdir(parents=True, exist_ok=True)
     engine = load_engine(args.corpus, args.out.with_suffix(".store"))
 

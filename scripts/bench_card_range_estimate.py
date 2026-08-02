@@ -38,6 +38,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from api.parsing import parse_scryfall_query  # noqa: E402
 from scripts import costbench  # noqa: E402
 from scripts.costbench import load_engine  # noqa: E402
+from scripts.query_sampler import QuerySampler, Shape  # noqa: E402
 
 TARGET_SOURCE = "card_range_popcount"
 MATERIALIZING = ("StreamedSelect", "GatheredScan")
@@ -53,28 +54,13 @@ MIN_FOR_DECILES = 10
 # count would need, measured at 98333ns/80527 printings.
 BUILD_PER_PRINTING_NS = 1.22
 
-# Every field `bare_range_bounds` resolves to a range index: the three price columns and collector
-# number have their own, `year:`/`date:` both map onto `released_at`. Values span each field's real
-# distribution so the sweep covers selectivities from a handful of cards to nearly the whole corpus.
-RANGE_FIELDS: dict[str, list[str]] = {
-    "usd": ["0.1", "0.25", "1", "2", "5", "10", "20", "50", "100", "200", "500"],
-    "eur": ["0.1", "0.5", "1", "3", "8", "20", "60", "150"],
-    "tix": ["0.05", "0.1", "0.5", "1", "3", "10", "30"],
-    "cn": ["5", "20", "50", "100", "200", "300", "500"],
-    "year": ["1994", "1999", "2004", "2009", "2014", "2018", "2021", "2023", "2025"],
-    "date": ["1995-01-01", "2005-06-01", "2015-03-01", "2020-09-01", "2024-01-01"],
-}
-RANGE_OPS = [">", ">=", "<", "<="]
-DATE_FIELDS = ("year", "date")
-
-
-def random_range_query(rng: random.Random) -> str:
-    """One bare range predicate — the only filter shape this acquire branch fires for."""
-    field = rng.choice(list(RANGE_FIELDS))
-    # `year:2023` is a bounded range on released_at (bare_range_bounds handles YearCmp/DateCmp), so
-    # it belongs in the sweep; `:` on a price column is equality and mostly yields empty results.
-    ops = [*RANGE_OPS, ":"] if field in DATE_FIELDS else RANGE_OPS
-    return f"{field}{rng.choice(ops)}{rng.choice(RANGE_FIELDS[field])}"
+#: One bare range at `unique=card` — the only filter shape this acquire branch fires for.
+#: Replaces a private generator that drew thresholds from a hardcoded list per field (eleven `usd`
+#: values, nine `year`s). Those clustered selectivity at a dozen arbitrary points, which is exactly
+#: what a cardinality-estimate sweep must not do: the estimate is a function of selectivity, so a
+#: sweep that samples a dozen values of it cannot describe the error curve between them.
+#: `QuerySampler` places each threshold at a uniformly-drawn quantile of the real column instead.
+RANGE_SHAPE = Shape(families=frozenset({"range"}), predicates=1, unique=frozenset({"card"}))
 
 
 def main() -> None:
@@ -87,6 +73,7 @@ def main() -> None:
     args = parser.parse_args()
 
     engine = load_engine(args.corpus, args.shm_path or args.corpus.with_suffix(".misselect.store"))
+    sampler = QuerySampler(args.corpus, "uniform")
     rng = random.Random(args.seed)
 
     samples = Samples()
@@ -94,7 +81,7 @@ def main() -> None:
     generated = other_source = 0
     deadline = time.monotonic() + args.seconds
     while time.monotonic() < deadline:
-        q = random_range_query(rng)
+        q = sampler.query(rng, RANGE_SHAPE)
         generated += 1
         if q in seen:
             continue

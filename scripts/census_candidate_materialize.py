@@ -64,6 +64,8 @@ ORDERBY_VALUES = frozenset(
     {"edhrec", "cubecobra", "cmc", "power", "toughness", "rarity", "name", "released", "set", "color", "usd", "artist", "review"}
 )
 DEFAULT_ORDERBY = "edhrec"
+# Overridable so the harness runs from a git worktree, which has no benchmarks/ tree of its own.
+WILD_CORPUS = REPO_ROOT / "benchmarks/wild-queries/wild-corpus.jsonl"
 # random_query() emits shapes, not unique/orderby; sample those the way real traffic
 # distributes (client/query_runner.py's own weights).
 RANDOM_UNIQUE_WEIGHTS = {"card": 75, "printing": 20, "artwork": 5}
@@ -174,6 +176,7 @@ def main() -> None:
         help="card rows to build the store from",
     )
     parser.add_argument("--shm-path", type=pathlib.Path, default=None, help="engine archive path (default: alongside --corpus)")
+    parser.add_argument("--wild-corpus", type=pathlib.Path, default=WILD_CORPUS, help="real-traffic corpus read by --wild")
     parser.add_argument("--wild", action="store_true", help="census the Common Crawl wild-query corpus")
     parser.add_argument("--random", type=int, default=0, metavar="N", help="also census N generated queries")
     parser.add_argument("--seed", type=int, default=0, help="seed for --random")
@@ -188,7 +191,7 @@ def main() -> None:
 
     sources: list[tuple[str, list[tuple[str, str, str, int]]]] = []
     if args.wild:
-        corpus = REPO_ROOT / "benchmarks/wild-queries/wild-corpus.jsonl"
+        corpus = args.wild_corpus
         sources.append(("wild-operators", wild_queries(corpus, with_operators=True)))
         sources.append(("wild-namelookup", wild_queries(corpus, with_operators=False)))
     if args.random:

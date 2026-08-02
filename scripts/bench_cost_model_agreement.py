@@ -4,15 +4,19 @@ Not a mis-selection check — this asks whether each plan's cost ARM is right, p
 `unique`, per `orderby`. A plan can be picked correctly for a long time while its arm is badly wrong,
 and only diverge once something competes closely with it.
 
-Sampling is deliberately unbiased where the existing generator is not:
+Sampling comes from `query_sampler.QuerySampler` in `uniform` mode, which is deliberately unbiased
+in the three ways this measurement needs. It used to come from private tables here that aimed at the
+same properties and reached two of the three:
 
 - `unique` is drawn evenly across card / printing / artwork, not 75/20/5. Distinct-on changes which
   plans are even applicable and what `scan_units` means, so under-sampling two thirds of it hides
   exactly the cells most likely to be wrong.
 - `orderby` is drawn across every column the engine supports, since the permutation's existence is
   what gates `StreamedSelect` and `PlanePopcountOrder`.
-- range thresholds are sampled from each field's real value distribution rather than a hand-picked
-  list, so selectivity is spread instead of clustered at round numbers.
+- range thresholds sit at a uniformly-drawn QUANTILE of the real column. The private table sampled
+  log-uniformly between hardcoded bounds (`usd` 0.05-400, `cn` 1-500), which spreads the *value* and
+  not the *selectivity* — and selectivity is the axis a cost model varies along. The shared sampler
+  also reaches `eur`/`tix` and two-sided bounds, neither of which the private table produced.
 
 Reports measured/predicted per (plan, acquire branch), plus the two phases no cost term describes:
 `prepare_candidates` — 21-33% of a range-acquired query against 7-10% of a plane-acquired one — and
@@ -41,7 +45,6 @@ from __future__ import annotations
 import argparse
 import collections
 import dataclasses
-import math
 import pathlib
 import random
 import statistics
@@ -54,13 +57,12 @@ sys.path.insert(0, str(REPO_ROOT))
 from api.parsing import parse_scryfall_query  # noqa: E402
 from scripts import costbench  # noqa: E402
 from scripts.costbench import load_engine  # noqa: E402
+from scripts.query_sampler import QuerySampler  # noqa: E402
 
 NUM_WARMUPS = 2
 NUM_TRIALS = 7
 # Every distinct-on the engine supports, evenly weighted — see the module docstring.
-UNIQUES = ("card", "printing", "artwork")
 # Every orderby `orderby_to_col` maps. Which ones have a sort permutation decides plan applicability.
-ORDERBYS = ("edhrec", "cubecobra", "cmc", "power", "toughness", "rarity", "usd", "name")
 LIMITS = (10, 100, 175)
 OFFSETS = (0, 0, 0, 100)  # mostly first-page, which is what real traffic asks for
 MIN_FOR_QUARTILES = 8
@@ -110,43 +112,7 @@ AGREE_LO, AGREE_HI = 0.8, 1.25
 
 # Predicate templates, one per engine path, so no single family dominates the sample the way a
 # weighted-dimension generator does. A query is one or two of these joined.
-PREDICATES: dict[str, list[str]] = {
-    "plane_color": ["c:w", "c:u", "c:b", "c:r", "c:g", "c:wu", "c:br", "id:g", "id:wu"],
-    "plane_type": ["t:creature", "t:instant", "t:artifact", "t:land", "t:enchantment", "t:sorcery"],
-    "legality": ["f:modern", "f:commander", "f:legacy", "f:pauper", "f:standard", "f:vintage"],
-    "text": ["o:flying", "o:draw", "o:destroy", "o:trample", "o:counter", "o:sacrifice"],
-    "collection": ["is:reprint", "border:black", "border:borderless", "frame:showcase", "watermark:set"],
-    "arith": ["pow>2", "tou<4", "power+toughness<6", "cmc>=4", "loyalty>=3"],
-}
 # Range fields with a real index, and the value ranges to sample thresholds from.
-RANGE_FIELDS: dict[str, tuple[float, float, bool]] = {
-    "usd": (0.05, 400.0, True),  # log-sampled: prices span four orders of magnitude
-    "cn": (1, 500, False),
-    "year": (1993, 2026, False),
-}
-RANGE_OPS = (">", ">=", "<", "<=", ":")
-
-
-def sample_range(rng: random.Random) -> str:
-    """One range predicate with the threshold drawn from the field's own distribution."""
-    field, (lo, hi, log_scale) = rng.choice(list(RANGE_FIELDS.items()))
-    value = f"{math.exp(rng.uniform(math.log(lo), math.log(hi))):.2f}" if log_scale else str(rng.randint(int(lo), int(hi)))
-    op = rng.choice(RANGE_OPS)
-    return f"{field}{op}{value}"
-
-
-def sample_query(rng: random.Random) -> str:
-    """One or two predicates, each family equally likely — ranges included as their own family."""
-    families = [*PREDICATES.keys(), "range"]
-    n = rng.choice((1, 1, 2))
-    parts, used = [], set()
-    for _ in range(n):
-        fam = rng.choice(families)
-        if fam in used:
-            continue
-        used.add(fam)
-        parts.append(sample_range(rng) if fam == "range" else rng.choice(PREDICATES[fam]))
-    return " ".join(parts)
 
 
 def main() -> None:
@@ -159,17 +125,18 @@ def main() -> None:
     args = parser.parse_args()
 
     engine = load_engine(args.corpus, args.shm_path or args.corpus.with_suffix(".agreement.store"))
+    sampler = QuerySampler(args.corpus, "uniform")
     rng = random.Random(args.seed)
 
     agr = Agreement()
 
     deadline = time.monotonic() + args.seconds
     while time.monotonic() < deadline:
-        q, unique = sample_query(rng), rng.choice(UNIQUES)
+        q, unique = sampler.query(rng), sampler.unique(rng)
         kw = {
             "filters": None,
             "unique": unique,
-            "orderby": rng.choice(ORDERBYS),
+            "orderby": sampler.orderby(rng),
             "direction": rng.choice(("asc", "desc")),
             "limit": rng.choice(LIMITS),
             "offset": rng.choice(OFFSETS),
