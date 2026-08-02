@@ -991,38 +991,22 @@ pub(crate) fn scan_oracle_words(idx: &Archived<OracleWordIndex>, needle: &str) -
 // archives as two contiguous zero-copy slices. Build and expand used to be
 // written out once per index; the convention lives here instead.
 
-/// A CSR row index. `u32` deliberately has no `Into<usize>` (usize may be 16-bit),
-/// so the widening is spelled once here rather than at every call site.
-trait CsrRow: Copy {
-    fn row(self) -> usize;
-}
-
-impl CsrRow for u16 {
-    fn row(self) -> usize {
-        self as usize
-    }
-}
-
-impl CsrRow for u32 {
-    fn row(self) -> usize {
-        self as usize
-    }
-}
-
-/// Concatenate the payload rows for `keys` and sort the result.
+/// Concatenate the `payload` rows named by `rows` and sort the result. Row ids are
+/// `u16` or `u32` depending on the index, so callers widen at the call site — `u32`
+/// deliberately has no `Into<usize>` (usize may be 16-bit) and a trait to hide three
+/// `as usize` casts costs more than it saves.
 ///
 /// Each row is internally sorted (placement below walks store order), but rows are
 /// not ordered relative to each other (dense ids are first-seen order), so the
 /// concatenation needs one final sort — required both by `intersect_sorted` when
 /// And-combining with other candidate sets and by the query driver, which assumes
 /// candidates arrive in store order.
-fn expand_csr<K: CsrRow>(offsets: &AOffsets, values: &AOffsets, keys: &[K]) -> Vec<u32> {
+fn expand_csr(offsets: &AOffsets, payload: &AOffsets, rows: impl IntoIterator<Item = usize>) -> Vec<u32> {
     let mut out: Vec<u32> = Vec::new();
-    for &k in keys {
-        let row = k.row();
+    for row in rows {
         let start = u32::from(offsets[row]) as usize;
         let end = u32::from(offsets[row + 1]) as usize;
-        out.extend(values[start..end].iter().map(|x| u32::from(*x)));
+        out.extend(payload[start..end].iter().map(|x| u32::from(*x)));
     }
     out.sort_unstable();
     out
@@ -1033,14 +1017,14 @@ fn expand_csr<K: CsrRow>(offsets: &AOffsets, values: &AOffsets, keys: &[K]) -> V
 /// flavor text). Returns `(offsets, payload)`, the payload holding every included
 /// item index grouped by row and ascending within it.
 ///
-/// `row_of` is called twice per item, once to count and once to place. Every caller
-/// is on the reload path, where this runs once over ~50k items, so a caller whose
-/// row lookup is a hash probe rather than a field read pays for the second probe
-/// there and nowhere else.
+/// `row_of` is called twice per item, once to count and once to place, so it should be
+/// a field read rather than a hash probe — every caller runs on the reload path over
+/// ~50k items, and one that has to look its row up materializes the rows first.
 fn build_csr(n_rows: usize, n_items: usize, row_of: impl Fn(usize) -> Option<usize>) -> (Vec<u32>, Vec<u32>) {
     let mut offsets = vec![0u32; n_rows + 1];
     for i in 0..n_items {
         if let Some(row) = row_of(i) {
+            debug_assert!(row < n_rows, "build_csr: row_of({i}) = {row}, out of range for {n_rows} rows");
             offsets[row + 1] += 1;
         }
     }
@@ -1210,7 +1194,7 @@ fn build_oracle_text_index(cards: &[OracleCard], strings: &[String]) -> OracleTe
 
 /// Expand surviving dense text ids to card indices via the CSR table.
 fn expand_text_ids(idx: &Archived<OracleTextIndex>, text_ids: &[u32]) -> Vec<u32> {
-    expand_csr(&idx.offsets, &idx.card_indices, text_ids)
+    expand_csr(&idx.offsets, &idx.card_indices, text_ids.iter().map(|&t| t as usize))
 }
 
 // ─── Name bigram index (#639 short-name narrowing) ──────────────────────────
@@ -1722,7 +1706,7 @@ fn build_artist_index(printings: &[Printing], n_artists: usize) -> ArtistIndex {
 
 /// Expand matching artist vocab ids to sorted printing ids via the CSR table.
 fn expand_artist_ids(idx: &Archived<ArtistIndex>, artist_ids: &[u16]) -> Vec<u32> {
-    expand_csr(&idx.offsets, &idx.printings, artist_ids)
+    expand_csr(&idx.offsets, &idx.printings, artist_ids.iter().map(|&a| a as usize))
 }
 
 // ─── Flavor-text index ────────────────────────────────────────────────────────
@@ -1804,23 +1788,31 @@ pub(crate) struct FlavorIndex {
 }
 
 fn build_flavor_index(printings: &[Printing], strings: &[String]) -> FlavorIndex {
-    // Assign dense ids in first-seen printing order; `build_csr` does its own counting
-    // pass, so this one only needs to establish the numbering and how many rows there are.
+    /// Row of a printing carrying no flavor text — omitted from the CSR table entirely.
+    const NO_ROW: u32 = u32::MAX;
+
+    // Assign dense ids in first-seen printing order, recording each printing's row as we
+    // go. Flavor is the one caller whose row is a hash lookup rather than a field read,
+    // and `build_csr` asks twice; materializing the rows here keeps this at one probe per
+    // printing, against two before the CSR helpers existed.
     let mut dense_of: HashMap<u32, u32> = HashMap::new();
     let mut gids: Vec<u32> = Vec::new();
+    let mut row_of_printing: Vec<u32> = Vec::with_capacity(printings.len());
     for p in printings {
         let gid = p.flavor_text_lower_id;
         if gid == NONE_STR {
+            row_of_printing.push(NO_ROW);
             continue;
         }
-        dense_of.entry(gid).or_insert_with(|| {
+        let dense = *dense_of.entry(gid).or_insert_with(|| {
             gids.push(gid);
             (gids.len() - 1) as u32
         });
+        row_of_printing.push(dense);
     }
     let (offsets, out) = build_csr(gids.len(), printings.len(), |i| {
-        let gid = printings[i].flavor_text_lower_id;
-        (gid != NONE_STR).then(|| dense_of[&gid] as usize)
+        let row = row_of_printing[i];
+        (row != NO_ROW).then_some(row as usize)
     });
     let fingerprints = gids
         .iter()
@@ -1866,7 +1858,7 @@ pub(crate) fn flavor_match_sets(
 
 /// Expand matched dense flavor text ids to sorted printing ids via the CSR.
 fn expand_flavor_ids(idx: &Archived<FlavorIndex>, dense_ids: &[u32]) -> Vec<u32> {
-    expand_csr(&idx.offsets, &idx.printings, dense_ids)
+    expand_csr(&idx.offsets, &idx.printings, dense_ids.iter().map(|&d| d as usize))
 }
 
 // ─── Sort permutations (streamed selection) ──────────────────────────────────
