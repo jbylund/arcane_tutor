@@ -15,6 +15,7 @@ import pytest
 
 from api.enums import CardOrdering
 from api.parsing import parse_scryfall_query
+from api.parsing.rewrite import _DERIVED_EXPANSIONS
 from client.query_sampler import (
     ENGINE_ORDERBYS,
     FALLBACK_VOCAB,
@@ -24,6 +25,7 @@ from client.query_sampler import (
     REALISTIC_FAMILY_WEIGHTS,
     REALISTIC_ORDERBY_WEIGHTS,
     REALISTIC_UNIQUE_WEIGHTS,
+    STATIC_VALUES,
     STRUCTURES,
     QuerySampler,
     Shape,
@@ -185,6 +187,15 @@ class TestParams:
 
     def test_sampled_orderbys_are_engine_orderbys(self) -> None:
         assert set(REALISTIC_ORDERBY_WEIGHTS) == set(ENGINE_ORDERBYS)
+
+    def test_is_tags_match_the_rewrite_table(self) -> None:
+        """An `is:` value the rewrite layer does not expand hits an empty column and matches nothing.
+
+        Same reason as the orderby list: the sampler cannot import `api/`, so the agreement is
+        asserted here rather than derived.
+        """
+        expandable = {f"is:{value}" for alias, value in _DERIVED_EXPANSIONS if alias == "is"}
+        assert set(STATIC_VALUES["tag"]) == expandable
 
 
 class TestModes:

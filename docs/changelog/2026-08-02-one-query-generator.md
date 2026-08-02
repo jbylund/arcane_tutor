@@ -38,6 +38,12 @@ image copies only that directory, and it imports nothing but stdlib.
 - Corpus values containing apostrophes, parentheses or spaces (`O'Connor`, `C'tan`, `First Strike`)
   fail the lexer bare. Values are now quoted when they are not plain alphanumeric, which is
   semantically inert (`t:goblin` and `t:"goblin"` parse to the same node).
+- The `is:` vocabulary was mostly dead. `is:` resolves through `api/parsing/rewrite.py`'s
+  `_DERIVED_EXPANSIONS` for the 17 values it expands; anything else falls through to a
+  `card_is_tags` JSONB lookup, and that column is empty. Of the old load generator's six values,
+  **four matched zero cards** (`is:spell`, `is:modal`, `is:token`, `is:commander`, plus `is:reprint`
+  which the sampler had added). The family is now exactly the rewrite table's `is:` keys, with a
+  test pinning the two together. Verified against the live API: all 17 return results, none zero.
 - `ORDERBY_VALUES` was duplicated across four scripts in **three different versions** — 13 values in
   two benches, 8 in the survey, 7 in `bench_guard_validation`. The authority is
   `api.enums.CardOrdering` (8). The 13-value copies passed `order=released`/`set`/`color` through to

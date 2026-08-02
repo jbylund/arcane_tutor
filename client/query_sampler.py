@@ -156,7 +156,35 @@ PREDICATE_COUNT_WEIGHTS: dict[int, float] = {1: 45, 2: 40, 3: 15}
 # Small fixed sets the corpus cannot improve on: `is:` predicates are computed rather than stored,
 # devotion is a colour crossed with a pip count, and arithmetic is our own syntax extension.
 STATIC_VALUES: dict[str, list[str]] = {
-    "tag": ["is:spell", "is:permanent", "is:historic", "is:modal", "is:token", "is:commander", "is:reprint"],
+    # Exactly the `is:` values the rewrite layer expands (api/parsing/rewrite.py's
+    # _DERIVED_EXPANSIONS; test_query_sampler asserts they agree). Not imported from there because
+    # this module ships in the client image, which contains no `api/`.
+    #
+    # Anything outside this set parses but falls through to a `card_is_tags` lookup, and that
+    # column is empty — `is:reprint`, `is:token`, `is:modal`, `is:spell` and `is:commander` were in
+    # the old load-generator list and every one of them matched zero cards. All 17 are kept rather
+    # than a token few: the family's share of traffic is set by its weight, not by how many values
+    # it holds, and each expands to a genuinely different shape — layout lookups, type unions, an
+    # oracle-text heuristic, a numeric conjunction.
+    "tag": [
+        "is:bear",
+        "is:colorshifted",
+        "is:dfc",
+        "is:flip",
+        "is:historic",
+        "is:leveler",
+        "is:manland",
+        "is:mdfc",
+        "is:meld",
+        "is:new",
+        "is:old",
+        "is:outlaw",
+        "is:party",
+        "is:permanent",
+        "is:split",
+        "is:transform",
+        "is:vanilla",
+    ],
     "devotion": [
         "devotion:w",
         "devotion:u",
