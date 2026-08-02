@@ -4662,41 +4662,37 @@ fn bare_range_bounds<'i>(
     filter: &FilterExpr,
     indexes: &'i Archived<CardIndexes>,
 ) -> Option<(&'i Archived<PrintingRangeIndex>, u32, u32)> {
-    match filter {
-        FilterExpr::NumericCmp { lhs, op, rhs } => {
-            let (idx, op, value) = resolve_numeric_range_leaf(lhs, *op, rhs, indexes)?;
-            match int_range_bounds(op, value)? {
-                None => Some((idx, 0, 0)),
-                Some((lo, hi)) => Some((idx, lo, hi)),
-            }
-        }
-        FilterExpr::DateCmp { op, value } => {
-            let (lo, hi) = date_range_bounds(*op, *value)?;
-            Some((&indexes.released_at, lo, hi))
-        }
-        FilterExpr::YearCmp { op, year } => {
-            let (lo, hi) = year_range_bounds(*op, *year)?;
-            Some((&indexes.released_at, lo, hi))
-        }
-        FilterExpr::Not(inner) => match inner.as_ref() {
+    // The direct and `Not` arms are the same three-way leaf dispatch, differing only in
+    // whether the leaf's op is taken as written or negated. `map_op` is that difference,
+    // so the grammar is written once and the two arms cannot drift apart.
+    fn leaf<'i>(
+        filter: &FilterExpr,
+        indexes: &'i Archived<CardIndexes>,
+        map_op: impl Fn(CmpOp) -> CmpOp,
+    ) -> Option<(&'i Archived<PrintingRangeIndex>, u32, u32)> {
+        match filter {
             FilterExpr::NumericCmp { lhs, op, rhs } => {
-                let (idx, op, value) = resolve_numeric_range_leaf(lhs, negate_op(*op), rhs, indexes)?;
+                let (idx, op, value) = resolve_numeric_range_leaf(lhs, map_op(*op), rhs, indexes)?;
                 match int_range_bounds(op, value)? {
                     None => Some((idx, 0, 0)),
                     Some((lo, hi)) => Some((idx, lo, hi)),
                 }
             }
             FilterExpr::DateCmp { op, value } => {
-                let (lo, hi) = date_range_bounds(negate_op(*op), *value)?;
+                let (lo, hi) = date_range_bounds(map_op(*op), *value)?;
                 Some((&indexes.released_at, lo, hi))
             }
             FilterExpr::YearCmp { op, year } => {
-                let (lo, hi) = year_range_bounds(negate_op(*op), *year)?;
+                let (lo, hi) = year_range_bounds(map_op(*op), *year)?;
                 Some((&indexes.released_at, lo, hi))
             }
             _ => None,
-        },
-        _ => None,
+        }
+    }
+
+    match filter {
+        FilterExpr::Not(inner) => leaf(inner.as_ref(), indexes, negate_op),
+        _ => leaf(filter, indexes, |op| op),
     }
 }
 
