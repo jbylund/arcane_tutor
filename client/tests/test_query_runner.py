@@ -9,13 +9,12 @@ from unittest.mock import MagicMock, patch
 import requests
 
 from client.query_runner import (
-    _DIM_VALUES,
     DEFAULT_API_URL,
     DEFAULT_BATCH_SIZE,
+    DEFAULT_MODE,
     DEFAULT_QUERY_DELAY,
     parse_args,
     print_statistics,
-    random_query,
     run_query,
 )
 
@@ -23,52 +22,32 @@ if TYPE_CHECKING:
     import pytest
 
 
-class TestRandomQuery:
-    def test_returns_string(self) -> None:
-        result = random_query()
-        assert isinstance(result, str)
-        assert len(result) > 0
-
-    def test_fragments_are_known(self) -> None:
-        all_fragments = {frag for frags in _DIM_VALUES.values() for frag in frags}
-        for _ in range(50):
-            query = random_query()
-            for fragment in query.split():
-                assert fragment in all_fragments, f"Unknown fragment {fragment!r} in query {query!r}"
-
-    def test_fragment_count(self) -> None:
-        for _ in range(50):
-            query = random_query()
-            count = len(query.split())
-            assert 1 <= count <= 4, f"Expected 1-4 fragments, got {count} in {query!r}"
-
-    def test_fragments_sorted(self) -> None:
-        for _ in range(50):
-            query = random_query()
-            parts = query.split()
-            assert parts == sorted(parts), f"Fragments not sorted in {query!r}"
-
-
 class TestParseArgs:
     def test_module_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("API_URL", raising=False)
         monkeypatch.delenv("QUERY_DELAY", raising=False)
         monkeypatch.delenv("BATCH_SIZE", raising=False)
+        monkeypatch.delenv("CORPUS", raising=False)
+        monkeypatch.delenv("QUERY_MODE", raising=False)
         with patch.object(sys, "argv", ["query_runner"]):
             args = parse_args()
         assert args.api_url == DEFAULT_API_URL
         assert args.query_delay == DEFAULT_QUERY_DELAY
         assert args.batch_size == DEFAULT_BATCH_SIZE
+        assert args.mode == DEFAULT_MODE
+        assert args.corpus is None
 
     def test_env_var_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("API_URL", "http://env-host:9090")
         monkeypatch.setenv("QUERY_DELAY", "2.5")
         monkeypatch.setenv("BATCH_SIZE", "100")
+        monkeypatch.setenv("QUERY_MODE", "uniform")
         with patch.object(sys, "argv", ["query_runner"]):
             args = parse_args()
         assert args.api_url == "http://env-host:9090"
         assert args.query_delay == 2.5
         assert args.batch_size == 100
+        assert args.mode == "uniform"
 
     def test_cli_overrides_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("API_URL", "http://env-host:9090")

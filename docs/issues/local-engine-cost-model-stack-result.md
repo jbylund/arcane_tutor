@@ -8,7 +8,7 @@ faster".
 ## The measurement
 
 `bench_query_latency_ab.py`, uniform weighting from
-[`query_sampler.py`](../../scripts/query_sampler.py), 120,000 sampled queries per side, 1 warmup and
+[`query_sampler.py`](../../client/query_sampler.py), 120,000 sampled queries per side, 1 warmup and
 3 trials each, **interleaved A/B/A/B** across two reps with a separate store per side. Two reps
 because one number is not a measurement here: at `--sample 400` the same engine and seed has
 produced 0.26 and 0.82 µs on consecutive runs.

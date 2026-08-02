@@ -29,9 +29,9 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from api.parsing import parse_scryfall_query  # noqa: E402
+from client.query_sampler import ENGINE_ORDERBYS, QuerySampler  # noqa: E402
 from scripts import costbench  # noqa: E402
 from scripts.costbench import load_engine  # noqa: E402
-from scripts.query_sampler import QuerySampler  # noqa: E402
 
 if TYPE_CHECKING:
     import card_engine
@@ -47,9 +47,6 @@ UNIQUE_FROM_SCRYFALL = {
     "prints": "printing",
     "printing": "printing",
 }
-ORDERBY_VALUES = frozenset(
-    {"edhrec", "cubecobra", "cmc", "power", "toughness", "rarity", "name", "released", "set", "color", "usd", "artist", "review"}
-)
 DEFAULT_ORDERBY = "edhrec"
 # Overridable so the harness runs from a git worktree, which has no benchmarks/ tree of its own.
 WILD_CORPUS = REPO_ROOT / "benchmarks/wild-queries/wild-corpus.jsonl"
@@ -77,7 +74,7 @@ def load_queries(
     `wild-operators` is the default and stays the wild corpus: real Scryfall traffic is the right
     universe for a REGRET number, because regret is what users actually lose.
 
-    `random` used `client.query_runner.random_query`, which is a load generator — it picks values
+    `random` used `client.query_runner.random_query`, a load generator since replaced — it picked values
     off hardcoded lists (`year:2019`..`year:2024` on a corpus spanning 1993-2026, a dozen fixed
     prices) and so clusters selectivity at a handful of arbitrary points. Routing is decided by
     selectivity, so that source could barely produce a mis-selection to measure. It draws from
@@ -96,7 +93,7 @@ def load_queries(
         if unique is None or not OP_RE.search(row["q"]):
             continue
         order = row.get("order", DEFAULT_ORDERBY)
-        rows.append((row["q"], unique, order if order in ORDERBY_VALUES else DEFAULT_ORDERBY))
+        rows.append((row["q"], unique, order if order in ENGINE_ORDERBYS else DEFAULT_ORDERBY))
     rng.shuffle(rows)
     return rows[:sample]
 

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from scripts.query_sampler import ANY_SHAPE, MODES, QuerySampler, Shape
+from client.query_sampler import ANY_SHAPE, MODES, RANGE_FAMILIES, QuerySampler, Shape
 
 if TYPE_CHECKING:
     import pathlib
@@ -62,29 +62,33 @@ def test_unshaped_draw_reaches_many_families(sampler: QuerySampler) -> None:
 
 
 def test_families_restriction_excludes_everything_else(sampler: QuerySampler) -> None:
-    """A range-only shape yields only range predicates, never a type or oracle one."""
+    """A range-only shape yields only range predicates, never a type or oracle one.
+
+    One predicate may still be written as two clauses: a bounded draw renders `usd>=a usd<=b`.
+    """
     rng = random.Random(0)
+    clause = r"(?:usd|eur|tix|cn|year|date)(?:<=|>=|<|>|:)\S+"
     for _ in range(DRAWS):
-        q = sampler.query(rng, Shape(families=frozenset({"range"}), predicates=1))
-        assert re.fullmatch(r"(usd|cn|year|date)(<=|>=|<|>|:)\S+", q), q
+        q = sampler.query(rng, Shape(families=RANGE_FAMILIES, predicates=1))
+        assert re.fullmatch(rf"{clause}(?: {clause})?", q), q
 
 
 def test_predicate_count_is_pinned(sampler: QuerySampler) -> None:
     """`predicates=1` means exactly one, which is what "bare range" plans require."""
     rng = random.Random(1)
     for _ in range(DRAWS):
-        q = sampler.query(rng, Shape(families=frozenset({"range"}), predicates=1))
+        q = sampler.query(rng, Shape(families=RANGE_FAMILIES, predicates=1, bounded=False))
         assert " " not in q, q
 
 
 def test_pinned_count_larger_than_pool_yields_the_pool(sampler: QuerySampler) -> None:
     """Families are drawn without replacement, so a count above the pool size cannot be met."""
     rng = random.Random(2)
-    shape = Shape(families=frozenset({"range", "bounded"}), predicates=5)
+    shape = Shape(families=frozenset({"usd", "cn"}), predicates=5)
     for _ in range(50):
         q = sampler.query(rng, shape)
-        # `bounded` renders as two clauses (`usd>=a usd<=b`), so count fields, not tokens.
-        assert len(re.findall(r"(?:usd|cn|year|date)(?:<=|>=|<|>|:)", q)) <= 4, q
+        # A bounded draw renders as two clauses (`usd>=a usd<=b`), so count fields, not clauses.
+        assert len(set(re.findall(r"(usd|cn)(?:<=|>=|<|>|:)", q))) <= 2, q
 
 
 def test_unique_and_orderby_are_restricted(sampler: QuerySampler) -> None:
@@ -113,18 +117,14 @@ def test_default_shape_matches_the_old_unshaped_behaviour(sampler: QuerySampler)
     assert [sampler.query(random.Random(i)) for i in range(50)] == [sampler.query(random.Random(i), ANY_SHAPE) for i in range(50)]
 
 
-impossible_shapes = {
-    "unknown_family": {"kwargs": {"families": frozenset({"nope"})}, "needle": "families"},
-    "scryfall_spelling_of_unique": {"kwargs": {"unique": frozenset({"cards"})}, "needle": "unique"},
-    "orderby_the_engine_has_no_column_for": {"kwargs": {"orderby": frozenset({"released"})}, "needle": "orderby"},
-    "zero_predicates": {"kwargs": {"predicates": 0}, "needle": "predicates"},
-}
-
-
 @pytest.mark.parametrize(
-    argnames=sorted(next(iter(impossible_shapes.values()))),
-    argvalues=[[v for _, v in sorted(impossible_shapes[name].items())] for name in sorted(impossible_shapes)],
-    ids=sorted(impossible_shapes),
+    ("kwargs", "needle"),
+    [
+        ({"families": frozenset({"nope"})}, "families"),
+        ({"unique": frozenset({"cards"})}, "unique"),
+        ({"orderby": frozenset({"colour"})}, "orderby"),
+        ({"predicates": 0}, "predicates"),
+    ],
 )
 def test_impossible_shapes_are_rejected_at_construction(kwargs: dict, needle: str) -> None:
     """A typo should fail where it is written, not loop or silently sample the wrong thing."""
@@ -139,7 +139,7 @@ def test_every_mode_accepts_a_shape(corpus: pathlib.Path) -> None:
 
 
 def test_sparse_range_columns_are_offered_when_present(tmp_path: pathlib.Path) -> None:
-    """`eur`/`tix` join the range family when the corpus carries them."""
+    """`eur`/`tix` join the range families when the corpus carries them."""
     path = tmp_path / "priced.jsonl"
     with path.open("w") as handle:
         for i in range(CORPUS_ROWS):
@@ -159,22 +159,19 @@ def test_sparse_range_columns_are_offered_when_present(tmp_path: pathlib.Path) -
                 + "\n"
             )
     s = QuerySampler(path, "uniform")
-    assert {"usd", "eur", "tix"} <= set(s.range_fields)
+    assert not {"usd", "eur", "tix"} & s.missing_numeric
     rng = random.Random(0)
-    drawn = {
-        s.query(rng, Shape(families=frozenset({"range"}), predicates=1)).split(">")[0].split("<")[0].split(":")[0]
-        for _ in range(400)
-    }
+    drawn = {re.split(r"[<>:=]", s.query(rng, Shape(families=RANGE_FAMILIES, predicates=1)))[0] for _ in range(400)}
     assert {"eur", "tix"} & drawn, f"expected eur/tix to appear, saw {drawn}"
 
 
 def test_absent_range_columns_are_not_offered(sampler: QuerySampler) -> None:
     """The module fixture has no eur/tix, so they must not be sampled rather than raising."""
-    assert "eur" not in sampler.range_fields
-    assert "tix" not in sampler.range_fields
+    assert {"eur", "tix"} <= sampler.missing_numeric
     rng = random.Random(0)
     for _ in range(DRAWS):
-        sampler.query(rng, Shape(families=frozenset({"range", "bounded"}), predicates=1))
+        q = sampler.query(rng, Shape(families=RANGE_FAMILIES, predicates=1))
+        assert not q.startswith(("eur", "tix")), q
 
 
 def test_prices_render_to_two_decimals(tmp_path: pathlib.Path) -> None:
@@ -185,6 +182,7 @@ def test_prices_render_to_two_decimals(tmp_path: pathlib.Path) -> None:
             handle.write(json.dumps({"card_name": f"C{i}", "card_types": ["Creature"], "price_eur": 1.5 + i * 0.37}) + "\n")
     s = QuerySampler(path, "uniform")
     rng = random.Random(0)
+    clause = r"eur(?:<=|>=|<|>|:)\d+\.\d{2}"
     for _ in range(50):
-        q = s.query(rng, Shape(families=frozenset({"range"}), predicates=1))
-        assert re.fullmatch(r"eur(<=|>=|<|>|:)\d+\.\d{2}", q), q
+        q = s.query(rng, Shape(families=RANGE_FAMILIES, predicates=1))
+        assert re.fullmatch(rf"{clause}(?: {clause})?", q), q

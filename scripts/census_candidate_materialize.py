@@ -34,7 +34,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from api.parsing import parse_scryfall_query  # noqa: E402
-from client.query_runner import random_query  # noqa: E402
+from client.query_sampler import ENGINE_ORDERBYS, QuerySampler  # noqa: E402
 from scripts.costbench import load_engine  # noqa: E402
 
 if TYPE_CHECKING:
@@ -58,17 +58,11 @@ UNIQUE_FROM_SCRYFALL = {
     "prints": "printing",
     "printing": "printing",
 }
-# Engine-supported orderby values (client/query_runner.py's list), so a corpus row carrying
-# an orderby the engine does not know cannot quietly change which plan is measured.
-ORDERBY_VALUES = frozenset(
-    {"edhrec", "cubecobra", "cmc", "power", "toughness", "rarity", "name", "released", "set", "color", "usd", "artist", "review"}
-)
+# A corpus row carrying an orderby the engine has no sort column for falls back to the default,
+# so it cannot quietly change which plan is measured while still being labelled as itself.
 DEFAULT_ORDERBY = "edhrec"
 # Overridable so the harness runs from a git worktree, which has no benchmarks/ tree of its own.
 WILD_CORPUS = REPO_ROOT / "benchmarks/wild-queries/wild-corpus.jsonl"
-# random_query() emits shapes, not unique/orderby; sample those the way real traffic
-# distributes (client/query_runner.py's own weights).
-RANDOM_UNIQUE_WEIGHTS = {"card": 75, "printing": 20, "artwork": 5}
 # Same rule build_wild_corpus.py uses to split its own census, so the partition here is
 # comparable to the counts in benchmarks/wild-queries/README.md (3,566 with operators against
 # 10,907 bare name lookups). The corpus is 75% name lookups — largely bot/tooling deep links —
@@ -108,16 +102,15 @@ def wild_queries(path: pathlib.Path, *, with_operators: bool) -> list[tuple[str,
         if unique is None or bool(OP_RE.search(row["q"])) != with_operators:
             continue
         order = row.get("order", DEFAULT_ORDERBY)
-        out.append((row["q"], unique, order if order in ORDERBY_VALUES else DEFAULT_ORDERBY, int(row.get("weight", 1))))
+        out.append((row["q"], unique, order if order in ENGINE_ORDERBYS else DEFAULT_ORDERBY, int(row.get("weight", 1))))
     return out
 
 
-def random_queries(n: int, seed: int) -> list[tuple[str, str, str, int]]:
-    """(query, unique, orderby, weight=1) from the random generator, for shape coverage."""
+def random_queries(n: int, seed: int, corpus: pathlib.Path) -> list[tuple[str, str, str, int]]:
+    """(query, unique, orderby, weight=1) from the query sampler, for shape coverage."""
     rng = random.Random(seed)
-    uniques = list(RANDOM_UNIQUE_WEIGHTS)
-    weights = [RANDOM_UNIQUE_WEIGHTS[u] for u in uniques]
-    return [(random_query(), rng.choices(uniques, weights=weights)[0], DEFAULT_ORDERBY, 1) for _ in range(n)]
+    sampler = QuerySampler(corpus, "realistic")
+    return [(sampler.query(rng), sampler.unique(rng), DEFAULT_ORDERBY, 1) for _ in range(n)]
 
 
 def census_one(
@@ -195,7 +188,7 @@ def main() -> None:
         sources.append(("wild-operators", wild_queries(corpus, with_operators=True)))
         sources.append(("wild-namelookup", wild_queries(corpus, with_operators=False)))
     if args.random:
-        sources.append(("random", random_queries(args.random, args.seed)))
+        sources.append(("random", random_queries(args.random, args.seed, args.corpus)))
 
     affected: list[tuple[str, str, str, str, int, int]] = []
     for name, queries in sources:

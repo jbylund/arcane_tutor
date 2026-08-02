@@ -36,6 +36,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import card_engine  # noqa: E402
 from api.parsing import parse_scryfall_query  # noqa: E402
+from client.query_sampler import ENGINE_ORDERBYS  # noqa: E402
 
 OUTDIR = REPO_ROOT / "benchmarks/cost-guards"
 
@@ -55,7 +56,6 @@ MAX_ITERS = 400
 # Wild params → engine params: unique names differ, and orders the engine has
 # no sort column for fall back to edhrec (mirroring orderby_to_col).
 _WILD_UNIQUE = {"card": "card", "prints": "printing", "art": "artwork"}
-_ENGINE_ORDERS = {"cmc", "power", "rarity", "toughness", "usd", "cubecobra", "edhrec"}
 # Bare name lookups dominate the wild corpus by weight but are one engine code
 # path; cap them so operator queries (many distinct paths) keep most slots.
 _NAME_LOOKUP_FRACTION = 1 / 6
@@ -79,7 +79,7 @@ def sample_wild(rng: random.Random, wild_corpus: pathlib.Path, count: int) -> li
         {
             "query": r["q"],
             "unique": _WILD_UNIQUE[r["unique"]],
-            "orderby": r["order"] if r["order"] in _ENGINE_ORDERS else "edhrec",
+            "orderby": r["order"] if r["order"] in ENGINE_ORDERBYS else "edhrec",
         }
         for r in picked
     ]

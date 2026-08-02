@@ -36,9 +36,9 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from api.parsing import parse_scryfall_query  # noqa: E402
+from client.query_sampler import RANGE_FAMILIES, QuerySampler, Shape  # noqa: E402
 from scripts import costbench  # noqa: E402
 from scripts.costbench import load_engine  # noqa: E402
-from scripts.query_sampler import QuerySampler, Shape  # noqa: E402
 
 TARGET_SOURCE = "card_range_popcount"
 MATERIALIZING = ("StreamedSelect", "GatheredScan")
@@ -60,7 +60,7 @@ BUILD_PER_PRINTING_NS = 1.22
 #: what a cardinality-estimate sweep must not do: the estimate is a function of selectivity, so a
 #: sweep that samples a dozen values of it cannot describe the error curve between them.
 #: `QuerySampler` places each threshold at a uniformly-drawn quantile of the real column instead.
-RANGE_SHAPE = Shape(families=frozenset({"range"}), predicates=1, unique=frozenset({"card"}))
+RANGE_SHAPE = Shape(families=RANGE_FAMILIES, predicates=1, unique=frozenset({"card"}))
 
 
 def main() -> None:

@@ -45,9 +45,9 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 import scripts.fit_cost_model as fitmod  # noqa: E402
+from client.query_sampler import MODES, QuerySampler  # noqa: E402
 from scripts.costbench import load_engine  # noqa: E402
 from scripts.fit_cost_model import collect, fit_log_ratio  # noqa: E402
-from scripts.query_sampler import MODES, QuerySampler  # noqa: E402
 
 # Mirrors cost.rs. Kept in the order each arm's design_row emits, so a fitted vector prints against
 # the shipped one term by term.

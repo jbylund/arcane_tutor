@@ -72,9 +72,9 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from client.query_sampler import MODES, QuerySampler  # noqa: E402
 from scripts import costbench  # noqa: E402
 from scripts.costbench import load_engine  # noqa: E402
-from scripts.query_sampler import MODES, QuerySampler  # noqa: E402
 
 # Identity of one measured (query, plan) observation. Everything here must match across builds for
 # the pair to be comparable -- the plan included, since the same query measures every applicable one.

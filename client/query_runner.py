@@ -4,21 +4,31 @@
 This script continuously generates random card search queries and executes them
 against the Scryfall OS API to help identify which database indexes are being used
 and which queries perform well or poorly.
+
+Queries come from `client.query_sampler`, the same universe the cost-model benches
+draw from. Without `--corpus` the sampler uses its built-in fallback vocabulary,
+which is what the container gets; point `--corpus` at a printing-corpus JSONL to
+draw values from real data instead.
 """
 
 import argparse
 import logging
 import os
+import pathlib
 import random
 import time
 
 import requests
+
+from client.query_sampler import MODES, QuerySampler
 
 logger = logging.getLogger(__name__)
 # Constants
 DEFAULT_API_URL = "http://apiservice:8080"
 DEFAULT_QUERY_DELAY = 1.0  # Delay between queries in seconds
 DEFAULT_BATCH_SIZE = 50  # Number of queries before reporting stats
+DEFAULT_MODE = "realistic"  # Load generation wants plausible traffic, not flat exploration
+RESULT_LIMIT = 100  # Page size requested per query
 
 
 def setup_logging() -> None:
@@ -29,382 +39,15 @@ def setup_logging() -> None:
     )
 
 
-_ORDERBY_VALUES = ["edhrec", "cubecobra", "cmc", "power", "toughness", "rarity", "usd"]
-
-# unique=card 75%, printing 20%, artwork 5%
-_UNIQUE_VALUES = ["card"] * 75 + ["printing"] * 20 + ["artwork"] * 5
-
-# Each dimension has a relative weight controlling how often it is chosen, and a list of
-# query fragments.  Weights are approximate — they reflect realistic user search patterns.
-# Higher weight = picked more often as one of the 1-4 dimensions in a random query.
-_DIMENSIONS: list[tuple[int, str, list[str]]] = [
-    (
-        30,
-        "name",
-        [
-            "name:bolt",
-            "name:angel",
-            "name:dragon",
-            "name:counter",
-            "name:force",
-            "name:fire",
-            "name:dark",
-            "name:ancient",
-            "name:storm",
-            "name:path",
-            "name:bo",
-            "name:an",
-            "name:dr",
-            "name:co",
-            "name:fo",
-            "name:fi",
-            "name:da",
-            "name:st",
-            "name:pa",
-        ],
-    ),
-    (
-        20,
-        "oracle_text",
-        [
-            "oracle:flying",
-            "oracle:haste",
-            "oracle:trample",
-            "oracle:deathtouch",
-            "oracle:lifelink",
-            "oracle:vigilance",
-            "oracle:draw",
-            "oracle:counter",
-            "oracle:destroy",
-            "oracle:exile",
-            "oracle:return",
-            "oracle:token",
-            "oracle:sacrifice",
-            "oracle:search",
-        ],
-    ),
-    (
-        18,
-        "card_type",
-        [
-            "type:creature",
-            "type:instant",
-            "type:sorcery",
-            "type:enchantment",
-            "type:artifact",
-            "type:planeswalker",
-            "type:land",
-        ],
-    ),
-    (
-        14,
-        "color",
-        [
-            "color:w",
-            "color:u",
-            "color:b",
-            "color:r",
-            "color:g",
-            "color:wu",
-            "color:ub",
-            "color:br",
-            "color:rg",
-            "color:gw",
-            "color:wub",
-            "color:ubr",
-            "color:brg",
-        ],
-    ),
-    (
-        15,
-        "color_identity",
-        [
-            "id:w",
-            "id:u",
-            "id:b",
-            "id:r",
-            "id:g",
-            "id:wu",
-            "id:ub",
-            "id:br",
-            "id:rg",
-            "id:gw",
-            "id:wub",
-            "id:ubr",
-            "id:brg",
-        ],
-    ),
-    (
-        12,
-        "set_code",
-        [
-            "set:m21",
-            "set:znr",
-            "set:khm",
-            "set:stx",
-            "set:mid",
-            "set:neo",
-            "set:snc",
-            "set:dmu",
-            "set:bro",
-            "set:mom",
-            "set:ltr",
-            "set:woe",
-            "set:mkm",
-            "set:otj",
-            "set:blb",
-        ],
-    ),
-    (
-        10,
-        "card_subtype",
-        [
-            "type:dragon",
-            "type:wizard",
-            "type:goblin",
-            "type:zombie",
-            "type:elf",
-            "type:angel",
-            "type:vampire",
-            "type:merfolk",
-            "type:equipment",
-            "type:aura",
-        ],
-    ),
-    (
-        8,
-        "legality",
-        [
-            "format:standard",
-            "format:modern",
-            "format:commander",
-            "format:legacy",
-            "format:vintage",
-            "format:pioneer",
-            "format:pauper",
-        ],
-    ),
-    (
-        7,
-        "year",
-        [
-            "year:2019",
-            "year:2020",
-            "year:2021",
-            "year:2022",
-            "year:2023",
-            "year:2024",
-        ],
-    ),
-    (
-        6,
-        "power",
-        [
-            "pow=0",
-            "pow=1",
-            "pow=2",
-            "pow=3",
-            "pow=4",
-            "pow=5",
-            "pow=6",
-            "pow<2",
-            "pow<4",
-            "pow>2",
-            "pow>4",
-            "pow>=5",
-        ],
-    ),
-    (
-        6,
-        "toughness",
-        [
-            "tou=0",
-            "tou=1",
-            "tou=2",
-            "tou=3",
-            "tou=4",
-            "tou=5",
-            "tou=6",
-            "tou<2",
-            "tou<4",
-            "tou>2",
-            "tou>4",
-            "tou>=5",
-        ],
-    ),
-    (
-        5,
-        "price_usd",
-        [
-            "usd<0.25",
-            "usd<1",
-            "usd<5",
-            "usd>1",
-            "usd>5",
-            "usd>20",
-            "usd>50",
-        ],
-    ),
-    (
-        3,
-        "artist",
-        [
-            "artist:tedin",
-            "artist:rahn",
-            "artist:avon",
-            "artist:burns",
-            "artist:thomas",
-            "artist:foglio",
-        ],
-    ),
-    (
-        3,
-        "is_tag",
-        [
-            "is:spell",
-            "is:permanent",
-            "is:historic",
-            "is:modal",
-            "is:token",
-            "is:commander",
-        ],
-    ),
-    (
-        2,
-        "price_tix",
-        [
-            "tix<0.1",
-            "tix<1",
-            "tix>1",
-            "tix>5",
-        ],
-    ),
-    (
-        2,
-        "price_eur",
-        [
-            "eur<1",
-            "eur<5",
-            "eur>5",
-            "eur>20",
-        ],
-    ),
-    (
-        2,
-        "produced_mana",
-        [
-            "produces:w",
-            "produces:u",
-            "produces:b",
-            "produces:r",
-            "produces:g",
-            "produces:c",
-        ],
-    ),
-    (
-        1,
-        "flavor_text",
-        [
-            "flavor:death",
-            "flavor:fire",
-            "flavor:light",
-            "flavor:darkness",
-            "flavor:power",
-            "flavor:ancient",
-        ],
-    ),
-    (
-        1,
-        "border",
-        [
-            "border:black",
-            "border:white",
-            "border:silver",
-            "border:borderless",
-        ],
-    ),
-    (
-        1,
-        "frame",
-        [
-            "frame:old",
-            "frame:modern",
-            "frame:future",
-            "frame:showcase",
-            "frame:extendedart",
-        ],
-    ),
-    (
-        1,
-        "watermark",
-        [
-            "watermark:set",
-            "watermark:planeswalker",
-            "watermark:guild",
-        ],
-    ),
-    (
-        1,
-        "collector_number",
-        [
-            "cn:1",
-            "cn:100",
-            "cn:200",
-            "cn:300",
-        ],
-    ),
-    (
-        1,
-        "devotion",
-        [
-            "devotion:w",
-            "devotion:u",
-            "devotion:b",
-            "devotion:r",
-            "devotion:g",
-            "devotion:www",
-            "devotion:uuu",
-            "devotion:bbb",
-            "devotion:rrr",
-            "devotion:ggg",
-        ],
-    ),
-]
-
-# Pre-split for use with random.choices
-_DIM_WEIGHTS = [w for w, _, _ in _DIMENSIONS]
-_DIM_NAMES = [n for _, n, _ in _DIMENSIONS]
-_DIM_VALUES = {n: v for _, n, v in _DIMENSIONS}
-
-
-def random_query() -> str:
-    """Generate a single random multi-dimensional query.
-
-    Picks 1-4 dimensions weighted by search frequency, then picks one value
-    from each, giving realistic coverage without enumerating the full cross-product.
-
-    Returns:
-        A query string combining fragments from the chosen dimensions.
-    """
-    r = random.randint(1, 4)
-    chosen_dims = random.choices(_DIM_NAMES, weights=_DIM_WEIGHTS, k=r)
-    fragments = set()
-    for idx, cd in enumerate(chosen_dims, start=1):
-        dimension_choices = _DIM_VALUES[cd]
-        while len(fragments) < idx:
-            fragments.add(random.choice(dimension_choices))
-    return " ".join(sorted(fragments))
-
-
-def run_query(api_url: str, query: str, session: requests.Session, orderby: str, unique: str) -> dict:
+def run_query(api_url: str, query: str, session: requests.Session, **params: str | int) -> dict:
     """Run a single search query against the API.
 
     Args:
         api_url: Base URL for the API.
         query: The search query string.
         session: Requests session for API calls.
-        orderby: The orderby parameter value.
-        unique: The unique parameter value.
+        **params: Result-shaping parameters (unique, orderby, prefer, direction, offset) as
+            returned by `QuerySampler.params`. Passed through to the endpoint as given.
 
     Returns:
         Dictionary with query results and timing information.
@@ -417,7 +60,7 @@ def run_query(api_url: str, query: str, session: requests.Session, orderby: str,
     try:
         response = session.get(
             f"{api_url}/search",
-            params={"q": query, "limit": 100, "orderby": orderby, "unique": unique},
+            params={"q": query, "limit": RESULT_LIMIT, **params},
             timeout=30,
         )
         response.raise_for_status()
@@ -439,10 +82,9 @@ def run_query(api_url: str, query: str, session: requests.Session, orderby: str,
         execute_ms = result.get("execute_ms")
         execute_str = f" | DB execute: {execute_ms:.1f}ms" if execute_ms is not None else ""
         logging.info(
-            "Query: '%s' orderby=%s unique=%s | HTTP: %.1fms%s | Cards: %d",
+            "Query: '%s' %s | HTTP: %.1fms%s | Cards: %d",
             query,
-            orderby,
-            unique,
+            " ".join(f"{k}={v}" for k, v in params.items()),
             elapsed_ms,
             execute_str,
             card_count,
@@ -518,6 +160,19 @@ def parse_args() -> argparse.Namespace:
         default=int(os.environ.get("BATCH_SIZE", DEFAULT_BATCH_SIZE)),
         help=f"Queries per stats report (default: {DEFAULT_BATCH_SIZE}).",
     )
+    parser.add_argument(
+        "--corpus",
+        type=pathlib.Path,
+        default=os.environ.get("CORPUS") or None,
+        help="Printing-corpus JSONL to draw query values from (default: the sampler's built-in vocabulary).",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=MODES,
+        default=os.environ.get("QUERY_MODE", DEFAULT_MODE),
+        help=f"Sampler weighting (default: {DEFAULT_MODE}).",
+    )
+    parser.add_argument("--seed", type=int, default=None, help="Seed the query stream for a reproducible run.")
     return parser.parse_args()
 
 
@@ -533,6 +188,10 @@ def main() -> None:
     logger.info("Starting query runner against API: %s", api_url)
     logger.info("Query delay: %ss", query_delay)
     logger.info("Batch size: %d", batch_size)
+    logger.info("Sampler: mode=%s corpus=%s seed=%s", args.mode, args.corpus or "built-in", args.seed)
+
+    sampler = QuerySampler(corpus=args.corpus, mode=args.mode)
+    rng = random.Random(args.seed)
 
     # Create a session for HTTP requests
     session = requests.Session()
@@ -547,12 +206,12 @@ def main() -> None:
 
     try:
         while True:
-            query = random_query()
-            orderby = random.choice(_ORDERBY_VALUES)
-            unique = random.choice(_UNIQUE_VALUES)
+            # Shaped rather than flat: ORs, nested parens and negations are separate engine paths,
+            # and load generation is where they should be getting exercised.
+            query = sampler.structured_query(rng)["query"]
 
             # Run the query
-            result = run_query(api_url, query, session, orderby=orderby, unique=unique)
+            result = run_query(api_url, query, session, **sampler.params(rng))
             results.append(result)
             query_count += 1
 

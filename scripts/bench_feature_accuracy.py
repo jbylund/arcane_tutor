@@ -40,9 +40,9 @@ if TYPE_CHECKING:
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from client.query_sampler import MODES, QuerySampler  # noqa: E402
 from scripts import costbench  # noqa: E402
 from scripts.costbench import load_engine  # noqa: E402
-from scripts.query_sampler import MODES, QuerySampler  # noqa: E402
 
 # Deliberately below the shared (2, 7) default, and the one place in the toolkit where that is
 # justified: the counters this harness reads are deterministic for a given query, so the trials exist

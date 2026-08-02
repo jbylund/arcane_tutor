@@ -39,7 +39,7 @@ The end-to-end answer for the whole cost-model stack is recorded in
 [local-engine-cost-model-stack-result.md](local-engine-cost-model-stack-result.md) — including the
 bands, because a mean over this distribution understates the tail and a p99 overstates it.
 
-Most of them draw queries from one universe, [`query_sampler.py`](../../scripts/query_sampler.py), in
+Most of them draw queries from one universe, [`query_sampler.py`](../../client/query_sampler.py), in
 one of two weightings. Diagnostics default to `uniform` because their job is to FIND errors and
 uniform reaches the rare tails; latency defaults to `realistic` because there the question is what
 users wait for. Both matter: artwork is 5% of realistic traffic and carries **50% of all routing

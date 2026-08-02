@@ -69,29 +69,35 @@ The client supports the following environment variables:
 - `API_URL`: Base URL for the API (default: `http://apiservice:8080`)
 - `QUERY_DELAY`: Delay between queries in seconds (default: `1.0`)
 - `BATCH_SIZE`: Number of queries before reporting statistics (default: `50`)
+- `CORPUS`: Printing-corpus JSONL to draw query values from (default: the sampler's built-in
+  vocabulary, which is what the container uses)
+- `QUERY_MODE`: `realistic` (default) or `uniform` — see the mode discussion in
+  [query_sampler.py](query_sampler.py)
+
+`--seed` (CLI only) makes a run reproducible.
 
 ## Query Types
 
-The query runner generates a diverse set of queries including:
+Queries come from [`query_sampler.py`](query_sampler.py), the same universe the cost-model
+benchmarks in `scripts/` draw from — so a query shape the benchmarks measure is one the load
+generator can produce, and vice versa. It covers every searchable field: name, oracle and flavor
+text, types and subtypes, colours and colour identity, legality, rarity, set, artist, `is:`/border/
+frame/watermark, `produces:`, `devotion:`, the numeric fields (`pow`, `tou`, `cmc`, `loyalty`,
+`usd`, `eur`, `tix`, `cn`, `year`/`date`) as both one-sided and bounded ranges, and our arithmetic
+extension (`cmc+1<pow`). Queries are assembled across connective shapes — plain conjunctions, ORs,
+nested parens, negations, and regex — and paired with sampled `unique`/`orderby`/`prefer`/
+`direction`/`offset`.
 
-- **Color queries**: Single colors, multicolor combinations, color identity
-- **CMC queries**: Exact converted mana cost, ranges (>, <, >=, <=)
-- **Type queries**: Creature, instant, sorcery, enchantment, artifact, planeswalker, land
-- **Rarity queries**: Common, uncommon, rare, mythic
-- **Power/Toughness queries**: Specific power and toughness values
-- **Combined queries**: Color + type, color + CMC combinations
-- **Keyword queries**: Flying, haste, trample, deathtouch, lifelink, vigilance
-- **Text search**: Oracle text searches for common game terms
-- **Set queries**: Queries for specific set codes
-- **Format queries**: Legal in standard, modern, commander, legacy, vintage, pioneer
+Numeric thresholds are drawn uniformly in *quantile* rather than in value, so selectivity spreads
+evenly across the range instead of clustering at a few hand-picked points.
 
 ## Output
 
 The client logs information about each query execution:
 
 ```
-Query: 'color:r type:creature' | Duration: 0.123s | Cards: 42
-Query: 'cmc=3' | Duration: 0.089s | Cards: 156
+Query: 'name:an c:rw' unique=card orderby=edhrec prefer=default direction=asc offset=0 | HTTP: 10.5ms | Cards: 100
+Query: '(t:dragon usd>=0.11) or (loyalty<3 set:otj)' unique=card orderby=edhrec prefer=default direction=asc offset=0 | HTTP: 2.1ms | Cards: 100
 ...
 ============================================================
 Statistics for 50 queries:

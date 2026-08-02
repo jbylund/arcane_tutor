@@ -30,9 +30,9 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from client.query_sampler import MODES, QuerySampler  # noqa: E402
 from scripts import costbench  # noqa: E402
 from scripts.costbench import load_engine  # noqa: E402
-from scripts.query_sampler import MODES, QuerySampler  # noqa: E402
 
 # This harness pools finer than most (four nested slices), so it holds out for a thicker cell than
 # the shared default before it will print a percentile row.

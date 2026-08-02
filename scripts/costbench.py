@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     import pathlib
     from collections.abc import Callable, Iterator
 
-    from scripts.query_sampler import QuerySampler
+    from client.query_sampler import QuerySampler
 
 # ── engine loading ────────────────────────────────────────────────────────────────────────────
 # Rows per `add_batch` during a staged reload. Large enough that the per-call overhead disappears,

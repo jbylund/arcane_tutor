@@ -50,8 +50,8 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from api.parsing import parse_scryfall_query  # noqa: E402
+from client.query_sampler import MODES, QuerySampler  # noqa: E402
 from scripts.costbench import load_engine  # noqa: E402
-from scripts.query_sampler import MODES, QuerySampler  # noqa: E402
 
 # Well above the shared costbench (2, 7), which is calibrated for comparisons INSIDE one
 # `explain_analyze` call where every participant shares the same conditions. This is a

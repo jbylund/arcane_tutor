@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import random
 import re
 import statistics
 import sys
@@ -28,7 +29,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from api.parsing import parse_scryfall_query  # noqa: E402
-from client.query_runner import random_query  # noqa: E402
+from client.query_sampler import QuerySampler  # noqa: E402
 from scripts.costbench import load_engine  # noqa: E402
 
 TARGET_PLAN = "PlanePopcountOrder"
@@ -57,16 +58,19 @@ def main() -> None:
     parser.add_argument("--seconds", type=float, default=120.0, help="wall-clock budget for sampling")
     parser.add_argument("--corpus", type=pathlib.Path, default=REPO_ROOT / "benchmarks/bitplanes/corpus.jsonl")
     parser.add_argument("--shm-path", type=pathlib.Path, default=None)
+    parser.add_argument("--seed", type=int, default=42, help="seed the sampled query stream")
     args = parser.parse_args()
 
     engine = load_engine(args.corpus, args.shm_path or args.corpus.with_suffix(".misselect.store"))
+    sampler = QuerySampler(args.corpus, "realistic")
+    rng = random.Random(args.seed)
 
     rows: list[tuple[float, int, int, float, float, str]] = []
     seen: set[str] = set()
     generated = filtered = 0
     deadline = time.monotonic() + args.seconds
     while time.monotonic() < deadline:
-        q = random_query()
+        q = sampler.query(rng)
         generated += 1
         if q in seen:
             continue

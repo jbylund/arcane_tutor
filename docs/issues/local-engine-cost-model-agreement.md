@@ -55,7 +55,7 @@ failures are worth keeping:
    noise was signal, and concluded "no detectable difference". That was also wrong, because the
    generator drew thresholds from hardcoded value lists (`year:2019`–`2024` on a 1993–2026 corpus)
    and never produced bounded ranges at all.
-3. **Paired, with corpus-drawn thresholds** ([`scripts/query_sampler.py`](../../scripts/query_sampler.py)).
+3. **Paired, with corpus-drawn thresholds** ([`client/query_sampler.py`](../../client/query_sampler.py)).
    Found a 12x difference the first two could not see.
 
 The harness was validated in both directions before being believed: on a **null** (same engine

@@ -34,9 +34,9 @@ if TYPE_CHECKING:
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from client.query_sampler import MODES, QuerySampler  # noqa: E402
 from scripts import costbench  # noqa: E402
 from scripts.costbench import load_engine  # noqa: E402
-from scripts.query_sampler import MODES, QuerySampler  # noqa: E402
 
 # Below this a "miss" costs nothing and only inflates the rate.
 NOISE_FLOOR_US = costbench.NOISE_FLOOR_US
