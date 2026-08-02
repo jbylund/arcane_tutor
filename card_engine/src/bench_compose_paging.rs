@@ -103,13 +103,13 @@ fn bench_compose_paging() {
                     .map_or(0, |p| p.len())
             };
             let run_b = || {
-                gather_composed_page(&ctx, &bench_params(offset), &pbits)
+                gather_composed_page(&ctx, &bench_params(offset), &pbits, None)
                     .len()
             };
             // Cross-check identical page (offset 0 only — A declines into the null-price tail at deep
             // offsets, where only B is defined; that decline is itself the finding for those rows).
             let a_page = walk_range_orderby_page(&data.indexes.price_usd, &pbits, cards, printings, p2c, SortCol::PriceUsd, false, total, LIMIT, offset);
-            let b_page = gather_composed_page(&ctx, &bench_params(offset), &pbits);
+            let b_page = gather_composed_page(&ctx, &bench_params(offset), &pbits, None);
             if let Some(a_page) = &a_page {
                 let a_ids: Vec<u128> = a_page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect();
                 let b_ids: Vec<u128> = b_page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect();

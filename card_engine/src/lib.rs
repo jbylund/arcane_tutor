@@ -5775,9 +5775,13 @@ fn printing_compose_fastpath<'a>(
     // only because this plan won. The total is the popcount in the query's result space; the page is
     // the one grouped walk at the mode's granularity, using the composed bits as exact membership.
     let pbits = compose_printing_bits(filter, indexes, offsets, printings, printings.len());
+    // Card mode's total *is* the popcount of the card-space projection, and the permutation-free
+    // `gather_composed_page` below derives its candidate cards from that same projection over
+    // those same bits. Built once here and threaded through, instead of twice.
+    let card_bits = matches!(mode, Mode::Card).then(|| printing_bits_to_card_bits(&pbits, offsets, cards.len()));
     let total: usize = match mode {
         Mode::Printing => pbits.iter().map(|w| w.count_ones() as usize).sum(),
-        Mode::Card => printing_bits_to_card_bits(&pbits, offsets, cards.len()).iter().map(|w| w.count_ones() as usize).sum(),
+        Mode::Card => card_bits.as_ref().expect("card mode built card_bits above").iter().map(|w| w.count_ones() as usize).sum(),
         Mode::Artwork => {
             // Read straight off the archive. This used to prefix-sum `artwork_groups` here on every
             // artwork query -- an O(n_cards) pass for a value that cannot change after load.
@@ -5838,7 +5842,7 @@ fn printing_compose_fastpath<'a>(
                     // tail, or a page past the value structure), so `OrderbyWalk` was predicted
                     // and this gather is the documented fallback — NOT a mispredicted branch.
                     note_paging_taken(if walk_col { PagingTaken::GatherWalkDeclined } else { PagingTaken::Gather });
-                    gather_composed_page(ctx, params, &pbits)
+                    gather_composed_page(ctx, params, &pbits, card_bits.as_deref())
                 }
             }
         }
@@ -6472,12 +6476,25 @@ fn gather_composed_page<'a>(
     ctx: &QueryCtx<'a>,
     params: &QueryParams,
     pbits: &[u64],
+    card_bits: Option<&[u64]>,
 ) -> Vec<(&'a AOracleCard, &'a APrinting)> {
     let QueryCtx { cards, printings, offsets, indexes, .. } = *ctx;
     let QueryParams { mode, prefer, sort_col, descending, limit, page_offset } = *params;
     let max_artwork_groups = u16::from(indexes.max_artwork_groups);
     let is_set = |pid: usize| pbits[pid >> 6] & (1u64 << (pid & 63)) != 0;
-    let candidate_cards = bitmap_card_ids(&printing_bits_to_card_bits(pbits, offsets, cards.len()));
+    // `card_bits` is `pbits` already projected into card space. `Mode::Card` computes that
+    // projection for its `total` and hands it over rather than have this function repeat it
+    // over the same bits; printing/artwork totals need no card projection, so those pass
+    // `None` and it is built here as before.
+    let projected: Vec<u64>;
+    let card_bits = match card_bits {
+        Some(bits) => bits,
+        None => {
+            projected = printing_bits_to_card_bits(pbits, offsets, cards.len());
+            &projected
+        }
+    };
+    let candidate_cards = bitmap_card_ids(card_bits);
     let n = match mode {
         Mode::Artwork => usize::from(max_artwork_groups),
         Mode::Card => 1,
@@ -9449,5 +9466,7 @@ mod bench_word_dict_scan;
 mod bench_card_dedup;
 #[cfg(test)]
 mod bench_compose_paging;
+#[cfg(test)]
+mod bench_compose_card_projection;
 #[cfg(test)]
 mod bench_candidate_materialize;

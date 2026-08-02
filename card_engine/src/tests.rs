@@ -7276,7 +7276,7 @@ fn orderby_walk_matches_gather_composed() {
                 for &offset in &[0usize, 50, 200] {
                     let limit = 100usize;
                     let gather = super::gather_composed_page(
-                        &QueryCtx::from(archived), &kernel_params(Mode::Printing, sort_col, descending, limit, offset), &pbits,
+                        &QueryCtx::from(archived), &kernel_params(Mode::Printing, sort_col, descending, limit, offset), &pbits, None,
                     );
                     let walk = match sort_col {
                         SortCol::PriceUsd => super::walk_range_orderby_page(
