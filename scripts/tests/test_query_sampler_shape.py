@@ -6,13 +6,16 @@ Runs against a tiny synthetic corpus rather than the 239MB benchmark one, so the
 from __future__ import annotations
 
 import json
-import pathlib
 import random
 import re
+from typing import TYPE_CHECKING
 
 import pytest
 
 from scripts.query_sampler import ANY_SHAPE, MODES, QuerySampler, Shape
+
+if TYPE_CHECKING:
+    import pathlib
 
 # Enough rows that every corpus-derived vocabulary is non-empty and the range columns have spread.
 CORPUS_ROWS = 60

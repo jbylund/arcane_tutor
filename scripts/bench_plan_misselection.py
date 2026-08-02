@@ -29,9 +29,9 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from api.parsing import parse_scryfall_query  # noqa: E402
-from client.query_runner import random_query  # noqa: E402
 from scripts import costbench  # noqa: E402
 from scripts.costbench import load_engine  # noqa: E402
+from scripts.query_sampler import QuerySampler  # noqa: E402
 
 if TYPE_CHECKING:
     import card_engine
@@ -51,7 +51,6 @@ ORDERBY_VALUES = frozenset(
     {"edhrec", "cubecobra", "cmc", "power", "toughness", "rarity", "name", "released", "set", "color", "usd", "artist", "review"}
 )
 DEFAULT_ORDERBY = "edhrec"
-RANDOM_UNIQUE_WEIGHTS = {"card": 75, "printing": 20, "artwork": 5}
 # Above the shared costbench default, with a reason: enough rounds that a bimodal plan shows both
 # modes (00648's measurement-traps section) while keeping a 200-query sweep to a couple of minutes.
 NUM_WARMUPS = 3
@@ -68,13 +67,23 @@ MIN_FOR_QUARTILES = 4
 LIVE_DEFECT_FLOOR_US = 5.0
 
 
-def load_queries(source: str, sample: int, seed: int) -> list[tuple[str, str, str]]:
-    """(query, unique, orderby) triples from the requested source, sampled deterministically."""
+def load_queries(source: str, sample: int, seed: int, corpus: pathlib.Path) -> list[tuple[str, str, str]]:
+    """(query, unique, orderby) triples from the requested source, sampled deterministically.
+
+    `wild-operators` is the default and stays the wild corpus: real Scryfall traffic is the right
+    universe for a REGRET number, because regret is what users actually lose.
+
+    `random` used `client.query_runner.random_query`, which is a load generator — it picks values
+    off hardcoded lists (`year:2019`..`year:2024` on a corpus spanning 1993-2026, a dozen fixed
+    prices) and so clusters selectivity at a handful of arbitrary points. Routing is decided by
+    selectivity, so that source could barely produce a mis-selection to measure. It draws from
+    `QuerySampler` now: same synthetic role, but corpus-derived values, quantile-placed thresholds,
+    and a real spread of distinct-on and orderby instead of a fixed `edhrec`.
+    """
     rng = random.Random(seed)
     if source == "random":
-        uniques = list(RANDOM_UNIQUE_WEIGHTS)
-        weights = [RANDOM_UNIQUE_WEIGHTS[u] for u in uniques]
-        return [(random_query(), rng.choices(uniques, weights=weights)[0], DEFAULT_ORDERBY) for _ in range(sample)]
+        sampler = QuerySampler(corpus, "uniform")
+        return [(sampler.query(rng), sampler.unique(rng), sampler.orderby(rng)) for _ in range(sample)]
 
     rows = []
     for line in (REPO_ROOT / "benchmarks/wild-queries/wild-corpus.jsonl").open():
@@ -177,7 +186,7 @@ def main() -> None:
     args = parser.parse_args()
 
     engine = load_engine(args.corpus, args.shm_path or args.corpus.with_suffix(".misselect.store"))
-    queries = load_queries(args.source, args.sample, args.seed)
+    queries = load_queries(args.source, args.sample, args.seed, args.corpus)
     if args.calibration:
         calibration(engine, queries, args.trials)
         return

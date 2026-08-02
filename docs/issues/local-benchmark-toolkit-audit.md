@@ -88,15 +88,33 @@ draw queries from one universe, `query_sampler.py`."* Two of seven do.
 | harness | source | verdict |
 | --- | --- | --- |
 | `fit_cost_model`, `bench_cost_error_attribution` | `QuerySampler` | correct |
-| `bench_plan_misselection` | `client.query_runner.random_query` | **wrong universe** |
+| `bench_plan_misselection` | wild corpus (default) / `random_query` (opt-in) | **fixed** — see below |
 | `bench_plane_popcount_cost` | `random_query` | **wrong universe** |
 | `census_candidate_materialize` | `random_query` + wild corpus | wild slice is deliberate |
 | `bench_cost_model_agreement` | private `sample_query` | hardcoded predicate lists |
 | `bench_card_range_estimate` | private `random_range_query` | range-only is deliberate, values are not |
 
-`bench_plan_misselection` is the one that matters most — it produces the headline routing-regret
-number, from the generator `query_sampler` was written to replace. Switching it will move that
-number, so the switch needs a before/after recorded, not a silent edit.
+An earlier draft of this doc called `bench_plan_misselection` the worst case, on the grounds that
+the headline regret number came from `random_query`. That was wrong. Its default source is
+`--source wild-operators`, the real Scryfall traffic slice, which is the *right* universe for a
+regret number — regret is what users actually lose. Only the opt-in `--source random` used the load
+generator.
+
+That opt-in path now draws from `QuerySampler`. Same synthetic role, corpus-derived values,
+quantile-placed thresholds, and a real spread of distinct-on and orderby instead of a fixed
+`edhrec`. It changes what the source can find, measured at `--sample 150 --seed 0`:
+
+| | `random_query` | `QuerySampler` |
+| --- | --- | --- |
+| multi-plan queries | 150 | 103 |
+| mis-selected | 2 (1%) | 5 (5%) |
+| mean regret | 0.66 µs | 3.32 µs |
+| max regret | 72.0 µs | 162.1 µs |
+
+Five times the mis-selection rate over a smaller denominator, because the sampler produces more
+selective queries where fewer plans apply. The mis-selections it surfaces are shapes the old
+generator could not emit — `c:r usd>=0.47 usd<=0.63` and `cn>=13 cn<=108 name:of`, both bounded
+ranges, the shape `query_sampler`'s header singles out as missing from every older generator.
 
 ## Per-script disposition
 
@@ -150,10 +168,11 @@ spent on scripts that may not survive.
 
 ## Sequence
 
-1. Extract `load_engine` from `bench_bitplanes` into `costbench` (20 importers, mechanical).
-2. Add the shape filter to `QuerySampler`; port `bench_card_range_estimate` and
-   `bench_cost_model_agreement` off their private generators onto it.
-3. Switch `bench_plan_misselection` to `QuerySampler`, recording the before/after regret delta.
-4. Correct the reference doc's "one universe" claim.
-5. Harvest curated `CONFIGS` into fixtures, then delete the 25 closed/unreferenced scripts.
-6. Revisit the range-acquire cluster and the two agreement/percentile merges.
+1. ~~Extract `load_engine` from `bench_bitplanes` into `costbench`~~ — done, 35 call sites.
+2. ~~Add the shape filter to `QuerySampler`~~ — done, as `Shape`, with unit tests.
+3. ~~Switch `bench_plan_misselection`'s `random` source~~ — done, delta recorded above.
+4. ~~Correct the reference doc's "one universe" claim~~ — done.
+5. Port `bench_card_range_estimate` and `bench_cost_model_agreement` off their private range
+   generators onto `Shape(families={"range"}, predicates=1, ...)`.
+6. Harvest curated `CONFIGS` into fixtures, then delete the 25 closed/unreferenced scripts.
+7. Revisit the range-acquire cluster and the two agreement/percentile merges.
