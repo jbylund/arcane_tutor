@@ -41,8 +41,7 @@ from scripts.bench_cost_model_agreement import AGREE_HI, AGREE_LO  # noqa: E402
 from scripts.query_sampler import QuerySampler  # noqa: E402
 
 # Acquire branches where the routed path really does call `prepare_candidates` at dispatch, so the
-# materializing plans genuinely owe its cost; everywhere else acquire built the prep already. Defined
-# here rather than imported: this is the fitter's netting rule, not the agreement harness's.
+# materializing plans genuinely owe its cost; everywhere else acquire built the prep already.
 RANGE_ACQUIRES = frozenset({"card_range_popcount", "printing_range_scan", "printing_compose"})
 NUM_WARMUPS = 2
 NUM_TRIALS = 7
@@ -94,6 +93,11 @@ CURRENT: dict[str, list[float]] = {
     "GatheredScan": [6.88, 2.06, 18.89, 2.24, 3.51, 169.6],
     # eval_domain, scan_units, residual floor, matches, artwork_seen_cards, n_cards floor, corpus pass, fixed
     "StreamedSelect": [6.46, 5.53, 8.18, 0.13, 1.36, 1.64, 0.02, 217.5],
+    # broadcast, scatter, project, popcount, walk step, walk emit, gather card pass, gather bittest,
+    # gather push, fixed. Several of these are SHARED with other arms in cost.rs (LINEAR_PASS,
+    # RANGE_SCATTER, GATHER_CARD_PASS, GATHER_PUSH_PER_MATCH, ...), so a fitted value that disagrees
+    # with the other arm's is information about the shared constant, not a number to paste blindly.
+    "PrintingCompose": [1.93, 0.48, 1.93, 1.07, 0.58, 2.19, 9.81, 0.38, 3.39, 163.56],
 }
 
 
@@ -228,6 +232,46 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
                 "FIXED",
             ],
             excess,
+        )
+    if plan == "PrintingCompose":
+        # The arm no tool has ever fitted, while the regret matrix puts 75% of all lost time on it.
+        # `build` is common to every paging branch; the page term is whichever branch will run, so a
+        # row contributes to exactly one of the two page columns and zero to the other. Decline costs
+        # infinity and never reaches a measurement, so those rows are absent by construction.
+        paging = acq.get("compose_paging", "Gather")
+        if paging == "Decline":
+            return None
+        gather = paging == "Gather"
+        # Recomputed rather than read from the exposed u32, which is truncated for display. The
+        # mirror has to match cost.rs bit for bit or its self-check fails on small walks.
+        match_rate = max(matches / max(float(acq["n_printings"]), 1.0), MATCH_RATE_FLOOR)
+        walk = (page_span / match_rate) if not gather else 0.0
+        return (
+            [
+                float(acq["broadcast_printings"]),
+                float(acq["scatter_printings"]),
+                float(acq["project_printings"]),
+                float(acq["popcount_words"]),
+                walk,
+                limit if not gather else 0.0,
+                eval_domain if gather else 0.0,
+                float(acq["compose_scan_printings"]) if gather else 0.0,
+                matches if gather else 0.0,
+                1.0,
+            ],
+            [
+                "BROADCAST_PER_PRINTING",
+                "SCATTER_PER_PRINTING",
+                "PROJECT_PER_PRINTING",
+                "POPCOUNT_PER_WORD",
+                "WALK_STEP",
+                "WALK_EMIT_PER_ROW",
+                "GATHER_CARD_PASS",
+                "GATHER_BITTEST_PER_PRINTING",
+                "GATHER_PUSH_PER_MATCH",
+                "FIXED",
+            ],
+            0.0,  # no residual-floor term in this arm, so nothing comes off the target
         )
     return None
 

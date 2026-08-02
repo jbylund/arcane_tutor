@@ -7253,6 +7253,7 @@ fn mk_plan_feats(
         // artwork mode only — so it rides `eval_domain` there and vanishes elsewhere. See
         // STREAM_ARTWORK_SEEN_PER_CARD_NS for the mechanism and the measurement.
         artwork_seen_cards: if matches!(params.mode, Mode::Artwork) { eval_domain } else { 0 },
+        compose_scan_printings: 0, // set by every branch that costs a PrintingCompose (its own, or as a competitor)
     }
 }
 
@@ -7370,6 +7371,7 @@ fn acquire_plan_features(
         // `project` pass — so the fused op wins the argmin and a bare range doesn't mis-route to compose.
         feats.scatter_printings = k;
         feats.project_printings = k;
+        feats.compose_scan_printings = k;
         feats.compose_paging = compose_paging_for(indexes, cards.len(), mode, sort_col, descending);
         (feats, Prep::Range(CountSource::CardRangePopcount))
     } else if PhysicalPlan::PrintingRangeScan.applicable(ctx, params, filter, plane) {
@@ -7378,6 +7380,7 @@ fn acquire_plan_features(
         let (idx, lo, hi) = bare_range_bounds(filter, indexes).expect("applicable ⇒ bare range");
         let k = (idx.partition_point(|p| u32::from(p.0) < hi) - idx.partition_point(|p| u32::from(p.0) < lo)) as u32;
         let mut feats = mk_plan_feats(ctx, params, k, n_cards, n_printings, verify_cost_tier(filter));
+        feats.compose_scan_printings = k;
         feats.scatter_printings = k; // for costing a competing PrintingCompose (which would scatter k); P1 itself walks, so its own cost ignores this
         // Also for costing that competing compose: `eval_domain`/`scan_units` above are the
         // unnarrowed universe (right for P3/P4, which is what they are there for), so leaving
@@ -7446,6 +7449,7 @@ fn acquire_plan_features(
         feats.scatter_printings = scatter as u32;
         feats.project_printings = project as u32;
         feats.popcount_words = popcount_words as u32;
+        feats.compose_scan_printings = printing_matches as u32;
         // Which paging strategy the fastpath will actually use — decided the same way the fastpath
         // itself decides, through the same helpers, including whether it will decline. Only this
         // branch knows the estimated result total, so only it can predict the small-total bail. The
@@ -8678,6 +8682,10 @@ fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<B
         ("project_printings", g.project_printings),
         ("popcount_words", g.popcount_words),
         ("artwork_seen_cards", g.artwork_seen_cards),
+        ("compose_scan_printings", g.compose_scan_printings),
+        // Derived inside plan_cost rather than stored, and exposed because the Perm/OrderbyWalk
+        // paging branches are priced entirely on it and nothing else can check them.
+        ("printings_walked", cost::printings_walked(g) as u32),
     ] {
         d.set_item(k, v)?;
     }

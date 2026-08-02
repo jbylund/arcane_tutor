@@ -4431,6 +4431,7 @@ fn plan_cost_model_matches_gold() {
                     offset: offset as u32,
                     broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
+                compose_scan_printings: 0,
                 };
 
                 // ── Model argmin over the applicable plans ──
@@ -4543,8 +4544,8 @@ fn cost_terms(plan: PhysicalPlan, f: &super::cost::PlanFeatures) -> (Vec<f64>, f
         // scatter + project) are hand-set offsets, not refit params.
         PhysicalPlan::PrintingCompose => (
             vec![f64::from(f.popcount_words), page_span / match_rate, limit, 1.0],
-            (f64::from(f.broadcast_printings) + f64::from(f.project_printings)) * super::cost::LINEAR_PASS_PER_PRINTING_NS
-                + f64::from(f.scatter_printings) * super::cost::RANGE_SCATTER_PER_PRINTING_NS,
+            (f64::from(f.broadcast_printings) + f64::from(f.project_printings)) * super::cost::COMPOSE_LINEAR_PASS_PER_PRINTING_NS
+                + f64::from(f.scatter_printings) * super::cost::COMPOSE_SCATTER_PER_PRINTING_NS,
         ),
         // [PERM_SCATTER, POPCOUNT(card words), EMIT, FIXED].
         PhysicalPlan::PlanePopcountOrder => (vec![matches, n_cards / 64.0, limit, 1.0], 0.0),
@@ -4668,6 +4669,7 @@ fn plan_cost_refit() {
                     limit: limit as u32, offset: offset as u32,
                     broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
+                compose_scan_printings: 0,
                 };
                 for (pi, plan) in all_plans.iter().enumerate() {
                     if let Some(meas) = ns[pi] {
@@ -4868,6 +4870,7 @@ fn printing_range_route_probe() {
                 limit: LIMIT as u32, offset: offset as u32,
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
+                compose_scan_printings: 0,
             };
 
             // ── Three pickers ──
@@ -5228,6 +5231,7 @@ fn plan_regret_report() {
                 offset: offset as u32,
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
+                compose_scan_printings: 0,
             };
 
             let gold = (0..4).filter_map(|i| ns[i].map(|v| (v, i))).min_by_key(|(v, _)| *v);
@@ -5354,6 +5358,7 @@ fn plan_regret_fuzz() {
                 limit: limit as u32, offset: offset as u32,
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
+                compose_scan_printings: 0,
             };
             let feats_true = mk(true_total, eval_domain);
             let feats_est = mk(est, est.min(n_cards));

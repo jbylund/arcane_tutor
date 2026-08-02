@@ -95,6 +95,16 @@ pub(crate) struct PlanFeatures {
     /// Sharing one feature between the two forced a compromise that was ~2x wrong for whichever arm
     /// lost: with the value GatheredScan needs, compose over-counts 2x; with compose's, the scan plans
     /// under-count 3.3x.
+    /// Printings compose's **Gather** paging branch bit-tests, which is NOT `scan_units`.
+    ///
+    /// `scan_units` is every printing under a candidate card -- right for GatheredScan and
+    /// StreamedSelect, which must test each one. Compose walks the set bits of the bitmap it just
+    /// built, so it touches `printing_matches`. Measured against `printings_scanned`, compose reads
+    /// 1.00 on `matches` in printing mode and 1.00-1.01 on `project_printings` in artwork (the same
+    /// value), while `scan_units` reads 2.0-2.8 for it.
+    ///
+    /// Sharing one feature between the two forced a compromise ~2x wrong for whichever arm lost.
+    pub compose_scan_printings: u32,
     /// Page size (`limit`).
     pub limit: u32,
     /// Page offset.
@@ -132,31 +142,6 @@ pub(crate) struct PlanFeatures {
 // dominated by how far the walk must go to fill the page, which is
 // (offset+limit) matches at density `match_rate` printings.
 
-/// ns per permutation step walked. Fit from usd<5 printing shallow/deep
-/// (match_rate=0.734): (88708−666)ns over (13706−82) steps ≈ 6.5; year>=2020
-/// printing gave ≈3.5. The per-step cost is noisy (printing clustering along the
-/// sort order), so this is a representative middle value.
-///
-/// CAUTION: `printing_range_route_probe` measures P1 fidelity swinging 0.10×–2.24×
-/// against this single constant — a walk step in printing mode scans a whole card's
-/// printings, whose count varies by query. The earlier claim that exactness "matters
-/// little because P1 wins by 1-2 orders of magnitude" is FALSE at depth: at offset
-/// 20000 P1 leads P3 by only ~2×, and that is exactly where this loose constant
-/// flips the argmin (the model routes off gold-P1). Sharpening P1 needs a per-step
-/// term keyed on printings-scanned, not a scalar — deferred with the printing model.
-/// Per-printing cost of a **linear offset-walk** over set printings — the two passes that share this
-/// rate: `PrintingCompose`'s legality broadcast-DOWN (card ∃-plane → printing bitmap) and its
-/// projection-UP (printing bitmap → card/artwork existence, `printing_bits_to_card_bits`, which walks
-/// the set bits advancing a card cursor). Measured ~1.5 ns/printing: `legality_compose_kernel_costs`
-/// broad formats (~1.49), and `card_range_build_cost_split`'s B pass (122125ns / 80527 = 1.52).
-/// Carries `broadcast_printings` and `project_printings` — the midpoint of the two probes.
-pub(crate) const LINEAR_PASS_PER_PRINTING_NS: f64 = 1.50;
-/// Per-printing cost of `PrintingCompose`'s range **scatter** — `range_leaf_bits` reads the value-sorted
-/// index's contiguous in-range slice and scatters each pid into a printing bitmap (sequential read +
-/// random-write). Measured ~0.4 ns/printing (`card_range_build_cost_split`'s A pass 28583ns / 80527 =
-/// 0.355; `range_compose_kernel_costs` 0.36 at broad density) — far cheaper than a linear pass because
-/// there is no per-card cursor and the writes are the only work. Carries `scatter_printings` in compose.
-pub(crate) const RANGE_SCATTER_PER_PRINTING_NS: f64 = 0.36;
 const RANGE_WALK_STEP_NS: f64 = 4.5;
 /// Fixed P1 setup (binary searches + walk init). Fit from usd<5 printing shallow
 /// (666ns − 82 steps × RANGE_WALK_STEP_NS ≈ 150ns).
@@ -414,6 +399,57 @@ const GATHER_SELECT_PER_PAGE_SLOT_NS: f64 = 3.51;
 /// 5×GATHER_SELECT_PER_PAGE_SLOT_NS ≈ 170).
 const GATHER_FIXED_COST_NS: f64 = 169.6;
 
+// --- PrintingCompose's own rates -------------------------------------------------------------
+//
+// This arm borrowed every constant it used from plans fitted against DIFFERENT physical operations,
+// because until now nothing fitted it: `design_row` returned None for PrintingCompose, so the one arm
+// carrying ~75% of measured routing regret was the one arm no tool calibrated. Fitting it (11,332
+// rows, 5,996 distinct shapes) moved within-25% agreement from 39% to 55% and p10 from 0.30 to 0.52,
+// the largest single gain of the exercise -- and showed the borrowed values are genuinely wrong here:
+//
+//     term                    borrowed from            was    fitted
+//     BROADCAST / PROJECT     LINEAR_PASS             1.50      1.93
+//     SCATTER                 RANGE_SCATTER           0.36      0.48
+//     WALK_STEP               RANGE_WALK_STEP          4.5      0.58
+//     GATHER_CARD_PASS        GATHER_CARD_PASS        6.80      9.81
+//     GATHER_PUSH_PER_MATCH   GATHER_PUSH_PER_MATCH   2.81      3.39
+//     FIXED                   RANGE_FIXED_COST       150.0    163.56
+//
+// The two gather rates are the informative ones: fitted on the SAME sample, GatheredScan wants 6.58
+// and 2.54 for what the comments called "the same operation". They are not the same operation --
+// compose walks a bitmap it just built, GatheredScan walks the printing array -- so the sharing was an
+// assumption, not a measurement. WALK_STEP at 7.7x is the largest error; RANGE_WALK_STEP stays at 4.5
+// for PrintingRangeScan, which has too few rows here to refit and should not inherit this.
+
+/// Legality broadcast-down and the printing→card/artwork projection pass, both linear over the set.
+pub(crate) const COMPOSE_LINEAR_PASS_PER_PRINTING_NS: f64 = 1.93;
+/// Range-slice scatter into the printing bitmap during build.
+pub(crate) const COMPOSE_SCATTER_PER_PRINTING_NS: f64 = 0.48;
+/// Result-space bitmap words popcounted for the total.
+const COMPOSE_POPCOUNT_PER_WORD_NS: f64 = 1.07;
+/// Per printing stepped over by the Perm / OrderbyWalk page fill.
+const COMPOSE_WALK_STEP_NS: f64 = 0.58;
+/// Per row emitted by the Perm / OrderbyWalk page fill.
+const COMPOSE_WALK_EMIT_PER_ROW_NS: f64 = 2.19;
+/// Per candidate card visited by `gather_composed_page`.
+const COMPOSE_GATHER_CARD_PASS_NS: f64 = 9.81;
+/// Per printing bit-tested against `pbits` inside the gather.
+const COMPOSE_GATHER_BITTEST_PER_PRINTING_NS: f64 = 0.38;
+/// Per match pushed into the bounded GatherSelect accumulator.
+const COMPOSE_GATHER_PUSH_PER_MATCH_NS: f64 = 3.39;
+/// Per-query setup for the compose fastpath.
+const COMPOSE_FIXED_COST_NS: f64 = 163.56;
+
+/// Printings a forward-permutation / orderby walk steps over to fill one page: `page_span` result
+/// rows at density `match_rate`. Derived rather than stored, and exposed so a harness can check it
+/// against the `printings_scanned` counter -- the Perm and OrderbyWalk paging branches are priced
+/// entirely on this quantity and nothing else validates them.
+pub(crate) fn printings_walked(f: &PlanFeatures) -> f64 {
+    let page_span = f64::from((f.offset.saturating_add(f.limit)).min(f.matches));
+    let match_rate = (f64::from(f.matches) / f64::from(f.n_printings.max(1))).max(MATCH_RATE_FLOOR);
+    page_span / match_rate
+}
+
 pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
     let n_cards = f64::from(f.n_cards);
     let n_printings = f64::from(f.n_printings);
@@ -440,10 +476,10 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
         // `compose_has_perm`'s doc) — the permutation walk and the permutation-free gather fallback
         // have different cost shapes, so this must not just assume the walk.
         PhysicalPlan::PrintingCompose => {
-            let build = f64::from(f.broadcast_printings) * LINEAR_PASS_PER_PRINTING_NS  // legality broadcast-down into the printing bitmap (border/rarity read a plane → 0)
-                + f64::from(f.scatter_printings) * RANGE_SCATTER_PER_PRINTING_NS  // range-slice scatter into the printing bitmap (cheap: no card cursor)
-                + f64::from(f.project_printings) * LINEAR_PASS_PER_PRINTING_NS  // second pass: project printing→card/artwork (0 for printing mode) — the pass CardRangePopcount fuses away
-                + f64::from(f.popcount_words) * PLANE_POPCOUNT_PER_WORD_NS; // popcount the result-space bitmap for the total (printing/card/artwork words)
+            let build = f64::from(f.broadcast_printings) * COMPOSE_LINEAR_PASS_PER_PRINTING_NS  // legality broadcast-down into the printing bitmap (border/rarity read a plane → 0)
+                + f64::from(f.scatter_printings) * COMPOSE_SCATTER_PER_PRINTING_NS  // range-slice scatter into the printing bitmap (cheap: no card cursor)
+                + f64::from(f.project_printings) * COMPOSE_LINEAR_PASS_PER_PRINTING_NS  // second pass: project printing→card/artwork (0 for printing mode) — the pass CardRangePopcount fuses away
+                + f64::from(f.popcount_words) * COMPOSE_POPCOUNT_PER_WORD_NS; // popcount the result-space bitmap for the total (printing/card/artwork words)
             let page = match f.compose_paging {
                 // Perm (forward grouped walk) and OrderbyWalk (#744 value-index/plane walk) share the
                 // offset-dependent walk shape: fill the page in ~page_span/selectivity steps, then emit
@@ -451,8 +487,8 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
                 // which is exactly why the COMPOSE_GATHER breadth gate is bypassed for it — broad is its
                 // best case, not its worst.
                 super::ComposePaging::Perm | super::ComposePaging::OrderbyWalk => {
-                    printings_walked * RANGE_WALK_STEP_NS  // walk to fill the page
-                        + limit * PLANE_POPCOUNT_EMIT_PER_CARD_NS  // emit one page of rows
+                    printings_walked * COMPOSE_WALK_STEP_NS  // walk to fill the page
+                        + limit * COMPOSE_WALK_EMIT_PER_ROW_NS  // emit one page of rows
                 }
                 // gather_composed_page: visits every candidate (eval_domain, same rate GatheredScan's
                 // own permutation-free walk pays per card), tests `pbits` membership per printing
@@ -462,16 +498,16 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
                 // same per-match rate GatheredScan pays for the same operation). Offset-independent —
                 // unlike the walk above, it costs the same regardless of how deep the page is.
                 super::ComposePaging::Gather => {
-                    eval_domain * GATHER_CARD_PASS_NS
-                        + scan_units * RANGE_SCATTER_PER_PRINTING_NS
-                        + matches * GATHER_PUSH_PER_MATCH_NS
+                    eval_domain * COMPOSE_GATHER_CARD_PASS_NS
+                        + f64::from(f.compose_scan_printings) * COMPOSE_GATHER_BITTEST_PER_PRINTING_NS
+                        + matches * COMPOSE_GATHER_PUSH_PER_MATCH_NS
                 }
                 // The fastpath will refuse this query, so there is no page term to charge. Infinity
                 // keeps the plan out of the argmin entirely — routing to a plan that returns `None`
                 // pays the detour and then runs something else anyway.
                 super::ComposePaging::Decline => return f64::INFINITY,
             };
-            build + page + RANGE_FIXED_COST_NS // per-query setup
+            build + page + COMPOSE_FIXED_COST_NS // per-query setup
         }
         // #634 plane popcount-skip order walk (precomputed bitmap ⇒ no synth):
         PhysicalPlan::PlanePopcountOrder => {
