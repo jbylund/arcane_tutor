@@ -5709,54 +5709,12 @@ fn printing_compose_fastpath<'a>(
     // `COMPOSE_GATHER_MAX_CARD_FRACTION` gate must NOT apply to that branch: its premise ("broad ⇒ not
     // worth composing") is backwards here, where a broad predicate is the walk's *best* case.
     let walk_col = perm.is_none() && matches!(mode, Mode::Printing) && orderby_walk_available(sort_col);
-    // No permutation (rarity/usd) AND no orderby walk (card/artwork mode): before paying for the real
-    // build, check whether the gather is worth it at all using the same estimate
-    // `compose_printing_estimate` already computes cheaply in acquire (O(log n) partition points /
-    // plane popcounts, no scatter) — see `COMPOSE_GATHER_MAX_CARD_FRACTION`'s doc for why this needs
-    // its own threshold, not `MAX_NARROW_FRACTION`. The check must be in **mode space** (cards for
-    // `Card`, artworks for `Artwork`), not raw matching printings: a bare range's printing-space match
-    // count is a poor proxy for how many *candidates* `gather_composed_page` will actually visit (a
-    // card can have several qualifying printings). A plain `.min(domain)` cap is *not* enough to
-    // project it down, though — it saturates to exactly `domain` for every query whose printing-space
-    // count exceeds it (`cn<100`: 35,021 printings vs 31,508 cards, and `usd<50`: 80,527 vs 31,508
-    // both saturate to the *identical* 31,508, even though their true card counts are 17,616 vs 31,217
-    // — miles apart), which loses exactly the signal this check needs. A balls-into-bins estimate —
-    // `k` matching printings landing on `domain` cards, expected distinct cards touched
-    // `≈ domain·(1 − e^(−k/domain))` — doesn't saturate the same way and tracks the true count much
-    // better (checked against real totals: `cn<100` estimate 21,140 vs true 17,616; `usd<50` estimate
-    // 29,062 vs true 31,217; clearly separated, unlike the capped estimate's identical 31,508 for both).
+    // The permutation-free gather's two decline gates, asked through the shared helper so that
+    // `acquire_plan_features` can ask the SAME question when it costs this plan. See
+    // `compose_gather_declines`.
     if perm.is_none() && !walk_col {
-        let (printing_matches, _, _) = compose_printing_estimate(filter, indexes, offsets, printings.len());
-        // Artwork's true domain is n_artworks (>= n_cards), but getting it exactly means building
-        // artwork_base here — real O(n_cards) work paid just to maybe decline. `cards.len()` is a
-        // cheap, conservative stand-in (n_artworks is always >= it, so this only ever makes the
-        // fraction look *more* broad than reality — errs toward declining, same conservative lean
-        // `COMPOSE_GATHER_MAX_CARD_FRACTION` itself was calibrated with).
-        let domain = match mode {
-            Mode::Printing => printings.len(),
-            Mode::Card | Mode::Artwork => cards.len(),
-        };
-        let est = if matches!(mode, Mode::Printing) {
-            printing_matches as f64 // exact in printing space already, no projection needed
-        } else {
-            domain as f64 * (-(printing_matches as f64) / domain as f64).exp().mul_add(-1.0, 1.0)
-        };
-        if est > domain as f64 * *COMPOSE_GATHER_MAX_CARD_FRACTION {
-            note_paging_taken(PagingTaken::DeclineBroad);
-            return None;
-        }
-        // Small-total decline (mirrors the `Perm` branch's `total <= STREAM_MIN_MATCHES` below): in the
-        // permutation-free gather regime PrintingCompose has no paging edge over GatheredScan — it just
-        // composes the full printing bitmap and projects it back down, two O(n_cards) passes on top of
-        // the same gather. For a filter that narrows to few candidate cards the residual-eval saving is
-        // tiny while that build/projection dominates, so the candidate/narrowing path wins; decline to
-        // it. The SOUND card-space cardinality upper bound decides — exact for a collection leaf, unlike
-        // the balls-into-bins `est` above which overestimates a clustered predicate's distinct-card
-        // count (goblin: 501 cards but ~1471 `est`) and so can't make this call. This is what keeps a
-        // sparse `type:angel`/`type:goblin` card/usd (newly composable) from regressing onto this path:
-        // the collection compose leaves are a printing-mode orderby-walk win, not a card-mode gather win.
-        if (estimator::estimate_cardinality(filter, indexes, offsets).hi as usize) <= *STREAM_MIN_MATCHES {
-            note_paging_taken(PagingTaken::DeclineSparseEstimate);
+        if let Some(reason) = compose_gather_declines(filter, indexes, offsets, printings, cards, mode) {
+            note_paging_taken(reason);
             return None;
         }
     }
@@ -5878,6 +5836,10 @@ pub(crate) enum ComposePaging {
     /// No permutation and no orderby walk → the permutation-free bounded gather
     /// (`gather_composed_page`), which visits every match (offset-independent cost).
     Gather,
+    /// The fastpath will refuse this query — `compose_gather_declines`, or the `Perm` branch's
+    /// small-total bail. Costs infinity, which keeps the plan out of the argmin entirely: routing to
+    /// a plan that returns `None` pays the detour and then runs something else anyway.
+    Decline,
 }
 
 impl ComposePaging {
@@ -5899,6 +5861,11 @@ impl ComposePaging {
             ComposePaging::Perm => "Perm",
             ComposePaging::OrderbyWalk => "OrderbyWalk",
             ComposePaging::Gather => "Gather",
+            // No single `PagingTaken` counterpart on purpose: the executor distinguishes WHY it
+            // refused (`DeclineBroad` / `DeclineSparseEstimate` / `DeclineSparseExact`) while the
+            // model only predicts THAT it will. A comparison scoring these against each other has to
+            // treat any `Decline*` as matching this one.
+            ComposePaging::Decline => "Decline",
         }
     }
 }
@@ -7078,11 +7045,112 @@ fn declined_sibling_fastpath<'a>(
 /// — measured at 33x over-costed from the `PrintingRangeScan` acquire (~125 µs predicted against
 /// ~2.4 µs measured on `usd>20`/printing), which is enough to rank compose last and leave a 46x
 /// faster plan unused. See docs/issues/local-engine-plan-misselection.md.
+/// The permutation-free gather branch's two decline gates: `Some(reason)` if `printing_compose_fastpath`
+/// will refuse this query, `None` if it will run it.
+///
+/// Extracted so the COST MODEL can ask the same question. These conditions used to live inline in the
+/// fastpath, which meant `acquire_plan_features` had no way to know the plan it was costing would
+/// return `None` — so it priced a real gather, compose could win the argmin on that price, and
+/// dispatch then paid the detour and ran something else anyway. `compose_paging_with_total` now
+/// consults this and predicts `ComposePaging::Decline`, which costs infinity and keeps the plan out
+/// of the argmin entirely.
+///
+/// One function, two callers, so the prediction cannot drift from the behaviour by construction —
+/// and `paging_taken` (#797) measures whether it has.
+///
+/// No permutation (rarity/usd) AND no orderby walk (card/artwork mode): before paying for the real
+/// build, check whether the gather is worth it at all using the same estimate
+/// `compose_printing_estimate` already computes cheaply in acquire (O(log n) partition points /
+/// plane popcounts, no scatter) — see `COMPOSE_GATHER_MAX_CARD_FRACTION`'s doc for why this needs
+/// its own threshold, not `MAX_NARROW_FRACTION`. The check must be in **mode space** (cards for
+/// `Card`, artworks for `Artwork`), not raw matching printings: a bare range's printing-space match
+/// count is a poor proxy for how many *candidates* `gather_composed_page` will actually visit (a
+/// card can have several qualifying printings). A plain `.min(domain)` cap is *not* enough to
+/// project it down, though — it saturates to exactly `domain` for every query whose printing-space
+/// count exceeds it (`cn<100`: 35,021 printings vs 31,508 cards, and `usd<50`: 80,527 vs 31,508
+/// both saturate to the *identical* 31,508, even though their true card counts are 17,616 vs 31,217
+/// — miles apart), which loses exactly the signal this check needs. A balls-into-bins estimate —
+/// `k` matching printings landing on `domain` cards, expected distinct cards touched
+/// `≈ domain·(1 − e^(−k/domain))` — doesn't saturate the same way and tracks the true count much
+/// better (checked against real totals: `cn<100` estimate 21,140 vs true 17,616; `usd<50` estimate
+/// 29,062 vs true 31,217; clearly separated, unlike the capped estimate's identical 31,508 for both).
+fn compose_gather_declines(
+    filter: &FilterExpr,
+    indexes: &Archived<CardIndexes>,
+    offsets: &Archived<Vec<u32>>,
+    printings: &[APrinting],
+    cards: &[AOracleCard],
+    mode: Mode,
+) -> Option<PagingTaken> {
+    let (printing_matches, _, _) = compose_printing_estimate(filter, indexes, offsets, printings.len());
+    // Artwork's true domain is n_artworks (>= n_cards), but getting it exactly means building
+    // artwork_base here — real O(n_cards) work paid just to maybe decline. `cards.len()` is a cheap,
+    // conservative stand-in (n_artworks is always >= it, so this only ever makes the fraction look
+    // *more* broad than reality — errs toward declining, the same conservative lean
+    // `COMPOSE_GATHER_MAX_CARD_FRACTION` itself was calibrated with).
+    let domain = match mode {
+        Mode::Printing => printings.len(),
+        Mode::Card | Mode::Artwork => cards.len(),
+    };
+    let est = if matches!(mode, Mode::Printing) {
+        printing_matches as f64 // exact in printing space already, no projection needed
+    } else {
+        domain as f64 * (-(printing_matches as f64) / domain as f64).exp().mul_add(-1.0, 1.0)
+    };
+    if est > domain as f64 * *COMPOSE_GATHER_MAX_CARD_FRACTION {
+        return Some(PagingTaken::DeclineBroad);
+    }
+    // Small-total decline (mirrors the `Perm` branch's `total <= STREAM_MIN_MATCHES`): in the
+    // permutation-free gather regime PrintingCompose has no paging edge over GatheredScan — it just
+    // composes the full printing bitmap and projects it back down, two O(n_cards) passes on top of the
+    // same gather. For a filter that narrows to few candidate cards the residual-eval saving is tiny
+    // while that build/projection dominates, so the candidate/narrowing path wins; decline to it. The
+    // SOUND card-space cardinality upper bound decides — exact for a collection leaf, unlike the
+    // balls-into-bins `est` above which overestimates a clustered predicate's distinct-card count
+    // (goblin: 501 cards but ~1471 `est`) and so cannot make this call. This is what keeps a sparse
+    // `type:angel`/`type:goblin` card/usd (newly composable) from regressing onto this path: the
+    // collection compose leaves are a printing-mode orderby-walk win, not a card-mode gather win.
+    if (estimator::estimate_cardinality(filter, indexes, offsets).hi as usize) <= *STREAM_MIN_MATCHES {
+        return Some(PagingTaken::DeclineSparseEstimate);
+    }
+    None
+}
+
+/// `compose_paging_with_total` without a result total, for the range branches: they cost a COMPETING
+/// compose and have no total for it, so they get the plain 3-way answer and cannot predict a decline.
 fn compose_paging_for(indexes: &Archived<CardIndexes>, n_cards: usize, mode: Mode, sort_col: SortCol, descending: bool) -> ComposePaging {
+    compose_paging_with_total(indexes, n_cards, mode, sort_col, descending, None, None)
+}
+
+/// Which paging branch `printing_compose_fastpath` will take — including whether it will refuse the
+/// query outright, which the caller that knows the estimated total can now predict.
+fn compose_paging_with_total(
+    indexes: &Archived<CardIndexes>,
+    n_cards: usize,
+    mode: Mode,
+    sort_col: SortCol,
+    descending: bool,
+    result_total: Option<usize>,
+    gather_declines: Option<PagingTaken>,
+) -> ComposePaging {
     if indexes.sort_perms.get(sort_col, descending).is_some_and(|p| p.len() == n_cards) {
+        // Mirrors the fastpath's `Some(perm) => if total <= STREAM_MIN_MATCHES` bail. `result_total`
+        // is the acquire-time ESTIMATE where the fastpath has the exact count, so a query sitting
+        // right on the threshold can be classified either way — cheap by construction, since compose
+        // and its alternative are within noise of each other exactly there.
+        //
+        // A total of ZERO is different and must not be predicted as a decline. The fastpath returns at
+        // `total == 0 || page_offset >= total` BEFORE reaching the bail, and that return is
+        // `Some((total, vec![]))` — it SUCCEEDS, cheaply. Predicting Decline there makes `plan_cost`
+        // INFINITY and removes compose from the argmin for a query it would have answered immediately.
+        if result_total.is_some_and(|t| t > 0 && t <= *STREAM_MIN_MATCHES) {
+            return ComposePaging::Decline;
+        }
         ComposePaging::Perm
     } else if matches!(mode, Mode::Printing) && orderby_walk_available(sort_col) {
         ComposePaging::OrderbyWalk
+    } else if gather_declines.is_some() {
+        ComposePaging::Decline
     } else {
         ComposePaging::Gather
     }
@@ -7230,8 +7298,16 @@ fn acquire_plan_features(
         feats.project_printings = project as u32;
         feats.popcount_words = popcount_words as u32;
         // Which paging strategy the fastpath will actually use — decided the same way the fastpath
-        // itself decides (permutation walk / #744 orderby walk / gather fallback).
-        feats.compose_paging = compose_paging_for(indexes, cards.len(), mode, sort_col, descending);
+        // itself decides, through the same helpers, including whether it will decline. Only this
+        // branch knows the estimated result total, so only it can predict the small-total bail. The
+        // gather gates cost an estimate each, so ask them only when the gather branch is the one that
+        // would run.
+        let no_perm = indexes.sort_perms.get(sort_col, descending).is_none_or(|p| p.len() != cards.len());
+        let gather_declines = (no_perm && !(matches!(mode, Mode::Printing) && orderby_walk_available(sort_col)))
+            .then(|| compose_gather_declines(filter, indexes, offsets, ctx.printings, cards, mode))
+            .flatten();
+        feats.compose_paging =
+            compose_paging_with_total(indexes, cards.len(), mode, sort_col, descending, Some(result_total), gather_declines);
         (feats, Prep::Range(CountSource::PrintingCompose))
     } else {
         let prep = prepare_candidates(ctx, params, filter, plane);

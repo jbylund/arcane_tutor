@@ -63,11 +63,16 @@ ORDERBYS = ("edhrec", "cubecobra", "cmc", "power", "toughness", "rarity", "usd",
 LIMITS = (10, 100, 175)
 OFFSETS = (0, 0, 0, 100)  # mostly first-page, which is what real traffic asks for
 MIN_FOR_QUARTILES = 8
-# The three paging strategies `ComposePaging` predicts. `paging_taken` reports five further labels —
-# `NotComposable`, `DeclineBroad`, `DeclineSparseEstimate`, `DeclineSparseExact` and `EmptyPage` —
-# all of them run-time outcomes reached BEFORE any strategy runs. The prediction is never exercised
-# there, so they are excluded rather than counted as disagreements.
-COMPOSE_STRATEGIES = ("Perm", "OrderbyWalk", "Gather")
+# The paging outcomes `ComposePaging` predicts. `Decline` joined the other three once acquire gained
+# the estimated result total and could ask `compose_gather_declines` the same question the fastpath
+# asks — before that, a decline was unpredictable by construction and excluded here.
+#
+# `NotComposable` and `EmptyPage` stay excluded: both are reached before any strategy runs and
+# neither is something the prediction claims.
+COMPOSE_STRATEGIES = ("Perm", "OrderbyWalk", "Gather", "Decline")
+# The executor records WHY it refused; the model only predicts THAT it will. Fold the three reasons
+# onto the single predicted label, or every correct decline scores as a disagreement.
+DECLINE_REASONS = ("DeclineBroad", "DeclineSparseEstimate", "DeclineSparseExact")
 # `GatherWalkDeclined` is a strategy outcome, so it IS counted — but it is not a disagreement. Acquire
 # never composes, so it can only test that an orderby walk is AVAILABLE, never that it will succeed;
 # the walk declines on the null-value tail or a page past the value structure and falls into the
@@ -218,8 +223,10 @@ def main() -> None:
             # acquire. Under any other branch it is the untouched `mk_plan_feats` default, so an
             # off-diagonal cell there means a competing compose was mispriced, not that a prediction
             # drifted -- different defect, different fix, and pooling them reports neither.
-            if p["plan"] == "PrintingCompose" and p["paging_taken"] in (*COMPOSE_STRATEGIES, WALK_DECLINED):
-                agr.paging[acq["count_source"], acq["compose_paging"], p["paging_taken"]] += 1
+            if p["plan"] == "PrintingCompose":
+                taken = "Decline" if p["paging_taken"] in DECLINE_REASONS else p["paging_taken"]
+                if taken in (*COMPOSE_STRATEGIES, WALK_DECLINED):
+                    agr.paging[acq["count_source"], acq["compose_paging"], taken] += 1
 
     report(agr, args.seconds)
 

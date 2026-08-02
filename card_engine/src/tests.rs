@@ -3346,6 +3346,11 @@ fn compose_paging_prediction_matches_the_branch_taken() {
     let offsets = [0usize, 40, 10_000];
 
     let (mut exercised, mut declined, mut empty) = (0usize, 0usize, 0usize);
+    // Predicted `Decline` where the fastpath actually RAN. Not a failure: acquire predicts the
+    // small-total bail from an ESTIMATED total where the fastpath has the exact one, so queries near
+    // `STREAM_MIN_MATCHES` can fall either side. Counted and printed so the rate stays visible --
+    // silently predicting Decline for plans that would have run removes them from the argmin.
+    let mut decline_predicted_but_ran = 0usize;
     // Perm / OrderbyWalk / Gather / GatherWalkDeclined. The fourth is not a strategy the model
     // predicts -- it is the one legal inexactness in the prediction, and it gets its own cell so
     // the allowance above cannot pass by never being exercised.
@@ -3413,6 +3418,11 @@ fn compose_paging_prediction_matches_the_branch_taken() {
                                 // fastpath found a walk available where acquire predicted none,
                                 // i.e. the two availability tests really had drifted.
                                 ComposePaging::Gather => &[PagingTaken::Gather],
+                                // The fastpath disagreed and ran. Legal (estimated vs exact total),
+                                // but every run-branch is a distinct disagreement worth counting.
+                                ComposePaging::Decline => {
+                                    &[PagingTaken::Perm, PagingTaken::OrderbyWalk, PagingTaken::Gather, PagingTaken::GatherWalkDeclined]
+                                }
                             };
                             assert!(
                                 legal.contains(&taken),
@@ -3424,6 +3434,7 @@ fn compose_paging_prediction_matches_the_branch_taken() {
                                 (ComposePaging::OrderbyWalk, PagingTaken::GatherWalkDeclined) => by_strategy[3] += 1,
                                 (ComposePaging::OrderbyWalk, _) => by_strategy[1] += 1,
                                 (ComposePaging::Gather, _) => by_strategy[2] += 1,
+                                (ComposePaging::Decline, _) => decline_predicted_but_ran += 1,
                             }
                         }
                     }
@@ -3435,7 +3446,8 @@ fn compose_paging_prediction_matches_the_branch_taken() {
     // that skipped the assertion, and all of them skipping would still pass.
     println!(
         "compose paging: {exercised} strategy runs checked \
-         ({} Perm, {} OrderbyWalk, {} Gather, {} walk-declined), {declined} declined, {empty} empty-page",
+         ({} Perm, {} OrderbyWalk, {} Gather, {} walk-declined), {declined} declined, {empty} empty-page, \
+         {decline_predicted_but_ran} predicted-decline-but-ran",
         by_strategy[0], by_strategy[1], by_strategy[2], by_strategy[3],
     );
     // Every cell, not just a total: the agreement is only interesting where the two decisions could

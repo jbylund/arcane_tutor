@@ -363,6 +363,10 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
                         + scan_units * RANGE_SCATTER_PER_PRINTING_NS
                         + matches * GATHER_PUSH_PER_MATCH_NS
                 }
+                // The fastpath will refuse this query, so there is no page term to charge. Infinity
+                // keeps the plan out of the argmin entirely — routing to a plan that returns `None`
+                // pays the detour and then runs something else anyway.
+                super::ComposePaging::Decline => return f64::INFINITY,
             };
             build + page + RANGE_FIXED_COST_NS // per-query setup
         }
