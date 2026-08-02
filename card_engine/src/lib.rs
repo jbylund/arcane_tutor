@@ -4662,37 +4662,33 @@ fn bare_range_bounds<'i>(
     filter: &FilterExpr,
     indexes: &'i Archived<CardIndexes>,
 ) -> Option<(&'i Archived<PrintingRangeIndex>, u32, u32)> {
-    // The direct and `Not` arms are the same three-way leaf dispatch, differing only in
-    // whether the leaf's op is taken as written or negated. `map_op` is that difference,
-    // so the grammar is written once and the two arms cannot drift apart.
-    fn leaf<'i>(
-        filter: &FilterExpr,
-        indexes: &'i Archived<CardIndexes>,
-        map_op: impl Fn(CmpOp) -> CmpOp,
-    ) -> Option<(&'i Archived<PrintingRangeIndex>, u32, u32)> {
-        match filter {
-            FilterExpr::NumericCmp { lhs, op, rhs } => {
-                let (idx, op, value) = resolve_numeric_range_leaf(lhs, map_op(*op), rhs, indexes)?;
-                match int_range_bounds(op, value)? {
-                    None => Some((idx, 0, 0)),
-                    Some((lo, hi)) => Some((idx, lo, hi)),
-                }
-            }
-            FilterExpr::DateCmp { op, value } => {
-                let (lo, hi) = date_range_bounds(map_op(*op), *value)?;
-                Some((&indexes.released_at, lo, hi))
-            }
-            FilterExpr::YearCmp { op, year } => {
-                let (lo, hi) = year_range_bounds(map_op(*op), *year)?;
-                Some((&indexes.released_at, lo, hi))
-            }
-            _ => None,
-        }
-    }
-
+    // The direct and `Not` cases are the same three-way leaf dispatch, differing only in
+    // whether the leaf's op is taken as written or negated. Peel the `Not` into that one
+    // difference up front and the grammar below is written once, for both.
+    //
+    // Peeling exactly one level is what makes `Not(Not(x))` decline: the second `Not` is
+    // then matched as a leaf, and it is not one.
+    let (filter, map_op): (&FilterExpr, fn(CmpOp) -> CmpOp) = match filter {
+        FilterExpr::Not(inner) => (inner.as_ref(), negate_op),
+        _ => (filter, |op| op),
+    };
     match filter {
-        FilterExpr::Not(inner) => leaf(inner.as_ref(), indexes, negate_op),
-        _ => leaf(filter, indexes, |op| op),
+        FilterExpr::NumericCmp { lhs, op, rhs } => {
+            let (idx, op, value) = resolve_numeric_range_leaf(lhs, map_op(*op), rhs, indexes)?;
+            match int_range_bounds(op, value)? {
+                None => Some((idx, 0, 0)),
+                Some((lo, hi)) => Some((idx, lo, hi)),
+            }
+        }
+        FilterExpr::DateCmp { op, value } => {
+            let (lo, hi) = date_range_bounds(map_op(*op), *value)?;
+            Some((&indexes.released_at, lo, hi))
+        }
+        FilterExpr::YearCmp { op, year } => {
+            let (lo, hi) = year_range_bounds(map_op(*op), *year)?;
+            Some((&indexes.released_at, lo, hi))
+        }
+        _ => None,
     }
 }
 
