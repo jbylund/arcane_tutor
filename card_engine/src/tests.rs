@@ -3797,6 +3797,12 @@ fn declining_plans_report_their_gate_through_explain_analyze() {
     const NUM_TRIALS: usize = 2;
     /// Gates that mean "entered the compose fastpath and turned back". `NotEntered` is excluded on
     /// purpose: it is the value this test exists to prove a decline never reports.
+    ///
+    /// `NotComposable` is IN the list but should never be seen, exactly like the range fastpath's
+    /// two tripwires below: `PhysicalPlan::PrintingCompose.applicable` IS `printing_compose_applicable`,
+    /// the same structural test the fastpath re-checks. Admitted here rather than asserted against
+    /// for the same reason as those — this test's job is "a gate was named", and `by_gate` below
+    /// prints the distribution so its showing up is visible.
     const DECLINE_GATES: [PagingTaken; 4] = [
         PagingTaken::NotComposable,
         PagingTaken::DeclineBroad,

@@ -6500,7 +6500,12 @@ pub(crate) enum PagingTaken {
     /// strategy ran. Shared by both fastpaths — a compose that composed to nothing and a range whose
     /// `k` the offset overran are the same observation, and neither exercises a prediction.
     EmptyPage,
-    /// The structural check failed (not a composable expr, or the compose indexes are not built).
+    /// The structural check failed (not a composable expr, or the compose indexes are not built). A
+    /// TRIPWIRE, not an expected outcome, for the same reason `RangeNotBare` is:
+    /// `PhysicalPlan::PrintingCompose.applicable` IS `printing_compose_applicable`, which already
+    /// requires both halves of this test, and every caller of `printing_compose_fastpath` gates on
+    /// it first. So a plan `explain` ranked can only reach this if those two structural tests have
+    /// drifted apart.
     NotComposable,
     /// The `COMPOSE_GATHER_MAX_CARD_FRACTION` breadth gate.
     DeclineBroad,

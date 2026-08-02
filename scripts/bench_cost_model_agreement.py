@@ -79,12 +79,13 @@ WALK_DECLINED = "GatherWalkDeclined"
 # bitmap, off the real total rather than the estimator's bound -- so those rounds pay a full compose
 # and discard it. The other three gate before the compose and are cheap. See `report_declines`.
 POST_COMPOSE_GATE = "DeclineSparseExact"
-# Range-fastpath gates that should be unreachable, so a non-zero count is a defect rather than a
-# measurement. `RangeNotBare` contradicts `PrintingRangeScan.applicable`, which already requires bare
-# range bounds; `RangePermutationStale` means a sort permutation was built against a different store.
-# Called out on their own line because in the decline table they would otherwise read as two more
-# cheap rows -- their cost is not the point, their existence is.
-IMPOSSIBLE_GATES = ("RangeNotBare", "RangePermutationStale")
+# Gates that should be unreachable, so a non-zero count is a defect rather than a measurement.
+# `RangeNotBare` contradicts `PrintingRangeScan.applicable`, which already requires bare range
+# bounds; `NotComposable` contradicts `PrintingCompose.applicable`, which IS the same structural
+# test the compose fastpath re-checks; `RangePermutationStale` means a sort permutation was built
+# against a different store. Called out on their own line because in the decline table they would
+# otherwise read as three more cheap rows -- their cost is not the point, their existence is.
+IMPOSSIBLE_GATES = ("RangeNotBare", "NotComposable", "RangePermutationStale")
 # The acquire branch that actually PREDICTS `compose_paging`. Every other branch leaves the
 # `mk_plan_feats` default of `Gather` untouched — see `report_paging` for why that is a different
 # defect rather than a prediction that missed.
@@ -349,10 +350,13 @@ def report_declines(agr: Agreement) -> None:
     the number this table exists to separate:
 
     `PrintingCompose` --
-    - `NotComposable`, `DeclineBroad`, `DeclineSparseEstimate` gate BEFORE the compose. Cheap; the
-      fastpath looked at an estimate and turned back.
+    - `DeclineBroad` and `DeclineSparseEstimate` gate BEFORE the compose. Cheap; the fastpath looked
+      at an estimate and turned back.
     - `DeclineSparseExact` gates AFTER, off the real total, so it has already composed the printing
       bitmap and throws it away. That is a full compose paid for nothing.
+    - `NotComposable` should never appear at all: `PrintingCompose.applicable` IS the structural
+      test the fastpath re-checks, so reaching it means the two have drifted. Its existence is the
+      finding, not the timing next to it -- see `IMPOSSIBLE_GATES`.
 
     `PrintingRangeScan` -- all four of its real gates are cheap (two binary searches and a lookup),
     so the interesting number here is the COUNT, not the median:
@@ -364,7 +368,8 @@ def report_declines(agr: Agreement) -> None:
     - `RangeSparse` needs 1000 < k <= 1024 and so is near-unreachable outside a tiny index.
     - `RangeNotBare` and `RangePermutationStale` should never appear at all -- the first contradicts
       `PrintingRangeScan.applicable`, the second means an index built against a different store. A
-      non-zero count in either row is the finding, not the timing next to it.
+      non-zero count in either row is the finding, not the timing next to it. Same class as compose's
+      `NotComposable` above; all three are in `IMPOSSIBLE_GATES`.
 
     A high `DeclineSparseExact` median against the same query's `PrintingCompose` predicted cost is
     the actionable case: it means the pre-compose sparse estimate is not catching what the exact
