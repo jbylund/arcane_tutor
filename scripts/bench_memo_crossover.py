@@ -23,7 +23,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from api.parsing import parse_scryfall_query  # noqa: E402
-from scripts.bench_bitplanes import load_engine  # noqa: E402
+from scripts.costbench import load_engine  # noqa: E402
 
 NEEDLES = ["deathtouch", "vigilance", "trample", "sacrifice", "draw", "target"]
 CMC_STEPS = [0, 1, 2, 3, 4, 5, 6, 8]

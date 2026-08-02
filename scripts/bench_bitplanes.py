@@ -23,17 +23,20 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import pathlib
 import subprocess
 import sys
 import time
+from typing import TYPE_CHECKING
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-import card_engine  # noqa: E402
 from api.parsing import parse_scryfall_query  # noqa: E402
+from scripts.costbench import load_engine  # noqa: E402
+
+if TYPE_CHECKING:
+    import card_engine
 
 # (group, query, unique, orderby, prefer) — direction=asc, limit=100, offset=0 throughout.
 # Groups map to the #630 phases; "control" rows are selective queries that must not regress.
@@ -109,28 +112,6 @@ CONFIGS: list[tuple[str, str, str, str, str]] = [
 ]
 
 WARMUP = 20
-BATCH_SIZE = 2000
-
-
-def load_engine(corpus: pathlib.Path, shm_path: pathlib.Path) -> card_engine.QueryEngine:
-    """Build a fresh engine store from the corpus JSONL via the staged reload API."""
-    engine = card_engine.QueryEngine(str(shm_path))
-    if not engine.reload_begin():
-        msg = "reload_begin returned False (stale archive published concurrently?)"
-        raise RuntimeError(msg)
-    t0 = time.monotonic()
-    batch: list[dict] = []
-    with corpus.open() as fh:
-        for line in fh:
-            batch.append(json.loads(line))
-            if len(batch) == BATCH_SIZE:
-                engine.add_batch(batch)
-                batch.clear()
-    if batch:
-        engine.add_batch(batch)
-    engine.reload_commit()
-    print(f"Engine loaded: {engine.size():,} printings in {time.monotonic() - t0:.1f}s", flush=True)
-    return engine
 
 
 def bench_one(engine: card_engine.QueryEngine, config: tuple[str, str, str, str], window: float) -> tuple[int, int, float, float]:

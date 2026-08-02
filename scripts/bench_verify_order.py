@@ -194,7 +194,7 @@ def cmd_worker(args: argparse.Namespace) -> None:
 
 def cmd_run(args: argparse.Namespace) -> None:
     """Build the store + frozen spec set, then run interleaved old/new reps."""
-    from scripts.bench_bitplanes import load_engine  # noqa: PLC0415 — heavy loader, workers don't need it
+    from scripts.costbench import load_engine  # noqa: PLC0415 — heavy loader, workers don't need it
 
     store = OUTDIR / "real.store"
     queries = OUTDIR / "specs.json"

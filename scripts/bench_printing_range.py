@@ -24,7 +24,8 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from api.parsing import parse_scryfall_query  # noqa: E402
-from scripts.bench_bitplanes import WARMUP, load_engine  # noqa: E402
+from scripts.bench_bitplanes import WARMUP  # noqa: E402
+from scripts.costbench import load_engine  # noqa: E402
 
 if TYPE_CHECKING:
     import card_engine

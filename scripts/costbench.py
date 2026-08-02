@@ -39,6 +39,42 @@ if TYPE_CHECKING:
 
     from scripts.query_sampler import QuerySampler
 
+# ── engine loading ────────────────────────────────────────────────────────────────────────────
+# Rows per `add_batch` during a staged reload. Large enough that the per-call overhead disappears,
+# small enough that the batch list stays cheap to hold.
+BATCH_SIZE = 2000
+
+
+def load_engine(corpus: pathlib.Path, shm_path: pathlib.Path) -> object:
+    """Build a fresh engine store from the corpus JSONL via the staged reload API.
+
+    Lived in `bench_bitplanes.py` until 35 call sites were importing it out of a targeted benchmark
+    whose own investigation had closed. Nothing about it is bitplane-specific.
+
+    Raises:
+        RuntimeError: if `reload_begin` refuses, which means another process published concurrently.
+    """
+    import card_engine  # noqa: PLC0415 - keeps `costbench` importable without the built extension
+
+    engine = card_engine.QueryEngine(str(shm_path))
+    if not engine.reload_begin():
+        msg = "reload_begin returned False (stale archive published concurrently?)"
+        raise RuntimeError(msg)
+    t0 = time.monotonic()
+    batch: list[dict] = []
+    with corpus.open() as fh:
+        for line in fh:
+            batch.append(json.loads(line))
+            if len(batch) == BATCH_SIZE:
+                engine.add_batch(batch)
+                batch.clear()
+    if batch:
+        engine.add_batch(batch)
+    engine.reload_commit()
+    print(f"Engine loaded: {engine.size():,} printings in {time.monotonic() - t0:.1f}s", flush=True)
+    return engine
+
+
 # ── measurement defaults ──────────────────────────────────────────────────────────────────────
 # The (2, 7) pair six of the nine harnesses had already converged on. Seven is the floor for reading
 # `trials_ns` as a head-to-head: participants are shuffled per round from a fixed seed rather than

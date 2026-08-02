@@ -31,7 +31,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from api.parsing import parse_scryfall_query  # noqa: E402
 from client.query_runner import random_query  # noqa: E402
 from scripts import costbench  # noqa: E402
-from scripts.bench_bitplanes import load_engine  # noqa: E402
+from scripts.costbench import load_engine  # noqa: E402
 
 if TYPE_CHECKING:
     import card_engine

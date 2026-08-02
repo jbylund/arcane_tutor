@@ -37,7 +37,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from api.parsing import parse_scryfall_query  # noqa: E402
 from scripts import costbench  # noqa: E402
-from scripts.bench_bitplanes import load_engine  # noqa: E402
+from scripts.costbench import load_engine  # noqa: E402
 
 TARGET_SOURCE = "card_range_popcount"
 MATERIALIZING = ("StreamedSelect", "GatheredScan")

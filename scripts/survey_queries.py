@@ -36,7 +36,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from api.parsing import parse_scryfall_query  # noqa: E402
 from client.query_runner import _DIM_NAMES, _DIM_VALUES, _DIM_WEIGHTS  # noqa: E402
-from scripts.bench_bitplanes import load_engine  # noqa: E402
+from scripts.costbench import load_engine  # noqa: E402
 
 # tix/eur are excluded from the survey (issue #638, priority low): they are not
 # part of our real search traffic, and they have no index, so they'd dominate

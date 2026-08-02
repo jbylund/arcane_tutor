@@ -32,7 +32,8 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.bench_bitplanes import bench_one, load_engine  # noqa: E402
+from scripts.bench_bitplanes import bench_one  # noqa: E402
+from scripts.costbench import load_engine  # noqa: E402
 
 # (group, query, unique, orderby, prefer) — direction=asc, limit=100, offset=0 throughout.
 # `total` doubles as the parity check (identical across builds for every row).
@@ -52,14 +53,12 @@ CONFIGS: list[tuple[str, str, str, str, str]] = [
     # that the "pick the sparser side" branch leaves the majority-illegal case alone.
     ("pioneer_printing", "f:pioneer", "printing", "usd", "default"),
     ("pioneer_printing", "f:pioneer", "printing", "rarity", "default"),
-
     # ── Controls: unique=card / artwork (out of scope — prefer-dependent representative). Hold flat. ──
     ("commander_card", "f:commander", "card", "usd", "default"),
     ("commander_card", "f:commander", "card", "rarity", "default"),
     ("commander_artwork", "f:commander", "artwork", "usd", "default"),
     ("commander_artwork", "f:commander", "artwork", "rarity", "default"),
     ("legacy_card", "f:legacy", "card", "usd", "default"),
-
     # ── Controls: already-fast printing-mode paths. Hold flat. ──
     # Permutation orderby (edhrec) → walk_grouped_page, unaffected by either change.
     ("commander_printing_perm", "f:commander", "printing", "edhrec", "default"),
@@ -69,7 +68,6 @@ CONFIGS: list[tuple[str, str, str, str, str]] = [
     ("border_printing", "border:black", "printing", "rarity", "default"),
     # Bare usd range, printing/rarity — permutation-free gather fallback (#740), no legality build.
     ("bare_usd_printing", "usd<50", "printing", "rarity", "default"),
-
     # ── Controls: plane-only card path (split_planes + card popcount). Hold flat. ──
     ("plane_card", "f:modern", "card", "usd", "default"),
     ("plane_card", "f:commander", "card", "edhrec", "default"),

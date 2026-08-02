@@ -26,7 +26,8 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.bench_bitplanes import bench_one, load_engine  # noqa: E402
+from scripts.bench_bitplanes import bench_one  # noqa: E402
+from scripts.costbench import load_engine  # noqa: E402
 
 # (group, query, unique, orderby, prefer) — direction=asc, limit=100, offset=0 throughout.
 # `edhrec` rows are controls (already fast via a real permutation; must not regress). `rarity`/`usd`

@@ -35,7 +35,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from api.parsing import parse_scryfall_query  # noqa: E402
-from scripts.bench_bitplanes import load_engine  # noqa: E402
+from scripts.costbench import load_engine  # noqa: E402
 
 # Thresholds per dimension, spanning each field's real distribution from a handful of cards to
 # nearly the whole corpus. Deliberately the same shapes the investigation swept.
