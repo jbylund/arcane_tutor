@@ -3723,6 +3723,46 @@ fn plan_stats_never_leak_between_participants() {
     assert!(range_labelled > 0, "no PrintingRangeScan produced a page; its success labels are unchecked");
 }
 
+/// The predicted strategy and the taken strategy must SPELL themselves the same way.
+///
+/// These are two enums — `ComposePaging` (what the cost model predicted) and `PagingTaken` (what the
+/// fastpath did) — and Rust compares them nowhere: `compose_paging_prediction_matches_the_branch_taken`
+/// maps one to the other through an explicit table, so a rename on either side is invisible to it.
+///
+/// The comparison that DOES happen is in Python, on the strings.
+/// `scripts/bench_cost_model_agreement.py` counts agreement as `cells[(predicted, taken)]`, drawing
+/// `predicted` from `acquire["compose_paging"]` and `taken` from `plans[i]["paging_taken"]`. If the
+/// two labels drift apart, every agreed run is reclassified as a disagreement and the whole
+/// diagonal empties — a table full of alarming off-diagonal counts, with nothing wrong but a name.
+///
+/// This was a live hole until `ComposePaging::label()` existed: that side was `format!("{:?}", ..)`,
+/// so it followed a variant rename automatically while `PagingTaken::label()` did not.
+#[test]
+fn compose_paging_and_paging_taken_agree_on_strategy_names() {
+    // The three strategies that exist on BOTH sides, which is exactly the set the Python table
+    // compares. `PagingTaken`'s other variants are gates and outcomes with no predicted counterpart,
+    // and `GatherWalkDeclined` is deliberately spelled differently — it is the one cell where the
+    // prediction is allowed to be inexact, so it must NOT collide with `Gather`.
+    let paired = [
+        (ComposePaging::Perm, PagingTaken::Perm),
+        (ComposePaging::OrderbyWalk, PagingTaken::OrderbyWalk),
+        (ComposePaging::Gather, PagingTaken::Gather),
+    ];
+    for (predicted, taken) in paired {
+        assert_eq!(
+            predicted.label(), taken.label(),
+            "{predicted:?} and {taken:?} are the same strategy but spell it differently; \
+             bench_cost_model_agreement.py compares them as strings and its diagonal would empty",
+        );
+    }
+    // The fallback must stay distinguishable from the strategy it falls back to, or the walk-declined
+    // rate folds into the agreed count and the under-costing it measures disappears.
+    assert_ne!(
+        PagingTaken::GatherWalkDeclined.label(), PagingTaken::Gather.label(),
+        "a declined walk must not be reported as a plain gather",
+    );
+}
+
 /// A plan that enters a fastpath and declines must say so through `explain_analyze`, not just
 /// through `run_query_with_plan`.
 ///

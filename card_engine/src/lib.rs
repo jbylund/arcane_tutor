@@ -5725,6 +5725,29 @@ pub(crate) enum ComposePaging {
     Gather,
 }
 
+impl ComposePaging {
+    /// The string `explain` reports under `"compose_paging"`. Byte-identical to what `Debug`
+    /// produced before this existed, so the Python surface did not move.
+    ///
+    /// Spelled out rather than left as `format!("{:?}", ..)` for the same reason `PagingTaken` and
+    /// `CountSource` are, and with a sharper edge than either: a consumer compares this label
+    /// against `PagingTaken`'s. `scripts/bench_cost_model_agreement.py` counts agreement as
+    /// `cells[(predicted, taken)]` with `predicted` from here and `taken` from
+    /// `PagingTaken::label()`, so the two must SPELL the three strategies the same way. While this
+    /// side was `Debug`-derived, renaming a variant here would have silently emptied that diagonal —
+    /// every agreed run reclassified as a disagreement — and `compose_paging_prediction_matches_the_branch_taken`
+    /// would not have noticed, because it compares enums rather than strings.
+    ///
+    /// `compose_paging_and_paging_taken_agree_on_strategy_names` is the test that pins the pairing.
+    fn label(self) -> &'static str {
+        match self {
+            ComposePaging::Perm => "Perm",
+            ComposePaging::OrderbyWalk => "OrderbyWalk",
+            ComposePaging::Gather => "Gather",
+        }
+    }
+}
+
 impl PhysicalPlan {
     /// All plans, argmin-ordered so ties resolve deterministically toward the
     /// cheaper-fixed-cost plan. The router filters this by `applicable`.
@@ -8204,7 +8227,9 @@ fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<B
     ] {
         d.set_item(k, v)?;
     }
-    d.set_item("compose_paging", format!("{:?}", g.compose_paging))?;
+    // `label()`, not `Debug` — a consumer compares this against `PagingTaken::label()`, so the two
+    // have to spell the shared strategy names identically. See `ComposePaging::label`.
+    d.set_item("compose_paging", g.compose_paging.label())?;
     Ok(d)
 }
 
