@@ -444,47 +444,6 @@ const COMPOSE_FIXED_COST_NS: f64 = 163.56;
 /// rows at density `match_rate`. Derived rather than stored, and exposed so a harness can check it
 /// against the `printings_scanned` counter -- the Perm and OrderbyWalk paging branches are priced
 /// entirely on this quantity and nothing else validates them.
-// --- PrintingCompose's own rates -------------------------------------------------------------
-//
-// This arm borrowed every constant it used from plans fitted against DIFFERENT physical operations,
-// because until now nothing fitted it: `design_row` returned None for PrintingCompose, so the one arm
-// carrying ~75% of measured routing regret was the one arm no tool calibrated. Fitting it (11,332
-// rows, 5,996 distinct shapes) moved within-25% agreement from 39% to 55% and p10 from 0.30 to 0.52,
-// the largest single gain of the exercise -- and showed the borrowed values are genuinely wrong here:
-//
-//     term                    borrowed from            was    fitted
-//     BROADCAST / PROJECT     LINEAR_PASS             1.50      1.93
-//     SCATTER                 RANGE_SCATTER           0.36      0.48
-//     WALK_STEP               RANGE_WALK_STEP          4.5      0.58
-//     GATHER_CARD_PASS        GATHER_CARD_PASS        6.80      9.81
-//     GATHER_PUSH_PER_MATCH   GATHER_PUSH_PER_MATCH   2.81      3.39
-//     FIXED                   RANGE_FIXED_COST       150.0    163.56
-//
-// The two gather rates are the informative ones: fitted on the SAME sample, GatheredScan wants 6.58
-// and 2.54 for what the comments called "the same operation". They are not the same operation --
-// compose walks a bitmap it just built, GatheredScan walks the printing array -- so the sharing was an
-// assumption, not a measurement. WALK_STEP at 7.7x is the largest error; RANGE_WALK_STEP stays at 4.5
-// for PrintingRangeScan, which has too few rows here to refit and should not inherit this.
-
-/// Legality broadcast-down and the printing→card/artwork projection pass, both linear over the set.
-pub(crate) const COMPOSE_LINEAR_PASS_PER_PRINTING_NS: f64 = 1.93;
-/// Range-slice scatter into the printing bitmap during build.
-pub(crate) const COMPOSE_SCATTER_PER_PRINTING_NS: f64 = 0.48;
-/// Result-space bitmap words popcounted for the total.
-const COMPOSE_POPCOUNT_PER_WORD_NS: f64 = 1.07;
-/// Per printing stepped over by the Perm / OrderbyWalk page fill.
-const COMPOSE_WALK_STEP_NS: f64 = 0.58;
-/// Per row emitted by the Perm / OrderbyWalk page fill.
-const COMPOSE_WALK_EMIT_PER_ROW_NS: f64 = 2.19;
-/// Per candidate card visited by `gather_composed_page`.
-const COMPOSE_GATHER_CARD_PASS_NS: f64 = 9.81;
-/// Per printing bit-tested against `pbits` inside the gather.
-const COMPOSE_GATHER_BITTEST_PER_PRINTING_NS: f64 = 0.38;
-/// Per match pushed into the bounded GatherSelect accumulator.
-const COMPOSE_GATHER_PUSH_PER_MATCH_NS: f64 = 3.39;
-/// Per-query setup for the compose fastpath.
-const COMPOSE_FIXED_COST_NS: f64 = 163.56;
-
 pub(crate) fn printings_walked(f: &PlanFeatures) -> f64 {
     let page_span = f64::from((f.offset.saturating_add(f.limit)).min(f.matches));
     let match_rate = (f64::from(f.matches) / f64::from(f.n_printings.max(1))).max(MATCH_RATE_FLOOR);

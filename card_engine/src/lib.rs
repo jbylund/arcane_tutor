@@ -1965,7 +1965,9 @@ fn invert_perm(perm: &[u32]) -> Vec<u32> {
     inv
 }
 
-fn build_sort_permutations(cards: &[OracleCard], printings: &[Printing], offsets: &[u32]) -> SortPermutations {
+fn build_sort_permutations(cards: &[OracleCard]) -> SortPermutations {
+    // Purely card-space now: the printings/offsets arguments existed only to read the first stored
+    // printing's prefer_score, which is no longer a sort key (see the closure below).
     let perm = |get: &dyn Fn(&OracleCard) -> Option<f32>, descending: bool| -> Vec<u32> {
         let mut ids: Vec<u32> = (0..cards.len() as u32).collect();
         ids.sort_unstable_by_key(|&i| {
@@ -1975,12 +1977,11 @@ fn build_sort_permutations(cards: &[OracleCard], printings: &[Printing], offsets
             // Canonical secondary: the first (store-preferred) printing's
             // default prefer score, matching sort_key_bits' third component
             // for the printing the default prefer chooses.
-            let first = offsets[i as usize] as usize;
-            let sc = printings
-                .get(first)
-                .and_then(|p| p.prefer_score)
-                .map_or(u32::MAX, |v| f32_sort_bits(-v));
-            (((pk as u128) << 64) | ((e as u128) << 32) | (sc as u128), i)
+            // Keys 1-2 then the card index. prefer_score is deliberately NOT a key here: it used to
+            // be, taken from the first stored printing, which the gathered paths cannot reproduce
+            // because they see the first MATCHING printing instead. Ordering on something only one
+            // side can compute is what made row order depend on which plan ran. See `page_cmp`.
+            (((pk as u128) << 64) | (e as u128), i)
         });
         ids
     };
@@ -3996,7 +3997,18 @@ type Match = (u128, u32, u32);
 /// The page comparator (`select_page`'s order): sort key, then pid. pid is unique,
 /// so this is a total order over `Match`.
 fn page_cmp(a: &Match, b: &Match) -> std::cmp::Ordering {
-    a.0.cmp(&b.0).then_with(|| a.2.cmp(&b.2))
+    // Keys 1-2 only (`>> 32` drops key 3, prefer_score), then CARD, then printing.
+    //
+    // Key 3 must not decide across cards, because the two sides cannot agree on it. The prebuilt
+    // permutation bakes in `printings[offsets[i]]`'s prefer_score -- the first STORED printing, chosen
+    // without knowledge of any filter -- while this path uses the first MATCHING printing. Whenever a
+    // card's preferred printing fails the filter the two disagree, and the row order flips depending
+    // on which plan ran. Same query, different page, different plan: a page boundary could then repeat
+    // or skip a row.
+    //
+    // `cid` is filter-independent and total, so both sides can reach it. Within a card this changes
+    // nothing: printings are stored prefer-desc, so ascending pid already IS descending prefer_score.
+    (a.0 >> 32).cmp(&(b.0 >> 32)).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.cmp(&b.2))
 }
 
 /// Number of matches the gather buffer may grow *past* the page (`offset+limit`)
@@ -4034,14 +4046,15 @@ fn select_page(mut v: Vec<Match>, offset: usize, limit: usize) -> Vec<(u32, u32)
     if offset >= end {
         return Vec::new();
     }
-    let cmp = |a: &Match, b: &Match| a.0.cmp(&b.0).then_with(|| a.2.cmp(&b.2));
+    // `page_cmp` itself, not a copy of it. This was an inlined duplicate, which is exactly the
+    // drift `page_cmp`'s doc warns about -- one of the two got the cid tiebreak and the other did not.
     if end < v.len() {
-        v.select_nth_unstable_by(end, cmp);
+        v.select_nth_unstable_by(end, page_cmp);
     }
     if offset > 0 {
-        v[..end].select_nth_unstable_by(offset, cmp);
+        v[..end].select_nth_unstable_by(offset, page_cmp);
     }
-    v[offset..end].sort_unstable_by(cmp);
+    v[offset..end].sort_unstable_by(page_cmp);
     v.truncate(end);
     v.drain(..offset);
     v.into_iter().map(|(_, c, p)| (c, p)).collect()
@@ -7000,12 +7013,32 @@ fn run_query<'a>(
 /// `offsets` ranges over the candidate cards — O(candidates), a routing-time cost
 /// only paid when a candidate list exists.
 #[allow(dead_code)] // consumed by the cost benches (tests.rs) and future all-mode routing
-fn scan_units(mode: Mode, candidate_cards: Option<&[u32]>, offsets: &AOffsets, n_printings: u32, eval_domain: u32) -> u32 {
-    match mode {
-        Mode::Card => eval_domain,
-        Mode::Printing | Mode::Artwork => match candidate_cards {
-            None => n_printings,
-            Some(v) => v
+fn scan_units(mode: Mode, candidate_cards: Option<&[u32]>, offsets: &AOffsets, n_printings: u32, n_cards: u32) -> u32 {
+    // Card mode used to short-circuit to `eval_domain`, on the theory that the loop breaks at the
+    // first matching printing of each card. The `printings_scanned` counter says otherwise: across
+    // every acquire branch, GatheredScan and StreamedSelect scan the FULL printing span of their
+    // candidates in card mode too, and the old feature read 0.25-0.33 against it. So the QUANTITY is
+    // the same in all three modes -- printings under the candidates -- and there is no mode branch in
+    // what this means.
+    //
+    // There is a mode branch in how it is PAID FOR. The exact sum is O(candidates), which
+    // printing/artwork have always paid; card mode had not, and simply removing the short-circuit
+    // added ~30-47 us of acquire to every broad card query (`border:black` 47 us at 31,169
+    // candidates) -- a 40-70 us end-to-end regression on exactly those queries, for a feature nothing
+    // needed to be exact. The O(1) projection is what the counter was validated against in the first
+    // place: `eval_domain * n_printings/n_cards` reads 0.90-1.02 for both plans in all three modes,
+    // inside the [0.8, 1.25] bar.
+    //
+    // Printing/artwork keep the exact sum: they are already paying for it, and it reads 1.00 with a
+    // spread of 1.0. Card mode takes the projection and pays nothing.
+    match candidate_cards {
+        None => n_printings,
+        Some(v) => match mode {
+            Mode::Card => {
+                let per_card = f64::from(n_printings) / f64::from(n_cards.max(1));
+                (f64::from(v.len() as u32) * per_card) as u32
+            }
+            Mode::Printing | Mode::Artwork => v
                 .iter()
                 .map(|&cid| u32::from(offsets[cid as usize + 1]) - u32::from(offsets[cid as usize]))
                 .sum(),
@@ -7267,7 +7300,7 @@ fn mk_plan_feats(
 /// for `eval_domain·n_printings/n_cards` without re-justifying.
 fn candidate_feats(ctx: &QueryCtx, params: &QueryParams, prep: &PreparedCandidates, filter: &FilterExpr) -> cost::PlanFeatures {
     let count = prep.candidate_cards.as_ref().map_or(ctx.n_cards(), |v| v.len() as u32);
-    let scan = scan_units(params.mode, prep.candidate_cards.as_deref(), ctx.offsets, ctx.n_printings(), count);
+    let scan = scan_units(params.mode, prep.candidate_cards.as_deref(), ctx.offsets, ctx.n_printings(), ctx.n_cards());
     // Result cardinality is in the plan's OPERATING space, so it is NOT the candidate card count in
     // every mode. Passing `count` regardless under-counted printing mode by the printings-per-card
     // ratio: measured `matches_pushed / matches` of 2.41 for printing and 1.15 for artwork against
@@ -9028,7 +9061,7 @@ impl QueryEngine {
             released_at_cards,
             price_usd_cards,
             collector_number_cards,
-            sort_perms:     build_sort_permutations(&cards, &printings, &offsets),
+            sort_perms:     build_sort_permutations(&cards),
             max_artwork_groups: artwork_group_counts.iter().copied().max().unwrap_or(0),
             artwork_groups: artwork_group_counts,
             // Columnar copy of each printing's assigned artwork_group_id, derived here — the single

@@ -286,7 +286,7 @@ fn store_of(cards: Vec<OracleCard>, printing_counts: &[usize], vocab: VocabInter
         planes: build_bit_planes(&cards, &printings, &offsets, &[]),
         name_bigrams: build_name_bigram_index(&cards),
         legal_divergent: build_divergent_ids(&cards),
-        sort_perms: build_sort_permutations(&cards, &printings, &offsets),
+        sort_perms: build_sort_permutations(&cards),
         max_artwork_groups: artwork_groups.iter().copied().max().unwrap_or(0),
         artwork_groups,
         artwork_group_col: printings.iter().map(|p| p.artwork_group_id).collect(),
@@ -2359,7 +2359,7 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     data.indexes.flavor = build_flavor_index(&data.printings, &data.strings);
     data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
     data.indexes.legal_divergent = build_divergent_ids(&data.cards);
-    data.indexes.sort_perms = build_sort_permutations(&data.cards, &data.printings, &data.offsets);
+    data.indexes.sort_perms = build_sort_permutations(&data.cards);
     data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(i16::from));
     data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power.map(i16::from));
     data.indexes.toughness = build_numeric_index(&data.cards, |c| c.creature_toughness.map(i16::from));
@@ -2963,6 +2963,10 @@ fn force_plan_differential_agreement() {
     // >= any possible total, so the offset-0 page is the complete ordered result.
     let full_limit = archived.printings.len().max(1);
     // Same rows regardless of tie order.
+    // Order-preserving, unlike `id_multiset` below -- the full row sequence.
+    let id_seq = |page: &[(&Archived<OracleCard>, &Archived<Printing>)]| -> Vec<u128> {
+        page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect()
+    };
     let id_multiset = |page: &[(&Archived<OracleCard>, &Archived<Printing>)]| -> Vec<u128> {
         let mut v: Vec<u128> = page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect();
         v.sort_unstable();
@@ -3006,6 +3010,13 @@ fn force_plan_differential_agreement() {
                 ran[plan_idx(PhysicalPlan::GatheredScan)] += 1;
                 let ref_ids = id_multiset(&ref_page);
                 let ref_key2 = key2_seq(&ref_page);
+                // Full ROW ORDER, not just the 2-key value sequence. Every plan now orders on
+                // (key1, key2, cid, pid) -- all four filter-independent, all four reachable from
+                // either side -- so the sequences must be identical, not merely compatible. This
+                // could not be asserted while key 3 decided: the permutation baked in the first
+                // STORED printing's prefer_score and the gathered paths used the first MATCHING
+                // one, so tied rows legitimately interleaved differently per plan.
+                let ref_order = id_seq(&ref_page);
 
                 for &plan in &all_plans {
                     if plan == PhysicalPlan::GatheredScan {
@@ -3035,6 +3046,20 @@ fn force_plan_differential_agreement() {
                         "{plan:?} 2-key order disagrees with GatheredScan (mode={mode}, prefer={prefer}, orderby={orderby}, dir={direction}, filter={})",
                         fuzz_describe(spec),
                     );
+                    // Full row order, for every plan that orders through `page_cmp` or a card
+                    // permutation -- i.e. everything except `PrintingRangeScan`, which walks the
+                    // range index bucket by bucket and windows within the touched ones instead of
+                    // ordering the whole match set. That is a SEPARATE, pre-existing divergence:
+                    // verified by probe, it fails identically with and without the `cid` tiebreak
+                    // this change adds, so it is neither caused nor fixed here. Tracked for its own
+                    // change rather than silently folded in.
+                    if plan != PhysicalPlan::PrintingRangeScan {
+                        assert_eq!(
+                            id_seq(&page), ref_order,
+                            "{plan:?} ROW ORDER disagrees with GatheredScan (mode={mode}, prefer={prefer}, orderby={orderby}, dir={direction}, filter={})",
+                            fuzz_describe(spec),
+                        );
+                    }
                 }
             }
         }
@@ -5684,7 +5709,7 @@ fn bench_checked_vs_unchecked_access() {
         released_at_cards: RangeCardCounts::default(),
         price_usd_cards: RangeCardCounts::default(),
         collector_number_cards: RangeCardCounts::default(),
-        sort_perms:     build_sort_permutations(&cards, &printings, &offsets),
+        sort_perms:     build_sort_permutations(&cards),
         max_artwork_groups: artwork_groups.iter().copied().max().unwrap_or(0),
         artwork_groups,
         artwork_group_col: printings.iter().map(|p| p.artwork_group_id).collect(),
@@ -6285,7 +6310,7 @@ fn streamed_selection_matches_gathered() {
             p.price_usd = Some((pid % 7) as u32 * 100 + 50); // $0.50, $1.50, ... $6.50
         }
         if with_perms {
-            data.indexes.sort_perms = build_sort_permutations(&data.cards, &data.printings, &data.offsets);
+            data.indexes.sort_perms = build_sort_permutations(&data.cards);
             reassign_artwork_grouping(&mut data);
         }
         rkyv::to_bytes::<Error>(&data).expect("serialize")
@@ -6393,7 +6418,7 @@ fn sort_permutations_nulls_last_both_directions() {
     cards[1].cmc = None;
     cards[2].cmc = Some(1);
     let data = store_of(cards, &[1, 1, 1], vocab);
-    let perms = build_sort_permutations(&data.cards, &data.printings, &data.offsets);
+    let perms = build_sort_permutations(&data.cards);
     assert_eq!(perms.cmc[0], vec![2, 0, 1], "asc: 1, 5, null");
     assert_eq!(perms.cmc[1], vec![0, 2, 1], "desc: 5, 1, null");
 }
@@ -9052,7 +9077,7 @@ fn named_store() -> CardData {
         .collect();
     assign_name_ranks(&mut cards);
     let mut data = store_of(cards, &[1; 6], vocab);
-    data.indexes.sort_perms = build_sort_permutations(&data.cards, &data.printings, &data.offsets);
+    data.indexes.sort_perms = build_sort_permutations(&data.cards);
     data
 }
 
