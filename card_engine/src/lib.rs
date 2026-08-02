@@ -5762,7 +5762,7 @@ impl PhysicalPlan {
 struct PreparedCandidates {
     candidate_cards: Option<Vec<u32>>,
     all_match_known: bool,
-    /// `Candidates::repr_label` of what the narrowing returned, before this struct flattened
+    /// `Candidates::repr` of what the narrowing returned, before this struct flattened
     /// it to `candidate_cards`. Diagnostic only (`explain`) — nothing in execution reads it,
     /// and it exists because a candidate *count* in some band does not imply the query paid
     /// a sort to get there: a plane AND'd with a range reaches the same count word-wise.
@@ -6406,6 +6406,11 @@ pub(crate) struct PhaseStats {
     ///
     /// The prediction is 3-way and this is 10-way, so they are not compared blindly — see
     /// `PagingTaken` for what each variant licenses.
+    ///
+    /// Reported here but NOT stored here: the live value lives in the `PAGING_TAKEN` thread-local
+    /// and `take_phase_stats` merges it in. It is the one field written by something other than an
+    /// executor, so sharing a slot with the counters meant every publisher had to remember not to
+    /// clobber it — see `PAGING_TAKEN`.
     pub(crate) paging_taken: PagingTaken,
 }
 
@@ -6423,7 +6428,7 @@ pub(crate) enum PagingTaken {
     /// `run_query_with_plan` rejected before calling it. A compose that DID enter and declined
     /// always names the gate instead, so this never means "declined".
     ///
-    /// `#[default]` so a zeroed `PhaseStats` reads as "nothing recorded", which is what
+    /// `#[default]` so a cleared `PAGING_TAKEN` reads as "nothing recorded", which is what
     /// `take_phase_stats` leaves behind and what an uninstrumented plan reports.
     #[default]
     NotEntered,
@@ -6529,22 +6534,45 @@ thread_local! {
     /// `explain_analyze` is the only caller that establishes it.
     ///
     /// Nothing clears this on the production path, deliberately: a `Cell` write per query to reset
-    /// state no production reader consults would be cost for nobody. The consequence is that a live
-    /// worker thread carries whatever its last query left here indefinitely, and because both
-    /// publishers use `..c.get()` to preserve `paging_taken` across a partial write, a stale label
-    /// from an unrelated earlier query is inherited rather than overwritten.
+    /// state no production reader consults would be cost for nobody. So a reader added outside
+    /// `explain_analyze` gets an arbitrary earlier query's numbers, not zeros and not the current
+    /// query's. Take first, then run, then read.
     ///
-    /// So a reader added outside `explain_analyze` gets an arbitrary earlier query's numbers, not
-    /// zeros and not the current query's. Take first, then run, then read.
+    /// Every publisher writes this slot WHOLE. That is what keeps the staleness above bounded to
+    /// "the last query on this thread" instead of compounding: an earlier draft had the publishers
+    /// write 8 of 10 fields and inherit the rest through `..c.get()`, which silently widened "this
+    /// run" to "this thread, ever" and was measured leaking a compose-only `paging_taken` into
+    /// `GatheredScan` on 49 of 600 queries. The two fields that made `..c.get()` necessary are now
+    /// owned elsewhere: `paging_taken` by `PAGING_TAKEN` below, `ns_round_total`/`result_total` by
+    /// `explain_analyze`, which fills them after the take.
     static PHASE_STATS: std::cell::Cell<PhaseStats> = const { std::cell::Cell::new(PhaseStats {
         cards_visited: 0, printings_scanned: 0, matches_pushed: 0, ns_setup: 0, ns_loop: 0, ns_finish: 0, ns_round_total: 0,
         ns_prepare: 0, result_total: 0, paging_taken: PagingTaken::NotEntered,
     }) };
-}
 
-thread_local! {
+    /// The compose fastpath's branch label, stored apart from `PHASE_STATS` because it is the one
+    /// field written by something that is not an executor, and on a path that runs in production.
+    ///
+    /// Two things fall out of the split, both of which the shared slot got wrong:
+    /// - a materializing publish can no longer wipe it, so the routed path's "compose declines,
+    ///   records its gate, falls through to a materializing plan" sequence is preserved by
+    ///   construction rather than by every publisher remembering to write `..c.get()`;
+    /// - `note_paging_taken` is a one-byte store instead of a read-modify-write of the whole
+    ///   ~80-byte `PhaseStats`, which matters because it is on the production compose path.
+    ///
+    /// `take_phase_stats` reassembles the two into one `PhaseStats`, so consumers see no seam.
+    static PAGING_TAKEN: std::cell::Cell<PagingTaken> = const { std::cell::Cell::new(PagingTaken::NotEntered) };
+
     /// `prepare_candidates`' time for the run in progress, handed to the executor that follows it —
     /// the two are separate calls in `run_query_with_plan`, and only the executor publishes stats.
+    ///
+    /// Unlike the two slots above this one is never cleared by `take_phase_stats`, because it is
+    /// not a stat: it is a value in flight between two calls, and the receiving executor consumes
+    /// it with `replace(0)`. That handoff is what keeps it from leaking, and it is an invariant
+    /// spanning three functions rather than anything the type system enforces — every
+    /// `timed_prepare_candidates` must be followed by an executor that publishes. The
+    /// `debug_assert` below pins it, because the failure is silent: an unconsumed value is read by
+    /// the NEXT participant and reported as its `ns_prepare`, which looks entirely plausible.
     static PENDING_PREPARE_NS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
@@ -6556,6 +6584,13 @@ fn timed_prepare_candidates(
     filter: &mut FilterExpr,
     plane: Option<&PlaneExpr>,
 ) -> PreparedCandidates {
+    // Nothing may be in flight here: the previous timed prepare's executor must already have
+    // consumed it. See PENDING_PREPARE_NS for why an unconsumed value is worse than a missing one.
+    debug_assert_eq!(
+        PENDING_PREPARE_NS.with(std::cell::Cell::get),
+        0,
+        "a previous timed_prepare_candidates was not consumed by an executor; its time would be reported as this run's",
+    );
     let t = std::time::Instant::now();
     let prep = prepare_candidates(ctx, params, filter, plane);
     PENDING_PREPARE_NS.with(|c| c.set(t.elapsed().as_nanos() as u64));
@@ -6565,18 +6600,19 @@ fn timed_prepare_candidates(
 /// Record which paging branch the compose fastpath took. Reporting only -- see
 /// `PhaseStats::paging_taken` for why the predicted branch is not enough.
 fn note_paging_taken(which: PagingTaken) {
-    PHASE_STATS.with(|c| {
-        let mut st = c.get();
-        st.paging_taken = which;
-        c.set(st);
-    });
+    PAGING_TAKEN.with(|c| c.set(which));
 }
 
 /// Last executor run's phase stats, and clear them. `explain_analyze` reads this immediately after a
 /// timed run, having cleared beforehand — see `PHASE_STATS` for why that order is the contract and
 /// why an unpaired read does NOT see zeros.
+///
+/// Both slots are taken together, so a caller cannot clear one and leave the other to leak into the
+/// next participant — which is the whole failure `plan_stats_never_leak_between_participants` pins.
 fn take_phase_stats() -> PhaseStats {
-    PHASE_STATS.with(|c| c.replace(PhaseStats::default()))
+    let mut stats = PHASE_STATS.with(|c| c.replace(PhaseStats::default()));
+    stats.paging_taken = PAGING_TAKEN.with(|c| c.replace(PagingTaken::NotEntered));
+    stats
 }
 
 /// P4 executor: the universal gathered per-card loop + `select_page`. Runs any
@@ -6649,6 +6685,9 @@ fn exec_gathered_scan<'a>(
     let t_end = std::time::Instant::now();
     let prep_ns = PENDING_PREPARE_NS.with(|c| c.replace(0));
     PHASE_STATS.with(|c| {
+        // A WHOLE-struct set, deliberately: nothing here is inherited, so this executor cannot
+        // report a field an earlier query wrote. The compose fastpath's `paging_taken` survives
+        // regardless — it lives in `PAGING_TAKEN`, which this does not touch.
         c.set(PhaseStats {
             cards_visited: n_cards_visited,
             printings_scanned: n_printings_scanned,
@@ -6658,9 +6697,8 @@ fn exec_gathered_scan<'a>(
             ns_finish: (t_end - t_finish).as_nanos() as u64,
             ns_round_total: 0, // filled by explain_analyze, which owns the round timer
             ns_prepare: prep_ns,
-            // Keep whatever this run already recorded (e.g. the paging branch the fastpath took):
-            // a whole-struct set here would silently wipe it.
-            ..c.get()
+            result_total: 0,   // likewise: explain_analyze fills it from the value actually returned
+            paging_taken: PagingTaken::NotEntered, // owned by PAGING_TAKEN; take_phase_stats merges it in
         });
     });
     (total, page)
@@ -6928,9 +6966,11 @@ fn run_query_routed<'a>(
         // prepare_candidates yields for a True-residual plane query.
         (p, Prep::Plane) => exec_from_candidates(
             p, ctx, params, filter,
-            // `narrowed_repr` is diagnostic-only and this path is not reached via `explain`'s
-            // acquire (which reports `Prep::Plane` as "none"); the plane bitmap is the source.
-            &PreparedCandidates { candidate_cards: Some(bitmap_card_ids(&plane_bits)), all_match_known: true, narrowed_repr: NarrowedRepr::CardBits },
+            // `None`, matching what `Prep::narrowed_repr` reports for a plane acquire: the field
+            // means "what the residual NARROWING produced", and no narrowing ran here — the list
+            // came from the plane bitmap. Diagnostic-only and unread on this path, but `CardBits`
+            // here would be the one value that contradicts `explain`'s contract if it ever were.
+            &PreparedCandidates { candidate_cards: Some(bitmap_card_ids(&plane_bits)), all_match_known: true, narrowed_repr: NarrowedRepr::None },
             plane,
         ),
         (p, Prep::Candidates(prep)) => exec_from_candidates(p, ctx, params, filter, prep, plane),
@@ -7072,7 +7112,7 @@ pub(crate) struct AcquireFacts {
     /// `"candidates"` materializes a candidate list at all, so it is the first thing
     /// to check before treating a query as a test case for materialization work.
     pub(crate) count_source: CountSource,
-    /// `Candidates::repr_label` of what the narrowing produced — `cards`/`printings` mean a
+    /// `Candidates::repr` of what the narrowing produced — `cards`/`printings` mean a
     /// sorted vec was built (some site ran a `collect` + `sort_unstable`), `card_bits`/
     /// `printing_bits` mean it stayed word-wise. `none` means the residual narrowing produced
     /// nothing: either no candidate list at all (`range`/`plane` acquire), or a candidate
@@ -7081,7 +7121,7 @@ pub(crate) struct AcquireFacts {
     /// Needed because a candidate *count* in a given band does not imply a sort was paid to
     /// reach it: a plane AND'd with a range lands at the same count without sorting anything.
     ///
-    /// A top-of-narrowing proxy, not a per-site census — see `Candidates::repr_label`.
+    /// A top-of-narrowing proxy, not a per-site census — see `Candidates::repr`.
     pub(crate) narrowed_repr: NarrowedRepr,
     /// Raw per-sample wall time of the acquire step — narrowing and any
     /// materialization included. Not pre-reduced, same rationale as
@@ -7285,6 +7325,16 @@ const PARTICIPANT_SHUFFLE_SEED: u64 = 745_002;
 /// The shuffle is seeded from a fixed constant, so ordering stays reproducible for the same query
 /// while still decorrelating which participant follows which.
 ///
+/// What the shuffle gives up, and why `num_trials` has to carry it: rotation was *position-balanced*
+/// — over `n` rounds every participant occupied every slot exactly once — and an independent
+/// per-round shuffle is not. At `num_trials = 3` a participant can draw the warm tail of the round
+/// twice by chance, and since every consumer reduces `trials_ns` with `min`, that lower sample is
+/// the one that survives. The trade is still right, because the bias it removes was directional and
+/// unequal across acquire classes while this one is zero-mean and shrinks with rounds — but it
+/// shrinks only with rounds. Prefer enough trials for positions to average out
+/// (`scripts/bench_cost_model_agreement.py` uses 7); do not read a 2-3 trial run as a fair
+/// head-to-head between plans whose times are within ~10% of each other.
+///
 /// `trials_ns` is a fair head-to-head *between plans*, not a reproduction of a real
 /// query's wall time: each `run_query_with_plan` call re-runs its own
 /// `prepare_candidates`, whereas `run_query_routed` acquires the shared artifact
@@ -7316,9 +7366,10 @@ fn explain_analyze(
     let mut rng = rand::rngs::SmallRng::seed_from_u64(PARTICIPANT_SHUFFLE_SEED);
     let mut order: Vec<Participant> =
         (0..n).map(Participant::Plan).chain([Participant::Acquire, Participant::Routed]).collect();
-    // Every participant clears PHASE_STATS after itself, so this is only about the very first one:
-    // with `num_warmups == 0` it would otherwise publish over whatever an earlier query on this
-    // thread left behind (the publishers preserve unwritten fields via `..c.get()`).
+    // Every participant clears both stat slots after itself, so this is only about the very first
+    // one: with `num_warmups == 0` an uninstrumented plan would otherwise report whatever an
+    // earlier query on this thread left in `PAGING_TAKEN`, which nothing on the production path
+    // resets.
     take_phase_stats();
     for round in 0..(num_warmups + num_trials) {
         order.shuffle(&mut rng);
@@ -7626,7 +7677,8 @@ fn run_query_streamed<'a>(
                 ns_finish: (end - t_finish).as_nanos() as u64,
                 ns_round_total: 0,
                 ns_prepare: prep_ns,
-                ..c.get() // see the note at the other publisher
+                result_total: 0,                       // see the note at the other publisher
+                paging_taken: PagingTaken::NotEntered, // ditto: owned by PAGING_TAKEN
             });
         });
     };

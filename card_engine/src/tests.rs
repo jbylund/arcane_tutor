@@ -3201,7 +3201,7 @@ fn explain_analyze_matches_explain_and_times_every_plan() {
 /// mirror that silently drifted from `cost.rs` for two revisions. `PhaseStats::paging_taken` exists
 /// to make the agreement checkable; this is the check.
 ///
-/// The prediction is 3-way (`ComposePaging`) and `paging_taken` is 8-way, because a decline or an
+/// The prediction is 3-way (`ComposePaging`) and `paging_taken` is 10-way, because a decline or an
 /// empty page reaches no strategy at all. Only the strategy labels are comparable; the rest must
 /// still name the gate that fired, which is the other half of what this checks.
 ///
@@ -3399,9 +3399,13 @@ fn compose_paging_prediction_matches_the_branch_taken() {
 /// `all_match_known` is honest, so the artwork/all-match cell checks the narrowing's own claim as
 /// well as the counters — which is why it is guarded for coverage separately below.
 ///
-/// `matches_pushed` is deliberately NOT asserted: it equals `result_total` by construction in both
-/// executors (`GatherSelect::absorb` accumulates the identical `len() - before` the counter does),
-/// and plan-vs-plan agreement on `result_total` is already covered elsewhere.
+/// `matches_pushed` is asserted two ways: plan-vs-plan like the others, and against the total each
+/// run actually returned. The second is what carries it. Plan-vs-plan alone cannot catch both
+/// executors being wrong the same way, and "it equals the total by construction" is not something
+/// this file should take on faith across two functions — `GatherSelect::absorb` accumulates the
+/// identical `len() - before` the counter does, and in artwork mode that expression sits downstream
+/// of the group dedup, so a counter moved above it would still agree plan-to-plan while both
+/// disagreed with reality.
 #[test]
 fn materializing_plans_agree_on_the_counters_they_share() {
     use rand::SeedableRng;
@@ -3484,6 +3488,28 @@ fn materializing_plans_agree_on_the_counters_they_share() {
                     "printings_scanned disagrees (streamed {} vs gathered {}): {case}",
                     streamed.printings_scanned, gathered.printings_scanned,
                 );
+                assert_eq!(
+                    streamed.matches_pushed, gathered.matches_pushed,
+                    "matches_pushed disagrees (streamed {} vs gathered {}): {case}",
+                    streamed.matches_pushed, gathered.matches_pushed,
+                );
+                // And anchored to the value the run really returned, in BOTH executors. The two
+                // above are plan-vs-plan only, which cannot catch the two of them being wrong the
+                // same way; this is the one counter with an independent ground truth available for
+                // free, since `run_query_with_plan` already hands back the total.
+                //
+                // It is also what makes the `matches_pushed` parity above more than a restatement:
+                // the counter and `GatherSelect::total` accumulate the identical `len() - before`,
+                // and in artwork mode that expression is downstream of the group dedup, so a
+                // counter placed outside it would diverge here rather than in some later re-fit.
+                assert_eq!(
+                    streamed.matches_pushed, streamed_ran.as_ref().expect("checked above").0 as u64,
+                    "StreamedSelect's matches_pushed must equal the total it returned: {case}",
+                );
+                assert_eq!(
+                    gathered.matches_pushed, gathered_ran.as_ref().expect("asserted above").0 as u64,
+                    "GatheredScan's matches_pushed must equal the total it returned: {case}",
+                );
                 checked += 1;
 
                 // Coverage bookkeeping, so the assertions above cannot pass by never meeting the
@@ -3543,24 +3569,31 @@ fn materializing_plans_agree_on_the_counters_they_share() {
 ///
 /// Two distinct leaks, and the second is the one actually observed:
 ///
-/// 1. A participant that publishes NOTHING reads its predecessor's whole struct.
-///    `PrintingRangeScan`, `PlanePopcountOrder` and `CardRangePopcount` write no counters at all
-///    (they are bitmap/index operations with no per-card match loop), so without the clear they
-///    report whichever materializing plan ran before them.
+/// 1. A participant that publishes NOTHING reads its predecessor's state. `PrintingRangeScan`,
+///    `PlanePopcountOrder` and `CardRangePopcount` write no counters at all (they are bitmap/index
+///    operations with no per-card match loop), so without the clear they report whichever
+///    materializing plan ran before them.
 ///
-/// 2. A participant that publishes PARTIALLY inherits the fields it does not write. Both executors
-///    set 8 of `PhaseStats`' 10 fields and carry the rest through `..c.get()` — deliberately, since
-///    a compose fastpath that declines records `paging_taken` and THEN falls through to a
-///    materializing plan whose publish must not wipe it. That `..c.get()` means "inherit from
-///    earlier in this run", and the clear is the only thing that keeps "this run" from widening to
-///    "this thread, ever". Measured before the clear existed: 49 of 600 queries had `GatheredScan`
-///    reporting a `paging_taken` only `printing_compose_fastpath` sets.
+/// 2. `paging_taken` crossing from the plan that recorded it to a later one. Only
+///    `printing_compose_fastpath` writes it, and it must survive a materializing publish within one
+///    run — the routed path's "compose declines, records its gate, falls through to a materializing
+///    plan" sequence depends on that. So its lifetime is deliberately wider than any single
+///    publisher, and the per-participant clear is the only thing bounding it to one run instead of
+///    "this thread, ever". Measured when that clear was absent: 49 of 600 queries had
+///    `GatheredScan` reporting a `paging_taken` only the compose fastpath sets.
 ///
 /// So a fully-instrumented, looping plan was the contaminated one — which is why asserting only
 /// that the silent fast paths report zeros would miss the real defect.
 ///
-/// `result_total` is not checked: `explain_analyze` overwrites it after the take, so it is the one
-/// `..c.get()` field with no exposure. `paging_taken` is the whole of it.
+/// The two leaks now fail in different ways, and both still need pinning. Leak 1 needs
+/// `take_phase_stats` to clear `PHASE_STATS`; leak 2 needs it to clear `PAGING_TAKEN`, which is a
+/// separate thread-local precisely so a publisher cannot clobber it — dropping either half of that
+/// take reproduces the corresponding leak. (An earlier draft stored both in one slot and had the
+/// executors preserve the label through `..c.get()`; that made every publisher responsible for not
+/// wiping a field it does not own, which is the arrangement leak 2 came out of.)
+///
+/// `result_total` is not checked: `explain_analyze` overwrites it after the take, so it has no
+/// exposure. `paging_taken` is the whole of it.
 #[test]
 fn plan_stats_never_leak_between_participants() {
     use rand::SeedableRng;
