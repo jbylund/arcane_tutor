@@ -5712,11 +5712,12 @@ fn printing_compose_fastpath<'a>(
     // The permutation-free gather's two decline gates, asked through the shared helper so that
     // `acquire_plan_features` can ask the SAME question when it costs this plan. See
     // `compose_gather_declines`.
-    if perm.is_none() && !walk_col {
-        if let Some(reason) = compose_gather_declines(filter, indexes, offsets, printings, cards, mode) {
-            note_paging_taken(reason);
-            return None;
-        }
+    if perm.is_none()
+        && !walk_col
+        && let Some(reason) = compose_gather_declines(filter, indexes, offsets, printings, cards, mode)
+    {
+        note_paging_taken(reason);
+        return None;
     }
     // Compose once, here (never in acquire) — that single build is the only synthesis, and it is paid
     // only because this plan won. The total is the popcount in the query's result space; the page is
