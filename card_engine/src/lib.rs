@@ -4314,13 +4314,45 @@ fn card_match_count(
     // branch inside the hot loop. This is the overwhelmingly common case
     // (every query without a promoted legality leaf), and it's called once
     // per *candidate*, not once per emitted row, so its cost is on the
-    // critical path for every non-Step-2 query. A prior version of this
-    // function routed both cases through one closure-based `satisfies`
-    // helper regardless of `existential_plane`; measured as a real (~15%)
-    // regression on `banned:modern`/`restricted:vintage` (full-candidate-set
-    // scans, unaffected by `existential_plane` in outcome but paying its
-    // indirection anyway) via the broad survey, not the targeted benchmark --
-    // isolating the fast path here restores it.
+    // critical path for every non-Step-2 query.
+    //
+    // This comment used to justify the split with "a real (~15%) regression on
+    // `banned:modern`/`restricted:vintage`", measured via the broad survey.
+    // `bench_card_match_unify` re-measured it at the kernel (#799 follow-up).
+    // Every part of that claim turned out to be wrong, including the verdict.
+    //
+    // The named workload pays nothing: `banned:modern` measures at the noise
+    // floor. #676 recorded the note at 16:36; #679 gave banned:/restricted:
+    // exact legality planes at 18:09 the same day, making those queries tight
+    // -- `all_match` true, empty residual -- so they take the blind shortcut
+    // below and never reach a per-printing closure at all. The cited
+    // measurement was invalidated 93 minutes after it was written down.
+    //
+    // The split IS faster than a naive dedupe, but for two separable reasons,
+    // roughly half each, and neither requires duplicated source. Against a
+    // split-vs-split noise floor of 1.000-1.002x on Card+residual:
+    //
+    //   runtime `existential_plane` branch + `printings[pid]`   1.086-1.103x
+    //   `const HAS_PLANE: bool`            + `printings[pid]`   1.051-1.059x
+    //   `const HAS_PLANE: bool`            + slice iteration    0.980-0.997x
+    //
+    // So ~4% was the per-printing plane branch, and ~5% was indexing by `pid`
+    // instead of iterating `&printings[start..end]`. The second one is pure
+    // accident: `eval_plane_expr_for_printing` takes `&Archived<Printing>`,
+    // not an index, so even the plane path never needed `pid` -- only
+    // `Mode::Artwork` does, for `artwork_group_col`.
+    //
+    // A single body with `const HAS_PLANE: bool` and slice iteration
+    // benchmarks at parity or slightly better than what is written here, so
+    // the duplication below is NOT load-bearing and this function is no longer
+    // on #799's do-not-touch list. It is still written out twice only because
+    // nobody has done the collapse yet. If you do it: keep the const generic
+    // (a runtime branch costs the 4%), keep slice iteration, keep the blind
+    // `all_match` shortcut, and re-run the bench -- including its
+    // split-vs-split floor column, without which none of these numbers can be
+    // read, and its `black_box` on the plane `Option`, without which the
+    // optimizer folds away the branch under test and reports every variant as
+    // free.
     let Some((pe, planes)) = existential_plane else {
         return match mode {
             Mode::Card => {
@@ -9464,6 +9496,8 @@ mod bench_narrow_alloc;
 mod bench_word_dict_scan;
 #[cfg(test)]
 mod bench_card_dedup;
+#[cfg(test)]
+mod bench_card_match_unify;
 #[cfg(test)]
 mod bench_compose_paging;
 #[cfg(test)]
