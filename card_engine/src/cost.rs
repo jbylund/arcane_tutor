@@ -414,21 +414,6 @@ const GATHER_SELECT_PER_PAGE_SLOT_NS: f64 = 3.51;
 /// 5×GATHER_SELECT_PER_PAGE_SLOT_NS ≈ 170).
 const GATHER_FIXED_COST_NS: f64 = 169.6;
 
-/// Estimated wall-clock cost of running `plan` on a query with features `f`, in
-/// nanoseconds. Lower is cheaper; the planner routes to `argmin_plan plan_cost`.
-/// Only meaningful for plans that are *applicable* to the query (`run_query_routed`
-/// only ever costs `PhysicalPlan::ALL.filter(applicable)`); an inapplicable plan's
-/// cost is not defined.
-/// Printings a forward-permutation / orderby walk steps over to fill one page: `page_span` result
-/// rows at density `match_rate`. Derived rather than stored, and exposed so a harness can check it
-/// against the `printings_scanned` counter -- the Perm and OrderbyWalk paging branches are priced
-/// entirely on this quantity and nothing else validates them.
-pub(crate) fn printings_walked(f: &PlanFeatures) -> f64 {
-    let page_span = f64::from((f.offset.saturating_add(f.limit)).min(f.matches));
-    let match_rate = (f64::from(f.matches) / f64::from(f.n_printings.max(1))).max(MATCH_RATE_FLOOR);
-    page_span / match_rate
-}
-
 pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
     let n_cards = f64::from(f.n_cards);
     let n_printings = f64::from(f.n_printings);
