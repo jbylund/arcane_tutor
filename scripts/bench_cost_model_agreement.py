@@ -95,6 +95,11 @@ IMPOSSIBLE_GATES = ("RangeNotBare", "NotComposable", "RangePermutationStale")
 # `mk_plan_feats` default of `Gather` untouched — see `report_paging` for why that is a different
 # defect rather than a prediction that missed.
 COMPOSE_ACQUIRE = "printing_compose"
+# Acquire branches where the routed path really does call `prepare_candidates` at dispatch, so the
+# materializing plans genuinely owe its cost; everywhere else acquire built the prep already. Every
+# harness that nets prepare out of a plan's measured time needs the same rule, so it lives here once
+# rather than as a copy per script.
+RANGE_ACQUIRES = frozenset({"card_range_popcount", "printing_range_scan", COMPOSE_ACQUIRE})
 # The only plans that call `prepare_candidates`, and so the only ones with a prepare phase at all.
 # Every other plan reports `ns_prepare == 0` because it has no such phase — which is not the same
 # as spending 0% of its run there, and pooling the two says the wrong thing.

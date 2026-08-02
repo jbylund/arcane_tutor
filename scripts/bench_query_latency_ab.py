@@ -1,0 +1,181 @@
+"""Paired end-to-end query latency between two engine builds. The only A/B that works against main.
+
+`bench_plan_misselection.py` measures routing regret, but it reads `explain_analyze` fields and a
+response shape that this branch introduced — main returns a bare list where the branch returns
+`{"acquire": ..., "plans": [...]}`, and the per-plan `picked` / `ns_prepare` / `ns_round_total`
+fields do not exist there at all. So it cannot be pointed at main.
+
+`query()` is present and identically shaped in both, and it measures the thing users actually wait
+for. Same discipline as the regret A/B: write per-query rows with `--out`, then `--compare` two files
+PAIRED over the same query list, with a bootstrap CI on the difference. Latency is heavy-tailed
+(broad scans cost thousands of times a name lookup), so comparing two headline means is hopeless —
+pairing removes query-sampling variance and the interval says whether what remains is real.
+
+    # once per build:
+    .venv/bin/python scripts/bench_query_latency_ab.py --sample 2000 --out A.jsonl
+    .venv/bin/python scripts/bench_query_latency_ab.py --compare A.jsonl B.jsonl
+
+INTERLEAVE THE BUILDS. Run A, then B, then A, then B, and compare like against like. Measuring all
+of A and then all of B maps any drift in machine state -- thermal, background load, page cache --
+straight onto the comparison. Measured: a sequential main-then-branch run showed a ~3% median
+slowdown spread EVENLY across acquire branches the change never touched, while the branch it did
+touch was absolutely faster. A uniform effect on untouched code paths is drift, not signal, and the
+mean's confidence interval spanned zero throughout.
+"""
+
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import json
+import math
+import pathlib
+import random
+import statistics
+import sys
+import time
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from api.parsing import parse_scryfall_query  # noqa: E402
+from scripts.bench_bitplanes import load_engine  # noqa: E402
+from scripts.query_sampler import MODES, QuerySampler  # noqa: E402
+
+NUM_WARMUPS = 2
+NUM_TRIALS = 7
+LIMITS = (10, 100, 175)
+OFFSETS = (0, 0, 0, 100)
+BOOTSTRAP_RESAMPLES = 10_000
+BOOTSTRAP_CI = 0.95
+# Below this, per-query differences are timer noise rather than a real change.
+NOISE_FLOOR_US = 1.0
+
+
+@dataclasses.dataclass(frozen=True)
+class Budget:
+    """How many queries to measure, and how hard.
+
+    Fewer trials buys more DISTINCT queries per unit of CPU, and for a PAIRED comparison that is the
+    better trade -- pairing already removes per-query variance, so breadth beats depth.
+    """
+
+    sample: int
+    warmups: int = NUM_WARMUPS
+    trials: int = NUM_TRIALS
+
+
+def measure(engine: object, sampler: QuerySampler, rng: random.Random, budget: Budget) -> list[dict]:
+    """Min-of-trials wall time for `query()` on each sampled query."""
+    rows: list[dict] = []
+    for _ in range(budget.sample):
+        limit, offset = rng.choice(LIMITS), rng.choice(OFFSETS)
+        kw = {
+            "unique": sampler.unique(rng),
+            "orderby": sampler.orderby(rng),
+            "direction": rng.choice(("asc", "desc")),
+            "limit": limit,
+            "offset": offset,
+        }
+        q = sampler.query(rng)
+        try:
+            filters = parse_scryfall_query(q)
+            for _ in range(budget.warmups):
+                engine.query(filters=filters, prefer="default", **kw)
+            best = math.inf
+            for _ in range(budget.trials):
+                t0 = time.perf_counter_ns()
+                engine.query(filters=filters, prefer="default", **kw)
+                best = min(best, time.perf_counter_ns() - t0)
+        except Exception:  # noqa: BLE001, S112 - a rejected query is a skipped sample
+            continue
+        rows.append(
+            {
+                "q": q,
+                **{k: kw[k] for k in ("unique", "orderby", "direction")},
+                "limit": limit,
+                "offset": offset,
+                "us": best / 1000.0,
+            }
+        )
+    return rows
+
+
+def paired_bootstrap(deltas: list[float]) -> tuple[float, float]:
+    """Central `BOOTSTRAP_CI` interval for the mean of `deltas`, by resampling with replacement."""
+    rng = random.Random(0)  # fixed: the interval should not wobble between reads of the same data
+    n = len(deltas)
+    means = sorted(sum(deltas[rng.randrange(n)] for _ in range(n)) / n for _ in range(BOOTSTRAP_RESAMPLES))
+    tail = (1.0 - BOOTSTRAP_CI) / 2.0
+    return means[int(tail * BOOTSTRAP_RESAMPLES)], means[int((1.0 - tail) * BOOTSTRAP_RESAMPLES) - 1]
+
+
+def compare(path_a: pathlib.Path, path_b: pathlib.Path) -> None:
+    """Paired latency comparison over the queries both runs recorded."""
+
+    def rows(path: pathlib.Path) -> dict[tuple, float]:
+        out = {}
+        for line in path.open():
+            r = json.loads(line)
+            out[(r["q"], r["unique"], r["orderby"], r["direction"], r["limit"], r["offset"])] = r["us"]
+        return out
+
+    a, b = rows(path_a), rows(path_b)
+    shared = sorted(set(a) & set(b))
+    if not shared:
+        print("no queries in common -- both runs need the same --mode/--sample/--seed")
+        return
+    deltas = [b[k] - a[k] for k in shared]
+    lo, hi = paired_bootstrap(deltas)
+    mean_a = sum(a[k] for k in shared) / len(shared)
+    mean_b = sum(b[k] for k in shared) / len(shared)
+    # The mean is dominated by the slowest queries; the median ratio says what a typical query sees.
+    ratios = sorted(b[k] / a[k] for k in shared if a[k] > 0)
+    worse = sum(1 for d in deltas if d > NOISE_FLOOR_US)
+    better = sum(1 for d in deltas if d < -NOISE_FLOOR_US)
+
+    print(f"\npaired over {len(shared):,} queries in common ({len(a):,} / {len(b):,} recorded)")
+    print(f"  A mean latency  {mean_a:>9.1f} µs   median {statistics.median(a[k] for k in shared):>8.1f} µs   ({path_a.name})")
+    print(f"  B mean latency  {mean_b:>9.1f} µs   median {statistics.median(b[k] for k in shared):>8.1f} µs   ({path_b.name})")
+    print(f"  B - A           {mean_b - mean_a:>9.1f} µs   {BOOTSTRAP_CI:.0%} CI [{lo:+.1f}, {hi:+.1f}]")
+    print(
+        f"  per-query ratio B/A: median {statistics.median(ratios):.3f}   p10 {ratios[len(ratios) // 10]:.3f}   p90 {ratios[len(ratios) * 9 // 10]:.3f}"
+    )
+    print(f"  slower on {worse:,}, faster on {better:,}, within ±{NOISE_FLOOR_US:g}µs on {len(shared) - worse - better:,}")
+    verdict = "NO DETECTABLE DIFFERENCE (interval spans zero)" if lo <= 0.0 <= hi else ("B is SLOWER" if lo > 0 else "B is FASTER")
+    print(f"  verdict: {verdict}")
+
+
+def main() -> None:
+    """Either measure one build to a file, or compare two such files."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--sample", type=int, default=2000)
+    # Fewer trials buys more DISTINCT queries per unit of CPU. For a paired comparison that is the
+    # better trade: pairing already removes per-query variance, so breadth beats depth.
+    parser.add_argument("--warmups", type=int, default=NUM_WARMUPS)
+    parser.add_argument("--trials", type=int, default=NUM_TRIALS)
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--mode", choices=MODES, default="realistic", help="latency asks what users wait for, so traffic-weighted")
+    parser.add_argument("--corpus", type=pathlib.Path, default=REPO_ROOT / "benchmarks/bitplanes/corpus.jsonl")
+    parser.add_argument("--shm-path", type=pathlib.Path, default=None)
+    parser.add_argument("--out", type=pathlib.Path, help="write per-query latencies as JSONL")
+    parser.add_argument("--compare", nargs=2, type=pathlib.Path, metavar=("A.jsonl", "B.jsonl"))
+    args = parser.parse_args()
+
+    if args.compare:
+        compare(*args.compare)
+        return
+
+    engine = load_engine(args.corpus, args.shm_path or args.corpus.with_suffix(".latency.store"))
+    sampler = QuerySampler(args.corpus, args.mode)
+    rows = measure(engine, sampler, random.Random(args.seed), Budget(args.sample, args.warmups, args.trials))
+    print(f"measured {len(rows):,} queries, mode={args.mode}")
+    if args.out:
+        with args.out.open("w") as handle:
+            for row in rows:
+                handle.write(json.dumps(row) + "\n")
+        print(f"wrote {args.out}")
+
+
+if __name__ == "__main__":
+    main()

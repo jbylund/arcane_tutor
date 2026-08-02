@@ -37,12 +37,9 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from api.parsing import parse_scryfall_query  # noqa: E402
 from scripts.bench_bitplanes import load_engine  # noqa: E402
-from scripts.bench_cost_model_agreement import AGREE_HI, AGREE_LO  # noqa: E402
+from scripts.bench_cost_model_agreement import AGREE_HI, AGREE_LO, RANGE_ACQUIRES  # noqa: E402
 from scripts.query_sampler import QuerySampler  # noqa: E402
 
-# Acquire branches where the routed path really does call `prepare_candidates` at dispatch, so the
-# materializing plans genuinely owe its cost; everywhere else acquire built the prep already.
-RANGE_ACQUIRES = frozenset({"card_range_popcount", "printing_range_scan", "printing_compose"})
 NUM_WARMUPS = 2
 NUM_TRIALS = 7
 LIMITS = (10, 100, 175)
