@@ -4430,6 +4430,7 @@ fn plan_cost_model_matches_gold() {
                     limit: limit as u32,
                     offset: offset as u32,
                     broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
+                artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 };
 
                 // ── Model argmin over the applicable plans ──
@@ -4666,6 +4667,7 @@ fn plan_cost_refit() {
                     residual_tier_ns100: if prep.all_match_known { 0 } else { verify_cost_tier(&res) },
                     limit: limit as u32, offset: offset as u32,
                     broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
+                artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 };
                 for (pi, plan) in all_plans.iter().enumerate() {
                     if let Some(meas) = ns[pi] {
@@ -4865,6 +4867,7 @@ fn printing_range_route_probe() {
                 residual_tier_ns100,
                 limit: LIMIT as u32, offset: offset as u32,
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
+                artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
             };
 
             // ── Three pickers ──
@@ -5224,6 +5227,7 @@ fn plan_regret_report() {
                 limit: limit as u32,
                 offset: offset as u32,
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
+                artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
             };
 
             let gold = (0..4).filter_map(|i| ns[i].map(|v| (v, i))).min_by_key(|(v, _)| *v);
@@ -5349,6 +5353,7 @@ fn plan_regret_fuzz() {
                 residual_tier_ns100: tier,
                 limit: limit as u32, offset: offset as u32,
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
+                artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
             };
             let feats_true = mk(true_total, eval_domain);
             let feats_est = mk(est, est.min(n_cards));

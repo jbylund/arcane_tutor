@@ -38,10 +38,10 @@
 //! P3/P4 by ~`n_printings/n_cards` (≈3.09) because those modes scan EVERY printing
 //! of every candidate. The fix is `PlanFeatures::scan_units` (not a `mode` branch):
 //! the per-card `card_pass` term is driven by `eval_domain` (candidate cards) and
-//! the per-row residual scan + its verify `tier` by `scan_units` (rows scanned in
-//! the plan's operating space — `≈ eval_domain` for card, printings-under-candidates
-//! for printing/artwork). One mode-agnostic formula; the caller fills `scan_units`
-//! per mode via `scan_units()`. The `_CARD_PASS`/`_SCAN` split of the old lumped
+//! the per-row residual scan + its verify `tier` by `scan_units` (printings under the
+//! candidate cards). One mode-agnostic formula, and `scan_units()` no longer branches
+//! on mode at all: the `printings_scanned` counter shows the scan plans walk the full
+//! printing span of their candidates in CARD mode too, not one row each. The `_CARD_PASS`/`_SCAN` split of the old lumped
 //! `VISIT` constants was fit to hold card unchanged while correcting printing (see
 //! each constant's doc). Artwork rides the printing path (same all-printings scan);
 //! its confirming validation is still pending a bench run.
@@ -60,6 +60,7 @@ use super::*;
 /// Cheap, per-query features the cost model consumes, built once per query by
 /// `run_query_routed`'s `acquire` step. All counts are exact or cheap-exact (plane
 /// popcount / range `k` / candidate count), never estimated.
+#[derive(Clone)]
 pub(crate) struct PlanFeatures {
     /// Distinct cards in the corpus (card-space universe).
     pub n_cards: u32,
@@ -71,17 +72,29 @@ pub(crate) struct PlanFeatures {
     /// Candidate CARDS the loop iterates (one `card_pass` each): the narrowed
     /// candidate count when `prepare_candidates` produced a list, else `n_cards`.
     pub eval_domain: u32,
-    /// Rows the per-row residual scan touches, in the plan's operating space — the
-    /// dominant P3/P4 driver. Card mode breaks at the first matching printing
-    /// (≈ one row per candidate), so `scan_units ≈ eval_domain`; printing/artwork
-    /// scan every printing of every candidate, so it is the printing count under
-    /// those cards (`≈ eval_domain · n_printings/n_cards`). This is the field that
-    /// makes the formula operating-space-correct without a `mode` branch (see the
-    /// module "Calibration scope" note); the caller fills it via `scan_units()`.
+    /// Printings under the candidate cards — the dominant P3/P4 driver, and the same
+    /// quantity in all three distinct-ons. Card mode was long assumed to break at the
+    /// first matching printing (`scan_units ≈ eval_domain`); measured against
+    /// `printings_scanned`, that read 0.25-0.33 for both GatheredScan and StreamedSelect
+    /// while `eval_domain · n_printings/n_cards` reads 0.90-1.02 in every mode.
     pub scan_units: u32,
     /// Per-card verify cost of the residual, ns×100 (`verify_cost_tier`); `0`
     /// when `all_match_known` (the walk skips `card_pass` entirely).
     pub residual_tier_ns100: u32,
+    /// Cards `run_query_streamed` visits in ARTWORK mode, i.e. `eval_domain` there and `0` in card and
+    /// printing mode. Charged at `STREAM_ARTWORK_SEEN_PER_CARD_NS`.
+    pub artwork_seen_cards: u32,
+    /// Printings compose's **Gather** paging branch bit-tests, which is NOT `scan_units`.
+    ///
+    /// `scan_units` is every printing under a candidate card — right for GatheredScan and
+    /// StreamedSelect, which must test each one. Compose walks the set bits of the composed bitmap
+    /// instead, so it touches `printing_matches`. Measured against `printings_scanned`, compose reads
+    /// 1.00 on `matches` in printing mode and 1.00-1.01 on `project_printings` in artwork (the same
+    /// value), while `scan_units` reads 2.0-2.8 for it.
+    ///
+    /// Sharing one feature between the two forced a compromise that was ~2x wrong for whichever arm
+    /// lost: with the value GatheredScan needs, compose over-counts 2x; with compose's, the scan plans
+    /// under-count 3.3x.
     /// Page size (`limit`).
     pub limit: u32,
     /// Page offset.
@@ -131,6 +144,19 @@ pub(crate) struct PlanFeatures {
 /// 20000 P1 leads P3 by only ~2×, and that is exactly where this loose constant
 /// flips the argmin (the model routes off gold-P1). Sharpening P1 needs a per-step
 /// term keyed on printings-scanned, not a scalar — deferred with the printing model.
+/// Per-printing cost of a **linear offset-walk** over set printings — the two passes that share this
+/// rate: `PrintingCompose`'s legality broadcast-DOWN (card ∃-plane → printing bitmap) and its
+/// projection-UP (printing bitmap → card/artwork existence, `printing_bits_to_card_bits`, which walks
+/// the set bits advancing a card cursor). Measured ~1.5 ns/printing: `legality_compose_kernel_costs`
+/// broad formats (~1.49), and `card_range_build_cost_split`'s B pass (122125ns / 80527 = 1.52).
+/// Carries `broadcast_printings` and `project_printings` — the midpoint of the two probes.
+pub(crate) const LINEAR_PASS_PER_PRINTING_NS: f64 = 1.50;
+/// Per-printing cost of `PrintingCompose`'s range **scatter** — `range_leaf_bits` reads the value-sorted
+/// index's contiguous in-range slice and scatters each pid into a printing bitmap (sequential read +
+/// random-write). Measured ~0.4 ns/printing (`card_range_build_cost_split`'s A pass 28583ns / 80527 =
+/// 0.355; `range_compose_kernel_costs` 0.36 at broad density) — far cheaper than a linear pass because
+/// there is no per-card cursor and the writes are the only work. Carries `scatter_printings` in compose.
+pub(crate) const RANGE_SCATTER_PER_PRINTING_NS: f64 = 0.36;
 const RANGE_WALK_STEP_NS: f64 = 4.5;
 /// Fixed P1 setup (binary searches + walk init). Fit from usd<5 printing shallow
 /// (666ns − 82 steps × RANGE_WALK_STEP_NS ≈ 150ns).
@@ -157,27 +183,27 @@ const PLANE_POPCOUNT_EMIT_PER_CARD_NS: f64 = 2.0;
 /// Fixed P2 setup (plane eval into the bitmap, buffers).
 const PLANE_POPCOUNT_FIXED_COST_NS: f64 = 200.0;
 
-/// Per-printing cost of a **linear offset-walk** over set printings — the two passes that share this
-/// rate: `PrintingCompose`'s legality broadcast-DOWN (card ∃-plane → printing bitmap) and its
-/// projection-UP (printing bitmap → card/artwork existence, `printing_bits_to_card_bits`, which walks
-/// the set bits advancing a card cursor). Measured ~1.5 ns/printing: `legality_compose_kernel_costs`
-/// broad formats (~1.49), and `card_range_build_cost_split`'s B pass (122125ns / 80527 = 1.52).
-/// Carries `broadcast_printings` and `project_printings` — the midpoint of the two probes.
-pub(crate) const LINEAR_PASS_PER_PRINTING_NS: f64 = 1.50;
 
-/// Per-printing cost of `PrintingCompose`'s range **scatter** — `range_leaf_bits` reads the value-sorted
-/// index's contiguous in-range slice and scatters each pid into a printing bitmap (sequential read +
-/// random-write). Measured ~0.4 ns/printing (`card_range_build_cost_split`'s A pass 28583ns / 80527 =
-/// 0.355; `range_compose_kernel_costs` 0.36 at broad density) — far cheaper than a linear pass because
-/// there is no per-card cursor and the writes are the only work. Carries `scatter_printings` in compose.
-pub(crate) const RANGE_SCATTER_PER_PRINTING_NS: f64 = 0.36;
 
 /// Per-printing cost of `CardRangePopcount`'s **fused build** — `build_card_range_bits` sets the printing
 /// bit AND the card bit (via `printing_to_card`) in one pass over the range slice, fusing compose's
 /// scatter+project (0.4 + 1.5 = 1.9) into a single ~1.2 ns/printing pass (`card_range_build_cost_split`'s
 /// C 98333ns / 80527 = 1.22). Carries `scatter_printings` in CardRangePopcount's arm — the same `k` as
 /// compose's scatter but a cheaper op, which is exactly why a bare range routes here, not to compose.
-pub(crate) const CARD_RANGE_BUILD_PER_PRINTING_NS: f64 = 1.22;
+///
+/// Retuned 1.22 -> 0.93 from END-TO-END measurement, which disagrees with that kernel figure. The arm
+/// over-costed by a near-uniform 1.20 (p10 0.99, p50 1.20, p90 1.43 — a spread of only 1.4, the
+/// signature of a plain rate error), and this term is 80% of it. Its four other constants are shared
+/// with PlanePopcountOrder, which is slightly UNDER-costed at 0.92, so they cannot absorb it.
+///
+/// The disagreement is real, not a sampling artifact, and was checked for exactly that: the implied
+/// end-to-end rate is FLAT in k — 0.97 / 0.81 / 0.91 / 0.92 / 0.99 across k bins from 1.5k to 81k — so
+/// no single-k distribution is doing the work. At k≈81,479, the same slice size the kernel benchmark
+/// uses, end-to-end still implies 0.99 against its 1.26. The kernel times the build in isolation;
+/// `plan_cost` predicts end-to-end time, so end-to-end is the figure it should carry. Re-running
+/// `card_range_build_cost_split` today still reports 1.26 (101500/80527), so the kernel has not drifted
+/// — the two simply measure different things.
+pub(crate) const CARD_RANGE_BUILD_PER_PRINTING_NS: f64 = 0.93;
 
 // ─── Candidate materialization ──────────────────────────────────────────────
 // `plan_cost` prices only what happens AFTER the acquire step: `eval_domain` and `matches` are its
@@ -201,24 +227,11 @@ pub(crate) const CARD_RANGE_BUILD_PER_PRINTING_NS: f64 = 1.22;
 /// `Vec::with_capacity` plus the run walk, before any comparison work
 /// (`bench_candidate_materialize`, axis A).
 pub(crate) const MATERIALIZE_SORT_FIXED_NS: f64 = 143.0;
-/// pdqsort on `u32`, per candidate — treated as **linear**, not `c·log2 c`. `sort_unstable` is a full
-/// pdqsort so it is asymptotically `n log n`, and the log factor is faintly visible over this range,
-/// but far too weak to model: per-element cost grows only 1.17x across a 31x size increase, where an
-/// `n log n` fit demands 1.49x.
-///
-/// Axis H, minimum of 10 runs (`bench_candidate_materialize_sort_shape`):
-///
-///     cands     1,024   4,096   8,192  16,384  31,508
-///     ns/elem    4.35    4.39    4.49    4.75    5.08
-///     n log n    4.35    4.83    5.11    5.40    6.50
-///
-/// Re-fit rather than extrapolating past ~3M cards, where the log factor does start to matter.
-///
-/// MEASUREMENT NOTE: take the MINIMUM across repeated runs, not a single run. Contention here is
-/// one-sided — across those 10 runs min and median agree to within 0.06 ns/elem at every point while
-/// the max reaches 5.73 — so one contaminated run reads as flat ~5.0 at every size and hides the
-/// trend completely. That artifact is what made an earlier draft of this doc quote figures that
-/// disagreed with the bench, and it is the reason to distrust any single-run number here.
+/// pdqsort on `u32`, per candidate — **linear**, not `c·log2 c`. `sort_unstable` is a full pdqsort
+/// so it is asymptotically `n log n`, but measured per-element cost is flat across the sizes this
+/// engine sees (4.39 ns at 1,024 rising only to 5.09 at 31,508, where an `n log n` fit predicts
+/// 4.39 → 6.57). Fit on the rows bracketing the crossover. Re-fit rather than extrapolating past
+/// ~3M cards, where the log factor does start to show.
 pub(crate) const MATERIALIZE_SORT_PER_CAND_NS: f64 = 4.95;
 
 /// Modelled cost of producing the candidate list a materializing plan consumes, in ns. `0.0` for
@@ -261,23 +274,110 @@ pub(crate) fn materialize_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
 /// which the lumped constant under-priced ~2× (fidelity 0.5, the eval_domain-counts-
 /// cards bug). Split fit: card sum pins `CARD_PASS + SCAN = 3.0`; printing's ~2×
 /// under-prediction at ratio ~3.09 pins the split (`CARD_PASS + 3.09·SCAN ≈ 6.0`).
-const STREAM_CARD_PASS_NS: f64 = 1.56;
-/// ns per printing scanned in the match phase (residual test per row). See
-/// STREAM_CARD_PASS_NS for the split derivation. The residual verify `tier` rides
-/// this term (it is paid per scanned row), common-mode with P4's scan term.
-const STREAM_SCAN_PER_ROW_NS: f64 = 1.44;
+/// Refit 2026-07-30 by `scripts/fit_cost_model.py` — non-negative Gauss-Newton on the LOG ratio
+/// (symmetric in over/under, unlike a relative-error fit, which shrinks every rate toward zero),
+/// ridge-anchored to the previous values because several columns barely vary on this corpus and
+/// are collinear with the intercept. Fitted on ~10k distinct feature vectors, stable to <3% across
+/// independent seeds. Median measured/predicted moved 1.78 -> 1.00 (P4) and 1.69 -> 1.06 (P3).
+const STREAM_CARD_PASS_NS: f64 = 6.46;
+
+/// P3's per-scanned-row cost, charged ONLY when a residual is present.
+///
+/// Unlike P4, P3 merely COUNTS matches, and `card_match_count` is O(1) offset arithmetic whenever
+/// `all_match` holds (the artwork-group count is a build-time constant). So with no residual it does
+/// no per-printing work at all — but with one it must walk the printings testing each. Regressing
+/// per-card match-loop time on printings-scanned-per-card, split by tier, shows exactly that split:
+///
+/// | residual | slope (ns per printing/card) |
+/// |----------|-----------------------------:|
+/// | none (all_match) | **0.02** |
+/// | MASK_COMPARE | 2.83 |
+/// | SET_LOOKUP | 2.19 |
+/// | TEXT_SCAN | 1.90 |
+///
+/// An earlier revision removed this term outright, on the O(1) argument above. That argument is
+/// right for the `all_match` half and wrong for the other, and an ungated fit drove the rate to 0
+/// because the tier-0 rows (the majority) dominated it. Gating on the residual separates them.
+///
+/// This one is NOT common-mode with P4 — P4 pays `GATHER_SCAN_PER_ROW_NS` unconditionally — so
+/// unlike the verify tier it can move the argmin between the two.
+const STREAM_SCAN_PER_ROW_NS: f64 = 5.53;
+
+
+/// Per-card cost of RUNNING `card_pass` at all, on top of whatever the residual's own nodes cost.
+/// The tri walk has to set up, populate the reused `residual` vec, branch on the `Tri`, and drive
+/// the per-printing loop; none of that is a filter node, so `verify_cost_tier` does not describe it
+/// and should not be asked to.
+///
+/// This replaces a multiplicative `*_VERIFY_TIER_SCALE` of 2.87/2.65. The multiplier was wrong in
+/// form, not just in value. `bench_verify_cost` (cargo test --release bench_verify_cost -- --ignored)
+/// times the real `FilterExpr::matches()` path per node and VALIDATES the tier constants:
+/// MASK_COMPARE claims 4.0 ns against 2.08-3.60 measured, SET_LOOKUP 9.0 against 2.12-8.69,
+/// TEXT_SCAN 23.0 against 21.5, REGEX_MACHINERY 50 against 45.8-47.5. They are right, slightly
+/// conservative. So there was no per-node calibration error for a multiplier to correct — there was
+/// an unmodelled fixed per-card overhead, and scaling by 2.7x happened to approximate it for the
+/// common cheap tiers while badly over-costing text (2.7 x 23 = 62 ns against a real 23 + 17).
+///
+/// It is a FLOOR, not an offset: `max(tier_ns, this)`. Cheap residuals are dominated by the walk,
+/// expensive ones dominate it, and the two do not add. Measured by regressing per-card match-loop
+/// time on printings-scanned-per-card, separately per tier class, over the real query population
+/// (the earlier additive fit used single-predicate queries, whose tiny sample disagreed):
+///
+/// | tier | claims | P3 excess over no-residual | P4 excess |
+/// |------|-------:|---------------------------:|----------:|
+/// | MASK_COMPARE | 4 ns | 8.9 | 15.4 |
+/// | SET_LOOKUP | 9 ns | 10.4 | 11.2 |
+/// | TEXT_SCAN | 23 ns | 20.7 | 19.9 |
+///
+/// The excess is roughly INDEPENDENT of the tier for the cheap classes and non-monotonic across them
+/// (P4's MASK excess exceeds its SET_LOOKUP excess), which additive cannot produce. `max` fits all
+/// three within ~2 ns for P3 and ~4 for P4, where `tier + 11` over-costs TEXT_SCAN by 14 ns — the
+/// text-heavy over-costing that showed up as GatheredScan/candidates at 0.67.
+///
+/// That same regression also shows the residual's cost is per CARD, not per printing scanned: the
+/// SLOPE against printings-per-card is ~3.5 for every tier including none (P4) and ~2 for P3, i.e.
+/// independent of what the residual is. So the tier belongs on `eval_domain`, as it now sits.
+const STREAM_RESIDUAL_FLOOR_NS: f64 = 8.18;
 /// ns per match, for the permutation-walk emit. Small — P3 measured nearly flat
 /// in match count once eval_domain is fixed (see STREAM_MATCH_PHASE_PER_CARD_NS),
 /// so this is a minor term.
-const STREAM_EMIT_PER_MATCH_NS: f64 = 0.1;
+const STREAM_EMIT_PER_MATCH_NS: f64 = 0.13;
+/// ns per candidate card that ARTWORK mode pays and the other two do not.
+///
+/// `card_match_count`'s artwork arm keeps a per-card `seen_words` bitmask to dedupe artwork groups,
+/// and that costs a fixed amount per card regardless of how many printings the card has: a
+/// `seen_words.fill(0)` before the loop and a `seen_words.iter().map(count_ones).sum()` after it,
+/// over `ARTWORK_GROUP_WORDS = 8` u64s. Card mode returns on the first matching printing and printing
+/// mode just counts, so neither pays it. (The `all_match` + `have_group_counts` shortcut in
+/// `run_query_streamed` skips the helper entirely, which is why this lands on residual-bearing
+/// candidates in particular.)
+///
+/// Fitting the arm separately per distinct-on is what surfaced it, over three seeds:
+///
+///     StreamedSelect    artwork / printing        seed21      seed22      seed23
+///     CARD_PASS                              5.92/3.36   5.76/3.20   5.89/3.17
+///     RESIDUAL_FLOOR                        11.75/9.21  11.81/9.39  11.86/9.81
+///
+/// Two independently fitted per-card terms, both elevated in artwork by ~2.4 ns and never flipping
+/// sign. One mechanism showing up twice, so it belongs in its own term rather than as a mode-specific
+/// copy of each rate. ~16 word-ops per card is the right order for 2.4 ns.
+const STREAM_ARTWORK_SEEN_PER_CARD_NS: f64 = 1.36;
 /// ns per card scanned in the small-total gather (`for cid in 0..n_cards`,
 /// counts[cid]==0 check). Cheaper than a match-phase visit (no filter work). Fit
 /// from the narrow-query floor: cmc>=15 / o:annihilator / cmc==7 card SHALLOW all
 /// ~52µs = 31508 × 1.65. Only added when `matches <= STREAM_MIN_MATCHES`, the
-/// exact condition that routes P3 into that gather branch.
-const STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS: f64 = 1.65;
-/// Fixed P3 setup (counts buffer resize/clear, thread-local).
-const STREAM_FIXED_COST_NS: f64 = 500.0;
+/// exact condition that routes P3 into that gather branch. The 1.65 above was fit on three hand
+/// picked narrow queries; across the sampled space the floor measures ~31µs, not 52µs.
+const STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS: f64 = 1.64;
+/// Per-card cost P3 pays over the WHOLE corpus regardless of how narrow the query is, charged on
+/// `n_cards` rather than `eval_domain`. The thread-local counts buffer is resized and cleared to
+/// `cards.len()` every query — a 126 kB memset on this corpus — and the emission walk is over the
+/// corpus-sized sort permutation. Fit lands at ~9 µs total, more than a memset alone accounts for,
+/// so this lumps the two; a single corpus cannot separate them (both are exactly `n_cards`). Kept
+/// as a per-card RATE rather than the previous flat constant so it tracks corpus size at all.
+const STREAM_CORPUS_PASS_PER_CARD_NS: f64 = 0.02;
+/// Fixed P3 setup, net of the O(n_cards) work above.
+const STREAM_FIXED_COST_NS: f64 = 217.5;
 
 // ─── P4: GatheredScan ───────────────────────────────────────────────────────
 // The universal fallback: per-card loop pushes every match's sort key into a
@@ -290,27 +390,45 @@ const STREAM_FIXED_COST_NS: f64 = 500.0;
 /// eval_domain==matches, tier=0, sum ≈ 6.3-6.9 with GATHER_PUSH); card keeps
 /// `CARD_PASS + SCAN = 5.5`. Printing's ~2× under-prediction at ratio ~3.09 splits
 /// it (`CARD_PASS + 3.09·SCAN ≈ 11`).
-const GATHER_CARD_PASS_NS: f64 = 2.87;
-/// ns per printing scanned in the gathered loop (residual test per row); the verify
-/// `tier` rides this term, common-mode with P3's scan term. See GATHER_CARD_PASS_NS.
-const GATHER_SCAN_PER_ROW_NS: f64 = 2.63;
+/// Refit 2026-07-30 by `scripts/fit_cost_model.py` — non-negative Gauss-Newton on the LOG ratio
+/// (symmetric in over/under, unlike a relative-error fit, which shrinks every rate toward zero),
+/// ridge-anchored to the previous values because several columns barely vary on this corpus and
+/// are collinear with the intercept. Fitted on ~10k distinct feature vectors, stable to <3% across
+/// independent seeds. Median measured/predicted moved 1.78 -> 1.00 (P4) and 1.69 -> 1.06 (P3).
+const GATHER_CARD_PASS_NS: f64 = 6.88;
+/// ns per printing scanned in the gathered loop (residual test per row). The verify `tier`
+/// does NOT ride this term; see GATHER_VERIFY_TIER_SCALE and STREAM_SCAN_PER_ROW_NS.
+const GATHER_SCAN_PER_ROW_NS: f64 = 2.06;
+
+/// P4's counterpart to STREAM_RESIDUAL_FLOOR_NS — see there for the form and its derivation.
+const GATHER_RESIDUAL_FLOOR_NS: f64 = 18.89;
 /// ns per match pushed into the sort-key Vec + quickselected.
-const GATHER_PUSH_PER_MATCH_NS: f64 = 1.0;
+const GATHER_PUSH_PER_MATCH_NS: f64 = 2.24;
 /// ns per page slot materialized. Fit from the deep-vs-shallow gap on broad
 /// queries (cmc>=0 card: 225708−216667 ≈ 9041ns over 10000 extra offset ≈ 0.9),
 /// bounded by matches: narrow deep pages (offset > matches) measured ≈ shallow
 /// (select_page returns early), so the term uses min(offset+limit, matches).
-const GATHER_SELECT_PER_PAGE_SLOT_NS: f64 = 0.9;
+const GATHER_SELECT_PER_PAGE_SLOT_NS: f64 = 3.51;
 /// Fixed P4 setup. Fit from the narrowest query (cmc>=15 card shallow 208ns at
 /// eval_domain=5: 208 − 5×(GATHER_VISIT_PER_CARD_NS+GATHER_PUSH_PER_MATCH_NS) −
 /// 5×GATHER_SELECT_PER_PAGE_SLOT_NS ≈ 170).
-const GATHER_FIXED_COST_NS: f64 = 200.0;
+const GATHER_FIXED_COST_NS: f64 = 169.6;
 
 /// Estimated wall-clock cost of running `plan` on a query with features `f`, in
 /// nanoseconds. Lower is cheaper; the planner routes to `argmin_plan plan_cost`.
 /// Only meaningful for plans that are *applicable* to the query (`run_query_routed`
 /// only ever costs `PhysicalPlan::ALL.filter(applicable)`); an inapplicable plan's
 /// cost is not defined.
+/// Printings a forward-permutation / orderby walk steps over to fill one page: `page_span` result
+/// rows at density `match_rate`. Derived rather than stored, and exposed so a harness can check it
+/// against the `printings_scanned` counter -- the Perm and OrderbyWalk paging branches are priced
+/// entirely on this quantity and nothing else validates them.
+pub(crate) fn printings_walked(f: &PlanFeatures) -> f64 {
+    let page_span = f64::from((f.offset.saturating_add(f.limit)).min(f.matches));
+    let match_rate = (f64::from(f.matches) / f64::from(f.n_printings.max(1))).max(MATCH_RATE_FLOOR);
+    page_span / match_rate
+}
+
 pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
     let n_cards = f64::from(f.n_cards);
     let n_printings = f64::from(f.n_printings);
@@ -390,22 +508,33 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
             // The small-total gather branch (run_query_streamed) scans all
             // n_cards when total <= STREAM_MIN_MATCHES — the O(N) floor that
             // sinks P3 on narrow queries.
-            let floor = if u64::from(f.matches) <= *super::STREAM_MIN_MATCHES as u64 {
-                n_cards * STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS
-            } else {
-                0.0
-            };
-            // card_pass is per candidate card; the residual scan + its verify tier
-            // are per scanned printing (scan_units) — the operating-space split.
-            eval_domain * STREAM_CARD_PASS_NS
-                + scan_units * (STREAM_SCAN_PER_ROW_NS + tier_ns)
+            // Mirrors `run_query_streamed`'s own guard: it returns at `total == 0 || page_offset >=
+            // total` BEFORE reaching the small-total gather, so those queries never scan n_cards and
+            // must not be charged for it. Charging them anyway over-costs by the whole floor --
+            // measured est/real of 55.7 at p50 on zero-match queries, which really take 0.62 us
+            // against a ~35 us estimate, and 1,265 of 33k StreamedSelect rows land there.
+            let runs_small_gather = u64::from(f.matches) <= *super::STREAM_MIN_MATCHES as u64
+                && f.matches > 0
+                && u64::from(f.offset) < u64::from(f.matches);
+            let floor = if runs_small_gather { n_cards * STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS } else { 0.0 };
+            // card_pass — and the verify tier that prices it — is per candidate CARD: the loop
+            // calls `filter.card_pass` once per `cid`, and only the cheaper printing-dependent
+            // residual is re-checked per row inside `push_card_matches`. Charging `tier_ns` per
+            // scanned ROW instead is invisible in card mode (scan_units ≈ eval_domain) and
+            // overcharges printing/artwork by the whole printings-per-card ratio.
+            eval_domain * (STREAM_CARD_PASS_NS + if tier_ns > 0.0 { tier_ns.max(STREAM_RESIDUAL_FLOOR_NS) } else { 0.0 })
+                // Only with a residual does P3 walk printings; see STREAM_SCAN_PER_ROW_NS.
+                + if tier_ns > 0.0 { scan_units * STREAM_SCAN_PER_ROW_NS } else { 0.0 }
                 + matches * STREAM_EMIT_PER_MATCH_NS
+                + f64::from(f.artwork_seen_cards) * STREAM_ARTWORK_SEEN_PER_CARD_NS
                 + floor
+                + n_cards * STREAM_CORPUS_PASS_PER_CARD_NS
                 + STREAM_FIXED_COST_NS
         }
         PhysicalPlan::GatheredScan => {
-            eval_domain * GATHER_CARD_PASS_NS
-                + scan_units * (GATHER_SCAN_PER_ROW_NS + tier_ns)
+            // Per-CARD verify tier, for the reason spelled out in the StreamedSelect arm above.
+            eval_domain * (GATHER_CARD_PASS_NS + if tier_ns > 0.0 { tier_ns.max(GATHER_RESIDUAL_FLOOR_NS) } else { 0.0 })
+                + scan_units * GATHER_SCAN_PER_ROW_NS
                 + matches * GATHER_PUSH_PER_MATCH_NS
                 + page_span * GATHER_SELECT_PER_PAGE_SLOT_NS
                 + GATHER_FIXED_COST_NS

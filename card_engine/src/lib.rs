@@ -7249,6 +7249,10 @@ fn mk_plan_feats(
         project_printings: 0,  // PrintingCompose's card/artwork projection pass; CardRangePopcount sets it too (for costing compose)
         popcount_words: 0,     // PrintingCompose overrides this (result-space bitmap words)
         compose_paging: ComposePaging::Gather, // PrintingCompose overrides this (which paging strategy it'll actually use)
+        // `run_query_streamed`'s per-card artwork overhead applies to every candidate it visits, in
+        // artwork mode only — so it rides `eval_domain` there and vanishes elsewhere. See
+        // STREAM_ARTWORK_SEEN_PER_CARD_NS for the mechanism and the measurement.
+        artwork_seen_cards: if matches!(params.mode, Mode::Artwork) { eval_domain } else { 0 },
     }
 }
 
@@ -8673,6 +8677,7 @@ fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<B
         ("scatter_printings", g.scatter_printings),
         ("project_printings", g.project_printings),
         ("popcount_words", g.popcount_words),
+        ("artwork_seen_cards", g.artwork_seen_cards),
     ] {
         d.set_item(k, v)?;
     }
