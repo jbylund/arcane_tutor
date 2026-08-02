@@ -2446,15 +2446,7 @@ fn rarity_candidates(idx: &Archived<RarityIndex>, op: CmpOp, val: f64) -> Option
     if matches!(op, CmpOp::Ne) {
         return None;
     }
-    let keep = |r: f64| match op {
-        CmpOp::Eq => r == val,
-        CmpOp::Lt => r < val,
-        CmpOp::Le => r <= val,
-        CmpOp::Gt => r > val,
-        CmpOp::Ge => r >= val,
-        CmpOp::Ne => false,
-    };
-    let buckets: Vec<usize> = (0..idx.len()).filter(|&r| keep(r as f64)).collect();
+    let buckets: Vec<usize> = (0..idx.len()).filter(|&r| num_cmp(op, r as f64, val)).collect();
     let total: usize = idx.iter().map(|b| b.len()).sum();
     let selected: usize = buckets.iter().map(|&b| idx[b].len()).sum();
     if selected as f64 > total as f64 * MAX_UNION_FRACTION {
@@ -2488,18 +2480,10 @@ fn rarity_plane_candidates(indexes: &Archived<CardIndexes>, n_cards: usize, op: 
     if u32::from(indexes.planes.n_cards) as usize != n_cards || n_cards == 0 {
         return None;
     }
-    let keep = |r: f64| match op {
-        CmpOp::Eq => r == val,
-        CmpOp::Lt => r < val,
-        CmpOp::Le => r <= val,
-        CmpOp::Gt => r > val,
-        CmpOp::Ge => r >= val,
-        CmpOp::Ne => r != val,
-    };
     let wpp = words_per_plane(n_cards);
     let mut bits = vec![0u64; wpp];
     for b in 0..RARITY_INTERIOR {
-        if keep(b as f64) {
+        if num_cmp(op, b as f64, val) {
             let plane = PLANE_RARITY + b;
             for (a, w) in bits.iter_mut().zip(&indexes.planes.words[plane * wpp..(plane + 1) * wpp]) {
                 *a |= u64::from(*w);
@@ -2779,7 +2763,9 @@ impl Candidates {
         matches!(self, Candidates::Printings(_) | Candidates::PrintingBits(_))
     }
 
-    /// Approximate member count (exact for both representations).
+    /// Exact member count, in the set's **own** space — a printing-space set counts
+    /// printings, not the cards they belong to. Bitmap variants popcount the whole
+    /// bitmap, so this is O(words) rather than O(1); callers in a loop should cache it.
     fn len(&self) -> usize {
         match self {
             Candidates::Cards(v) | Candidates::Printings(v) => v.len(),
@@ -3804,10 +3790,7 @@ fn narrow_rec(
                     // Sparse results (vecs, and bitmaps under a quarter of the
                     // space) project as before.
                     match &p.set {
-                        Candidates::PrintingBits(b) if p.set.len() > n_printings / 4 => {
-                            let _ = b;
-                            None
-                        }
+                        Candidates::PrintingBits(_) if p.set.len() > n_printings / 4 => None,
                         _ => Some(seal(p)),
                     }
                 }
@@ -4772,7 +4755,6 @@ fn walk_printing_page<'a>(
     let QueryCtx { cards, printings, offsets, strings, .. } = *ctx;
     let QueryParams { sort_col, descending, limit, page_offset, .. } = *params;
     let residual: [&FilterExpr; 1] = [leaf];
-    let cmp = |a: &Match, b: &Match| a.0.cmp(&b.0).then_with(|| a.2.cmp(&b.2));
     let mut page: Vec<(&AOracleCard, &APrinting)> = Vec::with_capacity(limit);
     let mut scratch: Vec<Match> = Vec::new();
     let mut skip = page_offset;
@@ -4794,7 +4776,7 @@ fn walk_printing_page<'a>(
             skip -= scratch.len();
             continue;
         }
-        scratch.sort_unstable_by(cmp);
+        scratch.sort_unstable_by(page_cmp);
         for m in scratch.iter().skip(skip) {
             page.push((&cards[m.1 as usize], &printings[m.2 as usize]));
             if page.len() == limit {
@@ -4881,7 +4863,8 @@ fn aligned_page<'a>(
         }
     }
     // Canonically sort the collected touched-bucket printings (small: ~one or two buckets) and
-    // window the page — same comparator select_page uses, so ordering matches the gathered path.
+    // window the page — `page_cmp` is the comparator `select_page` uses, so ordering matches the
+    // gathered path by construction.
     let mut matches: Vec<Match> = collected
         .iter()
         .map(|&pid| {
@@ -4889,7 +4872,7 @@ fn aligned_page<'a>(
             (sort_key_bits(&cards[cid as usize], &printings[pid as usize], SortCol::PriceUsd, descending), cid, pid)
         })
         .collect();
-    matches.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.2.cmp(&b.2)));
+    matches.sort_unstable_by(page_cmp);
     let start = page_offset - first_touched_cum;
     let end = (start + limit).min(matches.len());
     matches[start..end].iter().map(|m| (&cards[m.1 as usize], &printings[m.2 as usize])).collect()
@@ -6041,8 +6024,8 @@ fn existential_plane_for<'a>(
 // Each captures a plan's *correctness* preconditions (not its perf gate). These
 // are the future `choose_plan` eligibility gates — real, named, reusable.
 
-/// `GatheredScan` can execute any query.
-#[allow(dead_code)] // trivially true; referenced through the force entry point
+/// `GatheredScan` can execute any query. Trivially true, and called like every other
+/// predicate here — from `PhysicalPlan::applicable`.
 fn gathered_scan_applicable() -> bool {
     true
 }
@@ -6373,7 +6356,6 @@ fn walk_grouped_page<'a>(
     let QueryParams { mode, prefer, sort_col, descending, limit, page_offset } = *params;
     let max_artwork_groups = u16::from(indexes.max_artwork_groups);
     let is_set = |pid: usize| pbits[pid >> 6] & (1u64 << (pid & 63)) != 0;
-    let cmp = |a: &Match, b: &Match| a.0.cmp(&b.0).then_with(|| a.2.cmp(&b.2));
     let mut page: Vec<(&AOracleCard, &APrinting)> = Vec::with_capacity(limit);
     // per group key: (best matching pid, its prefer score). Pre-sized so the grouping loop needs no
     // per-printing resize check: Artwork needs one slot per group, Card collapses to a single group
@@ -6438,7 +6420,7 @@ fn walk_grouped_page<'a>(
             skip -= scratch.len();
             continue;
         }
-        scratch.sort_unstable_by(cmp);
+        scratch.sort_unstable_by(page_cmp);
         for m in scratch.iter().skip(skip) {
             page.push((&cards[m.1 as usize], &printings[m.2 as usize]));
             if page.len() == limit {
@@ -7011,8 +6993,7 @@ fn run_query<'a>(
 /// printing/artwork scan every printing of every candidate, so it is the printing
 /// count under those cards (`n_printings` when unnarrowed). The `Some` branch sums
 /// `offsets` ranges over the candidate cards — O(candidates), a routing-time cost
-/// only paid when a candidate list exists.
-#[allow(dead_code)] // consumed by the cost benches (tests.rs) and future all-mode routing
+/// only paid when a candidate list exists. Called from `candidate_feats`.
 fn scan_units(mode: Mode, candidate_cards: Option<&[u32]>, offsets: &AOffsets, n_printings: u32, n_cards: u32) -> u32 {
     // Card mode used to short-circuit to `eval_domain`, on the theory that the loop breaks at the
     // first matching printing of each card. The `printings_scanned` counter says otherwise: across
@@ -8334,7 +8315,6 @@ fn run_query_streamed<'a>(
     let mut group_best: Vec<Option<(u32, f64)>> =
         if matches!(mode, Mode::Artwork) { vec![None; usize::from(max_artwork_groups)] } else { Vec::new() };
     let mut touched: Vec<u16> = Vec::new();
-    let cmp = |a: &Match, b: &Match| a.0.cmp(&b.0).then_with(|| a.2.cmp(&b.2));
 
     // Small totals: gather and quickselect — same result as the gathered path.
     if total <= *STREAM_MIN_MATCHES {
@@ -8395,7 +8375,7 @@ fn run_query_streamed<'a>(
             card, cid, printings, artwork_group_col, start, end, all_match, &residual, residual_is_or, mode, prefer,
             sort_col, descending, strings, existential_plane, &mut scratch, &mut group_best, &mut touched,
         );
-        scratch.sort_unstable_by(cmp);
+        scratch.sort_unstable_by(page_cmp);
         for m in scratch.iter().skip(skip) {
             page.push((&cards[m.1 as usize], &printings[m.2 as usize]));
             if page.len() == limit {

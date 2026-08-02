@@ -185,7 +185,7 @@ pub(crate) fn numeric_cmp_tri<F: Fn(NumField) -> NumVal>(lhs: &NumExpr, op: CmpO
     match (lhs.eval_with(fetch), rhs.eval_with(fetch)) {
         (NumVal::Null, _) | (_, NumVal::Null) => Tri::Null, // missing field: SQL NULL
         (NumVal::PDep, _) | (_, NumVal::PDep) => Tri::PrintingDep,
-        (NumVal::Known(a), NumVal::Known(b)) => tri_bool(cmp(op, a, b)),
+        (NumVal::Known(a), NumVal::Known(b)) => tri_bool(num_cmp(op, a, b)),
     }
 }
 
@@ -269,7 +269,9 @@ pub(crate) fn eval_arith_tuple_tri(
     numeric_cmp_tri(lhs, op, rhs, &fetch)
 }
 
-fn cmp(op: CmpOp, a: f64, b: f64) -> bool {
+/// The one numeric comparator dispatch. `pub(crate)` because the rarity candidate
+/// builders in `lib.rs` need exactly this and used to each carry their own copy.
+pub(crate) fn num_cmp(op: CmpOp, a: f64, b: f64) -> bool {
     match op {
         CmpOp::Eq => a == b,
         CmpOp::Ne => a != b,
