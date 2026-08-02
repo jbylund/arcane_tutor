@@ -24,6 +24,11 @@ image copies only that directory, and it imports nothing but stdlib.
   hand-picked constants; they are now drawn from the corpus distribution like `usd` always was.
 - **Boundedness is a property of a range draw, not its own family.** As a separate family it could
   co-occur with a one-sided draw on the same field and emit `usd<5 usd>=1 usd<=20`.
+- **A `keyword:` family**, which no generator had. Corpus-derived (639 usable values, `Flying` at
+  9,060 printings down to one-offs); the no-corpus fallback is the evergreens plus a few
+  distinctive mechanics (`infect`, `exalted`, `cascade`, `delve`) so the selective end is covered.
+  Deliberately overlapping the oracle family — `keyword:flying` is a JSONB key lookup and
+  `o:flying` a trigram substring match, two index paths for one intent.
 - **No corpus required.** `QuerySampler()` with no corpus serves `FALLBACK_DECILES` (measured
   deciles per numeric column, interpolated) and `FALLBACK_VOCAB`. Uniform-in-quantile sampling
   survives at decile resolution, which is what lets the container-shipped runner use the same
@@ -44,6 +49,13 @@ image copies only that directory, and it imports nothing but stdlib.
   **four matched zero cards** (`is:spell`, `is:modal`, `is:token`, `is:commander`, plus `is:reprint`
   which the sampler had added). The family is now exactly the rewrite table's `is:` keys, with a
   test pinning the two together. Verified against the live API: all 17 return results, none zero.
+- **`keyword:` is broken for 131 of 770 keywords, including two evergreens** — found while adding
+  the family. Keywords are stored verbatim from Scryfall but looked up `.title()`-cased, so
+  `keyword:"first strike"` asks for `First Strike` while the stored key is `First strike` and
+  matches nothing. 5.6% of all keyword occurrences; `.title()` also mangles `Doctor's` → `Doctor'S`.
+  Not fixed here — either fix needs a reimport, so it wants its own change. Filed as #825 with
+  `docs/issues/00825-keyword-title-case-mismatch.md`; the sampler skips the affected values via
+  `is_queryable_keyword`, which should be deleted along with the mismatch.
 - `ORDERBY_VALUES` was duplicated across four scripts in **three different versions** — 13 values in
   two benches, 8 in the survey, 7 in `bench_guard_validation`. The authority is
   `api.enums.CardOrdering` (8). The 13-value copies passed `order=released`/`set`/`color` through to

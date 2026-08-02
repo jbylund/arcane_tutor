@@ -107,6 +107,10 @@ REALISTIC_FAMILY_WEIGHTS: dict[str, float] = {
     "color": 6,
     "set": 5,
     "rarity": 4,
+    # Deliberately overlaps the oracle family: `keyword:flying` is a JSONB key lookup and
+    # `o:flying` a trigram substring match, so the same user intent takes two different index
+    # paths and both are worth sampling.
+    "keyword": 4,
     "pow": 3.5,
     "tou": 3,
     "cmc": 3,
@@ -201,6 +205,7 @@ STATIC_VALUES: dict[str, list[str]] = {
 VOCAB_PREFIXES: dict[str, str] = {
     "oracle": "o",
     "flavor": "ft",
+    "keyword": "keyword",
     "artist": "a",
     "set": "set",
     "type": "t",
@@ -231,6 +236,22 @@ MAX_VOCAB = 4000
 NAME_PREFIX_LEN = (2, 6)
 NAME_PREFIX_FRACTION = 0.5
 WORD_RE = re.compile(rf"[a-z]{{{MIN_WORD_LEN},}}")
+
+
+def is_queryable_keyword(keyword: str) -> bool:
+    """Whether `keyword:<this>` can match anything at all.
+
+    Keywords are stored verbatim from Scryfall (`api/card_processing.py`) but looked up
+    title-cased (`get_keywords_comparison_object`), so any keyword Scryfall does not itself write in
+    Title Case is unreachable: the stored key is `First strike` and the lookup asks for
+    `First Strike`. 131 of 770 distinct keywords are affected, including the evergreen `First
+    strike` and `Double strike` — see docs/issues/00825-keyword-title-case-mismatch.md.
+
+    Sampling them would only manufacture guaranteed-empty queries, which measure nothing. Delete
+    this filter along with the mismatch.
+    """
+    return keyword == keyword.title()
+
 
 # ─── Query structures ─────────────────────────────────────────────────────────
 # Structure name → (relative weight, template). The template's placeholder count is the arity;
@@ -384,6 +405,41 @@ FALLBACK_VOCAB: dict[str, list[str]] = {
         "sacrifice",
     ],
     "flavor": ["death", "fire", "light", "darkness", "power", "ancient"],
+    # The evergreen keywords, plus a handful of distinctive non-evergreen mechanics for the
+    # narrow end — `keyword:infect` matches 80 printings against `keyword:flying`'s 9,060, and a
+    # vocabulary of only common values would never exercise the selective side of this index.
+    # `first strike` and `double strike` are evergreen and deliberately absent: they are among the
+    # 131 keywords `is_queryable_keyword` rejects.
+    "keyword": [
+        "deathtouch",
+        "defender",
+        "enchant",
+        "equip",
+        "flash",
+        "flying",
+        "haste",
+        "hexproof",
+        "indestructible",
+        "lifelink",
+        "menace",
+        "protection",
+        "prowess",
+        "reach",
+        "trample",
+        "vigilance",
+        "ward",
+        "scry",
+        "mill",
+        "cycling",
+        "flashback",
+        "kicker",
+        "landfall",
+        "infect",
+        "exalted",
+        "cascade",
+        "storm",
+        "delve",
+    ],
     "type": [
         "creature",
         "instant",
@@ -513,6 +569,10 @@ class QuerySampler:
         # Key-set maps, where the presence of a key is the value being queried.
         for family, column in (("produces", "produced_mana"), ("frame", "card_frame_data")):
             counters[family].update(pip.lower() for pip in row.get(column) or {})
+        # Keywords have a long tail (770 distinct, down to one-offs) which is left whole on purpose:
+        # uniform mode reaching `keyword:"brood telepathy"` is how the selectivity extremes get
+        # sampled at all. The queryable filter is not about rarity — see QUERYABLE_KEYWORD note.
+        counters["keyword"].update(k.lower() for k in row.get("card_keywords") or {} if is_queryable_keyword(k))
         # Only formats a card can actually be legal in; `f:` on a format nothing is legal in is a
         # guaranteed-empty query, which measures nothing.
         counters["legality"].update(fmt.lower() for fmt, status in (row.get("card_legalities") or {}).items() if status == "legal")

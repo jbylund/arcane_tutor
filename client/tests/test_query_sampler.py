@@ -15,6 +15,7 @@ import pytest
 
 from api.enums import CardOrdering
 from api.parsing import parse_scryfall_query
+from api.parsing.card_query_nodes import get_keywords_comparison_object
 from api.parsing.rewrite import _DERIVED_EXPANSIONS
 from client.query_sampler import (
     ENGINE_ORDERBYS,
@@ -29,6 +30,7 @@ from client.query_sampler import (
     STRUCTURES,
     QuerySampler,
     Shape,
+    is_queryable_keyword,
 )
 
 if TYPE_CHECKING:
@@ -187,6 +189,23 @@ class TestParams:
 
     def test_sampled_orderbys_are_engine_orderbys(self) -> None:
         assert set(REALISTIC_ORDERBY_WEIGHTS) == set(ENGINE_ORDERBYS)
+
+    def test_keyword_filter_matches_the_query_layer(self) -> None:
+        """`is_queryable_keyword` must agree with what the lookup actually normalizes to.
+
+        Keywords are stored verbatim and looked up title-cased, so a keyword survives the round trip
+        only if it is already Title Case. Asserted against the real normalizer so the filter cannot
+        drift from it — and so this fails loudly once #825 is fixed and the filter should go.
+        """
+        for keyword in ("Flying", "Brood Telepathy", "First strike", "Doctor's companion"):
+            stored = {keyword: True}
+            looked_up = get_keywords_comparison_object(keyword)
+            matches = looked_up.keys() <= stored.keys()
+            assert is_queryable_keyword(keyword) == matches, keyword
+
+    def test_fallback_keywords_are_all_queryable(self) -> None:
+        for keyword in FALLBACK_VOCAB["keyword"]:
+            assert is_queryable_keyword(keyword.title()), keyword
 
     def test_is_tags_match_the_rewrite_table(self) -> None:
         """An `is:` value the rewrite layer does not expand hits an empty column and matches nothing.
