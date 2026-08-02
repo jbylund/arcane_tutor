@@ -1315,6 +1315,14 @@ class TestExplain:
             # num_trials recorded.
             assert row["trials_ns"] == [] or len(row["trials_ns"]) == 3
             assert all(t >= 0 for t in row["trials_ns"])
+            # A decline is reported as its own thing rather than as an absence: it produced no page,
+            # so it is not a trial, but it still cost wall time and named the gate that fired. The
+            # two are mutually exclusive because a decline is deterministic for one query and store.
+            assert not (row["trials_ns"] and row["declined_ns"]), f"{row['plan']} reported both trials and declines"
+            if row["declined_ns"]:
+                assert len(row["declined_ns"]) == 3
+                # Nothing executed, so a non-zero counter here would be another plan's.
+                assert (row["cards_visited"], row["matches_pushed"], row["ns_round_total"]) == (0, 0, 0)
         assert any(row["plan"] == "GatheredScan" and len(row["trials_ns"]) == 3 for row in analyzed["plans"])
 
     def test_explain_analyze_counters_track_the_features_that_predict_them(self, engine: QueryEngine) -> None:

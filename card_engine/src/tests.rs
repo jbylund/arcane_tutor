@@ -3690,6 +3690,119 @@ fn plan_stats_never_leak_between_participants() {
     assert!(compose_labelled > 0, "no compose recorded a paging label; leak 2 has no contaminant to detect");
 }
 
+/// A plan that enters a fastpath and declines must say so through `explain_analyze`, not just
+/// through `run_query_with_plan`.
+///
+/// `compose_paging_prediction_matches_the_branch_taken` checks the decline labels by driving
+/// `run_query_with_plan` and reading the thread-local directly, which only Rust can do. Everything
+/// outside the crate — `scripts/bench_cost_model_agreement.py`, any future calibration harness —
+/// sees `explain_analyze`, and that used to drop the stats of any plan whose round returned `None`.
+/// So `NotComposable`, `DeclineBroad`, `DeclineSparseEstimate` and `DeclineSparseExact` were
+/// recorded, asserted in-crate, and then discarded before anyone outside could count them.
+///
+/// The distinction is worth a wire field rather than an inference because the four declines do not
+/// cost the same thing. Three gate BEFORE `printing_compose_fastpath` composes. `DeclineSparseExact`
+/// gates AFTER, off the real total, so it pays a full printing compose and throws it away before
+/// the general path answers the query again. `declined_ns` is what sizes that; `paging_taken` is
+/// what says which of the two happened.
+///
+/// Asserted here, in order: a declining plan reports EMPTY `trials_ns` (it produced nothing), a
+/// NON-EMPTY `declined_ns` (it still cost something), zero counters and zero phase timings (no
+/// executor ran, so anything else would be a leak), and — for compose specifically — a label naming
+/// the gate rather than the `NotEntered` default that would mean it was never tried.
+#[test]
+fn declining_plans_report_their_gate_through_explain_analyze() {
+    use rand::SeedableRng;
+    const CORPUS_SIZE: usize = 2_000;
+    const NUM_WARMUPS: usize = 1;
+    const NUM_TRIALS: usize = 2;
+    /// Gates that mean "entered the compose fastpath and turned back". `NotEntered` is excluded on
+    /// purpose: it is the value this test exists to prove a decline never reports.
+    const DECLINE_GATES: [PagingTaken; 4] = [
+        PagingTaken::NotComposable,
+        PagingTaken::DeclineBroad,
+        PagingTaken::DeclineSparseEstimate,
+        PagingTaken::DeclineSparseExact,
+    ];
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(745_006);
+    // The narrow keyword/border AND is the one that reliably declines -- same reasoning as the
+    // compose sweep's last spec, where a small match set is what drives the sparse gates. The
+    // broader leaves are here so the sweep also covers plans that decline for other reasons.
+    let specs = [
+        FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
+        fuzz_leaf_type(&mut rng),
+        fuzz_leaf_price(&mut rng),
+        FuzzSpec::And(vec![
+            FuzzSpec::Leaf(FuzzLeaf::Collection { field: CollField::Keywords, op: CmpOp::Ge, value: "fateseal".to_string() }),
+            FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
+        ]),
+    ];
+    let modes = [("card", Mode::Card), ("printing", Mode::Printing), ("artwork", Mode::Artwork)];
+    let sort_cols = [("edhrec", SortCol::EdhrecRank), ("usd", SortCol::PriceUsd), ("rarity", SortCol::Rarity)];
+
+    let data = fuzz_store_n(&mut rng, CORPUS_SIZE);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let ctx = QueryCtx::from(archived);
+
+    let (mut declines_seen, mut compose_gates_seen) = (0usize, 0usize);
+    let mut by_gate = std::collections::BTreeMap::<String, usize>::new();
+    for spec in &specs {
+        for &(mode_label, mode) in &modes {
+            for &(orderby, sort_col) in &sort_cols {
+                let params = kernel_params(mode, sort_col, false, 60, 0);
+                let bound = fuzz_bound_filter(spec, archived);
+                let (pe, filter) = split_planes(
+                    bound, &archived.indexes.planes, &archived.indexes.oracle_trigram.words, matches!(mode, Mode::Card),
+                );
+                let (_facts, trials) = explain_analyze(&ctx, &params, &filter, pe.as_ref(), NUM_WARMUPS, NUM_TRIALS);
+
+                for t in &trials {
+                    if t.declined_ns.is_empty() {
+                        continue;
+                    }
+                    let case = format!("{:?} {mode_label}/{orderby} ({})", t.plan, fuzz_describe(spec));
+                    // Mutually exclusive: a decline is deterministic for one query and store, so a
+                    // plan cannot both produce a page and bail across rounds of the same sweep.
+                    assert!(t.trials_ns.is_empty(), "a plan reported both trials and declines: {case}");
+                    assert_eq!(t.declined_ns.len(), NUM_TRIALS, "one decline sample per recorded round: {case}");
+                    assert!(t.declined_ns.iter().all(|&ns| ns > 0), "a decline still costs wall time: {case}");
+                    // No executor ran, so anything non-zero here came from somewhere else.
+                    let p = &t.phases;
+                    assert_eq!(
+                        (p.cards_visited, p.printings_scanned, p.matches_pushed), (0, 0, 0),
+                        "a declining plan reported counters no executor wrote: {case}",
+                    );
+                    assert_eq!(
+                        (p.ns_setup, p.ns_loop, p.ns_finish, p.ns_prepare, p.ns_round_total, p.result_total), (0, 0, 0, 0, 0, 0),
+                        "a declining plan reported timings or a total it never produced: {case}",
+                    );
+                    declines_seen += 1;
+                    // Only compose labels its gates; PrintingRangeScan has no equivalent, so it
+                    // legitimately declines as `NotEntered`.
+                    if t.plan == PhysicalPlan::PrintingCompose {
+                        assert!(
+                            DECLINE_GATES.contains(&p.paging_taken),
+                            "a declining compose reported {:?}, which does not name a gate: {case}",
+                            p.paging_taken,
+                        );
+                        *by_gate.entry(format!("{:?}", p.paging_taken)).or_default() += 1;
+                        compose_gates_seen += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    let gates: Vec<String> = by_gate.iter().map(|(g, n)| format!("{g} x{n}")).collect();
+    println!("declines through explain_analyze: {declines_seen} total, {compose_gates_seen} compose ({})", gates.join(", "));
+    // Both guards matter: the first says the wire field is reachable at all, the second says the
+    // labels ride along with it. Before `declined_ns` existed every one of these rows was dropped.
+    assert!(declines_seen > 0, "no plan declined; the whole assertion block above is unexercised");
+    assert!(compose_gates_seen > 0, "no compose declined; the gate labels are still unreachable from outside Rust");
+}
+
 /// #702 PR1 estimator accuracy report (NOT an assertion — a reporting tool).
 /// Runs a spread of fuzz queries against a corpus store, comparing the point
 /// estimate and bounds to the mode="card" reference count, and prints the

@@ -22,6 +22,11 @@ because the range-vs-plane contrast is the whole point of the row, and both cove
 materializing plans: no other plan has those phases at all, which is not the same as spending 0%
 of its run in them.
 
+Then what the fastpaths that DECLINED cost. Those rounds produce no page, so they have no
+measured/predicted ratio and appear in no other table -- but the work is real and no cost term
+describes it, and one gate (`DeclineSparseExact`) turns back only after composing the printing
+bitmap, paying a full compose it then discards. See `report_declines`.
+
 Finally, whether `PrintingCompose`'s predicted paging branch is the one that actually ran, split by
 acquire branch. Those two decisions are computed independently and nothing checked they agree until
 `paging_taken` existed; `card_engine`'s `compose_paging_prediction_matches_the_branch_taken` asserts
@@ -70,6 +75,10 @@ COMPOSE_STRATEGIES = ("Perm", "OrderbyWalk", "Gather")
 # Tracked separately because the rate is the interesting number: it is how often the engine pays a
 # walk attempt AND a full gather while being priced as a walk.
 WALK_DECLINED = "GatherWalkDeclined"
+# The one decline gate that fires AFTER `printing_compose_fastpath` has composed the printing
+# bitmap, off the real total rather than the estimator's bound -- so those rounds pay a full compose
+# and discard it. The other three gate before the compose and are cheap. See `report_declines`.
+POST_COMPOSE_GATE = "DeclineSparseExact"
 # The acquire branch that actually PREDICTS `compose_paging`. Every other branch leaves the
 # `mk_plan_feats` default of `Gather` untouched — see `report_paging` for why that is a different
 # defect rather than a prediction that missed.
@@ -166,6 +175,15 @@ def main() -> None:
             continue
         agr.sampled += 1
         for p in res["plans"]:
+            # A plan that entered a fastpath and turned back produces no page, so it has no
+            # measured/predicted ratio and falls out of every table below. It is not free, though,
+            # and until `declined_ns` existed it was invisible from here entirely: `explain_analyze`
+            # dropped the stats of any plan whose round returned nothing, so the four decline gates
+            # were recorded in Rust and discarded before this loop could count them. That made the
+            # compose table below a census of successful composes described as a census of composes.
+            if p["declined_ns"]:
+                agr.declines[p["plan"], p["paging_taken"]].append(min(p["declined_ns"]))
+                continue
             if not p["trials_ns"] or p["predicted_ns"] <= 0:
                 continue
             measured = min(p["trials_ns"])
@@ -199,6 +217,23 @@ def main() -> None:
     report(agr, args.seconds)
 
 
+def report_suppressed(groups: dict[tuple[str, str], list[float]]) -> None:
+    """The cells too thin to summarise, named and sized.
+
+    This harness's whole argument is that under-sampling hides the cells most likely to be wrong, so
+    dropping them silently is that same bias applied to the report itself -- the reason `skip_reasons`
+    counts exceptions by type rather than totalling them. Both numbers are needed: how many samples a
+    suppressed cell already has says whether more budget would surface it (n=6 of 8) or whether the
+    shape is genuinely rare in the sample space (n=1). Named, because a cell that is thin every run is
+    itself the finding.
+    """
+    thin = {f"{plan}/{key}": len(rs) for (plan, key), rs in groups.items() if len(rs) < MIN_FOR_QUARTILES}
+    if not thin:
+        return
+    listed = ", ".join(f"{name} n={n}" for name, n in sorted(thin.items(), key=lambda kv: (-kv[1], kv[0])))
+    print(f"  {len(thin)} cells suppressed (n < {MIN_FOR_QUARTILES}), {sum(thin.values())} samples: {listed}")
+
+
 def summarise(label: str, groups: dict[tuple[str, str], list[float]], col: str) -> None:
     """One table: median measured/predicted per cell, and how many cells clear the agreement bar."""
     cells: list[tuple[str, float]] = []
@@ -214,7 +249,10 @@ def summarise(label: str, groups: dict[tuple[str, str], list[float]], col: str) 
         cells.append((f"{plan}/{key}", med))
     passing = sum(1 for _, m in cells if AGREE_LO <= m <= AGREE_HI)
     print(f"  {label}")
-    print(f"  {passing}/{len(cells)} cells inside [{AGREE_LO}, {AGREE_HI}]")
+    # "of the cells reported", not "of the cells that exist" -- the suppressed line below carries the
+    # rest, and without it this ratio reads as coverage when it is nothing of the kind.
+    print(f"  {passing}/{len(cells)} reported cells inside [{AGREE_LO}, {AGREE_HI}]")
+    report_suppressed(groups)
 
 
 @dataclasses.dataclass
@@ -229,6 +267,9 @@ class Agreement:
     # says whether an off-diagonal cell is drift in a real prediction or a default that was never
     # one; see `report_paging`.
     paging: dict[tuple[str, str, str], int] = dataclasses.field(default_factory=lambda: collections.defaultdict(int))
+    # (plan, gate) -> the ns each declining round cost. Declines produce no page and so appear in no
+    # other table; see `report_declines` for why the cost is worth its own row.
+    declines: dict[tuple[str, str], list[float]] = dataclasses.field(default_factory=lambda: collections.defaultdict(list))
     sampled: int = 0
     skipped: int = 0
     skip_reasons: dict[str, int] = dataclasses.field(default_factory=lambda: collections.defaultdict(int))
@@ -290,6 +331,40 @@ def report_paging(agr: Agreement) -> None:
             print(f"    predicted {pred:<12} took {took:<12}{n:>7,}")
 
 
+def report_declines(agr: Agreement) -> None:
+    """What the fastpaths that turned back cost, per gate.
+
+    A decline produces no page, so it has no measured/predicted ratio and appears in no other table.
+    That is exactly why it needs one: the work is real, it is charged to the query, and no cost term
+    describes it. The router picked a plan, the plan bailed, and the general path then answered the
+    query from scratch -- so a declining round is pure overhead on top of whatever ran next.
+
+    The gates do not cost the same thing, which is the number this table exists to separate:
+
+    - `NotComposable`, `DeclineBroad`, `DeclineSparseEstimate` gate BEFORE the compose. Cheap; the
+      fastpath looked at an estimate and turned back.
+    - `DeclineSparseExact` gates AFTER, off the real total, so it has already composed the printing
+      bitmap and throws it away. That is a full compose paid for nothing.
+
+    A high `DeclineSparseExact` median against the same query's `PrintingCompose` predicted cost is
+    the actionable case: it means the pre-compose sparse estimate is not catching what the exact
+    total then rejects, and tightening the estimator would recover the whole of it.
+    """
+    if not agr.declines:
+        print("\nno plan declined; every fastpath that was tried produced a page")
+        return
+    total = sum(len(v) for v in agr.declines.values())
+    print(f"\nfastpath declines: {total:,} rounds that entered, turned back, and produced nothing")
+    print(f"{'plan':<20}{'gate':<24}{'n':>6}{'median µs':>12}{'p90 µs':>10}")
+    for (plan, gate), costs in sorted(agr.declines.items(), key=lambda kv: -len(kv[1])):
+        p90 = statistics.quantiles(costs, n=10)[8] if len(costs) >= MIN_FOR_QUARTILES else max(costs)
+        print(f"{plan:<20}{gate:<24}{len(costs):>6}{statistics.median(costs) / 1000:>12.1f}{p90 / 1000:>10.1f}")
+    post_compose = sum(len(v) for (_, gate), v in agr.declines.items() if gate == POST_COMPOSE_GATE)
+    if post_compose:
+        print(f"  {post_compose:,} of these ({post_compose / total:.0%}) are {POST_COMPOSE_GATE} -- composed, then discarded.")
+    print("  Declines appear in no other table: no page, so no measured/predicted ratio.")
+
+
 def report_phase_share(groups: dict[tuple[str, str], list[float]], caption: str) -> None:
     """One phase's share of the plan's whole run, per (plan, acquire branch)."""
     print(f"\n{'plan':<20}{'acquire':<22}{'n':>6}{'median share':>20}{'p90':>8}")
@@ -299,6 +374,7 @@ def report_phase_share(groups: dict[tuple[str, str], list[float]], caption: str)
         p90 = statistics.quantiles(fracs, n=10)[8]
         print(f"{plan:<20}{acquire:<22}{len(fracs):>6}{statistics.median(fracs):>19.0%}{p90:>8.0%}")
     print(f"  {caption}")
+    report_suppressed(groups)
 
 
 def report(agr: Agreement, seconds: float) -> None:
@@ -315,6 +391,7 @@ def report(agr: Agreement, seconds: float) -> None:
     print("  scales with the corpus rather than with the answer, and no cost arm carries it either.")
     print("  Both tables cover only the two materializing plans; no other plan has these phases.")
     report_paging(agr)
+    report_declines(agr)
 
 
 if __name__ == "__main__":

@@ -7243,6 +7243,26 @@ pub(crate) struct PlanTrial {
     pub(crate) materialize_ns: f64,
     pub(crate) picked: bool,
     pub(crate) trials_ns: Vec<u64>,
+    /// Raw per-round wall time of the rounds where this plan ENTERED and then declined, producing
+    /// no page. Mutually exclusive with `trials_ns` in practice — a decline is deterministic for a
+    /// given query and store — so exactly one of the two is non-empty for a plan that participated.
+    ///
+    /// Separate from `trials_ns` rather than folded into it because the two answer different
+    /// questions and every consumer reduces `trials_ns` with `min` as "what this plan costs to run".
+    /// A decline is not a run: it produced nothing, and averaging it in would make a plan that bails
+    /// early look fast.
+    ///
+    /// Only the two printing-space fast paths can land here. `PhysicalPlan::applicable` is at least
+    /// as strong as the guard `run_query_with_plan` re-checks, so a plan `explain` ranked never
+    /// fails that guard — `None` from it is always a runtime decline, never a missed applicability
+    /// test. The other four either always produce a page or are not in the list.
+    ///
+    /// This is the cost of the decline itself, and it is not free: `PagingTaken::DeclineSparseExact`
+    /// fires AFTER `printing_compose_fastpath` has composed the printing bitmap, so those rounds pay
+    /// a full compose and throw it away before the general path runs the query again. The three
+    /// other declines gate before the compose and are cheap. `phases.paging_taken` is what tells the
+    /// two apart, which is why it is recorded for a declining plan even though nothing else is.
+    pub(crate) declined_ns: Vec<u64>,
     /// Execution counters and coarse phase timings from this plan's FASTEST recorded round — the
     /// same round `min(trials_ns)` names, so a phase share read against that total describes one
     /// execution rather than two. See `PhaseStats`: the counters check whether the cost arm's
@@ -7264,9 +7284,19 @@ pub(crate) struct PlanTrial {
     /// `printing_compose_fastpath` sets on its own.
     ///
     /// A consumer must not read all-zero counters as "this plan did no work": `explain_analyze`
-    /// always fills `ns_round_total`, so `ns_round_total > 0 && ns_loop == 0` is the uninstrumented
-    /// case, and only `ns_round_total == 0` means the plan never ran at all (which `trials_ns`
-    /// already says, being empty).
+    /// fills `ns_round_total` for every round it records, so `ns_round_total > 0 && ns_loop == 0` is
+    /// the uninstrumented case, and `ns_round_total == 0` means the plan completed no round.
+    ///
+    /// `ns_round_total == 0` has two sub-cases, and `declined_ns` is what separates them:
+    ///
+    /// - `declined_ns` empty — the plan never produced a page and never entered a fastpath either.
+    /// - `declined_ns` non-empty — the plan entered and declined. Everything here is zero EXCEPT
+    ///   `paging_taken`, which names the gate that fired. That is the whole point of recording
+    ///   stats for a plan that produced nothing: without it a declining `PrintingCompose` is
+    ///   indistinguishable from one that was never tried, and the four decline labels
+    ///   (`NotComposable`, `DeclineBroad`, `DeclineSparseEstimate`, `DeclineSparseExact`) would be
+    ///   reachable only from Rust. The counters and phase timings stay zero because no executor
+    ///   ran — a decline is a gate, not a loop.
     pub(crate) phases: PhaseStats,
 }
 
@@ -7362,6 +7392,10 @@ fn explain_analyze(
 
     let n = estimates.len();
     let mut trials_ns: Vec<Vec<u64>> = vec![Vec::with_capacity(num_trials); n];
+    // Rounds where a plan entered and declined instead of producing a page. Kept apart from
+    // `trials_ns` so `min(trials_ns)` never mixes "what running costs" with "what bailing costs" —
+    // see `PlanTrial::declined_ns`.
+    let mut declined_ns: Vec<Vec<u64>> = vec![Vec::new(); n];
     let mut phases: Vec<PhaseStats> = vec![PhaseStats::default(); n];
     let mut rng = rand::rngs::SmallRng::seed_from_u64(PARTICIPANT_SHUFFLE_SEED);
     let mut order: Vec<Participant> =
@@ -7417,6 +7451,14 @@ fn explain_analyze(
                             phases[i] = stats;
                         }
                         trials_ns[i].push(dt);
+                    } else {
+                        // Entered and declined. Nothing executed, so the counters and phase timings
+                        // stay at their default zeros — but the GATE is a real observation, and it
+                        // is the only place the four decline labels are visible from outside Rust.
+                        // Assigned rather than merged: everything else in `stats` is already zero
+                        // here, and leaving `ns_round_total` at 0 keeps "completed no round" true.
+                        phases[i].paging_taken = stats.paging_taken;
+                        declined_ns[i].push(dt);
                     }
                 }
             }
@@ -7427,13 +7469,15 @@ fn explain_analyze(
         estimates
         .into_iter()
         .zip(trials_ns)
+        .zip(declined_ns)
         .zip(phases)
-        .map(|((e, trials_ns), phases)| PlanTrial {
+        .map(|(((e, trials_ns), declined_ns), phases)| PlanTrial {
             plan: e.plan,
             predicted_ns: e.predicted_ns,
             materialize_ns: e.materialize_ns,
             picked: e.picked,
             trials_ns,
+            declined_ns,
             phases,
         })
         .collect();
@@ -8030,6 +8074,10 @@ fn plan_trial_to_pydict<'py>(py: Python<'py>, t: &PlanTrial) -> PyResult<Bound<'
     d.set_item("materialize_ns", t.materialize_ns)?;
     d.set_item("picked", t.picked)?;
     d.set_item("trials_ns", t.trials_ns.clone())?;
+    // Non-empty only for a plan that entered a fastpath and declined; `paging_taken` below names
+    // the gate. See `PlanTrial::declined_ns` — a decline is not a cheap run, and
+    // `DeclineSparseExact` in particular pays a full compose first.
+    d.set_item("declined_ns", t.declined_ns.clone())?;
     d.set_item("cards_visited", t.phases.cards_visited)?;
     d.set_item("printings_scanned", t.phases.printings_scanned)?;
     d.set_item("matches_pushed", t.phases.matches_pushed)?;
