@@ -298,7 +298,16 @@ classifier doc).
   by `pid` rather than iterating `&printings[start..end]`. The latter is accidental —
   `eval_plane_expr_for_printing` takes `&Archived<Printing>`, so even the plane path never needed the
   index; only `Mode::Artwork` does. With both addressed, one body reaches parity, so **the
-  duplication is not load-bearing** and the collapse is available whenever someone wants it.
+  duplication is not load-bearing**.
+
+  **Collapsed.** Both functions now have one body plus a `const HAS_PLANE: bool` dispatch wrapper,
+  so every call site is unchanged. `bench_card_match_unify`'s `SHIPPED` column tracks its
+  old-vs-old floor in every row, and `bench_push_card_matches` compares emitted `Match` tuples
+  (not just counts — picking a different-but-valid representative printing would change what a
+  user sees) and finds custom-prefer emission 11-13% *faster* collapsed, outside the floor.
+  `push_card_matches` keeps its prefer split, which is algorithmic rather than duplication:
+  printings are stored default-prefer-descending, so default prefer takes the first satisfying
+  printing and stops while a custom prefer must score them all.
 
   `banned:modern` specifically measures at the floor under every variant: #679 gave
   banned:/restricted: exact legality planes 93 minutes after #676 recorded the note, making those

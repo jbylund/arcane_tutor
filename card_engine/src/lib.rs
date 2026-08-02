@@ -4290,9 +4290,6 @@ const ARTWORK_GROUP_WORDS: usize = 8;
 // `Mode::Printing`/`Artwork` below are unaffected -- their planes, if any,
 // were never folded to begin with when existential (`unique_is_card`).
 #[allow(clippy::too_many_arguments)]
-// needless_range_loop: `pid` is the printing's absolute id, used for `artwork_group_id`
-// lookups alongside the residual test — a slice iterator would lose the id.
-#[allow(clippy::needless_range_loop)]
 #[inline(always)]
 fn card_match_count(
     card: &AOracleCard,
@@ -4309,134 +4306,117 @@ fn card_match_count(
     existential_plane: Option<(&PlaneExpr, &Archived<BitPlanes>)>,
     seen_words: &mut [u64; ARTWORK_GROUP_WORDS],
 ) -> u32 {
-    // No existential plane: identical code shape to before #676's
-    // existential_plane parameter existed at all -- no closure, no extra
-    // branch inside the hot loop. This is the overwhelmingly common case
-    // (every query without a promoted legality leaf), and it's called once
-    // per *candidate*, not once per emitted row, so its cost is on the
-    // critical path for every non-Step-2 query.
-    //
-    // This comment used to justify the split with "a real (~15%) regression on
-    // `banned:modern`/`restricted:vintage`", measured via the broad survey.
-    // `bench_card_match_unify` re-measured it at the kernel (#799 follow-up).
-    // Every part of that claim turned out to be wrong, including the verdict.
-    //
-    // The named workload pays nothing: `banned:modern` measures at the noise
-    // floor. #676 recorded the note at 16:36; #679 gave banned:/restricted:
-    // exact legality planes at 18:09 the same day, making those queries tight
-    // -- `all_match` true, empty residual -- so they take the blind shortcut
-    // below and never reach a per-printing closure at all. The cited
-    // measurement was invalidated 93 minutes after it was written down.
-    //
-    // The split IS faster than a naive dedupe, but for two separable reasons,
-    // roughly half each, and neither requires duplicated source. Against a
-    // split-vs-split noise floor of 1.000-1.002x on Card+residual:
-    //
-    //   runtime `existential_plane` branch + `printings[pid]`   1.086-1.103x
-    //   `const HAS_PLANE: bool`            + `printings[pid]`   1.051-1.059x
-    //   `const HAS_PLANE: bool`            + slice iteration    0.980-0.997x
-    //
-    // So ~4% was the per-printing plane branch, and ~5% was indexing by `pid`
-    // instead of iterating `&printings[start..end]`. The second one is pure
-    // accident: `eval_plane_expr_for_printing` takes `&Archived<Printing>`,
-    // not an index, so even the plane path never needed `pid` -- only
-    // `Mode::Artwork` does, for `artwork_group_col`.
-    //
-    // A single body with `const HAS_PLANE: bool` and slice iteration
-    // benchmarks at parity or slightly better than what is written here, so
-    // the duplication below is NOT load-bearing and this function is no longer
-    // on #799's do-not-touch list. It is still written out twice only because
-    // nobody has done the collapse yet. If you do it: keep the const generic
-    // (a runtime branch costs the 4%), keep slice iteration, keep the blind
-    // `all_match` shortcut, and re-run the bench -- including its
-    // split-vs-split floor column, without which none of these numbers can be
-    // read, and its `black_box` on the plane `Option`, without which the
-    // optimizer folds away the branch under test and reports every variant as
-    // free.
-    let Some((pe, planes)) = existential_plane else {
-        return match mode {
-            Mode::Card => {
-                if all_match {
-                    return u32::from(start < end);
-                }
-                for p in &printings[start..end] {
-                    if FilterExpr::residual_matches(card, p, strings, residual, residual_is_or) {
-                        return 1;
-                    }
-                }
-                0
-            }
-            Mode::Printing => {
-                if all_match {
-                    return (end - start) as u32;
-                }
-                let mut n = 0u32;
-                for p in &printings[start..end] {
-                    if FilterExpr::residual_matches(card, p, strings, residual, residual_is_or) {
-                        n += 1;
-                    }
-                }
-                n
-            }
-            Mode::Artwork => {
-                // #737's skip-repped shortcut, which landed in the gather loop but not here. Read the
-                // group id FIRST -- from the columnar array, so an already-counted group never touches
-                // the wide APrinting struct -- and skip before the residual. This loop only COUNTS
-                // distinct groups, so once a bit is set no later printing of that group can change the
-                // answer and testing the residual again is pure waste. Strictly safer than the
-                // gather's version, which had to assume prefer-desc ordering to pick a representative;
-                // counting needs no ordering assumption and so has no custom-prefer carve-out.
-                seen_words.fill(0);
-                for pid in start..end {
-                    let gid = u16::from(artwork_group_col[pid]) as usize;
-                    let (word, bit) = (gid / 64, 1u64 << (gid % 64));
-                    if seen_words[word] & bit != 0 {
-                        continue;
-                    }
-                    if !all_match
-                        && !FilterExpr::residual_matches(card, &printings[pid], strings, residual, residual_is_or)
-                    {
-                        continue;
-                    }
-                    seen_words[word] |= bit;
-                }
-                seen_words.iter().map(|w| w.count_ones()).sum()
-            }
-        };
-    };
+    // The plane test is a *const* parameter, not a runtime branch, so each instantiation
+    // folds it away and the per-printing loops below are branch-free on it. This dispatch is
+    // the only place the `Option` is inspected, and it sits outside the printing loop; every
+    // caller has it loop-invariant across candidates, so it costs one predicted branch per
+    // candidate at worst and is usually unswitched out of the candidate loop entirely.
+    if existential_plane.is_some() {
+        card_match_count_impl::<true>(
+            card, cid, printings, artwork_group_col, start, end, all_match, residual, residual_is_or, mode, strings, existential_plane,
+            seen_words,
+        )
+    } else {
+        card_match_count_impl::<false>(
+            card, cid, printings, artwork_group_col, start, end, all_match, residual, residual_is_or, mode, strings, existential_plane,
+            seen_words,
+        )
+    }
+}
 
-    // Existential plane present (Mode::Card only -- see this function's
-    // doc): the blind all_match shortcut never applies, and both the
-    // residual and the plane must hold for the same printing.
-    let satisfies =
-        |pid: usize| eval_plane_expr_for_printing(pe, planes, cid, &printings[pid], strings)
-            && (all_match || FilterExpr::residual_matches(card, &printings[pid], strings, residual, residual_is_or));
+/// `card_match_count`'s body, once, with `HAS_PLANE` deciding at compile time whether the
+/// existential plane participates.
+///
+/// This used to be written out twice — a no-plane arm of three specialized mode loops, then a
+/// closure-based arm of the same three shapes — with a comment claiming the duplication was
+/// worth ~15% on `banned:modern`. `bench_card_match_unify` (#799) showed otherwise, and the
+/// two things that actually cost anything are both preserved here rather than duplicated:
+///
+///   - `HAS_PLANE` is a const generic, not a runtime `Option` test inside `satisfies`. That
+///     distinction measured ~4% on Card+residual against a 1.000-1.002x noise floor.
+///   - The loops iterate `&printings[start..end]` rather than indexing `printings[pid]`,
+///     worth another ~5%. Only `Mode::Artwork` needs the index at all, for
+///     `artwork_group_col`; `eval_plane_expr_for_printing` takes `&Archived<Printing>`, so
+///     even the plane path never did.
+///
+/// Collapsed, this benchmarks at 0.980-0.997x of the duplicated version. Keep both properties
+/// if you touch it, and re-run that bench — it carries a split-vs-split floor column without
+/// which its ratios cannot be read, and a `black_box` on the plane `Option` without which the
+/// optimizer folds away the very branch under test.
+#[allow(clippy::too_many_arguments)]
+// needless_range_loop: Artwork's `pid` indexes `artwork_group_col` alongside the printing itself,
+// so a bare slice iterator would lose the id it needs.
+#[allow(clippy::needless_range_loop)]
+#[inline(always)]
+fn card_match_count_impl<const HAS_PLANE: bool>(
+    card: &AOracleCard,
+    cid: u32,
+    printings: &[APrinting],
+    artwork_group_col: &Archived<Vec<u16>>,
+    start: usize,
+    end: usize,
+    all_match: bool,
+    residual: &[&FilterExpr],
+    residual_is_or: bool,
+    mode: Mode,
+    strings: &AStrings,
+    existential_plane: Option<(&PlaneExpr, &Archived<BitPlanes>)>,
+    seen_words: &mut [u64; ARTWORK_GROUP_WORDS],
+) -> u32 {
+    // Both the residual and, when present, the plane must hold for the *same* printing
+    // (#676's review: `all_match`/`residual` alone only prove some printing satisfies the
+    // residual; the plane alone only proves its existential leaf holds for some possibly
+    // different printing). `HAS_PLANE` is const, so the plane conjunct disappears entirely
+    // from the `false` instantiation rather than being tested per printing.
+    let satisfies = |p: &APrinting| {
+        (!HAS_PLANE
+            || {
+                let (pe, planes) = existential_plane.expect("HAS_PLANE implies Some");
+                eval_plane_expr_for_printing(pe, planes, cid, p, strings)
+            })
+            && (all_match || FilterExpr::residual_matches(card, p, strings, residual, residual_is_or))
+    };
+    // The blind shortcut: with every printing matching AND no plane to check, the answer is
+    // the range's shape and no printing needs visiting. Folds to `all_match` in the no-plane
+    // instantiation and to `false` in the other, where it is never sound.
+    let blind = all_match && !HAS_PLANE;
     match mode {
         Mode::Card => {
-            for pid in start..end {
-                if satisfies(pid) {
+            if blind {
+                return u32::from(start < end);
+            }
+            for p in &printings[start..end] {
+                if satisfies(p) {
                     return 1;
                 }
             }
             0
         }
         Mode::Printing => {
+            if blind {
+                return (end - start) as u32;
+            }
             let mut n = 0u32;
-            for pid in start..end {
-                if satisfies(pid) {
+            for p in &printings[start..end] {
+                if satisfies(p) {
                     n += 1;
                 }
             }
             n
         }
         Mode::Artwork => {
-            // Same skip-repped shortcut as the no-plane arm above, and it matters more here:
-            // `satisfies` evaluates a plane expression per printing on top of the residual.
+            // #737's skip-repped shortcut. Read the group id FIRST -- from the columnar array, so
+            // an already-counted group never touches the wide APrinting struct -- and skip before
+            // the residual. This loop only COUNTS distinct groups, so once a bit is set no later
+            // printing of that group can change the answer and re-testing is pure waste. Counting
+            // needs no ordering assumption, so unlike the gather's version there is no
+            // custom-prefer carve-out. It matters more under `HAS_PLANE`, where `satisfies` also
+            // evaluates a plane expression per printing.
             seen_words.fill(0);
             for pid in start..end {
                 let gid = u16::from(artwork_group_col[pid]) as usize;
                 let (word, bit) = (gid / 64, 1u64 << (gid % 64));
-                if seen_words[word] & bit != 0 || !satisfies(pid) {
+                if seen_words[word] & bit != 0 || !satisfies(&printings[pid]) {
                     continue;
                 }
                 seen_words[word] |= bit;
@@ -4463,9 +4443,6 @@ fn card_match_count(
 /// this (their planes are never folded this way, see `unique_is_card`), and a
 /// card-invariant `all_match` needs no check (every printing already agrees).
 #[allow(clippy::too_many_arguments)]
-// needless_range_loop: `pid` is the printing's identity, not a cursor — it is pushed into
-// the emitted match tuple (`pid as u32`), so the loop needs the absolute index.
-#[allow(clippy::needless_range_loop)]
 #[inline(always)]
 fn push_card_matches(
     card: &AOracleCard,
@@ -4487,56 +4464,81 @@ fn push_card_matches(
     group_best: &mut [Option<(u32, f64)>],
     touched: &mut Vec<u16>,
 ) {
+    // Same const-generic dispatch as `card_match_count` — see its doc for the measurements.
+    // `existential_plane` is `Some` only for `Mode::Card`, so only that arm below reads it.
+    if existential_plane.is_some() {
+        push_card_matches_impl::<true>(
+            card, cid, printings, artwork_group_col, start, end, all_match, residual, residual_is_or, mode, prefer, sort_col,
+            descending, strings, existential_plane, out, group_best, touched,
+        );
+    } else {
+        push_card_matches_impl::<false>(
+            card, cid, printings, artwork_group_col, start, end, all_match, residual, residual_is_or, mode, prefer, sort_col,
+            descending, strings, existential_plane, out, group_best, touched,
+        );
+    }
+}
+
+/// `push_card_matches`' body, once. `HAS_PLANE` folds the existential-plane conjunct in or out
+/// at compile time, exactly as in `card_match_count` and for the same measured reasons.
+///
+/// The Card arm used to be three blocks — plane×(default-prefer, custom-prefer) in one, then
+/// no-plane default-prefer, then no-plane custom-prefer — where the only real distinction is
+/// prefer: default-prefer takes the first satisfying printing (they are stored prefer-desc, so
+/// first *is* best) while a custom prefer must score them all. That distinction is algorithmic
+/// and stays; the plane one is now the compiler's job.
+#[allow(clippy::too_many_arguments)]
+// needless_range_loop: Artwork's `pid` indexes `artwork_group_col`, and every arm pushes `pid`
+// into the emitted match tuple, so the loops need the absolute index.
+#[allow(clippy::needless_range_loop)]
+#[inline(always)]
+fn push_card_matches_impl<const HAS_PLANE: bool>(
+    card: &AOracleCard,
+    cid: u32,
+    printings: &[APrinting],
+    artwork_group_col: &Archived<Vec<u16>>,
+    start: usize,
+    end: usize,
+    all_match: bool,
+    residual: &[&FilterExpr],
+    residual_is_or: bool,
+    mode: Mode,
+    prefer: Prefer,
+    sort_col: SortCol,
+    descending: bool,
+    strings: &AStrings,
+    existential_plane: Option<(&PlaneExpr, &Archived<BitPlanes>)>,
+    out: &mut Vec<Match>,
+    group_best: &mut [Option<(u32, f64)>],
+    touched: &mut Vec<u16>,
+) {
     match mode {
         Mode::Card => {
-            // Printings are stored in descending default-prefer order, so
-            // for the default prefer the first matching printing IS the
-            // chosen one — O(1) when the card pass already said True.
+            // Printings are stored in descending default-prefer order, so for the default
+            // prefer the first satisfying printing IS the chosen one — O(1) when the card pass
+            // already said True. A custom prefer has to score every printing.
             //
-            // #676 review: when `existential_plane` is `Some`, the residual
-            // check is still required, not replaced -- a legality leaf folded
-            // into `plane` alongside a genuinely printing-dependent residual
-            // (DateCmp, ArtistMatch, ...) needs a printing satisfying *both*
-            // at once (docs/issues/00667-engine-legality-divergent-carveout.md "Row
-            // selection for unique=card"); checking only the plane could pick
-            // a printing that's legal but fails the residual, or vice versa.
-            // Kept as two separate closures (not one closure branching on
-            // `existential_plane` every call) for the same reason
-            // `card_match_count` is split this way — see its doc.
-            let chosen: Option<u32> = if let Some((pe, planes)) = existential_plane {
-                let satisfies = |pid: usize| {
-                    eval_plane_expr_for_printing(pe, planes, cid, &printings[pid], strings)
-                        && (all_match || FilterExpr::residual_matches(card, &printings[pid], strings, residual, residual_is_or))
-                };
-                if matches!(prefer, Prefer::Default) {
-                    (start..end).find(|&pid| satisfies(pid)).map(|pid| pid as u32)
-                } else {
-                    let mut chosen: Option<(u32, f64)> = None;
-                    for pid in start..end {
-                        if !satisfies(pid) {
-                            continue;
-                        }
-                        let score = prefer_score(card, &printings[pid], prefer);
-                        if chosen.is_none_or(|(_, s)| score > s) {
-                            chosen = Some((pid as u32, score));
-                        }
-                    }
-                    chosen.map(|(pid, _)| pid)
-                }
-            } else if matches!(prefer, Prefer::Default) {
-                let mut found: Option<u32> = None;
-                for pid in start..end {
-                    if all_match || FilterExpr::residual_matches(card, &printings[pid], strings, residual, residual_is_or) {
-                        found = Some(pid as u32);
-                        break;
-                    }
-                }
-                found
+            // #676 review: when a plane is present the residual check is still required, not
+            // replaced — a legality leaf folded into `plane` alongside a genuinely
+            // printing-dependent residual (DateCmp, ArtistMatch, ...) needs one printing
+            // satisfying *both* at once (docs/issues/00667-engine-legality-divergent-carveout.md
+            // "Row selection for unique=card"). Checking only the plane could pick a printing
+            // that is legal but fails the residual, or vice versa.
+            let satisfies = |p: &APrinting| {
+                (!HAS_PLANE
+                    || {
+                        let (pe, planes) = existential_plane.expect("HAS_PLANE implies Some");
+                        eval_plane_expr_for_printing(pe, planes, cid, p, strings)
+                    })
+                    && (all_match || FilterExpr::residual_matches(card, p, strings, residual, residual_is_or))
+            };
+            let chosen: Option<u32> = if matches!(prefer, Prefer::Default) {
+                printings[start..end].iter().position(satisfies).map(|i| (start + i) as u32)
             } else {
                 let mut chosen: Option<(u32, f64)> = None;
                 for pid in start..end {
                     let p = &printings[pid];
-                    if !all_match && !FilterExpr::residual_matches(card, p, strings, residual, residual_is_or) {
+                    if !satisfies(p) {
                         continue;
                     }
                     let score = prefer_score(card, p, prefer);
@@ -9498,6 +9500,8 @@ mod bench_word_dict_scan;
 mod bench_card_dedup;
 #[cfg(test)]
 mod bench_card_match_unify;
+#[cfg(test)]
+mod bench_push_card_matches;
 #[cfg(test)]
 mod bench_compose_paging;
 #[cfg(test)]

@@ -17,7 +17,9 @@
 //! #676 (2026-07-13) — before #737 gave the artwork arms their skip-repped shortcut and
 //! before the group id moved to a columnar side array, both of which changed these loops.
 //!
-//! This bench isolates the kernel. `count_split` is today's shipped shape; `count_unified`
+//! This bench isolates the kernel. `count_split` preserves the **historical** duplicated shape
+//! (it was the shipped one when this bench was written, and is kept as the baseline now that the
+//! collapse has landed); `Variant::Shipped` calls the real `card_match_count`. `count_unified`
 //! is the deduplicated one — a single `satisfies` closure that folds the plane test in, one
 //! loop per mode instead of two. Both are compiled here rather than A/B'd across builds, so
 //! the same binary, same store, and same candidate order produce both numbers.
@@ -59,6 +61,9 @@ enum Variant {
     /// `Split`'s no-plane arms use. `eval_plane_expr_for_printing` takes `&Archived<Printing>`,
     /// not an index, so the plane path never needed `pid` either.
     GenericIter,
+    /// The **shipped** `card_match_count`, whatever shape it currently has. This is the column
+    /// that matters for a PR: the others are hypotheses, this one is production.
+    Shipped,
     /// `Split` again, measured independently. Its ratio against `Split` is the noise floor:
     /// no column below is meaningful unless it clears this.
     SplitControl,
@@ -438,13 +443,16 @@ fn bench_card_match_unify() {
                 Variant::GenericIter => count_generic_iter::<false>(
                     card, cid as u32, printings, artwork_group_col, start, end, all_match, residual, false, mode, strings, no_plane, &mut seen,
                 ),
+                Variant::Shipped => super::card_match_count(
+                    card, cid as u32, printings, artwork_group_col, start, end, all_match, residual, false, mode, strings, no_plane, &mut seen,
+                ),
             };
             acc += u64::from(n);
         }
         acc
     };
 
-    println!("\n  {:<38} {:>10} {:>9} {:>9} {:>11} {:>9} {:>9}", "case (existential_plane = None)", "split ns", "unif/spl", "gen/spl", "gen+it/spl", "FLOOR", "rows");
+    println!("\n  {:<38} {:>9} {:>9} {:>9} {:>11} {:>9} {:>8} {:>8}", "case (existential_plane = None)", "old ns", "unif/old", "gen/old", "gen+it/old", "SHIPPED", "FLOOR", "rows");
     let cases: &[(&str, Mode, bool, &[&FilterExpr])] = &[
         ("Card,    all_match (banned:modern)", Mode::Card, true, &[]),
         ("Printing, all_match", Mode::Printing, true, &[]),
@@ -460,6 +468,8 @@ fn bench_card_match_unify() {
         let c = sweep_all(mode, all_match, residual, Variant::Generic);
         let d = sweep_all(mode, all_match, residual, Variant::GenericIter);
         assert_eq!(a, d, "{label}: const-generic+iter disagrees with split ({a} vs {d})");
+        let e = sweep_all(mode, all_match, residual, Variant::Shipped);
+        assert_eq!(a, e, "{label}: SHIPPED card_match_count disagrees with the historical split ({a} vs {e})");
         assert_eq!(a, b, "{label}: split and unified disagree ({a} vs {b})");
         assert_eq!(a, c, "{label}: split and const-generic disagree ({a} vs {c})");
 
@@ -467,31 +477,35 @@ fn bench_card_match_unify() {
         // inherits the other's cache and frequency state, so a one-order measurement cannot tell
         // "slower function" apart from "ran second" — and at these magnitudes that confound is the
         // same size as the effect. Best-over-both-orders removes it.
-        let mut best = [u128::MAX; 5];
+        let mut best = [u128::MAX; 6];
         let mut rows = 0;
         for pass in 0..2 {
-            for i in 0..5 {
-                let all = [Variant::Split, Variant::Unified, Variant::Generic, Variant::GenericIter, Variant::SplitControl];
-                let v = all[if pass == 0 { i } else { 4 - i }];
+            for i in 0..6 {
+                let all = [
+                    Variant::Split, Variant::Unified, Variant::Generic, Variant::GenericIter, Variant::Shipped, Variant::SplitControl,
+                ];
+                let v = all[if pass == 0 { i } else { 5 - i }];
                 let (ns, r) = best_ns(|| sweep_all(mode, all_match, residual, v));
                 let slot = match v {
                     Variant::Split => 0,
                     Variant::Unified => 1,
                     Variant::Generic => 2,
                     Variant::GenericIter => 3,
-                    Variant::SplitControl => 4,
+                    Variant::Shipped => 4,
+                    Variant::SplitControl => 5,
                 };
                 best[slot] = best[slot].min(ns);
                 rows = r;
             }
         }
         println!(
-            "  {label:<38} {:>10} {:>8.3}x {:>8.3}x {:>10.3}x {:>8.3}x {rows:>9}",
+            "  {label:<38} {:>9} {:>8.3}x {:>8.3}x {:>10.3}x {:>8.3}x {:>7.3}x {rows:>8}",
             best[0],
             best[1] as f64 / best[0] as f64,
             best[2] as f64 / best[0] as f64,
             best[3] as f64 / best[0] as f64,
             best[4] as f64 / best[0] as f64,
+            best[5] as f64 / best[0] as f64,
         );
     }
     println!("\n  ratio > 1 means slower than the shipped split. The claim under test is ~1.15x.");
