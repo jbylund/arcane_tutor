@@ -44,6 +44,40 @@ disagreed between reps by 3.5 µs and were read as signal before the disagreemen
     200-1000      384.1  -> 370.7 (-13.4) 388.2  -> 376.0 (-12.3)
     >=1000       1219.6  -> 968.4 (-251) 1226.0  -> 988.9 (-237)
 
+## Where the win actually comes from: 88% executor, 12% routing
+
+The stack is cost-model work, so the natural assumption is that the improvement comes from routing.
+It does not. Recording the picked plan alongside the routed time on both builds splits it cleanly --
+if both sides pick the same plan, any delta is that plan running faster; if the pick differs, it is
+routing:
+
+    group                        n    share   mean A -> B    total     of win
+    same plan (executor)     8,036      91%   82.5 -> 77.9   -37.0 ms     88%
+    different plan (routing)   777       9%  133.2 -> 126.9   -4.9 ms     12%
+
+The 88% is three executor changes that rode along in the same PRs:
+
+  - `artwork_base` precomputed at load instead of prefix-summed per artwork query (~11-12 us)
+  - #737's skip-repped shortcut extended to `card_match_count` (-17% on `r:common`)
+  - card mode's `scan_units` taking an O(1) projection instead of an O(candidates) sum (~14 us of
+    acquire on a broad card query)
+
+Routing touches only 9% of queries -- but where it fires it is worth MORE per query than the
+executor work is (-6.33 us against -4.61), and the two largest switches are precisely what the
+model changes were aimed at:
+
+    PrintingCompose   -> GatheredScan      n=483    -4.8 ms   (~10 us each)
+    PrintingRangeScan -> PrintingCompose   n= 31    -3.5 ms   (~113 us each)
+
+The second is 31 queries carrying 7% of the total win on its own.
+
+Worth being clear about the causation, though: all three executor wins were FOUND by the
+cost-model instrumentation. The `artwork_base` rebuild surfaced as an unmodelled ~11 us shortfall
+in compose's artwork arm; the skip-repped gap surfaced while pricing what that loop costs per card;
+the O(candidates) sum surfaced as a +2% card regression the feature audit then explained. The
+routing changes contributed 12% of the latency, and the measurement apparatus that produced them
+contributed the other 88% indirectly.
+
 ## Reading it honestly
 
 **The median ratio is below 1.** That matters more than the mean: it says the typical query got
