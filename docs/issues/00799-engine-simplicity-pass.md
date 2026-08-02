@@ -282,10 +282,33 @@ classifier doc).
 
 - **`card_match_count` / `push_card_matches`** ([4115](../../card_engine/src/lib.rs#L4115),
   [4239](../../card_engine/src/lib.rs#L4239)). The mode × `existential_plane` matrix is the most
-  duplicated code in the engine and the most obvious refactor target. Both carry measurements
-  showing the unified-closure version regressed ~15% on `banned:modern`-shaped scans. Leave them,
-  and keep their comments — this is exactly the "don't 'fix' this" case the density rule above
-  exempts.
+  duplicated code in the engine and the most obvious refactor target. **This entry is withdrawn** —
+  the ~15%-on-`banned:modern` figure it cited does not survive re-measurement, and neither does the
+  verdict. `card_engine/src/bench_card_match_unify.rs` re-tested it at the kernel; the code comment
+  now carries the numbers. Summary, against a split-vs-split noise floor of 1.000-1.002× on
+  Card+residual:
+
+  | one body, no duplicated source                        | Card + residual |
+  |-------------------------------------------------------|-----------------|
+  | runtime `existential_plane` branch + `printings[pid]` | 1.086-1.103×    |
+  | `const HAS_PLANE: bool` + `printings[pid]`            | 1.051-1.059×    |
+  | `const HAS_PLANE: bool` + slice iteration             | 0.980-0.997×    |
+
+  So the split's advantage was two separable things: ~4% the per-printing plane branch, ~5% indexing
+  by `pid` rather than iterating `&printings[start..end]`. The latter is accidental —
+  `eval_plane_expr_for_printing` takes `&Archived<Printing>`, so even the plane path never needed the
+  index; only `Mode::Artwork` does. With both addressed, one body reaches parity, so **the
+  duplication is not load-bearing** and the collapse is available whenever someone wants it.
+
+  `banned:modern` specifically measures at the floor under every variant: #679 gave
+  banned:/restricted: exact legality planes 93 minutes after #676 recorded the note, making those
+  queries tight and routing them to the blind `all_match` shortcut.
+
+  **Two methodology notes the bench encodes, both of which produced wrong answers first:** passing
+  `existential_plane: None` as a literal lets the optimizer fold away the branch under test and
+  reports every variant as free — it has to go through `black_box`. And without a split-vs-split
+  floor column, none of these ratios can be read: the floor on Card+`all_match` runs to ±12%, which
+  is wider than any real effect in the table.
 - **`ArchivedSortPermutations::get` / `get_inv`** ([1912](../../card_engine/src/lib.rs#L1912)) —
   near-identical, but the duplication is forced by the archived struct's field layout. Not worth a
   macro.
