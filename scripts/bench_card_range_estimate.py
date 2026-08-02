@@ -14,8 +14,8 @@ things get measured here, because the proxy alone cannot be the cause:
    and rejected (`cost::materialize_cost` prices a concat+sort; these branches extract from a bitmap).
 
 Generates range queries exclusively, at `unique=card`, because that is the only shape this acquire
-fires for (`card_range_popcount_applicable` requires `Mode::Card`) and the general `random_query()`
-emits it roughly once in 150,000.
+fires for (`card_range_popcount_applicable` requires `Mode::Card`) and the general
+`QuerySampler.query` emits it roughly once in 150,000.
 
     .venv/bin/python scripts/bench_card_range_estimate.py --seconds 60
 """
