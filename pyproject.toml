@@ -19,7 +19,11 @@ ignore = [
     "COM812", # trailing comma - enforced by ruff format
     "S311",   # random is fine for non-cryptographic use in this codebase
 ]
-per-file-ignores = {"**/tests/**/*.py" = ["ANN001", "ANN201", "ANN401", "ARG001", "D101", "D102", "D103", "PLR2004", "PT004", "PT006", "S101"], "conftest.py" = ["ANN001", "ANN201", "ANN401", "ARG001", "D101", "D102", "D103", "PLR2004", "PT004", "PT006", "S101"], "api_worker.py" = ["PLC0415"], "**/scripts/**/*.py" = ["T201", "S603", "S607", "PTH123"]}
+# The per-file entries for analyze_labels / art_distance / bench_search / fit_artwork_score /
+# fit_prefer_score / gen_labeller cover scripts rescued from an unmerged branch as-is: preserved
+# rather than reviewed, so their existing lint debt is scoped rather than fixed blind in code nobody
+# has read. Drop those entries when someone picks the work up properly.
+per-file-ignores = {"**/tests/**/*.py" = ["ANN001", "ANN201", "ANN401", "ARG001", "D101", "D102", "D103", "PLR2004", "PT004", "PT006", "S101"], "conftest.py" = ["ANN001", "ANN201", "ANN401", "ARG001", "D101", "D102", "D103", "PLR2004", "PT004", "PT006", "S101"], "api_worker.py" = ["PLC0415"], "**/scripts/**/*.py" = ["T201", "S603", "S607", "PTH123"], "**/scripts/analyze_labels.py" = ["D103", "PLR2004", "EXE001", "S108", "S310", "PLR0915", "ARG001"], "**/scripts/art_distance.py" = ["D103", "PLR2004", "EXE001", "S108", "S310", "PLR0915", "ARG001"], "**/scripts/bench_search.py" = ["D103", "PLR2004", "EXE001", "S108", "S310", "PLR0915", "ARG001"], "**/scripts/fit_artwork_score.py" = ["D103", "PLR2004", "EXE001", "S108", "S310", "PLR0915", "ARG001"], "**/scripts/fit_prefer_score.py" = ["D103", "PLR2004", "EXE001", "S108", "S310", "PLR0915", "ARG001"], "**/scripts/gen_labeller.py" = ["D103", "PLR2004", "EXE001", "S108", "S310", "PLR0915", "ARG001"]}
 
 
 [tool.ruff.lint.pydocstyle]
