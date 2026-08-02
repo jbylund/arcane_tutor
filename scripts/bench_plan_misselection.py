@@ -30,6 +30,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from api.parsing import parse_scryfall_query  # noqa: E402
 from client.query_runner import random_query  # noqa: E402
+from scripts import costbench  # noqa: E402
 from scripts.bench_bitplanes import load_engine  # noqa: E402
 
 if TYPE_CHECKING:
@@ -51,13 +52,13 @@ ORDERBY_VALUES = frozenset(
 )
 DEFAULT_ORDERBY = "edhrec"
 RANDOM_UNIQUE_WEIGHTS = {"card": 75, "printing": 20, "artwork": 5}
-# Enough rounds that a bimodal plan shows both modes (00648's measurement-traps section) while
-# keeping a 200-query sweep to a couple of minutes.
+# Above the shared costbench default, with a reason: enough rounds that a bimodal plan shows both
+# modes (00648's measurement-traps section) while keeping a 200-query sweep to a couple of minutes.
 NUM_WARMUPS = 3
 NUM_TRIALS = 15
 # Regret below this is inside run-to-run noise at these sizes; counted but reported separately
 # so a "miss" that costs nothing does not inflate the headline rate.
-NOISE_FLOOR_US = 1.0
+NOISE_FLOOR_US = costbench.NOISE_FLOOR_US
 # Fewer plans than this and there is no choice to get wrong.
 MIN_PLANS_TO_CHOOSE = 2
 # statistics.quantiles needs more than this many samples to say anything.
@@ -119,18 +120,23 @@ def calibration(engine: card_engine.QueryEngine, queries: list[tuple[str, str, s
         except Exception:  # noqa: BLE001, S112 - a query bind rejects is a sample skip, not an error
             continue
         for p in res["plans"]:
-            if not p["trials_ns"] or p["predicted_ns"] <= 0:
+            predicted = costbench.predicted_ns(p)
+            if not p["trials_ns"] or predicted is None:
                 continue
             # A plan can measure 0 ns when it is faster than the clock's resolution; clamp so the
             # log-scale ordering below stays defined without dropping the sample.
             meas = max(min(p["trials_ns"]), 1)
-            r = meas / p["predicted_ns"]
+            r = meas / predicted
             ratios[p["plan"]].append(r)
-            # A plan that materializes pays acquire inside its trial; net it out. Clamped at a
-            # nanosecond so a plan whose whole cost was acquire cannot divide by zero.
-            net = max(meas - min(res["acquire"]["acquire_ns"]), 1.0) if p["materialize_ns"] > 0 else float(meas)
-            nets[p["plan"]].append(net / p["predicted_ns"])
-            by_source[p["plan"], res["acquire"]["count_source"]].append(net / p["predicted_ns"])
+            # `costbench.plan_self_ns` is the toolkit's one definition of a plan's own cost. This
+            # harness previously netted `acquire_ns`, which times a DIFFERENT participant, so its
+            # `net` column was not comparable to the same column in the percentile and pairwise
+            # harnesses. It nets `ns_prepare` now, and drops the row when the subtraction overshoots.
+            self_ns = costbench.plan_self_ns(p, res["acquire"])
+            if self_ns is None:
+                continue
+            nets[p["plan"]].append(self_ns / predicted)
+            by_source[p["plan"], res["acquire"]["count_source"]].append(self_ns / predicted)
             # Track the furthest from 1 in log terms, either direction.
             if abs(math.log(r)) > abs(math.log(worst[p["plan"]][0])):
                 worst[p["plan"]] = (r, f"{q} [{unique}]")

@@ -26,7 +26,6 @@ import pathlib
 import random
 import statistics
 import sys
-import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -35,62 +34,47 @@ if TYPE_CHECKING:
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from api.parsing import parse_scryfall_query  # noqa: E402
+from scripts import costbench  # noqa: E402
 from scripts.bench_bitplanes import load_engine  # noqa: E402
 from scripts.query_sampler import MODES, QuerySampler  # noqa: E402
 
-NUM_WARMUPS = 2
-NUM_TRIALS = 7
-LIMITS = (10, 100, 175)
-OFFSETS = (0, 0, 0, 100)
 # Below this a "miss" costs nothing and only inflates the rate.
-NOISE_FLOOR_US = 1.0
-MIN_ROWS = 30
+NOISE_FLOOR_US = costbench.NOISE_FLOOR_US
+MIN_ROWS = costbench.MIN_ROWS
+# Regret is mostly zeros, so the low percentiles carry no information and the shared p0..p100 row
+# would be six columns of 0.00. Only the tail says anything here.
 PERCENTILES = (90, 99)
 
 
-def percentile(vals: list[float], pct: int) -> float:
-    """Nearest-rank percentile, so each printed number is a real query."""
-    idx = min(round(pct / 100.0 * len(vals) + 0.5) - 1, len(vals) - 1)
-    return vals[max(idx, 0)]
+percentile = costbench.percentile
 
 
 def collect(engine: object, sampler: QuerySampler, rng: random.Random, seconds: float) -> list[dict]:
-    """One row per multi-plan query: what it lost, and everything to slice that by."""
+    """One row per multi-plan query: what it lost, and everything to slice that by.
+
+    Deliberately does NOT use `costbench.plan_self_ns`. That nets `ns_prepare` back out to make a
+    plan comparable to the cost model's per-plan prediction; regret compares against `routed_ns`,
+    a whole real execution with the prep included. Netting one side of that subtraction and not the
+    other would invent time that was never saved.
+    """
     rows: list[dict] = []
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        unique = sampler.unique(rng)
-        kw = {
-            "filters": None,
-            "unique": unique,
-            "orderby": sampler.orderby(rng),
-            "direction": rng.choice(("asc", "desc")),
-            "limit": rng.choice(LIMITS),
-            "offset": rng.choice(OFFSETS),
-        }
-        try:
-            kw["filters"] = parse_scryfall_query(sampler.query(rng))
-            acq = engine.explain(**kw)["acquire"]
-            res = engine.explain_analyze(prefer="default", num_warmups=NUM_WARMUPS, num_trials=NUM_TRIALS, **kw)
-        except Exception:  # noqa: BLE001, S112 - a rejected query is a skipped sample
-            continue
-        ran = [p for p in res["plans"] if p["trials_ns"]]
+    for sample in costbench.iter_samples(engine, sampler, rng, costbench.Budget(seconds=seconds)):
+        ran = [p for p in sample.plans if p["trials_ns"]]
         if len(ran) < 2:  # noqa: PLR2004 - one applicable plan means there is nothing to get wrong
             continue
-        picked = next((p for p in res["plans"] if p["picked"]), None)
+        picked = next((p for p in sample.plans if p["picked"]), None)
         declined = picked is not None and not picked["trials_ns"]
         best = min(ran, key=lambda p: min(p["trials_ns"]))
         # routed_ns lives on explain_analyze's acquire; `explain` runs nothing and leaves it empty.
-        routed = res["acquire"]["routed_ns"]
+        routed = sample.res["acquire"]["routed_ns"]
         if not routed:
             continue
         routed_us = min(routed) / 1000.0
         rows.append(
             {
                 "lost": max(routed_us - min(best["trials_ns"]) / 1000.0, 0.0),
-                "acquire": acq["count_source"],
-                "unique": unique,
+                "acquire": sample.acquire["count_source"],
+                "unique": sample.kw["unique"],
                 "picked": f"{picked['plan']}{'(declined)' if declined else ''}" if picked else "?",
                 "best": best["plan"],
             }

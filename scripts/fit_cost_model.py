@@ -36,8 +36,9 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from api.parsing import parse_scryfall_query  # noqa: E402
+from scripts import costbench  # noqa: E402
 from scripts.bench_bitplanes import load_engine  # noqa: E402
-from scripts.bench_cost_model_agreement import AGREE_HI, AGREE_LO, RANGE_ACQUIRES  # noqa: E402
+from scripts.bench_cost_model_agreement import AGREE_HI, AGREE_LO  # noqa: E402
 from scripts.query_sampler import QuerySampler  # noqa: E402
 
 NUM_WARMUPS = 2
@@ -59,7 +60,8 @@ MATCH_RATE_FLOOR = 1.0 / 1_000_000.0
 COUNTER_TOL = 0.15
 # Netting prepare_candidates out can overshoot (different round than the min trial). Keep a row only
 # if what remains is at least this fraction of the raw time; below that the residual is noise.
-MIN_NETTED_FRACTION = 0.5
+# Now enforced inside `costbench.plan_self_ns`, which every harness shares.
+MIN_NETTED_FRACTION = costbench.NETTING_RESIDUAL_FLOOR
 # The mirror check's tolerance. This is a reimplementation of cost.rs in Python, so it can drift --
 # and did: the arms moved to `max(tier, floor)` and gained a residual-gated per-row term while
 # `design_row` still modelled the tier as a multiplier, which silently invalidated every coefficient
@@ -326,18 +328,13 @@ def collect(engine: object, rng: random.Random, seconds: float, sampler: QuerySa
         except Exception:  # noqa: BLE001, S112 - a rejected query is a skipped sample
             continue
         for p in res["plans"]:
-            if not p["trials_ns"] or p["predicted_ns"] <= 0:
-                continue
-            # Same netting as the agreement harness: only a Prep::Range acquire makes the routed path
-            # re-pay prepare_candidates, so elsewhere it is not the plan's cost to carry.
-            raw = float(min(p["trials_ns"]))
-            measured = raw
-            if p["ns_round_total"] and acq["count_source"] not in RANGE_ACQUIRES:
-                measured = raw - p["ns_prepare"]
-            # `ns_prepare` comes from the instrumented round while `raw` is the min over trials, so the
-            # subtraction can overshoot. Clamping those rows to a floor is worse than dropping them: a
-            # row scaled by 1/1ns swamps the Gram matrix and drags every coefficient to zero.
-            if measured < raw * MIN_NETTED_FRACTION:
+            # `costbench.plan_self_ns` is this rule, now shared: net `ns_prepare` except under a
+            # range acquire, and DROP the row when the subtraction overshoots. Dropping beats
+            # clamping here in particular -- a row scaled by 1/1ns swamps the Gram matrix and drags
+            # every coefficient to zero. `predicted_ns` screens the infinite cost a declining
+            # compose reports, which no `<= 0` guard catches.
+            measured = costbench.plan_self_ns(p, acq)
+            if not p["trials_ns"] or costbench.predicted_ns(p) is None or measured is None:
                 continue
             samples.append(
                 {

@@ -1,4 +1,4 @@
-"""Paired end-to-end query latency between two engine builds. The only A/B that works against main.
+"""Paired end-to-end query latency between two engine builds. The A/B that works against ANY build.
 
 `bench_plan_misselection.py` measures routing regret, but it reads `explain_analyze` fields and a
 response shape that this branch introduced — main returns a bare list where the branch returns
@@ -10,6 +10,17 @@ for. Same discipline as the regret A/B: write per-query rows with `--out`, then 
 PAIRED over the same query list, with a bootstrap CI on the difference. Latency is heavy-tailed
 (broad scans cost thousands of times a name lookup), so comparing two headline means is hopeless —
 pairing removes query-sampling variance and the interval says whether what remains is real.
+
+For the executor-level question underneath this one — did a specific PLAN get faster, whether or not
+the router picks it — see `bench_plan_execution_ab.py`.
+
+**Pairing does not remove the other variance, and breadth does not substitute for depth.** `min` over
+the trials is a floor estimator, and how far above the floor it lands depends on the interference
+that run saw. That error is common-mode across every query in a run, so averaging it over more
+queries does NOT cancel it. Measured on a same-build, same-seed pair at the old (2, 7) defaults, 388
+queries paired: `B - A = -1.0 µs, 95% CI [-1.6, -0.5]`, verdict "B is FASTER", faster on 110 and
+slower on 35 — with nothing changed. The same pair at (6, 30): `+0.5 µs, CI [-1.0, +2.9]`, no
+detectable difference. Hence the defaults below; lower them only if you can show the canary is clean.
 
     # once per build:
     .venv/bin/python scripts/bench_query_latency_ab.py --sample 2000 --out A.jsonl
@@ -42,8 +53,12 @@ from api.parsing import parse_scryfall_query  # noqa: E402
 from scripts.bench_bitplanes import load_engine  # noqa: E402
 from scripts.query_sampler import MODES, QuerySampler  # noqa: E402
 
-NUM_WARMUPS = 2
-NUM_TRIALS = 7
+# Well above the shared costbench (2, 7), which is calibrated for comparisons INSIDE one
+# `explain_analyze` call where every participant shares the same conditions. This is a
+# cross-process comparison, where each run's floor estimate carries its own error -- see the module
+# docstring for the same-build canary that fixes these numbers.
+NUM_WARMUPS = 6
+NUM_TRIALS = 30
 LIMITS = (10, 100, 175)
 OFFSETS = (0, 0, 0, 100)
 BOOTSTRAP_RESAMPLES = 10_000
@@ -56,8 +71,10 @@ NOISE_FLOOR_US = 1.0
 class Budget:
     """How many queries to measure, and how hard.
 
-    Fewer trials buys more DISTINCT queries per unit of CPU, and for a PAIRED comparison that is the
-    better trade -- pairing already removes per-query variance, so breadth beats depth.
+    Breadth and depth defend against DIFFERENT variance, and only one of them is optional. Pairing
+    plus a wide sample removes query-to-query variance. Neither touches the floor-estimation error,
+    which is common-mode within a run and therefore survives any amount of averaging over queries.
+    Buy depth first, then spend what is left on breadth.
     """
 
     sample: int
@@ -149,11 +166,15 @@ def compare(path_a: pathlib.Path, path_b: pathlib.Path) -> None:
 def main() -> None:
     """Either measure one build to a file, or compare two such files."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--sample", type=int, default=2000)
-    # Fewer trials buys more DISTINCT queries per unit of CPU. For a paired comparison that is the
-    # better trade: pairing already removes per-query variance, so breadth beats depth.
+    # Was 2000 when a run was 9 rounds deep; at 36 that would be 4x the wall time. Depth comes first
+    # (breadth cannot cancel a common-mode error), and the same-build canary was already clean at 400.
+    parser.add_argument("--sample", type=int, default=800)
+    # Lowering these to buy more distinct queries is the trade this harness used to make, and it is
+    # the wrong one: breadth cannot cancel an error that is common-mode within a run.
     parser.add_argument("--warmups", type=int, default=NUM_WARMUPS)
-    parser.add_argument("--trials", type=int, default=NUM_TRIALS)
+    parser.add_argument(
+        "--trials", type=int, default=NUM_TRIALS, help="a cross-process A/B needs a converged floor; see the module docstring"
+    )
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--mode", choices=MODES, default="realistic", help="latency asks what users wait for, so traffic-weighted")
     parser.add_argument("--corpus", type=pathlib.Path, default=REPO_ROOT / "benchmarks/bitplanes/corpus.jsonl")

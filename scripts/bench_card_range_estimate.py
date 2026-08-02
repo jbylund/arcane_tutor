@@ -36,6 +36,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from api.parsing import parse_scryfall_query  # noqa: E402
+from scripts import costbench  # noqa: E402
 from scripts.bench_bitplanes import load_engine  # noqa: E402
 
 TARGET_SOURCE = "card_range_popcount"
@@ -193,19 +194,33 @@ class Samples:
     n_cards: int = 0
 
     def record(self, q: str, quick: dict, res: dict, total: int) -> None:
-        """Fold one sampled query in. `matches` is clamped at n_cards here, so k comes from range_k."""
+        """Fold one sampled query in.
+
+        Both quantities this reads used to be spelled as acquire keys the engine has never published
+        — `acquire.range_k` and `acquire.prep_ns` — so the harness raised `KeyError` on its first
+        recorded query. They are read from what the engine does expose now:
+
+        - `k` comes from `matches`, which for this acquire IS `card_est = k.min(n_cards)`. It is
+          clamped, so every slice at or above `n_cards` collapses into the last bucket and
+          `by_slice_size` cannot separate them. Recovering the unclamped probe would mean exporting
+          `probe_range_k` from the engine; the buckets below the clamp are unaffected.
+        - prep is per-PLAN `ns_prepare`, not a single acquire-wide number. That is the more accurate
+          reading anyway: each forced round pays its own `prepare_candidates`, so netting one shared
+          value across two plans was already the wrong subtraction.
+        """
         acq = quick["acquire"]
         est = acq["matches"]
         self.n_cards = acq["n_cards"]
         self.est_rows.append((est / max(total, 1), est, total, q))
-        self.k_rows.append((acq["range_k"], est / max(total, 1), total, q))
+        self.k_rows.append((est, est / max(total, 1), total, q))
         self.picks[next((p["plan"] for p in quick["plans"] if p["picked"]), "?")] += 1
-        prep = min(res["acquire"]["prep_ns"])
         for p in res["plans"]:
-            if p["plan"] not in MATERIALIZING or not p["trials_ns"] or p["predicted_ns"] <= 0:
+            predicted = costbench.predicted_ns(p)
+            if p["plan"] not in MATERIALIZING or not p["trials_ns"] or predicted is None:
                 continue
             meas = max(min(p["trials_ns"]), 1)
-            self.arm_rows.append((p["plan"], meas / p["predicted_ns"], max(meas - prep, 1) / p["predicted_ns"], q))
+            netted = max(meas - p["ns_prepare"], 1)
+            self.arm_rows.append((p["plan"], meas / predicted, netted / predicted, q))
 
 
 def by_slice_size(k_rows: list[tuple[int, float, int, str]], picks: collections.Counter[str]) -> None:

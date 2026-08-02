@@ -1,22 +1,39 @@
 # Measuring the cost model: which tool answers which question
 
-Seven harnesses, built while doing the work in
+Eight harnesses, built while doing the work in
 [local-engine-cost-model-agreement.md](local-engine-cost-model-agreement.md). They exist because each
 answers a question the others structurally cannot, and reaching for the wrong one wastes days — three
 successive reworkings of one term improved the metric being watched and moved routing by
 `-0.003 µs, CI [-0.206, +0.214]`.
 
+This is the tool-picking reference. For *when in a PR's life* to reach for each one, see
+[the performance PR workflow](../workflows/performance-pr-workflow.md), which organizes the same
+tools into four layers: features, plan costs, plan execution, end-user latency.
+
 Pick by question:
 
 | question | tool |
 | --- | --- |
+| Do the FEATURES match what the executor did? | [`bench_feature_accuracy.py`](../../scripts/bench_feature_accuracy.py) |
 | Is this plan's absolute cost right? | [`bench_cost_model_agreement.py`](../../scripts/bench_cost_model_agreement.py) |
 | What SHAPE is the error — uniform, or a tail? | [`bench_cost_error_percentiles.py`](../../scripts/bench_cost_error_percentiles.py) |
 | Is it the features, the coefficients, or the arm's shape? | [`bench_cost_error_attribution.py`](../../scripts/bench_cost_error_attribution.py) |
 | What should the constants be? | [`fit_cost_model.py`](../../scripts/fit_cost_model.py) |
 | Does the model ORDER two plans correctly? | [`bench_pairwise_ordering.py`](../../scripts/bench_pairwise_ordering.py) |
 | Where does routing actually lose time? | [`bench_regret_matrix.py`](../../scripts/bench_regret_matrix.py) |
-| Did a change help end to end? | [`bench_plan_misselection.py`](../../scripts/bench_plan_misselection.py) `--compare`, or [`bench_query_latency_ab.py`](../../scripts/bench_query_latency_ab.py) vs `main` |
+| Did this PLAN's executor get faster, picked or not? | [`bench_plan_execution_ab.py`](../../scripts/bench_plan_execution_ab.py) `--compare` |
+| Did a change help end to end? | [`bench_query_latency_ab.py`](../../scripts/bench_query_latency_ab.py) vs `main` |
+
+All of them are built on [`scripts/costbench.py`](../../scripts/costbench.py), which owns the
+sampling loop, the nearest-rank percentiles, the paired-bootstrap comparison, and — the one that
+matters for comparing numbers ACROSS these tools — the single definition of a plan's own cost,
+`plan_self_ns`: min-of-trials, less `ns_prepare`, except under a range acquire, dropping the row when
+the subtraction overshoots. Three harnesses used to disagree about that rule, one of them netting
+`acquire_ns` (a different participant entirely), so their columns were never comparable.
+
+`costbench.predicted_ns` is the other shared screen: `cost::plan_cost` returns `f64::INFINITY` for a
+declining compose, which no `predicted_ns <= 0` guard catches, and any ratio built from it silently
+poisons the percentile cell it lands in.
 
 The end-to-end answer for the whole cost-model stack is recorded in
 [local-engine-cost-model-stack-result.md](local-engine-cost-model-stack-result.md) — including the
@@ -74,6 +91,18 @@ the other, and lost overall.
   `--sample 400` the same engine and seed produced 0.26 and 0.82 µs on two runs.
 - **Interleave A/B/A/B.** All-of-A-then-all-of-B maps machine drift onto the comparison. A sequential
   run showed a ~3% median slowdown spread evenly across acquire branches the change never touched.
+- **A cross-process A/B needs far more trials than a within-call comparison, and breadth is not a
+  substitute.** `min` over the trials is a floor estimator whose distance above the floor depends on
+  the interference that run saw, and that error is common-mode across every query in a run — so
+  pairing and a wide sample do not cancel it. Both A/B harnesses false-positived on same-build,
+  same-seed pairs at 7 trials: the plan-execution one called every plan "SLOWER" by 4–9% with
+  "faster on 0"; the latency one called `-1.0 µs, CI [-1.6, -0.5]` over 388 paired queries. Both are
+  clean at 30. Prefix-min convergence, absolute, is much gentler — 0.4–1.4% above the floor at k=7,
+  converged by k=30 — which is why the within-call diagnostics keep the cheaper default. The table
+  is in [`costbench.py`](../../scripts/costbench.py).
+- **Run the canary.** Compare a build against ITSELF before believing any cross-build number.
+  `bench_plan_execution_ab.py` also keeps acquire as a CONTROL and prints an adjusted column when it
+  moves; if that fires, raise `--trials` before reading anything else.
 - **A grid optimum on the boundary is not an optimum.** Two sweeps had to be redone for this. Use
   geometric grids open at both ends, and check the optimum is interior.
 - **Fixing a feature can make agreement worse**, because coefficients were compensating. Expect it,
@@ -82,7 +111,10 @@ the other, and lost overall.
   had silently drifted for two revisions; it now checks itself against `predicted_ns` and refuses to
   fit below 99% agreement.
 - **A plan that DECLINES accumulates no trials**, so it is absent from every measurement here. Enabling
-  a declining path introduces a population nothing has ever measured.
+  a declining path introduces a population nothing has ever measured. The decline is not free —
+  `DeclineSparseExact` fires after a full compose — and its cost is in `declined_ns`, which
+  `bench_cost_model_agreement.py` reports in its own section rather than in the measured/predicted
+  table.
 - **Agreement is not sufficient.** One fix improved routing significantly (`-0.166 µs`,
   CI `[-0.341, -0.007]`) while making median agreement WORSE — a per-cell median cannot see a 56x error
   on 4% of rows.

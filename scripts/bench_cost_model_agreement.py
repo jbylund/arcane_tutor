@@ -52,6 +52,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from api.parsing import parse_scryfall_query  # noqa: E402
+from scripts import costbench  # noqa: E402
 from scripts.bench_bitplanes import load_engine  # noqa: E402
 
 NUM_WARMUPS = 2
@@ -96,10 +97,10 @@ IMPOSSIBLE_GATES = ("RangeNotBare", "NotComposable", "RangePermutationStale")
 # defect rather than a prediction that missed.
 COMPOSE_ACQUIRE = "printing_compose"
 # Acquire branches where the routed path really does call `prepare_candidates` at dispatch, so the
-# materializing plans genuinely owe its cost; everywhere else acquire built the prep already. Every
-# harness that nets prepare out of a plan's measured time needs the same rule, so it lives here once
-# rather than as a copy per script.
-RANGE_ACQUIRES = frozenset({"card_range_popcount", "printing_range_scan", COMPOSE_ACQUIRE})
+# materializing plans genuinely owe its cost; everywhere else acquire built the prep already. Now
+# owned by `costbench` alongside the netting rule that reads it — re-exported here because this
+# module's own report still slices on it, and because other harnesses imported it from here.
+RANGE_ACQUIRES = costbench.RANGE_ACQUIRES
 # The only plans that call `prepare_candidates`, and so the only ones with a prepare phase at all.
 # Every other plan reports `ns_prepare == 0` because it has no such phase — which is not the same
 # as spending 0% of its run there, and pooling the two says the wrong thing.
@@ -201,11 +202,12 @@ def main() -> None:
             if p["declined_ns"]:
                 agr.declines[p["plan"], p["paging_taken"]].append(min(p["declined_ns"]))
                 continue
-            if not p["trials_ns"] or p["predicted_ns"] <= 0:
+            predicted = costbench.predicted_ns(p)
+            if not p["trials_ns"] or predicted is None:
                 continue
             measured = min(p["trials_ns"])
-            agr.ratios[p["plan"], acq["count_source"]].append(measured / p["predicted_ns"])
-            agr.by_unique[p["plan"], unique].append(measured / p["predicted_ns"])
+            agr.ratios[p["plan"], acq["count_source"]].append(measured / predicted)
+            agr.by_unique[p["plan"], unique].append(measured / predicted)
             # Keyed by acquire branch as well as plan: the whole point of this row is that the
             # prepare share differs by HOW the query was acquired, so collapsing to the plan alone
             # averages a range-acquired query together with a plane-acquired one and reports a

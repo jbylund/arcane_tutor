@@ -30,20 +30,14 @@ import pathlib
 import random
 import statistics
 import sys
-import time
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from api.parsing import parse_scryfall_query  # noqa: E402
+from scripts import costbench  # noqa: E402
 from scripts.bench_bitplanes import load_engine  # noqa: E402
-from scripts.bench_cost_model_agreement import RANGE_ACQUIRES  # noqa: E402
 from scripts.query_sampler import MODES, QuerySampler  # noqa: E402
 
-NUM_WARMUPS = 2
-NUM_TRIALS = 7
-LIMITS = (10, 100, 175)
-OFFSETS = (0, 0, 0, 100)
 # A gap smaller than this is inside measurement noise, so calling the order "wrong" says nothing.
 TIE_FLOOR_US = 1.0
 MIN_PAIRS_TO_REPORT = 30
@@ -52,40 +46,19 @@ MIN_PAIRS_TO_REPORT = 30
 def collect(engine: object, sampler: QuerySampler, rng: random.Random, seconds: float) -> list[dict]:
     """One row per (query, plan) that ran, carrying a query id so pairs can be reconstructed."""
     rows: list[dict] = []
-    deadline = time.monotonic() + seconds
-    qid = 0
-    while time.monotonic() < deadline:
-        limit, offset = rng.choice(LIMITS), rng.choice(OFFSETS)
-        kw = {
-            "filters": None,
-            "unique": sampler.unique(rng),
-            "orderby": sampler.orderby(rng),
-            "direction": rng.choice(("asc", "desc")),
-            "limit": limit,
-            "offset": offset,
-        }
-        try:
-            kw["filters"] = parse_scryfall_query(sampler.query(rng))
-            acq = engine.explain(**kw)["acquire"]
-            res = engine.explain_analyze(prefer="default", num_warmups=NUM_WARMUPS, num_trials=NUM_TRIALS, **kw)
-        except Exception:  # noqa: BLE001, S112 - a rejected query is a skipped sample
-            continue
-        qid += 1
-        for p in res["plans"]:
-            if not p["trials_ns"] or p["predicted_ns"] <= 0:
+    for qid, sample in enumerate(costbench.iter_samples(engine, sampler, rng, costbench.Budget(seconds=seconds))):
+        for p in sample.plans:
+            measured = costbench.plan_self_ns(p, sample.acquire)
+            predicted = costbench.predicted_ns(p)
+            if measured is None or predicted is None:
                 continue
-            # Same netting as the agreement harness: only a Prep::Range acquire makes the routed path
-            # re-pay prepare_candidates, so elsewhere it is not the plan's cost to carry.
-            measured = float(min(p["trials_ns"]))
-            if p["ns_round_total"] and acq["count_source"] not in RANGE_ACQUIRES:
-                measured = max(measured - p["ns_prepare"], 1.0)
             rows.append(
                 {
                     "qid": qid,
                     "plan": p["plan"],
-                    "acquire": acq["count_source"],
+                    "acquire": sample.acquire["count_source"],
                     "measured_us": measured / 1000.0,
-                    "predicted_us": p["predicted_ns"] / 1000.0,
+                    "predicted_us": predicted / 1000.0,
                 }
             )
     return rows

@@ -29,12 +29,9 @@ while the pooled median looks fine.
 from __future__ import annotations
 
 import argparse
-import collections
-import math
 import pathlib
 import random
 import sys
-import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -43,16 +40,16 @@ if TYPE_CHECKING:
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from api.parsing import parse_scryfall_query  # noqa: E402
+from scripts import costbench  # noqa: E402
 from scripts.bench_bitplanes import load_engine  # noqa: E402
 from scripts.query_sampler import MODES, QuerySampler  # noqa: E402
 
+# Deliberately below the shared (2, 7) default, and the one place in the toolkit where that is
+# justified: the counters this harness reads are deterministic for a given query, so the trials exist
+# only to make each plan run once. Extra rounds buy nothing and cost sample breadth.
 NUM_WARMUPS = 1
-NUM_TRIALS = 2  # counters are deterministic; trials exist only to make the plan run
-LIMITS = (10, 100, 175)
-OFFSETS = (0, 0, 0, 100)
-PERCENTILES = (10, 50, 90)
-MIN_ROWS = 30
+NUM_TRIALS = 2
+MIN_ROWS = costbench.MIN_ROWS
 # A cell's median must land inside this to be considered calibrated, matching the agreement bar in
 # bench_cost_model_agreement.py so the two tools grade on the same scale.
 AGREE_LO, AGREE_HI = 0.8, 1.25
@@ -82,37 +79,19 @@ def scan_feature(plan: str, paging: str) -> str:
     return "compose_scan_printings" if paging == "Gather" else "printings_walked"
 
 
-def percentile(sorted_vals: list[float], pct: int) -> float:
-    """Nearest-rank percentile; every printed number is a real observation."""
-    if not sorted_vals:
-        return float("nan")
-    idx = min(round(pct / 100.0 * len(sorted_vals) + 0.5) - 1, len(sorted_vals) - 1)
-    return sorted_vals[max(idx, 0)]
+percentile = costbench.percentile
 
 
 def collect(engine: object, sampler: QuerySampler, rng: random.Random, seconds: float) -> list[dict]:
     """One row per (query, plan, feature) where the plan reported the matching counter."""
     rows: list[dict] = []
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        kw = {
-            "filters": None,
-            "unique": sampler.unique(rng),
-            "orderby": sampler.orderby(rng),
-            "direction": rng.choice(("asc", "desc")),
-            "limit": rng.choice(LIMITS),
-            "offset": rng.choice(OFFSETS),
-        }
-        try:
-            kw["filters"] = parse_scryfall_query(sampler.query(rng))
-            acq = engine.explain(**kw)["acquire"]
-            res = engine.explain_analyze(prefer="default", num_warmups=NUM_WARMUPS, num_trials=NUM_TRIALS, **kw)
-        except Exception:  # noqa: BLE001, S112 - a rejected query is a skipped sample
-            continue
-        for plan in res["plans"]:
+    budget = costbench.Budget(seconds=seconds, warmups=NUM_WARMUPS, trials=NUM_TRIALS)
+    for sample in costbench.iter_samples(engine, sampler, rng, budget):
+        acq = sample.acquire
+        for plan in sample.plans:
             if not plan["trials_ns"]:
                 continue  # declined: it ran nothing, so there is no counter to check against
-            paging = acq.get("compose_paging", "-")
+            paging = acq["compose_paging"]
             for feat, counter in PAIRS:
                 if feat == "scan_units":
                     feat = scan_feature(plan["plan"], paging)  # noqa: PLW2901 - the arm decides which field it reads
@@ -124,37 +103,36 @@ def collect(engine: object, sampler: QuerySampler, rng: random.Random, seconds: 
                         "feature": feat,
                         "plan": plan["plan"],
                         "acquire": acq["count_source"],
-                        "unique": kw["unique"],
+                        "unique": sample.kw["unique"],
                         # Compose's arm reads `scan_units` ONLY in its Gather branch; Perm/OrderbyWalk
                         # stop at page_offset+limit and never scan the candidates. A ratio measured on
                         # those is comparing the feature to work the arm never charges for.
-                        "paging": acq.get("compose_paging", "-"),
+                        "paging": paging,
                         "ratio": acq[feat] / got,
                     }
                 )
     return rows
 
 
+def verdict(sorted_vals: list[float]) -> str:
+    """Flag a cell whose median feature/counter ratio sits outside the agreement band."""
+    med = costbench.percentile(sorted_vals, 50)
+    if AGREE_LO <= med <= AGREE_HI:
+        return ""
+    return "  OVER-COUNTS" if med > AGREE_HI else "  UNDER-COUNTS"
+
+
 def table(rows: list[dict], key: Callable[[dict], object], label: str, *, limit: int = 30) -> None:
     """Feature/counter percentiles for one grouping, worst-calibrated cells first."""
-    groups: dict[object, list[float]] = collections.defaultdict(list)
-    for r in rows:
-        groups[key(r)].append(r["ratio"])
-    head = "".join(f"{f'p{p}':>8}" for p in PERCENTILES)
-    print(f"\n{label:<52}{'n':>7}{head}{'spread':>8}   verdict")
-    scored = []
-    for name, vals in groups.items():
-        if len(vals) < MIN_ROWS:
-            continue
-        vals.sort()
-        scored.append((abs(math.log(max(percentile(vals, 50), 1e-9))), name, vals))
-    for _, name, vals in sorted(scored, reverse=True)[:limit]:
-        med = percentile(vals, 50)
-        cells = "".join(f"{percentile(vals, p):>8.2f}" for p in PERCENTILES)
-        lo = percentile(vals, 10)
-        spread = percentile(vals, 90) / lo if lo > 0 else float("inf")
-        verdict = "" if AGREE_LO <= med <= AGREE_HI else ("  OVER-COUNTS" if med > AGREE_HI else "  UNDER-COUNTS")
-        print(f"{name!s:<52}{len(vals):>7}{cells}{spread:>8.1f}{verdict}")
+    costbench.percentile_table(
+        rows,
+        key,
+        label,
+        rank=costbench.BY_MISCALIBRATION,
+        limit=limit,
+        min_rows=MIN_ROWS,
+        annotate=verdict,
+    )
 
 
 def main() -> None:
