@@ -4703,6 +4703,12 @@ fn aligned_page<'a>(
 /// selective range (the existing narrowing already wins, and restricting the walk to dense
 /// predicates keeps its worst case bounded), or an order-by without a card permutation (e.g. the
 /// range field itself — deferred).
+///
+/// Every exit records itself in `PAGING_TAKEN` (the `Range*` variants of [`PagingTaken`]), so a
+/// `None` from here reaches `explain_analyze` naming the gate rather than as a bare cost with no
+/// cause. Nothing predicts these the way `compose_paging` predicts the compose branch — the point
+/// is to size the declines, and to make `RangeNotBare`/`RangePermutationStale` visible if they ever
+/// fire, since neither should.
 fn printing_range_fastpath<'a>(
     ctx: &QueryCtx<'a>,
     params: &QueryParams,
@@ -4710,24 +4716,34 @@ fn printing_range_fastpath<'a>(
 ) -> Option<(usize, Vec<(&'a AOracleCard, &'a APrinting)>)> {
     let QueryCtx { cards, printings, indexes, .. } = *ctx;
     let QueryParams { sort_col, descending, limit, page_offset, .. } = *params;
-    let (idx, lo, hi) = bare_range_bounds(filter, indexes)?;
+    let Some((idx, lo, hi)) = bare_range_bounds(filter, indexes) else {
+        note_paging_taken(PagingTaken::RangeNotBare);
+        return None;
+    };
     let s = idx.partition_point(|p| u32::from(p.0) < lo);
     let e = idx.partition_point(|p| u32::from(p.0) < hi);
     let k = e - s;
     if !range_too_broad_to_narrow(k, idx.len()) {
+        note_paging_taken(PagingTaken::RangeSelective);
         return None; // selective: the existing narrowing path narrows tightly and wins
     }
     // total = matching printings = k (each priced printing in [lo, hi) is one row; NULL-valued
     // printings are absent from the index and don't match). Same value the count pass would sum.
     if k == 0 || page_offset >= k {
+        note_paging_taken(PagingTaken::EmptyPage);
         return Some((k, Vec::new()));
     }
     // Aligned: order by the range field itself. `usd` is the only range field that is also a sort
     // column, and only a price predicate makes `idx` the value-sorted permutation for that sort;
     // a non-price predicate ordered by usd has no aligned mapping (and no permutation) — bail.
     if matches!(sort_col, SortCol::PriceUsd) {
-        return is_price_leaf(filter)
-            .then(|| (k, aligned_page(idx, s, e, cards, printings, &indexes.printing_to_card, descending, page_offset, limit)));
+        if !is_price_leaf(filter) {
+            note_paging_taken(PagingTaken::RangeUnalignedPrice);
+            return None;
+        }
+        note_paging_taken(PagingTaken::RangeAligned);
+        let page = aligned_page(idx, s, e, cards, printings, &indexes.printing_to_card, descending, page_offset, limit);
+        return Some((k, page));
     }
     // The walk reproduces run_query_streamed's *stream* emission (per-card-contiguous), which the
     // general path only uses above STREAM_MIN_MATCHES; at or below it, run_query_streamed gathers
@@ -4737,12 +4753,18 @@ fn printing_range_fastpath<'a>(
     // index (broad needs k > index_len/4, so index_len < ~4096) -- never in production, where broad
     // means tens of thousands. aligned_page above matches the gathered path directly, so it's exempt.
     if k <= *STREAM_MIN_MATCHES {
+        note_paging_taken(PagingTaken::RangeSparse);
         return None;
     }
-    let perm = indexes.sort_perms.get(sort_col, descending)?;
+    let Some(perm) = indexes.sort_perms.get(sort_col, descending) else {
+        note_paging_taken(PagingTaken::RangeNoPermutation);
+        return None;
+    };
     if perm.len() != cards.len() {
+        note_paging_taken(PagingTaken::RangePermutationStale);
         return None;
     }
+    note_paging_taken(PagingTaken::RangeWalk);
     Some((k, walk_printing_page(ctx, params, filter, perm)))
 }
 
@@ -6383,8 +6405,11 @@ pub(crate) struct PhaseStats {
     /// harness wanting the true cardinality made a SECOND `query()` call, which is a different
     /// execution, so agreement with the analyzed run was assumed rather than observed.
     pub(crate) result_total: u64,
-    /// Which paging branch `printing_compose_fastpath` ACTUALLY took, against the `compose_paging`
-    /// the cost model predicted it would.
+    /// Which exit the printing-space fastpath that ran ACTUALLY took. For
+    /// `printing_compose_fastpath` that is a paging branch, checkable against the `compose_paging`
+    /// the cost model predicted; for `printing_range_fastpath` it is one of the `Range*` gates,
+    /// which predict nothing and exist to size the declines. The rest of this note is about the
+    /// compose half, which is the half with a prediction to falsify.
     ///
     /// `acquire_plan_features`' `PrintingCompose` branch sets `feats.compose_paging` by
     /// reimplementing a decision the fastpath makes independently -- it recomputes the permutation
@@ -6414,18 +6439,25 @@ pub(crate) struct PhaseStats {
     pub(crate) paging_taken: PagingTaken,
 }
 
-/// Which exit `printing_compose_fastpath` took, against the 3-way `ComposePaging` the cost model
-/// predicted. Every exit records itself, which is what lets `NotEntered` mean exactly one thing.
+/// Which exit a printing-space fastpath took: `printing_compose_fastpath` against the 3-way
+/// `ComposePaging` the cost model predicted, and `printing_range_fastpath` against nothing (the
+/// model predicts no strategy for it — see the `Range*` block). Every exit of both records itself,
+/// which is what lets `NotEntered` mean exactly one thing.
+///
+/// The name is compose-era and now undersells the type: only `Perm`/`OrderbyWalk`/`Gather` are
+/// about paging at all, and the rest name gates. Left alone deliberately — `paging_taken` is the
+/// wire key `scripts/bench_cost_model_agreement.py` and any later harness read, and renaming it
+/// would churn the compose narrative throughout this file for no diagnostic gain.
 ///
 /// An enum rather than a `&'static str` because the valid set is load-bearing in four places — the
-/// fastpath's record sites, `compose_paging_prediction_matches_the_branch_taken`'s legal-label
+/// fastpaths' record sites, `compose_paging_prediction_matches_the_branch_taken`'s legal-label
 /// tables, `scripts/bench_cost_model_agreement.py`'s strategy constants, and this doc. As strings
 /// those four drift silently; as variants the compiler settles three of them and a typo stops
 /// being expressible.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(crate) enum PagingTaken {
-    /// The fastpath was never entered at all — every other plan, and a compose plan that
-    /// `run_query_with_plan` rejected before calling it. A compose that DID enter and declined
+    /// Neither fastpath was entered at all — every other plan, and a compose or range plan that
+    /// `run_query_with_plan` rejected before calling it. A fastpath that DID enter and declined
     /// always names the gate instead, so this never means "declined".
     ///
     /// `#[default]` so a cleared `PAGING_TAKEN` reads as "nothing recorded", which is what
@@ -6441,8 +6473,9 @@ pub(crate) enum PagingTaken {
     /// predicted `OrderbyWalk` and only under one; a bare `Gather` in that cell would mean the
     /// availability tests really had drifted.
     GatherWalkDeclined,
-    /// The composed total was 0 or the offset was past it, so the fastpath returned before any
-    /// strategy ran. The prediction is simply not exercised.
+    /// The total was 0 or the offset was past it, so the fastpath returned an empty page before any
+    /// strategy ran. Shared by both fastpaths — a compose that composed to nothing and a range whose
+    /// `k` the offset overran are the same observation, and neither exercises a prediction.
     EmptyPage,
     /// The structural check failed (not a composable expr, or the compose indexes are not built).
     NotComposable,
@@ -6452,6 +6485,46 @@ pub(crate) enum PagingTaken {
     /// the real total, respectively.
     DeclineSparseEstimate,
     DeclineSparseExact,
+
+    // ── printing_range_fastpath ─────────────────────────────────────────────
+    // Every exit of the range fastpath, for the same reason the compose ones exist: before these,
+    // a declining `PrintingRangeScan` reached `explain_analyze` with a non-empty `declined_ns` and
+    // a `NotEntered` label, i.e. "it cost something and we cannot say what for". Unlike compose
+    // there is nothing to check them AGAINST -- `PlanFeatures` carries no range-strategy prediction
+    // -- so these size the declines rather than falsify a prediction.
+    /// Ordered by the range field itself (a price predicate under a `usd` orderby), so the index IS
+    /// the sort permutation and the page is windowed straight out of it. One of the fastpath's two
+    /// success exits.
+    RangeAligned,
+    /// The general case: walked the card sort permutation, emitting per-card-contiguous runs. The
+    /// other success exit.
+    RangeWalk,
+    /// No bare range bounds — not a range predicate, or no index for its field. A TRIPWIRE, not an
+    /// expected outcome: `PhysicalPlan::PrintingRangeScan.applicable` already requires
+    /// `bare_range_bounds(..).is_some()`, so a plan `explain` ranked can only reach this if those
+    /// two structural tests have drifted apart.
+    RangeNotBare,
+    /// `range_too_broad_to_narrow` said no: the range is selective enough that the ordinary
+    /// narrowing beats the walk. The expected decline in production, and the cheapest — two binary
+    /// searches and a ratio.
+    RangeSelective,
+    /// A `usd` orderby whose predicate is not a price leaf, so the index is not the sort
+    /// permutation and there is no aligned mapping to window. Distinct from `RangeNoPermutation`
+    /// because the orderby DOES have an aligned representation in general — this query just cannot
+    /// use it — and a harness reading one label for both could not tell a missing permutation from
+    /// a mismatched one.
+    RangeUnalignedPrice,
+    /// `k <= STREAM_MIN_MATCHES`. The range analogue of `DeclineSparseExact`, and exact for the
+    /// same reason: `k` is the index's own count, not an estimate. Cheap either way — this gates
+    /// before the walk, where compose's namesake gates after a full compose.
+    RangeSparse,
+    /// No sort permutation for this (column, direction) pair, so there is nothing to walk.
+    RangeNoPermutation,
+    /// A permutation exists but its length disagrees with the corpus. Its own label rather than
+    /// folded into `RangeNoPermutation` because the two mean different things: that one is a query
+    /// the fastpath does not serve, this one is an index built against a different store. It should
+    /// never fire, and a non-zero count in the decline table is the finding.
+    RangePermutationStale,
 }
 
 /// Which acquire branch produced a query's cost features — the `count_source` `explain` reports.
@@ -6524,6 +6597,14 @@ impl PagingTaken {
             PagingTaken::DeclineBroad => "DeclineBroad",
             PagingTaken::DeclineSparseEstimate => "DeclineSparseEstimate",
             PagingTaken::DeclineSparseExact => "DeclineSparseExact",
+            PagingTaken::RangeAligned => "RangeAligned",
+            PagingTaken::RangeWalk => "RangeWalk",
+            PagingTaken::RangeNotBare => "RangeNotBare",
+            PagingTaken::RangeSelective => "RangeSelective",
+            PagingTaken::RangeUnalignedPrice => "RangeUnalignedPrice",
+            PagingTaken::RangeSparse => "RangeSparse",
+            PagingTaken::RangeNoPermutation => "RangeNoPermutation",
+            PagingTaken::RangePermutationStale => "RangePermutationStale",
         }
     }
 }
@@ -7281,7 +7362,9 @@ pub(crate) struct PlanTrial {
     /// `StreamedSelect` (`run_query_streamed`, which publishes from all three of its return paths).
     /// The four fast paths — `PrintingRangeScan`, `PrintingCompose`, `PlanePopcountOrder`,
     /// `CardRangePopcount` — are NOT instrumented and report zeros, except `paging_taken`, which
-    /// `printing_compose_fastpath` sets on its own.
+    /// the two printing-space fastpaths set on their own. `PlanePopcountOrder` and
+    /// `CardRangePopcount` write nothing at all and are the only plans for which a `NotEntered`
+    /// label is expected on a successful run.
     ///
     /// A consumer must not read all-zero counters as "this plan did no work": `explain_analyze`
     /// fills `ns_round_total` for every round it records, so `ns_round_total > 0 && ns_loop == 0` is
@@ -7293,10 +7376,12 @@ pub(crate) struct PlanTrial {
     /// - `declined_ns` non-empty — the plan entered and declined. Everything here is zero EXCEPT
     ///   `paging_taken`, which names the gate that fired. That is the whole point of recording
     ///   stats for a plan that produced nothing: without it a declining `PrintingCompose` is
-    ///   indistinguishable from one that was never tried, and the four decline labels
-    ///   (`NotComposable`, `DeclineBroad`, `DeclineSparseEstimate`, `DeclineSparseExact`) would be
-    ///   reachable only from Rust. The counters and phase timings stay zero because no executor
-    ///   ran — a decline is a gate, not a loop.
+    ///   indistinguishable from one that was never tried, and the decline labels — compose's
+    ///   `NotComposable`/`DeclineBroad`/`DeclineSparseEstimate`/`DeclineSparseExact` and the range
+    ///   fastpath's `RangeSelective`/`RangeSparse`/`RangeUnalignedPrice`/`RangeNoPermutation` (plus
+    ///   the two tripwires `RangeNotBare`/`RangePermutationStale`) — would be reachable only from
+    ///   Rust. The counters and phase timings stay zero because no executor ran — a decline is a
+    ///   gate, not a loop.
     pub(crate) phases: PhaseStats,
 }
 

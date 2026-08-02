@@ -3603,6 +3603,15 @@ fn plan_stats_never_leak_between_participants() {
     /// Publish no counters whatsoever — see the doc's leak 1.
     const SILENT_PLANS: [PhysicalPlan; 3] =
         [PhysicalPlan::PrintingRangeScan, PhysicalPlan::PlanePopcountOrder, PhysicalPlan::CardRangePopcount];
+    /// The subset of `SILENT_PLANS` that writes NO field at all, `paging_taken` included, so
+    /// `NotEntered` there is still proof no label leaked in. `PrintingRangeScan` is silent for the
+    /// counters and phase timings but labels its own exits, so it is checked separately below —
+    /// against its own labels, which is a stronger statement than "inherited nothing".
+    const UNLABELLED_PLANS: [PhysicalPlan; 2] = [PhysicalPlan::PlanePopcountOrder, PhysicalPlan::CardRangePopcount];
+    /// What a `PrintingRangeScan` that produced a page must report. Both are success exits; every
+    /// other `Range*` variant means it declined, and a declining plan has empty `trials_ns` and is
+    /// skipped above.
+    const RANGE_SUCCESS: [PagingTaken; 2] = [PagingTaken::RangeAligned, PagingTaken::RangeWalk];
 
     let mut rng = rand::rngs::SmallRng::seed_from_u64(745_005);
     // Chosen for plan COVERAGE, not for query realism: the bare ranges are what make
@@ -3626,6 +3635,9 @@ fn plan_stats_never_leak_between_participants() {
     let ctx = QueryCtx::from(archived);
 
     let (mut silent_checked, mut materializing_checked, mut compose_labelled) = (0usize, 0usize, 0usize);
+    // Counted apart from `silent_checked` so the range fastpath's own success labels cannot go
+    // unexercised behind the two plans that legitimately report nothing.
+    let mut range_labelled = 0usize;
     for spec in &specs {
         for &(mode_label, mode) in &modes {
             for &(orderby, sort_col) in &sort_cols {
@@ -3653,14 +3665,31 @@ fn plan_stats_never_leak_between_participants() {
                             (p.ns_setup, p.ns_loop, p.ns_finish, p.ns_prepare), (0, 0, 0, 0),
                             "uninstrumented plan reported phase timings it never wrote: {case}",
                         );
-                        assert_eq!(p.paging_taken, PagingTaken::NotEntered, "uninstrumented plan inherited a paging label: {case}");
+                        // The label half splits: only the two plans that write nothing can be
+                        // checked as "still NotEntered". `PrintingRangeScan` labels its own exits,
+                        // so for it the equivalent — and stronger — statement is that the label is
+                        // one of ITS OWN success variants, not merely absent. A leaked compose
+                        // label would fail that just as surely.
+                        if UNLABELLED_PLANS.contains(&t.plan) {
+                            assert_eq!(
+                                p.paging_taken, PagingTaken::NotEntered,
+                                "uninstrumented plan inherited a paging label: {case}",
+                            );
+                        } else {
+                            assert!(
+                                RANGE_SUCCESS.contains(&p.paging_taken),
+                                "PrintingRangeScan produced a page but reported {:?}, not one of its success exits: {case}",
+                                p.paging_taken,
+                            );
+                            range_labelled += 1;
+                        }
                         silent_checked += 1;
                     } else if matches!(t.plan, PhysicalPlan::StreamedSelect | PhysicalPlan::GatheredScan) {
-                        // Leak 2: the field neither executor writes. Only `printing_compose_fastpath`
-                        // sets this, and it is not on either of their paths.
+                        // Leak 2: the field neither executor writes. Only the two printing-space
+                        // fastpaths set it, and neither is on either of their paths.
                         assert_eq!(
                             p.paging_taken, PagingTaken::NotEntered,
-                            "materializing plan inherited a paging label only the compose fastpath sets: {case}",
+                            "materializing plan inherited a paging label only a printing fastpath sets: {case}",
                         );
                         materializing_checked += 1;
                     } else if t.plan == PhysicalPlan::PrintingCompose {
@@ -3679,8 +3708,8 @@ fn plan_stats_never_leak_between_participants() {
     }
 
     println!(
-        "stat isolation: {silent_checked} uninstrumented-plan runs, {materializing_checked} materializing runs, \
-         {compose_labelled} compose runs carrying a real paging label"
+        "stat isolation: {silent_checked} uninstrumented-plan runs ({range_labelled} range-labelled), \
+         {materializing_checked} materializing runs, {compose_labelled} compose runs carrying a real paging label"
     );
     // Each guard covers a leak that would otherwise go unasserted, and the third is what supplies
     // the contaminant: without a labelled compose in the mix, leak 2 cannot be reproduced even with
@@ -3688,6 +3717,10 @@ fn plan_stats_never_leak_between_participants() {
     assert!(silent_checked > 0, "no uninstrumented plan ran; leak 1 is unchecked");
     assert!(materializing_checked > 0, "no materializing plan ran; leak 2 is unchecked");
     assert!(compose_labelled > 0, "no compose recorded a paging label; leak 2 has no contaminant to detect");
+    // The range fastpath is a second contaminant source AND the only plan here whose success is
+    // asserted against its own labels rather than against their absence. A sweep that never runs it
+    // successfully leaves both unexercised.
+    assert!(range_labelled > 0, "no PrintingRangeScan produced a page; its success labels are unchecked");
 }
 
 /// A plan that enters a fastpath and declines must say so through `explain_analyze`, not just
@@ -3708,8 +3741,14 @@ fn plan_stats_never_leak_between_participants() {
 ///
 /// Asserted here, in order: a declining plan reports EMPTY `trials_ns` (it produced nothing), a
 /// NON-EMPTY `declined_ns` (it still cost something), zero counters and zero phase timings (no
-/// executor ran, so anything else would be a leak), and — for compose specifically — a label naming
-/// the gate rather than the `NotEntered` default that would mean it was never tried.
+/// executor ran, so anything else would be a leak), and a label naming the gate rather than the
+/// `NotEntered` default that would mean it was never tried.
+///
+/// That last one now covers BOTH printing-space fastpaths. `PrintingRangeScan` used to decline as
+/// `NotEntered` — indistinguishable from never having been tried, and rendered as a blank gate
+/// column in `scripts/bench_cost_model_agreement.py`'s decline table. Its gates carry no prediction
+/// to falsify, unlike compose's, so the assertion is only that one fired; what they are for is
+/// sizing the declines and surfacing the two that should never fire at all.
 #[test]
 fn declining_plans_report_their_gate_through_explain_analyze() {
     use rand::SeedableRng;
@@ -3724,6 +3763,23 @@ fn declining_plans_report_their_gate_through_explain_analyze() {
         PagingTaken::DeclineSparseEstimate,
         PagingTaken::DeclineSparseExact,
     ];
+    /// The same for the range fastpath. `RangeAligned`/`RangeWalk` are excluded because they are
+    /// its success exits — reaching one of those with an empty `trials_ns` would mean the fastpath
+    /// returned a page and `explain_analyze` recorded a decline anyway.
+    ///
+    /// `RangeNotBare` and `RangePermutationStale` are IN the list but should never be seen:
+    /// `PhysicalPlan::PrintingRangeScan.applicable` already requires bare range bounds, and a
+    /// permutation whose length disagrees with the corpus is a corrupt index. They are admitted
+    /// here rather than asserted against because this test's job is "a gate was named", and
+    /// `range_gate_counts` below prints the distribution so either one showing up is visible.
+    const RANGE_DECLINE_GATES: [PagingTaken; 6] = [
+        PagingTaken::RangeSelective,
+        PagingTaken::RangeSparse,
+        PagingTaken::RangeUnalignedPrice,
+        PagingTaken::RangeNoPermutation,
+        PagingTaken::RangeNotBare,
+        PagingTaken::RangePermutationStale,
+    ];
 
     let mut rng = rand::rngs::SmallRng::seed_from_u64(745_006);
     // The narrow keyword/border AND is the one that reliably declines -- same reasoning as the
@@ -3733,6 +3789,22 @@ fn declining_plans_report_their_gate_through_explain_analyze() {
         FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
         fuzz_leaf_type(&mut rng),
         fuzz_leaf_price(&mut rng),
+        // The range fastpath's declines, which the sampled price leaf above does not reach: with
+        // this seed it draws a threshold that is broad enough to walk under every orderby in the
+        // list, so the sweep only ever saw the fastpath SUCCEED. Both of these are bare ranges, so
+        // `PrintingRangeScan` is applicable for all three of them and only the gate differs.
+        //
+        // Broad: passes `range_too_broad_to_narrow` and reaches the strategy choice, so it succeeds
+        // where a permutation exists and declines `RangeNoPermutation` where one does not.
+        FuzzSpec::Leaf(FuzzLeaf::Price { op: CmpOp::Lt, val: 100_000.0 }),
+        // Matches nothing, so the breadth gate turns it back first — `RangeSelective`, NOT
+        // `EmptyPage`: the broadness test runs before the `k == 0` check, which is why an empty
+        // range reads as "the narrowing wins" rather than as an empty page.
+        FuzzSpec::Leaf(FuzzLeaf::Price { op: CmpOp::Gt, val: 100_000.0 }),
+        // A broad range that is NOT a price leaf, so under the `usd` orderby in `sort_cols` the
+        // index is not the sort permutation and there is no aligned mapping — `RangeUnalignedPrice`,
+        // the one gate that needs the predicate and the orderby to disagree.
+        FuzzSpec::Leaf(FuzzLeaf::Year { op: CmpOp::Gt, year: 1900 }),
         FuzzSpec::And(vec![
             FuzzSpec::Leaf(FuzzLeaf::Collection { field: CollField::Keywords, op: CmpOp::Ge, value: "fateseal".to_string() }),
             FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
@@ -3746,7 +3818,10 @@ fn declining_plans_report_their_gate_through_explain_analyze() {
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     let ctx = QueryCtx::from(archived);
 
-    let (mut declines_seen, mut compose_gates_seen) = (0usize, 0usize);
+    let (mut declines_seen, mut compose_gates_seen, mut range_gates_seen) = (0usize, 0usize, 0usize);
+    // Decline rounds that measured above zero. Counted rather than asserted per round — see the
+    // note at the accumulation site for why a zero is legitimate for the cheapest gates.
+    let mut nonzero_declines = 0usize;
     let mut by_gate = std::collections::BTreeMap::<String, usize>::new();
     for spec in &specs {
         for &(mode_label, mode) in &modes {
@@ -3767,7 +3842,14 @@ fn declining_plans_report_their_gate_through_explain_analyze() {
                     // plan cannot both produce a page and bail across rounds of the same sweep.
                     assert!(t.trials_ns.is_empty(), "a plan reported both trials and declines: {case}");
                     assert_eq!(t.declined_ns.len(), NUM_TRIALS, "one decline sample per recorded round: {case}");
-                    assert!(t.declined_ns.iter().all(|&ns| ns > 0), "a decline still costs wall time: {case}");
+                    // NOT asserted per-round as `> 0`. The cheapest gates really do complete inside
+                    // the clock's granularity: `RangeSelective` on `usd>100000` is two binary
+                    // searches over an empty span, and in a release build it measures 0 ns. An
+                    // earlier draft asserted every round was non-zero and failed on exactly that
+                    // query — the assertion was wrong, not the timer. What is worth pinning is that
+                    // the timer is wired up AT ALL, which is a sweep-level claim; see
+                    // `nonzero_declines` below.
+                    nonzero_declines += t.declined_ns.iter().filter(|&&ns| ns > 0).count();
                     // No executor ran, so anything non-zero here came from somewhere else.
                     let p = &t.phases;
                     assert_eq!(
@@ -3779,16 +3861,33 @@ fn declining_plans_report_their_gate_through_explain_analyze() {
                         "a declining plan reported timings or a total it never produced: {case}",
                     );
                     declines_seen += 1;
-                    // Only compose labels its gates; PrintingRangeScan has no equivalent, so it
-                    // legitimately declines as `NotEntered`.
-                    if t.plan == PhysicalPlan::PrintingCompose {
-                        assert!(
-                            DECLINE_GATES.contains(&p.paging_taken),
-                            "a declining compose reported {:?}, which does not name a gate: {case}",
-                            p.paging_taken,
-                        );
-                        *by_gate.entry(format!("{:?}", p.paging_taken)).or_default() += 1;
-                        compose_gates_seen += 1;
+                    // Both printing-space fastpaths label their gates, against their own legal
+                    // sets — a compose gate arriving on a range decline (or vice versa) is a leak,
+                    // and a shared "is not NotEntered" check would pass straight through it.
+                    // No other plan has a fastpath, so no other plan can reach here labelled.
+                    match t.plan {
+                        PhysicalPlan::PrintingCompose => {
+                            assert!(
+                                DECLINE_GATES.contains(&p.paging_taken),
+                                "a declining compose reported {:?}, which does not name a compose gate: {case}",
+                                p.paging_taken,
+                            );
+                            *by_gate.entry(format!("{:?}", p.paging_taken)).or_default() += 1;
+                            compose_gates_seen += 1;
+                        }
+                        PhysicalPlan::PrintingRangeScan => {
+                            assert!(
+                                RANGE_DECLINE_GATES.contains(&p.paging_taken),
+                                "a declining range scan reported {:?}, which does not name a range gate: {case}",
+                                p.paging_taken,
+                            );
+                            *by_gate.entry(format!("{:?}", p.paging_taken)).or_default() += 1;
+                            range_gates_seen += 1;
+                        }
+                        _ => assert_eq!(
+                            p.paging_taken, PagingTaken::NotEntered,
+                            "a plan with no fastpath declined carrying a label: {case}",
+                        ),
                     }
                 }
             }
@@ -3796,11 +3895,21 @@ fn declining_plans_report_their_gate_through_explain_analyze() {
     }
 
     let gates: Vec<String> = by_gate.iter().map(|(g, n)| format!("{g} x{n}")).collect();
-    println!("declines through explain_analyze: {declines_seen} total, {compose_gates_seen} compose ({})", gates.join(", "));
-    // Both guards matter: the first says the wire field is reachable at all, the second says the
-    // labels ride along with it. Before `declined_ns` existed every one of these rows was dropped.
+    println!(
+        "declines through explain_analyze: {declines_seen} total, {compose_gates_seen} compose, \
+         {range_gates_seen} range ({})",
+        gates.join(", "),
+    );
+    // Each guard matters: the first says the wire field is reachable at all, the other two say the
+    // labels ride along with it. Before `declined_ns` existed every one of these rows was dropped,
+    // and before the `Range*` labels the third was reachable but blank.
     assert!(declines_seen > 0, "no plan declined; the whole assertion block above is unexercised");
     assert!(compose_gates_seen > 0, "no compose declined; the gate labels are still unreachable from outside Rust");
+    assert!(range_gates_seen > 0, "no range scan declined; its gate labels are still unreachable from outside Rust");
+    // `declined_ns` must be a real measurement somewhere, or it is a vector of zeros nothing would
+    // notice. Sweep-level because a single cheap gate legitimately reads 0 — the claim is that the
+    // timer runs, not that every gate is expensive enough to see.
+    assert!(nonzero_declines > 0, "every decline measured 0 ns; declined_ns is not timing anything");
 }
 
 /// #702 PR1 estimator accuracy report (NOT an assertion — a reporting tool).

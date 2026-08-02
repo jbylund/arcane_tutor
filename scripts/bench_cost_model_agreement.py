@@ -79,6 +79,12 @@ WALK_DECLINED = "GatherWalkDeclined"
 # bitmap, off the real total rather than the estimator's bound -- so those rounds pay a full compose
 # and discard it. The other three gate before the compose and are cheap. See `report_declines`.
 POST_COMPOSE_GATE = "DeclineSparseExact"
+# Range-fastpath gates that should be unreachable, so a non-zero count is a defect rather than a
+# measurement. `RangeNotBare` contradicts `PrintingRangeScan.applicable`, which already requires bare
+# range bounds; `RangePermutationStale` means a sort permutation was built against a different store.
+# Called out on their own line because in the decline table they would otherwise read as two more
+# cheap rows -- their cost is not the point, their existence is.
+IMPOSSIBLE_GATES = ("RangeNotBare", "RangePermutationStale")
 # The acquire branch that actually PREDICTS `compose_paging`. Every other branch leaves the
 # `mk_plan_feats` default of `Gather` untouched — see `report_paging` for why that is a different
 # defect rather than a prediction that missed.
@@ -339,12 +345,26 @@ def report_declines(agr: Agreement) -> None:
     describes it. The router picked a plan, the plan bailed, and the general path then answered the
     query from scratch -- so a declining round is pure overhead on top of whatever ran next.
 
-    The gates do not cost the same thing, which is the number this table exists to separate:
+    Both printing-space fastpaths name their gate. The gates do not cost the same thing, which is
+    the number this table exists to separate:
 
+    `PrintingCompose` --
     - `NotComposable`, `DeclineBroad`, `DeclineSparseEstimate` gate BEFORE the compose. Cheap; the
       fastpath looked at an estimate and turned back.
     - `DeclineSparseExact` gates AFTER, off the real total, so it has already composed the printing
       bitmap and throws it away. That is a full compose paid for nothing.
+
+    `PrintingRangeScan` -- all four of its real gates are cheap (two binary searches and a lookup),
+    so the interesting number here is the COUNT, not the median:
+    - `RangeSelective` is the expected one: the range is narrow enough that the ordinary narrowing
+      wins. A large count is fine.
+    - `RangeNoPermutation` and `RangeUnalignedPrice` are orderby/predicate mismatches. A large count
+      means the router keeps ranking a plan that structurally cannot serve those queries, which is a
+      costing question rather than a fastpath one.
+    - `RangeSparse` needs 1000 < k <= 1024 and so is near-unreachable outside a tiny index.
+    - `RangeNotBare` and `RangePermutationStale` should never appear at all -- the first contradicts
+      `PrintingRangeScan.applicable`, the second means an index built against a different store. A
+      non-zero count in either row is the finding, not the timing next to it.
 
     A high `DeclineSparseExact` median against the same query's `PrintingCompose` predicted cost is
     the actionable case: it means the pre-compose sparse estimate is not catching what the exact
@@ -362,6 +382,10 @@ def report_declines(agr: Agreement) -> None:
     post_compose = sum(len(v) for (_, gate), v in agr.declines.items() if gate == POST_COMPOSE_GATE)
     if post_compose:
         print(f"  {post_compose:,} of these ({post_compose / total:.0%}) are {POST_COMPOSE_GATE} -- composed, then discarded.")
+    impossible = {gate: len(v) for (_, gate), v in agr.declines.items() if gate in IMPOSSIBLE_GATES}
+    if impossible:
+        named = ", ".join(f"{gate} x{n:,}" for gate, n in sorted(impossible.items()))
+        print(f"  DEFECT: {named} -- see IMPOSSIBLE_GATES; these gates are supposed to be unreachable.")
     print("  Declines appear in no other table: no page, so no measured/predicted ratio.")
 
 
