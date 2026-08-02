@@ -1,12 +1,14 @@
 """Fetcher for Scryfall bulk data."""
 
 import io
+import itertools
 import logging
 import os
 import pathlib
 import secrets
 import time
-from collections.abc import Iterator
+import zlib
+from collections.abc import Iterable, Iterator
 from enum import StrEnum
 
 import orjson
@@ -33,9 +35,66 @@ _TMP_PRUNE_AGE_SECONDS = 15 * MINUTE
 # Log at most this many individual unparseable lines; beyond that only the final summary reports them.
 _MAX_UNPARSEABLE_LINE_LOGS = 5
 
+# Field on each /bulk-data record holding the dump URL. Scryfall served plain-JSON `download_uri`
+# until it moved the dumps to gzipped JSONL under this name; the old field no longer exists.
+_DOWNLOAD_URI_FIELD = "jsonl_download_uri"
+
+# Scryfall serves the dumps as `.jsonl.gz` with Content-Type: application/gzip and *no*
+# Content-Encoding header, so requests hands back raw gzip bytes rather than decompressing.
+_GZIP_MAGIC = b"\x1f\x8b"
+# zlib needs this window-bits offset to parse a gzip container rather than a raw deflate stream.
+_GZIP_WBITS = 16 + zlib.MAX_WBITS
+
 
 class BulkDataParseError(Exception):
     """Raised when a bulk data file yields implausibly little card data for its size."""
+
+
+class BulkDataFormatError(Exception):
+    """Raised when Scryfall's /bulk-data response does not have the shape we expect."""
+
+
+def _gunzip_if_needed(chunks: Iterable[bytes]) -> Iterator[bytes]:
+    """Decompress a byte stream if it is gzipped, else pass it through unchanged.
+
+    Sniffs the gzip magic bytes rather than trusting the URL suffix or headers, so this keeps
+    working whether Scryfall serves gzip as the payload (today) or as a Content-Encoding that
+    requests transparently decompresses for us.
+
+    Args:
+        chunks: Byte chunks as returned by requests' iter_content.
+
+    Yields:
+        Decompressed bytes, not aligned to any particular boundary.
+
+    Raises:
+        BulkDataFormatError: If a gzip stream ends mid-member, i.e. the download was truncated.
+    """
+    nonempty = (chunk for chunk in chunks if chunk)  # iter_content emits empty keep-alive chunks
+    first = next(nonempty, b"")
+    if not first:
+        return
+    if not first.startswith(_GZIP_MAGIC):
+        yield first
+        yield from nonempty
+        return
+
+    decompressor = zlib.decompressobj(_GZIP_WBITS)
+    for chunk in itertools.chain([first], nonempty):
+        pending = chunk
+        while pending:
+            if out := decompressor.decompress(pending):
+                yield out
+            if not decompressor.eof:
+                break
+            pending = decompressor.unused_data
+            if pending:
+                # Concatenated members are one logical stream; decode the next one too, or a
+                # multi-member dump would silently truncate to its first member.
+                decompressor = zlib.decompressobj(_GZIP_WBITS)
+    if not decompressor.eof:
+        msg = "Bulk data gzip stream ended mid-member; the download was truncated"
+        raise BulkDataFormatError(msg)
 
 
 class BulkDataKey(StrEnum):
@@ -110,14 +169,32 @@ class ScryfallBulkDataFetcher:
         return {BulkDataKey(r["type"]): r for r in records if r["type"] in known_types}
 
     def get_download_uri_for_key(self, data_key: BulkDataKey) -> str:
-        """Get the download URI for a given data key."""
-        return self.list_bulk_data()[data_key]["download_uri"]
+        """Get the download URI for a given data key.
+
+        Args:
+            data_key: Which bulk data dump to look up.
+
+        Returns:
+            The URL of the dump file.
+
+        Raises:
+            BulkDataFormatError: If the record lacks the download URI field, which means Scryfall
+                renamed or removed it again.
+        """
+        record = self.list_bulk_data()[data_key]
+        if _DOWNLOAD_URI_FIELD not in record:
+            msg = (
+                f"Scryfall bulk data record for {data_key} has no {_DOWNLOAD_URI_FIELD!r} field "
+                f"(present fields: {sorted(record)}); the /bulk-data schema has changed"
+            )
+            raise BulkDataFormatError(msg)
+        return record[_DOWNLOAD_URI_FIELD]
 
     def _cache_file_path_for_key(self, data_key: BulkDataKey) -> pathlib.Path:
         download_uri = self.get_download_uri_for_key(data_key)
-        suffix = download_uri.rpartition("/")[-1]
-        cache_file_path = self.cache_directory / data_key / suffix
-        return cache_file_path.with_suffix(".json.zstd")
+        remote_name = download_uri.rpartition("/")[-1]
+        # We store decompressed-then-zstd-recompressed content, so drop any upstream .gz suffix.
+        return self.cache_directory / data_key / f"{remote_name.removesuffix('.gz')}.zstd"
 
     def _ensure_cached(self, data_key: BulkDataKey, cache_file_path: pathlib.Path) -> None:
         """Download and cache the bulk data file if not already present.
@@ -147,7 +224,7 @@ class ScryfallBulkDataFetcher:
         try:
             with self._get(download_uri, stream=True, timeout=60) as response:
                 with tmp_path.open("wb") as f, cctx.stream_writer(f) as compressor:
-                    for chunk in response.iter_content(chunk_size=65536):
+                    for chunk in _gunzip_if_needed(response.iter_content(chunk_size=65536)):
                         compressor.write(chunk)
             tmp_path.rename(cache_file_path)
         except Exception:
@@ -158,11 +235,12 @@ class ScryfallBulkDataFetcher:
     def stream_data_for_key(self, data_key: BulkDataKey) -> Iterator[dict]:
         """Yield card dicts one at a time without loading the full file into memory.
 
-        Reads the cached .json.zstd file line-by-line; downloads and caches first if needed.
-        Each line that starts with '{' is treated as one card JSON object (trailing comma stripped).
-        Unparseable lines are logged and skipped, but if a non-trivially-sized file ends up with
-        less than _PARSE_COVERAGE_THRESHOLD of its content parsed into cards (e.g. the dump is no
-        longer one-object-per-line), BulkDataParseError is raised instead of silently under-yielding.
+        Reads the cached .zstd file line-by-line; downloads and caches first if needed. The dumps
+        are JSONL, so every non-blank line must be one JSON object. Lines that are not — malformed
+        JSON, or valid JSON of some other type such as a whole array on one line — are logged and
+        skipped. But if a non-trivially-sized file ends up with less than _PARSE_COVERAGE_THRESHOLD
+        of its content parsed into cards (e.g. the dump is no longer one-object-per-line),
+        BulkDataParseError is raised instead of silently under-yielding.
 
         Note: the coverage check runs after the last line is read, so it only fires for consumers
         that iterate to exhaustion. A consumer that stops early (break, islice, etc.) gets no
@@ -185,12 +263,16 @@ class ScryfallBulkDataFetcher:
             ):
                 for raw_line in text_reader:
                     total_chars += len(raw_line)
-                    stripped = raw_line.strip().rstrip(",")
-                    if not stripped.startswith("{"):
+                    stripped = raw_line.strip()
+                    if not stripped:
                         continue
                     try:
                         card = orjson.loads(stripped)
                     except orjson.JSONDecodeError:
+                        card = None
+                    # A non-dict line means the layout is not JSONL; skipping keeps the yielded
+                    # type honest and lets the coverage check below turn it into a hard failure.
+                    if not isinstance(card, dict):
                         skipped_lines += 1
                         if skipped_lines <= _MAX_UNPARSEABLE_LINE_LOGS:
                             logger.warning("Skipping unparseable line: %.120s", stripped)

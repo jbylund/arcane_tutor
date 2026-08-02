@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import logging
 import os
 import time
@@ -14,7 +15,9 @@ import requests
 import zstandard as zstd
 
 from api.scryfall_bulk_data_fetcher import (
+    _DOWNLOAD_URI_FIELD,
     _MAX_UNPARSEABLE_LINE_LOGS,
+    BulkDataFormatError,
     BulkDataKey,
     BulkDataParseError,
     ScryfallBulkDataFetcher,
@@ -23,8 +26,10 @@ from api.scryfall_bulk_data_fetcher import (
 if TYPE_CHECKING:
     import pathlib
 
-_FAKE_URI = "https://data.scryfall.io/default-cards/default-cards-test.json"
-_FAKE_BULK_DATA = {BulkDataKey.DEFAULT_CARDS: {"download_uri": _FAKE_URI}}
+_FAKE_URI = "https://data.scryfall.io/default-cards/default-cards-test.jsonl.gz"
+_FAKE_BULK_DATA = {BulkDataKey.DEFAULT_CARDS: {"jsonl_download_uri": _FAKE_URI}}
+# What _cache_file_path_for_key derives from _FAKE_URI: .gz stripped, .zstd appended.
+_FAKE_CACHE_NAME = "default-cards-test.jsonl.zstd"
 
 
 def _make_fetcher(cache_directory: pathlib.Path) -> ScryfallBulkDataFetcher:
@@ -35,20 +40,15 @@ def _make_fetcher(cache_directory: pathlib.Path) -> ScryfallBulkDataFetcher:
 
 
 def _write_cache_file(cache_dir: pathlib.Path, raw_json: bytes) -> pathlib.Path:
-    cache_file = cache_dir / "default_cards" / "default-cards-test.json.zstd"
+    cache_file = cache_dir / "default_cards" / _FAKE_CACHE_NAME
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     cache_file.write_bytes(zstd.compress(raw_json))
     return cache_file
 
 
-def _scryfall_json(cards: list[dict]) -> bytes:
-    """Produce a Scryfall-style newline-delimited JSON array."""
-    lines = ["[\n"]
-    for i, card in enumerate(cards):
-        comma = "," if i < len(cards) - 1 else ""
-        lines.append(orjson.dumps(card).decode() + comma + "\n")
-    lines.append("]\n")
-    return "".join(lines).encode()
+def _scryfall_jsonl(cards: list[dict]) -> bytes:
+    """Produce a Scryfall-style JSONL dump: one compact JSON object per line."""
+    return b"".join(orjson.dumps(card) + b"\n" for card in cards)
 
 
 def _mock_streaming_response(chunks: list[bytes] | object) -> MagicMock:
@@ -67,7 +67,7 @@ class TestStreamDataForKeyHappyPath:
 
     def test_streams_all_cards_from_cache(self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path) -> None:
         cards = [{"id": "c1", "name": "Lightning Bolt"}, {"id": "c2", "name": "Counterspell"}]
-        _write_cache_file(tmp_path, _scryfall_json(cards))
+        _write_cache_file(tmp_path, _scryfall_jsonl(cards))
 
         with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA):
             result = list(fetcher.stream_data_for_key(BulkDataKey.DEFAULT_CARDS))
@@ -77,7 +77,7 @@ class TestStreamDataForKeyHappyPath:
         assert result[1] == {"id": "c2", "name": "Counterspell"}
 
     def test_single_card_file(self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path) -> None:
-        _write_cache_file(tmp_path, _scryfall_json([{"id": "only", "name": "Dark Ritual"}]))
+        _write_cache_file(tmp_path, _scryfall_jsonl([{"id": "only", "name": "Dark Ritual"}]))
 
         with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA):
             result = list(fetcher.stream_data_for_key(BulkDataKey.DEFAULT_CARDS))
@@ -85,8 +85,8 @@ class TestStreamDataForKeyHappyPath:
         assert len(result) == 1
         assert result[0]["name"] == "Dark Ritual"
 
-    def test_empty_array_yields_nothing(self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path) -> None:
-        _write_cache_file(tmp_path, _scryfall_json([]))
+    def test_empty_file_yields_nothing(self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path) -> None:
+        _write_cache_file(tmp_path, _scryfall_jsonl([]))
 
         with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA):
             result = list(fetcher.stream_data_for_key(BulkDataKey.DEFAULT_CARDS))
@@ -99,31 +99,11 @@ class TestStreamDataForKeyLineParsing:
     def fetcher(self, tmp_path: pathlib.Path) -> ScryfallBulkDataFetcher:
         return _make_fetcher(tmp_path)
 
-    def test_skips_opening_and_closing_bracket_lines(self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path) -> None:
-        """[ and ] delimiter lines must not be parsed as cards."""
-        raw = b'[\n{"id":"c1","name":"A"}\n]\n'
-        _write_cache_file(tmp_path, raw)
-
-        with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA):
-            result = list(fetcher.stream_data_for_key(BulkDataKey.DEFAULT_CARDS))
-
-        assert result == [{"id": "c1", "name": "A"}]
-
-    def test_strips_trailing_comma_from_card_lines(self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path) -> None:
-        """Trailing commas on all-but-last card lines must be stripped before parsing."""
-        raw = b'[\n{"id":"c1","name":"A"},\n{"id":"c2","name":"B"},\n{"id":"c3","name":"C"}\n]\n'
-        _write_cache_file(tmp_path, raw)
-
-        with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA):
-            result = list(fetcher.stream_data_for_key(BulkDataKey.DEFAULT_CARDS))
-
-        assert [r["name"] for r in result] == ["A", "B", "C"]
-
     def test_skips_malformed_lines_and_logs_warning(
         self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Malformed JSON lines are skipped; a WARNING is emitted and parsing continues."""
-        raw = b'[\n{"id":"good1","name":"Good"},\n{bad json here},\n{"id":"good2","name":"Also Good"}\n]\n'
+        raw = b'{"id":"good1","name":"Good"}\n{bad json here}\n{"id":"good2","name":"Also Good"}\n'
         _write_cache_file(tmp_path, raw)
 
         with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA), caplog.at_level(logging.WARNING):
@@ -132,14 +112,32 @@ class TestStreamDataForKeyLineParsing:
         assert [r["name"] for r in result] == ["Good", "Also Good"]
         assert any("Skipping unparseable" in r.message for r in caplog.records)
 
-    def test_ignores_blank_lines(self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path) -> None:
-        raw = b'[\n\n{"id":"c1","name":"A"}\n\n]\n'
+    def test_skips_valid_json_that_is_not_an_object(
+        self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Lines that parse but aren't objects must not be yielded, or callers get a non-dict card."""
+        raw = b'{"id":"c1","name":"A"}\n[{"id":"nested"}]\n"a bare string"\n42\n'
         _write_cache_file(tmp_path, raw)
 
-        with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA):
+        with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA), caplog.at_level(logging.WARNING):
             result = list(fetcher.stream_data_for_key(BulkDataKey.DEFAULT_CARDS))
 
-        assert len(result) == 1
+        assert result == [{"id": "c1", "name": "A"}]
+        assert all(isinstance(card, dict) for card in result)
+        assert sum("Skipping unparseable" in r.message for r in caplog.records) == 3
+
+    def test_ignores_blank_lines(
+        self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Blank lines are structural whitespace, not unparseable content, so they log nothing."""
+        raw = b'\n{"id":"c1","name":"A"}\n\n'
+        _write_cache_file(tmp_path, raw)
+
+        with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA), caplog.at_level(logging.WARNING):
+            result = list(fetcher.stream_data_for_key(BulkDataKey.DEFAULT_CARDS))
+
+        assert result == [{"id": "c1", "name": "A"}]
+        assert not [r for r in caplog.records if "Skipping unparseable" in r.message]
 
 
 class TestStreamDataForKeyCacheMiss:
@@ -149,13 +147,13 @@ class TestStreamDataForKeyCacheMiss:
 
     def test_downloads_and_caches_on_miss(self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path) -> None:
         """When no cache file exists, the file is downloaded and written as zstd-compressed cache."""
-        raw_json = _scryfall_json([{"id": "dl-1", "name": "Downloaded Card"}])
+        raw_json = _scryfall_jsonl([{"id": "dl-1", "name": "Downloaded Card"}])
         fetcher.session.get.return_value = _mock_streaming_response([raw_json])
 
         with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA):
             result = list(fetcher.stream_data_for_key(BulkDataKey.DEFAULT_CARDS))
 
-        cache_file = tmp_path / "default_cards" / "default-cards-test.json.zstd"
+        cache_file = tmp_path / "default_cards" / _FAKE_CACHE_NAME
         assert cache_file.exists(), "cache file should have been written"
         # Use ZstdDecompressor so we can bound output size via max_output_size.
         dctx = zstd.ZstdDecompressor()
@@ -165,7 +163,7 @@ class TestStreamDataForKeyCacheMiss:
 
     def test_second_call_does_not_re_download(self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path) -> None:
         """Once the cache file exists, subsequent calls must not make HTTP requests."""
-        _write_cache_file(tmp_path, _scryfall_json([{"id": "c1", "name": "Cached"}]))
+        _write_cache_file(tmp_path, _scryfall_jsonl([{"id": "c1", "name": "Cached"}]))
 
         with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA):
             list(fetcher.stream_data_for_key(BulkDataKey.DEFAULT_CARDS))
@@ -179,11 +177,11 @@ class TestStreamDataForKeyCacheMiss:
         stale.parent.mkdir(parents=True, exist_ok=True)
         stale.write_bytes(b"stale data")
 
-        raw_json = _scryfall_json([{"id": "new", "name": "New Card"}])
+        raw_json = _scryfall_jsonl([{"id": "new", "name": "New Card"}])
         uri = "https://data.scryfall.io/default-cards/default-cards-new.json"
         fetcher.session.get.return_value = _mock_streaming_response([raw_json])
 
-        bulk_data = {BulkDataKey.DEFAULT_CARDS: {"download_uri": uri}}
+        bulk_data = {BulkDataKey.DEFAULT_CARDS: {"jsonl_download_uri": uri}}
         with patch.object(fetcher, "list_bulk_data", return_value=bulk_data):
             list(fetcher.stream_data_for_key(BulkDataKey.DEFAULT_CARDS))
 
@@ -195,7 +193,7 @@ class TestStreamDataForKeyCacheMiss:
         fresh_tmp.parent.mkdir(parents=True, exist_ok=True)
         fresh_tmp.write_bytes(b"in-flight download")
 
-        raw_json = _scryfall_json([{"id": "new", "name": "New Card"}])
+        raw_json = _scryfall_jsonl([{"id": "new", "name": "New Card"}])
         fetcher.session.get.return_value = _mock_streaming_response([raw_json])
 
         with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA):
@@ -211,7 +209,7 @@ class TestStreamDataForKeyCacheMiss:
         two_hours_ago = time.time() - 2 * 60 * 60
         os.utime(old_tmp, (two_hours_ago, two_hours_ago))
 
-        raw_json = _scryfall_json([{"id": "new", "name": "New Card"}])
+        raw_json = _scryfall_jsonl([{"id": "new", "name": "New Card"}])
         fetcher.session.get.return_value = _mock_streaming_response([raw_json])
 
         with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA):
@@ -226,7 +224,7 @@ class TestStreamDataForKeyCacheMiss:
 
         def _chunks() -> object:
             seen_names.extend(p.name for p in cache_dir.iterdir())
-            yield _scryfall_json([{"id": "c1", "name": "A"}])
+            yield _scryfall_jsonl([{"id": "c1", "name": "A"}])
 
         fetcher.session.get.return_value = _mock_streaming_response(_chunks())
 
@@ -262,15 +260,15 @@ class TestScryfallApiSession:
         response = MagicMock()
         response.json.return_value = {
             "data": [
-                {"type": "default_cards", "download_uri": _FAKE_URI},
-                {"type": "future_type", "download_uri": "https://data.scryfall.io/future/whatever.json"},
+                {"type": "default_cards", "jsonl_download_uri": _FAKE_URI},
+                {"type": "future_type", "jsonl_download_uri": "https://data.scryfall.io/future/whatever.json"},
             ],
         }
         fetcher.session.get.return_value = response
 
         result = fetcher.list_bulk_data()
 
-        assert result == {BulkDataKey.DEFAULT_CARDS: {"type": "default_cards", "download_uri": _FAKE_URI}}
+        assert result == {BulkDataKey.DEFAULT_CARDS: {"type": "default_cards", "jsonl_download_uri": _FAKE_URI}}
 
 
 class TestStreamDataForKeyCorruptCache:
@@ -280,7 +278,7 @@ class TestStreamDataForKeyCorruptCache:
 
     def test_corrupt_cache_file_is_deleted_and_raises(self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path) -> None:
         """A cache file that fails zstd decompression is deleted so the next call can re-download."""
-        cache_file = tmp_path / "default_cards" / "default-cards-test.json.zstd"
+        cache_file = tmp_path / "default_cards" / _FAKE_CACHE_NAME
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         cache_file.write_bytes(b"this is not a zstd stream")
 
@@ -301,11 +299,11 @@ class TestStreamDataForKeyCorruptCache:
 
     def test_call_after_corruption_re_downloads(self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path) -> None:
         """After a corrupt cache file is deleted, the next call downloads a fresh copy and succeeds."""
-        cache_file = tmp_path / "default_cards" / "default-cards-test.json.zstd"
+        cache_file = tmp_path / "default_cards" / _FAKE_CACHE_NAME
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         cache_file.write_bytes(b"this is not a zstd stream")
 
-        raw_json = _scryfall_json([{"id": "c1", "name": "Recovered"}])
+        raw_json = _scryfall_jsonl([{"id": "c1", "name": "Recovered"}])
         fetcher.session.get.return_value = _mock_streaming_response([raw_json])
 
         with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA):
@@ -329,8 +327,8 @@ class TestStreamDataForKeyParseCoverage:
     def fetcher(self, tmp_path: pathlib.Path) -> ScryfallBulkDataFetcher:
         return _make_fetcher(tmp_path)
 
-    def test_minified_single_line_array_raises(self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path) -> None:
-        """A large dump minified onto one line yields zero cards and must raise, not silently return nothing."""
+    def test_whole_array_on_one_line_raises(self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path) -> None:
+        """A dump that reverts to a single-line JSON array parses as a list, yields no cards, and must raise."""
         cards = [_padded_card(i) for i in range(1200)]  # ~1.2MB as a single line
         _write_cache_file(tmp_path, orjson.dumps(cards) + b"\n")
 
@@ -339,9 +337,8 @@ class TestStreamDataForKeyParseCoverage:
 
     def test_mostly_unparseable_large_file_raises(self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path) -> None:
         """A large file whose content is mostly garbage lines raises even though some cards parsed."""
-        good_lines = [orjson.dumps(_padded_card(i)).decode() for i in range(400)]
-        garbage_lines = ["{not valid json " + "y" * 1000 for _ in range(800)]
-        raw = ("[\n" + ",\n".join(good_lines + garbage_lines) + "\n]\n").encode()
+        raw = _scryfall_jsonl([_padded_card(i) for i in range(400)])
+        raw += b"".join(b"{not valid json " + b"y" * 1000 + b"\n" for _ in range(800))
         _write_cache_file(tmp_path, raw)
 
         with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA), pytest.raises(BulkDataParseError):
@@ -351,9 +348,8 @@ class TestStreamDataForKeyParseCoverage:
         self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path
     ) -> None:
         """Garbage below the threshold is skipped with warnings, as for small files."""
-        good_lines = [orjson.dumps(_padded_card(i)).decode() for i in range(1000)]
-        garbage_lines = ["{not valid json " + "y" * 1000 for _ in range(100)]
-        raw = ("[\n" + ",\n".join(good_lines + garbage_lines) + "\n]\n").encode()
+        raw = _scryfall_jsonl([_padded_card(i) for i in range(1000)])
+        raw += b"".join(b"{not valid json " + b"y" * 1000 + b"\n" for _ in range(100))
         _write_cache_file(tmp_path, raw)
 
         with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA):
@@ -365,9 +361,8 @@ class TestStreamDataForKeyParseCoverage:
         self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Per-line warnings stop after the cap; a single summary line reports the total."""
-        good_lines = [orjson.dumps(_padded_card(i)).decode() for i in range(1000)]
-        garbage_lines = ["{not valid json " + "y" * 1000 for _ in range(100)]
-        raw = ("[\n" + ",\n".join(good_lines + garbage_lines) + "\n]\n").encode()
+        raw = _scryfall_jsonl([_padded_card(i) for i in range(1000)])
+        raw += b"".join(b"{not valid json " + b"y" * 1000 + b"\n" for _ in range(100))
         _write_cache_file(tmp_path, raw)
 
         with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA), caplog.at_level(logging.WARNING):
@@ -381,9 +376,125 @@ class TestStreamDataForKeyParseCoverage:
 
     def test_small_files_are_exempt_from_coverage_check(self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path) -> None:
         """Files below the minimum size never trigger the coverage check, even at 0% coverage."""
-        _write_cache_file(tmp_path, b"[\n{bad json}\n]\n")
+        _write_cache_file(tmp_path, b"{bad json}\n")
 
         with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA):
             result = list(fetcher.stream_data_for_key(BulkDataKey.DEFAULT_CARDS))
 
         assert result == []
+
+
+class TestGzippedJsonlBulkData:
+    """Scryfall serves gzipped JSONL dumps via `jsonl_download_uri`, with no Content-Encoding header."""
+
+    @pytest.fixture
+    def fetcher(self, tmp_path: pathlib.Path) -> ScryfallBulkDataFetcher:
+        return _make_fetcher(tmp_path)
+
+    def test_cache_path_strips_gz_and_appends_zstd(self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path) -> None:
+        """The upstream .gz suffix is dropped, since we store zstd-recompressed plaintext."""
+        with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA):
+            path = fetcher._cache_file_path_for_key(BulkDataKey.DEFAULT_CARDS)
+
+        assert path == tmp_path / "default_cards" / "default-cards-test.jsonl.zstd"
+
+    def test_gzipped_jsonl_download_is_decompressed_and_streamed(
+        self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path
+    ) -> None:
+        """A gzip payload must be gunzipped before zstd-caching, not stored as opaque bytes."""
+        cards = [{"id": "c1", "name": "Lightning Bolt"}, {"id": "c2", "name": "Counterspell"}]
+        fetcher.session.get.return_value = _mock_streaming_response([gzip.compress(_scryfall_jsonl(cards))])
+
+        with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA):
+            result = list(fetcher.stream_data_for_key(BulkDataKey.DEFAULT_CARDS))
+
+        assert result == cards
+        dctx = zstd.ZstdDecompressor()
+        cached = dctx.decompress((tmp_path / "default_cards" / _FAKE_CACHE_NAME).read_bytes(), max_output_size=1 << 20)
+        assert cached.startswith(b'{"id":"c1"'), "cache must hold plaintext JSONL, not gzip bytes"
+
+    def test_gzip_split_across_chunks(self, fetcher: ScryfallBulkDataFetcher) -> None:
+        """Decompression must work when gzip members are split arbitrarily across iter_content chunks."""
+        cards = [{"id": f"c{i}", "name": f"Card {i}"} for i in range(50)]
+        blob = gzip.compress(_scryfall_jsonl(cards))
+        chunk_size = 7  # deliberately tiny, so members split mid-header and mid-trailer
+        chunks = [blob[i : i + chunk_size] for i in range(0, len(blob), chunk_size)]
+        fetcher.session.get.return_value = _mock_streaming_response(chunks)
+
+        with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA):
+            result = list(fetcher.stream_data_for_key(BulkDataKey.DEFAULT_CARDS))
+
+        assert result == cards
+
+    def test_concatenated_gzip_members_are_all_read(self, fetcher: ScryfallBulkDataFetcher) -> None:
+        """Multi-member gzip is one logical stream; every member must be decompressed."""
+        first = [{"id": "a", "name": "A"}]
+        second = [{"id": "b", "name": "B"}]
+        blob = gzip.compress(_scryfall_jsonl(first)) + gzip.compress(_scryfall_jsonl(second))
+        fetcher.session.get.return_value = _mock_streaming_response([blob])
+
+        with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA):
+            result = list(fetcher.stream_data_for_key(BulkDataKey.DEFAULT_CARDS))
+
+        assert result == first + second
+
+    def test_truncated_gzip_raises_and_leaves_no_cache_file(self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path) -> None:
+        """A download cut off mid-member must fail loudly rather than cache a partial dump."""
+        blob = gzip.compress(_scryfall_jsonl([{"id": f"c{i}", "name": f"Card {i}"} for i in range(50)]))
+        fetcher.session.get.return_value = _mock_streaming_response([blob[: len(blob) // 2]])
+
+        with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA), pytest.raises(BulkDataFormatError):
+            list(fetcher.stream_data_for_key(BulkDataKey.DEFAULT_CARDS))
+
+        assert list((tmp_path / "default_cards").iterdir()) == [], "no cache or tmp file should survive"
+
+    def test_uncompressed_payload_still_passes_through(self, fetcher: ScryfallBulkDataFetcher) -> None:
+        """If the body is already plaintext (e.g. requests decoded a Content-Encoding), pass it through."""
+        cards = [{"id": "c1", "name": "Plain"}]
+        fetcher.session.get.return_value = _mock_streaming_response([_scryfall_jsonl(cards)])
+
+        with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA):
+            result = list(fetcher.stream_data_for_key(BulkDataKey.DEFAULT_CARDS))
+
+        assert result == cards
+
+    def test_empty_leading_chunks_are_tolerated(self, fetcher: ScryfallBulkDataFetcher) -> None:
+        """iter_content can emit empty keep-alive chunks before the real body."""
+        cards = [{"id": "c1", "name": "Keepalive"}]
+        fetcher.session.get.return_value = _mock_streaming_response([b"", b"", gzip.compress(_scryfall_jsonl(cards))])
+
+        with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA):
+            result = list(fetcher.stream_data_for_key(BulkDataKey.DEFAULT_CARDS))
+
+        assert result == cards
+
+    def test_large_jsonl_file_passes_coverage_check(self, fetcher: ScryfallBulkDataFetcher, tmp_path: pathlib.Path) -> None:
+        """JSONL yields ~100% parse coverage, so a big real-shaped dump must not trip BulkDataParseError."""
+        cards = [_padded_card(i) for i in range(1200)]  # ~1.2MB, past _PARSE_COVERAGE_MIN_CHARS
+        _write_cache_file(tmp_path, _scryfall_jsonl(cards))
+
+        with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA):
+            result = list(fetcher.stream_data_for_key(BulkDataKey.DEFAULT_CARDS))
+
+        assert len(result) == 1200
+
+
+class TestBulkDataSchemaDrift:
+    """A renamed or removed download-URI field must name the problem, not surface as a bare KeyError."""
+
+    def test_missing_download_uri_field_raises_with_diagnostics(self, tmp_path: pathlib.Path) -> None:
+        fetcher = _make_fetcher(tmp_path)
+        # The exact shape that broke production: the record exists, the URI field does not.
+        stale_schema = {BulkDataKey.DEFAULT_CARDS: {"type": "default_cards", "download_uri": _FAKE_URI}}
+
+        with patch.object(fetcher, "list_bulk_data", return_value=stale_schema), pytest.raises(BulkDataFormatError) as exc:
+            fetcher.get_download_uri_for_key(BulkDataKey.DEFAULT_CARDS)
+
+        message = str(exc.value)
+        assert _DOWNLOAD_URI_FIELD in message
+        assert "download_uri" in message, "the message should list the fields that were present"
+
+    def test_download_uri_read_from_jsonl_field(self, tmp_path: pathlib.Path) -> None:
+        fetcher = _make_fetcher(tmp_path)
+        with patch.object(fetcher, "list_bulk_data", return_value=_FAKE_BULK_DATA):
+            assert fetcher.get_download_uri_for_key(BulkDataKey.DEFAULT_CARDS) == _FAKE_URI
