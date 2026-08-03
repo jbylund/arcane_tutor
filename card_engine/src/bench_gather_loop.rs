@@ -65,10 +65,38 @@
 //! it is dearer where cards are narrow and cheaper where they are wide. `ns_setup` is not the
 //! explanation either — the `group_best` allocation measures 83-125 ns, negligible.
 //!
-//! So P4's loop needs rates fitted PER MODE (or a term keyed on printings-per-card), not one triple
-//! plus a linear artwork correction. Until that exists, the shipped mode-blind constants are doing
-//! real work by being too high: they absorb artwork's cost, and lowering them to the card/printing
-//! truth under-costs artwork and loses more than it gains. The constants are deliberately unchanged.
+//! Adding an artwork ARM (per-card and per-printing rates gated on `artwork_seen_cards`, which is
+//! `eval_domain` in artwork mode and 0 otherwise) was tried next and measured:
+//!
+//!     card + printing pooled    3.41 ns/card   2.36 ns/printing   0.80 ns/match
+//!     printing mode             3.41           2.36               0.76  (card/row shared)
+//!     artwork mode              6.68           1.20               0.80  (push shared)
+//!
+//! Artwork does MORE per card (walk `touched`, push per group, reset `group_best`) and LESS per
+//! printing (a group-id lookup and compare instead of a sort-key push), which is the mechanism behind
+//! the sign flip. That arm FIXED artwork at the gate -- artwork went 52% -> 50% of lost time, mean
+//! 3.40 -> 3.55 -- but total regret was still worse, 40.7 -> 44.3 ms, with the damage moving to
+//! printing mode (mean 1.69 -> 2.10). Printing's own push rate fits 0.76 against 0.80, a 5% gap that
+//! cannot account for it, so a third arm does not fix it either: lowering P4's cost simply wins it
+//! more printing-mode queries where P3 was genuinely better. Reverted again.
+//!
+//! The structural obstacle found on the way is the durable result. No single mode can identify all
+//! three rates, because in each one a column is a DUPLICATE: card mode pushes once per card, so
+//! `matches == cards`; printing mode pushes every printing it examines, so `matches == printings`.
+//! Only pooling card and printing separates the three, which is in direct tension with the rates
+//! differing by mode. So "fit each mode separately" is not available, and the way out is to
+//! REPARAMETERISE onto what each mode can identify:
+//!
+//!     card mode      (LOOP + PUSH) per card, SCAN per printing
+//!     printing mode  LOOP per card, (SCAN + PUSH) per printing
+//!     artwork mode   LOOP_art per card, SCAN_art per printing, PUSH per group
+//!
+//! Every parameter there is identifiable in the mode that uses it, and no mode carries a column that
+//! duplicates another. That is the next thing to try; it is a different model, not a refit.
+//!
+//! Until then the shipped mode-blind constants are doing real work by being too high: they absorb
+//! artwork's cost, and every attempt to lower them toward the measured card/printing truth has lost
+//! more elsewhere than it gained. The constants are deliberately unchanged.
 //!
 //! One further limit on all of these: `LIMIT` is fixed, so nothing here constrains how the rates
 //! behave as the page grows.
@@ -118,10 +146,9 @@ struct Cell {
     /// fit; the rows that DO call `card_pass` are used to price that call instead, and mixing them
     /// would fold a predicate evaluation into the card term.
     ran_card_pass: bool,
-    /// Artwork mode maintains `group_best`/`touched` per printing on top of everything the other modes
-    /// do. Those rows are held out of the three-rate fit and priced against it, because pooling them
-    /// would smear a mode-specific cost across rates that cost.rs applies to all three modes.
-    artwork: bool,
+    /// The `unique` mode this cell ran in. All three loops differ, so rates are fitted per mode:
+    /// pooling them smears mode-specific cost across rates that then fit none of the modes.
+    mode: &'static str,
 }
 
 /// Solve a 3×3 system by Gaussian elimination with partial pivoting.
@@ -148,9 +175,16 @@ fn solve3(mut a: [[f64; 4]; 3]) -> Option<[f64; 3]> {
 /// Relative least squares over every cell: each equation is divided by its own measured time, so a
 /// cell running 50 µs does not outweigh one running 5 µs. Absolute OLS here would fit the largest
 /// cell and ignore the rest, which is the same mistake that inflated the finish-phase rate.
-fn fit(cells: &[Cell]) -> Option<[f64; 3]> {
+/// Fitted over the modes named, and it has to be more than one of them.
+///
+/// No single mode can identify all three rates, because in each one a column is a DUPLICATE: card mode
+/// pushes once per card, so `matches == cards`; printing mode pushes every printing it examines, so
+/// `matches == printings`. Pooling card and printing is what makes the three separable, which sits in
+/// direct tension with the rates differing by mode -- the tension is resolved by reparameterising
+/// (see the module docs), not by fitting each mode alone.
+fn fit(cells: &[Cell], modes: &[&str]) -> Option<[f64; 3]> {
     let mut normal = [[0.0f64; 4]; 3];
-    for c in cells.iter().filter(|c| !c.ran_card_pass && !c.artwork) {
+    for c in cells.iter().filter(|c| !c.ran_card_pass && modes.contains(&c.mode)) {
         let w = 1.0 / c.ns_loop;
         let x = [c.cards * w, c.printings * w, c.matches * w];
         for i in 0..3 {
@@ -161,6 +195,57 @@ fn fit(cells: &[Cell]) -> Option<[f64; 3]> {
         }
     }
     solve3(normal)
+}
+
+/// Artwork's card and printing rates with the MATCH rate held at the value fitted for the other
+/// modes. Fitting all three on artwork alone is ill-conditioned -- artwork groups grow with printings,
+/// so `matches` and `printings` are collinear inside artwork, and the unconstrained solve answers with
+/// a large printing rate against a NEGATIVE match rate (-60 ns) that interpolates the cells and means
+/// nothing. Holding the push shared is not a convenience: it is the same `GatherSelect` push in every
+/// mode, so the constraint is the physical claim, and it leaves 2 unknowns against 3 ratio levels.
+fn fit_artwork(cells: &[Cell], push_ns: f64) -> Option<[f64; 2]> {
+    let mut normal = [[0.0f64; 3]; 2];
+    for c in cells.iter().filter(|c| !c.ran_card_pass && c.mode == "artwork") {
+        let w = 1.0 / c.ns_loop;
+        let x = [c.cards * w, c.printings * w];
+        // The shared push comes off the target, exactly as `design_row` handles cost.rs's offsets.
+        let y = (c.ns_loop - c.matches * push_ns) * w;
+        for i in 0..2 {
+            for j in 0..2 {
+                normal[i][j] += x[i] * x[j];
+            }
+            normal[i][2] += x[i] * y;
+        }
+    }
+    let det = normal[0][0] * normal[1][1] - normal[0][1] * normal[1][0];
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    Some([
+        (normal[0][2] * normal[1][1] - normal[0][1] * normal[1][2]) / det,
+        (normal[0][0] * normal[1][2] - normal[1][0] * normal[0][2]) / det,
+    ])
+}
+
+/// Printing mode's push rate, with per-card and per-printing held at the card-mode values.
+///
+/// Only one unknown is available: printing mode pushes every printing it examines, so `matches ==
+/// printings` exactly and those two columns are IDENTICAL within the mode -- no design over real cards
+/// can separate them. The bit test is the same work in both modes, so the rate that is allowed to move
+/// is the push, which is what actually differs (consecutive printings of one card push into the
+/// selector back to back, where card mode pushes one per card).
+fn fit_printing_push(cells: &[Cell], per_card: f64, per_row: f64) -> Option<f64> {
+    let (mut num, mut den) = (0.0f64, 0.0f64);
+    for c in cells.iter().filter(|c| !c.ran_card_pass && c.mode == "printing") {
+        let w = 1.0 / c.ns_loop;
+        let x = c.matches * w;
+        num += x * (c.ns_loop - c.cards * per_card - c.printings * per_row) * w;
+        den += x * x;
+    }
+    if den <= 0.0 {
+        return None;
+    }
+    Some(num / den)
 }
 
 fn predict(c: &Cell, k: [f64; 3]) -> f64 {
@@ -186,19 +271,22 @@ fn bench_gather_loop() {
 
     // Group cards by printing count. This is the knob sampled traffic does not have: it sets
     // printings-per-card independently of how many cards the loop visits.
-    let (mut singleton, mut wide): (Vec<u32>, Vec<u32>) = (Vec::new(), Vec::new());
+    let (mut singleton, mut medium, mut wide): (Vec<u32>, Vec<u32>, Vec<u32>) = (Vec::new(), Vec::new(), Vec::new());
     for cid in 0..data.cards.len() {
         let span = u32::from(data.offsets[cid + 1]) as usize - u32::from(data.offsets[cid]) as usize;
         if span == 1 {
             singleton.push(cid as u32);
         } else if span >= WIDE_MIN_PRINTINGS {
             wide.push(cid as u32);
+        } else {
+            medium.push(cid as u32);
         }
     }
     println!(
-        "\n{} oracle cards: {} with 1 printing, {} with >={WIDE_MIN_PRINTINGS}",
+        "\n{} oracle cards: {} with 1 printing, {} with 2..{WIDE_MIN_PRINTINGS}, {} with >={WIDE_MIN_PRINTINGS}",
         data.cards.len(),
         singleton.len(),
+        medium.len(),
         wide.len()
     );
     // How much headroom `WIDE_MIN_PRINTINGS` and `CARD_COUNTS` have. The tail is steep, and the
@@ -247,13 +335,16 @@ fn bench_gather_loop() {
     // them low, under-costing artwork. Shipping that moved total routing regret 36.2 -> 51.7 ms, with
     // candidates/artwork going 19% -> 35% of all lost time. Artwork has to be in the design for these
     // rates to mean anything.
-    let designs: [(&'static str, &Vec<u32>, &str, &str, bool); 9] = [
+    let designs: [(&'static str, &Vec<u32>, &str, &str, bool); 12] = [
         ("A 1p  card/default", &singleton, "card", "default", true),
         ("B 1p  print/default", &singleton, "printing", "default", true),
         ("C wide card/oldest", &wide, "card", "oldest", true),
         ("D wide print/default", &wide, "printing", "default", true),
         ("E 1p  artwork/default", &singleton, "artwork", "default", true),
         ("F wide artwork/default", &wide, "artwork", "default", true),
+        ("G med artwork/default", &medium, "artwork", "default", true),
+        ("H med card/oldest", &medium, "card", "oldest", true),
+        ("I med print/default", &medium, "printing", "default", true),
         ("A' 1p card/default ctl", &singleton, "card", "default", true),
         ("A+ 1p  card, card_pass", &singleton, "card", "default", false),
         ("C+ wide card, card_pass", &wide, "card", "oldest", false),
@@ -275,7 +366,7 @@ fn bench_gather_loop() {
         prep: PreparedCandidates,
         params: QueryParams,
         ran_card_pass: bool,
-        artwork: bool,
+        mode: &'static str,
     }
     let mut configs: Vec<Config> = Vec::new();
     for n_req in CARD_COUNTS {
@@ -294,7 +385,7 @@ fn bench_gather_loop() {
                 },
                 params: QueryParams::from_strs(unique, prefer, "name", "asc", LIMIT, 0),
                 ran_card_pass: !all_match_known,
-                artwork: *unique == "artwork",
+                mode: unique,
             });
         }
     }
@@ -330,7 +421,7 @@ fn bench_gather_loop() {
             matches,
             ns_loop: best_ns[i],
             ran_card_pass: cfg.ran_card_pass,
-            artwork: cfg.artwork,
+            mode: cfg.mode,
         };
         println!(
             "{:<22}{:>7}{:>10.0}{:>11.0}{:>10.0}{:>12.0}{:>11.2}{:>11.0}",
@@ -383,7 +474,7 @@ fn bench_gather_loop() {
         }
     }
 
-    let Some(k) = fit(&cells) else {
+    let Some(k) = fit(&cells, &["card", "printing"]) else {
         println!("\nsystem still singular — the design did not separate the columns");
         return;
     };
@@ -391,7 +482,7 @@ fn bench_gather_loop() {
     // so today this sits inside the shared rates, which is why measuring them without artwork in the
     // design and then lowering them under-costs artwork queries.
     println!("\nartwork surcharge over the card/printing fit (P4 has no artwork term today):");
-    for c in cells.iter().filter(|c| c.artwork) {
+    for c in cells.iter().filter(|c| c.mode == "artwork") {
         let base = predict(c, k);
         println!(
             "  {:<26}{:>7}  measured {:>8.0} ns vs fit {:>8.0} ns   +{:>6.2} ns/printing  +{:>6.2} ns/card",
@@ -402,6 +493,34 @@ fn bench_gather_loop() {
             (c.ns_loop - base) / c.printings,
             (c.ns_loop - base) / c.cards
         );
+    }
+
+    // The two candidate shapes, side by side. If artwork's triple differs from the other modes' while
+    // card and printing sit together under one triple, the model wants a two-way branch on mode
+    // (artwork vs not) rather than one mode-blind triple, an additive artwork correction, or a
+    // three-way branch. An additive correction cannot be right if artwork's per-printing rate comes
+    // out LOWER, since the term would have to be negative; a three-way branch is only justified if
+    // card and printing actually separate.
+    if let Some(a2) = fit_artwork(&cells, k[2]) {
+        let art = [a2[0], a2[1], k[2]];
+        println!("\n{:<26}{:>14}{:>14}{:>14}", "fitted separately", "ns/card", "ns/printing", "ns/match");
+        println!("{:<26}{:>14.2}{:>14.2}{:>14.2}", "card + printing pooled", k[0], k[1], k[2]);
+        match fit_printing_push(&cells, k[0], k[1]) {
+            Some(push) => println!("{:<26}{:>14.2}{:>14.2}{:>14.2}  (card/row shared)", "printing mode", k[0], k[1], push),
+            None => println!("{:<26}  no printing cells", "printing mode"),
+        }
+        println!("{:<26}{:>14.2}{:>14.2}{:>14.2}  (push shared)", "artwork mode", art[0], art[1], art[2]);
+        println!("\n  per-cell agreement under the triple fitted for that cell's OWN group:");
+        for c in cells.iter().filter(|c| !c.ran_card_pass) {
+            let own = if c.mode == "artwork" { art } else { k };
+            println!(
+                "    {:<24}{:>7}  own-group p/a {:>6.2}   card/printing-triple p/a {:>6.2}",
+                c.label,
+                c.n_cards_req,
+                predict(c, own) / c.ns_loop,
+                predict(c, k) / c.ns_loop
+            );
+        }
     }
 
     println!("\n{:<34}{:>10}{:>10}", "rate", "shipped", "fitted");
