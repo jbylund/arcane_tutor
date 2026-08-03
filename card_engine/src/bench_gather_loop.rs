@@ -1,5 +1,22 @@
 //! Micro-benchmark that decomposes `GatheredScan`'s match loop into its three rates.
 //!
+//! **RETRACTION (2026-08-03): every rate this harness reports is a WARM-CACHE rate, and the shipped
+//! constants are not too high.** `ITERS` walks one card list repeatedly and keeps the minimum, so by the
+//! second pass every card, printing and string it touches is resident. Production walks a candidate set
+//! once. Measuring the first pass against the warm minimum on cells that run after the mmap has faulted
+//! in gives 1.6-2.2x (A' 1.91x/1.74x, I 1.83x/1.59x, H 2.17x/2.14x; the 100x+ figures on the first cells
+//! are first-touch page faults on the 68 MB store, not cache effects).
+//!
+//! That 1.6-2x is the whole discrepancy. Warm 2.98 ns/card against 6.34 fitted on traffic is 2.1x; P3's
+//! warm 2.41 against a shipped 5.05 is 2.1x; the warm push 1.06 against 2.00 fitted is 1.9x. The
+//! counter/feature ratios all read 1.00, so the features were never the gap -- the TIME was, and the
+//! shipped constants include the miss cost this harness removes.
+//!
+//! So the five refits below did not fail because routing is a delicate joint surface. They failed
+//! because they lowered rates toward a cache state production never reaches. Read every ns figure in
+//! this file as "warm", useful for the SHAPE of the loop -- which terms exist, which are degenerate, how
+//! artwork differs -- and not as a candidate constant. Those shape findings stand; the levels do not.
+//!
 //! `cost.rs` charges that loop three ways — `GATHER_CARD_PASS_NS` per card visited,
 //! `GATHER_SCAN_PER_ROW_NS` per printing examined, `GATHER_PUSH_PER_MATCH_NS` per match
 //! pushed — and notes the three "could NOT be fit ... a STRUCTURAL collinearity no corpus
@@ -389,13 +406,22 @@ fn bench_gather_loop() {
         }
     }
 
+    // Iteration 0, kept because min-of-ITERS is a WARM-CACHE number: the same card list is walked 200
+    // times, so every card, printing and string it touches is resident by the second pass. Production
+    // walks a candidate set once. If the first pass is materially slower than the minimum, these rates
+    // describe a cache state production never sees, and that -- not a wrong feature -- is why shipping
+    // them regresses. The counter/feature ratios all read 1.00, so the features are not the gap.
+    let mut first_loop: Vec<f64> = vec![0.0; configs.len()];
     let mut best_setup: Vec<f64> = vec![f64::INFINITY; configs.len()];
     let mut best_ns: Vec<f64> = vec![f64::INFINITY; configs.len()];
     let mut counters: Vec<(f64, f64, f64)> = vec![(0.0, 0.0, 0.0); configs.len()];
-    for _ in 0..ITERS {
+    for iter in 0..ITERS {
         for (i, cfg) in configs.iter().enumerate() {
             black_box(exec_gathered_scan(&ctx, &cfg.params, &filter, &cfg.prep, None));
             let s = take_phase_stats();
+            if iter == 0 {
+                first_loop[i] = s.ns_loop as f64;
+            }
             if (s.ns_loop as f64) < best_ns[i] {
                 best_ns[i] = s.ns_loop as f64;
             }
@@ -480,6 +506,24 @@ fn bench_gather_loop() {
     // What artwork mode costs ON TOP of the three fitted rates. cost.rs has no artwork term for P4,
     // so today this sits inside the shared rates, which is why measuring them without artwork in the
     // design and then lowering them under-costs artwork queries.
+    // The warm/cold gap, per cell. `cost.rs`'s constants are fitted on production traffic, which pays
+    // this; every rate this harness reports is a min-of-200 and does not.
+    println!("\nfirst pass vs warm minimum (min-of-{ITERS} hides whatever the cold walk costs):");
+    let (mut sum_first, mut sum_best) = (0.0f64, 0.0f64);
+    for (i, c) in cells.iter().enumerate() {
+        println!(
+            "  {:<24}{:>7}  first {:>9.2} ns/card   warm min {:>8.2}   ratio {:>5.2}x",
+            c.label,
+            c.n_cards_req,
+            first_loop[i] / c.cards,
+            c.ns_loop / c.cards,
+            first_loop[i] / c.ns_loop
+        );
+        sum_first += first_loop[i];
+        sum_best += c.ns_loop;
+    }
+    println!("  overall first/warm {:.2}x", sum_first / sum_best);
+
     println!("\nartwork surcharge over the card/printing fit (P4 has no artwork term today):");
     for c in cells.iter().filter(|c| c.mode == "artwork") {
         let base = predict(c, k);
