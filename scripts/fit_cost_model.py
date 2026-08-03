@@ -322,6 +322,12 @@ def perm_step_check(samples: list[dict]) -> tuple[int, float, float, float] | No
     by a sort column, and predicates correlate with sort columns (`year>=2020` under `order=released`
     is the extreme case), so a real skew here would be a genuine model defect and not noise.
 
+    Read the SPREAD, not just the median. The executor bounds its walk to the realized match span, so
+    the ends of a cluster no longer cost anything and this ratio can only be inflated by non-matching
+    entries INTERIOR to the span. Bounding those ends took p90 from 6.43 to 4.26 (p10 0.13 -> 0.08,
+    median 1.00 -> 0.90) on one seed and sample length: a third of the tail was the leading prefix, and
+    what is left is a different mechanism's to fix.
+
     Returns (rows, p10, median, p90) of realized/estimated, or None if no row walked.
     """
     ratios = []
