@@ -23,6 +23,11 @@ Pick by question:
 | Where does routing actually lose time? | [`bench_regret_matrix.py`](../../scripts/bench_regret_matrix.py) |
 | Did this PLAN's executor get faster, picked or not? | [`bench_plan_execution_ab.py`](../../scripts/bench_plan_execution_ab.py) `--compare` |
 | Did a change help end to end? | [`bench_query_latency_ab.py`](../../scripts/bench_query_latency_ab.py) vs `main` |
+| Where does the routed path spend its time? | any harness, on a `--features routed-phases` build |
+
+Several of these need a `routed-phases` build to be read correctly — `bench_regret_matrix.py` refuses
+to run without it. See the two-bin section below for what the feature buys and why it is not on by
+default (~1.6% of every request).
 
 All of them are built on [`scripts/costbench.py`](../../scripts/costbench.py), which owns the
 sampling loop, the nearest-rank percentiles, the paired-bootstrap comparison, and — the one that
@@ -42,8 +47,10 @@ bands, because a mean over this distribution understates the tail and a p99 over
 Most of them draw queries from one universe, [`query_sampler.py`](../../client/query_sampler.py), in
 one of two weightings. Diagnostics default to `uniform` because their job is to FIND errors and
 uniform reaches the rare tails; latency defaults to `realistic` because there the question is what
-users wait for. Both matter: artwork is 5% of realistic traffic and carries **50% of all routing
-regret**.
+users wait for. Both matter: artwork is 5% of realistic traffic and carries a wildly disproportionate
+share of routing regret — on the dispatch basis, `printing_compose / artwork` alone is **33% of all
+lost time** against 5% for printing and 2% for card. (An older reading put artwork at 50% overall; that
+predates the dispatch re-base and should not be quoted.)
 
 Constrain the draw with `Shape` rather than writing a generator — `Shape(families={"range"},
 predicates=1, unique={"printing"})` gives a bare printing-space range while keeping corpus-derived
@@ -52,6 +59,65 @@ values (`bench_card_range_estimate`, `bench_cost_model_agreement`) and should mo
 [local-benchmark-toolkit-audit.md](local-benchmark-toolkit-audit.md). Two draw from real traffic on
 purpose: `bench_plan_misselection --source wild-operators` and `census_candidate_materialize`, where
 the question is what users actually lose.
+
+## Acquire and dispatch are two bins, and plan timing means dispatch
+
+The routed path has exactly two phases that matter for measurement, and conflating them produced the
+single largest error this toolkit has reported.
+
+**Acquire** runs once, before any plan is chosen, and is identical whichever plan wins. It picks the
+count source, builds the cost features, and materialises the artifact those imply — the plane bitmap,
+a range `k`, or `prepare_candidates`. **Dispatch** runs the winner.
+
+`cost::plan_cost` prices only the second: "only what happens AFTER the acquire step". So any
+plan-versus-plan comparison must be dispatch-only on both sides. A baseline that includes acquire
+charges the router for work no plan choice could have avoided.
+
+Measured with the `routed-phases` fenceposts (below), acquire is not a rounding error:
+
+| acquire flavor | routed µs | acquire | choose | dispatch |
+| --- | --: | --: | --: | --: |
+| `candidates` | 10.42 | **45%** | 0.0% | 53% |
+| `plane` | 10.08 | **55%** | 0.1% | 45% |
+| `printing_compose` | 5.46 | 3% | 0.0% | 96% |
+| `printing_range_scan` | 4.65 | 1% | 0.3% | 97% |
+| `card_range_popcount` | 44.42 | 1% | 0.1% | 99% |
+
+Two things to take from it. `choose` — the `argmin` itself — is **41 ns**, so the routing decision is
+free and only what it selects matters. And acquire is ~45% of the dominant flavor while being entirely
+unpriced, which is the quantified form of the note in `cost.rs` that the model's median error is
+`1.09x acquire_ns`. Acquire is a **latency** target, not a routing one: being common-mode within a
+query, it cannot change an `argmin`.
+
+### Getting the two sides comparable
+
+A forced run (`run_query_with_plan`, which is what `trials_ns` measures) rebuilds shared artifacts the
+router would have supplied, so its trial is not dispatch. `costbench.plan_self_ns` nets that back out,
+and the netting is not a correction for a mistake — it is the conversion:
+
+- **candidates acquire** — the routed path runs `prepare_candidates` inside acquire and dispatch reuses
+  the result, so netting `ns_prepare` yields the executor-only quantity dispatch measures.
+- **range / compose acquire** — nothing is prepared during acquire; dispatch pays it if a materializing
+  plan wins, and both sides already include it. Hence `RANGE_ACQUIRES` is excluded.
+- **plane acquire** — the plane eval is published as `ns_prepare` for the same reason, so a forced
+  `PlanePopcountOrder` can be netted down to its walk.
+
+**A plan you cannot price has no computable regret.** `plan_self_ns` returns `None` when netting
+overshoots, and taking the best of what remains substitutes a slower plan for the true best — which
+reads as the router beating it. `bench_regret_matrix` skips and counts those queries; on the bitplanes
+corpus that is ~39%, which is the price of recovering the executor's time by subtraction rather than
+reading `ns_setup + ns_loop + ns_finish` directly.
+
+### What ignoring this cost
+
+Regret was `routed_ns - best_dispatch`, mixing the whole path against a dispatch-only baseline. On the
+21,463 queries whose picked plan *was* the best — zero misrouting by construction — that read a mean
+**6.13 µs** instead of **-0.01 µs**, and those rows were **63% of all reported regret**. The top slice
+of the matrix was `StreamedSelect -> StreamedSelect`, which is not a misroute by definition. Re-based,
+it is 3%, and P3/P4 confusion turns out to be **66%** of lost time rather than the 40% it looked like.
+
+SHARE therefore sums *signed* regret. Clamping each row at zero let a slice whose mean is negative
+accumulate share as though it were losing time.
 
 ## The two matrices, and why both
 
@@ -78,19 +144,33 @@ while those two drove OPPOSITE routing errors.
 
 ### The regret matrix — where being wrong costs time
 
-Regret is `routed_ns - best_measured_ns`, so a correct pick contributes 0. Measured against
-`routed_ns`, not the picked plan's own trial, because those differ exactly when the picked plan
-DECLINES and dispatch re-chooses among materializing plans only.
+Regret is `routed_dispatch_ns - best_dispatch_ns`, so a correct pick contributes 0. Measured against
+the routed path, not the picked plan's own trial, because those differ exactly when the picked plan
+DECLINES and dispatch re-chooses among materializing plans only — and dispatch-to-dispatch, for the
+reason in the two-bin section above.
 
 Regret is mostly zeros, so **read SHARE** — the fraction of all lost time a slice accounts for, which
-is frequency times severity and is what ranks work. It found compose carrying **75%** of all lost
-time, and one transition (`StreamedSelect -> PrintingCompose`) losing a mean of 190 µs over 150
-queries.
+is frequency times severity and is what ranks work.
 
-**Split compose-like regret by DIRECTION before acting.** "75% of lost time" is compatible with two
-opposite fixes, and here it was both at once: over-picked 38:1 in artwork, under-picked 10:1 in
-printing. A change that made compose uniformly cheaper was therefore right for one mode and wrong for
-the other, and lost overall.
+**Every share figure predating the dispatch re-base is wrong, including the ones this file used to
+quote.** The old baseline mixed the whole routed path against a dispatch-only best, so 63% of reported
+regret was acquire on correctly-routed queries. What it looked like, and what it is:
+
+| slice | on `routed_ns` | on dispatch |
+| --- | --: | --: |
+| `StreamedSelect -> StreamedSelect` (picked == best, so not a misroute) | 31% | **3%** |
+| `StreamedSelect -> GatheredScan` | 23% | **41%** |
+| `GatheredScan -> StreamedSelect` | 17% | **25%** |
+| `PrintingCompose -> GatheredScan` | 11% | **21%** |
+
+So P3/P4 confusion is **66%** of lost time, not the ~40% it appeared to be, and compose over-picking
+is 34%. The older "compose carries 75%" reading came from the same conflation and does not survive it.
+
+**Split compose-like regret by DIRECTION before acting.** A single share figure is compatible with two
+opposite fixes, and for compose it was both at once: over-picked in artwork, under-picked in printing.
+A change that made compose uniformly cheaper was therefore right for one mode and wrong for the other,
+and lost overall. Compose's regret is still artwork-concentrated — `printing_compose / artwork` is 33%
+of all lost time against 5% for printing and 2% for card.
 
 ## Traps, each one paid for
 
