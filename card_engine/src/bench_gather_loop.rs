@@ -46,17 +46,32 @@
 //!     GATHER_PUSH_PER_MATCH_NS   shipped 2.24   fitted 0.90        (1.000x)
 //!     the card_pass call itself                 2.94-3.00 ns/card on singletons, 1.6-1.8 on wide
 //!
-//! Those last two lines are the finding, and they say the shipped constant is not simply wrong:
-//! 3.24 of loop overhead plus ~3.0 for the `card_pass` call is ~6.2 against a shipped 6.88, so
-//! `GATHER_CARD_PASS_NS` BUNDLES the predicate call. It is therefore about right for queries that
-//! make that call, and about 2x too high for the #634 `all_match_known` path, which skips
-//! `card_pass` entirely and is charged for it anyway. That is a model-shape error rather than a
-//! mis-fitted constant, and it over-costs `GatheredScan` precisely on the queries that should be
-//! cheapest for it — the direction that loses them to `StreamedSelect`.
+//! Those last two lines say the shipped constant is not simply wrong: 3.24 of loop overhead plus
+//! ~3.0 for the `card_pass` call is ~6.2 against a shipped 6.88, so `GATHER_CARD_PASS_NS` BUNDLES
+//! the predicate call. It is therefore about right for queries that make that call, and about 2x too
+//! high for the #634 `all_match_known` path, which skips `card_pass` entirely and is charged for it
+//! anyway — a model-shape error rather than a mis-fitted constant, and it over-costs `GatheredScan`
+//! precisely on the queries that should be cheapest for it.
 //!
-//! One limit remains on all of these: `LIMIT` is fixed, so nothing here constrains how the rates
-//! behave as the page grows. Traffic-level regret and latency matrices remain the gate before any
-//! of it ships.
+//! **Shipping those constants FAILED the acceptance test, and that is the more important result.**
+//! Splitting the card term as measured and applying all three rates moved total routing regret
+//! 36.2 → 51.7 ms, with `candidates / artwork` going 19% → 35% of all lost time. The design had no
+//! artwork cell in it, and `cost.rs` applies one set of `GATHER_*` rates to all three modes.
+//!
+//! Adding artwork cells (E, F) shows why no single rate triple can work. Against the card/printing
+//! fit, artwork measures +19% and +36% on single-printing cards but −29% and −19% on wide ones: the
+//! surcharge FLIPS SIGN with printings-per-card. Artwork pushes ~2.4 matches/card where printing mode
+//! pushes ~6.9, and its per-printing group bookkeeping is cheaper than the push path it replaces, so
+//! it is dearer where cards are narrow and cheaper where they are wide. `ns_setup` is not the
+//! explanation either — the `group_best` allocation measures 83-125 ns, negligible.
+//!
+//! So P4's loop needs rates fitted PER MODE (or a term keyed on printings-per-card), not one triple
+//! plus a linear artwork correction. Until that exists, the shipped mode-blind constants are doing
+//! real work by being too high: they absorb artwork's cost, and lowering them to the card/printing
+//! truth under-costs artwork and loses more than it gains. The constants are deliberately unchanged.
+//!
+//! One further limit on all of these: `LIMIT` is fixed, so nothing here constrains how the rates
+//! behave as the page grows.
 //!
 //!     cargo test --release bench_gather_loop -- --ignored --nocapture
 //!
@@ -103,6 +118,10 @@ struct Cell {
     /// fit; the rows that DO call `card_pass` are used to price that call instead, and mixing them
     /// would fold a predicate evaluation into the card term.
     ran_card_pass: bool,
+    /// Artwork mode maintains `group_best`/`touched` per printing on top of everything the other modes
+    /// do. Those rows are held out of the three-rate fit and priced against it, because pooling them
+    /// would smear a mode-specific cost across rates that cost.rs applies to all three modes.
+    artwork: bool,
 }
 
 /// Solve a 3×3 system by Gaussian elimination with partial pivoting.
@@ -131,7 +150,7 @@ fn solve3(mut a: [[f64; 4]; 3]) -> Option<[f64; 3]> {
 /// cell and ignore the rest, which is the same mistake that inflated the finish-phase rate.
 fn fit(cells: &[Cell]) -> Option<[f64; 3]> {
     let mut normal = [[0.0f64; 4]; 3];
-    for c in cells.iter().filter(|c| !c.ran_card_pass) {
+    for c in cells.iter().filter(|c| !c.ran_card_pass && !c.artwork) {
         let w = 1.0 / c.ns_loop;
         let x = [c.cards * w, c.printings * w, c.matches * w];
         for i in 0..3 {
@@ -220,19 +239,29 @@ fn bench_gather_loop() {
     // `card_pass` call itself. Their gap over the matching `true` row prices that call, which is what
     // `GATHER_RESIDUAL_FLOOR` is for; without it, lowering the card term would silently remove charge
     // that was covering a predicate evaluation on every non-all_match query.
-    let designs: [(&'static str, &Vec<u32>, &str, &str, bool); 7] = [
+    // The E/F rows are artwork mode, and they are here because leaving them out is what made the
+    // first attempt at these constants fail. cost.rs applies one set of GATHER_* rates to all three
+    // modes, but the artwork loop also maintains `group_best` and `touched` per printing, and P4 has
+    // no artwork term to carry that (P3 has STREAM_ARTWORK_SEEN_PER_CARD_NS). So the extra work was
+    // absorbed into the shipped rates, and a design covering only card and printing mode measured
+    // them low, under-costing artwork. Shipping that moved total routing regret 36.2 -> 51.7 ms, with
+    // candidates/artwork going 19% -> 35% of all lost time. Artwork has to be in the design for these
+    // rates to mean anything.
+    let designs: [(&'static str, &Vec<u32>, &str, &str, bool); 9] = [
         ("A 1p  card/default", &singleton, "card", "default", true),
         ("B 1p  print/default", &singleton, "printing", "default", true),
         ("C wide card/oldest", &wide, "card", "oldest", true),
         ("D wide print/default", &wide, "printing", "default", true),
+        ("E 1p  artwork/default", &singleton, "artwork", "default", true),
+        ("F wide artwork/default", &wide, "artwork", "default", true),
         ("A' 1p card/default ctl", &singleton, "card", "default", true),
         ("A+ 1p  card, card_pass", &singleton, "card", "default", false),
         ("C+ wide card, card_pass", &wide, "card", "oldest", false),
     ];
 
     println!(
-        "\n{:<22}{:>7}{:>10}{:>11}{:>10}{:>12}{:>11}",
-        "cell", "n", "cards", "printings", "matches", "ns_loop", "ns/card"
+        "\n{:<22}{:>7}{:>10}{:>11}{:>10}{:>12}{:>11}{:>11}",
+        "cell", "n", "cards", "printings", "matches", "ns_loop", "ns/card", "ns_setup"
     );
     // Every cell is built up front, then all of them are run inside ONE iteration loop, so each
     // cell's minimum is drawn from the same time window as every other cell's. Running a cell to
@@ -246,6 +275,7 @@ fn bench_gather_loop() {
         prep: PreparedCandidates,
         params: QueryParams,
         ran_card_pass: bool,
+        artwork: bool,
     }
     let mut configs: Vec<Config> = Vec::new();
     for n_req in CARD_COUNTS {
@@ -264,10 +294,12 @@ fn bench_gather_loop() {
                 },
                 params: QueryParams::from_strs(unique, prefer, "name", "asc", LIMIT, 0),
                 ran_card_pass: !all_match_known,
+                artwork: *unique == "artwork",
             });
         }
     }
 
+    let mut best_setup: Vec<f64> = vec![f64::INFINITY; configs.len()];
     let mut best_ns: Vec<f64> = vec![f64::INFINITY; configs.len()];
     let mut counters: Vec<(f64, f64, f64)> = vec![(0.0, 0.0, 0.0); configs.len()];
     for _ in 0..ITERS {
@@ -276,6 +308,12 @@ fn bench_gather_loop() {
             let s = take_phase_stats();
             if (s.ns_loop as f64) < best_ns[i] {
                 best_ns[i] = s.ns_loop as f64;
+            }
+            // Tracked because artwork mode allocates and zeroes a `max_artwork_groups`-long buffer
+            // here, which is O(corpus) work no loop rate can represent and which P4's cost arm carries
+            // only in a flat GATHER_FIXED_COST_NS.
+            if (s.ns_setup as f64) < best_setup[i] {
+                best_setup[i] = s.ns_setup as f64;
             }
             // Counters are deterministic per cell, so any iteration's are the cell's; recording them
             // every time rather than only on the fastest keeps them independent of which run won.
@@ -292,10 +330,18 @@ fn bench_gather_loop() {
             matches,
             ns_loop: best_ns[i],
             ran_card_pass: cfg.ran_card_pass,
+            artwork: cfg.artwork,
         };
         println!(
-            "{:<22}{:>7}{:>10.0}{:>11.0}{:>10.0}{:>12.0}{:>11.2}",
-            cell.label, cell.n_cards_req, cell.cards, cell.printings, cell.matches, cell.ns_loop, cell.ns_loop / cell.cards
+            "{:<22}{:>7}{:>10.0}{:>11.0}{:>10.0}{:>12.0}{:>11.2}{:>11.0}",
+            cell.label,
+            cell.n_cards_req,
+            cell.cards,
+            cell.printings,
+            cell.matches,
+            cell.ns_loop,
+            cell.ns_loop / cell.cards,
+            best_setup[i]
         );
         cells.push(cell);
     }
@@ -341,6 +387,23 @@ fn bench_gather_loop() {
         println!("\nsystem still singular — the design did not separate the columns");
         return;
     };
+    // What artwork mode costs ON TOP of the three fitted rates. cost.rs has no artwork term for P4,
+    // so today this sits inside the shared rates, which is why measuring them without artwork in the
+    // design and then lowering them under-costs artwork queries.
+    println!("\nartwork surcharge over the card/printing fit (P4 has no artwork term today):");
+    for c in cells.iter().filter(|c| c.artwork) {
+        let base = predict(c, k);
+        println!(
+            "  {:<26}{:>7}  measured {:>8.0} ns vs fit {:>8.0} ns   +{:>6.2} ns/printing  +{:>6.2} ns/card",
+            c.label,
+            c.n_cards_req,
+            c.ns_loop,
+            base,
+            (c.ns_loop - base) / c.printings,
+            (c.ns_loop - base) / c.cards
+        );
+    }
+
     println!("\n{:<34}{:>10}{:>10}", "rate", "shipped", "fitted");
     for (name, shipped, got) in [
         ("GATHER_CARD_PASS_NS", 6.88, k[0]),
