@@ -7775,7 +7775,17 @@ fn acquire_plan_features(
                 // count stays where it belongs -- `project` (the printing->artwork pass) and
                 // `scan_units` both walk printings, as `printing_span` confirms.
                 let n_artworks = u32::from(*indexes.artwork_base.last().expect("artwork_base has n_cards+1 entries")) as usize;
-                let rt = artwork_estimate(printing_matches, est_cards, n_cards as usize, n_artworks);
+                // The UNCALIBRATED card count feeds the artwork capacity on purpose.
+                // `COMPOSE_CARD_ESTIMATE_BIAS` was measured against `cards_visited` -- distinct CARDS
+                // -- and `artwork_estimate` does not consume a card count as an answer, it uses it to
+                // size a capacity (`est_cards * n_artworks/n_cards`) that a second balls-into-bins then
+                // draws into. Feeding the calibrated value shrank both stages and moved
+                // `matches <Gather> / artwork` from 0.97 to 0.84, i.e. it made an already-good cell
+                // worse. Under-charging compose's push term is what over-picks it, and compose is
+                // over-picked in artwork specifically: that slice carries 21% of ALL routing regret at
+                // p99 205us against 40us for printing and 36us for card.
+                let capacity_cards = exact_cards.map_or_else(|| balls_into_bins(printing_matches, n_cards as usize), |n| n as usize);
+                let rt = artwork_estimate(printing_matches, capacity_cards, n_cards as usize, n_artworks);
                 // The bitmap `printing_bits_to_artwork_bits` popcounts is n_artworks bits wide, not
                 // n_printings -- 46,112 against 97,206 here, so this was 2.1x over as well.
                 (rt, printing_matches, n_artworks.div_ceil(64), est_cards, scan_all(est_cards))
