@@ -1,6 +1,43 @@
 //! Micro-benchmark that decomposes `StreamedSelect`'s match loop, the companion to
 //! `bench_gather_loop`.
 //!
+//! **Cache state fixed, and the rates are corpus-size dependent (2026-08-03).** Chunk ROTATION (each
+//! iteration walks a different slice) plus per-cell STAGGER (cells sharing a group walk different slices
+//! in the same iteration) means no walk inherits another's cache lines, and the reported rate is the
+//! MEDIAN over rotated chunks rather than the luckiest minimum. Both were needed: rotation alone still
+//! had cell A at 10.50 ns/card against cell B's 6.11 on identical cards, because every cell on a group
+//! walked the same chunk and the first paid all the misses. `scripts/upscale_corpus.py` supplies stores
+//! big enough to rotate (the real corpus gives the wide group ONE chunk at 4,500 cards), selected with
+//! `BENCH_LOOP_STORE`.
+//!
+//! Swept over 31,508 / 126,032 / 409,604 oracle cards:
+//!
+//!     P4  LOOP  ns/card         6.27   11.37   15.04     2.4x
+//!     P4  SCAN  ns/printing     2.27    3.03    2.24     flat
+//!     P4  PUSH  ns/match        1.51    4.94    6.98     4.6x
+//!     P3  all_match ns/card     2.58    2.54    2.55     FLAT
+//!     P3  residual  ns/card     5.08   11.33   18.15     3.6x
+//!     P3  SCAN  ns/printing     3.30    5.57   10.85     3.3x
+//!
+//! P3's all_match arm being flat across a 13x corpus is the check that the method works: that path reads
+//! only the card record and does offset arithmetic, so it has no misses to gain, while everything that
+//! walks printings grows 3x+. A rate is therefore not a property of the code alone -- it is a property of
+//! the code AND how much of the archive fits in cache, and `cost.rs` has no term for the second.
+//!
+//! At the production corpus size the shipped P4 constants are confirmed: LOOP 6.27 against 6.88 (9%
+//! low), SCAN 2.27 against 2.06 (10% high), PUSH 1.51 against 2.24. That is the retraction closed from
+//! the other side -- warm measurement said 2.98 and was wrong; cold measurement says 6.27 and agrees
+//! with what ships.
+//!
+//! P3 does NOT agree: 2.58 against a shipped 5.05 per card, 5.08 against 11.63 with a residual, 3.30
+//! against 5.97 per printing -- about 2x over-costed. Both plans were measured identically, so this is
+//! not a cache artifact, but it is measured on `ns_loop` ONLY, and P3's arm may be absorbing setup or
+//! finish cost that its loop never pays. That has to be ruled out before the gap is called an error.
+//!
+//! The routing consequence is the durable one: the plans' rates scale DIFFERENTLY with corpus size, so
+//! the P3/P4 balance drifts as the corpus grows even with every constant left alone. Any refit is
+//! calibrated to the corpus it was measured on.
+//!
 //! **RETRACTION (2026-08-03): every rate this harness reports is a WARM-CACHE rate, and the shipped
 //! constants are not too high.** `ITERS` walks one card list repeatedly and keeps the minimum, so by the
 //! second pass every card, printing and string it touches is resident. Production walks a candidate set
@@ -119,7 +156,13 @@ const LIMIT: usize = 60;
 /// or 1 per card (card mode, which returns at the first match) instead of a corpus-dependent fraction.
 const DATE_AFTER_EVERYTHING: u32 = 99_999_999;
 
-const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+/// Default store; `BENCH_LOOP_STORE` overrides it, same as `bench_gather_loop`, so both harnesses sweep
+/// the same upscaled stores from `scripts/upscale_corpus.py`.
+const DEFAULT_STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+
+fn store_path() -> String {
+    std::env::var("BENCH_LOOP_STORE").unwrap_or_else(|_| DEFAULT_STORE_PATH.to_string())
+}
 
 /// One measured design point.
 struct Cell {
@@ -192,15 +235,16 @@ fn fit_pair(cells: &[Cell], mode: &str, residual: bool) -> Option<[f64; 2]> {
 #[test]
 #[ignore = "micro-benchmark; needs benchmarks/verify-order/real.store (see module docs)"]
 fn bench_streamed_loop() {
-    let Ok(file) = std::fs::File::open(STORE_PATH) else {
-        eprintln!("SKIP: {STORE_PATH} not found (see module docs)");
+    let path = store_path();
+    let Ok(file) = std::fs::File::open(&path) else {
+        eprintln!("SKIP: {path} not found (see module docs)");
         return;
     };
     // Safety: same contract as bench_verify_cost / get_mmap() — written by rkyv::to_bytes and replaced
     // atomically, and the header is re-validated below before the payload is trusted.
     let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
     if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
-        eprintln!("SKIP: {STORE_PATH} header mismatch (stale archive — rebuild it, see module docs)");
+        eprintln!("SKIP: {path} header mismatch (stale archive — rebuild it, see module docs)");
         return;
     }
     let data = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
@@ -236,7 +280,10 @@ fn bench_streamed_loop() {
         n_cards_req: usize,
         mode: &'static str,
         residual: bool,
-        prep: PreparedCandidates,
+        /// The whole group; each iteration walks a different chunk and each CELL is staggered onto a
+        /// different chunk, so no walk inherits another's cache lines. Holding one slice and taking a
+        /// minimum is what made the earlier rates warm-cache numbers, ~2x under production.
+        group: Vec<u32>,
         params: QueryParams,
     }
     // (label, group, unique, residual). `all_match_known` is set only on the no-residual cells; with a
@@ -269,11 +316,7 @@ fn bench_streamed_loop() {
                 n_cards_req: n_req,
                 mode: unique,
                 residual: *residual,
-                prep: PreparedCandidates {
-                    candidate_cards: Some(group[..n_req].to_vec()),
-                    all_match_known: !residual,
-                    narrowed_repr: NarrowedRepr::Cards,
-                },
+                group: (*group).clone(),
                 params: QueryParams::from_strs(unique, "default", "name", "asc", LIMIT, 0),
             });
         }
@@ -283,12 +326,22 @@ fn bench_streamed_loop() {
     let mut best_setup = vec![f64::INFINITY; configs.len()];
     let mut best_finish = vec![f64::INFINITY; configs.len()];
     let mut counters = vec![(0.0, 0.0, 0.0); configs.len()];
-    for _ in 0..ITERS {
+    // Median across rotated chunks is the honest rate; with rotation every pass walks unfamiliar cards.
+    let mut per_card_samples: Vec<Vec<f64>> = vec![Vec::with_capacity(ITERS); configs.len()];
+    for iter in 0..ITERS {
         for (i, cfg) in configs.iter().enumerate() {
             let filter = if cfg.residual { &printing_residual } else { &no_residual };
-            black_box(exec_streamed_select(&ctx, &cfg.params, filter, &cfg.prep, None));
+            let chunks = (cfg.group.len() / cfg.n_cards_req).max(1);
+            let start = ((iter + i) % chunks) * cfg.n_cards_req;
+            let end = (start + cfg.n_cards_req).min(cfg.group.len());
+            let prep = PreparedCandidates {
+                candidate_cards: Some(cfg.group[start..end].to_vec()),
+                all_match_known: !cfg.residual,
+                narrowed_repr: NarrowedRepr::Cards,
+            };
+            black_box(exec_streamed_select(&ctx, &cfg.params, filter, &prep, None));
             let s = take_phase_stats();
-            best_loop[i] = best_loop[i].min(s.ns_loop as f64);
+            per_card_samples[i].push(s.ns_loop as f64 / (s.cards_visited.max(1)) as f64);
             best_setup[i] = best_setup[i].min(s.ns_setup as f64);
             best_finish[i] = best_finish[i].min(s.ns_finish as f64);
             counters[i] = (s.cards_visited as f64, s.printings_examined as f64, s.matches_pushed as f64);
@@ -311,7 +364,11 @@ fn bench_streamed_loop() {
             printings,
             matches,
             ns_setup: best_setup[i],
-            ns_loop: best_loop[i],
+            ns_loop: {
+                let v = &mut per_card_samples[i];
+                v.sort_by(f64::total_cmp);
+                v[v.len() / 2] * cards
+            },
             ns_finish: best_finish[i],
         };
         println!(

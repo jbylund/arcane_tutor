@@ -1,5 +1,42 @@
 //! Micro-benchmark that decomposes `GatheredScan`'s match loop into its three rates.
 //!
+//! **Cache state fixed, and the rates are corpus-size dependent (2026-08-03).** Chunk ROTATION (each
+//! iteration walks a different slice) plus per-cell STAGGER (cells sharing a group walk different slices
+//! in the same iteration) means no walk inherits another's cache lines, and the reported rate is the
+//! MEDIAN over rotated chunks rather than the luckiest minimum. Both were needed: rotation alone still
+//! had cell A at 10.50 ns/card against cell B's 6.11 on identical cards, because every cell on a group
+//! walked the same chunk and the first paid all the misses. `scripts/upscale_corpus.py` supplies stores
+//! big enough to rotate (the real corpus gives the wide group ONE chunk at 4,500 cards), selected with
+//! `BENCH_LOOP_STORE`.
+//!
+//! Swept over 31,508 / 126,032 / 409,604 oracle cards:
+//!
+//!     P4  LOOP  ns/card         6.27   11.37   15.04     2.4x
+//!     P4  SCAN  ns/printing     2.27    3.03    2.24     flat
+//!     P4  PUSH  ns/match        1.51    4.94    6.98     4.6x
+//!     P3  all_match ns/card     2.58    2.54    2.55     FLAT
+//!     P3  residual  ns/card     5.08   11.33   18.15     3.6x
+//!     P3  SCAN  ns/printing     3.30    5.57   10.85     3.3x
+//!
+//! P3's all_match arm being flat across a 13x corpus is the check that the method works: that path reads
+//! only the card record and does offset arithmetic, so it has no misses to gain, while everything that
+//! walks printings grows 3x+. A rate is therefore not a property of the code alone -- it is a property of
+//! the code AND how much of the archive fits in cache, and `cost.rs` has no term for the second.
+//!
+//! At the production corpus size the shipped P4 constants are confirmed: LOOP 6.27 against 6.88 (9%
+//! low), SCAN 2.27 against 2.06 (10% high), PUSH 1.51 against 2.24. That is the retraction closed from
+//! the other side -- warm measurement said 2.98 and was wrong; cold measurement says 6.27 and agrees
+//! with what ships.
+//!
+//! P3 does NOT agree: 2.58 against a shipped 5.05 per card, 5.08 against 11.63 with a residual, 3.30
+//! against 5.97 per printing -- about 2x over-costed. Both plans were measured identically, so this is
+//! not a cache artifact, but it is measured on `ns_loop` ONLY, and P3's arm may be absorbing setup or
+//! finish cost that its loop never pays. That has to be ruled out before the gap is called an error.
+//!
+//! The routing consequence is the durable one: the plans' rates scale DIFFERENTLY with corpus size, so
+//! the P3/P4 balance drifts as the corpus grows even with every constant left alone. Any refit is
+//! calibrated to the corpus it was measured on.
+//!
 //! **RETRACTION (2026-08-03): every rate this harness reports is a WARM-CACHE rate, and the shipped
 //! constants are not too high.** `ITERS` walks one card list repeatedly and keeps the minimum, so by the
 //! second pass every card, printing and string it touches is resident. Production walks a candidate set
@@ -150,7 +187,15 @@ const CARD_COUNTS: [usize; 2] = [1_500, 4_500];
 /// keeps that contribution proportional to matches rather than to the page.
 const LIMIT: usize = 60;
 
-const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+/// Default store. `BENCH_LOOP_STORE` overrides it, which is how the corpus-size sweep runs: build
+/// upscaled stores with `scripts/upscale_corpus.py` and point this at each in turn. The real corpus is
+/// only ~68 MB, small enough that a full chunk rotation can stay resident in the system-level cache, so
+/// the rates it yields are still partly warm however the walk is ordered.
+const DEFAULT_STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+
+fn store_path() -> String {
+    std::env::var("BENCH_LOOP_STORE").unwrap_or_else(|_| DEFAULT_STORE_PATH.to_string())
+}
 
 /// One measured design point: the realized counters, and the loop time they were produced by.
 struct Cell {
@@ -271,17 +316,19 @@ fn predict(c: &Cell, k: [f64; 3]) -> f64 {
 #[test]
 #[ignore = "micro-benchmark; needs benchmarks/verify-order/real.store (see module docs)"]
 fn bench_gather_loop() {
-    let Ok(file) = std::fs::File::open(STORE_PATH) else {
-        eprintln!("SKIP: {STORE_PATH} not found (see module docs)");
+    let path = store_path();
+    let Ok(file) = std::fs::File::open(&path) else {
+        eprintln!("SKIP: {path} not found (see module docs)");
         return;
     };
     // Safety: same contract as bench_verify_cost / get_mmap() — written by rkyv::to_bytes and
     // replaced atomically, and the header is re-validated below before the payload is trusted.
     let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
     if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
-        eprintln!("SKIP: {STORE_PATH} header mismatch (stale archive — rebuild it, see module docs)");
+        eprintln!("SKIP: {path} header mismatch (stale archive — rebuild it, see module docs)");
         return;
     }
+    println!("\nstore {path}  ({:.0} MB)", mmap.len() as f64 / (1024.0 * 1024.0));
     let data = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
     let ctx = QueryCtx::from(data);
 
@@ -379,10 +426,35 @@ fn bench_gather_loop() {
     struct Config {
         label: &'static str,
         n_cards_req: usize,
-        prep: PreparedCandidates,
+        /// The WHOLE group, not one slice of it. Each iteration walks a different chunk of `n_cards_req`
+        /// cards, so consecutive walks of a cell share no cards and cannot inherit each other's cache
+        /// lines. Holding one fixed slice and taking the minimum over 200 passes is what made every rate
+        /// here a warm-cache number, 1.6-2.2x under what the first pass costs.
+        group: Vec<u32>,
+        all_match_known: bool,
         params: QueryParams,
         ran_card_pass: bool,
         mode: &'static str,
+    }
+    impl Config {
+        /// Candidates for one iteration: a rotating window over the group, wrapping when it runs out. A
+        /// full rotation touches every card in the group before returning to the first chunk.
+        /// `stagger` is the cell's own index, so cells sharing a group walk DIFFERENT chunks within one
+        /// iteration. Without it every cell on a group walked the same chunk, the first paid all the
+        /// misses and the rest inherited warm lines -- which read as cell A costing 10.50 ns/card against
+        /// cell B's 6.11 on identical cards. `chunks` therefore has to exceed the number of cells sharing
+        /// a group, which the real corpus cannot supply at the larger card counts (the wide group holds
+        /// 8,036 cards, so one chunk at 4,500). That is what `scripts/upscale_corpus.py` is for.
+        fn prep_for(&self, iter: usize, stagger: usize) -> PreparedCandidates {
+            let chunks = (self.group.len() / self.n_cards_req).max(1);
+            let start = ((iter + stagger) % chunks) * self.n_cards_req;
+            let end = (start + self.n_cards_req).min(self.group.len());
+            PreparedCandidates {
+                candidate_cards: Some(self.group[start..end].to_vec()),
+                all_match_known: self.all_match_known,
+                narrowed_repr: NarrowedRepr::Cards,
+            }
+        }
     }
     let mut configs: Vec<Config> = Vec::new();
     for n_req in CARD_COUNTS {
@@ -394,11 +466,8 @@ fn bench_gather_loop() {
             configs.push(Config {
                 label,
                 n_cards_req: n_req,
-                prep: PreparedCandidates {
-                    candidate_cards: Some(group[..n_req].to_vec()),
-                    all_match_known: *all_match_known,
-                    narrowed_repr: NarrowedRepr::Cards,
-                },
+                group: (*group).clone(),
+                all_match_known: *all_match_known,
                 params: QueryParams::from_strs(unique, prefer, "name", "asc", LIMIT, 0),
                 ran_card_pass: !all_match_known,
                 mode: unique,
@@ -411,13 +480,24 @@ fn bench_gather_loop() {
     // walks a candidate set once. If the first pass is materially slower than the minimum, these rates
     // describe a cache state production never sees, and that -- not a wrong feature -- is why shipping
     // them regresses. The counter/feature ratios all read 1.00, so the features are not the gap.
+    // Chunks per cell. Fewer than the number of cells sharing a group means some of them collide on a
+    // chunk within an iteration and the later one measures a warm walk, so this is printed rather than
+    // assumed -- it is the check that the store is big enough for the design.
+    println!("\nchunks available per cell (want more than the cells sharing each group):");
+    for cfg in &configs {
+        println!("  {:<24}{:>7}  {:>3} chunks of {} from {} cards", cfg.label, cfg.n_cards_req, (cfg.group.len() / cfg.n_cards_req).max(1), cfg.n_cards_req, cfg.group.len());
+    }
     let mut first_loop: Vec<f64> = vec![0.0; configs.len()];
     let mut best_setup: Vec<f64> = vec![f64::INFINITY; configs.len()];
     let mut best_ns: Vec<f64> = vec![f64::INFINITY; configs.len()];
     let mut counters: Vec<(f64, f64, f64)> = vec![(0.0, 0.0, 0.0); configs.len()];
+    // One per-card sample per iteration. With chunk rotation every pass walks unfamiliar cards, so this
+    // distribution is the real one and its MEDIAN is the honest rate; the minimum is just its luckiest draw.
+    let mut per_card_samples: Vec<Vec<f64>> = vec![Vec::with_capacity(ITERS); configs.len()];
     for iter in 0..ITERS {
         for (i, cfg) in configs.iter().enumerate() {
-            black_box(exec_gathered_scan(&ctx, &cfg.params, &filter, &cfg.prep, None));
+            let prep = cfg.prep_for(iter, i);
+            black_box(exec_gathered_scan(&ctx, &cfg.params, &filter, &prep, None));
             let s = take_phase_stats();
             if iter == 0 {
                 first_loop[i] = s.ns_loop as f64;
@@ -425,6 +505,10 @@ fn bench_gather_loop() {
             if (s.ns_loop as f64) < best_ns[i] {
                 best_ns[i] = s.ns_loop as f64;
             }
+            // Per-card, since rotating chunks vary slightly in length at the group's tail. The MEDIAN of
+            // these is what the fit uses: with rotation every pass walks unfamiliar cards, so the
+            // distribution is the real one and the minimum is just its luckiest draw.
+            per_card_samples[i].push(s.ns_loop as f64 / (s.cards_visited.max(1)) as f64);
             // Tracked because artwork mode allocates and zeroes a `max_artwork_groups`-long buffer
             // here, which is O(corpus) work no loop rate can represent and which P4's cost arm carries
             // only in a flat GATHER_FIXED_COST_NS.
@@ -444,7 +528,13 @@ fn bench_gather_loop() {
             cards,
             printings,
             matches,
-            ns_loop: best_ns[i],
+            // Median per-card time x cards, so every downstream fit sees a typical rotated walk rather
+            // than the warmest one. `best_ns` is kept only to report the warm/typical gap.
+            ns_loop: {
+                let v = &mut per_card_samples[i];
+                v.sort_by(f64::total_cmp);
+                v[v.len() / 2] * cards
+            },
             ran_card_pass: cfg.ran_card_pass,
             mode: cfg.mode,
         };
