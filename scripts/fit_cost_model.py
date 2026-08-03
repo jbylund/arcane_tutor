@@ -55,6 +55,9 @@ MIN_ROWS_FOR_FIT = 200
 STREAM_MIN_MATCHES = 1024
 # Mirrors cost.rs MATCH_RATE_FLOOR, the density floor under the page-fill walk length.
 MATCH_RATE_FLOOR = 1.0 / 1_000_000.0
+# Mirrors cost.rs WALK_LENGTH_BIAS: matches clump along the sort order, so a walk runs ~1.45x longer
+# than uniform spacing predicts. Measured 0.69 against `printings_examined` before this existed.
+WALK_LENGTH_BIAS = 1.45
 # A realized counter this far from the feature meant to predict it is a FEATURE bug; refitting rates
 # on top of it just relocates the error.
 COUNTER_TOL = 0.15
@@ -256,7 +259,9 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
         # Recomputed rather than read from the exposed u32, which is truncated for display. The
         # mirror has to match cost.rs bit for bit or its self-check fails on small walks.
         match_rate = max(matches / max(float(acq["n_printings"]), 1.0), MATCH_RATE_FLOOR)
-        walk = (page_span / match_rate) if not gather else 0.0
+        # Mirrors `cost::printings_walked`: the closed form times WALK_LENGTH_BIAS, then floored by
+        # `orderby_walk_scan` for the plane-bucket orderby walk (0 for Perm and for the usd walk).
+        walk = max(page_span / match_rate * WALK_LENGTH_BIAS, float(acq.get("orderby_walk_scan", 0))) if not gather else 0.0
         return (
             [
                 float(acq["broadcast_printings"]),
@@ -317,6 +322,15 @@ def counter_check(samples: list[dict]) -> dict[str, list[tuple[str, float]]]:
             graded = instrumented
             if counter == "printings_examined" and plan == "StreamedSelect":
                 graded = [r for r in instrumented if r["acq"]["residual_tier_ns100"] > 0]
+            # Compose's three paging branches charge different features, so grading a row against a
+            # feature its branch never multiplies by a rate manufactures a defect. Its Gather branch
+            # charges eval_domain/compose_scan_printings/matches; Perm and OrderbyWalk charge only
+            # printings_walked and stop at page_offset+limit, so their `cards_visited` is 0 (the
+            # orderby walk steps a value structure, not cards) and their `matches_pushed` is a page,
+            # not a total. Ungated, those read 0.02 and 0.01 and vetoed the plan's whole fit.
+            if plan == "PrintingCompose":
+                gather_only = counter in ("cards_visited", "matches_pushed")
+                graded = [r for r in graded if (r.get("paging_taken") in ("Gather", "GatherWalkDeclined")) == gather_only]
             if not graded:
                 continue
             got = [r[counter] / max(r["acq"][feature_for(plan, counter, r)], 1) for r in graded]
@@ -376,6 +390,7 @@ def collect(engine: object, rng: random.Random, seconds: float, sampler: QuerySa
                     "ns_loop": p["ns_loop"],
                     "ns_finish": p["ns_finish"],
                     "printing_span": p["printing_span"],
+                    "paging_taken": p.get("paging_taken"),
                     "printings_examined": p["printings_examined"],
                     "matches_pushed": p["matches_pushed"],
                 }

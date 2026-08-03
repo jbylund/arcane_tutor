@@ -517,10 +517,12 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
     let limit = f64::from(f.limit);
     let page_span = f64::from((f.offset.saturating_add(f.limit)).min(f.matches));
 
-    // Printings walked to fill the page in a forward-permutation walk (both printing-space plans):
-    // roughly `page_span` rows at density `match_rate`.
-    let match_rate = (matches / n_printings).max(MATCH_RATE_FLOOR);
-    let printings_walked = page_span / match_rate;
+    // Printings walked to fill the page in a forward-permutation walk (both printing-space plans).
+    // Calls the shared `printings_walked` rather than recomputing `page_span / match_rate`: this was
+    // a second copy of that formula, and adding WALK_LENGTH_BIAS to the function alone changed what
+    // harnesses were TOLD without changing what the router CHARGED. `fit_cost_model`'s mirror check
+    // caught it as a 3.7% disagreement; there is now one definition.
+    let printings_walked = self::printings_walked(f);
     match plan {
         // #695 bare range, unique=printing: total is the range index's `k` (no synth, no popcount pass),
         // page is a forward permutation walk. So just the walk + fixed setup.
