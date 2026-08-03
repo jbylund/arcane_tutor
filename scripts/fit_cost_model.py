@@ -88,7 +88,10 @@ RIDGE_STRENGTH = 0.01
 # and the baseline each fitted rate is reported against.
 CURRENT: dict[str, list[float]] = {
     # eval_domain, scan_units, tier scale, matches, page_span, fixed
-    "GatheredScan": [6.88, 2.06, 18.89, 2.24, 3.51, 169.6],
+    # ..., page_span, page_rows, fixed -- page_rows new 2026-08-03. The phase has two drivers: the
+    # quickselect scales with offset+limit, the collect with the page actually returned. A designed page
+    # sweep separates them where traffic cannot, since the two are correlated in the sampled query mix.
+    "GatheredScan": [6.88, 2.06, 18.89, 2.24, 3.51, 9.79, 169.6],
     # eval_domain, scan_units, residual floor, matches, artwork_seen_cards, n_cards floor, corpus pass, fixed
     # Refit once `printings_examined` existed: this plan's fit was vetoed for as long as the only
     # available counter was the printing SPAN, which its all_match rows disagree with by ~3x over a
@@ -207,14 +210,17 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
     n_cards = float(acq["n_cards"])
     tier_ns = acq["residual_tier_ns100"] / 100.0
     page_span = float(min(offset + limit, acq["matches"]))
+    # Mirrors cost.rs: `select_page` returns clamp(matches - offset, 0, limit), so a page past the end of
+    # the matches collects fewer rows than requested.
+    page_rows = float(min(max(acq["matches"] - offset, 0), limit))
     residual_on = 1.0 if tier_ns > 0.0 else 0.0
     floor = SHIPPED_RESIDUAL_FLOOR.get(plan, 0.0)
     excess = eval_domain * max(tier_ns - floor, 0.0) if tier_ns > 0.0 else 0.0
 
     if plan == "GatheredScan":
         return (
-            [eval_domain, scan_units, eval_domain * residual_on, matches, page_span, 1.0],
-            ["CARD_PASS", "SCAN_PER_ROW", "RESIDUAL_FLOOR", "PUSH_PER_MATCH", "SELECT_PER_PAGE_SLOT", "FIXED"],
+            [eval_domain, scan_units, eval_domain * residual_on, matches, page_span, page_rows, 1.0],
+            ["CARD_PASS", "SCAN_PER_ROW", "RESIDUAL_FLOOR", "PUSH_PER_MATCH", "SELECT_PER_PAGE_SLOT", "COLLECT_PER_PAGE_ROW", "FIXED"],
             excess,
         )
     if plan == "StreamedSelect":
