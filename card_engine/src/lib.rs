@@ -6597,15 +6597,17 @@ fn gather_composed_page<'a>(
     // `compose_scan_printings` is set to the composed bitmap's POPCOUNT, on the stated grounds that
     // compose "walks the set bits". This loop does not: except in the card/default-prefer arm it
     // iterates `start..end` of every candidate card and bit-tests each printing, so the real count is
-    // the SPAN of the candidate cards. Counted per arm below so the difference is measured rather
-    // than argued.
-    let mut work = ComposePageWork::default();
+    // the SPAN of the candidate cards.
+    //
+    // Only the span is accumulated. `cards_visited` is `candidate_cards.len()`, known before the loop
+    // starts, and `matches_pushed` is the total `GatherSelect` already computes and this function
+    // currently discards -- neither needs a per-iteration add.
+    let mut work = ComposePageWork { cards_visited: candidate_cards.len() as u64, ..Default::default() };
     for cid in candidate_cards {
         let card = &cards[cid as usize];
         let start = u32::from(offsets[cid as usize]) as usize;
         let end = u32::from(offsets[cid as usize + 1]) as usize;
         let before = sel.buf().len();
-        work.cards_visited += 1;
         match mode {
             // Printing: every set printing is its own row (no grouping).
             Mode::Printing => {
@@ -6664,10 +6666,13 @@ fn gather_composed_page<'a>(
                 }
             }
         }
-        work.matches_pushed += (sel.buf().len() - before) as u64;
         sel.absorb(before);
     }
-    let (_total, page_ids) = sel.finish(page_offset, limit); // total already known exactly via popcount; only the page is wanted here
+    // `total` is every match this branch pushed, which is what `matches_pushed` wants and what
+    // `GatherSelect` has been computing and this function discarding. The popcount already gave the
+    // caller the result total, hence the old `_total`.
+    let (total, page_ids) = sel.finish(page_offset, limit);
+    work.matches_pushed = total as u64;
     (page_ids.into_iter().map(|(cid, pid)| (&cards[cid as usize], &printings[pid as usize])).collect(), work)
 }
 
@@ -6989,6 +6994,23 @@ thread_local! {
     /// `take_phase_stats` reassembles the two into one `PhaseStats`, so consumers see no seam.
     static PAGING_TAKEN: std::cell::Cell<PagingTaken> = const { std::cell::Cell::new(PagingTaken::NotEntered) };
 
+    /// The compose fastpath's three counters, stored apart from `PHASE_STATS` for exactly the reason
+    /// `PAGING_TAKEN` is: this is the production compose path, and a whole-struct publish there is a
+    /// read-modify-write of ~80 bytes to report 24.
+    ///
+    /// Measured, because the first version did write the whole struct: a paired A/B against the same
+    /// build without it read `+1.4 µs` and `+3.1 µs` on a 129 µs mean (slower on 619 and 863 queries
+    /// of ~2,000), and neutralising every cost-model change left the regression in place — the
+    /// publish WAS the regression. The note on `PAGING_TAKEN` above had already said so.
+    ///
+    /// Safe to leave unwritten by the other executors for the same reason `PHASE_STATS` is safe:
+    /// `take_phase_stats` replaces this with the default, and `explain_analyze` takes before every
+    /// participant runs, so a plan that does not publish here reads zeros rather than the last
+    /// compose's numbers. Outside that window nothing reads it at all.
+    static COMPOSE_WORK: std::cell::Cell<ComposePageWork> = const { std::cell::Cell::new(ComposePageWork {
+        cards_visited: 0, printings_examined: 0, matches_pushed: 0,
+    }) };
+
     /// `prepare_candidates`' time for the run in progress, handed to the executor that follows it —
     /// the two are separate calls in `run_query_with_plan`, and only the executor publishes stats.
     ///
@@ -7029,32 +7051,16 @@ fn note_paging_taken(which: PagingTaken) {
     PAGING_TAKEN.with(|c| c.set(which));
 }
 
-/// Publish what a compose paging branch did into the shared counters, so `PrintingCompose` reports
-/// the same three quantities the two materializing plans do.
+/// Publish what a compose paging branch did, so `PrintingCompose` reports the same three quantities
+/// the two materializing plans do.
 ///
-/// A WHOLE-struct set, like the other two publishers: nothing here is inherited, so compose cannot
-/// report a field an earlier participant wrote. `paging_taken` survives because it lives in
-/// `PAGING_TAKEN`, which this does not touch -- the same split `PhaseStats` documents.
-///
-/// The phase timings stay zero. Compose's cost arm is not decomposed into setup/loop/finish the way
-/// the scan plans' is, so there is nothing yet to check them against, and publishing an
-/// unvalidatable number is how `printings_scanned` became load-bearing in the first place.
+/// A 24-byte store into `COMPOSE_WORK`, not a write of the whole `PhaseStats` — see that slot's doc
+/// for the measurement that forced the split. `take_phase_stats` merges the two, so consumers see no
+/// seam, and the phase timings stay zero: compose's arm is not decomposed into setup/loop/finish, so
+/// there is nothing to check them against, and publishing an unvalidatable number is how
+/// `printing_span` became load-bearing in the first place.
 fn publish_compose_work(work: ComposePageWork) {
-    PHASE_STATS.with(|c| {
-        c.set(PhaseStats {
-            cards_visited: work.cards_visited,
-            printing_span: 0, // compose never materializes a candidate list, so there is no span
-            printings_examined: work.printings_examined,
-            matches_pushed: work.matches_pushed,
-            ns_setup: 0,
-            ns_loop: 0,
-            ns_finish: 0,
-            ns_round_total: 0, // filled by explain_analyze, which owns the round timer
-            ns_prepare: 0,
-            result_total: 0, // likewise
-            paging_taken: PagingTaken::NotEntered, // owned by PAGING_TAKEN; take_phase_stats merges it in
-        });
-    });
+    COMPOSE_WORK.with(|c| c.set(work));
 }
 
 /// Last executor run's phase stats, and clear them. `explain_analyze` reads this immediately after a
@@ -7066,6 +7072,16 @@ fn publish_compose_work(work: ComposePageWork) {
 fn take_phase_stats() -> PhaseStats {
     let mut stats = PHASE_STATS.with(|c| c.replace(PhaseStats::default()));
     stats.paging_taken = PAGING_TAKEN.with(|c| c.replace(PagingTaken::NotEntered));
+    // Compose's counters live in their own slot; fold them in so a consumer cannot tell which
+    // executor wrote them. Only ONE of the two publishes per run -- a materializing executor writes
+    // `PHASE_STATS` and never `COMPOSE_WORK`, compose the reverse -- so this cannot double-count, and
+    // taking both together is what stops either leaking into the next participant.
+    let compose = COMPOSE_WORK.with(|c| c.replace(ComposePageWork::default()));
+    if compose.cards_visited | compose.printings_examined | compose.matches_pushed != 0 {
+        stats.cards_visited = compose.cards_visited;
+        stats.printings_examined = compose.printings_examined;
+        stats.matches_pushed = compose.matches_pushed;
+    }
     stats
 }
 
