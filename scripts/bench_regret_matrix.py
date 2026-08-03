@@ -110,7 +110,7 @@ def collect(engine: object, sampler: QuerySampler, rng: random.Random, seconds: 
         declined = picked is not None and not picked["trials_ns"]
         # Best on the SAME dispatch-equivalent definition the baseline uses, and EVERY plan that ran
         # must be priceable on it. `plan_self_ns` returns None when netting overshoots
-        # the timer noise floor, and taking the best of what is left silently substitutes a slower
+        # no phase timing, and taking the best of what is left silently substitutes a slower
         # plan for the true best -- which reads as the router beating it. Measured on plane queries,
         # where the plane build is a large share of a forced trial: PlanePopcountOrder is dropped 37%
         # of the time (median ns_prepare/trial 0.38), and those rows drove the plane slice to a mean
@@ -138,7 +138,7 @@ def collect(engine: object, sampler: QuerySampler, rng: random.Random, seconds: 
             }
         )
     if skipped_unpriced:
-        print(f"skipped {skipped_unpriced:,} queries where a plan that ran could not be priced (netting overshoot)")
+        print(f"skipped {skipped_unpriced:,} queries where a plan that ran published no phase timing and so cannot be priced")
     if skipped_unphased:
         print(f"skipped {skipped_unphased:,} queries with no routed phase split -- build with --features routed-phases")
     return rows

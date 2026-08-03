@@ -4952,6 +4952,27 @@ fn printing_range_fastpath<'a>(
     params: &QueryParams,
     filter: &FilterExpr,
 ) -> Option<(usize, Vec<(&'a AOracleCard, &'a APrinting)>)> {
+    // Timed as one span rather than split into setup/loop/finish. The three-phase split exists where
+    // an executor HAS three phases to attribute cost between; this one has a dozen structurally
+    // different exits (three of them producing a page) and no common shape across them. What the
+    // harnesses need is that the phase sum equals the executor's own time, and one span satisfies
+    // that exactly -- `ns_loop` is the honest bucket for "the work", with the other two zero.
+    //
+    // Only a run that PRODUCED a page publishes. A decline returns `None`, records no trial, and must
+    // leave the slot as `take_phase_stats` cleared it.
+    let t = std::time::Instant::now();
+    let out = printing_range_fastpath_inner(ctx, params, filter);
+    if out.is_some() {
+        PHASE_STATS.with(|c| c.set(PhaseStats { ns_loop: t.elapsed().as_nanos() as u64, ..PhaseStats::default() }));
+    }
+    out
+}
+
+fn printing_range_fastpath_inner<'a>(
+    ctx: &QueryCtx<'a>,
+    params: &QueryParams,
+    filter: &FilterExpr,
+) -> Option<(usize, Vec<(&'a AOracleCard, &'a APrinting)>)> {
     let QueryCtx { cards, printings, indexes, .. } = *ctx;
     let QueryParams { sort_col, descending, limit, page_offset, .. } = *params;
     let Some((idx, lo, hi)) = bare_range_bounds(filter, indexes) else {
@@ -5734,6 +5755,14 @@ struct ComposePageWork {
     /// Rows the branch pushed. For the gather this is every match (it visits every candidate); for
     /// the two walks it is bounded by the page, which is the whole point of their cost shape.
     matches_pushed: u64,
+    /// The whole fastpath's wall time, merged into `ns_loop` by `take_phase_stats`.
+    ///
+    /// One span, not three. Compose's arm is not decomposed into setup/loop/finish -- it is a build
+    /// plus one of three structurally different paging branches -- so there is nothing to attribute
+    /// between phases. What the harnesses need is that the phase sum equals the executor's own time,
+    /// and one span gives that. Carried here rather than written to `PHASE_STATS` separately so the
+    /// production compose path still pays ONE store; see this slot's doc for what that cost.
+    ns_total: u64,
 }
 
 fn collect_orderby_page<'a>(
@@ -5791,6 +5820,8 @@ fn collect_orderby_page<'a>(
         cards_visited: 0,
         printings_examined: scanned,
         matches_pushed: collected.len() as u64,
+        // Filled by `printing_compose_fastpath`, which owns the span; this helper only reports work.
+        ns_total: 0,
     };
     let matches: Vec<Match> = collected
         .iter()
@@ -5932,6 +5963,9 @@ fn printing_compose_fastpath<'a>(
     params: &QueryParams,
     filter: &FilterExpr,
 ) -> Option<(usize, Vec<(&'a AOracleCard, &'a APrinting)>)> {
+    // Ends at whichever exit produces a page; see `ComposePageWork::ns_total`. Declines return before
+    // any publish and so leave the slot as `take_phase_stats` cleared it.
+    let t_start = std::time::Instant::now();
     let QueryCtx { cards, printings, offsets, indexes, .. } = *ctx;
     let QueryParams { mode, sort_col, descending, limit, page_offset, .. } = *params;
     if !is_printing_composable(filter, indexes) || !printing_compose_indexes_built(indexes) {
@@ -5979,10 +6013,10 @@ fn printing_compose_fastpath<'a>(
     };
     if total == 0 || page_offset >= total {
         note_paging_taken(PagingTaken::EmptyPage);
-        publish_compose_work(ComposePageWork::default());
+        publish_compose_work(ComposePageWork { ns_total: t_start.elapsed().as_nanos() as u64, ..Default::default() });
         return Some((total, Vec::new()));
     }
-    let (page, work) = match perm {
+    let (page, mut work) = match perm {
         Some(perm) => {
             if total <= *STREAM_MIN_MATCHES {
                 // `Exact` to distinguish it from `DeclineSparseEstimate` above: same intent, but that
@@ -6032,6 +6066,7 @@ fn printing_compose_fastpath<'a>(
             }
         }
     };
+    work.ns_total = t_start.elapsed().as_nanos() as u64;
     publish_compose_work(work);
     Some((total, page))
 }
@@ -6496,15 +6531,10 @@ fn exec_plane_popcount_order_with_bitmap<'a>(
     let perm = indexes.sort_perms.get(sort_col, descending).expect("PlanePopcountOrder applicability guarantees a permutation");
     let inv_perm =
         indexes.sort_perms.get_inv(sort_col, descending).expect("PlanePopcountOrder applicability guarantees an inverse permutation");
-    let out = run_query_streamed_popcount(ctx, params, perm, inv_perm, bitmap, Some(plane_expr), None);
-    // Consume whatever `exec_plane_popcount_order` left in flight and publish it, so a harness can
-    // net the plane build out of a forced trial. Zero on the ROUTED path, which reaches this function
-    // directly with the acquire's bitmap and builds nothing — which is exactly the asymmetry being
-    // reported. Counters stay zero: this plan popcounts a bitmap and visits no cards, so it has
-    // nothing to report there and `plan_stats_never_leak_between_participants` still pins that.
-    let prep_ns = PENDING_PREPARE_NS.with(|c| c.replace(0));
-    PHASE_STATS.with(|c| c.set(PhaseStats { ns_prepare: prep_ns, ..PhaseStats::default() }));
-    out
+    // `run_query_streamed_popcount` publishes the phases and consumes the pending plane build; see
+    // `publish_popcount_phases`. Counters stay zero: this plan popcounts a bitmap and visits no
+    // cards, so it has nothing to report there.
+    run_query_streamed_popcount(ctx, params, perm, inv_perm, bitmap, Some(plane_expr), None)
 }
 
 /// `CardRangePopcount` executor: the same popcount-skip order phase as P2, but its match bitmap is a
@@ -7130,7 +7160,7 @@ thread_local! {
     /// participant runs, so a plan that does not publish here reads zeros rather than the last
     /// compose's numbers. Outside that window nothing reads it at all.
     static COMPOSE_WORK: std::cell::Cell<ComposePageWork> = const { std::cell::Cell::new(ComposePageWork {
-        cards_visited: 0, printings_examined: 0, matches_pushed: 0,
+        cards_visited: 0, printings_examined: 0, matches_pushed: 0, ns_total: 0,
     }) };
 
     /// The routed path's disjoint phase split — see `RoutedPhases`. Its own slot for the same reason
@@ -7222,10 +7252,13 @@ fn take_phase_stats() -> PhaseStats {
     // `PHASE_STATS` and never `COMPOSE_WORK`, compose the reverse -- so this cannot double-count, and
     // taking both together is what stops either leaking into the next participant.
     let compose = COMPOSE_WORK.with(|c| c.replace(ComposePageWork::default()));
-    if compose.cards_visited | compose.printings_examined | compose.matches_pushed != 0 {
+    if compose.cards_visited | compose.printings_examined | compose.matches_pushed | compose.ns_total != 0 {
         stats.cards_visited = compose.cards_visited;
         stats.printings_examined = compose.printings_examined;
         stats.matches_pushed = compose.matches_pushed;
+        // Compose reports one undivided span; `ns_loop` is where it belongs so the phase sum equals
+        // the executor's time. See `ComposePageWork::ns_total`.
+        stats.ns_loop = compose.ns_total;
     }
     stats
 }
@@ -8059,8 +8092,13 @@ fn run_query_routed<'a>(
         //   - a materializing plan (StreamedSelect/GatheredScan) that beat them narrows + runs.
         (PhysicalPlan::CardRangePopcount, Prep::Range(_)) => {
             let (idx, lo, hi) = bare_range_bounds(filter, ctx.indexes).expect("applicable ⇒ bare range");
+            // Timed and handed to the executor as `ns_prepare`: this build happens in DISPATCH on
+            // both paths, so it belongs to the plan's cost, and `card_range_popcount` being a
+            // RANGE_ACQUIRE is what tells `plan_self_ns` to add it rather than exclude it.
+            let t_build = std::time::Instant::now();
             let (card_bits, range_pbits) =
                 build_card_range_bits(idx, lo, hi, ctx.indexes, ctx.cards.len(), ctx.printings.len());
+            note_pending_prepare_ns(t_build.elapsed().as_nanos() as u64);
             exec_card_range_popcount(ctx, params, &card_bits, &range_pbits)
         }
         (plan, Prep::Range(_)) => {
@@ -8130,7 +8168,11 @@ fn run_query_with_plan<'a>(
                 return None;
             }
             let (idx, lo, hi) = bare_range_bounds(filter, indexes).expect("applicability guarantees a bare range");
+            // Timed exactly as the routed path times it, so a forced trial and dispatch contain the
+            // same work; see the routed call site.
+            let t_build = std::time::Instant::now();
             let (card_bits, range_pbits) = build_card_range_bits(idx, lo, hi, indexes, cards.len(), ctx.printings.len());
+            note_pending_prepare_ns(t_build.elapsed().as_nanos() as u64);
             Some(exec_card_range_popcount(ctx, params, &card_bits, &range_pbits))
         }
         PhysicalPlan::StreamedSelect => {
@@ -8614,12 +8656,20 @@ fn run_query_streamed_popcount<'a>(
     plane: Option<&PlaneExpr>,
     range_bits: Option<&[u64]>,
 ) -> (usize, Vec<(&'a AOracleCard, &'a APrinting)>) {
+    // First of the three phase boundaries, same convention as `run_query_streamed`: everything to the
+    // skip scan is `ns_setup` (here the total popcount plus the permuted scatter), the skip scan is
+    // `ns_loop`, the emit walk is `ns_finish`. Shared by BOTH popcount plans, so instrumenting here
+    // covers `PlanePopcountOrder` and `CardRangePopcount` at once.
+    let t_start = std::time::Instant::now();
     let QueryCtx { cards, printings, offsets, strings, indexes } = *ctx;
     let QueryParams { prefer, limit, page_offset, .. } = *params;
     let planes = &indexes.planes;
     let n_cards = cards.len();
     let total: usize = bitmap.iter().map(|w| w.count_ones() as usize).sum();
     if total == 0 || page_offset >= total {
+        // Still publishes: an empty page is real work (the popcount) and a plan that ran must report
+        // a cost, or a consumer reading the phases as the executor's time gets zero for a real run.
+        publish_popcount_phases(t_start.elapsed().as_nanos() as u64, 0, 0);
         return (total, Vec::new());
     }
 
@@ -8643,6 +8693,9 @@ fn run_query_streamed_popcount<'a>(
                 permuted[pos / 64] |= 1u64 << (pos % 64);
             }
         }
+
+        // Ends `ns_setup` (popcount + scatter) and starts `ns_loop`.
+        let t_loop = std::time::Instant::now();
 
         // Skip: accumulate word popcounts until the boundary word containing
         // page_offset — 64 cards per word read, deep pagination is a
@@ -8672,6 +8725,8 @@ fn run_query_streamed_popcount<'a>(
         // even then: bounded by `limit` emitted cards, not the candidate set,
         // and only pays the extra check at all for legality-touching planes.
         let existential = plane.is_some_and(plane_expr_is_existential);
+        // Ends `ns_loop` (the skip scan) and starts `ns_finish` (the emit walk).
+        let t_finish = std::time::Instant::now();
         let mut page: Vec<(&AOracleCard, &APrinting)> = Vec::with_capacity(limit);
         'walk: while word_idx < permuted.len() {
             let mut w = permuted[word_idx];
@@ -8723,8 +8778,25 @@ fn run_query_streamed_popcount<'a>(
             }
             word_idx += 1;
         }
+        publish_popcount_phases(
+            (t_loop - t_start).as_nanos() as u64,
+            (t_finish - t_loop).as_nanos() as u64,
+            t_finish.elapsed().as_nanos() as u64,
+        );
         (total, page)
     })
+}
+
+/// Publish the popcount executor's three phases, consuming whatever build its caller handed over.
+///
+/// The pending value differs per plan and the `RANGE_ACQUIRES` rule is what makes both correct:
+/// `PlanePopcountOrder`'s plane eval is built during ACQUIRE on the routed path (so a forced run's
+/// rebuild must not count toward dispatch, and `plane` is not a range acquire), while
+/// `CardRangePopcount`'s bitmap is built in DISPATCH on both paths (so it must count, and
+/// `card_range_popcount` IS a range acquire). Same handoff, opposite treatment, both from one rule.
+fn publish_popcount_phases(ns_setup: u64, ns_loop: u64, ns_finish: u64) {
+    let prep_ns = PENDING_PREPARE_NS.with(|c| c.replace(0));
+    PHASE_STATS.with(|c| c.set(PhaseStats { ns_setup, ns_loop, ns_finish, ns_prepare: prep_ns, ..PhaseStats::default() }));
 }
 
 /// Streamed selection: match phase records per-card match counts (total is

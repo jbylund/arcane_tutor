@@ -3738,7 +3738,10 @@ fn plan_stats_never_leak_between_participants() {
     const CORPUS_SIZE: usize = 3_000;
     const NUM_WARMUPS: usize = 1;
     const NUM_TRIALS: usize = 3;
-    /// Publish no counters whatsoever — see the doc's leak 1.
+    /// Publish no per-card COUNTERS — they popcount bitmaps or walk an index and visit no cards, so
+    /// `cards_visited`/`printings_examined`/`matches_pushed` have nothing to report. They DO publish
+    /// phase timings: every plan does now, which is what lets `plan_self_ns` read the executor's own
+    /// time directly instead of recovering it by subtracting `ns_prepare` from a trial.
     const SILENT_PLANS: [PhysicalPlan; 3] =
         [PhysicalPlan::PrintingRangeScan, PhysicalPlan::PlanePopcountOrder, PhysicalPlan::CardRangePopcount];
     /// The subset of `SILENT_PLANS` that writes NO field at all, `paging_taken` included, so
@@ -3799,19 +3802,14 @@ fn plan_stats_never_leak_between_participants() {
                             (p.cards_visited, p.printing_span, p.printings_examined, p.matches_pushed), (0, 0, 0, 0),
                             "uninstrumented plan reported counters it never wrote: {case}",
                         );
-                        assert_eq!(
-                            (p.ns_setup, p.ns_loop, p.ns_finish), (0, 0, 0),
-                            "uninstrumented plan reported loop timings it never wrote: {case}",
+                        // The INVERSE of the old assertion, and a stronger statement: these plans must
+                        // publish a phase span, because `plan_self_ns` now reads the executor's own
+                        // time from the phases rather than recovering it by subtraction. A plan that
+                        // ran and reports no phase would be priced at zero.
+                        assert!(
+                            p.ns_setup + p.ns_loop + p.ns_finish > 0,
+                            "plan produced a page but published no phase timing, so it prices as zero: {case}",
                         );
-                        // `ns_prepare` is the one exception, and only for `PlanePopcountOrder`: the
-                        // router builds its plane bitmap during acquire and hands it over, so a FORCED
-                        // run has to rebuild it and reports that build here. Netting it is what makes
-                        // a plane row dispatch-comparable — without it the regret matrix read a mean
-                        // -4.21us on plane/card, the routed path apparently beating the best plan.
-                        // Every other silent plan still reports nothing.
-                        if t.plan != PhysicalPlan::PlanePopcountOrder {
-                            assert_eq!(p.ns_prepare, 0, "uninstrumented plan reported a prepare time it never wrote: {case}");
-                        }
                         // The label half splits: only the two plans that write nothing can be
                         // checked as "still NotEntered". `PrintingRangeScan` labels its own exits,
                         // so for it the equivalent — and stronger — statement is that the label is

@@ -111,21 +111,12 @@ MIN_ROWS = 30
 # Below this, a per-query difference is timer jitter rather than a real change.
 NOISE_FLOOR_US = 1.0
 
-# Acquire sources whose routed path re-pays `prepare_candidates`, so a plan's `trials_ns` is NOT
-# double-counting it and must not be netted. Everywhere else the prep is shared and the plan is
-# charged for a copy it would not pay under the router.
+# Acquire sources where acquire only ESTIMATED, so DISPATCH pays the artifact build itself -- either
+# `prepare_candidates` on a lazy materialize, or `build_card_range_bits` for CardRangePopcount. On
+# these `ns_prepare` is part of the plan's cost and `plan_self_ns` ADDS it. Everywhere else the router
+# built the artifact during acquire and dispatch merely reuses it, so a forced run rebuilding it is
+# reporting work dispatch never pays.
 RANGE_ACQUIRES = frozenset({"card_range_popcount", "printing_range_scan", "printing_compose"})
-# Below this many nanoseconds, a netted residual is timer noise rather than a smaller measurement, so
-# the row is dropped instead of reporting a number built out of two nearly-equal quantities.
-#
-# ABSOLUTE, where this used to be a fraction of the trial (0.5). The fraction cost real coverage for no
-# reason: `ns_prepare` comes from the same round as the trial it is subtracted from (`explain_analyze`
-# keeps the fastest round's phases), so the subtraction is exact rather than cross-round, and a residual
-# that is 40% of a 10us trial is 4us -- perfectly measurable. The fractional guard was dropping
-# `PlanePopcountOrder` on 37% of plane queries, which made `bench_regret_matrix` skip 39% of all
-# queries as unpriceable. What matters is whether the residual clears the timer, not what share of the
-# trial it is.
-NETTING_RESIDUAL_FLOOR_NS = NOISE_FLOOR_US * 1000.0
 
 BOOTSTRAP_RESAMPLES = 10_000
 BOOTSTRAP_CI = 0.95
@@ -315,46 +306,41 @@ def predicted_ns(plan: dict) -> float | None:
 def plan_self_ns(plan: dict, acquire: dict) -> float | None:
     """What this plan costs to RUN, in nanoseconds -- the single definition every harness uses.
 
-    The quantity wanted is the executor's own time: dispatch, excluding any shared artifact the router
-    would have built during acquire and handed over. Two ways to get it, and the direct one is
-    preferred.
+    The quantity wanted is DISPATCH: what the routed path spends after it has chosen. It is built by
+    ADDITION now, from two measured pieces, where it used to be recovered by subtracting `ns_prepare`
+    from a trial.
 
-    **Measured directly, where the executor publishes phases.** `ns_setup + ns_loop + ns_finish` are
-    contiguous by construction -- four instants bounding three spans -- so their sum IS the executor,
-    with no subtraction and nothing to overshoot. Verified against the netted figure on 45k paired
-    rows: median ratio 0.998 (GatheredScan) and 0.997 (StreamedSelect), with 0.08us of the round left
-    unaccounted by any phase. Only the two materializing plans publish them.
+    **The executor**, from `ns_setup + ns_loop + ns_finish`. Contiguous by construction, so the sum IS
+    the executor -- exact, with nothing to overshoot. Every plan publishes these; the two materializing
+    ones split them three ways, and the four others report one undivided span in `ns_loop` because they
+    have no three phases to attribute between. Verified against the old netted figure on 45k paired
+    rows before the switch: median ratio 0.998 (GatheredScan) and 0.997 (StreamedSelect), 0.08us of the
+    round unaccounted.
 
-    **Netted, otherwise.** The other four plans publish no phases, so their executor time is recovered
-    as `min(trials_ns) - ns_prepare`: a forced run rebuilds the shared artifact (candidate list, or the
-    plane bitmap) that the router acquires once, and `ns_prepare` is that build. Except under a
-    range-style acquire, where the routed path re-pays it too and it IS the plan's cost -- hence
-    `RANGE_ACQUIRES`.
+    **Plus any shared artifact DISPATCH pays for**, which depends on the acquire and not on the plan:
 
-    The guard on that subtraction is an ABSOLUTE floor, not a fraction. It used to drop any row where
-    netting removed more than half the trial, which cost real coverage for no reason: `ns_prepare` and
-    the trial come from the SAME round (`explain_analyze` keeps the fastest round's phases), so the
-    subtraction is exact rather than cross-round, and a residual that is 40% of a 10us trial is 4us --
-    measurable, not noise. That guard was dropping `PlanePopcountOrder` on 37% of plane queries, which
-    made `bench_regret_matrix` skip 39% of all queries as unpriceable. What matters is whether the
-    residual clears the timer, so the floor is `NOISE_FLOOR_US`.
+    - `candidates` / `plane` acquire -- the router built the artifact during acquire and dispatch just
+      reuses it, so dispatch is the executor alone. A forced run rebuilt it and reported the rebuild in
+      `ns_prepare`; that is exactly what must NOT be counted.
+    - `RANGE_ACQUIRES` -- acquire only estimated. Dispatch pays the build itself, whether that is
+      `prepare_candidates` on a lazy materialize or `build_card_range_bits` for `CardRangePopcount`, so
+      `ns_prepare` IS part of the plan's cost and is added.
+
+    Why this is better than the subtraction it replaces: an addition cannot overshoot, so the guard
+    that dropped rows is gone, and with it the reason `bench_regret_matrix` was skipping queries. That
+    guard cost 39% of all queries as a fraction and 1.8% as an absolute floor; it is now 0%.
 
     Returns:
-        The plan's own nanoseconds, or None if the plan produced no page (declined, or never ran) or if
-        the netted residual falls below the timer's noise floor.
+        The plan's dispatch nanoseconds, or None if it produced no page (declined, or never ran).
     """
     if not plan["trials_ns"]:
         return None
-    phases = float(plan["ns_setup"] + plan["ns_loop"] + plan["ns_finish"])
-    if phases > 0:
-        return phases
-    real = float(min(plan["trials_ns"]))
-    if plan["ns_round_total"] and acquire["count_source"] not in RANGE_ACQUIRES:
-        netted = real - plan["ns_prepare"]
-        if netted < NETTING_RESIDUAL_FLOOR_NS:
-            return None
-        real = netted
-    return real
+    dispatch = float(plan["ns_setup"] + plan["ns_loop"] + plan["ns_finish"])
+    if dispatch <= 0:
+        return None  # ran but published no phase: cannot be priced, and must not read as zero
+    if acquire["count_source"] in RANGE_ACQUIRES:
+        dispatch += float(plan["ns_prepare"])
+    return dispatch
 
 
 # ── statistics and tables ─────────────────────────────────────────────────────────────────────
