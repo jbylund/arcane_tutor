@@ -4478,6 +4478,7 @@ fn plan_cost_model_matches_gold() {
                     broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 compose_scan_printings: 0,
+                gather_group_printings: 0,
                 orderby_walk_scan: 0,
                 };
 
@@ -4717,6 +4718,7 @@ fn plan_cost_refit() {
                     broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 compose_scan_printings: 0,
+                gather_group_printings: 0,
                 orderby_walk_scan: 0,
                 };
                 for (pi, plan) in all_plans.iter().enumerate() {
@@ -4919,6 +4921,7 @@ fn printing_range_route_probe() {
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 compose_scan_printings: 0,
+                gather_group_printings: 0,
                 orderby_walk_scan: 0,
             };
 
@@ -5281,6 +5284,7 @@ fn plan_regret_report() {
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 compose_scan_printings: 0,
+                gather_group_printings: 0,
                 orderby_walk_scan: 0,
             };
 
@@ -5409,6 +5413,7 @@ fn plan_regret_fuzz() {
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 compose_scan_printings: 0,
+                gather_group_printings: 0,
                 orderby_walk_scan: 0,
             };
             let feats_true = mk(true_total, eval_domain);

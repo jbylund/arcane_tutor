@@ -146,6 +146,31 @@ pub(crate) struct PlanFeatures {
     /// that keeps the popcount term honest across distinct-ons: `n_printings/64` (printing),
     /// `n_cards/64` (card), `n_artworks/64` (artwork). Set by `PrintingCompose`; `0` elsewhere.
     pub popcount_words: u32,
+    /// Set printings `gather_composed_page`'s GROUPING arm processes, or `0` when that arm is not the
+    /// one that runs.
+    ///
+    /// The Gather arm charged three things: a per-candidate-card pass, a per-printing bit test at
+    /// 0.38ns ("a cheap bit test, not a real residual scan"), and a per-match push. That describes
+    /// the printing-mode arm, which really does just test a bit and push. It does not describe the
+    /// `Mode::Card | Mode::Artwork` arm, which for every SET printing also reads the artwork group id,
+    /// computes `prefer_score`, and compares against `group_best` — real work, none of it a bit test.
+    ///
+    /// The unit is the load-bearing part. `matches` in artwork mode is the DEDUPED artwork count, so
+    /// `COMPOSE_GATHER_PUSH_PER_MATCH_NS` charges once per surviving group, while the grouping work
+    /// scales with the PRE-dedup printing matches feeding it. A card with twelve printings across two
+    /// artworks pays twelve groupings and two pushes. That is the same class of error
+    /// `bench_feature_accuracy` was written for, mirrored: there a printing count drove a per-result
+    /// term, here a deduped count drives a term whose work is pre-dedup.
+    ///
+    /// Measured consequence before this term existed: over 129 queries where compose was picked and
+    /// lost to GatheredScan, compose's real/predicted was **3.07** — 89% of the lost time in artwork,
+    /// 94% on the Gather branch, and every one of the five worst a single bare `f:` legality leaf at
+    /// ~300us. `PrintingCompose -> GatheredScan` is 99% miss and 11% of ALL routing regret.
+    ///
+    /// `0` for printing mode (the push term already covers its per-set-printing work, since `matches`
+    /// there IS the printing count) and for card mode under `Prefer::Default`, which takes the
+    /// early-break arm instead and never groups.
+    pub gather_group_printings: u32,
     /// Printings the #744 orderby walk's BUCKET SCAN covers before the page can fill, or `0` when the
     /// walk is not the branch (or its buckets are cheap value runs).
     ///
@@ -475,11 +500,24 @@ const COMPOSE_WALK_STEP_NS: f64 = 0.58;
 /// Per row emitted by the Perm / OrderbyWalk page fill.
 const COMPOSE_WALK_EMIT_PER_ROW_NS: f64 = 2.19;
 /// Per candidate card visited by `gather_composed_page`.
-const COMPOSE_GATHER_CARD_PASS_NS: f64 = 9.81;
+///
+/// Raised from 9.81 on 2026-08-03. `fit_cost_model` has wanted this higher in every run it was asked
+/// (1.23x, 1.35x, 1.60x across seeds) and it is the dominant term for the queries that dominate
+/// compose's regret: a bare `f:` legality leaf under `unique=artwork` puts `eval_domain` at nearly the
+/// whole corpus, so 31,508 candidate cards times a 3.4ns error is ~108us on ONE query. Those queries
+/// measure ~300us and `PrintingCompose -> GatheredScan` is 99% miss.
+///
+/// Its own constant, not shared with `GatheredScan`'s `GATHER_CARD_PASS_NS` (6.88) — the two loops do
+/// different per-card work, and moving this does not disturb that plan.
+const COMPOSE_GATHER_CARD_PASS_NS: f64 = 13.22;
 /// Per printing bit-tested against `pbits` inside the gather.
 const COMPOSE_GATHER_BITTEST_PER_PRINTING_NS: f64 = 0.38;
 /// Per match pushed into the bounded GatherSelect accumulator.
 const COMPOSE_GATHER_PUSH_PER_MATCH_NS: f64 = 3.39;
+/// Per SET printing the grouping arm scores and compares — see `gather_group_printings` for why this
+/// is not the bit-test rate and not the push rate. Cheaper than a push (no `sort_key_bits`, no
+/// buffer growth) and dearer than a bit test (a struct read plus `prefer_score`); fitted below.
+const COMPOSE_GATHER_GROUP_PER_PRINTING_NS: f64 = 1.5;
 /// Per-query setup for the compose fastpath.
 const COMPOSE_FIXED_COST_NS: f64 = 163.56;
 
@@ -561,6 +599,7 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
                 super::ComposePaging::Gather => {
                     eval_domain * COMPOSE_GATHER_CARD_PASS_NS
                         + f64::from(f.compose_scan_printings) * COMPOSE_GATHER_BITTEST_PER_PRINTING_NS
+                        + f64::from(f.gather_group_printings) * COMPOSE_GATHER_GROUP_PER_PRINTING_NS
                         + matches * COMPOSE_GATHER_PUSH_PER_MATCH_NS
                 }
                 // The fastpath will refuse this query, so there is no page term to charge. Infinity

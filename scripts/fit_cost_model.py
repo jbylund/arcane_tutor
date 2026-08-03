@@ -102,7 +102,10 @@ CURRENT: dict[str, list[float]] = {
     # gather push, fixed. Several of these are SHARED with other arms in cost.rs (LINEAR_PASS,
     # RANGE_SCATTER, GATHER_CARD_PASS, GATHER_PUSH_PER_MATCH, ...), so a fitted value that disagrees
     # with the other arm's is information about the shared constant, not a number to paste blindly.
-    "PrintingCompose": [1.93, 0.48, 1.93, 1.07, 0.58, 2.19, 9.81, 0.38, 3.39, 163.56],
+    # GATHER_GROUP_PER_PRINTING sits between the bit-test and push columns, matching design_row.
+    # Added when the artwork tail was traced to the grouping arm's work being charged at the bit-test
+    # rate; its 1.5 start is a physical guess (a struct read plus prefer_score), meant to be fitted.
+    "PrintingCompose": [1.93, 0.48, 1.93, 1.07, 0.58, 2.19, 13.22, 0.38, 1.5, 3.39, 163.56],
 }
 
 
@@ -272,6 +275,7 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
                 limit if not gather else 0.0,
                 eval_domain if gather else 0.0,
                 float(acq["compose_scan_printings"]) if gather else 0.0,
+                float(acq.get("gather_group_printings", 0)) if gather else 0.0,
                 matches if gather else 0.0,
                 1.0,
             ],
@@ -284,6 +288,7 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
                 "WALK_EMIT_PER_ROW",
                 "GATHER_CARD_PASS",
                 "GATHER_BITTEST_PER_PRINTING",
+                "GATHER_GROUP_PER_PRINTING",
                 "GATHER_PUSH_PER_MATCH",
                 "FIXED",
             ],
