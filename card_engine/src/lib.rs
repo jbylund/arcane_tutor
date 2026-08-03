@@ -5610,6 +5610,108 @@ fn orderby_walk_available(sort_col: SortCol) -> bool {
 /// every match lives in the buckets (`collected` reaches `total`, no null tail), a short last page is
 /// windowed normally.
 #[allow(clippy::too_many_arguments)]
+/// The routed path's time, split into DISJOINT phases that cover all of `run_query_routed`.
+///
+/// Everything else here measures one participant at a time and cannot be added up. `acquire_ns` is
+/// timed in its own `explain_analyze` round — a standalone `acquire_plan_features` call with its own
+/// cache state — while `routed_ns` times a SEPARATE execution that does its own acquire inside. They
+/// are two independent measurements of overlapping work, not a part and a whole, which is why
+/// `acquire_ns / routed_ns` measured a nonsensical 104% at the median on candidate-acquired queries.
+///
+/// These three are read from ONE execution with four contiguous clock reads, so
+/// `ns_acquire + ns_choose + ns_dispatch` accounts for the whole call bar the reads themselves. The
+/// same shape `PhaseStats` uses for setup/loop/finish, one level up — and those three subdivide
+/// `ns_dispatch`, together with `ns_prepare`, so the two nest rather than overlap.
+///
+/// Why it is worth four clock reads on the production path: `plan_cost` prices only what happens
+/// AFTER acquire, so acquire is unpriced for every plan, and cost.rs records the model's median error
+/// as 1.09x `acquire_ns`. Acquire is the largest unmodelled component in the engine and nothing has
+/// ever measured it as a fraction of the query it belongs to.
+/// Behind the `routed-phases` cargo feature, and the reason is measured rather than cautious: the
+/// four clock reads cost +2.7us and +2.3us on a ~40us median query in a paired interleaved A/B, both
+/// intervals excluding zero. That is ~1.6% of every request to answer a question a diagnostic build
+/// can answer instead — the same trade `alloc-counter` already makes.
+///
+/// With the feature off, `RoutedPhaseTimer` is a zero-sized struct whose methods are empty, so the
+/// reads and the publish compile away entirely.
+#[derive(Default, Clone, Copy)]
+struct RoutedPhases {
+    /// `acquire_plan_features`: count source, feature build, and whatever artifact it materializes.
+    ns_acquire: u64,
+    /// The `argmin cost::plan_cost` over applicable plans. Expected to be negligible; measured so
+    /// that "expected" is not doing the work — it comes out at 41ns, 0.0% of the query.
+    ns_choose: u64,
+    /// Running the winner, including a lazy re-materialize and re-choose when a fastpath declines.
+    ns_dispatch: u64,
+}
+
+/// Marks the three phase boundaries in `run_query_routed`, or nothing at all when the
+/// `routed-phases` feature is off. See `RoutedPhases`.
+#[cfg(feature = "routed-phases")]
+struct RoutedPhaseTimer {
+    entry: std::time::Instant,
+    acquired: Option<std::time::Instant>,
+    chosen: Option<std::time::Instant>,
+}
+
+#[cfg(feature = "routed-phases")]
+impl RoutedPhaseTimer {
+    fn start() -> Self {
+        Self { entry: std::time::Instant::now(), acquired: None, chosen: None }
+    }
+    fn acquired(&mut self) {
+        self.acquired = Some(std::time::Instant::now());
+    }
+    fn chosen(&mut self) {
+        self.chosen = Some(std::time::Instant::now());
+    }
+    /// Publishes the three disjoint spans. A boundary that was never marked collapses to the entry
+    /// instant, which cannot happen on the one path that exists but keeps this total.
+    fn finish(self) {
+        let done = std::time::Instant::now();
+        let acquired = self.acquired.unwrap_or(self.entry);
+        let chosen = self.chosen.unwrap_or(acquired);
+        ROUTED_PHASES.with(|c| {
+            c.set(RoutedPhases {
+                ns_acquire: (acquired - self.entry).as_nanos() as u64,
+                ns_choose: (chosen - acquired).as_nanos() as u64,
+                ns_dispatch: (done - chosen).as_nanos() as u64,
+            });
+        });
+    }
+}
+
+#[cfg(not(feature = "routed-phases"))]
+struct RoutedPhaseTimer;
+
+#[cfg(not(feature = "routed-phases"))]
+impl RoutedPhaseTimer {
+    #[inline(always)]
+    fn start() -> Self {
+        Self
+    }
+    #[inline(always)]
+    fn acquired(&mut self) {}
+    #[inline(always)]
+    fn chosen(&mut self) {}
+    #[inline(always)]
+    fn finish(self) {}
+}
+
+/// The last routed execution's phase split, cleared. All zeros without the `routed-phases` feature,
+/// which is what `explain_analyze` then reports — a consumer sees three empty-looking spans rather
+/// than a missing key, so the schema does not change with the feature.
+fn take_routed_phases() -> RoutedPhases {
+    #[cfg(feature = "routed-phases")]
+    {
+        ROUTED_PHASES.with(|c| c.replace(RoutedPhases::default()))
+    }
+    #[cfg(not(feature = "routed-phases"))]
+    {
+        RoutedPhases::default()
+    }
+}
+
 /// What a compose paging branch actually did, against the three quantities its cost arm charges.
 ///
 /// `PrintingCompose` published no executor counters at all until this existed, which made it the one
@@ -7011,6 +7113,17 @@ thread_local! {
         cards_visited: 0, printings_examined: 0, matches_pushed: 0,
     }) };
 
+    /// The routed path's disjoint phase split — see `RoutedPhases`. Its own slot for the same reason
+    /// the two above have theirs: `run_query_routed` is the production entry point, and one 24-byte
+    /// store there is affordable where a read-modify-write of `PhaseStats` measurably was not.
+    ///
+    /// Written by `run_query_routed` only, so it never collides with the executors' slot; the routed
+    /// path's dispatch phase CONTAINS an executor publish into `PHASE_STATS`, and the two nest.
+    #[cfg(feature = "routed-phases")]
+    static ROUTED_PHASES: std::cell::Cell<RoutedPhases> = const { std::cell::Cell::new(RoutedPhases {
+        ns_acquire: 0, ns_choose: 0, ns_dispatch: 0,
+    }) };
+
     /// `prepare_candidates`' time for the run in progress, handed to the executor that follows it —
     /// the two are separate calls in `run_query_with_plan`, and only the executor publishes stats.
     ///
@@ -7873,14 +7986,24 @@ fn run_query_routed<'a>(
             .expect("GatheredScan is always applicable and materializing")
     };
 
+    // Marks three disjoint phases covering the whole call — see `RoutedPhases` for why acquire needed
+    // measuring from inside one execution rather than as its own `explain_analyze` participant, and
+    // why it is behind a feature. Compiles to nothing without `routed-phases`.
+    let mut phases = RoutedPhaseTimer::start();
+
     // ── acquire: pick the count source, build features, materialize its artifact ──
     let (feats, prep, plane_bits) = acquire_plan_features(ctx, params, filter, plane);
+    phases.acquired();
 
     // ── choose: cheapest applicable plan ──
     let plan = choose(filter, &feats, false);
+    phases.chosen();
 
     // ── dispatch: run the winner, reusing the acquired artifact ──
-    match (plan, &prep) {
+    // Bound, not returned directly, so the closing clock read happens before the result is handed
+    // back and the phase covers dispatch alone. The match has no early returns, so this one exit is
+    // the only place the phases can be published from.
+    let out = match (plan, &prep) {
         (PhysicalPlan::PlanePopcountOrder, Prep::Plane) => {
             exec_plane_popcount_order_with_bitmap(ctx, params, plane.expect("Prep::Plane ⇒ plane"), &plane_bits)
         }
@@ -7924,7 +8047,9 @@ fn run_query_routed<'a>(
                 }
             }
         }
-    }
+    };
+    phases.finish();
+    out
 }
 
 /// In-process force/dispatch entry point (#702 step 2): run `plan` for this
@@ -8088,6 +8213,17 @@ pub(crate) struct AcquireFacts {
     /// into the picked plan's executor, so a fixed position ahead of the plans would pre-warm
     /// exactly the plan whose selection the comparison is meant to question.
     pub(crate) routed_ns: Vec<u64>,
+    /// `routed_ns` split into disjoint phases, one triple per round, from INSIDE the same execution —
+    /// see `RoutedPhases`. `routed_acquire_ns[i] + routed_choose_ns[i] + routed_dispatch_ns[i]`
+    /// accounts for `routed_ns[i]` bar the clock reads.
+    ///
+    /// Not the same quantity as `acquire_ns`, and the difference is the point. That one times a
+    /// standalone `acquire_plan_features` in its own participant round, so it can be compared across
+    /// queries but cannot be divided into `routed_ns` — measured, the ratio comes out at 104% of the
+    /// median candidate-acquired query, which is how the two got read as a part and a whole.
+    pub(crate) routed_acquire_ns: Vec<u64>,
+    pub(crate) routed_choose_ns: Vec<u64>,
+    pub(crate) routed_dispatch_ns: Vec<u64>,
 }
 
 impl Prep {
@@ -8131,6 +8267,9 @@ fn explain(ctx: &QueryCtx, params: &QueryParams, filter: &mut FilterExpr, plane:
         feats, // moved: `eval_domain`/`n_cards`/`matches` live here and nowhere else
         acquire_ns: vec![acquire_ns],
         routed_ns: Vec::new(), // explain runs nothing
+        routed_acquire_ns: Vec::new(),
+        routed_choose_ns: Vec::new(),
+        routed_dispatch_ns: Vec::new(),
     };
     let mut estimates: Vec<PlanEstimate> = PhysicalPlan::ALL
         .into_iter()
@@ -8359,7 +8498,16 @@ fn explain_analyze(
             }
             match participant {
                 Participant::Acquire => facts.acquire_ns.push(dt),
-                Participant::Routed => facts.routed_ns.push(dt),
+                Participant::Routed => {
+                    facts.routed_ns.push(dt);
+                    // Taken from the slot `run_query_routed` just wrote, in the same round, so the
+                    // three sum to `dt`. Replaced with the default so a later participant that does
+                    // not publish here cannot report this round as its own.
+                    let ph = take_routed_phases();
+                    facts.routed_acquire_ns.push(ph.ns_acquire);
+                    facts.routed_choose_ns.push(ph.ns_choose);
+                    facts.routed_dispatch_ns.push(ph.ns_dispatch);
+                }
                 // A structurally-applicable plan's fastpath can still decline at runtime
                 // (e.g. PrintingCompose on a sparse total) — deterministic for this
                 // query/data, so a decliner simply never accumulates trials.
@@ -9037,6 +9185,9 @@ fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<B
     d.set_item("narrowed_repr", f.narrowed_repr.label())?;
     d.set_item("acquire_ns", f.acquire_ns.clone())?;
     d.set_item("routed_ns", f.routed_ns.clone())?;
+    d.set_item("routed_acquire_ns", f.routed_acquire_ns.clone())?;
+    d.set_item("routed_choose_ns", f.routed_choose_ns.clone())?;
+    d.set_item("routed_dispatch_ns", f.routed_dispatch_ns.clone())?;
     // The model's own inputs, so a calibration fit regresses on the same vector `plan_cost` reads.
     let g = &f.feats;
     for (k, v) in [

@@ -148,7 +148,20 @@ PLAN_KEYS = frozenset(
         "paging_taken",
     }
 )
-ACQUIRE_KEYS = frozenset({"count_source", "narrowed_repr", "acquire_ns", "routed_ns", "compose_paging"})
+# The routed phase split is asserted here too: it is a partition of `routed_ns`, so a build that
+# stops publishing it should fail loudly rather than have a consumer silently read an empty list.
+ACQUIRE_KEYS = frozenset(
+    {
+        "count_source",
+        "narrowed_repr",
+        "acquire_ns",
+        "routed_ns",
+        "routed_acquire_ns",
+        "routed_choose_ns",
+        "routed_dispatch_ns",
+        "compose_paging",
+    }
+)
 
 
 def require_schema(res: dict) -> None:

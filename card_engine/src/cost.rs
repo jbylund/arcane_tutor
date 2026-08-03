@@ -547,7 +547,8 @@ const WALK_LENGTH_BIAS: f64 = 1.45;
 
 pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
     let n_cards = f64::from(f.n_cards);
-    let n_printings = f64::from(f.n_printings);
+    // `n_printings` is no longer bound here: it was only feeding the local copy of the walk-length
+    // formula, which now calls `printings_walked` so there is one definition of it.
     let matches = f64::from(f.matches);
     let eval_domain = f64::from(f.eval_domain);
     let scan_units = f64::from(f.scan_units);
