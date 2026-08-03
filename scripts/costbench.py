@@ -136,7 +136,8 @@ PLAN_KEYS = frozenset(
         "trials_ns",
         "declined_ns",
         "cards_visited",
-        "printings_scanned",
+        "printing_span",
+        "printings_examined",
         "matches_pushed",
         "ns_setup",
         "ns_loop",
@@ -210,9 +211,20 @@ class Sample:
         return (self.q, self.kw["unique"], self.kw["orderby"], self.kw["direction"], self.kw["limit"], self.kw["offset"])
 
 
-def sample_kwargs(sampler: QuerySampler, rng: random.Random) -> dict:
-    """One query shape: distinct-on, order, direction and page, weighted by the sampler's mode."""
-    return {
+def sample_kwargs(sampler: QuerySampler, rng: random.Random, *, vary_prefer: bool = False) -> dict:
+    """One query shape: distinct-on, order, direction and page, weighted by the sampler's mode.
+
+    `vary_prefer` draws `prefer` from the sampler instead of pinning it to `"default"`, and it is
+    OFF by default for a reason that is not timidity: drawing it consumes the rng, so turning it on
+    shifts every subsequent query in the stream. Baselines on disk were taken without it, and a
+    harness comparing against one must keep the stream byte-identical.
+
+    Turn it on where `prefer` is the variable under study. It is not cosmetic -- it decides whether
+    the card-mode match kernels may stop at the first qualifying printing (`Prefer::Default`,
+    printings are stored in prefer-desc order) or must score all of them to find the max. That is a
+    ~3x difference in per-card work that no other sampled parameter reaches.
+    """
+    kwargs = {
         "filters": None,
         "unique": sampler.unique(rng),
         "orderby": sampler.orderby(rng),
@@ -220,13 +232,21 @@ def sample_kwargs(sampler: QuerySampler, rng: random.Random) -> dict:
         "limit": rng.choice(LIMITS),
         "offset": rng.choice(OFFSETS),
     }
+    if vary_prefer:
+        kwargs["prefer"] = sampler.prefer(rng)
+    return kwargs
 
 
-def iter_samples(engine: object, sampler: QuerySampler, rng: random.Random, budget: Budget) -> Iterator[Sample]:
+def iter_samples(
+    engine: object, sampler: QuerySampler, rng: random.Random, budget: Budget, *, vary_prefer: bool = False
+) -> Iterator[Sample]:
     """Yield measured queries until the budget runs out, skipping any the parser rejects.
 
     The schema is checked against the first response that comes back, so a run against a build whose
     `explain_analyze` has moved on fails immediately instead of part way through.
+
+    `vary_prefer` is forwarded to `sample_kwargs`; see there for why it defaults off. The drawn
+    `prefer` lands in `Sample.kw`, so a caller that turns it on can slice by it.
     """
     # Imported here, not at module scope, so `costbench` stays importable (and unit-testable)
     # without the `api` package on the path. The cost is one import per process.
@@ -237,12 +257,17 @@ def iter_samples(engine: object, sampler: QuerySampler, rng: random.Random, budg
     taken = 0
     while time.monotonic() < deadline and (budget.sample is None or taken < budget.sample):
         taken += 1
-        kw = sample_kwargs(sampler, rng)
+        kw = sample_kwargs(sampler, rng, vary_prefer=vary_prefer)
         q = sampler.query(rng)
         try:
             kw["filters"] = parse_scryfall_query(q)
+            # Both calls get the same `prefer`. Note what that does and does not buy: `PlanFeatures`
+            # does not carry `prefer`, so the features and every `predicted_ns` come back identical
+            # whatever is passed, while execution honours it. That asymmetry is what makes a prefer
+            # slice readable -- only the COUNTERS move, so a ratio that shifts with `prefer` is the
+            # feature failing to model a real difference in work, not two numbers drifting at once.
             acquire = engine.explain(**kw)["acquire"]
-            res = engine.explain_analyze(prefer="default", num_warmups=budget.warmups, num_trials=budget.trials, **kw)
+            res = engine.explain_analyze(num_warmups=budget.warmups, num_trials=budget.trials, **{"prefer": "default", **kw})
         except Exception:  # noqa: BLE001, S112 - a rejected query is a skipped sample
             continue
         if not checked:

@@ -768,6 +768,17 @@ class QuerySampler:
         """An orderby, weighted by mode. Which one gates StreamedSelect/PlanePopcountOrder."""
         return self._choose(self._restrict(self.orderbys, shape.orderby), rng)
 
+    def prefer(self, rng: random.Random) -> str:
+        """A printing-preference, weighted by mode.
+
+        Exposed alongside `unique`/`orderby` because it is not merely a result-shaping knob: the
+        card- and artwork-mode match kernels may stop at the first qualifying printing under
+        `default` (printings are stored in prefer-desc order, so the first match IS the pick) and
+        must score every printing under any other value. A harness that pins this to `default`
+        measures only the short-circuiting path.
+        """
+        return self._choose(self.prefers, rng)
+
     def params(self, rng: random.Random, shape: Shape = ANY_SHAPE) -> dict[str, str | int]:
         """Every result-shaping parameter at once: unique, orderby, prefer, direction, offset."""
         return {

@@ -50,7 +50,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from api.parsing import parse_scryfall_query  # noqa: E402
-from client.query_sampler import MODES, QuerySampler  # noqa: E402
+from client.query_sampler import ANY_SHAPE, MODES, QuerySampler, Shape  # noqa: E402
 from scripts.costbench import load_engine  # noqa: E402
 
 # Well above the shared costbench (2, 7), which is calibrated for comparisons INSIDE one
@@ -82,8 +82,24 @@ class Budget:
     trials: int = NUM_TRIALS
 
 
-def measure(engine: object, sampler: QuerySampler, rng: random.Random, budget: Budget) -> list[dict]:
-    """Min-of-trials wall time for `query()` on each sampled query."""
+def measure(  # noqa: PLR0913 - a measurement function's arguments ARE the conditions it measures under
+    engine: object,
+    sampler: QuerySampler,
+    rng: random.Random,
+    budget: Budget,
+    shape: Shape = ANY_SHAPE,
+    *,
+    vary_prefer: bool = False,
+) -> list[dict]:
+    """Min-of-trials wall time for `query()` on each sampled query.
+
+    `vary_prefer` draws the printing preference instead of pinning it to `default`. Off by default
+    because drawing it consumes the rng and shifts the whole query stream, which would orphan every
+    baseline on disk -- but a run pinned to `default` cannot see a change to the custom-prefer path at
+    all. `Prefer::Default` is the only value that lets the card- and artwork-mode match kernels stop
+    at the first qualifying printing; the other four must score every printing of the card. `query()`
+    has taken `prefer` on every build this harness can target, so varying it stays A/B-safe.
+    """
     rows: list[dict] = []
     for _ in range(budget.sample):
         limit, offset = rng.choice(LIMITS), rng.choice(OFFSETS)
@@ -94,15 +110,16 @@ def measure(engine: object, sampler: QuerySampler, rng: random.Random, budget: B
             "limit": limit,
             "offset": offset,
         }
-        q = sampler.query(rng)
+        q = sampler.query(rng, shape)
+        prefer = sampler.prefer(rng) if vary_prefer else "default"
         try:
             filters = parse_scryfall_query(q)
             for _ in range(budget.warmups):
-                engine.query(filters=filters, prefer="default", **kw)
+                engine.query(filters=filters, prefer=prefer, **kw)
             best = math.inf
             for _ in range(budget.trials):
                 t0 = time.perf_counter_ns()
-                engine.query(filters=filters, prefer="default", **kw)
+                engine.query(filters=filters, prefer=prefer, **kw)
                 best = min(best, time.perf_counter_ns() - t0)
         except Exception:  # noqa: BLE001, S112 - a rejected query is a skipped sample
             continue
@@ -110,6 +127,7 @@ def measure(engine: object, sampler: QuerySampler, rng: random.Random, budget: B
             {
                 "q": q,
                 **{k: kw[k] for k in ("unique", "orderby", "direction")},
+                "prefer": prefer,
                 "limit": limit,
                 "offset": offset,
                 "us": best / 1000.0,
@@ -134,7 +152,9 @@ def compare(path_a: pathlib.Path, path_b: pathlib.Path) -> None:
         out = {}
         for line in path.open():
             r = json.loads(line)
-            out[(r["q"], r["unique"], r["orderby"], r["direction"], r["limit"], r["offset"])] = r["us"]
+            # `.get` for `prefer`: files written before it was recorded pin it to default anyway, so
+            # they still pair with each other rather than failing to key.
+            out[(r["q"], r["unique"], r["orderby"], r["direction"], r.get("prefer", "default"), r["limit"], r["offset"])] = r["us"]
         return out
 
     a, b = rows(path_a), rows(path_b)
@@ -176,7 +196,23 @@ def main() -> None:
         "--trials", type=int, default=NUM_TRIALS, help="a cross-process A/B needs a converged floor; see the module docstring"
     )
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--vary-prefer",
+        action="store_true",
+        help="sample the printing preference instead of pinning it to default; the custom-prefer path is the only one where the match kernels cannot early-break",
+    )
     parser.add_argument("--mode", choices=MODES, default="realistic", help="latency asks what users wait for, so traffic-weighted")
+    parser.add_argument(
+        "--predicates",
+        type=int,
+        default=None,
+        help=(
+            "pin the conjunction width instead of drawing it from PREDICATE_COUNT_WEIGHTS (1/2/3 at "
+            "45/40/15). 4+ is reachable only this way, and on purpose: the sampler caps the natural "
+            "draw at 3 because deeper conjunctions narrow to nothing and stop exercising plan choice, "
+            "which is the thing being measured. Pin it to compare like against like at one width."
+        ),
+    )
     parser.add_argument("--corpus", type=pathlib.Path, default=REPO_ROOT / "benchmarks/bitplanes/corpus.jsonl")
     parser.add_argument("--shm-path", type=pathlib.Path, default=None)
     parser.add_argument("--out", type=pathlib.Path, help="write per-query latencies as JSONL")
@@ -189,8 +225,17 @@ def main() -> None:
 
     engine = load_engine(args.corpus, args.shm_path or args.corpus.with_suffix(".latency.store"))
     sampler = QuerySampler(args.corpus, args.mode)
-    rows = measure(engine, sampler, random.Random(args.seed), Budget(args.sample, args.warmups, args.trials))
-    print(f"measured {len(rows):,} queries, mode={args.mode}")
+    shape = Shape(predicates=args.predicates) if args.predicates else ANY_SHAPE
+    rows = measure(
+        engine,
+        sampler,
+        random.Random(args.seed),
+        Budget(args.sample, args.warmups, args.trials),
+        shape,
+        vary_prefer=args.vary_prefer,
+    )
+    width = f", predicates={args.predicates}" if args.predicates else ""
+    print(f"measured {len(rows):,} queries, mode={args.mode}{width}")
     if args.out:
         with args.out.open("w") as handle:
             for row in rows:

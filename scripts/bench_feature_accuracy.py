@@ -29,6 +29,7 @@ while the pooled median looks fine.
 from __future__ import annotations
 
 import argparse
+import math
 import pathlib
 import random
 import sys
@@ -58,25 +59,47 @@ AGREE_LO, AGREE_HI = 0.8, 1.25
 MIN_COUNTER = 100
 
 # feature name on the shared acquire vector -> the executor counter that realizes it.
+#
+# `scan_units` is graded against `printings_examined`, NOT `printing_span`. The latter is the
+# printing SPAN under the candidate cards, computed by the caller before the match kernel runs, so it
+# reports what a full scan would have cost rather than what happened. The two coincide in printing and
+# artwork mode -- those loops really do traverse the span -- which is why grading against the span
+# looked fine everywhere except card mode, where every kernel short-circuits. Reading the span as the
+# work done is how `cost.rs` came to assert that the scan plans "walk the full printing span of their
+# candidates in CARD mode too, not one row each"; they do not.
 PAIRS = (
     ("matches", "matches_pushed"),
     ("eval_domain", "cards_visited"),
-    ("scan_units", "printings_scanned"),
+    ("scan_units", "printings_examined"),
 )
+# Kept alongside so one run shows both gradings. The gap between the two columns IS the miscount, and
+# reporting it as a column beats asserting it in prose.
+SPAN_COUNTER = "printing_span"
 
 
-def scan_feature(plan: str, paging: str) -> str:
-    """Which feature the ARM actually charges its printing scan on.
+def scan_feature(plan: str, paging: str, tier_ns100: int) -> str | None:
+    """Which feature the ARM actually charges its printing scan on, or None if it charges none.
 
     One shared vector costs every plan, but they do not all read the same field, and comparing a
     counter to a feature the arm never touches manufactures a defect. Compose walks the set bits of
     its composed bitmap (`compose_scan_printings`) when it pages by Gather, and stops at
     `page_offset + limit` when it pages by walking (`printings_walked`); only the materializing scan
     plans read `scan_units`.
+
+    `StreamedSelect` reads it only WITH a residual. Its arm is
+    `if tier_ns > 0.0 { scan_units * STREAM_SCAN_PER_ROW_NS } else { 0.0 }` -- with `all_match` (tier
+    0) P3 walks no printings and the term is switched off entirely. Graded anyway, those rows read
+    p50 2.72 / p70 3.08 against `printings_examined`, because `scan_units` there is GatheredScan's
+    full-span quantity while StreamedSelect's counting kernel answers existence from the first
+    matching printing. That is not a feature error -- it is a number the model never multiplies by
+    anything -- and reporting it as one sent `fit_cost_model.py`'s `counter_check` into refusing to
+    fit this plan at all.
     """
-    if plan != "PrintingCompose":
-        return "scan_units"
-    return "compose_scan_printings" if paging == "Gather" else "printings_walked"
+    if plan == "PrintingCompose":
+        return "compose_scan_printings" if paging == "Gather" else "printings_walked"
+    if plan == "StreamedSelect" and tier_ns100 == 0:
+        return None
+    return "scan_units"
 
 
 percentile = costbench.percentile
@@ -86,7 +109,13 @@ def collect(engine: object, sampler: QuerySampler, rng: random.Random, seconds: 
     """One row per (query, plan, feature) where the plan reported the matching counter."""
     rows: list[dict] = []
     budget = costbench.Budget(seconds=seconds, warmups=NUM_WARMUPS, trials=NUM_TRIALS)
-    for sample in costbench.iter_samples(engine, sampler, rng, budget):
+    # `prefer` is sampled, not pinned: it decides whether the card-mode kernels stop at the first
+    # qualifying printing or must score every one, which is the single largest per-card work
+    # difference any sampled parameter reaches -- and the cost model cannot see it, since
+    # `PlanFeatures` does not carry `prefer` (see `explain`'s doc in lib.rs). A run pinned to
+    # `default` measures only the short-circuiting path and reads the feature as though the
+    # long path did not exist.
+    for sample in costbench.iter_samples(engine, sampler, rng, budget, vary_prefer=True):
         acq = sample.acquire
         for plan in sample.plans:
             if not plan["trials_ns"]:
@@ -94,21 +123,32 @@ def collect(engine: object, sampler: QuerySampler, rng: random.Random, seconds: 
             paging = acq["compose_paging"]
             for feat, counter in PAIRS:
                 if feat == "scan_units":
-                    feat = scan_feature(plan["plan"], paging)  # noqa: PLW2901 - the arm decides which field it reads
+                    feat = scan_feature(plan["plan"], paging, acq["residual_tier_ns100"])  # noqa: PLW2901 - the arm decides
+                    if feat is None:
+                        continue  # this arm charges no scan term for this query; there is nothing to grade
                 got = plan.get(counter)
                 if got is None or got < MIN_COUNTER:
                     continue
+                span = plan.get(SPAN_COUNTER)
                 rows.append(
                     {
                         "feature": feat,
                         "plan": plan["plan"],
                         "acquire": acq["count_source"],
                         "unique": sample.kw["unique"],
+                        "orderby": sample.kw["orderby"],
+                        # Sampled, so this slice is the one that separates the short-circuiting
+                        # card-mode kernels from the ones that must score every printing.
+                        "prefer": sample.kw.get("prefer", "default"),
                         # Compose's arm reads `scan_units` ONLY in its Gather branch; Perm/OrderbyWalk
                         # stop at page_offset+limit and never scan the candidates. A ratio measured on
                         # those is comparing the feature to work the arm never charges for.
                         "paging": paging,
                         "ratio": acq[feat] / got,
+                        # What the same row would have read graded against the printing SPAN -- the
+                        # old comparison. `nan` where the plan publishes no span, which `percentile`
+                        # tolerates and `MIN_ROWS` cells then drop.
+                        "span_ratio": (acq[feat] / span) if span else float("nan"),
                     }
                 )
     return rows
@@ -122,12 +162,13 @@ def verdict(sorted_vals: list[float]) -> str:
     return "  OVER-COUNTS" if med > AGREE_HI else "  UNDER-COUNTS"
 
 
-def table(rows: list[dict], key: Callable[[dict], object], label: str, *, limit: int = 30) -> None:
+def table(rows: list[dict], key: Callable[[dict], object], label: str, *, limit: int = 30, value: str = "ratio") -> None:
     """Feature/counter percentiles for one grouping, worst-calibrated cells first."""
     costbench.percentile_table(
         rows,
         key,
         label,
+        value=value,
         rank=costbench.BY_MISCALIBRATION,
         limit=limit,
         min_rows=MIN_ROWS,
@@ -158,9 +199,28 @@ def main() -> None:
     # StreamedSelect, GatheredScan and compose's Gather branch alike. If they disagree here, no single
     # value of the feature is right for all of them and the fix is per-arm, not per-mode.
     table(rows, lambda r: f"{r['feature']} <{r['plan']}> / {r['unique']}", "feature <plan> / distinct-on")
+    # `prefer` decides whether the card-mode kernels early-break, and `PlanFeatures` does not carry
+    # it, so one feature value has to serve both regimes. If these two rows differ, the feature is not
+    # merely miscalibrated -- it is blind to a variable that changes the work.
+    scan = [r for r in rows if r["feature"] == "scan_units"]
+    table(scan, lambda r: f"scan_units / {r['unique']} / prefer={r['prefer']}", "scan_units by distinct-on and PREFER")
+    # Orderby was always sampled and never sliced, so its effect has never been visible. It selects
+    # the plan set (StreamedSelect needs a sort permutation; PlanePopcountOrder needs its column) and
+    # therefore which arm reads the shared vector at all.
+    table(rows, lambda r: f"{r['feature']} / orderby={r['orderby']}", "feature by ORDERBY", limit=40)
     # Compose only pays `scan_units` when it pages by Gather, so judge the feature on those rows.
     compose = [r for r in rows if r["plan"] == "PrintingCompose"]
     table(compose, lambda r: f"{r['feature']} <compose {r['paging']}> / {r['unique']}", "compose only: feature by PAGING branch")
+    # The old grading, same rows: `scan_units` against the printing SPAN rather than the printings
+    # actually examined. Printed last as the control -- if these cells sit at 1.0 where the real
+    # column does not, the span is what the constants were fit against.
+    spanned = [r for r in scan if math.isfinite(r["span_ratio"])]
+    table(
+        spanned,
+        lambda r: f"scan_units / {r['unique']}",
+        "CONTROL: scan_units vs printing SPAN (the old grading)",
+        value="span_ratio",
+    )
     print(f"\n  Cells outside [{AGREE_LO}, {AGREE_HI}] are flagged. A feature error cannot be fixed by any")
     print("  rate: fit_cost_model.py will bury it in whichever coefficient correlates with it.")
 

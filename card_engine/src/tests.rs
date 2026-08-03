@@ -3491,16 +3491,16 @@ fn compose_paging_prediction_matches_the_branch_taken() {
     assert!(declined > 0, "no compose query declined; the decline-label assertion is unexercised");
 }
 
-/// The two materializing plans must report identical `cards_visited` and `printings_scanned`.
+/// The two materializing plans must report identical `cards_visited` and `printing_span`.
 ///
 /// These are ONE counter under one name: `PhaseStats` has a single set of fields and both
 /// `exec_gathered_scan` and `run_query_streamed` publish into them, so a consumer reading
-/// `printings_scanned` off a `PlanTrial` cannot tell which executor produced it. `scan_units` has
+/// `printing_span` off a `PlanTrial` cannot tell which executor produced it. `scan_units` has
 /// one definition too, and both plans' cost arms key on it — so if the executors count differently,
 /// at most one of them is the valid comparison, and the damage surfaces as a rate constant that
 /// will not calibrate rather than as anything that looks like a bug.
 ///
-/// `printings_scanned` is the load-bearing half, and the reason is a one-line placement: both
+/// `printing_span` is the load-bearing half, and the reason is a one-line placement: both
 /// executors count it BELOW the `card_pass` continue, because a card rejected there never has its
 /// printings touched. Counting at the top of the loop instead is the exact defect this pins, and it
 /// is the shape a plausible "just count once at the top" cleanup would reintroduce silently.
@@ -3515,6 +3515,12 @@ fn compose_paging_prediction_matches_the_branch_taken() {
 /// while streamed calls it and could hit the `continue`. The counts stay equal only if
 /// `all_match_known` is honest, so the artwork/all-match cell checks the narrowing's own claim as
 /// well as the counters — which is why it is guarded for coverage separately below.
+///
+/// `printings_examined` is deliberately NOT in this set, and must not be added: the two executors do
+/// genuinely different work there, which is the whole reason it exists as a second counter. Streamed
+/// only COUNTS, so both `all_match` arms of `card_match_count` answer from span arithmetic and examine
+/// zero printings; gathered must EMIT, so it reads the one printing it picks. Asserting equality would
+/// pin the very conflation `printing_span` already suffered from — see `PhaseStats`.
 ///
 /// `matches_pushed` is asserted two ways: plan-vs-plan like the others, and against the total each
 /// run actually returned. The second is what carries it. Plan-vs-plan alone cannot catch both
@@ -3536,7 +3542,7 @@ fn materializing_plans_agree_on_the_counters_they_share() {
     // never fires and the two loops trivially agree. Only an inexact narrowing (an oracle-text
     // trigram superset, an arithmetic comparison across a card and a printing field) hands the
     // executors candidates that `card_pass` then rejects, which is the only condition under which
-    // `printings_scanned` can diverge at all. Verified: without the second group `saw_continue` is
+    // `printing_span` can diverge at all. Verified: without the second group `saw_continue` is
     // 0 across the whole sweep and both assertions pass without exercising anything.
     let specs = [
         fuzz_leaf_type(&mut rng),
@@ -3601,9 +3607,9 @@ fn materializing_plans_agree_on_the_counters_they_share() {
                     streamed.cards_visited, gathered.cards_visited,
                 );
                 assert_eq!(
-                    streamed.printings_scanned, gathered.printings_scanned,
-                    "printings_scanned disagrees (streamed {} vs gathered {}): {case}",
-                    streamed.printings_scanned, gathered.printings_scanned,
+                    streamed.printing_span, gathered.printing_span,
+                    "printing_span disagrees (streamed {} vs gathered {}): {case}",
+                    streamed.printing_span, gathered.printing_span,
                 );
                 assert_eq!(
                     streamed.matches_pushed, gathered.matches_pushed,
@@ -3639,7 +3645,7 @@ fn materializing_plans_agree_on_the_counters_they_share() {
                 }
                 // Did the `card_pass` continue actually fire? Only then do the two loops take
                 // different numbers of trips past the counter, which is the only way
-                // `printings_scanned` can come apart at all. Measured as "fewer printings scanned
+                // `printing_span` can come apart at all. Measured as "fewer printings scanned
                 // than the candidate set holds", not guessed from the counters alone.
                 let scannable: u64 = prep
                     .card_ids(&ctx)
@@ -3648,7 +3654,7 @@ fn materializing_plans_agree_on_the_counters_they_share() {
                         u64::from(u32::from(e) - u32::from(s))
                     })
                     .sum();
-                if gathered.printings_scanned < scannable {
+                if gathered.printing_span < scannable {
                     saw_continue += 1;
                 }
             }
@@ -3666,12 +3672,12 @@ fn materializing_plans_agree_on_the_counters_they_share() {
         artwork_all_match > 0,
         "no artwork query had all_match_known; the one cell where the two all_match gates diverge is unchecked",
     );
-    // And the continue must actually fire somewhere, or `printings_scanned` equality is trivial:
+    // And the continue must actually fire somewhere, or `printing_span` equality is trivial:
     // with every candidate passing, both loops scan every printing and cannot disagree. This is
     // what the inexact-narrowing specs are in the list for -- drop them and this drops to 0.
     assert!(
         saw_continue > 0,
-        "card_pass never rejected a candidate; printings_scanned agreed only because nothing was skipped",
+        "card_pass never rejected a candidate; printing_span agreed only because nothing was skipped",
     );
 }
 
@@ -3775,7 +3781,7 @@ fn plan_stats_never_leak_between_participants() {
                         // Leak 1. `ns_round_total` and `result_total` are excluded: `explain_analyze`
                         // fills both itself after the take, so they are non-zero by design here.
                         assert_eq!(
-                            (p.cards_visited, p.printings_scanned, p.matches_pushed), (0, 0, 0),
+                            (p.cards_visited, p.printing_span, p.printings_examined, p.matches_pushed), (0, 0, 0, 0),
                             "uninstrumented plan reported counters it never wrote: {case}",
                         );
                         assert_eq!(
@@ -4016,7 +4022,7 @@ fn declining_plans_report_their_gate_through_explain_analyze() {
                     // No executor ran, so anything non-zero here came from somewhere else.
                     let p = &t.phases;
                     assert_eq!(
-                        (p.cards_visited, p.printings_scanned, p.matches_pushed), (0, 0, 0),
+                        (p.cards_visited, p.printing_span, p.printings_examined, p.matches_pushed), (0, 0, 0, 0),
                         "a declining plan reported counters no executor wrote: {case}",
                     );
                     assert_eq!(

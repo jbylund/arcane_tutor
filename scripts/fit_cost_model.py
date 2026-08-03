@@ -91,7 +91,10 @@ CURRENT: dict[str, list[float]] = {
     # eval_domain, scan_units, tier scale, matches, page_span, fixed
     "GatheredScan": [6.88, 2.06, 18.89, 2.24, 3.51, 169.6],
     # eval_domain, scan_units, residual floor, matches, artwork_seen_cards, n_cards floor, corpus pass, fixed
-    "StreamedSelect": [6.46, 5.53, 8.18, 0.13, 1.36, 1.64, 0.02, 217.5],
+    # Refit once `printings_examined` existed: this plan's fit was vetoed for as long as the only
+    # available counter was the printing SPAN, which its all_match rows disagree with by ~3x over a
+    # term the arm multiplies by zero. Median agreement 0.63 -> 0.92, within-25% 19% -> 58%.
+    "StreamedSelect": [5.05, 5.97, 6.58, 0.12, 1.21, 1.02, 0.02, 217.0],
     # broadcast, scatter, project, popcount, walk step, walk emit, gather card pass, gather bittest,
     # gather push, fixed. Several of these are SHARED with other arms in cost.rs (LINEAR_PASS,
     # RANGE_SCATTER, GATHER_CARD_PASS, GATHER_PUSH_PER_MATCH, ...), so a fitted value that disagrees
@@ -167,10 +170,19 @@ def nnls(rows: list[list[float]], targets: list[float]) -> list[float]:
     return coeffs
 
 
-# The residual floors the shipped arms use inside `max(tier_ns, floor)`. They are NOT fitted here --
-# see design_row for why the max cannot be a plain linear column -- and were derived independently by
-# regressing per-card match-loop time on printings-per-card, split by tier class.
-SHIPPED_RESIDUAL_FLOOR = {"GatheredScan": 18.89, "StreamedSelect": 8.18}
+# The residual floors the shipped arms use inside `max(tier_ns, floor)`.
+#
+# These MUST equal the `*_RESIDUAL_FLOOR_NS` constants in cost.rs, and equal the third entry of the
+# matching `CURRENT` vector. All three are the same number: `design_row` makes the floor the
+# coefficient of the `eval_domain * residual_on` column AND uses it to compute the `excess` offset for
+# rows where the tier beats it. Change one without the others and `mirror_matches_engine` drops below
+# its 99% bar -- which is exactly how the 2026-08-02 refit was caught pasting a fitted floor of 6.58
+# into cost.rs while the offset here still assumed 8.18 (7.4% of rows disagreed).
+#
+# A consequence worth stating: the fitted floor is not directly pasteable, because the offset it was
+# fitted against assumed the OLD floor. Applying it and re-fitting is a fixed-point iteration, and
+# each run is only self-consistent with whatever is shipped at the time.
+SHIPPED_RESIDUAL_FLOOR = {"GatheredScan": 18.89, "StreamedSelect": 6.58}
 
 
 def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[float], list[str], float] | None:
@@ -277,12 +289,15 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
 
 def counter_check(samples: list[dict]) -> dict[str, list[tuple[str, float]]]:
     """Realized counter vs the feature that should predict it, per plan. Ratios should be 1.00."""
-    pairs = (("cards_visited", "eval_domain"), ("printings_scanned", "scan_units"), ("matches_pushed", "matches"))
+    # `scan_units` pairs with `printings_examined`, not the `printing_span` this used to read: the span
+    # is computed by the caller before the match kernel runs, so in card mode -- where every kernel
+    # stops at the first qualifying printing -- it reports work that never happened.
+    pairs = (("cards_visited", "eval_domain"), ("printings_examined", "scan_units"), ("matches_pushed", "matches"))
 
     def feature_for(plan: str, counter: str, row: dict) -> str:
         """Compose reads its own scan field, and which one depends on the paging branch that runs."""
-        if counter != "printings_scanned" or plan != "PrintingCompose":
-            return {"cards_visited": "eval_domain", "printings_scanned": "scan_units", "matches_pushed": "matches"}[counter]
+        if counter != "printings_examined" or plan != "PrintingCompose":
+            return {"cards_visited": "eval_domain", "printings_examined": "scan_units", "matches_pushed": "matches"}[counter]
         return "compose_scan_printings" if row["acq"].get("compose_paging") == "Gather" else "printings_walked"
 
     out: dict[str, list[tuple[str, float]]] = {}
@@ -295,8 +310,17 @@ def counter_check(samples: list[dict]) -> dict[str, list[tuple[str, float]]]:
             continue  # only the two scan plans carry counters; absent is not the same as wrong
         checks = []
         for counter, _default in pairs:
-            got = [r[counter] / max(r["acq"][feature_for(plan, counter, r)], 1) for r in instrumented]
-            feature = feature_for(plan, counter, instrumented[0])
+            # Only grade rows whose arm actually multiplies the feature by a rate. StreamedSelect's
+            # scan term is `if tier_ns > 0.0 { scan_units * ... } else { 0.0 }`, so on an all_match
+            # query (tier 0) `scan_units` is a number the model never reads -- and grading it anyway
+            # read 0.65 here and vetoed the whole plan's fit over a term that contributes zero.
+            graded = instrumented
+            if counter == "printings_examined" and plan == "StreamedSelect":
+                graded = [r for r in instrumented if r["acq"]["residual_tier_ns100"] > 0]
+            if not graded:
+                continue
+            got = [r[counter] / max(r["acq"][feature_for(plan, counter, r)], 1) for r in graded]
+            feature = feature_for(plan, counter, graded[0])
             if got:
                 checks.append((f"{counter}/{feature}", statistics.median(got)))
         if checks:
@@ -351,7 +375,8 @@ def collect(engine: object, rng: random.Random, seconds: float, sampler: QuerySa
                     "ns_setup": p["ns_setup"],
                     "ns_loop": p["ns_loop"],
                     "ns_finish": p["ns_finish"],
-                    "printings_scanned": p["printings_scanned"],
+                    "printing_span": p["printing_span"],
+                    "printings_examined": p["printings_examined"],
                     "matches_pushed": p["matches_pushed"],
                 }
             )
@@ -488,7 +513,10 @@ def main() -> None:
     args = parser.parse_args()
 
     engine = load_engine(args.corpus, args.shm_path or args.corpus.with_suffix(".fit.store"))
-    samples = collect(engine, random.Random(args.seed), args.seconds)
+    # Pass the sampler explicitly: `collect`'s fallback builds one off a hardcoded corpus path, so
+    # `--corpus` was loading the engine from one file and drawing queries from another (or, off the
+    # default checkout, raising FileNotFoundError). Values must come from the corpus the engine holds.
+    samples = collect(engine, random.Random(args.seed), args.seconds, QuerySampler(args.corpus, "uniform"))
     print(f"\n{len(samples):,} plan-rows collected in {args.seconds:.0f}s")
 
     agree, checked = mirror_matches_engine(samples)

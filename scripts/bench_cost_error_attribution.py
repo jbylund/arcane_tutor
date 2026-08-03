@@ -22,11 +22,14 @@ whatever error survives both is (2), the floor imposed by the arm's shape.
 
 Scoped to GatheredScan and StreamedSelect: they are the two plans with full executor counters, and
 they take the large majority of queries. `cards_visited` and `matches_pushed` are exact
-(verified 1.00 against their features on the candidates branch). `printings_scanned` is deliberately
-NOT substituted -- it counts the printing SPAN of each visited card, not rows examined, so in card
-mode where the loop breaks at the first match it overstates real work. Substituting it would
-manufacture a feature error that is really a counter definition. That makes the feature share here a
-LOWER bound, which is the safe direction.
+(verified 1.00 against their features on the candidates branch).
+
+`scan_units` is now substituted too, from `printings_examined`. It used to be left alone because the
+only counter available was `printing_span` (then named `printings_scanned`), which counts the printing
+SPAN of each visited card rather than rows examined -- so in card mode, where the kernels break at the
+first qualifying printing, it overstates real work and substituting it would have manufactured a
+feature error that was really a counter definition. `printings_examined` is reported by the match
+kernels themselves, so the feature share here is no longer a LOWER bound.
 
     .venv/bin/python scripts/bench_cost_error_attribution.py --seconds 600 --mode realistic
 """
@@ -124,16 +127,18 @@ def rows_for(samples: list[dict], plan: str, *, realized: bool) -> tuple[list[li
             continue
         a = s["acq"]
         tier = a["residual_tier_ns100"] / 100.0
-        # Realized: substitute the two EXACT counters. scan_units is left alone on purpose -- see the
-        # module docstring on why printings_scanned is not a drop-in for it.
+        # Realized: substitute all three counters. `printings_examined` is the match kernels' own
+        # report of rows touched, so unlike the `printing_span` it replaces it IS a drop-in for
+        # `scan_units` -- see the module docstring.
         eval_domain = float(s["cards_visited"] if realized else a["eval_domain"])
         matches = float(s["matches_pushed"] if realized else a["matches"])
+        scan_units = float(s["printings_examined"] if realized else a["scan_units"])
         design.append(
             terms(
                 plan,
                 Feats(
                     eval_domain=eval_domain,
-                    scan_units=float(a["scan_units"]),
+                    scan_units=scan_units,
                     matches=matches,
                     n_cards=float(a["n_cards"]),
                     tier_ns=tier,
