@@ -146,6 +146,21 @@ pub(crate) struct PlanFeatures {
     /// that keeps the popcount term honest across distinct-ons: `n_printings/64` (printing),
     /// `n_cards/64` (card), `n_artworks/64` (artwork). Set by `PrintingCompose`; `0` elsewhere.
     pub popcount_words: u32,
+    /// Printings the #744 orderby walk's BUCKET SCAN covers before the page can fill, or `0` when the
+    /// walk is not the branch (or its buckets are cheap value runs).
+    ///
+    /// The Perm and OrderbyWalk branches shared `printings_walked` — `page_span / match_rate`, a
+    /// page-fill length in MATCH units. That describes the permutation walk and does not describe a
+    /// bucket walk at all: `walk_rarity_orderby_page`'s interior buckets are one-hot PLANES, so a
+    /// single bucket ANDs `words_per_plane` words of the whole corpus whether two matches survive or
+    /// twenty thousand. Measured against the raw units actually scanned, the shared formula reads a
+    /// median 0.25 with spread 400 — it under-charges the walk ~4x, and under-charging is what
+    /// over-picks a plan.
+    ///
+    /// `usd` needs none of this: its buckets are value runs off the range index, small and
+    /// proportional to matches, which is the shape `printings_walked` already has. So this is `0`
+    /// there and the shared term stands.
+    pub orderby_walk_scan: u32,
     /// Which of `PrintingCompose`'s three paging strategies will actually run (see `ComposePaging`),
     /// decided the same way `printing_compose_fastpath` decides. The three have different cost shapes
     /// — the permutation walk and the #744 orderby-index walk are both offset-dependent (fill the page
@@ -475,8 +490,22 @@ const COMPOSE_FIXED_COST_NS: f64 = 163.56;
 pub(crate) fn printings_walked(f: &PlanFeatures) -> f64 {
     let page_span = f64::from((f.offset.saturating_add(f.limit)).min(f.matches));
     let match_rate = (f64::from(f.matches) / f64::from(f.n_printings.max(1))).max(MATCH_RATE_FLOOR);
-    page_span / match_rate
+    page_span / match_rate * WALK_LENGTH_BIAS
 }
+
+/// The closed form above assumes matches are spread UNIFORMLY along the walk order, so a page of
+/// `page_span` rows arrives after `page_span / match_rate` printings. They are not: the permutation
+/// orders cards by the sort column, and matches cluster within that order, so the walk runs longer
+/// than uniform spacing predicts before the page fills.
+///
+/// Measured against `printings_examined` once the walk branches began reporting it, the raw form
+/// reads a median 0.69 -- consistently under on all three acquires that reach a walk
+/// (`printing_range_scan` 0.66, `printing_compose` 0.67, `card_range_popcount` 0.74), which is what
+/// makes it a bias worth dividing out rather than three separate errors.
+///
+/// Bias only. The spread stays wide (p90/p10 ~10-18) because how matches clump along a sort order is
+/// not something a density ratio can see, and no constant will fix that.
+const WALK_LENGTH_BIAS: f64 = 1.45;
 
 pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
     let n_cards = f64::from(f.n_cards);
@@ -515,7 +544,9 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
                 // which is exactly why the COMPOSE_GATHER breadth gate is bypassed for it — broad is its
                 // best case, not its worst.
                 super::ComposePaging::Perm | super::ComposePaging::OrderbyWalk => {
-                    printings_walked * COMPOSE_WALK_STEP_NS  // walk to fill the page
+                    // `orderby_walk_scan` is 0 for Perm and for the usd walk, so this is the shared
+                    // page-fill term unless a bucket scan dominates it — see the field's doc.
+                    printings_walked.max(f64::from(f.orderby_walk_scan)) * COMPOSE_WALK_STEP_NS  // walk to fill the page
                         + limit * COMPOSE_WALK_EMIT_PER_ROW_NS  // emit one page of rows
                 }
                 // gather_composed_page: visits every candidate (eval_domain, same rate GatheredScan's

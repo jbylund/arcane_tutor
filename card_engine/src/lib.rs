@@ -5635,7 +5635,7 @@ struct ComposePageWork {
 }
 
 fn collect_orderby_page<'a>(
-    mut next_bucket: impl FnMut() -> Option<Vec<u32>>,
+    mut next_bucket: impl FnMut() -> Option<(u64, Vec<u32>)>,
     cards: &'a [AOracleCard],
     printings: &'a [APrinting],
     printing_to_card: &AOffsets,
@@ -5650,8 +5650,15 @@ fn collect_orderby_page<'a>(
     let mut cum = 0usize; // matches seen (skipped + collected) so far
     let mut first_touched = 0usize; // matches before the first collected bucket (the offset skip)
     let mut started = false;
+    // The work this walk really does, which is NOT `cum`. A bucket is produced by scanning a raw
+    // structure and intersecting it with `pbits`: a rarity PLANE bucket ANDs `words_per_plane` words
+    // (~n_printings/64) however few matches come out, a postings bucket walks its list, a range
+    // bucket walks its value run. `cum` counts what SURVIVED that scan, so pricing the walk on it
+    // charges nothing for a bucket that scanned the whole corpus and matched twice.
+    let mut scanned = 0u64;
     while cum < want {
-        let Some(bucket) = next_bucket() else { break };
+        let Some((raw, bucket)) = next_bucket() else { break };
+        scanned += raw;
         let m = bucket.len();
         if m == 0 {
             continue;
@@ -5674,13 +5681,13 @@ fn collect_orderby_page<'a>(
     if cum < want && cum < total {
         return None;
     }
-    // `cum` is what this branch stepped over to fill the page: matches seen, skipped and collected
-    // alike. That is the quantity `cost::printings_walked` predicts as `page_span / match_rate`, and
-    // until now nothing checked it. `cards_visited` stays 0 -- this walk steps a value structure and
-    // never iterates cards.
+    // `printings_examined` is the RAW units scanned, not `cum`: see `scanned`. `cost::printings_walked`
+    // predicts `page_span / match_rate`, a page-fill length in match units, which does not describe a
+    // bucket scan at all -- one rarity plane bucket costs the same whether it yields two matches or
+    // twenty thousand. `cards_visited` stays 0: this walk steps a value structure, never cards.
     let work = ComposePageWork {
         cards_visited: 0,
-        printings_examined: cum as u64,
+        printings_examined: scanned,
         matches_pushed: collected.len() as u64,
     };
     let matches: Vec<Match> = collected
@@ -5723,7 +5730,7 @@ fn walk_range_orderby_page<'a>(
 ) -> Option<(Vec<(&'a AOracleCard, &'a APrinting)>, ComposePageWork)> {
     let is_set = |pid: usize| pbits[pid >> 6] & (1u64 << (pid & 63)) != 0;
     let (mut lo, mut hi) = (0usize, idx.len());
-    let next = move || -> Option<Vec<u32>> {
+    let next = move || -> Option<(u64, Vec<u32>)> {
         if lo >= hi {
             return None;
         }
@@ -5743,7 +5750,8 @@ fn walk_range_orderby_page<'a>(
             (lo, b)
         };
         if descending { hi = bs } else { lo = be }
-        Some((bs..be).map(|t| u32::from(idx[t].1)).filter(|&pid| is_set(pid as usize)).collect())
+        // The value run is scanned in full and bit-tested per entry; `be - bs` is that cost.
+        Some(((be - bs) as u64, (bs..be).map(|t| u32::from(idx[t].1)).filter(|&pid| is_set(pid as usize)).collect()))
     };
     collect_orderby_page(next, cards, printings, printing_to_card, sort_col, descending, total, limit, page_offset)
 }
@@ -5776,10 +5784,13 @@ fn walk_rarity_orderby_page<'a>(
     }
     let wpp = words_per_plane(n_printings);
     let mut vi = 0usize;
-    let next = move || -> Option<Vec<u32>> {
+    let next = move || -> Option<(u64, Vec<u32>)> {
         let int = *values.get(vi)?;
         vi += 1;
-        let pids: Vec<u32> = if let Some(k) = RARITY_PRINTING_PLANE_INTS.iter().position(|&v| v == int) {
+        // `raw` is what the bucket cost to produce, which the two kinds pay very differently: a plane
+        // bucket ANDs `wpp` words of the whole corpus however few matches survive, while a postings
+        // bucket walks only its own list. Counted in the same units the caller sums.
+        let (raw, pids): (u64, Vec<u32>) = if let Some(k) = RARITY_PRINTING_PLANE_INTS.iter().position(|&v| v == int) {
             let plane = &rp.words[k * wpp..(k + 1) * wpp];
             let mut out = Vec::new();
             for (wi, (pw, bw)) in plane.iter().zip(pbits.iter()).enumerate() {
@@ -5789,14 +5800,20 @@ fn walk_rarity_orderby_page<'a>(
                     w &= w - 1;
                 }
             }
-            out
+            // One word covers 64 printings, so report the printings covered rather than the word
+            // count -- that keeps this comparable to the entry-scanning buckets and to a feature
+            // measured in printings.
+            ((wpp * 64) as u64, out)
         } else {
             match rp.postings.iter().find(|e| e.0 == int) {
-                Some(e) => e.1.iter().map(|p| u32::from(*p)).filter(|&pid| pbits[pid as usize >> 6] & (1u64 << (pid & 63)) != 0).collect(),
-                None => Vec::new(),
+                Some(e) => (
+                    e.1.len() as u64,
+                    e.1.iter().map(|p| u32::from(*p)).filter(|&pid| pbits[pid as usize >> 6] & (1u64 << (pid & 63)) != 0).collect(),
+                ),
+                None => (0, Vec::new()),
             }
         };
-        Some(pids)
+        Some((raw, pids))
     };
     collect_orderby_page(next, cards, printings, printing_to_card, SortCol::Rarity, descending, total, limit, page_offset)
 }
@@ -7308,6 +7325,68 @@ fn declined_sibling_fastpath<'a>(
 /// `domain * (1 - e^(-k/domain))`. Unlike `k.min(domain)` this does not saturate -- `cn<100` (35,021
 /// printings) and `usd<50` (80,527) both cap to exactly 31,508 against true counts of 17,616 and
 /// 31,217, losing the entire signal between them.
+/// How much `balls_into_bins` over-states compose's distinct-card count, measured against
+/// `cards_visited` once `PrintingCompose` began reporting it.
+///
+/// The model assumes each matching printing lands in an independently chosen card. Compose's
+/// predicates are CLUSTERED instead -- a legality leaf broadcast down sets every printing of a
+/// matching card at once -- so the same `k` printings touch far fewer cards than independence
+/// predicts. Over 1,036 measured gather rows the raw estimator reads a median **1.73x** the truth.
+///
+/// A calibration constant and not a better model, deliberately: a size-biased estimator over the
+/// corpus's span histogram (`P(hit) = 1-(1-p)^s` per span-`s` card, which is the principled fix for
+/// treating every card as one equally likely bin) was tried and scored NO better -- log error 0.512
+/// against 0.513 -- because the failing assumption is independence, not uniform bins, and a
+/// size-biased model is still an independence model. Per-slice constants keyed on
+/// broadcast/range were also tried and added nothing once the exact rows below were separated out
+/// (test log error 0.439 against 0.438).
+///
+/// Fit on 1,036 rows, scored on a held-out 1,047: test log error 0.678 -> 0.438, median 1.73 -> 0.98,
+/// spread unchanged at 3.6. Spread is what a constant cannot fix, and it is what remains.
+///
+/// NOT applied where `range_card_counts_for` answers exactly -- those rows measure 1.000 with log
+/// error 0.056 and dividing them by anything would break them. That mixture is why the bias looked
+/// like 1.35 before the two populations were separated.
+const COMPOSE_CARD_ESTIMATE_BIAS: f64 = 1.78;
+
+/// Printings the gather BIT-TESTS per matching printing.
+///
+/// `compose_scan_printings` was the composed bitmap's popcount, on the stated grounds that compose
+/// "walks the set bits". `gather_composed_page` does not: except in its card/default-prefer arm it
+/// iterates `start..end` of every candidate card and tests each printing, so the real count is the
+/// SPAN of the candidate cards. Measured against `printings_examined`, the popcount reads a median
+/// 0.68 of the truth -- the gather tests 1.47 printings for every one that is set.
+///
+/// A single constant, unlike the card estimate's: per-slice constants keyed on broadcast/range were
+/// tried and made the held-out SPREAD worse (14.8 against 9.2) for a log-error gain of 0.005, which
+/// is overfitting four numbers to a mixture. Test log error 0.845 -> 0.700, median 0.66 -> 0.97.
+///
+/// The alternative is to make the feature true by changing the executor -- walking set bits, as the
+/// old comment claimed. Measured ceiling for that: bit tests on non-set printings are 11% of the
+/// gather's modelled page cost (`card_pass` is 60%, `push` 26%), so it is a constant-factor
+/// optimisation of one branch, not a model change. Left as a separate question.
+const COMPOSE_GATHER_SPAN_PER_MATCH: f64 = 1.47;
+
+/// How much bigger the candidate cards on a compose acquire are than an average card.
+///
+/// `scan_all` projects a card count into printings with the corpus mean (`printings_per_card`,
+/// 3.09). That is right when the candidates are a fair sample of the corpus and wrong here: a
+/// composable predicate selects cards by having a matching PRINTING, so heavily-reprinted cards are
+/// over-represented — the same size bias that makes compose's own gather test 13.2 printings per
+/// candidate card against a corpus mean of 3.09.
+///
+/// This multiplier is on `scan_units`, which costs the MATERIALIZING alternatives should compose
+/// lose, so it is a routing input even though compose never reads it. Calibrating the card estimate
+/// exposed it: `scan_units [printing_compose]` had been reading 0.75 with the two errors partly
+/// cancelling, and dividing `est_cards` by 1.78 moved it to 0.47.
+const COMPOSE_CANDIDATE_SPAN_BIAS: f64 = 2.1;
+
+/// `balls_into_bins` with its measured bias divided out. See `COMPOSE_CARD_ESTIMATE_BIAS`.
+fn calibrated_balls_into_bins(k: usize, domain: usize) -> usize {
+    let raw = balls_into_bins(k, domain) as f64;
+    ((raw / COMPOSE_CARD_ESTIMATE_BIAS).round() as usize).max(usize::from(k > 0))
+}
+
 fn balls_into_bins(k: usize, domain: usize) -> usize {
     if domain == 0 {
         return 0;
@@ -7446,6 +7525,7 @@ fn mk_plan_feats(
         // STREAM_ARTWORK_SEEN_PER_CARD_NS for the mechanism and the measurement.
         artwork_seen_cards: if matches!(params.mode, Mode::Artwork) { eval_domain } else { 0 },
         compose_scan_printings: 0, // set by every branch that costs a PrintingCompose (its own, or as a competitor)
+        orderby_walk_scan: 0,      // only the compose branch, and only for a plane-bucket orderby walk
     }
 }
 
@@ -7604,11 +7684,23 @@ fn acquire_plan_features(
         feats.compose_paging = compose_paging_for(indexes, cards.len(), mode, sort_col, descending);
         (feats, Prep::Range(CountSource::CardRangePopcount))
     } else if PhysicalPlan::PrintingRangeScan.applicable(ctx, params, filter, plane) {
-        // Bare range: exact k from the index (no scan). P3/P4 estimated unnarrowed
-        // (their broad regime — a narrow range makes P1 lose, and dispatch materializes).
+        // Bare range: exact k from the index (no scan).
         let (idx, lo, hi) = bare_range_bounds(filter, indexes).expect("applicable ⇒ bare range");
         let k = (idx.partition_point(|p| u32::from(p.0) < hi) - idx.partition_point(|p| u32::from(p.0) < lo)) as u32;
-        let mut feats = mk_plan_feats(ctx, params, k, n_cards, n_printings, verify_cost_tier(filter));
+        // What the MATERIALIZING alternatives see, by the same test the sibling `CardRangePopcount`
+        // branch already applies: `range_narrowed` hands back an enumerable printing list only while
+        // the slice stays under `MAX_NARROW_FRACTION`, and degrades to a printing-space bitmap past
+        // it, which cannot yield card ids so the scan walks the whole corpus.
+        //
+        // This branch used to assume the degraded case ALWAYS, on the grounds that a narrow range
+        // makes P1 lose and dispatch materializes anyway. The sibling's comment went further and
+        // claimed the two "agree to within 1%". They agree at the MEDIAN and nowhere else: measured
+        // against `cards_visited`, `eval_domain` here reads 1.00 at p50 but 4.23 at p70 and 41.7 at
+        // p90, because a third of these queries do narrow. (The p100 of 315 is the harness's
+        // MIN_COUNTER floor, not the real maximum -- 31,508/100.)
+        let (eval_domain, scan_units) =
+            if range_too_broad_to_narrow(k as usize, idx.len()) { (n_cards, n_printings) } else { (k.min(n_cards), k) };
+        let mut feats = mk_plan_feats(ctx, params, k, eval_domain, scan_units, verify_cost_tier(filter));
         feats.compose_scan_printings = k;
         feats.scatter_printings = k; // for costing a competing PrintingCompose (which would scatter k); P1 itself walks, so its own cost ignores this
         // Also for costing that competing compose: `eval_domain`/`scan_units` above are the
@@ -7639,7 +7731,8 @@ fn acquire_plan_features(
         // every artwork-mode one, plus card-mode ones whose orderby has no permutation.
         let exact_cards = bare_range_bounds(filter, indexes)
             .and_then(|(idx, lo, hi)| range_card_counts_for(indexes, idx).and_then(|counts| counts.distinct_cards(lo, hi)));
-        let est_cards = exact_cards.map_or_else(|| balls_into_bins(printing_matches, n_cards as usize), |n| n as usize);
+        let est_cards =
+            exact_cards.map_or_else(|| calibrated_balls_into_bins(printing_matches, n_cards as usize), |n| n as usize);
         // What the MATERIALIZING alternatives scan if compose loses. Every mode narrows -- a
         // composable filter has an index for every leaf -- so all three are the NARROWED counts.
         // Printing mode took the unnarrowed universe while card/artwork took a narrowed count; only
@@ -7647,7 +7740,7 @@ fn acquire_plan_features(
         // `eval_domain` and scanned 0.14x the claimed `scan_units`. Over-costing both plans inflates
         // the predicted GAP between them (P4 carries the larger per-row rates), which is what routing
         // reads -- measured as a GatheredScan-vs-StreamedSelect gap ratio of 0.32 on this acquire.
-        let scan_all = |cards: usize| ((cards as f64) * printings_per_card) as usize;
+        let scan_all = |cards: usize| ((cards as f64) * printings_per_card * COMPOSE_CANDIDATE_SPAN_BIAS) as usize;
         let (result_total, project, popcount_words, eval_domain, scan_units) = match mode {
             Mode::Printing => (printing_matches, 0, (n_printings as usize).div_ceil(64), est_cards, scan_all(est_cards)),
             Mode::Card => {
@@ -7677,7 +7770,11 @@ fn acquire_plan_features(
         feats.scatter_printings = scatter as u32;
         feats.project_printings = project as u32;
         feats.popcount_words = popcount_words as u32;
-        feats.compose_scan_printings = printing_matches as u32;
+        feats.compose_scan_printings = (printing_matches as f64 * COMPOSE_GATHER_SPAN_PER_MATCH) as u32;
+        // A rarity orderby walk pays a whole one-hot plane per bucket, so its floor is the corpus
+        // however selective the filter is. `usd` walks small value runs instead and keeps the shared
+        // page-fill term. See `PlanFeatures::orderby_walk_scan`.
+        feats.orderby_walk_scan = if matches!(sort_col, SortCol::Rarity) { n_printings } else { 0 };
         // Which paging strategy the fastpath will actually use — decided the same way the fastpath
         // itself decides, through the same helpers, including whether it will decline. Only this
         // branch knows the estimated result total, so only it can predict the small-total bail. The
@@ -8920,6 +9017,7 @@ fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<B
         ("popcount_words", g.popcount_words),
         ("artwork_seen_cards", g.artwork_seen_cards),
         ("compose_scan_printings", g.compose_scan_printings),
+        ("orderby_walk_scan", g.orderby_walk_scan),
         // Derived inside plan_cost rather than stored, and exposed because the Perm/OrderbyWalk
         // paging branches are priced entirely on it and nothing else can check them.
         ("printings_walked", cost::printings_walked(g) as u32),

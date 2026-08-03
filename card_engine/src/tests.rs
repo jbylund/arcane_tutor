@@ -3224,6 +3224,21 @@ fn explain_reports_ranked_applicable_plans() {
                 );
             }
             for e in &estimates {
+                // `PrintingCompose` alone may report `+inf`, and it means one specific thing: the
+                // fastpath is predicted to REFUSE this query, so `cost::plan_cost` returns
+                // `f64::INFINITY` to keep it out of the argmin rather than route to a plan that
+                // returns `None` and pays a detour. It still appears in `estimates` (sorted last),
+                // and `costbench.predicted_ns` screens it for exactly this reason.
+                //
+                // This assertion used to demand finiteness from every plan and passed only because
+                // the fixture never tripped the small-total decline. Calibrating the compose card
+                // estimate (it read a median 1.73x the truth) shrank `result_total` enough to
+                // predict declines here -- the prediction mirrors the fastpath's real
+                // `total <= STREAM_MIN_MATCHES` bail, so predicting more of them on a better
+                // estimate is the improvement, not a regression.
+                if e.plan == PhysicalPlan::PrintingCompose && e.predicted_ns == f64::INFINITY {
+                    continue;
+                }
                 assert!(e.predicted_ns.is_finite() && e.predicted_ns >= 0.0, "non-finite/negative predicted_ns for {:?}", e.plan);
             }
         }
@@ -4463,6 +4478,7 @@ fn plan_cost_model_matches_gold() {
                     broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 compose_scan_printings: 0,
+                orderby_walk_scan: 0,
                 };
 
                 // ── Model argmin over the applicable plans ──
@@ -4701,6 +4717,7 @@ fn plan_cost_refit() {
                     broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 compose_scan_printings: 0,
+                orderby_walk_scan: 0,
                 };
                 for (pi, plan) in all_plans.iter().enumerate() {
                     if let Some(meas) = ns[pi] {
@@ -4902,6 +4919,7 @@ fn printing_range_route_probe() {
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 compose_scan_printings: 0,
+                orderby_walk_scan: 0,
             };
 
             // ── Three pickers ──
@@ -5263,6 +5281,7 @@ fn plan_regret_report() {
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 compose_scan_printings: 0,
+                orderby_walk_scan: 0,
             };
 
             let gold = (0..4).filter_map(|i| ns[i].map(|v| (v, i))).min_by_key(|(v, _)| *v);
@@ -5390,6 +5409,7 @@ fn plan_regret_fuzz() {
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 compose_scan_printings: 0,
+                orderby_walk_scan: 0,
             };
             let feats_true = mk(true_total, eval_domain);
             let feats_est = mk(est, est.min(n_cards));
