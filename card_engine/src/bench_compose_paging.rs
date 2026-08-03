@@ -26,13 +26,21 @@ use rkyv::Archived;
 
 use super::{
     archive_header, archive_payload, compose_printing_bits, gather_composed_page, walk_range_orderby_page, CardData, CmpOp, CollField,
-    FilterExpr, Mmap, Mode, Prefer, QueryCtx, QueryParams, SortCol, ARCHIVE_HEADER_LEN,
+    FilterExpr, Mmap, Mode, Prefer, QueryCtx, QueryParams, SortBound, SortCol, ARCHIVE_HEADER_LEN,
 };
 
 /// This bench's fixed query shape: `unique=printing`, `orderby=usd` ascending,
 /// one page of `LIMIT` — only the offset sweeps.
 fn bench_params(page_offset: usize) -> QueryParams {
-    QueryParams { mode: Mode::Printing, prefer: Prefer::Default, sort_col: SortCol::PriceUsd, descending: false, limit: LIMIT, page_offset }
+    QueryParams {
+        mode: Mode::Printing,
+        prefer: Prefer::Default,
+        sort_col: SortCol::PriceUsd,
+        descending: false,
+        limit: LIMIT,
+        page_offset,
+        sort_bound: SortBound::UNBOUNDED,
+    }
 }
 
 const ITERS: usize = 200;

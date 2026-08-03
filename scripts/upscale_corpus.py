@@ -41,8 +41,6 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from scripts import costbench  # noqa: E402
-
 # Rows per `add_batch`, matching costbench.BATCH_SIZE's reasoning: large enough that per-call overhead
 # vanishes, small enough that the batch list stays cheap to hold.
 BATCH_SIZE = 2000
@@ -51,6 +49,8 @@ BATCH_SIZE = 2000
 # per card rather than in cards, which is the opposite of what this is for. `illustration_id` decides
 # artwork groups, and `scryfall_id` is the printing primary key.
 UUID_FIELDS = ("oracle_id", "scryfall_id", "illustration_id")
+# Hex characters in a UUID's leading block, which is the part `rewrite_uuid` stamps the copy index over.
+UUID_FIRST_BLOCK = 8
 
 
 def rewrite_uuid(value: str, copy: int) -> str:
@@ -60,9 +60,9 @@ def rewrite_uuid(value: str, copy: int) -> str:
     them unique across copies without needing a counter or a hash. Values that are not UUID-shaped
     (absent, null, or some other spelling) are returned unchanged rather than corrupted.
     """
-    if not isinstance(value, str) or len(value) < 8 or "-" not in value:
+    if not isinstance(value, str) or len(value) < UUID_FIRST_BLOCK or "-" not in value:
         return value
-    return f"{copy:08x}{value[8:]}"
+    return f"{copy:08x}{value[UUID_FIRST_BLOCK:]}"
 
 
 def replicate(record: dict, copy: int) -> dict:
@@ -81,6 +81,7 @@ def replicate(record: dict, copy: int) -> dict:
 
 
 def main() -> None:
+    """Build an upscaled store by replicating the corpus, then report what it came out as."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--copies", type=int, required=True, help="replication factor; 1 reproduces the real corpus")
     ap.add_argument("--corpus", type=pathlib.Path, default=REPO_ROOT / "benchmarks" / "bitplanes" / "corpus.jsonl")
