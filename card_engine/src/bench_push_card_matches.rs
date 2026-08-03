@@ -28,12 +28,34 @@ use std::time::Instant;
 use rkyv::Archived;
 
 use super::{
-    archive_header, archive_payload, prefer_score, sort_key_bits, AOracleCard, APrinting, AStrings, BitPlanes, CardData, CmpOp, FilterExpr,
-    Match, Mmap, Mode, NumExpr, NumField, PlaneExpr, Prefer, SortCol, ARCHIVE_HEADER_LEN,
+    archive_header, archive_payload, prefer_score, sort_key_bits, AOracleCard, APrinting, AStrings, BitPlanes, Candidate, CardData, CmpOp,
+    FilterExpr, Match, MatchCtx, Mmap, Mode, NumExpr, NumField, PlaneExpr, Prefer, SortCol, ARCHIVE_HEADER_LEN,
 };
 
 const ITERS: usize = 120;
 const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+
+/// The `MatchCtx` a real caller builds once per query, for the two sweeps below. `Mode::Card`,
+/// `SortCol::EdhrecRank` and `descending: false` are fixed for this bench — only `prefer` varies
+/// across cases, and `existential_plane` arrives already `black_box`ed by the caller.
+fn shipped_ctx<'a>(
+    printings: &'a [APrinting],
+    artwork_group_col: &'a Archived<Vec<u16>>,
+    strings: &'a AStrings,
+    prefer: Prefer,
+    existential_plane: Option<(&'a PlaneExpr, &'a Archived<BitPlanes>)>,
+) -> MatchCtx<'a> {
+    MatchCtx {
+        printings,
+        artwork_group_col,
+        strings,
+        mode: Mode::Card,
+        prefer,
+        sort_col: SortCol::EdhrecRank,
+        descending: false,
+        existential_plane,
+    }
+}
 
 /// The historical Card arm: three blocks, plane hoisted by duplicating the source. Printing and
 /// artwork modes are omitted — the collapse did not touch them, so there is nothing to compare.
@@ -147,11 +169,12 @@ fn bench_push_card_matches() {
     let residual_leaf: [&FilterExpr; 1] = [&cmc];
 
     // As in bench_card_match_unify: the plane `Option` and `all_match` go through `black_box`, or
-    // the optimizer folds away the branch the const generic exists to remove and every variant
-    // measures as free.
+    // the optimizer folds away the branch the `PlaneTest` dispatch exists to remove and every
+    // variant measures as free.
     let sweep = |prefer: Prefer, all_match: bool, residual: &[&FilterExpr], which: Which| -> usize {
         let no_plane: Option<(&PlaneExpr, &Archived<BitPlanes>)> = black_box(None);
         let all_match = black_box(all_match);
+        let mctx = shipped_ctx(printings, artwork_group_col, strings, prefer, no_plane);
         let mut out: Vec<Match> = Vec::with_capacity(cards.len());
         let mut group_best: Vec<Option<(u32, f64)>> = vec![None; max_groups];
         let mut touched: Vec<u16> = Vec::new();
@@ -165,8 +188,11 @@ fn bench_push_card_matches() {
                     no_plane, &mut out,
                 ),
                 Which::Shipped => super::push_card_matches(
-                    card, cid as u32, printings, artwork_group_col, start, end, all_match, residual, false, Mode::Card, prefer,
-                    SortCol::EdhrecRank, false, strings, no_plane, &mut out, &mut group_best, &mut touched,
+                    mctx,
+                    Candidate { card, cid: cid as u32, start, end, all_match, residual, residual_is_or: false },
+                    &mut out,
+                    &mut group_best,
+                    &mut touched,
                 ),
             }
         }
@@ -176,6 +202,7 @@ fn bench_push_card_matches() {
     // The emitted rows themselves, for the agreement check below.
     let rows = |prefer: Prefer, all_match: bool, residual: &[&FilterExpr], which: Which| -> Vec<Match> {
         let no_plane: Option<(&PlaneExpr, &Archived<BitPlanes>)> = black_box(None);
+        let mctx = shipped_ctx(printings, artwork_group_col, strings, prefer, no_plane);
         let mut out: Vec<Match> = Vec::new();
         let mut group_best: Vec<Option<(u32, f64)>> = vec![None; max_groups];
         let mut touched: Vec<u16> = Vec::new();
@@ -189,8 +216,11 @@ fn bench_push_card_matches() {
                     no_plane, &mut out,
                 ),
                 Which::Shipped => super::push_card_matches(
-                    card, cid as u32, printings, artwork_group_col, start, end, all_match, residual, false, Mode::Card, prefer,
-                    SortCol::EdhrecRank, false, strings, no_plane, &mut out, &mut group_best, &mut touched,
+                    mctx,
+                    Candidate { card, cid: cid as u32, start, end, all_match, residual, residual_is_or: false },
+                    &mut out,
+                    &mut group_best,
+                    &mut touched,
                 ),
             }
         }

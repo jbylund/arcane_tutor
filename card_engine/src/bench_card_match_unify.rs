@@ -1,9 +1,9 @@
 //! Re-test of the measurement that put `card_match_count`/`push_card_matches` on #799's
 //! "what not to touch" list.
 //!
-//! `card_match_count` is split in two: an `existential_plane == None` arm that is a plain
+//! `card_match_count` *was* split in two: an `existential_plane == None` arm that was a plain
 //! `match mode` over three specialized loops, and an `existential_plane == Some` arm that
-//! builds a `satisfies` closure and runs the same three shapes through it. Its doc explains
+//! built a `satisfies` closure and ran the same three shapes through it. Its doc explained
 //! the split as load-bearing:
 //!
 //! > A prior version of this function routed both cases through one closure-based
@@ -42,8 +42,8 @@ use std::time::Instant;
 use rkyv::Archived;
 
 use super::{
-    archive_header, archive_payload, AOracleCard, APrinting, AStrings, BitPlanes, CardData, CmpOp, FilterExpr, Mmap, Mode, NumExpr,
-    NumField, PlaneExpr, ARCHIVE_HEADER_LEN, ARTWORK_GROUP_WORDS,
+    archive_header, archive_payload, AOracleCard, APrinting, AStrings, BitPlanes, Candidate, CardData, CmpOp, FilterExpr, MatchCtx, Mmap,
+    Mode, NumExpr, NumField, PlaneExpr, Prefer, SortCol, ARCHIVE_HEADER_LEN, ARTWORK_GROUP_WORDS,
 };
 
 const ITERS: usize = 200;
@@ -421,6 +421,19 @@ fn bench_card_match_unify() {
     let sweep_all = |mode: Mode, all_match: bool, residual: &[&FilterExpr], variant: Variant| -> u64 {
         let no_plane: Option<(&PlaneExpr, &Archived<BitPlanes>)> = black_box(None);
         let all_match = black_box(all_match);
+        // What a real caller builds once per query. The count path ignores prefer/sort_col/
+        // descending; they are here because `MatchCtx` also serves `push_card_matches`. The
+        // black_box'd `no_plane` goes in as-is, so the dispatch stays opaque to the optimizer.
+        let mctx = MatchCtx {
+            printings,
+            artwork_group_col,
+            strings,
+            mode,
+            prefer: Prefer::Default,
+            sort_col: SortCol::EdhrecRank,
+            descending: false,
+            existential_plane: no_plane,
+        };
         let mut seen = [0u64; ARTWORK_GROUP_WORDS];
         let mut acc = 0u64;
         for cid in 0..cards.len() {
@@ -444,7 +457,9 @@ fn bench_card_match_unify() {
                     card, cid as u32, printings, artwork_group_col, start, end, all_match, residual, false, mode, strings, no_plane, &mut seen,
                 ),
                 Variant::Shipped => super::card_match_count(
-                    card, cid as u32, printings, artwork_group_col, start, end, all_match, residual, false, mode, strings, no_plane, &mut seen,
+                    mctx,
+                    Candidate { card, cid: cid as u32, start, end, all_match, residual, residual_is_or: false },
+                    &mut seen,
                 ),
             };
             acc += u64::from(n);
