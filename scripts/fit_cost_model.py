@@ -302,6 +302,39 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
     return None
 
 
+def perm_step_check(samples: list[dict]) -> tuple[int, float, float, float] | None:
+    """Realized `perm_steps` against the estimate cost.rs derives. The ratio should be 1.00.
+
+    Separate from `counter_check` because this feature is not published by acquire -- the arm computes
+    it from `page_span`, `n_cards` and `matches`. The rate was fitted and cross-validated (kernel
+    0.958-1.256 ns/entry, traffic 1.15), but a rate can look right while the quantity it multiplies is
+    wrong, so the ESTIMATE needs its own grade.
+
+    What is being tested is the uniform-spread assumption: the walk is modelled as finding one match
+    every `n_cards / matches` entries, which holds if matches are scattered evenly through the sort
+    permutation and fails if they cluster. Clustering is not far-fetched -- the permutation is ordered
+    by a sort column, and predicates correlate with sort columns (`year>=2020` under `order=released`
+    is the extreme case), so a real skew here would be a genuine model defect and not noise.
+
+    Returns (rows, p10, median, p90) of realized/estimated, or None if no row walked.
+    """
+    ratios = []
+    for s in samples:
+        if s["plan"] != "StreamedSelect" or not s.get("perm_steps"):
+            continue
+        acq, matches = s["acq"], float(s["acq"]["matches"])
+        if matches <= 0:
+            continue
+        page_span = float(min(s["offset"] + s["limit"], matches))
+        estimate = min(page_span * float(acq["n_cards"]) / matches, float(acq["n_cards"]))
+        if estimate > 0:
+            ratios.append(float(s["perm_steps"]) / estimate)
+    if not ratios:
+        return None
+    ratios.sort()
+    return (len(ratios), ratios[len(ratios) // 10], ratios[len(ratios) // 2], ratios[(9 * len(ratios)) // 10])
+
+
 def counter_check(samples: list[dict]) -> dict[str, list[tuple[str, float]]]:
     """Realized counter vs the feature that should predict it, per plan. Ratios should be 1.00."""
     # `scan_units` pairs with `printings_examined`, not the `printing_span` this used to read: the span
@@ -403,6 +436,7 @@ def collect(engine: object, rng: random.Random, seconds: float, sampler: QuerySa
                     "paging_taken": p.get("paging_taken"),
                     "printings_examined": p["printings_examined"],
                     "matches_pushed": p["matches_pushed"],
+                    "perm_steps": p.get("perm_steps", 0),
                 }
             )
     return samples
@@ -563,6 +597,13 @@ def main() -> None:
                 suspect.add(plan)
             print(f"{plan:<20}{label:<40}{ratio:>9.2f}{flag}")
     print("  a ratio far from 1.00 is a miscounted feature; no rate can absorb it.")
+    perm = perm_step_check(samples)
+    if perm is not None:
+        rows, p10, med, p90 = perm
+        print(f"\nStreamedSelect perm_steps realized/estimated over {rows:,} walking rows:")
+        print(f"  p10 {p10:.2f}   median {med:.2f}   p90 {p90:.2f}")
+        print("  tests the uniform-spread assumption behind `page_span * n_cards / matches`; skew would")
+        print("  show as a median away from 1.00, and clustering as a wide p10-p90 spread.")
 
     by_plan: dict[str, list[dict]] = collections.defaultdict(list)
     for s in samples:
