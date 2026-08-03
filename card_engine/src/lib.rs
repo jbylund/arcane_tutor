@@ -10046,3 +10046,5 @@ mod bench_compose_paging;
 mod bench_compose_card_projection;
 #[cfg(test)]
 mod bench_candidate_materialize;
+#[cfg(test)]
+mod bench_gather_loop;
