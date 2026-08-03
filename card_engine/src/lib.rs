@@ -6441,10 +6441,9 @@ impl PreparedCandidates {
     /// both P3 and P4 want the same either-or — previously spelled out
     /// identically at the head of each.
     ///
-    /// `ExactSizeIterator` rather than `Iterator`: both arms know their length (a `Vec` and a
-    /// `Range`), and an executor that wants the candidate count before its loop -- P3, to decide
-    /// whether tracking the walk's match span can pay -- would otherwise have to be handed the count
-    /// alongside the iterator and trust the two to agree.
+    /// `ExactSizeIterator` rather than `Iterator`: both arms know their length (a `Vec` and a `Range`),
+    /// so an executor that wants the candidate count before its loop can ask for it instead of being
+    /// handed the count alongside the iterator and trusting the two to agree.
     fn card_ids<'s>(&'s self, ctx: &QueryCtx) -> Box<dyn ExactSizeIterator<Item = u32> + 's> {
         match &self.candidate_cards {
             Some(v) => Box::new(v.iter().copied()),
