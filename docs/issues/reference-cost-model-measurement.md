@@ -60,6 +60,12 @@ values (`bench_card_range_estimate`, `bench_cost_model_agreement`) and should mo
 purpose: `bench_plan_misselection --source wild-operators` and `census_candidate_materialize`, where
 the question is what users actually lose.
 
+For built designs — kernel harnesses that control the ratios instead of sampling them — and the rule
+that came out of them (**shape from a built design, levels from traffic**), see
+[local-engine-loop-phase-measurement.md](./local-engine-loop-phase-measurement.md). It also records
+why a min-of-N benchmark over one candidate list measures a cache state production never reaches, and
+why a whole-arm fit's intercept cannot be read as a fixed cost.
+
 ## Acquire and dispatch are two bins, and plan timing means dispatch
 
 The routed path has exactly two phases that matter for measurement, and conflating them produced the
