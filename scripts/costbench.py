@@ -137,6 +137,10 @@ PLAN_KEYS = frozenset(
         "printing_span",
         "printings_examined",
         "matches_pushed",
+    # Permutation entries StreamedSelect's walk stepped. Realized ground truth for the estimate
+    # `page_span * n_cards / matches`, which assumes matches are spread uniformly through the
+    # permutation -- an assumption worth grading rather than trusting.
+    "perm_steps",
         "ns_setup",
         "ns_loop",
         "ns_finish",

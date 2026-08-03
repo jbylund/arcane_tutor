@@ -186,6 +186,12 @@ const CARD_COUNTS: [usize; 2] = [1_500, 4_500];
 /// `offset + limit`, so this is part of what the per-match rate has to cover — keeping it constant
 /// keeps that contribution proportional to matches rather than to the page.
 const LIMIT: usize = 60;
+/// (offset, limit) pairs for the finish-phase sweep. `GATHER_SELECT_PER_PAGE_SLOT_NS` is charged against
+/// `page_span = min(offset + limit, matches)`, and every cell above holds the page FIXED, so that term
+/// has never been varied here -- the loop rates were measured while the one term keyed on the page was
+/// held constant. These four move `page_span` ~40x at constant counters, which is what separates a
+/// per-slot rate from a fixed cost the phase pays regardless.
+const PAGE_SPECS: [(usize, usize); 4] = [(0, 15), (0, 60), (0, 600), (900, 60)];
 
 /// Default store. `BENCH_LOOP_STORE` overrides it, which is how the corpus-size sweep runs: build
 /// upscaled stores with `scripts/upscale_corpus.py` and point this at each in turn. The real corpus is
@@ -597,6 +603,56 @@ fn bench_gather_loop() {
     // What artwork mode costs ON TOP of the three fitted rates. cost.rs has no artwork term for P4,
     // so today this sits inside the shared rates, which is why measuring them without artwork in the
     // design and then lowering them under-costs artwork queries.
+    // Finish-phase sweep. Runs the SAME candidate set at four pages, so the loop's work is identical
+    // across rows and every difference in `ns_finish` is the select-and-collect. Chunk-rotated like
+    // everything else, and the median is reported.
+    //
+    // `page_span` is `min(offset + limit, matches)`, so the (900, 60) row is capped by matches rather
+    // than by the page: with 4,500 matches it asks for span 960, where (0, 600) asks for 600. That is
+    // the row that separates a genuine per-slot rate from `offset` merely being large.
+    if singleton.len() >= CARD_COUNTS[1] {
+        println!("\nfinish phase vs page_span (same cards, four pages -- the loop is identical across rows):");
+        println!("  {:>7}{:>8}{:>12}{:>12}{:>14}", "offset", "limit", "page_span", "ns_finish", "ns per slot");
+        let mut rows: Vec<(f64, f64)> = Vec::new();
+        for (offset, limit) in PAGE_SPECS {
+            let params = QueryParams::from_strs("card", "default", "name", "asc", limit, offset);
+            let mut samples: Vec<f64> = Vec::with_capacity(ITERS);
+            let mut span = 0.0f64;
+            let chunks = (singleton.len() / CARD_COUNTS[1]).max(1);
+            for iter in 0..ITERS {
+                let start = (iter % chunks) * CARD_COUNTS[1];
+                let end = (start + CARD_COUNTS[1]).min(singleton.len());
+                let prep = PreparedCandidates {
+                    candidate_cards: Some(singleton[start..end].to_vec()),
+                    all_match_known: true,
+                    narrowed_repr: NarrowedRepr::Cards,
+                };
+                black_box(exec_gathered_scan(&ctx, &params, &filter, &prep, None));
+                let st = take_phase_stats();
+                span = (offset + limit).min(st.matches_pushed as usize) as f64;
+                samples.push(st.ns_finish as f64);
+            }
+            samples.sort_by(f64::total_cmp);
+            let ns = samples[samples.len() / 2];
+            println!("  {offset:>7}{limit:>8}{span:>12.0}{ns:>12.0}{:>14.2}", ns / span.max(1.0));
+            rows.push((span, ns));
+        }
+        // Two-point solve across the widest span gap, which is the cheapest way to see whether the phase
+        // has a fixed component. Through the origin the slope has to absorb any constant, which inflates
+        // it on the small-page rows -- the same error that made `GATHER_SELECT_PER_PAGE_SLOT_NS` look 5x
+        // wrong earlier in this branch.
+        if let (Some(lo), Some(hi)) = (rows.first(), rows.iter().max_by(|a, b| a.0.total_cmp(&b.0))) {
+            if hi.0 > lo.0 {
+                let slope = (hi.1 - lo.1) / (hi.0 - lo.0);
+                println!(
+                    "  two-point: {:.2} ns/slot + {:.0} ns fixed   (shipped GATHER_SELECT_PER_PAGE_SLOT_NS 3.51, no fixed term)",
+                    slope,
+                    lo.1 - slope * lo.0
+                );
+            }
+        }
+    }
+
     // The warm/cold gap, per cell. `cost.rs`'s constants are fitted on production traffic, which pays
     // this; every rate this harness reports is a min-of-200 and does not.
     println!("\nfirst pass vs warm minimum (min-of-{ITERS} hides whatever the cold walk costs):");
