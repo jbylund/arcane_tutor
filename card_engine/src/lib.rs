@@ -6879,6 +6879,16 @@ pub(crate) struct PhaseStats {
     /// span arithmetic alone, and the stored artwork group count answers without a printing either.
     pub(crate) printings_examined: u64,
     pub(crate) matches_pushed: u64,
+    /// Permutation entries `run_query_streamed`'s walk stepped over. Zero for every other executor and
+    /// for P3's other two exits (the empty/past-the-end return and the small-total gather).
+    ///
+    /// The walk steps the permutation until the page fills, so its length is
+    /// `page x n_cards / matches` -- inversely proportional to selectivity, and the one quantity in P3's
+    /// finish phase that no existing feature is proportional to. Measured against a fixed 1,500 matches
+    /// it runs 1,333 / 3,791 / 10,458 ns at 31.5k / 126k / 410k cards while the arm charged
+    /// `matches x EMIT + FIXED` ~ 397 ns throughout: under by 3.4x at the production corpus and 26x at
+    /// 410k. Published so the estimate can be GRADED rather than assumed, like the other three counters.
+    pub(crate) perm_steps: u64,
     /// Per-query scratch setup, before the match loop starts. Split out because it is neither
     /// prepare nor match and it is NOT negligible: `run_query_streamed` zeroes an `n_cards`-long
     /// counts buffer here (~126 kB on the real corpus) no matter how few candidates it is about to
@@ -7129,8 +7139,8 @@ thread_local! {
     /// owned elsewhere: `paging_taken` by `PAGING_TAKEN` below, `ns_round_total`/`result_total` by
     /// `explain_analyze`, which fills them after the take.
     static PHASE_STATS: std::cell::Cell<PhaseStats> = const { std::cell::Cell::new(PhaseStats {
-        cards_visited: 0, printing_span: 0, printings_examined: 0, matches_pushed: 0, ns_setup: 0, ns_loop: 0, ns_finish: 0, ns_round_total: 0,
-        ns_prepare: 0, result_total: 0, paging_taken: PagingTaken::NotEntered,
+        cards_visited: 0, printing_span: 0, printings_examined: 0, matches_pushed: 0, perm_steps: 0, ns_setup: 0, ns_loop: 0,
+        ns_finish: 0, ns_round_total: 0, ns_prepare: 0, result_total: 0, paging_taken: PagingTaken::NotEntered,
     }) };
 
     /// The compose fastpath's branch label, stored apart from `PHASE_STATS` because it is the one
@@ -7345,6 +7355,7 @@ fn exec_gathered_scan<'a>(
             printing_span: n_printing_span,
             printings_examined: n_printings_examined,
             matches_pushed: n_matches_pushed,
+            perm_steps: 0, // GatheredScan never walks the permutation
             ns_setup: (t_loop - t_start).as_nanos() as u64,
             ns_loop: (t_finish - t_loop).as_nanos() as u64,
             ns_finish: (t_end - t_finish).as_nanos() as u64,
@@ -8896,7 +8907,7 @@ fn run_query_streamed<'a>(
     // Publishing helper: the walk below has several early returns, and every one of them must leave
     // the stats behind or the accounting silently attributes this plan's work to nothing. Each takes
     // the closing instant itself, so the emit phase is bounded without a second start marker.
-    let publish = |end: std::time::Instant| {
+    let publish = |end: std::time::Instant, perm_steps: u64| {
         let prep_ns = PENDING_PREPARE_NS.with(|c| c.replace(0));
         PHASE_STATS.with(|c| {
             c.set(PhaseStats {
@@ -8904,6 +8915,7 @@ fn run_query_streamed<'a>(
                 printing_span: n_printing_span,
                 printings_examined: n_printings_examined,
                 matches_pushed: n_matches_pushed,
+                perm_steps,
                 ns_setup: (t_loop - t_start).as_nanos() as u64,
                 ns_loop: (t_finish - t_loop).as_nanos() as u64,
                 ns_finish: (end - t_finish).as_nanos() as u64,
@@ -8915,7 +8927,7 @@ fn run_query_streamed<'a>(
         });
     };
     if total == 0 || page_offset >= total {
-        publish(std::time::Instant::now());
+        publish(std::time::Instant::now(), 0);
         return (total, Vec::new());
     }
 
@@ -8950,7 +8962,7 @@ fn run_query_streamed<'a>(
             .into_iter()
             .map(|(cid, pid)| (&cards[cid as usize], &printings[pid as usize]))
             .collect();
-        publish(std::time::Instant::now());
+        publish(std::time::Instant::now(), 0);
         return (total, page);
     }
 
@@ -8961,7 +8973,12 @@ fn run_query_streamed<'a>(
     let mut skip = page_offset;
     let mut page: Vec<(&AOracleCard, &APrinting)> = Vec::with_capacity(limit);
     let mut scratch: Vec<Match> = Vec::new();
+    // Counted for every entry the walk touches, including the ones skipped on a zero count -- that
+    // skip IS the walk's cost, and it is what grows as matches thin out in a larger corpus. A plain
+    // local, published once, like the other counters.
+    let mut n_perm_steps = 0u64;
     'walk: for cid in perm.iter().map(|x| u32::from(*x)) {
+        n_perm_steps += 1;
         let c = counts[cid as usize] as usize;
         if c == 0 {
             continue;
@@ -8993,7 +9010,7 @@ fn run_query_streamed<'a>(
         }
         skip = 0;
     }
-    publish(std::time::Instant::now());
+    publish(std::time::Instant::now(), n_perm_steps);
     (total, page)
     }) // COUNTS.with
 }
@@ -9269,6 +9286,7 @@ fn plan_trial_to_pydict<'py>(py: Python<'py>, t: &PlanTrial) -> PyResult<Bound<'
     d.set_item("printing_span", t.phases.printing_span)?;
     d.set_item("printings_examined", t.phases.printings_examined)?;
     d.set_item("matches_pushed", t.phases.matches_pushed)?;
+    d.set_item("perm_steps", t.phases.perm_steps)?;
     d.set_item("ns_setup", t.phases.ns_setup)?;
     d.set_item("ns_loop", t.phases.ns_loop)?;
     d.set_item("ns_finish", t.phases.ns_finish)?;
