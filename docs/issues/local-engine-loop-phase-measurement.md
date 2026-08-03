@@ -47,6 +47,69 @@ four-row page sweep falsifies outright:
 **Neutral to marginally negative** — taken for correctness, since a one-column model four rows disprove
 should not survive on a neutral gate.
 
+**The emission walk's match span.** The walk started at permutation index 0 and stopped only when the
+page filled, so it stepped every entry ordered before the first match (`cmc>=6 order=cmc asc`: 28,275
+entries for a 60-row page, 10.6 us of a 20.25 us execution) and, on any page it could not fill, every
+entry after the last match. Bounded to `min..=max` of `inv_perm` over matching cards — realized, so it
+holds for any predicate and cannot be wrong about tie-breaking — the same query walks 60 entries in
+0.38 us. Row identity verified against `GatheredScan` on an anti-correlated corpus at four offsets in
+every mode and direction, because a bound one entry off drops a row rather than crashing.
+
+**Gated**, at candidates ≤ ¼ of the corpus, because the span costs 0.51 ns per matching card against a
+match loop that is ~2.6 ns/card: ungated it took `cmc>=1 order=edhrec`'s `ns_loop` from 78.54 to 94.46
+us while its walk stayed at 111 steps. The bound can save at most `(n_cards − m) × 0.37 ns` against
+`m × 0.51 ns`, so worst-case break-even is 0.42 × `n_cards` and the gate sits inside it.
+
+| exec, span on/off (geometric mean) | cells |
+| --- | --- |
+| clustered (predicate correlates with orderby) | **0.660** over 8 |
+| broad (gate off — identical path) | 1.000 over 4 |
+
+Pooled over 419 sampled `StreamedSelect` queries: no detectable difference, −0.10 us, CI [−0.62, +0.41].
+
+## Measuring this needed one binary, not two
+
+`scripts/bench_walk_span.py` A/Bs `CARD_ENGINE_SPAN_TRACK_CANDIDATE_DIVISOR` in interleaved
+subprocesses of a single build, with equal-length env values. That is not fastidiousness — a
+cross-build attempt got the sign wrong:
+
+- `ns_loop` wandered 43.00 / 45.38 / 47.17 us across three runs on a phase neither build changed, ±9%
+  in both directions. A 0.5 ns/card effect is invisible under that.
+- `bench_plan_execution_ab.py` across builds called the change 2% **slower** — while its own acquire
+  control, which the change cannot touch, moved 1.9% the same way. Within one binary the control is
+  flat (+0.01 us, median ratio 1.000) and the verdict is no detectable difference.
+
+Both are the failure the toolkit already documents (`min` is a floor estimator; its error is
+common-mode within a run, so pairing does not cancel it). The toggle removes it by construction:
+identical code, identical layout, one process each.
+
+## Regrading the perm estimate
+
+`perm_steps` realized/estimated, same seed and sample length, ~12.3k walking rows:
+
+| walk | p10 | median | p90 |
+| --- | --: | --: | --: |
+| unbounded | 0.13 | 1.00 | 6.43 |
+| bounded, gated | 0.09 | 0.94 | 5.07 |
+| bounded, ungated | 0.08 | 0.90 | 4.26 |
+
+Three things fall out of that table.
+
+- **A third of the p90 tail was the leading prefix**, and it is gone. p90 is the late-cluster case, so
+  this is the estimate's largest error being deleted rather than modelled — which was the point of
+  doing (1) before (2).
+- **The rate did not move.** Traffic fits `PERM_STEP` at 1.17 before and 1.15–1.17 after. Deleting a
+  third of the steps at the tail without moving the per-step rate is what a real per-unit cost looks
+  like, as against a coefficient absorbing its feature's error — the failure mode `GATHER_FIXED_COST_NS`
+  turned out to be. Left at the shipped 1.0; no refit.
+- **The cost model prefers ungated and the runtime prefers gated.** Recorded, not resolved: the
+  mechanism that ends the tension is a predicate-derived start position (below), which costs nothing per
+  card and so needs no gate.
+
+What remains at p90 5.07 is **interior** to the span — non-matching entries between matches, which no
+start position can skip. Different mechanism, and one the engine already owns elsewhere: the
+popcount-skip walk.
+
 ## What was declined, and why that is the more useful result
 
 **`GATHER_FIXED_COST_NS` (169.6, traffic says 85).** Looked like the cheapest win available: a 2×
@@ -104,21 +167,30 @@ Recorded because both were believed and acted on:
   `illustration_id` and suffixing names, leaving everything cost-relevant alone. Needed because the real
   corpus gives the wide group one chunk at 4,500 cards. **The 126k and 410k stores are ~1.4 GB in
   `benchmarks/loop-scale/` — delete when done.**
+- `scripts/bench_walk_span.py` — A/Bs the walk's span bound through
+  `CARD_ENGINE_SPAN_TRACK_CANDIDATE_DIVISOR` inside one binary, clustered cells against broad controls.
+  The pattern to copy for any change whose effect is smaller than the cross-build floor error: one build,
+  a runtime toggle, interleaved subprocesses, equal-length env values.
 - `perm_steps` published on `PhaseStats` and graded in `fit_cost_model.py`.
 
 ## What is left
 
-1. **Seek the streamed walk to its first match.** The walk starts at permutation index 0 unconditionally,
-   so `year>=2020 order=released asc` grinds through the whole pre-2020 prefix discarding on
-   `counts[cid] == 0`. The match loop already visits every candidate, so one `inv[cid]` read plus a `min`
-   over matching cards gives the first match's position for free, and the walk can start there. Stronger
-   than deriving a bound from the predicate: it is the realized minimum, so it works for any predicate and
-   cannot be wrong about tie-breaking. Attacks the expensive tail directly — `perm_steps`
-   realized/estimated grades median 0.99 with **p10 0.12 / p90 7.01**, and p90 is exactly the late-cluster
-   case a seek deletes. Verify row identity against the reference, as this touches paging. Descending needs
-   nothing: there are two permutations per column, one per direction.
-2. **Re-grade the perm estimate after (1)**, then fit whatever spread remains. Doing it before would be
-   modelling wasted work we can cheaply stop doing.
+1. **A predicate-derived start position, which would cost nothing per card.** The permutation IS a sorted
+   array on `(sort key, edhrec, cid)`, so when the filter bounds the *sort column* — `cmc>=6` under
+   `order=cmc`, exactly the correlation that makes a cluster — a binary search for the first position whose
+   value satisfies the bound gives a start in O(log `n_cards`) once per query, against 0.51 ns × matching
+   cards for the realized span. Seek to the START of the boundary tie block and it can only start too
+   early, never too late, which answers the tie-breaking objection that made the realized span the first
+   choice. It composes with the span rather than replacing it (free ⇒ no gate ⇒ available to broad queries
+   too), and it is what would let the cost model have the ungated column of the regrade table above.
+   Conjunction analysis to extract the bound, plus row-identity verification, since it touches paging again.
+2. **Extend the popcount-skip walk past `FilterExpr::True`.** What is left of the perm estimate's p90 is
+   non-matching entries *interior* to the match span, and a start position cannot reach those by
+   construction. Scattering the match set through `inv_perm` and walking words at 64 cards a load is the
+   mechanism that can — `run_query_streamed_popcount` already does it for `unique=card` queries whose
+   filter fully consumed to `True`. Generalizing it needs per-card match counts for the skip (a popcount
+   counts cards, not matches, so printing/artwork mode cannot skip by popcount alone) and pays the same
+   per-card scatter the span bound pays, so it wants the same gate or the free start position above.
 3. **A curvature term for the loop rates** — the cause of both the `FIXED` disagreement and corpus drift.
 4. **Gate P4's artwork arm on its own.**
 5. Carried over: make the fit loss the actual multi-way routing outcome rather than a pairwise proxy;
