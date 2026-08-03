@@ -38,24 +38,25 @@
 //! reimplemented, so there is no second copy of the loop to keep in sync, and the fit is
 //! against the instrumentation the cost model is actually checked with.
 //!
-//! What it measured (2026-08-03), stable to 1.07× / 1.02× / 1.04× across three runs where the
-//! traffic fit could not pin the push rate off the boundary at all:
+//! What it measured (2026-08-03), across three runs, where the traffic fit could not pin the push
+//! rate off the boundary at all:
 //!
-//!     GATHER_CARD_PASS_NS        shipped 6.88   fitted 3.08-3.30
-//!     GATHER_SCAN_PER_ROW_NS     shipped 2.06   fitted 2.44-2.48
-//!     GATHER_PUSH_PER_MATCH_NS   shipped 2.24   fitted 0.91-0.95
+//!     GATHER_CARD_PASS_NS        shipped 6.88   fitted 3.15-3.33   (1.06x spread)
+//!     GATHER_SCAN_PER_ROW_NS     shipped 2.06   fitted 2.25-2.26   (1.004x)
+//!     GATHER_PUSH_PER_MATCH_NS   shipped 2.24   fitted 0.90        (1.000x)
+//!     the card_pass call itself                 2.94-3.00 ns/card on singletons, 1.6-1.8 on wide
 //!
-//! The shipped set over-predicts every cell (1.07-1.92 predicted/actual) and over-predicts MOST
-//! on single-printing cards, least on wide card-mode ones — so `GatheredScan` is systematically
-//! over-costed on card-heavy candidate sets, which is the direction that loses it to
-//! `StreamedSelect` wrongly.
+//! Those last two lines are the finding, and they say the shipped constant is not simply wrong:
+//! 3.24 of loop overhead plus ~3.0 for the `card_pass` call is ~6.2 against a shipped 6.88, so
+//! `GATHER_CARD_PASS_NS` BUNDLES the predicate call. It is therefore about right for queries that
+//! make that call, and about 2x too high for the #634 `all_match_known` path, which skips
+//! `card_pass` entirely and is charged for it anyway. That is a model-shape error rather than a
+//! mis-fitted constant, and it over-costs `GatheredScan` precisely on the queries that should be
+//! cheapest for it — the direction that loses them to `StreamedSelect`.
 //!
-//! Two limits on reading these as drop-in replacements. `all_match_known` is set, so the loop
-//! never calls `card_pass` and the fitted card term is loop overhead with NO predicate evaluation
-//! in it — correct for the #634 path that also skips it, but queries reaching `card_pass` pay more,
-//! which is what the residual-tier term exists to cover. And `LIMIT` is fixed, so nothing here
-//! constrains how the rates behave as the page grows. Traffic-level regret and latency matrices
-//! remain the gate before any of this ships.
+//! One limit remains on all of these: `LIMIT` is fixed, so nothing here constrains how the rates
+//! behave as the page grows. Traffic-level regret and latency matrices remain the gate before any
+//! of it ships.
 //!
 //!     cargo test --release bench_gather_loop -- --ignored --nocapture
 //!
@@ -68,7 +69,7 @@ use rkyv::Archived;
 
 use super::{
     archive_header, archive_payload, exec_gathered_scan, take_phase_stats, CardData, CmpOp, FilterExpr, Mmap, NarrowedRepr,
-    PreparedCandidates, QueryCtx, QueryParams, ARCHIVE_HEADER_LEN,
+    NumExpr, NumField, PreparedCandidates, QueryCtx, QueryParams, ARCHIVE_HEADER_LEN,
 };
 
 /// Timed repetitions per cell; the minimum is reported, as elsewhere in these harnesses.
@@ -98,6 +99,10 @@ struct Cell {
     printings: f64,
     matches: f64,
     ns_loop: f64,
+    /// False when `all_match_known` short-circuited `card_pass`. Only these rows feed the three-rate
+    /// fit; the rows that DO call `card_pass` are used to price that call instead, and mixing them
+    /// would fold a predicate evaluation into the card term.
+    ran_card_pass: bool,
 }
 
 /// Solve a 3×3 system by Gaussian elimination with partial pivoting.
@@ -126,7 +131,7 @@ fn solve3(mut a: [[f64; 4]; 3]) -> Option<[f64; 3]> {
 /// cell and ignore the rest, which is the same mistake that inflated the finish-phase rate.
 fn fit(cells: &[Cell]) -> Option<[f64; 3]> {
     let mut normal = [[0.0f64; 4]; 3];
-    for c in cells {
+    for c in cells.iter().filter(|c| !c.ran_card_pass) {
         let w = 1.0 / c.ns_loop;
         let x = [c.cards * w, c.printings * w, c.matches * w];
         for i in 0..3 {
@@ -189,73 +194,110 @@ fn bench_gather_loop() {
     }
     println!();
 
-    // all_match_known short-circuits `card_pass`, so the residual tier is exactly zero and this
-    // filter is never evaluated — the loop is card visit + push + absorb and nothing else. That
-    // isolates the three rates from the residual term, which is fitted separately.
-    // `mask: 0` with `Ge` is unconditionally true, but nothing evaluates it either way.
-    let filter = FilterExpr::TypeCmp { mask: 0, op: CmpOp::Ge };
+    // `cmc >= -1` holds for every card, and cmc is a CARD field, so `card_pass` resolves it to
+    // Tri::True with an empty residual — the tier stays 0 and `push_card_matches` still gets
+    // `all_match = true`. On the `all_match_known` cells nothing evaluates it at all, so the loop is
+    // card visit + push + absorb and the three rates come out clean of any predicate cost. On the
+    // cells that clear that flag it IS evaluated, which is what prices the call.
+    //
+    // A real evaluated predicate rather than `FilterExpr::True`, deliberately: `True` short-circuits
+    // to nearly free and would price the call at ~0, and `NumericCmp` is what `bench_verify_cost`
+    // already classes as tier 0, so this is the cheapest predicate production actually runs.
+    let filter =
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(-1.0) };
     let mut cells: Vec<Cell> = Vec::new();
 
-    // (label, source group, unique, prefer)
+    // (label, source group, unique, prefer, all_match_known)
     //
     // A' repeats A last as a control. A and B are the same cards with one printing each and report
     // identical counters, so any time difference between them is either a real `unique` effect or an
     // artifact of A running first and paying first-touch on the mmap. A' vs A separates those: equal
     // means the difference is real, A' matching B means it was ordering.
-    let designs: [(&'static str, &Vec<u32>, &str, &str); 5] = [
-        ("A 1p  card/default", &singleton, "card", "default"),
-        ("B 1p  print/default", &singleton, "printing", "default"),
-        ("C wide card/oldest", &wide, "card", "oldest"),
-        ("D wide print/default", &wide, "printing", "default"),
-        ("A' 1p card/default ctl", &singleton, "card", "default"),
+    //
+    // The `false` rows are the same cells with `all_match_known` cleared, so `card_pass` actually
+    // runs. The filter answers `Tri::True` and leaves the residual empty, so `push_card_matches`
+    // still gets `all_match = true` and every counter is identical — the ONLY difference is the
+    // `card_pass` call itself. Their gap over the matching `true` row prices that call, which is what
+    // `GATHER_RESIDUAL_FLOOR` is for; without it, lowering the card term would silently remove charge
+    // that was covering a predicate evaluation on every non-all_match query.
+    let designs: [(&'static str, &Vec<u32>, &str, &str, bool); 7] = [
+        ("A 1p  card/default", &singleton, "card", "default", true),
+        ("B 1p  print/default", &singleton, "printing", "default", true),
+        ("C wide card/oldest", &wide, "card", "oldest", true),
+        ("D wide print/default", &wide, "printing", "default", true),
+        ("A' 1p card/default ctl", &singleton, "card", "default", true),
+        ("A+ 1p  card, card_pass", &singleton, "card", "default", false),
+        ("C+ wide card, card_pass", &wide, "card", "oldest", false),
     ];
 
     println!(
         "\n{:<22}{:>7}{:>10}{:>11}{:>10}{:>12}{:>11}",
         "cell", "n", "cards", "printings", "matches", "ns_loop", "ns/card"
     );
+    // Every cell is built up front, then all of them are run inside ONE iteration loop, so each
+    // cell's minimum is drawn from the same time window as every other cell's. Running a cell to
+    // completion before starting the next one lets machine drift between cells enter the fit as if it
+    // were a rate difference: doing exactly that moved the card term to 4.34 while three interleaved
+    // runs held it inside 3.08-3.30, and left two cells with identical counters differing 1.8×. Same
+    // reason the query-level harnesses interleave A/B/A/B instead of running all of A then all of B.
+    struct Config {
+        label: &'static str,
+        n_cards_req: usize,
+        prep: PreparedCandidates,
+        params: QueryParams,
+        ran_card_pass: bool,
+    }
+    let mut configs: Vec<Config> = Vec::new();
     for n_req in CARD_COUNTS {
-        for (label, group, unique, prefer) in &designs {
+        for (label, group, unique, prefer, all_match_known) in &designs {
             if group.len() < n_req {
                 println!("{label:<22}{n_req:>7}   SKIP (only {} cards in group)", group.len());
                 continue;
             }
-            let prep = PreparedCandidates {
-                candidate_cards: Some(group[..n_req].to_vec()),
-                all_match_known: true,
-                narrowed_repr: NarrowedRepr::Cards,
-            };
-            let params = QueryParams::from_strs(unique, prefer, "name", "asc", LIMIT, 0);
-            let mut best = f64::INFINITY;
-            let mut stats = take_phase_stats();
-            for _ in 0..ITERS {
-                black_box(exec_gathered_scan(&ctx, &params, &filter, &prep, None));
-                let s = take_phase_stats();
-                if (s.ns_loop as f64) < best {
-                    best = s.ns_loop as f64;
-                    stats = s;
-                }
-            }
-            let cell = Cell {
+            configs.push(Config {
                 label,
                 n_cards_req: n_req,
-                cards: stats.cards_visited as f64,
-                printings: stats.printings_examined as f64,
-                matches: stats.matches_pushed as f64,
-                ns_loop: best,
-            };
-            println!(
-                "{:<22}{:>7}{:>10.0}{:>11.0}{:>10.0}{:>12.0}{:>11.2}",
-                cell.label,
-                cell.n_cards_req,
-                cell.cards,
-                cell.printings,
-                cell.matches,
-                cell.ns_loop,
-                cell.ns_loop / cell.cards
-            );
-            cells.push(cell);
+                prep: PreparedCandidates {
+                    candidate_cards: Some(group[..n_req].to_vec()),
+                    all_match_known: *all_match_known,
+                    narrowed_repr: NarrowedRepr::Cards,
+                },
+                params: QueryParams::from_strs(unique, prefer, "name", "asc", LIMIT, 0),
+                ran_card_pass: !all_match_known,
+            });
         }
+    }
+
+    let mut best_ns: Vec<f64> = vec![f64::INFINITY; configs.len()];
+    let mut counters: Vec<(f64, f64, f64)> = vec![(0.0, 0.0, 0.0); configs.len()];
+    for _ in 0..ITERS {
+        for (i, cfg) in configs.iter().enumerate() {
+            black_box(exec_gathered_scan(&ctx, &cfg.params, &filter, &cfg.prep, None));
+            let s = take_phase_stats();
+            if (s.ns_loop as f64) < best_ns[i] {
+                best_ns[i] = s.ns_loop as f64;
+            }
+            // Counters are deterministic per cell, so any iteration's are the cell's; recording them
+            // every time rather than only on the fastest keeps them independent of which run won.
+            counters[i] = (s.cards_visited as f64, s.printings_examined as f64, s.matches_pushed as f64);
+        }
+    }
+    for (i, cfg) in configs.iter().enumerate() {
+        let (cards, printings, matches) = counters[i];
+        let cell = Cell {
+            label: cfg.label,
+            n_cards_req: cfg.n_cards_req,
+            cards,
+            printings,
+            matches,
+            ns_loop: best_ns[i],
+            ran_card_pass: cfg.ran_card_pass,
+        };
+        println!(
+            "{:<22}{:>7}{:>10.0}{:>11.0}{:>10.0}{:>12.0}{:>11.2}",
+            cell.label, cell.n_cards_req, cell.cards, cell.printings, cell.matches, cell.ns_loop, cell.ns_loop / cell.cards
+        );
+        cells.push(cell);
     }
 
     assert!(cells.len() >= 3, "need at least 3 design points to identify 3 rates, got {}", cells.len());
@@ -271,6 +313,28 @@ fn bench_gather_loop() {
             c.printings / c.cards,
             c.matches / c.cards
         );
+    }
+
+    // What a `card_pass` call costs per card, from the cells that differ ONLY by whether it ran.
+    // This is the floor `GATHER_RESIDUAL_FLOOR` has to cover for a tier-0 predicate, and it has to be
+    // read alongside the card term rather than after it: the two are set together or the total drifts.
+    println!("\ncost of the card_pass call itself (paired cells, identical counters):");
+    for c in cells.iter().filter(|c| c.ran_card_pass) {
+        // The `+` label marks the card_pass variant of the cell whose label shares its first letter.
+        let base = cells
+            .iter()
+            .find(|b| !b.ran_card_pass && b.n_cards_req == c.n_cards_req && b.label.as_bytes()[0] == c.label.as_bytes()[0]);
+        match base {
+            Some(b) => println!(
+                "  {:<26}{:>7}  {:>9.0} ns vs {:>9.0} ns   {:>7.2} ns/card for card_pass",
+                c.label,
+                c.n_cards_req,
+                c.ns_loop,
+                b.ns_loop,
+                (c.ns_loop - b.ns_loop) / c.cards
+            ),
+            None => println!("  {:<26}{:>7}  no paired all_match cell", c.label, c.n_cards_req),
+        }
     }
 
     let Some(k) = fit(&cells) else {
