@@ -487,6 +487,30 @@ const GATHER_PUSH_PER_MATCH_NS: f64 = 2.24;
 /// bounded by matches: narrow deep pages (offset > matches) measured ≈ shallow
 /// (select_page returns early), so the term uses min(offset+limit, matches).
 const GATHER_SELECT_PER_PAGE_SLOT_NS: f64 = 3.51;
+/// ns per row actually collected into the page — `page_ids.into_iter().map(..)`, two random array
+/// derefs per row into `cards` and `printings`.
+///
+/// A SECOND driver for this phase, found by `bench_gather_loop`'s page sweep 2026-08-03. The phase was
+/// charged on `page_span` alone, which the sweep falsifies directly: at identical candidates,
+/// `page_span` 960 (offset 900, limit 60) costs 11,250 ns while `page_span` 600 (offset 0, limit 600)
+/// costs 16,375. A bigger span costing less is impossible under one column. The quickselect scales with
+/// `offset + limit`, but the collect scales with the PAGE, and the two rows separate them because one
+/// pairs a large span with a small page.
+///
+/// Traffic cannot separate them -- span and page are correlated across the sampled query mix, which is
+/// why an earlier non-negative fit put this at exactly 0.00. Four designed rows do it. Same lesson as
+/// the loop's three collinear counters: shape from a built design, level from traffic.
+///
+/// The count is what `select_page` returns, `clamp(matches - offset, 0, limit)`, not `limit`: a page
+/// past the end of the matches collects fewer rows than asked for, and charging `limit` there would
+/// bill a deep page on a narrow query for rows that do not exist.
+/// Level from traffic, not from the sweep. The page sweep put this near 15 ns/row, but a traffic fit
+/// with the column present reads 9.79, and traffic is what the routing surface is calibrated against --
+/// kernel LEVELS have not transferred in this branch (first warm cache, then an unexplained 1.6x on
+/// P3's per-card rate), while kernel SHAPE has been reliable. Adding the column did not disturb
+/// `GATHER_SELECT_PER_PAGE_SLOT_NS`, which refits 3.44 against a shipped 3.51 -- so the two are
+/// additive in the sampled mix rather than trading off, and only this one moves.
+const GATHER_COLLECT_PER_PAGE_ROW_NS: f64 = 9.79;
 /// Fixed P4 setup. Fit from the narrowest query (cmc>=15 card shallow 208ns at
 /// eval_domain=5: 208 − 5×(GATHER_VISIT_PER_CARD_NS+GATHER_PUSH_PER_MATCH_NS) −
 /// 5×GATHER_SELECT_PER_PAGE_SLOT_NS ≈ 170).
@@ -692,11 +716,15 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
                 + STREAM_FIXED_COST_NS
         }
         PhysicalPlan::GatheredScan => {
+    // Rows the collect actually walks: `select_page` yields `clamp(matches - offset, 0, limit)`, so a
+    // page past the end of the matches collects fewer rows than `limit` asked for.
+    let page_rows = f64::from(f.matches.saturating_sub(f.offset).min(f.limit));
             // Per-CARD verify tier, for the reason spelled out in the StreamedSelect arm above.
             eval_domain * (GATHER_CARD_PASS_NS + if tier_ns > 0.0 { tier_ns.max(GATHER_RESIDUAL_FLOOR_NS) } else { 0.0 })
                 + scan_units * GATHER_SCAN_PER_ROW_NS
                 + matches * GATHER_PUSH_PER_MATCH_NS
                 + page_span * GATHER_SELECT_PER_PAGE_SLOT_NS
+                + page_rows * GATHER_COLLECT_PER_PAGE_ROW_NS
                 + GATHER_FIXED_COST_NS
         }
     }
