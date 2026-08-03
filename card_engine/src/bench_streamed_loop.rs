@@ -35,6 +35,37 @@
 //! `DateCmp` is a `MASK_COMPARE_NS100` tier, the cheapest real residual, so the fitted per-card figure
 //! is a floor on `STREAM_RESIDUAL_FLOOR_NS` rather than a typical value.
 //!
+//! What both harnesses together establish, which is the point of having them (2026-08-03).
+//!
+//! P3's loop is over-costed like P4's, and by more: 5.05 shipped against 2.41 measured per card on the
+//! all_match path, 11.63 (5.05 + the 6.58 floor) against 4.32 with a residual, 5.97 against 2.92 per
+//! printing. So BOTH scan arms are inflated ~2-3x as rates.
+//!
+//! Five refits were then taken through the regret gate, interleaved A/B/A/B:
+//!
+//!     P4 mode-blind triple                      +43%
+//!     P4 pooled + artwork arm                  +8.8%
+//!     P4 reparameterised                        +40%
+//!     P3 and P4 both refit                      +30%
+//!     ... plus symmetric residual floors        +90%
+//!
+//! Every one regressed, and the best was the one that moved LEAST from the shipped values. Two of the
+//! attempts were diagnosed and corrected mid-flight -- artwork needed its own arm, and leaving P4's
+//! residual floor at 18.89 while P3's went to 1.91 was an asymmetry that sent
+//! `StreamedSelect -> GatheredScan` from 407 queries at 38% of lost time to 653 at 44%. Fixing that
+//! asymmetry then made things worse still, because 18.89 was load-bearing despite being unmeasured.
+//!
+//! The conclusion is not about any constant. Every rate here is now measured against realized counters
+//! on a built design, and the rates are demonstrably wrong while the PRODUCTS they form are roughly
+//! right -- which is the signature of compensating error in the FEATURES, not the rates. `plan_cost`
+//! multiplies a rate by an estimate; a rate 2x high against an estimate 2x low predicts correctly and
+//! routes correctly, and correcting only the rate breaks it. The shipped constants are a jointly-tuned
+//! routing surface, not a set of independently valid ns figures, and that is why they have survived.
+//!
+//! So the next work is on the estimators (`eval_domain`, `scan_units`, `matches`) graded against the
+//! realized counters these harnesses publish -- not another refit. Correcting a feature and its rate
+//! TOGETHER is the only move that can hold the products fixed while making both halves true.
+//!
 //! Calls the real `exec_streamed_select` and reads `ns_setup`/`ns_loop`/`ns_finish` and the counters
 //! off `PhaseStats` — same fenceposts and counters production publishes, nothing reimplemented.
 //!
