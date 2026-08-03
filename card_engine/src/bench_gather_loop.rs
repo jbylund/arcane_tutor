@@ -178,10 +178,12 @@ const ITERS: usize = 200;
 /// the larger cells. 4 keeps the leverage worth having and the wide group ~4× bigger.
 const WIDE_MIN_PRINTINGS: usize = 4;
 /// Card counts each cell runs at. Two sizes so linearity in the card term is measured, not assumed;
-/// bounded above by the wide group, which is the scarce one. The single-printing cell runs 6.31 →
+/// bounded above by the wide group, which is the scarce one. 400 is here to give the INTERCEPT leverage:
+/// a per-query fixed cost only shows up as the y-intercept of cells that vary in size, and the smallest
+/// cell is what pins it. The single-printing cell runs 6.31 →
 /// 7.67 ns/card between the two, so this is not a formality — the card term is mildly superlinear
 /// and a one-size design would bake whichever size it used into the constant.
-const CARD_COUNTS: [usize; 2] = [1_500, 4_500];
+const CARD_COUNTS: [usize; 3] = [400, 1_500, 4_500];
 /// Page requested. Small and fixed: `sel.absorb()` runs INSIDE the loop and prunes toward
 /// `offset + limit`, so this is part of what the per-match rate has to cover — keeping it constant
 /// keeps that contribution proportional to matches rather than to the page.
@@ -682,6 +684,35 @@ fn bench_gather_loop() {
             (c.ns_loop - base) / c.printings,
             (c.ns_loop - base) / c.cards
         );
+    }
+
+    // A per-query FIXED cost, measured as the intercept of the loop phase rather than taken from a
+    // whole-arm traffic fit. `fit_cost_model.py` fits one equation per query against total dispatch, so
+    // its intercept absorbs every mis-specification the other columns cannot express -- it read 84 and
+    // then 85 while COLLECT_PER_PAGE_ROW moved 15.0 -> 9.79 beneath it, which is exactly that. Here the
+    // intercept is identified by cells that differ ONLY in size, so nothing else can hide in it.
+    {
+        println!("\nloop-phase intercept per mode (the y-intercept IS the per-query fixed cost):");
+        for mode in ["card", "printing", "artwork"] {
+            // Two-point solve on the smallest and largest cells of one shape, which is all an intercept
+            // needs and avoids weighting choices skewing it.
+            let mut same: Vec<&Cell> = cells
+                .iter()
+                .filter(|c| c.mode == mode && !c.ran_card_pass && (c.printings / c.cards) < 1.5)
+                .collect();
+            same.sort_by(|a, b| a.cards.total_cmp(&b.cards));
+            if let (Some(lo), Some(hi)) = (same.first(), same.last()) {
+                if hi.cards > lo.cards {
+                    let slope = (hi.ns_loop - lo.ns_loop) / (hi.cards - lo.cards);
+                    let intercept = lo.ns_loop - slope * lo.cards;
+                    println!(
+                        "  {:<10}{:>6.0} -> {:>6.0} cards   {:>7.2} ns/card   intercept {:>8.0} ns",
+                        mode, lo.cards, hi.cards, slope, intercept
+                    );
+                }
+            }
+        }
+        println!("  shipped GATHER_FIXED_COST_NS 169.6; a whole-arm traffic fit puts it at 85.");
     }
 
     // The reparameterised fit: each mode fitted in the two-parameter space it can actually support,
