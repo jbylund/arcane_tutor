@@ -93,7 +93,10 @@ CURRENT: dict[str, list[float]] = {
     # Refit once `printings_examined` existed: this plan's fit was vetoed for as long as the only
     # available counter was the printing SPAN, which its all_match rows disagree with by ~3x over a
     # term the arm multiplies by zero. Median agreement 0.63 -> 0.92, within-25% 19% -> 58%.
-    "StreamedSelect": [5.05, 5.97, 6.58, 0.12, 1.21, 1.02, 0.02, 217.0],
+    # ..., perm_steps, ... -- the permutation walk's length, new 2026-08-03. It is the one quantity in
+    # P3's finish phase no other feature is proportional to: the walk steps until the page fills, so it
+    # visits ~page_span * n_cards / matches entries, inversely proportional to selectivity.
+    "StreamedSelect": [5.05, 5.97, 6.58, 0.12, 1.0, 1.21, 1.02, 0.02, 217.0],
     # broadcast, scatter, project, popcount, walk step, walk emit, gather card pass, gather bittest,
     # gather push, fixed. Several of these are SHARED with other arms in cost.rs (LINEAR_PASS,
     # RANGE_SCATTER, GATHER_CARD_PASS, GATHER_PUSH_PER_MATCH, ...), so a fitted value that disagrees
@@ -215,6 +218,10 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
             excess,
         )
     if plan == "StreamedSelect":
+        # Mirrors the arm's guards: an empty result or a page past the end returns before BOTH branches,
+        # so neither the gather floor nor the walk is charged there.
+        walks_perm = matches > STREAM_MIN_MATCHES and matches > 0 and offset < matches
+        perm_steps = min(page_span * n_cards / matches, n_cards) if walks_perm else 0.0
         # Mirrors run_query_streamed's early return: zero matches, or a page past the total, never
         # reaches the small-total gather. See STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS in cost.rs.
         runs_small_gather = 0 < matches <= STREAM_MIN_MATCHES and offset < matches
@@ -229,6 +236,7 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
                 scan_units * residual_on,
                 eval_domain * residual_on,
                 matches,
+                perm_steps,
                 float(acq["artwork_seen_cards"]),
                 small_total,
                 n_cards,
@@ -239,6 +247,7 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
                 "SCAN_PER_ROW",
                 "RESIDUAL_FLOOR",
                 "EMIT_PER_MATCH",
+                "PERM_STEP",
                 "ARTWORK_SEEN_PER_CARD",
                 "SMALL_TOTAL_FLOOR_PER_CARD",
                 "CORPUS_PASS_PER_CARD",

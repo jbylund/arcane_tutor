@@ -145,9 +145,13 @@ const ITERS: usize = 200;
 /// A "wide" card has at least this many printings; below it and above 1 is "medium". Three levels of
 /// printings-per-card is what identifies two rates per mode with a degree of freedom left over.
 const WIDE_MIN_PRINTINGS: usize = 4;
-/// Card counts each cell runs at, bounded above by the scarce wide group. Two sizes measure linearity
-/// in the card term rather than assuming it.
-const CARD_COUNTS: [usize; 2] = [1_500, 4_500];
+/// Card counts each cell runs at, bounded above by the scarce wide group. Three sizes measure linearity
+/// in the card term rather than assuming it, and 600 sits BELOW `STREAM_MIN_MATCHES` (1,024) in card
+/// mode where matches == cards. That matters because the finish phase takes a different branch on each
+/// side: at or under the threshold the small-total gather scans `0..n_cards`, above it the permutation
+/// walk steps until the page fills. Every earlier cell exceeded the threshold, so the gather branch --
+/// and `STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS` with it -- was never measured at all.
+const CARD_COUNTS: [usize; 3] = [600, 1_500, 4_500];
 /// Page requested. P3's `ns_finish` branches on `total` against `STREAM_MIN_MATCHES`, not on the page,
 /// so this only has to be small and fixed to keep the finish phase out of the loop measurement.
 const LIMIT: usize = 60;
@@ -443,6 +447,33 @@ fn bench_streamed_loop() {
         let (lo, hi) = (cr.min(predicted), cr.max(predicted));
         println!("  spread {:>.2}x  (linearity in these two counters requires these to agree)", hi / lo.max(1e-9));
     }
+
+    // The finish phase, per branch, against the quantity each branch is actually driven by. This is what
+    // fits STREAM_PERM_STEP_NS and STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS, and it needs cells on both
+    // sides of STREAM_MIN_MATCHES to do it -- hence the 600-card row.
+    println!("\nfinish phase by branch (n_cards = {}):", data.cards.len());
+    println!("  {:<24}{:>7}{:>10}{:>12}{:>13}{:>12}", "cell", "n", "matches", "ns_finish", "branch", "ns per unit");
+    for c in &cells {
+        // Mirrors run_query_streamed's guards: an empty result or a page past the end returns before
+        // either branch, so those cells drive nothing and are labelled rather than fitted.
+        let (branch, units) = if c.matches <= 0.0 {
+            ("none", 0.0)
+        } else if c.matches <= 1024.0 {
+            ("gather", data.cards.len() as f64)
+        } else {
+            ("perm walk", (LIMIT as f64 * data.cards.len() as f64 / c.matches).min(data.cards.len() as f64))
+        };
+        let per_unit = if units > 0.0 { c.ns_finish / units } else { 0.0 };
+        println!(
+            "  {:<24}{:>7}{:>10.0}{:>12.0}{:>13}{:>12.3}",
+            c.label, c.n_cards_req, c.matches, c.ns_finish, branch, per_unit
+        );
+    }
+    println!(
+        "\n  gather rows are ns per card scanned, against a shipped STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS\n  \
+         of 1.02; perm-walk rows are ns per permutation entry, against STREAM_PERM_STEP_NS. Grade the\n  \
+         step ESTIMATE against the realized `perm_steps` counter separately -- this table assumes it."
+    );
 
     println!(
         "\n  shipped: STREAM_CARD_PASS_NS 5.05 per card, STREAM_SCAN_PER_ROW_NS 5.97 per printing,\n  \

@@ -421,7 +421,32 @@ const STREAM_ARTWORK_SEEN_PER_CARD_NS: f64 = 1.21;
 /// ~52µs = 31508 × 1.65. Only added when `matches <= STREAM_MIN_MATCHES`, the
 /// exact condition that routes P3 into that gather branch. The 1.65 above was fit on three hand
 /// picked narrow queries; across the sampled space the floor measures ~31µs, not 52µs.
+///
+/// CONFIRMED 2026-08-03 by `bench_streamed_loop`, which needed 600-card cells to reach this branch at
+/// all -- every earlier cell had more than `STREAM_MIN_MATCHES` matches and took the permutation walk
+/// instead, so this constant had never been measured against the branch it prices. It now reads
+/// 1.075-1.250 ns per card scanned against the 1.02 shipped, on a 33.9 us finish phase. Left alone.
 const STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS: f64 = 1.02;
+/// ns per permutation entry stepped in the streaming walk, the branch taken when
+/// `total > STREAM_MIN_MATCHES`.
+///
+/// The walk steps the permutation until the page fills, so it visits about
+/// `page_span * n_cards / matches` entries -- inversely proportional to selectivity, and the one
+/// quantity in P3's finish phase that no other feature is proportional to. Nothing charged for it
+/// before: the arm had `matches * EMIT + FIXED`, which is flat in `n_cards`, so at a fixed 1,500
+/// matches it predicted ~397 ns while `bench_streamed_loop` measured 1,333 / 3,791 / 10,458 ns at
+/// 31.5k / 126k / 410k cards. Under by 3.4x at the production corpus and 26x at 410k, which is why
+/// that phase graded mean |log| 2.06 while carrying 12% of all measured nanoseconds.
+///
+/// Measured 0.958-1.256 ns/entry on the cells where the walk is long (1,500 matches, ~1,260 estimated
+/// steps): 1.0 is the middle of that. Cells whose walk is SHORT read 2.0-4.2 ns/entry, but those are a
+/// ~167-step estimate against a few hundred ns, where a fixed cost dominates and a per-step rate
+/// overstates -- the long-walk regime is the one worth fitting, being where the term is large enough to
+/// change a routing decision.
+///
+/// The estimate is graded against the realized `perm_steps` counter rather than trusted, the same way
+/// `scan_units` is graded against `printings_examined`.
+const STREAM_PERM_STEP_NS: f64 = 1.0;
 /// Per-card cost P3 pays over the WHOLE corpus regardless of how narrow the query is, charged on
 /// `n_cards` rather than `eval_domain`. The thread-local counts buffer is resized and cleared to
 /// `cards.len()` every query — a 126 kB memset on this corpus — and the emission walk is over the
@@ -639,6 +664,18 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
                 && f.matches > 0
                 && u64::from(f.offset) < u64::from(f.matches);
             let floor = if runs_small_gather { n_cards * STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS } else { 0.0 };
+            // The other branch: when the small-total gather does NOT run and there is a page to emit,
+            // the walk steps the permutation until it fills. Same guards as the gather -- a query with
+            // no matches, or a page past the end, returns before the walk too.
+            let walks_permutation = !runs_small_gather && f.matches > 0 && u64::from(f.offset) < u64::from(f.matches);
+            let perm_steps = if walks_permutation {
+                // Entries visited to accumulate `page_span` matches, when matches are spread uniformly
+                // through the permutation: one match per `n_cards / matches` entries. Bounded by the
+                // corpus, since the walk cannot step past the end of the permutation.
+                (page_span * n_cards / f64::from(f.matches)).min(n_cards)
+            } else {
+                0.0
+            };
             // card_pass — and the verify tier that prices it — is per candidate CARD: the loop
             // calls `filter.card_pass` once per `cid`, and only the cheaper printing-dependent
             // residual is re-checked per row inside `push_card_matches`. Charging `tier_ns` per
@@ -648,6 +685,7 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
                 // Only with a residual does P3 walk printings; see STREAM_SCAN_PER_ROW_NS.
                 + if tier_ns > 0.0 { scan_units * STREAM_SCAN_PER_ROW_NS } else { 0.0 }
                 + matches * STREAM_EMIT_PER_MATCH_NS
+                + perm_steps * STREAM_PERM_STEP_NS
                 + f64::from(f.artwork_seen_cards) * STREAM_ARTWORK_SEEN_PER_CARD_NS
                 + floor
                 + n_cards * STREAM_CORPUS_PASS_PER_CARD_NS
