@@ -6386,6 +6386,105 @@ fn streamed_selection_matches_gathered() {
     }
 }
 
+/// The emission walk must cover the MATCH SPAN only, not the whole permutation — the
+/// `year>=2020 order=released asc` shape, built here as a corpus whose sort order and match set are
+/// deliberately anti-correlated: 4,500 non-matching cards sort ahead of the 1,500 that match.
+///
+/// Both ends matter, and one direction exercises each. Ascending, the walk used to step the 4,500-entry
+/// prefix before its first emit; descending at a deep offset it used to run to the END of the
+/// permutation, because the only thing that stopped it was the page filling and a partial last page
+/// never fills.
+///
+/// Two assertions, and neither substitutes for the other:
+///
+/// - **Row identity against `GatheredScan`** at several page offsets. The span moves where the paging
+///   walk starts and stops, so an end one entry off drops a row silently — a wrong page, not a crash,
+///   and only a reference comparison catches it. `streamed_selection_matches_gathered` pages the same
+///   way but on an evenly-spread match set, where the span is the whole corpus and bounding it is a
+///   no-op; the anti-correlation here is what makes it load-bearing.
+/// - **`perm_steps`**, which is how far the walk actually stepped. The row assertions pass just as well
+///   on a walk that steps everything: unbounded, the ascending cells cost `offset + limit + PREFIX`
+///   steps and the deep descending ones the full 6,000.
+#[test]
+fn streamed_walk_seeks_past_the_unmatched_prefix() {
+    // > STREAM_MIN_MATCHES (1,024) in every mode, so the walk branch runs rather than the
+    // small-total gather -- the seek only exists on the walk.
+    const MATCHING: usize = 1_500;
+    const PREFIX: usize = 4_500; // cards sorting ahead of every match under `cmc asc`
+    const N: usize = PREFIX + MATCHING;
+    const MATCH_CMC: u8 = 5;
+    const LIMIT: usize = 10;
+    // Two printings per card, so printing and artwork mode have more than one row per matching card
+    // to page through rather than degenerating to card mode.
+    const PRINTINGS_PER_CARD: usize = 2;
+
+    let mut vocab = VocabInterner::new();
+    let mut cards = Vec::with_capacity(N);
+    for i in 0..N {
+        let mut c = stub_card((i + 1) as u128, TYPE_CREATURE, &[], &mut vocab);
+        // The anti-correlation: cmc 0 for the prefix, MATCH_CMC for the tail, so the ascending cmc
+        // permutation puts every match last and the descending one puts every match first. One
+        // fixture then covers both "the seek skips almost everything" and "the seek is a no-op".
+        c.cmc = Some(if i < PREFIX { 0 } else { MATCH_CMC });
+        c.edhrec_rank = Some(((i * 37) % N) as u32 + 1); // distinct, shuffled: no full-key tie blocks
+        cards.push(c);
+    }
+    let data = store_of(cards, &vec![PRINTINGS_PER_CARD; N], vocab);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let ctx = QueryCtx::from(archived);
+
+    let filt = || FilterExpr::NumericCmp {
+        lhs: NumExpr::Field(NumField::Cmc),
+        op: CmpOp::Ge,
+        rhs: NumExpr::Const(f64::from(MATCH_CMC)),
+    };
+    let ids = |page: &[(&super::AOracleCard, &super::APrinting)]| -> Vec<(u128, u128)> {
+        page.iter().map(|(c, p)| (u128::from(c.oracle_id), u128::from(p.scryfall_id))).collect()
+    };
+
+    let mut checked = 0usize;
+    for &(mode_label, mode) in &[("card", Mode::Card), ("printing", Mode::Printing), ("artwork", Mode::Artwork)] {
+        for descending in [false, true] {
+            // Offsets across the page-depth range this plan sees, including one deep enough that the
+            // walk runs off the end of the matches (1,499 in card mode leaves a single row).
+            for offset in [0usize, 7, 750, 1_499] {
+                let params = kernel_params(mode, SortCol::Cmc, descending, LIMIT, offset);
+                let (pe, filter) = split_planes(
+                    filt(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, matches!(mode, Mode::Card),
+                );
+                // A pristine clone per plan: `prepare_candidates` rewrites the filter it is handed.
+                let mut streamed_filter = filter.clone();
+                take_phase_stats();
+                let streamed = run_query_with_plan(PhysicalPlan::StreamedSelect, &ctx, &params, &mut streamed_filter, pe.as_ref())
+                    .expect("store_of builds the cmc permutation, so StreamedSelect is applicable");
+                let stats = take_phase_stats();
+                let mut gathered_filter = filter.clone();
+                let gathered = run_query_with_plan(PhysicalPlan::GatheredScan, &ctx, &params, &mut gathered_filter, pe.as_ref())
+                    .expect("GatheredScan is always applicable");
+
+                let case = format!("{mode_label}/{}/offset={offset}", if descending { "desc" } else { "asc" });
+                assert!(streamed.0 > *STREAM_MIN_MATCHES, "cell must reach the walk branch, not the gather: {case}");
+                assert_eq!(streamed.0, gathered.0, "total disagrees with GatheredScan: {case}");
+                assert_eq!(ids(&streamed.1), ids(&gathered.1), "page disagrees with GatheredScan: {case}");
+
+                // The walk consumes `offset` matches and emits at most `limit` more, and every entry
+                // inside the span is a match here (the matching group is contiguous in this fixture),
+                // so one step per match plus the entry the break lands on bounds it. Unbounded, the
+                // ascending cells were PREFIX higher than this and the deep descending ones ran to N.
+                let bound = (offset + LIMIT + 1) as u64;
+                assert!(
+                    stats.perm_steps <= bound,
+                    "walk stepped {} entries, over the {bound}-step bound — the match span did not bound it: {case}",
+                    stats.perm_steps,
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, 24, "every mode × direction × offset cell must have run");
+}
+
 // Group counts collapse duplicate illustrations within a card.
 #[test]
 fn artwork_group_counts_dedup_illustrations() {
