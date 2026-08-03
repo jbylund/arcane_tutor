@@ -115,10 +115,17 @@ NOISE_FLOOR_US = 1.0
 # double-counting it and must not be netted. Everywhere else the prep is shared and the plan is
 # charged for a copy it would not pay under the router.
 RANGE_ACQUIRES = frozenset({"card_range_popcount", "printing_range_scan", "printing_compose"})
-# If netting `ns_prepare` removes more than this fraction of the measured round, the subtraction has
-# overshot and the residual is noise rather than a smaller measurement. Drop the row instead of
-# reporting a number built out of two nearly-equal quantities.
-NETTING_RESIDUAL_FLOOR = 0.5
+# Below this many nanoseconds, a netted residual is timer noise rather than a smaller measurement, so
+# the row is dropped instead of reporting a number built out of two nearly-equal quantities.
+#
+# ABSOLUTE, where this used to be a fraction of the trial (0.5). The fraction cost real coverage for no
+# reason: `ns_prepare` comes from the same round as the trial it is subtracted from (`explain_analyze`
+# keeps the fastest round's phases), so the subtraction is exact rather than cross-round, and a residual
+# that is 40% of a 10us trial is 4us -- perfectly measurable. The fractional guard was dropping
+# `PlanePopcountOrder` on 37% of plane queries, which made `bench_regret_matrix` skip 39% of all
+# queries as unpriceable. What matters is whether the residual clears the timer, not what share of the
+# trial it is.
+NETTING_RESIDUAL_FLOOR_NS = NOISE_FLOOR_US * 1000.0
 
 BOOTSTRAP_RESAMPLES = 10_000
 BOOTSTRAP_CI = 0.95
@@ -308,24 +315,43 @@ def predicted_ns(plan: dict) -> float | None:
 def plan_self_ns(plan: dict, acquire: dict) -> float | None:
     """What this plan costs to RUN, in nanoseconds -- the single definition every harness uses.
 
-    `min` over the trials, because the question is what the plan costs when nothing interferes, and
-    the distribution's upper tail is machine noise rather than the plan.
+    The quantity wanted is the executor's own time: dispatch, excluding any shared artifact the router
+    would have built during acquire and handed over. Two ways to get it, and the direct one is
+    preferred.
 
-    Materializing plans re-run `prepare_candidates` inside their own forced round, where the router
-    would have acquired the artifact once and shared it. That prep is published per plan as
-    `ns_prepare`, so it can be netted back out -- except under a range-style acquire, where the
-    routed path re-pays it too and it IS the plan's cost.
+    **Measured directly, where the executor publishes phases.** `ns_setup + ns_loop + ns_finish` are
+    contiguous by construction -- four instants bounding three spans -- so their sum IS the executor,
+    with no subtraction and nothing to overshoot. Verified against the netted figure on 45k paired
+    rows: median ratio 0.998 (GatheredScan) and 0.997 (StreamedSelect), with 0.08us of the round left
+    unaccounted by any phase. Only the two materializing plans publish them.
+
+    **Netted, otherwise.** The other four plans publish no phases, so their executor time is recovered
+    as `min(trials_ns) - ns_prepare`: a forced run rebuilds the shared artifact (candidate list, or the
+    plane bitmap) that the router acquires once, and `ns_prepare` is that build. Except under a
+    range-style acquire, where the routed path re-pays it too and it IS the plan's cost -- hence
+    `RANGE_ACQUIRES`.
+
+    The guard on that subtraction is an ABSOLUTE floor, not a fraction. It used to drop any row where
+    netting removed more than half the trial, which cost real coverage for no reason: `ns_prepare` and
+    the trial come from the SAME round (`explain_analyze` keeps the fastest round's phases), so the
+    subtraction is exact rather than cross-round, and a residual that is 40% of a 10us trial is 4us --
+    measurable, not noise. That guard was dropping `PlanePopcountOrder` on 37% of plane queries, which
+    made `bench_regret_matrix` skip 39% of all queries as unpriceable. What matters is whether the
+    residual clears the timer, so the floor is `NOISE_FLOOR_US`.
 
     Returns:
-        The plan's own nanoseconds, or None if the plan produced no page (declined, or never ran) or
-        if netting overshot far enough that the residual is noise.
+        The plan's own nanoseconds, or None if the plan produced no page (declined, or never ran) or if
+        the netted residual falls below the timer's noise floor.
     """
     if not plan["trials_ns"]:
         return None
+    phases = float(plan["ns_setup"] + plan["ns_loop"] + plan["ns_finish"])
+    if phases > 0:
+        return phases
     real = float(min(plan["trials_ns"]))
     if plan["ns_round_total"] and acquire["count_source"] not in RANGE_ACQUIRES:
         netted = real - plan["ns_prepare"]
-        if netted < real * NETTING_RESIDUAL_FLOOR:
+        if netted < NETTING_RESIDUAL_FLOOR_NS:
             return None
         real = netted
     return real

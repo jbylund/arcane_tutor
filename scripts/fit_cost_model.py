@@ -61,10 +61,6 @@ WALK_LENGTH_BIAS = 1.45
 # A realized counter this far from the feature meant to predict it is a FEATURE bug; refitting rates
 # on top of it just relocates the error.
 COUNTER_TOL = 0.15
-# Netting prepare_candidates out can overshoot (different round than the min trial). Keep a row only
-# if what remains is at least this fraction of the raw time; below that the residual is noise.
-# Now enforced inside `costbench.plan_self_ns`, which every harness shares.
-MIN_NETTED_FRACTION = costbench.NETTING_RESIDUAL_FLOOR
 # The mirror check's tolerance. This is a reimplementation of cost.rs in Python, so it can drift --
 # and did: the arms moved to `max(tier, floor)` and gained a residual-gated per-row term while
 # `design_row` still modelled the tier as a multiplier, which silently invalidated every coefficient
