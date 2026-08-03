@@ -31,7 +31,7 @@ use rkyv::Archived;
 
 use super::{
     archive_header, archive_payload, bitmap_card_ids, compose_printing_bits, gather_composed_page, printing_bits_to_card_bits, AOffsets,
-    CardData, CmpOp, CollField, FilterExpr, Mmap, Mode, Prefer, QueryCtx, QueryParams, SortCol, ARCHIVE_HEADER_LEN,
+    CardData, CmpOp, CollField, FilterExpr, Mmap, Mode, Prefer, QueryCtx, QueryParams, SortBound, SortCol, ARCHIVE_HEADER_LEN,
 };
 
 const ITERS: usize = 200;
@@ -42,7 +42,15 @@ const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/ver
 /// card-space sort permutation, and the printing-space orderby walk requires
 /// `Mode::Printing` — so card mode lands in `gather_composed_page`, the affected branch.
 fn card_params(page_offset: usize) -> QueryParams {
-    QueryParams { mode: Mode::Card, prefer: Prefer::Default, sort_col: SortCol::PriceUsd, descending: false, limit: LIMIT, page_offset }
+    QueryParams {
+        mode: Mode::Card,
+        prefer: Prefer::Default,
+        sort_col: SortCol::PriceUsd,
+        descending: false,
+        limit: LIMIT,
+        page_offset,
+        sort_bound: SortBound::UNBOUNDED,
+    }
 }
 
 fn best_ns(mut kernel: impl FnMut() -> usize) -> u128 {

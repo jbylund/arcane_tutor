@@ -45,7 +45,9 @@ fn tri_bool(b: bool) -> Tri {
 
 // ─── Numeric expressions ──────────────────────────────────────────────────────
 
-#[derive(Clone, Copy)]
+// PartialEq so a caller can ask "is this leaf about the field I care about" — `sort_col_bound` matches
+// the sort column against the field a NumericCmp constrains.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NumField {
     Cmc,
     Power,

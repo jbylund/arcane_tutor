@@ -11,7 +11,7 @@ use super::{
     PhysicalPlan, ComposePaging, trigram_candidates, finalize_trigram_index, PrintingRangeIndex, NARROW_FLOOR,
     gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
     walk_printing_page, aligned_page, bare_range_bounds, probe_range_k, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
-    prepare_candidates, verify_cost_tier, scan_units, Mode, QueryCtx, QueryParams, Prefer,
+    prepare_candidates, verify_cost_tier, scan_units, sort_col_bound, Mode, QueryCtx, QueryParams, Prefer, SortBound,
     GatherSelect, select_page, GATHER_PRUNE_CHUNK, Match,
     archive_header, archive_payload, ARCHIVE_HEADER_LEN, Mmap,
     bitmap_contains, bitmap_card_ids, compile_plane, eval_planes, split_planes,
@@ -32,7 +32,15 @@ use rand::RngExt;
 /// (`cost::PlanFeatures` has no such field), and `SortCol::EdhrecRank`/ascending
 /// is the default orderby these tests were written against.
 fn explain_params(mode: Mode, limit: usize) -> QueryParams {
-    QueryParams { mode, prefer: Prefer::Default, sort_col: SortCol::EdhrecRank, descending: false, limit, page_offset: 0 }
+    QueryParams {
+        mode,
+        prefer: Prefer::Default,
+        sort_col: SortCol::EdhrecRank,
+        descending: false,
+        limit,
+        page_offset: 0,
+        sort_bound: SortBound::UNBOUNDED,
+    }
 }
 
 /// `QueryParams` from the enum-space inputs a kernel-level test drives directly
@@ -40,7 +48,7 @@ fn explain_params(mode: Mode, limit: usize) -> QueryParams {
 /// `prefer` is `Default` — the value every one of these call sites passed
 /// explicitly before the bundle.
 fn kernel_params(mode: Mode, sort_col: SortCol, descending: bool, limit: usize, page_offset: usize) -> QueryParams {
-    QueryParams { mode, prefer: Prefer::Default, sort_col, descending, limit, page_offset }
+    QueryParams { mode, prefer: Prefer::Default, sort_col, descending, limit, page_offset, sort_bound: SortBound::UNBOUNDED }
 }
 
 /// `QueryParams` for a test calling a function that reads only `mode` —
@@ -2861,6 +2869,27 @@ fn force_plan_differential_agreement() {
         (FuzzSpec::Leaf(FuzzLeaf::Price { op: CmpOp::Lt, val: 100_000.0 }), "edhrec", "asc"),
         (FuzzSpec::Leaf(FuzzLeaf::Price { op: CmpOp::Lt, val: 2.0 }), "edhrec", "desc"),
         (FuzzSpec::And(vec![FuzzSpec::Leaf(FuzzLeaf::Price { op: CmpOp::Lt, val: 100_000.0 }), fuzz_leaf_color(&mut rng)]), "edhrec", "asc"),
+        // A numeric bound on the SORT column itself, which is what `walk_bounds` narrows a streamed
+        // walk with. Hand-built in BOTH directions, and in compound as well as bare form: the random
+        // generator draws its predicate and its orderby independently, so it produced descending
+        // bounded cases and no ascending ones (caught by the per-direction coverage assertion at the
+        // end). The compound case checks that an `And` sibling neither widens nor blocks the bound, and
+        // the `Or` case that a disjunction correctly yields no bound at all — a bound taken from one
+        // arm of an `Or` would cut off rows the other arm matches, and only a row-order comparison
+        // against the reference catches that.
+        (FuzzSpec::Leaf(FuzzLeaf::Cmc { op: CmpOp::Ge, val: 4.0 }), "cmc", "asc"),
+        (FuzzSpec::Leaf(FuzzLeaf::Cmc { op: CmpOp::Le, val: 3.0 }), "cmc", "desc"),
+        (FuzzSpec::And(vec![FuzzSpec::Leaf(FuzzLeaf::Cmc { op: CmpOp::Ge, val: 3.0 }), fuzz_leaf_type(&mut rng)]), "cmc", "asc"),
+        (FuzzSpec::Leaf(FuzzLeaf::Power { op: CmpOp::Ge, val: 3.0 }), "power", "asc"),
+        (FuzzSpec::Leaf(FuzzLeaf::Toughness { op: CmpOp::Eq, val: 2.0 }), "toughness", "asc"),
+        (
+            FuzzSpec::Or(vec![
+                FuzzSpec::Leaf(FuzzLeaf::Cmc { op: CmpOp::Ge, val: 6.0 }),
+                fuzz_leaf_color(&mut rng),
+            ]),
+            "cmc",
+            "asc",
+        ),
         // PR 3: cn/date bare ranges also route through CardRangePopcount in card mode (the Date cases
         // above already exercise it; add collector_number + year over card-level perms too).
         (FuzzSpec::Leaf(FuzzLeaf::CollectorNumber { op: CmpOp::Lt, val: 100.0 }), "edhrec", "asc"),
@@ -2959,6 +2988,11 @@ fn force_plan_differential_agreement() {
         PhysicalPlan::GatheredScan => 5,
     };
     let mut ran = [0u32; 6];
+    // Coverage for the sort-column bound below: a corpus that never produced one would verify nothing
+    // about `walk_bounds`, and the assertion at the end of this test would pass vacuously. Counted per
+    // DIRECTION because `walk_bounds` negates the key under `desc`, so the two directions map an
+    // interval onto opposite ends of the permutation and a sign error would only show in one of them.
+    let mut bounded_cases = [0usize; 2];
 
     // >= any possible total, so the offset-0 page is the complete ordered result.
     let full_limit = archived.printings.len().max(1);
@@ -2989,6 +3023,14 @@ fn force_plan_differential_agreement() {
     for (spec, orderby, direction) in &cases {
         let sort_col = orderby_to_col(orderby);
         let descending = *direction == "desc";
+        // Extracted from the unsplit filter, as `bind_and_split_filter` does in production, and passed
+        // to every plan. This is what holds `walk_bounds` to the reference across the whole fuzz corpus:
+        // numeric leaves on cmc/power/toughness appear under And, Or and Not here, so an extractor that
+        // read a bound out of a disjunction or inverted one out of a negation would return a short page
+        // for some case and fail the row-order assertion below. Applied to ALL plans, not just P3, since
+        // a bound that changed any plan's answer is equally wrong.
+        let sort_bound = sort_col_bound(&fuzz_bound_filter(spec, archived), sort_col);
+        bounded_cases[usize::from(descending)] += usize::from(!sort_bound.is_unbounded());
         // (key1, key2) = the top 64 bits of sort_key_bits; drop the low 32 (key 3).
         let key2_seq = |page: &[(&Archived<OracleCard>, &Archived<Printing>)]| -> Vec<u128> {
             page.iter().map(|&(c, p)| sort_key_bits(c, p, sort_col, descending) >> 32).collect()
@@ -3004,7 +3046,8 @@ fn force_plan_differential_agreement() {
                 );
                 let (ref_total, ref_page) = run_query_with_plan(
                     PhysicalPlan::GatheredScan, &QueryCtx::from(archived),
-                    &QueryParams::from_strs(mode, prefer, orderby, direction, full_limit, 0), &mut ref_res, ref_pe.as_ref(),
+                    &QueryParams::from_strs(mode, prefer, orderby, direction, full_limit, 0).with_sort_bound(sort_bound),
+                    &mut ref_res, ref_pe.as_ref(),
                 )
                 .expect("GatheredScan is always applicable");
                 ran[plan_idx(PhysicalPlan::GatheredScan)] += 1;
@@ -3027,7 +3070,8 @@ fn force_plan_differential_agreement() {
                     );
                     let out = run_query_with_plan(
                         plan, &QueryCtx::from(archived),
-                        &QueryParams::from_strs(mode, prefer, orderby, direction, full_limit, 0), &mut res, pe.as_ref(),
+                        &QueryParams::from_strs(mode, prefer, orderby, direction, full_limit, 0).with_sort_bound(sort_bound),
+                        &mut res, pe.as_ref(),
                     );
                     let Some((total, page)) = out else { continue };
                     ran[plan_idx(plan)] += 1;
@@ -3069,6 +3113,14 @@ fn force_plan_differential_agreement() {
         assert!(
             ran[plan_idx(plan)] > 0,
             "plan {plan:?} was never exercised by the differential corpus — add coverage",
+        );
+    }
+    for (dir, count) in [("asc", bounded_cases[0]), ("desc", bounded_cases[1])] {
+        assert!(
+            count > 0,
+            "no {dir} case constrained its own sort column, so `walk_bounds` never narrowed a walk in that \
+             direction — the row assertions above did not verify it. Add a numeric leaf on \
+             cmc/power/toughness under a matching orderby.",
         );
     }
 }
@@ -6386,35 +6438,34 @@ fn streamed_selection_matches_gathered() {
     }
 }
 
-/// The emission walk must cover the MATCH SPAN only, not the whole permutation — the
-/// `year>=2020 order=released asc` shape, built here as a corpus whose sort order and match set are
-/// deliberately anti-correlated: 8,500 non-matching cards sort ahead of the 1,500 that match.
+/// The emission walk must cover only the segment of the permutation its filter's bound on the sort
+/// column admits — the `cmc>=6 order=cmc asc` shape, built here as a corpus whose sort order and match
+/// set are deliberately anti-correlated: 8,500 non-matching cards sort ahead of the 1,500 that match.
 ///
-/// Both ends matter, and one direction exercises each. Ascending, the walk used to step the 8,500-entry
-/// prefix before its first emit; descending at a deep offset it used to run to the END of the
-/// permutation, because the only thing that stopped it was the page filling and a partial last page
-/// never fills.
+/// Both ends matter, and one direction exercises each. Ascending, the walk would step the 8,500-entry
+/// prefix before its first emit; descending at a deep offset it would run to the END of the permutation,
+/// because the only thing that stops it is the page filling and a partial last page never fills. The
+/// bound is one interval either way: `walk_bounds` swaps which side of it starts the segment, since the
+/// permutation's key negates under `desc`.
 ///
-/// Two assertions, and neither substitutes for the other:
+/// Three assertions, and none substitutes for another:
 ///
-/// - **Row identity against `GatheredScan`** at several page offsets. The span moves where the paging
-///   walk starts and stops, so an end one entry off drops a row silently — a wrong page, not a crash,
-///   and only a reference comparison catches it. `streamed_selection_matches_gathered` pages the same
-///   way but on an evenly-spread match set, where the span is the whole corpus and bounding it is a
-///   no-op; the anti-correlation here is what makes it load-bearing.
+/// - **Row identity against `GatheredScan`** at several page offsets. The segment decides where the
+///   paging walk starts and stops, so an end one entry off drops a row silently — a wrong page, not a
+///   crash, and only a reference comparison catches it.
 /// - **`perm_steps`**, which is how far the walk actually stepped. The row assertions pass just as well
 ///   on a walk that steps everything: unbounded, the ascending cells cost `offset + limit + PREFIX`
 ///   steps and the deep descending ones the full 10,000.
+/// - **The unbounded control.** The same query ordered by a column the filter says nothing about
+///   (`edhrec`) must return identical rows while stepping the whole permutation — that is the fallback
+///   every query without a bound on its sort column takes, and it has to stay correct.
 #[test]
-fn streamed_walk_seeks_past_the_unmatched_prefix() {
+fn streamed_walk_bounds_itself_by_the_sort_column_predicate() {
     // > STREAM_MIN_MATCHES (1,024) in every mode, so the walk branch runs rather than the
     // small-total gather -- the span bound only exists on the walk.
     const MATCHING: usize = 1_500;
-    // Cards sorting ahead of every match under `cmc asc`. Sized so matching cards are 15% of the
-    // corpus, comfortably under `SPAN_TRACK_CANDIDATE_DIVISOR`'s quarter -- at exactly a quarter this
-    // test would pass or fail on whether the narrowing returned 1,500 candidates or 6,000.
-    // `streamed_selection_matches_gathered` covers the other side of that gate: 1,125 matches among
-    // 1,500 cards is three quarters of the corpus, so its walk is the unbounded one.
+    // Cards sorting ahead of every match under `cmc asc`, so the prefix the bound skips is 85% of the
+    // corpus and a walk that ignored the bound would be caught by an order of magnitude.
     const PREFIX: usize = 8_500;
     const N: usize = PREFIX + MATCHING;
     const MATCH_CMC: u8 = 5;
@@ -6448,13 +6499,25 @@ fn streamed_walk_seeks_past_the_unmatched_prefix() {
         page.iter().map(|(c, p)| (u128::from(c.oracle_id), u128::from(p.scryfall_id))).collect()
     };
 
+    // Extracted from the UNSPLIT filter, exactly as `bind_and_split_filter` does: `cmc>=MATCH_CMC`
+    // plane-consumes to `FilterExpr::True`, so a bound read after the split would find nothing.
+    let cmc_bound = sort_col_bound(&filt(), SortCol::Cmc);
+    assert_eq!(
+        cmc_bound,
+        SortBound { lo: Some(f64::from(MATCH_CMC)), hi: None },
+        "a bare `cmc >= k` must bound the cmc column below and leave it unbounded above",
+    );
+    // The control: the same filter says nothing about `edhrec`, so ordering by it must fall back to
+    // walking everything.
+    assert_eq!(sort_col_bound(&filt(), SortCol::EdhrecRank), SortBound::UNBOUNDED, "cmc says nothing about edhrec");
+
     let mut checked = 0usize;
     for &(mode_label, mode) in &[("card", Mode::Card), ("printing", Mode::Printing), ("artwork", Mode::Artwork)] {
         for descending in [false, true] {
             // Offsets across the page-depth range this plan sees, including one deep enough that the
             // walk runs off the end of the matches (1,499 in card mode leaves a single row).
             for offset in [0usize, 7, 750, 1_499] {
-                let params = kernel_params(mode, SortCol::Cmc, descending, LIMIT, offset);
+                let params = kernel_params(mode, SortCol::Cmc, descending, LIMIT, offset).with_sort_bound(cmc_bound);
                 let (pe, filter) = split_planes(
                     filt(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, matches!(mode, Mode::Card),
                 );
@@ -6488,6 +6551,32 @@ fn streamed_walk_seeks_past_the_unmatched_prefix() {
         }
     }
     assert_eq!(checked, 24, "every mode × direction × offset cell must have run");
+
+    // The unbounded control: same filter, ordered by a column it constrains not at all. Rows must still
+    // agree with the reference, and the walk must step far more than the bounded cells did -- otherwise
+    // this test would pass with `walk_bounds` returning an empty slice for everything.
+    for offset in [0usize, 750] {
+        let params = kernel_params(Mode::Card, SortCol::EdhrecRank, false, LIMIT, offset);
+        let (pe, filter) =
+            split_planes(filt(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
+        let mut streamed_filter = filter.clone();
+        take_phase_stats();
+        let streamed = run_query_with_plan(PhysicalPlan::StreamedSelect, &ctx, &params, &mut streamed_filter, pe.as_ref())
+            .expect("store_of builds the edhrec permutation too");
+        let stats = take_phase_stats();
+        let mut gathered_filter = filter.clone();
+        let gathered = run_query_with_plan(PhysicalPlan::GatheredScan, &ctx, &params, &mut gathered_filter, pe.as_ref())
+            .expect("GatheredScan is always applicable");
+        assert_eq!(streamed.0, gathered.0, "unbounded total disagrees with GatheredScan: offset={offset}");
+        assert_eq!(ids(&streamed.1), ids(&gathered.1), "unbounded page disagrees with GatheredScan: offset={offset}");
+        // Matches are 15% of the corpus and scattered through edhrec order, so filling a 10-row page
+        // takes ~`limit / 0.15` steps at minimum -- far above the bounded cells' `offset + LIMIT + 1`.
+        assert!(
+            stats.perm_steps > (offset + LIMIT + 1) as u64,
+            "an unbounded walk must step more than a bounded one ({} steps at offset={offset})",
+            stats.perm_steps,
+        );
+    }
 }
 
 // Group counts collapse duplicate illustrations within a card.

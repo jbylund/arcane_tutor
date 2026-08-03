@@ -1,28 +1,26 @@
-"""A/B the streamed walk's match-span bound (`CARD_ENGINE_SPAN_TRACK_CANDIDATE_DIVISOR`).
+"""A/B the streamed walk's sort-column bound (`CARD_ENGINE_WALK_SORT_BOUND`).
 
-The bound trades work in two phases at once, so a single number cannot judge it:
+`StreamedSelect`'s emission walk steps the sort permutation until the page fills. When the filter bounds
+the SORT COLUMN -- `cmc>=6` under `order=cmc`, the correlation that puts every match at one end of the
+walked order -- two binary searches turn that into a walk over only the segment the bound admits. This
+prices that, per cell, against the same binary walking everything.
 
-* `ns_finish` — the walk itself. Bounded to the match span it steps from the first matching card to
-  the last instead of from permutation index 0 to wherever the page happens to fill.
-* `ns_loop` — the match loop, which pays one `inv_perm` read plus a `min` and a `max` per MATCHING
-  card to learn that span.
+Cells come in two groups. CLUSTERED pairs a predicate with an orderby it correlates with, which is where
+a walk from index 0 grinds through a long non-matching prefix. BROAD is the control: matches spread
+through the permutation, so the walk already fills its page in ~`limit` steps and the bound has nothing
+to skip. Both matter -- the change is only worth taking if the first group's win is real and the second
+group is untouched.
 
-So the cells come in two groups. CLUSTERED pairs a predicate with an orderby it correlates with, which
-is where a walk from index 0 grinds through a long non-matching prefix. BROAD has matches spread
-through the permutation, so the walk fills its page in ~`limit` steps and the bound can only cost.
-Both groups matter: the change is only worth taking if the first group's win is real AND the second
-group's cost is not.
+**Why a toggle rather than two builds.** Cross-build comparison cannot resolve this. Measured on these
+cells, `ns_loop` wandered 43.00 / 45.38 / 47.17 us across three runs of two builds -- +-9%, in both
+directions, on a phase neither build changed -- and a cross-build `bench_plan_execution_ab.py` run
+reported the wrong SIGN for this change while its own acquire control moved 1.9% the same way. That is
+the common-mode floor error the toolkit documents, plus whatever the linker did to code layout. One
+binary with a runtime toggle removes both: identical code, identical layout.
 
-**Why a toggle rather than two builds.** Cross-build comparison cannot resolve this. Measured on
-these cells, `ns_loop` wandered 43.00 / 45.38 / 47.17 us across three runs on the same two builds —
-±9%, in both directions, on a phase neither build changed. That is the common-mode floor error
-`bench_plan_execution_ab.py` documents, plus whatever the linker did to code layout, and the per-card
-cost being hunted here is smaller than it. One binary with a runtime toggle removes both: identical
-code, identical layout, and the only difference is a branch that was already there.
-
-Both variants set the env var, to EQUAL-LENGTH values (`00001` / `99999`, both parsed as usize), because
-an env var present in one branch only shifts process memory layout enough to move sub-100us queries a
-consistent ~15% either way -- the same bias `bench_verify_order.py` documents and equalizes.
+Both arms set the env var, to EQUAL-LENGTH values, because an env var present in one arm only shifts
+process memory layout enough to move sub-100us queries a consistent ~15% either way -- the same bias
+`bench_verify_order.py` documents and equalizes.
 
     .venv/bin/python scripts/bench_walk_span.py --reps 5
 """
@@ -41,16 +39,25 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 CORPUS = REPO_ROOT / "benchmarks/bitplanes/corpus.jsonl"
-TOGGLE = "CARD_ENGINE_SPAN_TRACK_CANDIDATE_DIVISOR"
-# Equal-length values, both valid usize: 1 tracks the span for every query (candidates <= n_cards),
-# 99999 for none (n_cards / 99999 == 0 on any real corpus).
-ON_ENV = {TOGGLE: "00001"}
-OFF_ENV = {TOGGLE: "99999"}
+TOGGLE = "CARD_ENGINE_WALK_SORT_BOUND"
+# Two arms, equal-length values so neither carries a differently-sized environment: `0` walks the whole
+# permutation as the executor did before the bound existed, `1` narrows it to what the filter's interval
+# on the sort column admits.
+ARMS = {"off": "0", "on": "1"}
+BASELINE_ARM = "off"
 # The cross-process regime's depth, for the reason `bench_plan_execution_ab.py` gives: `min` over
 # trials is a floor estimator whose error is common-mode within a run, so pairing does not cancel it.
 WARMUPS = 6
 TRIALS = 30
 LIMIT = 60
+
+# Swept, because WHICH mode is measured decides whether the result is a routed win or a latent one.
+# In `unique=card` a plane-consumable predicate leaves `FilterExpr::True`, which makes
+# `PlanePopcountOrder` applicable, and the router picks it over `StreamedSelect` on exactly the
+# clustered cells here (`cmc>=6 order=cmc`: 2.46 us against P3's 12.38). Printing and artwork mode have
+# no popcount plan -- a popcount counts cards, not printings -- so P3 is picked and the same improvement
+# is what a user waits for. The `routed` column says which happened, per cell.
+UNIQUES = ("card", "printing", "artwork")
 
 # (query, orderby, direction, offset). The clustered cells put the match band at the far end of the
 # walked order (`asc` over a `>=` predicate on the sort column); the `desc` twin puts the same band at
@@ -83,29 +90,32 @@ def measure_one_process() -> None:
     engine = costbench.load_engine(CORPUS, CORPUS.with_suffix(".walkspan.store"))
     out = {}
     for group, cells in GROUPS.items():
-        for q, orderby, direction, offset in cells:
-            res = engine.explain_analyze(
-                filters=parse_scryfall_query(q),
-                unique="card",
-                prefer="default",
-                orderby=orderby,
-                direction=direction,
-                limit=LIMIT,
-                offset=offset,
-                num_warmups=WARMUPS,
-                num_trials=TRIALS,
-            )
-            plan = next((p for p in res["plans"] if p["plan"] == "StreamedSelect"), None)
-            if plan is None:
-                continue
-            out[f"{group}|{q}|{orderby}|{direction}|{offset}"] = {
-                "exec_us": costbench.plan_self_ns(plan, res["acquire"]) / 1000.0,
-                "loop_us": plan["ns_loop"] / 1000.0,
-                "finish_us": plan["ns_finish"] / 1000.0,
-                "perm_steps": plan["perm_steps"],
-                "cards": plan["cards_visited"],
-                "total": plan["result_total"],
-            }
+        for unique in UNIQUES:
+            for q, orderby, direction, offset in cells:
+                res = engine.explain_analyze(
+                    filters=parse_scryfall_query(q),
+                    unique=unique,
+                    prefer="default",
+                    orderby=orderby,
+                    direction=direction,
+                    limit=LIMIT,
+                    offset=offset,
+                    num_warmups=WARMUPS,
+                    num_trials=TRIALS,
+                )
+                plan = next((p for p in res["plans"] if p["plan"] == "StreamedSelect"), None)
+                if plan is None:
+                    continue
+                picked = next((p["plan"] for p in res["plans"] if p["picked"]), "?")
+                out[f"{group}|{unique}|{q}|{orderby}|{direction}|{offset}"] = {
+                    "exec_us": costbench.plan_self_ns(plan, res["acquire"]) / 1000.0,
+                    "loop_us": plan["ns_loop"] / 1000.0,
+                    "finish_us": plan["ns_finish"] / 1000.0,
+                    "perm_steps": plan["perm_steps"],
+                    "cards": plan["cards_visited"],
+                    "total": plan["result_total"],
+                    "picked": picked,
+                }
     print("BENCHJSON " + json.dumps(out))
 
 
@@ -132,41 +142,47 @@ def main() -> None:
         measure_one_process()
         return
 
-    runs: dict[str, list[dict]] = {"on": [], "off": []}
+    runs: dict[str, list[dict]] = {arm: [] for arm in ARMS}
     for rep in range(args.reps):
-        # A/B/B/A within each pair, so a monotonic drift over the run cannot land on one arm.
-        order = [("off", OFF_ENV), ("on", ON_ENV)] if rep % 2 else [("on", ON_ENV), ("off", OFF_ENV)]
-        for label, overlay in order:
-            runs[label].append(run_child(overlay))
+        # Arm order reversed on alternate reps, so a monotonic drift over the run cannot land on one arm.
+        arms = list(ARMS.items())
+        for label, value in arms if rep % 2 == 0 else reversed(arms):
+            runs[label].append(run_child({TOGGLE: value}))
             print(f"  rep {rep + 1}/{args.reps} {label} done", flush=True)
 
-    cells = sorted(set(runs["on"][0]) & set(runs["off"][0]))
-    print(
-        f"\n{'cell':<44}{'steps off':>10}{'steps on':>9}"
-        f"{'loop off':>10}{'loop on':>9}{'exec off':>10}{'exec on':>9}{'on/off':>8}"
-    )
-    ratios: dict[str, list[float]] = {"CLUSTERED": [], "BROAD": []}
+    cells = sorted(set.intersection(*(set(runs[arm][0]) for arm in ARMS)))
+    print(f"\n{'cell':<50}{'steps off':>10}{'steps on':>11}{'exec off':>10}{'exec on':>10}{'on/off':>9}{'routed':>20}")
+    # Keyed by group AND by whether P3 is the routed plan, because a ratio on a plan the router does not
+    # pick is a latent win and must not be averaged in with the realized ones.
+    ratios: dict[str, list[float]] = {}
+
     def med(label: str, cell: str, field: str) -> float:
         """Median of one field for one cell across that arm's subprocesses."""
         return statistics.median(r[cell][field] for r in runs[label])
 
     for cell in cells:
         group = cell.split("|", 1)[0]
-        totals = {r[cell]["total"] for r in runs["on"] + runs["off"]}
+        picked = runs["on"][0][cell]["picked"]
+        routed = picked == "StreamedSelect"
+        totals = {r[cell]["total"] for arm in ARMS for r in runs[arm]}
         parity = "" if len(totals) == 1 else "  TOTALS DIFFER"
-        ratio = med("on", cell, "exec_us") / med("off", cell, "exec_us")
-        ratios[group].append(ratio)
+        base = med(BASELINE_ARM, cell, "exec_us")
+        ship_ratio = med("on", cell, "exec_us") / base
+        ratios.setdefault(f"{group} {'routed' if routed else 'LATENT'}", []).append(ship_ratio)
         label = cell.split("|", 1)[1].replace("|", " ")
         print(
-            f"{label:<44}{med('off', cell, 'perm_steps'):>10,.0f}{med('on', cell, 'perm_steps'):>9,.0f}"
-            f"{med('off', cell, 'loop_us'):>10.2f}{med('on', cell, 'loop_us'):>9.2f}"
-            f"{med('off', cell, 'exec_us'):>10.2f}{med('on', cell, 'exec_us'):>9.2f}{ratio:>8.3f}{parity}"
+            f"{label:<50}{med('off', cell, 'perm_steps'):>10,.0f}{med('on', cell, 'perm_steps'):>11,.0f}"
+            f"{base:>10.2f}{med('on', cell, 'exec_us'):>10.2f}{ship_ratio:>9.3f}"
+            f"{picked:>20}{parity}"
         )
     print()
-    for group, rs in ratios.items():
-        if rs:
-            print(f"{group}: geometric mean exec on/off = {statistics.geometric_mean(rs):.3f} over {len(rs)} cells")
-    print("\nCLUSTERED below 1.0 is the win; BROAD above 1.0 is what the bound costs where it cannot help.")
+    for group, rs in sorted(ratios.items()):
+        print(f"{group:<20} geometric mean exec on/off = {statistics.geometric_mean(rs):.3f} over {len(rs)} cells")
+    print(
+        "\nCLUSTERED below 1.0 is the win; BROAD at 1.0 is the control staying put -- the bound costs\n"
+        "nothing per card, so a query it cannot help should be unchanged rather than taxed.\n"
+        "LATENT rows are cells where the router picks another plan, so their ratio is not what a user sees."
+    )
 
 
 if __name__ == "__main__":
