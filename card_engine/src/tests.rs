@@ -7281,7 +7281,7 @@ fn orderby_walk_matches_gather_composed() {
             for &descending in &[false, true] {
                 for &offset in &[0usize, 50, 200] {
                     let limit = 100usize;
-                    let gather = super::gather_composed_page(
+                    let (gather, _) = super::gather_composed_page(
                         &QueryCtx::from(archived), &kernel_params(Mode::Printing, sort_col, descending, limit, offset), &pbits, None,
                     );
                     let walk = match sort_col {
@@ -7295,7 +7295,7 @@ fn orderby_walk_matches_gather_composed() {
                         ),
                         _ => None,
                     };
-                    if let Some(walk) = walk {
+                    if let Some((walk, _)) = walk {
                         walked_any = true;
                         assert_eq!(
                             ids(&walk), ids(&gather),
@@ -9974,7 +9974,7 @@ fn range_compose_kernel_costs() {
             let page = super::walk_grouped_page(
                 &QueryCtx::from(archived), &kernel_params(Mode::Card, SortCol::EdhrecRank, false, LIMIT, 0), &pbits, perm,
             );
-            page.len() as u64
+            page.0.len() as u64
         });
         let per_prtg = scatter_ns as f64 / set_prtg.max(1) as f64;
         println!(

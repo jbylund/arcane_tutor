@@ -5610,6 +5610,30 @@ fn orderby_walk_available(sort_col: SortCol) -> bool {
 /// every match lives in the buckets (`collected` reaches `total`, no null tail), a short last page is
 /// windowed normally.
 #[allow(clippy::too_many_arguments)]
+/// What a compose paging branch actually did, against the three quantities its cost arm charges.
+///
+/// `PrintingCompose` published no executor counters at all until this existed, which made it the one
+/// plan `bench_feature_accuracy.py` could say nothing about -- every cell labelled with a compose
+/// ACQUIRE was really measuring how well compose's shared feature vector described GatheredScan and
+/// StreamedSelect, the plans that do report. Its own arm terms (`compose_scan_printings`,
+/// `printings_walked`) were graded against nothing, and its paging table was structurally empty at
+/// any sample size. That matters more than the gap in coverage suggests: compose carries ~75% of all
+/// routing regret (docs/issues/reference-cost-model-measurement.md).
+///
+/// The three branches do different work and each fills these differently -- see the doc on each.
+#[derive(Default, Clone, Copy)]
+struct ComposePageWork {
+    /// Cards the branch iterated: candidate cards for the gather, permutation entries consumed for
+    /// the forward walk, `0` for the orderby walk (it steps a value structure, not cards).
+    cards_visited: u64,
+    /// Printings the branch touched: `pbits` membership tests for the gather and the forward walk,
+    /// matches stepped over for the orderby walk.
+    printings_examined: u64,
+    /// Rows the branch pushed. For the gather this is every match (it visits every candidate); for
+    /// the two walks it is bounded by the page, which is the whole point of their cost shape.
+    matches_pushed: u64,
+}
+
 fn collect_orderby_page<'a>(
     mut next_bucket: impl FnMut() -> Option<Vec<u32>>,
     cards: &'a [AOracleCard],
@@ -5620,7 +5644,7 @@ fn collect_orderby_page<'a>(
     total: usize,
     limit: usize,
     page_offset: usize,
-) -> Option<Vec<(&'a AOracleCard, &'a APrinting)>> {
+) -> Option<(Vec<(&'a AOracleCard, &'a APrinting)>, ComposePageWork)> {
     let want = page_offset + limit;
     let mut collected: Vec<u32> = Vec::new();
     let mut cum = 0usize; // matches seen (skipped + collected) so far
@@ -5650,6 +5674,15 @@ fn collect_orderby_page<'a>(
     if cum < want && cum < total {
         return None;
     }
+    // `cum` is what this branch stepped over to fill the page: matches seen, skipped and collected
+    // alike. That is the quantity `cost::printings_walked` predicts as `page_span / match_rate`, and
+    // until now nothing checked it. `cards_visited` stays 0 -- this walk steps a value structure and
+    // never iterates cards.
+    let work = ComposePageWork {
+        cards_visited: 0,
+        printings_examined: cum as u64,
+        matches_pushed: collected.len() as u64,
+    };
     let matches: Vec<Match> = collected
         .iter()
         .map(|&pid| {
@@ -5661,12 +5694,13 @@ fn collect_orderby_page<'a>(
     // of matches, so the `O(n log n)` sort's log factor is the dominant cost there — `select_page`
     // (same `page_cmp` comparator) is `O(collected + limit·log limit)`. `page_offset - first_touched`
     // rebases the offset onto the collected touched buckets.
-    Some(
+    Some((
         select_page(matches, page_offset - first_touched, limit)
             .into_iter()
             .map(|(cid, pid)| (&cards[cid as usize], &printings[pid as usize]))
             .collect(),
-    )
+        work,
+    ))
 }
 
 /// #744 orderby walk for a range-indexed sort column (`usd` — the only such `SortCol`; cn/date are
@@ -5686,7 +5720,7 @@ fn walk_range_orderby_page<'a>(
     total: usize,
     limit: usize,
     page_offset: usize,
-) -> Option<Vec<(&'a AOracleCard, &'a APrinting)>> {
+) -> Option<(Vec<(&'a AOracleCard, &'a APrinting)>, ComposePageWork)> {
     let is_set = |pid: usize| pbits[pid >> 6] & (1u64 << (pid & 63)) != 0;
     let (mut lo, mut hi) = (0usize, idx.len());
     let next = move || -> Option<Vec<u32>> {
@@ -5732,7 +5766,7 @@ fn walk_rarity_orderby_page<'a>(
     limit: usize,
     page_offset: usize,
     n_printings: usize,
-) -> Option<Vec<(&'a AOracleCard, &'a APrinting)>> {
+) -> Option<(Vec<(&'a AOracleCard, &'a APrinting)>, ComposePageWork)> {
     // Every rarity int present: interior [0..3] (planes, always laid out) + the postings' ints.
     let mut values: Vec<u8> = RARITY_PRINTING_PLANE_INTS.to_vec();
     values.extend(rp.postings.iter().map(|e| e.0));
@@ -5826,9 +5860,10 @@ fn printing_compose_fastpath<'a>(
     };
     if total == 0 || page_offset >= total {
         note_paging_taken(PagingTaken::EmptyPage);
+        publish_compose_work(ComposePageWork::default());
         return Some((total, Vec::new()));
     }
-    let page = match perm {
+    let (page, work) = match perm {
         Some(perm) => {
             if total <= *STREAM_MIN_MATCHES {
                 // `Exact` to distinguish it from `DeclineSparseEstimate` above: same intent, but that
@@ -5861,9 +5896,9 @@ fn printing_compose_fastpath<'a>(
                 None
             };
             match walked {
-                Some(rows) => {
+                Some(rows_and_work) => {
                     note_paging_taken(PagingTaken::OrderbyWalk);
-                    rows
+                    rows_and_work
                 }
                 None => {
                     // Two different situations reach this gather, and `compose_paging` predicts
@@ -5878,6 +5913,7 @@ fn printing_compose_fastpath<'a>(
             }
         }
     };
+    publish_compose_work(work);
     Some((total, page))
 }
 
@@ -6410,7 +6446,7 @@ fn walk_grouped_page<'a>(
     params: &QueryParams,
     pbits: &[u64],
     perm: &Archived<Vec<u32>>,
-) -> Vec<(&'a AOracleCard, &'a APrinting)> {
+) -> (Vec<(&'a AOracleCard, &'a APrinting)>, ComposePageWork) {
     let QueryCtx { cards, printings, offsets, indexes, .. } = *ctx;
     let QueryParams { mode, prefer, sort_col, descending, limit, page_offset } = *params;
     let max_artwork_groups = u16::from(indexes.max_artwork_groups);
@@ -6429,10 +6465,16 @@ fn walk_grouped_page<'a>(
     let mut touched: Vec<u16> = Vec::new();
     let mut scratch: Vec<Match> = Vec::new();
     let mut skip = page_offset;
+    // This walk pays per PERMUTATION ENTRY, not per match: it steps cards in sort order and bit-tests
+    // each one's whole printing span, stopping only when the page fills. `cost::printings_walked`
+    // models that as `page_span / match_rate`, which nothing checked before these counters.
+    let mut work = ComposePageWork::default();
     for cid in perm.iter().map(|x| u32::from(*x)) {
         let card = &cards[cid as usize];
         let start = u32::from(offsets[cid as usize]) as usize;
         let end = u32::from(offsets[cid as usize + 1]) as usize;
+        work.cards_visited += 1;
+        work.printings_examined += (end - start) as u64;
         scratch.clear();
         match mode {
             // Printing: every set printing is its own row (no grouping).
@@ -6472,6 +6514,7 @@ fn walk_grouped_page<'a>(
                 }
             }
         }
+        work.matches_pushed += scratch.len() as u64;
         if scratch.is_empty() {
             continue;
         }
@@ -6483,12 +6526,12 @@ fn walk_grouped_page<'a>(
         for m in scratch.iter().skip(skip) {
             page.push((&cards[m.1 as usize], &printings[m.2 as usize]));
             if page.len() == limit {
-                return page;
+                return (page, work);
             }
         }
         skip = 0;
     }
-    page
+    (page, work)
 }
 
 /// Permutation-free counterpart to `walk_grouped_page`, for when `orderby` has no card-space
@@ -6508,7 +6551,7 @@ fn gather_composed_page<'a>(
     params: &QueryParams,
     pbits: &[u64],
     card_bits: Option<&[u64]>,
-) -> Vec<(&'a AOracleCard, &'a APrinting)> {
+) -> (Vec<(&'a AOracleCard, &'a APrinting)>, ComposePageWork) {
     let QueryCtx { cards, printings, offsets, indexes, .. } = *ctx;
     let QueryParams { mode, prefer, sort_col, descending, limit, page_offset } = *params;
     let max_artwork_groups = u16::from(indexes.max_artwork_groups);
@@ -6534,14 +6577,22 @@ fn gather_composed_page<'a>(
     let mut group_best: Vec<Option<(u32, f64)>> = vec![None; n];
     let mut touched: Vec<u16> = Vec::new();
     let mut sel = GatherSelect::new(page_offset, limit);
+    // `compose_scan_printings` is set to the composed bitmap's POPCOUNT, on the stated grounds that
+    // compose "walks the set bits". This loop does not: except in the card/default-prefer arm it
+    // iterates `start..end` of every candidate card and bit-tests each printing, so the real count is
+    // the SPAN of the candidate cards. Counted per arm below so the difference is measured rather
+    // than argued.
+    let mut work = ComposePageWork::default();
     for cid in candidate_cards {
         let card = &cards[cid as usize];
         let start = u32::from(offsets[cid as usize]) as usize;
         let end = u32::from(offsets[cid as usize + 1]) as usize;
         let before = sel.buf().len();
+        work.cards_visited += 1;
         match mode {
             // Printing: every set printing is its own row (no grouping).
             Mode::Printing => {
+                work.printings_examined += (end - start) as u64;
                 for pid in start..end {
                     if is_set(pid) {
                         sel.buf().push((sort_key_bits(card, &printings[pid], sort_col, descending), cid, pid as u32));
@@ -6557,12 +6608,19 @@ fn gather_composed_page<'a>(
             // cost that scales with total matches rather than `limit` is the dominant term for a broad
             // composed set.
             Mode::Card if matches!(prefer, Prefer::Default) => {
+                // The one arm that does stop early: `find` breaks at the first set printing, and a
+                // candidate card has at least one by construction, so this tests `first_set - start + 1`
+                // rather than the span.
                 if let Some(pid) = (start..end).find(|&pid| is_set(pid)) {
+                    work.printings_examined += (pid - start + 1) as u64;
                     sel.buf().push((sort_key_bits(card, &printings[pid], sort_col, descending), cid, pid as u32));
+                } else {
+                    work.printings_examined += (end - start) as u64;
                 }
             }
             // Card (non-default prefer) / Artwork: one best-prefer representative per group.
             Mode::Card | Mode::Artwork => {
+                work.printings_examined += (end - start) as u64;
                 touched.clear();
                 for pid in start..end {
                     if !is_set(pid) {
@@ -6589,10 +6647,11 @@ fn gather_composed_page<'a>(
                 }
             }
         }
+        work.matches_pushed += (sel.buf().len() - before) as u64;
         sel.absorb(before);
     }
     let (_total, page_ids) = sel.finish(page_offset, limit); // total already known exactly via popcount; only the page is wanted here
-    page_ids.into_iter().map(|(cid, pid)| (&cards[cid as usize], &printings[pid as usize])).collect()
+    (page_ids.into_iter().map(|(cid, pid)| (&cards[cid as usize], &printings[pid as usize])).collect(), work)
 }
 
 /// P3 executor: streamed selection over the sort permutation. Caller guarantees
@@ -6951,6 +7010,34 @@ fn timed_prepare_candidates(
 /// `PhaseStats::paging_taken` for why the predicted branch is not enough.
 fn note_paging_taken(which: PagingTaken) {
     PAGING_TAKEN.with(|c| c.set(which));
+}
+
+/// Publish what a compose paging branch did into the shared counters, so `PrintingCompose` reports
+/// the same three quantities the two materializing plans do.
+///
+/// A WHOLE-struct set, like the other two publishers: nothing here is inherited, so compose cannot
+/// report a field an earlier participant wrote. `paging_taken` survives because it lives in
+/// `PAGING_TAKEN`, which this does not touch -- the same split `PhaseStats` documents.
+///
+/// The phase timings stay zero. Compose's cost arm is not decomposed into setup/loop/finish the way
+/// the scan plans' is, so there is nothing yet to check them against, and publishing an
+/// unvalidatable number is how `printings_scanned` became load-bearing in the first place.
+fn publish_compose_work(work: ComposePageWork) {
+    PHASE_STATS.with(|c| {
+        c.set(PhaseStats {
+            cards_visited: work.cards_visited,
+            printing_span: 0, // compose never materializes a candidate list, so there is no span
+            printings_examined: work.printings_examined,
+            matches_pushed: work.matches_pushed,
+            ns_setup: 0,
+            ns_loop: 0,
+            ns_finish: 0,
+            ns_round_total: 0, // filled by explain_analyze, which owns the round timer
+            ns_prepare: 0,
+            result_total: 0, // likewise
+            paging_taken: PagingTaken::NotEntered, // owned by PAGING_TAKEN; take_phase_stats merges it in
+        });
+    });
 }
 
 /// Last executor run's phase stats, and clear them. `explain_analyze` reads this immediately after a

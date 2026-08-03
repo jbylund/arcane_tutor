@@ -77,6 +77,33 @@ PAIRS = (
 SPAN_COUNTER = "printing_span"
 
 
+#: Which of the three PAIRS features each compose paging branch's cost arm actually multiplies by a
+#: rate. `Perm` and `OrderbyWalk` are priced `printings_walked * WALK_STEP + limit * WALK_EMIT_PER_ROW`
+#: -- they charge NEITHER `matches` nor `eval_domain`, and grading those against a walk that stops at
+#: `page_offset + limit` produced cells reading 100-200x off numbers the model never reads. Only
+#: `Gather` charges all three (`eval_domain`, `compose_scan_printings`, `matches`).
+COMPOSE_ARM_CHARGES: dict[str, frozenset[str]] = {
+    "Perm": frozenset({"printings_walked"}),
+    "OrderbyWalk": frozenset({"printings_walked"}),
+    "Gather": frozenset({"eval_domain", "compose_scan_printings", "matches"}),
+    # The walk was available, was attempted, declined, and fell into the gather -- so the gather is
+    # what ran and the gather's terms are what to grade.
+    "GatherWalkDeclined": frozenset({"eval_domain", "compose_scan_printings", "matches"}),
+}
+
+
+def compose_grades(paging_taken: str, feat: str) -> bool:
+    """Whether compose's arm charges `feat` on the branch it actually took.
+
+    Keyed on `paging_taken` -- what RAN -- not on the acquire's `compose_paging`, which is the
+    model's PREDICTION of the branch. Those disagree exactly where a walk was predicted and declined,
+    and grading a gather's counters against a walk's terms is how the two get conflated.
+    """
+    charged = COMPOSE_ARM_CHARGES.get(paging_taken)
+    # An exit with no cost arm of its own (EmptyPage, the declines): nothing ran that a term describes.
+    return feat in charged if charged is not None else False
+
+
 def scan_feature(plan: str, paging: str, tier_ns100: int) -> str | None:
     """Which feature the ARM actually charges its printing scan on, or None if it charges none.
 
@@ -96,7 +123,8 @@ def scan_feature(plan: str, paging: str, tier_ns100: int) -> str | None:
     fit this plan at all.
     """
     if plan == "PrintingCompose":
-        return "compose_scan_printings" if paging == "Gather" else "printings_walked"
+        # `GatherWalkDeclined` IS the gather -- a walk was attempted, declined, and fell into it.
+        return "compose_scan_printings" if paging in ("Gather", "GatherWalkDeclined") else "printings_walked"
     if plan == "StreamedSelect" and tier_ns100 == 0:
         return None
     return "scan_units"
@@ -120,12 +148,16 @@ def collect(engine: object, sampler: QuerySampler, rng: random.Random, seconds: 
         for plan in sample.plans:
             if not plan["trials_ns"]:
                 continue  # declined: it ran nothing, so there is no counter to check against
-            paging = acq["compose_paging"]
+            # `compose_paging` is the model's PREDICTION; `paging_taken` is what ran. Label and grade
+            # compose on the latter -- they disagree exactly where a walk was predicted and declined.
+            paging = plan.get("paging_taken") if plan["plan"] == "PrintingCompose" else acq["compose_paging"]
             for feat, counter in PAIRS:
                 if feat == "scan_units":
                     feat = scan_feature(plan["plan"], paging, acq["residual_tier_ns100"])  # noqa: PLW2901 - the arm decides
                     if feat is None:
                         continue  # this arm charges no scan term for this query; there is nothing to grade
+                if plan["plan"] == "PrintingCompose" and not compose_grades(paging, feat):
+                    continue  # this branch's arm never multiplies this feature by a rate
                 got = plan.get(counter)
                 if got is None or got < MIN_COUNTER:
                     continue

@@ -131,7 +131,7 @@ fn bench_compose_card_projection() {
         let twice_ns = best_ns(|| derive_twice(&pbits, offsets, n_cards).1.len());
         let once_ns = best_ns(|| derive_once(&pbits, offsets, n_cards).1.len());
         let card_bits = printing_bits_to_card_bits(&pbits, offsets, n_cards);
-        let gather_ns = best_ns(|| gather_composed_page(&ctx, &card_params(0), &pbits, Some(&card_bits)).len());
+        let gather_ns = best_ns(|| gather_composed_page(&ctx, &card_params(0), &pbits, Some(&card_bits)).0.len());
 
         let saved = twice_ns.saturating_sub(once_ns);
         let share = 100.0 * saved as f64 / (twice_ns + gather_ns) as f64;
