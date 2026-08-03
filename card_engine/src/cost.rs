@@ -430,7 +430,7 @@ const STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS: f64 = 1.02;
 /// ns per permutation entry stepped in the streaming walk, the branch taken when
 /// `total > STREAM_MIN_MATCHES`.
 ///
-/// The walk steps the permutation until the page fills, so it visits about
+/// The walk covers the realized match span until the page fills, so it visits about
 /// `page_span * n_cards / matches` entries -- inversely proportional to selectivity, and the one
 /// quantity in P3's finish phase that no other feature is proportional to. Nothing charged for it
 /// before: the arm had `matches * EMIT + FIXED`, which is flat in `n_cards`, so at a fixed 1,500
@@ -445,7 +445,11 @@ const STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS: f64 = 1.02;
 /// change a routing decision.
 ///
 /// The estimate is graded against the realized `perm_steps` counter rather than trusted, the same way
-/// `scan_units` is graded against `printings_examined`.
+/// `scan_units` is graded against `printings_examined`. **The rate survived the walk being bounded to
+/// its match span**, which is the useful thing that grade has said so far: traffic fit 1.17 before and
+/// 1.15 after, on the same seed and sample length, while realized steps at p90 fell 6.43x the estimate
+/// to 4.26x. A change that deletes a third of the steps at the tail and moves the per-step rate by 2%
+/// is the signature of a rate that is a real per-unit cost rather than a sink for the count's error.
 const STREAM_PERM_STEP_NS: f64 = 1.0;
 /// Per-card cost P3 pays over the WHOLE corpus regardless of how narrow the query is, charged on
 /// `n_cards` rather than `eval_domain`. The thread-local counts buffer is resized and cleared to
@@ -713,6 +717,17 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
                 // Entries visited to accumulate `page_span` matches, when matches are spread uniformly
                 // through the permutation: one match per `n_cards / matches` entries. Bounded by the
                 // corpus, since the walk cannot step past the end of the permutation.
+                //
+                // The executor now bounds the walk to the realized match span (first matching card's
+                // sort position to the last), which this cannot see -- no `PlanFeatures` field carries
+                // it. The uniform-spread assumption absorbs it: the expected gap before the first match
+                // is one `n_cards / matches` stride, negligible against `page_span` of them. What the
+                // regrade showed is that the assumption's remaining error is a DIFFERENT shape.
+                // Realized/estimated ran p10 0.13 / median 1.00 / p90 6.43 before the span bound and
+                // p10 0.08 / median 0.90 / p90 4.26 after, on the same seed and sample: bounding the
+                // ends removed a third of the tail, so a third of it was the leading prefix. The
+                // remaining 4.26x is the part no seek can reach -- non-matching entries INTERIOR to the
+                // span, which is the popcount-skip mechanism's territory, not a start position's.
                 (page_span * n_cards / f64::from(f.matches)).min(n_cards)
             } else {
                 0.0

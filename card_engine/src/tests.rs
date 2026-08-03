@@ -6388,9 +6388,9 @@ fn streamed_selection_matches_gathered() {
 
 /// The emission walk must cover the MATCH SPAN only, not the whole permutation — the
 /// `year>=2020 order=released asc` shape, built here as a corpus whose sort order and match set are
-/// deliberately anti-correlated: 4,500 non-matching cards sort ahead of the 1,500 that match.
+/// deliberately anti-correlated: 8,500 non-matching cards sort ahead of the 1,500 that match.
 ///
-/// Both ends matter, and one direction exercises each. Ascending, the walk used to step the 4,500-entry
+/// Both ends matter, and one direction exercises each. Ascending, the walk used to step the 8,500-entry
 /// prefix before its first emit; descending at a deep offset it used to run to the END of the
 /// permutation, because the only thing that stopped it was the page filling and a partial last page
 /// never fills.
@@ -6404,13 +6404,18 @@ fn streamed_selection_matches_gathered() {
 ///   no-op; the anti-correlation here is what makes it load-bearing.
 /// - **`perm_steps`**, which is how far the walk actually stepped. The row assertions pass just as well
 ///   on a walk that steps everything: unbounded, the ascending cells cost `offset + limit + PREFIX`
-///   steps and the deep descending ones the full 6,000.
+///   steps and the deep descending ones the full 10,000.
 #[test]
 fn streamed_walk_seeks_past_the_unmatched_prefix() {
     // > STREAM_MIN_MATCHES (1,024) in every mode, so the walk branch runs rather than the
-    // small-total gather -- the seek only exists on the walk.
+    // small-total gather -- the span bound only exists on the walk.
     const MATCHING: usize = 1_500;
-    const PREFIX: usize = 4_500; // cards sorting ahead of every match under `cmc asc`
+    // Cards sorting ahead of every match under `cmc asc`. Sized so matching cards are 15% of the
+    // corpus, comfortably under `SPAN_TRACK_CANDIDATE_DIVISOR`'s quarter -- at exactly a quarter this
+    // test would pass or fail on whether the narrowing returned 1,500 candidates or 6,000.
+    // `streamed_selection_matches_gathered` covers the other side of that gate: 1,125 matches among
+    // 1,500 cards is three quarters of the corpus, so its walk is the unbounded one.
+    const PREFIX: usize = 8_500;
     const N: usize = PREFIX + MATCHING;
     const MATCH_CMC: u8 = 5;
     const LIMIT: usize = 10;

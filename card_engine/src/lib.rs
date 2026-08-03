@@ -4659,6 +4659,22 @@ static RESIDUAL_PASS_RATE_ARTWORK: LazyLock<f64> = LazyLock::new(|| guard_env("C
 /// streaming's win grows fast (~1.8× by 8k), so the trigger stays put.
 static STREAM_MIN_MATCHES: LazyLock<usize> = LazyLock::new(|| guard_env("CARD_ENGINE_STREAM_MIN_MATCHES", 1_024));
 
+/// The emission walk tracks its match span only when candidates are at most `n_cards` over this — a
+/// quarter of the corpus. See the derivation at `track_span` in `run_query_streamed`.
+///
+/// Calibrated by `scripts/bench_walk_span.py`, which A/Bs this toggle inside ONE binary (cross-build
+/// comparison cannot resolve it: `ns_loop` wandered ±9% run to run on a phase neither build changed).
+/// Tracking costs **0.51 ns per matching card** and a walk step costs **0.37 ns**, so insurance that
+/// cannot pay for itself starts at `matching_cards = n_cards * 0.37 / (0.37 + 0.51)` = 0.42 ×
+/// `n_cards`; a quarter sits inside that with room for the estimate to be wrong. Ungated, the broad
+/// cells measured 1.13-1.21x SLOWER (`cmc>=1 order=edhrec`: `ns_loop` 78.54 -> 94.46 us over 30,318
+/// cards) while saving nothing, because a match set that big leaves no prefix to skip.
+///
+/// Set to 1 to track unconditionally, or above the corpus size to disable tracking; `bench_walk_span.py`
+/// uses exactly those two settings, spelled `00001` / `99999` so both arms carry an equal-length value.
+static SPAN_TRACK_CANDIDATE_DIVISOR: LazyLock<usize> =
+    LazyLock::new(|| guard_env("CARD_ENGINE_SPAN_TRACK_CANDIDATE_DIVISOR", 4).max(1));
+
 /// Whether run_query reorders And/Or children cheapest-verification-first
 /// before the evaluation walk (see FilterExpr::order_children_by_verify_cost).
 /// Unlike the guards above this is a binary A/B switch, not a threshold:
@@ -6244,7 +6260,12 @@ impl PreparedCandidates {
     /// every card. Boxed because the two arms are different iterator types and
     /// both P3 and P4 want the same either-or — previously spelled out
     /// identically at the head of each.
-    fn card_ids<'s>(&'s self, ctx: &QueryCtx) -> Box<dyn Iterator<Item = u32> + 's> {
+    ///
+    /// `ExactSizeIterator` rather than `Iterator`: both arms know their length (a `Vec` and a
+    /// `Range`), and an executor that wants the candidate count before its loop -- P3, to decide
+    /// whether tracking the walk's match span can pay -- would otherwise have to be handed the count
+    /// alongside the iterator and trust the two to agree.
+    fn card_ids<'s>(&'s self, ctx: &QueryCtx) -> Box<dyn ExactSizeIterator<Item = u32> + 's> {
         match &self.candidate_cards {
             Some(v) => Box::new(v.iter().copied()),
             None => Box::new(0..ctx.n_cards()),
@@ -8845,7 +8866,7 @@ fn run_query_streamed<'a>(
     filter: &FilterExpr,
     all_match_known: bool,
     order: SortOrder<'_>,
-    card_ids: Box<dyn Iterator<Item = u32> + '_>,
+    card_ids: Box<dyn ExactSizeIterator<Item = u32> + '_>,
     existential_plane: Option<(&PlaneExpr, &Archived<BitPlanes>)>,
 ) -> (usize, Vec<(&'a AOracleCard, &'a APrinting)>) {
     // First of the three phase boundaries — everything down to the match loop is `ns_setup`, which
@@ -8887,15 +8908,37 @@ fn run_query_streamed<'a>(
     // through every card ordered before the first match discarding on `counts[cid] == 0` -- `year>=2020
     // order=released asc` pays the entire pre-2020 prefix -- and, on any page it cannot fill, every
     // card ordered after the last match as well, since the only thing that stops it early is the page
-    // filling. This loop already visits every candidate, so the span costs one `inv_perm` read, a `min`
-    // and a `max` per MATCHING card, and candidates arrive in ascending `cid` order, which makes those
-    // reads a forward stream through `inv_perm` rather than random access.
+    // filling. Measured on this corpus: `cmc>=6 order=cmc asc` walked 28,275 entries for a 60-row page
+    // and spent 10.6 us of a 20.25 us execution doing it; bounded, it walks 60 and spends 0.38 us.
     //
     // Deliberately the REALIZED span rather than bounds derived from the predicate and the sort
     // column: it holds for any predicate (including a residual only `card_match_count` can resolve),
     // and it cannot be wrong about how ties inside the sort key are broken. Descending needs nothing
     // extra -- there are two permutations per column, one per direction, so `inv_perm` is already the
     // inverse of the order actually walked.
+    //
+    // GATED, because the span is emphatically not free. It costs an `inv_perm` read plus a `min` and a
+    // `max` per MATCHING card, and this loop's `all_match` arm is only ~2.6 ns/card to begin with, so
+    // 0.51 ns/card of tracking is a 20% tax on it: ungated, `cmc>=1 order=edhrec` measured `ns_loop`
+    // 78.54 -> 94.46 us over 30,318 cards while its walk stayed at 111 steps either way. The tax is
+    // paid on every streamed query; the saving only exists when the walk had something to skip.
+    //
+    // The bound is therefore insurance, and the gate is the premium being kept below the payout. A
+    // query with `m` matching cards has at most `n_cards - m` entries outside its span, so the most the
+    // bound can save is `(n_cards - m) * 0.37 ns` against a cost of `m * 0.51 ns` -- break-even at
+    // `m = 0.42 * n_cards`, and `SPAN_TRACK_CANDIDATE_DIVISOR` sits at a quarter, inside it. The
+    // regime below the gate is also where the unbounded walk is dangerous: steps go as
+    // `page_span * n_cards / matches`, so sparse matches are exactly what make it long.
+    //
+    // Candidates bound matching cards from above, and unlike the match count it is known HERE, before
+    // the loop -- so this is one perfectly-predicted branch per card, rather than a decision that could
+    // only be made after the cost had already been paid.
+    //
+    // What the gate does not fix: a query whose cluster sits at the NEAR end of the walked order pays
+    // the premium for nothing, because the page fills before the last-match bound can matter
+    // (`cmc>=6 order=cmc desc offset=900` measured 1.17x). That is the shape of the bet, not a defect
+    // in it -- which end a cluster lands on is not knowable before the loop runs.
+    let track_span = card_ids.len() <= cards.len() / *SPAN_TRACK_CANDIDATE_DIVISOR;
     let (mut first_match_pos, mut last_match_pos) = (u32::MAX, 0u32);
     // Ends `ns_setup` and starts `ns_loop` — one read, two phases.
     let t_loop = std::time::Instant::now();
@@ -8943,7 +8986,7 @@ fn run_query_streamed<'a>(
         counts[cid as usize] = c;
         // Guarded on `c != 0` because a zero-count card is exactly what the walk skips: widening the
         // span to one would put entries inside it that the walk then discards, giving back the saving.
-        if c != 0 {
+        if track_span && c != 0 {
             let pos = u32::from(inv_perm[cid as usize]);
             first_match_pos = first_match_pos.min(pos);
             last_match_pos = last_match_pos.max(pos);
@@ -9024,11 +9067,16 @@ fn run_query_streamed<'a>(
     // outside it every entry has `counts[cid] == 0` by construction (the span is the min and max over
     // all cards with a nonzero count), and the walk's only effect on a zero-count entry is to
     // `continue`. `total > 0` here — the guard above returned otherwise — so some card set both ends.
-    debug_assert!(
-        first_match_pos <= last_match_pos && (last_match_pos as usize) < perm.len(),
-        "total > 0 guarantees a matching card, so the match span must be a real permutation range"
-    );
-    let match_span = &perm[first_match_pos as usize..=last_match_pos as usize];
+    // Ungated, the whole permutation, exactly as before.
+    let match_span: &[Archived<u32>] = if track_span {
+        debug_assert!(
+            first_match_pos <= last_match_pos && (last_match_pos as usize) < perm.len(),
+            "total > 0 guarantees a matching card, so the match span must be a real permutation range"
+        );
+        &perm[first_match_pos as usize..=last_match_pos as usize]
+    } else {
+        &perm[..]
+    };
     let mut skip = page_offset;
     let mut page: Vec<(&AOracleCard, &APrinting)> = Vec::with_capacity(limit);
     let mut scratch: Vec<Match> = Vec::new();
