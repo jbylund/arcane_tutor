@@ -1,6 +1,23 @@
 //! Micro-benchmark that decomposes `StreamedSelect`'s match loop, the companion to
 //! `bench_gather_loop`.
 //!
+//! **RETRACTION (2026-08-03): every rate this harness reports is a WARM-CACHE rate, and the shipped
+//! constants are not too high.** `ITERS` walks one card list repeatedly and keeps the minimum, so by the
+//! second pass every card, printing and string it touches is resident. Production walks a candidate set
+//! once. Measuring the first pass against the warm minimum on cells that run after the mmap has faulted
+//! in gives 1.6-2.2x (A' 1.91x/1.74x, I 1.83x/1.59x, H 2.17x/2.14x; the 100x+ figures on the first cells
+//! are first-touch page faults on the 68 MB store, not cache effects).
+//!
+//! That 1.6-2x is the whole discrepancy. Warm 2.98 ns/card against 6.34 fitted on traffic is 2.1x; P3's
+//! warm 2.41 against a shipped 5.05 is 2.1x; the warm push 1.06 against 2.00 fitted is 1.9x. The
+//! counter/feature ratios all read 1.00, so the features were never the gap -- the TIME was, and the
+//! shipped constants include the miss cost this harness removes.
+//!
+//! So the five refits below did not fail because routing is a delicate joint surface. They failed
+//! because they lowered rates toward a cache state production never reaches. Read every ns figure in
+//! this file as "warm", useful for the SHAPE of the loop -- which terms exist, which are degenerate, how
+//! artwork differs -- and not as a candidate constant. Those shape findings stand; the levels do not.
+//!
 //! That harness established that P4 cannot be fixed alone: three successively better descriptions of
 //! its loop each REGRESSED routing (+43%, +8.8%, +40%), because `plan_cost` is only ever used
 //! comparatively and P4's inflated arm is absorbing an over-estimate on P3's side. So P3's loop gets
