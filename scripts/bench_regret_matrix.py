@@ -101,18 +101,25 @@ def collect(engine: object, sampler: QuerySampler, rng: random.Random, seconds: 
     """
     rows: list[dict] = []
     skipped_unphased = 0
+    skipped_unpriced = 0
     for sample in costbench.iter_samples(engine, sampler, rng, costbench.Budget(seconds=seconds)):
         ran = [p for p in sample.plans if p["trials_ns"]]
         if len(ran) < 2:  # noqa: PLR2004 - one applicable plan means there is nothing to get wrong
             continue
         picked = next((p for p in sample.plans if p["picked"]), None)
         declined = picked is not None and not picked["trials_ns"]
-        # Best on the SAME dispatch-equivalent definition the baseline uses.
+        # Best on the SAME dispatch-equivalent definition the baseline uses, and EVERY plan that ran
+        # must be priceable on it. `plan_self_ns` returns None when netting overshoots
+        # `NETTING_RESIDUAL_FLOOR`, and taking the best of what is left silently substitutes a slower
+        # plan for the true best -- which reads as the router beating it. Measured on plane queries,
+        # where the plane build is a large share of a forced trial: PlanePopcountOrder is dropped 37%
+        # of the time (median ns_prepare/trial 0.38), and those rows drove the plane slice to a mean
+        # of -6.27us. A query with an unpriceable plan has no computable regret; skip it and say so.
         selves = {id(p): costbench.plan_self_ns(p, sample.acquire) for p in ran}
-        comparable = [p for p in ran if selves[id(p)] is not None]
-        if len(comparable) < 2:  # noqa: PLR2004 - netting dropped too many to have a comparison
+        if any(v is None for v in selves.values()):
+            skipped_unpriced += 1
             continue
-        best = min(comparable, key=lambda p: selves[id(p)])
+        best = min(ran, key=lambda p: selves[id(p)])
         dispatch = sample.res["acquire"].get("routed_dispatch_ns")
         if not dispatch or not any(dispatch):
             skipped_unphased += 1
@@ -130,6 +137,8 @@ def collect(engine: object, sampler: QuerySampler, rng: random.Random, seconds: 
                 "best": best["plan"],
             }
         )
+    if skipped_unpriced:
+        print(f"skipped {skipped_unpriced:,} queries where a plan that ran could not be priced (netting overshoot)")
     if skipped_unphased:
         print(f"skipped {skipped_unphased:,} queries with no routed phase split -- build with --features routed-phases")
     return rows

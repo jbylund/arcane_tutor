@@ -6462,7 +6462,19 @@ fn exec_plane_popcount_order<'a>(
     }
     PLANE_BITMAP_POPCOUNT.with(|cell| {
         let mut bitmap = cell.borrow_mut();
+        // Timed and published as `ns_prepare`, for the same reason `prepare_candidates` is: this is a
+        // SHARED artifact that the router builds once during acquire and hands to whichever plan wins
+        // (`Prep::Plane`), so a forced run that rebuilds it is paying something the routed path does
+        // not pay at dispatch. Netting it is what makes the two comparable — see
+        // `costbench.plan_self_ns`.
+        //
+        // Without this the plane rows read NEGATIVE regret: routed dispatch reuses `plane_bits` while
+        // the forced trial re-evaluates the plane, so the router appeared to beat the best plan by a
+        // mean of 4.21us and held -13% of share. That is the `prepare_candidates` asymmetry again, one
+        // artifact along.
+        let t = std::time::Instant::now();
         eval_planes(plane_expr, &ctx.indexes.planes, &mut bitmap);
+        note_pending_prepare_ns(t.elapsed().as_nanos() as u64);
         exec_plane_popcount_order_with_bitmap(ctx, params, plane_expr, &bitmap)
     })
 }
@@ -6484,7 +6496,15 @@ fn exec_plane_popcount_order_with_bitmap<'a>(
     let perm = indexes.sort_perms.get(sort_col, descending).expect("PlanePopcountOrder applicability guarantees a permutation");
     let inv_perm =
         indexes.sort_perms.get_inv(sort_col, descending).expect("PlanePopcountOrder applicability guarantees an inverse permutation");
-    run_query_streamed_popcount(ctx, params, perm, inv_perm, bitmap, Some(plane_expr), None)
+    let out = run_query_streamed_popcount(ctx, params, perm, inv_perm, bitmap, Some(plane_expr), None);
+    // Consume whatever `exec_plane_popcount_order` left in flight and publish it, so a harness can
+    // net the plane build out of a forced trial. Zero on the ROUTED path, which reaches this function
+    // directly with the acquire's bitmap and builds nothing — which is exactly the asymmetry being
+    // reported. Counters stay zero: this plan popcounts a bitmap and visits no cards, so it has
+    // nothing to report there and `plan_stats_never_leak_between_participants` still pins that.
+    let prep_ns = PENDING_PREPARE_NS.with(|c| c.replace(0));
+    PHASE_STATS.with(|c| c.set(PhaseStats { ns_prepare: prep_ns, ..PhaseStats::default() }));
+    out
 }
 
 /// `CardRangePopcount` executor: the same popcount-skip order phase as P2, but its match bitmap is a
@@ -7162,6 +7182,18 @@ fn timed_prepare_candidates(
 /// `PhaseStats::paging_taken` for why the predicted branch is not enough.
 fn note_paging_taken(which: PagingTaken) {
     PAGING_TAKEN.with(|c| c.set(which));
+}
+
+/// Hand a shared-artifact build time to the executor that follows, the same way
+/// `timed_prepare_candidates` does. Used by the plane path, whose artifact the router builds in
+/// acquire and a forced run has to rebuild; see `exec_plane_popcount_order`.
+fn note_pending_prepare_ns(ns: u64) {
+    debug_assert_eq!(
+        PENDING_PREPARE_NS.with(std::cell::Cell::get),
+        0,
+        "a previous shared-artifact build was not consumed by an executor; its time would be reported as this run's",
+    );
+    PENDING_PREPARE_NS.with(|c| c.set(ns));
 }
 
 /// Publish what a compose paging branch did, so `PrintingCompose` reports the same three quantities

@@ -3800,9 +3800,18 @@ fn plan_stats_never_leak_between_participants() {
                             "uninstrumented plan reported counters it never wrote: {case}",
                         );
                         assert_eq!(
-                            (p.ns_setup, p.ns_loop, p.ns_finish, p.ns_prepare), (0, 0, 0, 0),
-                            "uninstrumented plan reported phase timings it never wrote: {case}",
+                            (p.ns_setup, p.ns_loop, p.ns_finish), (0, 0, 0),
+                            "uninstrumented plan reported loop timings it never wrote: {case}",
                         );
+                        // `ns_prepare` is the one exception, and only for `PlanePopcountOrder`: the
+                        // router builds its plane bitmap during acquire and hands it over, so a FORCED
+                        // run has to rebuild it and reports that build here. Netting it is what makes
+                        // a plane row dispatch-comparable — without it the regret matrix read a mean
+                        // -4.21us on plane/card, the routed path apparently beating the best plan.
+                        // Every other silent plan still reports nothing.
+                        if t.plan != PhysicalPlan::PlanePopcountOrder {
+                            assert_eq!(p.ns_prepare, 0, "uninstrumented plan reported a prepare time it never wrote: {case}");
+                        }
                         // The label half splits: only the two plans that write nothing can be
                         // checked as "still NotEntered". `PrintingRangeScan` labels its own exits,
                         // so for it the equivalent — and stronger — statement is that the label is
