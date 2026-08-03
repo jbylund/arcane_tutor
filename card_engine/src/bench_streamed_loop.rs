@@ -1,0 +1,349 @@
+//! Micro-benchmark that decomposes `StreamedSelect`'s match loop, the companion to
+//! `bench_gather_loop`.
+//!
+//! That harness established that P4 cannot be fixed alone: three successively better descriptions of
+//! its loop each REGRESSED routing (+43%, +8.8%, +40%), because `plan_cost` is only ever used
+//! comparatively and P4's inflated arm is absorbing an over-estimate on P3's side. So P3's loop gets
+//! the same built-design treatment, and the two arms move together.
+//!
+//! P3's loop is a different shape from P4's, and the difference decides the design:
+//!
+//!   - It has NO per-match cost. The loop writes `counts[cid] = c` and accumulates `total`; nothing is
+//!     pushed. `STREAM_EMIT_PER_MATCH_NS` belongs to `ns_finish`, not here.
+//!   - `scan_units` is GATED on a residual. Under `all_match` (and outside artwork mode)
+//!     `card_match_count` answers from offset arithmetic without touching a printing, so the loop is
+//!     O(cards) regardless of how many printings those cards have.
+//!
+//! Two rates instead of three is what makes this tractable where P4 was not. P4 needed three rates and
+//! no single mode could identify them, because card mode pushes once per card (`matches == cards`) and
+//! printing mode pushes every printing (`matches == printings`), so a column duplicated another in
+//! every mode. Two rates against three printings-per-card levels is identifiable INSIDE one mode, so
+//! P3 needs neither pooling nor the reparameterisation P4 required.
+//!
+//! The cells:
+//!
+//!     all_match, per mode      cards visited only; printings never touched. Isolates the per-card
+//!                              overhead with `card_pass` short-circuited and counting O(1).
+//!     residual, per mode       `card_pass` runs, returns PrintingDep, and `card_match_count` walks.
+//!                              Gives (CARD_PASS + tier floor) per card and SCAN per printing.
+//!
+//! The residual predicate is `DateCmp` against a date every printing satisfies. Release date is a
+//! PRINTING field, so `card_pass` cannot resolve it and must hand back a residual — which is the whole
+//! point, since an always-true CARD predicate would answer `Tri::True` and never walk. Every printing
+//! matching keeps the counters clean: `printings_examined` is the full span in printing mode, and in
+//! card mode it is 1 per card because `card_match_count` returns at the first qualifying printing.
+//! `DateCmp` is a `MASK_COMPARE_NS100` tier, the cheapest real residual, so the fitted per-card figure
+//! is a floor on `STREAM_RESIDUAL_FLOOR_NS` rather than a typical value.
+//!
+//! Calls the real `exec_streamed_select` and reads `ns_setup`/`ns_loop`/`ns_finish` and the counters
+//! off `PhaseStats` — same fenceposts and counters production publishes, nothing reimplemented.
+//!
+//!     cargo test --release bench_streamed_loop -- --ignored --nocapture
+//!
+//! Needs benchmarks/verify-order/real.store, shared with `bench_verify_cost` and `bench_gather_loop`;
+//! rebuild it the same way (see `bench_verify_cost`'s module docs).
+
+use std::hint::black_box;
+
+use rkyv::Archived;
+
+use super::{
+    archive_header, archive_payload, exec_streamed_select, take_phase_stats, CardData, CmpOp, FilterExpr, Mmap, NarrowedRepr,
+    NumExpr, NumField, PreparedCandidates, QueryCtx, QueryParams, ARCHIVE_HEADER_LEN,
+};
+
+/// Timed repetitions; the minimum per cell is reported, and all cells run inside this loop so every
+/// cell's minimum is drawn from the same time window. Running cells to completion one at a time let
+/// machine drift enter `bench_gather_loop`'s fit as a rate difference — 1.8× between cells with
+/// identical counters — so this interleaves from the start.
+const ITERS: usize = 200;
+/// A "wide" card has at least this many printings; below it and above 1 is "medium". Three levels of
+/// printings-per-card is what identifies two rates per mode with a degree of freedom left over.
+const WIDE_MIN_PRINTINGS: usize = 4;
+/// Card counts each cell runs at, bounded above by the scarce wide group. Two sizes measure linearity
+/// in the card term rather than assuming it.
+const CARD_COUNTS: [usize; 2] = [1_500, 4_500];
+/// Page requested. P3's `ns_finish` branches on `total` against `STREAM_MIN_MATCHES`, not on the page,
+/// so this only has to be small and fixed to keep the finish phase out of the loop measurement.
+const LIMIT: usize = 60;
+/// A release date no printing in the corpus reaches, so the residual predicate is always true. Keeps
+/// every printing matching, so `printings_examined` and `matches` are exactly the span (printing mode)
+/// or 1 per card (card mode, which returns at the first match) instead of a corpus-dependent fraction.
+const DATE_AFTER_EVERYTHING: u32 = 99_999_999;
+
+const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+
+/// One measured design point.
+struct Cell {
+    label: &'static str,
+    n_cards_req: usize,
+    mode: &'static str,
+    /// True for the cells whose `card_pass` runs and leaves a printing-dependent residual behind. The
+    /// two groups are fitted apart: with no residual the loop never walks a printing, so pooling them
+    /// would regress a real printing column against a phase that did not pay for it.
+    residual: bool,
+    cards: f64,
+    printings: f64,
+    matches: f64,
+    ns_setup: f64,
+    ns_loop: f64,
+    ns_finish: f64,
+}
+
+/// A single per-card rate for one group, for the groups where that is all the design can support.
+///
+/// Two of the four groups are degenerate, and measurement is what showed it rather than assumption.
+/// The `all_match` rows examine ZERO printings at every printings-per-card level, because
+/// `card_match_count` answers from offset arithmetic there -- so the printing column is identically
+/// zero and there is nothing to fit but the per-card rate. The `card` + residual rows examine exactly
+/// ONE printing per card at every level, because the kernel returns at the first qualifying printing --
+/// so the printing column DUPLICATES the card column and only their sum is identifiable. Reporting one
+/// number for those groups is the honest form; a two-parameter fit there would be picking arbitrarily
+/// from a ridge of equally good answers.
+fn fit_per_card(cells: &[Cell], mode: &str, residual: bool) -> Option<f64> {
+    let (mut num, mut den) = (0.0f64, 0.0f64);
+    for c in cells.iter().filter(|c| c.mode == mode && c.residual == residual) {
+        let w = 1.0 / c.ns_loop;
+        let x = c.cards * w;
+        num += x * (c.ns_loop * w);
+        den += x * x;
+    }
+    if den <= 0.0 {
+        return None;
+    }
+    Some(num / den)
+}
+
+/// Per-card and per-printing rates for one (mode, residual) group. Two unknowns, three ratio levels.
+fn fit_pair(cells: &[Cell], mode: &str, residual: bool) -> Option<[f64; 2]> {
+    let mut normal = [[0.0f64; 3]; 2];
+    let mut rows = 0;
+    for c in cells.iter().filter(|c| c.mode == mode && c.residual == residual) {
+        // Relative least squares: each equation divided by its own measured time, so a cell running
+        // 100 µs does not outweigh one running 5 µs.
+        let w = 1.0 / c.ns_loop;
+        let x = [c.cards * w, c.printings * w];
+        for i in 0..2 {
+            for j in 0..2 {
+                normal[i][j] += x[i] * x[j];
+            }
+            normal[i][2] += x[i] * (c.ns_loop * w);
+        }
+        rows += 1;
+    }
+    let det = normal[0][0] * normal[1][1] - normal[0][1] * normal[1][0];
+    if rows < 2 || det.abs() < 1e-12 {
+        return None;
+    }
+    Some([
+        (normal[0][2] * normal[1][1] - normal[0][1] * normal[1][2]) / det,
+        (normal[0][0] * normal[1][2] - normal[1][0] * normal[0][2]) / det,
+    ])
+}
+
+#[test]
+#[ignore = "micro-benchmark; needs benchmarks/verify-order/real.store (see module docs)"]
+fn bench_streamed_loop() {
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found (see module docs)");
+        return;
+    };
+    // Safety: same contract as bench_verify_cost / get_mmap() — written by rkyv::to_bytes and replaced
+    // atomically, and the header is re-validated below before the payload is trusted.
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch (stale archive — rebuild it, see module docs)");
+        return;
+    }
+    let data = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(data);
+
+    let (mut singleton, mut medium, mut wide): (Vec<u32>, Vec<u32>, Vec<u32>) = (Vec::new(), Vec::new(), Vec::new());
+    for cid in 0..data.cards.len() {
+        let span = u32::from(data.offsets[cid + 1]) as usize - u32::from(data.offsets[cid]) as usize;
+        if span == 1 {
+            singleton.push(cid as u32);
+        } else if span >= WIDE_MIN_PRINTINGS {
+            wide.push(cid as u32);
+        } else {
+            medium.push(cid as u32);
+        }
+    }
+    println!(
+        "\n{} oracle cards: {} with 1 printing, {} with 2..{WIDE_MIN_PRINTINGS}, {} with >={WIDE_MIN_PRINTINGS}",
+        data.cards.len(),
+        singleton.len(),
+        medium.len(),
+        wide.len()
+    );
+
+    // `cmc >= -1` is always true and lives on the CARD, so `card_pass` resolves it to Tri::True with an
+    // empty residual — the all_match-shaped cells. `DateCmp` is always true but lives on the PRINTING,
+    // so `card_pass` must return PrintingDep and the loop walks; that is the residual shape.
+    let no_residual = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(-1.0) };
+    let printing_residual = FilterExpr::DateCmp { op: CmpOp::Lt, value: DATE_AFTER_EVERYTHING };
+
+    struct Config {
+        label: &'static str,
+        n_cards_req: usize,
+        mode: &'static str,
+        residual: bool,
+        prep: PreparedCandidates,
+        params: QueryParams,
+    }
+    // (label, group, unique, residual). `all_match_known` is set only on the no-residual cells; with a
+    // printing-dependent residual it must be false or the walk would be short-circuited and the cell
+    // would measure the other group again.
+    let designs: [(&'static str, &Vec<u32>, &str, bool); 12] = [
+        ("1p   card   all_match", &singleton, "card", false),
+        ("med  card   all_match", &medium, "card", false),
+        ("wide card   all_match", &wide, "card", false),
+        ("1p   print  all_match", &singleton, "printing", false),
+        ("med  print  all_match", &medium, "printing", false),
+        ("wide print  all_match", &wide, "printing", false),
+        ("1p   card   residual", &singleton, "card", true),
+        ("med  card   residual", &medium, "card", true),
+        ("wide card   residual", &wide, "card", true),
+        ("1p   print  residual", &singleton, "printing", true),
+        ("med  print  residual", &medium, "printing", true),
+        ("wide print  residual", &wide, "printing", true),
+    ];
+
+    let mut configs: Vec<Config> = Vec::new();
+    for n_req in CARD_COUNTS {
+        for (label, group, unique, residual) in &designs {
+            if group.len() < n_req {
+                println!("{label:<24}{n_req:>7}   SKIP (only {} cards in group)", group.len());
+                continue;
+            }
+            configs.push(Config {
+                label,
+                n_cards_req: n_req,
+                mode: unique,
+                residual: *residual,
+                prep: PreparedCandidates {
+                    candidate_cards: Some(group[..n_req].to_vec()),
+                    all_match_known: !residual,
+                    narrowed_repr: NarrowedRepr::Cards,
+                },
+                params: QueryParams::from_strs(unique, "default", "name", "asc", LIMIT, 0),
+            });
+        }
+    }
+
+    let mut best_loop = vec![f64::INFINITY; configs.len()];
+    let mut best_setup = vec![f64::INFINITY; configs.len()];
+    let mut best_finish = vec![f64::INFINITY; configs.len()];
+    let mut counters = vec![(0.0, 0.0, 0.0); configs.len()];
+    for _ in 0..ITERS {
+        for (i, cfg) in configs.iter().enumerate() {
+            let filter = if cfg.residual { &printing_residual } else { &no_residual };
+            black_box(exec_streamed_select(&ctx, &cfg.params, filter, &cfg.prep, None));
+            let s = take_phase_stats();
+            best_loop[i] = best_loop[i].min(s.ns_loop as f64);
+            best_setup[i] = best_setup[i].min(s.ns_setup as f64);
+            best_finish[i] = best_finish[i].min(s.ns_finish as f64);
+            counters[i] = (s.cards_visited as f64, s.printings_examined as f64, s.matches_pushed as f64);
+        }
+    }
+
+    let mut cells: Vec<Cell> = Vec::new();
+    println!(
+        "\n{:<24}{:>7}{:>9}{:>11}{:>10}{:>10}{:>11}{:>10}{:>10}",
+        "cell", "n", "cards", "printings", "matches", "ns_setup", "ns_loop", "ns/card", "ns_finish"
+    );
+    for (i, cfg) in configs.iter().enumerate() {
+        let (cards, printings, matches) = counters[i];
+        let cell = Cell {
+            label: cfg.label,
+            n_cards_req: cfg.n_cards_req,
+            mode: cfg.mode,
+            residual: cfg.residual,
+            cards,
+            printings,
+            matches,
+            ns_setup: best_setup[i],
+            ns_loop: best_loop[i],
+            ns_finish: best_finish[i],
+        };
+        println!(
+            "{:<24}{:>7}{:>9.0}{:>11.0}{:>10.0}{:>10.0}{:>11.0}{:>10.2}{:>10.0}",
+            cell.label,
+            cell.n_cards_req,
+            cell.cards,
+            cell.printings,
+            cell.matches,
+            cell.ns_setup,
+            cell.ns_loop,
+            cell.ns_loop / cell.cards.max(1.0),
+            cell.ns_finish
+        );
+        cells.push(cell);
+    }
+
+    // The design's leverage, stated rather than assumed. The all_match rows are the check that P3's
+    // loop really is O(cards): printings-per-card varies ~7x across them while the printing column
+    // should stay near zero, because `card_match_count` answers from offset arithmetic there.
+    println!("\nprintings examined per card (all_match rows should stay ~0 -- the loop never walks):");
+    for c in &cells {
+        println!(
+            "  {:<24}{:>7}  printings/card {:>6.2}   matches/card {:>6.2}",
+            c.label,
+            c.n_cards_req,
+            c.printings / c.cards.max(1.0),
+            c.matches / c.cards.max(1.0)
+        );
+    }
+
+    println!("\n{:<34}{:>12}{:>16}{}", "fitted per (mode, residual)", "ns/card", "ns/printing", "   note");
+    let mut recovered: Vec<(&str, f64, f64)> = Vec::new();
+    for mode in ["card", "printing"] {
+        for residual in [false, true] {
+            let tag = format!("{mode} / {}", if residual { "residual" } else { "all_match" });
+            // Only printing-mode-with-residual has a non-degenerate printing column; everything else
+            // gets the one rate it can support, with why printed alongside so the table is readable
+            // without the source.
+            match (mode, residual) {
+                ("printing", true) => match fit_pair(&cells, mode, residual) {
+                    Some(pair) => {
+                        println!("{tag:<34}{:>12.2}{:>16.2}   both identifiable", pair[0], pair[1]);
+                        recovered.push(("printing/residual", pair[0], pair[1]));
+                    }
+                    None => println!("{tag:<34}   pair not identifiable"),
+                },
+                _ => {
+                    let why = if residual { "printings==cards, so this is their SUM" } else { "printings==0, no printing term exists" };
+                    match fit_per_card(&cells, mode, residual) {
+                        Some(per_card) => {
+                            println!("{tag:<34}{per_card:>12.2}{:>16}   {why}", "--");
+                            recovered.push((if residual { "card/residual" } else { "all_match" }, per_card, 0.0));
+                        }
+                        None => println!("{tag:<34}   no cells"),
+                    }
+                }
+            }
+        }
+    }
+
+    // Cross-check, the counterpart to bench_gather_loop's two independent recoveries of PUSH. Card mode
+    // with a residual examines exactly one printing per card, so its single fitted rate must equal
+    // printing mode's per-card PLUS per-printing. Those come from different cells and different
+    // columns, so agreement is a test of whether the loop is linear in these two counters at all.
+    let card_resid = recovered.iter().find(|r| r.0 == "card/residual").map(|r| r.1);
+    let print_resid = recovered.iter().find(|r| r.0 == "printing/residual").copied();
+    if let (Some(cr), Some((_, pc, pp))) = (card_resid, print_resid) {
+        let predicted = pc + pp;
+        println!("\ncross-check (independent cells, independent columns):");
+        println!("  card/residual fitted directly          {cr:>7.2} ns/card");
+        println!("  printing/residual per-card + per-row   {predicted:>7.2} ns/card  ({pc:.2} + {pp:.2})");
+        let (lo, hi) = (cr.min(predicted), cr.max(predicted));
+        println!("  spread {:>.2}x  (linearity in these two counters requires these to agree)", hi / lo.max(1e-9));
+    }
+
+    println!(
+        "\n  shipped: STREAM_CARD_PASS_NS 5.05 per card, STREAM_SCAN_PER_ROW_NS 5.97 per printing,\n  \
+         STREAM_RESIDUAL_FLOOR_NS 6.58 added per card when a residual exists. So the residual rows here\n  \
+         compare against 5.05 + 6.58 = 11.63 per card, and the all_match rows against 5.05 with no\n  \
+         printing term at all -- which the zero printing column above confirms is the right shape."
+    );
+}
