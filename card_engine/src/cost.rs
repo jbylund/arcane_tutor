@@ -514,6 +514,23 @@ const GATHER_COLLECT_PER_PAGE_ROW_NS: f64 = 9.79;
 /// Fixed P4 setup. Fit from the narrowest query (cmc>=15 card shallow 208ns at
 /// eval_domain=5: 208 − 5×(GATHER_VISIT_PER_CARD_NS+GATHER_PUSH_PER_MATCH_NS) −
 /// 5×GATHER_SELECT_PER_PAGE_SLOT_NS ≈ 170).
+///
+/// NOT refit 2026-08-03, deliberately. A whole-arm traffic fit puts this at 85, half the shipped value,
+/// on a model whose every other term sits at 0.85-1.22 -- and an intercept that far out on an otherwise
+/// agreeing model is a symptom, not a measurement. `fit_cost_model.py` fits ONE equation per query
+/// against total dispatch, so its intercept absorbs whatever the other columns cannot express; it read
+/// 84 and then 85 while `GATHER_COLLECT_PER_PAGE_ROW_NS` moved 15.0 -> 9.79 underneath it.
+///
+/// Measuring the intercept directly says the same thing more sharply. `bench_gather_loop` solves it from
+/// cells differing ONLY in card count, where nothing else can hide, and gets card -1,084 ns and printing
+/// -845 ns. A negative fixed cost is impossible, so the linear-in-cards shape is wrong: the loop is
+/// CONVEX in card count (12.40 ns/card across 400-4,500 against 6.31-7.67 over 1,500-4,500), which is the
+/// same working-set effect the corpus sweep measured as rates growing 2.4x over 13x cards. A straight
+/// line through a convex curve drives its intercept negative.
+///
+/// So 85 is compensation for curvature, not a fixed cost, and pasting it would fit today's query-size mix
+/// and drift as either query sizes or the corpus change. The fix is a term for the curvature -- see the
+/// corpus-size note in `bench_gather_loop` -- not a smaller constant.
 const GATHER_FIXED_COST_NS: f64 = 169.6;
 
 // --- PrintingCompose's own rates -------------------------------------------------------------
