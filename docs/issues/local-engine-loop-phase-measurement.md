@@ -261,6 +261,42 @@ asymptote, and it changes both the shape to fit and the urgency:
   a runtime toggle, interleaved subprocesses, equal-length env values.
 - `perm_steps` published on `PhaseStats` and graded in `fit_cost_model.py`.
 
+## Where the routing loss actually is (2026-08-03, after the regret netting fix)
+
+With both sides of regret priced the same way, the largest single cell is `printing_compose / artwork` at
+**32% of all lost time** (n=1,435, mean 8.24 µs, max 904). Chased to the bottom, it is one feature defect:
+
+**Every bare format predicate mis-picks, in artwork mode only.** `f:predh` −55 µs, `f:gladiator` −75,
+`f:modern` −33, `f:standard` −31, `legal:pauper` −30, and so on for nine of twelve shapes probed. Card
+mode picks `PlanePopcountOrder` and is right; printing mode picks `PrintingCompose` and is right; artwork
+mode picks `PrintingCompose` when `StreamedSelect` is 1.8× faster. Compounds (`f:modern t:creature`) route
+to a candidates acquire and are fine.
+
+**Compose is not the problem — it is priced accurately.** On `f:gladiator` artwork, predicted/measured
+reads 0.98 for compose and **6.87 for StreamedSelect**; on `f:modern`, 1.10 and 5.70. The router is not
+over-confident about compose, it is over-charging P3 by ~6×, and `scan_units × STREAM_SCAN_PER_ROW_NS`
+alone is 525 µs of P3's 704 µs prediction against a 91 µs measured loop.
+
+**The feature overstates P3's work by 13–15×.** Graded against realized `printings_examined`:
+
+| query / mode | plan | `scan_units` | examined | ratio |
+| --- | --- | --: | --: | --: |
+| f:gladiator / artwork | GatheredScan | 88,026 | 54,213 | 1.62 |
+| f:gladiator / artwork | StreamedSelect | 88,026 | **5,876** | **14.98** |
+| f:modern / artwork | GatheredScan | 101,716 | 73,783 | 1.38 |
+| f:modern / artwork | StreamedSelect | 101,716 | **7,770** | **13.09** |
+
+Both plans receive the same per-query `scan_units`, but P3 examines 9× fewer printings: `card_match_count`
+returns at the first qualifying printing under `Prefer::Default`, while `push_card_matches` must walk the
+whole span to push every match. This module's header already says `prefer` "is the one thing this cannot
+see", and that `acquire_plan_features` therefore sets `scan_units` itself on the **plane** branch instead
+of taking the span estimate. The **compose** branch was never given the same treatment.
+
+So the fix is a feature correction on the compose acquire, not a rate — the category the toolkit says is
+the only one a rate cannot rescue. It is also NOT the artwork arm of item 4 below: the 6× over-cost exists
+in printing mode too (6.23, 5.25), where compose happens to be genuinely faster, so the wrong ratio does
+not flip the pick. Artwork is only where the margin is thin enough to expose it.
+
 ## What is left
 
 1. **Extend the popcount-skip walk past `FilterExpr::True`.** What is left of the perm estimate's p90 has
