@@ -1044,3 +1044,39 @@ so the 1.43 is only modestly outside run noise; the max-miss and band shifts are
 (`eur<=0.09 usd>=0.38 usd<=4.92` used 31,508 against a realized 144; `eur:0.39` 31,508 against 439). Both are
 tier-4 MASK price ranges where the span base is meaningless, and both routes to an exact count were measured
 and declined above.
+
+### Pattern B traced upstream: an unnarrowed query has no base for a match estimate
+
+`eur<=0.09 usd>=0.38 usd<=4.92` / artwork used `matches` 31,508 against a realized 144. The chain:
+
+1. every leaf individually exceeds `MAX_NARROW_FRACTION` (0.25), so narrowing declines;
+2. `eval_domain` becomes the whole corpus, 31,508;
+3. `in_space * RESIDUAL_PASS_RATE_ARTWORK` gives ~24,439, and then
+   **`.max(count.min(in_space))` forces 31,508** — the floor, not the rate.
+
+The floor asserts at least one match per candidate. That holds under a tight narrowing and is catastrophic
+under a loose one, which is the candidates-versus-matches confusion for the fourth time in this file.
+
+**Removing the floor is nonetheless not a fix.** Split by whether it binds (`matches == eval_domain`):
+
+| population | mode | n | p50 | p90 | mean \|log\| |
+| --- | --- | --: | --: | --: | --: |
+| floor binds | artwork | 2,883 | 1.06 | 23.25 | **0.936** |
+| rate applies | artwork | 1,179 | 1.34 | 8.29 | **0.799** |
+| floor binds | printing | 299 | 0.60 | 1.14 | **0.567** |
+| rate applies | printing | 4,010 | 1.22 | 17.92 | **1.094** |
+
+Worse in artwork, **better** in printing. Dropping it helps one mode and hurts the other. Two reading notes:
+card mode is excluded because its `matches` *is* `count`, so a "floor binds" detector flags all of it by
+construction; and the extreme tails sit in both populations (max 1,575× floored against 1,690× rated), so the
+tail is not the floor's doing either.
+
+**So the root cause is upstream of both terms.** When no leaf is selective enough for narrowing to fire, the
+candidate set is the corpus and *neither* a rate nor a floor has a base related to the answer. That is 57% of
+rows on this acquire. It is the same conclusion as compose's `eval_domain`, as tier 2's two dead ends, and as
+the floor here: the wanted quantity is `|candidates ∩ residual|`, and nothing cheap computes it for an
+unnarrowed query.
+
+The one route not yet closed is a bitmap AND of the candidate set against an indexed residual leaf — exact,
+conditional, and available on the ~9% where the residual is a single indexed leaf. Everything else on this
+acquire looks irreducibly estimated.
