@@ -23,8 +23,10 @@ Those rows were **63% of all reported regret**, and `StreamedSelect -> StreamedS
 best, so not misrouting by definition — was the single largest slice at a 14.15 us mean. On this basis
 it is 1.16. The genuine misroutes are unmoved (`PrintingCompose -> GatheredScan` 65.94 -> 65.22).
 
-Needs a `routed-phases` build. Without the feature the phase keys publish as zeros and those queries
-are skipped with a warning rather than measured against a zero baseline.
+Only the DECLINE rows need a `routed-phases` build: when the picked plan declines at runtime nothing
+forced describes what ran, so those fall back to the routed dispatch phase and are skipped without the
+feature. Every other row prices both sides from forced trials, so the harness now measures the whole
+sample on a plain build instead of skipping ~58% of it.
 
 Regret is mostly zeros, so a median is useless here: read the SHARE column, which is what fraction of
 all lost time a slice accounts for. That ranks the work. p90/p99/max show whether a slice loses a
@@ -120,23 +122,47 @@ def collect(engine: object, sampler: QuerySampler, rng: random.Random, seconds: 
             skipped_unpriced += 1
             continue
         best = min(ran, key=lambda p: selves[id(p)])
+        # The baseline is the PICKED plan measured exactly as `best` was -- same estimator, same netting,
+        # same round selection -- so a query whose picked plan is its best has regret identically 0 and
+        # contributes nothing. That is what the routed-dispatch baseline could not do: on 16,770 queries
+        # where picked IS best it read median +0.04 us but p10 -7.21 and mean -4.52, because it compared
+        # `min` over the routed path's dispatch trials against a phase sum from a forced run's fastest
+        # round. Two floor estimators of the same quantity agree at the median and disagree in the tail,
+        # and that tail was the whole negative total: -51.7 ms over the run, with SHARE columns of 127%.
+        #
+        # `routed_dispatch_ns` is still the only measurement that exists for the case it was introduced
+        # for: when the picked plan DECLINES at runtime, dispatch re-chooses among materializing plans
+        # only, so no forced trial describes what actually ran. Those rows keep it, and only those rows
+        # need a `routed-phases` build.
         dispatch = sample.res["acquire"].get("routed_dispatch_ns")
-        if not dispatch or not any(dispatch):
-            skipped_unphased += 1
-            continue
+        if declined or picked is None:
+            if not dispatch or not any(dispatch):
+                skipped_unphased += 1
+                continue
+            baseline_ns = float(min(dispatch))
+        else:
+            baseline_ns = float(selves[id(picked)])
         rows.append(
             {
+                "picked_is_best": picked is not None and not declined and id(picked) == id(best),
                 # SIGNED. A negative row is the routed path beating the best forced plan, which
                 # happens (the lazy re-choose, or a forced run paying a cold cache the routed one
                 # does not) and is information, not zero. Clamping it to 0 let a transition whose
                 # MEAN is negative still accumulate share as if it were loss.
-                "lost": min(dispatch) / 1000.0 - selves[id(best)] / 1000.0,
+                "lost": (baseline_ns - selves[id(best)]) / 1000.0,
                 "acquire": sample.acquire["count_source"],
                 "unique": sample.kw["unique"],
                 "picked": f"{picked['plan']}{'(declined)' if declined else ''}" if picked else "?",
                 "best": best["plan"],
             }
         )
+    # An invariant now, not a bias estimate: same estimator on both sides means these rows are exactly
+    # zero. Anything else is a bug in the pricing, so it is worth one line of output to keep honest.
+    zero_pop = [r for r in rows if r["picked_is_best"]]
+    if zero_pop:
+        worst = max(abs(r["lost"]) for r in zero_pop)
+        verdict = "exactly 0, as it must be" if worst == 0.0 else f"NONZERO -- max |{worst:.3f}| us, which is a pricing bug"
+        print(f"invariant: {len(zero_pop):,} queries where picked IS best price at {verdict}")
     if skipped_unpriced:
         print(f"skipped {skipped_unpriced:,} queries where a plan that ran published no phase timing and so cannot be priced")
     if skipped_unphased:
