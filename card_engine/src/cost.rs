@@ -123,6 +123,13 @@ pub(crate) struct PlanFeatures {
     /// Set by the acquire branch that knows the difference; `mk_plan_feats` defaults it to `scan_units`, so
     /// a branch that has not been taught reads exactly as before.
     pub stream_scan_units: u32,
+    /// Diagnostic: the residual compares only CARD-level fields, so `card_pass` answers `True`/`False`
+    /// per card and never `PrintingDep`. A matching candidate then contributes its whole printing span and
+    /// a non-matching one none of it, which is a different estimator shape from one where printings under a
+    /// single card disagree — and the latter is what `RESIDUAL_PASS_RATE_PRINTING`/`_ARTWORK` was fitted on.
+    /// Exposed so `matches`'s error can be split by population before any rate is touched. **Nothing in
+    /// `plan_cost` reads this.**
+    pub residual_card_invariant: bool,
     /// Per-card verify cost of the residual, ns×100 (`verify_cost_tier`); `0`
     /// when `all_match_known` (the walk skips `card_pass` entirely).
     pub residual_tier_ns100: u32,

@@ -863,3 +863,70 @@ Three cautions in reading it, all of which change what the next item should be:
    interesting than when it was queued.
 7. Carried over: make the fit loss the actual multi-way routing outcome rather than a pairwise proxy;
    bitmap+extract candidate materialization in the 64–4,095 band; the 4096+ prep band.
+
+## The candidates acquire: `matches`, and a declined tier-1 fix
+
+The re-baseline put `candidates` at 78% of lost time. Investigated, and it is a **different defect from the
+compose acquire's** — the compose-acquire lessons do not transfer.
+
+**It is not the features, mostly.** The oracle substitution that bought 89% on compose buys only **29%**
+here (60.0 → 42.3 ms). `eval_domain` is **exact at p10/p50/p90**, because on this acquire it is the
+materialized narrowed candidate count rather than an estimate. Every losing query is the P3/P4 pair, and it
+fails in **both directions** — `StreamedSelect -> GatheredScan` 1,159 queries / 38.8 ms and
+`GatheredScan -> StreamedSelect` 861 / 21.1 ms.
+
+**The one bad feature is `matches`, and the sign of its error picks the direction of the mispick:**
+
+| transition | n | `matches` / realized, p50 | sum lost |
+| --- | --: | --: | --: |
+| `StreamedSelect -> GatheredScan` | 782 | **29.85** | 27.5 ms |
+| `GatheredScan -> StreamedSelect` | 767 | **0.88** | 21.4 ms |
+| correct | 13,601 | **1.00** | 0.0 ms |
+
+The mechanism is an asymmetry: `matches` drives P4's `PUSH` at 2.24 ns against P3's `EMIT` at 0.12 — 18.7× —
+**and** enters P3's `perm_steps` inversely. Over-counting therefore charges P4 more and P3 less, both
+favouring P3. `matches_pushed` agreed between the two plans on 100% of rows, so one shared feature is
+structurally fine here; it is simply wrong.
+
+`matches` is the candidates' printing/artwork **span** discounted by one constant per mode
+(`RESIDUAL_PASS_RATE_PRINTING` 0.40, `_ARTWORK` 0.53). A p50 of 29.85 is far past what any rate explains: the
+span is ~75× the truth there, because under a loose narrowing most candidates do not match at all. **Same
+class of defect as `eval_domain`'s** — a span is the wrong base for a match estimate — one field over.
+
+### Tier 1, measured and declined as a fix
+
+`filter::touches_printing_field` is new: the `any` composition of the leaf table `printing_dependent` reads
+with `all`, factored so the two callers cannot disagree on the table. A card-invariant residual answers
+`True`/`False` per card, so a candidate contributes its whole span or none. Published as
+`residual_card_invariant`; **nothing in `plan_cost` reads it.**
+
+Implied true pass rate, `shipped / (matches / realized)`:
+
+| mode | residual class | n | p10 | p50 | p90 |
+| --- | --- | --: | --: | --: | --: |
+| printing | card-invariant | 257 | 0.00 | **0.78** | 1.00 |
+| printing | printing-varying | 2,544 | 0.06 | **0.35** | 0.87 |
+| artwork | card-invariant | 221 | 0.00 | **0.60** | 0.90 |
+| artwork | printing-varying | 2,386 | 0.09 | **0.43** | 0.74 |
+
+The classifier separates the populations — 2.2× in printing mode — and the shipped 0.40 sits on the
+printing-varying value, confirming it was fitted there. **But the hypothesis it was built to test is wrong.**
+"Card-invariant ⇒ pass rate 1.0" fails: p50 is 0.78 and **p10 is 0.00**. The all-or-nothing reasoning holds,
+but the rate is then "what fraction of *candidates* match", which the residual's class does not pin — the
+spread inside the class is the full 0.00–1.00. And the class is only **9% of rows**, so a perfect rate there
+moves almost nothing.
+
+**Split constants are therefore not worth shipping**, and the diagnostic is kept only to scope the next step.
+
+### Why tier 2 is the work
+
+Printing-varying is 91% of rows and its median is already within 14% of shipped (0.35 against 0.40). The
+defect there is **spread — 0.06 to 0.87, a 14× range** — which no constant can address. That is the argument
+for a per-predicate estimate rather than a better global rate:
+
+- **Indexed range residuals** (`usd`, `cn`, `date`) have an exact printing count from two
+  `partition_point` calls, which `bare_range_bounds` already uses for its `k`.
+- **Plane residuals** (border, rarity, legality) have stored popcounts.
+- The residual usually is not the whole predicate, so a global pass fraction still assumes independence
+  from the candidate set — the assumption that just cost us on `eval_domain`. Preferring a direct count
+  where the residual *is* the leaf avoids it; conjunctions still need care.
