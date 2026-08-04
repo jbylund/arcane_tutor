@@ -1407,13 +1407,13 @@ pub(crate) fn split_planes(
         return (None, filter);
     }
     if let Some(pe) = compile_plane(&filter, bounds, words)
-        // `u64::MAX`, deliberately: using the divergence mask here would let a card-invariant legality
-        // leaf be consumed into a whole-filter plane, which makes the residual `True` -- and a `True`
-        // residual takes `PrintingCompose` out of the running entirely. Compose is the best plan for
-        // several of these queries by a wide margin (`f:commander`/printing measured 1.83 us against
-        // StreamedSelect's 99.38), so trading it away to skip per-printing verification is a large net
-        // loss. The mask is used below the applicability decisions, not inside them.
-        && (unique_is_card || !plane_expr_is_existential(&pe, u64::MAX))
+        // The store's real mask, which it could not be while consumption eliminated `PrintingCompose`:
+        // a card-invariant legality leaf consumes the whole filter, the residual becomes `True`, and
+        // compose used to fail its `plane.is_none()` guard and vanish from the argmin -- measured 1.83 us
+        // for compose against StreamedSelect's 99.38 on `f:commander`/printing. `bind_and_split_filter`
+        // now retains the unsplit filter, so compose is still costed on the whole predicate and simply
+        // wins where it is better.
+        && (unique_is_card || !plane_expr_is_existential(&pe, u64::from(bounds.divergent_formats)))
     {
         return (Some(pe), FilterExpr::True);
     }
