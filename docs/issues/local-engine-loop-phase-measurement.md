@@ -479,16 +479,30 @@ candidate explanations for it have now been eliminated by measurement. Two hones
 
 ## What is left
 
-1. **Extend the popcount-skip walk past `FilterExpr::True`.** What is left of the perm estimate's p90 has
-   two sources, and neither is reachable from a start position: non-matching entries *interior* to the
-   walked segment, and clustering the predicate does not name (the 5.31-vs-4.26 gap in the regrade table).
-   Scattering the match set through `inv_perm` and walking words at 64 cards a load reaches both —
-   `run_query_streamed_popcount` already does exactly that for `unique=card` queries whose filter fully
-   consumed to `True`, and printing mode, where P3 is actually routed, is the case it does not cover.
-   Generalizing it needs per-card match counts for the skip (a popcount counts cards, not matches) and
-   pays a per-card scatter, so it inherits the cost question the realized span had — with the difference
-   that its payoff does not depend on matches being contiguous.
-2. **A curvature term for the loop rates** — the cause of both the `FIXED` disagreement and corpus drift.
-3. **Gate P4's artwork arm on its own.**
-4. Carried over: make the fit loss the actual multi-way routing outcome rather than a pairwise proxy;
+1. **Compose's remaining shape error, on compose-acquire artwork.** The largest open finding and the one that
+   pays the regret debt. After correcting `stream_scan_units` the model still prices compose ~1.5× under P3
+   where P3 measures ~1.7× faster — `f:gladiator`/artwork, P3 at 79.83 µs against compose's 177.83 — so ~2.5×
+   survives, and it is provably none of the three things already measured: not the residual floor (traffic
+   fits it at 0.90), not the scan feature (now correct against the realized counter), not the per-card level.
+   Sixteen mispicks remain. Compose is also the worst-modelled arm overall (p90 41×, spread 136× on
+   rarity/usd ordering), so this is where its arm should be attacked.
+2. **Decide the 13% regret debt.** Regret sits at 55.0 ms against a 48.7 ms baseline, all of it from making
+   the split non-destructive — which is correct, but hands the argmin a candidate whose arm is badly modelled.
+   Either (1) above pays it back, or revert the split and give back `f:modern t:creature`'s 0.476× until the
+   arm is fixed. Isolated: the consume guard is not the cause (56.8 ms with it off against 55.0 with it on).
+3. **Extend the popcount-skip walk past `FilterExpr::True`.** What is left of the perm estimate's p90 has two
+   sources, neither reachable from a start position: entries *interior* to the walked segment, and clustering
+   the predicate does not name (the 5.31-vs-4.26 gap in the regrade table). Scattering the match set through
+   `inv_perm` and walking words at 64 cards a load reaches both, and `run_query_streamed_popcount` already
+   does that for `unique=card` + `True` — printing mode, where P3 is actually routed, is the case it does not
+   cover. Needs per-card counts for the skip, since a popcount counts cards and not matches.
+4. **Compose `format:A AND format:B` now that both are usually card-invariant.** The shared-witness objection
+   dissolves when neither format diverges: `∃p: A(p) ∧ B` is `(∃p: A(p)) ∧ B`. `compile_plane` still declines
+   it with `u64::MAX`, and `legality_and_of_two_formats_declines_but_or_compiles` names the assertion to
+   revisit.
+5. **A curvature term for the loop rates** — cause of both the `FIXED` disagreement and corpus drift, though
+   the five-size sweep demoted it: the drift saturates and production sits at the bottom of the curve.
+6. **Gate P4's artwork arm on its own.** Every surviving mispick is in artwork mode, which makes this more
+   interesting than when it was queued.
+7. Carried over: make the fit loss the actual multi-way routing outcome rather than a pairwise proxy;
    bitmap+extract candidate materialization in the 64–4,095 band; the 4096+ prep band.
