@@ -215,6 +215,37 @@ Recorded because both were believed and acted on:
   `all_match` per-card is flat (2.58 / 2.54 / 2.55) while its residual per-card grows 3.6× and P4's loop
   grows 2.4×. So the P3/P4 balance drifts as the corpus grows with every constant left alone.
 
+### The drift SATURATES, which three corpus sizes could not show
+
+Five log₂-spaced stores (31.5k / 63k / 126k / 252k / 504k cards, built by `upscale_corpus.py` at
+1/2/4/8/16 copies) against the previous 1×/4×/13×. The per-card loop rate, measured directly per cell —
+no differencing across modes, which is where `PUSH` goes unidentified:
+
+| store, oracle cards | 31.5k | 63k | 126k | 252k | 504k |
+| --- | --: | --: | --: | --: | --: |
+| A card, ns/card | 10.15 | 13.23 | 20.66 | 24.54 | **24.72** |
+| B printing | 10.64 | 14.47 | 22.94 | 25.75 | **25.95** |
+| E artwork | 10.96 | 15.99 | 29.90 | 33.01 | **33.19** |
+| A′ card (stagger control) | 11.70 | 11.90 | 19.06 | 24.96 | **25.40** |
+
+It is not a drift that keeps going: the rate roughly doubles to 126k, adds ~19% to 252k, and then stops
+— all four cells move under 2% between 252k and 504k. That is a cache-residency curve reaching its
+asymptote, and it changes both the shape to fit and the urgency:
+
+- **The term is bounded, not logarithmic.** Two levels — a resident rate ~10–11 ns/card and a
+  non-resident rate ~25 ns/card — with a knee between 126k and 252k cards on this machine. A `log(n)`
+  term fitted to three points would have extrapolated past the plateau and over-costed a large corpus.
+- **Production sits at the bottom of the curve** (31.5k cards, ~10 ns/card). So the constants are
+  calibrated in the resident regime and the drift is insurance against a ~4× corpus, not a routing defect
+  today. That demotes this from "the biggest single item" to "the best-understood one".
+- **The two axes are one mechanism.** The within-store curvature (100 → 4,500 cards visited) shrinks as
+  the store grows — 1.33–1.36× at 31.5k, 1.07–1.15× at 504k — which is what a single residency curve
+  predicts: once every access misses, visiting more cards cannot make it worse. So a curvature term keyed
+  on working-set residency should subsume both, rather than needing one term per axis.
+- **The "fixed cost" is still not identified.** It reads 14–305 ns at 31.5k and 305–499 ns at 504k. A
+  per-query constant cannot depend on corpus size, so something size-dependent is still leaking into that
+  end of the fit, and the `169.6`-vs-`85` question stays open.
+
 ## Tooling added
 
 - `card_engine/src/bench_gather_loop.rs`, `bench_streamed_loop.rs` — call the real executors and read
