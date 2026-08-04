@@ -312,6 +312,9 @@ fn store_of(cards: Vec<OracleCard>, printing_counts: &[usize], vocab: VocabInter
         mana_vocab: vec![],
         indexes,
         format_shifts: HashMap::new(),
+        // Every format divergent: the conservative value, so a fixture exercises the existential
+        // carveout rather than the card-invariant shortcut unless it opts in.
+        divergent_formats: u64::MAX,
     }
 }
 
@@ -5822,6 +5825,8 @@ fn bench_checked_vs_unchecked_access() {
         mana_vocab: vec![],
         indexes,
         format_shifts: HashMap::new(),
+        // Conservative, as in `store_of`: every format treated as divergent.
+        divergent_formats: u64::MAX,
     };
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     println!("archive size: {:.1} MB", bytes.len() as f64 / 1e6);

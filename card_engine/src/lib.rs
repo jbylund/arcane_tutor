@@ -2797,6 +2797,21 @@ struct CardData {
     // which never run the load path that feeds FORMAT_SHIFTS — resolve
     // legality shifts identically to the worker that built the archive.
     format_shifts: HashMap<String, u8>,
+    // WHICH formats actually have printings that disagree, as a mask over the same 2-bit fields
+    // `format_shifts` indexes. `legality_divergent` on the card is one boolean meaning "some format
+    // disagreed for this card", which is all the #667 carveout has ever had to work with — so every
+    // legality leaf is treated as existential and re-verified per printing, for every format.
+    //
+    // The data does not justify that. Over the production corpus, all 556 divergent cards diverge in
+    // `oldschool` and nothing else; `modern`, `commander`, `pauper` and the rest are card-invariant, and
+    // the per-printing re-verification on them is provably redundant (measured: 7,770 printing
+    // examinations by StreamedSelect on `f:modern` that cannot change an answer).
+    //
+    // Accumulated as the OR of the XOR between successive printings of a card, so it names exactly the
+    // 2-bit fields that ever differ, and it is derived from the data rather than asserting anything
+    // about `oldschool`: if Scryfall ever makes another format divergent, this picks it up on the next
+    // reload and the conservative path returns on its own.
+    divergent_formats: u64,
 }
 
 // ─── Candidate narrowing ─────────────────────────────────────────────────────
@@ -9368,7 +9383,7 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 // current calendar date (20260723) and 20260724 were both already consumed by
 // earlier same-window archive changes (#737 columnar artwork_group_id, #741
 // watermark postings), so this takes the next distinct value — see the doc above.
-const ARCHIVE_FORMAT_VERSION: u32 = 20260802;
+const ARCHIVE_FORMAT_VERSION: u32 = 20260803;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -9791,6 +9806,8 @@ impl QueryEngine {
         let mut cards: Vec<OracleCard> = Vec::new();
         let mut printings: Vec<Printing> = Vec::with_capacity(rows.len());
         let mut offsets: Vec<u32> = Vec::new();
+        // See `CardData::divergent_formats`: which formats disagree, not just that some card's did.
+        let mut divergent_formats: u64 = 0;
         for mut row in rows {
             let is_new = cards.last().is_none_or(|c| c.oracle_id != row.oracle_id);
             if is_new {
@@ -9828,6 +9845,8 @@ impl QueryEngine {
                 });
             } else if row.card_legalities != cards.last().map(|c| c.card_legalities).unwrap_or(0) {
                 cards.last_mut().unwrap().legality_divergent = true;
+                // Which 2-bit fields differ, not merely that some did. See `CardData::divergent_formats`.
+                divergent_formats |= row.card_legalities ^ cards.last().map(|c| c.card_legalities).unwrap_or(0);
             }
             printings.push(Printing {
                 scryfall_id: row.scryfall_id,
@@ -9954,7 +9973,19 @@ impl QueryEngine {
         // Snapshot the registry card_from_pydict just populated so reader
         // processes can adopt the same format→shift assignments.
         let format_shifts_snapshot = format_shifts().read().map(|m| m.clone()).unwrap_or_default();
-        let card_data = CardData { cards, printings, offsets, strings, coll_vocab, coll_vocab_sorted, artist_vocab, mana_vocab, indexes, format_shifts: format_shifts_snapshot };
+        let card_data = CardData {
+            cards,
+            printings,
+            offsets,
+            strings,
+            coll_vocab,
+            coll_vocab_sorted,
+            artist_vocab,
+            mana_vocab,
+            indexes,
+            format_shifts: format_shifts_snapshot,
+            divergent_formats,
+        };
 
         // Write atomically: stream into a per-PID .tmp, then rename over shm_path.
         // Per-PID avoids the race where two workers write to the same .tmp and
@@ -10181,6 +10212,25 @@ impl QueryEngine {
         out.set_item("acquire", acquire_facts_to_pydict(py, &facts)?)?;
         out.set_item("plans", PyList::new(py, rows)?)?;
         Ok(out)
+    }
+
+    /// The formats whose printings actually disagree, as `{format: shift}` — the data behind
+    /// `CardData::divergent_formats`, so a harness can check the claim that only `oldschool` diverges
+    /// against a real store rather than by re-reading the corpus JSONL. Empty when the archive is
+    /// missing or from another build; `{}` also legitimately means "no format diverges".
+    fn divergent_formats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        let Ok(mmap) = self.get_mmap() else { return Ok(d) };
+        // Safety: see query()'s access_unchecked justification.
+        let data = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+        let mask = u64::from(data.divergent_formats);
+        for (format, shift) in data.format_shifts.iter() {
+            // Two bits per format, so a format is divergent if either of its bits ever differed.
+            if mask >> *shift & 0b11 != 0 {
+                d.set_item(format.as_str(), *shift)?;
+            }
+        }
+        Ok(d)
     }
 
     fn size(&self) -> PyResult<usize> {
