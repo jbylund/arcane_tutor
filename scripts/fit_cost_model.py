@@ -215,6 +215,10 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
     """
     eval_domain = float(acq["eval_domain"])
     scan_units = float(acq["scan_units"])
+    # P3's own scan estimate, which differs from `scan_units` on a legality-composed acquire -- see
+    # `PlanFeatures::stream_scan_units`. Absent from an older recorded run, in which case it equals
+    # `scan_units` and this mirrors the pre-split arm exactly.
+    stream_scan_units = float(acq.get("stream_scan_units", acq["scan_units"]))
     matches = float(acq["matches"])
     n_cards = float(acq["n_cards"])
     tier_ns = acq["residual_tier_ns100"] / 100.0
@@ -256,7 +260,7 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
         return (
             [
                 eval_domain,
-                scan_units * residual_on,
+                stream_scan_units * residual_on,
                 eval_domain * residual_on,
                 matches,
                 perm_steps,

@@ -105,6 +105,24 @@ pub(crate) struct PlanFeatures {
     /// non-matching cards dominate either way) and decisive under an exact one, which is why the plane
     /// branch of `acquire_plan_features` sets this field itself rather than taking the span estimate.
     pub scan_units: u32,
+    /// `scan_units` for `StreamedSelect` specifically, where that plan examines a DIFFERENT number of
+    /// printings from `GatheredScan` on the same query. One per-query field cannot serve both: P4's
+    /// `push_card_matches` must walk a card's span to push every match, while P3's `card_match_count`
+    /// answers from span arithmetic for every card `card_pass` resolves outright.
+    ///
+    /// Measured on the compose acquire, `scan_units` against the realized `printings_examined`:
+    ///
+    ///     f:modern / artwork      GatheredScan 101,716 / 73,783 = 1.38    StreamedSelect 101,716 / 7,770 = 13.09
+    ///     f:gladiator / artwork    88,026 / 54,213 = 1.62                  88,026 /  5,876 = 14.98
+    ///
+    /// Right for P4 to within 1.4-1.6x, wrong for P3 by 13-15x, and `scan_units * STREAM_SCAN_PER_ROW_NS`
+    /// is then 525 us of P3's 704 us prediction against a 91 us measured loop. That is a FEATURE error, the
+    /// one class no rate can absorb — unlike the residual floor, whose kernel-vs-traffic gap turned out to
+    /// be a cache artifact.
+    ///
+    /// Set by the acquire branch that knows the difference; `mk_plan_feats` defaults it to `scan_units`, so
+    /// a branch that has not been taught reads exactly as before.
+    pub stream_scan_units: u32,
     /// Per-card verify cost of the residual, ns×100 (`verify_cost_tier`); `0`
     /// when `all_match_known` (the walk skips `card_pass` entirely).
     pub residual_tier_ns100: u32,
@@ -797,7 +815,7 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
                 * (STREAM_LOOP_PER_CARD_NS
                     + if tier_ns > 0.0 { STREAM_CARD_PASS_NS + tier_ns.max(STREAM_RESIDUAL_FLOOR_NS) } else { 0.0 })
                 // Only with a residual does P3 walk printings; see STREAM_SCAN_PER_ROW_NS.
-                + if tier_ns > 0.0 { scan_units * STREAM_SCAN_PER_ROW_NS } else { 0.0 }
+                + if tier_ns > 0.0 { f64::from(f.stream_scan_units) * STREAM_SCAN_PER_ROW_NS } else { 0.0 }
                 + matches * STREAM_EMIT_PER_MATCH_NS
                 + perm_steps * STREAM_PERM_STEP_NS
                 + f64::from(f.artwork_seen_cards) * STREAM_ARTWORK_SEEN_PER_CARD_NS
