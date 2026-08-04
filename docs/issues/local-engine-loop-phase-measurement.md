@@ -286,11 +286,34 @@ alone is 525 µs of P3's 704 µs prediction against a 91 µs measured loop.
 | f:modern / artwork | GatheredScan | 101,716 | 73,783 | 1.38 |
 | f:modern / artwork | StreamedSelect | 101,716 | **7,770** | **13.09** |
 
-Both plans receive the same per-query `scan_units`, but P3 examines 9× fewer printings: `card_match_count`
-returns at the first qualifying printing under `Prefer::Default`, while `push_card_matches` must walk the
-whole span to push every match. This module's header already says `prefer` "is the one thing this cannot
-see", and that `acquire_plan_features` therefore sets `scan_units` itself on the **plane** branch instead
-of taking the span estimate. The **compose** branch was never given the same treatment.
+Both plans receive the same per-query `scan_units`, but P3 examines 9× fewer printings. The reason is NOT
+the first-match break that the plane branch corrects for — sweeping ten composable filters shows the
+defect is confined to **legality**:
+
+| composed filter | P3 examined / P4 examined |
+| --- | --: |
+| `f:modern`, `f:commander`, `f:vintage`, `legal:pauper`, `f:standard`, `t:goblin or f:legacy` | **0.10 – 0.26** |
+| `border:black` | 1.00 |
+| `r:mythic` | 1.00 |
+| `watermark:riveteers` | 1.00 |
+
+For every other printing-varying leaf the two plans examine *identically* and `scan_units` is right to
+within 1.1–2.4×. Legality differs because `card_pass` resolves it at CARD level for every non-divergent
+card: `Tri::True` or `Tri::False` comes back without a printing being read, so `card_match_count` answers
+from span arithmetic and P3's per-printing cost exists only for the divergent subset. P4 has no such
+escape — `push_card_matches` must walk the span to push every match.
+
+The implied estimate is exact rather than fitted, because the engine already holds the set:
+`indexes.legal_divergent` is the divergent card list, so P3's scan on a legality-composed filter is
+`eval_domain × (divergent / n_cards) × printings_per_card`. Back-solving the measurements gives a divergent
+share of 16–22% (`f:modern` 7,770 examined ⇒ 2,514 of 15,700 candidates; `f:commander` 21.7%;
+`legal:pauper` 19.9%; `f:standard` 22.4%), which is one corpus constant and not a per-query guess.
+
+So this is NOT the plane branch's correction extended — that one is `prefer`-aware, this one has to be
+divergence-aware, and they share only the conclusion that one per-query `scan_units` cannot serve two
+plans whose kernels short-circuit differently. Implementing it needs a per-plan field on `PlanFeatures`
+(the pattern `compose_scan_printings` already establishes), set on the compose branch and read by P3's arm
+alone, plus the matching mirror column in `fit_cost_model.py`.
 
 So the fix is a feature correction on the compose acquire, not a rate — the category the toolkit says is
 the only one a rate cannot rescue. It is also NOT the artwork arm of item 4 below: the 6× over-cost exists
