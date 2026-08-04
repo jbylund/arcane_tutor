@@ -1116,6 +1116,51 @@ term on artwork queries *with* a residual. Same structure as the verify-tier gat
 exposing an unmodelled cost underneath. `o:creature` never had that compensation, since its tier is 0, which
 is why it shows the error at full size.
 
-Sequencing consequence: **item 6 moves ahead of everything else on this list.** It is one term, its shape is
-already measured, the population is identifiable (`unique=artwork`, which carries 33% of all lost time), and
-it needs a counter for the grouping walk before its feature can be graded at all.
+### Corrected, and it was not a cost-model defect at all
+
+The diagnosis above was wrong about the mechanism, and the correction is worth more than the original finding.
+`printings_examined` reading 0 is **right**: `run_query_streamed` has a fast path that answers an artwork
+count from a stored per-card group count without touching a printing. The 921 us was not a grouping walk.
+
+It was `card_pass`. The `all_match_known` skip was **gated off for `Mode::Artwork`**, so `o:creature`/artwork
+ran a full oracle-text containment check over all 23,155 candidates that the narrowing had already proved
+matched. Printing mode skips it and took 56.7 us for identical work. The gate's own comment cited a ~45%
+regression on `t:creature`/artwork, called it "an unexplained codegen/scheduling effect ... not a logical
+cost", and attributed it to bisecting **across builds** — trap 1 in the method doc.
+
+Re-measured with a runtime toggle in one binary, the cited regression does not reproduce in either direction,
+and **every artwork cell is faster with the gate removed**:
+
+| query, artwork, limit 175 | gate on | gate off | speedup |
+| --- | --: | --: | --: |
+| `o:this` | 1047.7 us | **43.8** | **24x** |
+| `o:target` | 556.6 | **28.7** | **19x** |
+| `o:creature` | 1010.5 | **50.6** | **20x** |
+| `t:creature` | 84.1 | **38.5** | **2.2x** (the query the gate protected) |
+| `o:flying` | 24.1 | 12.1 | 2.0x |
+| `c:r` | 32.2 | 16.6 | 1.9x |
+| `t:land` | 15.5 | 11.6 | 1.3x |
+
+Row identity is what an `all_match` error breaks silently here — totals do not move, the printing that REPS
+each artwork group does. **1,134 cells identical** (21 predicates x 3 modes x 3 orderbys x 3 pages x 2
+prefers, hashing the returned `scryfall_id` sequence), 378 of them artwork, including the existential shapes
+`f:*`, `border:*`, `r>=rare`, `watermark:*`, `-f:modern`.
+
+| | before | after |
+| --- | --: | --: |
+| `artwork` regret slice, mean | 1.87 us | **1.59** |
+| `artwork` regret slice, max | **504.5 us** | **185.5** |
+| total regret, mean | 1.43 us | 1.44 (flat) |
+
+Total regret is flat because this does not change any *pick* — it makes the picked plan faster. The user-facing
+win is latency, and it is the largest in this branch.
+
+**Item 6 inverts.** The artwork arm now **over**-costs: P3 reads p/m 1.58-1.83 on these cells against 0.09-0.11
+before, so `STREAM_ARTWORK_SEEN_PER_CARD_NS` at 1.21 is now too HIGH rather than 33x too low. The cost model
+was right about what should happen throughout — it charges `tier = 0` because `all_match_known` is supposed to
+mean no `card_pass` runs, and now it does not. What remains is a level, not a shape, and it is small.
+
+**The general lesson is about the comment, not the code.** A perf carve-out justified by a cross-build
+measurement, explicitly labelled unexplained, sat in the hot loop of the mode carrying 36% of all routing loss
+and cost up to 24x. This file has now retracted four cross-build findings; that instrument's output should be
+treated as unproven until re-measured in one binary, especially where it has been encoded as a permanent gate.
