@@ -3113,7 +3113,7 @@ fn force_plan_differential_agreement() {
                 let (ref_total, ref_page) = run_query_with_plan(
                     PhysicalPlan::GatheredScan, &QueryCtx::from(archived),
                     &QueryParams::from_strs(mode, prefer, orderby, direction, full_limit, 0).with_sort_bound(sort_bound),
-                    &mut ref_res, ref_pe.as_ref(),
+                    &mut ref_res, None, ref_pe.as_ref(),
                 )
                 .expect("GatheredScan is always applicable");
                 ran[plan_idx(PhysicalPlan::GatheredScan)] += 1;
@@ -3137,7 +3137,7 @@ fn force_plan_differential_agreement() {
                     let out = run_query_with_plan(
                         plan, &QueryCtx::from(archived),
                         &QueryParams::from_strs(mode, prefer, orderby, direction, full_limit, 0).with_sort_bound(sort_bound),
-                        &mut res, pe.as_ref(),
+                        &mut res, None, pe.as_ref(),
                     );
                     let Some((total, page)) = out else { continue };
                     ran[plan_idx(plan)] += 1;
@@ -3283,7 +3283,7 @@ fn explain_reports_ranked_applicable_plans() {
                 fuzz_bound_filter(spec, archived), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, matches!(mode, Mode::Card),
             );
             let (facts, estimates): (AcquireFacts, Vec<PlanEstimate>) = explain(
-                &QueryCtx::from(archived), &explain_params(mode, 60), &mut filter, pe.as_ref(),
+                &QueryCtx::from(archived), &explain_params(mode, 60), &mut filter, None, pe.as_ref(),
             );
 
             // The acquire facts every plan in this call shares. `eval_domain` is what a
@@ -3388,13 +3388,13 @@ fn explain_analyze_matches_explain_and_times_every_plan() {
         bound.clone(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true,
     );
     let (ref_facts, reference): (AcquireFacts, Vec<PlanEstimate>) = explain(
-        &QueryCtx::from(archived), &explain_params(Mode::Card, 60), &mut ref_filter, ref_pe.as_ref(),
+        &QueryCtx::from(archived), &explain_params(Mode::Card, 60), &mut ref_filter, None, ref_pe.as_ref(),
     );
 
     let (pe, filter) = split_planes(bound, &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
     let (facts, trials): (AcquireFacts, Vec<PlanTrial>) = explain_analyze(
         &QueryCtx::from(archived), &QueryParams::from_strs("card", "default", "edhrec", "asc", 60, 0),
-        &filter, pe.as_ref(), NUM_WARMUPS, NUM_TRIALS,
+        &filter, None, pe.as_ref(), NUM_WARMUPS, NUM_TRIALS,
     );
 
     // The acquire facts describe the query, not the round, so they must agree with
@@ -3535,7 +3535,7 @@ fn compose_paging_prediction_matches_the_branch_taken() {
 
                             // The prediction, on its own clone -- acquire mutates the filter it reads.
                             let mut acq_filter = filter.clone();
-                            let (feats, prep, _bits) = acquire_plan_features(&ctx, &params, &mut acq_filter, pe.as_ref());
+                            let (feats, prep, _bits) = acquire_plan_features(&ctx, &params, &mut acq_filter, None, pe.as_ref());
                             if prep.count_source() != CountSource::PrintingCompose {
                                 continue; // not a compose acquire; compose_paging has no referent
                             }
@@ -3545,7 +3545,7 @@ fn compose_paging_prediction_matches_the_branch_taken() {
                             // iteration's label survives in the cell otherwise (see PHASE_STATS).
                             let mut run_filter = filter.clone();
                             take_phase_stats();
-                            let ran = run_query_with_plan(PhysicalPlan::PrintingCompose, &ctx, &params, &mut run_filter, pe.as_ref());
+                            let ran = run_query_with_plan(PhysicalPlan::PrintingCompose, &ctx, &params, &mut run_filter, None, pe.as_ref());
                             let taken = take_phase_stats().paging_taken;
 
                             let case = format!(
@@ -3720,7 +3720,7 @@ fn materializing_plans_agree_on_the_counters_they_share() {
                 let mut streamed_filter = filter.clone();
                 take_phase_stats();
                 let streamed_ran =
-                    run_query_with_plan(PhysicalPlan::StreamedSelect, &ctx, &params, &mut streamed_filter, pe.as_ref());
+                    run_query_with_plan(PhysicalPlan::StreamedSelect, &ctx, &params, &mut streamed_filter, None, pe.as_ref());
                 let streamed = take_phase_stats();
                 if streamed_ran.is_none() {
                     continue; // no sort permutation for this orderby; nothing to compare against
@@ -3729,7 +3729,7 @@ fn materializing_plans_agree_on_the_counters_they_share() {
                 let mut gathered_filter = filter.clone();
                 take_phase_stats();
                 let gathered_ran =
-                    run_query_with_plan(PhysicalPlan::GatheredScan, &ctx, &params, &mut gathered_filter, pe.as_ref());
+                    run_query_with_plan(PhysicalPlan::GatheredScan, &ctx, &params, &mut gathered_filter, None, pe.as_ref());
                 let gathered = take_phase_stats();
                 assert!(gathered_ran.is_some(), "GatheredScan is always applicable");
 
@@ -3905,7 +3905,7 @@ fn plan_stats_never_leak_between_participants() {
                 let (pe, filter) = split_planes(
                     bound, &archived.indexes.planes, &archived.indexes.oracle_trigram.words, matches!(mode, Mode::Card),
                 );
-                let (_facts, trials) = explain_analyze(&ctx, &params, &filter, pe.as_ref(), NUM_WARMUPS, NUM_TRIALS);
+                let (_facts, trials) = explain_analyze(&ctx, &params, &filter, None, pe.as_ref(), NUM_WARMUPS, NUM_TRIALS);
 
                 for t in &trials {
                     if t.trials_ns.is_empty() {
@@ -4140,7 +4140,7 @@ fn declining_plans_report_their_gate_through_explain_analyze() {
                 let (pe, filter) = split_planes(
                     bound, &archived.indexes.planes, &archived.indexes.oracle_trigram.words, matches!(mode, Mode::Card),
                 );
-                let (_facts, trials) = explain_analyze(&ctx, &params, &filter, pe.as_ref(), NUM_WARMUPS, NUM_TRIALS);
+                let (_facts, trials) = explain_analyze(&ctx, &params, &filter, None, pe.as_ref(), NUM_WARMUPS, NUM_TRIALS);
 
                 for t in &trials {
                     if t.declined_ns.is_empty() {
@@ -4443,7 +4443,7 @@ fn plan_cost_calibration() {
                         let t0 = Instant::now();
                         let out = black_box(run_query_with_plan(
                             *plan, &QueryCtx::from(archived),
-                            &QueryParams::from_strs(mode, "default", "edhrec", "asc", limit, offset), &mut res, pe.as_ref(),
+                            &QueryParams::from_strs(mode, "default", "edhrec", "asc", limit, offset), &mut res, None, pe.as_ref(),
                         ));
                         let dt = t0.elapsed().as_nanos() as u64;
                         match out {
@@ -4566,7 +4566,7 @@ fn plan_cost_model_matches_gold() {
                         let t0 = Instant::now();
                         let out = black_box(run_query_with_plan(
                             *plan, &QueryCtx::from(archived),
-                            &QueryParams::from_strs(mode, "default", "edhrec", "asc", limit, offset), &mut res, pe.as_ref(),
+                            &QueryParams::from_strs(mode, "default", "edhrec", "asc", limit, offset), &mut res, None, pe.as_ref(),
                         ));
                         let dt = t0.elapsed().as_nanos() as u64;
                         match out {
@@ -4821,7 +4821,7 @@ fn plan_cost_refit() {
                         let t0 = Instant::now();
                         let out = black_box(run_query_with_plan(
                             *plan, &QueryCtx::from(archived),
-                            &QueryParams::from_strs(mode, "default", "edhrec", "asc", limit, offset), &mut res, pe.as_ref(),
+                            &QueryParams::from_strs(mode, "default", "edhrec", "asc", limit, offset), &mut res, None, pe.as_ref(),
                         ));
                         let dt = t0.elapsed().as_nanos() as u64;
                         match out { Some((t, _)) => { total = t; applicable = true; if it >= WARMUP { best = best.min(dt); } } None => break }
@@ -5015,7 +5015,7 @@ fn printing_range_route_probe() {
                     let t0 = Instant::now();
                     let out = black_box(run_query_with_plan(
                         *plan, &QueryCtx::from(archived),
-                        &QueryParams::from_strs("printing", "default", "edhrec", "asc", LIMIT, offset), &mut res, pe.as_ref(),
+                        &QueryParams::from_strs("printing", "default", "edhrec", "asc", LIMIT, offset), &mut res, None, pe.as_ref(),
                     ));
                     let dt = t0.elapsed().as_nanos() as u64;
                     match out {
@@ -5241,7 +5241,7 @@ fn idea1_vs_idea2_probe() {
                 let t0 = Instant::now();
                 let out = black_box(run_query_with_plan(
                     PhysicalPlan::PrintingRangeScan, &QueryCtx::from(archived),
-                    &QueryParams::from_strs("printing", "default", "edhrec", "asc", LIMIT, offset), &mut res, pe.as_ref(),
+                    &QueryParams::from_strs("printing", "default", "edhrec", "asc", LIMIT, offset), &mut res, None, pe.as_ref(),
                 ));
                 let dt = t0.elapsed().as_nanos() as u64;
                 match out { Some((t, _)) => { total = t; applicable = true; if it >= WARMUP { i1 = i1.min(dt); } } None => break }
@@ -5373,7 +5373,7 @@ fn plan_regret_report() {
                     let t0 = Instant::now();
                     let out = black_box(run_query_with_plan(
                         *plan, &QueryCtx::from(archived),
-                        &QueryParams::from_strs("card", "default", "edhrec", "asc", limit, offset), &mut res, pe.as_ref(),
+                        &QueryParams::from_strs("card", "default", "edhrec", "asc", limit, offset), &mut res, None, pe.as_ref(),
                     ));
                     let dt = t0.elapsed().as_nanos() as u64;
                     match out {
@@ -6596,11 +6596,11 @@ fn streamed_walk_bounds_itself_by_the_sort_column_predicate() {
                 // A pristine clone per plan: `prepare_candidates` rewrites the filter it is handed.
                 let mut streamed_filter = filter.clone();
                 take_phase_stats();
-                let streamed = run_query_with_plan(PhysicalPlan::StreamedSelect, &ctx, &params, &mut streamed_filter, pe.as_ref())
+                let streamed = run_query_with_plan(PhysicalPlan::StreamedSelect, &ctx, &params, &mut streamed_filter, None, pe.as_ref())
                     .expect("store_of builds the cmc permutation, so StreamedSelect is applicable");
                 let stats = take_phase_stats();
                 let mut gathered_filter = filter.clone();
-                let gathered = run_query_with_plan(PhysicalPlan::GatheredScan, &ctx, &params, &mut gathered_filter, pe.as_ref())
+                let gathered = run_query_with_plan(PhysicalPlan::GatheredScan, &ctx, &params, &mut gathered_filter, None, pe.as_ref())
                     .expect("GatheredScan is always applicable");
 
                 let case = format!("{mode_label}/{}/offset={offset}", if descending { "desc" } else { "asc" });
@@ -6633,11 +6633,11 @@ fn streamed_walk_bounds_itself_by_the_sort_column_predicate() {
             split_planes(filt(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
         let mut streamed_filter = filter.clone();
         take_phase_stats();
-        let streamed = run_query_with_plan(PhysicalPlan::StreamedSelect, &ctx, &params, &mut streamed_filter, pe.as_ref())
+        let streamed = run_query_with_plan(PhysicalPlan::StreamedSelect, &ctx, &params, &mut streamed_filter, None, pe.as_ref())
             .expect("store_of builds the edhrec permutation too");
         let stats = take_phase_stats();
         let mut gathered_filter = filter.clone();
-        let gathered = run_query_with_plan(PhysicalPlan::GatheredScan, &ctx, &params, &mut gathered_filter, pe.as_ref())
+        let gathered = run_query_with_plan(PhysicalPlan::GatheredScan, &ctx, &params, &mut gathered_filter, None, pe.as_ref())
             .expect("GatheredScan is always applicable");
         assert_eq!(streamed.0, gathered.0, "unbounded total disagrees with GatheredScan: offset={offset}");
         assert_eq!(ids(&streamed.1), ids(&gathered.1), "unbounded page disagrees with GatheredScan: offset={offset}");

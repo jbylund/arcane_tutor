@@ -6387,14 +6387,21 @@ impl PhysicalPlan {
     /// prep is available, `PrintingRangeScan` exactly when the range-estimate prep is,
     /// so filtering `ALL` by `applicable` inside each prep branch yields the right
     /// candidate set with no per-branch plan list.
-    fn applicable(self, ctx: &QueryCtx, params: &QueryParams, filter: &FilterExpr, plane: Option<&PlaneExpr>) -> bool {
+    fn applicable(
+        self,
+        ctx: &QueryCtx,
+        params: &QueryParams,
+        filter: &FilterExpr,
+        unsplit: Option<&FilterExpr>,
+        plane: Option<&PlaneExpr>,
+    ) -> bool {
         let QueryCtx { cards, indexes, .. } = *ctx;
         let QueryParams { mode, sort_col, descending, .. } = *params;
         match self {
             PhysicalPlan::PrintingRangeScan => {
                 printing_range_scan_applicable(mode, plane, cards) && bare_range_bounds(filter, indexes).is_some()
             }
-            PhysicalPlan::PrintingCompose => printing_compose_applicable(filter, cards, plane, indexes),
+            PhysicalPlan::PrintingCompose => printing_compose_applicable(filter, unsplit, cards, plane, indexes),
             PhysicalPlan::PlanePopcountOrder => {
                 plane_popcount_order_applicable(filter, mode, cards, plane, sort_col, descending, indexes)
             }
@@ -6558,11 +6565,46 @@ fn printing_range_scan_applicable(mode: Mode, plane: Option<&PlaneExpr>, cards: 
 /// docs/issues/local-engine-compose-permutation-fallback.md) — either way the total (a popcount over
 /// the already-exact composed bits) and the page are both correct; only *which* paging strategy runs
 /// depends on the permutation's presence, decided inside the fastpath itself.
-fn printing_compose_applicable(filter: &FilterExpr, cards: &[AOracleCard], plane: Option<&PlaneExpr>, indexes: &Archived<CardIndexes>) -> bool {
+///
+/// **`plane.is_none()` is about REPRESENTATION, not about routing**, and `unsplit` is what lifts it.
+/// Compose builds its printing bitmap from the filter TREE; a plane sitting alongside holds predicate
+/// this function cannot see, so composing the residual alone would silently drop it — wrong rows, not
+/// slow rows. That is why the guard exists. But `split_planes` runs at bind time, before any plan is
+/// costed, so consuming a leaf into a plane ELIMINATED compose before the argmin could weigh it: measured
+/// 1.83 us for compose against StreamedSelect's 99.38 on `f:commander`/printing, a plan the router never
+/// got to consider. `unsplit` carries the filter as bound, so compose can be costed on the whole
+/// predicate whether or not a plane took part of it, and `cost::plan_cost` decides as #702 intends.
+fn printing_compose_applicable(
+    filter: &FilterExpr,
+    unsplit: Option<&FilterExpr>,
+    cards: &[AOracleCard],
+    plane: Option<&PlaneExpr>,
+    indexes: &Archived<CardIndexes>,
+) -> bool {
     // Mode-agnostic: the cost model arbitrates overlap with the specialized range plans. All three
     // range/compose plans are non-materializing (estimate-in-acquire), so nothing is eagerly built —
     // a losing plan costs only a binary search, never a wasted scatter.
-    *PRINTING_COMPOSE != 0 && !cards.is_empty() && plane.is_none() && is_printing_composable(filter, indexes) && printing_compose_indexes_built(indexes)
+    //
+    // With a plane present, the whole predicate is `unsplit` and compose must compose that; without one,
+    // the residual IS the whole predicate. A caller that supplies no `unsplit` keeps the old behaviour.
+    let whole = match (plane, unsplit) {
+        (None, _) => Some(filter),
+        (Some(_), Some(u)) => Some(u),
+        (Some(_), None) => None,
+    };
+    *PRINTING_COMPOSE != 0
+        && !cards.is_empty()
+        && whole.is_some_and(|f| is_printing_composable(f, indexes))
+        && printing_compose_indexes_built(indexes)
+}
+
+/// The predicate `PrintingCompose` composes for this query: the whole thing, wherever it lives. See
+/// `printing_compose_applicable` for why the two representations both have to be available.
+fn compose_source<'f>(filter: &'f FilterExpr, unsplit: Option<&'f FilterExpr>, plane: Option<&PlaneExpr>) -> &'f FilterExpr {
+    match (plane, unsplit) {
+        (Some(_), Some(u)) => u,
+        _ => filter,
+    }
 }
 
 /// `CardRangePopcount` needs `Mode::Card`, a **bare** range leaf as the whole filter — usd/cn/date,
@@ -7623,7 +7665,9 @@ fn run_query<'a>(
     // #702: plan selection is one cost-based routing layer (`run_query_routed`,
     // `argmin cost::plan_cost` over the applicable plans), not a hand-tuned decision tree.
     let params = QueryParams::from_strs(unique, prefer, orderby, direction, limit, page_offset);
-    run_query_routed(ctx, &params, filter, plane)
+    // `None`: this wrapper receives an already-split filter and has no unsplit form to offer, so compose
+    // is costed exactly as it was before the split became non-destructive. See `bind_and_split_filter`.
+    run_query_routed(ctx, &params, filter, None, plane)
 }
 
 /// `cost::PlanFeatures::scan_units` for a query: the rows the per-row residual
@@ -7704,6 +7748,7 @@ fn declined_sibling_fastpath<'a>(
     ctx: &QueryCtx<'a>,
     params: &QueryParams,
     filter: &FilterExpr,
+    unsplit: Option<&FilterExpr>,
     plane: Option<&PlaneExpr>,
     feats: &cost::PlanFeatures,
     choose: &impl Fn(&FilterExpr, &cost::PlanFeatures, bool) -> PhysicalPlan,
@@ -7713,7 +7758,7 @@ fn declined_sibling_fastpath<'a>(
         PhysicalPlan::PrintingCompose => PhysicalPlan::PrintingRangeScan,
         _ => return None, // a materializing plan won the estimate; it has no fast-path sibling
     };
-    if !sibling.applicable(ctx, params, filter, plane) {
+    if !sibling.applicable(ctx, params, filter, unsplit, plane) {
         return None;
     }
     if cost::plan_cost(sibling, feats) >= cost::plan_cost(choose(filter, feats, true), feats) {
@@ -7721,7 +7766,7 @@ fn declined_sibling_fastpath<'a>(
     }
     match sibling {
         PhysicalPlan::PrintingRangeScan => printing_range_fastpath(ctx, params, filter),
-        PhysicalPlan::PrintingCompose => printing_compose_fastpath(ctx, params, filter),
+        PhysicalPlan::PrintingCompose => printing_compose_fastpath(ctx, params, compose_source(filter, unsplit, plane)),
         _ => unreachable!("sibling is one of the two printing-space fast paths"),
     }
 }
@@ -8034,6 +8079,7 @@ fn acquire_plan_features(
     ctx: &QueryCtx,
     params: &QueryParams,
     filter: &mut FilterExpr,
+    unsplit: Option<&FilterExpr>,
     plane: Option<&PlaneExpr>,
 ) -> (cost::PlanFeatures, Prep, Vec<u64>) {
     let QueryCtx { cards, offsets, indexes, .. } = *ctx;
@@ -8050,7 +8096,7 @@ fn acquire_plan_features(
     // empty (no alloc).
     let mut plane_bits: Vec<u64> = Vec::new();
 
-    let (feats, prep) = if PhysicalPlan::PlanePopcountOrder.applicable(ctx, params, filter, plane) {
+    let (feats, prep) = if PhysicalPlan::PlanePopcountOrder.applicable(ctx, params, filter, unsplit, plane) {
         // The ONE plane eval; its popcount IS the exact count. True residual ⇒ tier 0.
         eval_planes(plane.expect("PlanePopcountOrder ⇒ plane"), &indexes.planes, &mut plane_bits);
         let count: u32 = plane_bits.iter().map(|w| w.count_ones()).sum();
@@ -8089,7 +8135,7 @@ fn acquire_plan_features(
             span.min(u64::from(n_printings)) as u32
         };
         (mk_plan_feats(ctx, params, count, count, scan_units, 0), Prep::Plane)
-    } else if PhysicalPlan::CardRangePopcount.applicable(ctx, params, filter, plane) {
+    } else if PhysicalPlan::CardRangePopcount.applicable(ctx, params, filter, unsplit, plane) {
         // Exact in-range printing count `k` from the index partition points (two binary searches, no
         // scan, no scatter). The O(k) card-bitmap build is deferred to dispatch and paid only if this
         // plan wins — so a competing winner never eats a wasted build (re-deriving the bounds there is
@@ -8128,7 +8174,7 @@ fn acquire_plan_features(
         feats.compose_scan_printings = k;
         feats.compose_paging = compose_paging_for(indexes, cards.len(), mode, sort_col, descending);
         (feats, Prep::Range(CountSource::CardRangePopcount))
-    } else if PhysicalPlan::PrintingRangeScan.applicable(ctx, params, filter, plane) {
+    } else if PhysicalPlan::PrintingRangeScan.applicable(ctx, params, filter, unsplit, plane) {
         // Bare range: exact k from the index (no scan).
         let (idx, lo, hi) = bare_range_bounds(filter, indexes).expect("applicable ⇒ bare range");
         let k = (idx.partition_point(|p| u32::from(p.0) < hi) - idx.partition_point(|p| u32::from(p.0) < lo)) as u32;
@@ -8154,7 +8200,7 @@ fn acquire_plan_features(
         // never run. Compose's page term only reads `eval_domain` in the Gather branch.
         feats.compose_paging = compose_paging_for(indexes, cards.len(), mode, sort_col, descending);
         (feats, Prep::Range(CountSource::PrintingRangeScan))
-    } else if PhysicalPlan::PrintingCompose.applicable(ctx, params, filter, plane) {
+    } else if PhysicalPlan::PrintingCompose.applicable(ctx, params, filter, unsplit, plane) {
         // Composable printing-space expr, any distinct-on. Estimate the counts cheaply — the fast path
         // composes once, only if this plan wins (never in acquire; a legality broadcast paid here and
         // then discarded would be pure waste). `synth_printings` = broadcast down (legality) + projection
@@ -8287,6 +8333,7 @@ fn run_query_routed<'a>(
     ctx: &QueryCtx<'a>,
     params: &QueryParams,
     filter: &mut FilterExpr,
+    unsplit: Option<&FilterExpr>,
     plane: Option<&PlaneExpr>,
 ) -> (usize, Vec<(&'a AOracleCard, &'a APrinting)>) {
     // Generic argmin: the cheapest applicable plan. `filter` is passed per call (not
@@ -8296,7 +8343,7 @@ fn run_query_routed<'a>(
     let choose = |filter: &FilterExpr, feats: &cost::PlanFeatures, materializing_only: bool| -> PhysicalPlan {
         PhysicalPlan::ALL
             .into_iter()
-            .filter(|p| p.applicable(ctx, params, filter, plane) && (!materializing_only || p.materializing()))
+            .filter(|p| p.applicable(ctx, params, filter, unsplit, plane) && (!materializing_only || p.materializing()))
             .min_by(|a, b| cost::plan_cost(*a, feats).partial_cmp(&cost::plan_cost(*b, feats)).expect("plan_cost is finite"))
             .expect("GatheredScan is always applicable and materializing")
     };
@@ -8307,7 +8354,7 @@ fn run_query_routed<'a>(
     let mut phases = RoutedPhaseTimer::start();
 
     // ── acquire: pick the count source, build features, materialize its artifact ──
-    let (feats, prep, plane_bits) = acquire_plan_features(ctx, params, filter, plane);
+    let (feats, prep, plane_bits) = acquire_plan_features(ctx, params, filter, unsplit, plane);
     phases.acquired();
 
     // ── choose: cheapest applicable plan ──
@@ -8354,10 +8401,10 @@ fn run_query_routed<'a>(
         (plan, Prep::Range(_)) => {
             let fast_page = match plan {
                 PhysicalPlan::PrintingRangeScan => printing_range_fastpath(ctx, params, filter),
-                PhysicalPlan::PrintingCompose => printing_compose_fastpath(ctx, params, filter),
+                PhysicalPlan::PrintingCompose => printing_compose_fastpath(ctx, params, compose_source(filter, unsplit, plane)),
                 _ => None, // a materializing plan won the estimate — materialize + run it below
             };
-            match fast_page.or_else(|| declined_sibling_fastpath(plan, ctx, params, filter, plane, &feats, &choose)) {
+            match fast_page.or_else(|| declined_sibling_fastpath(plan, ctx, params, filter, unsplit, plane, &feats, &choose)) {
                 Some(page) => page,
                 None => {
                     let prep = prepare_candidates(ctx, params, filter, plane);
@@ -8385,6 +8432,7 @@ fn run_query_with_plan<'a>(
     ctx: &QueryCtx<'a>,
     params: &QueryParams,
     filter: &mut FilterExpr,
+    unsplit: Option<&FilterExpr>,
     plane: Option<&PlaneExpr>,
 ) -> Option<(usize, Vec<(&'a AOracleCard, &'a APrinting)>)> {
     let QueryCtx { cards, indexes, .. } = *ctx;
@@ -8399,12 +8447,12 @@ fn run_query_with_plan<'a>(
             printing_range_fastpath(ctx, params, filter)
         }
         PhysicalPlan::PrintingCompose => {
-            if !printing_compose_applicable(filter, cards, plane, indexes) {
+            if !printing_compose_applicable(filter, unsplit, cards, plane, indexes) {
                 return None;
             }
             // The fastpath composes, projects per mode, and walks — or declines (None) on a sparse
             // total, exactly as under the router.
-            printing_compose_fastpath(ctx, params, filter)
+            printing_compose_fastpath(ctx, params, compose_source(filter, unsplit, plane))
         }
         PhysicalPlan::PlanePopcountOrder => {
             if !plane_popcount_order_applicable(filter, mode, cards, plane, sort_col, descending, indexes) {
@@ -8581,9 +8629,15 @@ impl Prep {
 /// dispatch would compute if that plan actually won and got lazily re-costed
 /// against a materialized candidate list (see `acquire_plan_features`'s
 /// `PrintingRangeScan`/`PrintingCompose` branches).
-fn explain(ctx: &QueryCtx, params: &QueryParams, filter: &mut FilterExpr, plane: Option<&PlaneExpr>) -> (AcquireFacts, Vec<PlanEstimate>) {
+fn explain(
+    ctx: &QueryCtx,
+    params: &QueryParams,
+    filter: &mut FilterExpr,
+    unsplit: Option<&FilterExpr>,
+    plane: Option<&PlaneExpr>,
+) -> (AcquireFacts, Vec<PlanEstimate>) {
     let t0 = std::time::Instant::now();
-    let (feats, prep, _plane_bits) = acquire_plan_features(ctx, params, filter, plane);
+    let (feats, prep, _plane_bits) = acquire_plan_features(ctx, params, filter, unsplit, plane);
     let acquire_ns = t0.elapsed().as_nanos() as u64;
     let facts = AcquireFacts {
         count_source: prep.count_source(),
@@ -8597,7 +8651,7 @@ fn explain(ctx: &QueryCtx, params: &QueryParams, filter: &mut FilterExpr, plane:
     };
     let mut estimates: Vec<PlanEstimate> = PhysicalPlan::ALL
         .into_iter()
-        .filter(|p| p.applicable(ctx, params, filter, plane))
+        .filter(|p| p.applicable(ctx, params, filter, unsplit, plane))
         .map(|plan| PlanEstimate {
             plan,
             predicted_ns: cost::plan_cost(plan, &facts.feats),
@@ -8763,6 +8817,7 @@ fn explain_analyze(
     ctx: &QueryCtx,
     params: &QueryParams,
     filter: &FilterExpr,
+    unsplit: Option<&FilterExpr>,
     plane: Option<&PlaneExpr>,
     num_warmups: usize,
     num_trials: usize,
@@ -8772,7 +8827,7 @@ fn explain_analyze(
 
     // explain() needs `&mut` for its own (one-time) acquire-step mutation; clone so
     // the timing loop below starts from `filter`'s untouched, pristine state.
-    let (mut facts, estimates) = explain(ctx, params, &mut filter.clone(), plane);
+    let (mut facts, estimates) = explain(ctx, params, &mut filter.clone(), unsplit, plane);
     // explain()'s single sample was taken outside the loop below, so it sits in a
     // different cache/allocator state than the plan trials it would be compared
     // against. Discard it and re-sample in-loop, one per round, from the same fresh
@@ -8804,9 +8859,9 @@ fn explain_analyze(
             let (mut ran, mut acquired, mut routed) = (None, None, None);
             let t0 = std::time::Instant::now();
             match participant {
-                Participant::Plan(i) => ran = run_query_with_plan(estimates[i].plan, ctx, params, &mut round_filter, plane),
-                Participant::Acquire => acquired = Some(acquire_plan_features(ctx, params, &mut round_filter, plane)),
-                Participant::Routed => routed = Some(run_query_routed(ctx, params, &mut round_filter, plane)),
+                Participant::Plan(i) => ran = run_query_with_plan(estimates[i].plan, ctx, params, &mut round_filter, unsplit, plane),
+                Participant::Acquire => acquired = Some(acquire_plan_features(ctx, params, &mut round_filter, unsplit, plane)),
+                Participant::Routed => routed = Some(run_query_routed(ctx, params, &mut round_filter, unsplit, plane)),
             }
             let dt = t0.elapsed().as_nanos() as u64;
             drop((acquired, routed));
@@ -9496,7 +9551,7 @@ fn bind_and_split_filter(
     unique: &str,
     data: &Archived<CardData>,
     sort_col: SortCol,
-) -> PyResult<(Option<PlaneExpr>, FilterExpr, SortBound)> {
+) -> PyResult<(Option<PlaneExpr>, FilterExpr, SortBound, FilterExpr)> {
     let to_json = filters.call_method0("to_json")?;
     let json_bytes: Vec<u8> = py
         .import("orjson")?
@@ -9516,12 +9571,19 @@ fn bind_and_split_filter(
 
     // Read before the split consumes the tree.
     let sort_bound = sort_col_bound(&filter_expr, sort_col);
+    // Kept, and this is the point: `split_planes` is a DESTRUCTIVE rewrite run before any plan is costed,
+    // and it moves predicate out of the tree that `PrintingCompose` composes from into a `PlaneExpr` it
+    // cannot read. Compose then fails its `plane.is_none()` guard and never reaches the argmin -- measured
+    // at 1.83 us against StreamedSelect's 99.38 on `f:commander`/printing, a plan the router was never
+    // offered. Retaining the unsplit form lets each plan be costed on the representation it can consume,
+    // which is what #702 says the routing layer is for. One clone of a small tree, once per query.
+    let unsplit = filter_expr.clone();
     let (plane, residual) = if u32::from(data.indexes.planes.n_cards) as usize == data.cards.len() && !data.cards.is_empty() {
         split_planes(filter_expr, &data.indexes.planes, &data.indexes.oracle_trigram.words, !matches!(unique, "artwork" | "printing"))
     } else {
         (None, filter_expr)
     };
-    Ok((plane, residual, sort_bound))
+    Ok((plane, residual, sort_bound, unsplit))
 }
 
 fn plan_estimate_to_pydict<'py>(py: Python<'py>, e: &PlanEstimate) -> PyResult<Bound<'py, PyDict>> {
@@ -10092,12 +10154,13 @@ impl QueryEngine {
         // dispatch. Shared verbatim with explain()/explain_analyze() — see
         // bind_and_split_filter.
         let params = QueryParams::from_strs(unique, prefer, orderby, direction, limit, offset);
-        let (plane_expr, mut filter_expr, sort_bound) = bind_and_split_filter(py, filters, unique, data, params.sort_col)?;
+        let (plane_expr, mut filter_expr, sort_bound, unsplit) = bind_and_split_filter(py, filters, unique, data, params.sort_col)?;
 
         let ctx = QueryCtx::from(data);
         // `run_query`'s string→enum adaptation, done here so the filter's sort-column bound can ride on
         // the params: `from_strs` is still the single interpretation of the four strings.
-        let (total, page) = run_query_routed(&ctx, &params.with_sort_bound(sort_bound), &mut filter_expr, plane_expr.as_ref());
+        let (total, page) =
+            run_query_routed(&ctx, &params.with_sort_bound(sort_bound), &mut filter_expr, Some(&unsplit), plane_expr.as_ref());
 
         let matches: Vec<Bound<PyDict>> = page
             .iter()
@@ -10135,7 +10198,7 @@ impl QueryEngine {
         // Safety: see query()'s access_unchecked justification.
         let data = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
         let params = QueryParams::from_strs(unique, prefer, orderby, direction, limit, offset);
-        let (plane_expr, mut filter_expr, sort_bound) = bind_and_split_filter(py, filters, unique, data, params.sort_col)?;
+        let (plane_expr, mut filter_expr, sort_bound, unsplit) = bind_and_split_filter(py, filters, unique, data, params.sort_col)?;
 
         // `prefer` is accepted and passed through, but note what it does NOT yet change:
         // `cost::plan_cost`/`PlanFeatures` still don't read it, so the argmin and every
@@ -10150,7 +10213,7 @@ impl QueryEngine {
         // prefer-aware feature be graded here at all; until one exists, an `explain` for a
         // non-default `prefer` still predicts the default's numbers.
         let (facts, estimates) =
-            explain(&QueryCtx::from(data), &params.with_sort_bound(sort_bound), &mut filter_expr, plane_expr.as_ref());
+            explain(&QueryCtx::from(data), &params.with_sort_bound(sort_bound), &mut filter_expr, Some(&unsplit), plane_expr.as_ref());
 
         let rows: Vec<Bound<PyDict>> = estimates.iter().map(|e| plan_estimate_to_pydict(py, e)).collect::<PyResult<Vec<_>>>()?;
         let out = PyDict::new(py);
@@ -10184,7 +10247,7 @@ impl QueryEngine {
         // Safety: see query()'s access_unchecked justification.
         let data = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
         let params = QueryParams::from_strs(unique, prefer, orderby, direction, limit, offset);
-        let (plane_expr, filter_expr, sort_bound) = bind_and_split_filter(py, filters, unique, data, params.sort_col)?;
+        let (plane_expr, filter_expr, sort_bound, unsplit) = bind_and_split_filter(py, filters, unique, data, params.sort_col)?;
 
         // Release the GIL for the timing loop: it's pure Rust (no Python calls) and
         // runs plans × (warmups + trials) executions, so a long explain_analyze
@@ -10192,7 +10255,7 @@ impl QueryEngine {
         // conversion below stay on the GIL.
         let ctx = QueryCtx::from(data);
         let params = params.with_sort_bound(sort_bound);
-        let (facts, trials) = py.detach(|| explain_analyze(&ctx, &params, &filter_expr, plane_expr.as_ref(), num_warmups, num_trials));
+        let (facts, trials) = py.detach(|| explain_analyze(&ctx, &params, &filter_expr, Some(&unsplit), plane_expr.as_ref(), num_warmups, num_trials));
 
         let rows: Vec<Bound<PyDict>> = trials.iter().map(|t| plan_trial_to_pydict(py, t)).collect::<PyResult<Vec<_>>>()?;
         let out = PyDict::new(py);
