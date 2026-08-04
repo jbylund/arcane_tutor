@@ -344,6 +344,42 @@ which no rate can absorb; and it is **pick-preserving where picks are already ri
 rows still choose compose after the fix, and compose is correct there (94 vs 111 µs, 38 vs 152 µs). So it
 buys accuracy without moving sound decisions, which is the cheapest kind of change to gate.
 
+## The bigger lever underneath it: divergence is per-CARD but the data is per-FORMAT
+
+Chasing the estimate above turned up something that makes it partly moot. A full pass over the corpus,
+comparing each card's printings format by format:
+
+    97,206 printings, 31,508 oracle cards
+    cards with ANY divergent format: 556 (1.76%)
+    divergent cards per format:
+      oldschool       556
+
+**Every divergent card in the corpus diverges in `oldschool` and nothing else.** No other format has a
+single card whose printings disagree.
+
+The engine cannot use that, because it detects divergence as a whole-bitmask comparison and stores one
+boolean per card (`reload`: `row.card_legalities != cards.last()...card_legalities` sets
+`legality_divergent`). So `plane_expr_is_existential` is true for every legality leaf, the #667 carveout
+applies to every format, and `card_match_count` / `push_card_matches` / the popcount plans' `satisfies`
+closure all re-verify per printing — on `f:modern`, 7,770 printing examinations that are provably
+redundant, because modern legality is card-invariant in this data.
+
+The upgrade is one line at the detection site and is **self-maintaining**: OR the XOR of the two bitmasks
+into a corpus-level `divergent_formats: u64` instead of setting a boolean. Then a legality leaf whose
+format bit is outside that mask is card-invariant, `all_match` holds, and the per-printing work does not
+happen. Nothing hardcodes "oldschool" — if Scryfall ever makes another format divergent, the mask picks it
+up from the data and the conservative path returns on its own.
+
+Note what that does to the `scan_units` defect above: with legality non-existential, `split_planes`
+consumes the leaf and the residual becomes `True`, so `tier_ns` is 0 and P3's arm charges **no scan term
+at all** (`if tier_ns > 0.0`). The 525 µs over-cost stops existing for the queries where it mattered,
+rather than being estimated more accurately. Same for the mispick: P3 measured 102 µs against compose's
+182, and it is the over-cost that hides that.
+
+So the ordering is: this, then re-measure, and only then decide whether a per-plan `scan_units` field is
+still needed for the non-legality compose cases (`border:black`, `r:mythic`, `watermark:*`), where the
+current estimate is already right to 1.1-2.4x.
+
 ## What is left
 
 1. **Extend the popcount-skip walk past `FilterExpr::True`.** What is left of the perm estimate's p90 has
