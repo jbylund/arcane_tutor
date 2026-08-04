@@ -705,20 +705,60 @@ t:creature`'s 0.476× is kept. What is left is not a debt but a named defect: th
 
 1b. **Review the compose acquire's feature estimation — the foundational work, ahead of any rate work.** The
    oracle run above bounds this at 58% → 83% ordered right and a 9× cut in lost time on the pair, with rates
-   untouched. Three targets, in order:
+   untouched. Two questions of that bound are now answered by measurement.
 
-   - **Decompose the oracle gain into "better shared estimate" vs "per-plan feature".** The oracle used each
-     plan's own counters; `scan_units` is one shared number today and the two plans examine different amounts.
-     `stream_scan_units` already splits it for P3, but only on legality filters. This decides the shape of
-     everything below, so it comes first.
-   - **`eval_domain` on the failing population.** p50 **0.85** in the wrong group against 0.98 in the right
-     one, and P4's per-card rate is 2.2× P3's, so the residue discounts P4 asymmetrically. The broad class is
-     mostly range predicates, and `range_card_counts_for` already answers *exactly* — but `bare_range_bounds`
-     matches one comparison, so `cn<=226 year>2004` (an `And` of two) falls back to the estimator. Widening
-     that exact path is likely worth more than any estimator refinement.
-   - **`scan_units` on selective compose queries.** mean |log| **1.22**, p10 0.08, p90 3.62 — a ~45× spread
-     that none of the three bias variants improves (see the span-bias note). Not previously on any list, and
-     the worst-calibrated feature in the acquire.
+   **Which feature carries it — leave-one-out from the full oracle, shipped rates throughout, 2,768 pairs:**
+
+   | variant | ordered right | lost time |
+   | --- | --: | --: |
+   | shipped | 59% | 116.7 ms |
+   | full oracle (per-plan) | **83%** | **12.4 ms** |
+   | oracle, `eval_domain` back to its estimate | 68% | **91.2 ms** |
+   | oracle, `scan` back | 79% | 22.4 ms |
+   | oracle, `matches` back | 83% | 13.2 ms |
+   | oracle, `scan` forced **SHARED** (both read P4's) | 83% | 12.4 ms |
+   | oracle, `eval_domain` forced **SHARED** | 83% | 12.4 ms |
+
+   **`eval_domain` is ~75% of the recoverable loss** (78 of the 104 ms), `scan` ~10%, `matches` nothing.
+
+   **And per-plan features are worth exactly zero.** Forcing either feature to be shared, while keeping it
+   exact, costs nothing at all. So the answer is **not** to split features per plan — it is to make the one
+   shared number accurate. That is visible in the mechanism: on the broad-residual class both plans examine
+   the same 97,206 printings, and on the card-invariant class the verify-tier gate already zeroes P3's scan
+   term. **A corollary worth checking: `stream_scan_units` may now be redundant with that gate**, since the
+   divergence it was built for is the population the gate already handles.
+
+   **Where `eval_domain`'s error lives** (ratio against P4's realized `cards_visited`):
+
+   | path | n | p50 | mean \|log\| |
+   | --- | --: | --: | --: |
+   | EXACT (`range_card_counts_for`) | 574 | 0.92 | **0.236** |
+   | estimated (`calibrated_balls_into_bins`) | 3,154 | 0.90 | 0.382 |
+
+   | query shape | n | % estimated | p50 | mean \|log\| |
+   | --- | --: | --: | --: | --: |
+   | 1 leaf, range | 1,064 | 46% | 0.91 | **0.226** |
+   | 1 leaf, other | 1,384 | 100% | 1.15 | 0.317 |
+   | **2+ leaves, ALL range** | **745** | **100%** | **0.62** | **0.507** |
+   | 2+ leaves, mixed | 322 | 100% | 1.19 | 0.553 |
+   | 3+ leaves, ALL range | 108 | 100% | 0.70 | 0.541 |
+
+   The exact path is much better calibrated, and multi-leaf all-range (853 rows, 23% of the population) is
+   100% estimated at p50 0.62. That is the `cn<=226 year>2004` shape and the obvious target — but two things
+   must be settled before "widen `bare_range_bounds`" is the plan:
+
+   - **The exact path is not exact against the counter** (p50 0.92, p10 0.50), so it is not a 1.00 ceiling.
+   - **The two quantities may not be the same thing.** `eval_domain` estimates *matching* cards, while
+     `cards_visited` counts *candidates visited* — 24,592 against 31,508 (the whole corpus) on
+     `border:black`. Candidates ⊇ matches whenever the narrowing is inexact, which would explain systematic
+     under-counting far better than miscalibration does, and would mean the fix is to estimate the
+     **narrowed candidate count** rather than to calibrate a match count. Test this first; it decides whether
+     any of the above is the right work.
+   - Combining two exact range counts is also not free: the boundary table answers each range independently,
+     and an `And`'s distinct-card count is not derivable from the two without composing.
+
+   **`scan_units` on selective compose queries** stays on the list at mean |log| **1.22**, p10 0.08, p90 3.62
+   — a ~45× spread no bias variant improves — but is now known to be second-order for this pair (~10%).
 
 1c. **Build the pair-level loop harness, once the features stop moving.** `bench_streamed_loop` and `bench_gather_loop` now
    share `bench_loop_design`, so their cells match and can be read side by side — but neither computes the
