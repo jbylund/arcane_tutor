@@ -7895,18 +7895,51 @@ const COMPOSE_GATHER_SPAN_PER_MATCH: f64 = 1.47;
 /// cancelling, and dividing `est_cards` by 1.78 moved it to 0.47.
 const COMPOSE_CANDIDATE_SPAN_BIAS: f64 = 2.1;
 
-/// `balls_into_bins` with its measured bias divided out. See `COMPOSE_CARD_ESTIMATE_BIAS`.
+/// `balls_into_bins` with its measured clustering bias divided out of the BALL COUNT. See
+/// `COMPOSE_CARD_ESTIMATE_BIAS` for the 1.78 and why clustering causes it.
+///
+/// The bias used to divide the estimator's OUTPUT, which broke its ceiling. `balls_into_bins` saturates
+/// toward `domain` — that is the whole point of using it over `k.min(domain)` — so scaling what it returns
+/// caps the calibrated estimate at `domain / 1.78`, i.e. **17,701 of 31,508 cards no matter how many
+/// printings match**. `border:black` matches 85,046 of 97,206 printings and visits every card in the corpus;
+/// the estimate read 16,511.
+///
+/// Clustering does not mean "fewer cards than the estimator says". It means the `k` matching printings are
+/// not `k` independent draws — a legality leaf broadcast down sets a whole card's printings at once — so the
+/// EFFECTIVE ball count is lower. That is an input. Dividing `k` instead is the same correction in the
+/// selective regime the 1.78 was fitted on (`balls_into_bins(k, d) ≈ k` for `k ≪ d`, so scaling either side
+/// agrees) and keeps the saturation the output form destroyed. Graded against P4's realized `cards_visited`
+/// over 3,490 estimator rows, estimate/realized:
+///
+///     breadth (k / n_printings)      bias on output        bias on input
+///     selective  < 0.1               p50 1.02              p50 1.02      <- fitted here, unchanged
+///     mid        0.1-0.5             p50 0.91              p50 1.18
+///     broad      > 0.5               p50 0.52              p50 0.78
+///     all                            p50 0.87  spread 3.3  p50 0.90  spread 2.7
+///
+/// The mid band overshoots because 1.78 was fitted against the output form; it is not re-fitted here, so
+/// this is the shape change alone. Re-fitting it is a fixed-point iteration on a constant whose own value
+/// depends on where it is applied — the same caveat `fit_cost_model` records for the residual floor.
+///
+/// Why this matters for routing and not just accuracy: `eval_domain` feeds a per-card term in both scan
+/// arms, and P4's rate is 25.77 ns/card against P3's 11.63, so under-counting candidates discounts P4 by
+/// 2.2× as much. On the broad-residual class that inverted the pair — P3 measured 819.7 µs against P4's
+/// 1,308.4 with the model pricing them within 5 µs of each other.
 fn calibrated_balls_into_bins(k: usize, domain: usize) -> usize {
-    let raw = balls_into_bins(k, domain) as f64;
-    ((raw / COMPOSE_CARD_ESTIMATE_BIAS).round() as usize).max(usize::from(k > 0))
+    balls_into_bins_effective(k as f64 / COMPOSE_CARD_ESTIMATE_BIAS, domain).max(usize::from(k > 0))
 }
 
 fn balls_into_bins(k: usize, domain: usize) -> usize {
+    balls_into_bins_effective(k as f64, domain).max(usize::from(k > 0))
+}
+
+/// `domain * (1 - e^(-k/domain))` for a possibly fractional ball count, clamped to the domain.
+fn balls_into_bins_effective(k: f64, domain: usize) -> usize {
     if domain == 0 {
         return 0;
     }
-    let est = domain as f64 * (-(k as f64) / domain as f64).exp().mul_add(-1.0, 1.0);
-    (est.round() as usize).min(domain).max(usize::from(k > 0))
+    let est = domain as f64 * (-k / domain as f64).exp().mul_add(-1.0, 1.0);
+    (est.round() as usize).min(domain)
 }
 
 /// Distinct **artworks** an estimated printing set touches, projected in two stages.
