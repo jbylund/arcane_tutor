@@ -1298,3 +1298,55 @@ router never sees the plan, so no regret figure, no pairwise ordering and no fea
 `r>=rare` looked like a 100 µs cost-model bug and was a 375 µs missing-plan bug. Auditing
 `is_printing_composable` leaf by leaf against what `compose_printing_bits` can actually build is likely to
 find more; `printing_compose / card` is now the worst cell at mean 2.55 µs and is the place to look next.
+
+## Sparse compose gather: attempted, and the blocker is now named exactly
+
+`usd>=0.42 usd<=0.43`/artwork appeared in the top 100 at 112 µs of regret. The dump says the regret figure
+is nearly irrelevant:
+
+    acquire=printing_compose
+      PrintingCompose   pred  105.9   meas    —      PICKED, then DeclineSparseExact
+      StreamedSelect    pred  988.2   meas 1249.8    exam 97,206
+      GatheredScan      pred 1058.2   meas 1161.5    exam 97,206
+      matches (estimated) 20,411      result_total (actual) 837
+
+The router picked compose, compose built the bitmap, **discarded it**, and dispatch re-derived everything with
+a full-corpus scan — 97,206 printings examined to return 837 matches, ~1,250 µs. The 112 µs the matrix reports
+is only the P3-vs-P4 difference among the fallbacks, because **regret compares only plans that ran** and a
+declining plan accumulates no trials. Second time today that blind spot hid the larger finding, after
+`r>=rare`.
+
+[local-engine-sparse-compose-gather.md](./local-engine-sparse-compose-gather.md) had already designed the
+fix — `gather_composed_page` in place of the `return None` — and verified it byte-identical over 127,640
+queries. Its stated blocker was that `plan_cost` could not price the path, and this stack added the
+`ComposePaging::Gather` arm, so it looked unblocked.
+
+**Tried it. Two edits, not one:** the fastpath gathers, *and* `compose_paging_for` must predict `Gather`
+rather than `Decline`, since a `Decline` prediction costs infinity and keeps compose out of the argmin so the
+gather would never run. Rows verified again on this build: **2,304 cells identical** over the sparse
+two-sided ranges the change enables plus broad controls, four orderbys including the tie-heavy `usd` and
+`rarity`, deep offsets, both prefers.
+
+**And routing got worse, so it is reverted:**
+
+| | decline | gather |
+| --- | --: | --: |
+| regret mean | 1.43 µs | **1.55 (+8%)** |
+| `printing_compose` miss% | 7% | **18%** |
+| `printing_compose` mean | 1.69 | **2.43** |
+| `printing_compose` p90 | **0.00** | **7.92** |
+
+**The blocker is not the cost arm — it is that the prediction cannot tell the query is sparse.**
+`compose_paging_for` branches on `result_total`, which is the *estimate*: 20,411 against a true 837. So it
+predicts `Perm` and prices a cheap permutation walk while the executor runs a gather. The arm is fine; it is
+being handed the wrong branch. That is the same number as the original doc's p10 0.64 → 0.14.
+
+**Which makes the real prerequisite a two-sided range.** `bare_range_bounds` matches one comparison, so
+`usd>=0.42 usd<=0.43` composes as `And` of two one-sided slices — `scatter_printings` reads **82,421** for an
+answer of 837, and the estimate multiplies the two sides instead of intersecting one interval. Fusing an `And`
+of two comparisons on the same field into a single index interval fixes the estimate *and* the build cost at
+once, and only then does sparse-gather become predictable. That supersedes "widen `bare_range_bounds` for
+multi-leaf ranges" as an `eval_domain` idea — it was the wrong motivation for the right change.
+
+Order to attempt it in: fuse the two-sided range, confirm `matches` on that population, then re-enable the
+gather behind the now-correct sparsity prediction, then re-check regret. Not before.
