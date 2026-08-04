@@ -1080,3 +1080,42 @@ unnarrowed query.
 The one route not yet closed is a bitmap AND of the candidate set against an indexed residual leaf — exact,
 conditional, and available on the ~9% where the residual is a single indexed leaf. Everything else on this
 acquire looks irreducibly estimated.
+
+## The largest single regret in the engine is item 6, and a mode sweep isolates it exactly
+
+`o:creature` / artwork / order=power / limit=175 loses **508.9 µs** — the worst routing miss measured. Held
+everything constant and varied only `unique`:
+
+| mode | P3 pred | P3 meas | p/m | P3 loop | eval_domain | printing_span | printings_examined |
+| --- | --: | --: | --: | --: | --: | --: | --: |
+| printing | 68.1 | **56.8** | **1.20** | 55.5 | 23,155 | 61,941 | 0 |
+| artwork | 92.5 | **978.1** | **0.09** | 974.0 | 23,155 | 61,941 | 0 |
+
+**Artwork costs P3 921 µs more than printing for identical work, and the model charges 24 µs more.** That is
+the whole regret, in one term: `STREAM_ARTWORK_SEEN_PER_CARD_NS` is 1.21 against a realized **39.8 ns/card**
+of surcharge — or 14.9 ns/printing over the span, which is very likely the right shape.
+
+Two things the dump makes plain.
+
+**The work is real and uncharged.** `residual_tier_ns100` is 0 here (the oracle word index resolves
+`o:creature` exactly), so P3's scan term is gated off — correctly, there being no residual to examine. But
+artwork's group-and-score pass walks the candidate span *regardless of the residual*, and no term covers it.
+
+**`printings_examined` does not count it.** It reads **0** while 61,941 printings are walked for grouping,
+because the counter covers residual examinations only. That is why every feature grading in this file looked
+clean on artwork: the instrument cannot see this work, so the error could only ever show up as a rate.
+
+**This is item 6, already measured and not shipped.** `bench_streamed_loop` found the shape — artwork needs
+its own per-card *and* per-printing rates, and its surcharge flips sign with printings-per-card so no additive
+correction expresses it. What is new here is that it is the **largest** routing error in the engine, not a
+tidy-up, and that a two-cell mode sweep sizes it without any built design.
+
+**And the pattern-A fix in this branch made it more visible**, which is worth stating rather than discovering
+later: the `scan_units × 5.97` charge that fix removes had been partly compensating for this missing artwork
+term on artwork queries *with* a residual. Same structure as the verify-tier gate — a correct removal
+exposing an unmodelled cost underneath. `o:creature` never had that compensation, since its tier is 0, which
+is why it shows the error at full size.
+
+Sequencing consequence: **item 6 moves ahead of everything else on this list.** It is one term, its shape is
+already measured, the population is identifiable (`unique=artwork`, which carries 33% of all lost time), and
+it needs a counter for the grouping walk before its feature can be graded at all.
