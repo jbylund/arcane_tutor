@@ -8059,6 +8059,7 @@ fn mk_plan_feats(
         matches,
         eval_domain,
         scan_units,
+        residual_card_invariant: false, // diagnostic; only the candidates acquire sets it
         // Defaults to `scan_units`: only an acquire that knows P3 examines fewer printings overrides it.
         stream_scan_units: scan_units,
         residual_tier_ns100,
@@ -8122,7 +8123,15 @@ fn candidate_feats(ctx: &QueryCtx, params: &QueryParams, prep: &PreparedCandidat
             }
         }
     };
-    mk_plan_feats(ctx, params, matches, count, scan, if prep.all_match_known { 0 } else { verify_cost_tier(filter) })
+    let mut feats =
+        mk_plan_feats(ctx, params, matches, count, scan, if prep.all_match_known { 0 } else { verify_cost_tier(filter) });
+    // Diagnostic only (`explain`), so the residual-pass-rate population can be split by traffic before any
+    // rate moves. A card-invariant residual answers `True`/`False` per card and never `PrintingDep`, so a
+    // matching candidate contributes its WHOLE printing span and a non-matching one none of it — the
+    // all-or-nothing shape. With a printing-level field in play the printings under one card disagree, which
+    // is the shape the single `RESIDUAL_PASS_RATE_*` was fitted on. Nothing reads this in routing.
+    feats.residual_card_invariant = !prep.all_match_known && !touches_printing_field(filter);
+    feats
 }
 
 /// The acquire step of `run_query_routed`'s three-step algorithm (see its doc
@@ -9806,6 +9815,7 @@ fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<B
         // P3's own scan estimate; equals `scan_units` unless the acquire knew the two plans differ.
         ("stream_scan_units", g.stream_scan_units),
         ("residual_tier_ns100", g.residual_tier_ns100),
+        ("residual_card_invariant", u32::from(g.residual_card_invariant)),
         ("limit", g.limit),
         ("offset", g.offset),
         ("broadcast_printings", g.broadcast_printings),

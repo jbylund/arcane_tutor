@@ -670,6 +670,37 @@ pub(crate) fn regex_tier(pattern: &str) -> u32 {
 /// settles an And, a card-level True settles an Or), so a composite is
 /// printing-dependent only when ALL its children are.
 fn printing_dependent(f: &FilterExpr) -> bool {
+    match f {
+        FilterExpr::And(children) | FilterExpr::Or(children) => children.iter().all(printing_dependent),
+        FilterExpr::Not(inner) => printing_dependent(inner),
+        leaf => leaf_compares_printing_field(leaf),
+    }
+}
+
+/// Whether `f` compares a printing-level field **anywhere** — the `any` composition of the same leaf
+/// table `printing_dependent` reads with `all`. The two questions are different and both are wanted:
+///
+/// - `printing_dependent` asks "can this node never settle at card level", for verify ORDERING. A
+///   composite settles when ANY child can, so it is printing-dependent only when ALL children are.
+/// - this asks "could any part of this need a per-printing answer", for the result-total ESTIMATE. A
+///   card-invariant residual returns `True`/`False` per card and never `PrintingDep`, so each candidate
+///   contributes either its whole printing span or none of it — a different estimator shape from one where
+///   printings under a single card disagree.
+///
+/// `name:s AND usd>10` separates them: not `printing_dependent` (the name settles it), but it does touch a
+/// printing field, so the span of a matching card is not all-or-nothing.
+pub(crate) fn touches_printing_field(f: &FilterExpr) -> bool {
+    match f {
+        FilterExpr::And(children) | FilterExpr::Or(children) => children.iter().any(touches_printing_field),
+        FilterExpr::Not(inner) => touches_printing_field(inner),
+        leaf => leaf_compares_printing_field(leaf),
+    }
+}
+
+/// The per-leaf half of both questions above: does this NON-composite node compare a printing-level
+/// field. Composition is the callers' business, which is the whole reason this is factored out — the two
+/// callers disagree on it and must not disagree on the table.
+fn leaf_compares_printing_field(f: &FilterExpr) -> bool {
     fn num_pdep(e: &NumExpr) -> bool {
         match e {
             NumExpr::Const(_) => false,
@@ -712,8 +743,11 @@ fn printing_dependent(f: &FilterExpr) -> bool {
         // Divergent-legality cards defer to the printing, but they are a rare
         // exception (non-tournament reprints); rank by the common card-level case.
         FilterExpr::Legality { .. } => false,
-        FilterExpr::And(children) | FilterExpr::Or(children) => children.iter().all(printing_dependent),
-        FilterExpr::Not(inner) => printing_dependent(inner),
+        // Composites are composed by the two callers, which differ on `all` vs `any`; reaching here with
+        // one is a bug in whichever caller forgot to handle it, not a case to answer silently.
+        FilterExpr::And(_) | FilterExpr::Or(_) | FilterExpr::Not(_) => {
+            unreachable!("composites are composed by printing_dependent / touches_printing_field")
+        }
         // Exhaustive, not `_ => false`: a new variant must get a considered
         // answer here rather than silently inheriting "can settle at card level".
         FilterExpr::True

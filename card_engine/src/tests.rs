@@ -4601,6 +4601,7 @@ fn plan_cost_model_matches_gold() {
                     // No compose acquire in this fixture, so P3's estimate is the shared one.
                     stream_scan_units: su,
                     residual_tier_ns100,
+                    residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
                     limit: limit as u32,
                     offset: offset as u32,
                     broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
@@ -4844,6 +4845,7 @@ fn plan_cost_refit() {
                     scan_units: su,
                     stream_scan_units: su, // no compose acquire here, so P3's estimate is the shared one
                     residual_tier_ns100: if prep.all_match_known { 0 } else { verify_cost_tier(&res) },
+                    residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
                     limit: limit as u32, offset: offset as u32,
                     broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
@@ -5049,6 +5051,7 @@ fn printing_range_route_probe() {
                 scan_units: su,
                 stream_scan_units: su, // no compose acquire here, so P3's estimate is the shared one
                 residual_tier_ns100,
+                residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
                 limit: LIMIT as u32, offset: offset as u32,
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
@@ -5412,6 +5415,7 @@ fn plan_regret_report() {
                 scan_units: est.min(n_cards), // card-mode regret report ⇒ scan_units == eval_domain
                 stream_scan_units: est.min(n_cards),
                 residual_tier_ns100: tier,
+                residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
                 limit: limit as u32,
                 offset: offset as u32,
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
@@ -5543,6 +5547,7 @@ fn plan_regret_fuzz() {
                 n_cards, n_printings, matches, eval_domain: evd, scan_units: evd, // card mode ⇒ scan_units == eval_domain
                 stream_scan_units: evd,
                 residual_tier_ns100: tier,
+                residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
                 limit: limit as u32, offset: offset as u32,
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
