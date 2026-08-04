@@ -91,7 +91,11 @@ CURRENT: dict[str, list[float]] = {
     # ..., page_span, page_rows, fixed -- page_rows new 2026-08-03. The phase has two drivers: the
     # quickselect scales with offset+limit, the collect with the page actually returned. A designed page
     # sweep separates them where traffic cannot, since the two are correlated in the sampled query mix.
-    "GatheredScan": [6.88, 2.06, 18.89, 2.24, 3.51, 9.79, 169.6],
+    # 2026-08-03: the first column is now the UNCONDITIONAL loop rate and the third carries the
+    # `card_pass` call (3.00) on top of the floor (18.89), because the arm gates the call on
+    # `tier_ns > 0` -- `all_match_known` skips it. The design matrix already had these as two
+    # columns; only the arm and these labels changed.
+    "GatheredScan": [3.88, 2.06, 21.89, 2.24, 3.51, 9.79, 169.6],
     # eval_domain, scan_units, residual floor, matches, artwork_seen_cards, n_cards floor, corpus pass, fixed
     # Refit once `printings_examined` existed: this plan's fit was vetoed for as long as the only
     # available counter was the printing SPAN, which its all_match rows disagree with by ~3x over a
@@ -99,7 +103,9 @@ CURRENT: dict[str, list[float]] = {
     # ..., perm_steps, ... -- the permutation walk's length, new 2026-08-03. It is the one quantity in
     # P3's finish phase no other feature is proportional to: the walk steps until the page fills, so it
     # visits ~page_span * n_cards / matches entries, inversely proportional to selectivity.
-    "StreamedSelect": [5.05, 5.97, 6.58, 0.12, 1.0, 1.21, 1.02, 0.02, 217.0],
+    # Same split as GatheredScan above: 2.58 unconditional, and the call (2.47) folded into the
+    # residual-gated column alongside the 6.58 floor.
+    "StreamedSelect": [2.58, 5.97, 9.05, 0.12, 1.0, 1.21, 1.02, 0.02, 217.0],
     # broadcast, scatter, project, popcount, walk step, walk emit, gather card pass, gather bittest,
     # gather push, fixed. Several of these are SHARED with other arms in cost.rs (LINEAR_PASS,
     # RANGE_SCATTER, GATHER_CARD_PASS, GATHER_PUSH_PER_MATCH, ...), so a fitted value that disagrees
@@ -190,6 +196,9 @@ def nnls(rows: list[list[float]], targets: list[float]) -> list[float]:
 # A consequence worth stating: the fitted floor is not directly pasteable, because the offset it was
 # fitted against assumed the OLD floor. Applying it and re-fitting is a fixed-point iteration, and
 # each run is only self-consistent with whatever is shipped at the time.
+# The residual-gated column now prices the `card_pass` call as well as the floor, but the OFFSET
+# below is still about the floor alone: it captures `eval_domain * max(tier_ns - FLOOR, 0)`, the
+# excess where an expensive residual beats the floor, and the call is not part of that maximum.
 SHIPPED_RESIDUAL_FLOOR = {"GatheredScan": 18.89, "StreamedSelect": 6.58}
 
 
@@ -220,7 +229,15 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
     if plan == "GatheredScan":
         return (
             [eval_domain, scan_units, eval_domain * residual_on, matches, page_span, page_rows, 1.0],
-            ["CARD_PASS", "SCAN_PER_ROW", "RESIDUAL_FLOOR", "PUSH_PER_MATCH", "SELECT_PER_PAGE_SLOT", "COLLECT_PER_PAGE_ROW", "FIXED"],
+            [
+                "LOOP_PER_CARD",
+                "SCAN_PER_ROW",
+                "CARD_PASS+FLOOR",
+                "PUSH_PER_MATCH",
+                "SELECT_PER_PAGE_SLOT",
+                "COLLECT_PER_PAGE_ROW",
+                "FIXED",
+            ],
             excess,
         )
     if plan == "StreamedSelect":
@@ -249,9 +266,9 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
                 1.0,
             ],
             [
-                "CARD_PASS",
+                "LOOP_PER_CARD",
                 "SCAN_PER_ROW",
-                "RESIDUAL_FLOOR",
+                "CARD_PASS+FLOOR",
                 "EMIT_PER_MATCH",
                 "PERM_STEP",
                 "ARTWORK_SEEN_PER_CARD",
