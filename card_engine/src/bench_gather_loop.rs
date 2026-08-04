@@ -161,6 +161,7 @@
 //! Needs benchmarks/verify-order/real.store, shared with `bench_verify_cost` — rebuild it the
 //! same way (see that module's docs) after any AOracleCard/APrinting layout change.
 
+use super::bench_loop_design::{store_path, CARD_COUNTS, ITERS, LIMIT, WIDE_MIN_PRINTINGS};
 use std::hint::black_box;
 
 use rkyv::Archived;
@@ -170,30 +171,6 @@ use super::{
     NumExpr, NumField, PreparedCandidates, QueryCtx, QueryParams, ARCHIVE_HEADER_LEN,
 };
 
-/// Timed repetitions per cell; the minimum is reported, as elsewhere in these harnesses.
-const ITERS: usize = 200;
-/// A "wide" card has at least this many printings. Sets the leverage between the card column and
-/// the printing column: a bigger gap separates them better, but the corpus has a steep tail — the
-/// group-size table this prints shows only 1,910 cards reach 8 printings, which is too few to fill
-/// the larger cells. 4 keeps the leverage worth having and the wide group ~4× bigger.
-const WIDE_MIN_PRINTINGS: usize = 4;
-/// Card counts each cell runs at. Four sizes, geometric, because two things are being measured on this
-/// axis and they need opposite ends of it:
-///
-/// - **Linearity in the card term**, which the large end shows: the single-printing card cell measured
-///   8.33 / 8.53 / 10.11 ns/card at 400 / 1,500 / 4,500, so the per-card rate RISES with card count and
-///   a one-size design would bake whichever size it used into the constant.
-/// - **The intercept**, i.e. the per-query fixed cost, which only exists as the y-intercept of cells
-///   that vary in size — and which the SMALL end pins, because `intercept = t(n) - slope * n` multiplies
-///   any slope error by `n`. At a 400-card floor a 1 ns/card slope error is 400 ns of intercept error,
-///   against a shipped `GATHER_FIXED_COST_NS` of 169.6: unmeasurable. 100 shortens that lever 4x.
-///
-/// Bounded above by the wide group, which is the scarce one (see `WIDE_MIN_PRINTINGS`).
-const CARD_COUNTS: [usize; 4] = [100, 400, 1_500, 4_500];
-/// Page requested. Small and fixed: `sel.absorb()` runs INSIDE the loop and prunes toward
-/// `offset + limit`, so this is part of what the per-match rate has to cover — keeping it constant
-/// keeps that contribution proportional to matches rather than to the page.
-const LIMIT: usize = 60;
 /// (offset, limit) pairs for the finish-phase sweep. `GATHER_SELECT_PER_PAGE_SLOT_NS` is charged against
 /// `page_span = min(offset + limit, matches)`, and every cell above holds the page FIXED, so that term
 /// has never been varied here -- the loop rates were measured while the one term keyed on the page was
@@ -201,15 +178,7 @@ const LIMIT: usize = 60;
 /// per-slot rate from a fixed cost the phase pays regardless.
 const PAGE_SPECS: [(usize, usize); 4] = [(0, 15), (0, 60), (0, 600), (900, 60)];
 
-/// Default store. `BENCH_LOOP_STORE` overrides it, which is how the corpus-size sweep runs: build
-/// upscaled stores with `scripts/upscale_corpus.py` and point this at each in turn. The real corpus is
-/// only ~68 MB, small enough that a full chunk rotation can stay resident in the system-level cache, so
-/// the rates it yields are still partly warm however the walk is ordered.
-const DEFAULT_STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
 
-fn store_path() -> String {
-    std::env::var("BENCH_LOOP_STORE").unwrap_or_else(|_| DEFAULT_STORE_PATH.to_string())
-}
 
 /// One measured design point: the realized counters, and the loop time they were produced by.
 struct Cell {

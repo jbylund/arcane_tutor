@@ -128,6 +128,7 @@
 //! Needs benchmarks/verify-order/real.store, shared with `bench_verify_cost` and `bench_gather_loop`;
 //! rebuild it the same way (see `bench_verify_cost`'s module docs).
 
+use super::bench_loop_design::{store_path, CARD_COUNTS, ITERS, LIMIT, WIDE_MIN_PRINTINGS};
 use std::hint::black_box;
 
 use rkyv::Archived;
@@ -137,36 +138,12 @@ use super::{
     NumExpr, NumField, PreparedCandidates, QueryCtx, QueryParams, ARCHIVE_HEADER_LEN,
 };
 
-/// Timed repetitions; the minimum per cell is reported, and all cells run inside this loop so every
-/// cell's minimum is drawn from the same time window. Running cells to completion one at a time let
-/// machine drift enter `bench_gather_loop`'s fit as a rate difference — 1.8× between cells with
-/// identical counters — so this interleaves from the start.
-const ITERS: usize = 200;
-/// A "wide" card has at least this many printings; below it and above 1 is "medium". Three levels of
-/// printings-per-card is what identifies two rates per mode with a degree of freedom left over.
-const WIDE_MIN_PRINTINGS: usize = 4;
-/// Card counts each cell runs at, bounded above by the scarce wide group. Three sizes measure linearity
-/// in the card term rather than assuming it, and 600 sits BELOW `STREAM_MIN_MATCHES` (1,024) in card
-/// mode where matches == cards. That matters because the finish phase takes a different branch on each
-/// side: at or under the threshold the small-total gather scans `0..n_cards`, above it the permutation
-/// walk steps until the page fills. Every earlier cell exceeded the threshold, so the gather branch --
-/// and `STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS` with it -- was never measured at all.
-const CARD_COUNTS: [usize; 3] = [600, 1_500, 4_500];
-/// Page requested. P3's `ns_finish` branches on `total` against `STREAM_MIN_MATCHES`, not on the page,
-/// so this only has to be small and fixed to keep the finish phase out of the loop measurement.
-const LIMIT: usize = 60;
 /// A release date no printing in the corpus reaches, so the residual predicate is always true. Keeps
 /// every printing matching, so `printings_examined` and `matches` are exactly the span (printing mode)
 /// or 1 per card (card mode, which returns at the first match) instead of a corpus-dependent fraction.
 const DATE_AFTER_EVERYTHING: u32 = 99_999_999;
 
-/// Default store; `BENCH_LOOP_STORE` overrides it, same as `bench_gather_loop`, so both harnesses sweep
-/// the same upscaled stores from `scripts/upscale_corpus.py`.
-const DEFAULT_STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
 
-fn store_path() -> String {
-    std::env::var("BENCH_LOOP_STORE").unwrap_or_else(|_| DEFAULT_STORE_PATH.to_string())
-}
 
 /// One measured design point.
 struct Cell {

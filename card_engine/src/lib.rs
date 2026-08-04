@@ -10559,6 +10559,8 @@ mod bench_compose_card_projection;
 #[cfg(test)]
 mod bench_candidate_materialize;
 #[cfg(test)]
+mod bench_loop_design;
+#[cfg(test)]
 mod bench_gather_loop;
 #[cfg(test)]
 mod bench_streamed_loop;
