@@ -8352,6 +8352,30 @@ fn acquire_plan_features(
                 (rt, printing_matches, n_artworks.div_ceil(64), est_cards, scan_all(est_cards))
             }
         };
+        // `eval_domain` and `scan_units` describe what the MATERIALIZING alternatives walk, and when the
+        // narrowing does not shrink the candidate set they walk the whole corpus — at which point these are
+        // not badly estimated, they are estimating the wrong QUANTITY. `est_cards` is a count of MATCHING
+        // cards; `cards_visited` counts CANDIDATES, a superset whenever the narrowing is inexact. Measured
+        // against P4's `cards_visited` over 2,904 compose rows, the distribution is bimodal — 34% of rows
+        // visit every card — and on those rows:
+        //
+        //     est_cards            p10 0.43   p50 0.65   p90 0.83   mean |log| 0.454
+        //     n_cards              p10 1.00   p50 1.00   p90 1.00   mean |log| 0.000
+        //
+        // Exact by construction, not calibrated. Overall mean |log| 0.370 -> 0.216. Both plans visited the
+        // SAME card count on 100% of rows, which is also why this feature does not want splitting per plan.
+        //
+        // Predicted with the predicate and the constant the sibling `PrintingRangeScan` branch already uses
+        // for the identical decision — no new constant. Scored against the realized flag, `printing_matches`
+        // over `MAX_NARROW_FRACTION` (0.25) of `n_printings` catches **98%** of full-scan rows at 87%
+        // accuracy, beating every threshold on the two alternative signals tried. Its 26% false positives
+        // over-cost both materializing plans by the same factor, which an argmin largely absorbs; the false
+        // negatives are what were losing `GatheredScan vs StreamedSelect`, so recall is the side to favour.
+        let (eval_domain, scan_units) = if range_too_broad_to_narrow(printing_matches, n_printings as usize) {
+            (n_cards as usize, n_printings as usize)
+        } else {
+            (eval_domain, scan_units)
+        };
         // The tier is what the MATERIALIZING alternatives pay per candidate, so it must be asked about
         // the predicate THEY see (`filter` + `plane`), not about `composed` — and gated exactly as
         // `prepare_candidates` gates it, or the router charges a `card_pass` the kernels will skip. On a
