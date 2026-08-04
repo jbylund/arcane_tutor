@@ -320,7 +320,7 @@ the only one a rate cannot rescue. It is also NOT the artwork arm of item 4 belo
 in printing mode too (6.23, 5.25), where compose happens to be genuinely faster, so the wrong ratio does
 not flip the pick. Artwork is only where the margin is thin enough to expose it.
 
-### But that correction alone does not flip the pick
+### But that correction alone does not flip the pick (confirmed: it did not)
 
 The term is linear, so the corrected prediction is exact arithmetic rather than a guess:
 
@@ -420,6 +420,62 @@ consumed form measured 79.83 µs against compose's 177.83 on `f:gladiator`/artwo
 picks compose — but now because it prices compose 4–6× too cheaply against P3, not because P3 was removed
 from the ballot. The architecture stopped hiding the problem, which is what makes the remaining work worth
 doing.
+
+## The two cost-arm defects, both now measured
+
+### `STREAM_RESIDUAL_FLOOR_NS`: measured with a built design, and declined
+
+The floor only ever binds on `MASK_COMPARE` (tier 4.00); every other tier exceeds 6.58 and `max` takes the
+tier. So `bench_streamed_loop`'s always-true `DateCmp` cells are exactly its population, and at 31,508 cards
+they read `card/all_match` 2.49, `card/residual` 7.80, `printing/residual` 4.97 + 3.26 ns/printing.
+Subtracting the loop body puts the residual's per-card cost at **2.45 ns against a charged 9.05** — the
+`card_pass` call is the whole cost and the mask compare adds nothing measurable.
+
+Traffic disagrees and traffic wins on levels: the fitted `CARD_PASS+FLOOR` column reads **8.19 against the
+shipped 9.05 (0.90)** for P3 and **21.59 against 21.89 (0.99)** for P4. Nothing to correct.
+
+That is the **third** time this file has caught the same artifact — an always-true predicate over
+chunk-rotated slices measuring a cache state production never reaches, differing by 3.3× here as it differed
+1.6–2.2× in the retraction at the top of `bench_streamed_loop`. It is now recorded in the constant's own doc,
+so the next person measuring it finds the answer instead of the trap.
+
+### `stream_scan_units`: shipped, and it was necessary but not sufficient exactly as predicted
+
+P3 now has its own scan estimate on a legality-composed acquire, from the divergent share of the candidate
+span (`legal_divergent`, 556 of 31,508), floored at one printing per candidate and scoped to filters that
+touch legality — `border:black`, `r:mythic` and `watermark:*` measured at parity between the two plans.
+
+It also surfaced a defect this branch had introduced: `acquire_plan_features` was still calling
+`compose_printing_estimate` on the RESIDUAL. Once the divergence mask began consuming legality leaves that
+residual was `True`, so compose estimated all 97,206 printings for every legality query alike and was costed
+as if it returned the corpus for free — `matches` reading 97,206 identically across `f:modern`, `f:predh` and
+the rest, at a predicted pick/best ratio of 0.00. Applicability, estimate and execution now share one
+`compose_source`. **The numbers reported for the consume-guard commit were measured against that broken arm**
+and should not be read as they stand.
+
+| | before | after |
+| --- | --: | --: |
+| predicted pick/best on the artwork mispicks | 0.22 | **0.63–0.69** |
+| `StreamedSelect [printing_compose] / artwork` p90 | 6.69 | **4.73** |
+| its p90/p10 spread | 12.3 | **9.2** |
+| total regret | 56.1 ms | 55.0 ms |
+| row identity, 60 cells | — | identical |
+
+**The mispicks survive, and that is the result.** Sixteen remain. The model prices compose ~1.5× under P3
+where P3 measures ~1.7× faster, so ~2.5× survives a corrected feature — and it is not the per-card level
+(traffic fits it at 0.90), not the floor, and not the scan feature. Something cell-specific to compose-acquire
+artwork is mis-shaped and none of the three things measured here is it.
+
+## The open decision: 13% of regret is unpaid
+
+Regret stands at **55.0 ms against a 48.7 ms baseline**. The rise came from making the split
+non-destructive — handing the argmin a candidate whose arm is the worst-modelled in the engine — and both
+candidate explanations for it have now been eliminated by measurement. Two honest options:
+
+- **Find compose's remaining shape error.** It is the largest single error in the model (p90 41×, spread 136×
+  on rarity/usd) and it is now applicable on more queries, so the debt is bounded by that one arm.
+- **Revert the non-destructive split** and give back `f:modern t:creature`'s 0.476× until compose's arm is
+  fixed. The plumbing is inert on its own; only compose's widened applicability carries the cost.
 
 ## What is left
 
