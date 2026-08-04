@@ -545,7 +545,10 @@ cost-only changes and `force_plan_differential_agreement` already proves every p
 The honest caveat: the P4 scan fix **did not fix the pair**. `GatheredScan vs StreamedSelect
 [printing_compose]` is still 69% ordered right (gap 0.89 → 0.91), and `StreamedSelect -> GatheredScan`
 returned to its baseline level rather than improving on it. What the fix removed was the bias that was
-*amplifying* the gate's exposure to that pair. The pair remains item 1.
+*amplifying* the gate's exposure to that pair. The pair remains item 1 — and it is now diagnosed there as a
+named sub-population (broad residuals, both plans scanning the corpus, the two arms' scan rates 2.9× apart)
+rather than the variance this section first guessed at. The card-invariant half of the acquire, which is what
+these two changes touched, orders **409/409** correctly.
 
 Also worth watching: `GatheredScan vs PrintingCompose [printing_compose]` gap sizing drifted 1.14 → 1.40
 while staying 92% ordered right, so it costs nothing yet and is a sign compose's arm is absorbing something.
@@ -569,29 +572,52 @@ t:creature`'s 0.476× is kept. What is left is not a debt but a named defect: th
 
 ## What is left
 
-1. **Rank `GatheredScan vs StreamedSelect` on the compose acquire.** 3,391 pairs at **69% ordered right**,
-   mean regret 36.82 µs — the worst-ranked pair in the engine and now the top item, because it is the
-   prerequisite for the P3 tier gate above rather than a peer of it. The gate is written and measured
-   (targeted pair 80% → 96%, mean regret 11.04 → 1.57 µs) and cannot ship while this pair is 69%: correcting
-   P3 lets it into the argmin more often. Two corrections landed against it and **neither moved its
-   ordering**: the tier gate (69% → 69%) and P4's scan feature (69% → 69%, gap 0.89 → 0.91). Those bought
-   −25% total regret by removing biases that amplified this pair; the pair itself is untouched and is now the
-   engine's largest single routing error at 3,403 pairs and 36.40 µs mean regret.
+1. **Rank `GatheredScan vs StreamedSelect` on the compose acquire.** 3,403 pairs at **69% ordered right**,
+   mean regret 36.40 µs — the engine's largest single routing error and the top item. Two corrections landed
+   against it and **neither moved its ordering**: the tier gate (69% → 69%) and P4's scan feature (69% → 69%,
+   gap 0.89 → 0.91). Both were worth doing — together −25% total regret — but they bought that by removing
+   biases that *amplified* this pair, not by ranking it. The pair itself is untouched.
 
-   The gap ratio being 0.91 is the whole diagnosis: the model sizes this difference **correctly on average**
-   and gets the **sign** wrong 31% of the time. So no constant fixes it — it is variance, and the feature
-   grading says where the variance lives. `eval_domain` on this acquire reads p90/p10 **3.1** and `scan_units`
-   **4.5** even after the bias fix, because both descend from `calibrated_balls_into_bins` — an *estimate*,
-   where the `candidates` acquire (92% ordered right) has exact narrowed counts. The likely answer is not a
-   better estimator but making the two plans' costs depend on the estimate the *same* way, so its error
-   cancels in their difference the way the verify tier already does.
+   **Not variance — a sub-population, and it is named.** The gap ratio of 0.91 invites reading this as noise
+   around a correct average; splitting the pairs by whether the sign is right says otherwise. Over 5,085
+   non-tie pairs:
+
+   | group | n | P3 wins (measured) | P3 wins (predicted) | median \|gap\| |
+   | --- | --: | --: | --: | --: |
+   | right, tier 0 (card-invariant) | 409 | 100% | 100% | — |
+   | right, tier > 0 (real residual) | 3,100 | 5% | 5% | 31.8 µs |
+   | **wrong, tier > 0** | **1,576** | **98%** | **2%** | **98.4 µs** |
+
+   Every wrong pair is in the `tier > 0` regime — the card-invariant population the two fixes above touched
+   is ordered **409/409** correctly. And the wrong group is not mixed: P3 really wins 98% of it while the
+   model says P4 wins 98% of it. The model **over-picks P4** on a specific class.
+
+   That class is **broad residuals where both plans examine the whole corpus** — `border:black`,
+   `year<=2026`, `cn<336`, bare date ranges. Worst cells, `printings_examined` = 97,206 for *both* plans:
+
+   | query / mode | P3 meas | P4 meas | P3 pred | P4 pred |
+   | --- | --: | --: | --: | --: |
+   | `border:black` / printing | 861.3 | 1,489.8 | 841.8 | **838.2** |
+   | `cn<=226 year>2004` / printing | 1,025.3 | 1,454.7 | 789.6 | **756.4** |
+   | `year<=2026` / artwork | 601.6 | 1,026.9 | 1,629.2 | **1,326.1** |
+
+   P3 is genuinely ~1.7× faster and the model has the pair tied to within 5 µs. What brings it to parity is
+   the two arms' per-printing scan rates: `STREAM_SCAN_PER_ROW_NS` 5.97 against `GATHER_SCAN_PER_ROW_NS`
+   2.06, a **2.9× ratio for what is nominally the same walk-a-printing-and-test work**. P3's higher rate
+   cancels its lower per-card rate exactly where both features are maximal.
+
+   The trap for whoever takes this: a pooled traffic fit **endorses both rates** (StreamedSelect
+   `SCAN_PER_ROW` fits 6.04, ratio 1.01; GatheredScan 2.53, ratio 1.23), so `fit_cost_model` will not find
+   this and a pooled refit cannot fix it. It needs the population split — the same lesson this file has now
+   learned three times. Wrong-rate concentrates by mode: artwork 38–46%, printing 25–46%, card 16–24%.
 
    Superseded item 1 ("compose's remaining shape error") — see the retraction above; compose reads 1.02–1.17
    on the mispicked cells and only `oldschool` is under-priced.
-2. **Decide the 13% regret debt.** Regret sits at 55.0 ms against a 48.7 ms baseline, all of it from making
-   the split non-destructive — which is correct, but hands the argmin a candidate whose arm is badly modelled.
-   Either (1) above pays it back, or revert the split and give back `f:modern t:creature`'s 0.476× until the
-   arm is fixed. Isolated: the consume guard is not the cause (56.8 ms with it off against 55.0 with it on).
+2. ~~**Decide the 13% regret debt.**~~ **Closed** — and neither of the two options on offer was the answer.
+   The debt was never bounded by compose's arm; the mispriced arm was P3's. Gating the verify tier on the
+   compose acquire plus fixing P4's candidate span took regret to **61.2 ms against the 81.7 ms measured
+   baseline, −25%**, without reverting the split, so `f:modern t:creature`'s 0.476× is kept. See the
+   retraction section above for why the original framing pointed at the wrong plan.
 3. **Extend the popcount-skip walk past `FilterExpr::True`.** What is left of the perm estimate's p90 has two
    sources, neither reachable from a start position: entries *interior* to the walked segment, and clustering
    the predicate does not name (the 5.31-vs-4.26 gap in the regrade table). Scattering the match set through
