@@ -1164,3 +1164,42 @@ mean no `card_pass` runs, and now it does not. What remains is a level, not a sh
 measurement, explicitly labelled unexplained, sat in the hot loop of the mode carrying 36% of all routing loss
 and cost up to 24x. This file has now retracted four cross-build findings; that instrument's output should be
 treated as unproven until re-measured in one binary, especially where it has been encoded as a permanent gate.
+
+### And yes, the constants need refitting — but the first correction is a gate, and it regresses routing
+
+Removing the artwork `card_pass` gate changed what the arm should charge, so the artwork constants — fitted
+against traffic that *included* the redundant `card_pass` — are now stale. P3 reads p/m **1.58–1.83** on the
+tier-0 artwork cells where printing mode reads 1.02–1.23 on the same queries, so the surcharge is the suspect.
+
+Measured as the artwork-minus-printing `ns_loop` delta on identical candidate sets, against a charged
+**+1.21 ns/card**:
+
+| regime | n | median ns/card | median ns/printing |
+| --- | --: | --: | --: |
+| `printings_examined == 0` (stored group count) | 9 | **−0.46** | −0.17 |
+| `printings_examined == span` (dedup walk) | 8 | **+0.38** | +0.12 |
+
+So it is a **shape** problem before it is a level one. `run_query_streamed` answers an artwork count from a
+stored per-card group count when `all_match && have_group_counts` — touching no printing — and only walks the
+span to dedup groups when a residual survives per printing. In the first regime artwork is *cheaper* than
+printing (one array read against printing's span arithmetic), so +1.21 has the wrong **sign**, not merely the
+wrong magnitude. Every `exam == 0` row is `all_match_known` or `residual_card_invariant`, including `name:s`
+(exam 0, artwork cheaper by 0.52 ns/card, p/m 2.20) — the same discriminator as the two fixes above.
+
+**Gated on that signal and measured: absolute agreement improves, routing gets worse.**
+
+| | before gate | after gate |
+| --- | --: | --: |
+| P3 p/m, tier-0 artwork cells | 1.58–1.83 | **1.14–1.34** |
+| artwork regret slice, mean | 1.59 µs | **1.71** |
+| artwork regret slice, max | 185.5 µs | **732.5** |
+| total regret, mean | 1.44 | 1.48 |
+
+**Not shipped.** The +1.21 is compensating for something else in the P3/P4 artwork balance and cannot be
+removed alone — which is `bench_gather_loop`'s "P4 cannot be fixed alone" for a third time, and is exactly
+what item 6 has to mean now: **both artwork arms together, or neither.** The measurement is recorded at the
+call site so the next attempt starts from the shape rather than rediscovering it.
+
+Fourth instance this session of a correct fix that removes a compensating error — after the verify-tier gate,
+the P4 span feature, and the estimator's ball count. Three of those paid once the exposed error was fixed too;
+this one has no partner fix yet, so it waits.

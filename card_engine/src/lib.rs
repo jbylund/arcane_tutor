@@ -8164,6 +8164,21 @@ fn candidate_feats(ctx: &QueryCtx, params: &QueryParams, prep: &PreparedCandidat
     if feats.residual_card_invariant {
         feats.stream_scan_units = 0;
     }
+    // Same signal, second term — **measured, and NOT applied.** `run_query_streamed` answers an artwork count
+    // from a STORED per-card group count when `all_match && have_group_counts`, touching no printing, and only
+    // walks the span to dedup groups when a residual survives per printing. So `artwork_seen_cards` charging
+    // `eval_domain` unconditionally is the wrong SHAPE, and measurably the wrong sign in the fast-path regime.
+    // Artwork-minus-printing `ns_loop` delta on identical candidate sets, against a charged +1.21 ns/card:
+    //
+    //     printings_examined == 0    (stored count)   median -0.46 ns/card   n=9
+    //     printings_examined == span (dedup walk)     median +0.38 ns/card   n=8
+    //
+    // Artwork is *cheaper* than printing when the fast path fires. Gating the term on
+    // `all_match_known || residual_card_invariant` duly improved absolute agreement — P3 went from p/m
+    // 1.58-1.83 to 1.14-1.34 on those cells — and **regressed routing**: the artwork regret slice went mean
+    // 1.59 -> 1.71 us and max 185.5 -> 732.5. So the +1.21 is compensating for something else in the P3/P4
+    // artwork balance, and cannot be removed alone. That is item 6, and it needs both arms at once — the same
+    // lesson as `bench_gather_loop`'s "P4 cannot be fixed alone".
 
     feats
 }
