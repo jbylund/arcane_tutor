@@ -5306,8 +5306,10 @@ fn is_printing_composable(filter: &FilterExpr, indexes: &Archived<CardIndexes>) 
         {
             true
         }
-        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op: CmpOp::Eq, rhs: NumExpr::Const(_) }
-        | FilterExpr::NumericCmp { lhs: NumExpr::Const(_), op: CmpOp::Eq, rhs: NumExpr::Field(NumField::RarityInt) } => true,
+        // Any rarity comparison, not only `== c`: the domain is closed and every present value has exact
+        // bits, so an inequality is the `Or` of the qualifying ones. See `rarity_cmp_leaf_bits`.
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), rhs: NumExpr::Const(_), .. }
+        | FilterExpr::NumericCmp { lhs: NumExpr::Const(_), rhs: NumExpr::Field(NumField::RarityInt), .. } => true,
         // Legality via #667's card `_EXISTS` plane + a divergent repair (see `legality_leaf_bits`).
         // Only a plane-backed status (legal/banned/restricted) with a present format; an absent format
         // (`shift: None`) matches nothing and stays on the general path.
@@ -5379,6 +5381,48 @@ fn rarity_leaf_bits(c: f64, rp: &Archived<RarityPrintingPlanes>, n_printings: us
         Some(e) => scatter_bits(e.1.iter().map(|p| u32::from(*p)), n_printings),
         None => vec![0u64; wpp],
     }
+}
+
+/// The exact printing-space bitmap for **any** rarity comparison, not just `== c`.
+///
+/// Rarity's domain is closed and small: the four interior ints have laid-out planes and the sparse tail
+/// (special/bonus) has postings, so every value present in the store can be enumerated and its exact bits
+/// read. An inequality is then the `Or` of the values that satisfy it — the same enumeration
+/// `walk_rarity_orderby_page` already walks for its bucket order.
+///
+/// Two consequences worth stating. **NULL rarity is excluded for free**: a printing with no rarity appears in
+/// no plane and no posting, so it matches nothing here, which is the trivalent answer for every op including
+/// `Ne` (`-r:rare` must not match a rarity-less printing). And this is **strictly more capable than
+/// `compile_plane`'s** `compile_rarity_cmp`, which shares one "above mythic" plane and so declines
+/// (`BucketVerdict::Ambiguous`) whenever special must be told from bonus — `r:special`, `r>=bonus` and friends.
+/// Compose reads the two apart from their own postings, so it has no ambiguous case at all.
+///
+/// Was `Eq`-only, and the cost of that was not subtle: `r>=rare`/artwork fell off the compose path entirely
+/// and took **487.7 µs** through a full candidate scan, against **59.2 µs** for `r:rare` on the same corpus —
+/// 8× for a predicate that is just `rare ∨ mythic ∨ special ∨ bonus`.
+fn rarity_cmp_leaf_bits(op: CmpOp, threshold: f64, rp: &Archived<RarityPrintingPlanes>, n_printings: usize) -> Vec<u64> {
+    let wpp = words_per_plane(n_printings);
+    let mut out = vec![0u64; wpp];
+    for int in rarity_ints_present(rp) {
+        if !planes::matches_op(op, f64::from(int), threshold) {
+            continue;
+        }
+        for (dst, src) in out.iter_mut().zip(rarity_leaf_bits(f64::from(int), rp, n_printings)) {
+            *dst |= src;
+        }
+    }
+    out
+}
+
+/// Every rarity int the store actually holds: the four interior values (planes, always laid out) plus
+/// whatever the sparse tail carries. One definition, shared by the compose leaf above and
+/// `walk_rarity_orderby_page`'s bucket walk, so the two cannot disagree about the domain.
+fn rarity_ints_present(rp: &Archived<RarityPrintingPlanes>) -> Vec<u8> {
+    let mut values: Vec<u8> = RARITY_PRINTING_PLANE_INTS.to_vec();
+    values.extend(rp.postings.iter().map(|e| e.0));
+    values.sort_unstable();
+    values.dedup();
+    values
 }
 
 /// #746: the exact printing-space bitmap for a bare tag-postings leaf (`set:VALUE`/`watermark:VALUE`)
@@ -5710,9 +5754,12 @@ fn compose_printing_bits(
             let (idx, card_space) = collection_compose_index(indexes, *field).expect("guarded by the matches!");
             collection_negated_leaf_bits(idx, value.as_str(), card_space, offsets, n_printings)
         }
-        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op: CmpOp::Eq, rhs: NumExpr::Const(c) }
-        | FilterExpr::NumericCmp { lhs: NumExpr::Const(c), op: CmpOp::Eq, rhs: NumExpr::Field(NumField::RarityInt) } => {
-            rarity_leaf_bits(*c, &indexes.rarity_printing, n_printings)
+        // `flip_op` on the const-first form so `2<=rarity` and `rarity>=2` build the same bitmap.
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op, rhs: NumExpr::Const(c) } => {
+            rarity_cmp_leaf_bits(*op, *c, &indexes.rarity_printing, n_printings)
+        }
+        FilterExpr::NumericCmp { lhs: NumExpr::Const(c), op, rhs: NumExpr::Field(NumField::RarityInt) } => {
+            rarity_cmp_leaf_bits(flip_op(*op), *c, &indexes.rarity_printing, n_printings)
         }
         FilterExpr::Legality { shift: Some(shift), expected } => {
             legality_leaf_bits(*shift, *expected, indexes, offsets, printings, n_printings)
@@ -5805,9 +5852,11 @@ fn compose_printing_estimate(
             let k = collection_leaf_printing_count(idx, value.as_str(), card_space, offsets);
             (n_printings.saturating_sub(k), 0, k)
         }
-        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op: CmpOp::Eq, rhs: NumExpr::Const(c) }
-        | FilterExpr::NumericCmp { lhs: NumExpr::Const(c), op: CmpOp::Eq, rhs: NumExpr::Field(NumField::RarityInt) } => {
-            (popcount(&rarity_leaf_bits(*c, &indexes.rarity_printing, n_printings)), 0, 0)
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op, rhs: NumExpr::Const(c) } => {
+            (popcount(&rarity_cmp_leaf_bits(*op, *c, &indexes.rarity_printing, n_printings)), 0, 0)
+        }
+        FilterExpr::NumericCmp { lhs: NumExpr::Const(c), op, rhs: NumExpr::Field(NumField::RarityInt) } => {
+            (popcount(&rarity_cmp_leaf_bits(flip_op(*op), *c, &indexes.rarity_printing, n_printings)), 0, 0)
         }
         // Legality: matches ≈ the legal-∃ cards' printings (existence-scaled from the cheap card
         // ∃-plane popcount). The build cost rides the *sparser* side (#744): a majority-legal format

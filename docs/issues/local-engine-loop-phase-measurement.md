@@ -1237,3 +1237,64 @@ note here claimed the counter was missing and that a grouping walk was uncounted
 Artwork's per-card surcharge was the last of it. The executor gate was removed (up to 24×), P3's surcharge is
 gated on the same signal, and P4 was measured and needs nothing. What remains in artwork mode is a level
 question inside 0.86–1.25 on both arms, which is not worth a refit against a warm-cache design.
+
+## Compose was `Eq`-only on rarity, and that cost 167×
+
+Chasing `r>=rare`/artwork (100.1 µs regret, six appearances in the top 100) found something bigger than the
+routing error. Its full dump:
+
+    r>=rare  artwork  limit=175      acquire=candidates
+      GatheredScan     pred 484.4   meas 485.9   p/m 1.00   loop 482.2   ← picked
+      StreamedSelect   pred 518.5   meas 381.6   p/m 1.36   loop 376.1
+      eval_domain 12,887 = cards_visited     scan_units 58,656 = printings_examined (BOTH plans)
+
+**The features are exact and both arms are individually respectable**, yet the order inverts: the model
+charges P3 2.9× more per printing (5.97 vs 2.06) and P4 2.9× more per card, on the *same* 58,656 printings,
+and the two errors nearly cancel into a 34 µs predicted gap the wrong way against a 100 µs real one. That is
+the `SCAN_PER_ROW` ratio a pooled fit endorses, in its cleanest form.
+
+**But routing was the small half.** Splitting the phases shows what the query actually spends:
+
+| limit | loop (count) | finish (emit) | perm_steps |
+| --: | --: | --: | --: |
+| 10 | **386.6 µs** | 0.7 µs | 3 |
+| 175 | **374.4 µs** | 4.8 µs | 97 |
+
+`query()` returns `(total, page)`, so an exact `total = 20,979` requires visiting every candidate before
+anything can be emitted. **99.8% of the query produces the count**, flat in page size, while producing the
+rows costs 0.7–4.8 µs. Choosing the better plan wins 100 µs; not scanning at all wins 375.
+
+**And a plan that does not scan already existed — for `Eq` only.** `is_printing_composable` matched rarity
+with `CmpOp::Eq` and nothing else, so `r:rare` composed and `r>=rare` fell to a full candidate scan:
+
+| query | before | after | speedup |
+| --- | --: | --: | --: |
+| `r>=rare` / printing | 349.6 µs | **2.1** | **167×** |
+| `r<=uncommon` / printing | 378.8 | **1.9** | **199×** |
+| `r>uncommon` / printing | 344.5 | **2.1** | **164×** |
+| `r>=rare` / artwork | 487.7 | **82.7** | **5.9×** |
+| `r<=uncommon` / artwork | 421.7 | **125.7** | 3.4× |
+| `r>uncommon` / artwork | 531.7 | **91.4** | 5.8× |
+
+Printing mode becomes a popcount with no scan at all; artwork still pays the printing→artwork projection,
+which is why it is 3–6× rather than 100×.
+
+`rarity_cmp_leaf_bits` enumerates the closed domain — four interior planes plus the sparse tail's postings,
+one definition shared with `walk_rarity_orderby_page` via `rarity_ints_present` — and `Or`s the values that
+satisfy the op. Two properties fall out. **NULL rarity is excluded for free**, since a rarity-less printing is
+in no plane and no posting, which is the trivalent answer for every op including `Ne`. And this is **strictly
+more capable than `compile_plane`'s** `compile_rarity_cmp`, which shares one "above mythic" plane and declines
+`BucketVerdict::Ambiguous` whenever special must be told from bonus — compose reads those two apart from their
+own postings, so it has no ambiguous case.
+
+Row identity: **1,566 cells identical** — every rarity op, negations, conjunctions, `r:special`/`r:bonus`,
+three modes × three orderbys × three pages × two prefers, hashing the returned `scryfall_id` sequence.
+Regret mean 1.45 → **1.40 µs**; the compose acquire grows 7,532 → 8,636 queries as intended, and its share
+goes 22% → 27% because more queries live there now, at a much lower absolute cost.
+
+**The generalisable point**, given compose is meant to become the universal exact evaluator (#731): an
+applicability gate that is narrower than the machinery behind it is invisible to every routing metric. The
+router never sees the plan, so no regret figure, no pairwise ordering and no feature grading can report it —
+`r>=rare` looked like a 100 µs cost-model bug and was a 375 µs missing-plan bug. Auditing
+`is_printing_composable` leaf by leaf against what `compose_printing_bits` can actually build is likely to
+find more; `printing_compose / card` is now the worst cell at mean 2.55 µs and is the place to look next.
