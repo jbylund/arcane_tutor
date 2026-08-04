@@ -2161,27 +2161,6 @@ fn partition_point(len: usize, pred: impl Fn(usize) -> bool) -> usize {
     lo
 }
 
-/// Which legality formats have printings that disagree, as a mask over the same 2-bit fields
-/// `format_shifts` indexes. See `CardData::divergent_formats` for why the per-format answer is worth
-/// more than the per-card boolean beside it.
-///
-/// One definition, used by `reload` AND by the test fixtures, because a fixture computing this
-/// differently from production would either exercise a shortcut production never takes or miss one it
-/// does — and the thing being decided is whether per-printing legality verification can be skipped.
-fn divergent_formats_of(printings: &[Printing], offsets: &[u32]) -> u64 {
-    let mut mask = 0u64;
-    for w in offsets.windows(2) {
-        let (start, end) = (w[0] as usize, w[1] as usize);
-        // XOR every printing against the group's first: a field that ever differs shows up in some XOR,
-        // and a field that never does contributes nothing from any pair.
-        let first = printings[start].card_legalities;
-        for pr in &printings[start + 1..end] {
-            mask |= first ^ pr.card_legalities;
-        }
-    }
-    mask
-}
-
 fn build_sort_permutations(cards: &[OracleCard]) -> SortPermutations {
     // Purely card-space now: the printings/offsets arguments existed only to read the first stored
     // printing's prefer_score, which is no longer a sort key (see the closure below).
@@ -2818,21 +2797,6 @@ struct CardData {
     // which never run the load path that feeds FORMAT_SHIFTS — resolve
     // legality shifts identically to the worker that built the archive.
     format_shifts: HashMap<String, u8>,
-    // WHICH formats actually have printings that disagree, as a mask over the same 2-bit fields
-    // `format_shifts` indexes. `legality_divergent` on the card is one boolean meaning "some format
-    // disagreed for this card", which is all the #667 carveout has ever had to work with — so every
-    // legality leaf is treated as existential and re-verified per printing, for every format.
-    //
-    // The data does not justify that. Over the production corpus, all 556 divergent cards diverge in
-    // `oldschool` and nothing else; `modern`, `commander`, `pauper` and the rest are card-invariant, and
-    // the per-printing re-verification on them is provably redundant (measured: 7,770 printing
-    // examinations by StreamedSelect on `f:modern` that cannot change an answer).
-    //
-    // Accumulated as the OR of the XOR between successive printings of a card, so it names exactly the
-    // 2-bit fields that ever differ, and it is derived from the data rather than asserting anything
-    // about `oldschool`: if Scryfall ever makes another format divergent, this picks it up on the next
-    // reload and the conservative path returns on its own.
-    divergent_formats: u64,
 }
 
 // ─── Candidate narrowing ─────────────────────────────────────────────────────
@@ -3493,7 +3457,7 @@ fn narrow_rec(
         // `Narrowed`'s doc and the dedicated `Legality` arms below), so a
         // compiled expression touching them can only narrow loosely here,
         // same as if it had fallen through to those arms directly.
-        return if plane_expr_is_existential(&pe) {
+        return if plane_expr_is_existential(&pe, u64::from(indexes.planes.divergent_formats)) {
             Narrowed::loose(Candidates::CardBits(bits))
         } else {
             Narrowed::tight(Candidates::CardBits(bits))
@@ -6523,7 +6487,9 @@ fn existential_plane_for<'a>(
     indexes: &'a Archived<CardIndexes>,
 ) -> Option<(&'a PlaneExpr, &'a Archived<BitPlanes>)> {
     match (mode, plane) {
-        (Mode::Card, Some(pe)) if plane_expr_is_existential(pe) => Some((pe, &indexes.planes)),
+        (Mode::Card, Some(pe)) if plane_expr_is_existential(pe, u64::from(indexes.planes.divergent_formats)) => {
+            Some((pe, &indexes.planes))
+        }
         _ => None,
     }
 }
@@ -6674,7 +6640,9 @@ fn prepare_candidates(ctx: &QueryCtx, params: &QueryParams, filter: &mut FilterE
     // plane touched legality, so this only trusts a True residual for those
     // modes when the plane is existential-free (plane_expr_is_existential).
     let plane_true_for_mode =
-        plane.is_none_or(|expr| matches!(mode, Mode::Card) || !plane_expr_is_existential(expr));
+        plane.is_none_or(|expr| {
+            matches!(mode, Mode::Card) || !plane_expr_is_existential(expr, u64::from(ctx.indexes.planes.divergent_formats))
+        });
     let all_match_known = (matches!(filter, FilterExpr::True) && plane_true_for_mode) || residual_exact;
 
     // The plane bitmap is the exact card-level truth of the plane-consumed
@@ -9006,7 +8974,7 @@ fn run_query_streamed_popcount<'a>(
         // blindly -- verify against `eval_plane_expr_for_printing` too. Cheap
         // even then: bounded by `limit` emitted cards, not the candidate set,
         // and only pays the extra check at all for legality-touching planes.
-        let existential = plane.is_some_and(plane_expr_is_existential);
+        let existential = plane.is_some_and(|e| plane_expr_is_existential(e, u64::from(planes.divergent_formats)));
         // Ends `ns_loop` (the skip scan) and starts `ns_finish` (the emit walk).
         let t_finish = std::time::Instant::now();
         let mut page: Vec<(&AOracleCard, &APrinting)> = Vec::with_capacity(limit);
@@ -9993,9 +9961,6 @@ impl QueryEngine {
         // Snapshot the registry card_from_pydict just populated so reader
         // processes can adopt the same format→shift assignments.
         let format_shifts_snapshot = format_shifts().read().map(|m| m.clone()).unwrap_or_default();
-        // Computed over the grouped arrays rather than inside the grouping loop, so the fixtures can call
-        // the same function on the same shape. One pass over the printings against a ~2 s load.
-        let divergent_formats = divergent_formats_of(&printings, &offsets);
         let card_data = CardData {
             cards,
             printings,
@@ -10007,7 +9972,6 @@ impl QueryEngine {
             mana_vocab,
             indexes,
             format_shifts: format_shifts_snapshot,
-            divergent_formats,
         };
 
         // Write atomically: stream into a per-PID .tmp, then rename over shm_path.
@@ -10246,7 +10210,7 @@ impl QueryEngine {
         let Ok(mmap) = self.get_mmap() else { return Ok(d) };
         // Safety: see query()'s access_unchecked justification.
         let data = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
-        let mask = u64::from(data.divergent_formats);
+        let mask = u64::from(data.indexes.planes.divergent_formats);
         for (format, shift) in data.format_shifts.iter() {
             // Two bits per format, so a format is divergent if either of its bits ever differed.
             if mask >> *shift & 0b11 != 0 {

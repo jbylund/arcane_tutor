@@ -221,6 +221,13 @@ pub(crate) struct BitPlanes {
     pub(crate) power_hi: BucketBounds,
     pub(crate) toughness_lo: BucketBounds,
     pub(crate) toughness_hi: BucketBounds,
+    /// Which legality formats have printings that disagree — see `divergent_formats_of`. Lives here
+    /// because it is a statement about what plane truth MEANS: a legality plane for a format outside this
+    /// mask is card-invariant, so a card-level bit implies every printing of that card, and the #667
+    /// existential carveout does not apply to it. Every site that asks "is this plane existential"
+    /// already holds `&Archived<BitPlanes>`, so keeping it here needs no new plumbing and leaves one
+    /// home for the fact.
+    pub(crate) divergent_formats: u64,
 }
 
 pub(crate) fn words_per_plane(n_cards: usize) -> usize {
@@ -280,6 +287,27 @@ fn set_numeric_plane(
         bounds.observe(v as i16);
         set(plane);
     }
+}
+
+/// Which legality formats have printings that disagree, as a mask over the same 2-bit fields
+/// `format_shifts` indexes. See `BitPlanes::divergent_formats` for why the per-format answer is worth
+/// more than `OracleCard::legality_divergent`, the per-card boolean beside it.
+///
+/// One definition, used by `reload` AND by the test fixtures, because a fixture computing this
+/// differently from production would either exercise a shortcut production never takes or miss one it
+/// does — and the thing being decided is whether per-printing legality verification can be skipped.
+pub(crate) fn divergent_formats_of(printings: &[Printing], offsets: &[u32]) -> u64 {
+    let mut mask = 0u64;
+    for w in offsets.windows(2) {
+        let (start, end) = (w[0] as usize, w[1] as usize);
+        // XOR every printing against the group's first: a field that ever differs shows up in some XOR,
+        // and a field that never does contributes nothing from any pair.
+        let first = printings[start].card_legalities;
+        for pr in &printings[start + 1..end] {
+            mask |= first ^ pr.card_legalities;
+        }
+    }
+    mask
 }
 
 pub(crate) fn build_bit_planes(cards: &[OracleCard], printings: &[Printing], offsets: &[u32], strings: &[String]) -> BitPlanes {
@@ -420,7 +448,18 @@ pub(crate) fn build_bit_planes(cards: &[OracleCard], printings: &[Printing], off
             (PLANE_TOUGHNESS_HI, &mut toughness_hi),
         );
     }
-    BitPlanes { n_cards: cards.len() as u32, words, cmc_hi, power_lo, power_hi, toughness_lo, toughness_hi }
+    BitPlanes {
+        n_cards: cards.len() as u32,
+        words,
+        cmc_hi,
+        power_lo,
+        power_hi,
+        toughness_lo,
+        toughness_hi,
+        // Computed here, from the same printings the planes were built from, so every fixture that builds
+        // planes gets it without a second call site to keep in step.
+        divergent_formats: divergent_formats_of(printings, offsets),
+    }
 }
 
 /// #724: printing-space border planes — bit per printing, **exact** (unlike #664's card-space
@@ -1071,6 +1110,26 @@ const PLANE_BLOCKS: [PlaneBlock; 10] = [
     PlaneBlock { base: PLANE_BORDER_OTHER, len: 1, kind: BlockKind::BorderOther },
 ];
 
+/// Whether plane `p` needs PER-PRINTING verification: an existential leaf whose fact can actually differ
+/// between the printings of one card.
+///
+/// For rarity and border that is every leaf — those are printing-varying by nature. For legality it is a
+/// per-FORMAT question, and the answer is usually no: `divergent_formats` names the formats whose
+/// printings ever disagree (one, `oldschool`, in the production corpus), and a legality plane outside that
+/// mask is card-invariant. A card-level bit for it implies every printing of the card, exactly like
+/// colors or types, so the #667 carveout does not apply and the per-printing re-verification it forces is
+/// work that cannot change an answer.
+///
+/// `u64::MAX` — every format divergent — is the conservative value and reproduces the behaviour that
+/// predates the mask, which is what a store built before it (or a fixture that does not care) supplies.
+fn needs_printing_verification(p: usize, divergent_formats: u64) -> bool {
+    match existential_leaf(p) {
+        Some(ExistentialLeaf::Legality { shift, .. }) => divergent_formats >> shift & 0b11 != 0,
+        Some(_) => true,
+        None => false,
+    }
+}
+
 /// Plane index `p`'s existential family and fact, or `None` for a
 /// card-invariant plane. Walks `PLANE_BLOCKS` once; which block `p` falls in
 /// (if any) says both which field it belongs to and, via the in-block
@@ -1106,20 +1165,20 @@ fn existential_leaf(p: usize) -> Option<ExistentialLeaf> {
 /// one. A literal duplicate leaf (`format:A AND format:A`) reads the same
 /// plane index and collapses to one entry, fine to compose -- the same
 /// underlying fact checked twice, not two facts needing a shared witness.
-fn collect_existential_indices(expr: &PlaneExpr, out: &mut Vec<u16>) {
+fn collect_existential_indices(expr: &PlaneExpr, out: &mut Vec<u16>, divergent_formats: u64) {
     match expr {
         PlaneExpr::Plane(p) => {
-            if existential_leaf(*p as usize).is_some() && !out.contains(p) {
+            if needs_printing_verification(*p as usize, divergent_formats) && !out.contains(p) {
                 out.push(*p);
             }
         }
         PlaneExpr::Bits(_) | PlaneExpr::Const(_) => {}
         PlaneExpr::And(cs) | PlaneExpr::Or(cs) => {
             for c in cs {
-                collect_existential_indices(c, out);
+                collect_existential_indices(c, out, divergent_formats);
             }
         }
-        PlaneExpr::Not(inner) => collect_existential_indices(inner, out),
+        PlaneExpr::Not(inner) => collect_existential_indices(inner, out, divergent_formats),
     }
 }
 
@@ -1130,12 +1189,17 @@ fn collect_existential_indices(expr: &PlaneExpr, out: &mut Vec<u16>) {
 /// (docs/issues/00667-engine-legality-divergent-carveout.md,
 /// docs/issues/00680-engine-existential-plane-generalization.md; Step 2's popcount
 /// path is already `Mode::Card`-only for unrelated reasons, see `run_query`).
-pub(crate) fn plane_expr_is_existential(expr: &PlaneExpr) -> bool {
+///
+/// Takes the divergence mask because "existential" is not a property of the plane index alone for
+/// legality: see `needs_printing_verification`. A caller with a `&Archived<BitPlanes>` passes
+/// `planes.divergent_formats`; one with no store in reach passes `u64::MAX` and gets the old,
+/// conservative answer.
+pub(crate) fn plane_expr_is_existential(expr: &PlaneExpr, divergent_formats: u64) -> bool {
     match expr {
-        PlaneExpr::Plane(p) => existential_leaf(*p as usize).is_some(),
+        PlaneExpr::Plane(p) => needs_printing_verification(*p as usize, divergent_formats),
         PlaneExpr::Bits(_) | PlaneExpr::Const(_) => false,
-        PlaneExpr::And(cs) | PlaneExpr::Or(cs) => cs.iter().any(plane_expr_is_existential),
-        PlaneExpr::Not(inner) => plane_expr_is_existential(inner),
+        PlaneExpr::And(cs) | PlaneExpr::Or(cs) => cs.iter().any(|c| plane_expr_is_existential(c, divergent_formats)),
+        PlaneExpr::Not(inner) => plane_expr_is_existential(inner, divergent_formats),
     }
 }
 
@@ -1157,10 +1221,10 @@ pub(crate) fn plane_expr_is_existential(expr: &PlaneExpr) -> bool {
 /// shape nobody realistically writes --
 /// docs/issues/reference-engine-printing-varying-plane-repair-pattern.md has the joint
 /// per-printing evaluation this would need if it ever mattered enough to build.
-fn and_of_checked_for_shared_witness(children: Vec<PlaneExpr>) -> Option<PlaneExpr> {
+fn and_of_checked_for_shared_witness(children: Vec<PlaneExpr>, divergent_formats: u64) -> Option<PlaneExpr> {
     let mut formats = Vec::new();
     for c in &children {
-        collect_existential_indices(c, &mut formats);
+        collect_existential_indices(c, &mut formats, divergent_formats);
     }
     if formats.len() > 1 {
         return None;
@@ -1171,7 +1235,9 @@ fn and_of_checked_for_shared_witness(children: Vec<PlaneExpr>) -> Option<PlaneEx
 pub(crate) fn compile_plane(filter: &FilterExpr, bounds: &rkyv::Archived<BitPlanes>, words: &rkyv::Archived<OracleWordIndex>) -> Option<PlaneExpr> {
     match filter {
         FilterExpr::True => Some(PlaneExpr::Const(true)),
-        FilterExpr::And(children) => and_of_checked_for_shared_witness(compile_plane_children(children, bounds, words)?),
+        FilterExpr::And(children) => {
+            and_of_checked_for_shared_witness(compile_plane_children(children, bounds, words)?, u64::MAX)
+        }
         FilterExpr::Or(children) => compile_plane_children(children, bounds, words).map(or_of),
         // De Morgan pushdown so a Not that reaches a Legality leaf lands on
         // `illegal_exists` instead of bit-complementing `legal_exists` (wrong
@@ -1283,7 +1349,7 @@ fn compile_plane_neg(filter: &FilterExpr, bounds: &rkyv::Archived<BitPlanes>, wo
         FilterExpr::And(children) => compile_plane_neg_children(children, bounds, words).map(or_of),
         // Not(Or(cs)) = And(Not(c) for c in cs) -- THIS does have the
         // shared-witness exposure (see and_of_checked_for_shared_witness).
-        FilterExpr::Or(children) => and_of_checked_for_shared_witness(compile_plane_neg_children(children, bounds, words)?),
+        FilterExpr::Or(children) => and_of_checked_for_shared_witness(compile_plane_neg_children(children, bounds, words)?, u64::MAX),
         FilterExpr::Not(inner) => compile_plane(inner, bounds, words), // double negation
         FilterExpr::True => Some(PlaneExpr::Const(false)),
         // Everything else: only Legality has a divergent-card correctness
@@ -1341,7 +1407,13 @@ pub(crate) fn split_planes(
         return (None, filter);
     }
     if let Some(pe) = compile_plane(&filter, bounds, words)
-        && (unique_is_card || !plane_expr_is_existential(&pe))
+        // `u64::MAX`, deliberately: using the divergence mask here would let a card-invariant legality
+        // leaf be consumed into a whole-filter plane, which makes the residual `True` -- and a `True`
+        // residual takes `PrintingCompose` out of the running entirely. Compose is the best plan for
+        // several of these queries by a wide margin (`f:commander`/printing measured 1.83 us against
+        // StreamedSelect's 99.38), so trading it away to skip per-printing verification is a large net
+        // loss. The mask is used below the applicability decisions, not inside them.
+        && (unique_is_card || !plane_expr_is_existential(&pe, u64::MAX))
     {
         return (Some(pe), FilterExpr::True);
     }
@@ -1364,7 +1436,7 @@ pub(crate) fn split_planes(
                 match compile_plane(&c, bounds, words) {
                     Some(pe) => {
                         let mut fmts = Vec::new();
-                        collect_existential_indices(&pe, &mut fmts);
+                        collect_existential_indices(&pe, &mut fmts, u64::MAX);
                         if fmts.is_empty() {
                             planes.push(pe);
                         } else {
@@ -1376,7 +1448,7 @@ pub(crate) fn split_planes(
             }
             let mut all_formats = Vec::new();
             for (_, pe) in &legality_children {
-                collect_existential_indices(pe, &mut all_formats);
+                collect_existential_indices(pe, &mut all_formats, u64::MAX);
             }
             if unique_is_card && all_formats.len() <= 1 {
                 for (_, pe) in legality_children {

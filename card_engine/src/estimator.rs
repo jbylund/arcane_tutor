@@ -258,7 +258,7 @@ fn plane_popcount(f: &FilterExpr, indexes: &Archived<CardIndexes>, n_cards: u32)
     let mut bits: Vec<u64> = Vec::new();
     eval_planes(&pe, &indexes.planes, &mut bits);
     let c: u32 = bits.iter().map(|w| w.count_ones()).sum();
-    Some((c, plane_expr_is_existential(&pe)))
+    Some((c, plane_expr_is_existential(&pe, u64::from(indexes.planes.divergent_formats))))
 }
 
 /// A plane-backed leaf. `force_loose` forces the superset treatment

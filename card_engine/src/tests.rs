@@ -301,8 +301,6 @@ fn store_of(cards: Vec<OracleCard>, printing_counts: &[usize], vocab: VocabInter
         printing_to_card: build_printing_to_card(&offsets),
         ..Default::default()
     };
-    // Before the literal moves `printings`/`offsets` into it.
-    let divergent_formats = divergent_formats_of(&printings, &offsets);
     CardData {
         cards,
         printings,
@@ -314,11 +312,6 @@ fn store_of(cards: Vec<OracleCard>, printing_counts: &[usize], vocab: VocabInter
         mana_vocab: vec![],
         indexes,
         format_shifts: HashMap::new(),
-        // Computed by the same function `reload` uses, so a fixture cannot accidentally exercise a
-        // shortcut production would not take (or miss one it would). `stub_printing` gives every printing
-        // the same legality word, so a plain fixture store reads 0 here -- no format diverges -- and the
-        // fixtures that DO want divergence build their words explicitly (see `fuzz_store_n`).
-        divergent_formats,
     }
 }
 
@@ -1365,11 +1358,33 @@ fn plane_expr_is_existential_identifies_legality_only() {
     let bounds = &archived.indexes.planes;
     let words = &archived.indexes.oracle_trigram.words;
 
+    // This fixture's card2 has two printings disagreeing at shifts 0 and 4, and nothing disagrees at
+    // shift 2 -- so it carries both regimes, and the mask says which is which. Asserted rather than
+    // assumed, because every expectation below depends on it.
+    let divergent = u64::from(bounds.divergent_formats);
+    assert_eq!(divergent >> 0 & 0b11, 0b01, "shift 0 diverges: card2 is legal in one printing, not the other");
+    assert_eq!(divergent >> 2 & 0b11, 0b00, "shift 2 is card-invariant across this fixture");
+    assert_ne!(divergent >> 4 & 0b11, 0b00, "shift 4 diverges: banned in one printing, legal in the other");
+
     let legality_pe = compile_plane(&FilterExpr::Legality { shift: Some(0), expected: 0b01 }, bounds, words).unwrap();
-    assert!(super::plane_expr_is_existential(&legality_pe));
+    assert!(super::plane_expr_is_existential(&legality_pe, divergent), "a DIVERGENT format needs per-printing truth");
+
+    // The new half: a legality plane for a format whose printings never disagree is card-invariant, so it
+    // is not existential and the #667 carveout does not apply to it. This is what makes `f:modern` behave
+    // like `t:creature` -- in the production corpus every format but `oldschool` is in this case.
+    let invariant_pe = compile_plane(&FilterExpr::Legality { shift: Some(2), expected: 0b01 }, bounds, words).unwrap();
+    assert!(
+        !super::plane_expr_is_existential(&invariant_pe, divergent),
+        "a format no card diverges in is card-invariant, so its plane needs no per-printing verification",
+    );
+    // ...and the conservative mask still says yes, which is what a pre-mask store supplies.
+    assert!(
+        super::plane_expr_is_existential(&invariant_pe, u64::MAX),
+        "u64::MAX must reproduce the pre-mask behaviour for every format",
+    );
 
     let creature_pe = compile_plane(&FilterExpr::TypeCmp { mask: TYPE_CREATURE, op: CmpOp::Ge }, bounds, words).unwrap();
-    assert!(!super::plane_expr_is_existential(&creature_pe));
+    assert!(!super::plane_expr_is_existential(&creature_pe, divergent));
 
     let mixed = compile_plane(
         &FilterExpr::And(vec![
@@ -1380,7 +1395,7 @@ fn plane_expr_is_existential_identifies_legality_only() {
         words,
     )
     .unwrap();
-    assert!(super::plane_expr_is_existential(&mixed), "one existential leaf must taint the whole And");
+    assert!(super::plane_expr_is_existential(&mixed, divergent), "one existential leaf must taint the whole And");
 }
 
 /// Regression for the mode-aware all_match bug found while building this
@@ -5577,6 +5592,12 @@ fn legality_and_of_two_formats_declines_but_or_compiles() {
     let a = || FilterExpr::Legality { shift: Some(0), expected: 0b01 };
     let b = || FilterExpr::Legality { shift: Some(2), expected: 0b01 };
 
+    // Still unconditional: `compile_plane` deliberately asks this question with `u64::MAX` rather than the
+    // store's divergence mask, because the answer decides whether the filter consumes to a plane -- and a
+    // consumed filter takes `PrintingCompose` out of the running, which measured a 54x loss on
+    // `f:commander`/printing. The mask is used below the applicability decisions, never inside them.
+    // Once compose is applicable to plane-consumed filters, `a AND invariant` becomes composable and this
+    // assertion is the one to revisit.
     assert!(
         compile_plane(&FilterExpr::And(vec![a(), b()]), bounds, words).is_none(),
         "two distinct formats ANDed must decline (shared-witness)"
@@ -5862,7 +5883,6 @@ fn bench_checked_vs_unchecked_access() {
         legal_divergent: build_divergent_ids(&cards),
         arith_tuple:    build_arith_tuple_index(&cards),
     };
-    let divergent_formats = divergent_formats_of(&printings, &offsets);
     let data = CardData {
         cards,
         printings,
@@ -5874,7 +5894,6 @@ fn bench_checked_vs_unchecked_access() {
         mana_vocab: vec![],
         indexes,
         format_shifts: HashMap::new(),
-        divergent_formats,
     };
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     println!("archive size: {:.1} MB", bytes.len() as f64 / 1e6);
