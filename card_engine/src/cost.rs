@@ -332,7 +332,18 @@ pub(crate) fn materialize_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
 /// 9,867 distinct shapes. P3 had been under-costed ~1.6x, which biases the router toward picking it.
 /// P4 and compose were re-fit in the same run and NOT changed: P4's fitted values reproduce these
 /// within 8% with no agreement gain, and compose's fit makes its median worse (0.95 -> 0.86).
-const STREAM_CARD_PASS_NS: f64 = 5.05;
+/// **Split 2026-08-03**, and the level below is now the CALL only. `bench_streamed_loop` measures P3's
+/// loop at 2.58 ns/card on the `all_match` path and 5.08 with a residual, on the same cells at the same
+/// corpus size — so ~2.5 of the shipped 5.05 was the `card_pass` call, charged to every candidate whether
+/// the call happened or not. The sum is preserved (2.58 + 2.47 = 5.05), so a residual-bearing query is
+/// costed exactly as before and only the `all_match` path gets cheaper.
+const STREAM_CARD_PASS_NS: f64 = 2.47;
+/// P3's loop body per candidate card, paid whether or not a residual exists: the `counts` write, the
+/// offsets arithmetic, and the match-count call that answers from the span alone under `all_match`.
+/// 2.58 ns/card measured by `bench_streamed_loop`, and the one rate in either loop that is FLAT across a
+/// 13× corpus (2.58 / 2.54 / 2.55) — it reads the card record and nothing else, so it has no misses to
+/// gain. That flatness is why it is the half worth stating as a constant.
+const STREAM_LOOP_PER_CARD_NS: f64 = 2.58;
 
 /// P3's per-scanned-row cost, charged ONLY when a residual is present.
 ///
@@ -478,7 +489,20 @@ const STREAM_FIXED_COST_NS: f64 = 217.0;
 /// ridge-anchored to the previous values because several columns barely vary on this corpus and
 /// are collinear with the intercept. Fitted on ~10k distinct feature vectors, stable to <3% across
 /// independent seeds. Median measured/predicted moved 1.78 -> 1.00 (P4) and 1.69 -> 1.06 (P3).
-const GATHER_CARD_PASS_NS: f64 = 6.88;
+/// **Split 2026-08-03**, and the level below is now the CALL only. The module header's own reading of
+/// `bench_gather_loop` said this constant "BUNDLES the predicate call": ~3.2 ns/card of loop overhead
+/// plus 2.94-3.00 for the `card_pass` call itself on singletons, summing to ~6.2 against the shipped
+/// 6.88. It was therefore "about right for queries that make that call, and about 2x too high for the
+/// #634 `all_match_known` path, which skips `card_pass` entirely and is charged for it anyway — a
+/// model-shape error rather than a mis-fitted constant". This is that error, fixed where it lives.
+///
+/// The sum is preserved (3.88 + 3.00 = 6.88), so residual-bearing queries are costed as before.
+const GATHER_CARD_PASS_NS: f64 = 3.00;
+/// P4's loop body per candidate card, paid whether or not a residual exists. 3.88 = the shipped 6.88
+/// less the 3.00 call above, rather than the kernel's 3.15-3.33 directly: the kernel figure is a warm
+/// rate (see the retraction in `bench_gather_loop`'s header) and holding the SUM at the shipped value
+/// keeps this change a pure re-gating, with no level moving on the queries that were costed correctly.
+const GATHER_LOOP_PER_CARD_NS: f64 = 3.88;
 /// ns per printing scanned in the gathered loop (residual test per row). The verify `tier`
 /// does NOT ride this term; see GATHER_VERIFY_TIER_SCALE and STREAM_SCAN_PER_ROW_NS.
 const GATHER_SCAN_PER_ROW_NS: f64 = 2.06;
@@ -746,7 +770,15 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
             // residual is re-checked per row inside `push_card_matches`. Charging `tier_ns` per
             // scanned ROW instead is invisible in card mode (scan_units ≈ eval_domain) and
             // overcharges printing/artwork by the whole printings-per-card ratio.
-            eval_domain * (STREAM_CARD_PASS_NS + if tier_ns > 0.0 { tier_ns.max(STREAM_RESIDUAL_FLOOR_NS) } else { 0.0 })
+            //
+            // The per-card term is TWO terms, gated apart on the same `tier_ns > 0` signal this arm
+            // already uses for its scan: the loop body runs for every candidate, but the `card_pass`
+            // CALL only happens when there is a residual to check. `all_match_known` skips it outright
+            // (#634 step 1), and `tier_ns == 0` is exactly that condition. Charging the call anyway made
+            // the arm's card-mode body read p50 1.90 over-costed.
+            eval_domain
+                * (STREAM_LOOP_PER_CARD_NS
+                    + if tier_ns > 0.0 { STREAM_CARD_PASS_NS + tier_ns.max(STREAM_RESIDUAL_FLOOR_NS) } else { 0.0 })
                 // Only with a residual does P3 walk printings; see STREAM_SCAN_PER_ROW_NS.
                 + if tier_ns > 0.0 { scan_units * STREAM_SCAN_PER_ROW_NS } else { 0.0 }
                 + matches * STREAM_EMIT_PER_MATCH_NS
@@ -761,7 +793,13 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
     // page past the end of the matches collects fewer rows than `limit` asked for.
     let page_rows = f64::from(f.matches.saturating_sub(f.offset).min(f.limit));
             // Per-CARD verify tier, for the reason spelled out in the StreamedSelect arm above.
-            eval_domain * (GATHER_CARD_PASS_NS + if tier_ns > 0.0 { tier_ns.max(GATHER_RESIDUAL_FLOOR_NS) } else { 0.0 })
+            // Split and gated exactly as in the StreamedSelect arm above, and deliberately in the same
+            // change: this lowers both plans' cost on `all_match` queries, and the one asymmetric
+            // adjustment tried before (P3's residual floor moved while P4's stayed) sent
+            // `StreamedSelect -> GatheredScan` from 407 lost-time queries to 653.
+            eval_domain
+                * (GATHER_LOOP_PER_CARD_NS
+                    + if tier_ns > 0.0 { GATHER_CARD_PASS_NS + tier_ns.max(GATHER_RESIDUAL_FLOOR_NS) } else { 0.0 })
                 + scan_units * GATHER_SCAN_PER_ROW_NS
                 + matches * GATHER_PUSH_PER_MATCH_NS
                 + page_span * GATHER_SELECT_PER_PAGE_SLOT_NS
