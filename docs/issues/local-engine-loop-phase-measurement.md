@@ -380,6 +380,47 @@ So the ordering is: this, then re-measure, and only then decide whether a per-pl
 still needed for the non-legality compose cases (`border:black`, `r:mythic`, `watermark:*`), where the
 current estimate is already right to 1.1-2.4x.
 
+## Making the split non-destructive, and what it cost
+
+`split_planes` is a destructive rewrite run at bind time, before any plan is costed: it moves predicate
+out of the filter tree `PrintingCompose` composes from into a `PlaneExpr` compose cannot read, so compose
+fails its `plane.is_none()` guard and never reaches the argmin. That guard is right — composing the
+residual alone would drop the plane's predicate — but the elimination happens blind, under a layer whose
+premise is "plan selection is one cost-based routing layer, not a hand-tuned decision tree". Measured
+consequence: compose ran `f:commander`/printing in 1.83 µs against StreamedSelect's 99.38, a plan the
+router was never offered.
+
+`bind_and_split_filter` now retains the filter as bound; `printing_compose_applicable` asks about the
+whole predicate, and `compose_source` is the one place that picks a representation. Every other plan keeps
+plane+residual. Row identity across the whole series: 60 (query, mode, offset) cells over ten legality
+shapes, identical on total, page length and a hash of returned `scryfall_id`s.
+
+| query / mode | before | after | ratio |
+| --- | --: | --: | --: |
+| `f:modern t:creature` / printing | 90.00 | **42.83** | **0.476** |
+| `f:modern t:creature` / artwork | 82.38 | 67.50 | 0.819 |
+| bare formats, both modes | — | — | 0.97–1.14, compose still picked |
+
+**And it raised regret 15%, which is the honest headline.** Total regret 48.7 → 56.1 ms, with the compose
+slice going 39% → 46% of lost time (mean 3.98 → 4.86 µs, miss 10% → 12%). Isolated by reverting just the
+consume guard: 56.8 ms with it off against 56.1 with it on — so the guard is **not** the cause and is now
+free, where before the split was retained it cost 54× on `f:commander`/printing. The rise is the split
+itself: handing the argmin a candidate whose arm is the worst-modelled in the engine (p90 41×, spread 136×
+on rarity/usd) imports mispicks.
+
+That is a real trade, and the two ways to read it are both defensible. Against: a measured 15% regret
+regression is exactly what this branch has declined six times before. For: the regret is now *visible and
+attributable* rather than hidden behind an elimination, and it is bounded by one arm's accuracy — the same
+arm whose two defects are already measured (`scan_units` overstating P3 by 13–15×,
+`STREAM_RESIDUAL_FLOOR_NS` charging 11.63 ns/card against a measured 6.7). Fixing those converts the
+exposure into the win.
+
+**The bare-format artwork mispick survives, and is now purely a cost error.** StreamedSelect with the
+consumed form measured 79.83 µs against compose's 177.83 on `f:gladiator`/artwork, and the router still
+picks compose — but now because it prices compose 4–6× too cheaply against P3, not because P3 was removed
+from the ballot. The architecture stopped hiding the problem, which is what makes the remaining work worth
+doing.
+
 ## What is left
 
 1. **Extend the popcount-skip walk past `FilterExpr::True`.** What is left of the perm estimate's p90 has
