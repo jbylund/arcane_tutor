@@ -297,6 +297,30 @@ the only one a rate cannot rescue. It is also NOT the artwork arm of item 4 belo
 in printing mode too (6.23, 5.25), where compose happens to be genuinely faster, so the wrong ratio does
 not flip the pick. Artwork is only where the margin is thin enough to expose it.
 
+### But that correction alone does not flip the pick
+
+The term is linear, so the corrected prediction is exact arithmetic rather than a guess:
+
+| query / mode | P3 predicted | with the fix | P3 measured | compose predicted | winner after | truth |
+| --- | --: | --: | --: | --: | --- | --- |
+| f:gladiator / artwork | 704.0 | **213.6** | 102.5 | 178.7 | compose | **P3** (102 µs) |
+| f:modern / artwork | 813.7 | **252.8** | 142.8 | 188.8 | compose | **P3** (143 µs) |
+
+It removes 490–561 µs — the largest single error — and takes P3 from 6.9× over to **2.08×** and 5.7× to
+**1.77×**. But compose is predicted at 179/189, so P3 at 214/253 still loses and the 33 µs stays lost.
+
+What remains is P3's per-card term: `eval_domain × (2.58 + 2.47 + max(tier, 6.58))` = 13,587 × 11.63 =
+158 µs against a measured loop of 90.9 µs over those same cards — 6.7 ns/card actual, 11.63 charged. The
+dominant piece is `STREAM_RESIDUAL_FLOOR_NS`, and at ~2 ns/card the arm lands near 151 µs and P3 wins. So
+the floor is the load-bearing half, and it is the term with the worst history here: P4's analogue (18.89)
+"was load-bearing despite being unmeasured" and moving it made routing worse. Unmeasured is the point —
+it has never had the built-design treatment that corrected the loop intercept above.
+
+Two reasons to ship the feature correction first regardless. It is a realized-counter defect of 13–15×,
+which no rate can absorb; and it is **pick-preserving where picks are already right** — the printing-mode
+rows still choose compose after the fix, and compose is correct there (94 vs 111 µs, 38 vs 152 µs). So it
+buys accuracy without moving sound decisions, which is the cheapest kind of change to gate.
+
 ## What is left
 
 1. **Extend the popcount-skip walk past `FilterExpr::True`.** What is left of the perm estimate's p90 has
