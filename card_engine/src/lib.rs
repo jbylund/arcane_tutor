@@ -2161,6 +2161,27 @@ fn partition_point(len: usize, pred: impl Fn(usize) -> bool) -> usize {
     lo
 }
 
+/// Which legality formats have printings that disagree, as a mask over the same 2-bit fields
+/// `format_shifts` indexes. See `CardData::divergent_formats` for why the per-format answer is worth
+/// more than the per-card boolean beside it.
+///
+/// One definition, used by `reload` AND by the test fixtures, because a fixture computing this
+/// differently from production would either exercise a shortcut production never takes or miss one it
+/// does — and the thing being decided is whether per-printing legality verification can be skipped.
+fn divergent_formats_of(printings: &[Printing], offsets: &[u32]) -> u64 {
+    let mut mask = 0u64;
+    for w in offsets.windows(2) {
+        let (start, end) = (w[0] as usize, w[1] as usize);
+        // XOR every printing against the group's first: a field that ever differs shows up in some XOR,
+        // and a field that never does contributes nothing from any pair.
+        let first = printings[start].card_legalities;
+        for pr in &printings[start + 1..end] {
+            mask |= first ^ pr.card_legalities;
+        }
+    }
+    mask
+}
+
 fn build_sort_permutations(cards: &[OracleCard]) -> SortPermutations {
     // Purely card-space now: the printings/offsets arguments existed only to read the first stored
     // printing's prefer_score, which is no longer a sort key (see the closure below).
@@ -9806,8 +9827,6 @@ impl QueryEngine {
         let mut cards: Vec<OracleCard> = Vec::new();
         let mut printings: Vec<Printing> = Vec::with_capacity(rows.len());
         let mut offsets: Vec<u32> = Vec::new();
-        // See `CardData::divergent_formats`: which formats disagree, not just that some card's did.
-        let mut divergent_formats: u64 = 0;
         for mut row in rows {
             let is_new = cards.last().is_none_or(|c| c.oracle_id != row.oracle_id);
             if is_new {
@@ -9845,8 +9864,6 @@ impl QueryEngine {
                 });
             } else if row.card_legalities != cards.last().map(|c| c.card_legalities).unwrap_or(0) {
                 cards.last_mut().unwrap().legality_divergent = true;
-                // Which 2-bit fields differ, not merely that some did. See `CardData::divergent_formats`.
-                divergent_formats |= row.card_legalities ^ cards.last().map(|c| c.card_legalities).unwrap_or(0);
             }
             printings.push(Printing {
                 scryfall_id: row.scryfall_id,
@@ -9973,6 +9990,9 @@ impl QueryEngine {
         // Snapshot the registry card_from_pydict just populated so reader
         // processes can adopt the same format→shift assignments.
         let format_shifts_snapshot = format_shifts().read().map(|m| m.clone()).unwrap_or_default();
+        // Computed over the grouped arrays rather than inside the grouping loop, so the fixtures can call
+        // the same function on the same shape. One pass over the printings against a ~2 s load.
+        let divergent_formats = divergent_formats_of(&printings, &offsets);
         let card_data = CardData {
             cards,
             printings,
