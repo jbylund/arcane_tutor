@@ -930,3 +930,53 @@ for a per-predicate estimate rather than a better global rate:
 - The residual usually is not the whole predicate, so a global pass fraction still assumes independence
   from the candidate set — the assumption that just cost us on `eval_domain`. Preferring a direct count
   where the residual *is* the leaf avoids it; conjunctions still need care.
+
+### Tier 2: both exact-count routes measured and declined
+
+The plan was to replace the global pass rate with a per-predicate count, since the spread (0.06–0.87) is
+what a constant cannot fix. Two routes existed without new machinery. Both are worse than the span estimate,
+and they fail for the same reason.
+
+**`estimator::estimate_cardinality`** — already in the tree, index-backed leaves, `Cardinality {lo, est, hi}`
+with independence for `And` and `min` for the `hi` bound. In production it is called **once**, as a
+`hi <= STREAM_MIN_MATCHES` threshold check. Graded against `matches_pushed`:
+
+| mode | shipped `matches` | `estimate_cardinality` |
+| --- | --: | --: |
+| card | p50 1.40, p90 9.91, mean \|log\| **0.789** | p50 1.45, p90 **33.38**, **1.312** |
+| printing | p50 1.09, p90 11.03, **0.953** | p50 0.70, p90 17.12, 1.346 |
+| artwork | p50 1.19, p90 10.19, **0.807** | p50 1.17, p90 25.01, 1.281 |
+
+Uniformly worse, and worst in the tail — which is where this acquire's loss lives. It dates from the
+estimate-based era of the planner; its `lo` arm already documents that Bonferroni is *unsound* over two or
+more printing-varying children, because a card can enter each child's card-space projection via **different
+printings** while no single printing satisfies all.
+
+**`RangeCardCounts::distinct_cards`** — genuinely exact, not an estimate: `below`/`at_or_above`/`at` per
+distinct value, two `partition_point` probes, exact for every op but a true interior range. It is the right
+instinct and it still does not work here:
+
+- **Coverage 9%** of rows with a residual — 7% of the misordered ones, 2.0 ms of a 46.5 ms pairwise gap.
+- **6× worse where it applies** — card p50 **6.32** against the shipped 1.12.
+
+Because `bare_range_bounds` matches the **residual**, so the count is exact for `cn<100` *globally* while the
+feature needs cards matching `cn<100` **and the rest of the query**. Exact for the wrong set. The span
+estimate is worse in principle and better in practice because it at least reflects the candidate set.
+
+**The shared lesson, third instance today.** `eval_domain` confused candidates with matches; the compose
+`scan_units` clamp was an impossible value; and now both exact-count routes answer a marginal question where
+a conditional one was asked. The quantity is `|candidates ∩ residual|`, and its exact evaluation is the work
+being costed. A bitmap AND of the candidate set against an indexed leaf's set would deliver it for the same
+9%; nothing cheap covers the remaining 91%.
+
+**What is left for `matches`, in order of expected value:**
+
+1. **Condition the pass rate on the residual TIER, not just the mode.** The tier already exists as a feature
+   and it separates the populations: implied rates ~0.24–0.32 for `MASK`, ~0.35 for `SET_LOOKUP`, ~0.95 for
+   `TEXT_SCAN`/printing against a shipped 0.40. A level change fitted from traffic, so it is on the right
+   side of the branch's rule, and it needs no new machinery. It fixes medians, not the 14× spread.
+2. **Bitmap-AND the candidate set with an indexed residual leaf** for an exact conditional count on the 9%.
+   Related to `local-engine-candidate-materialize.md`'s finding that a bitmap beats a sorted vec from ~64
+   candidates up, though that doc measures the acquire, which regret excludes by construction.
+3. **Accept the spread.** The evidence so far is that `matches` is irreducibly estimated on this acquire
+   without doing the residual's own work, and that its error is what the P3/P4 pair mostly reflects.

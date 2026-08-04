@@ -8101,6 +8101,21 @@ fn candidate_feats(ctx: &QueryCtx, params: &QueryParams, prep: &PreparedCandidat
     // where a residual survives, because roughly half the printings under a candidate then fail it.
     // Discount by the measured pass rate there; undiscounted it swapped a 2.4x under-count for a 2.6x
     // over-count. Result after both: 1.00 tight, 0.91-1.00 with a residual.
+    // Two exact-count routes were measured here and BOTH are worse than this span estimate, for one
+    // shared reason: the quantity wanted is `|candidates AND residual|`, and neither route provides an
+    // intersection.
+    //
+    // - `estimator::estimate_cardinality` (the engine already ships it, index-backed leaves, independence
+    //   over `And`): worse in every mode -- card mean |log| 1.31 against 0.79, p90 33.38 against 9.91.
+    // - `RangeCardCounts::distinct_cards`, which is genuinely EXACT and O(log n): available on only 9% of
+    //   rows with a residual (7% of the misordered ones, 2.0 of 46.5 ms of pairwise gap), and 6x worse where
+    //   it is available -- card p50 6.32 against 1.12. It counts cards matching the residual leaf GLOBALLY,
+    //   not cards matching it among the candidates, so it is exact for the wrong set.
+    //
+    // The exact answer needs the residual evaluated over the candidates, which is the work being costed. A
+    // bitmap AND of the candidate set with an indexed leaf's set would give it for that same 9%; nothing
+    // cheap covers the rest. See the candidates-acquire section of
+    // docs/issues/local-engine-loop-phase-measurement.md.
     let matches = match params.mode {
         Mode::Card => count,
         Mode::Printing | Mode::Artwork => {
@@ -8131,6 +8146,7 @@ fn candidate_feats(ctx: &QueryCtx, params: &QueryParams, prep: &PreparedCandidat
     // all-or-nothing shape. With a printing-level field in play the printings under one card disagree, which
     // is the shape the single `RESIDUAL_PASS_RATE_*` was fitted on. Nothing reads this in routing.
     feats.residual_card_invariant = !prep.all_match_known && !touches_printing_field(filter);
+
     feats
 }
 
