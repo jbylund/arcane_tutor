@@ -537,14 +537,22 @@ dominant term of P4's arm is what makes P3 win where P4 is better, which is the 
 | baseline (HEAD) | 81.7 ms | 2.07 µs | 408 q, 27% of loss | 1,045 q, 37% |
 | tier gate alone | 129.7 ms | 3.50 µs | 33 q, 0% | 1,830 q, 79% |
 | gate + P4 scan | 61.2 ms | 1.55 µs | 48 q, 1% | 1,050 q, 50% |
-| **+ clustering bias on the ball count** | **56.4 ms** | **1.49 µs** | 49 q, 1% | 999 q, 51% |
+| + clustering bias on the ball count | 56.4 ms | **1.49 µs** | 49 q, 1% | 999 q, 51% |
+| **+ `scan_units` clamped at `n_printings`** | 57.0 ms | **1.54 µs** | 43 q, 1% | 999 q, 52% |
 
-Compare the **means**: the total is a sum over however many queries the budget reached (39,458 against 37,749
-here), so the totals are not directly comparable and the mean is. **−28% on the baseline.**
+Compare the **means**: the total is a sum over however many queries the budget reached (39,458 down to 37,111
+across these rows), so the totals are not comparable and the mean is. **−26% on the baseline.**
 
-**−25% regret against HEAD**, and the mispick class this started from is gone (408 → 48 queries, mean 54.27
-→ 13.58 µs). `cargo test` 149 debug / 148 release; row identity needs no new run because these are
-cost-only changes and `force_plan_differential_agreement` already proves every plan returns the same rows.
+The last two rows are within run noise of each other (1.49 against 1.54 µs on transition tables that are
+otherwise identical — 999 queries against 999 on the top slice), so the clamp is **aggregate-neutral**. It is
+kept for what the aggregate cannot see: it is the only one of the four that moved the pair
+`GatheredScan vs StreamedSelect [printing_compose]`, 69% → **75%** with mean pair regret 40.24 → 23.00 µs.
+Which is the same lesson as the table itself — a 3% move in a pooled mean is not evidence either way, and the
+per-pair diagnostic is what ranks routing work.
+
+The mispick class this started from is gone (408 → 43 queries, mean 54.27 → 13.93 µs). `cargo test` 149 debug
+/ 148 release throughout; row identity needs no new run because these are cost-only changes and
+`force_plan_differential_agreement` already proves every plan returns the same rows.
 
 The honest caveat: the P4 scan fix **did not fix the pair**. `GatheredScan vs StreamedSelect
 [printing_compose]` is still 69% ordered right (gap 0.89 → 0.91), and `StreamedSelect -> GatheredScan`
@@ -576,14 +584,28 @@ t:creature`'s 0.476× is kept. What is left is not a debt but a named defect: th
 
 ## What is left
 
-1. **Rank `GatheredScan vs StreamedSelect` on the compose acquire.** 3,403 pairs at **69% ordered right**,
-   mean regret 36.40 µs — the engine's largest single routing error and the top item. Two corrections landed
-   against it and **neither moved its ordering**: the tier gate (69% → 69%) and P4's scan feature (69% → 69%,
-   gap 0.89 → 0.91). Both were worth doing — together −25% total regret — but they bought that by removing
-   biases that *amplified* this pair, not by ranking it. The pair itself is untouched.
+1. **Rank `GatheredScan vs StreamedSelect` on the compose acquire.** Now **75% ordered right** over 4,825
+   non-tie pairs, mean regret 23.00 µs, gap 0.96 — still the engine's largest single routing error and still
+   the top item. Four feature corrections landed against it, and the pattern of which ones moved it is the
+   useful part:
 
-   **Not variance — a sub-population, and it is named.** The gap ratio of 0.91 invites reading this as noise
-   around a correct average; splitting the pairs by whether the sign is right says otherwise. Over 5,085
+   | correction | pair ordered right | pair mean regret | gap |
+   | --- | --: | --: | --: |
+   | baseline | 69% | 35.96 µs | 0.89 |
+   | verify-tier gate | 69% | 36.82 | 0.90 |
+   | P4's span feature | 69% | 40.24 | 0.91 |
+   | estimator bias onto the ball count | 69% | 40.24 | 0.93 |
+   | **`scan_units` clamped at `n_printings`** | **75%** | **23.00** | **0.96** |
+
+   Three of the four moved nothing, and the reason is instructive: `eval_domain` and `scan_units` feed **both**
+   arms, so a correction to either moves both predictions the same direction and the difference barely
+   changes. The clamp moved it because it lands **asymmetrically** — `scan_units` is 76% of P3's arm on this
+   class and 28% of P4's. **For an argmin, a feature fix only pays when the two plans weight the feature
+   differently.** That is the same principle as the module header's "a term wrong for every plan cancels",
+   applied to features rather than rates.
+
+   **Not variance — a sub-population, and it is named.** The gap ratio invites reading this as noise around a
+   correct average; splitting the pairs by whether the sign is right says otherwise. At 69%, over 5,085
    non-tie pairs:
 
    | group | n | P3 wins (measured) | P3 wins (predicted) | median \|gap\| |
@@ -614,24 +636,66 @@ t:creature`'s 0.476× is kept. What is left is not a debt but a named defect: th
    much as P3 because P4's per-card rate is 25.77 ns against 11.63. Fixed by moving the clustering bias onto
    the ball count (see the commit); the broad band went 0.52 → 0.78 against `cards_visited`.
 
-   **What survives three feature corrections is a rate problem, and that is now the evidence.** The tier
-   gate, P4's span feature and the estimator's shape each improved something else and each left this pair at
-   **exactly 69%**, with an unchanged internal structure — still 100% of wrong pairs in `tier > 0`, still P3
-   winning 98% of them while the model says 2%. The decisive number is `meas/pred` = **−0.97**: the predicted
-   gap is almost exactly the *negative* of the measured gap, consistently. Magnitude right, direction
-   inverted, immovable by any feature. That is what a mis-split between the per-card and per-printing rates
-   looks like when both features are maximal.
+   **Retracted a second time: "what survives three feature corrections is a rate problem."** A fourth
+   feature correction moved it 69% → 75%, so that inference was wrong — it rested on three fixes that could
+   not have moved the pair for the structural reason above, and read their failure as evidence about rates.
+   The estimator fix also made things temporarily worse in a way worth recording: it improved `eval_domain`
+   (16,511 → 24,592) and *degraded* `scan_units` (106,970 → **159,325** against a realized 97,206), because
+   `scan_all` derives from `est_cards`. P3 went 1.03 → 1.53 of its real time while P4 sat at 0.88 — both
+   plans over the same feature. A feature above `n_printings` is impossible rather than merely wrong, which
+   is what made the clamp an invariant instead of a calibration.
 
-   So the remaining work is a **built design over the broad-residual population**, not another feature hunt:
-   `bench_streamed_loop` and `bench_gather_loop` restricted to cells where both plans scan the whole corpus,
-   solving for each arm's per-card and per-printing rates separately. Two traps attached. A pooled traffic fit
-   **endorses both current rates** (StreamedSelect `SCAN_PER_ROW` 6.04, ratio 1.01; GatheredScan 2.53, 1.23),
-   so `fit_cost_model` cannot find this. And the built design will read warm-cache, so it gives the **shape**
-   — which of the two rates is misattributed — and not the level. Wrong-rate concentrates by mode: artwork
-   37%, printing 31%, card 19%.
+   **Features are still not exhausted at 75%.** The wrong group retains a feature asymmetry against the
+   right group, so the next step is not automatically a rate measurement:
+
+   | feature / realized counter | right group p50 | wrong group p50 |
+   | --- | --: | --: |
+   | `eval_domain` | 0.98 | **0.85** |
+   | `scan_units` | 0.95 | 1.00 (was 1.37 before the clamp) |
+   | `matches` | 1.00 | 1.11 |
+
+   `eval_domain` still under-counts by ~1.18× exactly where the ordering fails, and P4's per-card rate is
+   2.2× P3's, so that residue still discounts P4 asymmetrically. `meas/pred` reads **−1.17** in the wrong
+   group: magnitude right, sign inverted, as before.
+
+   **The open question is which of the two it now is, and no tool can currently answer it.** Distinguishing
+   "remaining feature error" from "rate misattribution" needs each arm's per-card and per-printing rates
+   measured on *identical* cells — and `bench_loop_design`'s header states that neither harness compares the
+   two plans, deferring that to `explain_analyze`, which compares predicted against measured per plan on
+   sampled traffic and cannot isolate a rate. So the next piece of work is a **pair-level harness**: see the
+   note below. What the existing harnesses already report is suggestive — P3 3.30 ns/printing against P4's
+   2.27, a ratio of **1.45**, where the shipped constants are 5.97 and 2.06, a ratio of **2.90**. Both were
+   measured warm, but they were measured warm *together*, and a ratio between two equally-warm arms survives
+   the cache caveat that voids their levels.
+
+   Two traps attached to any rate work here. A pooled traffic fit **endorses both current rates**
+   (StreamedSelect `SCAN_PER_ROW` 6.04, ratio 1.01; GatheredScan 2.53, 1.23), so `fit_cost_model` cannot find
+   this and a pooled refit will confirm the status quo. And a built design reads warm-cache, so it yields the
+   **shape** — which of the two rates is misattributed — and not the level. Wrong-rate now concentrates by
+   mode at artwork 29%, printing 24%, card 18%.
 
    Superseded item 1 ("compose's remaining shape error") — see the retraction above; compose reads 1.02–1.17
    on the mispicked cells and only `oldschool` is under-priced.
+
+1b. **Build the pair-level loop harness item 1 needs.** `bench_streamed_loop` and `bench_gather_loop` now
+   share `bench_loop_design`, so their cells match and can be read side by side — but neither computes the
+   cross-plan quantity, deliberately: the header defers plan comparison to `explain_analyze`. That deferral
+   is incomplete, because `explain_analyze` compares predicted against measured *per plan* on sampled
+   traffic and cannot isolate a per-unit rate. The result is that the one number routing depends on — P3's
+   per-printing rate against P4's, on identical cells — is produced by nothing.
+
+   **Extend, do not fork.** `bench_loop_design` exists precisely because a P3-vs-P4 rate comparison is only
+   valid when the cells match, and they had already drifted once (`CARD_COUNTS` sharing two of five sizes). A
+   third harness that built its own cells would reintroduce that. The increment is to move **cell
+   construction** into `bench_loop_design` alongside the parameters, then add one reporting test that runs
+   both arms over those cells and prints each rate, the measured ratio, and the shipped ratio beside it.
+
+   Two prerequisites, both already flagged in `bench_streamed_loop`'s own header. The rates there are
+   `ns_loop` only, and *"P3's arm may be absorbing setup or finish cost that its loop never pays — that has
+   to be ruled out before the gap is called an error."* `Cell` already carries `ns_setup` and `ns_finish`, so
+   the data exists and is unused. And the broad-residual population is already the `residual: true` group
+   (an always-true `DateCmp` via `DATE_AFTER_EVERYTHING`), so no new cell class is needed — only the
+   comparison.
 2. ~~**Decide the 13% regret debt.**~~ **Closed** — and neither of the two options on offer was the answer.
    The debt was never bounded by compose's arm; the mispriced arm was P3's. Gating the verify tier on the
    compose acquire plus fixing P4's candidate span took regret to **61.2 ms against the 81.7 ms measured
