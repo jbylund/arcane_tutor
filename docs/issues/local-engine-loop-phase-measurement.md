@@ -743,9 +743,39 @@ t:creature`'s 0.476× is kept. What is left is not a debt but a named defect: th
    | 2+ leaves, mixed | 322 | 100% | 1.19 | 0.553 |
    | 3+ leaves, ALL range | 108 | 100% | 0.70 | 0.541 |
 
-   The exact path is much better calibrated, and multi-leaf all-range (853 rows, 23% of the population) is
-   100% estimated at p50 0.62. That is the `cn<=226 year>2004` shape and the obvious target — but two things
-   must be settled before "widen `bare_range_bounds`" is the plan:
+   **It was the quantity, and that is now fixed.** The third caveat below turned out to be the answer, so the
+   range-path widening was never the right work. `eval_domain` was `est_cards` — a count of *matching* cards —
+   graded against `cards_visited`, which counts *candidates*, a superset whenever the narrowing is inexact.
+   The distribution is bimodal: **34% of compose rows visit every card in the corpus**, and on those the right
+   value is not a better estimate but `n_cards`:
+
+   | on the 986 full-scan rows | p10 | p50 | p90 | mean \|log\| |
+   | --- | --: | --: | --: | --: |
+   | `est_cards` (was) | 0.43 | 0.65 | 0.83 | 0.454 |
+   | `n_cards` (now) | 1.00 | 1.00 | 1.00 | **0.000** |
+
+   Predicted with the predicate and constant the sibling `PrintingRangeScan` branch already uses for the
+   identical decision — `range_too_broad_to_narrow(printing_matches, n_printings)`, `MAX_NARROW_FRACTION`
+   0.25 — so no new constant. Scored against the realized flag it catches **98%** of full-scan rows at 87%
+   accuracy, beating every threshold on two alternative signals. Its 26% false positives over-cost both
+   materializing plans by the same factor, which an argmin absorbs; the false negatives were the ones losing
+   the pair, so recall is the side to favour.
+
+   | | before | after |
+   | --- | --: | --: |
+   | `eval_domain [printing_compose]` p50 / p10 | 0.91 / 0.45 | **1.00 / 0.68** |
+   | pair ordered right | 75% | **87%** |
+   | pair mean regret | 23.00 µs | **4.29 µs** |
+   | pair gap meas/pred | 0.96 | **0.98** |
+
+   That brings the acquire within reach of the well-behaved `candidates` acquire (92%, 2.42 µs). **Total regret
+   is flat** (1.52 against 1.54 µs) and `StreamedSelect -> GatheredScan` is still 967 queries — because
+   `bench_pairwise_ordering` scores every pair including queries where compose wins anyway, so the P3/P4
+   ordering never reaches the routing outcome there. Pairwise accuracy is a leading indicator, not the result;
+   the value banked is that the features are now trustworthy for everything downstream.
+
+   The other two caveats stand as recorded, and the remaining `eval_domain` error (p10 0.68) is in the
+   *narrowed* regime, where these still apply:
 
    - **The exact path is not exact against the counter** (p50 0.92, p10 0.50), so it is not a 1.00 ceiling.
    - **The two quantities may not be the same thing.** `eval_domain` estimates *matching* cards, while
