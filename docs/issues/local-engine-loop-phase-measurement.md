@@ -125,8 +125,8 @@ Three things fall out of that table.
   (1) before (2).
 - **The rate did not move.** Traffic fits `PERM_STEP` at 1.17 before and 1.19 after. Deleting a fifth of
   the tail without moving the per-step rate is what a real per-unit cost looks like, as against a
-  coefficient absorbing its feature's error — the failure mode `GATHER_FIXED_COST_NS` turned out to be.
-  Left at the shipped 1.0; no refit.
+  coefficient absorbing its feature's error, which is what `GATHER_FIXED_COST_NS` does. Left at the
+  shipped 1.0; no refit.
 - **The third row bounds what any start position can do.** A realized minimum reached 4.26 because it sees
   clustering the predicate never mentions (`o:flying` correlates with cmc; a name prefix correlates with
   name order). That gap is now a measured property of the two mechanisms, not a guess — and it is the
@@ -138,19 +138,51 @@ segment, which no start position can skip by construction.
 ## What was declined, and why that is the more useful result
 
 **`GATHER_FIXED_COST_NS` (169.6, traffic says 85).** Looked like the cheapest win available: a 2×
-disagreement with no shape question. Measuring the intercept from cells differing *only* in card count
-gives **card −1,084 ns, printing −845 ns**. A negative fixed cost is impossible, so the linear-in-cards
-shape is wrong — the loop is **convex** in card count (12.40 ns/card across 400–4,500 against 6.31–7.67
-over 1,500–4,500). A straight line through a convex curve drives its intercept negative, and a
-whole-arm fit puts that same curvature in its intercept.
+disagreement with no shape question. It is still declined, but the first reason given for declining it was
+wrong and is retracted below.
 
-So 85 is curvature compensation, not a fixed cost. Two consequences:
+The design now runs four card counts — 100 / 400 / 1,500 / 4,500 — and the average per-card cost is
+**U-shaped**, not monotone:
 
-- **Every plan's `FIXED` is its arm's error sink.** `fit_cost_model.py` fits one equation per query
-  against total dispatch, so no plan's fixed cost should be read off it without an independent intercept
-  measurement. `STREAM_FIXED_COST_NS` (217, fitted 192) is unexamined on this basis.
-- The convexity **is** the corpus-size effect below. P4's `FIXED` disagreement and corpus drift are one
-  problem.
+| single-printing card cell, ns/card | 100 | 400 | 1,500 | 4,500 |
+| --- | --: | --: | --: | --: |
+| A | 11.25 | 9.16 | 9.11 | 10.65 |
+| A′ (same shape, different chunk stagger) | 10.42 | 10.00 | 8.69 | 11.65 |
+
+Two effects, at opposite ends. A per-query **fixed cost** is only visible at the small end (at 4,500 cards
+a 170 ns constant is 0.04 ns/card, far under the cell-to-cell spread), and **cache pressure** raises the
+marginal rate at the large end. Solving each end separately, over four single-printing cells and
+reproducible to ±0.01 across runs:
+
+| | marginal ns/card, 100→400 | marginal ns/card, 1,500→4,500 | curvature | fixed cost |
+| --- | --: | --: | --: | --: |
+| card | 7.92 | 10.93 | **1.38×** | 250 |
+| printing | 8.19 | 11.22 | **1.37×** | 98 |
+| artwork | 11.11 | 10.50 | 0.94× | 222 |
+| card (stagger control) | 9.30 | 12.88 | **1.38×** | 29 |
+
+So the fixed cost measures **29–250 ns**, which brackets both the shipped 169.6 and the fitted 85 — and
+that spread, wider than the disagreement being adjudicated, is why the refit stays declined. The
+curvature is the finding: 1.37–1.38× on card and printing, reproducible, and the arm has no term for it.
+Artwork shows none, which is consistent with it being a different loop.
+
+**Retracted: "the measured intercept is negative, so the fixed cost is impossible and 85 is curvature
+compensation."** The negative intercept (−864, −1,078, −1,616 in the table the bench still prints) is an
+artifact of fitting ONE line across a range where a fixed cost dominates one end and cache pressure the
+other; least squares weights the 4,500-card cell by `n²`, so the line tilts to the large end and its
+intercept dives below zero. Adding a 100-card cell and solving the ends apart removes it. The earlier
+run's "card −1,084 / printing −845" also crossed cell boundaries — it paired cell `A` at 400 cards with
+`A′` at 4,500 — so up to half its magnitude was chunk-stagger noise.
+
+What survives, on its own evidence rather than on that one:
+
+- **Every plan's `FIXED` is still its arm's error sink.** `fit_cost_model.py` fits one equation per query
+  against total dispatch, and `FIXED` is the only term with no feature attached. It read 84 and then 85
+  while `COLLECT_PER_PAGE_ROW` moved 15.0 → 9.79 underneath it: a term that does not budge when a
+  neighbour changes by 35% is absorbing error, not measuring a cost. `STREAM_FIXED_COST_NS` (217, fitted
+  192) is unexamined on this basis.
+- **The curvature is real and unmodelled**, at 1.38× within one store — and the corpus-size effect below
+  is the same phenomenon at a larger scale. Those two are one problem; the fixed cost is not part of it.
 
 ## Retractions
 
