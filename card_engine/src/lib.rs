@@ -8146,6 +8146,24 @@ fn candidate_feats(ctx: &QueryCtx, params: &QueryParams, prep: &PreparedCandidat
     // all-or-nothing shape. With a printing-level field in play the printings under one card disagree, which
     // is the shape the single `RESIDUAL_PASS_RATE_*` was fitted on. Nothing reads this in routing.
     feats.residual_card_invariant = !prep.all_match_known && !touches_printing_field(filter);
+    // A residual that is invariant WITHIN a card never goes printing-dependent: `card_pass` returns
+    // `True`/`False` and never `Tri::PrintingDep`, so `run_query_streamed` sets its per-card `all_match` for
+    // every matching card and `card_match_count` answers from span arithmetic. P3 therefore examines **no
+    // printings at all** and `printings_examined` reads exactly 0 — while the arm was charging
+    // `scan_units * STREAM_SCAN_PER_ROW_NS` for the whole candidate span.
+    //
+    // `name:s` / artwork is the measured case: `scan_units` 97,206 against a realized 0 for P3 and 60,705 for
+    // P4, so the shared feature is 1.60x for the plan that does the work and infinitely wrong for the plan
+    // that does not. That charged P3 580 us of a 1,507 us prediction against a 456 us measurement and handed
+    // the query to `GatheredScan` at 824 us — 368 us lost on one query, repeated across every orderby.
+    //
+    // This is the `all_match_known` gate one step weaker. That gate needs the whole residual to be `True`;
+    // this needs only that it cannot vary within a card, which `name:s`, `o:`, `t:` and `cmc` all satisfy
+    // while being ordinary residuals. P4's `scan_units` is deliberately untouched — it walks each candidate's
+    // span to push, so its 60,705 is real work, and this is exactly the asymmetry an argmin needs.
+    if feats.residual_card_invariant {
+        feats.stream_scan_units = 0;
+    }
 
     feats
 }
