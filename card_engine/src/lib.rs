@@ -6651,6 +6651,36 @@ fn card_range_popcount_applicable(
 
 // ─── Shared P3/P4 candidate preparation ─────────────────────────────────────
 
+/// Whether a plane-consumed predicate leaves the match kernels **nothing to verify per card** — i.e.
+/// `card_pass` is redundant and both kernels take their `all_match` arm.
+///
+/// Legality planes (docs/issues/00667-engine-legality-divergent-carveout.md) are existence
+/// projections ("*some* printing matches"), unlike every other plane (card-invariant fields, true or
+/// false alike for every printing of a card). For `unique=card` that is exactly the semantics wanted.
+/// But `Mode::Printing`/`Artwork` enumerate individual printings, and "the card has some legal
+/// printing" does not mean "this printing is legal" — `card_pass` must still run per printing there
+/// whenever the plane touched a *divergent* format, which is what `plane_expr_is_existential` tests
+/// against the data-derived `divergent_formats` mask.
+///
+/// Extracted so the ROUTER can ask the same question the EXECUTOR does. `prepare_candidates` had the
+/// only copy, and the compose acquire branch — which never calls it — therefore charged
+/// `verify_cost_tier` on every legality-composed query alike. On a card-invariant format that put P3
+/// at meas/pred 0.16-0.44 while `PrintingCompose` read 1.02-1.17, and the argmin lost those cells to a
+/// plan measuring ~2.5x slower. A boolean, not an estimated share: the two attempts to price this as a
+/// divergent *fraction* of the corpus under-charged `f:oldschool`, whose candidates largely ARE the
+/// divergent cards, and traded 408 mispicks for 118 worse ones.
+fn plane_leaves_nothing_to_verify(
+    filter: &FilterExpr,
+    mode: Mode,
+    plane: Option<&PlaneExpr>,
+    indexes: &Archived<CardIndexes>,
+) -> bool {
+    matches!(filter, FilterExpr::True)
+        && plane.is_none_or(|expr| {
+            matches!(mode, Mode::Card) || !plane_expr_is_existential(expr, u64::from(indexes.planes.divergent_formats))
+        })
+}
+
 /// The candidate materialization + filter rewriting shared by `StreamedSelect`
 /// and `GatheredScan`, extracted verbatim from `run_query`. Mutates `filter` via
 /// `memoize_text_predicates` + `order_children_by_verify_cost` under the same
@@ -6680,22 +6710,7 @@ fn prepare_candidates(ctx: &QueryCtx, params: &QueryParams, filter: &mut FilterE
     // calls below and in run_query_streamed become redundant re-verification
     // of what the narrowing already established.
     //
-    // A plane-driven True residual needs one more check first: legality's
-    // planes (docs/issues/00667-engine-legality-divergent-carveout.md) are
-    // existence projections ("*some* printing matches"), unlike every other
-    // plane (card-invariant fields, true or false alike for every printing
-    // of a card). For unique=card that's exactly the semantics wanted --
-    // Mode::Card only needs *a* matching printing to exist, same as Step 2
-    // above. But Mode::Printing/Artwork enumerate individual printings, and
-    // "the card has some legal printing" does not mean "this printing is
-    // legal" -- card_pass must still run per printing there whenever the
-    // plane touched legality, so this only trusts a True residual for those
-    // modes when the plane is existential-free (plane_expr_is_existential).
-    let plane_true_for_mode =
-        plane.is_none_or(|expr| {
-            matches!(mode, Mode::Card) || !plane_expr_is_existential(expr, u64::from(ctx.indexes.planes.divergent_formats))
-        });
-    let all_match_known = (matches!(filter, FilterExpr::True) && plane_true_for_mode) || residual_exact;
+    let all_match_known = plane_leaves_nothing_to_verify(filter, mode, plane, ctx.indexes) || residual_exact;
 
     // The plane bitmap is the exact card-level truth of the plane-consumed
     // subexpression (split_planes), so it composes with the residual's
@@ -8285,7 +8300,35 @@ fn acquire_plan_features(
                 (rt, printing_matches, n_artworks.div_ceil(64), est_cards, scan_all(est_cards))
             }
         };
-        let mut feats = mk_plan_feats(ctx, params, result_total as u32, eval_domain as u32, scan_units as u32, verify_cost_tier(composed));
+        // The tier is what the MATERIALIZING alternatives pay per candidate, so it must be asked about
+        // the predicate THEY see (`filter` + `plane`), not about `composed` — and gated exactly as
+        // `prepare_candidates` gates it, or the router charges a `card_pass` the kernels will skip. On a
+        // card-invariant legality format `card_pass` resolves at card level for every card, so
+        // `printings_examined` reads 0 and both the per-card residual and the per-row scan are dead
+        // terms; charging them anyway was 92-94% of P3's predicted cost on `f:modern`, `f:gladiator`,
+        // `f:commander` and `f:predh`. `residual_exact` is unavailable here (this branch never narrows),
+        // so this is the conservative half of the executor's disjunction: it can over-charge, never under.
+        let nothing_to_verify = plane_leaves_nothing_to_verify(filter, mode, plane, indexes);
+        let tier = if nothing_to_verify { 0 } else { verify_cost_tier(composed) };
+        // `GatheredScan` walks every printing of every candidate card, so its scan feature is the candidate
+        // SPAN. `scan_all` estimates that span as `est_cards x` the corpus-average printings-per-card `x 2.1`,
+        // which is the right shape only when candidates are an average sample. With nothing to verify they
+        // are not: every printing of a matching card matches, so the span IS `printing_matches` — exact,
+        // and already computed above for compose's own estimate. Graded against P4's realized
+        // `printings_examined` over 597 card-invariant compose queries:
+        //
+        //     scan_units (shipped)   p10 1.13   p50 1.76   p90 5.08
+        //     printing_matches       p10 0.68   p50 0.93   p90 3.08
+        //
+        // A 1.76x over-charge on the dominant term of P4's arm, which is what makes P3 win where P4 is
+        // better: `StreamedSelect -> GatheredScan` is the largest regret slice on this acquire. Scoped to
+        // the same boolean as the tier because the grading inverts on the other population — with a real
+        // residual `scan_units` is right at p50 0.97 and `printing_matches` badly under at 0.39.
+        //
+        // Fixes the BIAS, not the spread: both rows read p90/p10 4.5, so what remains is the candidate
+        // count's own variance (`eval_domain` grades p90/p10 3.1 here) and is not a scan-feature problem.
+        let scan_units = if nothing_to_verify { printing_matches } else { scan_units };
+        let mut feats = mk_plan_feats(ctx, params, result_total as u32, eval_domain as u32, scan_units as u32, tier);
         // What `StreamedSelect` actually examines here, which is NOT `scan_units`. P4 walks a card's whole
         // span to push every match; P3's `card_match_count` answers from span arithmetic for every card
         // `card_pass` resolves at card level, and on a legality-composed filter that is every non-divergent
@@ -8298,11 +8341,20 @@ fn acquire_plan_features(
         // engine holds the set: `legal_divergent`. For a filter with no legality leaf the share is 1.0 and
         // this reduces to `scan_units`, which the same sweep showed is right to 1.0-2.4x on `border:black`,
         // `r:mythic` and `watermark:*` -- so the correction is confined to the case that measured wrong.
-        feats.stream_scan_units = if verify_cost_tier(composed) > 0 && filter_touches_legality(composed) {
+        feats.stream_scan_units = if tier == 0 {
+            // Nothing to verify: `card_match_count` answers every card from span arithmetic and examines
+            // no printings whatsoever. Reported as 0 so `bench_feature_accuracy` grades this against the
+            // realized `printings_examined` (also 0) instead of against a scan that never happens. The
+            // arm multiplies the term by zero on the same signal, so this changes no cost — only whether
+            // the feature can be graded honestly.
+            0
+        } else if filter_touches_legality(composed) {
             let divergent = indexes.legal_divergent.len() as f64;
             let share = (divergent / f64::from(n_cards)).min(1.0);
-            // Floored at one printing per candidate: even a fully card-invariant legality filter examines
-            // the boundary printing of the cards it does match, which the share alone would put at zero.
+            // Floored at one printing per candidate: with a divergent format in play the kernel does
+            // examine the boundary printing of the cards it matches, which the share alone would put at
+            // zero. Only reachable now when there IS something to verify, which is the case the floor was
+            // argued for -- the `tier == 0` arm above is where it used to be wrong.
             ((scan_units as f64) * share).max(eval_domain as f64) as u32
         } else {
             scan_units as u32

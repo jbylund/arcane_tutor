@@ -466,26 +466,125 @@ where P3 measures ~1.7× faster, so ~2.5× survives a corrected feature — and 
 (traffic fits it at 0.90), not the floor, and not the scan feature. Something cell-specific to compose-acquire
 artwork is mis-shaped and none of the three things measured here is it.
 
+## It was not compose. It was P3, and fixing it uncovers a third pair
+
+**Retracted: "compose is priced ~1.5× under P3".** Attributing both arms term-by-term against measurement
+says the opposite — on the four card-invariant formats compose is the *well*-modelled plan and P3 is the
+broken one:
+
+| cell | P3 pred | P3 meas | P3 ratio | compose pred | compose meas | compose ratio |
+| --- | --: | --: | --: | --: | --: | --: |
+| `f:gladiator` / artwork | 259.58 | 72.58 | **0.28** | 178.73 | 186.54 | 1.04 |
+| `f:predh` / printing | 215.80 | 34.08 | **0.16** | 70.62 | 80.21 | 1.14 |
+| `f:commander` / artwork | 323.24 | 143.62 | **0.44** | 188.80 | 220.12 | 1.17 |
+| `f:oldschool` / artwork *(the divergent format)* | 31.88 | 35.62 | 1.12 | 14.82 | 37.00 | **2.50** |
+
+Compose is under-priced only on `oldschool` — the *opposite* format from where the mispicks are. The
+attribution reproduces `predicted_ns` exactly, so this is arithmetic on the shipped arm, not a re-fit.
+
+**The mechanism.** `acquire_plan_features`'s compose branch passed `verify_cost_tier(composed)` with no
+gate, where the general candidate path gates on `all_match_known`. On a card-invariant legality format
+`card_pass` returns `Tri::True` at card level for every card, so the kernel takes its `all_match` arm and
+`printings_examined` reads **0** — while the model charged `CARD_PASS + max(tier, FLOOR)` = 9.05 ns on every
+candidate *and* `stream_scan_units × 5.97`. Those two dead terms are **92–94% of P3's predicted cost** on
+these cells.
+
+**One retraction inside the fix.** A first attempt priced this as the divergent *share* of the corpus
+(`legal_divergent / n_cards`, ~1.76%). That is wrong in principle — for `f:oldschool` the candidates largely
+*are* the divergent cards, so a global share under-charges exactly the cells whose residual is real. It
+traded 408 mispicks for 118 that were four times worse (mean 54.27 → 206.24 µs) for a net 3.4%. The right
+signal is the boolean the engine already derives from data, `plane_expr_is_existential` against
+`divergent_formats`, extracted as `plane_leaves_nothing_to_verify` so the router asks what the executor asks.
+
+**The gate works on the pair it targets, and costs regret elsewhere.** Pairwise ordering, 120 s uniform:
+
+| pair, `[printing_compose]` acquire | baseline | with the gate |
+| --- | --: | --: |
+| `PrintingCompose vs StreamedSelect` | 80% ordered right, mean regret 11.04 µs | **96%, 1.57 µs** |
+| `GatheredScan vs StreamedSelect` | 69%, 35.96 µs, gap 0.89 | 69%, 36.82 µs, gap 0.90 |
+
+Total regret went **81.7 → 129.7 ms** (mean 2.07 → 3.50 µs), with `StreamedSelect -> GatheredScan` going
+1,045 → 1,830 queries and 37% → 79% of all lost time. The two facts are not in conflict: the P3/P4 pair is
+**69% accurate before and after**, unmoved by this change, and correcting P3's cost simply lets P3 reach the
+argmin far more often, which multiplies exposure to it. P3's inflated cost was *masking* a pair that was
+already wrong — a compensating error, and every measurement of that pair ever taken through it was confounded
+by P3 being priced 3–6× over.
+
+### What the gate exposed: P4's scan feature over-counts 1.76× on the same population
+
+`GatheredScan` walks every printing of every candidate, so its scan feature is the candidate SPAN, estimated
+by `scan_all` as `est_cards ×` corpus-average printings-per-card `× 2.1`. That shape is right only when
+candidates are an average sample of the corpus. With nothing to verify they are not — every printing of a
+matching card matches, so the span **is** `printing_matches`, a quantity the branch already computes.
+Graded against P4's realized `printings_examined`, 597 card-invariant compose queries:
+
+| feature | p10 | p50 | p90 | p90/p10 |
+| --- | --: | --: | --: | --: |
+| `scan_units` (was shipped) | 1.13 | **1.76** | 5.08 | 4.5 |
+| `printing_matches` (now) | 0.68 | **0.93** | 3.08 | 4.5 |
+
+Scoped to the same boolean, because the grading **inverts** on the other population: with a real residual
+`scan_units` is right at p50 0.97 and `printing_matches` badly under at 0.39. A 1.76× over-charge on the
+dominant term of P4's arm is what makes P3 win where P4 is better, which is the slice the gate inflated.
+
+### Both together, measured at identical settings
+
+| build | total regret | mean | `PrintingCompose -> StreamedSelect` | `StreamedSelect -> GatheredScan` |
+| --- | --: | --: | --: | --: |
+| baseline (HEAD) | 81.7 ms | 2.07 µs | 408 q, 27% of loss | 1,045 q, 37% |
+| tier gate alone | 129.7 ms | 3.50 µs | 33 q, 0% | 1,830 q, 79% |
+| **gate + P4 scan** | **61.2 ms** | **1.55 µs** | 48 q, 1% | 1,050 q, 50% |
+
+**−25% regret against HEAD**, and the mispick class this started from is gone (408 → 48 queries, mean 54.27
+→ 13.58 µs). `cargo test` 149 debug / 148 release; row identity needs no new run because these are
+cost-only changes and `force_plan_differential_agreement` already proves every plan returns the same rows.
+
+The honest caveat: the P4 scan fix **did not fix the pair**. `GatheredScan vs StreamedSelect
+[printing_compose]` is still 69% ordered right (gap 0.89 → 0.91), and `StreamedSelect -> GatheredScan`
+returned to its baseline level rather than improving on it. What the fix removed was the bias that was
+*amplifying* the gate's exposure to that pair. The pair remains item 1.
+
+Also worth watching: `GatheredScan vs PrintingCompose [printing_compose]` gap sizing drifted 1.14 → 1.40
+while staying 92% ordered right, so it costs nothing yet and is a sign compose's arm is absorbing something.
+
 ## The open decision: 13% of regret is unpaid
 
 Regret stands at **55.0 ms against a 48.7 ms baseline**. The rise came from making the split
 non-destructive — handing the argmin a candidate whose arm is the worst-modelled in the engine — and both
 candidate explanations for it have now been eliminated by measurement. Two honest options:
 
-- **Find compose's remaining shape error.** It is the largest single error in the model (p90 41×, spread 136×
-  on rarity/usd) and it is now applicable on more queries, so the debt is bounded by that one arm.
-- **Revert the non-destructive split** and give back `f:modern t:creature`'s 0.476× until compose's arm is
-  fixed. The plumbing is inert on its own; only compose's widened applicability carries the cost.
+- **Find compose's remaining shape error.** ~~It is the largest single error in the model~~ — retracted; the
+  error on the mispicked cells is P3's, and the real prerequisite is the P3/P4 pair at 69%. See the section
+  above. Compose's rarity/usd spread is still real but is not what the artwork mispicks were made of.
+- **Revert the non-destructive split** and give back `f:modern t:creature`'s 0.476× until the compose acquire
+  can rank its plans. The plumbing is inert on its own; only compose's widened applicability carries the cost.
+
+**This decision is now closed, and neither option was the answer.** The debt was not bounded by compose's arm
+— the arm mis-pricing the mispicked cells was P3's. Correcting it plus P4's scan feature took regret to
+**61.2 ms against the 81.7 ms measured baseline, −25%**, without reverting the split, so `f:modern
+t:creature`'s 0.476× is kept. What is left is not a debt but a named defect: the P3/P4 pair at 69%, item 1.
 
 ## What is left
 
-1. **Compose's remaining shape error, on compose-acquire artwork.** The largest open finding and the one that
-   pays the regret debt. After correcting `stream_scan_units` the model still prices compose ~1.5× under P3
-   where P3 measures ~1.7× faster — `f:gladiator`/artwork, P3 at 79.83 µs against compose's 177.83 — so ~2.5×
-   survives, and it is provably none of the three things already measured: not the residual floor (traffic
-   fits it at 0.90), not the scan feature (now correct against the realized counter), not the per-card level.
-   Sixteen mispicks remain. Compose is also the worst-modelled arm overall (p90 41×, spread 136× on
-   rarity/usd ordering), so this is where its arm should be attacked.
+1. **Rank `GatheredScan vs StreamedSelect` on the compose acquire.** 3,391 pairs at **69% ordered right**,
+   mean regret 36.82 µs — the worst-ranked pair in the engine and now the top item, because it is the
+   prerequisite for the P3 tier gate above rather than a peer of it. The gate is written and measured
+   (targeted pair 80% → 96%, mean regret 11.04 → 1.57 µs) and cannot ship while this pair is 69%: correcting
+   P3 lets it into the argmin more often. Two corrections landed against it and **neither moved its
+   ordering**: the tier gate (69% → 69%) and P4's scan feature (69% → 69%, gap 0.89 → 0.91). Those bought
+   −25% total regret by removing biases that amplified this pair; the pair itself is untouched and is now the
+   engine's largest single routing error at 3,403 pairs and 36.40 µs mean regret.
+
+   The gap ratio being 0.91 is the whole diagnosis: the model sizes this difference **correctly on average**
+   and gets the **sign** wrong 31% of the time. So no constant fixes it — it is variance, and the feature
+   grading says where the variance lives. `eval_domain` on this acquire reads p90/p10 **3.1** and `scan_units`
+   **4.5** even after the bias fix, because both descend from `calibrated_balls_into_bins` — an *estimate*,
+   where the `candidates` acquire (92% ordered right) has exact narrowed counts. The likely answer is not a
+   better estimator but making the two plans' costs depend on the estimate the *same* way, so its error
+   cancels in their difference the way the verify tier already does.
+
+   Superseded item 1 ("compose's remaining shape error") — see the retraction above; compose reads 1.02–1.17
+   on the mispicked cells and only `oldschool` is under-priced.
 2. **Decide the 13% regret debt.** Regret sits at 55.0 ms against a 48.7 ms baseline, all of it from making
    the split non-destructive — which is correct, but hands the argmin a candidate whose arm is badly modelled.
    Either (1) above pays it back, or revert the split and give back `f:modern t:creature`'s 0.476× until the
