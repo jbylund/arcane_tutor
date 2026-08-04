@@ -8171,6 +8171,9 @@ fn candidate_feats(ctx: &QueryCtx, params: &QueryParams, prep: &PreparedCandidat
     if feats.residual_card_invariant {
         feats.stream_scan_units = 0;
     }
+    if prep.all_match_known || feats.residual_card_invariant {
+        feats.artwork_seen_cards = 0;
+    }
     // Same signal, second term — **measured, and NOT applied.** `run_query_streamed` answers an artwork count
     // from a STORED per-card group count when `all_match && have_group_counts`, touching no printing, and only
     // walks the span to dedup groups when a residual survives per printing. So `artwork_seen_cards` charging

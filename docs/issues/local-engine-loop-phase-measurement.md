@@ -1195,11 +1195,45 @@ wrong magnitude. Every `exam == 0` row is `all_match_known` or `residual_card_in
 | artwork regret slice, max | 185.5 µs | **732.5** |
 | total regret, mean | 1.44 | 1.48 |
 
-**Not shipped.** The +1.21 is compensating for something else in the P3/P4 artwork balance and cannot be
-removed alone — which is `bench_gather_loop`'s "P4 cannot be fixed alone" for a third time, and is exactly
-what item 6 has to mean now: **both artwork arms together, or neither.** The measurement is recorded at the
-call site so the next attempt starts from the shape rather than rediscovering it.
+**Shipped, after the decline was retracted.** Two things overturned it.
 
-Fourth instance this session of a correct fix that removes a compensating error — after the verify-tier gate,
-the P4 span feature, and the estimator's ball count. Three of those paid once the exposed error was fixed too;
-this one has no partner fix yet, so it waits.
+**P4 needs no partner fix.** Measuring *both* arms' artwork-minus-printing delta — which the first attempt
+never did — shows P4 is already accurate in artwork mode and P3 is the only mispriced arm:
+
+| regime | | P3 | P4 |
+| --- | --- | --: | --: |
+| grouping walk does **not** run (n=9) | median surcharge | −0.52 ns/card | **−3.17** |
+| | **p/m** | **1.74** | **0.98** |
+| grouping walk **runs** (n=10) | median surcharge | +1.47 | −6.89 |
+| | **p/m** | 1.11 | 0.87 |
+
+P4's arm carries no mode-dependent term at all, yet lands at 0.87–0.98 — because its `matches` in artwork
+mode is the *deduped* artwork count, so its `PUSH` term already shrinks by roughly the real saving. So
+"+1.21 compensates for P4 being over-costed" was **false**, and there is only one arm to move.
+
+**And the alarming max was noise.** Re-measured over a longer sample:
+
+| run | total mean | artwork mean | artwork max |
+| --- | --: | --: | --: |
+| ungated, 180 s | 1.44 µs | 1.59 | 185.5 |
+| gated, 180 s | 1.48 | 1.71 | **732.5** |
+| gated, 240 s | 1.45 | 1.69 | **189.9** |
+
+The 4× max does not reproduce. What survives is a consistent ~6% cost on the artwork regret slice with total
+regret flat, against P3 going **p/m 1.74 → 1.25** where the walk does not run and 1.11 → 1.20 where it does.
+Both arms now sit inside 0.86–1.25 in artwork mode.
+
+Taken on the principle this file's own header states: ordering-correct-by-cancellation is a local optimum you
+cannot build on, because the next change has no ground truth to check itself against. Same trade as the
+non-destructive split, which was kept at a 15% regret cost for the same reason.
+
+**The counter this needed already existed**, which is the other correction. Both kernels publish the artwork
+grouping span in `printings_examined` — P4 accumulates `push_card_matches`'s return, P3 accumulates
+`card_match_count`'s second value — and P3's fast path correctly reports 0 because no walk happens. An earlier
+note here claimed the counter was missing and that a grouping walk was uncounted; both were wrong.
+
+### Item 6 is now closed
+
+Artwork's per-card surcharge was the last of it. The executor gate was removed (up to 24×), P3's surcharge is
+gated on the same signal, and P4 was measured and needs nothing. What remains in artwork mode is a level
+question inside 0.86–1.25 on both arms, which is not worth a refit against a warm-cache design.
