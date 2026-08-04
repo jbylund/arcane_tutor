@@ -658,15 +658,41 @@ t:creature`'s 0.476× is kept. What is left is not a debt but a named defect: th
    2.2× P3's, so that residue still discounts P4 asymmetrically. `meas/pred` reads **−1.17** in the wrong
    group: magnitude right, sign inverted, as before.
 
-   **The open question is which of the two it now is, and no tool can currently answer it.** Distinguishing
-   "remaining feature error" from "rate misattribution" needs each arm's per-card and per-printing rates
-   measured on *identical* cells — and `bench_loop_design`'s header states that neither harness compares the
-   two plans, deferring that to `explain_analyze`, which compares predicted against measured per plan on
-   sampled traffic and cannot isolate a rate. So the next piece of work is a **pair-level harness**: see the
-   note below. What the existing harnesses already report is suggestive — P3 3.30 ns/printing against P4's
-   2.27, a ratio of **1.45**, where the shipped constants are 5.97 and 2.06, a ratio of **2.90**. Both were
-   measured warm, but they were measured warm *together*, and a ratio between two equally-warm arms survives
-   the cache caveat that voids their levels.
+   **Answered, without a built design: it is the features, and by a wide margin.** An ORACLE run settles the
+   sequencing question directly — recompute both arms substituting each plan's *realized counters* for the
+   estimated features (`cards_visited`, `printings_examined`, `matches_pushed`), keeping every shipped rate
+   untouched, then re-run the argmin. Over 2,778 non-tie pairs with at least 100 realized cards on both plans:
+
+   | features | ordered right | lost time (sum) |
+   | --- | --: | --: |
+   | shipped estimates | 58% | 116.2 ms |
+   | **oracle (realized counters)** | **83%** | **12.8 ms** |
+
+   | mode | shipped | oracle |
+   | --- | --: | --: |
+   | card | 58% | **96%** |
+   | printing | 62% | 80% |
+   | artwork | 56% | 81% |
+
+   Perfect features against **today's rates** reach 83% and cut lost time **9×**. That is the ceiling any
+   estimator work can buy, and it is most of the gap — so the rates are adequate to 83% and the remaining 17%
+   is what is genuinely attributable to them. **Features are the foundation and come first**; the rate
+   question is real but second-order and should not be opened until the estimates stop moving.
+
+   (58% here is not the 75% above: this run requires ≥100 realized cards on *both* plans, which selects the
+   larger queries where estimator error dominates. The valid comparison is the internal one, 58 → 83 on
+   identical rows with identical rates.)
+
+   One structural caveat on that ceiling, and it is the first thing to settle. The oracle gave each plan **its
+   own** counter, where `scan_units` today is one shared number that both arms read while examining different
+   amounts — `stream_scan_units` splits it for P3 on legality filters only. So the 58 → 83 gain mixes two
+   distinct fixes: *more accurate* shared features, and *per-plan* features. Decomposing that is step one,
+   because it decides whether the work is a better estimator or a split feature.
+
+   For when the rate question does open: the existing harnesses already report P3 at 3.30 ns/printing against
+   P4's 2.27, a ratio of **1.45**, where the shipped constants are 5.97 and 2.06, a ratio of **2.90**. Both
+   were measured warm, but *together*, and a ratio between two equally-warm arms survives the cache caveat
+   that voids their levels.
 
    Two traps attached to any rate work here. A pooled traffic fit **endorses both current rates**
    (StreamedSelect `SCAN_PER_ROW` 6.04, ratio 1.01; GatheredScan 2.53, 1.23), so `fit_cost_model` cannot find
@@ -677,7 +703,24 @@ t:creature`'s 0.476× is kept. What is left is not a debt but a named defect: th
    Superseded item 1 ("compose's remaining shape error") — see the retraction above; compose reads 1.02–1.17
    on the mispicked cells and only `oldschool` is under-priced.
 
-1b. **Build the pair-level loop harness item 1 needs.** `bench_streamed_loop` and `bench_gather_loop` now
+1b. **Review the compose acquire's feature estimation — the foundational work, ahead of any rate work.** The
+   oracle run above bounds this at 58% → 83% ordered right and a 9× cut in lost time on the pair, with rates
+   untouched. Three targets, in order:
+
+   - **Decompose the oracle gain into "better shared estimate" vs "per-plan feature".** The oracle used each
+     plan's own counters; `scan_units` is one shared number today and the two plans examine different amounts.
+     `stream_scan_units` already splits it for P3, but only on legality filters. This decides the shape of
+     everything below, so it comes first.
+   - **`eval_domain` on the failing population.** p50 **0.85** in the wrong group against 0.98 in the right
+     one, and P4's per-card rate is 2.2× P3's, so the residue discounts P4 asymmetrically. The broad class is
+     mostly range predicates, and `range_card_counts_for` already answers *exactly* — but `bare_range_bounds`
+     matches one comparison, so `cn<=226 year>2004` (an `And` of two) falls back to the estimator. Widening
+     that exact path is likely worth more than any estimator refinement.
+   - **`scan_units` on selective compose queries.** mean |log| **1.22**, p10 0.08, p90 3.62 — a ~45× spread
+     that none of the three bias variants improves (see the span-bias note). Not previously on any list, and
+     the worst-calibrated feature in the acquire.
+
+1c. **Build the pair-level loop harness, once the features stop moving.** `bench_streamed_loop` and `bench_gather_loop` now
    share `bench_loop_design`, so their cells match and can be read side by side — but neither computes the
    cross-plan quantity, deliberately: the header defers plan comparison to `explain_analyze`. That deferral
    is incomplete, because `explain_analyze` compares predicted against measured *per plan* on sampled
