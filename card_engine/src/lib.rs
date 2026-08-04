@@ -9365,17 +9365,44 @@ fn run_query_streamed<'a>(
     for cid in card_ids {
         n_cards_visited += 1;
         let card = &cards[cid as usize];
-        // #634 Step 1: skip the redundant card_pass re-derivation of Tri::True
-        // when the narrowing already proved every candidate matches. Gated
-        // off for Mode::Artwork specifically: measured a ~45% regression for
-        // `t:creature` unique=artwork with this applied unconditionally here
-        // (0.13ms -> 0.19ms typical, isolated by bisecting call sites) despite
-        // being a no-op change in card_pass's own return value (True either
-        // way) — an unexplained codegen/scheduling effect in this loop for
-        // that mode specifically, not a logical cost. Card/Printing modes
-        // showed no such effect and do benefit (this loop visits every
-        // candidate, not just the ~limit emitted).
-        let all_match = (all_match_known && !matches!(mode, Mode::Artwork))
+        // #634 Step 1: skip the redundant card_pass re-derivation of Tri::True when the narrowing has
+        // already proved every candidate matches.
+        //
+        // **This was gated OFF for `Mode::Artwork`, and the gate is now removed (2026-08-04).** Its comment
+        // cited a ~45% regression on `t:creature`/artwork (0.13ms -> 0.19ms) from applying the skip here,
+        // called it "an unexplained codegen/scheduling effect ... not a logical cost", and said it was
+        // "isolated by bisecting call sites" — i.e. across builds, the one instrument this engine has
+        // repeatedly shown cannot resolve an effect that size and will hand you the wrong sign (see trap 1
+        // in docs/workflows/diagnosing-a-plan-cost-error.md).
+        //
+        // Re-measured with a runtime toggle inside ONE binary, `unique=artwork`, limit 175:
+        //
+        //     query         gate on      gate off    speedup
+        //     o:this        1047.7 us      47.5 us     22.1x
+        //     o:target       556.6         30.1        18.5x
+        //     o:creature    1010.5         56.6        17.9x
+        //     t:creature      84.1         43.0         2.0x   <- the query the gate existed to protect
+        //     o:flying        24.1         13.5         1.8x
+        //     c:r             32.2         18.5         1.7x
+        //     t:land          15.5         12.1         1.3x
+        //
+        // Every cell is faster and the cited regression does not reproduce in either direction. The cost was
+        // worst for an expensive residual: `o:creature` ran a full oracle-text containment check over all
+        // 23,155 candidates the narrowing had already proved matched, which is why the same query in printing
+        // mode — identical candidate set, identical span, `card_pass` skipped — took 56.7 us against
+        // artwork's 1010.5. That query was the single largest routing regret in the engine at 508.9 us, and
+        // the cost model was right about it throughout: it charges `tier = 0` here, because `all_match_known`
+        // is supposed to mean no `card_pass` runs.
+        //
+        // Row identity is what an `all_match` mistake breaks silently in this mode — totals do not move, the
+        // printing that REPS each artwork group does. 1,134 cells over 21 predicates x 3 modes x 3 orderbys x
+        // 3 pages x 2 prefers, hashing the returned `scryfall_id` sequence: **identical**, 378 of them
+        // artwork, including the existential-plane shapes (`f:*`, `border:*`, `r>=rare`, `watermark:*`,
+        // `-f:modern`) where a card-level True does not imply every printing matches. Soundness rests on
+        // `all_match_known` itself, which already refuses an existential plane outside card mode via
+        // `plane_leaves_nothing_to_verify`, and only trusts `residual_exact` when the narrowing was not
+        // printing-space.
+        let all_match = all_match_known
             || match filter.card_pass(card, strings, &mut residual, &mut residual_is_or) {
                 Tri::False | Tri::Null => continue,
                 Tri::True => true,
