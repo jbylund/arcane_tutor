@@ -8298,7 +8298,19 @@ fn acquire_plan_features(
         // `eval_domain` and scanned 0.14x the claimed `scan_units`. Over-costing both plans inflates
         // the predicted GAP between them (P4 carries the larger per-row rates), which is what routing
         // reads -- measured as a GatheredScan-vs-StreamedSelect gap ratio of 0.32 on this acquire.
-        let scan_all = |cards: usize| ((cards as f64) * printings_per_card * COMPOSE_CANDIDATE_SPAN_BIAS) as usize;
+        // Clamped at `n_printings`, which is an INVARIANT and not a calibration: this estimates the
+        // printings under the candidate CARDS, and those are a subset of the corpus, so a value above
+        // `n_printings` is not a wrong estimate but an impossible one. `COMPOSE_CANDIDATE_SPAN_BIAS`'s 2.1
+        // says candidates are more reprinted than an average card, which is true when a composable
+        // predicate SELECTS by having a matching printing and false when it selects nearly everything —
+        // the same saturation failure `COMPOSE_CARD_ESTIMATE_BIAS` had, one multiplier downstream.
+        //
+        // `border:black` / printing reached 159,325 against a corpus of 97,206 and a realized
+        // `printings_examined` of exactly 97,206. The clamp makes that cell exact. It matters for routing
+        // because this feature is 76% of P3's arm on the broad-residual class, where it drove P3 to
+        // pred/meas 1.53 while P4 sat at 0.88 — the pair inverted, with both plans over the same feature.
+        let scan_all =
+            |cards: usize| (((cards as f64) * printings_per_card * COMPOSE_CANDIDATE_SPAN_BIAS) as usize).min(n_printings as usize);
         let (result_total, project, popcount_words, eval_domain, scan_units) = match mode {
             Mode::Printing => (printing_matches, 0, (n_printings as usize).div_ceil(64), est_cards, scan_all(est_cards)),
             Mode::Card => {
