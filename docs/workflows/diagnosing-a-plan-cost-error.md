@@ -82,7 +82,21 @@ pick/best ratio from 0.22 to 0.63–0.69 and flipped nothing: 16 mispicks surviv
 and "the router now picks correctly" are separate measurements, and so is "the arm now predicts its own
 time" — see the table at the top.
 
-## Two traps that cost the most time
+**9. If the fix does not move the ordering, split the population before touching a rate.** A pair can be
+right on average and bimodal underneath, and the summary statistic that hides this is the one that looks most
+reassuring. `GatheredScan vs StreamedSelect [printing_compose]` reads a **gap ratio of 0.91** — the model
+sizes the difference almost exactly right — at **69% ordered right**. That invites "it is variance, no
+constant will fix it". Splitting the 5,085 non-tie pairs on the regime flag says otherwise:
+
+    right, tier 0 (card-invariant)   409    P3 wins 100% measured, 100% predicted
+    right, tier > 0 (real residual) 3,100   P3 wins   5% measured,   5% predicted
+    wrong, tier > 0                 1,576   P3 wins  98% measured,   2% predicted
+
+Every wrong pair is in one regime, and the wrong group is **homogeneous** — the model is not scattered around
+the truth, it is confidently inverted on one identifiable class (broad residuals where both plans scan the
+whole corpus). A mean gap ratio of 0.91 is what two opposed sub-populations look like after averaging.
+
+## Three traps that cost the most time
 
 **Cross-build timing cannot resolve a small effect, and will hand you the wrong sign.** On identical cells
 `ns_loop` wandered 43.00 / 45.38 / 47.17 µs across runs of builds that never touched that phase — ±9%, both
@@ -96,3 +110,12 @@ ns/card on a built design while traffic fit the same column at 8.19 against a sh
 third time this has been caught. **Shape from a built design, levels from traffic.** A design tells you which
 terms exist, which are degenerate and how two plans differ; it does not tell you what a constant should
 equal.
+
+**A pooled fit endorses the rates that are wrong on a sub-population, so it cannot be your check.** On the
+class in step 9, `STREAM_SCAN_PER_ROW_NS` 5.97 and `GATHER_SCAN_PER_ROW_NS` 2.06 are 2.9× apart for what is
+nominally the same walk-a-printing-and-test work, and P3's higher rate cancels its lower per-card rate exactly
+where both features are maximal. `fit_cost_model.py` fits **both** and pronounces them fine — 6.04 at ratio
+1.01 and 2.53 at 1.23. So a refit will not surface this and cannot fix it; it will confirm the status quo. Fit
+the split populations separately, or the fitter launders the error into an endorsement. Corollary for
+`--counters`: it grades a feature against a counter *pooled the same way*, so a feature that is right at the
+median and inverted on a quarter of rows passes.
