@@ -536,7 +536,11 @@ dominant term of P4's arm is what makes P3 win where P4 is better, which is the 
 | --- | --: | --: | --: | --: |
 | baseline (HEAD) | 81.7 ms | 2.07 µs | 408 q, 27% of loss | 1,045 q, 37% |
 | tier gate alone | 129.7 ms | 3.50 µs | 33 q, 0% | 1,830 q, 79% |
-| **gate + P4 scan** | **61.2 ms** | **1.55 µs** | 48 q, 1% | 1,050 q, 50% |
+| gate + P4 scan | 61.2 ms | 1.55 µs | 48 q, 1% | 1,050 q, 50% |
+| **+ clustering bias on the ball count** | **56.4 ms** | **1.49 µs** | 49 q, 1% | 999 q, 51% |
+
+Compare the **means**: the total is a sum over however many queries the budget reached (39,458 against 37,749
+here), so the totals are not directly comparable and the mean is. **−28% on the baseline.**
 
 **−25% regret against HEAD**, and the mispick class this started from is gone (408 → 48 queries, mean 54.27
 → 13.58 µs). `cargo test` 149 debug / 148 release; row identity needs no new run because these are
@@ -601,15 +605,30 @@ t:creature`'s 0.476× is kept. What is left is not a debt but a named defect: th
    | `cn<=226 year>2004` / printing | 1,025.3 | 1,454.7 | 789.6 | **756.4** |
    | `year<=2026` / artwork | 601.6 | 1,026.9 | 1,629.2 | **1,326.1** |
 
-   P3 is genuinely ~1.7× faster and the model has the pair tied to within 5 µs. What brings it to parity is
-   the two arms' per-printing scan rates: `STREAM_SCAN_PER_ROW_NS` 5.97 against `GATHER_SCAN_PER_ROW_NS`
-   2.06, a **2.9× ratio for what is nominally the same walk-a-printing-and-test work**. P3's higher rate
-   cancels its lower per-card rate exactly where both features are maximal.
+   P3 is genuinely ~1.7× faster and the model has the pair tied to within 5 µs.
 
-   The trap for whoever takes this: a pooled traffic fit **endorses both rates** (StreamedSelect
-   `SCAN_PER_ROW` fits 6.04, ratio 1.01; GatheredScan 2.53, ratio 1.23), so `fit_cost_model` will not find
-   this and a pooled refit cannot fix it. It needs the population split — the same lesson this file has now
-   learned three times. Wrong-rate concentrates by mode: artwork 38–46%, printing 25–46%, card 16–24%.
+   **Retracted guess: "the two scan rates cancel."** Decomposing both arms says the false tie is one-sided.
+   On `border:black`/printing, P3 predicts **1.03** of its real time and P4 predicts **0.64** — P3 is priced
+   correctly and P4 is under-charged 1.56×. Two errors are not cancelling; one plan is wrong. The mechanism
+   was `eval_domain` reading 16,511 where both plans visited all 31,508 cards, which discounts P4 by 2.2× as
+   much as P3 because P4's per-card rate is 25.77 ns against 11.63. Fixed by moving the clustering bias onto
+   the ball count (see the commit); the broad band went 0.52 → 0.78 against `cards_visited`.
+
+   **What survives three feature corrections is a rate problem, and that is now the evidence.** The tier
+   gate, P4's span feature and the estimator's shape each improved something else and each left this pair at
+   **exactly 69%**, with an unchanged internal structure — still 100% of wrong pairs in `tier > 0`, still P3
+   winning 98% of them while the model says 2%. The decisive number is `meas/pred` = **−0.97**: the predicted
+   gap is almost exactly the *negative* of the measured gap, consistently. Magnitude right, direction
+   inverted, immovable by any feature. That is what a mis-split between the per-card and per-printing rates
+   looks like when both features are maximal.
+
+   So the remaining work is a **built design over the broad-residual population**, not another feature hunt:
+   `bench_streamed_loop` and `bench_gather_loop` restricted to cells where both plans scan the whole corpus,
+   solving for each arm's per-card and per-printing rates separately. Two traps attached. A pooled traffic fit
+   **endorses both current rates** (StreamedSelect `SCAN_PER_ROW` 6.04, ratio 1.01; GatheredScan 2.53, 1.23),
+   so `fit_cost_model` cannot find this. And the built design will read warm-cache, so it gives the **shape**
+   — which of the two rates is misattributed — and not the level. Wrong-rate concentrates by mode: artwork
+   37%, printing 31%, card 19%.
 
    Superseded item 1 ("compose's remaining shape error") — see the retraction above; compose reads 1.02–1.17
    on the mispicked cells and only `oldschool` is under-priced.
