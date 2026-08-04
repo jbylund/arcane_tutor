@@ -49,7 +49,15 @@ point step 11 next.
 **1. Pick the cell from regret, not from accuracy.** They disagree, sharply. P3's absolute error reaches p99
 47× and it barely appears as a regret source; the `plane` acquire has p50 errors of 1.2–1.3 and a **1% miss
 rate**. An argmin sees only *differences*, so a term wrong for every plan cancels. `bench_regret_matrix.py`
-sliced by acquire × unique is what ranks the work — `printing_compose / artwork` at 32% of all lost time.
+sliced by acquire × unique is what ranks the work — and **re-run it after every landed fix**, because the
+ranking moves under you. `printing_compose / artwork` was 32% of all lost time when the worked example below
+started and is **6%** now; `candidates / artwork` is 32%.
+
+Read the SHARE column knowing it is frequency × severity. `candidates` currently holds 78% of lost time at a
+mean of 1.69 µs against `printing_compose`'s 21% at 1.60 — i.e. the leading acquire is not the worse one per
+query, it is the one with 3.5× the queries. And **the loss is all tail**: p90 is 0.00 for every acquire, so
+the median query has no regret at all and only p99 (36–64 µs) is worth attacking. A mean is the wrong summary
+to optimise against here.
 
 **2. On one query in that cell, get predicted AND measured for every plan.** `explain_analyze` runs each plan
 for real, so it is one call, and it says which side of the comparison is broken:

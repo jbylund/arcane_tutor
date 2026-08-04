@@ -582,6 +582,39 @@ candidate explanations for it have now been eliminated by measurement. Two hones
 **61.2 ms against the 81.7 ms measured baseline, −25%**, without reverting the split, so `f:modern
 t:creature`'s 0.476× is kept. What is left is not a debt but a named defect: the P3/P4 pair at 69%, item 1.
 
+## Re-baselined after this series, because the ranking moved
+
+`bench_regret_matrix.py --seconds 180`, current build. The acquire this whole investigation was picked from
+has dropped from roughly half of all lost time to a fifth:
+
+| acquire | n | mean | SHARE |
+| --- | --: | --: | --: |
+| **candidates** | 26,251 | 1.69 µs | **78%** |
+| printing_compose | 7,536 | 1.60 µs | **21%** (was ~49%) |
+| printing_range_scan / plane / card_range_popcount | 3,370 | ≤0.22 | 0% |
+
+| cell | mean | SHARE |
+| --- | --: | --: |
+| candidates / artwork | 1.91 µs | 32% |
+| candidates / printing | 1.68 | 28% |
+| candidates / card | 1.43 | 19% |
+| printing_compose / printing | 1.63 | 8% |
+| printing_compose / card | **2.09** | 7% |
+| printing_compose / artwork | 1.25 | **6%** (was 32%) |
+
+Three cautions in reading it, all of which change what the next item should be:
+
+- **The compose acquire is no longer unusually broken.** Its mean is *lower* than `candidates`. The 78/21
+  split is volume — 3.5× the queries — not severity. "Candidates is now the problem" describes where the
+  aggregate lives, not a newly found defect.
+- **The loss is entirely tail.** `p90 = 0.00` on every acquire; only p99 (36–64 µs) carries anything. The
+  median query has zero regret, so a mean is the wrong thing to optimise and "improve the average estimate"
+  is the wrong instinct.
+- **The largest transition is unchanged**: `StreamedSelect -> GatheredScan`, 967 queries, mean 29.38 µs, 50%
+  of all loss. But on `candidates` that pair is already **92%** ordered right at 2.42 µs mean pair regret. So
+  what remains is the 8% tail of a well-ordered pair spread over high volume — a materially harder and
+  lower-yield target than anything fixed in this series, and it should be sized before it is started.
+
 ## What is left
 
 1. **Rank `GatheredScan vs StreamedSelect` on the compose acquire.** Now **75% ordered right** over 4,825
