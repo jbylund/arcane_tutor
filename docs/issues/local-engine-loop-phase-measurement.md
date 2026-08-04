@@ -980,3 +980,67 @@ being costed. A bitmap AND of the candidate set against an indexed leaf's set wo
    candidates up, though that doc measures the acquire, which regret excludes by construction.
 3. **Accept the spread.** The evidence so far is that `matches` is irreducibly estimated on this acquire
    without doing the residual's own work, and that its error is what the P3/P4 pair mostly reflects.
+
+### Miss size predicts the cause, which reverses how to read the 26%
+
+Splitting the candidates acquire's mis-picks (>2 µs gap) by whether realized counters would fix the order:
+
+| cause | n | % of n | sum lost | % of ms | mean | p90 |
+| --- | --: | --: | --: | --: | --: | --: |
+| feature (oracle fixes the order) | 625 | 26% | 27.9 ms | **37%** | **44.6 µs** | 81.3 |
+| rate/shape (survives the oracle) | 1,796 | 74% | 47.4 ms | 63% | 26.4 µs | 43.5 |
+
+| band | n | feature-caused, % of count |
+| --- | --: | --: |
+| 2–10 µs | 492 | 15% |
+| 10–30 µs | 929 | 16% |
+| 30–100 µs | 935 | **40%** |
+| >100 µs | 65 | **54%** |
+
+**Feature errors are the expensive tail; rate errors are the cheap bulk.** Since regret here is entirely a
+tail phenomenon (`p90 = 0.00` on every acquire), the 26% headcount understates feature work — it is 37% of
+avoidable time and 54% of the misses over 100 µs. An earlier note in this file called 25% the ceiling on
+feature work; that read the wrong column.
+
+### Pattern A shipped: P3's scan gated on within-card invariance
+
+Two feature defects produce all 625. The first is fixed.
+
+A residual invariant *within* a card never goes printing-dependent — `card_pass` returns `True`/`False` and
+never `Tri::PrintingDep`, so the streamed kernel sets its per-card `all_match` and `card_match_count` answers
+from span arithmetic. **P3 examines no printings at all.** The arm was charging `scan_units ×
+STREAM_SCAN_PER_ROW_NS` for the whole candidate span anyway:
+
+    name:s / artwork, order=cmc desc, limit=100        LOST 368.0 us
+      StreamedSelect   pred 1507.0 us   meas  456.0 us   <- best
+      GatheredScan     pred 1213.8 us   meas  824.0 us   <- picked
+      feature          used      P3 realized   P4 realized
+      eval_domain      31,508    31,508        31,508      1.00x
+      scan_units       97,206    0             60,705      1.60x
+      matches          31,508    29,169        29,169       1.08x
+
+580 µs of P3's 1,507 µs prediction, for work it does not do. `!touches_printing_field` is the test, so
+`stream_scan_units` goes to 0 there; P4's `scan_units` is untouched, since it walks each span to push and its
+60,705 is real. **That asymmetry is why it moves an argmin at all.**
+
+This is the `all_match_known` gate one step weaker: that needs the whole residual to be `True`, this needs
+only that it cannot vary within a card — which `name:s`, `o:`, `t:` and `cmc` satisfy as ordinary residuals.
+Third place this same class of defect has been found (compose's verify tier, compose's `eval_domain`, here).
+
+| | before | after |
+| --- | --: | --: |
+| regret mean, all queries | 1.52 µs | **1.43 µs** |
+| `candidates / printing` mean | 1.68 | **1.45** |
+| mis-picks >2 µs | 2,421 | 2,294 |
+| feature-caused lost time | 27.9 ms | **24.0 ms** |
+| feature-caused **max** single miss | **421.7 µs** | **272.4 µs** |
+| >100 µs band, feature-caused | 54% | **36%** |
+
+`GatheredScan vs StreamedSelect [candidates]` stays at 92% and 2.42 µs, because the class is a few hundred
+rows of 11,559 pairs — the win is the tail, not the rate. Earlier runs of the aggregate spanned 1.49–1.54 µs,
+so the 1.43 is only modestly outside run noise; the max-miss and band shifts are the load-bearing evidence.
+
+**Pattern B is not fixed**: `matches` over-estimated up to **219×** on selective conjunctions
+(`eur<=0.09 usd>=0.38 usd<=4.92` used 31,508 against a realized 144; `eur:0.39` 31,508 against 439). Both are
+tier-4 MASK price ranges where the span base is meaningless, and both routes to an exact count were measured
+and declined above.
