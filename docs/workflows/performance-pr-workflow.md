@@ -46,7 +46,9 @@ anything new rather than starting a twelfth private copy.
 For diagnosing *which* of features / model shape / coefficients is at fault once layer 1 or 2 shows
 an error, and for the regret and pairwise-ordering views, see
 [reference-cost-model-measurement.md](../../docs/issues/reference-cost-model-measurement.md). That is
-the tool-picking reference; this doc is the process.
+the tool-picking reference; this doc is the process. For the step-by-step diagnosis of one plan's arm —
+which cell to pick, how to tell a feature error from a rate error, and the two measurement traps that
+hand you the wrong sign — see [diagnosing-a-plan-cost-error.md](./diagnosing-a-plan-cost-error.md).
 
 ### Layers 1 and 2: read the shape, not the median
 

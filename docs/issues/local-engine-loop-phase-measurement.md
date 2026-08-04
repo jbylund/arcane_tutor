@@ -5,6 +5,9 @@ Branch `engine-compose-feature-accuracy`. Companion to
 answers which question; this covers what the tools said about `StreamedSelect` (P3) and
 `GatheredScan` (P4), and what is left.
 
+The method this campaign arrived at, extracted so it can be reused without reading the whole file:
+[diagnosing-a-plan-cost-error.md](../workflows/diagnosing-a-plan-cost-error.md).
+
 The earlier campaign in [local-engine-cost-model-agreement.md](./local-engine-cost-model-agreement.md)
 fitted rates from sampled traffic. This one built designed experiments instead, because several rates
 are **unidentifiable from traffic at any corpus size** — and that turned out to be the least
