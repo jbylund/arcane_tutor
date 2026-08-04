@@ -5257,6 +5257,19 @@ fn printing_range_fastpath_inner<'a>(
 /// where the residual applies the correct trivalent semantics. Anything else (a text search, a range,
 /// an arithmetic compare) is likewise non-composable. A composable expression's bits are **exact** (a
 /// set bit *is* a matching printing), so no per-printing re-check is needed.
+/// Whether `filter` constrains legality anywhere. Used to scope the `stream_scan_units` correction to the
+/// case the sweep measured wrong: legality is the one printing-varying attribute `card_pass` can resolve at
+/// CARD level for most cards (only the divergent ones defer), so it is the only one where P3 and P4 examine
+/// wildly different printing counts. Border, rarity and watermark all measured at parity.
+fn filter_touches_legality(filter: &FilterExpr) -> bool {
+    match filter {
+        FilterExpr::Legality { .. } => true,
+        FilterExpr::And(cs) | FilterExpr::Or(cs) => cs.iter().any(filter_touches_legality),
+        FilterExpr::Not(inner) => filter_touches_legality(inner),
+        _ => false,
+    }
+}
+
 fn is_printing_composable(filter: &FilterExpr, indexes: &Archived<CardIndexes>) -> bool {
     match filter {
         FilterExpr::True => true,
@@ -7998,6 +8011,8 @@ fn mk_plan_feats(
         matches,
         eval_domain,
         scan_units,
+        // Defaults to `scan_units`: only an acquire that knows P3 examines fewer printings overrides it.
+        stream_scan_units: scan_units,
         residual_tier_ns100,
         limit: params.limit as u32,
         offset: params.page_offset as u32,
@@ -8202,7 +8217,14 @@ fn acquire_plan_features(
         // composes once, only if this plan wins (never in acquire; a legality broadcast paid here and
         // then discarded would be pure waste). `synth_printings` = broadcast down (legality) + projection
         // up (card/artwork; 0 for printing). `popcount_words` = the result-space bitmap the total scans.
-        let (printing_matches, broadcast, scatter) = compose_printing_estimate(filter, indexes, offsets, n_printings as usize);
+        //
+        // Estimated from the SAME predicate the executor will compose (`compose_source`), not from the
+        // residual. Reading the residual once a plane had consumed the filter estimated `True` — every
+        // printing in the corpus — so `matches` came back as `n_printings` for every legality query alike
+        // and compose was costed as if it returned everything for nothing. Applicability, estimate and
+        // execution have to agree on which representation this plan is being judged on.
+        let composed = compose_source(filter, unsplit, plane);
+        let (printing_matches, broadcast, scatter) = compose_printing_estimate(composed, indexes, offsets, n_printings as usize);
         // Two build kinds, charged at different rates: `broadcast` = legality broadcast-down (linear
         // pass), `scatter` = range-slice scatter (cheap). `project` = the second pass (printing→
         // card/artwork), 0 for printing mode. Keeping all three separate is what lets a bare range's
@@ -8217,7 +8239,7 @@ fn acquire_plan_features(
         // projection -- and those are the bulk of what reaches here, since `bare_range_bounds`
         // matches one comparison, not an And of two. One-sided ranges DO land here in quantity:
         // every artwork-mode one, plus card-mode ones whose orderby has no permutation.
-        let exact_cards = bare_range_bounds(filter, indexes)
+        let exact_cards = bare_range_bounds(composed, indexes)
             .and_then(|(idx, lo, hi)| range_card_counts_for(indexes, idx).and_then(|counts| counts.distinct_cards(lo, hi)));
         let est_cards =
             exact_cards.map_or_else(|| calibrated_balls_into_bins(printing_matches, n_cards as usize), |n| n as usize);
@@ -8263,7 +8285,28 @@ fn acquire_plan_features(
                 (rt, printing_matches, n_artworks.div_ceil(64), est_cards, scan_all(est_cards))
             }
         };
-        let mut feats = mk_plan_feats(ctx, params, result_total as u32, eval_domain as u32, scan_units as u32, verify_cost_tier(filter));
+        let mut feats = mk_plan_feats(ctx, params, result_total as u32, eval_domain as u32, scan_units as u32, verify_cost_tier(composed));
+        // What `StreamedSelect` actually examines here, which is NOT `scan_units`. P4 walks a card's whole
+        // span to push every match; P3's `card_match_count` answers from span arithmetic for every card
+        // `card_pass` resolves at card level, and on a legality-composed filter that is every non-divergent
+        // card -- 556 of 31,508 in production diverge, all in `oldschool`. So P3 examines printings only for
+        // the divergent remainder plus the boundary cards, measured at 0.10-0.26x of P4's count where
+        // `scan_units` claimed parity: 7,770 against 73,783 on `f:modern`, 5,876 against 54,213 on
+        // `f:gladiator`.
+        //
+        // Estimated as the divergent SHARE of the candidate span rather than a fitted fraction, because the
+        // engine holds the set: `legal_divergent`. For a filter with no legality leaf the share is 1.0 and
+        // this reduces to `scan_units`, which the same sweep showed is right to 1.0-2.4x on `border:black`,
+        // `r:mythic` and `watermark:*` -- so the correction is confined to the case that measured wrong.
+        feats.stream_scan_units = if verify_cost_tier(composed) > 0 && filter_touches_legality(composed) {
+            let divergent = indexes.legal_divergent.len() as f64;
+            let share = (divergent / f64::from(n_cards)).min(1.0);
+            // Floored at one printing per candidate: even a fully card-invariant legality filter examines
+            // the boundary printing of the cards it does match, which the share alone would put at zero.
+            ((scan_units as f64) * share).max(eval_domain as f64) as u32
+        } else {
+            scan_units as u32
+        };
         feats.broadcast_printings = broadcast as u32;
         feats.scatter_printings = scatter as u32;
         feats.project_printings = project as u32;
@@ -9639,6 +9682,8 @@ fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<B
         ("matches", g.matches),
         ("n_printings", g.n_printings),
         ("scan_units", g.scan_units),
+        // P3's own scan estimate; equals `scan_units` unless the acquire knew the two plans differ.
+        ("stream_scan_units", g.stream_scan_units),
         ("residual_tier_ns100", g.residual_tier_ns100),
         ("limit", g.limit),
         ("offset", g.offset),
