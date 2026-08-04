@@ -11,7 +11,7 @@ use super::{
     PhysicalPlan, ComposePaging, trigram_candidates, finalize_trigram_index, PrintingRangeIndex, NARROW_FLOOR,
     gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
     walk_printing_page, aligned_page, bare_range_bounds, probe_range_k, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
-    prepare_candidates, verify_cost_tier, scan_units, sort_col_bound, Mode, QueryCtx, QueryParams, Prefer, SortBound,
+    prepare_candidates, verify_cost_tier, scan_units, sort_col_bound, divergent_formats_of, Mode, QueryCtx, QueryParams, Prefer, SortBound,
     GatherSelect, select_page, GATHER_PRUNE_CHUNK, Match,
     archive_header, archive_payload, ARCHIVE_HEADER_LEN, Mmap,
     bitmap_contains, bitmap_card_ids, compile_plane, eval_planes, split_planes,
@@ -301,6 +301,8 @@ fn store_of(cards: Vec<OracleCard>, printing_counts: &[usize], vocab: VocabInter
         printing_to_card: build_printing_to_card(&offsets),
         ..Default::default()
     };
+    // Before the literal moves `printings`/`offsets` into it.
+    let divergent_formats = divergent_formats_of(&printings, &offsets);
     CardData {
         cards,
         printings,
@@ -312,9 +314,11 @@ fn store_of(cards: Vec<OracleCard>, printing_counts: &[usize], vocab: VocabInter
         mana_vocab: vec![],
         indexes,
         format_shifts: HashMap::new(),
-        // Every format divergent: the conservative value, so a fixture exercises the existential
-        // carveout rather than the card-invariant shortcut unless it opts in.
-        divergent_formats: u64::MAX,
+        // Computed by the same function `reload` uses, so a fixture cannot accidentally exercise a
+        // shortcut production would not take (or miss one it would). `stub_printing` gives every printing
+        // the same legality word, so a plain fixture store reads 0 here -- no format diverges -- and the
+        // fixtures that DO want divergence build their words explicitly (see `fuzz_store_n`).
+        divergent_formats,
     }
 }
 
@@ -1623,6 +1627,13 @@ const FUZZ_OPS: [CmpOp; 6] = [CmpOp::Eq, CmpOp::Ne, CmpOp::Lt, CmpOp::Le, CmpOp:
 // banned(0b11); NOT_LEGAL(0b00) is never a query leaf (the parser negates instead).
 const FUZZ_SHIFTS: [u8; 3] = [0, 2, 4];
 const FUZZ_STATUSES: [u64; 3] = [0b01, 0b10, 0b11];
+// Shifts a divergent card is allowed to disagree at. Deliberately NOT all of `FUZZ_SHIFTS`: production
+// has exactly one divergent format (`oldschool`, all 556 of the corpus's divergent cards) and the rest
+// are card-invariant, so a corpus where every format can diverge would only ever exercise the
+// conservative existential path. Queries still draw leaves from all three shifts, so both regimes get
+// hit -- and `FUZZ_SHIFT_INVARIANT` is the one whose per-printing verification is provably redundant.
+const FUZZ_SHIFTS_DIVERGENT: [u8; 2] = [0, 2];
+const FUZZ_SHIFT_INVARIANT: u8 = 4;
 
 fn fuzz_op(rng: &mut rand::rngs::SmallRng) -> CmpOp {
     FUZZ_OPS[rng.random_range(0..FUZZ_OPS.len())]
@@ -2269,26 +2280,29 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
         };
         counts.push(npr);
 
-        let mut words: Vec<u64> = (0..npr).map(|_| rand_word(rng)).collect();
+        // One base word shared by every printing, then divergence introduced at ONE format. Drawing a
+        // fresh `rand_word` per printing (as this did) made every format differ between the printings of
+        // a divergent card, so the whole corpus was divergent in all three and `FUZZ_SHIFT_INVARIANT`
+        // could not exist -- caught by `fuzz_corpus_has_both_divergent_and_invariant_formats`, which read
+        // a mask of 0x3f. Production diverges in exactly one format, so this is also the more faithful
+        // shape.
+        let base = rand_word(rng);
+        let mut words: Vec<u64> = vec![base; npr];
         if divergent {
-            // Force a real disagreement at one format between printings 0 and 1,
-            // so the "divergent flag but printings happen to agree" degenerate
-            // case is not all this branch produces.
-            let ds = FUZZ_SHIFTS[rng.random_range(0..FUZZ_SHIFTS.len())];
+            // Force a real disagreement at one DIVERGENT-ELIGIBLE format between printings 0 and 1, so
+            // the "divergent flag but printings happen to agree" degenerate case is not all this branch
+            // produces, and so the invariant shift stays invariant.
+            let ds = FUZZ_SHIFTS_DIVERGENT[rng.random_range(0..FUZZ_SHIFTS_DIVERGENT.len())];
             let s0 = rng.random_range(0..4u64);
             let s1 = { let c = rng.random_range(0..4u64); if c == s0 { (s0 + 1) & 0b11 } else { c } };
-            words[0] = (words[0] & !(0b11 << ds)) | (s0 << ds);
-            words[1] = (words[1] & !(0b11 << ds)) | (s1 << ds);
+            words[0] = (base & !(0b11 << ds)) | (s0 << ds);
+            words[1] = (base & !(0b11 << ds)) | (s1 << ds);
             // Card-level word is unused for divergent cards (eval reads per-printing).
             card.card_legalities = words[0];
         } else {
             // Non-divergent: every printing shares the card-level word (the
             // real-data invariant the exact card-level plane relies on).
-            let w = words[0];
-            for x in words.iter_mut() {
-                *x = w;
-            }
-            card.card_legalities = w;
+            card.card_legalities = base;
         }
 
         for &word in &words {
@@ -2811,6 +2825,40 @@ fn gather_select_matches_reference() {
             }
         }
     }
+}
+
+/// The fuzz corpus must contain BOTH regimes of legality, or every differential test that touches it
+/// verifies only the conservative one.
+///
+/// Production has exactly one divergent format (`oldschool`: all 556 of the corpus's divergent cards) and
+/// the rest are card-invariant, which is what makes skipping per-printing legality verification safe for
+/// them. A fuzz store where every format could diverge would exercise the carveout and never the
+/// shortcut; one where none could would do the opposite. This pins both, on the mask `reload` itself
+/// computes, so the two cannot drift apart silently.
+#[test]
+fn fuzz_corpus_has_both_divergent_and_invariant_formats() {
+    use rand::SeedableRng;
+    // Enough cards that the ~10% divergent branch fires on every shift it is allowed to use.
+    const CORPUS_CARDS: usize = 4_000;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(828_003);
+    let data = fuzz_store_n(&mut rng, CORPUS_CARDS);
+    let mask = divergent_formats_of(&data.printings, &data.offsets);
+
+    for shift in FUZZ_SHIFTS_DIVERGENT {
+        assert_ne!(
+            mask >> shift & 0b11,
+            0,
+            "shift {shift} is in FUZZ_SHIFTS_DIVERGENT but no card diverged there, so the existential \
+             legality path is unexercised for it (mask {mask:#x})",
+        );
+    }
+    assert_eq!(
+        mask >> FUZZ_SHIFT_INVARIANT & 0b11,
+        0,
+        "shift {FUZZ_SHIFT_INVARIANT} must be card-invariant across every card -- it is the format whose \
+         per-printing verification is provably redundant, and the only reason a test can assert a \
+         shortcut is safe (mask {mask:#x})",
+    );
 }
 
 /// #702 step 2 (force-plan seam): every physical plan that is *applicable* to a
@@ -5814,6 +5862,7 @@ fn bench_checked_vs_unchecked_access() {
         legal_divergent: build_divergent_ids(&cards),
         arith_tuple:    build_arith_tuple_index(&cards),
     };
+    let divergent_formats = divergent_formats_of(&printings, &offsets);
     let data = CardData {
         cards,
         printings,
@@ -5825,8 +5874,7 @@ fn bench_checked_vs_unchecked_access() {
         mana_vocab: vec![],
         indexes,
         format_shifts: HashMap::new(),
-        // Conservative, as in `store_of`: every format treated as divergent.
-        divergent_formats: u64::MAX,
+        divergent_formats,
     };
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     println!("archive size: {:.1} MB", bytes.len() as f64 / 1e6);
