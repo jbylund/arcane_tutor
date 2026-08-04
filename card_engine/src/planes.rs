@@ -797,7 +797,7 @@ fn numeric_layout(field: NumField, bounds: &rkyv::Archived<BitPlanes>) -> Option
 /// `numeric_candidates` (lib.rs) uses, so the plane-compiled answer and the
 /// index-scan fallback can never disagree on a fractional-threshold edge
 /// case (e.g. `cmc>6.5`).
-fn matches_op(op: CmpOp, v: f64, threshold: f64) -> bool {
+pub(crate) fn matches_op(op: CmpOp, v: f64, threshold: f64) -> bool {
     match op {
         CmpOp::Eq => v == threshold,
         CmpOp::Ne => v != threshold,
