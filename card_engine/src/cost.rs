@@ -401,6 +401,23 @@ const STREAM_SCAN_PER_ROW_NS: f64 = 5.97;
 /// That same regression also shows the residual's cost is per CARD, not per printing scanned: the
 /// SLOPE against printings-per-card is ~3.5 for every tier including none (P4) and ~2 for P3, i.e.
 /// independent of what the residual is. So the tier belongs on `eval_domain`, as it now sits.
+/// **Measured with a built design 2026-08-04, and NOT changed — the useful part is why.** The floor only
+/// ever binds on `MASK_COMPARE` (tier 4.00); every other tier exceeds 6.58 and `max` takes the tier. So
+/// `bench_streamed_loop`'s always-true `DateCmp` cells are exactly the population it governs, and they say
+/// the residual's per-card cost is 2.45 ns (printing/residual 4.97 less printing/all_match 2.52) against a
+/// charged `CARD_PASS + floor` of 9.05 — i.e. the `card_pass` call IS the whole cost and the mask compare
+/// adds nothing measurable.
+///
+/// Traffic disagrees, and traffic wins on levels: the fitted `CARD_PASS+FLOOR` column reads **8.19 against
+/// the shipped 9.05 (0.90)** for this arm and **21.59 against 21.89 (0.99)** for `GatheredScan`. Both
+/// floors are already right to within 10% and 1%.
+///
+/// That is the third time this file has caught the same artifact. The design measures an always-true
+/// predicate over chunk-rotated slices; production runs real residuals over a warmer archive, and the two
+/// differ by 3.3x here exactly as they differed by 1.6-2.2x in the retraction at the top of
+/// `bench_streamed_loop`. Shape from a built design, levels from traffic — the design's contribution is
+/// the SHAPE finding that the tier adds ~0 over the call for the cheapest class, which is worth knowing
+/// and is not a licence to move the level.
 const STREAM_RESIDUAL_FLOOR_NS: f64 = 6.58;
 /// ns per match, for the permutation-walk emit. Small — P3 measured nearly flat
 /// in match count once eval_domain is fixed (see STREAM_MATCH_PHASE_PER_CARD_NS),
