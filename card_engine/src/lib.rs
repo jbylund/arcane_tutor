@@ -1688,17 +1688,80 @@ struct ArtistIndex {
     printings: Vec<u32>,
 }
 
-/// build_tag_index with the printing-space selectivity threshold applied at
-/// build time: values whose posting would be declined by the range guard
-/// anyway (frame:2015 covers 66% of printings) are simply not stored — the
-/// absent-key convention already means "no narrowing", so dropped and unknown
-/// values both fall back to the scan. Third application of the threshold
-/// after the range guard (#609) and rarity's union ceiling (#618).
-fn build_thresholded_tag_index<T>(rows: &[T], vocab: &[String], get_ids: impl Fn(&T) -> &Vec<u16>) -> TagIndex {
-    let mut idx = build_tag_index(rows, vocab, get_ids);
+/// A printing-space collection index that stores each value in whichever representation is CHEAPER: a
+/// bitmap for dense values, postings for the sparse tail. The same plane/postings split
+/// `BorderPrintingPlanes` and `RarityPrintingPlanes` already use, which `frame_data` never got.
+///
+/// This replaces `build_thresholded_tag_index`, which DROPPED any value past
+/// `range_too_broad_to_narrow` because "the absent-key convention already means no narrowing, so
+/// dropped and unknown values both fall back to the scan". That reasoning expired twice over: #636
+/// taught the consumer to scatter a broad list into a bitmap rather than decline, and the drop cost
+/// three things where only the first was intended.
+///
+/// 1. `frame:2015` could not narrow at all — a full 31,508-card scan, ~600 µs.
+/// 2. The index was not `complete`, so an unknown frame value could not narrow to provably-empty.
+/// 3. `collection_compose_index` excluded `FrameData` outright *for that reason*, keeping every frame
+///    query off `PrintingCompose` — the path that pages `border:black` in 26 µs.
+///
+/// Storing every value makes the index complete, which is what unlocks (2) and (3). And the guard was
+/// inverted rather than merely stale: of the 29 `frame_data` values, it dropped the ONE where a bitmap
+/// wins by the largest margin (`2015`, 250.5 KB of postings against 11.9 KB of bitmap) while keeping as
+/// postings six more that would also be smaller as bitmaps. Per-value cheaper-of-the-two is 111 KB
+/// against the 240 KB stored before, so this is smaller AND faster, not a trade.
+#[derive(Archive, Serialize, Deserialize, Default)]
+struct HybridTagIndex {
+    /// Values above the density crossover: one printing-space bitmap each, ready to use with no scatter.
+    dense: HashMap<String, Vec<u64>>,
+    /// Everything below it: sorted printing ids, exactly as `TagIndex`.
+    ///
+    /// A sparse value can never be "broad" downstream: the crossover is 1/32 (3.1%) and
+    /// `range_too_broad_to_narrow` fires at 25%, so anything landing here is far under that guard.
+    sparse: TagIndex,
+}
+
+/// A stored bitmap is smaller than a posting list once `4 * k > n / 8` bytes, i.e. `k * 32 > n` —
+/// density above 1/32. Integer arithmetic so the boundary is exact.
+fn bitmap_beats_postings(k: usize, n_rows: usize) -> bool {
+    k.saturating_mul(32) > n_rows
+}
+
+fn build_hybrid_tag_index<T>(rows: &[T], vocab: &[String], get_ids: impl Fn(&T) -> &Vec<u16>) -> HybridTagIndex {
     let n = rows.len();
-    idx.retain(|_, postings| !range_too_broad_to_narrow(postings.len(), n));
-    idx
+    let mut out = HybridTagIndex::default();
+    for (value, postings) in build_tag_index(rows, vocab, get_ids) {
+        if bitmap_beats_postings(postings.len(), n) {
+            out.dense.insert(value, scatter_bits(postings, n));
+        } else {
+            out.sparse.insert(value, postings);
+        }
+    }
+    out
+}
+
+impl ArchivedHybridTagIndex {
+    /// Whether this value is stored as a bitmap, i.e. whether `bits` costs a copy rather than a scatter.
+    fn is_dense(&self, value: &str) -> bool {
+        self.dense.get(value).is_some()
+    }
+
+    /// The value's printing-space bitmap, materialized from postings if that is how it is stored.
+    /// `None` only when the value is absent from the store entirely — nothing is dropped, so that is a
+    /// proof rather than a gap.
+    fn bits(&self, value: &str, n_printings: usize) -> Option<Vec<u64>> {
+        if let Some(b) = self.dense.get(value) {
+            return Some(b.iter().map(|w| u64::from(*w)).collect());
+        }
+        self.sparse.get(value).map(|v| scatter_bits(v.iter().map(|x| u32::from(*x)), n_printings))
+    }
+
+    /// Printings carrying this value, for the estimator and for the sparse narrowing path. Counts
+    /// without materializing when the value is a bitmap.
+    fn len_of(&self, value: &str) -> Option<usize> {
+        if let Some(b) = self.dense.get(value) {
+            return Some(b.iter().map(|w| u64::from(*w).count_ones() as usize).sum());
+        }
+        self.sparse.get(value).map(|v| v.len())
+    }
 }
 
 fn build_artist_index(printings: &[Printing], n_artists: usize) -> ArtistIndex {
@@ -2840,7 +2903,7 @@ struct CardIndexes {
     oracle_tags:    TagIndex,        // card space
     art_tags:       TagIndex,        // printing space
     is_tags:        TagIndex,        // printing space
-    frame_data:     TagIndex,        // printing space (selectivity-thresholded)
+    frame_data:     HybridTagIndex,  // printing space (bitmap for dense values, postings for the tail)
     artists:        ArtistIndex,     // printing space (CSR by artist vocab id)
     flavor:         FlavorIndex,     // printing space (CSR by dense flavor text id)
     set_codes:      TagIndex,        // printing space
@@ -4023,23 +4086,43 @@ fn narrow_rec(
         // condition is needed. (#700; Le/Lt/Ne genuinely can't reuse this —
         // they're not expressible as `contains` plus a length check.)
         FilterExpr::CollectionCmp { field, op, value, .. } if matches!(op, CmpOp::Ge | CmpOp::Eq | CmpOp::Gt) => {
-            // `complete` marks indexes that post every occurrence of every
-            // value — all of them except frame_data, whose dense values are
-            // deliberately dropped at build (#628), so absence proves nothing
-            // there.
-            let (idx, card_space, complete) = match field {
-                CollField::Subtypes   => (&indexes.subtypes,    true,  true),
-                CollField::Keywords   => (&indexes.keywords,    true,  true),
-                CollField::OracleTags => (&indexes.oracle_tags, true,  true),
-                CollField::ArtTags    => (&indexes.art_tags,    false, true),
-                CollField::IsTags     => (&indexes.is_tags,     false, true),
-                CollField::FrameData  => (&indexes.frame_data,  false, false),
-            };
             // Ge's postings are exact for Ge itself; for Eq/Gt they're only a
             // loose superset (they prove `contains(value)` but not the length
             // condition), so the residual `matches()` check the driver always
             // runs is load-bearing for those two ops.
             let mk = |set| if matches!(op, CmpOp::Ge) { Narrowed::tight(set) } else { Narrowed::loose(set) };
+            // frame_data is the one HYBRID index: dense values are stored as printing bitmaps and the
+            // sparse tail as postings (see `HybridTagIndex`). Handled before the postings-only table
+            // below because a dense hit needs no scatter at all.
+            if matches!(field, CollField::FrameData) {
+                let idx = &indexes.frame_data;
+                if idx.is_dense(value.as_str()) {
+                    // `broad_ok` exists to refuse PAYING to materialize a broad set -- "the scatter
+                    // would be pure waste". A stored bitmap is already materialized, so that premise
+                    // does not hold and the gate does not apply: this costs an 11.9 KB copy against the
+                    // ~600 us full scan it replaces. Requiring `broad_ok` here is what kept a lone
+                    // `frame:2015` on the scan path even once the bitmap existed.
+                    let bits = idx.bits(value.as_str(), n_printings)?;
+                    return mk(Candidates::PrintingBits(bits));
+                }
+                // Sparse values cannot be broad -- the storage crossover is 1/32 and the broadness
+                // guard fires at 1/4 -- so the postings go straight through with no guard.
+                return match idx.sparse.get(value.as_str()) {
+                    None => Narrowed::tight(Candidates::Printings(Vec::new())),
+                    Some(v) => mk(Candidates::Printings(v.iter().map(|x| u32::from(*x)).collect())),
+                };
+            }
+            // Every remaining index posts every occurrence of every value, so absence is a proof. That
+            // is now true of `frame_data` too, handled above -- it was the sole exception only because
+            // its dense values were dropped at build.
+            let (idx, card_space) = match field {
+                CollField::Subtypes   => (&indexes.subtypes,    true),
+                CollField::Keywords   => (&indexes.keywords,    true),
+                CollField::OracleTags => (&indexes.oracle_tags, true),
+                CollField::ArtTags    => (&indexes.art_tags,    false),
+                CollField::IsTags     => (&indexes.is_tags,     false),
+                CollField::FrameData  => unreachable!("frame_data is the hybrid index, handled above"),
+            };
             match idx.get(value.as_str()) {
                 // A value with no postings in a complete index proves
                 // `contains(value)` false for every row, which makes Ge, Eq,
@@ -4047,10 +4130,9 @@ fn narrow_rec(
                 // them without first satisfying containment. Exact for all
                 // three ops, not just Ge: `is:permanent` spent 0.6 ms
                 // full-scanning to return zero results.
-                None if complete => {
+                None => {
                     Narrowed::tight(if card_space { Candidates::Cards(Vec::new()) } else { Candidates::Printings(Vec::new()) })
                 }
-                None => None,
                 Some(v) => {
                     // Broad printing-space postings pay the same gather cost
                     // the range indexes guard against (is:spell is ~60k ids);
@@ -5732,23 +5814,34 @@ fn broadcast_card_ids_to_printings(card_ids: impl Iterator<Item = u32>, offsets:
     pbits
 }
 
-/// Maps a `CollectionCmp` field to its compose backing: the postings index and whether it is
-/// **card-space** (postings are card ids → project each card's printing range up with
-/// `broadcast_card_ids_to_printings`) or **printing-space** (postings are printing ids → scatter
-/// directly, like `set:`/`watermark:`). Returns `None` for `FrameData` — the only non-`complete`
-/// collection index (its dense values are dropped at build, #628, so absence proves nothing there and
-/// it cannot be an exact compose leaf); it stays on the general path. This is the single source of
-/// truth `is_printing_composable`/`compose_printing_bits`/`compose_printing_estimate` share so their
-/// field tables can't drift apart.
-fn collection_compose_index(indexes: &Archived<CardIndexes>, field: CollField) -> Option<(&Archived<TagIndex>, bool)> {
-    match field {
-        CollField::Subtypes   => Some((&indexes.subtypes,    true)),
-        CollField::Keywords   => Some((&indexes.keywords,    true)),
-        CollField::OracleTags => Some((&indexes.oracle_tags, true)),
-        CollField::ArtTags    => Some((&indexes.art_tags,    false)),
-        CollField::IsTags     => Some((&indexes.is_tags,     false)),
-        CollField::FrameData  => None,
-    }
+/// Which structure backs a `CollectionCmp` field on the compose path.
+enum CollComposeSource<'i> {
+    /// Postings. `true` = card-space ids (project each card's printing range up with
+    /// `broadcast_card_ids_to_printings`), `false` = printing ids (scatter directly, like
+    /// `set:`/`watermark:`).
+    Postings(&'i Archived<TagIndex>, bool),
+    /// The one hybrid printing-space index: a stored bitmap for dense values, postings for the tail.
+    Hybrid(&'i Archived<HybridTagIndex>),
+}
+
+/// Maps a `CollectionCmp` field to its compose backing. The single source of truth
+/// `is_printing_composable`/`compose_printing_bits`/`compose_printing_estimate` share so their field
+/// tables can't drift apart.
+///
+/// **Every field is composable now.** `FrameData` used to return `None` here, as the only non-`complete`
+/// collection index — its dense values were dropped at build, so absence proved nothing and it could not
+/// be an exact compose leaf. `HybridTagIndex` stores those values as bitmaps instead, which makes the
+/// index complete and puts frame queries on this path. The `Option` stays because the callers read it as
+/// "is this composable", and a future non-complete field would want it.
+fn collection_compose_index(indexes: &Archived<CardIndexes>, field: CollField) -> Option<CollComposeSource<'_>> {
+    Some(match field {
+        CollField::Subtypes   => CollComposeSource::Postings(&indexes.subtypes,    true),
+        CollField::Keywords   => CollComposeSource::Postings(&indexes.keywords,    true),
+        CollField::OracleTags => CollComposeSource::Postings(&indexes.oracle_tags, true),
+        CollField::ArtTags    => CollComposeSource::Postings(&indexes.art_tags,    false),
+        CollField::IsTags     => CollComposeSource::Postings(&indexes.is_tags,     false),
+        CollField::FrameData  => CollComposeSource::Hybrid(&indexes.frame_data),
+    })
 }
 
 /// The exact printing-space bitmap for a bare containment collection leaf (`type:`/`kw:`/`otag:`/
@@ -5761,11 +5854,17 @@ fn collection_compose_index(indexes: &Archived<CardIndexes>, field: CollField) -
 /// are tight for `Ge`, but only a loose superset for `Eq`/`Gt` (they prove `contains(value)`, not the
 /// collection-length condition, ~lib.rs:3441), and the compose path has no residual re-check, so
 /// `Eq`/`Gt` stay on the general path.
-fn collection_leaf_bits(idx: &Archived<TagIndex>, value: &str, card_space: bool, offsets: &AOffsets, n_printings: usize) -> Vec<u64> {
-    match idx.get(value) {
-        None => vec![0u64; words_per_plane(n_printings)],
-        Some(v) if card_space => broadcast_card_ids_to_printings(v.iter().map(|x| u32::from(*x)), offsets, n_printings),
-        Some(v) => scatter_bits(v.iter().map(|x| u32::from(*x)), n_printings),
+fn collection_leaf_bits(src: &CollComposeSource, value: &str, offsets: &AOffsets, n_printings: usize) -> Vec<u64> {
+    match src {
+        // Dense values are already a printing bitmap, so this is a copy rather than a scatter.
+        CollComposeSource::Hybrid(idx) => {
+            idx.bits(value, n_printings).unwrap_or_else(|| vec![0u64; words_per_plane(n_printings)])
+        }
+        CollComposeSource::Postings(idx, card_space) => match idx.get(value) {
+            None => vec![0u64; words_per_plane(n_printings)],
+            Some(v) if *card_space => broadcast_card_ids_to_printings(v.iter().map(|x| u32::from(*x)), offsets, n_printings),
+            Some(v) => scatter_bits(v.iter().map(|x| u32::from(*x)), n_printings),
+        },
     }
 }
 
@@ -5774,17 +5873,21 @@ fn collection_leaf_bits(idx: &Archived<TagIndex>, value: &str, card_space: bool,
 /// space: the postings length (one posting = one printing). Exact (a valid upper bound and then some),
 /// so the estimate for a bare collection leaf is exact, matching set/watermark. O(card postings) — the
 /// same order as the eventual scatter, cheap for the sparse subtype/keyword/oracle-tag posting lists.
-fn collection_leaf_printing_count(idx: &Archived<TagIndex>, value: &str, card_space: bool, offsets: &AOffsets) -> usize {
-    match idx.get(value) {
-        None => 0,
-        Some(v) if card_space => v
-            .iter()
-            .map(|c| {
-                let c = u32::from(*c) as usize;
-                (u32::from(offsets[c + 1]) - u32::from(offsets[c])) as usize
-            })
-            .sum(),
-        Some(v) => v.len(),
+fn collection_leaf_printing_count(src: &CollComposeSource, value: &str, offsets: &AOffsets) -> usize {
+    match src {
+        // A popcount when the value is a bitmap; a postings length otherwise.
+        CollComposeSource::Hybrid(idx) => idx.len_of(value).unwrap_or(0),
+        CollComposeSource::Postings(idx, card_space) => match idx.get(value) {
+            None => 0,
+            Some(v) if *card_space => v
+                .iter()
+                .map(|c| {
+                    let c = u32::from(*c) as usize;
+                    (u32::from(offsets[c + 1]) - u32::from(offsets[c])) as usize
+                })
+                .sum(),
+            Some(v) => v.len(),
+        },
     }
 }
 
@@ -5795,8 +5898,8 @@ fn collection_leaf_printing_count(idx: &Archived<TagIndex>, value: &str, card_sp
 /// the (exact, `Ge`) positive set is precisely the negated match set, with no trivalent-NULL printing
 /// wrongly swept in. Ge only, same reason as the positive leaf (a loose positive set would give a
 /// loose complement).
-fn collection_negated_leaf_bits(idx: &Archived<TagIndex>, value: &str, card_space: bool, offsets: &AOffsets, n_printings: usize) -> Vec<u64> {
-    let mut bits = collection_leaf_bits(idx, value, card_space, offsets, n_printings);
+fn collection_negated_leaf_bits(src: &CollComposeSource, value: &str, offsets: &AOffsets, n_printings: usize) -> Vec<u64> {
+    let mut bits = collection_leaf_bits(src, value, offsets, n_printings);
     complement_bits(&mut bits, n_printings);
     bits
 }
@@ -5970,8 +6073,8 @@ fn compose_printing_bits(
         FilterExpr::CollectionCmp { field, op: CmpOp::Ge, value, .. }
             if collection_compose_index(indexes, *field).is_some() =>
         {
-            let (idx, card_space) = collection_compose_index(indexes, *field).expect("guarded by the if");
-            collection_leaf_bits(idx, value.as_str(), card_space, offsets, n_printings)
+            let src = collection_compose_index(indexes, *field).expect("guarded by the if");
+            collection_leaf_bits(&src, value.as_str(), offsets, n_printings)
         }
         // Negated collection leaf — the exact complement of the positive leaf.
         FilterExpr::Not(inner)
@@ -5980,8 +6083,8 @@ fn compose_printing_bits(
             let FilterExpr::CollectionCmp { field, value, .. } = inner.as_ref() else {
                 unreachable!("guarded by the matches! above")
             };
-            let (idx, card_space) = collection_compose_index(indexes, *field).expect("guarded by the matches!");
-            collection_negated_leaf_bits(idx, value.as_str(), card_space, offsets, n_printings)
+            let src = collection_compose_index(indexes, *field).expect("guarded by the matches!");
+            collection_negated_leaf_bits(&src, value.as_str(), offsets, n_printings)
         }
         // `flip_op` on the const-first form so `2<=rarity` and `rarity>=2` build the same bitmap.
         FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op, rhs: NumExpr::Const(c) } => {
@@ -6073,8 +6176,8 @@ fn compose_printing_estimate(
         FilterExpr::CollectionCmp { field, op: CmpOp::Ge, value, .. }
             if collection_compose_index(indexes, *field).is_some() =>
         {
-            let (idx, card_space) = collection_compose_index(indexes, *field).expect("guarded by the if");
-            let k = collection_leaf_printing_count(idx, value.as_str(), card_space, offsets);
+            let src = collection_compose_index(indexes, *field).expect("guarded by the if");
+            let k = collection_leaf_printing_count(&src, value.as_str(), offsets);
             (k, 0, k)
         }
         // Negated collection leaf: all printings minus the positive `k`; the scatter cost rides the
@@ -6085,8 +6188,8 @@ fn compose_printing_estimate(
             let FilterExpr::CollectionCmp { field, value, .. } = inner.as_ref() else {
                 unreachable!("guarded by the matches! above")
             };
-            let (idx, card_space) = collection_compose_index(indexes, *field).expect("guarded by the matches!");
-            let k = collection_leaf_printing_count(idx, value.as_str(), card_space, offsets);
+            let src = collection_compose_index(indexes, *field).expect("guarded by the matches!");
+            let k = collection_leaf_printing_count(&src, value.as_str(), offsets);
             (n_printings.saturating_sub(k), 0, k)
         }
         FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op, rhs: NumExpr::Const(c) } => {
@@ -6471,14 +6574,6 @@ fn exact_card_total(composed: &FilterExpr, indexes: &Archived<CardIndexes>, n_ca
     None
 }
 
-/// The size of the query's RESULT space: every printing, card, or artwork in the store.
-fn compose_result_domain(mode: Mode, n_cards: usize, indexes: &Archived<CardIndexes>) -> usize {
-    match mode {
-        Mode::Printing => indexes.printing_to_card.len(),
-        Mode::Card => n_cards,
-        Mode::Artwork => u32::from(*indexes.artwork_base.last().expect("artwork_base has n_cards+1 entries")) as usize,
-    }
-}
 
 /// Whether composing `filter` needs a card-space plane BROADCAST down into printing space -- today,
 /// exactly a legality leaf (`repair_divergent_printings` / `broadcast_card_bits_to_printings`). Purely
@@ -10103,12 +10198,16 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 /// catch (e.g. reordering same-size fields, changing an index type) — and on
 /// any FLAVOR_FP_FEATURES change: archived fingerprints are built with that
 /// table, so a new table reading old fingerprints breaks the superset test.
+// 20260806: frame_data became a `HybridTagIndex` (bitmap for dense values, postings for the tail)
+// and therefore COMPLETE. Both the layout and the meaning of absence changed: a stale archive is
+// missing its dense values, and the new code reads absence as proof that nothing matches -- so it must
+// fail the header check rather than answer wrongly.
 // 20260805: the three printing-range indexes changed shape from `Vec<(value, pid)>` to the
 // value-major `PrintingValueIndex`; a fourth of the same type was added for the rarity orderby walk;
 // and `price_eur`/`price_tix` gained indexes plus card-count tables. All are archived-layout changes,
 // so a store built under the previous version must fail the header check and be rebuilt rather than be
 // read as garbage. One bump covers all of them -- they ship in the same window.
-const ARCHIVE_FORMAT_VERSION: u32 = 20260805;
+const ARCHIVE_FORMAT_VERSION: u32 = 20260806;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -10653,7 +10752,7 @@ impl QueryEngine {
             oracle_tags:    build_tag_index(&cards, &coll_vocab, |c| &c.card_oracle_tags),
             art_tags:       build_tag_index(&printings, &coll_vocab, |p| &p.card_art_tags),
             is_tags:        build_tag_index(&printings, &coll_vocab, |p| &p.card_is_tags),
-            frame_data:     build_thresholded_tag_index(&printings, &coll_vocab, |p| &p.card_frame_data),
+            frame_data:     build_hybrid_tag_index(&printings, &coll_vocab, |p| &p.card_frame_data),
             artists:        build_artist_index(&printings, artist_vocab.len()),
             flavor:         build_flavor_index(&printings, &strings),
             set_codes:      {
