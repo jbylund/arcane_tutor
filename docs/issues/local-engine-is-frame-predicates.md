@@ -281,24 +281,85 @@ oracle-text driver may be the wrong call, in which case the probe should apply t
 children only. Not diagnosed — and worth re-measuring on a quiet machine before acting, for the reason
 in section 0.
 
-## 6. Open: the mid-density regressions
+## 6. The mid-density regressions — FIXED, and the first hypothesis was wrong
 
-Shipped with three known regressions, all on the **mid-density** frame values — `2003` at 17.0% and
-`1997` at 11.1%, the ones already stored as postings before, so the population where the representation
-changed but the completeness win does not apply:
+The hybrid shipped with three regressions, all on the **mid-density** frame values — the ones stored as
+postings before, where the representation changed but the completeness win does not apply.
 
-| query | ratio |
-| --- | --: |
-| `o:this frame:2003` | 2.54× |
-| `t:human frame:1997` | 2.07× |
-| `frame:2003 c:g` (4 configs) | ~1.6× |
+**Cause: `dense` and `broad` are different thresholds, and the dense branch conflated them.**
 
-The lead is concrete and it does **not** point at the storage. `frame:2003` alone reads
-`eval_domain: 8,026`; `o:this frame:2003` reads **19,968** — adding a partner made the candidate set
-*bigger*, which can only happen if the `And` arm stopped including the frame child. That is the arm
-`3cfd441` gave a cost probe to, so the first thing to check is whether `probe_collection_k` is now
-sizing a dense frame value in printings against a driver counted in cards (the space mismatch its own
-doc admits inheriting from `probe_range_k`) and skipping on a comparison that is off by ~3×.
+| | threshold | meaning |
+| --- | --: | --- |
+| DENSE | 1/32 of printings | a bitmap is smaller than postings (`bitmap_beats_postings`) |
+| BROAD | 1/4 of printings | intersecting stops paying (`MAX_NARROW_FRACTION`) |
 
-The A/B harness makes this a 36-second question — it lives in the session scratchpad; the reusable part
-is the protocol, recorded in the benchmark-artifacts memory.
+Eight times apart, and three frame values sit between them: `legendary` 10.6%, `1997` 11.1%, `2003`
+17.0%. The dense branch consulted `broad_ok` for *every* dense value, so all three were declined as if
+they were broad. As postings they had taken the branch below, where `range_too_broad_to_narrow` is tested
+FIRST and `broad_ok` only decides the genuinely-broad case. Moving them to a bitmap silently moved them
+behind a stricter gate.
+
+It bites hardest with a **card-space partner**, because `narrow_candidates_exact` enters with
+`broad_ok: false` and an `And`'s rank-0 children inherit it. So the frame predicate stopped narrowing at
+all and became a per-printing residual instead of a bitmap AND:
+
+| query | before | after |
+| --- | --: | --: |
+| `o:this frame:1993` | 2,102 µs | **148 µs** |
+| `o:this frame:legendary` | 2,111 µs | **193 µs** |
+| `o:this frame:1997` | 1,829 µs | **288 µs** |
+| `o:this frame:2003` | 1,834 µs | **418 µs** |
+| `frame:2003 c:g` | 184 µs | **66 µs** |
+| `o:this` alone, for scale | 52 µs | 52 µs |
+
+Adding a predicate that CUT the result set 6x made the query 35x slower. `eval_domain` for
+`o:this frame:2003` was 19,968 — identical to `o:this` alone, and byte-identical to
+`o:this border:black`, which is how the mechanism was found: every printing-space partner behaved the
+same regardless of its selectivity.
+
+The fix is three lines — test broadness, then `broad_ok` — mirroring the non-hybrid path exactly.
+
+### What it is worth
+
+Interleaved A/B behind `CARD_ENGINE_DENSE_FRAME_BROAD_GATE`, 8 rounds, 1,374 queries:
+
+| subset | n | conflated | fixed | fixed/conflated |
+| --- | --: | --: | --: | --: |
+| `frame:` touched TARGET | 143 | 116.1 ms | 45.5 ms | **0.392** |
+| everything else CONTROL | 1,231 | 124.3 ms | 125.1 ms | 1.007 |
+| whole mix | 1,374 | 240.3 ms | 170.6 ms | **0.710** |
+
+p90 0.903, **p99 0.385** (2,114 µs → 813 µs), median target cell 0.754.
+
+The apparent control regressions (`name:s` 1.91x, `border:black is:flip` 1.43x, `is:mdfc` 1.39x) are
+within-query variance, not signal: `name:s`'s spread *inside arm A* is 2.40x, wider than the cross-arm
+ratio, and its other sampled config reads 1.00. None of the three contains a `frame:` leaf, so the change
+cannot reach them. Broad values still decline as designed — `o:this frame:2015` (66%) is unchanged.
+
+### Why the first hypothesis was wrong
+
+This was originally blamed on `probe_collection_k` sizing a dense frame value in PRINTINGS against a
+driver counted in CARDS, and the evidence offered was that adding a partner made `eval_domain` bigger.
+That evidence was real and the inference was wrong. The `And` arm's skip never fired: it is guarded on
+`best <= AND_SKIP_THRESHOLD` (2,048) and the oracle driver was 19,968. The child was not skipped by a
+cost comparison, it declined to narrow at all one level down.
+
+The lesson is the same one the walk-modes work learned twice: read the branch that actually ran before
+theorising about the one that looks suspicious. `eval_domain` alone could not distinguish "the parent
+skipped this child" from "the child declined", and those have different fixes.
+
+`probe_collection_k`'s printing-vs-card space mismatch is real and still unaddressed — it just was not
+this. Whether it costs anything is now an open question rather than an assumed cause.
+
+## 7. Still open
+
+- **`o:this frame:2003` is 418 µs against 52 µs for `o:this` alone.** Much better, not good. It picks
+  `GatheredScan` over 19,851 scan units where `o:this` alone streams a page and stops.
+- **Genuinely broad printing-space partners under a card-space driver** still decline entirely:
+  `o:this border:black` 1,989 µs, `o:this cn>200` 1,839 µs, `o:this frame:2015` 1,843 µs, all against 52
+  µs for the driver alone. For a STORED bitmap (a plane, or a dense hybrid value) the AND is nearly free
+  and the projection is one pass, so declining may be wrong even at 66% — but the previous attempt to
+  bypass `broad_ok` for stored bitmaps cost 1.3-1.8x on sparse `And`s, so the rule wants to be
+  contextual (is there a printing-space partner? is the driver large enough for the cut to pay?) rather
+  than removed. That is the next item in this family and it is worth more than what section 6 just fixed.
+- (2)'s `t:battle` plane poisoning and (3)'s missing `Battle` in `card_types`, both untouched.
