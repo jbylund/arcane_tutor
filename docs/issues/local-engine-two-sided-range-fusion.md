@@ -138,9 +138,13 @@ indexes fused inside one compose, unsatisfiable pairs, an `Or` of two fused `And
 
 ## What is left
 
-**Re-attempt the sparse gather**, now that the sparsity prediction is correct — the order the earlier
-attempt got wrong. Confirm `matches` holds on that population first, then flip `Decline` → `Gather`,
-then re-check regret.
+**The sparse gather was re-attempted and is still declined** — see
+[local-engine-sparse-compose-gather.md](./local-engine-sparse-compose-gather.md). The accurate estimate
+did remove its stated blocker (the prediction can now tell sparse from broad), and a second stale
+blocker fell with it (the tie-ordering reason the code gives for the decline died with #815). What
+remains is narrower and better quantified: the arm under-prices the gather to 0.27–0.53 of real, the
+resulting mispicks cancel a real 1.3–2.7x win, and the change measures neutral in wall time and 16%
+worse in regret.
 
 **Watch `printing_compose`'s own slice.** Its share of routed queries went 27% → 31% and its mean
 regret 1.65 → 1.80 µs across this commit, even as the total fell. More queries route there now and the
