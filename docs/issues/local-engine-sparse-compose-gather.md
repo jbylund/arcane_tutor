@@ -255,9 +255,42 @@ fits inside one of its `k+1` gaps, so
 
 over ~`n_printings + n_cards` gap intervals — a containment/dominance count, answerable exactly in
 O(log^2) with a merge tree, not a prefix sum. Weighting each gap by its card's printing count makes the
-**same** structure return the exact span as well. One structure, both features exact, both constants
-deleted, and the interior-range hole closed. That is a bigger change than a calibration and belongs in
-its own doc if it is taken up.
+**same** structure return the exact span as well.
+
+**Measured against a cheaper approximation, and the merge tree loses.** A binned start x end triangle
+`T[i][j]` = distinct cards in bins i..j stores the union answer directly, so it subtracts where a
+prefix array cannot. 100 equal-printing bins is 5,050 u32 = **20 KB per index**, against ~274 KB for a
+wavelet tree over the gaps and ~8.8 MB for an explicit merge tree, and the query is a bisect plus two
+reads rather than O(log^2).
+
+Broad intervals bracket tightly -- `T[i+1][j-1]` is contained, `T[i][j]` contains, and the width is the
+two boundary bins: **0.3% / 1.0% / 2.3% / 2.6%** on the four broad cases measured.
+
+Narrow intervals collapse the bracket (fewer than three bins spanned means no interior, so the lower
+bound is 0) and more bins cannot fix that. But the upper bound is the estimator, and it pairs with a
+second free bound: `k`, the printings in the range, is the two partition points the range path already
+computes, and a card needs at least one printing in range. Over 14 narrow intervals spanning both ends
+of both value axes:
+
+| estimator | median | max | direction |
+| --- | --: | --: | --- |
+| `T[i][j]` | 2.16x | 8.52x | never under |
+| **`min(k, T[i][j])`** | **1.21x** | **1.41x** | never under |
+| shipped | 0.72x | — | unbounded either way |
+
+The two bounds are complementary for a structural reason worth keeping: equal-printing bins are narrow
+in VALUE space exactly where printings are dense, so at the cheap end a bin is two distinct prices wide
+and `T[i][i]` is exact (3 of 14 cells). Where values are sparse the bin spans 1,381 values against a
+query's 173 and `T` is useless -- but that is the regime where printings-per-value is low, so cards ~ k
+and the clamp takes over.
+
+So the whole feature is 20 KB, O(1), bounded at 1.41x over on narrow and 2.6% on broad. **The arm is
+under by 2.5x overall**, so buying exactness here is misallocated: the merge tree, and the O(k)
+count-it-directly variant, both cost more to fix an error smaller than the one that remains.
+
+Same shipping caveat as the span patch: `min(k, T)` is systematically OVER, which makes compose look
+more expensive -- the direction that lost argmins compose deserved. It lands with the level fix, not
+before it. And the 14 intervals are hand-picked; grade it over the regret matrix's traffic first.
 
 Progress on the compose arm generally is tracked in
 [the cost-model doc](local-engine-cost-model-agreement.md).
