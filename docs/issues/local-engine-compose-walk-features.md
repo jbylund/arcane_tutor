@@ -123,11 +123,50 @@ feature grade did not move at all (0.88 / 0.44 / 0.18, unchanged), because the f
 sizes** — the bucket COUNT is corpus-invariant and the bucket SIZE scales, which is the 1/N law, but it
 means the count is not `printings_walked / bucket_size` and the `max` shape cannot express it.
 
-So the mechanism (whole-bucket collection, bucket size scaling with the corpus) is confirmed and the
-*model* for how many buckets is still unknown. That is the open question, and the next step is reading
-`collect_orderby_page` for what actually terminates the bucket loop — it is documented as skipping whole
-buckets by match count up to `page_offset` and then collecting the buckets the window overlaps, which
-should need ~1 bucket at 5x and demonstrably does not.
+### Resolved: two buckets, and the run length where the WALK STARTS
+
+`walk_range_orderby_page` forms one bucket per distinct price and reports `raw = be - bs`, the value run
+length. `collect_orderby_page` then loops `while cum < want` with `cum` in matches, so it can overshoot
+by one whole bucket — and `matches_pushed` says it does, massively: **109 pushed for a 60-row page at 1x,
+545 at 5x.**
+
+Reconstructing from that, the walk consumes **two** buckets at both sizes. The first (~8 printings at 1x,
+40 at 5x) yields fewer than the 60 needed; the second overshoots hugely (~97 at 1x, ~485 at 5x). The
+bucket COUNT stays 2 while the bucket SIZES scale, which is exactly why `scanned` scales and
+`printings_walked` cannot.
+
+**And it is why both floors failed.** The corpus-wide average run is 19.7 entries, but the walk starts at
+the cheap end where runs are far denser than average — the statistic has to be the run length *where the
+walk starts*, not a corpus-wide mean.
+
+The model that follows needs no constant: walk `printings_walked` entries from the start of the value
+order, then extend to the end of the run you land in. One `partition_point`. Scored against realized
+`scanned`:
+
+| query | 1x | 5x |
+| --- | --: | --: |
+| `border:black` | **1.00** | **1.00** |
+| `usd>0.01` | **1.00** | **1.00** |
+| `f:modern` | 4.21 | **1.00** |
+| `r:common` | 4.21 | **1.00** |
+| `r:mythic` | 0.04 | 0.02 |
+
+**It fixes the SCALING exactly and inherits the CLUMPING error.** The broad filters all consume the same
+two cheap buckets because their local match density near the cheap end is ~100%, while `printings_walked`
+divides by the GLOBAL rate — so `f:modern` and `r:common` over-predict at 1x. `r:mythic` is the inverse
+and far worse: mythics are expensive, absent from the cheap end, so the walk grinds through 32% of the
+index (31,698 entries) to find 75 matches.
+
+That is not a new defect and not one this model introduces. `WALK_LENGTH_BIAS`'s own doc already declares
+it: "the spread stays wide because how matches clump along a sort order is not something a density ratio
+can see, and no constant will fix that." The run-boundary model is a strict improvement in SHAPE — the
+current feature cannot scale with the corpus at all, and this one does — but **OW/usd will not become
+low-error until clumping is addressed**, and that is a bigger problem than this branch.
+
+What clumping would need: the match density in the *first* part of the sort order, not the whole. For a
+price orderby that is answerable — the composed bitmap intersected with the first N index entries — but
+it costs a scan of those entries, which is the walk's own price. The cheaper route is a per-filter
+correlation hint, and nothing in `PlanFeatures` carries one today.
 
 One case worth carrying into that: `r:mythic` at `orderby=usd` charges 947 against a realized 31,698 at
 1x and 129,075 at 5x — a 33x undercharge, far worse than the broad queries, and a sparse-match regime
@@ -138,15 +177,16 @@ explain that cell too.
 
 Nothing shipped on this branch yet. Order to take it in:
 
-1. **OW/usd's bucket COUNT.** The mechanism is confirmed (whole-bucket collection, bucket size scaling
-   with the corpus, count invariant) and the one-bucket floor was implemented and reverted for not
-   binding. What is missing is why the count is ~5.7 and corpus-invariant: read
-   `collect_orderby_page`'s termination, and make it explain the `r:mythic` cell (947 charged against
-   31,698 realized) as well as the broad ones.
+1. **Ship the run-boundary model for OW/usd.** Fully diagnosed and validated above; it makes the
+   feature scale with the corpus, which it currently cannot. Expect it to fix the broad cells and NOT
+   the `r:mythic` class — gate it on the compose-paging slice `bench_regret_matrix` now reports, since
+   OrderbyWalk is the worst-routed compose branch (miss% 12% against Perm's 3%) and is where any
+   movement will show.
 
-   `bench_regret_matrix` now slices by compose paging branch, which is the instrument this needs — it
-   already shows OrderbyWalk as the worst-routed compose branch (miss% 12% against Perm's 3%), so the
-   defect is visible in routing and not only in the feature.
+2. **Clumping is the real ceiling for both walks**, and it is one problem rather than two: `Perm`'s
+   `printings_walked` divides by the same global match rate and carries the same 10x spread. Neither
+   branch gets low-error without it. This is the item to open next if the goal is a well-behaved arm
+   rather than a well-behaved constant.
 2. **OW/rarity.** Attempted and declined — see above. Revisit only with a direction-aware model, and
    only if the tail (27% of cells undercharged 3-4x) shows up in regret. It has not yet.
 3. **Perm.** Leave it. 1.19 at production scale, and the drift is cache, not model.
