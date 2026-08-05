@@ -3382,23 +3382,35 @@ enum AndSource<'f, 'i> {
     /// printings — already probed, so the And arm reads it as the ranking probe instead of repeating
     /// the two binary searches. Constituents may include a `Not` (`bare_range_bounds` reduces
     /// `-usd<c` to `usd>=c`'s bounds itself); nothing downstream needs to know, because the
-    /// broad-interval gate below means `k` is always sparse and `range_narrowed` therefore takes its
-    /// vec path without ever consulting `broad_ok` — the one thing the negated arm cares about.
+    /// broad-interval gate below means `k` is always sparse under `sparse_only` and `range_narrowed`
+    /// therefore takes its vec path without ever consulting `broad_ok` — the one thing the negated arm
+    /// cares about. The compose builders don't consult `broad_ok` at all.
     FusedRange { idx: &'i Archived<PrintingRangeIndex>, lo: u32, hi: u32, k: usize },
 }
 
 /// Group an `And`'s children by which printing-range index they select on, fusing each group of two
 /// or more into a single interval — `lo = max(lo_i)`, `hi = min(hi_i)`.
 ///
-/// Children the range dispatch doesn't recognize, single-member groups, and groups whose fused
-/// interval is *still* broad all pass through untouched: those children keep taking their own arms, so
+/// Children the range dispatch doesn't recognize and single-member groups pass through untouched, so
 /// this cannot alter any query it doesn't fuse. Emission follows the written position of each group's
-/// first member, so the And arm's stable `sort_by_key` sees the tie-breaking it saw before for
-/// everything unfused.
+/// first member, so a caller that ranks its sources sees the tie-breaking it saw before for everything
+/// unfused.
 ///
 /// The fused interval is the exact conjunction of its constituents, which is what lets one source
-/// stand in for all of them — including in `every_child_included`'s tightness accounting.
-fn fuse_and_range_children<'f, 'i>(children: &'f [FilterExpr], indexes: &'i Archived<CardIndexes>) -> Vec<AndSource<'f, 'i>> {
+/// stand in for all of them — including in `narrow_rec`'s `every_child_included` tightness accounting.
+///
+/// `sparse_only` is the one thing the two callers disagree about. `narrow_rec` sets it, because a broad
+/// fused source reaches `range_narrowed` under a single `broad_ok` where two broad children each got
+/// their own, which takes a decision away from the And's per-child skip logic for no measured gain (see
+/// the gate below). The compose builders clear it: `range_leaf_bits` is an O(k) scatter at every k, so
+/// one scatter of the intersection always beats two scatters and an AND, and
+/// `compose_printing_estimate` reads the intersection's exact `k` where the unfused fold could only take
+/// the min of the two sides (measured: 33,862 against a true 879).
+fn fuse_and_range_children<'f, 'i>(
+    children: &'f [FilterExpr],
+    indexes: &'i Archived<CardIndexes>,
+    sparse_only: bool,
+) -> Vec<AndSource<'f, 'i>> {
     // At most one group per printing-range index (price / collector-number / released-at), so a
     // linear scan of the accumulator beats hashing a pointer.
     struct Group<'i> {
@@ -3424,15 +3436,14 @@ fn fuse_and_range_children<'f, 'i>(children: &'f [FilterExpr], indexes: &'i Arch
             None => groups.push(Group { first: pos, idx, lo, hi, count: 1 }),
         }
     }
-    // Fusion exists to DISCOVER a sparse intersection hiding behind broad halves. Where the
-    // intersection is itself broad there is nothing to discover — and fusing anyway is not neutral,
-    // because one broad source reaches `range_narrowed` under a single `broad_ok` where two broad
-    // children each got their own, so the And's per-child skip logic stops deciding per child.
+    // Under `sparse_only`, fusion exists to DISCOVER a sparse intersection hiding behind broad halves.
+    // Where the intersection is itself broad there is nothing to discover — and fusing anyway is not
+    // neutral, for the `broad_ok` reason in this function's doc.
     //
-    // This gate is a scope decision, not a measured win: paired traffic puts fused-vs-gated at 0.88 vs
+    // That gate is a scope decision, not a measured win: paired traffic puts fused-vs-gated at 0.88 vs
     // 0.86 of baseline on the fusible slice, and the per-query noise floor on a slice fusion cannot
     // touch at all is ±170 µs, so the two are indistinguishable. What the gate does buy is a bound —
-    // outside the sparse population where the win IS demonstrated (up to 1.3 ms/query), the change is a
+    // outside the sparse population where the win IS demonstrated (up to 1.3 ms/query), narrowing is a
     // provable no-op. `k` survives for the survivors so the probe isn't recomputed downstream.
     let mut fused: Vec<(&Group<'i>, usize)> = Vec::new();
     for g in &groups {
@@ -3441,7 +3452,7 @@ fn fuse_and_range_children<'f, 'i>(children: &'f [FilterExpr], indexes: &'i Arch
         }
         let s = g.idx.partition_point(|p| u32::from(p.0) < g.lo);
         let e = g.idx.partition_point(|p| u32::from(p.0) < g.hi);
-        if !range_too_broad_to_narrow(e - s, g.idx.len()) {
+        if !sparse_only || !range_too_broad_to_narrow(e - s, g.idx.len()) {
             fused.push((g, e - s));
         }
     }
@@ -4027,7 +4038,7 @@ fn narrow_rec(
             // Same-index range children fuse into one interval first (`fuse_and_range_children`),
             // because two individually-broad halves can intersect to something sparse and this arm
             // only ever intersects narrowing *results*, never the bounds.
-            let mut ranked: Vec<(u8, Option<usize>, AndSource)> = fuse_and_range_children(children, indexes)
+            let mut ranked: Vec<(u8, Option<usize>, AndSource)> = fuse_and_range_children(children, indexes, true)
                 .into_iter()
                 .map(|src| match src {
                     AndSource::Child(c) => {
@@ -5814,10 +5825,18 @@ fn compose_printing_bits(
     match filter {
         FilterExpr::True => all_printing_bits(n_printings),
         FilterExpr::And(v) => {
-            // empty And is vacuously true; start all-ones (tail masked) and intersect each child.
+            // empty And is vacuously true; start all-ones (tail masked) and intersect each source.
+            // Same-index range children fuse into one interval first, so `usd>=0.42 usd<=0.43` scatters
+            // the 879-printing intersection once instead of scattering 33,862 and 48,559 and ANDing
+            // them. Unconditional (`sparse_only: false`): `range_leaf_bits` is an O(k) scatter at every
+            // k, so one scatter of a subset can never lose to two of its supersets.
             let mut acc = all_printing_bits(n_printings);
-            for child in v.iter() {
-                and_bits_into(&mut acc, &compose_printing_bits(child, indexes, offsets, printings, n_printings));
+            for src in fuse_and_range_children(v, indexes, false) {
+                let bits = match src {
+                    AndSource::Child(c) => compose_printing_bits(c, indexes, offsets, printings, n_printings),
+                    AndSource::FusedRange { idx, lo, hi, .. } => range_leaf_bits(idx, lo, hi, n_printings),
+                };
+                and_bits_into(&mut acc, &bits);
             }
             acc
         }
@@ -5903,9 +5922,17 @@ fn compose_printing_estimate(
     let popcount = |bits: &[u64]| bits.iter().map(|w| w.count_ones() as usize).sum::<usize>();
     match filter {
         FilterExpr::True => (n_printings, 0, 0),
-        FilterExpr::And(v) => v
-            .iter()
-            .map(|c| compose_printing_estimate(c, indexes, offsets, n_printings))
+        // The min-of-children fold is an intersection UPPER BOUND, and on a two-sided range it is a bad
+        // one: `usd>=0.42 usd<=0.43` folded to min(33,862, 48,559) against a true 879, and the summed
+        // scatter to 82,421 for an 879-row answer. Fusing same-index children first replaces both with
+        // the interval's exact `k` — the same two `partition_point` calls the one-sided arm below
+        // already makes, which is why a one-sided range estimates at 1.0x and this did not.
+        FilterExpr::And(v) => fuse_and_range_children(v, indexes, false)
+            .into_iter()
+            .map(|src| match src {
+                AndSource::Child(c) => compose_printing_estimate(c, indexes, offsets, n_printings),
+                AndSource::FusedRange { k, .. } => (k, 0, k),
+            })
             .fold((n_printings, 0, 0), |(m, bc, sc), (cm, cbc, csc)| (m.min(cm), bc + cbc, sc + csc)),
         FilterExpr::Or(v) => {
             let (m, bc, sc) = v
