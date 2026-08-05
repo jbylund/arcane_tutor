@@ -317,6 +317,8 @@ fn bench_streamed_loop() {
             let prep = PreparedCandidates {
                 candidate_cards: Some(cfg.group[start..end].to_vec()),
                 all_match_known: !cfg.residual,
+                // The loop is driven directly here; no narrowing ran, so nothing is proven.
+                proven_conjuncts: 0,
                 narrowed_repr: NarrowedRepr::Cards,
             };
             black_box(exec_streamed_select(&ctx, &cfg.params, filter, &prep, None));

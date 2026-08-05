@@ -99,7 +99,7 @@ fn bench_iter_dispatch_cost() {
         let mut n_match = 0u32;
         for cid in it {
             let card = &data.cards[black_box(cid) as usize];
-            if matches!(filter.card_pass(card, strings, &mut residual, &mut residual_is_or), Tri::True) {
+            if matches!(filter.card_pass(card, strings, &mut residual, &mut residual_is_or, 0), Tri::True) {
                 n_match += 1;
             }
         }
@@ -112,7 +112,7 @@ fn bench_iter_dispatch_cost() {
         let mut n_match = 0u32;
         for cid in it {
             let card = &data.cards[black_box(cid) as usize];
-            if matches!(filter.card_pass(card, strings, &mut residual, &mut residual_is_or), Tri::True) {
+            if matches!(filter.card_pass(card, strings, &mut residual, &mut residual_is_or, 0), Tri::True) {
                 n_match += 1;
             }
         }

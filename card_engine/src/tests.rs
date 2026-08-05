@@ -406,7 +406,7 @@ fn narrow_candidates_eq_gt_reuse_ge_postings_loosely() {
 
     for op in [CmpOp::Eq, CmpOp::Gt] {
         match narrow_candidates_exact(&coll(op, "Flying"), archived, offsets, &[]) {
-            (Some(Candidates::Cards(v)), tight) => {
+            (Some(Candidates::Cards(v)), tight, _) => {
                 assert_eq!(v, vec![1], "{op:?} must reuse Ge's exact postings as a candidate superset");
                 assert!(!tight, "{op:?} postings only prove containment, not the length condition — must narrow loose");
             }
@@ -415,7 +415,7 @@ fn narrow_candidates_eq_gt_reuse_ge_postings_loosely() {
     }
     // Ge itself stays tight over the same postings.
     match narrow_candidates_exact(&coll(CmpOp::Ge, "Flying"), archived, offsets, &[]) {
-        (Some(Candidates::Cards(v)), tight) => {
+        (Some(Candidates::Cards(v)), tight, _) => {
             assert_eq!(v, vec![1]);
             assert!(tight, "Ge's postings are exact containment, must stay tight");
         }
@@ -425,7 +425,7 @@ fn narrow_candidates_eq_gt_reuse_ge_postings_loosely() {
     // too — no row can satisfy either without first satisfying containment.
     for op in [CmpOp::Eq, CmpOp::Gt, CmpOp::Ge] {
         match narrow_candidates_exact(&coll(op, "Trample"), archived, offsets, &[]) {
-            (Some(Candidates::Cards(v)), tight) => {
+            (Some(Candidates::Cards(v)), tight, _) => {
                 assert!(v.is_empty(), "{op:?} over an absent value narrows to the exact empty set");
                 assert!(tight, "{op:?} empty-postings narrowing is exact, not just advisory");
             }
@@ -2821,12 +2821,12 @@ fn arith_tuple_narrowing_matches_reference() {
                     let ref_set = reference(archived, &filter);
                     let ctx = format!("seed={seed} {label} {op:?} negated={negated}");
                     match narrow_candidates_exact(&filter, indexes, offsets, cards) {
-                        (Some(Candidates::Cards(v)), tight) => {
+                        (Some(Candidates::Cards(v)), tight, _) => {
                             assert!(tight, "{ctx}: card-level in-scope narrowing must be tight (exact)");
                             assert_eq!(v, ref_set, "{ctx}: tuple narrowing must equal the per-card reference");
                         }
-                        (Some(other), _) => panic!("{ctx}: expected card-space candidates, got {other:?}"),
-                        (None, _) => assert!(
+                        (Some(other), ..) => panic!("{ctx}: expected card-space candidates, got {other:?}"),
+                        (None, ..) => assert!(
                             ref_set.len() > broad_cap,
                             "{ctx}: declined but the reference isn't broad ({} of {n_cards}) — a narrowing failure, not the breadth cap",
                             ref_set.len()
@@ -3275,6 +3275,75 @@ fn force_plan_differential_agreement() {
              cmc/power/toughness under a matching orderby.",
         );
     }
+}
+
+/// The soundness condition for skipping a proven conjunct: for EVERY candidate the narrowing returns,
+/// every child in the `proven` mask must evaluate to `Tri::True` at card level.
+///
+/// Checked over all candidates rather than over a returned page, because that is the property
+/// `card_pass` relies on — a page-level comparison would pass while a rare candidate silently returned
+/// `False` and got emitted as a false positive.
+///
+/// Also asserts the mask is EMPTY for a printing-space result. A tight printing-space set says "this
+/// printing matches", not "every printing of this card does", so it cannot excuse a per-printing check.
+#[test]
+fn a_proven_conjunct_holds_for_every_candidate() {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(20_260_805);
+    let data = fuzz_store_n(&mut rng, 3_000);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let (indexes, offsets, cards, strings) = (&archived.indexes, &archived.offsets, &*archived.cards, &archived.strings);
+
+    // Mixed `And`s: a card-space child that narrows tightly, plus a printing-space one that does not.
+    // The keyword/subtype postings are the tight card-space case; border and the ranges are the partners.
+    let card_side = [
+        FuzzLeaf::Collection { field: CollField::Keywords, op: CmpOp::Ge, value: "flying".to_string() },
+        FuzzLeaf::Collection { field: CollField::Subtypes, op: CmpOp::Ge, value: "human".to_string() },
+        FuzzLeaf::Collection { field: CollField::OracleTags, op: CmpOp::Ge, value: "removal".to_string() },
+    ];
+    let printing_side = [
+        FuzzLeaf::Border { value: "black".to_string() },
+        FuzzLeaf::Collection { field: CollField::FrameData, op: CmpOp::Ge, value: "2003".to_string() },
+        FuzzLeaf::Collection { field: CollField::ArtTags, op: CmpOp::Ge, value: "dragon".to_string() },
+    ];
+
+    let mut fired = 0usize;
+    for c in &card_side {
+        for p in &printing_side {
+            for order in [[c.clone(), p.clone()], [p.clone(), c.clone()]] {
+                let spec = FuzzSpec::And(order.into_iter().map(FuzzSpec::Leaf).collect());
+                let filter = fuzz_bound_filter(&spec, archived);
+                let (Some(set), _, proven) = narrow_candidates_exact(&filter, indexes, offsets, cards) else {
+                    continue;
+                };
+                if set.is_printing_space() {
+                    assert_eq!(proven, 0, "{}: a printing-space result must prove nothing", fuzz_describe(&spec));
+                    continue;
+                }
+                if proven == 0 {
+                    continue;
+                }
+                fired += 1;
+                let FilterExpr::And(children) = &filter else { panic!("built an And") };
+                let candidate_cards = set.into_cards(offsets, &indexes.printing_to_card);
+                for &cid in &candidate_cards {
+                    for (i, child) in children.iter().enumerate() {
+                        if proven & (1 << i) == 0 {
+                            continue;
+                        }
+                        assert!(
+                            matches!(child.eval_card(&cards[cid as usize], strings), Tri::True),
+                            "{}: proven child {i} is not True for candidate card {cid}",
+                            fuzz_describe(&spec),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    // Otherwise the sweep proves nothing about a mask that is never set.
+    assert!(fired >= 6, "the proven mask fired on only {fired} of 18 mixed Ands; the property is undertested");
 }
 
 /// A dense `frame_data` value must still narrow under `broad_ok: false` unless it is genuinely BROAD.
@@ -6268,14 +6337,14 @@ fn card_pass_extracts_residual_and_matches() {
     let mut is_or = false;
 
     // Creature card: PrintingDep with a one-element residual (the art term).
-    let t = and.card_pass(&archived.cards[0], &archived.strings, &mut residual, &mut is_or);
+    let t = and.card_pass(&archived.cards[0], &archived.strings, &mut residual, &mut is_or, 0);
     assert!(t == Tri::PrintingDep && residual.len() == 1 && !is_or);
     assert!(!FilterExpr::residual_matches(&archived.cards[0], &archived.printings[0], &archived.strings, &residual, is_or));
     assert!(FilterExpr::residual_matches(&archived.cards[0], &archived.printings[1], &archived.strings, &residual, is_or));
 
     // Instant card: the type child is False at card level — whole And settles
     // to False without touching printings.
-    let t = and.card_pass(&archived.cards[1], &archived.strings, &mut residual, &mut is_or);
+    let t = and.card_pass(&archived.cards[1], &archived.strings, &mut residual, &mut is_or, 0);
     assert!(t == Tri::False);
 
     // Or[t:creature, art:wolf]: True for the creature card at card level (no
@@ -6288,9 +6357,9 @@ fn card_pass_extracts_residual_and_matches() {
     };
     wolf2.bind(&archived.coll_vocab, &archived.coll_vocab_sorted, &archived.artist_vocab, &archived.mana_vocab, &archived.indexes.flavor, &archived.strings);
     let or = FilterExpr::Or(vec![creature(), wolf2]);
-    let t = or.card_pass(&archived.cards[0], &archived.strings, &mut residual, &mut is_or);
+    let t = or.card_pass(&archived.cards[0], &archived.strings, &mut residual, &mut is_or, 0);
     assert!(t == Tri::True && residual.is_empty());
-    let t = or.card_pass(&archived.cards[1], &archived.strings, &mut residual, &mut is_or);
+    let t = or.card_pass(&archived.cards[1], &archived.strings, &mut residual, &mut is_or, 0);
     assert!(t == Tri::PrintingDep && residual.len() == 1 && is_or);
     assert!(!FilterExpr::residual_matches(&archived.cards[1], &archived.printings[2], &archived.strings, &residual, is_or));
 }
@@ -7221,7 +7290,7 @@ fn set_watermark_compose_leaves() {
         let mut is_or = false;
         for c in 0..archived.cards.len() {
             let card = &archived.cards[c];
-            let tri = f.card_pass(card, &archived.strings, &mut residual, &mut is_or);
+            let tri = f.card_pass(card, &archived.strings, &mut residual, &mut is_or, 0);
             let (lo, hi) = (u32::from(archived.offsets[c]), u32::from(archived.offsets[c + 1]));
             for pid in lo..hi {
                 let matched = match tri {
@@ -7359,7 +7428,7 @@ fn collection_compose_leaves() {
         let mut is_or = false;
         for c in 0..archived.cards.len() {
             let card = &archived.cards[c];
-            let tri = f.card_pass(card, &archived.strings, &mut residual, &mut is_or);
+            let tri = f.card_pass(card, &archived.strings, &mut residual, &mut is_or, 0);
             let (lo, hi) = (u32::from(archived.offsets[c]), u32::from(archived.offsets[c + 1]));
             for pid in lo..hi {
                 let matched = match tri {
@@ -9916,7 +9985,7 @@ fn verify_order_sorts_and_children_cheap_first() {
         rhs: NumExpr::Const(v),
     };
     let mut f = FilterExpr::And(vec![machinery_regex(), cmc_lt(3.0), contains_scan(), cmc_lt(5.0), type_mask()]);
-    f.order_children_by_verify_cost();
+    f.order_children_by_verify_cost(&mut 0);
     let FilterExpr::And(children) = &f else { panic!("still an And") };
     assert!(matches!(children[0], FilterExpr::NumericCmp { rhs: NumExpr::Const(v), .. } if v == 3.0));
     assert!(matches!(children[1], FilterExpr::NumericCmp { rhs: NumExpr::Const(v), .. } if v == 5.0));
@@ -9936,7 +10005,7 @@ fn verify_order_and_refines_by_set_size() {
         FilterExpr::NameMatch { ids: vec![1, 2, 3, 4, 5] },
         FilterExpr::OracleMatch { gids: vec![7, 9] },
     ]);
-    f.order_children_by_verify_cost();
+    f.order_children_by_verify_cost(&mut 0);
     let FilterExpr::And(children) = &f else { panic!("still an And") };
     assert!(matches!(&children[0], FilterExpr::OracleMatch { gids } if gids.len() == 2));
     assert!(matches!(&children[1], FilterExpr::NameMatch { ids } if ids.len() == 5));
@@ -9954,7 +10023,7 @@ fn verify_order_or_sorts_by_bucket_only() {
         FilterExpr::OracleMatch { gids: vec![7, 9] },
         type_mask(),
     ]);
-    f.order_children_by_verify_cost();
+    f.order_children_by_verify_cost(&mut 0);
     let FilterExpr::Or(children) = &f else { panic!("still an Or") };
     assert!(matches!(children[0], FilterExpr::TypeCmp { .. }));
     assert!(matches!(&children[1], FilterExpr::NameMatch { ids } if ids.len() == 5), "written order kept within tier");
@@ -9970,7 +10039,7 @@ fn verify_order_or_sorts_by_bucket_only() {
 fn verify_order_or_keeps_scan_cost_band_in_written_order() {
     let devotion = || FilterExpr::Devotion { op: CmpOp::Ge, pips: packed_pips(&[("B", 3)]) };
     let mut f = FilterExpr::Or(vec![contains_scan(), devotion()]);
-    f.order_children_by_verify_cost();
+    f.order_children_by_verify_cost(&mut 0);
     let FilterExpr::Or(children) = &f else { panic!("still an Or") };
     assert!(matches!(children[0], FilterExpr::TextContains { .. }), "contains keeps its written lead");
     assert!(matches!(children[1], FilterExpr::Devotion { .. }));
@@ -9978,7 +10047,7 @@ fn verify_order_or_keeps_scan_cost_band_in_written_order() {
     // In an And the same pair DOES reorder: rejection is what And children
     // short-circuit on, and the pip walk measures ~3× under the text scan.
     let mut g = FilterExpr::And(vec![contains_scan(), devotion()]);
-    g.order_children_by_verify_cost();
+    g.order_children_by_verify_cost(&mut 0);
     let FilterExpr::And(children) = &g else { panic!("still an And") };
     assert!(matches!(children[0], FilterExpr::Devotion { .. }), "And sorts the cheaper pip walk first");
     assert!(matches!(children[1], FilterExpr::TextContains { .. }));
@@ -9991,7 +10060,7 @@ fn verify_order_or_keeps_scan_cost_band_in_written_order() {
 #[test]
 fn verify_order_or_keeps_sets_and_scans_in_written_order() {
     let mut f = FilterExpr::Or(vec![contains_scan(), FilterExpr::NameMatch { ids: vec![1, 2] }]);
-    f.order_children_by_verify_cost();
+    f.order_children_by_verify_cost(&mut 0);
     let FilterExpr::Or(children) = &f else { panic!("still an Or") };
     assert!(matches!(children[0], FilterExpr::TextContains { .. }));
     assert!(matches!(children[1], FilterExpr::NameMatch { .. }));
@@ -10006,7 +10075,7 @@ fn verify_order_and_defers_printing_dependent_children() {
     let usd = || usd_cmp(CmpOp::Gt, 20.0);
     let dragon = || FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "dragon".to_string(), value_id: None };
     let mut f = FilterExpr::And(vec![usd(), dragon()]);
-    f.order_children_by_verify_cost();
+    f.order_children_by_verify_cost(&mut 0);
     let FilterExpr::And(children) = &f else { panic!("still an And") };
     assert!(matches!(children[0], FilterExpr::CollectionCmp { .. }), "card-level rejector first");
     assert!(matches!(children[1], FilterExpr::NumericCmp { .. }));
@@ -10014,7 +10083,7 @@ fn verify_order_and_defers_printing_dependent_children() {
     // Or(usd, type) can settle at card level through its type member (a True
     // settles an Or), so it is not printing-dependent and leads the contains.
     let mut g = FilterExpr::And(vec![contains_scan(), FilterExpr::Or(vec![usd(), type_mask()])]);
-    g.order_children_by_verify_cost();
+    g.order_children_by_verify_cost(&mut 0);
     let FilterExpr::And(children) = &g else { panic!("still an And") };
     assert!(matches!(children[0], FilterExpr::Or(_)), "mixed composite can settle: stays card-level");
     assert!(matches!(children[1], FilterExpr::TextContains { .. }));
@@ -10027,14 +10096,14 @@ fn verify_order_and_defers_printing_dependent_children() {
 fn verify_order_or_defers_printing_dependent_children() {
     let usd = || usd_cmp(CmpOp::Gt, 20.0);
     let mut f = FilterExpr::Or(vec![contains_scan(), usd()]);
-    f.order_children_by_verify_cost();
+    f.order_children_by_verify_cost(&mut 0);
     let FilterExpr::Or(children) = &f else { panic!("still an Or") };
     assert!(matches!(children[0], FilterExpr::TextContains { .. }), "card-level scan stays ahead of pdep numeric");
     assert!(matches!(children[1], FilterExpr::NumericCmp { .. }));
 
     // A card-level mask still moves ahead of a printing-dependent set lookup.
     let mut g = FilterExpr::Or(vec![FilterExpr::FlavorMatch { gids: vec![3], dense_ids: vec![] }, type_mask()]);
-    g.order_children_by_verify_cost();
+    g.order_children_by_verify_cost(&mut 0);
     let FilterExpr::Or(children) = &g else { panic!("still an Or") };
     assert!(matches!(children[0], FilterExpr::TypeCmp { .. }));
     assert!(matches!(children[1], FilterExpr::FlavorMatch { .. }));
@@ -10046,7 +10115,7 @@ fn verify_order_or_defers_printing_dependent_children() {
 fn verify_order_recurses_and_ranks_composites() {
     let inner_or = FilterExpr::Or(vec![machinery_regex(), type_mask()]);
     let mut f = FilterExpr::Not(Box::new(FilterExpr::And(vec![inner_or, contains_scan(), type_mask()])));
-    f.order_children_by_verify_cost();
+    f.order_children_by_verify_cost(&mut 0);
     let FilterExpr::Not(inner) = &f else { panic!("still a Not") };
     let FilterExpr::And(children) = inner.as_ref() else { panic!("still an And") };
     assert!(matches!(children[0], FilterExpr::TypeCmp { .. }));

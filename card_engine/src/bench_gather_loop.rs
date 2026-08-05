@@ -436,6 +436,8 @@ fn bench_gather_loop() {
             PreparedCandidates {
                 candidate_cards: Some(self.group[start..end].to_vec()),
                 all_match_known: self.all_match_known,
+                // The loop is driven directly here; no narrowing ran, so nothing is proven.
+                proven_conjuncts: 0,
                 narrowed_repr: NarrowedRepr::Cards,
             }
         }
@@ -602,7 +604,9 @@ fn bench_gather_loop() {
                 let prep = PreparedCandidates {
                     candidate_cards: Some(singleton[start..end].to_vec()),
                     all_match_known: true,
-                    narrowed_repr: NarrowedRepr::Cards,
+                    // The loop is driven directly here; no narrowing ran, so nothing is proven.
+                proven_conjuncts: 0,
+                narrowed_repr: NarrowedRepr::Cards,
                 };
                 black_box(exec_gathered_scan(&ctx, &params, &filter, &prep, None));
                 let st = take_phase_stats();
