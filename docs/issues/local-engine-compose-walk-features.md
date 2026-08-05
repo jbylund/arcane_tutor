@@ -177,9 +177,12 @@ explain that cell too.
 
 Nothing shipped on this branch yet. Order to take it in:
 
-1. **The run-boundary model is implemented and held on an unresolved total.** Patch at
-   `scratchpad/run_boundary.patch` (`range_walk_run_boundary` plus a `SortCol::PriceUsd` arm in
-   `orderby_walk_scan`). What it does:
+1. **The run-boundary model is implemented and held on an unresolved total.** Tracked at
+   [patches/local-engine-compose-walk-usd-run-boundary.patch](./patches/local-engine-compose-walk-usd-run-boundary.patch)
+   — `range_walk_run_boundary` plus a `SortCol::PriceUsd` arm in `orderby_walk_scan`. Applies to
+   `card_engine/src/lib.rs` at `cf44da2` with `git apply`, and passes 149 debug / 148 release. Held
+   rather than applied: it is one measurement short, and leaving it in the tree would mean shipping a
+   5% total regression on "probably noise". What it does:
 
    | | before | after |
    | --- | --: | --: |
