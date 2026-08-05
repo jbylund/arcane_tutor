@@ -297,9 +297,10 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
         # Recomputed rather than read from the exposed u32, which is truncated for display. The
         # mirror has to match cost.rs bit for bit or its self-check fails on small walks.
         match_rate = max(matches / max(float(acq["n_printings"]), 1.0), MATCH_RATE_FLOOR)
-        # Mirrors `cost::printings_walked`: the closed form times WALK_LENGTH_BIAS, then floored by
-        # `orderby_walk_scan` for the plane-bucket orderby walk (0 for Perm and for the usd walk).
-        walk = max(page_span / match_rate * WALK_LENGTH_BIAS, float(acq.get("orderby_walk_scan", 0))) if not gather else 0.0
+        # Mirrors `cost::printings_walked`: the closed form times WALK_LENGTH_BIAS. The
+        # `orderby_walk_scan` floor this used to take a max against is gone -- both walks now step a
+        # value index entry at a time, so there is no bucket granularity to express.
+        walk = page_span / match_rate * WALK_LENGTH_BIAS if not gather else 0.0
         return (
             [
                 float(acq["broadcast_printings"]),

@@ -4611,7 +4611,6 @@ fn plan_cost_model_matches_gold() {
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
-                orderby_walk_scan: 0,
                 };
 
                 // ── Model argmin over the applicable plans ──
@@ -4854,7 +4853,6 @@ fn plan_cost_refit() {
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
-                orderby_walk_scan: 0,
                 };
                 for (pi, plan) in all_plans.iter().enumerate() {
                     if let Some(meas) = ns[pi] {
@@ -5060,7 +5058,6 @@ fn printing_range_route_probe() {
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
-                orderby_walk_scan: 0,
             };
 
             // ── Three pickers ──
@@ -5424,7 +5421,6 @@ fn plan_regret_report() {
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
-                orderby_walk_scan: 0,
             };
 
             let gold = (0..4).filter_map(|i| ns[i].map(|v| (v, i))).min_by_key(|(v, _)| *v);
@@ -5555,7 +5551,6 @@ fn plan_regret_fuzz() {
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
-                orderby_walk_scan: 0,
             };
             let feats_true = mk(true_total, eval_domain);
             let feats_est = mk(est, est.min(n_cards));
