@@ -7,7 +7,7 @@ use super::{
     build_artist_index, build_printing_value_index, build_arith_tuple_index, is_arith_tuple_route, range_candidates, narrow_candidates, narrow_candidates_exact, rarity_candidates,
     range_too_broad_to_narrow, run_query, run_query_with_plan, explain, explain_analyze, AcquireFacts, PlanEstimate, PlanTrial,
     acquire_plan_features, take_phase_stats, PagingTaken, CountSource, NarrowedRepr,
-    RangeCardCounts, build_range_card_counts,
+    RangeCardCounts, build_range_card_counts, exact_result_total,
     PhysicalPlan, ComposePaging, trigram_candidates, finalize_trigram_index, PrintingValueIndex, NARROW_FLOOR,
     gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
     walk_printing_page, aligned_page, bare_range_bounds, probe_range_k, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
@@ -2461,6 +2461,12 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     data.indexes.price_eur = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_eur);
     data.indexes.price_tix = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_tix);
     data.indexes.collector_number = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.collector_number_int.map(u32::from));
+    // Rarity was MISSING from this list until the exact-total arm needed it, so it sat at its empty
+    // default: `idx.len() == 0` with a populated rarity histogram. Nothing failed, because the only
+    // consumer was the `rarity` orderby walk, which declines on an empty index and falls back --
+    // i.e. the walk was silently un-fuzzed, not wrong.
+    data.indexes.rarity_printing_ordered =
+        build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.card_rarity_int.map(u32::from));
     // The exact card-count tables ride on those indexes and must be rebuilt with them — leaving them
     // at their empty defaults would make every range acquire silently fall back to the `k.min(n_cards)`
     // proxy here while production used the table, so the fuzz differential would stop covering the
@@ -2475,6 +2481,8 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     data.indexes.price_eur_cards = build_range_card_counts(&data.indexes.price_eur, &p2c, n_cards, &data.printings, &artwork_base);
     data.indexes.price_tix_cards = build_range_card_counts(&data.indexes.price_tix, &p2c, n_cards, &data.printings, &artwork_base);
     data.indexes.collector_number_cards = build_range_card_counts(&data.indexes.collector_number, &p2c, n_cards, &data.printings, &artwork_base);
+    data.indexes.rarity_cards =
+        build_range_card_counts(&data.indexes.rarity_printing_ordered, &p2c, n_cards, &data.printings, &artwork_base);
     data.indexes.border_printing = build_border_printing_planes(&data.printings, &data.strings);
     data.indexes.rarity_printing = build_rarity_printing_planes(&data.printings);
     data
@@ -3247,6 +3255,56 @@ fn force_plan_differential_agreement() {
     }
 }
 
+/// `exact_result_total`'s rarity arm must be exact in all three spaces, for every op against every
+/// rarity value, against the same brute-force reference the fuzz differential uses.
+///
+/// Rarity is the one dimension where per-value counts would have been WRONG rather than merely
+/// incomplete: a card printed at both common and rare is in the distinct-card count for each, so
+/// `r<=rare` is not a sum. This checks the prefix/suffix shape actually answers the ranges.
+#[test]
+fn exact_result_total_is_exact_for_rarity() {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(20_260_805);
+    let data = fuzz_store_n(&mut rng, 2_000);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_cards = archived.cards.len();
+
+    let mut answered = 0usize;
+    for value in 0..=6i32 {
+        for op in [CmpOp::Eq, CmpOp::Lt, CmpOp::Le, CmpOp::Gt, CmpOp::Ge] {
+            for negate in [false, true] {
+                let leaf = FilterExpr::NumericCmp {
+                    lhs: NumExpr::Field(NumField::RarityInt),
+                    op,
+                    rhs: NumExpr::Const(f64::from(value)),
+                };
+                let f = if negate { FilterExpr::Not(Box::new(leaf)) } else { leaf };
+                for mode in [Mode::Printing, Mode::Card, Mode::Artwork] {
+                    let Some(got) = exact_result_total(&f, &archived.indexes, n_cards, mode) else {
+                        continue;
+                    };
+                    let label = match mode {
+                        Mode::Printing => "printing",
+                        Mode::Card => "card",
+                        Mode::Artwork => "artwork",
+                    };
+                    assert_eq!(
+                        got,
+                        fuzz_reference_total(archived, &f, label),
+                        "rarity {op:?} {value} negate={negate} mode={label}",
+                    );
+                    answered += 1;
+                }
+            }
+        }
+    }
+    // Every cell must be ANSWERED, not merely consistent -- a silently-declining arm would satisfy
+    // every assertion above. The one shape that must decline is a negated `Eq`, i.e. `Ne`, which covers
+    // two disjoint windows and so is not a range at all: 7 values x 3 modes of the 210 cells.
+    assert_eq!(answered, (7 * 5 * 2 - 7) * 3, "the rarity arm should answer every op except `Ne`, in every mode");
+}
+
 /// The per-value count table must be EXACT, not close, in BOTH spaces it carries: every one-sided
 /// cut and every single value, on all three range indexes, checked against a brute-force distinct
 /// count over the store for cards and for artworks alike.
@@ -3566,17 +3624,26 @@ fn compose_paging_prediction_matches_the_branch_taken() {
             FuzzSpec::Leaf(FuzzLeaf::Legality { shift: Some(0), expected: 0b01 }),
             FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
         ]),
-        // Deliberately NARROW, and the only other spec here built from leaves `is_printing_composable`
-        // accepts (`border==`, and `CollectionCmp` at `Ge`). This is what reaches
-        // `GatherWalkDeclined`: the walk declines when the matches carrying an indexed value run out
-        // before `page_offset + limit` while unvalued matches remain, so the missing ingredient was
-        // never nulls -- the store already generates 16% null prices and 15% null rarity -- it was a
-        // match set small enough for the valued ones to fall short of one page. `fateseal` is the
-        // rare tail of `FUZZ_KEYWORDS` (weight 1 of 86), and ANDing a border narrows it ~6x further.
+        // Deliberately NARROW, and one of only three specs here built from leaves
+        // `is_printing_composable` accepts (`border==`, and `CollectionCmp` at `Ge`). `fateseal` is the
+        // rare tail of `FUZZ_KEYWORDS` (weight 1 of 86), and ANDing a border narrows it ~6x further:
+        // 74 matching printings at n=8000. That is BELOW the sparse floor, so this spec declines before
+        // any paging strategy runs and contributes to `declined`, not to the strategy cells.
         FuzzSpec::And(vec![
             FuzzSpec::Leaf(FuzzLeaf::Collection { field: CollField::Keywords, op: CmpOp::Ge, value: "fateseal".to_string() }),
             FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
         ]),
+        // What actually reaches `GatherWalkDeclined`, which needs three things at once: enough matches
+        // to clear the sparse floor, more matches than `page_offset` (or the page is empty and returns
+        // early), and FEWER matches carrying the sort value than `page_offset + limit` -- that last one
+        // is the decline. At n=8000 `keyword:flying` matches 11,061 printings of which 9,337 are priced,
+        // so at `offset=10_000, limit=60` the walk runs out of priced entries 723 short of the page and
+        // hands over to the gather. Narrowing it further does NOT work: the comment here used to credit
+        // the `fateseal` spec above, but the branch was in fact being reached because
+        // `rarity_printing_ordered` was silently EMPTY in the fuzz store, which made every
+        // rarity-ordered walk decline for want of an index. Populating it (see `fuzz_store_n`) removed
+        // that accident and left this cell at zero, which is how the mis-attribution surfaced.
+        FuzzSpec::Leaf(FuzzLeaf::Collection { field: CollField::Keywords, op: CmpOp::Ge, value: "flying".to_string() }),
     ];
     // Every orderby, because which one is set is exactly what picks the branch: a card-space
     // permutation gives `Perm`, `usd`/`rarity` in printing mode give `OrderbyWalk` (#744), and
@@ -5968,6 +6035,7 @@ fn bench_checked_vs_unchecked_access() {
         price_eur_cards: RangeCardCounts::default(),
         price_tix_cards: RangeCardCounts::default(),
         collector_number_cards: RangeCardCounts::default(),
+        rarity_cards:   RangeCardCounts::default(),
         sort_perms:     build_sort_permutations(&cards),
         max_artwork_groups: artwork_groups.iter().copied().max().unwrap_or(0),
         artwork_groups,
