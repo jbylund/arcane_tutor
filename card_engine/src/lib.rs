@@ -2447,6 +2447,19 @@ struct RangeCardCounts {
     /// Distinct cards among printings with value == `values[i]`. Serves `Eq`, which cannot be had by
     /// subtracting neighbouring `below` entries.
     at: Vec<u32>,
+    /// The same three aggregates over distinct ARTWORKS.
+    ///
+    /// The third space, added because it was the only one estimated for every range: printings come
+    /// free as `k = e - s` and cards from the triple above, while artwork totals went through
+    /// `printing_bits_to_artwork_bits` and were read as 0.80-0.87 of the truth. Filled in the SAME pass
+    /// as the card triple, over a parallel artwork-seen bitmap, so the two cannot drift.
+    ///
+    /// Costs a measured **156.6 KB** of archive across the five range dimensions (12 bytes per distinct
+    /// value, ~13,400 values), or 0.22% — the honest price of the exactness, and more than the 133 KB
+    /// `frame_data`'s hybrid gave back.
+    below_artworks: Vec<u32>,
+    at_or_above_artworks: Vec<u32>,
+    at_artworks: Vec<u32>,
 }
 
 impl ArchivedRangeCardCounts {
@@ -2458,7 +2471,26 @@ impl ArchivedRangeCardCounts {
     /// several values (only `year:Y`, which covers a whole calendar year of release dates) returns
     /// `None`; distinct counts do not subtract, so the neighbouring entries cannot be combined.
     fn distinct_cards(&self, lo: u32, hi: u32) -> Option<u32> {
-        if self.values.is_empty() || hi <= lo {
+        self.lookup(lo, hi, &self.below, &self.at_or_above, &self.at)
+    }
+
+    /// Exact distinct ARTWORKS for `[lo, hi)`, on the same answerable shapes as `distinct_cards`.
+    fn distinct_artworks(&self, lo: u32, hi: u32) -> Option<u32> {
+        self.lookup(lo, hi, &self.below_artworks, &self.at_or_above_artworks, &self.at_artworks)
+    }
+
+    /// The shape both spaces share: which of the three aggregates a `[lo, hi)` reduces to, or `None`
+    /// where distinct counts cannot be combined. Written once so the two spaces cannot answer
+    /// differently-shaped questions.
+    fn lookup(
+        &self,
+        lo: u32,
+        hi: u32,
+        below: &Archived<Vec<u32>>,
+        at_or_above: &Archived<Vec<u32>>,
+        at: &Archived<Vec<u32>>,
+    ) -> Option<u32> {
+        if self.values.is_empty() || hi <= lo || below.is_empty() {
             return None;
         }
         let pos = |v: u32| self.values.partition_point(|x| u32::from(*x) < v);
@@ -2469,11 +2501,11 @@ impl ArchivedRangeCardCounts {
         let first = u32::from(self.values[0]);
         let last_covers_end = j == self.values.len();
         match (lo <= first, last_covers_end) {
-            (true, true) => Some(u32::from(self.at_or_above[0])), // whole index
-            (true, false) => Some(u32::from(self.below[j])),      // `<` / `<=`
-            (false, true) => Some(u32::from(self.at_or_above[i])), // `>` / `>=`
+            (true, true) => Some(u32::from(at_or_above[0])), // whole index
+            (true, false) => Some(u32::from(below[j])),      // `<` / `<=`
+            (false, true) => Some(u32::from(at_or_above[i])), // `>` / `>=`
             // Interior range: exact only when it holds a single distinct value, which is `Eq`.
-            (false, false) if j == i + 1 => Some(u32::from(self.at[i])),
+            (false, false) if j == i + 1 => Some(u32::from(at[i])),
             _ => None,
         }
     }
@@ -2482,59 +2514,93 @@ impl ArchivedRangeCardCounts {
 /// Build the three count vectors for one range index. O(n) over the index plus one card-seen bitmap
 /// per direction, so two passes; the index is value-major, so the value blocks are already delimited
 /// by `starts` and no boundary scan is needed.
-fn build_range_card_counts(idx: &PrintingValueIndex, printing_to_card: &[u32], n_cards: usize) -> RangeCardCounts {
+fn build_range_card_counts(
+    idx: &PrintingValueIndex,
+    printing_to_card: &[u32],
+    n_cards: usize,
+    // pid -> the printing's artwork group within its card, and card -> its first global artwork id.
+    // Together these give a printing's GLOBAL artwork id, the same derivation
+    // `printing_bits_to_artwork_bits` uses.
+    printings: &[Printing],
+    artwork_base: &[u32],
+) -> RangeCardCounts {
     let mut out = RangeCardCounts::default();
     if idx.pids.is_empty() {
         return out;
     }
     let n_values = idx.keys.len();
+    let n_artworks = artwork_base.last().copied().unwrap_or(0) as usize;
     let run = |b: usize| idx.starts[b] as usize..idx.starts[b + 1] as usize;
     out.values = idx.keys.clone();
+    // (card id, global artwork id) for a printing. One closure so the two spaces are derived from the
+    // same pid in the same place.
+    let ids = |pid: u32| {
+        let cid = printing_to_card[pid as usize] as usize;
+        let aid = artwork_base[cid] as usize + printings[pid as usize].artwork_group_id as usize;
+        (cid, aid)
+    };
 
-    let words = n_cards.div_ceil(64);
-    let mut seen = vec![0u64; words];
-    let mut distinct = 0u32;
+    // Two spaces, two domains, one pass over the index. A set-bit test per space per printing is
+    // cheaper than walking the index twice, and it keeps the card and artwork columns in lockstep.
+    let mut seen_c = vec![0u64; n_cards.div_ceil(64)];
+    let mut seen_a = vec![0u64; n_artworks.div_ceil(64)];
+    let (mut nc, mut na) = (0u32, 0u32);
+    let bump = |seen: &mut [u64], n: &mut u32, id: usize| {
+        let (w, bit) = (id >> 6, 1u64 << (id & 63));
+        if seen[w] & bit == 0 {
+            seen[w] |= bit;
+            *n += 1;
+        }
+    };
     // Forward: `below[i]` is the running distinct count before this value's block begins.
     for b in 0..n_values {
-        out.below.push(distinct);
+        out.below.push(nc);
+        out.below_artworks.push(na);
         for &pid in &idx.pids[run(b)] {
-            let cid = printing_to_card[pid as usize] as usize;
-            let (w, bit) = (cid >> 6, 1u64 << (cid & 63));
-            if seen[w] & bit == 0 {
-                seen[w] |= bit;
-                distinct += 1;
-            }
+            let (cid, aid) = ids(pid);
+            bump(&mut seen_c, &mut nc, cid);
+            bump(&mut seen_a, &mut na, aid);
         }
     }
-    // Backward for `at_or_above`, and per-block for `at` — both need their own fresh bitmap, since a
-    // card counted in one block must still count in another.
-    seen.fill(0);
-    distinct = 0;
+    // Backward for `at_or_above`, and per-block for `at` — both need their own fresh bitmap, since an
+    // id counted in one block must still count in another.
+    seen_c.fill(0);
+    seen_a.fill(0);
+    nc = 0;
+    na = 0;
     out.at_or_above = vec![0; n_values];
     out.at = vec![0; n_values];
-    // One scratch bitmap reused across blocks, cleared by walking back over the cards this block
-    // actually touched — a `fill(0)` per block would be O(n_cards) each, and there are as many
-    // blocks as distinct values.
-    let mut block = vec![0u64; words];
-    let mut touched: Vec<usize> = Vec::new();
+    out.at_or_above_artworks = vec![0; n_values];
+    out.at_artworks = vec![0; n_values];
+    // Scratch bitmaps reused across blocks, cleared by walking back over the ids this block actually
+    // touched — a `fill(0)` per block would be O(domain) each, and there are as many blocks as
+    // distinct values.
+    let mut block_c = vec![0u64; n_cards.div_ceil(64)];
+    let mut block_a = vec![0u64; n_artworks.div_ceil(64)];
+    let (mut touched_c, mut touched_a): (Vec<usize>, Vec<usize>) = (Vec::new(), Vec::new());
     for b in (0..n_values).rev() {
-        touched.clear();
+        touched_c.clear();
+        touched_a.clear();
         for &pid in &idx.pids[run(b)] {
-            let cid = printing_to_card[pid as usize] as usize;
-            let (w, bit) = (cid >> 6, 1u64 << (cid & 63));
-            if seen[w] & bit == 0 {
-                seen[w] |= bit;
-                distinct += 1;
-            }
-            if block[w] & bit == 0 {
-                block[w] |= bit;
-                touched.push(cid);
+            let (cid, aid) = ids(pid);
+            bump(&mut seen_c, &mut nc, cid);
+            bump(&mut seen_a, &mut na, aid);
+            for (blk, touched, id) in [(&mut block_c, &mut touched_c, cid), (&mut block_a, &mut touched_a, aid)] {
+                let (w, bit) = (id >> 6, 1u64 << (id & 63));
+                if blk[w] & bit == 0 {
+                    blk[w] |= bit;
+                    touched.push(id);
+                }
             }
         }
-        out.at_or_above[b] = distinct;
-        out.at[b] = touched.len() as u32;
-        for &cid in &touched {
-            block[cid >> 6] &= !(1u64 << (cid & 63));
+        out.at_or_above[b] = nc;
+        out.at[b] = touched_c.len() as u32;
+        out.at_or_above_artworks[b] = na;
+        out.at_artworks[b] = touched_a.len() as u32;
+        for (blk, touched) in [(&mut block_c, &touched_c), (&mut block_a, &touched_a)] {
+            for &id in touched.iter() {
+                blk[id >> 6] &= !(1u64 << (id & 63));
+            }
         }
     }
     out
@@ -6624,9 +6690,26 @@ fn walk_value_orderby_page<'a>(
 /// No new stored table: both counts are already on the query path. A per-format count table would work
 /// too (there are at most 32 formats x 4 statuses, so ~1 KB) but it would store what a popcount of a
 /// plane the query already reads gives for nothing.
-fn exact_card_total(composed: &FilterExpr, indexes: &Archived<CardIndexes>, n_cards: usize) -> Option<usize> {
+fn exact_result_total(
+    composed: &FilterExpr,
+    indexes: &Archived<CardIndexes>,
+    n_cards: usize,
+    mode: Mode,
+) -> Option<usize> {
     if let Some((idx, lo, hi)) = bare_range_bounds(composed, indexes) {
-        return range_card_counts_for(indexes, idx).and_then(|counts| counts.distinct_cards(lo, hi)).map(|n| n as usize);
+        // Printings come free from the index's own partition points; the other two spaces come from the
+        // prefix/suffix tables, which now carry an artwork column as well as a card one.
+        let (s, e) = idx.range(lo, hi);
+        return match mode {
+            Mode::Printing => Some(e - s),
+            Mode::Card => range_card_counts_for(indexes, idx).and_then(|c| c.distinct_cards(lo, hi)).map(|n| n as usize),
+            Mode::Artwork => range_card_counts_for(indexes, idx).and_then(|c| c.distinct_artworks(lo, hi)).map(|n| n as usize),
+        };
+    }
+    // The remaining shapes below are exact in CARD space only, so any other mode falls back to the
+    // estimator. Extending them is what the per-value 3-space count table is for.
+    if !matches!(mode, Mode::Card) {
+        return None;
     }
     if let FilterExpr::Legality { shift: Some(shift), expected } = composed {
         return legality_candidate_bits(indexes, n_cards, *shift, *expected, false)
@@ -8963,7 +9046,16 @@ fn acquire_plan_features(
         // projection -- and those are the bulk of what reaches here, since `bare_range_bounds`
         // matches one comparison, not an And of two. One-sided ranges DO land here in quantity:
         // every artwork-mode one, plus card-mode ones whose orderby has no permutation.
-        let exact_cards = exact_card_total(composed, indexes, n_cards as usize);
+        // Two quantities, deliberately separate. `exact_cards` is CARD space no matter the query's
+        // mode, because `eval_domain`, `scan_all` and the artwork capacity all consume a card count.
+        // `exact_total` is the answer in the query's OWN mode, and is what `result_total` wants.
+        // Conflating them puts an artwork count where cards are expected in artwork mode.
+        let exact_cards = exact_result_total(composed, indexes, n_cards as usize, Mode::Card);
+        let exact_total = if matches!(mode, Mode::Card) {
+            exact_cards
+        } else {
+            exact_result_total(composed, indexes, n_cards as usize, mode)
+        };
         let est_cards =
             exact_cards.unwrap_or_else(|| calibrated_balls_into_bins(printing_matches, n_cards as usize));
         // What the MATERIALIZING alternatives scan if compose loses. Every mode narrows -- a
@@ -9014,7 +9106,10 @@ fn acquire_plan_features(
                 // over-picked in artwork specifically: that slice carries 21% of ALL routing regret at
                 // p99 205us against 40us for printing and 36us for card.
                 let capacity_cards = exact_cards.unwrap_or_else(|| balls_into_bins(printing_matches, n_cards as usize));
-                let rt = artwork_estimate(printing_matches, capacity_cards, n_cards as usize, n_artworks);
+                // The two-stage estimate is only reached when nothing exact is available. A bare
+                // one-sided range now answers artwork exactly from the range table's artwork column,
+                // which is the one space every such query used to estimate (0.80-0.87 measured).
+                let rt = exact_total.unwrap_or_else(|| artwork_estimate(printing_matches, capacity_cards, n_cards as usize, n_artworks));
                 // The bitmap `printing_bits_to_artwork_bits` popcounts is n_artworks bits wide, not
                 // n_printings -- 46,112 against 97,206 here, so this was 2.1x over as well.
                 (rt, printing_matches, n_artworks.div_ceil(64), est_cards, scan_all(est_cards))
@@ -10821,11 +10916,11 @@ impl QueryEngine {
         let price_eur_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.price_eur);
         let price_tix_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.price_tix);
         let collector_number_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.collector_number_int.map(u32::from));
-        let released_at_cards = build_range_card_counts(&released_at_idx, &printing_to_card, cards.len());
-        let price_usd_cards = build_range_card_counts(&price_usd_idx, &printing_to_card, cards.len());
-        let price_eur_cards = build_range_card_counts(&price_eur_idx, &printing_to_card, cards.len());
-        let price_tix_cards = build_range_card_counts(&price_tix_idx, &printing_to_card, cards.len());
-        let collector_number_cards = build_range_card_counts(&collector_number_idx, &printing_to_card, cards.len());
+        let released_at_cards = build_range_card_counts(&released_at_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
+        let price_usd_cards = build_range_card_counts(&price_usd_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
+        let price_eur_cards = build_range_card_counts(&price_eur_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
+        let price_tix_cards = build_range_card_counts(&price_tix_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
+        let collector_number_cards = build_range_card_counts(&collector_number_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
         let indexes = CardIndexes {
             name_trigram:   build_trigram_index(&cards, |c| c.card_name_folded.as_str()),
             oracle_trigram: build_oracle_text_index(&cards, &strings),

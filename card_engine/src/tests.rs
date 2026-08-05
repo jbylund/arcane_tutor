@@ -2467,11 +2467,14 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     // path it is meant to cover.
     let p2c = build_printing_to_card(&data.offsets);
     let n_cards = data.cards.len();
-    data.indexes.released_at_cards = build_range_card_counts(&data.indexes.released_at, &p2c, n_cards);
-    data.indexes.price_usd_cards = build_range_card_counts(&data.indexes.price_usd, &p2c, n_cards);
-    data.indexes.price_eur_cards = build_range_card_counts(&data.indexes.price_eur, &p2c, n_cards);
-    data.indexes.price_tix_cards = build_range_card_counts(&data.indexes.price_tix, &p2c, n_cards);
-    data.indexes.collector_number_cards = build_range_card_counts(&data.indexes.collector_number, &p2c, n_cards);
+    // The artwork column of the range counts needs each printing's global artwork id, which is
+    // `artwork_base[card] + artwork_group_id`; both are already assigned by `store_of`.
+    let artwork_base = build_artwork_base_from(&data.indexes.artwork_groups.iter().copied().collect::<Vec<u16>>());
+    data.indexes.released_at_cards = build_range_card_counts(&data.indexes.released_at, &p2c, n_cards, &data.printings, &artwork_base);
+    data.indexes.price_usd_cards = build_range_card_counts(&data.indexes.price_usd, &p2c, n_cards, &data.printings, &artwork_base);
+    data.indexes.price_eur_cards = build_range_card_counts(&data.indexes.price_eur, &p2c, n_cards, &data.printings, &artwork_base);
+    data.indexes.price_tix_cards = build_range_card_counts(&data.indexes.price_tix, &p2c, n_cards, &data.printings, &artwork_base);
+    data.indexes.collector_number_cards = build_range_card_counts(&data.indexes.collector_number, &p2c, n_cards, &data.printings, &artwork_base);
     data.indexes.border_printing = build_border_printing_planes(&data.printings, &data.strings);
     data.indexes.rarity_printing = build_rarity_printing_planes(&data.printings);
     data
@@ -3244,8 +3247,9 @@ fn force_plan_differential_agreement() {
     }
 }
 
-/// The per-value card-count table must be EXACT, not close: every one-sided cut and every single
-/// value, on all three range indexes, checked against a brute-force distinct count over the store.
+/// The per-value count table must be EXACT, not close, in BOTH spaces it carries: every one-sided
+/// cut and every single value, on all three range indexes, checked against a brute-force distinct
+/// count over the store for cards and for artworks alike.
 ///
 /// Exhaustive over the distinct values rather than sampled. There are only a few thousand per
 /// dimension — the same property that makes the table affordable — and this investigation's errors
@@ -3271,30 +3275,44 @@ fn range_card_counts_are_exact() {
         assert_eq!(counts.values.len(), counts.below.len(), "{name}: parallel vectors");
         assert_eq!(counts.values.len(), counts.at_or_above.len(), "{name}: parallel vectors");
         assert_eq!(counts.values.len(), counts.at.len(), "{name}: parallel vectors");
+        assert_eq!(counts.values.len(), counts.below_artworks.len(), "{name}: parallel vectors");
+        assert_eq!(counts.values.len(), counts.at_or_above_artworks.len(), "{name}: parallel vectors");
+        assert_eq!(counts.values.len(), counts.at_artworks.len(), "{name}: parallel vectors");
 
-        // Brute force: distinct cards among printings whose value satisfies the predicate.
-        let distinct = |keep: &dyn Fn(u32) -> bool| -> u32 {
-            let mut seen = std::collections::HashSet::new();
+        // Brute force: distinct cards, and distinct artworks, among printings whose value satisfies
+        // the predicate. The artwork id is global -- `artwork_base[card] + artwork_group_id` -- so a
+        // group id colliding across two cards must not merge them, which is why the base is added.
+        let distinct = |keep: &dyn Fn(u32) -> bool| -> (u32, u32) {
+            let (mut cards, mut arts) = (std::collections::HashSet::new(), std::collections::HashSet::new());
             for (i, key) in idx.keys.iter().enumerate() {
                 if !keep(u32::from(*key)) {
                     continue;
                 }
                 for t in idx.run(i) {
-                    seen.insert(u32::from(p2c[idx.pid_at(t)]));
+                    let pid = idx.pid_at(t);
+                    let cid = u32::from(p2c[pid]);
+                    cards.insert(cid);
+                    arts.insert(u32::from(archived.indexes.artwork_base[cid as usize]) + u32::from(u16::from(archived.printings[pid].artwork_group_id)));
                 }
             }
-            seen.len() as u32
+            (cards.len() as u32, arts.len() as u32)
         };
 
         for (i, value) in counts.values.iter().enumerate() {
             let v = u32::from(*value);
-            assert_eq!(u32::from(counts.below[i]), distinct(&|x| x < v), "{name}: below[{i}] at {v}");
-            assert_eq!(u32::from(counts.at_or_above[i]), distinct(&|x| x >= v), "{name}: at_or_above[{i}] at {v}");
-            assert_eq!(u32::from(counts.at[i]), distinct(&|x| x == v), "{name}: at[{i}] at {v}");
-            // And through the lookup the acquire actually calls, for all three answerable shapes.
-            assert_eq!(counts.distinct_cards(0, v), Some(distinct(&|x| x < v)), "{name}: lookup `< {v}`");
-            assert_eq!(counts.distinct_cards(v, u32::MAX), Some(distinct(&|x| x >= v)), "{name}: lookup `>= {v}`");
-            assert_eq!(counts.distinct_cards(v, v + 1), Some(distinct(&|x| x == v)), "{name}: lookup `== {v}`");
+            let (lt, ge, eq) = (distinct(&|x| x < v), distinct(&|x| x >= v), distinct(&|x| x == v));
+            assert_eq!((u32::from(counts.below[i]), u32::from(counts.below_artworks[i])), lt, "{name}: below[{i}] at {v}");
+            assert_eq!(
+                (u32::from(counts.at_or_above[i]), u32::from(counts.at_or_above_artworks[i])),
+                ge,
+                "{name}: at_or_above[{i}] at {v}",
+            );
+            assert_eq!((u32::from(counts.at[i]), u32::from(counts.at_artworks[i])), eq, "{name}: at[{i}] at {v}");
+            // And through the lookups the acquire actually calls, for all three answerable shapes.
+            for (shape, (lo, hi), want) in [("< {v}", (0, v), lt), (">= {v}", (v, u32::MAX), ge), ("== {v}", (v, v + 1), eq)] {
+                assert_eq!(counts.distinct_cards(lo, hi), Some(want.0), "{name}: cards lookup `{shape}`");
+                assert_eq!(counts.distinct_artworks(lo, hi), Some(want.1), "{name}: artworks lookup `{shape}`");
+            }
         }
 
         // A range spanning several distinct values is the one shape the table declines, rather than
@@ -3304,6 +3322,7 @@ fn range_card_counts_are_exact() {
         if counts.values.len() >= 4 {
             let (lo, hi) = (u32::from(counts.values[1]), u32::from(counts.values[3]));
             assert_eq!(counts.distinct_cards(lo, hi), None, "{name}: multi-value interior must decline");
+            assert_eq!(counts.distinct_artworks(lo, hi), None, "{name}: artworks must decline the same shapes");
             let span = u32::from(counts.values[2]);
             assert!(
                 counts.distinct_cards(0, span).is_some(),
