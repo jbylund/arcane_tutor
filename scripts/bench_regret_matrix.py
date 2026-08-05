@@ -152,6 +152,14 @@ def collect(engine: object, sampler: QuerySampler, rng: random.Random, seconds: 
                 "lost": (baseline_ns - selves[id(best)]) / 1000.0,
                 "acquire": sample.acquire["count_source"],
                 "unique": sample.kw["unique"],
+                # Which paging branch a compose-acquired query would take. The compose arm's terms are
+                # SHARED across its three branches while their errors are not -- Gather is a flat level
+                # error, Perm drifts one way with corpus size and OrderbyWalk the other -- so a compose
+                # change gated on the `acquire` total alone can improve one branch and regress another
+                # invisibly. That is not hypothetical: the build term measured fine on the total and
+                # would have taken Perm from 1.19 to 1.54 had it been charged there.
+                # `-` for every other acquire, which keeps the slice readable rather than dropping rows.
+                "paging": sample.acquire.get("compose_paging") or "-",
                 "picked": f"{picked['plan']}{'(declined)' if declined else ''}" if picked else "?",
                 "best": best["plan"],
             }
@@ -209,6 +217,15 @@ def main() -> None:
     table(rows, lambda r: r["acquire"], "acquire")
     table(rows, lambda r: r["unique"], "unique")
     table(rows, lambda r: f"{r['acquire']} / {r['unique']}", "acquire / unique")
+    table(
+        [r for r in rows if r["paging"] != "-"],
+        lambda r: r["paging"],
+        # Not only compose-ACQUIRED rows: the range acquires call `compose_paging_for` too, because
+        # compose is a competitor whose cost they have to price. That is the right population -- it is
+        # every row where the branch decided a compose cost -- but it is wider than the `acquire` table's
+        # `printing_compose` line, so the two n's do not match and should not be expected to.
+        "compose paging branch (every row where a compose cost was priced)",
+    )
     table(rows, lambda r: f"{r['picked']} -> {r['best']}", "picked -> best (only when they differ)")
     print("\n  SHARE is the fraction of ALL lost time, which is what ranks the work: frequency times")
     print("  severity. miss% counts queries losing more than 1µs. Regret is mostly zeros, so no median.")
