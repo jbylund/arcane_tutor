@@ -418,13 +418,20 @@ fn estimate_leaf(f: &FilterExpr, indexes: &Archived<CardIndexes>, n_cards: u32, 
 
         FilterExpr::CollectionCmp { field, op: CmpOp::Ge, value, .. } => {
             // Mirror narrow_rec's field dispatch (lib.rs:3040-3047).
+            // frame_data is the hybrid index: the count comes from `len_of` (a popcount for a bitmap)
+            // and absence proves emptiness. Mirrors narrow_rec's branch so the estimate describes the
+            // path that will actually run.
+            if matches!(field, CollField::FrameData) {
+                let cnt = indexes.frame_data.len_of(value.as_str()).unwrap_or(0) as u32;
+                return project(cnt, n_cards, n_printings);
+            }
             let (idx, card_space, complete) = match field {
                 CollField::Subtypes => (&indexes.subtypes, true, true),
                 CollField::Keywords => (&indexes.keywords, true, true),
                 CollField::OracleTags => (&indexes.oracle_tags, true, true),
                 CollField::ArtTags => (&indexes.art_tags, false, true),
                 CollField::IsTags => (&indexes.is_tags, false, true),
-                CollField::FrameData => (&indexes.frame_data, false, false),
+                CollField::FrameData => unreachable!("handled above"),
             };
             match idx.get(value.as_str()) {
                 Some(v) => {
