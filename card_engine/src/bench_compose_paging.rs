@@ -72,7 +72,7 @@ fn bench_compose_paging() {
     }
     let data = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
     let n_printings = data.printings.len();
-    let (cards, printings, offsets, p2c) = (&data.cards, &data.printings, &data.offsets, &data.indexes.printing_to_card);
+    let (cards, printings, offsets) = (&data.cards, &data.printings, &data.offsets);
     let ctx = QueryCtx::from(data);
     println!("\n{} printings, {} cards from {STORE_PATH}", n_printings, cards.len());
 
@@ -107,13 +107,13 @@ fn bench_compose_paging() {
                 continue;
             }
             let run_a = || {
-                walk_value_orderby_page(&data.indexes.price_usd, &pbits, cards, printings, p2c, false, total, LIMIT, offset)
+                walk_value_orderby_page(&ctx, &bench_params(offset), &data.indexes.price_usd, &pbits, total)
                     .map_or(0, |p| p.0.len())
             };
             let run_b = || gather_composed_page(&ctx, &bench_params(offset), &pbits, None).0.len();
             // Cross-check identical page (offset 0 only — A declines into the null-price tail at deep
             // offsets, where only B is defined; that decline is itself the finding for those rows).
-            let a_page = walk_value_orderby_page(&data.indexes.price_usd, &pbits, cards, printings, p2c, false, total, LIMIT, offset);
+            let a_page = walk_value_orderby_page(&ctx, &bench_params(offset), &data.indexes.price_usd, &pbits, total);
             let (b_page, _) = gather_composed_page(&ctx, &bench_params(offset), &pbits, None);
             if let Some((a_rows, _)) = &a_page {
                 let a_ids: Vec<u128> = a_rows.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect();
