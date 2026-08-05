@@ -4367,7 +4367,30 @@ fn narrow_rec(
             if matches!(field, CollField::FrameData) {
                 let idx = &indexes.frame_data;
                 if idx.is_dense(value.as_str()) {
-                    if !broad_ok {
+                    // DENSE is the storage crossover (1/32 of printings, where a bitmap gets smaller
+                    // than postings). BROAD is the narrowing guard (`MAX_NARROW_FRACTION`, 1/4, where
+                    // intersecting stops paying). They are different questions eight times apart, and
+                    // consulting `broad_ok` for every dense value conflated them: `frame:2003` (17% of
+                    // printings), `frame:1997` (11%) and `frame:legendary` (10.6%) all sit BETWEEN the
+                    // two, so each was declined as if it were broad.
+                    //
+                    // That is the whole of the mid-density regression this index shipped with, and it is
+                    // not the `probe_collection_k` space mismatch it was first blamed on. Those three
+                    // values were POSTINGS before the hybrid, which took the branch below — where
+                    // `range_too_broad_to_narrow` is tested first and `broad_ok` only decides the broad
+                    // case. Moving them to a bitmap silently moved them behind a stricter gate.
+                    //
+                    // It bites hardest with a CARD-space partner, because `narrow_candidates_exact`
+                    // enters with `broad_ok: false` and rank-0 children inherit it: `o:this frame:2003`
+                    // narrowed to `o:this` alone (19,968 cards, identical features to `o:this
+                    // border:black`) and ran 1,809 us against 52 us for `o:this` by itself — adding a
+                    // predicate that CUTS the result set 6x made the query 35x slower, because the
+                    // frame test became a per-printing residual instead of a bitmap AND.
+                    let k = idx.len_of(value.as_str())?;
+                    // `DENSE_FRAME_BROAD_GATE=0` restores the conflated gate this fixed, so the two can
+                    // be measured against each other on a byte-identical archive.
+                    let broad = if *DENSE_FRAME_BROAD_GATE { range_too_broad_to_narrow(k, n_printings) } else { true };
+                    if broad && !broad_ok {
                         return None;
                     }
                     return mk(Candidates::PrintingBits(idx.bits(value.as_str(), n_printings)?));
@@ -5467,6 +5490,10 @@ static RESIDUAL_PASS_RATE_ARTWORK: LazyLock<f64> = LazyLock::new(|| guard_env("C
 /// Kept as a permanent handle, not scaffolding: these arms change ROUTING (a total feeds the argmin),
 /// so the only honest way to price them is an interleaved A/B in which both arms read a byte-identical
 /// archive. The table is archived either way, so flipping this cannot move a field offset.
+/// Whether a dense `frame_data` value is gated on being genuinely BROAD (1/4) rather than merely dense
+/// (1/32). 0 restores the conflated gate, for the A/B that priced the distinction.
+static DENSE_FRAME_BROAD_GATE: LazyLock<bool> = LazyLock::new(|| guard_env("CARD_ENGINE_DENSE_FRAME_BROAD_GATE", 1u8) != 0);
+
 static EXACT_VALUE_TOTALS: LazyLock<bool> = LazyLock::new(|| guard_env("CARD_ENGINE_EXACT_VALUE_TOTALS", 1u8) != 0);
 
 static STREAM_MIN_MATCHES: LazyLock<usize> = LazyLock::new(|| guard_env("CARD_ENGINE_STREAM_MIN_MATCHES", 1_024));

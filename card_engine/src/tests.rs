@@ -7,7 +7,7 @@ use super::{
     build_artist_index, build_printing_value_index, build_arith_tuple_index, is_arith_tuple_route, range_candidates, narrow_candidates, narrow_candidates_exact, rarity_candidates,
     range_too_broad_to_narrow, run_query, run_query_with_plan, explain, explain_analyze, AcquireFacts, PlanEstimate, PlanTrial,
     acquire_plan_features, take_phase_stats, PagingTaken, CountSource, NarrowedRepr,
-    EXACT_VALUE_TOTALS, RangeCardCounts, ValueTotals, build_all_value_totals, build_range_card_counts, exact_result_total,
+    EXACT_VALUE_TOTALS, RangeCardCounts, narrow_rec, ValueTotals, build_all_value_totals, build_range_card_counts, exact_result_total,
     PhysicalPlan, ComposePaging, trigram_candidates, finalize_trigram_index, PrintingValueIndex, NARROW_FLOOR,
     gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
     walk_printing_page, aligned_page, bare_range_bounds, probe_range_k, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
@@ -3275,6 +3275,57 @@ fn force_plan_differential_agreement() {
              cmc/power/toughness under a matching orderby.",
         );
     }
+}
+
+/// A dense `frame_data` value must still narrow under `broad_ok: false` unless it is genuinely BROAD.
+///
+/// Dense is the storage crossover (1/32 of printings); broad is the narrowing guard
+/// (`MAX_NARROW_FRACTION`, 1/4). Values between the two — the corpus has three, at 10.6%, 11% and 17% —
+/// must produce a bitmap, because `narrow_candidates_exact` enters with `broad_ok: false` and an `And`'s
+/// rank-0 children inherit it. Conflating the two thresholds cost `o:this frame:2003` 1,809 us against
+/// 52 us for `o:this` alone, with results identical either way — so no correctness test could see it and
+/// this asserts the representation decision directly.
+#[test]
+fn a_dense_but_not_broad_frame_value_narrows_without_broad_ok() {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(20_260_805);
+    let data = fuzz_store_n(&mut rng, 4_000);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let (offsets, cards) = (&archived.offsets, &archived.cards);
+    let n_printings = archived.printings.len();
+
+    let mut checked = (0usize, 0usize); // (dense-not-broad, broad)
+    for (value, _) in FUZZ_FRAME_DATA {
+        if !archived.indexes.frame_data.is_dense(value) {
+            continue;
+        }
+        let k = archived.indexes.frame_data.len_of(value).expect("a dense value has a count");
+        let mut f = FilterExpr::CollectionCmp {
+            field: CollField::FrameData,
+            op: CmpOp::Ge,
+            value: value.to_string(),
+            value_id: None,
+        };
+        f.bind(
+            &archived.coll_vocab, &archived.coll_vocab_sorted, &archived.artist_vocab,
+            &archived.mana_vocab, &archived.indexes.flavor, &archived.strings,
+        );
+        let got = narrow_rec(&f, &archived.indexes, offsets, cards, false);
+        if range_too_broad_to_narrow(k, n_printings) {
+            assert!(got.is_none(), "frame:{value} is broad ({k} of {n_printings}) and must decline without broad_ok");
+            checked.1 += 1;
+        } else {
+            let n = got.unwrap_or_else(|| panic!("frame:{value} is dense but NOT broad ({k} of {n_printings}) — must narrow"));
+            assert_eq!(n.set.len(), k, "frame:{value}: the bitmap must hold exactly the indexed printings");
+            assert!(n.tight, "Ge containment postings are exact, so the bitmap is tight");
+            checked.0 += 1;
+        }
+    }
+    // Both sides of the threshold must actually be present, or the test proves nothing about the
+    // distinction it exists to pin down.
+    assert!(checked.0 > 0, "no dense-but-not-broad frame value in the store; the regression case is uncovered");
+    assert!(checked.1 > 0, "no broad frame value in the store; the decline case is uncovered");
 }
 
 /// The per-value `ValueTotals` table must be exact in all three spaces, for every value of every
