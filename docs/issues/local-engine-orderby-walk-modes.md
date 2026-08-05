@@ -1,15 +1,50 @@
-# The orderby walk is printing-mode only, and that costs 33x on artwork mode
+# The orderby walk is printing-mode only, and card mode pays 18x for it
 
-`border:black` ordered by rarity takes **25.5 µs** under `unique=printing` and **853.8 µs** under
-`unique=artwork`. Same filter, same orderby, same corpus. The walk that makes the first one fast
-requires `Mode::Printing`:
+`border:black` ordered by rarity takes **25 µs** under `unique=printing`, **451 µs** under
+`unique=card`, and **836 µs** under `unique=artwork`. Same filter, same orderby, same corpus. The walk
+that makes the first one fast requires `Mode::Printing`:
 
 ```rust
 let walk_col = perm.is_none() && matches!(mode, Mode::Printing) && orderby_walk_available(sort_col);
 ```
 
-Everything else falls to `gather_composed_page`, which visits every candidate — so a broad predicate
-costs a whole-corpus gather instead of a 60-row walk.
+Everything else falls to a gather over every candidate CARD — so a broad predicate costs a whole-corpus
+pass instead of a 60-row walk.
+
+**The target is card mode, not artwork**, and an earlier revision of this doc had that backwards
+because it ranked by the 200 slowest queries rather than by traffic. Artwork is the slowest per query
+but 5% of `REALISTIC_UNIQUE_WEIGHTS`; card is 75%. Weighted by realistic traffic:
+
+| shape | share of realistic traffic |
+| --- | --: |
+| artwork x (`usd`\|`rarity`) | 0.90% |
+| **card x (`usd`\|`rarity`)** | **13.50%** |
+
+`usd` (10%) and `rarity` (8%) are 18% of `REALISTIC_ORDERBY_WEIGHTS`. So ~13.5% of real traffic runs at
+451-882 µs where the identical shape in printing mode runs at 25 µs. Artwork dominated the 200-slowest
+list only because `uniform` sampling weights the three modes equally.
+
+## Why card mode is 2x cheaper than artwork, and why that is fragile
+
+Not a structural advantage — one store-order trick, and it is worth measuring because it is also the
+cheapest available evidence that the fix below is cheap.
+
+| unique | prefer | `printings_examined` | per card | µs |
+| --- | --- | --: | --: | --: |
+| card | default | 31,453 | **1.01** | **451** |
+| card | usd_high | 96,790 | 3.11 | 882 |
+| artwork | default | 96,790 | 3.11 | 836 |
+| artwork | usd_high | 96,790 | 3.11 | 993 |
+| printing | either | **60** | — | **25** |
+
+Printings are stored prefer-desc within a card, so under `Prefer::Default` the first MATCHING printing
+is the representative and the gather early-breaks after 1.01 printings per card instead of 3.11. Any
+other prefer must score the whole card to find the max, and the break is gone — 451 → 882 µs, landing
+where artwork already is. 15% of realistic `prefer` draws are non-default. Artwork can never have the
+break: it must see every matching printing to discover the card's other artwork groups.
+
+But `cards_visited` is 31,169 — the whole card corpus — in every card-mode row. The early break makes
+each card cheaper, not the pass shorter, which is why card mode is still 18x off printing mode.
 
 ## This is the dominant slow shape in sampled traffic
 
@@ -102,15 +137,22 @@ That is correct, and each card is emitted exactly once at its true key position:
   Emitting on first encounter would order the group by whichever printing arrived first, which is the
   min-over-group semantics the measurement above rules out.
 
-Cost is one representative resolution per encountered matching printing, and it is cheap: under
-`Prefer::Default` printings are stored prefer-desc within a card, so `rep(c)` is the first `pbits` hit
-in `offsets[cid]..offsets[cid+1]` — ~1-3 bit tests, 3.08 printings per card on average. A 60-row page
-over a broad filter resolves on the order of 60-200 spans, against `gather_composed_page`'s whole-corpus
-visit. No buffer, no permutation, no archive change.
+Cost is one representative resolution per encountered matching printing, and the card-mode early break
+above is the measurement: it resolves a representative in **1.01 `pbits` tests per card** in
+production, on the same store order, for the same reason. That is not an estimate — it is the operation
+this walk needs, already running at scale. Non-default prefers cost the card's full span instead (3.11
+printings). No buffer, no permutation, no archive change.
 
-The prize is bounded by what the equivalent permutation walk already achieves in artwork mode:
-`border:black`/artwork/edhrec runs `Perm` at 172 µs, so ~5x on the 853 µs cell rather than the 33x that
-printing mode gets — artwork mode has real per-card work the walk cannot remove.
+The prize, bounded by what the equivalent permutation walk already achieves in the same modes
+(`border:black`/edhrec, which HAS a permutation): 172 µs artwork, and card mode's own `Perm` figures.
+So expect card mode ~451 → tens of µs and artwork ~836 → ~172 µs — a large win on 13.5% of realistic
+traffic and a smaller one on 0.9%.
+
+One gate interacts: card mode currently DECLINES compose on broad filters
+(`COMPOSE_GATHER_MAX_CARD_FRACTION`, correctly for the gather) and runs `GatheredScan`. A walk inverts
+that premise exactly as it already does for printing mode — "broad ⇒ not worth composing" is backwards
+for a branch whose best case is a dense predicate — so the gate must not apply to it, the same carve-out
+`walk_col` already has.
 
 Row identity is the gate, not regret: this changes which ROW represents a group if the `p == rep(c)`
 test is wrong, and `force_plan_differential_agreement` asserts full row order against `GatheredScan`.
@@ -131,10 +173,11 @@ meaningful slice of `REALISTIC_ORDERBY_WEIGHTS`, so unlike
 [the layout question](./local-engine-layout-postings.md) this shape is genuinely sampled by realistic
 traffic — it just needs the realistic-mode number measured before the work is priced.
 
-Card mode is a separate case and mostly NOT this problem: compose declines there
-(`COMPOSE_GATHER_MAX_CARD_FRACTION`, correctly — `border:black` is 98.9% of cards, past the calibrated
-~93% where the gather stops winning) and `GatheredScan` runs at 353-626 µs. That decline is right; the
-cost is real.
+Card mode was described here as "a separate case and mostly NOT this problem". That was wrong: it is
+the SAME problem and the largest instance of it. Compose does decline there
+(`COMPOSE_GATHER_MAX_CARD_FRACTION` — `border:black` is 98.9% of cards, past the calibrated ~93% where
+the gather stops winning) and that decline is correct **for the gather**; it is not correct for a walk,
+which is the point.
 
 ## Status
 
