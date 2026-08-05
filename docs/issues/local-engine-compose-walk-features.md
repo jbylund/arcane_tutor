@@ -200,8 +200,14 @@ Item by item, so the reasoning above is readable against the outcome:
    is, only that it is bad, and `Gather` is O(matches) — it gets safer exactly as the walk gets worse.
    `r:mythic` ordered by usd is charged 2.5 µs against 11.0 realized and is the only cell on this slice
    that still drifts with the corpus.
-4. **Perm — leave it.** 1.19 at production scale; the drift is cache superlinearity that saturates, not
-   a missing term. Unchanged by any of this.
+4. **Perm — revisit, and the reason is new.** "Leave it, the drift is cache superlinearity" was the
+   conclusion here, and the cache part still holds. But `Perm` also has a genuinely MISSING FEATURE:
+   fitting realized time against `(popcount_words, printings_examined)` gives it a -1,126 ns intercept,
+   and admitting `cards_visited` moves that to -12 ns while reconciling the per-printing rate with
+   `OrderbyWalk`'s (0.3135 against 0.3057). Which retires the puzzle above about `printings_walked /
+   cards_visited` grading 4.53 while `/printings_examined` graded 1.17 — the arm needs BOTH columns, and
+   has neither a cards term nor an estimator for one.
+   [local-engine-compose-build-rates.md](./local-engine-compose-build-rates.md) has the numbers.
 
 The general lesson this branch keeps re-teaching: a partial accuracy fix on the compose arm loses regret
 (`compose_scan_printings`'s span patch 1.33 -> 1.41 µs, the build term applied build-wide 1.193 -> 1.544
