@@ -1,35 +1,58 @@
-# The rarity orderby walk: postings for mythic would not help, and what does
+# The rarity orderby walk collects whole buckets, and ordering the buckets fixes it
 
 `walk_rarity_orderby_page` walks rarity buckets in sort order. The four interior rarities
 (`common`=0, `uncommon`=1, `rare`=2, `mythic`=3) are one-hot **planes**; the sparse tail
 (`special`=4, `bonus`=5) is **postings** ([planes.rs:184](../../card_engine/src/planes.rs#L184)).
 
-The idea this doc closes off: give mythic — and the other low-density rarities — postings too, so a
-selective query does not pay a whole-corpus plane AND.
+A plane bucket yields its pids in **pid** order, so `collect_orderby_page` must take the bucket whole and
+sort it. Measured, printing mode, `limit=60 offset=0`:
 
-## It would be slower, and the current crossover is in the right place
+| query | dir | total | **pushed** | examined | widths | measured |
+| --- | --- | --: | --: | --: | --: | --: |
+| `border:black` | **asc** | 85,046 | **24,653** | 97,216 | 1.0 | **115.5 µs** |
+| `border:black` | desc | 85,046 | 337 | 391 | 0.0 | **2.5 µs** |
+| `f:modern` | **asc** | 73,783 | **22,853** | 97,216 | 1.0 | **142.3 µs** |
+| `f:modern` | desc | 73,783 | 315 | 391 | 0.0 | 40.6 µs |
+| `usd>0.01` | **asc** | 81,534 | **25,418** | 97,216 | 1.0 | **153.6 µs** |
+| `usd>0.01` | desc | 81,534 | 249 | 391 | 0.0 | 32.8 µs |
+| `r:mythic` | asc | 8,924 | 8,924 | 388,864 | **4.0** | 44.8 µs |
+| `r:mythic` | desc | 8,924 | 8,924 | 97,607 | 1.0 | 43.7 µs |
 
-A plane bucket ANDs `words_per_plane` words of the corpus: **1,519** word operations at 97,206 printings,
-fixed, whatever the filter matches. A postings bucket walks its own id list: one bit-test per entry.
+**Ascending collects the entire `common` bucket — 24,653 matches to serve 60 rows, a 411x overshoot — and
+runs 46x slower than the same query descending**, which fills from the sparse bonus/special postings and
+examines 391 entries. `r:mythic` ascending is the other shape: it ANDs common, uncommon and rare finding
+nothing, then takes all of mythic, for four corpus widths.
 
-| rarity | printings | plane cost | postings cost | cheaper |
-| --- | --: | --: | --: | --- |
-| common | ~27,500 | 1,519 words | ~27,500 entries | **plane** |
-| rare | — | 1,519 words | — | **plane** |
-| **mythic** | **8,924** | **1,519 words** | **~8,924 entries** | **plane, ~6x** |
-| special / bonus | sparse | 1,519 words | short list | **postings** |
+## The fix: tiebreak-ordered storage for the bucket a walk STARTS in
 
-Mythic is 9% of printings, which sounds sparse but is still ~6x more entries than the plane has words.
-The crossover is where a rarity's printing count passes ~1,519, and every interior rarity is far above it
-while special/bonus are far below. So the representation is already right, and moving mythic to postings
-would cost ~6x on every rarity-ordered page that touches it.
+Give the relevant rarity a postings list sorted by the full tiebreak, alongside its plane
+([the same layout proposed for range indexes](./local-engine-range-index-value-major.md)). The walk then
+bit-tests entries in page order and **stops when the page fills** — ~60-70 entries for a broad filter,
+against 24,653 collected today.
 
-Nor does it help the case that motivated the question. `r:mythic` ordered by **usd** scans 31,698 entries
-of the *price* index — that walk never consults a rarity structure at all, it bit-tests `pbits`. Fixing it
-needs a price-ordered index per rarity value, which is one index per (predicate value × sort column) and
-unbounded in combination; the cheap fix is
-[making the paging branch cost-based](./local-engine-compose-paging-cost-based.md) so the walk is not
-taken.
+Which buckets need it follows from the table, and it is not the one I first guessed:
+
+- **`common` is the priority.** Ascending always starts there, and that is the 115-154 µs case.
+- **`mythic` second**, for descending — though descending already examines only 391 entries when
+  bonus/special fill the page, so this matters mainly for filters those two cannot satisfy (`r:mythic`
+  itself, at 43.7 µs).
+- `uncommon`/`rare` are only reached when an earlier bucket fails to fill, so they can wait.
+
+Dual storage, kept deliberately: the plane is still what `rarity_cmp_leaf_bits` reads on the FILTER path,
+where a whole-bucket bitmap is exactly what compose wants. The postings list serves the WALK path, where
+early stop is what matters. ~110 KB for common, ~36 KB for mythic. And as you note, special/bonus need no
+plane at all — their bits can be twiddled in from postings when a filter wants them.
+
+**Retracted: "postings for mythic would be ~6x slower."** An earlier revision of this doc closed the idea
+off on that arithmetic — 1,519 plane words against 8,924 postings entries. That compares
+enumerate-the-whole-bucket both ways, which is the wrong comparison: the entire point of tiebreak ordering
+is that the walk does not enumerate the whole bucket. With early stop the crossover moves to roughly "does
+the filter match more than ~4% of this rarity", which nearly every query clears. The plane only wins when
+the filter is so sparse within the rarity that the walk drains the whole postings list anyway.
+
+**This is separate from the `r:mythic`-ordered-by-**usd** case**, which walks the price index and never
+consults a rarity structure —
+[that one is a paging-branch choice](./local-engine-compose-paging-cost-based.md).
 
 ## The real defect: one rate for two operations
 
