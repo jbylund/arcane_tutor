@@ -60,18 +60,67 @@ what any other plan produces. This is the same representative-selection trap tha
 bug as the printing-varying `all_match` problem: it changes which ROW is returned, not just the count,
 so `force_plan_differential_agreement` is the gate for anything attempted here.
 
-So this is not a small gate to relax. Three directions, none cheap:
+### The semantics, measured rather than assumed
 
-1. **Walk in value order but resolve representatives lazily.** For `Prefer::Default` the representative
-   is the first matching printing in *pid* order within the card, which a value-order walk can determine
-   only after seeing all of that card's matching printings. Bounded if a card's printings can be probed
-   cheaply from `pbits` on first encounter (`offsets[cid]..offsets[cid+1]`, ~3 printings on average) —
-   that would make the walk emit correct groups at O(page x printings-per-card). **This is the promising
-   one and it has not been tried.**
-2. **Redefine group ordering as min/max over the group** for these two columns. Cheap and wrong: it
-   changes results, and every other plan would have to change with it.
-3. **Accept it** and make sure the router at least picks the cheapest of the bad options. It already
-   does — regret on these rows is ~0.7%.
+`unique=card orderby=usd desc` over `usd>=0.01` returns **Timetwister's $8.15 printing** while that
+card's most expensive printing is **$51.42** — and the page is ordered by the returned price,
+monotonically. Six of the top 25 rows are likewise not their card's maximum. So the key is the
+representative's value, not min/max over the group, and the representative is `prefer`-chosen. That is
+the whole obstacle, stated as a fact about output rather than a reading of the code.
+
+### A static permutation is the wrong tool, and the numbers say why
+
+A permutation is sound for a card only if its key is identical whichever printing represents it:
+
+| column | cards with a uniform value | can move with the filter |
+| --- | --: | --: |
+| rarity | 28,713 (91.1%) | 2,795 (8.9%) |
+| **usd** | 13,268 (42.1%) | **18,240 (57.9%)** |
+
+41.4% of cards have a single printing, so nearly all of usd's "uniform" cards are simply cards that
+could not vary. And displacement is unbounded: among cards with a price spread, max/min is p50 2.1x,
+p90 9.0x, **p99 241x, max 24,000x**. A displaced card does not land near its static position, it
+crosses the whole order, so repairing a static permutation needs an unbounded buffer.
+
+Rarity's 8.9% is the same order as `legal_divergent`'s 1.8% carve-out, so rarity alone might be
+servable that way. usd cannot. Storage was never the issue — 123 KB per vector, 492 KB for both
+columns both directions, 0.96 MB with inverses, against a 69 MB store.
+
+### What does work: resolve the representative on the fly, no new structure
+
+The walk already has the value index. Walk its key runs in page order and, for each matching printing
+`p` of card `c`, resolve `rep(c)` — the `prefer`-best MATCHING printing of `c` — then **emit `c` only
+when `p == rep(c)`**.
+
+That is correct, and each card is emitted exactly once at its true key position:
+
+- If `rep(c)`'s value is *below* the current run, `rep(c)` was itself encountered in an earlier run
+  (it matches, so it is in the index) and `c` was emitted there.
+- If it is *above*, this encounter is skipped and the walk reaches `rep(c)` later.
+- If it is *equal*, `rep(c)` is in this same run, so emitting at `rep(c)`'s position gives the correct
+  tiebreak — which is exactly why the test is `p == rep(c)` and not "first printing of an unseen card".
+  Emitting on first encounter would order the group by whichever printing arrived first, which is the
+  min-over-group semantics the measurement above rules out.
+
+Cost is one representative resolution per encountered matching printing, and it is cheap: under
+`Prefer::Default` printings are stored prefer-desc within a card, so `rep(c)` is the first `pbits` hit
+in `offsets[cid]..offsets[cid+1]` — ~1-3 bit tests, 3.08 printings per card on average. A 60-row page
+over a broad filter resolves on the order of 60-200 spans, against `gather_composed_page`'s whole-corpus
+visit. No buffer, no permutation, no archive change.
+
+The prize is bounded by what the equivalent permutation walk already achieves in artwork mode:
+`border:black`/artwork/edhrec runs `Perm` at 172 µs, so ~5x on the 853 µs cell rather than the 33x that
+printing mode gets — artwork mode has real per-card work the walk cannot remove.
+
+Row identity is the gate, not regret: this changes which ROW represents a group if the `p == rep(c)`
+test is wrong, and `force_plan_differential_agreement` asserts full row order against `GatheredScan`.
+
+### Rejected
+
+- **Redefine group ordering as min/max over the group.** Cheap and wrong: it changes results, and the
+  measurement above shows it is not what any current plan produces.
+- **Accept it.** The router already picks the cheapest of the bad options — regret on these rows is
+  ~0.7% — so there is nothing to recover by routing, only by making a better option exist.
 
 ## What it is worth
 
