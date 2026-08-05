@@ -355,11 +355,11 @@ this. Whether it costs anything is now an open question rather than an assumed c
 
 - **`o:this frame:2003` is 418 µs against 52 µs for `o:this` alone.** Much better, not good. It picks
   `GatheredScan` over 19,851 scan units where `o:this` alone streams a page and stops.
-- **Genuinely broad printing-space partners under a card-space driver** still decline entirely:
-  `o:this border:black` 1,989 µs, `o:this cn>200` 1,839 µs, `o:this frame:2015` 1,843 µs, all against 52
-  µs for the driver alone. For a STORED bitmap (a plane, or a dense hybrid value) the AND is nearly free
-  and the projection is one pass, so declining may be wrong even at 66% — but the previous attempt to
-  bypass `broad_ok` for stored bitmaps cost 1.3-1.8x on sparse `And`s, so the rule wants to be
-  contextual (is there a printing-space partner? is the driver large enough for the cut to pay?) rather
-  than removed. That is the next item in this family and it is worth more than what section 6 just fixed.
+- ~~**Genuinely broad printing-space partners under a card-space driver** still decline entirely, and for
+  a stored bitmap the AND would be nearly free~~ — **WITHDRAWN.** The decline was not the cost. Those
+  queries were slow because the candidate set's own card-space conjunct was being re-verified once per
+  printing; narrowing with the border bitmap would not have helped, because the pass over printings was
+  never where the time went. Fixed in
+  [local-engine-proven-conjuncts.md](./local-engine-proven-conjuncts.md), which took
+  `o:this border:black` from 1,993 µs to 542 µs without changing the narrowing at all.
 - (2)'s `t:battle` plane poisoning and (3)'s missing `Battle` in `card_types`, both untouched.

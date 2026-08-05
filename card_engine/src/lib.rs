@@ -2962,14 +2962,14 @@ fn range_narrowed(idx: &Archived<PrintingValueIndex>, lo: u32, hi: u32, n_printi
         // is contractually pid-ascending. Cheaper than before if anything — no stride over a tuple.
         let mut result: Vec<u32> = idx.range_pids(lo, hi).collect();
         result.sort_unstable();
-        return Some(Narrowed { set: Candidates::Printings(result), tight: exact });
+        return Some(Narrowed { set: Candidates::Printings(result), tight: exact, proven: 0 });
     }
     if !broad_ok {
         return None; // nothing downstream would consume the bitmap — pre-#636 behavior
     }
     if k <= idx.len() - k {
         let bits = scatter_bits(idx.range_pids(lo, hi), n_printings);
-        return Some(Narrowed { set: Candidates::PrintingBits(bits), tight: exact });
+        return Some(Narrowed { set: Candidates::PrintingBits(bits), tight: exact, proven: 0 });
     }
     let mut bits = scatter_bits(
         idx.pids[..s].iter().chain(idx.pids[e..].iter()).map(|p| u32::from(*p)),
@@ -3242,6 +3242,23 @@ enum Candidates {
 struct Narrowed {
     set: Candidates,
     tight: bool,
+    /// Which of a top-level `And`'s children this candidate set already PROVES, as a bitmask over the
+    /// children in written order. Set only by the `And` arm, and only for children whose own narrowing
+    /// was tight AND card-space; 0 everywhere else, including for a nested `And` (only the outermost
+    /// mask is ever read).
+    ///
+    /// Tightness has always been one bit for the whole expression, so a single un-narrowed conjunct
+    /// makes the whole set loose and the residual re-verifies EVERY conjunct — including ones membership
+    /// in the set already settles. `o:this` alone narrows tightly and runs in 67 us examining zero
+    /// printings; `o:this border:black` re-evaluates the oracle contains on all 19,968 candidates and
+    /// costs 1,993 us. The leaf identity does not matter (`cn>200`, `frame:2015`, three leaves at once
+    /// all land within 8%), because the cost is one card-level text evaluation per candidate CARD.
+    ///
+    /// Card-space only, for the reason `narrow_candidates_exact` spells out: a tight PRINTING-space set
+    /// says "this printing matches", not "every printing of this card does", so it cannot excuse a
+    /// per-printing check. Card-space tight is exactly the `all_match` promotion argument applied to one
+    /// conjunct instead of the whole tree.
+    proven: u64,
 }
 
 /// Ids-to-bits promotion threshold for And/Or composition. Below it the
@@ -3416,11 +3433,11 @@ impl Candidates {
 
 impl Narrowed {
     fn tight(set: Candidates) -> Option<Narrowed> {
-        Some(Narrowed { set, tight: true })
+        Some(Narrowed { set, tight: true, proven: 0 })
     }
 
     fn loose(set: Candidates) -> Option<Narrowed> {
-        Some(Narrowed { set, tight: false })
+        Some(Narrowed { set, tight: false, proven: 0 })
     }
 
     /// Project into card space. Printing→card projection is an existence
@@ -3430,10 +3447,10 @@ impl Narrowed {
         match self.set {
             Candidates::Cards(_) | Candidates::CardBits(_) => self,
             Candidates::Printings(v) => {
-                Narrowed { set: Candidates::Cards(cards_of_printings(offsets, printing_to_card, &v)), tight: false }
+                Narrowed { set: Candidates::Cards(cards_of_printings(offsets, printing_to_card, &v)), tight: false, proven: 0 }
             }
             Candidates::PrintingBits(b) => {
-                Narrowed { set: Candidates::CardBits(printing_bits_to_card_bits(&b, offsets, n_cards)), tight: false }
+                Narrowed { set: Candidates::CardBits(printing_bits_to_card_bits(&b, offsets, n_cards)), tight: false, proven: 0 }
             }
         }
     }
@@ -3498,7 +3515,7 @@ fn and_all(mut sets: Vec<Narrowed>) -> Option<Narrowed> {
         }
         (None, None) => unreachable!("sets was non-empty"),
     };
-    Some(Narrowed { set, tight })
+    Some(Narrowed { set, tight, proven: 0 })
 }
 
 /// Union same-space sets. Small all-vec inputs keep today's merge; anything
@@ -3534,7 +3551,7 @@ fn or_all(mut sets: Vec<Narrowed>, n: usize) -> Option<Narrowed> {
         }
         if card_space { Candidates::CardBits(acc) } else { Candidates::PrintingBits(acc) }
     };
-    Some(Narrowed { set, tight })
+    Some(Narrowed { set, tight, proven: 0 })
 }
 
 /// Static answer to "could narrow_rec(f) produce a tight set, and in which
@@ -3635,18 +3652,20 @@ fn narrow_candidates_exact(
     indexes: &Archived<CardIndexes>,
     offsets: &AOffsets,
     cards: &[AOracleCard],
-) -> (Option<Candidates>, bool) {
+) -> (Option<Candidates>, bool, u64) {
     let n_cards = offsets.len().saturating_sub(1);
     let n_printings = if n_cards == 0 { 0 } else { u32::from(offsets[n_cards]) as usize };
     match narrow_rec(filter, indexes, offsets, cards, false) {
-        None => (None, false),
+        None => (None, false, 0),
         Some(n) => {
             let printing_space = n.set.is_printing_space();
             let domain = if printing_space { n_printings } else { n_cards };
             if n.set.len() <= domain - domain / 4 {
-                (Some(n.set), n.tight && !printing_space)
+                // The mask is only meaningful alongside the set it was derived from: discarding the set
+                // for broadness discards the proof with it.
+                (Some(n.set), n.tight && !printing_space, n.proven)
             } else {
-                (None, false)
+                (None, false, 0)
             }
         }
     }
@@ -4575,7 +4594,23 @@ fn narrow_rec(
             // per child meant popcounting every accumulated bitmap again on every
             // iteration — O(children² × words) for a value that only ever shrinks.
             let mut best: Option<usize> = None;
+            // Which children the returned set will PROVE, by their index in `children` as written. A
+            // child qualifies when its own narrowing came back tight AND card-space, and it actually got
+            // pushed: `and_all` intersects, and an intersection is a subset of each of its inputs, so
+            // every card in the result satisfies each such child. See `Narrowed::proven`.
+            //
+            // Indices are recovered by pointer identity rather than by tracking position through
+            // `fuse_and_range_children`'s regrouping and the sort below — those reorder freely, and a
+            // positional guess that silently slipped would drop a real predicate from the residual.
+            // Children past 64 are simply never marked, which costs a re-verification and cannot be wrong.
+            let mut proven: u64 = 0;
             for (rank, _sort_k, size_k, src) in ranked {
+                let child_index = match &src {
+                    AndSource::Child(c) => children.iter().position(|w| std::ptr::eq(w, *c)),
+                    // A fused interval stands for two or more children at once, and is printing-space
+                    // besides, so it can never be proven.
+                    AndSource::FusedRange { .. } => None,
+                };
                 // A driver this selective already bounds the candidate set the
                 // residual re-verifies, so a costlier (rank>0) child usually
                 // narrows nothing the driver's verification doesn't already do
@@ -4629,6 +4664,12 @@ fn narrow_rec(
                         continue;
                     }
                     best = Some(best.map_or(len, |b| b.min(len)));
+                    if let Some(i) = child_index.filter(|&i| i < 64)
+                        && n.tight
+                        && !n.set.is_printing_space()
+                    {
+                        proven |= 1 << i;
+                    }
                     if n.set.is_printing_space() { printing_sets.push(n) } else { card_sets.push(n) }
                 } else {
                     every_child_included = false;
@@ -4636,8 +4677,12 @@ fn narrow_rec(
             }
             let cards = and_all(card_sets);
             let printings = and_all(printing_sets);
+            // `proven` rides only on results that CONTAIN the card side. Every branch below that returns
+            // the card intersection (alone, or intersected with a projected printing side) is a subset of
+            // each proven child's set; the lone-printing branch is not, and gets 0.
             let seal = |mut n: Narrowed| {
                 n.tight &= every_child_included;
+                n.proven = proven;
                 n
             };
             match (cards, printings) {
@@ -4652,7 +4697,10 @@ fn narrow_rec(
                     // space) project as before.
                     match &p.set {
                         Candidates::PrintingBits(_) if p.set.len() > n_printings / 4 => None,
-                        _ => Some(seal(p)),
+                        // No card side, so nothing here proves a card-space child -- and there cannot be
+                        // one, since a pushed card set would have produced `cards`. `proven` is 0 either
+                        // way; sealed through the same closure so the two branches cannot drift.
+                        _ => Some(Narrowed { proven: 0, ..seal(p) }),
                     }
                 }
                 (Some(c), Some(p)) => {
@@ -5493,6 +5541,10 @@ static RESIDUAL_PASS_RATE_ARTWORK: LazyLock<f64> = LazyLock::new(|| guard_env("C
 /// Whether a dense `frame_data` value is gated on being genuinely BROAD (1/4) rather than merely dense
 /// (1/32). 0 restores the conflated gate, for the A/B that priced the distinction.
 static DENSE_FRAME_BROAD_GATE: LazyLock<bool> = LazyLock::new(|| guard_env("CARD_ENGINE_DENSE_FRAME_BROAD_GATE", 1u8) != 0);
+
+/// Whether a conjunct the candidate set already proves is skipped by `card_pass` instead of
+/// re-verified. 0 restores the re-verification, for the A/B that priced it.
+static PROVEN_CONJUNCTS: LazyLock<bool> = LazyLock::new(|| guard_env("CARD_ENGINE_PROVEN_CONJUNCTS", 1u8) != 0);
 
 static EXACT_VALUE_TOTALS: LazyLock<bool> = LazyLock::new(|| guard_env("CARD_ENGINE_EXACT_VALUE_TOTALS", 1u8) != 0);
 
@@ -7378,6 +7430,10 @@ struct PreparedCandidates {
     /// and it exists because a candidate *count* in some band does not imply the query paid
     /// a sort to get there: a plane AND'd with a range reaches the same count word-wise.
     narrowed_repr: NarrowedRepr,
+    /// Top-level `And` children `card_pass` may skip because the candidate set proves them — see
+    /// `Narrowed::proven`. Already validated against `candidate_cards` and permuted to match the
+    /// post-reorder child positions, so consumers can use it directly.
+    proven_conjuncts: u64,
 }
 
 impl PreparedCandidates {
@@ -7625,7 +7681,7 @@ fn prepare_candidates(ctx: &QueryCtx, params: &QueryParams, filter: &mut FilterE
     // queries exactly as before. Left un-materialized (Candidates, not
     // Vec<u32>) here so the plane branch below can AND two card-space bitmaps
     // directly instead of paying to materialize one of them first.
-    let (raw_candidates, residual_exact): (Option<Candidates>, bool) =
+    let (raw_candidates, residual_exact, proven_conjuncts): (Option<Candidates>, bool, u64) =
         narrow_candidates_exact(filter, indexes, offsets, cards);
     // Captured before the flattening below consumes it — see PreparedCandidates::narrowed_repr.
     let narrowed_repr = raw_candidates.as_ref().map_or(NarrowedRepr::None, Candidates::repr);
@@ -7690,6 +7746,15 @@ fn prepare_candidates(ctx: &QueryCtx, params: &QueryParams, filter: &mut FilterE
     // candidate set with a selective needle memoizes while a narrow one
     // leaves the scan alone. Skipped entirely when all_match_known: card_pass
     // never runs, so there is nothing left for the rewrite to speed up.
+    // The mask indexes `filter`'s top-level children, so it is only valid while BOTH still describe the
+    // same query. Two things here can break that, and each clears it:
+    //
+    //   * `candidate_cards` being None. The narrowing was discarded (too broad, or absent), so the walk
+    //     visits cards the proof never covered. Keeping the mask would skip a real predicate.
+    //   * `order_children_by_verify_cost` permuting the children. The mask is carried THROUGH that
+    //     permutation rather than cleared, because the reorder is exactly what makes the residual cheap
+    //     and dropping the mask here would forfeit the win on every query that reaches it.
+    let mut proven_conjuncts = if candidate_cards.is_some() && *PROVEN_CONJUNCTS { proven_conjuncts } else { 0 };
     if !all_match_known {
         let eval_domain = candidate_cards.as_ref().map_or(cards.len(), Vec::len);
         filter.memoize_text_predicates(cards, strings, &indexes.name_trigram, &indexes.name_bigrams, &indexes.oracle_trigram, eval_domain);
@@ -7698,11 +7763,14 @@ fn prepare_candidates(ctx: &QueryCtx, params: &QueryParams, filter: &mut FilterE
         // see order_children_by_verify_cost). After memoization, which flips
         // TextContains nodes from the scan tier to the set tier.
         if *VERIFY_ORDER != 0 {
-            filter.order_children_by_verify_cost();
+            filter.order_children_by_verify_cost(&mut proven_conjuncts);
         }
+    } else {
+        // `card_pass` never runs, so there is nothing to skip and the mask has no consumer.
+        proven_conjuncts = 0;
     }
 
-    PreparedCandidates { candidate_cards, all_match_known, narrowed_repr }
+    PreparedCandidates { candidate_cards, all_match_known, narrowed_repr, proven_conjuncts }
 }
 
 // ─── Plan executors ─────────────────────────────────────────────────────────
@@ -8072,7 +8140,7 @@ fn exec_streamed_select<'a>(
     // when the filter constrains the sort column, the whole permutation otherwise.
     let walk = walk_bounds(perm, ctx.cards, params.sort_col, params.descending, params.sort_bound);
     let existential_plane = existential_plane_for(params.mode, plane, indexes);
-    run_query_streamed(ctx, params, filter, prep.all_match_known, walk, prep.card_ids(ctx), existential_plane)
+    run_query_streamed(ctx, params, filter, prep.all_match_known, prep.proven_conjuncts, walk, prep.card_ids(ctx), existential_plane)
 }
 
 /// Per-query execution counters and coarse phase timings, for checking the cost model against what
@@ -8550,7 +8618,7 @@ fn exec_gathered_scan<'a>(
         // every candidate matches — card_pass would just re-derive Tri::True
         // at real per-node evaluation cost for nothing.
         let all_match = all_match_known
-            || match filter.card_pass(card, strings, &mut residual, &mut residual_is_or) {
+            || match filter.card_pass(card, strings, &mut residual, &mut residual_is_or, prep.proven_conjuncts) {
                 Tri::False | Tri::Null => continue,
                 Tri::True => true,          // every printing matches: skip per-printing checks
                 Tri::PrintingDep => false,  // verify each printing against the residual below
@@ -9092,7 +9160,11 @@ fn candidate_feats(ctx: &QueryCtx, params: &QueryParams, prep: &PreparedCandidat
         }
     };
     let mut feats =
-        mk_plan_feats(ctx, params, matches, count, scan, if prep.all_match_known { 0 } else { verify_cost_tier(filter) });
+        mk_plan_feats(ctx, params, matches, count, scan, if prep.all_match_known {
+            0
+        } else {
+            verify_cost_tier_unproven(filter, prep.proven_conjuncts)
+        });
     // Diagnostic only (`explain`), so the residual-pass-rate population can be split by traffic before any
     // rate moves. A card-invariant residual answers `True`/`False` per card and never `PrintingDep`, so a
     // matching candidate contributes its WHOLE printing span and a non-matching one none of it — the
@@ -9575,7 +9647,7 @@ fn run_query_routed<'a>(
             // means "what the residual NARROWING produced", and no narrowing ran here — the list
             // came from the plane bitmap. Diagnostic-only and unread on this path, but `CardBits`
             // here would be the one value that contradicts `explain`'s contract if it ever were.
-            &PreparedCandidates { candidate_cards: Some(bitmap_card_ids(&plane_bits)), all_match_known: true, narrowed_repr: NarrowedRepr::None },
+            &PreparedCandidates { candidate_cards: Some(bitmap_card_ids(&plane_bits)), all_match_known: true, proven_conjuncts: 0, narrowed_repr: NarrowedRepr::None },
             plane,
         ),
         (p, Prep::Candidates(prep)) => exec_from_candidates(p, ctx, params, filter, prep, plane),
@@ -10310,6 +10382,10 @@ fn run_query_streamed<'a>(
     params: &QueryParams,
     filter: &FilterExpr,
     all_match_known: bool,
+    // Conjuncts the candidate set proves, passed straight to `card_pass` (see `Narrowed::proven`).
+    // Alongside `all_match_known` because they are the same idea at two granularities: that flag says the
+    // whole residual is settled, this says which parts of it are.
+    proven_conjuncts: u64,
     walk: &[Archived<u32>],
     card_ids: Box<dyn ExactSizeIterator<Item = u32> + '_>,
     existential_plane: Option<(&PlaneExpr, &Archived<BitPlanes>)>,
@@ -10390,7 +10466,7 @@ fn run_query_streamed<'a>(
         // `plane_leaves_nothing_to_verify`, and only trusts `residual_exact` when the narrowing was not
         // printing-space.
         let all_match = all_match_known
-            || match filter.card_pass(card, strings, &mut residual, &mut residual_is_or) {
+            || match filter.card_pass(card, strings, &mut residual, &mut residual_is_or, proven_conjuncts) {
                 Tri::False | Tri::Null => continue,
                 Tri::True => true,
                 Tri::PrintingDep => false,
@@ -10465,7 +10541,7 @@ fn run_query_streamed<'a>(
             }
             let card = &cards[cid as usize];
             let all_match = all_match_known
-                || match filter.card_pass(card, strings, &mut residual, &mut residual_is_or) {
+                || match filter.card_pass(card, strings, &mut residual, &mut residual_is_or, proven_conjuncts) {
                     Tri::True => true,
                     Tri::PrintingDep => false,
                     _ => continue,
@@ -10515,7 +10591,7 @@ fn run_query_streamed<'a>(
         }
         let card = &cards[cid as usize];
         let all_match = all_match_known
-            || match filter.card_pass(card, strings, &mut residual, &mut residual_is_or) {
+            || match filter.card_pass(card, strings, &mut residual, &mut residual_is_or, proven_conjuncts) {
                 Tri::True => true,
                 Tri::PrintingDep => false,
                 _ => continue,

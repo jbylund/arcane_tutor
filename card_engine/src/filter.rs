@@ -590,6 +590,25 @@ pub(crate) const REGEX_MACHINERY_NS100: u32 = 5_000;
 /// Per-candidate verification cost of a node in the tri walk. Composites take
 /// the max of their children: their short-circuit may have to evaluate every
 /// child, so the most expensive child bounds the cost.
+/// `verify_cost_tier` over an `And` whose `proven` children are skipped, matching what `card_pass` will
+/// actually evaluate (see `Narrowed::proven`).
+///
+/// Without this the model keeps charging the tier of a conjunct nobody verifies: `o:this border:black`
+/// read `TEXT_SCAN` (23 ns/card) when the surviving residual is a `TextExact` at `MASK_COMPARE` (4 ns),
+/// and both plans under-predicted by 2.0-2.6x. A cost model that does not see a change cannot route on it.
+pub(crate) fn verify_cost_tier_unproven(f: &FilterExpr, proven: u64) -> u32 {
+    match f {
+        FilterExpr::And(children) if proven != 0 => children
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i >= 64 || proven & (1 << i) == 0)
+            .map(|(_, c)| verify_cost_tier(c))
+            .max()
+            .unwrap_or(0),
+        _ => verify_cost_tier(f),
+    }
+}
+
 pub(crate) fn verify_cost_tier(f: &FilterExpr) -> u32 {
     match f {
         FilterExpr::TextRegex { regex, .. } => regex_tier(regex.as_str()),
@@ -1108,21 +1127,43 @@ impl FilterExpr {
     /// memoization flips TextContains nodes from the scan tier to the set
     /// tier. The per-printing residual pass inherits the order too, since
     /// card_pass() pushes residual children in child order.
-    pub(crate) fn order_children_by_verify_cost(&mut self) {
+    /// `proven` is a bitmask over THIS node's `And` children (see `Narrowed::proven`) and is permuted in
+    /// step with them. Carrying it through rather than invalidating it matters: this reorder runs on every
+    /// query with a residual, so a mask dropped here would never survive to its consumer. Nested nodes get
+    /// no mask — only the outermost `And`'s is ever read.
+    pub(crate) fn order_children_by_verify_cost(&mut self, proven: &mut u64) {
         match self {
             FilterExpr::And(children) => {
                 for c in children.iter_mut() {
-                    c.order_children_by_verify_cost();
+                    c.order_children_by_verify_cost(&mut 0);
                 }
-                children.sort_by_key(|c| (printing_dependent(c), verify_cost_tier(c), and_child_set_len(c)));
+                let key = |c: &FilterExpr| (printing_dependent(c), verify_cost_tier(c), and_child_set_len(c));
+                if *proven == 0 {
+                    children.sort_by_key(key);
+                    return;
+                }
+                // Sort an index permutation instead of the children, so the mask can be rebuilt against
+                // the new positions. `sort_by_key` is stable, so this produces the same order as the
+                // unmasked path above.
+                let mut order: Vec<usize> = (0..children.len()).collect();
+                order.sort_by_key(|&i| key(&children[i]));
+                let mut moved: Vec<Option<FilterExpr>> = std::mem::take(children).into_iter().map(Some).collect();
+                let mut remapped = 0u64;
+                for (new_i, &old_i) in order.iter().enumerate() {
+                    if new_i < 64 && old_i < 64 && *proven & (1 << old_i) != 0 {
+                        remapped |= 1 << new_i;
+                    }
+                    children.push(moved[old_i].take().expect("each index appears once in a permutation"));
+                }
+                *proven = remapped;
             }
             FilterExpr::Or(children) => {
                 for c in children.iter_mut() {
-                    c.order_children_by_verify_cost();
+                    c.order_children_by_verify_cost(&mut 0);
                 }
                 children.sort_by_key(or_child_key);
             }
-            FilterExpr::Not(inner) => inner.order_children_by_verify_cost(),
+            FilterExpr::Not(inner) => inner.order_children_by_verify_cost(&mut 0),
             _ => {}
         }
     }
@@ -1165,12 +1206,21 @@ impl FilterExpr {
         strings: &AStrings,
         residual: &mut Vec<&'f FilterExpr>,
         residual_is_or: &mut bool,
+        proven: u64,
     ) -> Tri {
         residual.clear();
         *residual_is_or = false;
         match self {
             FilterExpr::And(children) => {
-                for c in children {
+                for (i, c) in children.iter().enumerate() {
+                    // Membership in the candidate set already settles this conjunct for this card, so
+                    // evaluating it can only return `True` — see `Narrowed::proven` for why that is sound
+                    // and for what it costs when it is not done. Skipping it is exactly the `all_match`
+                    // shortcut at conjunct granularity: not in the residual either, since the printings
+                    // of a card cannot disagree about a card-space fact.
+                    if i < 64 && proven & (1 << i) != 0 {
+                        continue;
+                    }
                     match c.tri(card, None, strings) {
                         // And(Null, x) is Null or False for every printing —
                         // never True — so the card cannot match.

@@ -140,7 +140,7 @@ fn build(rng: &mut rand::rngs::SmallRng, shape: Shape, k: usize) -> Vec<Narrowed
                     Candidates::Cards(random_sorted_list(rng, N_CARDS, (N_CARDS as f64 * fill) as usize))
                 }
             };
-            Narrowed { set, tight: true }
+            Narrowed { set, tight: true, proven: 0 }
         })
         .collect()
 }
