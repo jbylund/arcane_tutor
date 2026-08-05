@@ -1,7 +1,7 @@
 use super::{
     and_child_rank, assign_name_ranks,
     build_numeric_index, build_oracle_text_index, build_tag_index, build_trigram_index,
-    build_rarity_index, build_flavor_index, build_thresholded_tag_index, build_sort_permutations,
+    build_rarity_index, build_flavor_index, build_hybrid_tag_index, bitmap_beats_postings, HybridTagIndex, build_sort_permutations,
     assign_artwork_groups, build_artwork_base_from, build_bit_planes, build_border_printing_planes, build_rarity_printing_planes, build_divergent_ids, build_name_bigram_index, build_printing_to_card, flavor_fingerprint, flavor_match_sets,
     cards_of_printings, count_common_keywords, count_common_types,
     build_artist_index, build_printing_value_index, build_arith_tuple_index, is_arith_tuple_route, range_candidates, narrow_candidates, narrow_candidates_exact, rarity_candidates,
@@ -366,9 +366,12 @@ fn narrow_candidates_spaces() {
         Some(Candidates::Printings(v)) => assert!(v.is_empty(), "absent tag narrows to the exact empty set"),
         _ => panic!("absent tag must narrow to empty, not decline"),
     }
-    // frame_data is selectivity-thresholded (#628): dense values are absent by
-    // design, so absence proves nothing and it must keep declining.
-    assert!(narrow_candidates(&coll(CollField::FrameData, "zombie"), archived, offsets, &[]).is_none());
+    // frame_data stores every value now (`HybridTagIndex`), so absence proves emptiness here exactly as
+    // it does for every other collection index. It used to be the sole exception.
+    match narrow_candidates(&coll(CollField::FrameData, "zombie"), archived, offsets, &[]) {
+        Some(Candidates::Printings(v)) => assert!(v.is_empty(), "frame_data is complete: absence is a proof"),
+        other => panic!("an absent frame value must narrow to empty, got {other:?}"),
+    }
 
     // And of mixed spaces projects the printing product up and intersects in
     // card space: art printings {0,2} → cards {0,1}, ∩ keyword cards {1} = {1}.
@@ -429,11 +432,14 @@ fn narrow_candidates_eq_gt_reuse_ge_postings_loosely() {
             other => panic!("{op:?} over an absent value must narrow to empty, not decline, got {other:?}"),
         }
     }
-    // frame_data stays excluded for Eq/Gt too (#628: incomplete index, absence
-    // proves nothing), same as it already is for Ge.
+    // frame_data joins them for Eq/Gt as well, now that it is complete: an absent value cannot satisfy
+    // containment, so it cannot satisfy Eq or Gt either, and the empty set is exact for all three.
     let frame = |op| FilterExpr::CollectionCmp { field: CollField::FrameData, op, value: "zombie".to_string(), value_id: None };
     for op in [CmpOp::Eq, CmpOp::Gt, CmpOp::Ge] {
-        assert!(narrow_candidates(&frame(op), archived, offsets, &[]).is_none(), "{op:?} over frame_data must decline, not narrow");
+        match narrow_candidates(&frame(op), archived, offsets, &[]) {
+            Some(Candidates::Printings(v)) => assert!(v.is_empty(), "{op:?} over an absent value is empty"),
+            other => panic!("{op:?} over frame_data must narrow to empty, got {other:?}"),
+        }
     }
 }
 
@@ -2432,7 +2438,7 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     data.indexes.oracle_tags = build_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_oracle_tags);
     data.indexes.art_tags = build_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_art_tags);
     data.indexes.is_tags = build_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_is_tags);
-    data.indexes.frame_data = build_thresholded_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_frame_data);
+    data.indexes.frame_data = build_hybrid_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_frame_data);
     data.indexes.artists = build_artist_index(&data.printings, data.artist_vocab.len());
     // Text narrowing indexes — same load-bearing property. name/oracle drive trigram + bigram
     // narrowing and the full-scan memoization; flavor is the printing-space CSR bind() resolves against.
@@ -5927,7 +5933,7 @@ fn bench_checked_vs_unchecked_access() {
         oracle_tags:    build_tag_index(&cards, &vocab.strings, |c| &c.card_oracle_tags),
         art_tags:       build_tag_index(&printings, &vocab.strings, |p| &p.card_art_tags),
         is_tags:        build_tag_index(&printings, &vocab.strings, |p| &p.card_is_tags),
-        frame_data:     HashMap::new(),
+        frame_data:     HybridTagIndex::default(),
         artists:        ArtistIndex::default(),
         flavor:         build_flavor_index(&printings, &strings),
         set_codes:      HashMap::new(),
@@ -6476,48 +6482,52 @@ fn popcount_skip_matches_non_popcount_path() {
     assert_eq!(ids_pc, ids_old);
 }
 
-// Frame postings are selectivity-thresholded at build: values covering more
-// of printing space than the range guard would accept are not stored, and the
-// absent-key convention makes them (and unknown values) fall back to the scan.
+// The representation split: `build_hybrid_tag_index` decides per value by size, and the crossover is
+// arithmetic, so assert it directly. This replaces `frame_postings_thresholded_at_build`, which pinned
+// the opposite contract -- that dense values are DROPPED.
 #[test]
-fn frame_postings_thresholded_at_build() {
+fn hybrid_tag_index_splits_dense_from_sparse_at_the_size_crossover() {
+    // A bitmap costs 1 bit per row and a posting 4 bytes, so a bitmap is smaller once k * 32 > n.
+    assert!(!bitmap_beats_postings(62, 2000) && bitmap_beats_postings(63, 2000), "crossover is 1/32");
+    assert!(!bitmap_beats_postings(0, 2000), "an absent value is not dense");
+
     let mut vocab = VocabInterner::new();
     let modern = vocab_ids(&mut vocab, &["2015"]);
     let showcase = vocab_ids(&mut vocab, &["Showcase"]);
-    // 2,000 printings: all carry "2015" (dominant, must be dropped: >1,000 and
-    // >25%), the first 40 also carry "Showcase" (selective, must be kept).
+    // 1,200 of 2,000 carry "2015" (60%, dense); the first 40 also carry "Showcase" (2%, sparse).
     let mut printings: Vec<Printing> = (1..=2000u128).map(|i| stub_printing(i, i, None)).collect();
     for (i, p) in printings.iter_mut().enumerate() {
-        p.card_frame_data = modern.clone();
+        if i < 1200 {
+            p.card_frame_data = modern.clone();
+        }
         if i < 40 {
             p.card_frame_data = [modern.clone(), showcase.clone()].concat();
             p.card_frame_data.sort_unstable();
         }
     }
-    let idx = build_thresholded_tag_index(&printings, &vocab.strings, |p| &p.card_frame_data);
-    assert!(!idx.contains_key("2015"), "dominant value must be dropped by the threshold");
-    assert_eq!(idx.get("Showcase").map(|v| v.len()), Some(40));
+    let idx = build_hybrid_tag_index(&printings, &vocab.strings, |p| &p.card_frame_data);
+    assert!(idx.dense.contains_key("2015"), "a dense value belongs in `dense`, not dropped");
+    assert!(!idx.sparse.contains_key("2015"), "and not duplicated into `sparse`");
+    assert_eq!(idx.sparse.get("Showcase").map(|v| v.len()), Some(40), "a sparse value stays postings");
+    assert!(!idx.dense.contains_key("Showcase"));
+    // Nothing dropped: that is what makes the index complete, and completeness is what lets absence
+    // prove emptiness and puts frame leaves on the compose path.
+    assert_eq!(idx.dense.len() + idx.sparse.len(), 2, "every value is stored in exactly one form");
 
-    // Wired into narrowing: selective value narrows in printing space, the
-    // dropped value declines (None, not empty — the scan still answers it).
-    let indexes = CardIndexes { frame_data: idx, ..Default::default() };
-    let bytes = rkyv::to_bytes::<Error>(&indexes).expect("serialize");
-    let archived = rkyv::access::<Archived<CardIndexes>, Error>(&bytes).expect("access");
-    let offsets_bytes = rkyv::to_bytes::<Error>(&vec![0u32, 2000]).expect("serialize offsets");
-    let offsets = rkyv::access::<Archived<Vec<u32>>, Error>(&offsets_bytes).expect("access offsets");
-    let coll = |value: &str| FilterExpr::CollectionCmp {
-        field: CollField::FrameData,
-        op: CmpOp::Ge,
-        value: value.to_string(),
-        value_id: None,
-    };
-    match narrow_candidates(&coll("Showcase"), archived, offsets, &[]) {
-        Some(Candidates::Printings(v)) => assert_eq!(v.len(), 40),
-        _ => panic!("selective frame value must narrow in printing space"),
+    // The archived accessors agree on the count whichever form backs the value.
+    let bytes = rkyv::to_bytes::<Error>(&idx).expect("serialize");
+    let archived = rkyv::access::<Archived<HybridTagIndex>, Error>(&bytes).expect("access");
+    assert!(archived.is_dense("2015") && !archived.is_dense("Showcase"));
+    assert_eq!(archived.len_of("2015"), Some(1200), "popcount of the bitmap");
+    assert_eq!(archived.len_of("Showcase"), Some(40), "length of the postings");
+    assert_eq!(archived.len_of("Zzz"), None, "absent is absent, not zero-length");
+    for value in ["2015", "Showcase"] {
+        let bits = archived.bits(value, 2000).expect("present");
+        let want = if value == "2015" { 1200 } else { 40 };
+        assert_eq!(bits.iter().map(|w| w.count_ones() as usize).sum::<usize>(), want, "{value} bits");
     }
-    assert!(narrow_candidates(&coll("2015"), archived, offsets, &[]).is_none());
-    assert!(narrow_candidates(&coll("Zzz"), archived, offsets, &[]).is_none());
 }
+
 
 // Streamed selection must agree with the gathered path. Two stores identical
 // except for the presence of sort permutations: the perm-less store takes the
@@ -7172,9 +7182,12 @@ fn collection_compose_leaves() {
         assert!(!super::is_printing_composable(&f, &archived.indexes), "type:goblin op={op:?} (loose) must stay off the compose path");
         assert!(!super::is_printing_composable(&not(f), &archived.indexes), "-(loose collection) must stay off the compose path");
     }
+    // Composability follows completeness: the index used to drop dense values, so absence proved nothing
+    // and it could not be an exact compose leaf. Storing everything makes it complete, hence composable,
+    // and that chain is most of this change's win.
     let frame = coll(CollField::FrameData, CmpOp::Ge, "showcase");
-    assert!(!super::is_printing_composable(&frame, &archived.indexes), "frame: (non-complete) must stay off the compose path");
-    assert!(!super::is_printing_composable(&not(frame), &archived.indexes), "-frame: must stay off the compose path");
+    assert!(super::is_printing_composable(&frame.clone(), &archived.indexes), "frame: is complete and composes");
+    assert!(super::is_printing_composable(&not(frame), &archived.indexes), "-frame: composes via the Not arm");
     // A loose Eq inside an And keeps the whole And off the compose path.
     let mixed = FilterExpr::And(vec![ge(CollField::Subtypes, "goblin"), coll(CollField::Keywords, CmpOp::Eq, "Flying")]);
     assert!(!super::is_printing_composable(&mixed, &archived.indexes), "a loose Eq collection inside an And keeps the whole And off the compose path");
