@@ -4,11 +4,11 @@ use super::{
     build_rarity_index, build_flavor_index, build_thresholded_tag_index, build_sort_permutations,
     assign_artwork_groups, build_artwork_base_from, build_bit_planes, build_border_printing_planes, build_rarity_printing_planes, build_divergent_ids, build_name_bigram_index, build_printing_to_card, flavor_fingerprint, flavor_match_sets,
     cards_of_printings, count_common_keywords, count_common_types,
-    build_artist_index, build_range_index, build_arith_tuple_index, is_arith_tuple_route, range_candidates, narrow_candidates, narrow_candidates_exact, rarity_candidates,
+    build_artist_index, build_printing_value_index, build_arith_tuple_index, is_arith_tuple_route, range_candidates, narrow_candidates, narrow_candidates_exact, rarity_candidates,
     range_too_broad_to_narrow, run_query, run_query_with_plan, explain, explain_analyze, AcquireFacts, PlanEstimate, PlanTrial,
     acquire_plan_features, take_phase_stats, PagingTaken, CountSource, NarrowedRepr,
     RangeCardCounts, build_range_card_counts,
-    PhysicalPlan, ComposePaging, trigram_candidates, finalize_trigram_index, PrintingRangeIndex, NARROW_FLOOR,
+    PhysicalPlan, ComposePaging, trigram_candidates, finalize_trigram_index, PrintingValueIndex, NARROW_FLOOR,
     gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
     walk_printing_page, aligned_page, bare_range_bounds, probe_range_k, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
     prepare_candidates, verify_cost_tier, scan_units, sort_col_bound, divergent_formats_of, Mode, QueryCtx, QueryParams, Prefer, SortBound,
@@ -2407,9 +2407,9 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     // (n_cards mismatch) makes arith_tuple_narrow decline, so building it here is what actually
     // exercises the new positive/negated narrowing through run_query in fuzz_row_identity_matches_reference.
     data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
-    data.indexes.released_at = build_range_index(&data.printings, |p| p.released_at_int);
-    data.indexes.price_usd = build_range_index(&data.printings, |p| p.price_usd);
-    data.indexes.collector_number = build_range_index(&data.printings, |p| p.collector_number_int.map(u32::from));
+    data.indexes.released_at = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.released_at_int);
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    data.indexes.collector_number = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.collector_number_int.map(u32::from));
     // The exact card-count tables ride on those indexes and must be rebuilt with them — leaving them
     // at their empty defaults would make every range acquire silently fall back to the `k.min(n_cards)`
     // proxy here while production used the table, so the fuzz differential would stop covering the
@@ -3212,7 +3212,7 @@ fn range_card_counts_are_exact() {
         ("price_usd", &indexes.price_usd, &indexes.price_usd_cards),
         ("collector_number", &indexes.collector_number, &indexes.collector_number_cards),
     ] {
-        if idx.is_empty() {
+        if idx.len() == 0 {
             continue;
         }
         assert_eq!(counts.values.len(), counts.below.len(), "{name}: parallel vectors");
@@ -3222,9 +3222,12 @@ fn range_card_counts_are_exact() {
         // Brute force: distinct cards among printings whose value satisfies the predicate.
         let distinct = |keep: &dyn Fn(u32) -> bool| -> u32 {
             let mut seen = std::collections::HashSet::new();
-            for entry in idx.iter() {
-                if keep(u32::from(entry.0)) {
-                    seen.insert(u32::from(p2c[u32::from(entry.1) as usize]));
+            for (i, key) in idx.keys.iter().enumerate() {
+                if !keep(u32::from(*key)) {
+                    continue;
+                }
+                for t in idx.run(i) {
+                    seen.insert(u32::from(p2c[idx.pid_at(t)]));
                 }
             }
             seen.len() as u32
@@ -5129,8 +5132,7 @@ fn idea2_printing_cost_kernel(
     limit: usize,
 ) -> Option<(usize, u64)> {
     let (idx, lo, hi) = bare_range_bounds(filter, &archived.indexes)?;
-    let s = idx.partition_point(|p| u32::from(p.0) < lo);
-    let e = idx.partition_point(|p| u32::from(p.0) < hi);
+    let (s, e) = idx.range(lo, hi);
     let k = e - s;
     let n_printings = archived.printings.len();
     thread_local! {
@@ -5142,8 +5144,8 @@ fn idea2_printing_cost_kernel(
         bits.resize(n_printings.div_ceil(64), 0);
         // Scatter: O(k), one bit set per matching printing.
         for t in s..e {
-            let pid = u32::from(idx[t].1);
-            bits[(pid >> 6) as usize] |= 1u64 << (pid & 63);
+            let pid = idx.pid_at(t);
+            bits[pid >> 6] |= 1u64 << (pid & 63);
         }
         if k == 0 || page_offset >= k {
             return Some((k, 0));
@@ -5878,9 +5880,9 @@ fn bench_checked_vs_unchecked_access() {
         flavor:         build_flavor_index(&printings, &strings),
         set_codes:      HashMap::new(),
         watermarks:     HashMap::new(),
-        released_at:    Vec::new(),
-        price_usd:      Vec::new(),
-        collector_number: Vec::new(),
+        released_at:    PrintingValueIndex::default(),
+        price_usd:      PrintingValueIndex::default(),
+        collector_number: PrintingValueIndex::default(),
         // Empty to match the empty range indexes above; fuzz_store_n rebuilds all six together.
         released_at_cards: RangeCardCounts::default(),
         price_usd_cards: RangeCardCounts::default(),
@@ -5893,6 +5895,7 @@ fn bench_checked_vs_unchecked_access() {
         planes:         build_bit_planes(&cards, &printings, &offsets, &strings),
         border_printing: build_border_printing_planes(&printings, &strings),
         rarity_printing: build_rarity_printing_planes(&printings),
+        rarity_printing_ordered: build_printing_value_index(&printings, &cards, &offsets, |p| p.card_rarity_int.map(u32::from)),
         name_bigrams:   build_name_bigram_index(&cards),
         legal_divergent: build_divergent_ids(&cards),
         arith_tuple:    build_arith_tuple_index(&cards),
@@ -6172,7 +6175,7 @@ fn collector_number_narrowing() {
     data.printings[2].collector_number_int = Some(101);
     // printings[3] has no numeric part: absent from the index
     data.indexes.collector_number =
-        build_range_index(&data.printings, |p| p.collector_number_int.map(u32::from));
+        build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.collector_number_int.map(u32::from));
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
 
@@ -6236,7 +6239,7 @@ fn all_match_promotion_never_fires_for_printing_space_tight_results() {
     data.printings[0].collector_number_int = Some(100);
     data.printings[1].collector_number_int = Some(228);
     data.printings[2].collector_number_int = Some(101);
-    data.indexes.collector_number = build_range_index(&data.printings, |p| p.collector_number_int.map(u32::from));
+    data.indexes.collector_number = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.collector_number_int.map(u32::from));
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
 
@@ -6708,7 +6711,7 @@ fn artwork_group_ids_handle_more_than_64_groups() {
     for p in data.printings[1..].iter_mut() {
         p.price_usd = Some(1_000); // $10.00
     }
-    data.indexes.price_usd = build_range_index(&data.printings, |p| p.price_usd);
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
 
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
@@ -6757,7 +6760,7 @@ fn set_code_and_date_narrowing() {
         set_codes.entry(p.card_set_code.as_str().to_string()).or_default().push(i as u32);
     }
     data.indexes.set_codes = set_codes;
-    data.indexes.released_at = build_range_index(&data.printings, |p| p.released_at_int);
+    data.indexes.released_at = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.released_at_int);
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
 
@@ -6891,7 +6894,7 @@ fn set_watermark_compose_leaves() {
     }
     data.indexes.set_codes = set_codes;
     data.indexes.watermarks = watermarks;
-    data.indexes.released_at = build_range_index(&data.printings, |p| p.released_at_int);
+    data.indexes.released_at = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.released_at_int);
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     let n_printings = archived.printings.len();
@@ -7020,7 +7023,7 @@ fn collection_compose_leaves() {
     data.indexes.oracle_tags = build_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_oracle_tags);
     data.indexes.art_tags = build_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_art_tags);
     data.indexes.is_tags = build_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_is_tags);
-    data.indexes.released_at = build_range_index(&data.printings, |p| p.released_at_int);
+    data.indexes.released_at = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.released_at_int);
 
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
@@ -7134,9 +7137,14 @@ fn broad_ranges_decline_to_narrow() {
 
     // End-to-end through the archived index: a broad slice returns None (fall
     // back to the scan), a selective slice still narrows.
-    let idx: PrintingRangeIndex = (0..8_000u32).map(|v| (v, v)).collect();
+    let printings: Vec<Printing> = (0..8_000u32).map(|v| {
+        let mut p = stub_printing(u128::from(v) + 1, u128::from(v) + 1, None);
+        p.price_usd = Some(v);
+        p
+    }).collect();
+    let idx = build_printing_value_index(&printings, &[], &[], |p| p.price_usd);
     let bytes = rkyv::to_bytes::<Error>(&idx).expect("serialize");
-    let archived = rkyv::access::<Archived<PrintingRangeIndex>, Error>(&bytes).expect("access");
+    let archived = rkyv::access::<Archived<PrintingValueIndex>, Error>(&bytes).expect("access");
     assert!(range_candidates(archived, 0, u32::MAX).is_none());
     assert_eq!(range_candidates(archived, 100, 200).map(|v| v.len()), Some(100));
 }
@@ -7154,7 +7162,7 @@ fn price_narrowing_and_verification_are_exact_at_the_boundary() {
     data.printings[1].price_usd = Some(10); // $0.10 -- sits exactly on the query boundary
     data.printings[2].price_usd = Some(6000); // $60.00
     data.printings[3].price_usd = None; // priceless printings never satisfy price filters
-    data.indexes.price_usd = build_range_index(&data.printings, |p| p.price_usd);
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     let card = &archived.cards[0];
@@ -7212,7 +7220,7 @@ fn price_comparison_matches_exact_value_not_lossy_f32_widening() {
     let cards = vec![stub_card(1, TYPE_CREATURE, &[], &mut vocab)];
     let mut data = store_of(cards, &[1], vocab);
     data.printings[0].price_usd = Some(722); // $7.22 -- 7.22_f32 widened to f64 is 7.21999979019165
-    data.indexes.price_usd = build_range_index(&data.printings, |p| p.price_usd);
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     let card = &archived.cards[0];
@@ -7309,9 +7317,9 @@ fn negated_range_narrowing() {
     data.printings[1].released_at_int = Some(20_241_115);
     data.printings[2].released_at_int = None;
     data.printings[3].released_at_int = Some(20_200_101);
-    data.indexes.price_usd = build_range_index(&data.printings, |p| p.price_usd);
-    data.indexes.collector_number = build_range_index(&data.printings, |p| p.collector_number_int.map(u32::from));
-    data.indexes.released_at = build_range_index(&data.printings, |p| p.released_at_int);
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    data.indexes.collector_number = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.collector_number_int.map(u32::from));
+    data.indexes.released_at = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.released_at_int);
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
 
@@ -7470,7 +7478,7 @@ fn and_skip_probes_range_selectivity() {
     for (i, p) in data.printings.iter_mut().enumerate() {
         p.price_usd = Some(i as u32 + 1); // 1..=400 cents
     }
-    data.indexes.price_usd = build_range_index(&data.printings, |p| p.price_usd);
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     let (indexes, offsets, cards) = (&archived.indexes, &archived.offsets, &archived.cards);
@@ -7595,17 +7603,14 @@ fn orderby_walk_matches_gather_composed() {
                     let (gather, _) = super::gather_composed_page(
                         &QueryCtx::from(archived), &kernel_params(Mode::Printing, sort_col, descending, limit, offset), &pbits, None,
                     );
-                    let walk = match sort_col {
-                        SortCol::PriceUsd => super::walk_range_orderby_page(
-                            &archived.indexes.price_usd, &pbits, &archived.cards, &archived.printings,
-                            &archived.indexes.printing_to_card, sort_col, descending, total, limit, offset,
-                        ),
-                        SortCol::Rarity => super::walk_rarity_orderby_page(
-                            &archived.indexes.rarity_printing, &pbits, &archived.cards, &archived.printings,
-                            &archived.indexes.printing_to_card, descending, total, limit, offset, n_printings,
-                        ),
-                        _ => None,
+                    let idx = match sort_col {
+                        SortCol::PriceUsd => &archived.indexes.price_usd,
+                        _ => &archived.indexes.rarity_printing_ordered,
                     };
+                    let walk = super::walk_value_orderby_page(
+                        idx, &pbits, &archived.cards, &archived.printings,
+                        &archived.indexes.printing_to_card, descending, total, limit, offset,
+                    );
                     if let Some((walk, _)) = walk {
                         walked_any = true;
                         assert_eq!(
@@ -7896,7 +7901,7 @@ fn usd_inside_arithmetic_evaluates_in_dollars_not_cents() {
     card.creature_power = Some(52);
     let mut data = store_of(vec![card], &[1], vocab);
     data.printings[0].price_usd = Some(5000); // $50.00
-    data.indexes.price_usd = build_range_index(&data.printings, |p| p.price_usd);
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     let card = &archived.cards[0];
@@ -7923,7 +7928,7 @@ fn usd_compared_directly_against_another_field_evaluates_in_dollars() {
     card.cmc = Some(3);
     let mut data = store_of(vec![card], &[1], vocab);
     data.printings[0].price_usd = Some(200); // $2.00
-    data.indexes.price_usd = build_range_index(&data.printings, |p| p.price_usd);
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     let card = &archived.cards[0];
@@ -8795,9 +8800,9 @@ fn range_narrowed_representations() {
         p.price_usd = Some(i / 4);
         p
     }).collect();
-    let idx = build_range_index(&printings, |p| p.price_usd);
+    let idx = build_printing_value_index(&printings, &[], &[], |p| p.price_usd);
     let bytes = rkyv::to_bytes::<Error>(&idx).expect("serialize");
-    let archived = rkyv::access::<Archived<PrintingRangeIndex>, Error>(&bytes).expect("access");
+    let archived = rkyv::access::<Archived<PrintingValueIndex>, Error>(&bytes).expect("access");
     let n = printings.len();
     // int_range_bounds directly (not through the dollars->cents *100 step) -- this test is
     // about range_narrowed's own branching, exercised via the plain integer domain it always
@@ -9054,7 +9059,7 @@ fn not_over_price_range_keeps_boundary_matches() {
     for (i, p) in data.printings.iter_mut().enumerate() {
         p.price_usd = Some(if i < 2 { 500 } else { 1000 }); // card 0 sits on the boundary ($5.00)
     }
-    data.indexes.price_usd = build_range_index(&data.printings, |p| p.price_usd);
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
 
@@ -9974,7 +9979,7 @@ fn printing_range_fixture(seed: u64, n_cards: usize) -> CardData {
     for p in data.printings.iter_mut() {
         p.price_usd = (rng.random_range(0..100) >= 15).then(|| PRICES[rng.random_range(0..PRICES.len())]);
     }
-    data.indexes.price_usd = build_range_index(&data.printings, |p| p.price_usd);
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
     data
 }
 
@@ -10264,8 +10269,8 @@ fn range_compose_kernel_costs() {
     );
     // Density sweep: hi at percentiles of the value-sorted index (0 = min value).
     for pct in [5usize, 25, 50, 75, 90, 100] {
-        let k = (idx.len() * pct / 100).min(idx.len().saturating_sub(1));
-        let hi = u32::from(idx[k].0).saturating_add(1);
+        // hi at a percentile of the DISTINCT values, which is what the index is keyed on.
+        let hi = u32::from(idx.keys[(idx.keys.len() * pct / 100).min(idx.keys.len() - 1)]).saturating_add(1);
         // (1) range scatter: in-range slice [0, hi) → printing bitmap.
         let (scatter_ns, _) = bench(&mut || {
             let pb = super::range_leaf_bits(idx, 0, hi, n_printings);
@@ -10399,24 +10404,22 @@ fn card_range_build_cost_split() {
     // The benched range is `usd<50`: every price below HI_CENTS, over the value-sorted price index.
     const HI_CENTS: u32 = 5_000;
     // The low bound is 0 and prices are unsigned, so the slice starts at the front of the index by
-    // definition — no binary search needed. (The partition point this replaced tested `< 0`, always
-    // false: it returned the right answer, 0, but read as if it were searching for something.)
-    let s = 0usize;
-    let e = idx.partition_point(|p| u32::from(p.0) < HI_CENTS);
+    // definition; `range` still reports it rather than the call site assuming it.
+    let (s, e) = idx.range(0, HI_CENTS);
     let k = e - s;
 
     // A: scatter the price slice into a printing bitmap.
     let mut a = u128::MAX;
     for it in 0..(WARMUP + ITERS) {
         let t0 = Instant::now();
-        let pb = super::scatter_bits(idx[s..e].iter().map(|p| u32::from(p.1)), n_printings);
+        let pb = super::scatter_bits(idx.range_pids(0, HI_CENTS), n_printings);
         black_box(&pb);
         if it >= WARMUP {
             a = a.min(t0.elapsed().as_nanos());
         }
     }
     // B: project that printing bitmap to a card-existence bitmap (pbits built once, reused).
-    let pbits = super::scatter_bits(idx[s..e].iter().map(|p| u32::from(p.1)), n_printings);
+    let pbits = super::scatter_bits(idx.range_pids(0, HI_CENTS), n_printings);
     let mut b = u128::MAX;
     for it in 0..(WARMUP + ITERS) {
         let t0 = Instant::now();
@@ -10432,8 +10435,8 @@ fn card_range_build_cost_split() {
         let t0 = Instant::now();
         let mut rp = vec![0u64; n_printings.div_ceil(64)];
         let mut cb = vec![0u64; n_cards.div_ceil(64)];
-        for p in idx[s..e].iter() {
-            let pid = u32::from(p.1) as usize;
+        for t in s..e {
+            let pid = idx.pid_at(t);
             rp[pid >> 6] |= 1u64 << (pid & 63);
             let cid = u32::from(ptc[pid]) as usize;
             cb[cid >> 6] |= 1u64 << (cid & 63);
@@ -10482,9 +10485,8 @@ fn printing_range_aligned_page_matches_naive_incl_tie_buckets() {
         let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
         let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
         let idx = &archived.indexes.price_usd;
-        // usd<50 -> cents [0, 5000); lo is 0 so s is the slice start.
-        let s = 0usize;
-        let e = idx.partition_point(|p| u32::from(p.0) < 5000);
+        // usd<50 -> cents [0, 5000).
+        let (s, e) = idx.range(0, 5000);
         let k = e - s;
         assert!(k > 100, "seed {seed}: matching set must be broad with big tie buckets, got {k}");
         // total = k = the true match count (independent count over all printings). The fastpath
@@ -10500,7 +10502,7 @@ fn printing_range_aligned_page_matches_naive_incl_tie_buckets() {
                     if off >= k {
                         continue;
                     }
-                    let got = aligned_page(idx, s, e, &archived.cards, &archived.printings, &archived.indexes.printing_to_card, desc, off, lim);
+                    let got = aligned_page(idx, 0, 5000, &archived.cards, &archived.printings, &archived.indexes.printing_to_card, desc, off, lim);
                     let want = naive_printing_page(archived, &leaf, SortCol::PriceUsd, desc, off, lim);
                     assert_eq!(page_scryfall_ids(&got), want, "aligned seed {seed} desc {desc} off {off} lim {lim} k {k}");
                 }
@@ -10524,7 +10526,7 @@ fn all_priced_fixture(n: usize) -> CardData {
     for p in data.printings.iter_mut() {
         p.price_usd = Some(100);
     }
-    data.indexes.price_usd = build_range_index(&data.printings, |p| p.price_usd);
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
     data
 }
 

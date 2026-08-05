@@ -2260,17 +2260,88 @@ fn build_printing_to_card(offsets: &[u32]) -> Vec<u32> {
     out
 }
 
-// ─── Printing-space range indexes (released_at, price, collector number) ─────
-// Sorted (value, printing idx); binary-searched ranges answer range filters in
-// printing space. Printings without the value are absent (they can never
-// satisfy a comparison — SQL NULL semantics). Dates store yyyymmdd directly;
-// collector numbers store the extracted int; prices store raw integer cents
-// directly (see Printing::price_usd's doc comment) — no f32_sort_bits
-// encoding needed, cents are already a natural, monotonic u32.
+// ─── Printing-space value-major indexes ──────────────────────────────────────
+// One layout for every printing-space ordering: released_at / price_usd /
+// collector_number (range filters, plus the `usd` orderby walk) and
+// rarity_printing_ordered (the `rarity` orderby walk). Printings without the
+// value are absent — they can never satisfy a comparison (SQL NULL semantics)
+// and they sort last, which the walk handles by declining. Dates store yyyymmdd
+// directly; collector numbers store the extracted int; prices store raw integer
+// cents directly (see Printing::price_usd's doc comment) — no f32_sort_bits
+// encoding needed, cents are already a natural, monotonic u32; rarity stores
+// the rarity int.
 
-type PrintingRangeIndex = Vec<(u32, u32)>;
+/// Value-major: `keys` holds each DISTINCT key once, ascending, and `pids[starts[i]..starts[i+1]]`
+/// holds key `keys[i]`'s printings **in `page_cmp` tiebreak order**.
+///
+/// Two properties fall out of that, and both are load-bearing:
+///
+/// - A value range `[lo, hi)` is still ONE contiguous `pids` slice, found by two `partition_point`s
+///   over `keys` — 4,133 entries for price rather than 81,542 pairs — so every filter consumer keeps
+///   the shape it had over the old `Vec<(value, pid)>`, only cheaper to search and 45% smaller (the
+///   value stops being repeated once per printing).
+/// - An `orderby` walk emits rows *directly*. `page_cmp` orders on (primary, edhrec_rank, cid, pid)
+///   and every printing in a run shares the primary, so a run pre-sorted on the rest already IS page
+///   order: the walk stops the instant the page fills instead of collecting whole runs and sorting
+///   them. Before this, a 60-row `orderby=rarity` ascending page collected 24,653 matches.
+///
+/// The tiebreak is direction-independent, which is why one index serves both directions:
+/// `sort_key_bits` negates only the PRIMARY under `desc`, and `page_cmp` drops key 3
+/// (`prefer_score`) entirely, so within a key the order is (edhrec_rank, cid, pid) ascending either
+/// way. Descending reads `keys` backwards and each run forwards. No mirror index, no reversal at
+/// query time.
+#[derive(Archive, Serialize, Deserialize, Default)]
+struct PrintingValueIndex {
+    /// Each distinct key, ascending. One entry per VALUE, not per printing.
+    keys: Vec<u32>,
+    /// `keys.len() + 1` entries: key `i` owns `pids[starts[i]..starts[i + 1]]`. The trailing
+    /// sentinel is `pids.len()`, which makes `starts[i]` also the offset of the first entry whose
+    /// key is `>= keys[i]` — exactly what a `[lo, hi)` lookup wants, with no
+    /// `get(i + 1).unwrap_or(len)` at every use site.
+    starts: Vec<u32>,
+    /// Key-major printing ids, tiebreak order within each key.
+    pids: Vec<u32>,
+}
 
-/// Exact distinct-CARD counts alongside a `PrintingRangeIndex`, so a range acquire can report the
+impl ArchivedPrintingValueIndex {
+    /// Indexed printings, NOT distinct keys — the denominator `range_too_broad_to_narrow` compares
+    /// against, and what `Vec<(value, pid)>::len()` used to mean.
+    fn len(&self) -> usize {
+        self.pids.len()
+    }
+
+    /// Offset into `pids` of the first entry whose key is `>= v`. An unbuilt (`Default`) index has
+    /// no sentinel at all, so the `get` also covers that case, reporting an empty index.
+    fn offset_of(&self, v: u32) -> usize {
+        let i = self.keys.partition_point(|k| u32::from(*k) < v);
+        self.starts.get(i).map_or(self.pids.len(), |o| u32::from(*o) as usize)
+    }
+
+    /// The half-open value range `[lo, hi)` as a `pids` offset pair — the `(s, e)` every filter
+    /// consumer used to get from two `partition_point`s over the pair vec.
+    fn range(&self, lo: u32, hi: u32) -> (usize, usize) {
+        (self.offset_of(lo), self.offset_of(hi))
+    }
+
+    /// Printing ids whose key is in `[lo, hi)`, key-major.
+    fn range_pids(&self, lo: u32, hi: u32) -> impl Iterator<Item = u32> + '_ {
+        let (s, e) = self.range(lo, hi);
+        self.pids[s..e].iter().map(|p| u32::from(*p))
+    }
+
+    /// `pids` offsets of key index `i`'s run. Callers hold `i < keys.len()`, where the sentinel
+    /// guarantees `starts[i + 1]`.
+    fn run(&self, i: usize) -> std::ops::Range<usize> {
+        u32::from(self.starts[i]) as usize..u32::from(self.starts[i + 1]) as usize
+    }
+
+    /// The printing id at a `pids` offset.
+    fn pid_at(&self, t: usize) -> usize {
+        u32::from(self.pids[t]) as usize
+    }
+}
+
+/// Exact distinct-CARD counts alongside a `PrintingValueIndex`, so a range acquire can report the
 /// real answer instead of estimating it.
 ///
 /// The index is printing-space and value-sorted, but `unique=card` costing needs distinct *cards*,
@@ -2294,6 +2365,12 @@ type PrintingRangeIndex = Vec<(u32, u32)>;
 #[derive(Archive, Serialize, Deserialize, Default)]
 struct RangeCardCounts {
     /// Each distinct value in the index, ascending. Parallel to the three count vectors.
+    ///
+    /// Byte-for-byte `PrintingValueIndex::keys` since the index went value-major, so this is ~16 KB
+    /// of duplication per dimension. Kept because `distinct_cards` is reached through
+    /// `range_card_counts_for` and answering from the index's own keys would mean threading the index
+    /// into it; both call sites do hold one, so this is a deliberate deferral, not an oversight. The
+    /// two are built from the same pass and cannot drift.
     values: Vec<u32>,
     /// Distinct cards among printings with value < `values[i]`. Serves `<` and `<=`.
     below: Vec<u32>,
@@ -2335,26 +2412,24 @@ impl ArchivedRangeCardCounts {
 }
 
 /// Build the three count vectors for one range index. O(n) over the index plus one card-seen bitmap
-/// per direction, so two passes; the index is already value-sorted, which is what makes the value
-/// boundaries a simple adjacent-difference scan.
-fn build_range_card_counts(idx: &PrintingRangeIndex, printing_to_card: &[u32], n_cards: usize) -> RangeCardCounts {
+/// per direction, so two passes; the index is value-major, so the value blocks are already delimited
+/// by `starts` and no boundary scan is needed.
+fn build_range_card_counts(idx: &PrintingValueIndex, printing_to_card: &[u32], n_cards: usize) -> RangeCardCounts {
     let mut out = RangeCardCounts::default();
-    if idx.is_empty() {
+    if idx.pids.is_empty() {
         return out;
     }
-    // Boundary positions: 0, then every position where the value changes.
-    let mut starts: Vec<usize> = vec![0];
-    starts.extend((1..idx.len()).filter(|&i| idx[i].0 != idx[i - 1].0));
-    out.values = starts.iter().map(|&i| idx[i].0).collect();
+    let n_values = idx.keys.len();
+    let run = |b: usize| idx.starts[b] as usize..idx.starts[b + 1] as usize;
+    out.values = idx.keys.clone();
 
     let words = n_cards.div_ceil(64);
     let mut seen = vec![0u64; words];
     let mut distinct = 0u32;
     // Forward: `below[i]` is the running distinct count before this value's block begins.
-    for (b, &start) in starts.iter().enumerate() {
+    for b in 0..n_values {
         out.below.push(distinct);
-        let end = starts.get(b + 1).copied().unwrap_or(idx.len());
-        for &(_, pid) in &idx[start..end] {
+        for &pid in &idx.pids[run(b)] {
             let cid = printing_to_card[pid as usize] as usize;
             let (w, bit) = (cid >> 6, 1u64 << (cid & 63));
             if seen[w] & bit == 0 {
@@ -2367,17 +2442,16 @@ fn build_range_card_counts(idx: &PrintingRangeIndex, printing_to_card: &[u32], n
     // card counted in one block must still count in another.
     seen.fill(0);
     distinct = 0;
-    out.at_or_above = vec![0; starts.len()];
-    out.at = vec![0; starts.len()];
+    out.at_or_above = vec![0; n_values];
+    out.at = vec![0; n_values];
     // One scratch bitmap reused across blocks, cleared by walking back over the cards this block
     // actually touched — a `fill(0)` per block would be O(n_cards) each, and there are as many
     // blocks as distinct values.
     let mut block = vec![0u64; words];
     let mut touched: Vec<usize> = Vec::new();
-    for (b, &start) in starts.iter().enumerate().rev() {
-        let end = starts.get(b + 1).copied().unwrap_or(idx.len());
+    for b in (0..n_values).rev() {
         touched.clear();
-        for &(_, pid) in &idx[start..end] {
+        for &pid in &idx.pids[run(b)] {
             let cid = printing_to_card[pid as usize] as usize;
             let (w, bit) = (cid >> 6, 1u64 << (cid & 63));
             if seen[w] & bit == 0 {
@@ -2447,14 +2521,51 @@ fn range_too_broad_to_narrow(matched: usize, index_len: usize) -> bool {
     matched > *NARROW_FLOOR && matched as f64 > index_len as f64 * *MAX_NARROW_FRACTION
 }
 
-fn build_range_index(printings: &[Printing], get: impl Fn(&Printing) -> Option<u32>) -> PrintingRangeIndex {
-    let mut idx: PrintingRangeIndex = printings
+/// Build one value-major index: every printing `get` yields a value for, grouped by distinct value
+/// and ordered *within* a value by `page_cmp`'s tiebreak. `cards`/`offsets` are needed only for that
+/// tiebreak, which reads a card-level field.
+///
+/// The tiebreak is `(edhrec_rank, cid, pid)` ascending with a missing rank last — `page_cmp`'s order
+/// below the primary, minus key 3 (`prefer_score`), which `page_cmp` deliberately drops so the two
+/// sides of a filter can agree. `cid` then falls out for free: printings are stored card-major, so
+/// ascending `pid` already IS ascending `(cid, pid)`. That leaves a two-field sort key.
+///
+/// A store with no cards (a fixture that indexes bare printings) gets a uniform `u32::MAX` rank, so
+/// each run degrades to pid order. That is what the old pair-vec layout produced, and only row ORDER
+/// depends on it — never membership — so such a fixture still exercises every filter path.
+fn build_printing_value_index(
+    printings: &[Printing],
+    cards: &[OracleCard],
+    offsets: &[u32],
+    get: impl Fn(&Printing) -> Option<u32>,
+) -> PrintingValueIndex {
+    let printing_to_card = build_printing_to_card(offsets);
+    let tiebreak = |pid: usize| -> u32 {
+        printing_to_card
+            .get(pid)
+            .and_then(|&cid| cards.get(cid as usize))
+            .and_then(|c| c.edhrec_rank)
+            .unwrap_or(u32::MAX)
+    };
+    // (key, tiebreak rank, pid) — one `sort_unstable` on the lexicographic tuple establishes both
+    // the value-major grouping and the within-value order at once.
+    let mut entries: Vec<(u32, u32, u32)> = printings
         .iter()
         .enumerate()
-        .filter_map(|(i, p)| get(p).map(|v| (v, i as u32)))
+        .filter_map(|(i, p)| get(p).map(|v| (v, tiebreak(i), i as u32)))
         .collect();
-    idx.sort_unstable();
-    idx
+    entries.sort_unstable();
+    let mut out = PrintingValueIndex { pids: Vec::with_capacity(entries.len()), ..Default::default() };
+    for (key, _, pid) in entries {
+        if out.keys.last() != Some(&key) {
+            out.keys.push(key);
+            out.starts.push(out.pids.len() as u32);
+        }
+        out.pids.push(pid);
+    }
+    // The sentinel that makes `starts[i]` a lower bound for every `i`, including one past the end.
+    out.starts.push(out.pids.len() as u32);
+    out
 }
 
 /// Cents per dollar for price fields, now stored as integer cents (see Printing::price_usd's
@@ -2536,13 +2647,12 @@ fn year_range_bounds(op: CmpOp, year: i32) -> Option<(u32, u32)> {
 /// too broad to be worth narrowing (see MAX_NARROW_FRACTION). Test-only
 /// reference for the sparse path range_narrowed() shares.
 #[cfg(test)]
-fn range_candidates(idx: &Archived<PrintingRangeIndex>, lo: u32, hi: u32) -> Option<Vec<u32>> {
-    let s = idx.partition_point(|p| u32::from(p.0) < lo);
-    let e = idx.partition_point(|p| u32::from(p.0) < hi);
+fn range_candidates(idx: &Archived<PrintingValueIndex>, lo: u32, hi: u32) -> Option<Vec<u32>> {
+    let (s, e) = idx.range(lo, hi);
     if range_too_broad_to_narrow(e - s, idx.len()) {
         return None;
     }
-    let mut result: Vec<u32> = idx[s..e].iter().map(|p| u32::from(p.1)).collect();
+    let mut result: Vec<u32> = idx.range_pids(lo, hi).collect();
     result.sort_unstable();
     Some(result)
 }
@@ -2560,12 +2670,13 @@ fn range_candidates(idx: &Archived<PrintingRangeIndex>, lo: u32, hi: u32) -> Opt
 /// widened one position for f32/f64 rounding (see price_bounds) and therefore
 /// produce supersets that must never be marked tight — a Not would complement
 /// away the boundary printings, which are exactly the negation's matches.
-fn range_narrowed(idx: &Archived<PrintingRangeIndex>, lo: u32, hi: u32, n_printings: usize, broad_ok: bool, exact: bool) -> Option<Narrowed> {
-    let s = idx.partition_point(|p| u32::from(p.0) < lo);
-    let e = idx.partition_point(|p| u32::from(p.0) < hi);
+fn range_narrowed(idx: &Archived<PrintingValueIndex>, lo: u32, hi: u32, n_printings: usize, broad_ok: bool, exact: bool) -> Option<Narrowed> {
+    let (s, e) = idx.range(lo, hi);
     let k = e - s;
     if !range_too_broad_to_narrow(k, idx.len()) {
-        let mut result: Vec<u32> = idx[s..e].iter().map(|p| u32::from(p.1)).collect();
+        // Still a sort: the run order is the sort-key tiebreak, not pid, and `Candidates::Printings`
+        // is contractually pid-ascending. Cheaper than before if anything — no stride over a tuple.
+        let mut result: Vec<u32> = idx.range_pids(lo, hi).collect();
         result.sort_unstable();
         return Some(Narrowed { set: Candidates::Printings(result), tight: exact });
     }
@@ -2573,11 +2684,11 @@ fn range_narrowed(idx: &Archived<PrintingRangeIndex>, lo: u32, hi: u32, n_printi
         return None; // nothing downstream would consume the bitmap — pre-#636 behavior
     }
     if k <= idx.len() - k {
-        let bits = scatter_bits(idx[s..e].iter().map(|p| u32::from(p.1)), n_printings);
+        let bits = scatter_bits(idx.range_pids(lo, hi), n_printings);
         return Some(Narrowed { set: Candidates::PrintingBits(bits), tight: exact });
     }
     let mut bits = scatter_bits(
-        idx[..s].iter().chain(idx[e..].iter()).map(|p| u32::from(p.1)),
+        idx.pids[..s].iter().chain(idx.pids[e..].iter()).map(|p| u32::from(*p)),
         n_printings,
     );
     complement_bits(&mut bits, n_printings);
@@ -2734,9 +2845,9 @@ struct CardIndexes {
     flavor:         FlavorIndex,     // printing space (CSR by dense flavor text id)
     set_codes:      TagIndex,        // printing space
     watermarks:     TagIndex,        // printing space
-    released_at:    PrintingRangeIndex,       // printing space
-    price_usd:      PrintingRangeIndex,       // printing space (integer cents, already order-preserving)
-    collector_number: PrintingRangeIndex,     // printing space (extracted int)
+    released_at:    PrintingValueIndex,       // printing space
+    price_usd:      PrintingValueIndex,       // printing space (integer cents, already order-preserving)
+    collector_number: PrintingValueIndex,     // printing space (extracted int)
     // Exact distinct-CARD counts per distinct value of each range index above, so a card-space
     // range acquire reports the truth instead of the `k.min(n_cards)` proxy (which over-estimates a
     // median 1.49x). ~159 KB for all three; see RangeCardCounts.
@@ -2760,6 +2871,12 @@ struct CardIndexes {
     planes:         BitPlanes,                 // card space: transposed low-cardinality dims (#630)
     border_printing: BorderPrintingPlanes,     // printing space: exact bit-per-printing border (#724)
     rarity_printing: RarityPrintingPlanes,     // printing space: exact bit-per-printing rarity (#724)
+    // printing space: rarity int -> tiebreak-ordered pids, the `orderby=rarity` walk's structure.
+    // Dual storage with `rarity_printing` above, deliberately: the FILTER path wants a whole-bucket
+    // bitmap (`rarity_cmp_leaf_bits` ANDs ~1,519 words), while the WALK wants sort order so it can
+    // stop when the page fills. Neither shape serves the other, and this one is the same
+    // `PrintingValueIndex` the three range dimensions use, so it costs a builder call and ~389 KB.
+    rarity_printing_ordered: PrintingValueIndex,
     name_bigrams:   NameBigramIndex,           // card space: exact 2-byte name containment (#639)
     legal_divergent: Vec<u16>,                // card space: ids with divergent legality (#630 phase 2), postings not a plane — see build_divergent_ids
     arith_tuple:    ArithTupleIndex,           // card space: joint (cmc,power,toughness,loyalty) postings for arith predicates (#743)
@@ -3362,8 +3479,7 @@ fn and_child_rank(f: &FilterExpr, indexes: &Archived<CardIndexes>) -> u8 {
 /// empty `Printings` vec would report.
 fn probe_range_k(filter: &FilterExpr, indexes: &Archived<CardIndexes>) -> Option<usize> {
     let (idx, lo, hi) = bare_range_bounds(filter, indexes)?;
-    let s = idx.partition_point(|p| u32::from(p.0) < lo);
-    let e = idx.partition_point(|p| u32::from(p.0) < hi);
+    let (s, e) = idx.range(lo, hi);
     Some(e - s)
 }
 
@@ -3385,7 +3501,7 @@ enum AndSource<'f, 'i> {
     /// broad-interval gate below means `k` is always sparse under `sparse_only` and `range_narrowed`
     /// therefore takes its vec path without ever consulting `broad_ok` — the one thing the negated arm
     /// cares about. The compose builders don't consult `broad_ok` at all.
-    FusedRange { idx: &'i Archived<PrintingRangeIndex>, lo: u32, hi: u32, k: usize },
+    FusedRange { idx: &'i Archived<PrintingValueIndex>, lo: u32, hi: u32, k: usize },
 }
 
 /// Group an `And`'s children by which printing-range index they select on, fusing each group of two
@@ -3415,7 +3531,7 @@ fn fuse_and_range_children<'f, 'i>(
     // linear scan of the accumulator beats hashing a pointer.
     struct Group<'i> {
         first: usize,
-        idx: &'i Archived<PrintingRangeIndex>,
+        idx: &'i Archived<PrintingValueIndex>,
         lo: u32,
         hi: u32,
         count: usize,
@@ -3450,8 +3566,7 @@ fn fuse_and_range_children<'f, 'i>(
         if g.count < 2 {
             continue;
         }
-        let s = g.idx.partition_point(|p| u32::from(p.0) < g.lo);
-        let e = g.idx.partition_point(|p| u32::from(p.0) < g.hi);
+        let (s, e) = g.idx.range(g.lo, g.hi);
         if !sparse_only || !range_too_broad_to_narrow(e - s, g.idx.len()) {
             fused.push((g, e - s));
         }
@@ -5013,7 +5128,7 @@ fn resolve_numeric_range_leaf<'i>(
     op: CmpOp,
     rhs: &NumExpr,
     indexes: &'i Archived<CardIndexes>,
-) -> Option<(&'i Archived<PrintingRangeIndex>, CmpOp, f64)> {
+) -> Option<(&'i Archived<PrintingValueIndex>, CmpOp, f64)> {
     match (lhs, rhs) {
         (NumExpr::Field(NumField::PriceUsd), NumExpr::Const(v)) => Some((&indexes.price_usd, op, snap_to_nearest_cent(*v * PRICE_CENTS_PER_DOLLAR))),
         (NumExpr::Const(v), NumExpr::Field(NumField::PriceUsd)) => Some((&indexes.price_usd, flip_op(op), snap_to_nearest_cent(*v * PRICE_CENTS_PER_DOLLAR))),
@@ -5031,7 +5146,7 @@ fn resolve_numeric_range_leaf<'i>(
 /// `resolve_numeric_range_leaf` instead would touch every caller for no more safety.
 fn range_card_counts_for<'i>(
     indexes: &'i Archived<CardIndexes>,
-    idx: &Archived<PrintingRangeIndex>,
+    idx: &Archived<PrintingValueIndex>,
 ) -> Option<&'i ArchivedRangeCardCounts> {
     if std::ptr::eq(idx, &indexes.released_at) {
         Some(&indexes.released_at_cards)
@@ -5058,7 +5173,7 @@ fn range_card_counts_for<'i>(
 fn bare_range_bounds<'i>(
     filter: &FilterExpr,
     indexes: &'i Archived<CardIndexes>,
-) -> Option<(&'i Archived<PrintingRangeIndex>, u32, u32)> {
+) -> Option<(&'i Archived<PrintingValueIndex>, u32, u32)> {
     // The direct and `Not` arms are the same three-way leaf dispatch, differing only in
     // whether the leaf's op is taken as written or negated. `map_op` is that difference,
     // so the grammar is written once and the two arms cannot drift apart.
@@ -5066,7 +5181,7 @@ fn bare_range_bounds<'i>(
         filter: &FilterExpr,
         indexes: &'i Archived<CardIndexes>,
         map_op: impl Fn(CmpOp) -> CmpOp,
-    ) -> Option<(&'i Archived<PrintingRangeIndex>, u32, u32)> {
+    ) -> Option<(&'i Archived<PrintingValueIndex>, u32, u32)> {
         match filter {
             FilterExpr::NumericCmp { lhs, op, rhs } => {
                 let (idx, op, value) = resolve_numeric_range_leaf(lhs, map_op(*op), rhs, indexes)?;
@@ -5110,7 +5225,7 @@ fn bare_range_bounds<'i>(
 /// even though the value-ordered slice makes those lookups random. Bare range only
 /// (`card_range_popcount_applicable` requires no plane), so there is nothing to AND.
 fn build_card_range_bits(
-    idx: &Archived<PrintingRangeIndex>,
+    idx: &Archived<PrintingValueIndex>,
     lo: u32,
     hi: u32,
     indexes: &Archived<CardIndexes>,
@@ -5118,12 +5233,10 @@ fn build_card_range_bits(
     n_printings: usize,
 ) -> (Vec<u64>, Vec<u64>) {
     let ptc = &indexes.printing_to_card;
-    let s = idx.partition_point(|p| u32::from(p.0) < lo);
-    let e = idx.partition_point(|p| u32::from(p.0) < hi);
     let mut range_pbits = vec![0u64; n_printings.div_ceil(64)];
     let mut card_bits = vec![0u64; n_cards.div_ceil(64)];
-    for p in idx[s..e].iter() {
-        let pid = u32::from(p.1) as usize;
+    for pid in idx.range_pids(lo, hi) {
+        let pid = pid as usize;
         range_pbits[pid >> 6] |= 1u64 << (pid & 63);
         let cid = u32::from(ptc[pid]) as usize;
         card_bits[cid >> 6] |= 1u64 << (cid & 63);
@@ -5191,19 +5304,21 @@ fn is_price_leaf(filter: &FilterExpr) -> bool {
     )
 }
 
-/// Page for a `unique=printing` price query ordered by `usd` (the aligned case). The price index's
-/// `[s, e)` slice is already value-sorted, so the page's value-buckets are found by count without
-/// touching most of the slice; only the bucket(s) the page overlaps are canonically re-sorted
-/// (their within-value order in the index is by pid, but the sort key ties on
-/// `(edhrec, prefer_score, pid)`, and price ties are large). The tiebreak does not flip with
-/// direction, so `descending` only reverses which buckets are walked first; the same
-/// `sort_key_bits`/`select_page` comparator orders the collected set, so the result is identical to
-/// the gathered path it replaces.
+/// Page for a `unique=printing` price query ordered by `usd` (the aligned case) — every printing in
+/// `[lo, hi)` matches, so the page is a pure slice of the index in sort order.
+///
+/// A key's `pids` run is already in `page_cmp`'s tiebreak order and every printing in it shares the
+/// primary key, so the runs from the page's starting end, concatenated, ARE the rows `select_page`
+/// would produce. This walks key indices — forward from `lo`'s ascending, backward from `hi`'s
+/// descending, since the tiebreak does not flip with direction — skips whole runs by length, and
+/// emits `limit` rows. No `sort_key_bits`, no `Match` buffer, no `select_page`: O(runs skipped +
+/// limit) rather than O(the runs the page overlaps), which for a price bucket is thousands of
+/// printings for a 60-row page.
 #[allow(clippy::too_many_arguments)]
 fn aligned_page<'a>(
-    idx: &Archived<PrintingRangeIndex>,
-    s: usize,
-    e: usize,
+    idx: &Archived<PrintingValueIndex>,
+    lo: u32,
+    hi: u32,
     cards: &'a [AOracleCard],
     printings: &'a [APrinting],
     printing_to_card: &AOffsets,
@@ -5211,64 +5326,27 @@ fn aligned_page<'a>(
     page_offset: usize,
     limit: usize,
 ) -> Vec<(&'a AOracleCard, &'a APrinting)> {
-    // Walk value-buckets lazily *from the page's starting end* — `s` forward for ascending, `e`
-    // backward for descending — forming only the buckets the page touches and stopping once
-    // offset+limit items are covered. Whole buckets before the page are skipped by count without
-    // collecting them; the untouched remainder of the slice is never scanned at all (so the cost
-    // is O(touched buckets), not O(distinct values in the slice)).
-    let want = page_offset + limit;
-    let mut collected: Vec<u32> = Vec::new();
-    let mut cum = 0usize;
-    let mut first_touched_cum = 0usize;
-    let mut started = false;
-    let (mut lo, mut hi) = (s, e);
-    while lo < hi {
-        // The next value-bucket in page order (a maximal run of equal value).
-        let (bs, be) = if descending {
-            let v = u32::from(idx[hi - 1].0);
-            let mut b = hi - 1;
-            while b > lo && u32::from(idx[b - 1].0) == v {
-                b -= 1;
-            }
-            (b, hi)
-        } else {
-            let v = u32::from(idx[lo].0);
-            let mut b = lo + 1;
-            while b < hi && u32::from(idx[b].0) == v {
-                b += 1;
-            }
-            (lo, b)
-        };
-        if descending { hi = bs } else { lo = be }
-        let sz = be - bs;
-        if !started && cum + sz <= page_offset {
-            cum += sz;
+    let ks = idx.keys.partition_point(|k| u32::from(*k) < lo);
+    let ke = idx.keys.partition_point(|k| u32::from(*k) < hi);
+    let mut page: Vec<(&AOracleCard, &APrinting)> = Vec::with_capacity(limit);
+    let mut skip = page_offset;
+    for step in 0..ke.saturating_sub(ks) {
+        let run = idx.run(if descending { ke - 1 - step } else { ks + step });
+        if skip >= run.len() {
+            skip -= run.len();
             continue;
         }
-        if !started {
-            started = true;
-            first_touched_cum = cum;
+        for t in run.start + skip..run.end {
+            let pid = idx.pid_at(t);
+            let cid = u32::from(printing_to_card[pid]) as usize;
+            page.push((&cards[cid], &printings[pid]));
+            if page.len() == limit {
+                return page;
+            }
         }
-        collected.extend((bs..be).map(|t| u32::from(idx[t].1)));
-        cum += sz;
-        if cum >= want {
-            break;
-        }
+        skip = 0;
     }
-    // Canonically sort the collected touched-bucket printings (small: ~one or two buckets) and
-    // window the page — `page_cmp` is the comparator `select_page` uses, so ordering matches the
-    // gathered path by construction.
-    let mut matches: Vec<Match> = collected
-        .iter()
-        .map(|&pid| {
-            let cid = u32::from(printing_to_card[pid as usize]);
-            (sort_key_bits(&cards[cid as usize], &printings[pid as usize], SortCol::PriceUsd, descending), cid, pid)
-        })
-        .collect();
-    matches.sort_unstable_by(page_cmp);
-    let start = page_offset - first_touched_cum;
-    let end = (start + limit).min(matches.len());
-    matches[start..end].iter().map(|m| (&cards[m.1 as usize], &printings[m.2 as usize])).collect()
+    page
 }
 
 /// Fast path for a *bare, broad* range predicate under `unique=printing`
@@ -5317,8 +5395,7 @@ fn printing_range_fastpath_inner<'a>(
         note_paging_taken(PagingTaken::RangeNotBare);
         return None;
     };
-    let s = idx.partition_point(|p| u32::from(p.0) < lo);
-    let e = idx.partition_point(|p| u32::from(p.0) < hi);
+    let (s, e) = idx.range(lo, hi);
     let k = e - s;
     if !range_too_broad_to_narrow(k, idx.len()) {
         note_paging_taken(PagingTaken::RangeSelective);
@@ -5339,7 +5416,7 @@ fn printing_range_fastpath_inner<'a>(
             return None;
         }
         note_paging_taken(PagingTaken::RangeAligned);
-        let page = aligned_page(idx, s, e, cards, printings, &indexes.printing_to_card, descending, page_offset, limit);
+        let page = aligned_page(idx, lo, hi, cards, printings, &indexes.printing_to_card, descending, page_offset, limit);
         return Some((k, page));
     }
     // The walk reproduces run_query_streamed's *stream* emission (per-card-contiguous), which the
@@ -5587,12 +5664,10 @@ fn set_code_negated_leaf_bits(index: &Archived<TagIndex>, value: &str, n_printin
 /// price/collector-number/date) aren't in the index at all, so they're excluded by construction —
 /// this is an intersection with the in-range set, never a complement, so the trivalent-NULL trap that
 /// keeps `Not` off the compose path doesn't apply here.
-fn range_leaf_bits(idx: &Archived<PrintingRangeIndex>, lo: u32, hi: u32, n_printings: usize) -> Vec<u64> {
-    let s = idx.partition_point(|p| u32::from(p.0) < lo);
-    let e = idx.partition_point(|p| u32::from(p.0) < hi);
+fn range_leaf_bits(idx: &Archived<PrintingValueIndex>, lo: u32, hi: u32, n_printings: usize) -> Vec<u64> {
     let mut bits = vec![0u64; n_printings.div_ceil(64)];
-    for p in idx[s..e].iter() {
-        let pid = u32::from(p.1) as usize;
+    for pid in idx.range_pids(lo, hi) {
+        let pid = pid as usize;
         bits[pid >> 6] |= 1u64 << (pid & 63);
     }
     bits
@@ -6015,8 +6090,8 @@ fn compose_printing_estimate(
             if bare_range_bounds(filter, indexes).is_some() =>
         {
             let (idx, lo, hi) = bare_range_bounds(filter, indexes).expect("guarded by bare_range_bounds");
-            let k = idx.partition_point(|p| u32::from(p.0) < hi) - idx.partition_point(|p| u32::from(p.0) < lo);
-            (k, 0, k)
+            let (s, e) = idx.range(lo, hi);
+            (e - s, 0, e - s)
         }
         _ => unreachable!("compose_printing_estimate on a non-composable filter — gated by is_printing_composable"),
     }
@@ -6024,29 +6099,19 @@ fn compose_printing_estimate(
 
 /// The two `orderby` values with no card-space sort permutation (`SortCol::PriceUsd`/`Rarity` — see
 /// `ArchivedSortPermutations::get`, which returns `None` for both because the representative printing's
-/// key can't be precomputed). Each nonetheless has a printing-space value-ordered structure a
-/// `unique=printing` page can be walked directly: price cents in the `price_usd` `PrintingRangeIndex`,
-/// rarity ints in the `rarity_printing` planes/postings. #744's walk uses one to emit a page in sort
-/// order without visiting every candidate — the opposite shape from `gather_composed_page`. Any other
-/// `orderby` either has a permutation (`walk_grouped_page`) or falls to the gather fallback.
+/// key can't be precomputed). Each nonetheless has a printing-space `PrintingValueIndex` — `price_usd`
+/// and `rarity_printing_ordered` — that a `unique=printing` page can be walked directly. #744's walk
+/// uses one to emit a page in sort order without visiting every candidate, the opposite shape from
+/// `gather_composed_page`. Any other `orderby` either has a permutation (`walk_grouped_page`) or falls
+/// to the gather fallback.
+///
+/// The two used to differ in *structure* — a pair vec against planes/postings — and so had a walk
+/// each. They now share one layout and one walk (`walk_value_orderby_page`), which is what makes this
+/// predicate mean exactly "there is a value index to walk".
 fn orderby_walk_available(sort_col: SortCol) -> bool {
     matches!(sort_col, SortCol::PriceUsd | SortCol::Rarity)
 }
 
-/// Assemble a `unique=printing` page from value-buckets yielded by `next_bucket` in page (sort-key)
-/// order, each already filtered to its `pbits`-matching pids. Skips whole buckets by match count up to
-/// `page_offset`, collects the complete buckets the page window overlaps, then sorts that (small)
-/// collected set by the full sort key and windows it — byte-identical order to
-/// `select_page`/`gather_composed_page`, because a value-bucket shares one primary sort key so no
-/// cross-bucket tie is possible (the primary dominates the top 64 bits of `sort_key_bits`).
-///
-/// Returns `None` when the buckets are exhausted before `page_offset+limit` matches were collected AND
-/// fewer than `total` matches were seen — i.e. the remaining rows are *null-value* matches (present in
-/// `pbits`, absent from the value structure, and sorting last since a missing primary maps to
-/// `u32::MAX`), which this walk can't order — so the caller falls back to `gather_composed_page`. When
-/// every match lives in the buckets (`collected` reaches `total`, no null tail), a short last page is
-/// windowed normally.
-#[allow(clippy::too_many_arguments)]
 /// The routed path's time, split into DISJOINT phases that cover all of `run_query_routed`.
 ///
 /// Everything else here measures one participant at a time and cannot be added up. `acquire_ns` is
@@ -6165,8 +6230,9 @@ struct ComposePageWork {
     /// Cards the branch iterated: candidate cards for the gather, permutation entries consumed for
     /// the forward walk, `0` for the orderby walk (it steps a value structure, not cards).
     cards_visited: u64,
-    /// Printings the branch touched: `pbits` membership tests for the gather and the forward walk,
-    /// matches stepped over for the orderby walk.
+    /// Printings the branch touched: `pbits` membership tests, for all three branches. The orderby
+    /// walk's are index entries rather than candidates' printings, but they are the same operation
+    /// and the same unit — one bit test per printing considered.
     printings_examined: u64,
     /// Rows the branch pushed. For the gather this is every match (it visits every candidate); for
     /// the two walks it is bounded by the page, which is the whole point of their cost shape.
@@ -6181,193 +6247,82 @@ struct ComposePageWork {
     ns_total: u64,
 }
 
-// Nine: the bucket source, the three stores it reads through, the sort key's two halves, and the three
-// paging bounds. They are the page-fill's whole input and the one caller passes them straight through.
-#[allow(clippy::too_many_arguments, reason = "the page fill's whole input; the single caller passes them straight through")]
-fn collect_orderby_page<'a>(
-    mut next_bucket: impl FnMut() -> Option<(u64, Vec<u32>)>,
+/// #744 orderby walk, over the one `PrintingValueIndex` layout both walkable sort columns now have
+/// (`usd` -> `price_usd`, `rarity` -> `rarity_printing_ordered`). Steps key runs in page order —
+/// `keys` forward ascending, backward descending — bit-tests each entry against `pbits` (the index
+/// covers *every* printing with the value, not just this filter's matches), and emits matching rows
+/// straight into the page.
+///
+/// It emits rather than collects because the layout makes the order already right: `page_cmp` orders
+/// on (primary, edhrec_rank, cid, pid), a key run shares the primary and is stored in the rest of
+/// that order, and the tiebreak does not flip with direction (`sort_key_bits` negates only the
+/// primary). So the concatenation of runs from the page's starting end IS the row order
+/// `select_page`/`gather_composed_page` produce, and the walk can stop the instant the page fills.
+/// That is the whole point of the layout: this used to hand `collect_orderby_page` whole buckets, and
+/// a bucket is finished once begun — 24,653 matches collected and quickselected to serve a 60-row
+/// `orderby=rarity` ascending page, against 60 pushed now.
+///
+/// Returns `None` when the runs are exhausted before `page_offset + limit` matches were seen AND
+/// fewer than `total` were found — the remainder are *null-value* matches (present in `pbits`, absent
+/// from the index, sorting last since a missing primary maps to `u32::MAX`), which this walk cannot
+/// order — so the caller falls back to `gather_composed_page`. When every match lives in the index
+/// (`seen` reaches `total`, no null tail), a short last page is returned normally.
+#[allow(clippy::too_many_arguments)]
+fn walk_value_orderby_page<'a>(
+    idx: &Archived<PrintingValueIndex>,
+    pbits: &[u64],
     cards: &'a [AOracleCard],
     printings: &'a [APrinting],
     printing_to_card: &AOffsets,
-    sort_col: SortCol,
     descending: bool,
     total: usize,
     limit: usize,
     page_offset: usize,
 ) -> Option<(Vec<(&'a AOracleCard, &'a APrinting)>, ComposePageWork)> {
     let want = page_offset + limit;
-    let mut collected: Vec<u32> = Vec::new();
-    let mut cum = 0usize; // matches seen (skipped + collected) so far
-    let mut first_touched = 0usize; // matches before the first collected bucket (the offset skip)
-    let mut started = false;
-    // The work this walk really does, which is NOT `cum`. A bucket is produced by scanning a raw
-    // structure and intersecting it with `pbits`: a rarity PLANE bucket ANDs `words_per_plane` words
-    // (~n_printings/64) however few matches come out, a postings bucket walks its list, a range
-    // bucket walks its value run. `cum` counts what SURVIVED that scan, so pricing the walk on it
-    // charges nothing for a bucket that scanned the whole corpus and matched twice.
-    let mut scanned = 0u64;
-    while cum < want {
-        let Some((raw, bucket)) = next_bucket() else { break };
-        scanned += raw;
-        let m = bucket.len();
-        if m == 0 {
-            continue;
+    let mut page: Vec<(&AOracleCard, &APrinting)> = Vec::with_capacity(limit);
+    let mut seen = 0usize; // matches passed: skipped for the offset, then emitted
+    // The walk's real work: one `pbits` test per index entry considered. Not `seen` — the entries
+    // that miss are the cost `printings_walked` has to predict, and on a clumped filter (`r:mythic`
+    // ordered by `usd`) almost every entry misses.
+    let mut examined = 0u64;
+    let n_keys = idx.keys.len();
+    'walk: for step in 0..n_keys {
+        for t in idx.run(if descending { n_keys - 1 - step } else { step }) {
+            examined += 1;
+            let pid = idx.pid_at(t);
+            if pbits[pid >> 6] & (1u64 << (pid & 63)) == 0 {
+                continue;
+            }
+            if seen >= page_offset {
+                let cid = u32::from(printing_to_card[pid]) as usize;
+                page.push((&cards[cid], &printings[pid]));
+            }
+            seen += 1;
+            if seen == want {
+                break 'walk;
+            }
         }
-        // Whole buckets entirely before the page window are skipped by count (not collected).
-        if !started && cum + m <= page_offset {
-            cum += m;
-            continue;
-        }
-        if !started {
-            started = true;
-            first_touched = cum;
-        }
-        collected.extend(bucket);
-        cum += m;
     }
-    // Exhausted the value structure short of the page, with matches still unaccounted for → those are
-    // null-value matches (sort last); decline so gather handles them. A short last page with the whole
-    // match set already collected (`cum == total`) is fine — window it.
-    if cum < want && cum < total {
+    // Exhausted the index short of the page with matches still unaccounted for → those are
+    // null-value matches (sort last); decline so gather handles them. A short last page with the
+    // whole match set already seen (`seen == total`) is fine — return it.
+    if seen < want && seen < total {
         return None;
     }
-    // `printings_examined` is the RAW units scanned, not `cum`: see `scanned`. `cost::printings_walked`
-    // predicts `page_span / match_rate`, a page-fill length in match units, which does not describe a
-    // bucket scan at all -- one rarity plane bucket costs the same whether it yields two matches or
-    // twenty thousand. `cards_visited` stays 0: this walk steps a value structure, never cards.
-    let work = ComposePageWork {
-        cards_visited: 0,
-        printings_examined: scanned,
-        matches_pushed: collected.len() as u64,
-        // Filled by `printing_compose_fastpath`, which owns the span; this helper only reports work.
-        ns_total: 0,
-    };
-    let matches: Vec<Match> = collected
-        .iter()
-        .map(|&pid| {
-            let cid = u32::from(printing_to_card[pid as usize]);
-            (sort_key_bits(&cards[cid as usize], &printings[pid as usize], sort_col, descending), cid, pid)
-        })
-        .collect();
-    // Quickselect the page rather than a full sort: a rarity bucket (common) can be tens of thousands
-    // of matches, so the `O(n log n)` sort's log factor is the dominant cost there — `select_page`
-    // (same `page_cmp` comparator) is `O(collected + limit·log limit)`. `page_offset - first_touched`
-    // rebases the offset onto the collected touched buckets.
+    let pushed = page.len() as u64;
     Some((
-        select_page(matches, page_offset - first_touched, limit)
-            .into_iter()
-            .map(|(cid, pid)| (&cards[cid as usize], &printings[pid as usize]))
-            .collect(),
-        work,
+        page,
+        ComposePageWork {
+            // This walk steps a value index, never cards.
+            cards_visited: 0,
+            printings_examined: examined,
+            // Now genuinely page-bounded, which is what this counter's doc always claimed.
+            matches_pushed: pushed,
+            // Filled by `printing_compose_fastpath`, which owns the span; this only reports work.
+            ns_total: 0,
+        },
     ))
-}
-
-/// #744 orderby walk for a range-indexed sort column (`usd` — the only such `SortCol`; cn/date are
-/// range-indexed but never an `orderby`). Walks the value-sorted `(value, pid)` index as value-buckets
-/// in page order — forward from the low end ascending, backward from the high end descending, the same
-/// directional bucket formation `aligned_page` uses — but tests `pbits` per entry (the index covers
-/// *every* printing with the value, not just this filter's matches). See `collect_orderby_page`.
-#[allow(clippy::too_many_arguments)]
-fn walk_range_orderby_page<'a>(
-    idx: &Archived<PrintingRangeIndex>,
-    pbits: &[u64],
-    cards: &'a [AOracleCard],
-    printings: &'a [APrinting],
-    printing_to_card: &AOffsets,
-    sort_col: SortCol,
-    descending: bool,
-    total: usize,
-    limit: usize,
-    page_offset: usize,
-) -> Option<(Vec<(&'a AOracleCard, &'a APrinting)>, ComposePageWork)> {
-    let is_set = |pid: usize| pbits[pid >> 6] & (1u64 << (pid & 63)) != 0;
-    let (mut lo, mut hi) = (0usize, idx.len());
-    let next = move || -> Option<(u64, Vec<u32>)> {
-        if lo >= hi {
-            return None;
-        }
-        let (bs, be) = if descending {
-            let v = u32::from(idx[hi - 1].0);
-            let mut b = hi - 1;
-            while b > lo && u32::from(idx[b - 1].0) == v {
-                b -= 1;
-            }
-            (b, hi)
-        } else {
-            let v = u32::from(idx[lo].0);
-            let mut b = lo + 1;
-            while b < hi && u32::from(idx[b].0) == v {
-                b += 1;
-            }
-            (lo, b)
-        };
-        if descending { hi = bs } else { lo = be }
-        // The value run is scanned in full and bit-tested per entry; `be - bs` is that cost.
-        Some(((be - bs) as u64, (bs..be).map(|t| u32::from(idx[t].1)).filter(|&pid| is_set(pid as usize)).collect()))
-    };
-    collect_orderby_page(next, cards, printings, printing_to_card, sort_col, descending, total, limit, page_offset)
-}
-
-/// #744 orderby walk for `orderby=rarity`. Rarity has no `PrintingRangeIndex`, but the exact
-/// `rarity_printing` planes/postings *are* a printing-space value-bucketed structure: one bucket per
-/// rarity int (interior values read their one-hot plane, the sparse tail its postings). Walks those
-/// buckets in rarity-value page order (ascending value ascending, descending value descending), each
-/// intersected with `pbits`. Null-rarity matches (in `pbits`, in no bucket) sort last and are handled
-/// by `collect_orderby_page`'s null-tail decline. See `collect_orderby_page`.
-#[allow(clippy::too_many_arguments)]
-fn walk_rarity_orderby_page<'a>(
-    rp: &Archived<RarityPrintingPlanes>,
-    pbits: &[u64],
-    cards: &'a [AOracleCard],
-    printings: &'a [APrinting],
-    printing_to_card: &AOffsets,
-    descending: bool,
-    total: usize,
-    limit: usize,
-    page_offset: usize,
-    n_printings: usize,
-) -> Option<(Vec<(&'a AOracleCard, &'a APrinting)>, ComposePageWork)> {
-    // Every rarity int present: interior [0..3] (planes, always laid out) + the postings' ints.
-    let mut values: Vec<u8> = RARITY_PRINTING_PLANE_INTS.to_vec();
-    values.extend(rp.postings.iter().map(|e| e.0));
-    values.sort_unstable();
-    if descending {
-        values.reverse();
-    }
-    let wpp = words_per_plane(n_printings);
-    let mut vi = 0usize;
-    let next = move || -> Option<(u64, Vec<u32>)> {
-        let int = *values.get(vi)?;
-        vi += 1;
-        // `raw` is what the bucket cost to produce, which the two kinds pay very differently: a plane
-        // bucket ANDs `wpp` words of the whole corpus however few matches survive, while a postings
-        // bucket walks only its own list. Counted in the same units the caller sums.
-        let (raw, pids): (u64, Vec<u32>) = if let Some(k) = RARITY_PRINTING_PLANE_INTS.iter().position(|&v| v == int) {
-            let plane = &rp.words[k * wpp..(k + 1) * wpp];
-            let mut out = Vec::new();
-            for (wi, (pw, bw)) in plane.iter().zip(pbits.iter()).enumerate() {
-                let mut w = u64::from(*pw) & bw;
-                while w != 0 {
-                    out.push(((wi as u32) << 6) | w.trailing_zeros());
-                    w &= w - 1;
-                }
-            }
-            // One word covers 64 printings, so report the printings covered rather than the word
-            // count -- that keeps this comparable to the entry-scanning buckets and to a feature
-            // measured in printings.
-            ((wpp * 64) as u64, out)
-        } else {
-            match rp.postings.iter().find(|e| e.0 == int) {
-                Some(e) => (
-                    e.1.len() as u64,
-                    e.1.iter().map(|p| u32::from(*p)).filter(|&pid| pbits[pid as usize >> 6] & (1u64 << (pid & 63)) != 0).collect(),
-                ),
-                None => (0, Vec::new()),
-            }
-        };
-        Some((raw, pids))
-    };
-    collect_orderby_page(next, cards, printings, printing_to_card, SortCol::Rarity, descending, total, limit, page_offset)
 }
 
 /// `unique=printing` fast path for a composable printing-space expression (bare `border:`/`r:` or an
@@ -6473,19 +6428,15 @@ fn printing_compose_fastpath<'a>(
         // gather fallback pages via the bounded GatherSelect, whose tie-break matches the general path
         // exactly (same GatherSelect, same comparator) — so no separate small-total decline is needed.
         None => {
-            let walked = if walk_col {
-                match sort_col {
-                    SortCol::PriceUsd => walk_range_orderby_page(
-                        &indexes.price_usd, &pbits, cards, printings, &indexes.printing_to_card, sort_col, descending, total, limit, page_offset,
-                    ),
-                    SortCol::Rarity => walk_rarity_orderby_page(
-                        &indexes.rarity_printing, &pbits, cards, printings, &indexes.printing_to_card, descending, total, limit, page_offset, printings.len(),
-                    ),
-                    _ => None,
-                }
-            } else {
-                None
-            };
+            // One walk over one layout; the sort column only picks which value index it reads.
+            let walked = match sort_col {
+                SortCol::PriceUsd if walk_col => Some(&indexes.price_usd),
+                SortCol::Rarity if walk_col => Some(&indexes.rarity_printing_ordered),
+                _ => None,
+            }
+            .and_then(|idx| {
+                walk_value_orderby_page(idx, &pbits, cards, printings, &indexes.printing_to_card, descending, total, limit, page_offset)
+            });
             match walked {
                 Some(rows_and_work) => {
                     note_paging_taken(PagingTaken::OrderbyWalk);
@@ -8477,7 +8428,8 @@ fn acquire_plan_features(
         // uses the card-count proxy `min(k, n_cards)` (card total ≤ both). The materializing
         // alternatives are costed with the range's verify tier (a `0` would under-cost them).
         let (idx, lo, hi) = bare_range_bounds(filter, indexes).expect("applicable ⇒ bare range");
-        let k = (idx.partition_point(|p| u32::from(p.0) < hi) - idx.partition_point(|p| u32::from(p.0) < lo)) as u32;
+        let (s, e) = idx.range(lo, hi);
+        let k = (e - s) as u32;
         // Exact distinct cards from the per-value table when it can answer this shape — every op but
         // `Eq` is one-sided, and `Eq` is a single value, so the only fallback is `year:Y`, which spans
         // a whole year of release dates. The `k.min(n_cards)` proxy it falls back to over-estimates a
@@ -8511,7 +8463,8 @@ fn acquire_plan_features(
     } else if PhysicalPlan::PrintingRangeScan.applicable(ctx, params, filter, unsplit, plane) {
         // Bare range: exact k from the index (no scan).
         let (idx, lo, hi) = bare_range_bounds(filter, indexes).expect("applicable ⇒ bare range");
-        let k = (idx.partition_point(|p| u32::from(p.0) < hi) - idx.partition_point(|p| u32::from(p.0) < lo)) as u32;
+        let (s, e) = idx.range(lo, hi);
+        let k = (e - s) as u32;
         // What the MATERIALIZING alternatives see, by the same test the sibling `CardRangePopcount`
         // branch already applies: `range_narrowed` hands back an enumerable printing list only while
         // the slice stays under `MAX_NARROW_FRACTION`, and degrades to a printing-space bitmap past
@@ -9887,12 +9840,11 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 /// catch (e.g. reordering same-size fields, changing an index type) — and on
 /// any FLAVOR_FP_FEATURES change: archived fingerprints are built with that
 /// table, so a new table reading old fingerprints breaks the superset test.
-// 20260725: adding CardIndexes.arith_tuple (#743) changes the archived layout, so
-// stores built under the previous version must be invalidated and rebuilt. The
-// current calendar date (20260723) and 20260724 were both already consumed by
-// earlier same-window archive changes (#737 columnar artwork_group_id, #741
-// watermark postings), so this takes the next distinct value — see the doc above.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026080503;
+// 20260805: the three printing-range indexes changed shape from `Vec<(value, pid)>` to the
+// value-major `PrintingValueIndex`, and a fourth of the same type was added for the rarity orderby
+// walk. Both are archived-layout changes, so a store built under the previous version must fail the
+// header check and be rebuilt rather than be read as garbage. One bump covers both.
+const ARCHIVE_FORMAT_VERSION: u32 = 20260805;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -10416,9 +10368,9 @@ impl QueryEngine {
         // literal below, because the tables need `printing_to_card` — which the literal also wants,
         // so it is derived once and moved in.
         let printing_to_card = build_printing_to_card(&offsets);
-        let released_at_idx = build_range_index(&printings, |p| p.released_at_int);
-        let price_usd_idx = build_range_index(&printings, |p| p.price_usd);
-        let collector_number_idx = build_range_index(&printings, |p| p.collector_number_int.map(u32::from));
+        let released_at_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.released_at_int);
+        let price_usd_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.price_usd);
+        let collector_number_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.collector_number_int.map(u32::from));
         let released_at_cards = build_range_card_counts(&released_at_idx, &printing_to_card, cards.len());
         let price_usd_cards = build_range_card_counts(&price_usd_idx, &printing_to_card, cards.len());
         let collector_number_cards = build_range_card_counts(&collector_number_idx, &printing_to_card, cards.len());
@@ -10477,6 +10429,7 @@ impl QueryEngine {
             planes:         build_bit_planes(&cards, &printings, &offsets, &strings),
             border_printing: build_border_printing_planes(&printings, &strings),
             rarity_printing: build_rarity_printing_planes(&printings),
+            rarity_printing_ordered: build_printing_value_index(&printings, &cards, &offsets, |p| p.card_rarity_int.map(u32::from)),
             name_bigrams:   build_name_bigram_index(&cards),
             legal_divergent: build_divergent_ids(&cards),
             arith_tuple:    build_arith_tuple_index(&cards),
