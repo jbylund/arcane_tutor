@@ -44,9 +44,44 @@ if !card_space && range_too_broad_to_narrow(v.len(), n_printings) {
 So the build throws away postings the consumer is now equipped to use. `frame:2015` and `is:new` are the
 same underlying predicate and together are ~1.16 ms of mean dispatch over 293 sampled queries.
 
-**Fix:** stop thresholding, or raise the threshold to the point where a bitmap scatter stops paying.
-Cost is one posting list for the dropped values — `frame:2015` is 64,139 printings ≈ 257 KB, and it is
-the only value in the corpus above the guard.
+**And the threshold is inverted, not merely stale.** A posting list costs 4 bytes per member; a
+printing-space bitmap costs 1 bit per row of the domain. So a bitmap is smaller above `1/32 = 3.1%`
+density — and it also removes the query-time scatter entirely, rather than paying it per member. Across
+the 29 `frame_data` values in the corpus, 7 are above that crossover and 22 below:
+
+| frame value | printings | density | as postings | as p-bitmap | cheaper | stored today |
+| --- | --: | --: | --: | --: | --- | --- |
+| `2015` | 64,139 | **66.0%** | 250.5 KB | **11.9 KB** | bitmap | **NOT STORED** |
+| `2003` | 16,490 | 17.0% | 64.4 KB | **11.9 KB** | bitmap | postings |
+| `1997` | 10,769 | 11.1% | 42.1 KB | **11.9 KB** | bitmap | postings |
+| `Legendary` | 10,333 | 10.6% | 40.4 KB | **11.9 KB** | bitmap | postings |
+| `Inverted` | 7,244 | 7.5% | 28.3 KB | **11.9 KB** | bitmap | postings |
+| `1993` | 5,569 | 5.7% | 21.8 KB | **11.9 KB** | bitmap | postings |
+| `Extendedart` | 4,157 | 4.3% | 16.2 KB | **11.9 KB** | bitmap | postings |
+| `Showcase` … `Upsidedowndfc` (22 values) | ≤3,006 | ≤3.1% | ≤11.7 KB | 11.9 KB | postings | postings |
+
+The guard drops exactly ONE value, and it is the one where a bitmap wins by the largest margin (21x).
+Everything it keeps as postings includes six more values that would also be smaller as bitmaps.
+
+**Fix: per-value cheaper-of-the-two, which is what `BorderPrintingPlanes` and `RarityPrintingPlanes`
+already do** — a one-hot plane per dense value plus postings for the sparse tail. `frame_data` is the one
+collection index that got neither.
+
+| scheme | total |
+| --- | --: |
+| all 29 as postings | 491 KB |
+| all 29 as printing bitmaps | 344 KB |
+| **per-value cheaper-of-the-two** | **111 KB** |
+| stored today (all but `2015`, as postings) | 240 KB |
+
+So it is **130 KB smaller than today AND removes the full scan** — not a size-for-speed trade.
+
+**A card-space existential bitmap is a different job, not a substitute.** 3.8 KB per value (112 KB for
+all 29), exact for card-mode TOTALS — which is the 132 µs `printing_bits_to_card_bits` projection
+discussed in [the walk-modes doc](./local-engine-orderby-walk-modes.md) — but LOOSE for row selection,
+since "this card has ≥1 printing with frame 2015" does not say which printing. Printing and artwork mode
+still need the printing bitmap. Border already carries both (`PLANE_BORDER` card-space +
+`BorderPrintingPlanes` printing-space), and that pairing is the shape to copy.
 
 Verify with `eval_domain`, not with timing: it should stop reading 31,508.
 
