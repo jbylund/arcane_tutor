@@ -417,23 +417,35 @@ fn estimate_leaf(f: &FilterExpr, indexes: &Archived<CardIndexes>, n_cards: u32, 
         },
 
         FilterExpr::CollectionCmp { field, op: CmpOp::Ge, value, .. } => {
-            // Mirror narrow_rec's field dispatch. frame_data is the hybrid index (bitmap for dense
-            // values, postings for the tail), so its count comes from `len_of` -- a popcount when the
-            // value is a bitmap -- rather than a postings length. Every index is `complete` now: nothing
-            // is dropped at build, so absence proves the value matches nothing.
-            let count = match field {
-                CollField::FrameData => (indexes.frame_data.len_of(value.as_str()), false),
-                CollField::Subtypes => (indexes.subtypes.get(value.as_str()).map(|v| v.len()), true),
-                CollField::Keywords => (indexes.keywords.get(value.as_str()).map(|v| v.len()), true),
-                CollField::OracleTags => (indexes.oracle_tags.get(value.as_str()).map(|v| v.len()), true),
-                CollField::ArtTags => (indexes.art_tags.get(value.as_str()).map(|v| v.len()), false),
-                CollField::IsTags => (indexes.is_tags.get(value.as_str()).map(|v| v.len()), false),
+            // Mirror narrow_rec's field dispatch (lib.rs:3040-3047).
+            let (idx, card_space, complete) = match field {
+                CollField::Subtypes => (&indexes.subtypes, true, true),
+                CollField::Keywords => (&indexes.keywords, true, true),
+                CollField::OracleTags => (&indexes.oracle_tags, true, true),
+                CollField::ArtTags => (&indexes.art_tags, false, true),
+                CollField::IsTags => (&indexes.is_tags, false, true),
+                CollField::FrameData => (&indexes.frame_data, false, false),
             };
-            let (cnt, card_space) = (count.0.unwrap_or(0) as u32, count.1);
-            if card_space {
-                exact(cnt)
-            } else {
-                project(cnt, n_cards, n_printings)
+            match idx.get(value.as_str()) {
+                Some(v) => {
+                    let cnt = v.len() as u32;
+                    if card_space {
+                        exact(cnt)
+                    } else {
+                        project(cnt, n_cards, n_printings)
+                    }
+                }
+                None if complete => {
+                    // Absent from a complete index ⇒ matches nothing.
+                    if card_space {
+                        exact(0)
+                    } else {
+                        project(0, n_cards, n_printings)
+                    }
+                }
+                // frame_data drops dense values at build (#628), so absence
+                // proves nothing → unknown.
+                None => unknown(n),
             }
         }
         FilterExpr::CollectionCmp { .. } => unknown(n),

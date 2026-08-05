@@ -20,7 +20,7 @@ Measured on the production corpus, `unique=card orderby=edhrec limit=60`, plan-o
 
 `eval_domain == 31,508` means nothing narrowed at all — a full corpus scan.
 
-## 1. The `frame_data` threshold drops its dense values — IMPLEMENTED, net latency still negative
+## 1. The `frame_data` threshold drops its dense values — IMPLEMENTED AND REVERTED
 
 `HybridTagIndex` shipped in `fb7f0a9`: every value stored, dense as a printing bitmap and the sparse
 tail as postings. The per-query wins are large and the memory prediction was exact (**130 KB smaller**,
@@ -49,11 +49,47 @@ frame:inverted` 40 → 72 µs, `name:of c:g frame:2003` 107 → 164, `pow<2 fram
 `t:warrior frame:2015` 161 → 211. Compose applicability is a property of the whole EXPRESSION, so one
 composable leaf makes an entire `And` composable however selective its siblings are.
 
-The obvious explanation was tested and is WRONG: the `Perm` branch learns its total from
-`compose_printing_bits` and declines a small one only after paying for the build, so hoisting that
-decline to a pre-build estimate check should have fixed it. It changed nothing (1.81× → 1.85×), and the
-guard was reverted. **Three mechanisms have now been eliminated by measurement in this area** — find the
-cause before judging this again.
+### The mechanism, found — and it is not compose
+
+Two hypotheses were tested and both were wrong. A pre-build sparsity guard (the `Perm` branch learns its
+total from `compose_printing_bits` and declines a small one only after paying) changed nothing:
+1.81× → 1.85×. The cause is not compose at all, which the counters show directly:
+
+| query | count_source | narrowed_repr | eval_domain | µs |
+| --- | --- | --- | --: | --: |
+| `pow<2` | candidates | none | 4,043 | **48.0** |
+| `pow<2 frame:2003` | candidates | **printing_bits** | **1,302** | **155.7** |
+
+Adding the frame leaf makes the narrowing *more* selective — 4,043 candidates down to 1,302 — and 3.2×
+slower, without ever reaching compose. The cost is `narrow_rec`'s `And` arm materialising an 11.9 KB
+dense bitmap and converting id spaces to intersect it, for a query whose sibling had already narrowed
+enough. That is exactly "the 10× And regressions of the first benchmark round" that `broad_ok` exists to
+prevent — and the implementation had bypassed `broad_ok` for dense values, reasoning that a *stored*
+bitmap has no scatter to pay.
+
+**That misread the gate.** `broad_ok` means "nothing downstream would consume this usefully", not merely
+"the scatter would be wasted". Inside an `And` with a selective sibling the bitmap IS consumed and still
+loses.
+
+### Why restoring the gate did not fix it either
+
+Honouring `broad_ok` for dense values moved the whole mix 1.084 → 1.059 and p99 to 549 µs (better than
+base), and turned `keyword:extort frame:inverted` from 1.81× into **0.51×**. But it broke others:
+
+| query | base | bypassing `broad_ok` | honouring it |
+| --- | --: | --: | --: |
+| `keyword:extort frame:inverted` | 39.7 µs | 71.8 (1.81×) | **20.2 (0.51×)** |
+| `pow<2 frame:2003` | 173.1 µs | 261.5 (1.51×) | 299.5 (**1.73×**) |
+| `set:ps11 frame:2015` | 56.9 µs | **11.7 (0.21×)** | 67.2 (1.18×) |
+| `set:hou frame:legendary` | 27.3 µs | **11.0 (0.40×)** | 58.7 (**2.15×**) |
+
+Different sub-populations want opposite settings. **`broad_ok` is a boolean standing in for a cost
+decision**, and that is the real blocker: whether materialising a broad child pays depends on the
+sibling's selectivity and on the id-space conversion it forces, which is a comparison the cost model
+should make and a boolean cannot express.
+
+So this was reverted (the engine change; this analysis stands). Retrying it means giving the `And` arm a
+cost-based choice about materialising a broad child — not a better boolean.
 
 Also note the control column sits on the ~9% run-to-run noise floor, and its worst row (`name:s`
 624 → 1188 µs) has no frame predicate, so part of it is not attributable. Restructuring `frame_data`
