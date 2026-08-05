@@ -101,11 +101,26 @@ to 0.74–1.34.
 
 ## What this did NOT fix
 
-- **`name:s border:black` is unchanged at ~1,160 µs.** `name:s` does not narrow at all (`eval_domain`
-  31,508 — the whole corpus), so there is no candidate set and nothing to prove. Its residual is genuinely
-  evaluated 60,705 times. A card-invariant conjunct under *no* narrowing wants the other half of this
-  idea: evaluate it once per card and reuse the verdict across the card's printings. `card_pass` already
-  computes exactly that verdict; the streamed/gather loops just have no candidate set to hang it on.
+- **`name:s border:black` is unchanged at ~1,160 µs**, and *not* for the reason first written here. This
+  doc previously claimed its residual is "genuinely evaluated 60,705 times" and that the loops need the
+  card verdict hung on a candidate set. Both are wrong: `card_pass` returns the card-level children as
+  settled and only the `PrintingDep` ones in `residual`, and `push_card_matches` verifies **only that
+  residual** per printing. The card/printing partition has always been there.
+
+  What the 1,160 µs actually is, measured against `name:s` alone (472 µs, 31,508 cards, zero printings
+  examined — 15.0 ns/card for the name residual):
+
+  | query | total | minus card part | per printing |
+  | --- | --: | --: | --: |
+  | `name:s usd>1` | 1,068 µs | 596 µs | 9.8 ns |
+  | `name:s cn>200` | 1,074 µs | 602 µs | 9.9 ns |
+  | `name:s border:black` | 1,158 µs | 686 µs | 11.3 ns |
+  | `name:s frame:2015` | 1,160 µs | 688 µs | 11.3 ns |
+
+  The leaf's own test is 0–1.5 ns of that; the other ~10 ns is the cost of *examining a printing at all*.
+  So the remaining cost is the per-printing WALK, not any redundant evaluation — and it is unavoidable for
+  a plan that verifies row by row, because a printing-varying conjunct means the exact total requires
+  testing every printing under every matching card.
 - **`name:s border:black` also still routes wrong** — GatheredScan at 1,170 µs measured against
   StreamedSelect's 975 (predicted 1,470, p/m 1.51).
 - The earlier diagnosis in
