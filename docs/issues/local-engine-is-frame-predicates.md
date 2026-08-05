@@ -20,7 +20,47 @@ Measured on the production corpus, `unique=card orderby=edhrec limit=60`, plan-o
 
 `eval_domain == 31,508` means nothing narrowed at all — a full corpus scan.
 
-## 1. The `frame_data` threshold drops its dense values, on a justification that expired
+## 1. The `frame_data` threshold drops its dense values — IMPLEMENTED, net latency still negative
+
+`HybridTagIndex` shipped in `fb7f0a9`: every value stored, dense as a printing bitmap and the sparse
+tail as postings. The per-query wins are large and the memory prediction was exact (**130 KB smaller**,
+72,158,208 → 72,025,104 bytes):
+
+| query | before | after |
+| --- | --: | --: |
+| `frame:2015` (card) | 603.1 µs | **185.5 µs** |
+| `is:new` (card) | 557.6 µs | **141.1 µs** |
+| `is:old` (card) | 399.1 µs | **62.1 µs** |
+| `frame:2003` (card) | 322.3 µs | **68.6 µs** |
+| `frame:1997` (card) | 250.9 µs | **54.2 µs** |
+| `frame:inverted` (card) | 249.5 µs | **50.9 µs** |
+| `frame:2015` (printing) | 834 µs | **0.4 µs** |
+
+**But the net is not a win yet.** Paired routed-path wall time, 2,000 realistic queries:
+
+| subset | n | before | after | ratio |
+| --- | --: | --: | --: | --: |
+| `is:`/`frame:` touched | 56 | 9.1 ms | 8.4 ms | 0.920 |
+| everything else | 1,944 | 171.6 ms | 187.5 ms | 1.093 |
+| whole mix | 2,000 | 180.7 ms | **195.9 ms** | **1.084** |
+
+A real regression class came with it: **a sparse `And` containing a frame leaf.** `keyword:extort
+frame:inverted` 40 → 72 µs, `name:of c:g frame:2003` 107 → 164, `pow<2 frame:2003` 173 → 262,
+`t:warrior frame:2015` 161 → 211. Compose applicability is a property of the whole EXPRESSION, so one
+composable leaf makes an entire `And` composable however selective its siblings are.
+
+The obvious explanation was tested and is WRONG: the `Perm` branch learns its total from
+`compose_printing_bits` and declines a small one only after paying for the build, so hoisting that
+decline to a pre-build estimate check should have fixed it. It changed nothing (1.81× → 1.85×), and the
+guard was reverted. **Three mechanisms have now been eliminated by measurement in this area** — find the
+cause before judging this again.
+
+Also note the control column sits on the ~9% run-to-run noise floor, and its worst row (`name:s`
+624 → 1188 µs) has no frame predicate, so part of it is not attributable. Restructuring `frame_data`
+shifts every later field's archive offset, which is a plausible global cache effect and a hazard of any
+layout change.
+
+### The original diagnosis, kept for the reasoning
 
 `build_thresholded_tag_index` deliberately discards any value whose postings trip
 `range_too_broad_to_narrow`, and its own doc names the casualty:
