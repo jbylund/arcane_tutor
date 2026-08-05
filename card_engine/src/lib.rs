@@ -6438,11 +6438,30 @@ fn printing_compose_fastpath<'a>(
     let (page, mut work) = match perm {
         Some(perm) => {
             if total <= *STREAM_MIN_MATCHES {
+                // Sparse: hand the query back to the general path rather than paging it here.
+                //
+                // NOT for the reason this comment used to give ("the general path gathers + globally
+                // sorts, ordering ties differently"). That died with #815, which made row order total
+                // and filter-independent on (key1, key2, cid, pid), replacing the key-3 `prefer_score`
+                // that genuinely differed between the permutation (first STORED printing's score) and
+                // the gathered paths (first MATCHING one). Measured 2026-08-04 by toggling this decline
+                // off: 576 real invocations of the walk over 1,512 tie-heavy cells, 0 row differences,
+                // plus 14 inside `force_plan_differential_agreement`, which asserts full row order
+                // against GatheredScan. Either executor is correct here now.
+                //
+                // What keeps the decline is cost, not correctness. `gather_composed_page` is genuinely
+                // 1.3-2.7x faster than the plan that otherwise wins on this population, but `plan_cost`
+                // reads 0.27-0.53 of its real time, and the resulting mispicks cancel the wins exactly:
+                // regret 1.30 -> 1.51 us, compose miss% 7% -> 18%, compose-acquire wall time 1.00 over
+                // 2,341 paired queries. Neutral in time and worse in routing is not a trade worth the
+                // complexity. docs/issues/local-engine-sparse-compose-gather.md carries the four
+                // acceptance criteria this has to clear.
+                //
                 // `Exact` to distinguish it from `DeclineSparseEstimate` above: same intent, but that
                 // one fires pre-compose off the estimator's upper bound, this one post-compose off
                 // the real total. A harness reading one label for both cannot tell which fired.
                 note_paging_taken(PagingTaken::DeclineSparseExact);
-                return None; // sparse: the general path gathers + globally sorts, ordering ties differently
+                return None;
             }
             note_paging_taken(PagingTaken::Perm);
             walk_grouped_page(ctx, params, &pbits, perm)
