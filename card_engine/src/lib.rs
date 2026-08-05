@@ -8602,6 +8602,10 @@ fn compose_paging_for(
 
 /// Which paging branch `printing_compose_fastpath` will take — including whether it will refuse the
 /// query outright, which the caller that knows the estimated total can now predict.
+// Eight arguments because it must see exactly what the fastpath sees -- any parameter dropped here is
+// a way for the predicted branch to diverge from the branch taken, which
+// compose_paging_prediction_matches_the_branch_taken then fails on.
+#[allow(clippy::too_many_arguments)]
 fn compose_paging_with_total(
     indexes: &Archived<CardIndexes>,
     n_cards: usize,
