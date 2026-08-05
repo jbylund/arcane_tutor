@@ -30,6 +30,23 @@ below needs no small-total decline of its own, and its comment says so —
 > the gather fallback pages via the bounded GatherSelect, whose tie-break matches the general path
 > exactly (same GatherSelect, same comparator) — so no separate small-total decline is needed.
 
+**The stated reason no longer applies to the WALK either — the comment is stale (2026-08-04).** #815
+(`fe1afeb`, 2026-08-02) made row order total and filter-independent on `(key1, key2, cid, pid)`,
+replacing the key-3 `prefer_score` that used to differ between the permutation (first *stored*
+printing's score) and the gathered paths (first *matching* one). With `cid` and `pid` in the key there
+is no tie left for the two emission shapes to break differently. Measured by toggling the decline off
+and running the walk on tie-heavy orderbys (`power`/`toughness`/`cmc`, three modes, both directions,
+deep offsets): **576 real invocations, 1,512 cells, 0 row differences**, plus 14 invocations inside
+`force_plan_differential_agreement`, which asserts *full row order* against `GatheredScan` and passed.
+
+That matters less for shipping than it looks — the doc's proposal was always the gather, which was
+never blocked on tie order — but it retires the reason the code gives for the decline, and it means
+either executor is now correct.
+
+**Watch the vacuous A/B here.** The first attempt at this measurement showed 0 differences because the
+cost model still predicted `Decline`, so compose never ran and neither arm of the A/B executed the
+branch. Both halves must be toggled, and the fire count must be *counted*, not assumed.
+
 **Why it is cheap precisely here.** `gather_composed_page` walks `bitmap_card_ids` of the composed
 set — only cards holding a matching printing — so it is O(total), and `total <= STREAM_MIN_MATCHES`
 is the condition. Add one O(n_printings/64) projection. Declining instead discards the finished
@@ -81,12 +98,57 @@ mispricing was not the blocker, or not the only one.
 - **Removing the infinities exposes a pre-existing p99 of 178x OVER-cost** in the compose arm, which
   was always there and hidden behind `inf`. The arm is wrong in both directions on this population.
 
+## Re-measured 2026-08-04, after the two-sided range fusion
+
+[local-engine-two-sided-range-fusion.md](./local-engine-two-sided-range-fusion.md) made
+`compose_printing_estimate` exact on ranges, which removed the second stated blocker: the prediction
+can now tell a sparse query from a broad one (879 against a true 879, where it read 20,411). Both
+executors were then re-tried behind a runtime toggle on one binary.
+
+**The gather really is faster on its population.** Warm, 15 trials, `PrintingCompose` against the best
+plan that would otherwise win:
+
+| query | mode | compose measured | compose predicted | best other |
+| --- | --- | --: | --: | --: |
+| `usd>=0.42 usd<=0.43` | artwork | **27.5 µs** | 13.5 | 75.0 |
+| `cn>=146 cn<=147` | artwork | **20.5** | 8.4 | 46.1 |
+| `set:lea` | artwork | **18.8** | 5.1 | 44.6 |
+| `usd>=200` | artwork | **15.6** | 4.6 | 27.5 |
+| `cn>=20000 r>=rare` | card | **13.9** | 4.3 | 17.6 |
+
+1.3–2.7× faster than the alternative, and **under-priced 2–4× in every row** (0.27–0.53 of real). That
+under-charge is the whole remaining problem, and it is narrow enough to be calibratable rather than
+structural.
+
+**And it is still not shippable, for a third reason that is neither of the first two.** The
+under-pricing over-picks compose on queries where it does *not* win, and those mispicks cancel the wins:
+
+| | decline | gather |
+| --- | --: | --: |
+| regret mean | 1.30 µs | **1.51 (+16%)** |
+| `printing_compose` miss% | 7% | **18%** |
+| `printing_compose` p90 | 0.00 | **8.12** |
+| compose-acquire wall time, 2,341 paired queries | 113.6 ms | **113.2 ms (1.00)** |
+
+**Read those two rows together, because separately each one lies.** Regret is a routing-error metric:
+a correct pick scores zero, so enabling a plan that is faster on its own population shows up as pure
+loss — the gains are invisible and only the new mispicks count. Wall time says the opposite is not true
+either: the win is real but confined, and the mispicks eat exactly as much as it earns. The honest
+summary is *neutral in time, worse in routing*, which is not a trade worth taking for added complexity.
+
+(The permutation walk was also measured, since it is what the stale comment is about: regret 1.52 µs,
+slightly worse than the gather, as expected — the walk pays per permutation entry and a sparse total
+means stepping a long way to fill a page, where the gather is O(total).)
+
 ## Prerequisite
 
-Price the compose `Gather` path. This is not a one-term tweak: the arm is under by ~4-7x at p10 and
-over by 178x at p99 on the population the change exposes. Progress on the compose arm generally is
-tracked in [the cost-model doc](local-engine-cost-model-agreement.md); this change should be retried
-whenever that cell reads sanely.
+Price the compose `Gather` path. The 2026-08-04 measurement above narrows what that means: on the
+sparse population the arm reads a consistent **0.27–0.53 of real** across every case measured, which is
+a level error rather than a missing dependence on some feature — the ordering within the population is
+right, the magnitude is halved. The older "under by ~4-7x at p10 and over by 178x at p99" spanned a
+wider population that included broad queries; both readings should be reconciled before picking a term
+to move. Progress on the compose arm generally is tracked in
+[the cost-model doc](local-engine-cost-model-agreement.md).
 
 ## Acceptance
 
@@ -98,3 +160,9 @@ whenever that cell reads sanely.
 
 The rows check is cheap and should be repeated rather than trusted from this document, since the
 comparator or the paging strategy may have moved since.
+
+Add a fourth, because criteria 1–2 alone would have passed a change that buys nothing:
+
+4. **Wall time better, not merely routing not-worse.** Paired routed dispatch on one binary with the
+   decline toggled, sliced to the compose acquire. The 2026-08-04 run reads 1.00 — the plan has to earn
+   more than it loses to its own mispicks, and regret cannot see the earning half.
