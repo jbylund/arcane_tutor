@@ -89,20 +89,45 @@ So the flat charge of 1 is a defensible estimator (exact on 83/168, mean error 0
 cost a popcount per plane — the walk's own price — so the honest options are to leave it, or to make
 the executor report a realized bucket count and revisit with a direction-aware model.
 
-### OW/usd: a genuine feature drift, and the only one that gets worse with scale
+### OW/usd: diagnosed — the feature is corpus-invariant and the work is not
 
-0.88 at 1x, degrading monotonically to 0.18 by 5x — the feature progressively under-counts as the
-corpus grows, by 5x over the range. Unlike Perm's, this is the feature itself drifting, so it is
-fixable rather than a rate story. Not yet diagnosed; the usd walk steps value runs in the price index,
-and `printings_walked`'s uniform-density assumption is the obvious suspect.
+0.88 at 1x degrading monotonically to 0.18 at 5x, and it is exactly a `1/N` law:
+
+| corpus | measured | `0.88 / N` | ratio |
+| --- | --: | --: | --: |
+| 1x | 0.88 | 0.88 | 1.00 |
+| 2x | 0.44 | 0.44 | 1.00 |
+| 3x | 0.30 | 0.29 | 1.02 |
+| 4x | 0.23 | 0.22 | 1.05 |
+| 5x | 0.18 | 0.18 | 1.02 |
+
+**The feature cannot move with the corpus and the work must.** `printings_walked` is
+`page_span / match_rate * WALK_LENGTH_BIAS`; under replication `matches` and `n_printings` scale
+together so `match_rate` is unchanged, and `page_span` is a page, so the feature is *constant* across
+the whole axis. Meanwhile `collect_orderby_page` collects **whole value buckets** that the page window
+overlaps — and replication puts N times as many printings on each distinct price — so the realized
+count scales linearly. Constant over linear is `1/N`, which is what the table shows.
+
+**The fix follows from that: the walk's cost has a floor of one bucket.** Charge
+`max(printings_walked, printings per distinct value)`, exactly the shape `orderby_walk_scan` already
+gives the rarity walk, with the average bucket size available from the price index and its
+`RangeCardCounts.values` length (4,133 distinct usd values at 1x, so ~23.5 printings per value; ~118 at
+5x).
+
+That `max` form also **predicts the 0.5x outlier**, which is the reason to believe it. 0.5x measures
+0.42 where the `1/N` law extrapolates 1.76 — the law breaks below 1x. Under `max(page, bucket)` it
+should: at half corpus the average bucket falls below a page, so the page term dominates and the
+bucket floor stops binding. A model that explains the one point that does not fit the trend is worth
+more than one fitted to the trend.
 
 ## Where this stands
 
 Nothing shipped on this branch yet. Order to take it in:
 
-1. **OW/usd's drift.** Now the only one of the three that is both a real feature defect and worsens
-   with corpus growth (0.88 at 1x, 0.18 at 5x). Undiagnosed; `printings_walked`'s uniform-density
-   assumption over the price index is the obvious suspect.
+1. **OW/usd's bucket floor.** Diagnosed above, fix identified, not implemented. Charge
+   `max(printings_walked, n_printings / n_distinct_values)`. Needs the usual gate, and note the
+   direction: it RAISES compose's cost on this branch, and every raise on this arm so far has lost
+   argmins compose deserved — so it wants the Perm/OW cells watched, not just the total.
 2. **OW/rarity.** Attempted and declined — see above. Revisit only with a direction-aware model, and
    only if the tail (27% of cells undercharged 3-4x) shows up in regret. It has not yet.
 3. **Perm.** Leave it. 1.19 at production scale, and the drift is cache, not model.
