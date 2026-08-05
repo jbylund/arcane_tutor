@@ -113,7 +113,10 @@ CURRENT: dict[str, list[float]] = {
     # GATHER_GROUP_PER_PRINTING sits between the bit-test and push columns, matching design_row.
     # Added when the artwork tail was traced to the grouping arm's work being charged at the bit-test
     # rate; its 1.5 start is a physical guess (a struct read plus prefer_score), meant to be fitted.
-    "PrintingCompose": [1.93, 0.48, 1.93, 1.07, 0.58, 2.19, 13.22, 0.38, 1.5, 3.39, 163.56],
+    # BUILD_PER_PRINTING (second to last) is the full-width bitmap build, Gather-arm only: it was
+    # measured directly over a 10x corpus axis rather than fitted here, so a pooled fit disagreeing
+    # with 0.0835 is a signal to re-examine, not to paste.
+    "PrintingCompose": [1.93, 0.48, 1.93, 1.07, 0.58, 2.19, 13.22, 0.38, 1.5, 3.39, 0.0835, 163.56],
 }
 
 
@@ -309,6 +312,10 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
                 float(acq["compose_scan_printings"]) if gather else 0.0,
                 float(acq.get("gather_group_printings", 0)) if gather else 0.0,
                 matches if gather else 0.0,
+                # The full-width printing-bitmap build, charged on the Gather arm only -- Perm and
+                # OrderbyWalk had their rates fitted with it already absorbed. See
+                # `COMPOSE_BUILD_PER_PRINTING_NS` in cost.rs for why it is scoped rather than shared.
+                float(acq["n_printings"]) if gather else 0.0,
                 1.0,
             ],
             [
@@ -322,6 +329,7 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
                 "GATHER_BITTEST_PER_PRINTING",
                 "GATHER_GROUP_PER_PRINTING",
                 "GATHER_PUSH_PER_MATCH",
+                "BUILD_PER_PRINTING",
                 "FIXED",
             ],
             0.0,  # no residual-floor term in this arm, so nothing comes off the target

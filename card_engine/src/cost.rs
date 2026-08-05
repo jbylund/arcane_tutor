@@ -658,6 +658,44 @@ const COMPOSE_GATHER_GROUP_PER_PRINTING_NS: f64 = 1.5;
 /// Per-query setup for the compose fastpath.
 const COMPOSE_FIXED_COST_NS: f64 = 163.56;
 
+/// The full-width printing-bitmap build, which no other term charges.
+///
+/// `compose_printing_bits` allocates an `n_printings`-wide bitmap and ANDs each child into it,
+/// `printing_bits_to_card_bits` projects it, and `bitmap_card_ids` walks the card bitmap to extract
+/// set ids. All three are O(corpus width) whatever the query matches, and `popcount_words` charges
+/// only the **result-space** bitmap, so the printing-space build was free in the model.
+///
+/// Measured as `meas - oracle_pred` on the gather population — realized counters substituted for every
+/// feature, shipped rates untouched, so what is left is work no term charges for. Nine corpus sizes
+/// from 0.5x to 5x, built by replicating the corpus and sampling the fractional part by oracle CARD
+/// (sampling printings would thin each card's span and change the printings-per-card distribution,
+/// which is the quantity under test), 33 cells each:
+///
+///     residual = -107 ns + 0.0835 ns/printing     R^2 = 0.998
+///
+/// The intercept is zero within noise: this is a width term, not a fixed cost, and
+/// `COMPOSE_FIXED_COST_NS` above stays as it is. `ns/printing` varies 1.13x over that 10x range with
+/// no trend — the bitmap crosses 6 KB to 59 KB, L1 to L2, without the rate moving — so the linear
+/// shape holds and this constant is not specific to the production corpus.
+///
+/// **Scoped to the Gather arm deliberately, though the work is physically a BUILD cost** shared by all
+/// three paging branches. `Perm` and `OrderbyWalk` had their rates fitted with this cost already
+/// absorbed into them, so charging it there as well double-counts: measured per branch over six sizes,
+/// `predicted/measured` on Perm goes 1.193 -> 1.544 at the production corpus when this term is added.
+/// Gather is the only branch whose error is a clean level (flat 0.52-0.55 across the whole 10x range),
+/// which is what makes a single constant the right instrument for it — and it fixes it, to 0.88-0.99.
+/// Widening this to the build section requires fixing `Perm`/`OrderbyWalk` first, and those two drift
+/// in OPPOSITE directions with corpus size while sharing their rates, so it is not a refit.
+/// See docs/issues/local-engine-sparse-compose-gather.md.
+///
+/// This DOES move production routing, and an earlier draft of this comment claimed it did not. The
+/// sparse-permutation case is declined, but `compose_paging_with_total` still returns `Gather` whenever
+/// there is no card-space permutation and the query is not printing-mode on usd/rarity — card and
+/// artwork on a usd/rarity orderby, which is ordinary traffic (13 of 45 cells in a quick sweep). So it
+/// carries a regret gate like any other arm change, not the free pass "it is behind the decline" would
+/// have bought.
+const COMPOSE_BUILD_PER_PRINTING_NS: f64 = 0.0835;
+
 /// Printings a forward-permutation / orderby walk steps over to fill one page: `page_span` result
 /// rows at density `match_rate`. Derived rather than stored, and exposed so a harness can check it
 /// against the `printing_span` counter -- the Perm and OrderbyWalk paging branches are priced
@@ -739,6 +777,7 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
                         + f64::from(f.compose_scan_printings) * COMPOSE_GATHER_BITTEST_PER_PRINTING_NS
                         + f64::from(f.gather_group_printings) * COMPOSE_GATHER_GROUP_PER_PRINTING_NS
                         + matches * COMPOSE_GATHER_PUSH_PER_MATCH_NS
+                        + f64::from(f.n_printings) * COMPOSE_BUILD_PER_PRINTING_NS
                 }
                 // The fastpath will refuse this query, so there is no page term to charge. Infinity
                 // keeps the plan out of the argmin entirely — routing to a plan that returns `None`
