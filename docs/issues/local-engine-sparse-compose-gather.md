@@ -140,14 +140,58 @@ summary is *neutral in time, worse in routing*, which is not a trade worth takin
 slightly worse than the gather, as expected — the walk pays per permutation entry and a sparse total
 means stepping a long way to fill a page, where the gather is O(total).)
 
-## Prerequisite
+## Prerequisite: what the 0.40× actually is
 
-Price the compose `Gather` path. The 2026-08-04 measurement above narrows what that means: on the
-sparse population the arm reads a consistent **0.27–0.53 of real** across every case measured, which is
-a level error rather than a missing dependence on some feature — the ordering within the population is
-right, the magnitude is halved. The older "under by ~4-7x at p10 and over by 178x at p99" spanned a
-wider population that included broad queries; both readings should be reconciled before picking a term
-to move. Progress on the compose arm generally is tracked in
+Price the compose `Gather` path. Diagnosed 2026-08-04, features before rates, over 33–38 cells with the
+decline toggled off (15 trials each).
+
+**Features first, and they are a minority of it.** Each priced feature against its own realized counter:
+
+| feature | realized counter | median used/realized |
+| --- | --- | --: |
+| `eval_domain` | `cards_visited` | 0.70× |
+| **`compose_scan_printings`** | `printings_examined` | **0.15×** |
+| `matches` | `matches_pushed` | 0.88× |
+
+`compose_scan_printings` is off by 6.7×, and `gather_composed_page`'s own comment already predicted
+exactly this: the feature is the composed bitmap's **popcount**, on the grounds that compose "walks the
+set bits", but the loop iterates `start..end` of every candidate card and bit-tests each printing, so
+the realized quantity is the candidate cards' **span**. It is the same printings→distinct-rows
+projection error behind `eval_domain`'s 0.70×.
+
+An ORACLE re-pricing — realized counters substituted, every shipped rate untouched — settles the
+sequencing:
+
+| features | median pred/meas |
+| --- | --: |
+| shipped | **0.40×** |
+| `compose_scan_printings` corrected alone | 0.47× |
+| all three realized | **0.57×** |
+
+So perfect features close about 40% of the gap and leave 1.75×. That is the **opposite** of the P3/P4
+result in [the loop-phase doc](./local-engine-loop-phase-measurement.md), where the oracle reached 83%
+and features were the whole story — worth noting before reusing that conclusion on a different arm.
+
+**What is left is a missing term, not a level error.** The oracle column spans 0.32–0.79, so no single
+multiplier fits it. Taking `meas − oracle_pred` gives a residual of **7,639 ns median** (stdev 1,720)
+against a `COMPOSE_FIXED_COST_NS` of 163.56 ns. Re-running the whole measurement on a one-third corpus
+(32,402 printings) gives 4,210 ns — a factor of 1.81 where the corpus factor is 3.0, so it is neither
+fixed nor proportional. A two-point fit:
+
+    residual ≈ 2,496 ns  +  0.0529 ns/printing   (3.39 ns per 64-bit word)
+
+Both halves are plausible as *unmodelled work* rather than mis-levelled rates. `compose_printing_bits`
+allocates a full-width printing bitmap and ANDs each child into it — O(`n_printings`/64) per leaf,
+charged nowhere, since `popcount_words` counts the **result-space** bitmap, not the printing-space
+build. And `bitmap_card_ids` walks the whole card bitmap to extract set ids whatever the popcount.
+
+Two caveats before anyone moves a constant on this. It is a **two-point fit**, and the loop-phase doc's
+own saturation finding is the standing warning against trusting those — a third size is the next
+measurement, not the constant. And the older reading here ("under by ~4-7× at p10 and over by 178× at
+p99") spanned a wider population including broad queries; the two need reconciling, because a term
+added to fix the sparse end will move the broad end too.
+
+Progress on the compose arm generally is tracked in
 [the cost-model doc](local-engine-cost-model-agreement.md).
 
 ## Acceptance
