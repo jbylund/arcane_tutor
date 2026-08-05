@@ -204,7 +204,30 @@ Nothing shipped on this branch yet. Order to take it in:
    the cause is worth finding before the fix lands, because nothing in the change should reach a
    non-`OrderbyWalk` row.
 
-2. **Clumping is the real ceiling for both walks**, and it is one problem rather than two: `Perm`'s
+2. **OW/rarity: one rate serving two operations, plus a 124x feature over-charge.** Tested and
+   confirmed. `walk_rarity_orderby_page` produces two physically different buckets and reports both in
+   the same unit — a PLANE bucket (common/uncommon/rare/mythic) ANDs `words_per_plane` words of the whole
+   corpus and reports `wpp * 64` printings covered; a POSTINGS bucket (special/bonus) walks its own id
+   list and reports its length. Both are charged `COMPOSE_WALK_STEP_NS`. Split by which kind a query
+   consumes:
+
+   | group | n | charged/examined | realized ns per reported printing |
+   | --- | --: | --: | --: |
+   | plane-only | 56 | 0.50 | **1.069** |
+   | postings-only | 8 | **124.43** | **3.792** |
+   | mixed | 32 | 0.33 | 1.413 |
+
+   The two operations differ **3.5x** in realized rate and the shipped 0.58 is under both. That is the
+   rate half, and a constant is the right instrument because the error is flat across the corpus axis.
+
+   The bigger half is the feature: `orderby_walk_scan = n_printings` charges a whole corpus pass even
+   for `r:special`/`r:bonus`, whose walk only touches a short postings list — **124x over**. Fixable
+   without a popcount, because it is a filter-SHAPE question: a rarity equality on a postings int
+   (`special`=4/`bonus`=5) can never consume a plane bucket, and the acquire can see that from the
+   filter. That the aggregate read a dead-flat 0.67 was these two errors, in opposite directions,
+   mixing — which is why splitting the population was the necessary step and a median was not.
+
+3. **Clumping is the real ceiling for both walks**, and it is one problem rather than two: `Perm`'s
    `printings_walked` divides by the same global match rate and carries the same 10x spread. Neither
    branch gets low-error without it. This is the item to open next if the goal is a well-behaved arm
    rather than a well-behaved constant.
