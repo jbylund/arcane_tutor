@@ -143,7 +143,6 @@ def term_names() -> dict[str, list[str]]:
         "popcount_words": 0,
         "compose_scan_printings": 0,
         "gather_group_printings": 0,
-        "orderby_walk_scan": 0,
     }
     return {plan: fitmod.design_row(plan, dummy, 100, 0)[1] for plan in (P3, P4)}
 

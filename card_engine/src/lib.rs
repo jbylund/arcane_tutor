@@ -8236,7 +8236,6 @@ fn mk_plan_feats(
         artwork_seen_cards: if matches!(params.mode, Mode::Artwork) { eval_domain } else { 0 },
         compose_scan_printings: 0, // set by every branch that costs a PrintingCompose (its own, or as a competitor)
         gather_group_printings: 0, // only the compose branch, and only when its grouping arm runs
-        orderby_walk_scan: 0,      // only the compose branch, and only for a plane-bucket orderby walk
     }
 }
 
@@ -8656,10 +8655,6 @@ fn acquire_plan_features(
         feats.project_printings = project as u32;
         feats.popcount_words = popcount_words as u32;
         feats.compose_scan_printings = (printing_matches as f64 * COMPOSE_GATHER_SPAN_PER_MATCH) as u32;
-        // A rarity orderby walk pays a whole one-hot plane per bucket, so its floor is the corpus
-        // however selective the filter is. `usd` walks small value runs instead and keeps the shared
-        // page-fill term. See `PlanFeatures::orderby_walk_scan`.
-        feats.orderby_walk_scan = if matches!(sort_col, SortCol::Rarity) { n_printings } else { 0 };
         // The gather's grouping arm runs for artwork always, and for card only under a non-default
         // prefer -- card/default takes the early-break arm and never groups. Printing mode gets 0
         // because its push term already rides the printing count. Driven by the PRE-dedup printing
@@ -10065,7 +10060,6 @@ fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<B
         ("artwork_seen_cards", g.artwork_seen_cards),
         ("compose_scan_printings", g.compose_scan_printings),
         ("gather_group_printings", g.gather_group_printings),
-        ("orderby_walk_scan", g.orderby_walk_scan),
         // Derived inside plan_cost rather than stored, and exposed because the Perm/OrderbyWalk
         // paging branches are priced entirely on it and nothing else can check them.
         ("printings_walked", cost::printings_walked(g) as u32),

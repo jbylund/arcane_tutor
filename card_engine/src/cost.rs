@@ -196,21 +196,6 @@ pub(crate) struct PlanFeatures {
     /// there IS the printing count) and for card mode under `Prefer::Default`, which takes the
     /// early-break arm instead and never groups.
     pub gather_group_printings: u32,
-    /// Printings the #744 orderby walk's BUCKET SCAN covers before the page can fill, or `0` when the
-    /// walk is not the branch (or its buckets are cheap value runs).
-    ///
-    /// The Perm and OrderbyWalk branches shared `printings_walked` — `page_span / match_rate`, a
-    /// page-fill length in MATCH units. That describes the permutation walk and does not describe a
-    /// bucket walk at all: `walk_rarity_orderby_page`'s interior buckets are one-hot PLANES, so a
-    /// single bucket ANDs `words_per_plane` words of the whole corpus whether two matches survive or
-    /// twenty thousand. Measured against the raw units actually scanned, the shared formula reads a
-    /// median 0.25 with spread 400 — it under-charges the walk ~4x, and under-charging is what
-    /// over-picks a plan.
-    ///
-    /// `usd` needs none of this: its buckets are value runs off the range index, small and
-    /// proportional to matches, which is the shape `printings_walked` already has. So this is `0`
-    /// there and the shared term stands.
-    pub orderby_walk_scan: u32,
     /// Which of `PrintingCompose`'s three paging strategies will actually run (see `ComposePaging`),
     /// decided the same way `printing_compose_fastpath` decides. The three have different cost shapes
     /// — the permutation walk and the #744 orderby-index walk are both offset-dependent (fill the page
@@ -760,9 +745,14 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
                 // which is exactly why the COMPOSE_GATHER breadth gate is bypassed for it — broad is its
                 // best case, not its worst.
                 super::ComposePaging::Perm | super::ComposePaging::OrderbyWalk => {
-                    // `orderby_walk_scan` is 0 for Perm and for the usd walk, so this is the shared
-                    // page-fill term unless a bucket scan dominates it — see the field's doc.
-                    printings_walked.max(f64::from(f.orderby_walk_scan)) * COMPOSE_WALK_STEP_NS  // walk to fill the page
+                    // One term for both branches, and there used to be a second: `orderby_walk_scan`
+                    // floored the rarity walk at `n_printings`, because a rarity bucket was a one-hot
+                    // PLANE and ANDing one covered the whole corpus however few matches survived.
+                    // Both walks now step a `PrintingValueIndex` entry at a time, so there is no
+                    // bucket granularity left to express and the floor was measured 146x OVER on
+                    // `border:black` ordered by rarity (58.3 us charged against 0.4 us realized).
+                    // Deleting the feature is the fix; `printings_walked` prices both walks.
+                    printings_walked * COMPOSE_WALK_STEP_NS  // walk to fill the page
                         + limit * COMPOSE_WALK_EMIT_PER_ROW_NS  // emit one page of rows
                 }
                 // gather_composed_page: visits every candidate (eval_domain, same rate GatheredScan's
