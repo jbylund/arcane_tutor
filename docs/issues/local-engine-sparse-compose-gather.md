@@ -174,22 +174,80 @@ and features were the whole story — worth noting before reusing that conclusio
 
 **What is left is a missing term, not a level error.** The oracle column spans 0.32–0.79, so no single
 multiplier fits it. Taking `meas − oracle_pred` gives a residual of **7,639 ns median** (stdev 1,720)
-against a `COMPOSE_FIXED_COST_NS` of 163.56 ns. Re-running the whole measurement on a one-third corpus
-(32,402 printings) gives 4,210 ns — a factor of 1.81 where the corpus factor is 3.0, so it is neither
-fixed nor proportional. A two-point fit:
+against a `COMPOSE_FIXED_COST_NS` of 163.56 ns.
 
-    residual ≈ 2,496 ns  +  0.0529 ns/printing   (3.39 ns per 64-bit word)
+### Measured over a controlled 10x corpus axis: it is per-printing, and there is no fixed part
 
-Both halves are plausible as *unmodelled work* rather than mis-levelled rates. `compose_printing_bits`
-allocates a full-width printing bitmap and ANDs each child into it — O(`n_printings`/64) per leaf,
-charged nowhere, since `popcount_words` counts the **result-space** bitmap, not the printing-space
-build. And `bitmap_card_ids` walks the whole card bitmap to extract set ids whatever the popcount.
+`upscale_corpus.py --copies N` replicates the corpus with rewritten identities, so the value
+distribution is preserved exactly and both `n_printings` and `n_cards` scale by N. Fractional steps need
+a partial copy sampled by **oracle card**, not by printing — thinning each card's span would change the
+printings-per-card distribution, which is the quantity under test. `CARD_ENGINE_STREAM_MIN_MATCHES`
+scaled with the corpus keeps the sparse population from evaporating as results scale (without that, the
+cell count fell 33 -> 26 -> 13 and the 4x stdev was 5x its median).
 
-Two caveats before anyone moves a constant on this. It is a **two-point fit**, and the loop-phase doc's
-own saturation finding is the standing warning against trusting those — a third size is the next
-measurement, not the constant. And the older reading here ("under by ~4-7× at p10 and over by 178× at
-p99") spanned a wider population including broad queries; the two need reconciling, because a term
-added to fix the sparse end will move the broad end too.
+Nine sizes, 0.5x to 5x, 33 cells each:
+
+| n_printings | bitmap | residual | fitted | meas/fit | ns/printing |
+| --: | --: | --: | --: | --: | --: |
+| 48,161 | 6 KB | 4,045 | 3,914 | 1.033 | 0.0840 |
+| 97,206 | 12 KB | 7,597 | 8,009 | 0.949 | 0.0782 |
+| 194,412 | 24 KB | 15,276 | 16,126 | 0.947 | 0.0786 |
+| 339,779 | 41 KB | 28,724 | 28,264 | 1.016 | 0.0845 |
+| 486,030 | 59 KB | 40,459 | 40,475 | 1.000 | 0.0832 |
+
+    residual = -107 ns  +  0.0835 ns/printing   =  5.34 ns per 64-bit word     R^2 = 0.99832
+
+**The intercept is zero within noise.** There is no missing *fixed* cost — the whole 7.6 us is a
+per-corpus-width build term. And `ns/printing` varies only **1.13x across a 10x range with no trend**,
+which rules out the cache story worth worrying about here: the printing bitmap goes 6 KB (L1) to 59 KB
+(L2) over this sweep without the rate moving, so linear is the right shape and 5.34 is not
+corpus-specific.
+
+**Retracted: the earlier two-point fit** (2,496 ns fixed + 0.0529 ns/printing). Its small point was
+`head -32402` of the corpus — the first third of the file, not a uniform sample — and the spurious fixed
+term came entirely from that. Sampling by card is what fixed it.
+
+The mechanism matches: `compose_printing_bits` allocates a full-width printing bitmap and ANDs each
+child into it, `printing_bits_to_card_bits` projects it, and `bitmap_card_ids` walks the card bitmap to
+extract set ids — all O(corpus width), all charged nowhere, since `popcount_words` counts only the
+**result-space** bitmap.
+
+### But it cannot be added to the shared build section alone
+
+`compose_printing_bits` runs for every compose execution, so the physical argument says the term belongs
+in the build and applies to `Perm`/`OrderbyWalk` too. Measured over ten sizes, that is wrong — and
+wrong in a way only the many-point sweep shows. `PrintingCompose` `predicted/measured` on the Perm
+population, with and without the term applied:
+
+| corpus | pred/meas | + build term |
+| --- | --: | --: |
+| 0.5x | 1.244 | 1.482 |
+| **1.0x** | **1.185** | **1.449** |
+| 2.0x | 0.965 | 1.198 |
+| 3.0x | 0.916 | 1.152 |
+| 3.5x | 0.838 | 1.035 |
+| 4.5x | 0.834 | 1.046 |
+| 5.0x | 0.855 | 1.061 |
+
+**Both curves SATURATE past ~3.5x** — the same phenomenon [the loop-phase
+doc](./local-engine-loop-phase-measurement.md) already records, and the reason a linear term shifts this
+curve instead of flattening it. With the term the asymptote is ~1.045 (right) against ~0.845 (18% under)
+without, so the term is real here as well. But at the **production** size it makes Perm worse, 1.185 ->
+1.449, which is what happens when an arm's rates were fitted with the cost already absorbed into them.
+
+So the change is one of:
+
+1. **Gather-scoped term.** Lowest risk, and it changes no production routing at all, because the Gather
+   branch is declined in production — it is purely a prerequisite for the sparse-gather work.
+2. **Build-wide term plus a refit** of `COMPOSE_WALK_STEP_NS` (0.58) and `COMPOSE_WALK_EMIT_PER_ROW_NS`
+   (2.19) in the same commit. Correct, but it moves every compose query and needs its own regret gate.
+
+Option 1 first. Option 2 is a real improvement — Perm is 18% under at scale and would stay so — but it
+is a separate change with a separate gate, and this branch has now twice demonstrated that a partial
+accuracy fix on this arm loses regret.
+
+One older reading still needs reconciling: "under by ~4-7x at p10 and over by 178x at p99" spanned a
+wider population including broad queries, so a term fixed on the sparse end will move the broad end too.
 
 ### Attempted and held: deriving the span feature from the candidate count
 
