@@ -1,5 +1,11 @@
 # `card_layout` has no index, so `is:flip` scans 31,508 cards to find 20
 
+**Deprioritized 2026-08-05** — layout predicates are judged rare in real use, which the traffic caveat
+below already flagged as the deciding unknown. Kept as a scoped, measured, ~4.5 KB fix if that judgement
+ever changes; do not pick it up ahead of
+[the artwork-mode walk gap](./local-engine-orderby-walk-modes.md), which is 136 of the 200 slowest
+queries against this one's 7.
+
 `is:flip` matches **20 oracle cards**. It takes **187 µs** and scans the whole corpus to get there,
 because `card_layout_id` — an interned string on `OracleCard`, 14 distinct values — has no index and no
 `narrow_rec` arm. `is:dfc` is the worst at **426 µs**.
@@ -118,7 +124,7 @@ from the other direction: the three behave identically because they now share a 
 
 ## Status
 
-Not implemented. The corpus distribution and every timing above are measured on the production corpus;
+Not implemented, and deprioritized — see the note at the top. The corpus distribution and every timing above are measured on the production corpus;
 the traffic weight is the open question and the reason this is not already done.
 
 `is:` covers more than layout, and the rest is separate work: `is:new`/`is:old` resolve to
