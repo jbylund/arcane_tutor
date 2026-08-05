@@ -227,7 +227,18 @@ Nothing shipped on this branch yet. Order to take it in:
    filter. That the aggregate read a dead-flat 0.67 was these two errors, in opposite directions,
    mixing — which is why splitting the population was the necessary step and a median was not.
 
-3. **Clumping is the real ceiling for both walks**, and it is one problem rather than two: `Perm`'s
+3. **Clumping is NOT the ceiling — see
+   [local-engine-compose-paging-cost-based.md](./local-engine-compose-paging-cost-based.md).** An earlier
+   revision of this doc said it was. The reframing: `compose_paging_with_total` picks `OrderbyWalk` by
+   SHAPE for printing mode on usd/rarity, so compose has no argmin between it and `Gather` even though
+   `plan_cost` has both arms. A router does not need to know how bad a clumped walk is, only that it is
+   bad — and `Gather` is O(matches), so it gets safer exactly as the walk gets worse. That is a far
+   weaker requirement than the density-along-the-sort-order feature the paragraph below asks for.
+
+   The full rarity-walk analysis, including why postings for mythic would be ~6x slower rather than
+   faster, is in [local-engine-rarity-walk-cost.md](./local-engine-rarity-walk-cost.md).
+
+4. **Clumping remains the ceiling on PRICING the walk**, and it is one problem rather than two: `Perm`'s
    `printings_walked` divides by the same global match rate and carries the same 10x spread. Neither
    branch gets low-error without it. This is the item to open next if the goal is a well-behaved arm
    rather than a well-behaved constant.
