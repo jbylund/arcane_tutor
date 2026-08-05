@@ -108,26 +108,45 @@ the whole axis. Meanwhile `collect_orderby_page` collects **whole value buckets*
 overlaps — and replication puts N times as many printings on each distinct price — so the realized
 count scales linearly. Constant over linear is `1/N`, which is what the table shows.
 
-**The fix follows from that: the walk's cost has a floor of one bucket.** Charge
-`max(printings_walked, printings per distinct value)`, exactly the shape `orderby_walk_scan` already
-gives the rarity walk, with the average bucket size available from the price index and its
-`RangeCardCounts.values` length (4,133 distinct usd values at 1x, so ~23.5 printings per value; ~118 at
-5x).
+**A one-bucket floor was the obvious fix. Implemented, measured, and it does not bind — reverted.**
+`max(printings_walked, printings per distinct value)`, the same shape `orderby_walk_scan` already gives
+the rarity walk, with the bucket size from the price index and its `RangeCardCounts.values` length. The
+feature grade did not move at all (0.88 / 0.44 / 0.18, unchanged), because the floor is far too small:
 
-That `max` form also **predicts the 0.5x outlier**, which is the reason to believe it. 0.5x measures
-0.42 where the `1/N` law extrapolates 1.76 — the law breaks below 1x. Under `max(page, bucket)` it
-should: at half corpus the average bucket falls below a page, so the page term dominates and the
-bucket floor stops binding. A model that explains the one point that does not fit the trend is worth
-more than one fitted to the trend.
+| corpus | `printings_walked` | floor | charged | realized `examined` |
+| --- | --: | --: | --: | --: |
+| 1x | 99 | 19 | 99 | **112** |
+| 5x | 99 | 98 | 99 | **560** |
+
+`examined` scales exactly 5x while `charged` cannot move, and at 5x one bucket is 98.6 printings, so
+`ceil(99 / 98.6) = 1` bucket predicts ~99 and not 560. **The walk consumes the same ~5.7 buckets at both
+sizes** — the bucket COUNT is corpus-invariant and the bucket SIZE scales, which is the 1/N law, but it
+means the count is not `printings_walked / bucket_size` and the `max` shape cannot express it.
+
+So the mechanism (whole-bucket collection, bucket size scaling with the corpus) is confirmed and the
+*model* for how many buckets is still unknown. That is the open question, and the next step is reading
+`collect_orderby_page` for what actually terminates the bucket loop — it is documented as skipping whole
+buckets by match count up to `page_offset` and then collecting the buckets the window overlaps, which
+should need ~1 bucket at 5x and demonstrably does not.
+
+One case worth carrying into that: `r:mythic` at `orderby=usd` charges 947 against a realized 31,698 at
+1x and 129,075 at 5x — a 33x undercharge, far worse than the broad queries, and a sparse-match regime
+(8,924 matches) where many buckets are needed to fill a page. Whatever explains the bucket count has to
+explain that cell too.
 
 ## Where this stands
 
 Nothing shipped on this branch yet. Order to take it in:
 
-1. **OW/usd's bucket floor.** Diagnosed above, fix identified, not implemented. Charge
-   `max(printings_walked, n_printings / n_distinct_values)`. Needs the usual gate, and note the
-   direction: it RAISES compose's cost on this branch, and every raise on this arm so far has lost
-   argmins compose deserved — so it wants the Perm/OW cells watched, not just the total.
+1. **OW/usd's bucket COUNT.** The mechanism is confirmed (whole-bucket collection, bucket size scaling
+   with the corpus, count invariant) and the one-bucket floor was implemented and reverted for not
+   binding. What is missing is why the count is ~5.7 and corpus-invariant: read
+   `collect_orderby_page`'s termination, and make it explain the `r:mythic` cell (947 charged against
+   31,698 realized) as well as the broad ones.
+
+   `bench_regret_matrix` now slices by compose paging branch, which is the instrument this needs — it
+   already shows OrderbyWalk as the worst-routed compose branch (miss% 12% against Perm's 3%), so the
+   defect is visible in routing and not only in the feature.
 2. **OW/rarity.** Attempted and declined — see above. Revisit only with a direction-aware model, and
    only if the tail (27% of cells undercharged 3-4x) shows up in regret. It has not yet.
 3. **Perm.** Leave it. 1.19 at production scale, and the drift is cache, not model.
