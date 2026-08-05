@@ -177,11 +177,29 @@ explain that cell too.
 
 Nothing shipped on this branch yet. Order to take it in:
 
-1. **Ship the run-boundary model for OW/usd.** Fully diagnosed and validated above; it makes the
-   feature scale with the corpus, which it currently cannot. Expect it to fix the broad cells and NOT
-   the `r:mythic` class — gate it on the compose-paging slice `bench_regret_matrix` now reports, since
-   OrderbyWalk is the worst-routed compose branch (miss% 12% against Perm's 3%) and is where any
-   movement will show.
+1. **The run-boundary model is implemented and held on an unresolved total.** Patch at
+   `scratchpad/run_boundary.patch` (`range_walk_run_boundary` plus a `SortCol::PriceUsd` arm in
+   `orderby_walk_scan`). What it does:
+
+   | | before | after |
+   | --- | --: | --: |
+   | OW/usd feature, 1x / 2x / 5x | 0.88 / 0.44 / 0.18 | **0.92 / 0.53 / 0.59** |
+   | drift across the range | 4.9x | **1.56x** |
+   | OrderbyWalk miss% | 12% | **11%** |
+   | OrderbyWalk mean | 2.55 µs | **2.40** |
+   | OrderbyWalk p90 | 2.75 | **2.25** |
+   | **total regret** | **1.32 µs** | **1.39** |
+
+   The targeted branch improves on every metric and the 1/N collapse is gone. The total moved +0.07 µs,
+   which OrderbyWalk cannot explain — it is 4% of rows and its own delta is -0.11 ms against a +3.4 ms
+   total. So either the total is noise or there is a second-order path I did not find, and a repeat on a
+   different seed settled nothing because the seed changes the query mix (1.51 with the change on seed 7,
+   with no seed-7 baseline to compare against).
+
+   **Resolving that is the next step, and it is cheap:** run both arms on three paired seeds. If the
+   total is noise, ship — the mechanism is validated and the targeted branch is better. If it is real,
+   the cause is worth finding before the fix lands, because nothing in the change should reach a
+   non-`OrderbyWalk` row.
 
 2. **Clumping is the real ceiling for both walks**, and it is one problem rather than two: `Perm`'s
    `printings_walked` divides by the same global match rate and carries the same 10x spread. Neither
