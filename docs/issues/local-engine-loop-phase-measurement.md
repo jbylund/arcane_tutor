@@ -1350,9 +1350,10 @@ as an `eval_domain` idea — it was the wrong motivation for the right change.
 Measured, the fusion turned out to be worth more than a prerequisite, for a reason with nothing to do with
 compose: the narrowing already handles a selective range and the `And` never reaches it, so
 `usd>=0.42 usd<=0.43` cost **1,146.8 µs** against **26.7 µs** for a one-sided range returning *more* rows.
-The narrowing half shipped in `4991759` (15–33× on that population, regret 1.42 → 1.35 µs); the compose half,
-which is what sparse-gather actually needs, has not moved. Both, with the evidence, the noise analysis behind
-the sparsity gate, and the order to attempt the rest in:
+Both halves have now shipped — `4991759` for the narrowing (15–33× on that population) and `7374e19` for
+compose's builders, where the estimate was 38.5× off a count that was two binary searches away. Together:
+regret 1.42 → 1.30 µs, and the fusible traffic slice to 0.81× of baseline. The evidence, the noise analysis
+behind the sparsity gate, and what is left (the sparse gather, now that its prediction is correct):
 [local-engine-two-sided-range-fusion.md](./local-engine-two-sided-range-fusion.md).
 
 ## A note on the test counts quoted throughout

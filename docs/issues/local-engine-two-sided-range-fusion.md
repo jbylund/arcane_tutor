@@ -1,8 +1,8 @@
 # Fusing a two-sided range into one index interval
 
 Split out of [local-engine-loop-phase-measurement.md](./local-engine-loop-phase-measurement.md),
-which found this while auditing plan-cost features and where the routing context lives. Shipped in
-`4991759`; the remaining work is the compose half, below.
+which found this while auditing plan-cost features and where the routing context lives. Shipped in two
+commits — `4991759` for the narrowing, `7374e19` for the compose builders.
 
 `narrow_rec`'s `And` arm narrows children independently and intersects the *results*, never the
 bounds. `usd>=0.42 usd<=0.43` therefore has both halves match most of the corpus, each trip
@@ -86,20 +86,66 @@ consumer computes `k` as `partition_point(hi) - partition_point(lo)` — that su
 and panics**. Clamping to `[lo, lo)` yields `k = 0`, which is what an empty range means and what every
 consumer already handles.
 
+## The compose half, and why it was not an estimator problem
+
+The narrowing fusion left `compose_printing_bits` and `compose_printing_estimate` reading the unfused
+shape, because both decompose `And` before any range guard. Their fold takes the **min** of the
+children's match counts — an intersection upper bound, and a bad one here. (An earlier draft of this
+doc said it *multiplied* the two sides. It does not: 33,862 is exactly `min(33,862, 48,559)`. The
+summing is in `scatter_printings`, 82,421 = 33,862 + 48,559.)
+
+| query | mode | estimated `matches` | true total | est/true |
+| --- | --- | --: | --: | --: |
+| `usd>=0.42 usd<=0.43` | printing | 33,862 | **879** | 38.5× |
+| | artwork | 20,411 | **837** | 24.4× |
+| | card | 14,281 | **763** | 18.7× |
+| `cn>=100 cn<=101` | printing | 35,589 | **568** | 62.7× |
+| **`usd>=200`** (control) | printing | 258 | 258 | **1.0×** |
+
+**The control is the whole finding.** A *one-sided* range already estimates at 1.0×, because the leaf
+arm reads `k` off two `partition_point` calls. So nothing here needed a better estimator — the exact
+count was two binary searches away the entire time, and the fold simply never saw the interval. The
+card-side projection is equally cheap: `range_card_counts_for` pairs each range index with an exact
+`RangeCardCounts` table over the same interval, which is why `usd>=0.42`/card reads 12,408 against a
+true 12,408.
+
+Shipped by reusing `fuse_and_range_children` with `sparse_only: false`. The compose builders want the
+fusion at every width, unlike narrowing: `range_leaf_bits` is an O(k) scatter, so one scatter of a
+subset cannot lose to two scatters of its supersets plus an AND, and the estimate is exact rather than
+an upper bound at any width. After: printing mode reads **1.0×**, card and artwork 0.6–0.9× — the same
+ratios their one-sided forms already carry, since those project printings to distinct rows.
+
+**The paging prediction follows for free, which is the part sparse-gather needed.** 879 is under
+`STREAM_MIN_MATCHES`, so `compose_paging_with_total` now predicts `Decline` where it predicted `Perm` —
+matching what the fastpath actually does — and the pick moves off `PrintingCompose` onto the plan that
+was already answering. That removes the blocker named in
+[local-engine-sparse-compose-gather.md](./local-engine-sparse-compose-gather.md): its `Decline` →
+`Gather` flip regressed routing purely because `compose_paging_for` branches on `result_total`, the
+estimate, and so could not tell a sparse query from a broad one. It can now.
+
+Cumulative over both fusion commits, paired routed dispatch on the same seed and stream:
+
+| | base | + narrowing | + compose |
+| --- | --: | --: | --: |
+| fusible slice (577 queries) | 111.6 ms | 95.9 ms | **90.5 ms (0.81×)** |
+| the untouchable slice | 915.6 ms | 897.6 ms | 925.8 ms (1.01, noise) |
+| regret mean | 1.42 µs | 1.35 µs | **1.30 µs** |
+
+Row identity for this half: 3,120 further cells, aimed at what only the compose builders fuse — broad
+intervals, each composable leaf kind (`border`/`r`/`f`/`set`/`watermark`/`type` and negations), two
+indexes fused inside one compose, unsatisfiable pairs, an `Or` of two fused `And`s. Harness:
+`scratchpad/composerows.py`.
+
 ## What is left
 
-**The compose half has not moved.** `eval_domain` still reads 31,508 on the bare two-sided form, and
-`printing_compose` is still the picked plan for it, because `is_printing_composable` and
-`compose_printing_bits` decompose `And` *before* any range guard — the fusion improves the narrowing
-path only. `compose_printing_estimate` therefore still multiplies the two sides instead of intersecting
-one interval (20,411 against a true 837), and `scatter_printings` still reads 82,421 for an 837-row
-answer. Doing the same fusion in those three functions is the next step, and it is the prerequisite
-[local-engine-sparse-compose-gather.md](./local-engine-sparse-compose-gather.md) is actually blocked
-on: that design's `Decline` → `Gather` flip regressed routing purely because `compose_paging_for`
-branches on `result_total`, the *estimate*, and so cannot tell a sparse query from a broad one.
+**Re-attempt the sparse gather**, now that the sparsity prediction is correct — the order the earlier
+attempt got wrong. Confirm `matches` holds on that population first, then flip `Decline` → `Gather`,
+then re-check regret.
 
-Order: fuse compose's three range paths, confirm `matches` on that population, then re-enable the
-gather behind the now-correct sparsity prediction, then re-check regret. Not before.
+**Watch `printing_compose`'s own slice.** Its share of routed queries went 27% → 31% and its mean
+regret 1.65 → 1.80 µs across this commit, even as the total fell. More queries route there now and the
+model prices them worse; that is the next thing to look at in the acquire, and it is the same cell the
+rarity widening flagged.
 
 **`eur` and `tix` cannot fuse at all**, because `resolve_numeric_range_leaf` covers only `price_usd` and
 `collector_number` (plus `DateCmp`/`YearCmp` reaching `released_at` directly). That is the same root
