@@ -235,16 +235,51 @@ curve instead of flattening it. With the term the asymptote is ~1.045 (right) ag
 without, so the term is real here as well. But at the **production** size it makes Perm worse, 1.185 ->
 1.449, which is what happens when an arm's rates were fitted with the cost already absorbed into them.
 
-So the change is one of:
+### It is not only Perm, and the three branches disagree about what is wrong
 
-1. **Gather-scoped term.** Lowest risk, and it changes no production routing at all, because the Gather
-   branch is declined in production — it is purely a prerequisite for the sparse-gather work.
-2. **Build-wide term plus a refit** of `COMPOSE_WALK_STEP_NS` (0.58) and `COMPOSE_WALK_EMIT_PER_ROW_NS`
-   (2.19) in the same commit. Correct, but it moves every compose query and needs its own regret gate.
+The sweep above conflated `Perm` with `OrderbyWalk`, and priced `Gather` by a different route (a residual
+on oracle features rather than `predicted/measured` on shipped ones), so the three were never comparable.
+Re-measured with one methodology — shipped features, `predicted_ns / plan_self_ns`, split by branch:
 
-Option 1 first. Option 2 is a real improvement — Perm is 18% under at scale and would stay so — but it
-is a separate change with a separate gate, and this branch has now twice demonstrated that a partial
-accuracy fix on this arm loses regret.
+| corpus | Perm (bare / +term) | OrderbyWalk | Gather |
+| --- | --: | --: | --: |
+| 0.5x | 1.259 / 1.630 | **0.571** / 1.243 | 0.544 / 0.992 |
+| 1.0x | 1.193 / 1.544 | 0.848 / 1.317 | 0.553 / 0.952 |
+| 2.0x | 0.926 / 1.223 | 0.953 / 1.358 | 0.540 / 0.944 |
+| 3.0x | 0.851 / 1.064 | 0.959 / 1.444 | 0.543 / 0.887 |
+| 5.0x | **0.721** / 0.924 | **0.997** / 1.314 | 0.518 / 0.876 |
+
+- **`Gather` is a clean LEVEL error** — flat at 0.52-0.55 across the whole 10x range, no scale dependence
+  whatsoever — and the build term fixes it (0.88-0.99). It is the branch the term was measured on and the
+  only one where it behaves as designed.
+- **`Perm` drifts DOWN 1.75x** (1.259 -> 0.721), and the term shifts the curve while leaving the same
+  1.76x drift. Perm's defect is not the build cost.
+- **`OrderbyWalk` drifts UP 1.75x** (0.571 -> 0.997) — the OPPOSITE sign. Nearly 2x under at half-corpus,
+  correct at 5x.
+
+**That rules out a shared refit.** Perm and OrderbyWalk both multiply `COMPOSE_WALK_STEP_NS` (0.58) and
+`COMPOSE_WALK_EMIT_PER_ROW_NS` (2.19), and no single refit of shared constants flattens two curves running
+in opposite directions. The shipped values are a compromise sitting where the two cross — near 1-2x, which
+is exactly why they look acceptable at the production corpus and diverge either side of it.
+
+And the cause is a FEATURE, not a rate, which is the rule this branch keeps re-confirming. The two
+branches multiply the same rate by different quantities: Perm uses `printings_walked` (`page_span /
+match_rate`, which does not scale with the corpus), while OrderbyWalk uses
+`max(printings_walked, orderby_walk_scan)` and `orderby_walk_scan` **is** `n_printings` for a rarity
+orderby. Same rate, differently-scaling features.
+
+### So the sequencing
+
+1. **Gather-scoped term.** Ready. Changes no production routing at all, because the Gather branch is
+   declined in production — purely a prerequisite for the sparse-gather work.
+2. **Perm and OrderbyWalk are separate investigations, features before rates.** The prerequisite for Perm
+   is a realized counter for `printings_walked`: it is an estimate with nothing to grade it against,
+   which is why an oracle pricing of that branch returns a stdev 15x its median. Same shape of blocker
+   `compose_scan_printings` was for Gather.
+
+A build-wide term plus a shared refit — the shape this was going to take — would have made the production
+corpus worse on Perm (1.193 -> 1.544) while fixing its asymptote, and over-corrected OrderbyWalk at every
+size. Ten points showed that; three would not have.
 
 One older reading still needs reconciling: "under by ~4-7x at p10 and over by 178x at p99" spanned a
 wider population including broad queries, so a term fixed on the sparse end will move the broad end too.
