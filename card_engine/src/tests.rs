@@ -7,7 +7,7 @@ use super::{
     build_artist_index, build_printing_value_index, build_arith_tuple_index, is_arith_tuple_route, range_candidates, narrow_candidates, narrow_candidates_exact, rarity_candidates,
     range_too_broad_to_narrow, run_query, run_query_with_plan, explain, explain_analyze, AcquireFacts, PlanEstimate, PlanTrial,
     acquire_plan_features, take_phase_stats, PagingTaken, CountSource, NarrowedRepr,
-    RangeCardCounts, build_range_card_counts, exact_result_total,
+    EXACT_VALUE_TOTALS, RangeCardCounts, ValueTotals, build_all_value_totals, build_range_card_counts, exact_result_total,
     PhysicalPlan, ComposePaging, trigram_candidates, finalize_trigram_index, PrintingValueIndex, NARROW_FLOOR,
     gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
     walk_printing_page, aligned_page, bare_range_bounds, probe_range_k, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
@@ -1650,6 +1650,10 @@ const FUZZ_OPS: [CmpOp; 6] = [CmpOp::Eq, CmpOp::Ne, CmpOp::Lt, CmpOp::Le, CmpOp:
 // `legal_plane_fixture`. Expected status is one of legal(0b01)/restricted(0b10)/
 // banned(0b11); NOT_LEGAL(0b00) is never a query leaf (the parser negates instead).
 const FUZZ_SHIFTS: [u8; 3] = [0, 2, 4];
+
+/// Card layouts the fuzz store assigns, cycled by card index. Weighted toward `normal` the way the
+/// corpus is (96% there), so the tail values stay small enough to exercise the sparse end.
+const FUZZ_LAYOUTS: [&str; 8] = ["normal", "normal", "normal", "normal", "transform", "split", "saga", "flip"];
 const FUZZ_STATUSES: [u64; 3] = [0b01, 0b10, 0b11];
 // Shifts a divergent card is allowed to disagree at. Deliberately NOT all of `FUZZ_SHIFTS`: production
 // has exactly one divergent format (`oldschool`, all 556 of the corpus's divergent cards) and the rest
@@ -2236,6 +2240,12 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     for i in 0..ncards {
         let mut card = stub_card(i as u128 + 1, fuzz_type_bits(rng), &[], &mut vocab);
         card.card_colors = rng.random_range(0..32u8);
+        // Layout, assigned DETERMINISTICALLY from the card index rather than by an rng draw: a draw here
+        // would shift the rng stream and so change every fuzz store in the suite. The skew mirrors the
+        // corpus, where `normal` is 96% of cards and the tail is what the `is:flip`-family predicates
+        // reach. Present at all because `exact_result_total`'s layout arm is otherwise untestable --
+        // this field sat at NONE_STR for every fuzz card.
+        card.card_layout_id = interner.intern(FUZZ_LAYOUTS[i % FUZZ_LAYOUTS.len()].to_string());
         // cmc on the corpus distribution (peaks at 2-3). Power/toughness/loyalty are *derived* from
         // it so bigger stats cost more and P~T track each other, and are present only on the
         // matching card kind: creatures have power/toughness, planeswalkers have loyalty.
@@ -2483,6 +2493,18 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     data.indexes.collector_number_cards = build_range_card_counts(&data.indexes.collector_number, &p2c, n_cards, &data.printings, &artwork_base);
     data.indexes.rarity_cards =
         build_range_card_counts(&data.indexes.rarity_printing_ordered, &p2c, n_cards, &data.printings, &artwork_base);
+    // Same load-bearing property as the count tables: left at its default, every per-value acquire would
+    // read an exact ZERO from an empty-but-"complete" table, which is a wrong total rather than a missing
+    // one. `format_shifts` comes from the data, not the global registry, so the keys match what `bind`
+    // resolved against.
+    data.indexes.value_totals = build_all_value_totals(
+        &data.cards,
+        &data.printings,
+        &p2c,
+        &data.strings,
+        &data.coll_vocab,
+        usize::from(data.indexes.max_artwork_groups),
+    );
     data.indexes.border_printing = build_border_printing_planes(&data.printings, &data.strings);
     data.indexes.rarity_printing = build_rarity_printing_planes(&data.printings);
     data
@@ -3255,6 +3277,82 @@ fn force_plan_differential_agreement() {
     }
 }
 
+/// The per-value `ValueTotals` table must be exact in all three spaces, for every value of every
+/// dimension it covers, against the same brute-force reference the fuzz differential uses.
+///
+/// Includes values the corpus does NOT contain, because absence from this table is claimed to be an
+/// exact ZERO rather than a declined shape — a claim that is only safe while the table is complete, and
+/// this is what checks it.
+#[test]
+fn value_totals_are_exact_in_all_three_spaces() {
+    // Asserts the arm ANSWERS, so it is meaningless with the arm switched off. Skipping rather than
+    // adapting: `CARD_ENGINE_EXACT_VALUE_TOTALS=0` exists to measure the estimator's behaviour, and a
+    // test that quietly passed either way would stop guarding the default.
+    if !*EXACT_VALUE_TOTALS {
+        return;
+    }
+
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(20_260_805);
+    let data = fuzz_store_n(&mut rng, 2_000);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_cards = archived.cards.len();
+
+    let mut leaves: Vec<(String, FilterExpr)> = Vec::new();
+    // "chartreuse" and "leveler" are absent from the store on purpose: the zero case.
+    for value in ["black", "white", "borderless", "gold", "yellow", "chartreuse"] {
+        leaves.push((format!("border:{value}"), FilterExpr::TextExact {
+            field: TextField::Border,
+            op: CmpOp::Eq,
+            value: value.to_string(),
+        }));
+    }
+    for value in ["normal", "transform", "split", "saga", "flip", "leveler"] {
+        leaves.push((format!("layout:{value}"), FilterExpr::TextExact {
+            field: TextField::Layout,
+            op: CmpOp::Eq,
+            value: value.to_string(),
+        }));
+    }
+    for (value, _) in FUZZ_FRAME_DATA {
+        leaves.push((format!("frame:{value}"), FilterExpr::CollectionCmp {
+            field: CollField::FrameData,
+            op: CmpOp::Ge,
+            value: value.to_string(),
+            value_id: None,
+        }));
+    }
+    for shift in FUZZ_SHIFTS {
+        for expected in 0..4u64 {
+            leaves.push((format!("legality shift={shift} status={expected}"), FilterExpr::Legality {
+                shift: Some(shift),
+                expected,
+            }));
+        }
+    }
+    // An unregistered format matches nothing in every space.
+    leaves.push(("legality shift=None".to_string(), FilterExpr::Legality { shift: None, expected: 1 }));
+
+    // Bound leaves, because `CollectionCmp` needs its `value_id` resolved before it can be counted.
+    let mut nonzero = 0usize;
+    for (label, leaf) in &leaves {
+        let mut f = leaf.clone();
+        f.bind(
+            &archived.coll_vocab, &archived.coll_vocab_sorted, &archived.artist_vocab,
+            &archived.mana_vocab, &archived.indexes.flavor, &archived.strings,
+        );
+        for (mode_label, mode) in [("printing", Mode::Printing), ("card", Mode::Card), ("artwork", Mode::Artwork)] {
+            let got = exact_result_total(&f, &archived.indexes, n_cards, mode)
+                .unwrap_or_else(|| panic!("{label} / {mode_label}: the table must answer, not decline"));
+            assert_eq!(got, fuzz_reference_total(archived, &f, mode_label), "{label} / {mode_label}");
+            nonzero += usize::from(got > 0);
+        }
+    }
+    // Otherwise a table that answered 0 to everything would pass every assertion above.
+    assert!(nonzero >= leaves.len(), "too many zero totals ({nonzero}); the sweep is not exercising the table");
+}
+
 /// `exact_result_total`'s rarity arm must be exact in all three spaces, for every op against every
 /// rarity value, against the same brute-force reference the fuzz differential uses.
 ///
@@ -3263,6 +3361,13 @@ fn force_plan_differential_agreement() {
 /// `r<=rare` is not a sum. This checks the prefix/suffix shape actually answers the ranges.
 #[test]
 fn exact_result_total_is_exact_for_rarity() {
+    // Asserts the arm ANSWERS, so it is meaningless with the arm switched off. Skipping rather than
+    // adapting: `CARD_ENGINE_EXACT_VALUE_TOTALS=0` exists to measure the estimator's behaviour, and a
+    // test that quietly passed either way would stop guarding the default.
+    if !*EXACT_VALUE_TOTALS {
+        return;
+    }
+
     use rand::SeedableRng;
     let mut rng = rand::rngs::SmallRng::seed_from_u64(20_260_805);
     let data = fuzz_store_n(&mut rng, 2_000);
@@ -6036,6 +6141,7 @@ fn bench_checked_vs_unchecked_access() {
         price_tix_cards: RangeCardCounts::default(),
         collector_number_cards: RangeCardCounts::default(),
         rarity_cards:   RangeCardCounts::default(),
+        value_totals:   ValueTotals::default(),
         sort_perms:     build_sort_permutations(&cards),
         max_artwork_groups: artwork_groups.iter().copied().max().unwrap_or(0),
         artwork_groups,

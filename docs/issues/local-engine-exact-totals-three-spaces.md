@@ -5,7 +5,9 @@ the store can already answer. `unique=` has three result spaces — printings, c
 predicate backed by a plane or a value index, the exact count in each is a build-time aggregate that
 fits in kilobytes.
 
-Two halves. The first is done.
+Two halves, both now done — and the honest headline is that the second one made 27 of 27 estimate cells
+exact and changed **no plan and no wall time**. Section 2's A/B is the number to read before extending
+this line of work.
 
 ## 1. The artwork column on the range tables — SHIPPED
 
@@ -47,44 +49,79 @@ indexes, against a brute-force distinct count, plus the shapes the table must DE
 interior multi-value range). Exhaustive rather than sampled because the errors in this area clustered at
 range ends.
 
-## 2. The core 3-space count table — NOT YET DONE
+## 2. Rarity, and the per-value core table — SHIPPED, and it bought no latency
 
-Same idea for the predicates that are a plane rather than a range. Five low-cardinality dimensions, 77
-values between them:
+**Rarity** got a sixth `RangeCardCounts` over the `rarity_printing_ordered` index that already existed
+for the rarity orderby walk. Per-value counts would have been *wrong* here, not merely incomplete: a
+card printed at both common and rare is in the distinct-card count for each, so `r<=rare` is not a sum.
+Prefix/suffix/at is the shape the question needs. 184 bytes; artwork went from 1.07-1.35 (error changing
+sign, so no bias constant could have fixed it) to 1.000 on all six values and every op.
 
-| dimension | values |
-| --- | --: |
-| border | 5 |
-| rarity | 6 |
-| layout | 14 |
-| frame | 29 |
-| format | 23 |
+**Border, layout, frame, and (format, status)** got `ValueTotals` — a per-value `SpaceTotals`
+(printings, cards, artworks), built in one pass with per-value stamps for the two dedup questions.
+Measured before/after, `est / true` on the production corpus:
 
-77 values × 3 spaces × 4 bytes = **0.9 KB**. At that size there is no threshold to tune and no sparse
-tail to special-case: store all of them.
+| predicate | mode | before | after |
+| --- | --- | --: | --: |
+| `border:black` / `border:borderless` | artwork | 0.905 / 0.835 | **1.000** |
+| `frame:2015` / `2003` / `1997` | card | 0.952 / 0.901 / 0.874 | **1.000** |
+| `frame:2015` / `2003` / `1997` | artwork | 0.948 / 1.080 / 0.973 | **1.000** |
+| `f:modern` / `f:vintage` / `f:pauper` | printing | 0.931 / 1.005 / 1.039 | **1.000** |
+| `f:modern` / `f:vintage` / `f:pauper` | artwork | 0.835 / 0.882 / 0.873 | **1.000** |
+| `banned:modern` | printing / artwork | 0.401 / 0.411 | **1.000** |
 
-What it fixes, from the accuracy audit:
+All 27 cells exact. Three implementation points:
 
-| predicate | mode | est/true today |
-| --- | --- | --: |
-| `frame:*` | card | 0.63–0.95 |
-| `format:*` | printing | 0.87–0.93 |
-| border / rarity / frame / format | artwork | estimated |
+- **All 32 format slots are stored, not just the assigned ones.** Absence from this table is read as an
+  exact zero, so an under-populated table is a *wrong* total rather than a missing one — and restricting
+  to the registry snapshot left it empty wherever the snapshot was (the fuzz store). The entries for
+  unassigned slots are correct rather than merely harmless: an unassigned format reads `not_legal` for
+  every card, which is what those entries say.
+- **Legality is counted per printing, not per card**, so `legality_divergent` cards contribute their
+  printings' own words. Reading the card word for those would mis-count exactly the cards the flag exists
+  to flag.
+- **Printing mode takes the exact value for `result_total` only.** `printing_matches` also feeds
+  `scan_units` and `project`, and it proxies the size of the bitmap compose BUILDS — for a legality leaf,
+  every printing of every existentially-legal card, a superset the residual then filters. The cost
+  features are calibrated against that superset, so substituting the true match count there would
+  under-charge the scan on precisely the divergent cards.
 
-Wire it into `exact_result_total`, which already has the mode parameter and already returns `None` for
-non-card modes on the shapes it cannot answer — the table is exactly what turns those `None`s into
-answers. Consumers are `compose_total_for_mode` and the acquire's `exact_cards`.
+### It changed no plan, and no wall time
 
-Rare statuses (`banned`, `restricted`) need not be covered: they are a small share of traffic and the
-estimator's error on them is not what is costing time.
+Interleaved A/B, 8 rounds, 1,398 queries (realistic sample plus enrichment across every dimension
+covered), `CARD_ENGINE_EXACT_VALUE_TOTALS` selecting the arm so both read a byte-identical archive:
 
-**Not the same as a popcount of a plane.** Where the query already reads a card-space `_EXISTS` plane,
-its popcount IS the exact card total and no table is needed — that is how legality got exact card counts
-for free, recorded in [the walk-modes doc](./local-engine-orderby-walk-modes.md). The table is for the
-two spaces that popcount cannot give: a card-space plane does not say WHICH printing matched, so it
-cannot count printings or artworks.
+| subset | n | off | on | on/off |
+| --- | --: | --: | --: | --: |
+| exact-total touched TARGET | 482 | 70.5 ms | 70.4 ms | **0.998** |
+| everything else CONTROL | 916 | 81.6 ms | 81.8 ms | 1.003 |
+| whole mix | 1,398 | 152.1 ms | 152.2 ms | **1.001** |
 
-## Why exactness here is worth anything at all
+p50 1.002, p90 1.008, p99 1.001; median cell 1.000 in both subsets. The ±6-8% outliers are on queries
+the change cannot reach (`name:the`, `a:easley`, `o:more`) and appear in both directions — the noise floor.
+
+The reason is not that the wins cancelled. **The router picked the identical plan for all 1,347 query
+configs**, off and on. Estimates wrong by 0.63-1.35x were still on the correct side of every argmin on
+this mix. So the honest accounting is: exactness achieved, latency unchanged, ~3.2 KB spent.
+
+That is consistent with the 2.5%-of-dispatch-time ceiling on all cost-model work
+([measured](./local-engine-layout-postings.md#why-this-was-invisible-before)) — it just lands at the
+bottom of that range rather than the top. It does NOT vindicate the earlier reading that the artwork
+slice's 21% share of routing regret came from its missing exact totals: those totals are now exact and
+the regret did not move.
+
+### What is still not exact, and why the table cannot fix it
+
+`is:flip` reads **1,080x** over and `is:split` 135x, unchanged. Their acquire is `count_source:
+candidates`, not compose, so `exact_result_total` is never consulted — `card_layout` has no narrowing arm
+at all ([layout postings](./local-engine-layout-postings.md)). The `layout` map in `ValueTotals` is
+therefore correct but **unreachable today**; it is kept (14 entries, ~200 bytes) because it is what that
+work will need, not because anything reads it now.
+
+`-r:common` also stays off (0.45 printing, 0.67 artwork): a negated rarity leaf acquires as `candidates`
+rather than compose, so it too never reaches these arms.
+
+## What exactness here was supposed to be worth
 
 Estimation error does not cost time directly; it costs time by mis-routing. The bound on all
 cost-model work is small — 2.5% of dispatch time is the total recoverable regret over uniform traffic
@@ -92,11 +129,22 @@ cost-model work is small — 2.5% of dispatch time is the total recoverable regr
 concentrated: the artwork slice alone carried 21% of it at p99 205 µs against 36–40 µs for the other two
 modes, and the reason is that artwork was the only space with no exact path at all.
 
-So the case for this work is not "the estimate is ugly". It is that a wrong total on one side of an
+So the case for this work was not "the estimate is ugly" — it was that a wrong total on one side of an
 argmin picks the wrong plan, and the two spaces without exact counts were the two where the router was
 most often wrong.
 
+**That reasoning did not survive measurement.** The premise is sound and the conclusion was false here,
+because it assumed the argmin was *close*. It is not: on these dimensions the gap between the best plan
+and the next one is wide enough to absorb a 35% error in the total. The lesson for the next accuracy
+item is to check the argmin's MARGIN before fixing an estimate — a large error on a wide margin is free
+to leave alone, and cheap to prove harmless with the plan-diff probe rather than a full A/B.
+
 ## Status
 
-(1) is implemented and measured on the production corpus; (2) is scoped and not started. Every ratio
-above is measured, minimum of 3 runs after warmup, against the executor's realized `result_total`.
+Both halves are implemented and measured on the production corpus. Every accuracy ratio is a minimum of
+3 runs after warmup against the executor's realized total; the wall-clock table is 8 interleaved rounds
+with a control subset, on a machine with Docker shut down.
+
+Total archive cost: **156.6 KB** for the artwork column plus **3.2 KB** for the per-value table and
+rarity — 0.22% of the store, for exactness that bought no measured latency. Whether that trade is worth
+keeping is a judgement call, and the flat A/B is the number to make it on.
