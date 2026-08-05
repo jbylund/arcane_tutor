@@ -191,6 +191,74 @@ measurement, not the constant. And the older reading here ("under by ~4-7× at p
 p99") spanned a wider population including broad queries; the two need reconciling, because a term
 added to fix the sparse end will move the broad end too.
 
+### Attempted and held: deriving the span feature from the candidate count
+
+`compose_scan_printings = scan_units` (the candidate span `GatheredScan` already estimates) in place
+of `printing_matches * COMPOSE_GATHER_SPAN_PER_MATCH`. It does what it claims — the feature grades
+0.15x -> **0.46x** of realized, and the shape becomes per-candidate instead of per-match, which is what
+the quantity actually is.
+
+**It is held, because routing got worse: regret 1.33 -> 1.41 us** (same-session baseline, so the 0.08
+is outside the ~0.03 run-to-run spread). And the cost barely moved, 0.40 -> **0.41x**, because bit
+tests are only 11% of the modelled page cost — the earlier "worth 0.40 -> 0.47" came from substituting
+a *perfect* counter, which `scan_units` at 0.46x does not deliver.
+
+The lesson is the sharper version of this branch's recurring one. Compose is under-priced by 2.5x
+overall; making one of its features honest while the level stays wrong does not move the level, it
+moves compose's *relative* position — and it was winning those argmins correctly while under-priced,
+so raising one term only loses them. **Partial accuracy on an argmin can be worse than consistent
+inaccuracy.** The span fix should land together with the missing ~7.7 us term, not before it. Patch
+kept at `scratchpad/span_fix.patch`.
+
+### The two constants are approximating something exactly computable
+
+`COMPOSE_CARD_ESTIMATE_BIAS` (1.78) and `COMPOSE_CANDIDATE_SPAN_BIAS` (2.1) both correct
+`balls_into_bins`, which is *uniform* occupancy — `domain * (1 - e^(-k/domain))`, every card an equally
+likely bin. Cards are not equally likely: a card is a candidate iff one of its `S` printings matches,
+so selection is size-biased. On this corpus the mean card holds 3.09 printings but the size-biased mean
+`E[S^2]/E[S]` is **42.30**, and the realized printings-per-candidate runs ~13 — between the two,
+because `k` is not infinitesimal. No single constant spans that.
+
+The size-aware form needs no fitted constant, only the printing-count histogram (one small table, built
+once at load):
+
+    E[candidate cards] = sum_c [1 - (1 - k/N)^S_c]
+    E[candidate span]  = sum_c S_c * [1 - (1 - k/N)^S_c]
+
+Both reduce to `balls_into_bins` when every `S_c` is equal, and both saturate correctly at `k = N`.
+Graded against exact truth (k from the printing-mode total, candidates from the card-mode result, span
+from the corpus) over 19 queries:
+
+| | size-aware | shipped |
+| --- | --: | --: |
+| candidate cards, median est/true | **1.10** | 0.72 |
+| candidate span, median est/true | **~1.1** | ~0.36 |
+
+Better centred on both, and with no constant to refit when the corpus changes. **But not uniformly
+better**: the span reads 9.85x on `usd<=0.02` and 4.73x on a narrow date range, because those
+predicates are *anti*-correlated with card size — the cheapest printings sit on small cards, so
+size-biased selection over-predicts. The uniform model is wrong in one direction, the size-biased one
+in the other, and neither knows which predicate it has.
+
+### Which makes the exact route the interesting one
+
+`RangeCardCounts` already answers distinct cards **exactly** for a range — and its `distinct_cards`
+returns `None` for an *interior* range, because "distinct counts do not subtract". That hole is exactly
+the two-sided population the range fusion just created, so those queries fall back to the estimator
+above precisely where an exact answer exists for their one-sided siblings.
+
+No 1-D prefix array closes it: whether a card has a printing in `[lo, hi)` is a 2-D question. But there
+is an exact structure. A card with values `v1 < ... < vk` has NO printing in `[lo, hi)` iff the interval
+fits inside one of its `k+1` gaps, so
+
+    cards missing the range = # gaps containing [lo, hi)     (at most one per card)
+
+over ~`n_printings + n_cards` gap intervals — a containment/dominance count, answerable exactly in
+O(log^2) with a merge tree, not a prefix sum. Weighting each gap by its card's printing count makes the
+**same** structure return the exact span as well. One structure, both features exact, both constants
+deleted, and the interior-range hole closed. That is a bigger change than a calibration and belongs in
+its own doc if it is taken up.
+
 Progress on the compose arm generally is tracked in
 [the cost-model doc](local-engine-cost-model-agreement.md).
 
