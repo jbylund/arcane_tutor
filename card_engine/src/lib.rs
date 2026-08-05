@@ -2992,6 +2992,15 @@ struct CardIndexes {
     price_eur_cards:        RangeCardCounts,
     price_tix_cards:        RangeCardCounts,
     collector_number_cards: RangeCardCounts,
+    /// The sixth, over `rarity_printing_ordered`. Rarity is NOT a `bare_range_bounds` member -- that
+    /// would make rarity queries eligible for `PrintingRangeScan`/`CardRangePopcount`, a routing change
+    /// worth its own measurement -- so this serves `exact_result_total`'s dedicated rarity arm only.
+    /// 6 distinct values, so it is ~144 bytes.
+    ///
+    /// Per-value counts would NOT have worked here: a card can be printed at several rarities, so
+    /// distinct cards for `r<=rare` is not the sum of the at-rarity counts. Prefix/suffix/at is the
+    /// shape the question needs, and it is the shape this struct already is.
+    rarity_cards:           RangeCardCounts,
     sort_perms:     SortPermutations,          // card space (streamed selection)
     artwork_groups: Vec<u16>,                  // card space: distinct illustration groups
     // card space, n_cards+1 entries: prefix sum of artwork_groups, so card c's artworks are the
@@ -5400,6 +5409,32 @@ fn range_card_counts_for<'i>(
 /// — `narrow_rec`'s own range narrowing, `is_printing_composable`, `compose_printing_estimate`,
 /// `compose_printing_bits` — gets the negated shape for free; none of them special-case `Not`
 /// themselves (docs/issues/local-engine-negated-range-narrowing.md).
+/// The `[lo, hi)` rarity-int window a bare rarity comparison covers, or `None` when the filter is not
+/// one. Deliberately narrow: `NumericCmp` on `RarityInt` against a constant, optionally negated, which
+/// is every spelling of `r:`/`rarity:` the parser produces.
+///
+/// Separate from `bare_range_bounds` on purpose -- see `exact_result_total`'s rarity arm.
+fn bare_rarity_bounds(filter: &FilterExpr) -> Option<(u32, u32)> {
+    fn leaf(filter: &FilterExpr, map_op: impl Fn(CmpOp) -> CmpOp) -> Option<(u32, u32)> {
+        let (op, value) = match filter {
+            FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op, rhs: NumExpr::Const(v) } => (map_op(*op), *v),
+            FilterExpr::NumericCmp { lhs: NumExpr::Const(v), op, rhs: NumExpr::Field(NumField::RarityInt) } => {
+                (flip_op(map_op(*op)), *v)
+            }
+            _ => return None,
+        };
+        // `Some(None)` is an empty window, which is an exact total of zero rather than no answer.
+        match int_range_bounds(op, value)? {
+            None => Some((0, 0)),
+            Some((lo, hi)) => Some((lo, hi)),
+        }
+    }
+    match filter {
+        FilterExpr::Not(inner) => leaf(inner.as_ref(), negate_op),
+        _ => leaf(filter, |op| op),
+    }
+}
+
 fn bare_range_bounds<'i>(
     filter: &FilterExpr,
     indexes: &'i Archived<CardIndexes>,
@@ -6704,6 +6739,22 @@ fn exact_result_total(
             Mode::Printing => Some(e - s),
             Mode::Card => range_card_counts_for(indexes, idx).and_then(|c| c.distinct_cards(lo, hi)).map(|n| n as usize),
             Mode::Artwork => range_card_counts_for(indexes, idx).and_then(|c| c.distinct_artworks(lo, hi)).map(|n| n as usize),
+        };
+    }
+    // Rarity is the same question one index over, and it gets its own arm rather than joining
+    // `bare_range_bounds`: that predicate gates `PrintingRangeScan`/`CardRangePopcount` applicability in
+    // a dozen places, so admitting rarity there is a ROUTING change (plausibly a good one -- `r:rare` is
+    // 55 us today) and belongs in its own measured commit, not in a counting one.
+    if let Some((lo, hi)) = bare_rarity_bounds(composed) {
+        if hi <= lo {
+            return Some(0); // an empty window is an exact zero in every space, not a declined shape
+        }
+        let idx = &indexes.rarity_printing_ordered;
+        let (s, e) = idx.range(lo, hi);
+        return match mode {
+            Mode::Printing => Some(e - s),
+            Mode::Card => indexes.rarity_cards.distinct_cards(lo, hi).map(|n| n as usize),
+            Mode::Artwork => indexes.rarity_cards.distinct_artworks(lo, hi).map(|n| n as usize),
         };
     }
     // The remaining shapes below are exact in CARD space only, so any other mode falls back to the
@@ -10921,6 +10972,8 @@ impl QueryEngine {
         let price_eur_cards = build_range_card_counts(&price_eur_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
         let price_tix_cards = build_range_card_counts(&price_tix_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
         let collector_number_cards = build_range_card_counts(&collector_number_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
+        let rarity_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.card_rarity_int.map(u32::from));
+        let rarity_cards = build_range_card_counts(&rarity_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
         let indexes = CardIndexes {
             name_trigram:   build_trigram_index(&cards, |c| c.card_name_folded.as_str()),
             oracle_trigram: build_oracle_text_index(&cards, &strings),
@@ -10980,7 +11033,8 @@ impl QueryEngine {
             planes:         build_bit_planes(&cards, &printings, &offsets, &strings),
             border_printing: build_border_printing_planes(&printings, &strings),
             rarity_printing: build_rarity_printing_planes(&printings),
-            rarity_printing_ordered: build_printing_value_index(&printings, &cards, &offsets, |p| p.card_rarity_int.map(u32::from)),
+            rarity_printing_ordered: rarity_idx,
+            rarity_cards,
             name_bigrams:   build_name_bigram_index(&cards),
             legal_divergent: build_divergent_ids(&cards),
             arith_tuple:    build_arith_tuple_index(&cards),
