@@ -6632,6 +6632,27 @@ fn exact_card_total(composed: &FilterExpr, indexes: &Archived<CardIndexes>, n_ca
         return legality_candidate_bits(indexes, n_cards, *shift, *expected, false)
             .map(|b| b.iter().map(|w| w.count_ones() as usize).sum());
     }
+    // A CARD-space containment leaf (`t:`/`keyword:`/`otag:`) posts card ids, so its postings length IS
+    // the exact distinct-card count -- the same "the answer was already computed and then discarded"
+    // shape the legality arm above fixes. The acquire was projecting the leaf's PRINTING count through
+    // balls-into-bins instead, which reads 1.27x on `t:human` (5,411 estimated against 4,249 exact) and
+    // up to 2.24x on `t:angel`.
+    //
+    // `Ge` only. `Eq`/`Gt` share these postings as a loose superset -- they prove containment but not the
+    // collection-length condition -- so their count is an upper bound, not a total.
+    if let FilterExpr::CollectionCmp { field, op: CmpOp::Ge, value, .. } = composed {
+        let card_space_idx = match field {
+            CollField::Subtypes => Some(&indexes.subtypes),
+            CollField::Keywords => Some(&indexes.keywords),
+            CollField::OracleTags => Some(&indexes.oracle_tags),
+            // Printing-space: postings are printing ids, so their length is not a card count. These want
+            // an import-time count table (the artwork side needs one for every family, including the
+            // ranges and formats that are already exact in card space).
+            CollField::ArtTags | CollField::IsTags | CollField::FrameData => None,
+        };
+        // Absent from a complete index is an exact ZERO, not "no answer".
+        return card_space_idx.map(|idx| idx.get(value.as_str()).map_or(0, |v| v.len()));
+    }
     None
 }
 
