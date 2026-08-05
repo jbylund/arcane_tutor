@@ -336,9 +336,8 @@ fn numeric_count(idx: &Archived<NumericIndex>, op: CmpOp, val: f64) -> Option<u3
 
 /// Printing count `e - s` for a `[lo, hi)` window over a printing range index,
 /// WITHOUT materializing (mirrors `range_narrowed`'s `k = e - s`).
-fn range_count(idx: &Archived<PrintingRangeIndex>, lo: u32, hi: u32) -> u32 {
-    let s = idx.partition_point(|p| u32::from(p.0) < lo);
-    let e = idx.partition_point(|p| u32::from(p.0) < hi);
+fn range_count(idx: &Archived<PrintingValueIndex>, lo: u32, hi: u32) -> u32 {
+    let (s, e) = idx.range(lo, hi);
     (e - s) as u32
 }
 

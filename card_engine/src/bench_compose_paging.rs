@@ -1,7 +1,7 @@
 //! Micro-benchmark: PrintingCompose paging strategy **A vs B** for a `unique=printing`,
 //! `orderby=usd` query whose composed predicate has no card-space sort permutation (the #744 regime).
 //!
-//!   A = `walk_range_orderby_page` — walk the pre-sorted `price_usd` `PrintingRangeIndex` in value
+//!   A = `walk_value_orderby_page` — walk the pre-sorted `price_usd` `PrintingRangeIndex` in value
 //!       order, test the composed `pbits` bit per visited entry, stop at `offset+limit`. Cost
 //!       `O((offset+limit)/selectivity)`, but the row it collects is a *random* pid into the store.
 //!   B = `gather_composed_page` — sweep the composed `pbits` (candidate cards in id order, each card's
@@ -25,7 +25,7 @@ use std::time::Instant;
 use rkyv::Archived;
 
 use super::{
-    archive_header, archive_payload, compose_printing_bits, gather_composed_page, walk_range_orderby_page, CardData, CmpOp, CollField,
+    archive_header, archive_payload, compose_printing_bits, gather_composed_page, walk_value_orderby_page, CardData, CmpOp, CollField,
     FilterExpr, Mmap, Mode, Prefer, QueryCtx, QueryParams, SortBound, SortCol, ARCHIVE_HEADER_LEN,
 };
 
@@ -107,13 +107,13 @@ fn bench_compose_paging() {
                 continue;
             }
             let run_a = || {
-                walk_range_orderby_page(&data.indexes.price_usd, &pbits, cards, printings, p2c, SortCol::PriceUsd, false, total, LIMIT, offset)
+                walk_value_orderby_page(&data.indexes.price_usd, &pbits, cards, printings, p2c, false, total, LIMIT, offset)
                     .map_or(0, |p| p.0.len())
             };
             let run_b = || gather_composed_page(&ctx, &bench_params(offset), &pbits, None).0.len();
             // Cross-check identical page (offset 0 only — A declines into the null-price tail at deep
             // offsets, where only B is defined; that decline is itself the finding for those rows).
-            let a_page = walk_range_orderby_page(&data.indexes.price_usd, &pbits, cards, printings, p2c, SortCol::PriceUsd, false, total, LIMIT, offset);
+            let a_page = walk_value_orderby_page(&data.indexes.price_usd, &pbits, cards, printings, p2c, false, total, LIMIT, offset);
             let (b_page, _) = gather_composed_page(&ctx, &bench_params(offset), &pbits, None);
             if let Some((a_rows, _)) = &a_page {
                 let a_ids: Vec<u128> = a_rows.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect();
