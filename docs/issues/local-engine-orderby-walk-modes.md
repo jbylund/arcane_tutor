@@ -1,9 +1,9 @@
 # The orderby walk is printing-mode only, and card mode pays 18x for it
 
-**Shipped** (`b0618f0`) — one walk for all three distinct-ons, via the group representative. What the
-work actually turned on was not the walk but an EXACTNESS fix in the router's card estimate; see
-[Outcome](#outcome). Two routing attempts failed first and both are recorded, because each failed in a
-way worth not repeating.
+**Shipped** (`b0618f0`, `38423f5`) — one walk for all three distinct-ons, via the group representative.
+The walk was the easy half; routing it took four attempts, and the thing that finally worked was
+realising that **breadth does not decide it — whether the compose build broadcasts does.** See
+[Outcome](#outcome). Target subset 6.9% faster, whole mix 2.9%, p99 down 8.1%.
 
 `border:black` ordered by rarity takes **25 µs** under `unique=printing`, **451 µs** under
 `unique=card`, and **836 µs** under `unique=artwork`. Same filter, same orderby, same corpus. The walk
@@ -244,28 +244,81 @@ because the formula saturates against the domain while the truth approaches it. 
 bias constant fixed it, and why the 0.85 gate — sitting exactly where the error changes sign — behaved
 so badly.
 
+### Attempt 3 was a fitted threshold, and the sweep that killed it
+
+Comparing result-space totals at a fitted 0.75 got the regressions to 1.00x and kept four wins, but the
+aggregate stayed inside the noise floor — and it excluded `cn>=74 cn<=413` by **0.4 percentage points**
+on a query where the walk is 5x faster. That near-miss was the clue to sweep the axis properly. Forcing
+the branch each way over 14 card-mode filters x {usd, rarity}:
+
+| breadth | query | walk/gather | |
+| --: | --- | --: | --- |
+| 100% | `r<=mythic` | **0.28×** | walk |
+| 100% | `f:duel` | 1.25× | gather |
+| 99% | `border:black` | **0.41×** | walk |
+| 75% | `cn>=74 cn<=413` | **0.20×** | walk |
+| 71% | `f:modern` | 1.08× | gather |
+| 48% | `f:penny` | 1.85× | gather |
+| 45% | `cn>200` | **0.53×** | walk |
+| 35% | `r:rare` | **0.57×** | walk |
+| 34% | `f:pauper` | 1.75× | gather |
+| 15% | `f:future` | 1.37× | gather |
+| 9% | `r>=mythic` | **0.54×** | walk |
+
+**Breadth does not predict the winner. The filter family does** — every legality filter loses, every
+range/plane filter wins, at every breadth from 9% to 100%, 28 of 28 cells separated by one bit.
+
+A legality leaf's compose build BROADCASTS a card-space plane across every printing of every matching
+card, which dominates the query — `f:duel` measures ~180 µs on *both* branches, so paging is noise — and
+legality is card-invariant, so the gather's early break lands at its best possible case, 1.01 printings
+per card. A range or plane leaf composes with a cheap slice or scatter, leaving paging to dominate, and
+that is where an O(page) walk beats an O(matches) gather.
+
+### What shipped: a structural gate
+
+`compose_needs_broadcast(filter)` — does this tree contain a legality leaf — plus the existing sparse
+floor. Structural matters twice: it removes the fitted constant, and it removes the estimate-vs-exact
+disagreement between router and executor that caused attempts 1 and 2, because both sides read the same
+tree. `compose_paging_with_total` takes the filter now, and the acquire passes `compose_source`'s output
+rather than the residual, since a plane-consumed residual would hide the leaf that decides the branch.
+
 ### What it is worth
 
 Paired wall time, 2,000 realistic queries, per-query minimum over two runs on each side:
 
-| subset | n | base | final | ratio |
-| --- | --: | --: | --: | --: |
-| card/artwork × (usd\|rarity) TARGET | 279 | 35.3 ms | 35.0 ms | 0.992 |
-| printing × (usd\|rarity) | 76 | 10.0 ms | 10.1 ms | 1.008 |
-| everything else CONTROL | 1,645 | 140.6 ms | 141.8 ms | 1.008 |
-| whole mix | 2,000 | 186.0 ms | 187.0 ms | 1.005 |
+| subset | n | base | attempt 3 (0.75) | **final** | final/base |
+| --- | --: | --: | --: | --: | --: |
+| card/artwork × (usd\|rarity) TARGET | 279 | 35.3 ms | 35.0 ms | **32.9 ms** | **0.931** |
+| printing × (usd\|rarity) | 76 | 10.0 ms | 10.1 ms | 9.8 ms | 0.981 |
+| everything else CONTROL | 1,645 | 140.6 ms | 141.8 ms | 138.0 ms | 0.981 |
+| whole mix | 2,000 | 186.0 ms | 187.0 ms | **180.7 ms** | **0.971** |
 
-**The aggregate is inside the noise floor and the honest claim is "no regression", not "a win"** — the
-target shapes are 279 queries and the wins total ~500 µs. What is reproducible per query is
-`border:black` 449 → 230, `cn<645` 551 → 319, `f:duel` 450 → 345, `f:oathbreaker` 378 → 303 µs, and
-p99 635 → 620 µs.
+p50 59.0 → 58.1, p90 172.3 → 168.4, **p99 635.4 → 583.8 µs**. Control and printing both read 0.981 —
+inside the noise floor — so the aggregate move is the target subset's. And unlike attempt 3, which paid
+off on four queries, the wins are broad:
 
-### Known limitation, named rather than tuned around
+| query | before | after |
+| --- | --: | --: |
+| `cn>=74 cn<=413` | 849 µs | **227 µs** (attempt 3 excluded it entirely) |
+| `r>=mythic` | 151 µs | **58 µs** (9% breadth; attempt 3 declined it) |
+| `year>=1994 year<=2013` | 352 µs | 156 µs |
+| `r<=uncommon` | 422 µs | 195 µs |
+| `border:black` | 449 µs | 228 µs |
+| `cn<645` | 551 µs | 315 µs |
+| `year>2017` | 516 µs | 297 µs |
+| `date<2019-11-07` | 527 µs | 317 µs |
 
-`cn>=74 cn<=413` went 849 → 224 µs under attempt 1 and is back at 827 µs. It is a two-sided INTERIOR
-range, where `distinct_cards` declines because distinct counts do not subtract, so the router is on the
-estimate and disagrees with the executor. Fixing it means an exact interior-range card count — the
-binned start×end triangle table in
-[local-engine-range-cardinality-estimate.md](./local-engine-range-cardinality-estimate.md) — or
-threading the router's decision to the executor instead of re-deriving it, which is the durable fix for
-the whole class and would also retire `GROUPED_WALK_MIN_FRACTION`'s fitted 0.75.
+Regressions are 1.11–1.28× on queries of 12–45 µs, plus one 100 → 114 µs row on `orderby=name` that
+this change cannot reach.
+
+### Two corrections to earlier readings of this data
+
+- **`r>=mythic` and `t:creature year<=2016` were listed as attempt-1 "wins". They were noise.** Verified
+  by BRANCH rather than by timing: `r>=mythic` card/usd is 9% of the domain, compose declined in every
+  build, and `GatheredScan` ran throughout; `t:creature year<=2016` is `orderby=name`, which has a
+  permutation. A table sorted by timing ratio mixes real branch changes with a ±1.58× per-query noise
+  floor, so branch identity is the check, not the ratio. (`r>=mythic` *is* a genuine win now — but only
+  because the structural gate lets it walk, which is a different mechanism.)
+- **The comparison itself was unfair for one round**: best-of-two on the baseline against a single run of
+  the new build hands the baseline a floor the new build never gets, which manufactured
+  "`f:penny` 2.6× slower" on an orderby that has a permutation. Both sides need the same estimator.
