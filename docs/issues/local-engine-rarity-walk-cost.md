@@ -93,14 +93,26 @@ necessary step; a median could not have shown it.
 
 ## Order
 
-1. **The postings shape check** (124x, no prerequisite, small).
-2. **A plane-step counter**, then the rate split (3.5x, flat, needs the counter first).
+1. **Tiebreak-ordered postings for `common`** — the biggest win by far, and it is an executor change
+   rather than a cost-model one: 115-154 µs becomes ~2-3 µs on the commonest shape (ascending, broad
+   filter). ~110 KB. Then `mythic` for the descending/`r:mythic` case, ~36 KB.
+2. **The postings shape check** for `r:special`/`r:bonus` (124x over, no prerequisite, small).
+3. **A plane-step counter**, then the rate split (3.5x, flat, needs the counter first).
 
-Both gate on the compose-paging slice, not the total.
+Note that (1) changes what (3) is measuring — a walk that stops early no longer pays a whole plane AND
+per bucket, so the plane-step rate matters less once (1) lands. Do (1) first and re-grade before
+touching the rate.
+
+Row identity is the gate for (1), not regret: it changes which rows a page contains if the tiebreak
+order is wrong, and `force_plan_differential_agreement` asserts full row order against `GatheredScan`
+across every plan. (2) and (3) are cost-only and gate on the compose-paging slice.
 
 ## Status
 
-The table is measured (96 cells, production corpus). The crossover arithmetic is arithmetic — 1,519 words
-against a printing count — not a timing, so if someone wants to move mythic to postings anyway, the thing
-to measure is a forced plane-bucket AND against a forced postings walk at equal selectivity. I would not
-expect it to change the conclusion at 6x.
+The two tables are measured on the production corpus — the per-direction overshoot (8 cells, 15 trials)
+and the rate split (96 cells). Nothing is implemented.
+
+The one number that is arithmetic rather than a timing is the ~4% crossover for where a tiebreak-ordered
+postings walk stops beating a plane AND. If that matters to a decision, measure a forced plane-bucket AND
+against a forced postings walk at equal selectivity; it will not affect (1), where the filters are broad
+and the win is 40x.
