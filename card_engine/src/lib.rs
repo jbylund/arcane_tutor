@@ -3492,6 +3492,35 @@ fn probe_range_k(filter: &FilterExpr, indexes: &Archived<CardIndexes>) -> Option
     Some(e - s)
 }
 
+/// The exact match count of a containment collection child, read from its index without materializing
+/// anything — the collection analogue of [`probe_range_k`], and it exists for the same reason: the And
+/// arm's skip decision is a COST comparison, and it can only be made for children whose size is known
+/// cheaply.
+///
+/// `None` when there is nothing to probe: a non-containment op, or a value absent from the index. Both
+/// keep the caller on its previous behaviour — an absent value in a complete index narrows to the empty
+/// set, which is the best driver there is and must never be skipped.
+///
+/// Card-space fields count CARDS and printing-space fields count PRINTINGS, which is the same space
+/// mismatch `probe_range_k` already lives with when its `k` is compared against `best`. It biases
+/// toward skipping a printing-space child (printings outnumber cards ~3:1), and skipping is the safe
+/// direction for a child that cannot become the driver anyway.
+fn probe_collection_k(filter: &FilterExpr, indexes: &Archived<CardIndexes>) -> Option<usize> {
+    let FilterExpr::CollectionCmp { field, op, value, .. } = filter else { return None };
+    if !matches!(op, CmpOp::Ge | CmpOp::Eq | CmpOp::Gt) {
+        return None;
+    }
+    let idx = match field {
+        CollField::Subtypes => &indexes.subtypes,
+        CollField::Keywords => &indexes.keywords,
+        CollField::OracleTags => &indexes.oracle_tags,
+        CollField::ArtTags => &indexes.art_tags,
+        CollField::IsTags => &indexes.is_tags,
+        CollField::FrameData => &indexes.frame_data,
+    };
+    idx.get(value.as_str()).map(|v| v.len())
+}
+
 /// One entry in the And arm's work list: a child exactly as written, or a half-open interval fused
 /// from two or more same-index range children.
 ///
@@ -4169,20 +4198,29 @@ fn narrow_rec(
             // Same-index range children fuse into one interval first (`fuse_and_range_children`),
             // because two individually-broad halves can intersect to something sparse and this arm
             // only ever intersects narrowing *results*, never the bounds.
-            let mut ranked: Vec<(u8, Option<usize>, AndSource)> = fuse_and_range_children(children, indexes, true)
+            // `sort_k` orders within a rank; `size_k` is the cost-comparison input for the skip below.
+            // They are separate because collection children only just gained a probe: feeding it into
+            // the sort as well would reorder rank-0 children in the same change that starts skipping
+            // them, and the two effects could not then be attributed.
+            let mut ranked: Vec<(u8, Option<usize>, Option<usize>, AndSource)> = fuse_and_range_children(children, indexes, true)
                 .into_iter()
                 .map(|src| match src {
                     AndSource::Child(c) => {
                         let rank = and_child_rank(c, indexes);
-                        let probe = if rank == 1 { probe_range_k(c, indexes) } else { None };
-                        (rank, probe, AndSource::Child(c))
+                        let sort_k = if rank == 1 { probe_range_k(c, indexes) } else { None };
+                        // A rank-0 child is assumed CHEAP to materialize, and for a plane or a short
+                        // posting list it is. A containment collection can be enormous (`is:spell` is
+                        // ~60k printing ids), and `frame_data`'s dense values more so, so probe it and
+                        // let the same cost rule apply.
+                        let size_k = sort_k.or_else(|| probe_collection_k(c, indexes));
+                        (rank, sort_k, size_k, AndSource::Child(c))
                     }
                     // A fused interval is a printing range like any other — rank 1, and its probe is
                     // the `k` its own broad-check already computed.
-                    AndSource::FusedRange { k, .. } => (1, Some(k), src),
+                    AndSource::FusedRange { k, .. } => (1, Some(k), Some(k), src),
                 })
                 .collect();
-            ranked.sort_by_key(|(r, probe, _)| (*r, probe.unwrap_or(usize::MAX)));
+            ranked.sort_by_key(|(r, sort_k, _, _)| (*r, sort_k.unwrap_or(usize::MAX)));
             let mut card_sets: Vec<Narrowed> = Vec::new();
             let mut printing_sets: Vec<Narrowed> = Vec::new();
             // Tightness of the And requires every child to be represented in
@@ -4194,7 +4232,7 @@ fn narrow_rec(
             // per child meant popcounting every accumulated bitmap again on every
             // iteration — O(children² × words) for a value that only ever shrinks.
             let mut best: Option<usize> = None;
-            for (rank, probe, src) in ranked {
+            for (rank, _sort_k, size_k, src) in ranked {
                 // A driver this selective already bounds the candidate set the
                 // residual re-verifies, so a costlier (rank>0) child usually
                 // narrows nothing the driver's verification doesn't already do
@@ -4206,8 +4244,18 @@ fn narrow_rec(
                 // is always sparse under a selective driver, so it only ever
                 // takes range_narrowed's cheap vec path. `continue`, not
                 // `break`: a later, smaller-k range child may still qualify.
-                if let Some(b) = best.filter(|&b| rank > 0 && b <= *AND_SKIP_THRESHOLD)
-                    && !probe.is_some_and(|k| k < b || k <= *AND_PROBE_FLOOR)
+                //
+                // The `rank > 0` this used to carry has become "we know what the child costs": a
+                // probed child is judged on its real `k` at ANY rank, because the decision is a cost
+                // comparison and rank is only a proxy for cost. A rank-0 child whose `k` exceeds the
+                // driver would be materialized and intersected — O(k) — purely to filter a set already
+                // smaller than itself, which is the shape `broad_ok` was introduced to prevent and
+                // which rank-0 children were never checked against. An UNPROBED rank-0 child keeps its
+                // benefit of the doubt, so planes and short postings behave exactly as before.
+                let unprobed_cheap = rank == 0 && size_k.is_none();
+                if let Some(b) = best.filter(|&b| b <= *AND_SKIP_THRESHOLD)
+                    && !unprobed_cheap
+                    && !size_k.is_some_and(|k| k < b || k <= *AND_PROBE_FLOOR)
                 {
                     every_child_included = false;
                     continue;
@@ -6471,14 +6519,6 @@ fn exact_card_total(composed: &FilterExpr, indexes: &Archived<CardIndexes>, n_ca
     None
 }
 
-/// The size of the query's RESULT space: every printing, card, or artwork in the store.
-fn compose_result_domain(mode: Mode, n_cards: usize, indexes: &Archived<CardIndexes>) -> usize {
-    match mode {
-        Mode::Printing => indexes.printing_to_card.len(),
-        Mode::Card => n_cards,
-        Mode::Artwork => u32::from(*indexes.artwork_base.last().expect("artwork_base has n_cards+1 entries")) as usize,
-    }
-}
 
 /// Whether composing `filter` needs a card-space plane BROADCAST down into printing space -- today,
 /// exactly a legality leaf (`repair_divergent_printings` / `broadcast_card_bits_to_printings`). Purely
