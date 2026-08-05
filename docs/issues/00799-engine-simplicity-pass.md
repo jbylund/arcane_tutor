@@ -140,15 +140,17 @@ The two compose walks differ only in candidate source (permutation vs `bitmap_ca
 (`page` vs `GatherSelect`). Extract the grouping into one `#[inline]` helper those two share; leave
 `push_card_matches` out of it (see [What not to touch](#what-not-to-touch)).
 
-### 9. The directional value-bucket walk is duplicated
+### 9. The directional value-bucket walk is duplicated — DONE, by deleting both copies
 
 [`aligned_page`:4632-4649](../../card_engine/src/lib.rs#L4632) and
 [`walk_range_orderby_page`:5414-5435](../../card_engine/src/lib.rs#L5414) contain the same "next
 maximal run of equal value, forward or backward" loop — the fiddliest code in the paging layer, in
 two copies. Extract `next_value_bucket(idx, &mut lo, &mut hi, descending) -> (usize, usize)`.
 
-Worth checking while there: `aligned_page` predates `collect_orderby_page` and may now be
-expressible entirely through it, which would delete the function rather than dedupe it.
+Resolved without the helper. The value-major layout made runs contiguous and pre-delimited by
+`starts`, so "next maximal run of equal value" became an offset subtraction and both loops went away:
+`aligned_page` emits a `pids` slice directly and `collect_orderby_page` no longer exists. See
+[done/local-engine-value-major-sort-indexes.md](./done/local-engine-value-major-sort-indexes.md).
 
 ### 10. CSR build and CSR expand, three copies each
 

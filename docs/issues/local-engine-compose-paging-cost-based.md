@@ -14,6 +14,12 @@ Printing mode on a `usd`/`rarity` orderby always takes the walk. `Gather` is rea
 walk *declines* at runtime (the null-value tail, or a page past the value structure). So compose has no
 internal argmin, even though `plan_cost` already has a fully-formed arm for both branches.
 
+This is now the **only** remaining error on the `OrderbyWalk` slice. The value-major layout
+([done/local-engine-value-major-sort-indexes.md](./done/local-engine-value-major-sort-indexes.md))
+deleted the walk's overshoot and the `orderby_walk_scan` floor with it, and `printings_walked` now
+grades flat across a 10x corpus axis for every non-clumped query. `r:mythic` ordered by usd is the
+exception and the reason, and it is the case below.
+
 ## Why that costs something
 
 The walk is fast when the filter's matches are dense near the start of the sort order and catastrophic
@@ -21,26 +27,27 @@ when they are not. Measured on `r:mythic` ordered by `usd`, printing mode:
 
 | | |
 | --- | --: |
-| entries the walk scanned | **31,698** |
+| entries the walk scanned | **30,646** |
 | matches it needed | 60 (a page) |
 | matches it found in those entries | 75 |
 | the composed set's total size | 8,924 |
 
-Mythics are expensive and an ascending price walk starts at pennies, so almost every one of those 31,698
+Mythics are expensive and an ascending price walk starts at pennies, so almost every one of those 30,646
 bit-tests is a miss. `gather_composed_page` would page the same query in **O(8,924)** — it materialises
 the composed set and pages it with the bounded `GatherSelect` — so the branch the shape test forces is
-~3.5x more work than the one it forbids.
+~3.4x more work than the one it forbids.
 
-Pricing, using the rate measured for plane-bucket steps in
-[local-engine-rarity-walk-cost.md](./local-engine-rarity-walk-cost.md) (1.07 ns/entry, not the shipped
-0.58):
+Measured after the layout change, printing mode, `limit=60 offset=0`, the compose participant's own
+trial minimum:
 
-- walk, realized: 31,698 entries ≈ **34 µs**
-- walk, as charged: `printings_walked` = 948 × 0.58 ≈ **0.55 µs** — 60x under
-- gather, roughly: the Gather arm over ~8,924 printings / ~2,568 cards ≈ **34 µs**
+- walk, realized: **11.0 µs** for 30,646 entries — 0.36 ns/entry
+- walk, as charged: **2.5 µs** — 4.4x under
+- and it gets worse with the corpus: 122,780 entries at 5x, where the charge cannot move at all
 
-So correctly priced the two are close to a tie on this query, and either is acceptable. The damage is
-entirely from the walk being charged 60x under while being the only branch the shape test allows.
+The charge used to be 60x under; deleting `orderby_walk_scan` did not cause that improvement, it just
+stopped a wrong floor from accidentally covering part of a different error. The residual 4.4x is
+clumping, and unlike everything else on this slice it is NOT flat across the corpus axis — the feature
+grades 0.03 at 1x and 0.01 at 5x.
 
 ## Why this is the cheap fix, and cheaper than the alternatives
 
@@ -60,16 +67,20 @@ It is also cheaper than either structural alternative:
 
 - A price-ordered index per rarity value would fix this query, but needs one index per (predicate value ×
   sort column) — small individually, unbounded in combination.
-- [The value-major range index](./local-engine-range-index-value-major.md) fixes the *overshoot* and is
-  worth doing on its own merits, but clumping is *across* buckets and survives it untouched.
+- [The value-major layout](./done/local-engine-value-major-sort-indexes.md) fixed the *overshoot* and
+  was worth doing on its own merits — but clumping is *across* runs and survived it untouched, as that
+  work predicted it would.
 
 ## What to do
 
 1. Replace the unconditional `OrderbyWalk` with a comparison: price both branches through `plan_cost`
    and take the cheaper. The arms exist; this is a branch selection, not a new model.
-2. The walk's charge must be fixed in the same change or the comparison is decided by the 60x error
-   rather than by cost. That means the rate split from the rarity-walk doc, and the usd feature from
-   [the walk-features doc](./local-engine-compose-walk-features.md).
+2. **This precondition is now satisfied.** It read: "the walk's charge must be fixed in the same change
+   or the comparison is decided by the 60x error rather than by cost." The layout change did that — the
+   walk is charged 2.5 µs against 11.0 realized on the worst case and grades flat everywhere else, so
+   the comparison is now decided by cost on every non-clumped query and by a 4.4x under-charge on the
+   clumped one. That is the error an argmin is allowed to work with, because `Gather` gets safer exactly
+   as the walk gets worse.
 3. `compose_paging` is asserted against the branch actually taken by
    `compose_paging_prediction_matches_the_branch_taken` — a cost-based choice must stay predictable, so
    the prediction has to run the same comparison the executor will.
@@ -79,6 +90,7 @@ of rows, so a real improvement there is invisible in the aggregate.
 
 ## Status
 
-Not measured. The costs above are the measured 31,698 entries and 8,924 total, times rates measured
-elsewhere — the arithmetic is sound but the conclusion that the branches are near-tied has not been
-verified by running both. Doing that is step zero: force each branch on the same query and time them.
+The walk side is now measured directly (11.0 µs realized, 30,646 entries) rather than inferred from a
+rate. The `Gather` side is still arithmetic: the conclusion that the branches are near-tied on this
+query has not been verified by running both. Doing that is step zero — force each branch on the same
+query and time them.

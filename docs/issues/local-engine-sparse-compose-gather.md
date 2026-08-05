@@ -268,6 +268,11 @@ match_rate`, which does not scale with the corpus), while OrderbyWalk uses
 `max(printings_walked, orderby_walk_scan)` and `orderby_walk_scan` **is** `n_printings` for a rarity
 orderby. Same rate, differently-scaling features.
 
+(`orderby_walk_scan` was deleted with the value-major layout — the rarity walk no longer ANDs a plane
+per bucket, so both branches now multiply the rate by `printings_walked` alone. The diagnosis stands as
+the reason the two diverged; the OrderbyWalk half of it is resolved. See
+[done/local-engine-value-major-sort-indexes.md](./done/local-engine-value-major-sort-indexes.md).)
+
 ### So the sequencing
 
 1. **Gather-scoped term.** Ready. Changes no production routing at all, because the Gather branch is

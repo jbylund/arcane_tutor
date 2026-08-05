@@ -31,12 +31,13 @@ effect; the 546x is the finding.
 
 ## Mechanism
 
-Three fields have a `PrintingRangeIndex`:
+Three fields have a `PrintingValueIndex` (`PrintingRangeIndex` when this was written; the type went
+value-major in [done/local-engine-value-major-sort-indexes.md](./done/local-engine-value-major-sort-indexes.md)):
 
 ```rust
-released_at:      PrintingRangeIndex,   // printing space
-price_usd:        PrintingRangeIndex,   // printing space (integer cents)
-collector_number: PrintingRangeIndex,   // printing space (extracted int)
+released_at:      PrintingValueIndex,   // printing space
+price_usd:        PrintingValueIndex,   // printing space (integer cents)
+collector_number: PrintingValueIndex,   // printing space (extracted int)
 ```
 
 And `resolve_numeric_range_leaf` maps only two numeric fields onto them — `PriceUsd` and
@@ -46,7 +47,7 @@ returns `None`, no range acquire applies, and the query lands on the general can
 
 ## Fix
 
-Add `price_eur` and `price_tix` as `PrintingRangeIndex`es and map them in
+Add `price_eur` and `price_tix` as `PrintingValueIndex`es and map them in
 `resolve_numeric_range_leaf`, alongside `price_usd`. Both columns already exist on the printing row
 (`price_eur`, `price_tix` in the corpus), and `price_usd` already demonstrates the integer-cents
 handling those two need — `snap_to_nearest_cent(v * PRICE_CENTS_PER_DOLLAR)`.
