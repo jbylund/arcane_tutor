@@ -1342,65 +1342,18 @@ predicts `Perm` and prices a cheap permutation walk while the executor runs a ga
 being handed the wrong branch. That is the same number as the original doc's p10 0.64 → 0.14.
 
 **Which makes the real prerequisite a two-sided range.** `bare_range_bounds` matches one comparison, so
-`usd>=0.42 usd<=0.43` composes as `And` of two one-sided slices — `scatter_printings` reads **82,421** for an
-answer of 837, and the estimate multiplies the two sides instead of intersecting one interval. Fusing an `And`
-of two comparisons on the same field into a single index interval fixes the estimate *and* the build cost at
-once, and only then does sparse-gather become predictable. That supersedes "widen `bare_range_bounds` for
-multi-leaf ranges" as an `eval_domain` idea — it was the wrong motivation for the right change.
+`usd>=0.42 usd<=0.43` composes as `And` of two one-sided slices — the estimate multiplies the two sides
+instead of intersecting one interval. Fusing them fixes the estimate *and* the build cost at once, and only
+then does sparse-gather become predictable. That supersedes "widen `bare_range_bounds` for multi-leaf ranges"
+as an `eval_domain` idea — it was the wrong motivation for the right change.
 
-Order to attempt it in: fuse the two-sided range, confirm `matches` on that population, then re-enable the
-gather behind the now-correct sparsity prediction, then re-check regret. Not before.
-
-## Fusing a two-sided range: the evidence, and where the code has to change
-
-The section above named this as sparse-gather's prerequisite. Measured, it is worth more than that, and for a
-reason that has nothing to do with compose: **the narrowing already handles a selective range and the `And`
-never reaches it.** All artwork, `orderby=toughness`, limit 10:
-
-| query | results | `eval_domain` | P3 `printings_examined` | best measured |
-| --- | --: | --: | --: | --: |
-| `usd>=200` | 160 | **148** | 6,089 | **26.7 µs** |
-| `usd<=0.02` | 103 | **100** | 339 | **3.2 µs** |
-| `cn>=20000` | 285 | **281** | 2,980 | **17.0 µs** |
-| **`usd>=0.42 usd<=0.43`** | 837 | **31,508** | **97,206** | **1,146.8 µs** |
-| **`cn>=100 cn<=101`** | 460 | **31,508** | **97,206** | **1,136.1 µs** |
-| `usd>=200 t:creature` | 36 | **36** (`narrowed_repr=printings`) | 532 | **2.5 µs** |
-| `usd>=0.42 usd<=0.43 t:creature` | 361 | 17,317 | 45,976 | 570.2 µs |
-
-A one-sided range with **160** results narrows to **148** candidates and finishes in 26.7 µs. A two-sided
-range with **837** results narrows to nothing and takes **43× longer for 5× more rows**.
-
-**The mechanism.** `narrow_rec` narrows each child independently and intersects. `usd>=0.42` matches most of
-the corpus and so does `usd<=0.43`, so each child trips `range_too_broad_to_narrow`
-(`MAX_NARROW_FRACTION` 0.25) and declines. Both halves give up, and that their *intersection* is 837 is never
-discovered. So the shape a reader intuitively wants — walk the index slice, test the residual, accumulate the
-page — **is** what the engine does for `usd>=200`; the two-sided form simply never gets there.
-
-Fusing `And` of same-index comparisons into one interval inside `bare_range_bounds` should therefore fix three
-things at once: the narrowing (the ~1,100 µs), compose's `matches` estimate (20,411 against a true 837), and
-`scatter_printings` (82,421 for an 837-row answer).
-
-### Four things to get right, found by reading the callers
-
-- **Clamp the empty interval.** Callers compute `k` as `partition_point(hi) - partition_point(lo)`. An
-  unsatisfiable fusion gives `hi < lo` and that subtraction **underflows and panics**. Clamping to
-  `hi.max(lo)` makes it `[lo, lo)` and `k = 0`, which every caller already handles — `run_query_streamed`
-  returns at `total == 0` before either branch.
-- **One arm covers usd/cn/date/year, so do not subset.** `bare_range_bounds` funnels all of them through a
-  single `leaf` helper. But `resolve_numeric_range_leaf` covers only `price_usd` and `collector_number`, so
-  **`eur` and `tix` are not in the dispatch at all** and stay unfused — worth knowing, since several top-100
-  rows are `eur:`/`tix:` ranges.
-- **Check the arm order per caller before claiming a win.** `is_printing_composable` and
-  `compose_printing_bits` both decompose `And` *before* any range guard, so a fused `bare_range_bounds`
-  improves the narrowing path without necessarily making compose stop scattering both sides. Verify which
-  paths actually change.
-- **Unsatisfiable short-circuit falls out here, but only for indexed fields.** `usd>=1 usd<=0.5` fuses to an
-  empty interval for free. `power=3 power=5` does **not** reach this code: `resolve_numeric_range_leaf`
-  returns `None` for `Power`, and `printing_dependent` classifies `Power`/`Cmc`/`Toughness`/`Loyalty` as
-  card-level, evaluated through `numeric_candidates`. Detecting that contradiction is separate work, most
-  naturally at bind time, and needs its own decision on `Ne` and null semantics.
-
-`usd>=200` is the working control: the fused two-sided path should look like it.
+Measured, the fusion turned out to be worth more than a prerequisite, for a reason with nothing to do with
+compose: the narrowing already handles a selective range and the `And` never reaches it, so
+`usd>=0.42 usd<=0.43` cost **1,146.8 µs** against **26.7 µs** for a one-sided range returning *more* rows.
+The narrowing half shipped in `4991759` (15–33× on that population, regret 1.42 → 1.35 µs); the compose half,
+which is what sparse-gather actually needs, has not moved. Both, with the evidence, the noise analysis behind
+the sparsity gate, and the order to attempt the rest in:
+[local-engine-two-sided-range-fusion.md](./local-engine-two-sided-range-fusion.md).
 
 ## A note on the test counts quoted throughout
 
