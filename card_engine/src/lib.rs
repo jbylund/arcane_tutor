@@ -2847,12 +2847,16 @@ struct CardIndexes {
     watermarks:     TagIndex,        // printing space
     released_at:    PrintingValueIndex,       // printing space
     price_usd:      PrintingValueIndex,       // printing space (integer cents, already order-preserving)
+    price_eur:      PrintingValueIndex,       // printing space (integer cents, same shape as price_usd)
+    price_tix:      PrintingValueIndex,       // printing space (integer cents, same shape as price_usd)
     collector_number: PrintingValueIndex,     // printing space (extracted int)
     // Exact distinct-CARD counts per distinct value of each range index above, so a card-space
     // range acquire reports the truth instead of the `k.min(n_cards)` proxy (which over-estimates a
     // median 1.49x). ~159 KB for all three; see RangeCardCounts.
     released_at_cards:      RangeCardCounts,
     price_usd_cards:        RangeCardCounts,
+    price_eur_cards:        RangeCardCounts,
+    price_tix_cards:        RangeCardCounts,
     collector_number_cards: RangeCardCounts,
     sort_perms:     SortPermutations,          // card space (streamed selection)
     artwork_groups: Vec<u16>,                  // card space: distinct illustration groups
@@ -3459,7 +3463,12 @@ fn and_child_rank(f: &FilterExpr, indexes: &Archived<CardIndexes>) -> u8 {
         FilterExpr::TextRegex { .. } => 1,
         FilterExpr::DateCmp { .. } | FilterExpr::YearCmp { .. } => 1,
         FilterExpr::NumericCmp { lhs, rhs, .. } => {
-            let field = |e: &NumExpr| matches!(e, NumExpr::Field(NumField::PriceUsd | NumField::CollectorNumberInt));
+            let field = |e: &NumExpr| {
+                matches!(
+                    e,
+                    NumExpr::Field(NumField::PriceUsd | NumField::PriceEur | NumField::PriceTix | NumField::CollectorNumberInt)
+                )
+            };
             if field(lhs) || field(rhs) { 1 } else { 0 }
         }
         _ => 0,
@@ -3849,9 +3858,12 @@ fn narrow_rec(
             // Same shape as `cn` below now that price is integer cents, not lossy f32 dollars --
             // the only price-specific step is snapping the *PRICE_CENTS_PER_DOLLAR conversion
             // against its own floating-point noise before delegating to int_range_bounds.
-            let price = |op, v: &f64| match int_range_bounds(op, snap_to_nearest_cent(*v * PRICE_CENTS_PER_DOLLAR))? {
+            // All three price fields are integer cents with identical semantics, so one closure over
+            // whichever index the field selects; the only price-specific step is snapping the
+            // *PRICE_CENTS_PER_DOLLAR conversion against its own floating-point noise.
+            let price = |idx, op, v: &f64| match int_range_bounds(op, snap_to_nearest_cent(*v * PRICE_CENTS_PER_DOLLAR))? {
                 None => Narrowed::tight(Candidates::Printings(Vec::new())),
-                Some((lo, hi)) => range_narrowed(&indexes.price_usd, lo, hi, n_printings, broad_ok, true),
+                Some((lo, hi)) => range_narrowed(idx, lo, hi, n_printings, broad_ok, true),
             };
             let cn = |op, v: &f64| match int_range_bounds(op, *v)? {
                 None => Narrowed::tight(Candidates::Printings(Vec::new())),
@@ -3866,8 +3878,12 @@ fn narrow_rec(
                 (NumExpr::Const(v), NumExpr::Field(NumField::Toughness)) => numeric(&indexes.toughness, flip_op(*op), v),
                 (NumExpr::Field(NumField::RarityInt), NumExpr::Const(v)) => rarity(*op, v),
                 (NumExpr::Const(v), NumExpr::Field(NumField::RarityInt)) => rarity(flip_op(*op), v),
-                (NumExpr::Field(NumField::PriceUsd), NumExpr::Const(v)) => price(*op, v),
-                (NumExpr::Const(v), NumExpr::Field(NumField::PriceUsd)) => price(flip_op(*op), v),
+                (NumExpr::Field(NumField::PriceUsd), NumExpr::Const(v)) => price(&indexes.price_usd, *op, v),
+                (NumExpr::Const(v), NumExpr::Field(NumField::PriceUsd)) => price(&indexes.price_usd, flip_op(*op), v),
+                (NumExpr::Field(NumField::PriceEur), NumExpr::Const(v)) => price(&indexes.price_eur, *op, v),
+                (NumExpr::Const(v), NumExpr::Field(NumField::PriceEur)) => price(&indexes.price_eur, flip_op(*op), v),
+                (NumExpr::Field(NumField::PriceTix), NumExpr::Const(v)) => price(&indexes.price_tix, *op, v),
+                (NumExpr::Const(v), NumExpr::Field(NumField::PriceTix)) => price(&indexes.price_tix, flip_op(*op), v),
                 (NumExpr::Field(NumField::CollectorNumberInt), NumExpr::Const(v)) => cn(*op, v),
                 (NumExpr::Const(v), NumExpr::Field(NumField::CollectorNumberInt)) => cn(flip_op(*op), v),
                 // Everything the dedicated single-field arms above didn't consume: arith expressions
@@ -5132,6 +5148,10 @@ fn resolve_numeric_range_leaf<'i>(
     match (lhs, rhs) {
         (NumExpr::Field(NumField::PriceUsd), NumExpr::Const(v)) => Some((&indexes.price_usd, op, snap_to_nearest_cent(*v * PRICE_CENTS_PER_DOLLAR))),
         (NumExpr::Const(v), NumExpr::Field(NumField::PriceUsd)) => Some((&indexes.price_usd, flip_op(op), snap_to_nearest_cent(*v * PRICE_CENTS_PER_DOLLAR))),
+        (NumExpr::Field(NumField::PriceEur), NumExpr::Const(v)) => Some((&indexes.price_eur, op, snap_to_nearest_cent(*v * PRICE_CENTS_PER_DOLLAR))),
+        (NumExpr::Const(v), NumExpr::Field(NumField::PriceEur)) => Some((&indexes.price_eur, flip_op(op), snap_to_nearest_cent(*v * PRICE_CENTS_PER_DOLLAR))),
+        (NumExpr::Field(NumField::PriceTix), NumExpr::Const(v)) => Some((&indexes.price_tix, op, snap_to_nearest_cent(*v * PRICE_CENTS_PER_DOLLAR))),
+        (NumExpr::Const(v), NumExpr::Field(NumField::PriceTix)) => Some((&indexes.price_tix, flip_op(op), snap_to_nearest_cent(*v * PRICE_CENTS_PER_DOLLAR))),
         (NumExpr::Field(NumField::CollectorNumberInt), NumExpr::Const(v)) => Some((&indexes.collector_number, op, *v)),
         (NumExpr::Const(v), NumExpr::Field(NumField::CollectorNumberInt)) => Some((&indexes.collector_number, flip_op(op), *v)),
         _ => None,
@@ -5152,6 +5172,10 @@ fn range_card_counts_for<'i>(
         Some(&indexes.released_at_cards)
     } else if std::ptr::eq(idx, &indexes.price_usd) {
         Some(&indexes.price_usd_cards)
+    } else if std::ptr::eq(idx, &indexes.price_eur) {
+        Some(&indexes.price_eur_cards)
+    } else if std::ptr::eq(idx, &indexes.price_tix) {
+        Some(&indexes.price_tix_cards)
     } else if std::ptr::eq(idx, &indexes.collector_number) {
         Some(&indexes.collector_number_cards)
     } else {
@@ -9836,9 +9860,10 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 /// any FLAVOR_FP_FEATURES change: archived fingerprints are built with that
 /// table, so a new table reading old fingerprints breaks the superset test.
 // 20260805: the three printing-range indexes changed shape from `Vec<(value, pid)>` to the
-// value-major `PrintingValueIndex`, and a fourth of the same type was added for the rarity orderby
-// walk. Both are archived-layout changes, so a store built under the previous version must fail the
-// header check and be rebuilt rather than be read as garbage. One bump covers both.
+// value-major `PrintingValueIndex`; a fourth of the same type was added for the rarity orderby walk;
+// and `price_eur`/`price_tix` gained indexes plus card-count tables. All are archived-layout changes,
+// so a store built under the previous version must fail the header check and be rebuilt rather than be
+// read as garbage. One bump covers all of them -- they ship in the same window.
 const ARCHIVE_FORMAT_VERSION: u32 = 20260805;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
@@ -10364,9 +10389,13 @@ impl QueryEngine {
         let printing_to_card = build_printing_to_card(&offsets);
         let released_at_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.released_at_int);
         let price_usd_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.price_usd);
+        let price_eur_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.price_eur);
+        let price_tix_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.price_tix);
         let collector_number_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.collector_number_int.map(u32::from));
         let released_at_cards = build_range_card_counts(&released_at_idx, &printing_to_card, cards.len());
         let price_usd_cards = build_range_card_counts(&price_usd_idx, &printing_to_card, cards.len());
+        let price_eur_cards = build_range_card_counts(&price_eur_idx, &printing_to_card, cards.len());
+        let price_tix_cards = build_range_card_counts(&price_tix_idx, &printing_to_card, cards.len());
         let collector_number_cards = build_range_card_counts(&collector_number_idx, &printing_to_card, cards.len());
         let indexes = CardIndexes {
             name_trigram:   build_trigram_index(&cards, |c| c.card_name_folded.as_str()),
@@ -10405,9 +10434,13 @@ impl QueryEngine {
             },
             released_at:    released_at_idx,
             price_usd:      price_usd_idx,
+            price_eur:      price_eur_idx,
+            price_tix:      price_tix_idx,
             collector_number: collector_number_idx,
             released_at_cards,
             price_usd_cards,
+            price_eur_cards,
+            price_tix_cards,
             collector_number_cards,
             sort_perms:     build_sort_permutations(&cards),
             max_artwork_groups: artwork_group_counts.iter().copied().max().unwrap_or(0),
