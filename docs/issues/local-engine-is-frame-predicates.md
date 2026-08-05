@@ -20,26 +20,28 @@ Measured on the production corpus, `unique=card orderby=edhrec limit=60`, plan-o
 
 `eval_domain == 31,508` means nothing narrowed at all — a full corpus scan.
 
-## 0. FIRST: the revert below rests on a bad measurement — re-measure before trusting it
+## 0. RESOLVED: shipped in `f855135`, and the earlier revert was a measurement artifact
 
-Every wall-time figure in this doc's section 1 was taken against a baseline captured hours earlier. The
-same build re-measured back-to-back read **180.7 ms then against 220.6 ms later — 22% machine drift** —
-while the canary queries stayed flat at 31-32 µs, because three queries cannot see a broad thermal shift.
+`9cb7c15` reverted this on evidence taken against a baseline captured hours earlier, during which the
+machine drifted **22%** — while the canary queries stayed flat at 31–32 µs, because three queries cannot
+see a distribution-wide move. Re-measured with **15 interleaved A/B rounds** (one binary, one store,
+`CARD_ENGINE_FRAME_HYBRID` selecting the read path so both arms saw a byte-identical archive):
 
-Interpolating that drift, the hybrid index's "1.084 worse" was plausibly ~0.98, i.e. neutral or better.
-**The revert of `fb7f0a9` may therefore be wrong.** Before anything else here:
+| subset | n | A (thresholded) | B (hybrid) | B/A | median cell |
+| --- | --: | --: | --: | --: | --: |
+| `frame:`/`is:` touched **TARGET** | 166 | 58.2 ms | **26.8 ms** | **0.460** | 0.608 |
+| everything else **CONTROL** | 1,190 | 118.8 ms | 117.4 ms | **0.988** | 0.995 |
+| **whole mix** | 1,356 | 177.0 ms | **144.2 ms** | **0.815** | |
 
-1. On a quiet machine, capture base and hybrid **back-to-back**, two runs each side, per-query minimum.
-2. Include a control subset the change cannot touch (queries with no `frame:`/`is:` leaf) and require it
-   to read ~1.00. That is the check that actually caught this: `name:s` reading 2.21x on a query with no
-   frame predicate was the tell, not the canaries.
-3. Only then judge the aggregate.
+p50 0.894, p90 0.837, **p99 0.648**. `is:new` 1354 → 39 µs, `frame:2015` 1375 → 41 µs, `is:old`
+686 → 39 µs. Store 133 KB **smaller** as well.
 
-`fb7f0a9` is the commit to restore; `9cb7c15` reverted it. The per-query wins in it were measured with 20
-reps each and are not in doubt (`frame:2015` 603 -> 185 µs, `is:new` 558 -> 141, `is:old` 399 -> 62,
-`frame:2015` under `unique=printing` 834 -> 0.4) and neither is the 130 KB saving, which is deterministic.
+**Interleaving, not more samples** — the error was systematic, so more samples of each arm measured
+separately would only give two precise numbers describing two different machine states. Drift check,
+same arm first round vs last: A 0.983, B 0.989. And the CONTROL subset is the validity gate: it is what
+exposed the original artifact, when a query the change cannot touch read 2.21×.
 
-## 1. The `frame_data` threshold drops its dense values — IMPLEMENTED AND REVERTED (see 0)
+## 1. The `frame_data` threshold drops its dense values — SHIPPED (see 0)
 
 `HybridTagIndex` shipped in `fb7f0a9`: every value stored, dense as a printing bitmap and the sparse
 tail as postings. The per-query wins are large and the memory prediction was exact (**130 KB smaller**,
@@ -278,3 +280,25 @@ same argument as `numeric_candidates`") because materialising card ids is cheap.
 oracle-text driver may be the wrong call, in which case the probe should apply to printing-space
 children only. Not diagnosed — and worth re-measuring on a quiet machine before acting, for the reason
 in section 0.
+
+## 6. Open: the mid-density regressions
+
+Shipped with three known regressions, all on the **mid-density** frame values — `2003` at 17.0% and
+`1997` at 11.1%, the ones already stored as postings before, so the population where the representation
+changed but the completeness win does not apply:
+
+| query | ratio |
+| --- | --: |
+| `o:this frame:2003` | 2.54× |
+| `t:human frame:1997` | 2.07× |
+| `frame:2003 c:g` (4 configs) | ~1.6× |
+
+The lead is concrete and it does **not** point at the storage. `frame:2003` alone reads
+`eval_domain: 8,026`; `o:this frame:2003` reads **19,968** — adding a partner made the candidate set
+*bigger*, which can only happen if the `And` arm stopped including the frame child. That is the arm
+`3cfd441` gave a cost probe to, so the first thing to check is whether `probe_collection_k` is now
+sizing a dense frame value in printings against a driver counted in cards (the space mismatch its own
+doc admits inheriting from `probe_range_k`) and skipping on a comparison that is off by ~3×.
+
+The A/B harness makes this a 36-second question — it lives in the session scratchpad; the reusable part
+is the protocol, recorded in the benchmark-artifacts memory.
