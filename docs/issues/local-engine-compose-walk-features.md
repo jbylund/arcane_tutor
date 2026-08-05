@@ -175,77 +175,34 @@ explain that cell too.
 
 ## Where this stands
 
-Nothing shipped on this branch yet. Order to take it in:
+**Resolved, and not by any of the three fixes this doc worked up.** All three were about *describing*
+the walk's bucket granularity better; the layout change deleted the granularity instead. See
+[done/local-engine-value-major-sort-indexes.md](./done/local-engine-value-major-sort-indexes.md) for
+what shipped and the measurements.
 
-1. **The run-boundary model is implemented and held on an unresolved total.** Tracked at
-   [patches/local-engine-compose-walk-usd-run-boundary.patch](./patches/local-engine-compose-walk-usd-run-boundary.patch)
-   — `range_walk_run_boundary` plus a `SortCol::PriceUsd` arm in `orderby_walk_scan`. Applies to
-   `card_engine/src/lib.rs` at `cf44da2` with `git apply`, and passes 149 debug / 148 release. Held
-   rather than applied: it is one measurement short, and leaving it in the tree would mean shipping a
-   5% total regression on "probably noise". What it does:
+Item by item, so the reasoning above is readable against the outcome:
 
-   | | before | after |
-   | --- | --: | --: |
-   | OW/usd feature, 1x / 2x / 5x | 0.88 / 0.44 / 0.18 | **0.92 / 0.53 / 0.59** |
-   | drift across the range | 4.9x | **1.56x** |
-   | OrderbyWalk miss% | 12% | **11%** |
-   | OrderbyWalk mean | 2.55 µs | **2.40** |
-   | OrderbyWalk p90 | 2.75 | **2.25** |
-   | **total regret** | **1.32 µs** | **1.39** |
+1. **The run-boundary model for OW/usd — dropped, and the patch deleted.** It was an accurate
+   description of an overshoot that should not have existed: `collect_orderby_page` finished any bucket
+   it began, so a 60-row page pushed 109 matches at 1x and 545 at 5x. Pre-sorting each run in `page_cmp`
+   tiebreak order lets the walk stop mid-run, so the overshoot is gone and there is nothing left to
+   model. Realized `examined` is now 60-70 entries at every corpus size from 0.5x to 5x, and
+   `printings_walked` grades flat (1.52-2.05) instead of `1/N`. The held total regression that blocked
+   the patch never had to be resolved.
+2. **OW/rarity's two errors — both moot.** The rate split priced plane-bucket steps against entry steps;
+   the walk reads no planes now. The 124x `special`/`bonus` over-charge was `orderby_walk_scan`, which is
+   deleted. [done/local-engine-rarity-walk-cost.md](./done/local-engine-rarity-walk-cost.md) carries
+   that analysis with its resolution.
+3. **Clumping is still the ceiling, and still not a rate.**
+   [local-engine-compose-paging-cost-based.md](./local-engine-compose-paging-cost-based.md) is the live
+   item: `compose_paging_with_total` picks `OrderbyWalk` by SHAPE, so compose has no argmin against
+   `Gather` even though `plan_cost` has both arms. A router does not need to know how bad a clumped walk
+   is, only that it is bad, and `Gather` is O(matches) — it gets safer exactly as the walk gets worse.
+   `r:mythic` ordered by usd is charged 2.5 µs against 11.0 realized and is the only cell on this slice
+   that still drifts with the corpus.
+4. **Perm — leave it.** 1.19 at production scale; the drift is cache superlinearity that saturates, not
+   a missing term. Unchanged by any of this.
 
-   The targeted branch improves on every metric and the 1/N collapse is gone. The total moved +0.07 µs,
-   which OrderbyWalk cannot explain — it is 4% of rows and its own delta is -0.11 ms against a +3.4 ms
-   total. So either the total is noise or there is a second-order path I did not find, and a repeat on a
-   different seed settled nothing because the seed changes the query mix (1.51 with the change on seed 7,
-   with no seed-7 baseline to compare against).
-
-   **Resolving that is the next step, and it is cheap:** run both arms on three paired seeds. If the
-   total is noise, ship — the mechanism is validated and the targeted branch is better. If it is real,
-   the cause is worth finding before the fix lands, because nothing in the change should reach a
-   non-`OrderbyWalk` row.
-
-2. **OW/rarity: one rate serving two operations, plus a 124x feature over-charge.** Tested and
-   confirmed. `walk_rarity_orderby_page` produces two physically different buckets and reports both in
-   the same unit — a PLANE bucket (common/uncommon/rare/mythic) ANDs `words_per_plane` words of the whole
-   corpus and reports `wpp * 64` printings covered; a POSTINGS bucket (special/bonus) walks its own id
-   list and reports its length. Both are charged `COMPOSE_WALK_STEP_NS`. Split by which kind a query
-   consumes:
-
-   | group | n | charged/examined | realized ns per reported printing |
-   | --- | --: | --: | --: |
-   | plane-only | 56 | 0.50 | **1.069** |
-   | postings-only | 8 | **124.43** | **3.792** |
-   | mixed | 32 | 0.33 | 1.413 |
-
-   The two operations differ **3.5x** in realized rate and the shipped 0.58 is under both. That is the
-   rate half, and a constant is the right instrument because the error is flat across the corpus axis.
-
-   The bigger half is the feature: `orderby_walk_scan = n_printings` charges a whole corpus pass even
-   for `r:special`/`r:bonus`, whose walk only touches a short postings list — **124x over**. Fixable
-   without a popcount, because it is a filter-SHAPE question: a rarity equality on a postings int
-   (`special`=4/`bonus`=5) can never consume a plane bucket, and the acquire can see that from the
-   filter. That the aggregate read a dead-flat 0.67 was these two errors, in opposite directions,
-   mixing — which is why splitting the population was the necessary step and a median was not.
-
-3. **Clumping is NOT the ceiling — see
-   [local-engine-compose-paging-cost-based.md](./local-engine-compose-paging-cost-based.md).** An earlier
-   revision of this doc said it was. The reframing: `compose_paging_with_total` picks `OrderbyWalk` by
-   SHAPE for printing mode on usd/rarity, so compose has no argmin between it and `Gather` even though
-   `plan_cost` has both arms. A router does not need to know how bad a clumped walk is, only that it is
-   bad — and `Gather` is O(matches), so it gets safer exactly as the walk gets worse. That is a far
-   weaker requirement than the density-along-the-sort-order feature the paragraph below asks for.
-
-   The full rarity-walk analysis, including why postings for mythic would be ~6x slower rather than
-   faster, is in [local-engine-rarity-walk-cost.md](./local-engine-rarity-walk-cost.md).
-
-4. **Clumping remains the ceiling on PRICING the walk**, and it is one problem rather than two: `Perm`'s
-   `printings_walked` divides by the same global match rate and carries the same 10x spread. Neither
-   branch gets low-error without it. This is the item to open next if the goal is a well-behaved arm
-   rather than a well-behaved constant.
-2. **OW/rarity.** Attempted and declined — see above. Revisit only with a direction-aware model, and
-   only if the tail (27% of cells undercharged 3-4x) shows up in regret. It has not yet.
-3. **Perm.** Leave it. 1.19 at production scale, and the drift is cache, not model.
-
-Each needs its own regret gate. This branch has twice shown that a partial accuracy fix on the compose
-arm loses regret — the `compose_scan_printings` span patch (1.33 -> 1.41 us) and the build term applied
-build-wide (Perm 1.193 -> 1.544 at production scale).
+The general lesson this branch keeps re-teaching: a partial accuracy fix on the compose arm loses regret
+(`compose_scan_printings`'s span patch 1.33 -> 1.41 µs, the build term applied build-wide 1.193 -> 1.544
+at production scale). What worked here was not a better estimator but removing the work being estimated.

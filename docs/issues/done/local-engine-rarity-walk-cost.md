@@ -1,13 +1,19 @@
 # The rarity orderby walk's cost model, after the layout change
 
-The rarity walk's *structural* defect — a plane bucket yields pids in pid order, so
-`collect_orderby_page` takes the whole bucket, and ascending collects **24,653 matches to serve 60 rows**
-at 115-154 µs — is not rarity-specific. It is the same defect the range indexes have, and the fix is one
-layout for both: [local-engine-value-major-sort-indexes.md](./local-engine-value-major-sort-indexes.md).
-The measurements that establish it live there.
+**Resolved by the layout change, and by neither fix proposed below.**
+[local-engine-value-major-sort-indexes.md](./local-engine-value-major-sort-indexes.md) shipped, and both
+errors this doc measured were errors about *plane buckets*. The rarity walk no longer reads planes at
+all: it steps a `PrintingValueIndex` one entry at a time, like the usd walk.
 
-This doc keeps only what survives that change: two cost-model errors that are specific to rarity, both
-measured, running in opposite directions.
+- The **rate split** (below, 3.5x) priced a plane-bucket step against an entry step under one constant.
+  There is one operation now, so there is nothing to split.
+- The **124x `special`/`bonus` over-charge** was `orderby_walk_scan = n_printings`. That field is
+  deleted; the walk is priced by `printings_walked` alone, which now grades flat across a 10x corpus
+  axis.
+
+Kept as a record of how the population had to be split to see either error — the aggregate read a
+dead-flat 0.67 because the two ran in opposite directions, and a median could not have shown it. The
+analysis below is as measured, before the change.
 
 ## The real defect: one rate for two operations
 
@@ -46,28 +52,23 @@ The two errors run in opposite directions, which is why the aggregate read a fla
 plane population is 2x under, the postings population 124x over. Splitting the population was the
 necessary step; a median could not have shown it.
 
-## Order
+## Order it was going to be taken in, and what happened instead
 
-1. **Tiebreak-ordered postings for `common`** — the biggest win by far, and it is an executor change
-   rather than a cost-model one: 115-154 µs becomes ~2-3 µs on the commonest shape (ascending, broad
-   filter). ~110 KB. Then `mythic` for the descending/`r:mythic` case, ~36 KB.
-2. **The postings shape check** for `r:special`/`r:bonus` (124x over, no prerequisite, small).
-3. **A plane-step counter**, then the rate split (3.5x, flat, needs the counter first).
+1. **Tiebreak-ordered postings for `common`** — shipped, but as one value-major layout for every key
+   rather than a special case for the commonest bucket, which is what
+   [the layout doc](./local-engine-value-major-sort-indexes.md) argued and measured. 115-154 µs became
+   0.4 µs, not the ~2-3 µs projected here.
+2. **The postings shape check** for `r:special`/`r:bonus` — not needed; the field it corrected is gone.
+3. **A plane-step counter, then the rate split** — not needed; there are no plane steps in the walk.
 
-Note that (1) changes what (3) is measuring — a walk that stops early no longer pays a whole plane AND
-per bucket, so the plane-step rate matters less once (1) lands. Do (1) first and re-grade before
-touching the rate.
-
-Row identity is the gate for (1), not regret: it changes which rows a page contains if the tiebreak
-order is wrong, and `force_plan_differential_agreement` asserts full row order against `GatheredScan`
-across every plan. (2) and (3) are cost-only and gate on the compose-paging slice.
+The note here that (1) would change what (3) measured turned out to understate it: (1) removed (3)
+entirely.
 
 ## Status
 
-The two tables are measured on the production corpus — the per-direction overshoot (8 cells, 15 trials)
-and the rate split (96 cells). Nothing is implemented.
+Resolved. The two tables were measured on the production corpus — the per-direction overshoot (8 cells,
+15 trials) and the rate split (96 cells) — and both describe an executor that no longer exists.
 
-The one number that is arithmetic rather than a timing is the ~4% crossover for where a tiebreak-ordered
-postings walk stops beating a plane AND. If that matters to a decision, measure a forced plane-bucket AND
-against a forced postings walk at equal selectivity; it will not affect (1), where the filters are broad
-and the win is 40x.
+The one number that was arithmetic rather than a timing, the ~4% crossover for where a tiebreak-ordered
+postings walk stops beating a plane AND, was never needed: the layout change made the walk's structure
+independent of the plane/postings crossover, which now governs only the FILTER path.
