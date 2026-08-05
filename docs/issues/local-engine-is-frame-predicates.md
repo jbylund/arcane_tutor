@@ -20,7 +20,26 @@ Measured on the production corpus, `unique=card orderby=edhrec limit=60`, plan-o
 
 `eval_domain == 31,508` means nothing narrowed at all — a full corpus scan.
 
-## 1. The `frame_data` threshold drops its dense values — IMPLEMENTED AND REVERTED
+## 0. FIRST: the revert below rests on a bad measurement — re-measure before trusting it
+
+Every wall-time figure in this doc's section 1 was taken against a baseline captured hours earlier. The
+same build re-measured back-to-back read **180.7 ms then against 220.6 ms later — 22% machine drift** —
+while the canary queries stayed flat at 31-32 µs, because three queries cannot see a broad thermal shift.
+
+Interpolating that drift, the hybrid index's "1.084 worse" was plausibly ~0.98, i.e. neutral or better.
+**The revert of `fb7f0a9` may therefore be wrong.** Before anything else here:
+
+1. On a quiet machine, capture base and hybrid **back-to-back**, two runs each side, per-query minimum.
+2. Include a control subset the change cannot touch (queries with no `frame:`/`is:` leaf) and require it
+   to read ~1.00. That is the check that actually caught this: `name:s` reading 2.21x on a query with no
+   frame predicate was the tell, not the canaries.
+3. Only then judge the aggregate.
+
+`fb7f0a9` is the commit to restore; `9cb7c15` reverted it. The per-query wins in it were measured with 20
+reps each and are not in doubt (`frame:2015` 603 -> 185 µs, `is:new` 558 -> 141, `is:old` 399 -> 62,
+`frame:2015` under `unique=printing` 834 -> 0.4) and neither is the 130 KB saving, which is deterministic.
+
+## 1. The `frame_data` threshold drops its dense values — IMPLEMENTED AND REVERTED (see 0)
 
 `HybridTagIndex` shipped in `fb7f0a9`: every value stored, dense as a printing bitmap and the sparse
 tail as postings. The per-query wins are large and the memory prediction was exact (**130 KB smaller**,
@@ -238,3 +257,24 @@ mechanisms are explicitly open — (2)'s cause and the `is:old`/`is:historic` ga
 share is unmodelled. Unlike layout, though, `frame:` IS in the realistic weights (0.5), and the
 `is:permanent`/`is:vanilla` shapes reach `card_types` and `oracle_text`, which are heavily weighted — so
 parts of this reach realistic traffic through other spellings.
+
+## 5. The `And` arm's cost-based skip — SHIPPED (`3cfd441`)
+
+The general fix the frame_data work turned out to need, and it stands on its own. `narrow_rec`'s `And`
+arm already had the rule — `AND_PROBE_FLOOR`'s doc: *"a child with `k < best` becomes the new,
+strictly-smaller driver (fewer residual verifications, never a regression)"* — but gated it on
+`rank > 0`, and only rank-1 range children had a probe. Rank 0 was assumed cheap to materialise and
+never checked, which is false for containment collections (`is:spell` is ~60k printing ids).
+
+`probe_collection_k` gives collections the same cheap size probe, and the skip drops `rank > 0` in
+favour of "we know what this child costs". Unprobed rank-0 children keep their benefit of the doubt.
+
+Measured against a **back-to-back** baseline: total 0.969, p50 0.971, p90 0.964, p99 0.967, with
+`keyword:extort frame:inverted` at **0.48x** and untouchable queries at 0.98-0.99.
+
+**Open:** `o:owner keyword:flying` at 1.56x. `keyword:flying` is a large *card-space* posting list, and
+card-space children were explicitly exempted from the broad guard ("card-space lists need no guard —
+same argument as `numeric_candidates`") because materialising card ids is cheap. Skipping one under an
+oracle-text driver may be the wrong call, in which case the probe should apply to printing-space
+children only. Not diagnosed — and worth re-measuring on a quiet machine before acting, for the reason
+in section 0.
