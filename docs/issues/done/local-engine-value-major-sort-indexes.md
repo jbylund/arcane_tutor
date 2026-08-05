@@ -93,7 +93,13 @@ bytes touched for the same set.
 pays for the ~389 KB rarity index. The prediction was wrong because it counted the range saving at 45%
 of the value column only, not of the whole pair.
 
-`ARCHIVE_FORMAT_VERSION` → 20260805; one bump covered both layout changes.
+That 649 KB then got spent, deliberately: `price_eur`/`price_tix` gained indexes of this same type
+([done/local-engine-eur-tix-range-index.md](./local-engine-eur-tix-range-index.md)) for +653 KB, which
+came in 41% under that doc's own estimate precisely because the layout is value-major. Net for the whole
+branch is **+20 KB over main having added three indexes**, which is the number to quote — not either
+half on its own.
+
+`ARCHIVE_FORMAT_VERSION` → 20260805; one bump covered all three layout changes in this window.
 
 ## What it did NOT buy
 
@@ -121,11 +127,12 @@ deliberately. 149 debug / 148 release.
 
 ## Next, in the order the evidence puts them
 
-1. **The compose BUILD section is now the dominant error on this slice.** `border:black` ordered by
-   rarity is charged 2.0 µs against 0.4 µs realized, and the walk is only 190 ns of that — the rest is
-   `popcount_words * COMPOSE_POPCOUNT_PER_WORD_NS` (1,519 × 1.07 = 1.6 µs) against a build that is a
-   plane copy plus a popcount. Suspected ~4x over, not measured; the build section was explicitly
-   blocked on fixing `Perm`/`OrderbyWalk` first, and `OrderbyWalk` is now fixed.
+1. **The compose BUILD section — measured, and it is a dead end on its own.** The suspicion recorded
+   here first ("~4x over, not measured") was right about the rate and wrong about it being actionable:
+   `COMPOSE_POPCOUNT_PER_WORD_NS` is 4.3x over, and correcting it alone loses regret AND wall time
+   because the other compose rates were fitted with the error present.
+   [local-engine-compose-build-rates.md](../local-engine-compose-build-rates.md) carries the
+   measurement, the revert, and a second finding: `Perm` is missing a per-CARD cost feature.
 2. **[Cost-based `OrderbyWalk` vs `Gather`](../local-engine-compose-paging-cost-based.md)** — the
    clumping case, and the only remaining item this doc's work does not touch.
 3. **`Perm`.** Leave it. 1.19 at production scale; its drift is cache superlinearity that saturates,
