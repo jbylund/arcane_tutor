@@ -6480,63 +6480,61 @@ fn compose_result_domain(mode: Mode, n_cards: usize, indexes: &Archived<CardInde
     }
 }
 
-/// Whether the #744 walk beats `gather_composed_page` on a composed set of `total` rows out of
-/// `domain`. The one test both the fastpath and `compose_paging_with_total` apply, so the branch the
-/// router PRICES is the branch the executor RUNS.
-///
-/// Printing mode: always. The walk does no grouping there and terminates at the page, while the gather
-/// visits every match, so there is no density at which the gather wins.
-///
-/// Card and artwork: only on a BROAD set, and this reuses `COMPOSE_GATHER_MAX_CARD_FRACTION` because it
-/// is already calibrated at exactly this crossover from the other side. The two branches have opposite
-/// best cases -- the walk is O(page / local density) and the gather is O(matches), including the clumped
-/// sparse case the walk is worst at (`r:mythic` ordered by usd scans 30,646 entries for 75 matches).
-///
-/// **Deliberately the total in result space, not `compose_gather_declines`' verdict.** Gating the branch
-/// on that verdict was tried and measured wrong: it derives breadth from
-/// `compose_printing_estimate` through balls-into-bins, which over-estimates a legality leaf, and the
-/// acquire and the fastpath were reaching it with different filters. `f:penny` under `unique=card` is
-/// 47.8% of cards -- the gather's case -- yet was predicted `OrderbyWalk` and then served by the gather,
-/// so compose won the argmin at a walk's price and paid a gather's. That is a 1.8-2.6x regression on
-/// every mid-range legality filter, against a 1.4-3.8x win on the broad range and plane filters this is
-/// for. Comparing totals keeps the two sides on one quantity: exact in the fastpath, the acquire's own
-/// estimate of it in the prediction, which is the same estimate/exact pairing the `STREAM_MIN_MATCHES`
-/// bail already documents as cheap-by-construction at the boundary.
-fn orderby_walk_beats_gather(mode: Mode, total: usize, domain: usize) -> bool {
-    matches!(mode, Mode::Printing) || total as f64 > domain as f64 * GROUPED_WALK_MIN_FRACTION
+/// Whether composing `filter` needs a card-space plane BROADCAST down into printing space -- today,
+/// exactly a legality leaf (`repair_divergent_printings` / `broadcast_card_bits_to_printings`). Purely
+/// structural, so the router and the executor cannot disagree about it.
+fn compose_needs_broadcast(filter: &FilterExpr) -> bool {
+    match filter {
+        FilterExpr::Legality { .. } => true,
+        FilterExpr::And(v) | FilterExpr::Or(v) => v.iter().any(compose_needs_broadcast),
+        FilterExpr::Not(inner) => compose_needs_broadcast(inner),
+        _ => false,
+    }
 }
 
-/// Result-space fraction above which the grouped orderby walk takes over from the gather.
+/// Whether the #744 walk beats `gather_composed_page` for this query. The one test both the fastpath
+/// and `compose_paging_with_total` apply, so the branch the router PRICES is the branch the executor
+/// RUNS.
 ///
-/// NOT `COMPOSE_GATHER_MAX_CARD_FRACTION` (0.85), even though that is the calibrated crossover, because
-/// the two sides of this decision do not see the same number: the fastpath tests the EXACT total, the
-/// router tests its estimate of it, and that estimate is 0.83x the truth on the broad end (it saturates
-/// against the domain while the truth approaches it) and up to 1.53x on the sparse end. At 0.85 the
-/// estimate never clears the bar -- it tops out near 0.82 of the domain -- so the router priced every
-/// grouped query as a gather while the executor walked, and compose lost the argmin on queries it would
-/// have served fast. Measured: `border:black` under `unique=card orderby=usd` reverted from 230 us to
-/// 437 us that way, and `cn<645` was the only survivor precisely because
-/// `RangeCardCounts::distinct_cards` answers a one-sided range EXACTLY, so its two sides agreed.
+/// Printing mode: always. The walk does no grouping there and terminates at the page, while the gather
+/// visits every match, so no density favours the gather.
 ///
-/// 0.75 is chosen so that estimate and exact land on the same side for the whole measured population,
-/// which is the property that matters here rather than the crossover's own precision -- a disagreement
-/// costs a mispriced branch, and the expensive direction (router predicts walk, executor gathers) is
-/// what produced 1.8-2.6x regressions on mid-range legality filters. Checked against measured pairs:
+/// Card and artwork: whenever the compose build needs no broadcast, and above the sparse floor. That is
+/// not the shape this started with -- two breadth thresholds were tried first and both were wrong,
+/// because **breadth does not predict the winner.** Swept over 14 card-mode filters x {usd, rarity} with
+/// the branch forced each way:
 ///
-///     query           exact      estimate    both sides
-///     border:black    98.9%      82.0%       walk
-///     f:duel          99.6%      82.2%       walk
-///     f:modern        70.7%      70.6%       gather
-///     f:penny         47.8%      56.3%       gather
-///     f:historic      46.3%      55.2%       gather
-///     r:common        33.7%      44.3%       gather
+///     breadth  query             walk/gather
+///        100%  r<=mythic               0.28x   walk
+///        100%  f:duel                  1.25x   gather
+///         99%  border:black            0.41x   walk
+///         75%  cn>=74 cn<=413          0.20x   walk
+///         71%  f:modern                1.08x   gather
+///         48%  f:penny                 1.85x   gather
+///         45%  cn>200                  0.53x   walk
+///         35%  r:rare                  0.57x   walk
+///         34%  f:pauper                1.75x   gather
+///          9%  r>=mythic               0.54x   walk
 ///
-/// The margin is wide because the estimate's error grows as the set gets sparser, so the queries whose
-/// estimate is most inflated are furthest below the bar anyway. **This is fitted to that population**,
-/// and the residual risk is a query whose estimate and exact straddle 0.75; the durable fix is for the
-/// router's decision to be THREADED to the executor rather than re-derived from a different number, which
-/// removes the class rather than tuning around it.
-const GROUPED_WALK_MIN_FRACTION: f64 = 0.75;
+/// Every legality filter loses and every range/plane filter wins, at every breadth from 9% to 100% --
+/// 28 of 28 cells separated by that one bit. The mechanism: a legality leaf's build BROADCASTS a
+/// card-space plane across every printing of every matching card, which dominates the query (`f:duel`
+/// measures ~180 us on both branches, so paging is noise), and legality is card-invariant, so the
+/// gather's early break lands at 1.01 printings per card -- its best possible case. A range or plane
+/// leaf composes with a cheap slice or scatter, leaving paging to dominate, which is where an O(page)
+/// walk beats an O(matches) gather.
+///
+/// The earlier `GROUPED_WALK_MIN_FRACTION = 0.75` is gone with the thresholds. It excluded
+/// `cn>=74 cn<=413` by 0.4 percentage points on a query where the walk is 5x faster, and it could only
+/// ever be fitted, because the quantity it tested is not the one that decides.
+///
+/// The sparse floor stays and is the one place the two sides see different numbers -- the fastpath's
+/// exact `total` against the router's estimate. Harmless for the same reason the `Perm` branch documents
+/// for its identical bail: at ~1,000 rows every branch is microseconds, so a query on the boundary is
+/// cheap whichever way it is classified.
+fn orderby_walk_beats_gather(mode: Mode, filter: &FilterExpr, total: usize) -> bool {
+    matches!(mode, Mode::Printing) || (!compose_needs_broadcast(filter) && total > *STREAM_MIN_MATCHES)
+}
 
 /// The composed set's size in the query's RESULT space: matching printings, distinct cards, or distinct
 /// artworks.
@@ -6626,7 +6624,7 @@ fn printing_compose_fastpath<'a>(
     let total = compose_total_for_mode(&pbits, mode, indexes, printings, card_bits.as_deref());
     // Now the exact total exists, so make the real walk-vs-gather call on it. See
     // `orderby_walk_beats_gather` for why this is the total rather than the gather's own broad verdict.
-    let walk_col = walk_possible && orderby_walk_beats_gather(mode, total, compose_result_domain(mode, cards.len(), indexes));
+    let walk_col = walk_possible && orderby_walk_beats_gather(mode, filter, total);
     if total == 0 || page_offset >= total {
         note_paging_taken(PagingTaken::EmptyPage);
         publish_compose_work(ComposePageWork { ns_total: t_start.elapsed().as_nanos() as u64, ..Default::default() });
@@ -8414,8 +8412,15 @@ fn compose_gather_declines(
 
 /// `compose_paging_with_total` without a result total, for the range branches: they cost a COMPETING
 /// compose and have no total for it, so they get the plain 3-way answer and cannot predict a decline.
-fn compose_paging_for(indexes: &Archived<CardIndexes>, n_cards: usize, mode: Mode, sort_col: SortCol, descending: bool) -> ComposePaging {
-    compose_paging_with_total(indexes, n_cards, mode, sort_col, descending, None, None)
+fn compose_paging_for(
+    indexes: &Archived<CardIndexes>,
+    n_cards: usize,
+    filter: &FilterExpr,
+    mode: Mode,
+    sort_col: SortCol,
+    descending: bool,
+) -> ComposePaging {
+    compose_paging_with_total(indexes, n_cards, filter, mode, sort_col, descending, None, None)
 }
 
 /// Which paging branch `printing_compose_fastpath` will take — including whether it will refuse the
@@ -8423,6 +8428,10 @@ fn compose_paging_for(indexes: &Archived<CardIndexes>, n_cards: usize, mode: Mod
 fn compose_paging_with_total(
     indexes: &Archived<CardIndexes>,
     n_cards: usize,
+    // The expression that will actually be COMPOSED -- `compose_source`'s output on the acquire side and
+    // the fastpath's own argument on the other. `compose_needs_broadcast` reads it, and a plane-consumed
+    // residual would hide the legality leaf that decides the branch.
+    filter: &FilterExpr,
     mode: Mode,
     sort_col: SortCol,
     descending: bool,
@@ -8444,7 +8453,7 @@ fn compose_paging_with_total(
         }
         ComposePaging::Perm
     } else if orderby_walk_available(sort_col)
-        && result_total.is_some_and(|t| orderby_walk_beats_gather(mode, t, compose_result_domain(mode, n_cards, indexes)))
+        && result_total.is_some_and(|t| orderby_walk_beats_gather(mode, filter, t))
     {
         // The same `orderby_walk_beats_gather` the fastpath applies, on this side's ESTIMATE of the
         // total where the fastpath has the exact one. Any drift shows up as a
@@ -8713,7 +8722,7 @@ fn acquire_plan_features(
         feats.scatter_printings = k;
         feats.project_printings = k;
         feats.compose_scan_printings = k;
-        feats.compose_paging = compose_paging_for(indexes, cards.len(), mode, sort_col, descending);
+        feats.compose_paging = compose_paging_for(indexes, cards.len(), filter, mode, sort_col, descending);
         (feats, Prep::Range(CountSource::CardRangePopcount))
     } else if PhysicalPlan::PrintingRangeScan.applicable(ctx, params, filter, unsplit, plane) {
         // Bare range: exact k from the index (no scan).
@@ -8740,7 +8749,7 @@ fn acquire_plan_features(
         // unnarrowed universe (right for P3/P4, which is what they are there for), so leaving
         // `compose_paging` at its `Gather` default charged compose a full-corpus gather it would
         // never run. Compose's page term only reads `eval_domain` in the Gather branch.
-        feats.compose_paging = compose_paging_for(indexes, cards.len(), mode, sort_col, descending);
+        feats.compose_paging = compose_paging_for(indexes, cards.len(), filter, mode, sort_col, descending);
         (feats, Prep::Range(CountSource::PrintingRangeScan))
     } else if PhysicalPlan::PrintingCompose.applicable(ctx, params, filter, unsplit, plane) {
         // Composable printing-space expr, any distinct-on. Estimate the counts cheaply — the fast path
@@ -8938,7 +8947,7 @@ fn acquire_plan_features(
             .then(|| compose_gather_declines(filter, indexes, offsets, ctx.printings, cards, mode))
             .flatten();
         feats.compose_paging =
-            compose_paging_with_total(indexes, cards.len(), mode, sort_col, descending, Some(result_total), gather_declines);
+            compose_paging_with_total(indexes, cards.len(), composed, mode, sort_col, descending, Some(result_total), gather_declines);
         (feats, Prep::Range(CountSource::PrintingCompose))
     } else {
         let prep = prepare_candidates(ctx, params, filter, plane);

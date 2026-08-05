@@ -3531,6 +3531,16 @@ fn compose_paging_prediction_matches_the_branch_taken() {
         fuzz_leaf_rarity(&mut rng),
         FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
         FuzzSpec::And(vec![fuzz_leaf_type(&mut rng), fuzz_leaf_rarity(&mut rng)]),
+        // The one composable leaf whose build needs a card-plane BROADCAST, and therefore the only
+        // shape that now reaches `Gather` under a grouped mode on a walkable orderby -- every other
+        // composable leaf walks there (see `orderby_walk_beats_gather`). Without this spec
+        // `ComposePaging::Gather` is unreachable in this sweep, which is how the walk's extension to
+        // card/artwork was caught removing the branch entirely.
+        FuzzSpec::Leaf(FuzzLeaf::Legality { shift: Some(0), expected: 0b01 }),
+        FuzzSpec::And(vec![
+            FuzzSpec::Leaf(FuzzLeaf::Legality { shift: Some(0), expected: 0b01 }),
+            FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
+        ]),
         // Deliberately NARROW, and the only other spec here built from leaves `is_printing_composable`
         // accepts (`border==`, and `CollectionCmp` at `Ge`). This is what reaches
         // `GatherWalkDeclined`: the walk declines when the matches carrying an indexed value run out
