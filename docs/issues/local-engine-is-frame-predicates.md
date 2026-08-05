@@ -1,0 +1,129 @@
+# `is:` and `frame:` are 24% of dispatch time and four unrelated bugs
+
+After the value-major layout, the eur/tix indexes and the grouped orderby walk, `is:`/`frame:` queries
+are **24.0% of all remaining dispatch time** in uniform sampled traffic and none of them moved (0.97–1.03
+across every value). They are the largest remaining target, and the prefix hides at least four separate
+problems.
+
+Measured on the production corpus, `unique=card orderby=edhrec limit=60`, plan-own dispatch:
+
+| predicate | resolves to | count source | true | `eval_domain` | µs |
+| --- | --- | --- | --: | --: | --: |
+| `frame:2015` | `card_frame_data` | candidates | 22,562 | **31,508** | **603** |
+| `is:new` | `card_frame_data` | candidates | 22,562 | **31,508** | **558** |
+| `is:permanent` | `Or` over 6 `card_types` | candidates | 24,387 | **31,508** | **641** |
+| `is:old` | `Or` over `card_frame_data` | candidates | 7,191 | 7,191 | 399 |
+| `frame:2003` | `card_frame_data` | candidates | 8,905 | 8,905 | 322 |
+| `frame:1997` | `card_frame_data` | candidates | 6,302 | 6,302 | 251 |
+| `is:historic` | `card_frame_data` | candidates | 7,261 | 7,261 | **59** |
+| `is:dfc` … `is:flip` | `card_layout` | candidates | 20–388 | **31,508** | 70–209 |
+
+`eval_domain == 31,508` means nothing narrowed at all — a full corpus scan.
+
+## 1. The `frame_data` threshold drops its dense values, on a justification that expired
+
+`build_thresholded_tag_index` deliberately discards any value whose postings trip
+`range_too_broad_to_narrow`, and its own doc names the casualty:
+
+> values whose posting would be declined by the range guard anyway (frame:2015 covers 66% of
+> printings) are simply not stored — the absent-key convention already means "no narrowing", so
+> dropped and unknown values both fall back to the scan.
+
+**That reasoning is stale.** The range guard stopped declining broad sets in #636, and the consumer
+followed: `narrow_rec`'s `CollectionCmp` arm now scatters a broad printing-space posting list into a
+bitmap rather than giving up —
+
+```rust
+if !card_space && range_too_broad_to_narrow(v.len(), n_printings) {
+    if !broad_ok { return None; }
+    let bits = scatter_bits(v.iter().map(|x| u32::from(*x)), n_printings);
+    return mk(Candidates::PrintingBits(bits));
+}
+```
+
+So the build throws away postings the consumer is now equipped to use. `frame:2015` and `is:new` are the
+same underlying predicate and together are ~1.16 ms of mean dispatch over 293 sampled queries.
+
+**Fix:** stop thresholding, or raise the threshold to the point where a bitmap scatter stops paying.
+Cost is one posting list for the dropped values — `frame:2015` is 64,139 printings ≈ 257 KB, and it is
+the only value in the corpus above the guard.
+
+Verify with `eval_domain`, not with timing: it should stop reading 31,508.
+
+## 2. An `Or` containing `t:battle` loses the plane path entirely
+
+`is:permanent` desugars to `t:creature or t:artifact or t:enchantment or t:land or t:planeswalker or
+t:battle`, and that last disjunct costs **11.5x**:
+
+| query | count source | plan | µs |
+| --- | --- | --- | --: |
+| 5 disjuncts (through `t:planeswalker`) | plane | PlanePopcountOrder | **55** |
+| … `or t:snow` (6 disjuncts) | plane | PlanePopcountOrder | 57 |
+| `t:instant or t:sorcery or t:snow or t:world or t:basic or t:kindred` (6) | plane | PlanePopcountOrder | 47 |
+| … `or t:battle` (6 disjuncts) | **candidates** | StreamedSelect | **497** |
+| `t:battle or t:creature` (2 disjuncts) | **candidates** | StreamedSelect | 90 |
+| `is:permanent` | **candidates** | StreamedSelect | **641** |
+
+Two candidate explanations are **ruled out** by that table: it is not the disjunct count (six other-type
+disjuncts stay on the plane path), and it is not a missing type plane (`TYPE_PLANES = 14` covers every
+bit including `TYPE_BATTLE = 1 << 2`, and `PERMANENT_TYPES` includes it).
+
+**The actual reason is not yet identified.** `t:battle` alone acquires as `printing_compose` returning 0
+rows in 3.5 µs, which is already odd for a `TypeCmp` — that is the thread to pull. Do not guess: two
+plausible mechanisms were already eliminated above.
+
+Whatever it is, the shape of the fix is likely the algebraic one: an empty or non-compilable disjunct
+should be *dropped* from an `Or` (`Or(x, ∅) = x`), not poison the whole expression.
+
+## 3. `card_types` has no `Battle`, which may be a correctness bug
+
+Counting `card_types` across the corpus gives 12 distinct names and **`Battle` is not among them**:
+
+    Creature 45,976   Legendary 13,537   Land 11,552   Artifact 10,949   Instant 10,725
+    Sorcery 10,626    Enchantment 9,914  Basic 4,196   Planeswalker 1,379  Snow 262
+    Kindred 183       World 42
+
+The corpus carries release dates through 2025-02-14, so battles (March of the Machine, 2023) should be
+present. If the live store is the same, then `t:battle` silently returns nothing and **`is:permanent`
+misses every battle** — a wrong answer, not just a slow one.
+
+Check the importer's type extraction before treating this as a corpus artifact. This is independent of
+(2): fixing the plane path would still return zero battles.
+
+## 4. `card_layout` is unindexed
+
+Already scoped and deprioritized in
+[local-engine-layout-postings.md](./local-engine-layout-postings.md) — `is:dfc`/`is:transform`/
+`is:mdfc`/`is:split`/`is:meld`/`is:leveler`/`is:flip` all resolve to `card_layout`, which has no index
+and no `narrow_rec` arm, so each is a full 31,508-card scan for as few as 20 matches.
+
+## The unexplained one
+
+`is:old` narrows to **7,191** cards and takes **399 µs**. `is:historic` narrows to **7,261** cards —
+0.4% more — and takes **59 µs**. Same field, same count source, near-identical evaluation domain,
+**6.8x** apart. Both are `Or`s over `card_frame_data`.
+
+That gap is not explained by anything above, and it is worth understanding before optimising either:
+whatever makes `is:historic` fast is presumably available to `is:old`.
+
+## Order
+
+1. **The `frame_data` threshold** (1) — largest, most certain, and the fix is deleting a stale guard.
+2. **The `Battle` data question** (3) — cheap to check and it is a correctness issue, so it outranks
+   the remaining performance items even though it is worth less time.
+3. **The `is:old` / `is:historic` gap** — diagnosis only, and it may explain more than those two.
+4. **The `t:battle` plane poisoning** (2) — worth 11.5x on a common idiom, but needs the mechanism found
+   first.
+5. `card_layout` (4) — deprioritized as rare.
+
+## Status
+
+Every number above is measured on the production corpus, minimum of 15 runs after warmup. The traffic
+share (24.0%) is one 150 s uniform sample of 53,071 priced queries. Nothing is implemented, and two
+mechanisms are explicitly open — (2)'s cause and the `is:old`/`is:historic` gap.
+
+`is:` and `frame:` are absent from `REALISTIC_FAMILY_WEIGHTS`, so the same caveat as
+[layout](./local-engine-layout-postings.md) applies: the 24% is a uniform-mode figure and the realistic
+share is unmodelled. Unlike layout, though, `frame:` IS in the realistic weights (0.5), and the
+`is:permanent`/`is:vanilla` shapes reach `card_types` and `oracle_text`, which are heavily weighted — so
+parts of this reach realistic traffic through other spellings.

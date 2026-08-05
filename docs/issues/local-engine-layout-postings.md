@@ -3,8 +3,9 @@
 **Deprioritized 2026-08-05** — layout predicates are judged rare in real use, which the traffic caveat
 below already flagged as the deciding unknown. Kept as a scoped, measured, ~4.5 KB fix if that judgement
 ever changes; do not pick it up ahead of
-[the artwork-mode walk gap](./local-engine-orderby-walk-modes.md), which is 136 of the 200 slowest
-queries against this one's 7.
+[the artwork-mode walk gap](./local-engine-orderby-walk-modes.md) (now shipped) or the rest of the
+`is:`/`frame:` family ([local-engine-is-frame-predicates.md](./local-engine-is-frame-predicates.md)),
+which is 24% of remaining dispatch time against this one's share of it.
 
 `is:flip` matches **20 oracle cards**. It takes **187 µs** and scans the whole corpus to get there,
 because `card_layout_id` — an interned string on `OracleCard`, 14 distinct values — has no index and no
