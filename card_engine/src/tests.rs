@@ -1567,7 +1567,10 @@ enum FuzzLeaf {
     Loyalty { op: CmpOp, val: f64 },    // card-invariant, nullable (planeswalkers only)
     Rarity { op: CmpOp, val: f64 },     // printing-varying
     CollectorNumber { op: CmpOp, val: f64 }, // printing-varying, nullable
-    Price { op: CmpOp, val: f64 },      // printing-varying, nullable (dollars)
+    // printing-varying, nullable (dollars). `field` is one of the three integer-cent columns --
+    // usd/eur/tix share a representation, a bounds derivation and (since eur/tix were indexed) a
+    // narrowing path, so covering only usd would leave two thirds of that path unfuzzed.
+    Price { field: NumField, op: CmpOp, val: f64 },
     Date { op: CmpOp, value: u32 },     // printing-varying (released_at, DateCmp)
     Year { op: CmpOp, year: i32 },      // printing-varying (released_at, YearCmp)
     Border { value: String },           // printing-varying
@@ -1693,8 +1696,15 @@ fn fuzz_leaf_collector_number(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
     FuzzSpec::Leaf(FuzzLeaf::CollectorNumber { op: fuzz_op(rng), val: fuzz_weighted(rng, &[(10.0, 2), (50.0, 3), (100.0, 3), (250.0, 2), (500.0, 1)]) })
 }
 fn fuzz_leaf_price(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
-    // Dollars; thresholds straddle the corpus's skew (median ~$0.33, 99th ~$60).
-    FuzzSpec::Leaf(FuzzLeaf::Price { op: fuzz_op(rng), val: fuzz_weighted(rng, &[(0.1, 2), (0.5, 4), (1.0, 4), (2.0, 3), (5.0, 2), (20.0, 1), (60.0, 1)]) })
+    // Dollars; thresholds straddle the corpus's skew (median ~$0.33, 99th ~$60). eur and tix are drawn
+    // as often as usd: the fixture gives them different values per printing, so a query that narrows on
+    // one and verifies against another would be caught here.
+    let field = match rng.random_range(0..3) {
+        0 => NumField::PriceEur,
+        1 => NumField::PriceTix,
+        _ => NumField::PriceUsd,
+    };
+    FuzzSpec::Leaf(FuzzLeaf::Price { field, op: fuzz_op(rng), val: fuzz_weighted(rng, &[(0.1, 2), (0.5, 4), (1.0, 4), (2.0, 3), (5.0, 2), (20.0, 1), (60.0, 1)]) })
 }
 /// A release year on the corpus's rough distribution (skewed recent), + a small jitter.
 fn fuzz_year_value(rng: &mut rand::rngs::SmallRng) -> u32 {
@@ -2035,7 +2045,7 @@ fn fuzz_build_filter(spec: &FuzzSpec) -> FilterExpr {
         FuzzSpec::Leaf(FuzzLeaf::Loyalty { op, val }) => FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Loyalty), op: *op, rhs: NumExpr::Const(*val) },
         FuzzSpec::Leaf(FuzzLeaf::Rarity { op, val }) => FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op: *op, rhs: NumExpr::Const(*val) },
         FuzzSpec::Leaf(FuzzLeaf::CollectorNumber { op, val }) => FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::CollectorNumberInt), op: *op, rhs: NumExpr::Const(*val) },
-        FuzzSpec::Leaf(FuzzLeaf::Price { op, val }) => FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::PriceUsd), op: *op, rhs: NumExpr::Const(*val) },
+        FuzzSpec::Leaf(FuzzLeaf::Price { field, op, val }) => FilterExpr::NumericCmp { lhs: NumExpr::Field(*field), op: *op, rhs: NumExpr::Const(*val) },
         FuzzSpec::Leaf(FuzzLeaf::Date { op, value }) => FilterExpr::DateCmp { op: *op, value: *value },
         FuzzSpec::Leaf(FuzzLeaf::Year { op, year }) => FilterExpr::YearCmp { op: *op, year: *year },
         FuzzSpec::Leaf(FuzzLeaf::Arith { shape, op }) => {
@@ -2115,7 +2125,7 @@ fn fuzz_describe(spec: &FuzzSpec) -> String {
         FuzzSpec::Leaf(FuzzLeaf::Loyalty { op, val }) => format!("loyalty{}{val}", fuzz_op_str(*op)),
         FuzzSpec::Leaf(FuzzLeaf::Rarity { op, val }) => format!("rarity{}{val}", fuzz_op_str(*op)),
         FuzzSpec::Leaf(FuzzLeaf::CollectorNumber { op, val }) => format!("cn{}{val}", fuzz_op_str(*op)),
-        FuzzSpec::Leaf(FuzzLeaf::Price { op, val }) => format!("usd{}{val}", fuzz_op_str(*op)),
+        FuzzSpec::Leaf(FuzzLeaf::Price { field, op, val }) => format!("{}{}{val}", fuzz_num_field_str(*field), fuzz_op_str(*op)),
         FuzzSpec::Leaf(FuzzLeaf::Date { op, value }) => format!("date{}{value}", fuzz_op_str(*op)),
         FuzzSpec::Leaf(FuzzLeaf::Year { op, year }) => format!("year{}{year}", fuzz_op_str(*op)),
         FuzzSpec::Leaf(FuzzLeaf::Arith { shape, op }) => {
@@ -2193,9 +2203,20 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     let corpus = text_corpus();
     let mut cards: Vec<OracleCard> = Vec::with_capacity(ncards);
     let mut counts: Vec<usize> = Vec::with_capacity(ncards);
-    // Per-printing (rarity, border, legality word, collector number, price cents, released_at),
-    // flat in card/printing order, applied after store_of lays out the printings.
-    type PMeta = (Option<u8>, Option<&'static str>, u64, Option<u16>, Option<u32>, u32);
+    // Per-printing scalar metadata, flat in card/printing order, applied after store_of lays out the
+    // printings. A struct rather than the tuple this was: it reached eight fields once all three price
+    // columns were fuzzed, three of them `Option<u32>` and adjacent, which is exactly the shape where a
+    // positional swap compiles and silently fuzzes the wrong column.
+    struct PMeta {
+        rarity: Option<u8>,
+        border: Option<&'static str>,
+        legality_word: u64,
+        collector_number: Option<u16>,
+        price_usd: Option<u32>,
+        price_eur: Option<u32>,
+        price_tix: Option<u32>,
+        released_at: u32,
+    }
     let mut pmeta: Vec<PMeta> = Vec::new();
     // Printing-space collections + artist vid + flavor text id, same flat card/printing order as
     // pmeta. Interned here (while the vocabs/interner are in scope) but only applied to the printings
@@ -2331,19 +2352,39 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
             };
             let border = BORDERS[rng.random_range(0..BORDERS.len())];
             let cn = if rng.random_bool(0.95) { Some(rng.random_range(1..=300u16)) } else { None };
-            let price = if rng.random_bool(0.16) {
-                None
-            } else {
-                Some(match fuzz_weighted(rng, &[(0u8, 50), (1, 25), (2, 15), (3, 10)]) {
-                    0 => rng.random_range(5..=50u32),
-                    1 => rng.random_range(50..=200u32),
-                    2 => rng.random_range(200..=1000u32),
-                    _ => rng.random_range(1000..=6000u32),
-                })
+            // One draw per price column, INDEPENDENTLY. Three separate draws rather than one scaled
+            // three ways, and independent null rates, because the point of fuzzing all three is to
+            // catch a narrowing that reads the wrong index or the wrong column: derived values would
+            // agree often enough to hide it, and a shared null pattern would hide an absent-printing
+            // mix-up entirely. tix is nulled harder, matching the real corpus (54,896 priced against
+            // usd's 81,542).
+            let mut cents = |null_rate: f64| {
+                if rng.random_bool(null_rate) {
+                    None
+                } else {
+                    Some(match fuzz_weighted(rng, &[(0u8, 50), (1, 25), (2, 15), (3, 10)]) {
+                        0 => rng.random_range(5..=50u32),
+                        1 => rng.random_range(50..=200u32),
+                        2 => rng.random_range(200..=1000u32),
+                        _ => rng.random_range(1000..=6000u32),
+                    })
+                }
             };
+            let price = cents(0.16);
+            let price_eur = cents(0.20);
+            let price_tix = cents(0.45);
             let year = fuzz_year_value(rng);
             let released = year * 10_000 + rng.random_range(1..=12u32) * 100 + rng.random_range(1..=28u32);
-            pmeta.push((rarity, border, word, cn, price, released));
+            pmeta.push(PMeta {
+                rarity,
+                border,
+                legality_word: word,
+                collector_number: cn,
+                price_usd: price,
+                price_eur,
+                price_tix,
+                released_at: released,
+            });
             // Printing-space collections (sorted+deduped by vocab_ids) + one artist per printing
             // (real data has no NULL artists). frame_data keeps "2015" dominant so the corpus-scale
             // store exercises the thresholded-index drop.
@@ -2362,13 +2403,15 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     let mut data = store_of(cards, &counts, vocab);
     data.artist_vocab = artist_vocab.strings;
     data.mana_vocab = mana_vocab;
-    for (idx, (rarity, border, word, cn, price, released)) in pmeta.into_iter().enumerate() {
-        data.printings[idx].card_rarity_int = rarity;
-        data.printings[idx].card_border_id = border.map_or(NONE_STR, |b| interner.intern(b.to_string()));
-        data.printings[idx].card_legalities = word;
-        data.printings[idx].collector_number_int = cn;
-        data.printings[idx].price_usd = price;
-        data.printings[idx].released_at_int = Some(released);
+    for (idx, m) in pmeta.into_iter().enumerate() {
+        data.printings[idx].card_rarity_int = m.rarity;
+        data.printings[idx].card_border_id = m.border.map_or(NONE_STR, |b| interner.intern(b.to_string()));
+        data.printings[idx].card_legalities = m.legality_word;
+        data.printings[idx].collector_number_int = m.collector_number;
+        data.printings[idx].price_usd = m.price_usd;
+        data.printings[idx].price_eur = m.price_eur;
+        data.printings[idx].price_tix = m.price_tix;
+        data.printings[idx].released_at_int = Some(m.released_at);
         data.printings[idx].card_art_tags = std::mem::take(&mut art_meta[idx]);
         data.printings[idx].card_is_tags = std::mem::take(&mut is_meta[idx]);
         data.printings[idx].card_frame_data = std::mem::take(&mut frame_meta[idx]);
@@ -2409,6 +2452,8 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
     data.indexes.released_at = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.released_at_int);
     data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    data.indexes.price_eur = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_eur);
+    data.indexes.price_tix = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_tix);
     data.indexes.collector_number = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.collector_number_int.map(u32::from));
     // The exact card-count tables ride on those indexes and must be rebuilt with them — leaving them
     // at their empty defaults would make every range acquire silently fall back to the `k.min(n_cards)`
@@ -2418,6 +2463,8 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     let n_cards = data.cards.len();
     data.indexes.released_at_cards = build_range_card_counts(&data.indexes.released_at, &p2c, n_cards);
     data.indexes.price_usd_cards = build_range_card_counts(&data.indexes.price_usd, &p2c, n_cards);
+    data.indexes.price_eur_cards = build_range_card_counts(&data.indexes.price_eur, &p2c, n_cards);
+    data.indexes.price_tix_cards = build_range_card_counts(&data.indexes.price_tix, &p2c, n_cards);
     data.indexes.collector_number_cards = build_range_card_counts(&data.indexes.collector_number, &p2c, n_cards);
     data.indexes.border_printing = build_border_printing_planes(&data.printings, &data.strings);
     data.indexes.rarity_printing = build_rarity_printing_planes(&data.printings);
@@ -2648,7 +2695,7 @@ fn fuzz_row_identity_matches_reference() {
     // Full checks: deliberate fast-path shapes (popcount, #695 broad-range) plus random trees.
     let mut full_specs = vec![
         FuzzSpec::And(vec![fuzz_leaf_color(&mut rng), fuzz_leaf_type(&mut rng)]), // -> True (card-mode popcount path)
-        FuzzSpec::Leaf(FuzzLeaf::Price { op: CmpOp::Lt, val: 100_000.0 }),        // matches ~all priced -> #695 fastpath
+        FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op: CmpOp::Lt, val: 100_000.0 }),        // matches ~all priced -> #695 fastpath
         FuzzSpec::Leaf(FuzzLeaf::Date { op: CmpOp::Gt, value: 1990_0000 }),       // broad date -> range fastpath
     ];
     while full_specs.len() < CORPUS_FULL_CHECKS {
@@ -2926,15 +2973,15 @@ fn force_plan_differential_agreement() {
         (FuzzSpec::And(vec![fuzz_leaf_color(&mut rng), fuzz_leaf_type(&mut rng)]), "name", "desc"),
         (FuzzSpec::Leaf(FuzzLeaf::Date { op: CmpOp::Gt, value: 1990_0000 }), "cmc", "asc"),
         (FuzzSpec::Leaf(FuzzLeaf::Date { op: CmpOp::Gt, value: 1990_0000 }), "edhrec", "desc"),
-        (FuzzSpec::Leaf(FuzzLeaf::Price { op: CmpOp::Lt, val: 100_000.0 }), "usd", "asc"),
-        (FuzzSpec::Leaf(FuzzLeaf::Price { op: CmpOp::Lt, val: 100_000.0 }), "usd", "desc"),
+        (FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op: CmpOp::Lt, val: 100_000.0 }), "usd", "asc"),
+        (FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op: CmpOp::Lt, val: 100_000.0 }), "usd", "desc"),
         // Bare broad price over a card-level perm -> CardRangePopcount (PR 2a) in card mode; a narrow
         // price at low density -> its argmin fallback to the candidate path. price AND a color plane
         // stays on the general path (CardRangePopcount is bare-range-only) — kept as a plain
         // agreement case covering the non-applicable branch.
-        (FuzzSpec::Leaf(FuzzLeaf::Price { op: CmpOp::Lt, val: 100_000.0 }), "edhrec", "asc"),
-        (FuzzSpec::Leaf(FuzzLeaf::Price { op: CmpOp::Lt, val: 2.0 }), "edhrec", "desc"),
-        (FuzzSpec::And(vec![FuzzSpec::Leaf(FuzzLeaf::Price { op: CmpOp::Lt, val: 100_000.0 }), fuzz_leaf_color(&mut rng)]), "edhrec", "asc"),
+        (FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op: CmpOp::Lt, val: 100_000.0 }), "edhrec", "asc"),
+        (FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op: CmpOp::Lt, val: 2.0 }), "edhrec", "desc"),
+        (FuzzSpec::And(vec![FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op: CmpOp::Lt, val: 100_000.0 }), fuzz_leaf_color(&mut rng)]), "edhrec", "asc"),
         // A numeric bound on the SORT column itself, which is what `walk_bounds` narrows a streamed
         // walk with. Hand-built in BOTH directions, and in compound as well as bare form: the random
         // generator draws its predicate and its orderby independently, so it produced descending
@@ -3275,7 +3322,7 @@ fn explain_reports_ranked_applicable_plans() {
 
     let specs = [
         FuzzSpec::And(vec![fuzz_leaf_color(&mut rng), fuzz_leaf_type(&mut rng)]),
-        FuzzSpec::Leaf(FuzzLeaf::Price { op: CmpOp::Lt, val: 100_000.0 }),
+        FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op: CmpOp::Lt, val: 100_000.0 }),
         FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
     ];
     let modes = [("card", Mode::Card), ("printing", Mode::Printing), ("artwork", Mode::Artwork)];
@@ -4108,11 +4155,11 @@ fn declining_plans_report_their_gate_through_explain_analyze() {
         //
         // Broad: passes `range_too_broad_to_narrow` and reaches the strategy choice, so it succeeds
         // where a permutation exists and declines `RangeNoPermutation` where one does not.
-        FuzzSpec::Leaf(FuzzLeaf::Price { op: CmpOp::Lt, val: 100_000.0 }),
+        FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op: CmpOp::Lt, val: 100_000.0 }),
         // Matches nothing, so the breadth gate turns it back first — `RangeSelective`, NOT
         // `EmptyPage`: the broadness test runs before the `k == 0` check, which is why an empty
         // range reads as "the narrowing wins" rather than as an empty page.
-        FuzzSpec::Leaf(FuzzLeaf::Price { op: CmpOp::Gt, val: 100_000.0 }),
+        FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op: CmpOp::Gt, val: 100_000.0 }),
         // A broad range that is NOT a price leaf, so under the `usd` orderby in `sort_cols` the
         // index is not the sort permutation and there is no aligned mapping — `RangeUnalignedPrice`,
         // the one gate that needs the predicate and the orderby to disagree.
@@ -4309,7 +4356,7 @@ fn calibration_queries() -> Vec<(&'static str, FuzzSpec)> {
     let typ   = |op, mask| FuzzSpec::Leaf(FuzzLeaf::Type { op, mask });
     let cmc   = |op, val| FuzzSpec::Leaf(FuzzLeaf::Cmc { op, val });
     let power = |op, val| FuzzSpec::Leaf(FuzzLeaf::Power { op, val });
-    let price = |op, val| FuzzSpec::Leaf(FuzzLeaf::Price { op, val });
+    let price = |op, val| FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op, val });
     let year   = |op, y: i32| FuzzSpec::Leaf(FuzzLeaf::Year { op, year: y });
     let otext  = |needle: &str| FuzzSpec::Leaf(FuzzLeaf::TextContains { field: TextSearchField::OracleTextLower, needle: needle.to_string() });
     let ntext  = |needle: &str| FuzzSpec::Leaf(FuzzLeaf::TextContains { field: TextSearchField::NameLower, needle: needle.to_string() });
@@ -4973,7 +5020,7 @@ fn printing_range_route_probe() {
 
     // Bare price/year ranges spanning the broad/narrow margin; `total` reveals each
     // one's true match_rate (of the priced/dated index) at run time.
-    let price = |op, val: f64| FuzzSpec::Leaf(FuzzLeaf::Price { op, val });
+    let price = |op, val: f64| FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op, val });
     let year  = |op, y: i32|   FuzzSpec::Leaf(FuzzLeaf::Year { op, year: y });
     let queries: Vec<(&str, FuzzSpec)> = vec![
         ("usd<0.25", price(CmpOp::Lt, 0.25)),
@@ -5224,7 +5271,7 @@ fn idea1_vs_idea2_probe() {
     let n_printings = archived.printings.len();
     eprintln!("real.store: {} cards, {n_printings} printings (printing mode, edhrec sort = unrelated order-by)\n", archived.cards.len());
 
-    let price = |op, val: f64| FuzzSpec::Leaf(FuzzLeaf::Price { op, val });
+    let price = |op, val: f64| FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op, val });
     let year  = |op, y: i32|   FuzzSpec::Leaf(FuzzLeaf::Year { op, year: y });
     let queries: Vec<(&str, FuzzSpec)> = vec![
         ("usd<0.25", price(CmpOp::Lt, 0.25)), ("usd<0.5", price(CmpOp::Lt, 0.5)),
@@ -5877,10 +5924,14 @@ fn bench_checked_vs_unchecked_access() {
         watermarks:     HashMap::new(),
         released_at:    PrintingValueIndex::default(),
         price_usd:      PrintingValueIndex::default(),
+        price_eur:      PrintingValueIndex::default(),
+        price_tix:      PrintingValueIndex::default(),
         collector_number: PrintingValueIndex::default(),
         // Empty to match the empty range indexes above; fuzz_store_n rebuilds all six together.
         released_at_cards: RangeCardCounts::default(),
         price_usd_cards: RangeCardCounts::default(),
+        price_eur_cards: RangeCardCounts::default(),
+        price_tix_cards: RangeCardCounts::default(),
         collector_number_cards: RangeCardCounts::default(),
         sort_perms:     build_sort_permutations(&cards),
         max_artwork_groups: artwork_groups.iter().copied().max().unwrap_or(0),
@@ -7313,6 +7364,8 @@ fn negated_range_narrowing() {
     data.printings[2].released_at_int = None;
     data.printings[3].released_at_int = Some(20_200_101);
     data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    data.indexes.price_eur = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_eur);
+    data.indexes.price_tix = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_tix);
     data.indexes.collector_number = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.collector_number_int.map(u32::from));
     data.indexes.released_at = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.released_at_int);
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");

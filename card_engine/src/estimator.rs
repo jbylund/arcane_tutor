@@ -370,21 +370,28 @@ fn estimate_leaf(f: &FilterExpr, indexes: &Archived<CardIndexes>, n_cards: u32, 
                 NumField::RarityInt => {
                     narrow_rarity(indexes, n_cards as usize, op, c).map_or_else(|| unknown(n), |nar| exact(nar.set.len() as u32))
                 }
-                // Printing-space integer-cent range → project (varying).
-                NumField::PriceUsd => match int_range_bounds(op, snap_to_nearest_cent(c * PRICE_CENTS_PER_DOLLAR)) {
-                    None => unknown(n),
-                    Some(None) => project(0, n_cards, n_printings),
-                    Some(Some((lo, hi))) => project(range_count(&indexes.price_usd, lo, hi), n_cards, n_printings),
-                },
+                // Printing-space integer-cent ranges → project (varying). All three price fields
+                // share the representation, so they share the arm.
+                NumField::PriceUsd | NumField::PriceEur | NumField::PriceTix => {
+                    let idx = match field {
+                        NumField::PriceEur => &indexes.price_eur,
+                        NumField::PriceTix => &indexes.price_tix,
+                        _ => &indexes.price_usd,
+                    };
+                    match int_range_bounds(op, snap_to_nearest_cent(c * PRICE_CENTS_PER_DOLLAR)) {
+                        None => unknown(n),
+                        Some(None) => project(0, n_cards, n_printings),
+                        Some(Some((lo, hi))) => project(range_count(idx, lo, hi), n_cards, n_printings),
+                    }
+                }
                 // Printing-space integer range → project (varying).
                 NumField::CollectorNumberInt => match int_range_bounds(op, c) {
                     None => unknown(n),
                     Some(None) => project(0, n_cards, n_printings),
                     Some(Some((lo, hi))) => project(range_count(&indexes.collector_number, lo, hi), n_cards, n_printings),
                 },
-                // No index (price_eur/price_tix are not indexed) or unindexed
-                // fields (loyalty/edhrec/prefer_score) → sound unknown.
-                NumField::PriceEur | NumField::PriceTix | NumField::Loyalty | NumField::EdhrEc | NumField::PreferScore => unknown(n),
+                // Unindexed fields (loyalty/edhrec/prefer_score) → sound unknown.
+                NumField::Loyalty | NumField::EdhrEc | NumField::PreferScore => unknown(n),
             }
         }
 
