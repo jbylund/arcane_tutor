@@ -9541,6 +9541,54 @@ fn name_bigrams_tiers_and_exactness() {
     assert!(super::narrow_rec(&f, &archived.indexes, &archived.offsets, &archived.cards, false).is_none());
 }
 
+/// The complement of a 1-byte NAME needle is exact, so the `Not` arm may mark it tight — and the
+/// complement of an ORACLE needle may not, because oracle text can be absent and a Null card satisfies
+/// neither the predicate nor its negation. Pins both sides of `never_null` (#858).
+#[test]
+fn not_over_unigram_is_tight_but_oracle_stays_loose() {
+    let mut vocab = VocabInterner::new();
+    // 'q' in every 8th name; no name contains 'v'. Oracle text left unset, which is what makes the
+    // oracle side Null rather than false.
+    let cards: Vec<OracleCard> = (0..256u32)
+        .map(|i| {
+            let mut c = stub_card(u128::from(i) + 1, TYPE_CREATURE, &[], &mut vocab);
+            let name = if i % 8 == 0 { format!("aq b{i}") } else { format!("ab c{i}") };
+            c.card_name_lower = InlineStr::from_str(&name);
+            c.card_name_folded = c.card_name_lower;
+            c
+        })
+        .collect();
+    let data = store_of(cards, &vec![1usize; 256], vocab);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let rec = |f: &FilterExpr| super::narrow_rec(f, &archived.indexes, &archived.offsets, &archived.cards, true);
+
+    let name_q = || FilterExpr::TextContains { field: TextSearchField::NameLower, word: "q".into() };
+    let n = rec(&FilterExpr::Not(Box::new(name_q()))).expect("-name:q must narrow");
+    assert!(n.tight, "name is never Null, so the complement of a tight 1-byte set is exact");
+    let cand = n.set.into_cards(&archived.offsets, &archived.indexes.printing_to_card);
+    let brute: Vec<u32> = archived
+        .cards
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| !c.card_name_folded.as_str().contains('q'))
+        .map(|(i, _)| i as u32)
+        .collect();
+    assert_eq!(cand, brute, "-name:q must be exactly the cards whose name lacks 'q'");
+
+    // An absent byte complements to every card, and that must stay exact rather than trip a breadth guard.
+    let name_v = FilterExpr::TextContains { field: TextSearchField::NameLower, word: "v".into() };
+    let n = rec(&FilterExpr::Not(Box::new(name_v))).expect("-name:v must narrow");
+    assert!(n.tight);
+    assert_eq!(n.set.len(), archived.cards.len(), "no name contains 'v', so its negation is every card");
+
+    // The other side of the gate: oracle text can be absent, so its complement is NOT exact. It cannot
+    // narrow at all here (no sub-trigram oracle index), which is the conservative outcome either way.
+    let oracle_q = FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: "q".into() };
+    assert!(!super::never_null(&oracle_q), "oracle text is nullable, so its negation must not be tight");
+    assert!(rec(&FilterExpr::Not(Box::new(oracle_q))).is_none());
+}
+
 /// The 1-byte name tier: both storage tiers, exactness against brute-force `contains`, and the empty
 /// case. Mirrors `name_bigrams_tiers_and_exactness` one length down (#858).
 #[test]

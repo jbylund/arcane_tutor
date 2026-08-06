@@ -3917,6 +3917,23 @@ fn or_all(mut sets: Vec<Narrowed>, n: usize) -> Option<Narrowed> {
     Some(Narrowed { set, tight, proven: 0 })
 }
 
+/// Can `f` never evaluate to `Tri::Null` on any card? Only then is the complement of a tight narrowing
+/// exact, because a Null card satisfies neither `f` nor `Not(f)` yet still lands in the complement.
+///
+/// Deliberately tiny, and conservative by default: a `false` answer only costs the `Not` arm its tight
+/// marking, while a wrong `true` drops or invents rows. The one field that qualifies today is
+/// `NameLower`, and the proof is one line in `str_val_of` -- it returns `StrVal::Known(...)`
+/// UNCONDITIONALLY, where oracle goes through `opt_sv` and flavor through `map_or(StrVal::PDep, ..)`.
+/// An empty name is still `Known("")`, and `"".contains(needle)` is `false` rather than Null, so the
+/// empty case needs no carve-out.
+///
+/// Before extending this: nullable fields are a repeat source of exactly this bug --
+/// `tight_narrow_space` had to drop `released_at` for being nullable, and excludes price for the same
+/// class of reason. Add a field only with the `str_val_of` / accessor line that proves totality.
+fn never_null(f: &FilterExpr) -> bool {
+    matches!(f, FilterExpr::TextContains { field: TextSearchField::NameLower, .. })
+}
+
 /// Static answer to "could narrow_rec(f) produce a tight set, and in which
 /// space?" — Some(true) = printing space, Some(false) = card space, None =
 /// never tight. Conservative: loose-by-construction sources and mixed-space
@@ -5185,6 +5202,21 @@ fn narrow_rec(
             let (printing_space, domain) = (n.set.is_printing_space(), if n.set.is_printing_space() { n_printings } else { n_cards });
             let mut bits = n.set.into_bits(domain);
             complement_bits(&mut bits, domain);
+            // The complement of a tight set is EXACT whenever the inner predicate can never evaluate
+            // `Tri::Null` — the one thing the loose marking was protecting against, since a Null card
+            // satisfies neither the predicate nor its negation but lands in the complement anyway.
+            //
+            // That matters most where the inner set is SPARSE: its complement is then ~the whole corpus,
+            // which the breadth guard discards for a loose set, so `-name:q` fell back to a full scan
+            // with `card_pass` on every card (463 us) while `-name:e` -- complement of a DENSE set, so
+            // only 16% of cards -- stayed under the guard and cost 76 us. Marking the exact case tight
+            // keeps the broad complement (via #860's tight exemption) and skips verification entirely.
+            //
+            // Printing space is excluded: `into_card_space` drops tightness on projection, so a tight
+            // printing-space complement would not survive to the walk as one anyway.
+            if !printing_space && never_null(inner) {
+                return Narrowed::tight(Candidates::CardBits(bits));
+            }
             Narrowed::loose(if printing_space { Candidates::PrintingBits(bits) } else { Candidates::CardBits(bits) })
         }
 
@@ -8280,9 +8312,14 @@ fn prepare_candidates(ctx: &QueryCtx, params: &QueryParams, filter: &mut FilterE
     // reused across queries (thread-local), same as the streamed counts
     // buffer.
     let candidate_cards: Option<Vec<u32>> = match plane {
+        // The 7/8 breadth filter has the same inverted reasoning as `narrow_candidates_exact`'s 3/4 guard
+        // (#860): a near-total LOOSE list costs materialization and still verifies every card, but a
+        // near-total TIGHT one removes verification altogether, which is the larger term. `-name:q` is the
+        // case -- its complement is 30,918 of 31,508 cards, so it was dropped here, `all_match_known` was
+        // then correctly cleared, and the query fell back to a full scan with `card_pass` on every card.
         None => raw_candidates
             .map(|c| c.into_cards(offsets, &indexes.printing_to_card))
-            .filter(|v| v.len() < cards.len() - cards.len() / 8),
+            .filter(|v| residual_exact || v.len() < cards.len() - cards.len() / 8),
         Some(expr) => {
             thread_local! {
                 static PLANE_BITMAP: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
