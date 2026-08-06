@@ -3166,7 +3166,22 @@ fn range_candidates(idx: &Archived<PrintingValueIndex>, lo: u32, hi: u32) -> Opt
 fn range_narrowed(idx: &Archived<PrintingValueIndex>, lo: u32, hi: u32, n_printings: usize, broad_ok: bool, exact: bool) -> Option<Narrowed> {
     let (s, e) = idx.range(lo, hi);
     let k = e - s;
-    if !range_too_broad_to_narrow(k, idx.len()) {
+    // Breadth against the WALK's domain, not the index's own length. A printing-value index omits
+    // null-valued printings, so `idx.len()` is the priced subset -- 54,896 of 97,206 for tix -- and
+    // measuring against it overstates breadth by exactly the null rate (1.77x for tix, 1.19x for
+    // usd/eur, 1.00x for the always-present date and collector-number indexes).
+    //
+    // The guard asks "is this set too big a fraction of what we would otherwise scan to be worth
+    // materializing", and what we would otherwise scan is the corpus. `tix>=0.03 tix<=0.03` is 16,664
+    // printings: 30.4% of the tix index and 17.1% of the corpus. Judged the first way it is broad, so it
+    // declines under `broad_ok: false` and narrows NOTHING -- which is why
+    // `eur>0.15 tix>=0.03 tix<=0.03` runs 39 us alone but 1,405 us with any plane-consumed partner, the
+    // plane having taken the only leaf that could have supplied a printing-space set.
+    //
+    // The collection and frame arms already use `n_printings` for the same guard; the range arms were
+    // the inconsistent ones.
+    let domain = if *RANGE_BREADTH_VS_CORPUS { n_printings } else { idx.len() };
+    if !range_too_broad_to_narrow(k, domain) {
         // Still a sort: the run order is the sort-key tiebreak, not pid, and `Candidates::Printings`
         // is contractually pid-ascending. Cheaper than before if anything — no stride over a tuple.
         let mut result: Vec<u32> = idx.range_pids(lo, hi).collect();
@@ -4130,13 +4145,26 @@ fn fuse_and_range_children<'f, 'i>(
     // touch at all is ±170 µs, so the two are indistinguishable. What the gate does buy is a bound —
     // outside the sparse population where the win IS demonstrated (up to 1.3 ms/query), narrowing is a
     // provable no-op. `k` survives for the survivors so the probe isn't recomputed downstream.
+    // Every printing has a card, so this CSR is corpus-length -- unlike the value indexes, which omit nulls.
+    let corpus_printings = indexes.printing_to_card.len();
     let mut fused: Vec<(&Group<'i>, usize)> = Vec::new();
     for g in &groups {
         if g.count < 2 {
             continue;
         }
         let (s, e) = g.idx.range(g.lo, g.hi);
-        if !sparse_only || !range_too_broad_to_narrow(e - s, g.idx.len()) {
+        // Same denominator argument as `range_narrowed`'s: the index omits null-valued printings, so
+        // `g.idx.len()` is the priced subset and judging breadth against it overstates it by the null
+        // rate. `tix>=0.03 tix<=0.03` fuses to 16,664 printings -- 30.4% of the tix index but 17.1% of
+        // the corpus -- so this gate refused to fuse it, the two halves stayed separate and individually
+        // broad, and BOTH declined under `broad_ok: false`. The result was a query that narrowed nothing:
+        // `eur>0.15 tix>=0.03 tix<=0.03 id:bgruw` at 1,405 us against 39 us for the same query without
+        // the plane-consumed partner.
+        //
+        // This gate, not `range_narrowed`'s, is the one that fires first -- changing only the latter
+        // moved nothing, because unfused halves never reach it as an interval.
+        let domain = if *RANGE_BREADTH_VS_CORPUS { corpus_printings } else { g.idx.len() };
+        if !sparse_only || !range_too_broad_to_narrow(e - s, domain) {
             fused.push((g, e - s));
         }
     }
@@ -5753,6 +5781,10 @@ static RESIDUAL_PASS_RATE_ARTWORK: LazyLock<f64> = LazyLock::new(|| guard_env("C
 /// Whether a dense `frame_data` value is gated on being genuinely BROAD (1/4) rather than merely dense
 /// (1/32). 0 restores the conflated gate, for the A/B that priced the distinction.
 static DENSE_FRAME_BROAD_GATE: LazyLock<bool> = LazyLock::new(|| guard_env("CARD_ENGINE_DENSE_FRAME_BROAD_GATE", 1u8) != 0);
+
+/// Whether range breadth is judged against the corpus (`n_printings`) or the index's own length. The
+/// index omits nulls, so the latter overstates breadth by the null rate. 0 restores it, for the A/B.
+static RANGE_BREADTH_VS_CORPUS: LazyLock<bool> = LazyLock::new(|| guard_env("CARD_ENGINE_RANGE_BREADTH_VS_CORPUS", 1u8) != 0);
 
 /// Whether the PAIR table answers a two-leaf `And` exactly and tightens the `And` fold's bound. 0 falls
 /// both back to `min` over single leaves.
