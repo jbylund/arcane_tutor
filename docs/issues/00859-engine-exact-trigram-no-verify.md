@@ -1,7 +1,10 @@
 # A 3-byte needle's trigram set is exact, but `narrow_rec` marks it loose — so every candidate is re-verified
 
-Status: **defect confirmed by reading the code; the size of the win is not measured.** Filed as
+Status: **prototyped and measured 2026-08-06; change reverted, not committed.** Filed as
 [#859](https://github.com/jbylund/sylvan_librarian/issues/859).
+
+**Measured: `o:the` 783.9 µs → 168.5 µs (4.7×), `o:tar` 9.3×, and 0 of 104 result cells changed.** The full
+engine test suite passes. Details under [Prototyped](#prototyped-and-measured).
 
 **The fix is one guard, and it is not in `memoize_text_predicates`.** `narrow_rec`'s text arm returns
 `Narrowed::loose` for every needle of 3 bytes or more; at exactly 3 bytes the set is exact, so it should return
@@ -117,16 +120,50 @@ Two readings. Cost **tracks result count** rather than cliffing, so this is not 
 And **oracle costs ~3.6× more per result than name** (58 against 16 ns/result), which is what scanning full
 oracle texts looks like next to ~20-byte names.
 
-## What is not established
+## Prototyped and measured
 
-**How much of `o:the`'s 776 µs is verification** against the floor of emitting 16,240 rows. The arithmetic bounds
-it: 776 µs / 16,240 candidates = **47.8 ns per candidate**, which is what a `memmem` over a few hundred bytes of
-oracle text costs, so most of it is plausibly the verify. But `name:the` runs at 15.9 ns/result *including its
-own loose verify over ~20-byte names*, so the pure emit floor is below that — putting `o:the`'s floor under
-~258 µs and the likely win at **3–4×**, not 776 µs → nothing.
+Built as described — `let mk = if word.len() == 3 { Narrowed::tight } else { Narrowed::loose };` — measured, then
+**reverted**. Nothing is committed. Release build, Docker down, min of 9 trials, same store both sides.
 
-That is an estimate from two measurements, not a measurement. The experiment that settles it *is* the fix, so
-build it rather than model it further.
+**Correctness first: 0 of 104 cells changed.** 26 queries × 4 shapes, comparing total, row count, and a SHA over
+the returned row-identity sequence in order. The set deliberately includes the shapes where tightness propagates
+and could go wrong: negations (`-o:the`, `-name:the`), conjunctions (`o:the t:creature`, `o:the -t:land`,
+`name:the o:the`, `o:the c:g cmc<=3`), a disjunction (`o:the or o:you`), 2- and 4-byte controls (`o:th`,
+`o:they`, `o:ther`), and all three distinct-ons at two offsets each. The full engine suite also passes in debug —
+153 tests, including `fuzz_row_identity_matches_reference` and `force_plan_differential_agreement`.
+
+**Engine-side (`explain_analyze` routed_ns):**
+
+| query | before | after | |
+| --- | --: | --: | --: |
+| `o:the` | 783.9 µs | **168.5 µs** | **4.7×** |
+
+**End-to-end through `engine.query`** (includes Python marshalling, so these ratios are *conservative* — fixed
+overhead sits on both sides and pulls the ratio toward 1):
+
+| query / shape | before | after | |
+| --- | --: | --: | --: |
+| `o:tar` card/name | 1,559.4 µs | **167.0 µs** | **9.3×** |
+| `o:and` card/name | 1,255.1 | **178.3** | 7.0× |
+| `o:the` card/name offset 600 | 1,257.0 | **220.8** | 5.7× |
+| `o:you` card/name | 1,089.8 | **263.2** | 4.1× |
+| `o:the` card/name | 823.0 | **212.7** | 3.9× |
+| `o:the -t:land` | 929.5 | **220.8** | 4.2× |
+| `o:the t:creature` | 511.3 | **227.1** | 2.3× |
+| `name:the` | 88.8 | **46.5** | 1.9× |
+| `ft:the o:the` | 2,465.7 | **1,464.5** | 1.7× |
+| `o:qua` | 85.2 | **51.6** | 1.6× |
+
+1-byte needles are unchanged, as expected — that is [#858](00858-engine-short-needle-text-scan.md), a different
+mechanism.
+
+**The earlier 3–4× estimate was low, and here is why.** It put the emit floor at `name:the`'s 15.9 ns/result —
+but `name:the` was itself paying a loose verify, and improved 1.9×. So the floor was inflated by the very defect
+being measured. The lesson generalises: do not derive a floor from another query that has the same bug.
+
+**Compositions benefit more than the bare predicate**, which was not predicted. `o:the -t:land` gains 4.2×
+against the bare `o:the`'s 3.9×, because a tight text child lets the `And` skip `card_pass` for the whole
+conjunction rather than just the text leaf.
 
 ## The change
 
