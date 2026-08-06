@@ -1,7 +1,7 @@
 # Prefer-Score Label Harness: Pairwise Screening and Weight Fitting
 
 Status: proposed, not started. Split out of
-[00720-prefer-score-artwork-tuning.md](00720-prefer-score-artwork-tuning.md) once it became clear this
+[00720-prefer-score-artwork-tuning.md](done/00720-prefer-score-artwork-tuning.md) once it became clear this
 is an independent deliverable: 00720 is the scoring defect, this is the instrument for fixing it and for
 preventing the next one. Not filed as a GitHub issue of its own.
 

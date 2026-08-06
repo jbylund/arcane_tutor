@@ -1,12 +1,24 @@
 # Prefer-Score Artwork Selection: Tuneable Weights and a Measured Objective
 
-Status: **in progress.** Tracked as [#720](https://github.com/jbylund/sylvan_librarian/issues/720),
-which carries the standalone problem statement. One component (`art_style`) is evidenced and ready to
-land; the labelling and swap-review tooling that produced it is built and working. This doc is the
-depth: what was measured, what was wrong, and why the shipped answer is not the one it looked like for
-most of the investigation.
+**DONE — [#720](https://github.com/jbylund/sylvan_librarian/issues/720) closed as completed 2026-07-26.**
+Two changes shipped: the `art_style` component at weight 14 (visible in
+[`api/sql/backfill_prefer_scores.sql`](../../../api/sql/backfill_prefer_scores.sql)) and the filtered
+`illustration_count` numerator that excludes memorabilia and foreign-language rows.
 
-Companion: [local-prefer-score-label-harness.md](local-prefer-score-label-harness.md) — the labelling
+**The remaining tuning work is [#855](../00855-prefer-score-remaining-tuning.md)** — child-set collapsing
+(deferred for a missing `magic.set_parents` table, and the largest effect measured at 16,357 duplicate credits),
+the 533-candidate `art_style` tag-set expansion, weight optimization, and lifting weights out of SQL.
+
+**If you are here because of #720's last comment ("Should only get 1 printing credit per set"): that was built
+and rejected**, at 28 better / 22 worse, with losses concentrated 17–1 on 7th–10th Edition `★` foils. See
+"Counting rules that were built and rejected" below before retrying it.
+
+This doc is the depth: what was measured, what was wrong, and why the shipped answer is not the one it looked
+like for most of the investigation.
+
+*Original status, kept for dating* — in progress; one component evidenced and ready to land.
+
+Companion: [local-prefer-score-label-harness.md](../local-prefer-score-label-harness.md) — the labelling
 instrument, its schema, sampling strategy, and fitting method.
 
 ## Why this cannot be hand-written
@@ -207,7 +219,10 @@ One new component, nothing else changed. `extended_art` stays at 12.
 Expressed as a bonus for being on-style rather than a penalty on being off-style, so every component
 stays non-negative, matching the rest of the table.
 
-## Open
+## Open — all four items now tracked as [#855](../00855-prefer-score-remaining-tuning.md)
+
+Kept here because the evidence behind each one is in this doc; #855 carries the sequencing and the reason (2)
+and (3) are blocked on the labelling tooling rather than on scoring judgement.
 
 - **The tag set is partly a hypothesis.** 533 further candidates exist — art tags whose artworks
   concentrate in few sets, a measurable proxy separating style/setting tags from content tags like
@@ -272,8 +287,8 @@ special foil or a different promo product.
 
 ## Related
 
-- [local-prefer-score-label-harness.md](local-prefer-score-label-harness.md) — labelling instrument.
-- [00707-engine-3key-ordering-parity.md](done/00707-engine-3key-ordering-parity.md) — `prefer_score` is the
+- [local-prefer-score-label-harness.md](../local-prefer-score-label-harness.md) — labelling instrument.
+- [00707-engine-3key-ordering-parity.md](00707-engine-3key-ordering-parity.md) — `prefer_score` is the
   third sort key and where plans may diverge.
-- [`api/sql/backfill_prefer_scores.sql`](../../api/sql/backfill_prefer_scores.sql) — the scoring
+- [`api/sql/backfill_prefer_scores.sql`](../../../api/sql/backfill_prefer_scores.sql) — the scoring
   definition.

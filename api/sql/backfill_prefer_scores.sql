@@ -26,7 +26,7 @@ WITH computed_components AS (
             -- perfectly real, and dropping them would penalise exactly the core-set reprints
             -- this component should reward.
             --
-            -- Evidence (docs/issues/00720-prefer-score-artwork-tuning.md): a 47-card blind
+            -- Evidence (docs/issues/done/00720-prefer-score-artwork-tuning.md): a 47-card blind
             -- swap review returned 11 better, 36 same, 0 worse, and a later 378-card review
             -- against production added 2 more with no regressions. This changes only the
             -- numerator -- it does not stop such printings being displayed.
@@ -138,7 +138,7 @@ WITH computed_components AS (
             -- line-art, and is demoted, because a line-art rendering is a departure from the
             -- painted core style whoever owns the IP. Confirmed against the artwork.
             --
-            -- Evidence (docs/issues/00720-prefer-score-artwork-tuning.md): in 177 labelled
+            -- Evidence (docs/issues/done/00720-prefer-score-artwork-tuning.md): in 177 labelled
             -- artwork comparisons where exactly one side was off-style, the on-style side
             -- was chosen 177 times. Blind swap review across weights 6, 9 and 14 gave 78
             -- "better" and 0 "worse" over 114 changed cards. Fixes both cards that opened

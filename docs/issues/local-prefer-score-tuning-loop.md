@@ -1,6 +1,6 @@
 # A closed tuning loop for `prefer_score`
 
-The tuning in [#720](00720-prefer-score-artwork-tuning.md) worked but the *process* did not. Each
+The tuning in [#720](done/00720-prefer-score-artwork-tuning.md) worked but the *process* did not. Each
 change took a bespoke script, a hand-built review page and a hand-written analysis, and the analysis
 was wrong three separate times. This is a design for replacing that with one loop: propose a change,
 grade ~20 cards, accept or reject, repeat — with a single number going up.
@@ -69,7 +69,7 @@ change is hand-copied — the weights should move to config that both the SQL an
 
 ## Related
 
-- [00720-prefer-score-artwork-tuning.md](00720-prefer-score-artwork-tuning.md) — the tuning this
+- [00720-prefer-score-artwork-tuning.md](done/00720-prefer-score-artwork-tuning.md) — the tuning this
   process was derived from, and the record of what it got wrong.
 - [local-prefer-score-label-harness.md](local-prefer-score-label-harness.md) — the labelling
   instrument that produces the objective.
