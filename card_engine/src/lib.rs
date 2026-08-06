@@ -5542,6 +5542,16 @@ static RESIDUAL_PASS_RATE_ARTWORK: LazyLock<f64> = LazyLock::new(|| guard_env("C
 /// (1/32). 0 restores the conflated gate, for the A/B that priced the distinction.
 static DENSE_FRAME_BROAD_GATE: LazyLock<bool> = LazyLock::new(|| guard_env("CARD_ENGINE_DENSE_FRAME_BROAD_GATE", 1u8) != 0);
 
+/// Whether the legality divergent-share correction to `stream_scan_units` is scoped to filters whose
+/// residual can actually settle at card level.
+///
+/// **Default OFF, deliberately.** The correction is more accurate scoped (see the call site) and it wins
+/// 2x in printing and artwork mode, but on its own it nets a wash: it also moves CARD mode onto
+/// `PrintingCompose`, which then declines at dispatch (`DeclineSparseExact`) and falls back having
+/// already paid the build. Turning this on wants the decline hazard fixed first —
+/// docs/issues/local-engine-legality-scan-scope.md has the chain and the measurements.
+static LEGALITY_SCAN_SCOPE: LazyLock<bool> = LazyLock::new(|| guard_env("CARD_ENGINE_LEGALITY_SCAN_SCOPE", 0u8) != 0);
+
 /// Whether a conjunct the candidate set already proves is skipped by `card_pass` instead of
 /// re-verified. 0 restores the re-verification, for the A/B that priced it.
 static PROVEN_CONJUNCTS: LazyLock<bool> = LazyLock::new(|| guard_env("CARD_ENGINE_PROVEN_CONJUNCTS", 1u8) != 0);
@@ -9525,7 +9535,18 @@ fn acquire_plan_features(
             // arm multiplies the term by zero on the same signal, so this changes no cost — only whether
             // the feature can be graded honestly.
             0
-        } else if filter_touches_legality(composed) {
+        } else if filter_touches_legality(composed) && !(*LEGALITY_SCAN_SCOPE && touches_printing_field(composed)) {
+            // `&& !touches_printing_field` because the argument below is about what `card_pass` can
+            // SETTLE, and legality being card-level is only decisive when it is the only thing left to
+            // verify. One printing-varying partner -- `border:white`, a range, a frame value -- makes
+            // `card_pass` return `PrintingDep` for every card, and P3 then walks the whole span like P4.
+            //
+            // Scoped on legality alone, the correction charged 2,755 for the entire `f:X border:white`
+            // family against a realized 5,353-19,737, up to 7.2x under, and handed every one of them to
+            // StreamedSelect: `f:modern border:white` measured 100.9 us on the plan the router picked
+            // against 44.3 us for the PrintingCompose it passed over. `Legality` reads false from
+            // `touches_printing_field` (it ranks by the common card-level case), so this composes
+            // cleanly -- a bare legality filter still takes the divergent-share arm.
             let divergent = indexes.legal_divergent.len() as f64;
             let share = (divergent / f64::from(n_cards)).min(1.0);
             // Floored at one printing per candidate: with a divergent format in play the kernel does
