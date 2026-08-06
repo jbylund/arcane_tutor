@@ -3222,7 +3222,7 @@ fn sorted_ids(ids: impl Iterator<Item = u32>, k: usize, domain: usize) -> Vec<u3
              duplicate, which the bitmap collapses and the sort keeps",
             collected.len(),
         );
-        return if bitmap { by_bitmap } else { by_sort };
+        if bitmap { by_bitmap } else { by_sort }
     }
     #[cfg(not(debug_assertions))]
     if bitmap {
@@ -9245,9 +9245,10 @@ fn exec_from_candidates<'a>(
 /// fallback it replaces on the model's own terms. Both paths are correct for any query either is
 /// applicable to — `force_plan_differential_agreement` holds every plan to identical results — so
 /// this changes only which correct plan runs.
-// Eight: the declined plan, the three shared query artifacts, the two split-filter pieces a sibling
-// needs to re-derive its own applicability, and the router's `choose`. A wrapper struct would only be
-// unpacked again at the two call sites.
+// Eight parameters: the declined plan, the three shared query artifacts (`ctx`, `params`, `filter`),
+// the two split-filter pieces a sibling needs to re-derive its own applicability (`unsplit`, `plane`),
+// and the router's `choose`. Bundling them would mean a struct whose only purpose is this call, and
+// whose fields the two call sites would immediately destructure again.
 #[allow(clippy::too_many_arguments, reason = "shared query artifacts plus the router's choose; a wrapper struct would only be unpacked again")]
 fn declined_sibling_fastpath<'a>(
     declined: PhysicalPlan,
