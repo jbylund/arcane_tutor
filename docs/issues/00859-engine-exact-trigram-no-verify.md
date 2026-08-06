@@ -165,6 +165,13 @@ being measured. The lesson generalises: do not derive a floor from another query
 against the bare `o:the`'s 3.9×, because a tight text child lets the `And` skip `card_pass` for the whole
 conjunction rather than just the text leaf.
 
+**One shape gets nothing, and it opened a separate finding.** `o:the or o:you` stays slow: the union of the two
+exact sets is 23,675 cards against a breadth guard that discards anything over 23,631, so the whole narrowing is
+thrown away 44 cards short. Relaxing that guard for tight sets is worth a further 4.4× — but attempting it
+**fails `fuzz_row_identity_matches_reference`** on a filter with no text in it, which means some narrowing
+already over-claims tightness and the guard has been masking it. That is
+[#860](00860-engine-broad-tight-narrowing-discarded.md), and it does not block this change.
+
 ## The change
 
 Split `narrow_rec`'s text arm at `word.len() == 3` and return `Narrowed::tight`. That is it — the tightness
