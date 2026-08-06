@@ -3,7 +3,9 @@
 Status: **designed and measured, not implemented.** Filed as
 [#856](https://github.com/jbylund/sylvan_librarian/issues/856).
 
-**Worth ~6.5× on the population that pays it, which is 1.3% of realistic queries and `set:`-dominated.**
+**Worth ~6.5× on the population that pays it — but that is 1.22% of routed time and contains no slow
+queries, so this is a ~1% aggregate rather than a latency fix.** `set:`-dominated. See
+[It touches no slow queries](#it-touches-no-slow-queries-and-that-is-structural) before citing the ratio.
 Both sides measured on `main` 2026-08-06, post-#833–#845: the residual costs **5.9 ns/printing**, the match
 loop is **87% of routed time**, and the replacement costs **0.17 ns**.
 
@@ -216,8 +218,36 @@ Two consequences worth stating plainly:
   `memoize_text_predicates` as a mechanism precedent, which is a different thing from sharing its target.
 
 **Scale:** 1,116 of 30,000 realistic-sampled queries are printing-mode on a compose acquire, and 377 of
-those (34%) route to a materializing plan — **1.3% of queries**. A 5× win on 1.3% of traffic is roughly a
-4% aggregate effect, and the honest case for doing it is the per-query tail rather than the mean.
+those (34%) route to a materializing plan — **1.3% of queries**, and **1.22% of all routed time**. The
+change saves **1.03% of total routed time**.
+
+### It touches no slow queries, and that is structural
+
+An earlier draft of this doc claimed "the honest case for doing it is the per-query tail rather than the
+mean." **That was asserted rather than measured, and it is false.** Measured routed time, realistic mode:
+
+| | p50 | p90 | p99 | max |
+| --- | --: | --: | --: | --: |
+| all sampled | 10.6 µs | 49.4 µs | **215.8 µs** | **1,132.6 µs** |
+| **this population** | 28.3 µs | 36.4 µs | 64.5 µs | **78.5 µs** |
+
+The population's *maximum* is about the overall *p90*. The engine's actual slow tail — 216 µs at p99, 1.1 ms
+worst — lies entirely outside it. These queries are consistently ~3× the median and never in the tail. The
+largest per-query win available is 78.5 µs → 9.2 µs, which no user can perceive.
+
+**And that is not luck.** This population is compose-acquired queries whose narrowing came back *tight*, and
+a tight narrowing is precisely what makes a query fast. The defect makes already-fast queries slower than they
+should be; it cannot produce a slow one. So the case is a ~1% aggregate, not a latency fix, and anything
+claiming otherwise should be checked against the table above — `scripts/bench_membership_waste.py` prints it.
+
+The slowest rows, for reference:
+
+```
+   78.5us ->    9.2us  (8.5x)  border:white f:historic cn<217
+   77.0us ->   12.7us  (6.1x)  usd>=0.15 usd<=0.15 f:pioneer
+   71.2us ->   14.6us  (4.9x)  eur:0.09 f:pauper
+   46.1us ->    2.2us  (20.5x) tix>=0.03 tix<=416.84 set:neo
+```
 
 ### Where the old 8× came from, and why it is withdrawn
 

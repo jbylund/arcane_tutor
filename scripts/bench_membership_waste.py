@@ -75,6 +75,7 @@ class Totals:
         self.cards = 0
         self.rates: list[float] = []
         self.rows_detail: list[tuple[float, int, str]] = []
+        self.tail: list[tuple[float, float, int, str]] = []
 
     def add(self, loop_ns: float, printings: int, routed_ns: float = 0.0, matches: int = 0, cards: int = 0) -> None:
         """Fold one measured plan trial in."""
@@ -92,11 +93,16 @@ def collect(engine: object, sampler: object, rng: random.Random, budget: object)
     from scripts import costbench  # noqa: PLC0415 - deferred so this imports without the built extension
 
     picked, every = Totals(), Totals()
+    # Every sampled query's routed time, so the population can be placed in the OVERALL latency
+    # distribution. A speedup on queries that are already fast is not a user-visible win, and only the
+    # comparison against all traffic can say which this is.
+    all_routed_ns: list[float] = []
     pop_n = 0
     by_repr: collections.Counter[str] = collections.Counter()
     picked_plans: collections.Counter[str] = collections.Counter()
 
     for s in costbench.iter_samples(engine, sampler, rng, budget):
+        all_routed_ns.append(float(min(s.res["acquire"]["routed_ns"])))
         if s.kw["unique"] != "printing" or s.acquire["count_source"] != COMPOSE_ACQUIRE:
             continue
         pop_n += 1
@@ -113,8 +119,9 @@ def collect(engine: object, sampler: object, rng: random.Random, budget: object)
                 # with ns_loop, which is itself the fastest round's phase split.
                 picked.add(loop, exam, float(min(s.res["acquire"]["routed_ns"])), int(p["matches_pushed"]), int(p["cards_visited"]))
                 picked.rows_detail.append((100.0 * int(p["matches_pushed"]) / exam, exam, s.q))
+                picked.tail.append((float(min(s.res["acquire"]["routed_ns"])), loop, exam, s.q))
                 picked_plans[p["plan"]] += 1
-    return picked, every, pop_n, by_repr, picked_plans
+    return picked, every, pop_n, by_repr, picked_plans, all_routed_ns
 
 
 def report_view(label: str, t: Totals) -> None:
@@ -216,7 +223,7 @@ def main() -> None:
     from scripts import costbench  # noqa: PLC0415
 
     engine = costbench.load_engine(args.corpus, args.shm)
-    picked, every, pop_n, by_repr, picked_plans = collect(
+    picked, every, pop_n, by_repr, picked_plans, all_routed_ns = collect(
         engine,
         QuerySampler(mode=args.mode),
         random.Random(args.seed),
@@ -234,6 +241,45 @@ def main() -> None:
         print(f"\n   per-query ns/printing, median {mid:.2f}  (pooled is volume-weighted)")
     if picked_plans:
         print("   picked plan:", ", ".join(f"{k}={v:,}" for k, v in picked_plans.most_common()))
+    report_tail(picked, all_routed_ns)
+
+
+def pctl(xs: list[float], q: float) -> float:
+    """The q-quantile of an unsorted list, nearest-rank."""
+    s = sorted(xs)
+    return s[min(int(q * len(s)), len(s) - 1)]
+
+
+def merge_ns_share() -> float:
+    """The recommended route's measured per-printing cost."""
+    return BIT_TEST_NS[0]
+
+
+def report_tail(t: Totals, all_routed_ns: list[float]) -> None:
+    """Place the population in the overall latency distribution, and show its slowest queries.
+
+    The aggregate speedup says nothing about whether any user-visible slow query gets faster. If the
+    population sits entirely inside the fast part of the distribution, the honest answer is that it does
+    not, however large the ratio.
+    """
+    if not t.tail or not all_routed_ns:
+        return
+    print("\n-- is anything SLOW here? --")
+    pop = [r for r, _, _, _ in t.tail]
+    print(f"   {'':<12}{'p50':>10}{'p90':>10}{'p99':>10}{'max':>10}")
+    for label, xs in (("all sampled", all_routed_ns), ("this population", pop)):
+        print(f"   {label:<12}" + "".join(f"{pctl(xs, q) / 1000:>9.1f}u" for q in (0.5, 0.9, 0.99, 1.0)))
+    # The aggregate that matters: this population's share of ALL routed time, and what the change saves
+    # of the whole. A large ratio on a small share is a small change.
+    total_all, total_pop = sum(all_routed_ns), sum(pop)
+    saved = t.loop_ns - t.printings * merge_ns_share()
+    print(f"   population share of all routed time: {100 * total_pop / total_all:.2f}%")
+    print(f"   saving as a share of ALL routed time: {100 * saved / total_all:.2f}%")
+    merge_ns = merge_ns_share()
+    print(f"   slowest in population, and what {merge_ns} ns/printing would make them:")
+    for routed, loop, exam, q in sorted(t.tail, key=lambda r: -r[0])[:8]:
+        after = routed - loop + exam * merge_ns
+        print(f"      {routed / 1000:>7.1f}us -> {after / 1000:>6.1f}us  ({routed / max(after, 1):.1f}x)  {q[:44]}")
 
 
 if __name__ == "__main__":
