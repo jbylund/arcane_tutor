@@ -117,8 +117,7 @@ cargo test --release bench_membership_check -- --ignored --nocapture
 - [#856](00856-engine-compose-membership-bittest.md) — the defect, the gate, and the general bitmap route.
 - [#852](00852-engine-compose-acquire-p3-p4-ranking.md) — the routing error on this same acquire, and where
   the engine's actual slow tail is.
-- [#730](00730-engine-popcount-skip-walk.md) — the permutation-order analogue. Keying candidates by
-  permutation position and *sorting* to make a forward pointer work there was measured and rejected (2.4–2.9 µs
-  per query against 0.2–0.3 for a scatter); the shape that works is a scatter through `inv_perm` into
-  permutation space, which `run_query_streamed_popcount` already does for `unique=card` + `True`. Recorded in
-  [#856](00856-engine-compose-membership-bittest.md#for-permutation-order-scatter--do-not-sort).
+- [#730](00730-engine-popcount-skip-walk.md) — the machinery the permutation-order route would use. Its own
+  subject is deep pagination; membership under a residual is a **second consumer**, recorded there along with
+  the measured rejection of sorting (2.4–2.9 µs/query against 0.2–0.3 for a scatter) and the note that its
+  "why deferred" reasoning covered only the pagination case.

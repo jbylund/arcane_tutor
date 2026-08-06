@@ -173,9 +173,15 @@ what the change wins.
 
 **The right shape for permutation order is a scatter too, just into permutation space** — and the engine
 already does it. `run_query_streamed_popcount` scatters the match set through `inv_perm` and walks words at 64
-cards a load, for `unique=card` + `True`. Extending that to printing mode is
-[#730](00730-engine-popcount-skip-walk.md), which is the better home for the permutation-order half of this
-than a sort would be.
+cards a load.
+
+Its limitation is the thing to extend: it runs only for `unique=card` with a `FilterExpr::True` residual, i.e.
+where the plane bitmap already *is* the match set. Carrying a real match set through `inv_perm` is what this
+route needs, and it needs per-card counts for the skip since a popcount counts cards and not matches. That
+extension is tracked at [#730](00730-engine-popcount-skip-walk.md) — whose own subject is deep pagination,
+with this as a **second consumer** of the same machinery — and it is also item 3 of
+[#852](00852-engine-compose-acquire-p3-p4-ranking.md)'s carried-forward list. #730 has the sort-vs-scatter
+numbers recorded so they are not re-derived there.
 
 **One trap, recorded because it produced a believable wrong answer.** A counting kernel
 (`if contains { hits += 1 }`) reads a flat 0.4 ns at *every* match density, because the compiler predicates it
