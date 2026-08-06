@@ -308,6 +308,9 @@ fn row(domain: usize, count: usize, runs_n: usize, label: &str) {
     );
 }
 
+/// The engine's printing-space domain, the one `range_narrowed` scatters into.
+const N_PRINTINGS_REF: usize = 97_206;
+
 fn header(axis: &str) {
     println!("\n{axis:<26}{:>8}{:>10}{:>10}{:>10}{:>9}{:>8}", "cands", "sort µs", "merge µs", "bitmap µs", "best", "spread");
 }
@@ -337,6 +340,15 @@ fn bench_candidate_materialize_contenders() {
     header("C. runs @ 4,096 cands");
     for k in [8, 64, 564, 2_048] {
         row(REAL_DOMAIN, 4_096, k, &format!("  {k} runs"));
+    }
+
+    // Axis 4: where the crossover actually sits in PRINTING space, which is the domain
+    // `range_narrowed` materializes into. Axis A is card space (31,508); printings are 97,206, and the
+    // bitmap pays `domain/64` words whatever `k` is -- 1,519 against 493 -- so the crossover has to move
+    // up. `MATERIALIZE_BITMAP_MIN` is set from THIS axis, not from axis A.
+    header("D. count @ printing domain");
+    for c in [16, 32, 64, 128, 256, 512, 1_024, 2_048] {
+        row(N_PRINTINGS_REF, c, REAL_RUNS, &format!("  {c} of {N_PRINTINGS_REF}"));
     }
 }
 
