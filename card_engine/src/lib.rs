@@ -8784,7 +8784,7 @@ fn acquire_plan_features(
         // every artwork-mode one, plus card-mode ones whose orderby has no permutation.
         let exact_cards = exact_card_total(composed, indexes, n_cards as usize);
         let est_cards =
-            exact_cards.map_or_else(|| calibrated_balls_into_bins(printing_matches, n_cards as usize), |n| n);
+            exact_cards.unwrap_or_else(|| calibrated_balls_into_bins(printing_matches, n_cards as usize));
         // What the MATERIALIZING alternatives scan if compose loses. Every mode narrows -- a
         // composable filter has an index for every leaf -- so all three are the NARROWED counts.
         // Printing mode took the unnarrowed universe while card/artwork took a narrowed count; only
@@ -8832,7 +8832,7 @@ fn acquire_plan_features(
                 // worse. Under-charging compose's push term is what over-picks it, and compose is
                 // over-picked in artwork specifically: that slice carries 21% of ALL routing regret at
                 // p99 205us against 40us for printing and 36us for card.
-                let capacity_cards = exact_cards.map_or_else(|| balls_into_bins(printing_matches, n_cards as usize), |n| n);
+                let capacity_cards = exact_cards.unwrap_or_else(|| balls_into_bins(printing_matches, n_cards as usize));
                 let rt = artwork_estimate(printing_matches, capacity_cards, n_cards as usize, n_artworks);
                 // The bitmap `printing_bits_to_artwork_bits` popcounts is n_artworks bits wide, not
                 // n_printings -- 46,112 against 97,206 here, so this was 2.1x over as well.
