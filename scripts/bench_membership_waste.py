@@ -46,10 +46,13 @@ MATERIALIZING = ("StreamedSelect", "GatheredScan")
 # The acquire branch whose dispatch-time narrowing produces an exact printing-space bitmap and drops it.
 COMPOSE_ACQUIRE = "printing_compose"
 
-# Cost of an O(1) bitmap membership test, for the counterfactual. Reported across a range rather than at
-# one value because the saving is (measured_rate - bit_test_ns): the original 8x assumed 1 ns, and a
-# reader should see how much the conclusion rests on that.
-BIT_TEST_NS = (0.5, 1.0, 2.0)
+# Per-printing cost of the membership check that would replace the residual, MEASURED by
+# card_engine/src/bench_membership_bittest.rs at the production point (234 cards x 13.6 printings,
+# 1.56 matches each). Two routes, plus a pessimistic control:
+#   0.17 - two-pointer merge over the sorted candidate list (no bitmap, GatheredScan only)
+#   0.88 - scatter into a printing bitmap then probe (also costs ~0.5 us/query to build)
+#   2.00 - control: 2x worse than the bitmap route, to show the floor
+BIT_TEST_NS = (0.17, 0.88, 2.0)
 
 # Match-density bands, chosen from bench_membership_bittest.rs's measured cost curve rather than as
 # round numbers: the bit test is ~0.5 ns where the branch is predictable (below ~2% or above ~80%) and

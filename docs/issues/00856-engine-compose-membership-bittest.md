@@ -3,13 +3,16 @@
 Status: **designed and measured, not implemented.** Filed as
 [#856](https://github.com/jbylund/sylvan_librarian/issues/856).
 
-**Worth ~5× on the population that pays it, which is 1.3% of realistic queries and `set:`-dominated.**
-Both sides now measured on `main` 2026-08-06, post-#833–#845: the residual costs **5.9 ns/printing** and the
-bit test replacing it costs **0.46 ns** at the production access pattern. The match loop is **87% of routed
-time** on that population. Figures and method under "What it is worth".
+**Worth ~6.5× on the population that pays it, which is 1.3% of realistic queries and `set:`-dominated.**
+Both sides measured on `main` 2026-08-06, post-#833–#845: the residual costs **5.9 ns/printing**, the match
+loop is **87% of routed time**, and the replacement costs **0.17 ns**.
 
-The earlier ~8× headline is withdrawn — it was a *forced-trial loop-time* ratio, not an end-to-end one — and
-the ~1 ns bit-test assumption it rested on turned out **conservative**.
+**The recommended design changed as a result: use a two-pointer merge, not a bitmap.** The narrowing already
+hands over a *sorted* candidate printing list, and the gather loop visits pids in ascending order, so no
+bitmap is needed — and the merge is 5× cheaper than one (0.17 against 0.88 ns/printing) while skipping a
+~0.5 µs/query scatter. See "Which structure to test against".
+
+The earlier ~8× headline is withdrawn — it was a *forced-trial loop-time* ratio, not an end-to-end one.
 
 **Mechanism re-verified against `main` after the #833–#845 stack.** The anchor line below is unchanged; #843
 added `n.proven` as a third element and nothing else.
@@ -49,7 +52,7 @@ This is the cell both the cost and regret matrices independently named as the to
 The original measurement here read *"3,054 compose-acquired printing queries: 1,213 ms of match-loop time
 over 145 million printings scanned, 6.98 ns each… roughly 8× less"*. That has been re-measured and the
 population re-identified — see [What it is worth](#what-it-is-worth). Current figures: **87% of routed time
-at 5.9 ns per printing against a 0.46 ns bit test, ~5× end to end.**
+at 5.9 ns per printing against a 0.17 ns merge, ~6.5× end to end.**
 
 There is in-tree precedent: `exec_card_range_popcount` threads `range_pbits` beside its card bitmap and
 membership-tests in O(1), for exactly this reason — "the shown printing must actually be in range, not
@@ -74,8 +77,14 @@ a considered cost here"), so it touches ~20 matches across filter.rs, estimator.
 lib.rs, plus 39 in tests.rs.
 
 B is the better shape; A is the smaller change. Either way the plumbing is the same: capture the
-bitmap in `narrow_candidates_exact` when `n.tight && printing_space`, carry it on
+membership structure in `narrow_candidates_exact` when `n.tight && printing_space`, carry it on
 `PreparedCandidates`, and use it in the walk.
+
+**Superseded in one respect: carry the sorted list, not a bitmap.** Both designs above assumed a bitmap and
+`bitmap_contains`. The measurement below says to carry `Candidates::Printings` as it already is and merge
+against it — 0.17 against 0.88 ns/printing, no allocation, and it is the structure `narrow_candidates_exact`
+already produced. Keep the bitmap only as the `StreamedSelect` fallback, since a permutation walk cannot use
+a forward pointer. That makes design **A** the smaller change *and* the faster one, which it was not before.
 
 ## The correctness constraint that decides the gate
 
@@ -118,35 +127,60 @@ route to a materializing plan** — 3.0% of the uniform sample. Every one picked
 
 Pooled and median agree to within 2%, so no single large query is carrying the rate.
 
-**What the bit test costs — measured, not assumed.** `card_engine/src/bench_membership_bittest.rs`
-reproduces the real access pattern (walk candidate cards, test each one's contiguous printing span) and
-sweeps the two axes that decide it. ns per printing tested, 1× corpus:
+### Which structure to test against
 
-| candidate stride | 1% dense | 9% dense | 50% dense | 99% dense |
-| --- | --: | --: | --: | --: |
-| 1 (every card) | 0.52 | 0.83 | **2.25** | 0.61 |
-| 32 | 0.47 | 0.45 | 0.81 | 0.62 |
-| **135 (measured production)** | 0.46 | **0.46** | 0.69 | 0.58 |
+**`set:` already has the index this needs.** `indexes.set_codes` is a `TagIndex` in printing space — set
+code → sorted printing ids — and `narrow_candidates_exact` turns `set:X` straight into
+`Narrowed::tight(Candidates::Printings(...))`. So on the dominant family the exact answer is *already a
+sorted `Vec<u32>`*, and `raw_candidates` still holds it at the point this change wants to capture something
+(it is consumed by the flattening to card ids immediately after).
 
-Two things fall out. The cost is **non-monotonic in density** — it peaks in the middle, where the branch is
-unpredictable, and is cheap at both ends. And the mispredict penalty **largely disappears as the candidate
-set gets sparse**: real queries visit 234 candidate cards of 31,508 (stride ~135) and only 722 printings, few
-enough decisions that even 50% density costs 0.69 ns.
+That makes a bitmap optional rather than necessary, and measuring both says skip it.
+`card_engine/src/bench_membership_bittest.rs`, modelled on the measured production shape — 234 candidate
+cards, 13.6 printings each, 1.56 matching — ns per printing in a visited span:
 
-At the production point — stride 135, 9% density — the bit test is **0.46 ns**.
+| matches/card | density | bitmap probe | **merge** | walk floor | bitmap build |
+| --- | --: | --: | --: | --: | --: |
+| 1 | 7% | 0.80 | **0.14** | 0.10 | 0.3 µs/query |
+| **2 (measured 1.56)** | **14%** | **0.88** | **0.17** | 0.09 | **0.5 µs/query** |
+| 4 | 29% | 0.97 | **0.22** | 0.09 | 1.7 µs |
+| 7 | 50% | 0.64 | **0.31** | 0.09 | 4.4 µs |
+| 14 | 100% | 0.98 | **0.64** | 0.08 | 8.5 µs |
 
-**So the counterfactual, now anchored** — realistic mode, 377 queries, 8.4 ms routed of which 7.3 ms
-(87.3%) is the match loop:
+The merge wins at every density, and for a structural reason rather than a constant-factor one: it is
+**O(matches)** where the probe is **O(span)**, so it never touches the 86% of printings that do not match.
+It also avoids allocating and zeroing the bitmap — 0.5 µs per query at production scale, which is ~2% of a
+22 µs query.
 
-| bit test | saves | of routed time | speedup on the population |
+**Soundness, and the one place it does not hold.** The merge needs the walk to visit pids in globally
+ascending order. It does for `GatheredScan`: `cards_of_printings` yields
+ascending cids, and each card's printing span is contiguous, so one forward pointer suffices.
+**`StreamedSelect` walks a permutation in sort order, so the pointer would be wrong there and the bitmap is
+the only option.** Every query measured on this population picked `GatheredScan`, so the merge covers the
+measured case and the bitmap is the fallback for the plan that was never chosen.
+
+**Two corrections this measurement forced**, recorded because both produced believable wrong answers:
+
+- A counting kernel (`if contains { hits += 1 }`) reads a flat 0.4 ns at *every* density, because the
+  compiler predicates it into `hits += contains as u32` and vectorizes. Density-flatness was the tell — an
+  unpredictable branch has to cost something. The real loop conditionally *appends*, which cannot be
+  predicated.
+- An earlier model strided over *all* cards, which made the merge advance its pointer through pids belonging
+  to skipped cards and read 3.75 ns instead of 0.17. That cannot happen: `card_ids` is derived **from** the
+  candidate list, so every visited card holds at least one match and the list has no pid outside a visited
+  span. The same model also used the corpus-average 3.09 printings per card where visited cards really hold
+  13.6, understating span work 4×.
+
+**So the counterfactual, anchored on both measurements** — realistic mode, 377 queries, 8.2 ms routed of
+which 7.1 ms (87.1%) is the match loop:
+
+| membership check | saves | of routed time | speedup on the population |
 | --- | --: | --: | --: |
-| **0.5 ns (measured)** | **6.7 ms** | **80.0%** | **5.01×** |
-| 1.0 ns (the old assumption) | 6.1 ms | 72.8% | 3.67× |
-| 2.0 ns | 4.9 ms | 58.2% | 2.39× |
+| **0.17 ns — merge (recommended)** | **6.9 ms** | **84.5%** | **6.47×** |
+| 0.88 ns — bitmap probe | 6.1 ms | 73.9% | 3.84× |
+| 2.0 ns — control, 2× worse than the bitmap | 4.7 ms | 57.2% | 2.34× |
 
-**~5×** end to end on this population, and the floor is 2.4× even if the bit test came in 4× worse than
-measured. The match loop itself goes ~12× faster; the end-to-end figure is smaller because 13% of the query
-is not the loop.
+**~6.5×** with the merge, ~3.8× with a bitmap, and a 2.3× floor even at a check cost nobody measured.
 
 ### Which queries this touches
 
@@ -207,11 +241,14 @@ The defect itself is unchanged, and the direction held.
   So 896 is an **upper bound** on the addressable population; the gate may fire on fewer.
 - **Uniform sampling.** 3.0% is a uniform-mode share, which over-samples rare shapes by construction. The
   realistic-traffic weight is unmodelled, the same caveat every `is:`/`frame:` figure carries.
-- **The bit test is now measured (0.46 ns), but on a synthetic bitmap.** `bench_membership_bittest.rs`
-  builds spans and bits synthetically, so it captures the access pattern and the branch behaviour but not
-  cache competition: in the real loop the bitmap shares L1 with `APrinting` rows being streamed. That makes
-  0.46 ns a floor. The sensitivity table is kept for exactly that reason — at 4× the measured cost the change
-  still returns 2.4×.
+- **Both checks are measured (0.17 / 0.88 ns), but on synthetic spans.** `bench_membership_bittest.rs`
+  builds spans and candidate lists synthetically, so it captures the access pattern, the branch behaviour and
+  the O(matches)-vs-O(span) difference, but not cache competition: in the real loop these structures share L1
+  with `APrinting` rows being streamed. Both figures are therefore floors, which is why the control row at
+  2.0 ns is kept — the change still returns 2.3× at a cost an order of magnitude above the merge's.
+- **Span placement is idealised.** Visited cards are spread evenly through the corpus; real candidate cards
+  cluster (a `set:` is a release, and printings of one release sit near each other in pid order). Clustering
+  helps both routes and helps the merge more, so this biases against the recommendation rather than for it.
 - **The density figure was a pooled mean and is now a distribution.** 8.7% pooled (uniform) hid a bimodal
   spread: under realistic weights p10/p50/p90 is 4% / 10% / 100%, with 96 of 377 queries above 80% density
   and only 32 in the expensive 20–80% band. A mean is the wrong summary for a non-monotonic cost curve — two
