@@ -1,5 +1,9 @@
 # Materializing a sorted candidate list: bitmap beats sort, merge loses badly
 
+**Shipped for `range_narrowed` (the range arms).** See "What shipped" at the bottom; the crossover turned
+out to be a domain:count RATIO, not a count, and the remaining call sites (`arith_tuple_narrow` and the
+other posting-union arms) have not adopted it yet.
+
 Any narrowing arm that unions several postings rows has sorted rows and no globally
 sorted output, because posting-row order is not card order. `arith_tuple_narrow` is
 the case that prompted this — it concatenates the selected rows and calls
@@ -65,7 +69,54 @@ Break-even sits near 600:1. The card corpus is 7.7:1 for a 4,096-card result and
 range for anything but a handful of matches. Printing space (97,206) does not change
 that conclusion.
 
-## What to change
+## The crossover is a ratio, not a count
+
+The original recommendation below said "keep concat+sort below ~64 candidates", from axis A — which is
+measured at the CARD domain (31,508, 493 words). `range_narrowed` materializes into PRINTING space
+(97,206, 1,519 words), where the bitmap's fixed cost triples and the crossover moves to ~194. A count
+constant is only ever right at one domain.
+
+Axis G's fine sweep (12% steps, 2 confirmations) shows it collapses to a ratio:
+
+| domain | words | measured crossover | ratio |
+| --: | --: | --: | --: |
+| 31,508 (cards) | 493 | 90 | 350:1 |
+| 97,206 (printings) | 1,519 | **194** | **501:1** |
+| 300,000 | 4,688 | 667 | 450:1 |
+| 1,000,000 | 15,625 | 2,064 | 484:1 |
+| 3,000,000 | 46,875 | 6,401 | 469:1 |
+
+So `k * 490 > domain`, which is `MATERIALIZE_BITMAP_RATIO`. Same shape as `bitmap_beats_postings`'s
+`k * 32 > n` — but that is a STORAGE crossover in bytes and this is a materialization-time one, so the
+two constants are unrelated and should not be conflated.
+
+## What shipped
+
+`sorted_ids(ids, k, domain)` picks the route by the ratio above, and `range_narrowed` calls it instead of
+`collect` + `sort_unstable`. Byte-identical output, so it is a pure cost choice with no consumer effect.
+
+Per query, on the production corpus — `prep` is `ns_prepare`, which is where the sort lived:
+
+| query | prep before | prep after | total before | total after |
+| --- | --: | --: | --: | --: |
+| `usd<0.18 t:land` | 134.0 µs | **54.5** | 140.3 µs | **60.8** |
+| `usd<0.20 t:land` | 160.3 | **67.4** | 167.8 | **74.5** |
+| `usd<0.20 t:creature` | 171.8 | **80.2** | 287.5 | **195.3** |
+| `usd<0.20 c:g` | 162.6 | **70.7** | 203.3 | **111.8** |
+| `eur<0.13 t:land` | 153.5 | **63.6** | 161.8 | **71.5** |
+
+Interleaved A/B, 10 rounds, 1,362 queries, drift 0.978/1.010: range TARGET **0.867**, control 0.989, whole
+mix **0.949**, p90 0.902. No regression above 1.07 and all of those are sub-20 µs queries.
+
+This also retired the one regression from
+[the breadth-denominator change](./local-engine-range-breadth-denominator.md): `eur<0.13 t:land` went
+208 µs before that change, 267 after it, and **71.5 µs** now.
+
+Note `usd<0.18 t:land` was never affected by the denominator at all — it was already narrowing, and
+already paying 134 µs to sort 13,328 ids. The sort cost was pre-existing across the whole mid band; the
+denominator change only made more queries visit it.
+
+## What to change (original, for the remaining call sites)
 
 The sorted-vec path only runs below `BITS_PROMOTE` (4,096) — above it the engine
 already hands back `CardBits`. So the band this affects is roughly 64 to 4,096

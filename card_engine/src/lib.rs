@@ -3163,6 +3163,43 @@ fn range_candidates(idx: &Archived<PrintingValueIndex>, lo: u32, hi: u32) -> Opt
 /// widened one position for f32/f64 rounding (see price_bounds) and therefore
 /// produce supersets that must never be marked tight — a Not would complement
 /// away the boundary printings, which are exactly the negation's matches.
+/// Where a bitmap scatter-then-extract becomes cheaper than `collect` + `sort_unstable` for producing
+/// an ascending id vector, as a DOMAIN:COUNT ratio rather than a count.
+///
+/// A count constant is only right at one domain: the bitmap pays `domain/64` words whatever the answer
+/// size is, so its fixed cost triples between card space (493 words) and printing space (1,519). The
+/// crossover collapses cleanly to a ratio instead -- `bench_candidate_materialize`'s fine sweep, 12%
+/// steps with 2 confirmations:
+///
+///        domain     words   crossover     ratio
+///        31,508       493          90     350:1
+///        97,206     1,519         194     501:1
+///       300,000     4,688         667     450:1
+///     1,000,000    15,625       2,064     484:1
+///     3,000,000    46,875       6,401     469:1
+///
+/// So `k * 490 > domain`, which puts printing space at k > 198. Same shape as
+/// `bitmap_beats_postings`'s `k * 32 > n`, but that one is a STORAGE crossover in bytes and this is a
+/// materialization-time one; the two are unrelated and their constants should not be conflated.
+///
+/// What it is worth where it matters: at 2,048 ids the bitmap is 3.6x, at 16,384 it is 5.8x, at 31,508
+/// 6.3x. A mid-band price range materializes 13,000-24,000.
+const MATERIALIZE_BITMAP_RATIO: usize = 490;
+
+/// An ascending id vector, by whichever route is cheaper at this size and domain. `ids` may arrive in
+/// any order -- `range_pids` yields key-major, which is the tiebreak order, not pid order.
+///
+/// Same output either way, so this is a pure cost choice. See `MATERIALIZE_BITMAP_RATIO`, and
+/// docs/issues/local-engine-candidate-materialize.md for the k-way merge that lost to both by 3-30x.
+fn sorted_ids(ids: impl Iterator<Item = u32>, k: usize, domain: usize) -> Vec<u32> {
+    if !*RANGE_MATERIALIZE_BITMAP || k.saturating_mul(MATERIALIZE_BITMAP_RATIO) <= domain {
+        let mut v: Vec<u32> = ids.collect();
+        v.sort_unstable();
+        return v;
+    }
+    bitmap_card_ids(&scatter_bits(ids, domain))
+}
+
 fn range_narrowed(idx: &Archived<PrintingValueIndex>, lo: u32, hi: u32, n_printings: usize, broad_ok: bool, exact: bool) -> Option<Narrowed> {
     let (s, e) = idx.range(lo, hi);
     let k = e - s;
@@ -3182,10 +3219,11 @@ fn range_narrowed(idx: &Archived<PrintingValueIndex>, lo: u32, hi: u32, n_printi
     // the inconsistent ones.
     let domain = if *RANGE_BREADTH_VS_CORPUS { n_printings } else { idx.len() };
     if !range_too_broad_to_narrow(k, domain) {
-        // Still a sort: the run order is the sort-key tiebreak, not pid, and `Candidates::Printings`
-        // is contractually pid-ascending. Cheaper than before if anything — no stride over a tuple.
-        let mut result: Vec<u32> = idx.range_pids(lo, hi).collect();
-        result.sort_unstable();
+        // The run order is the sort-key tiebreak, not pid, and `Candidates::Printings` is contractually
+        // pid-ascending -- so the ids have to be ordered somehow. `sorted_ids` picks the cheaper of the
+        // two ways: at this call site `k` reaches 20,000+ on a mid-band price range, where the sort cost
+        // 157 us of a 166 us query while the scatter costs ~25.
+        let result = sorted_ids(idx.range_pids(lo, hi), k, n_printings);
         return Some(Narrowed { set: Candidates::Printings(result), tight: exact, proven: 0 });
     }
     if !broad_ok {
@@ -5781,6 +5819,9 @@ static RESIDUAL_PASS_RATE_ARTWORK: LazyLock<f64> = LazyLock::new(|| guard_env("C
 /// Whether a dense `frame_data` value is gated on being genuinely BROAD (1/4) rather than merely dense
 /// (1/32). 0 restores the conflated gate, for the A/B that priced the distinction.
 static DENSE_FRAME_BROAD_GATE: LazyLock<bool> = LazyLock::new(|| guard_env("CARD_ENGINE_DENSE_FRAME_BROAD_GATE", 1u8) != 0);
+
+/// Whether `sorted_ids` may take the bitmap route. 0 forces `collect` + `sort_unstable`, for the A/B.
+static RANGE_MATERIALIZE_BITMAP: LazyLock<bool> = LazyLock::new(|| guard_env("CARD_ENGINE_RANGE_MATERIALIZE_BITMAP", 1u8) != 0);
 
 /// Whether range breadth is judged against the corpus (`n_printings`) or the index's own length. The
 /// index omits nulls, so the latter overstates breadth by the null rate. 0 restores it, for the A/B.
