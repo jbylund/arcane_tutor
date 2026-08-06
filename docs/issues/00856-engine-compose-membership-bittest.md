@@ -3,9 +3,13 @@
 Status: **designed and measured, not implemented.** Filed as
 [#856](https://github.com/jbylund/sylvan_librarian/issues/856).
 
-**Worth 3.5× end to end on the population that pays it, where the match loop is 86% of query time.**
-Re-measured on `main` 2026-08-06, post-#833–#845 — figures and method under "What it is worth". The
-earlier ~8× headline is withdrawn: it was a *forced-trial loop-time* ratio, not an end-to-end one.
+**Worth ~5× on the population that pays it, which is 1.3% of realistic queries and `set:`-dominated.**
+Both sides now measured on `main` 2026-08-06, post-#833–#845: the residual costs **5.9 ns/printing** and the
+bit test replacing it costs **0.46 ns** at the production access pattern. The match loop is **87% of routed
+time** on that population. Figures and method under "What it is worth".
+
+The earlier ~8× headline is withdrawn — it was a *forced-trial loop-time* ratio, not an end-to-end one — and
+the ~1 ns bit-test assumption it rested on turned out **conservative**.
 
 **Mechanism re-verified against `main` after the #833–#845 stack.** The anchor line below is unchanged; #843
 added `n.proven` as a third element and nothing else.
@@ -44,8 +48,8 @@ This is the cell both the cost and regret matrices independently named as the to
 
 The original measurement here read *"3,054 compose-acquired printing queries: 1,213 ms of match-loop time
 over 145 million printings scanned, 6.98 ns each… roughly 8× less"*. That has been re-measured and the
-population re-identified — see [What it is worth](#what-it-is-worth). Current figures: **86% of routed time
-on 896 queries at 5.8 ns per printing, ~3.5× end to end.**
+population re-identified — see [What it is worth](#what-it-is-worth). Current figures: **87% of routed time
+at 5.9 ns per printing against a 0.46 ns bit test, ~5× end to end.**
 
 There is in-tree precedent: `exec_card_range_popcount` threads `range_pbits` beside its card bitmap and
 membership-tests in O(1), for exactly this reason — "the shown printing must actually be in range, not
@@ -90,14 +94,18 @@ Gate the fast path on that distinction, exactly as `prepare_candidates` already 
 ## What it is worth
 
 Re-measured on `main` at `1e5035e` (2026-08-06), after the whole #833–#845 stack, with
-`scripts/bench_membership_waste.py`. 30,000 uniform-sampled queries, Docker shut down, two seeds.
+`scripts/bench_membership_waste.py` and `card_engine/src/bench_membership_bittest.rs`. 30,000 sampled
+queries per run, Docker shut down.
 
-**The population.** 2,495 of 30,000 sampled queries are printing-mode on a compose acquire; **896 of those
-(36%) route to a materializing plan**, which is the population this change can touch — 3.0% of the uniform
-sample. Every one of the 896 picked `GatheredScan`; `StreamedSelect` was never chosen here, so in practice
-this is `push_card_matches`, not `card_match_count`.
+**Read uniform for the rate and realistic for the share**, and do not mix them: uniform resolves the
+per-printing rate better because it reaches rare shapes at all, while only realistic weights say how much
+traffic this is. Both are labelled below.
 
-**The rate, and how much of the query it is.**
+**The population** (uniform). 2,495 of 30,000 are printing-mode on a compose acquire; **896 of those (36%)
+route to a materializing plan** — 3.0% of the uniform sample. Every one picked `GatheredScan`;
+`StreamedSelect` was never chosen here, so in practice this is `push_card_matches`, not `card_match_count`.
+
+**The rate, and how much of the query it is** — uniform, two seeds.
 
 | | seed 20260806 | seed 777 |
 | --- | --: | --: |
@@ -110,17 +118,72 @@ this is `push_card_matches`, not `card_match_count`.
 
 Pooled and median agree to within 2%, so no single large query is carrying the rate.
 
-**The counterfactual**, at three bit-test costs, because the saving is `rate − bit_test_ns` and the answer
-depends on that more than on anything else measured here:
+**What the bit test costs — measured, not assumed.** `card_engine/src/bench_membership_bittest.rs`
+reproduces the real access pattern (walk candidate cards, test each one's contiguous printing span) and
+sweeps the two axes that decide it. ns per printing tested, 1× corpus:
+
+| candidate stride | 1% dense | 9% dense | 50% dense | 99% dense |
+| --- | --: | --: | --: | --: |
+| 1 (every card) | 0.52 | 0.83 | **2.25** | 0.61 |
+| 32 | 0.47 | 0.45 | 0.81 | 0.62 |
+| **135 (measured production)** | 0.46 | **0.46** | 0.69 | 0.58 |
+
+Two things fall out. The cost is **non-monotonic in density** — it peaks in the middle, where the branch is
+unpredictable, and is cheap at both ends. And the mispredict penalty **largely disappears as the candidate
+set gets sparse**: real queries visit 234 candidate cards of 31,508 (stride ~135) and only 722 printings, few
+enough decisions that even 50% density costs 0.69 ns.
+
+At the production point — stride 135, 9% density — the bit test is **0.46 ns**.
+
+**So the counterfactual, now anchored** — realistic mode, 377 queries, 8.4 ms routed of which 7.3 ms
+(87.3%) is the match loop:
 
 | bit test | saves | of routed time | speedup on the population |
 | --- | --: | --: | --: |
-| 0.5 ns | 14.6 ms | 78.7% | **4.70×** |
-| **1.0 ns** | **13.2 ms** | **71.3%** | **3.48×** |
-| 2.0 ns | 10.5 ms | 56.5% | 2.30× |
+| **0.5 ns (measured)** | **6.7 ms** | **80.0%** | **5.01×** |
+| 1.0 ns (the old assumption) | 6.1 ms | 72.8% | 3.67× |
+| 2.0 ns | 4.9 ms | 58.2% | 2.39× |
 
-So **~3.5×** end to end at a 1 ns bit test, and still 2.3× if the bit test costs twice that. The match loop
-itself goes ~5.8× faster; the end-to-end figure is smaller because 14% of the query is not the loop.
+**~5×** end to end on this population, and the floor is 2.4× even if the bit test came in 4× worse than
+measured. The match loop itself goes ~12× faster; the end-to-end figure is smaller because 13% of the query
+is not the loop.
+
+### Which queries this touches
+
+The question the population share has to answer, since a rate alone does not justify the work. Under
+**realistic** family weights, by share of printings examined:
+
+| family | share | n | median density |
+| --- | --: | --: | --: |
+| `set:` | **63.2%** | 153 | 7.9% |
+| `f:` + `set:` | 6.2% | 16 | 7.3% |
+| `r:` | 4.3% | 14 | 10.5% |
+| `set:` + `usd:` | 3.0% | 7 | 4.9% |
+| `keyword:` | 2.8% | 77 | 100.0% |
+| `date:`/`tix:`/`cn:`/`eur:`/`year:` + `set:` | ~8% | 18 | 0–15% |
+
+**This is a `set:`-dominated change.** That is not a coincidence: `set:` and `watermark:` are the
+*exact-postings* compose leaves added by #748 (index #739), and exact postings are what make the narrowing
+tight — which is precisely #856's gate. The families that reach it are the ones whose narrowing can be
+tight.
+
+Note `watermark:` is 17.3% under **uniform** sampling and falls out of the top ten under realistic weights,
+where it carries 0.5 against `set:`'s 5. Read the uniform run for the rate and the realistic one for the
+share.
+
+Two consequences worth stating plainly:
+
+- **`f:` queries benefit only partly.** Legality is an existential plane, and the gate below excludes those
+  from the complete-bit-test case — the per-printing plane check still runs.
+- **Text predicates are not in this population at all.** `name:`/`oracle:`/`flavor:` are not
+  compose-composable ([#731](00731-engine-compose-universal-evaluator.md) step 3, not started), so a query
+  like `name:s` never reaches this path; and where a text leaf rides *alongside* a composable one it is the
+  residual, which makes the narrowing not-tight, so the gate does not fire either. #856's design B cites
+  `memoize_text_predicates` as a mechanism precedent, which is a different thing from sharing its target.
+
+**Scale:** 1,116 of 30,000 realistic-sampled queries are printing-mode on a compose acquire, and 377 of
+those (34%) route to a materializing plan — **1.3% of queries**. A 5× win on 1.3% of traffic is roughly a
+4% aggregate effect, and the honest case for doing it is the per-query tail rather than the mean.
 
 ### Where the old 8× came from, and why it is withdrawn
 
@@ -144,15 +207,25 @@ The defect itself is unchanged, and the direction held.
   So 896 is an **upper bound** on the addressable population; the gate may fire on fewer.
 - **Uniform sampling.** 3.0% is a uniform-mode share, which over-samples rare shapes by construction. The
   realistic-traffic weight is unmodelled, the same caveat every `is:`/`frame:` figure carries.
-- **The 1 ns bit test is an assumption**, not a measurement — hence the sensitivity table rather than one
-  number. A kernel micro-benchmark of `bitmap_contains` over a 12 KB bitmap would settle it, and is the
-  cheapest thing that would tighten this estimate.
+- **The bit test is now measured (0.46 ns), but on a synthetic bitmap.** `bench_membership_bittest.rs`
+  builds spans and bits synthetically, so it captures the access pattern and the branch behaviour but not
+  cache competition: in the real loop the bitmap shares L1 with `APrinting` rows being streamed. That makes
+  0.46 ns a floor. The sensitivity table is kept for exactly that reason — at 4× the measured cost the change
+  still returns 2.4×.
+- **The density figure was a pooled mean and is now a distribution.** 8.7% pooled (uniform) hid a bimodal
+  spread: under realistic weights p10/p50/p90 is 4% / 10% / 100%, with 96 of 377 queries above 80% density
+  and only 32 in the expensive 20–80% band. A mean is the wrong summary for a non-monotonic cost curve — two
+  queries at 1% and 99% average to the worst case while both are cheap.
 
 ### Reproducing
 
 ```bash
+# The residual side, the population, and which families reach it. --mode realistic for the share.
 .venv/bin/python scripts/bench_membership_waste.py \
-    --corpus benchmarks/bitplanes/corpus.jsonl --shm /tmp/membership.store --sample 30000
+    --corpus benchmarks/bitplanes/corpus.jsonl --shm /tmp/membership.store --sample 30000 --mode realistic
+
+# The bit-test side, swept over candidate sparsity and match density.
+cargo test --release bench_membership_bittest -- --ignored --nocapture
 ```
 
 Observational, not an A/B — both inputs are counters `explain_analyze` has published since #833, so there is

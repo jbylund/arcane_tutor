@@ -12286,3 +12286,5 @@ mod bench_loop_design;
 mod bench_gather_loop;
 #[cfg(test)]
 mod bench_streamed_loop;
+#[cfg(test)]
+mod bench_membership_bittest;
