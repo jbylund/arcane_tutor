@@ -6887,12 +6887,7 @@ fn walk_value_orderby_page<'a>(
 /// No new stored table: both counts are already on the query path. A per-format count table would work
 /// too (there are at most 32 formats x 4 statuses, so ~1 KB) but it would store what a popcount of a
 /// plane the query already reads gives for nothing.
-fn exact_result_total(
-    composed: &FilterExpr,
-    indexes: &Archived<CardIndexes>,
-    n_cards: usize,
-    mode: Mode,
-) -> Option<usize> {
+fn exact_result_total(composed: &FilterExpr, indexes: &Archived<CardIndexes>, mode: Mode) -> Option<usize> {
     if let Some((idx, lo, hi)) = bare_range_bounds(composed, indexes) {
         // Printings come free from the index's own partition points; the other two spaces come from the
         // prefix/suffix tables, which now carry an artwork column as well as a card one.
@@ -9284,11 +9279,11 @@ fn acquire_plan_features(
         // mode, because `eval_domain`, `scan_all` and the artwork capacity all consume a card count.
         // `exact_total` is the answer in the query's OWN mode, and is what `result_total` wants.
         // Conflating them puts an artwork count where cards are expected in artwork mode.
-        let exact_cards = exact_result_total(composed, indexes, n_cards as usize, Mode::Card);
+        let exact_cards = exact_result_total(composed, indexes, Mode::Card);
         let exact_total = if matches!(mode, Mode::Card) {
             exact_cards
         } else {
-            exact_result_total(composed, indexes, n_cards as usize, mode)
+            exact_result_total(composed, indexes, mode)
         };
         let est_cards =
             exact_cards.unwrap_or_else(|| calibrated_balls_into_bins(printing_matches, n_cards as usize));
@@ -10627,12 +10622,12 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 /// catch (e.g. reordering same-size fields, changing an index type) — and on
 /// any FLAVOR_FP_FEATURES change: archived fingerprints are built with that
 /// table, so a new table reading old fingerprints breaks the superset test.
-// Stack layer 08: `frame_data` becomes a `HybridTagIndex` -- a printing bitmap for the dense values,
-// postings for the sparse tail -- which is an archived-layout change, so a store built against the
-// previous layer must fail the header check and be rebuilt rather than be read as garbage.
-// Numbered by stack patch; the header check is EQUALITY, so the invariant is only that a value is
-// never reused for a different layout.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026080508;
+// Stack layer 09: `RangeCardCounts` gains an artwork column, a sixth table is added for rarity, and
+// `ValueTotals` arrives for border/layout/frame/(format,status). All archived-layout changes, so a
+// store built against the previous layer must fail the header check and be rebuilt rather than be
+// read as garbage. Numbered by stack patch; the check is EQUALITY, so the invariant is only that a
+// value is never reused for a different layout.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026080509;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {

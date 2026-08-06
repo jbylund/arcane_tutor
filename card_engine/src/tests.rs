@@ -2485,7 +2485,7 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     let n_cards = data.cards.len();
     // The artwork column of the range counts needs each printing's global artwork id, which is
     // `artwork_base[card] + artwork_group_id`; both are already assigned by `store_of`.
-    let artwork_base = build_artwork_base_from(&data.indexes.artwork_groups.iter().copied().collect::<Vec<u16>>());
+    let artwork_base = build_artwork_base_from(&data.indexes.artwork_groups.to_vec());
     data.indexes.released_at_cards = build_range_card_counts(&data.indexes.released_at, &p2c, n_cards, &data.printings, &artwork_base);
     data.indexes.price_usd_cards = build_range_card_counts(&data.indexes.price_usd, &p2c, n_cards, &data.printings, &artwork_base);
     data.indexes.price_eur_cards = build_range_card_counts(&data.indexes.price_eur, &p2c, n_cards, &data.printings, &artwork_base);
@@ -3297,7 +3297,6 @@ fn value_totals_are_exact_in_all_three_spaces() {
     let data = fuzz_store_n(&mut rng, 2_000);
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
-    let n_cards = archived.cards.len();
 
     let mut leaves: Vec<(String, FilterExpr)> = Vec::new();
     // "chartreuse" and "leveler" are absent from the store on purpose: the zero case.
@@ -3343,7 +3342,7 @@ fn value_totals_are_exact_in_all_three_spaces() {
             &archived.mana_vocab, &archived.indexes.flavor, &archived.strings,
         );
         for (mode_label, mode) in [("printing", Mode::Printing), ("card", Mode::Card), ("artwork", Mode::Artwork)] {
-            let got = exact_result_total(&f, &archived.indexes, n_cards, mode)
+            let got = exact_result_total(&f, &archived.indexes, mode)
                 .unwrap_or_else(|| panic!("{label} / {mode_label}: the table must answer, not decline"));
             assert_eq!(got, fuzz_reference_total(archived, &f, mode_label), "{label} / {mode_label}");
             nonzero += usize::from(got > 0);
@@ -3373,7 +3372,6 @@ fn exact_result_total_is_exact_for_rarity() {
     let data = fuzz_store_n(&mut rng, 2_000);
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
-    let n_cards = archived.cards.len();
 
     let mut answered = 0usize;
     for value in 0..=6i32 {
@@ -3386,7 +3384,7 @@ fn exact_result_total_is_exact_for_rarity() {
                 };
                 let f = if negate { FilterExpr::Not(Box::new(leaf)) } else { leaf };
                 for mode in [Mode::Printing, Mode::Card, Mode::Artwork] {
-                    let Some(got) = exact_result_total(&f, &archived.indexes, n_cards, mode) else {
+                    let Some(got) = exact_result_total(&f, &archived.indexes, mode) else {
                         continue;
                     };
                     let label = match mode {
