@@ -1,6 +1,6 @@
 """Acceptance test for the range-cardinality estimate: scan each dimension, compare estimate to truth.
 
-`docs/issues/local-engine-range-cardinality-estimate.md` proposes replacing `card_est = k.min(n_cards)`
+`docs/issues/done/local-engine-range-cardinality-estimate.md` proposes replacing `card_est = k.min(n_cards)`
 with a three-column boundary table (prefix / suffix / per-value distinct-card counts), which should be
 **exact**. This is the test that says whether it worked.
 

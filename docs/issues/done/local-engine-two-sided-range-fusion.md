@@ -129,6 +129,15 @@ subset cannot lose to two scatters of its supersets plus an AND, and the estimat
 an upper bound at any width. After: printing mode reads **1.0×**, card and artwork 0.6–0.9× — the same
 ratios their one-sided forms already carry, since those project printings to distinct rows.
 
+> **Correction.** "The same ratios their one-sided forms already carry" is misleading, and contradicts the
+> paragraph above it, which reports one-sided `usd>=0.42`/card as **exact** (12,408 against a true 12,408).
+> Both are true of different layers: `exact_result_total` answers a one-sided range's card and artwork
+> totals exactly from `RangeCardCounts`, while *compose's own* projection reads 0.6–0.9× for one-sided and
+> two-sided alike. The difference that matters is that one-sided has an exact path **above** the estimator
+> and two-sided has none — `bare_range_bounds` does not match `And`, so `exact_result_total` declines a fused
+> range in every mode, including the printing space where `k` is free. Tracked as
+> [#853](../00853-engine-interior-range-distinct-counts.md).
+
 **The paging prediction follows for free, which is the part sparse-gather needed.** 879 is under
 `STREAM_MIN_MATCHES`, so `compose_paging_with_total` now predicts `Decline` where it predicted `Perm` —
 matching what the fastpath actually does — and the pick moves off `PrintingCompose` onto the plan that

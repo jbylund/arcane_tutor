@@ -8,7 +8,7 @@ criteria at the bottom of this doc pass as written — see [Outcome](#outcome).
 `PrintingRangeIndex`, so `eur` and `tix` predicates never narrow and fall through to a scan.
 
 Found while scoping the acceptance test for
-[local-engine-range-cardinality-estimate.md](../local-engine-range-cardinality-estimate.md): those two
+[local-engine-range-cardinality-estimate.md](local-engine-range-cardinality-estimate.md): those two
 dimensions showed estimate errors up to 106x, which turned out to be a symptom of routing elsewhere
 entirely rather than a bad estimate.
 

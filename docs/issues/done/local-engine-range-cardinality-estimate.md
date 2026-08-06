@@ -1,4 +1,29 @@
-# Estimating distinct cards in a range slice
+# Estimating distinct cards in a range slice (one-sided)
+
+**DONE for one-sided ranges and `Eq` — candidate 2 shipped as `RangeCardCounts`**
+(`card_engine/src/lib.rs`), with the artwork triple added in
+[#841](https://github.com/jbylund/sylvan_librarian/pull/841) at a measured **156.6 KB** against this
+doc's 159 KB estimate. Six dimensions carry one: `released_at`, `price_usd`, `price_eur`, `price_tix`,
+`collector_number`, `rarity`. `<` / `<=` / `>` / `>=` / `Eq` are now **exact in all three spaces**;
+`usd>=0.42`/card reads 12,408 against a true 12,408.
+
+**Split: the two-sided and interior-interval half is
+[#853](../00853-engine-interior-range-distinct-counts.md).** The prefix/suffix arrays answer an interval
+that runs to an *edge* of the index; an interior one is not derivable from them, which the "what was tried
+and rejected" table below proves (`suf[i] != total - pre[i]` — distinct counts do not subtract). Two shapes
+are still inexact: `year:Y`, which reaches `distinct_cards` and gets `None`, falling back to the
+`k.min(n_cards)` proxy measured below; and fused two-sided ranges, which `exact_result_total` declines
+outright because `bare_range_bounds` does not match `And`.
+
+**One conclusion in this doc is now void.** The "Which shapes actually reach this acquire" section argues
+that two-sided conjunctions never reach the range index, and on that basis parks candidate 3 and calls
+candidate 2 plus two small arrays complete. [#837](local-engine-two-sided-range-fusion.md) fuses same-index
+`And` children into one range-index interval, so the premise is false and candidate 3's own parking condition
+— *"unless two-sided conjunctions are ever routed to the range index"* — has fired. Read that section as
+history; #853 re-decides it.
+
+Still unshipped from the Plan below: the **~34 per-year counts on `date`**, which is exactly why the
+`year:Y` fallback survives.
 
 `CardRangePopcount`'s acquire feeds `matches`/`eval_domain`/`scan_units` from
 `card_est = k.min(n_cards)`, where `k` counts in-range **printings** and stands in for a card count —
@@ -11,7 +36,7 @@ a proxy the branch's own comment flags. Measured against the true total on reali
 Not a tail problem — the median is 1.49x and p10 is already 1.14, so it over-estimates nearly
 everywhere, because printings outnumber cards.
 
-Split out of [local-engine-plan-misselection.md](local-engine-plan-misselection.md), which found the
+Split out of [local-engine-plan-misselection.md](../local-engine-plan-misselection.md), which found the
 proxy while investigating why every plan costed off that acquire is under-costed 2.0–2.6x.
 
 ## Nothing here ships alone
@@ -113,6 +138,13 @@ that path needs — `prefix_rank_op`, the struct, and a rank-capable bitvector t
 itself — is viable under an MIT attribution header if it is ever wanted.
 
 ## Which shapes actually reach this acquire
+
+> **SUPERSEDED by [#837](local-engine-two-sided-range-fusion.md).** The argument below is what parked
+> candidate 3 and made candidate 2 look complete, and its premise no longer holds: fusion turns a two-sided
+> conjunction into a single range-index interval in `narrow_rec` and the compose builders. The claim about
+> `bare_range_bounds` not matching `And` is still literally true — which is why `exact_result_total` now
+> *declines* two-sided ranges in every mode rather than estimating them — but the conclusion that two-sided
+> shapes are out of scope is void. See [#853](../00853-engine-interior-range-distinct-counts.md).
 
 This narrows the problem sharply, and was established late. `bare_range_bounds` matches only
 `NumericCmp`, `DateCmp`, `YearCmp` and `Not` of those — **not `And`**. So a two-sided conjunction like
@@ -222,7 +254,7 @@ already read 1.000 across 26 scan points: that branch sets `matches = k`, the in
 and in printing mode that *is* the result cardinality. Those rows must stay at 1.000.
 
 **Out of scope:** `eur` and `tix`, which have no range index and never reach this acquire — a separate
-and much larger defect, see [local-engine-eur-tix-range-index.md](done/local-engine-eur-tix-range-index.md).
+and much larger defect, see [local-engine-eur-tix-range-index.md](local-engine-eur-tix-range-index.md).
 
 Routing is deliberately **not** an acceptance criterion for this change alone. Correcting the estimate
 lowers predicted cost for the materializing plans, which are already over-picked, so routing should

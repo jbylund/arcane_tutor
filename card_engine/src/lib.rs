@@ -2777,7 +2777,7 @@ impl ArchivedPrintingValueIndex {
 /// and the two differ by the local printing:card ratio — measured 1.0 to 4.3 across the corpus, worst
 /// where reprint density is highest. `CardRangePopcount`'s acquire has stood in `k.min(n_cards)` (the
 /// in-range printing count clamped), which over-estimates a median 1.49x and up to 4.33x. See
-/// docs/issues/local-engine-range-cardinality-estimate.md for the estimators that were tried and why
+/// docs/issues/done/local-engine-range-cardinality-estimate.md for the estimators that were tried and why
 /// none of them work: distinct-card counts do not compose by arithmetic, because one card spans many
 /// values, so nothing derived from a coarser summary is exact.
 ///
@@ -9781,7 +9781,12 @@ fn acquire_plan_features(
         // Exact distinct cards from the per-value table when it can answer this shape — every op but
         // `Eq` is one-sided, and `Eq` is a single value, so the only fallback is `year:Y`, which spans
         // a whole year of release dates. The `k.min(n_cards)` proxy it falls back to over-estimates a
-        // median 1.49x (docs/issues/local-engine-range-cardinality-estimate.md).
+        // median 1.49x (docs/issues/done/local-engine-range-cardinality-estimate.md).
+        //
+        // A FUSED two-sided range never arrives here at all: `bare_range_bounds` gates this branch and does
+        // not match `And`, so `usd>=a usd<=b` is declined upstream by `exact_result_total` in every mode and
+        // its card/artwork totals come from compose's projection instead. Both interior-interval shapes are
+        // docs/issues/00853-engine-interior-range-distinct-counts.md.
         let card_est = range_card_counts_for(indexes, idx)
             .and_then(|counts| counts.distinct_cards(lo, hi))
             .unwrap_or_else(|| k.min(n_cards));
