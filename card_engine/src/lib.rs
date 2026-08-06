@@ -5765,6 +5765,9 @@ struct ComposePageWork {
     ns_total: u64,
 }
 
+// Nine: the bucket source, the three stores it reads through, the sort key's two halves, and the three
+// paging bounds. They are the page-fill's whole input and the one caller passes them straight through.
+#[allow(clippy::too_many_arguments, reason = "the page fill's whole input; the single caller passes them straight through")]
 fn collect_orderby_page<'a>(
     mut next_bucket: impl FnMut() -> Option<(u64, Vec<u32>)>,
     cards: &'a [AOracleCard],

@@ -227,8 +227,9 @@ fn solve3(mut a: [[f64; 4]; 3]) -> Option<[f64; 3]> {
                 continue;
             }
             let f = a[row][col] / a[col][col];
-            for k in col..4 {
-                a[row][k] -= f * a[col][k];
+            let pivot = a[col];
+            for (k, cell) in a[row].iter_mut().enumerate().skip(col) {
+                *cell -= f * pivot[k];
             }
         }
     }
