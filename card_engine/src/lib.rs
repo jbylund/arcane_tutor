@@ -2388,6 +2388,60 @@ fn legality_totals_key(shift: u8, expected: u64) -> u16 {
     (u16::from(shift) << 2) | (expected as u16 & 0b11)
 }
 
+/// A value is worth PAIRING only if it is broad enough that an estimate about it can change a routing
+/// decision. `STREAM_MIN_MATCHES` is that line: below it the sparse floor decides the plan, not the
+/// estimate's precision, and min-over-singles is already within a small factor of the truth.
+///
+/// Measured on the production corpus, this prunes the table 4.2x — 3,705 pairs to 879 — and it removes
+/// `layout` entirely, because only `normal` clears the floor and every other layout query is already
+/// selective. Counted in PRINTINGS, which is the conservative side: cards <= printings always, so a value
+/// with 1,500 printings but 400 cards is kept, and that is exactly the one card-mode routing needs.
+const PAIR_MIN_PRINTINGS: usize = 1_024;
+
+/// Exact 3-space totals for PAIRS of low-cardinality values, so an `And` of two of them is answered
+/// rather than bounded.
+///
+/// `compose_printing_estimate`'s `And` folds with `min`, an intersection upper bound, so the most
+/// selective leaf wins and every other conjunct contributes nothing: every `f:X border:white` estimates
+/// identically at 5,131 against true totals of 658-5,072. For a two-leaf query a stored pair is not a
+/// tighter bound, it is the exact answer; for three leaves, min-over-pairs measured 2.02x against
+/// min-over-singles' 7.80x on `f:modern r:rare border:white`.
+///
+/// **Unlike `ValueTotals`, this table may be incomplete.** Absence there is read as an exact zero and so
+/// the singleton table must cover every value; absence HERE just means "no answer", and the caller falls
+/// back to the min bound it already had. That is what lets the selectivity floor above prune it at all.
+///
+/// Same-dimension pairs are stored only for `frame_data`, the one multi-valued dimension here (1-5 values
+/// per printing; `frame:2015 frame:legendary` really does match 10,321). Border, rarity and legality are
+/// PARTITIONS — one value per printing — so two distinct values of one of them never co-occur, which is a
+/// rule rather than data and needs no bytes.
+#[derive(Archive, Serialize, Deserialize, Default)]
+struct PairTotals {
+    /// Each dimension's dense values → a compact id, shared across dimensions so a pair is one `u32`.
+    border: HashMap<String, u16>,
+    rarity: HashMap<u8, u16>,
+    frame: HashMap<String, u16>,
+    /// Keyed as `ValueTotals::legality` is, `(shift << 2) | status`.
+    legality: HashMap<u16, u16>,
+    /// `min(a,b) * n_ids + max(a,b)` → the pair's exact totals. Complete over the stored ids: a present
+    /// key is exact (possibly zero), a missing one means at least one value was pruned by the floor.
+    pairs: HashMap<u32, SpaceTotals>,
+    n_ids: u16,
+}
+
+impl ArchivedPairTotals {
+    fn key(&self, a: u16, b: u16) -> u32 {
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        u32::from(lo) * u32::from(u16::from(self.n_ids)) + u32::from(hi)
+    }
+
+    /// Exact total for the two values together, or `None` when the pair was pruned or the dimension is
+    /// not covered.
+    fn get(&self, a: u16, b: u16, mode: Mode) -> Option<usize> {
+        self.pairs.get(&self.key(a, b).into()).map(|t| t.get(mode))
+    }
+}
+
 /// Exact 3-space totals per value, in one pass over printings.
 ///
 /// `keys_of` yields every value the printing belongs to — one for a scalar dimension like border,
@@ -2433,6 +2487,161 @@ fn build_value_totals<K: Eq + std::hash::Hash>(
         }
     }
     acc.into_iter().map(|(k, a)| (k, a.totals)).collect()
+}
+
+/// Build the pair table: one counting pass to find the dense values, one accumulating pass over their
+/// co-occurrences.
+///
+/// The accumulator is a DENSE `n_ids x n_ids` array rather than the sparse map it is archived as,
+/// because the inner loop runs once per unordered pair of ids on a printing — about 325 with legality's
+/// 23 statuses in play, or ~32M over the corpus — and a hash lookup per increment would dominate the
+/// store build. Only the non-zero cells are archived.
+fn build_pair_totals(
+    cards: &[OracleCard],
+    printings: &[Printing],
+    printing_to_card: &[u32],
+    strings: &[String],
+    coll_vocab: &[String],
+    max_artwork_groups: usize,
+) -> PairTotals {
+    // Pass 1: per-value printing counts, to apply the selectivity floor.
+    let (mut border_n, mut rarity_n, mut frame_n, mut legality_n) =
+        (HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new());
+    let shifts: Vec<u8> = (0..MAX_FORMATS as u8).map(|i| i * 2).collect();
+    for (pid, p) in printings.iter().enumerate() {
+        let card = &cards[printing_to_card[pid] as usize];
+        if p.card_border_id != NONE_STR {
+            *border_n.entry(strings[p.card_border_id as usize].clone()).or_insert(0usize) += 1;
+        }
+        if let Some(r) = p.card_rarity_int {
+            *rarity_n.entry(r).or_insert(0usize) += 1;
+        }
+        for v in &p.card_frame_data {
+            *frame_n.entry(coll_vocab[*v as usize].clone()).or_insert(0usize) += 1;
+        }
+        let word = if card.legality_divergent { p.card_legalities } else { card.card_legalities };
+        for &shift in &shifts {
+            let status = (word >> shift) & 0b11;
+            // `banned`/`restricted` total ~7,000 printing-rows across every format, so those queries are
+            // already tiny and an estimate for them cannot cost routing time. Only legal/not_legal pair.
+            if status == LEGALITY_LEGAL || status == 0 {
+                *legality_n.entry(legality_totals_key(shift, status)).or_insert(0usize) += 1;
+            }
+        }
+    }
+
+    // Assign compact ids to the survivors, one id space across all four dimensions.
+    let mut out = PairTotals::default();
+    let mut next = 0u16;
+    let mut assign = |n: usize, next: &mut u16| -> Option<u16> {
+        (n >= PAIR_MIN_PRINTINGS).then(|| {
+            let id = *next;
+            *next += 1;
+            id
+        })
+    };
+    let mut border_sorted: Vec<_> = border_n.into_iter().collect();
+    border_sorted.sort_unstable();
+    for (v, n) in border_sorted {
+        if let Some(id) = assign(n, &mut next) {
+            out.border.insert(v, id);
+        }
+    }
+    let mut rarity_sorted: Vec<_> = rarity_n.into_iter().collect();
+    rarity_sorted.sort_unstable();
+    for (v, n) in rarity_sorted {
+        if let Some(id) = assign(n, &mut next) {
+            out.rarity.insert(v, id);
+        }
+    }
+    let mut frame_sorted: Vec<_> = frame_n.into_iter().collect();
+    frame_sorted.sort_unstable();
+    for (v, n) in frame_sorted {
+        if let Some(id) = assign(n, &mut next) {
+            out.frame.insert(v, id);
+        }
+    }
+    let mut legality_sorted: Vec<_> = legality_n.into_iter().collect();
+    legality_sorted.sort_unstable();
+    for (v, n) in legality_sorted {
+        if let Some(id) = assign(n, &mut next) {
+            out.legality.insert(v, id);
+        }
+    }
+    out.n_ids = next;
+    let n = usize::from(next);
+    if n == 0 {
+        return out;
+    }
+
+    // Pass 2: co-occurrence. Same dedup shape as `build_value_totals` -- `last_card` catches card
+    // repeats (a card's printings are contiguous), a `cid + 1` stamp per artwork group catches artwork
+    // repeats within a card -- just held per PAIR instead of per value.
+    let groups = max_artwork_groups + 1;
+    let mut totals = vec![SpaceTotals::default(); n * n];
+    let mut last_card = vec![u32::MAX; n * n];
+    let mut stamps = vec![0u32; n * n * groups];
+    let mut ids: Vec<u16> = Vec::with_capacity(32);
+    for (pid, p) in printings.iter().enumerate() {
+        let cid = printing_to_card[pid];
+        let card = &cards[cid as usize];
+        let group = usize::from(p.artwork_group_id);
+        ids.clear();
+        if p.card_border_id != NONE_STR
+            && let Some(&id) = out.border.get(strings[p.card_border_id as usize].as_str())
+        {
+            ids.push(id);
+        }
+        if let Some(r) = p.card_rarity_int
+            && let Some(&id) = out.rarity.get(&r)
+        {
+            ids.push(id);
+        }
+        for v in &p.card_frame_data {
+            if let Some(&id) = out.frame.get(coll_vocab[*v as usize].as_str()) {
+                ids.push(id);
+            }
+        }
+        let word = if card.legality_divergent { p.card_legalities } else { card.card_legalities };
+        for &shift in &shifts {
+            let status = (word >> shift) & 0b11;
+            if (status == LEGALITY_LEGAL || status == 0)
+                && let Some(&id) = out.legality.get(&legality_totals_key(shift, status))
+            {
+                ids.push(id);
+            }
+        }
+        for (i, &a) in ids.iter().enumerate() {
+            for &b in &ids[i + 1..] {
+                let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+                let slot = usize::from(lo) * n + usize::from(hi);
+                let e = &mut totals[slot];
+                e.printings += 1;
+                if last_card[slot] != cid {
+                    last_card[slot] = cid;
+                    e.cards += 1;
+                }
+                let stamp = &mut stamps[slot * groups + group];
+                if *stamp != cid + 1 {
+                    *stamp = cid + 1;
+                    e.artworks += 1;
+                }
+            }
+        }
+    }
+    // EVERY pair of stored ids is archived, including the zero ones, so that "both ids present" means
+    // the answer is exact -- possibly exactly zero. Storing only non-zero cells made a provably-empty
+    // pair indistinguishable from a pruned one, and `frame:2003 frame:1997` (no printing carries both era
+    // frames, though the field is multi-valued so nothing rules it out a priori) fell back to
+    // min-over-singles and read 10,769 against a true 0.
+    //
+    // Nearly free: the zero cells are the minority, and the floor already bounded `n_ids`.
+    for lo in 0..n {
+        for hi in lo + 1..n {
+            out.pairs.insert((lo * n + hi) as u32, totals[lo * n + hi]);
+        }
+    }
+    out
 }
 
 /// Build all four `ValueTotals` maps. One call site, so the four cannot be built from different
@@ -3154,6 +3363,9 @@ struct CardIndexes {
     /// Exact 3-space totals for the low-cardinality dimensions whose predicate tests one value:
     /// border, layout, frame, and (format, status). ~2 KB.
     value_totals:   ValueTotals,
+    /// Exact 3-space totals for PAIRS of dense low-cardinality values (~14 KB), so a two-leaf `And` over
+    /// them is answered rather than bounded by `min`.
+    pair_totals:    PairTotals,
     sort_perms:     SortPermutations,          // card space (streamed selection)
     artwork_groups: Vec<u16>,                  // card space: distinct illustration groups
     // card space, n_cards+1 entries: prefix sum of artwork_groups, so card c's artworks are the
@@ -5542,6 +5754,18 @@ static RESIDUAL_PASS_RATE_ARTWORK: LazyLock<f64> = LazyLock::new(|| guard_env("C
 /// (1/32). 0 restores the conflated gate, for the A/B that priced the distinction.
 static DENSE_FRAME_BROAD_GATE: LazyLock<bool> = LazyLock::new(|| guard_env("CARD_ENGINE_DENSE_FRAME_BROAD_GATE", 1u8) != 0);
 
+/// Whether the PAIR table answers a two-leaf `And` exactly and tightens the `And` fold's bound. 0 falls
+/// both back to `min` over single leaves.
+///
+/// **Default OFF.** The table itself is right -- 21 of 21 measured cells exact where `min` read 2.8-10.1x
+/// over, and the three-leaf bound goes 7.80x to 2.02x -- but feeding it into the estimate regresses the
+/// disjoint cases 24x. `border:white border:black` estimates an exact 0, which collapses `eval_domain`
+/// and `scan_units` for the MATERIALIZING alternatives, so `GatheredScan` prices at 0.2 us and measures
+/// 199.3 us: it still has to scan to discover the set is empty. A result total is not a scan domain.
+/// Turning this on wants those two features derived from a candidate bound rather than from the match
+/// estimate -- docs/issues/local-engine-pair-totals.md.
+static PAIR_TOTALS: LazyLock<bool> = LazyLock::new(|| guard_env("CARD_ENGINE_PAIR_TOTALS", 0u8) != 0);
+
 /// Whether the legality divergent-share correction to `stream_scan_units` is scoped to filters whose
 /// residual can actually settle at card level.
 ///
@@ -6542,13 +6766,24 @@ fn compose_printing_estimate(
         // scatter to 82,421 for an 879-row answer. Fusing same-index children first replaces both with
         // the interval's exact `k` — the same two `partition_point` calls the one-sided arm below
         // already makes, which is why a one-sided range estimates at 1.0x and this did not.
-        FilterExpr::And(v) => fuse_and_range_children(v, indexes, false)
-            .into_iter()
-            .map(|src| match src {
-                AndSource::Child(c) => compose_printing_estimate(c, indexes, offsets, n_printings),
-                AndSource::FusedRange { k, .. } => (k, 0, k),
-            })
-            .fold((n_printings, 0, 0), |(m, bc, sc), (cm, cbc, csc)| (m.min(cm), bc + cbc, sc + csc)),
+        FilterExpr::And(v) => {
+            let (m, bc, sc) = fuse_and_range_children(v, indexes, false)
+                .into_iter()
+                .map(|src| match src {
+                    AndSource::Child(c) => compose_printing_estimate(c, indexes, offsets, n_printings),
+                    AndSource::FusedRange { k, .. } => (k, 0, k),
+                })
+                .fold((n_printings, 0, 0), |(m, bc, sc), (cm, cbc, csc)| (m.min(cm), bc + cbc, sc + csc));
+            // Tighten the `min` bound with every PAIR of children the table stores. `min` over singles
+            // lets the most selective leaf decide alone, which is why `f:modern r:rare border:white`
+            // estimated 5,131 -- `border:white`'s own count -- against a true 658. The pair
+            // `r:rare border:white` is stored exactly at 1,330, taking the bound from 7.80x to 2.02x.
+            //
+            // `n choose 2` over an `And`'s children, bounded in practice by how many predicates a person
+            // types; the two-leaf case is answered exactly one level up in `exact_result_total` and never
+            // needs this.
+            (pair_bounded_min(v, indexes, m), bc, sc)
+        }
         FilterExpr::Or(v) => {
             let (m, bc, sc) = v
                 .iter()
@@ -6976,7 +7211,87 @@ fn walk_value_orderby_page<'a>(
 /// No new stored table: both counts are already on the query path. A per-format count table would work
 /// too (there are at most 32 formats x 4 statuses, so ~1 KB) but it would store what a popcount of a
 /// plane the query already reads gives for nothing.
-fn exact_result_total(composed: &FilterExpr, indexes: &Archived<CardIndexes>, mode: Mode) -> Option<usize> {
+/// `min` over every stored pair of an `And`'s children, floored into the caller's existing single-leaf
+/// bound. Returns the tighter of the two, and 0 when any two children are provably disjoint.
+///
+/// Both are still UPPER BOUNDS for three or more children -- the intersection of three sets is at most
+/// the smallest pairwise intersection -- but a pairwise bound is much tighter than a single-leaf one
+/// whenever the leaves are individually broad, which is exactly when the estimate matters.
+fn pair_bounded_min(children: &[FilterExpr], indexes: &Archived<CardIndexes>, single_min: usize) -> usize {
+    if children.len() < 2 || !*PAIR_TOTALS {
+        return single_min;
+    }
+    let pt = &indexes.pair_totals;
+    let ids: Vec<Option<u16>> = children.iter().map(|c| pair_leaf_id(c, pt)).collect();
+    let mut best = single_min;
+    for (i, a) in children.iter().enumerate() {
+        for (j, b) in children.iter().enumerate().skip(i + 1) {
+            if leaves_are_disjoint(a, b) {
+                return 0;
+            }
+            if let (Some(x), Some(y)) = (ids[i], ids[j])
+                && let Some(k) = pt.get(x, y, Mode::Printing)
+            {
+                best = best.min(k);
+            }
+        }
+    }
+    best
+}
+
+/// The pair-table id for a leaf, or `None` when the leaf's dimension is not covered or its value was
+/// pruned by the selectivity floor.
+///
+/// Deliberately the same four shapes `exact_result_total`'s singleton arms accept, and for the same
+/// reasons: `Eq` only on the interned strings (the ordering ops are not a per-value question), `Ge` only
+/// on the collection (`Eq`/`Gt` add a length condition containment does not prove), and rarity only at
+/// `Eq` (any other op is a range over several values, which no per-value entry answers).
+fn pair_leaf_id(filter: &FilterExpr, pt: &ArchivedPairTotals) -> Option<u16> {
+    let id = match filter {
+        FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value } => pt.border.get(value.as_str()),
+        FilterExpr::CollectionCmp { field: CollField::FrameData, op: CmpOp::Ge, value, .. } => pt.frame.get(value.as_str()),
+        FilterExpr::Legality { shift: Some(shift), expected } => pt.legality.get(&legality_totals_key(*shift, *expected).into()),
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op: CmpOp::Eq, rhs: NumExpr::Const(v) }
+        | FilterExpr::NumericCmp { lhs: NumExpr::Const(v), op: CmpOp::Eq, rhs: NumExpr::Field(NumField::RarityInt) } => {
+            if v.fract() != 0.0 || *v < 0.0 || *v > f64::from(u8::MAX) {
+                return None;
+            }
+            pt.rarity.get(&(*v as u8))
+        }
+        _ => None,
+    }?;
+    Some(u16::from(*id))
+}
+
+/// Whether two leaves are provably disjoint: distinct values of a dimension that holds exactly ONE value
+/// per printing, so no printing can satisfy both.
+///
+/// `frame_data` is excluded because it is multi-valued -- `frame:2015 frame:legendary` matches 10,321
+/// printings. A rule rather than stored data, which is why the pair table need not carry same-dimension
+/// entries for the partitions.
+fn leaves_are_disjoint(a: &FilterExpr, b: &FilterExpr) -> bool {
+    match (a, b) {
+        (
+            FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value: x },
+            FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value: y },
+        ) => x != y,
+        (FilterExpr::Legality { shift: Some(sa), expected: ea }, FilterExpr::Legality { shift: Some(sb), expected: eb }) => {
+            sa == sb && ea != eb
+        }
+        (
+            FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op: CmpOp::Eq, rhs: NumExpr::Const(x) },
+            FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op: CmpOp::Eq, rhs: NumExpr::Const(y) },
+        ) => x != y,
+        _ => false,
+    }
+}
+
+fn exact_result_total(
+    composed: &FilterExpr,
+    indexes: &Archived<CardIndexes>,
+    n_cards: usize,
+    mode: Mode,
+) -> Option<usize> {
     if let Some((idx, lo, hi)) = bare_range_bounds(composed, indexes) {
         // Printings come free from the index's own partition points; the other two spaces come from the
         // prefix/suffix tables, which now carry an artwork column as well as a card one.
@@ -7002,6 +7317,23 @@ fn exact_result_total(composed: &FilterExpr, indexes: &Archived<CardIndexes>, mo
             Mode::Card => indexes.rarity_cards.distinct_cards(lo, hi).map(|n| n as usize),
             Mode::Artwork => indexes.rarity_cards.distinct_artworks(lo, hi).map(|n| n as usize),
         };
+    }
+    // Two dense low-cardinality leaves: the PAIR table answers them exactly, where the singleton arms
+    // below could only answer one of them and the `And` fold would take the `min` bound. This is what
+    // makes `f:modern border:white` read 978 cards instead of 2,755 -- the difference between predicting
+    // a plan that runs and one that declines against the 1,024 sparse floor.
+    if let FilterExpr::And(children) = composed
+        && children.len() == 2
+        && *PAIR_TOTALS
+    {
+        if leaves_are_disjoint(&children[0], &children[1]) {
+            return Some(0);
+        }
+        if let (Some(a), Some(b)) = (pair_leaf_id(&children[0], &indexes.pair_totals), pair_leaf_id(&children[1], &indexes.pair_totals))
+            && let Some(total) = indexes.pair_totals.get(a, b, mode)
+        {
+            return Some(total);
+        }
     }
     // The per-value table, which covers the dimensions whose predicate tests ONE value, in all three
     // spaces. Absence from a COMPLETE table is an exact zero, not a declined shape -- every one of
@@ -11291,6 +11623,14 @@ impl QueryEngine {
         let rarity_cards = build_range_card_counts(&rarity_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
         // Out here for the same reason as the count tables: it reads `printing_to_card`, which the
         // struct literal below moves.
+        let pair_totals = build_pair_totals(
+            &cards,
+            &printings,
+            &printing_to_card,
+            &strings,
+            &coll_vocab,
+            usize::from(artwork_group_counts.iter().copied().max().unwrap_or(0)),
+        );
         let value_totals = build_all_value_totals(
             &cards,
             &printings,
@@ -11361,6 +11701,7 @@ impl QueryEngine {
             rarity_printing_ordered: rarity_idx,
             rarity_cards,
             value_totals,
+            pair_totals,
             name_bigrams:   build_name_bigram_index(&cards),
             legal_divergent: build_divergent_ids(&cards),
             arith_tuple:    build_arith_tuple_index(&cards),
