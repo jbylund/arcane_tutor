@@ -1,5 +1,6 @@
 //! What per-printing membership costs the two ways it could be done, for
-//! docs/issues/00856-engine-compose-membership-bittest.md.
+//! docs/issues/00856-engine-compose-membership-bittest.md (the bitmap route, general) and
+//! docs/issues/00857-engine-membership-merge-sorted-list.md (the merge, GatheredScan only).
 //!
 //! #856 replaces a per-printing residual evaluation (measured at 5.9 ns/printing by
 //! `scripts/bench_membership_waste.py`) with an O(1) membership check. That check was an ASSUMPTION of
@@ -39,7 +40,7 @@
 //! Corpus scale is swept because the bitmap is 12 KB at production scale (97,206 printings, 1,519
 //! words) — L1-resident — and that stops being true as the corpus grows.
 //!
-//!     cargo test --release bench_membership_bittest -- --ignored --nocapture
+//!     cargo test --release bench_membership_check -- --ignored --nocapture
 
 use std::hint::black_box;
 use std::time::Instant;
@@ -134,6 +135,21 @@ fn scatter_cost(pids: &[u32], n_printings: usize) -> u32 {
     bits.len() as u32
 }
 
+/// Per-query setup for the permutation-order route: key each candidate pid by its card's position in the
+/// sort permutation, then sort. That is what would let a forward pointer work during a `StreamedSelect`
+/// walk, which visits cards in permutation order rather than ascending cid.
+///
+/// Charged against `scatter_cost`, since the two are alternatives: both are one-off per-query work that
+/// buys an ordered structure to walk against.
+fn permuted_sort_cost(pids: &[u32], printing_to_card: &[u32], inv_perm: &[u32]) -> u32 {
+    let mut keyed: Vec<(u32, u32)> = pids
+        .iter()
+        .map(|&p| (inv_perm[printing_to_card[p as usize] as usize], p))
+        .collect();
+    keyed.sort_unstable();
+    keyed.len() as u32
+}
+
 /// The traversal touching neither structure — loop overhead alone.
 fn walk_only(spans: &[(usize, usize)]) -> u32 {
     let mut acc = 0u32;
@@ -159,7 +175,7 @@ fn time_ns(mut kernel: impl FnMut() -> u32) -> f64 {
 
 #[test]
 #[ignore = "micro-benchmark; synthetic data, no external deps"]
-fn bench_membership_bittest_cost() {
+fn bench_membership_check_cost() {
     let mut rng = rand::rngs::SmallRng::seed_from_u64(8_560_001);
 
     for scale in [1usize, 5] {
@@ -171,9 +187,28 @@ fn bench_membership_bittest_cost() {
             "\n=== corpus {scale}x — {n_printings} printings, bitmap {kb} KB, {VISITED_CARDS} cards x {SPAN_LEN} = {examined} examined ==="
         );
         println!(
-            "{:>9}  {:>8}  {:>9}  {:>7}  {:>7}  {:>10}  {:>9}",
-            "match/card", "density", "bit_test", "merge", "walk", "scatter/q", "winner"
+            "{:>9}  {:>8}  {:>9}  {:>7}  {:>7}  {:>10}  {:>10}  {:>9}",
+            "match/card", "density", "bit_test", "merge", "walk", "scatter/q", "permsort/q", "winner"
         );
+
+        // Permutation-order inputs for the StreamedSelect route: a card's position in the sort order is
+        // uncorrelated with its cid, so a shuffled permutation is the honest model.
+        let n_cards = n_printings / SPAN_LEN + 1;
+        let mut printing_to_card: Vec<u32> = vec![0; n_printings];
+        for (ci, &(s, e)) in spans.iter().enumerate() {
+            for slot in printing_to_card.iter_mut().take(e.min(n_printings)).skip(s) {
+                *slot = ci as u32;
+            }
+        }
+        let mut perm: Vec<u32> = (0..n_cards as u32).collect();
+        for i in 0..perm.len() {
+            let j = (rng.random::<u64>() % (perm.len() as u64)) as usize;
+            perm.swap(i, j);
+        }
+        let mut inv_perm: Vec<u32> = vec![0; n_cards];
+        for (pos, &cid) in perm.iter().enumerate() {
+            inv_perm[cid as usize] = pos as u32;
+        }
 
         let mut out: Vec<u32> = Vec::with_capacity(examined);
         for m in MATCHES_PER_CARD {
@@ -184,15 +219,17 @@ fn bench_membership_bittest_cost() {
             let t_walk = time_ns(|| walk_only(&spans)) / examined as f64;
             // Per query, not per printing: this is the one-off the bitmap route pays and merge does not.
             let t_scatter = time_ns(|| scatter_cost(&pids, n_printings)) / 1000.0;
+            let t_psort = time_ns(|| permuted_sort_cost(&pids, &printing_to_card, &inv_perm)) / 1000.0;
             let winner = if t_merge < t_bit { "merge" } else { "bit_test" };
             println!(
-                "{:>10}  {:>7.0}%  {:>9.2}  {:>7.2}  {:>7.2}  {:>8.1}us  {:>9}",
+                "{:>10}  {:>7.0}%  {:>9.2}  {:>7.2}  {:>7.2}  {:>8.1}us  {:>8.1}us  {:>9}",
                 m,
                 100.0 * pids.len() as f64 / examined as f64,
                 t_bit,
                 t_merge,
                 t_walk,
                 t_scatter,
+                t_psort,
                 winner
             );
         }
@@ -200,5 +237,7 @@ fn bench_membership_bittest_cost() {
     println!("\nns per printing in a visited span, min of {ITERS} rounds; `scatter/q` is microseconds PER QUERY.");
     println!("Measured production point is 2 matches/card (1.56) at ~11% density — read that row.");
     println!("Compare against the 5.9 ns/printing residual evaluation both would replace.");
-    println!("merge is GatheredScan-only (ascending pid order); StreamedSelect needs the bitmap.");
+    println!("merge is GatheredScan-only (ascending pid order). For StreamedSelect's permutation walk the");
+    println!("options are the bitmap (scatter/q) or keying candidates by perm position and sorting");
+    println!("(permsort/q) so a forward pointer works -- the two per-query setups compared side by side.");
 }

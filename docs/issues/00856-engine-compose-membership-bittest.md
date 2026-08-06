@@ -53,8 +53,8 @@ This is the cell both the cost and regret matrices independently named as the to
 
 The original measurement here read *"3,054 compose-acquired printing queries: 1,213 ms of match-loop time
 over 145 million printings scanned, 6.98 ns each… roughly 8× less"*. That has been re-measured and the
-population re-identified — see [What it is worth](#what-it-is-worth). Current figures: **87% of routed time
-at 5.9 ns per printing against a 0.17 ns merge, ~6.5× end to end.**
+population re-identified — see [What it is worth](#what-it-is-worth). Current figures: **87% of routed time at
+5.9 ns per printing, against 0.88 ns for this route's bitmap probe — 3.84× end to end.**
 
 There is in-tree precedent: `exec_card_range_popcount` threads `range_pbits` beside its card bitmap and
 membership-tests in O(1), for exactly this reason — "the shown printing must actually be in range, not
@@ -82,11 +82,10 @@ B is the better shape; A is the smaller change. Either way the plumbing is the s
 membership structure in `narrow_candidates_exact` when `n.tight && printing_space`, carry it on
 `PreparedCandidates`, and use it in the walk.
 
-**Superseded in one respect: carry the sorted list, not a bitmap.** Both designs above assumed a bitmap and
-`bitmap_contains`. The measurement below says to carry `Candidates::Printings` as it already is and merge
-against it — 0.17 against 0.88 ns/printing, no allocation, and it is the structure `narrow_candidates_exact`
-already produced. Keep the bitmap only as the `StreamedSelect` fallback, since a permutation walk cannot use
-a forward pointer. That makes design **A** the smaller change *and* the faster one, which it was not before.
+**Where the sorted list beats both:** for `GatheredScan` the candidate list can be merged against directly,
+with no bitmap — cheaper and simpler, and split out as
+[#857](00857-engine-membership-merge-sorted-list.md). The designs above remain the right shape for this route,
+whose job is the visit orders #857 cannot serve.
 
 ## The correctness constraint that decides the gate
 
@@ -129,60 +128,61 @@ route to a materializing plan** — 3.0% of the uniform sample. Every one picked
 
 Pooled and median agree to within 2%, so no single large query is carrying the rate.
 
-### Which structure to test against
+### What the bitmap probe costs
 
-**`set:` already has the index this needs.** `indexes.set_codes` is a `TagIndex` in printing space — set
-code → sorted printing ids — and `narrow_candidates_exact` turns `set:X` straight into
-`Narrowed::tight(Candidates::Printings(...))`. So on the dominant family the exact answer is *already a
-sorted `Vec<u32>`*, and `raw_candidates` still holds it at the point this change wants to capture something
-(it is consumed by the flattening to card ids immediately after).
+`card_engine/src/bench_membership_check.rs`, modelled on the measured production shape — 234 candidate cards,
+13.6 printings each, 1.56 matching. ns per printing in a visited span, plus the per-query cost of building the
+bitmap before anything can be probed:
 
-That makes a bitmap optional rather than necessary, and measuring both says skip it.
-`card_engine/src/bench_membership_bittest.rs`, modelled on the measured production shape — 234 candidate
-cards, 13.6 printings each, 1.56 matching — ns per printing in a visited span:
-
-| matches/card | density | bitmap probe | **merge** | walk floor | bitmap build |
-| --- | --: | --: | --: | --: | --: |
-| 1 | 7% | 0.80 | **0.14** | 0.10 | 0.3 µs/query |
-| **2 (measured 1.56)** | **14%** | **0.88** | **0.17** | 0.09 | **0.5 µs/query** |
-| 4 | 29% | 0.97 | **0.22** | 0.09 | 1.7 µs |
-| 7 | 50% | 0.64 | **0.31** | 0.09 | 4.4 µs |
-| 14 | 100% | 0.98 | **0.64** | 0.08 | 8.5 µs |
-
-The merge wins at every density, and for a structural reason rather than a constant-factor one: it is
-**O(matches)** where the probe is **O(span)**, so it never touches the 86% of printings that do not match.
-It also avoids allocating and zeroing the bitmap — 0.5 µs per query at production scale, which is ~2% of a
-22 µs query.
-
-**Soundness, and the one place it does not hold.** The merge needs the walk to visit pids in globally
-ascending order. It does for `GatheredScan`: `cards_of_printings` yields
-ascending cids, and each card's printing span is contiguous, so one forward pointer suffices.
-**`StreamedSelect` walks a permutation in sort order, so the pointer would be wrong there and the bitmap is
-the only option.** Every query measured on this population picked `GatheredScan`, so the merge covers the
-measured case and the bitmap is the fallback for the plan that was never chosen.
-
-**Two corrections this measurement forced**, recorded because both produced believable wrong answers:
-
-- A counting kernel (`if contains { hits += 1 }`) reads a flat 0.4 ns at *every* density, because the
-  compiler predicates it into `hits += contains as u32` and vectorizes. Density-flatness was the tell — an
-  unpredictable branch has to cost something. The real loop conditionally *appends*, which cannot be
-  predicated.
-- An earlier model strided over *all* cards, which made the merge advance its pointer through pids belonging
-  to skipped cards and read 3.75 ns instead of 0.17. That cannot happen: `card_ids` is derived **from** the
-  candidate list, so every visited card holds at least one match and the list has no pid outside a visited
-  span. The same model also used the corpus-average 3.09 printings per card where visited cards really hold
-  13.6, understating span work 4×.
-
-**So the counterfactual, anchored on both measurements** — realistic mode, 377 queries, 8.2 ms routed of
-which 7.1 ms (87.1%) is the match loop:
-
-| membership check | saves | of routed time | speedup on the population |
+| matches/card | density | **bitmap probe** | bitmap build |
 | --- | --: | --: | --: |
-| **0.17 ns — merge (recommended)** | **6.9 ms** | **84.5%** | **6.47×** |
-| 0.88 ns — bitmap probe | 6.1 ms | 73.9% | 3.84× |
-| 2.0 ns — control, 2× worse than the bitmap | 4.7 ms | 57.2% | 2.34× |
+| 1 | 7% | 0.33–0.80 | 0.3 µs/query |
+| **2 (measured 1.56)** | **14%** | **0.38–0.88** | **0.3–0.5 µs/query** |
+| 4 | 29% | 0.52–0.97 | 0.9–1.7 µs |
+| 7 | 50% | 0.64–1.09 | 3.5–4.4 µs |
+| 14 | 100% | 0.42–0.98 | 5.5–8.5 µs |
 
-**~6.5×** with the merge, ~3.8× with a bitmap, and a 2.3× floor even at a check cost nobody measured.
+**Ranges, not points, and deliberately so.** These kernels run at 0.1–1 ns per operation, where run-to-run and
+build-to-build variation is a large fraction of the value: the production row moved 0.88 → 0.38 between two
+versions of the bench that did not touch the kernel, then held at 0.37–0.43 across three consecutive runs. So
+the absolute level is soft. What is robust is the **ratio** against the merge, which reads 5.0× in the first
+run and 5.4× in the second — and the fact that both routes are an order of magnitude under the 5.9 ns residual
+they replace. Every figure quoted elsewhere in this doc uses the **pessimistic end (0.88)**, so the speedups
+are conservative.
+
+The same bench measures the [#857](00857-engine-membership-merge-sorted-list.md) merge alongside it and finds
+it 5× cheaper (0.17 ns) with no build cost, for the structural reason that it is O(matches) where this is
+O(span). This route earns its place on **reach**, not cost: it needs nothing of the visit order, so it serves
+`StreamedSelect`'s permutation walk, which the merge cannot.
+
+### For permutation order, scatter — do not sort
+
+A natural idea for the `StreamedSelect` case is to make a forward pointer work anyway: key each candidate pid
+by its card's position in the sort permutation (`inv_perm[printing_to_card[pid]]`), sort, then merge during the
+walk. Measured, it does not pay — the two per-query setups, at the production point:
+
+| setup | cost/query |
+| --- | --: |
+| scatter candidates into a printing bitmap | **0.2–0.3 µs** |
+| key by permutation position and sort | **2.4–2.9 µs** |
+
+An order of magnitude apart, and it widens with density (5.5 µs against 23.2 µs when every printing matches).
+The reason is structural: the scatter is O(k) with one store each, while the sort is O(k log k) with **two
+dependent random loads per element** to compute the key. On a ~22 µs query, 2.9 µs of setup would eat most of
+what the change wins.
+
+**The right shape for permutation order is a scatter too, just into permutation space** — and the engine
+already does it. `run_query_streamed_popcount` scatters the match set through `inv_perm` and walks words at 64
+cards a load, for `unique=card` + `True`. Extending that to printing mode is
+[#730](00730-engine-popcount-skip-walk.md), which is the better home for the permutation-order half of this
+than a sort would be.
+
+**One trap, recorded because it produced a believable wrong answer.** A counting kernel
+(`if contains { hits += 1 }`) reads a flat 0.4 ns at *every* match density, because the compiler predicates it
+into `hits += contains as u32` and vectorizes. Density-flatness was the tell — an unpredictable branch has to
+cost something. The real loop conditionally *appends* a match, which cannot be predicated, and once the kernel
+does that the expected inverted-U appears. Both kernels are kept in the bench, the counting one labelled as the
+trap.
 
 ### Which queries this touches
 
