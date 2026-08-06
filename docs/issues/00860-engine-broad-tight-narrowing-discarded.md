@@ -63,6 +63,11 @@ unplaned total mismatch (mode=card, orderby=rarity, dir=asc, seed=19,
 An **extra row**. #859 alone passes the full suite (153 tests); adding the guard change is what breaks it, and
 the filter contains no text, so #859 is not implicated.
 
+**#859 is not needed to reproduce it.** Verified separately: the guard relaxation *alone*, with #859's
+tightness change absent from the tree, fails the same assertion on the same filter and seed. That follows from
+the filter containing no text predicate, but it was measured rather than inferred — so this issue can be worked
+on `main` as it stands, with no dependency on #859 for the reproducer.
+
 **So some narrowing already claims `tight: true` without being exact, and the breadth guard has been masking
 it** — the over-claimed set was being discarded for breadth before anything trusted it. `colors != …` is the
 obvious suspect (`tight_narrow_space` classifies `ColorCmp` as tight-in-card-space unconditionally, and a `Ne`
@@ -81,8 +86,9 @@ diagnosis.
    That turns "the guard happens to hide it" into a named failure, and it is the same debug assertion
    [#859](https://github.com/jbylund/sylvan_librarian/issues/859) and #857 both want.
 
-Depends on [#859](https://github.com/jbylund/sylvan_librarian/issues/859) for the tightness that makes the union
-exact in the first place.
+Relationship to [#859](00859-engine-exact-trigram-no-verify.md): #859 supplies the tightness that makes the
+`o:the or o:you` *union* exact, so the 4.4× **performance** win needs it. The **bug** does not — see above. Step
+1 below is workable on `main` today.
 
 ## Reproducing
 
