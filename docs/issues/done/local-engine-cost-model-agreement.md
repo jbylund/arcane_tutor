@@ -8,7 +8,7 @@ on the instrumentation substrate from [#833](https://github.com/jbylund/sylvan_l
 This doc's residuals were already extracted into their own docs while it was live, and both are still open:
 
 - **P3 should not re-derive membership at all** (the "larger prize" of the top-target section) —
-  [local-engine-compose-membership-bittest.md](../local-engine-compose-membership-bittest.md). Worth ~8× on
+  [#856](../00856-engine-compose-membership-bittest.md). Worth ~8× on
   the highest-regret query class.
 - **Sparse compose should gather, not decline** —
   [local-engine-sparse-compose-gather.md](../local-engine-sparse-compose-gather.md).

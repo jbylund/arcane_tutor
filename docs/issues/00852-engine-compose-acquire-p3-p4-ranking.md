@@ -162,7 +162,7 @@ Which tool answers which question, and the measurement traps this line of work p
   measurement record, including the retractions.
 - [done/local-engine-cost-model-agreement.md](done/local-engine-cost-model-agreement.md) — the agreement
   matrix and the four feature fixes.
-- [local-engine-compose-membership-bittest.md](local-engine-compose-membership-bittest.md) — the larger prize
+- [#856](00856-engine-compose-membership-bittest.md) — the larger prize
   on this same population: P3 should not re-derive membership compose already computed exactly.
 - [local-engine-compose-build-rates.md](local-engine-compose-build-rates.md) — the rate measurements, and the
   `Perm` arm's missing `cards_visited` term.
