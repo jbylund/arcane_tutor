@@ -4453,16 +4453,17 @@ fn narrow_rec(
             if word.len() >= 3
                 && matches!(field, TextSearchField::NameLower | TextSearchField::OracleTextLower) =>
         {
-            // Trigram candidates are supersets (false positives until the walk
-            // verifies), so these sets are loose.
+            // A needle of exactly 3 bytes is exactly ONE trigram, so the posting list IS the containment
+            // set — no false positives to verify away. At 4+ bytes the intersection of several trigrams
+            // really is a superset ("the" AND "her" without "ther"), so those stay loose. (#859)
+            let mk = if word.len() == 3 { Narrowed::tight } else { Narrowed::loose };
             match field {
-                TextSearchField::NameLower => trigram_candidates(&indexes.name_trigram, word)
-                    .and_then(|v| Narrowed::loose(Candidates::Cards(v))),
+                TextSearchField::NameLower => trigram_candidates(&indexes.name_trigram, word).and_then(|v| mk(Candidates::Cards(v))),
                 // Oracle postings are in dense text-id space (see OracleTextIndex);
                 // intersect there, then expand the survivors to card indices
                 // through the CSR table.
                 _ => trigram_candidates(&indexes.oracle_trigram.trigrams, word)
-                    .and_then(|text_ids| Narrowed::loose(Candidates::Cards(expand_text_ids(&indexes.oracle_trigram, &text_ids)))),
+                    .and_then(|text_ids| mk(Candidates::Cards(expand_text_ids(&indexes.oracle_trigram, &text_ids)))),
             }
         }
 
