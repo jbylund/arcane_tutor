@@ -6472,6 +6472,9 @@ fn exact_card_total(composed: &FilterExpr, indexes: &Archived<CardIndexes>, n_ca
 }
 
 /// The size of the query's RESULT space: every printing, card, or artwork in the store.
+// Not called yet at this layer -- the compose acquire starts reading it when the exact three-space
+// totals land, and it is deleted again once `ComposeEstimate` carries the domain explicitly.
+#[allow(dead_code)]
 fn compose_result_domain(mode: Mode, n_cards: usize, indexes: &Archived<CardIndexes>) -> usize {
     match mode {
         Mode::Printing => indexes.printing_to_card.len(),
@@ -8429,6 +8432,10 @@ fn compose_paging_for(
 
 /// Which paging branch `printing_compose_fastpath` will take — including whether it will refuse the
 /// query outright, which the caller that knows the estimated total can now predict.
+// Eight arguments because it must see exactly what the fastpath sees -- any parameter dropped here is
+// a way for the predicted branch to diverge from the branch taken, which
+// compose_paging_prediction_matches_the_branch_taken then fails on.
+#[allow(clippy::too_many_arguments)]
 fn compose_paging_with_total(
     indexes: &Archived<CardIndexes>,
     n_cards: usize,
