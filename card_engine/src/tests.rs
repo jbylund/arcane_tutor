@@ -1362,7 +1362,7 @@ fn plane_expr_is_existential_identifies_legality_only() {
     // shift 2 -- so it carries both regimes, and the mask says which is which. Asserted rather than
     // assumed, because every expectation below depends on it.
     let divergent = u64::from(bounds.divergent_formats);
-    assert_eq!(divergent >> 0 & 0b11, 0b01, "shift 0 diverges: card2 is legal in one printing, not the other");
+    assert_eq!(divergent & 0b11, 0b01, "shift 0 diverges: card2 is legal in one printing, not the other");
     assert_eq!(divergent >> 2 & 0b11, 0b00, "shift 2 is card-invariant across this fixture");
     assert_ne!(divergent >> 4 & 0b11, 0b00, "shift 4 diverges: banned in one printing, legal in the other");
 

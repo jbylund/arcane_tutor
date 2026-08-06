@@ -7743,6 +7743,10 @@ fn exec_from_candidates<'a>(
 /// fallback it replaces on the model's own terms. Both paths are correct for any query either is
 /// applicable to — `force_plan_differential_agreement` holds every plan to identical results — so
 /// this changes only which correct plan runs.
+// Eight: the declined plan, the three shared query artifacts, the two split-filter pieces a sibling
+// needs to re-derive its own applicability, and the router's `choose`. A wrapper struct would only be
+// unpacked again at the two call sites.
+#[allow(clippy::too_many_arguments, reason = "shared query artifacts plus the router's choose; a wrapper struct would only be unpacked again")]
 fn declined_sibling_fastpath<'a>(
     declined: PhysicalPlan,
     ctx: &QueryCtx<'a>,
