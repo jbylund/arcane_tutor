@@ -11242,16 +11242,11 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 /// catch (e.g. reordering same-size fields, changing an index type) — and on
 /// any FLAVOR_FP_FEATURES change: archived fingerprints are built with that
 /// table, so a new table reading old fingerprints breaks the superset test.
-// 20260805: the three printing-range indexes changed shape from `Vec<(value, pid)>` to the
-// value-major `PrintingValueIndex`; a fourth of the same type was added for the rarity orderby walk;
-// and `price_eur`/`price_tix` gained indexes plus card-count tables. All are archived-layout changes,
-// so a store built under the previous version must fail the header check and be rebuilt rather than be
-// read as garbage. One bump covers all of them -- they ship in the same window, and `frame_data`'s
-// hybrid split plus `RangeCardCounts`' artwork column joined the same window afterwards. That is why
-// this reads 20260806 and not the 20260805 the note above names: 20260805 is the stamp of the layout
-// BEFORE any of this, so reusing it would let those stores pass the header check. A value is a layout
-// identity first and a date second -- never reuse one, even to correct it to today.
-const ARCHIVE_FORMAT_VERSION: u32 = 20260806;
+// Stack layer 12: `PairTotals` -- exact totals for PAIRS of low-cardinality values -- is a new
+// archived type, so a store built against the previous layer must fail the header check and be
+// rebuilt rather than be read as garbage. Numbered by stack patch; the check is EQUALITY, so the
+// invariant is only that a value is never reused for a different layout.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026080512;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
