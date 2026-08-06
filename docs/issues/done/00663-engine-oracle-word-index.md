@@ -1,6 +1,10 @@
 # Engine: word-level inverted index for oracle text search
 
-Status: proposed design, not started. Surfaced 2026-07-10 while investigating
+**DONE — shipped as PR #663 (merged).** `OracleWordIndex` and `scan_oracle_words` are in
+`card_engine/src/lib.rs`, with `bench_word_dict_scan.rs` as the harness. The "No GitHub issue filed yet"
+note below is also stale.
+
+*Original status, kept for dating* — proposed design, surfaced 2026-07-10 while investigating
 `oracle:token`'s cost (see
 [00624-engine-bind-memoized-text-predicates.md](00624-engine-bind-memoized-text-predicates.md)).
 No GitHub issue filed yet.

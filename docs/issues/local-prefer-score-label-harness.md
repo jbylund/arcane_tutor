@@ -3,7 +3,12 @@
 Status: proposed, not started. Split out of
 [00720-prefer-score-artwork-tuning.md](00720-prefer-score-artwork-tuning.md) once it became clear this
 is an independent deliverable: 00720 is the scoring defect, this is the instrument for fixing it and for
-preventing the next one. Not filed as a GitHub issue of its own — it is the first step of #720.
+preventing the next one. Not filed as a GitHub issue of its own.
+
+**#720 has since closed as completed** — `art_style` shipped — so this is no longer "the first step of
+#720"; it is the instrument that outlives it, and the reason it still matters is
+[the closed tuning loop](local-prefer-score-tuning-loop.md): that analysis was wrong three separate times
+without one.
 
 ## Why an instrument is needed at all
 

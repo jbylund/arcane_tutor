@@ -446,7 +446,8 @@ compose source on top of it — reaching the same compound wins without a dedica
   card-invariant `cmc`/`power`/`toughness` analogue; does not transfer (no existential dimension).
 - [00647-engine-cost-guard-calibration.md](00647-engine-cost-guard-calibration.md) — the
   guard-from-measurement precedent for Idea 1's crossover.
-- [#638] `tix`/`eur` range index; [#656] printing-space popcount pager; [#693] artwork dedup bitmask.
+- [#638] `tix`/`eur` range index (**shipped in #838, issue closed**); [#656] printing-space popcount pager;
+  [#693] artwork dedup bitmask.
 
 [#638]: https://github.com/jbylund/sylvan_librarian/issues/638
 [#647]: https://github.com/jbylund/sylvan_librarian/pull/647

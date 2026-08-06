@@ -1,6 +1,9 @@
 # Engine: card-level narrowing planes for border:
 
-Status: proposed, not started. GitHub: #664. Follows
+**DONE — shipped; #664 is closed.** `BorderPrintingPlanes` is in `card_engine/src/planes.rs`, and the
+per-value cheaper-of-the-two scheme it established is what #840 later reused for `frame_data`.
+
+*Original status, kept for dating* — proposed. Follows
 [docs/workflows/performance-pr-workflow.md](../../workflows/performance-pr-workflow.md).
 
 ## Measured problem

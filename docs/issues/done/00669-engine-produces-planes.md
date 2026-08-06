@@ -1,6 +1,9 @@
 # Engine: bitplanes for produces: (produced mana)
 
-Status: proposed, not started until now. Follows
+**DONE — shipped as PR #669 (merged).** `card_engine/src/planes.rs` cites this doc by path at the
+produced-mana plane definition.
+
+*Original status, kept for dating* — proposed. Follows
 [docs/workflows/performance-pr-workflow.md](../../workflows/performance-pr-workflow.md).
 No GitHub issue filed yet — surfaced while investigating the broad-survey slow tail after #666.
 

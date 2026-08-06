@@ -1,7 +1,15 @@
 # Engine: flavor-text narrowing via distinct-text scan + CSR
 
 Follow-on to [00605-engine-unindexed-predicates.md](00605-engine-unindexed-predicates.md)
-(PR #605). Status: written up 2026-07-03, not started. GitHub: #620.
+(PR #605).
+
+**DONE — shipped; #620 is closed.** It landed as `FlavorIndex`: `build_flavor_index`,
+`expand_flavor_ids` ("expand matched dense flavor text ids to sorted printing ids via the CSR"), and the
+`flavor` field on `CardIndexes` described as "printing space (CSR by dense flavor text id)" — which is all
+three unchecked boxes below. The names differ from what this doc predicted, which is why it reads as
+unstarted.
+
+*Original status, kept for dating* — written up 2026-07-03.
 
 ## Problem
 
