@@ -2533,7 +2533,7 @@ fn build_pair_totals(
     // Assign compact ids to the survivors, one id space across all four dimensions.
     let mut out = PairTotals::default();
     let mut next = 0u16;
-    let mut assign = |n: usize, next: &mut u16| -> Option<u16> {
+    let assign = |n: usize, next: &mut u16| -> Option<u16> {
         (n >= PAIR_MIN_PRINTINGS).then(|| {
             let id = *next;
             *next += 1;
@@ -7328,12 +7328,7 @@ fn leaves_are_disjoint(a: &FilterExpr, b: &FilterExpr) -> bool {
     }
 }
 
-fn exact_result_total(
-    composed: &FilterExpr,
-    indexes: &Archived<CardIndexes>,
-    n_cards: usize,
-    mode: Mode,
-) -> Option<usize> {
+fn exact_result_total(composed: &FilterExpr, indexes: &Archived<CardIndexes>, mode: Mode) -> Option<usize> {
     if let Some((idx, lo, hi)) = bare_range_bounds(composed, indexes) {
         // Printings come free from the index's own partition points; the other two spaces come from the
         // prefix/suffix tables, which now carry an artwork column as well as a card one.
@@ -11139,12 +11134,11 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 /// catch (e.g. reordering same-size fields, changing an index type) — and on
 /// any FLAVOR_FP_FEATURES change: archived fingerprints are built with that
 /// table, so a new table reading old fingerprints breaks the superset test.
-// Stack layer 09: `RangeCardCounts` gains an artwork column, a sixth table is added for rarity, and
-// `ValueTotals` arrives for border/layout/frame/(format,status). All archived-layout changes, so a
-// store built against the previous layer must fail the header check and be rebuilt rather than be
-// read as garbage. Numbered by stack patch; the check is EQUALITY, so the invariant is only that a
-// value is never reused for a different layout.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026080509;
+// Stack layer 12: `PairTotals` -- exact totals for PAIRS of low-cardinality values -- is a new
+// archived type, so a store built against the previous layer must fail the header check and be
+// rebuilt rather than be read as garbage. Numbered by stack patch; the check is EQUALITY, so the
+// invariant is only that a value is never reused for a different layout.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026080512;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
