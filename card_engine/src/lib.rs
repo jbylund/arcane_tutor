@@ -5757,24 +5757,24 @@ static DENSE_FRAME_BROAD_GATE: LazyLock<bool> = LazyLock::new(|| guard_env("CARD
 /// Whether the PAIR table answers a two-leaf `And` exactly and tightens the `And` fold's bound. 0 falls
 /// both back to `min` over single leaves.
 ///
-/// **Default OFF.** The table itself is right -- 21 of 21 measured cells exact where `min` read 2.8-10.1x
-/// over, and the three-leaf bound goes 7.80x to 2.02x -- but feeding it into the estimate regresses the
-/// disjoint cases 24x. `border:white border:black` estimates an exact 0, which collapses `eval_domain`
-/// and `scan_units` for the MATERIALIZING alternatives, so `GatheredScan` prices at 0.2 us and measures
-/// 199.3 us: it still has to scan to discover the set is empty. A result total is not a scan domain.
-/// Turning this on wants those two features derived from a candidate bound rather than from the match
-/// estimate -- docs/issues/local-engine-pair-totals.md.
-static PAIR_TOTALS: LazyLock<bool> = LazyLock::new(|| guard_env("CARD_ENGINE_PAIR_TOTALS", 0u8) != 0);
+/// 21 of 21 measured cells exact where `min` read 2.8-10.1x over, and the three-leaf bound goes 7.80x to
+/// 2.02x. Wiring it in regressed the disjoint cases 24x until `ComposeEstimate` split the result from the
+/// candidate bound: an exact 0 was collapsing `eval_domain`/`scan_units` for the MATERIALIZING
+/// alternatives, pricing `GatheredScan` at 0.2 us against a measured 199.3 us, because a plan still has
+/// to scan to discover a set is empty. With the split it is neutral in aggregate and it is what lets
+/// `LEGALITY_SCAN_SCOPE` be on -- docs/issues/local-engine-pair-totals.md.
+static PAIR_TOTALS: LazyLock<bool> = LazyLock::new(|| guard_env("CARD_ENGINE_PAIR_TOTALS", 1u8) != 0);
 
 /// Whether the legality divergent-share correction to `stream_scan_units` is scoped to filters whose
 /// residual can actually settle at card level.
 ///
-/// **Default OFF, deliberately.** The correction is more accurate scoped (see the call site) and it wins
-/// 2x in printing and artwork mode, but on its own it nets a wash: it also moves CARD mode onto
-/// `PrintingCompose`, which then declines at dispatch (`DeclineSparseExact`) and falls back having
-/// already paid the build. Turning this on wants the decline hazard fixed first —
-/// docs/issues/local-engine-legality-scan-scope.md has the chain and the measurements.
-static LEGALITY_SCAN_SCOPE: LazyLock<bool> = LazyLock::new(|| guard_env("CARD_ENGINE_LEGALITY_SCAN_SCOPE", 0u8) != 0);
+/// On since the pair table made it safe. Scoped, the correction is 5-7x more accurate on this
+/// population and wins 2.0x in printing mode and 1.6x in artwork; unscoped it also moved CARD mode onto
+/// `PrintingCompose`, which then declined at dispatch (`DeclineSparseExact`) and fell back having already
+/// paid the build. `PairTotals` gives card mode the exact total, so `compose_paging` now predicts that
+/// decline instead of walking into it. Aggregate is neutral (0.995 target / 0.997 whole mix over 12
+/// interleaved rounds); the win is per query and the point is a feature that is no longer wrong.
+static LEGALITY_SCAN_SCOPE: LazyLock<bool> = LazyLock::new(|| guard_env("CARD_ENGINE_LEGALITY_SCAN_SCOPE", 1u8) != 0);
 
 /// Whether a conjunct the candidate set already proves is skipped by `card_pass` instead of
 /// re-verified. 0 restores the re-verification, for the A/B that priced it.
@@ -6752,28 +6752,59 @@ fn compose_printing_bits(
 /// **only if this plan wins** (why acquire estimates rather than composing — it avoids a throwaway pass).
 /// `AND` takes the min matches (intersection upper bound) and sums each build kind; `OR` the capped sum.
 /// Used only for plan choice — the fast path recomputes the exact total.
+/// What `compose_printing_estimate` returns: the composed set's size, twice.
+///
+/// `result` is the best available estimate — exact where the pair table or a single-leaf table answers.
+/// `candidate` is the plain `min`-over-single-leaves bound, which is what the MATERIALIZING alternatives
+/// actually walk: `narrow_rec` declines broad children (`border:black` at 87% under `broad_ok: false`),
+/// so their candidate set is the surviving leaf's, not the intersection.
+///
+/// Keeping them apart is the whole point. Feeding an exact intersection into `eval_domain`/`scan_units`
+/// prices `GatheredScan` on `border:white border:black` at 0.2 us against a measured 199.3 us, because a
+/// plan still has to scan to DISCOVER a set is empty. A result total is not a scan domain — the same
+/// distinction `exact_cards` vs `exact_total` draws one level down.
+#[derive(Clone, Copy)]
+struct ComposeEstimate {
+    result: usize,
+    candidate: usize,
+    broadcast: usize,
+    scatter: usize,
+}
+
+impl ComposeEstimate {
+    /// A leaf: nothing to tighten, so both figures are the same count.
+    fn leaf(k: usize, broadcast: usize, scatter: usize) -> Self {
+        Self { result: k, candidate: k, broadcast, scatter }
+    }
+}
+
 fn compose_printing_estimate(
     filter: &FilterExpr,
     indexes: &Archived<CardIndexes>,
     offsets: &AOffsets,
     n_printings: usize,
-) -> (usize, usize, usize) {
+) -> ComposeEstimate {
     let popcount = |bits: &[u64]| bits.iter().map(|w| w.count_ones() as usize).sum::<usize>();
     match filter {
-        FilterExpr::True => (n_printings, 0, 0),
+        FilterExpr::True => ComposeEstimate::leaf(n_printings, 0, 0),
         // The min-of-children fold is an intersection UPPER BOUND, and on a two-sided range it is a bad
         // one: `usd>=0.42 usd<=0.43` folded to min(33,862, 48,559) against a true 879, and the summed
         // scatter to 82,421 for an 879-row answer. Fusing same-index children first replaces both with
         // the interval's exact `k` — the same two `partition_point` calls the one-sided arm below
         // already makes, which is why a one-sided range estimates at 1.0x and this did not.
         FilterExpr::And(v) => {
-            let (m, bc, sc) = fuse_and_range_children(v, indexes, false)
+            let folded = fuse_and_range_children(v, indexes, false)
                 .into_iter()
                 .map(|src| match src {
                     AndSource::Child(c) => compose_printing_estimate(c, indexes, offsets, n_printings),
-                    AndSource::FusedRange { k, .. } => (k, 0, k),
+                    AndSource::FusedRange { k, .. } => ComposeEstimate::leaf(k, 0, k),
                 })
-                .fold((n_printings, 0, 0), |(m, bc, sc), (cm, cbc, csc)| (m.min(cm), bc + cbc, sc + csc));
+                .fold(ComposeEstimate::leaf(n_printings, 0, 0), |a, c| ComposeEstimate {
+                    result: a.result.min(c.result),
+                    candidate: a.candidate.min(c.candidate),
+                    broadcast: a.broadcast + c.broadcast,
+                    scatter: a.scatter + c.scatter,
+                });
             // Tighten the `min` bound with every PAIR of children the table stores. `min` over singles
             // lets the most selective leaf decide alone, which is why `f:modern r:rare border:white`
             // estimated 5,131 -- `border:white`'s own count -- against a true 658. The pair
@@ -6782,29 +6813,40 @@ fn compose_printing_estimate(
             // `n choose 2` over an `And`'s children, bounded in practice by how many predicates a person
             // types; the two-leaf case is answered exactly one level up in `exact_result_total` and never
             // needs this.
-            (pair_bounded_min(v, indexes, m), bc, sc)
+            // Only `result` is tightened. `candidate` keeps the untightened `min`, because that is what
+            // narrowing leaves the alternatives to walk once its broad children decline.
+            ComposeEstimate { result: pair_bounded_min(v, indexes, folded.result), ..folded }
         }
         FilterExpr::Or(v) => {
-            let (m, bc, sc) = v
+            let summed = v
                 .iter()
                 .map(|c| compose_printing_estimate(c, indexes, offsets, n_printings))
-                .fold((0usize, 0usize, 0usize), |(m, bc, sc), (cm, cbc, csc)| (m + cm, bc + cbc, sc + csc));
-            (m.min(n_printings), bc, sc)
+                .fold(ComposeEstimate::leaf(0, 0, 0), |a, c| ComposeEstimate {
+                    result: a.result + c.result,
+                    candidate: a.candidate + c.candidate,
+                    broadcast: a.broadcast + c.broadcast,
+                    scatter: a.scatter + c.scatter,
+                });
+            ComposeEstimate {
+                result: summed.result.min(n_printings),
+                candidate: summed.candidate.min(n_printings),
+                ..summed
+            }
         }
         // Precomputed planes: exact cheap popcount, nothing synthesized.
         FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value } => {
-            (popcount(&border_leaf_bits(value.as_str(), &indexes.border_printing, n_printings)), 0, 0)
+            ComposeEstimate::leaf(popcount(&border_leaf_bits(value.as_str(), &indexes.border_printing, n_printings)), 0, 0)
         }
         // #746: `set:`/`watermark:` postings — matches = the value's postings length `k` (each
         // posting is one distinct printing), synthesized by scattering `k` ids → rides `scatter`
         // (the same cheap range-slice scatter rate). O(1) here: the length, no bitmap built.
         FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value } => {
             let k = indexes.set_codes.get(value.as_str()).map_or(0, |v| v.len());
-            (k, 0, k)
+            ComposeEstimate::leaf(k, 0, k)
         }
         FilterExpr::TextExact { field: TextField::Watermark, op: CmpOp::Eq, value } => {
             let k = indexes.watermarks.get(value.as_str()).map_or(0, |v| v.len());
-            (k, 0, k)
+            ComposeEstimate::leaf(k, 0, k)
         }
         // #746: `-set:VALUE` — matches = all printings minus the value's postings; the scatter cost
         // rides the (small) positive postings size cleared, not the (large) complement it produces.
@@ -6815,7 +6857,7 @@ fn compose_printing_estimate(
                 unreachable!("guarded by the matches! above")
             };
             let k = indexes.set_codes.get(value.as_str()).map_or(0, |v| v.len());
-            (n_printings.saturating_sub(k), 0, k)
+            ComposeEstimate::leaf(n_printings.saturating_sub(k), 0, k)
         }
         // Collection containment leaf (`type:`/`kw:`/`otag:`/`art:`/`is:`, `Ge`): `k` = the exact
         // printing count the leaf matches (card-space sums the matching cards' printing ranges,
@@ -6826,7 +6868,7 @@ fn compose_printing_estimate(
         {
             let src = collection_compose_index(indexes, *field).expect("guarded by the if");
             let k = collection_leaf_printing_count(&src, value.as_str(), offsets);
-            (k, 0, k)
+            ComposeEstimate::leaf(k, 0, k)
         }
         // Negated collection leaf: all printings minus the positive `k`; the scatter cost rides the
         // (small) positive `k` cleared, not the (large) complement it produces — same shape as `-set:`.
@@ -6838,13 +6880,13 @@ fn compose_printing_estimate(
             };
             let src = collection_compose_index(indexes, *field).expect("guarded by the matches!");
             let k = collection_leaf_printing_count(&src, value.as_str(), offsets);
-            (n_printings.saturating_sub(k), 0, k)
+            ComposeEstimate::leaf(n_printings.saturating_sub(k), 0, k)
         }
         FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op, rhs: NumExpr::Const(c) } => {
-            (popcount(&rarity_cmp_leaf_bits(*op, *c, &indexes.rarity_printing, n_printings)), 0, 0)
+            ComposeEstimate::leaf(popcount(&rarity_cmp_leaf_bits(*op, *c, &indexes.rarity_printing, n_printings)), 0, 0)
         }
         FilterExpr::NumericCmp { lhs: NumExpr::Const(c), op, rhs: NumExpr::Field(NumField::RarityInt) } => {
-            (popcount(&rarity_cmp_leaf_bits(flip_op(*op), *c, &indexes.rarity_printing, n_printings)), 0, 0)
+            ComposeEstimate::leaf(popcount(&rarity_cmp_leaf_bits(flip_op(*op), *c, &indexes.rarity_printing, n_printings)), 0, 0)
         }
         // Legality: matches ≈ the legal-∃ cards' printings (existence-scaled from the cheap card
         // ∃-plane popcount). The build cost rides the *sparser* side (#744): a majority-legal format
@@ -6856,7 +6898,7 @@ fn compose_printing_estimate(
             let legal = legality_candidate_bits(indexes, n_cards, *shift, *expected, false).map_or(0, |b| popcount(&b));
             let illegal = legality_candidate_bits(indexes, n_cards, *shift, *expected, true).map_or(0, |b| popcount(&b));
             let scale = |c: usize| (c * n_printings).checked_div(n_cards).unwrap_or(0);
-            (scale(legal), scale(legal.min(illegal)), 0)
+            ComposeEstimate::leaf(scale(legal), scale(legal.min(illegal)), 0)
         }
         // Range (bare or negated — `-usd<50` etc., see `bare_range_bounds`'s doc): `k` in-range
         // printings from the index partition points (O(log n), no scatter here); matches ≈ k, and k
@@ -6866,7 +6908,7 @@ fn compose_printing_estimate(
         {
             let (idx, lo, hi) = bare_range_bounds(filter, indexes).expect("guarded by bare_range_bounds");
             let (s, e) = idx.range(lo, hi);
-            (e - s, 0, e - s)
+            ComposeEstimate::leaf(e - s, 0, e - s)
         }
         _ => unreachable!("compose_printing_estimate on a non-composable filter — gated by is_printing_composable"),
     }
@@ -9301,7 +9343,8 @@ fn compose_gather_declines(
     cards: &[AOracleCard],
     mode: Mode,
 ) -> Option<PagingTaken> {
-    let (printing_matches, _, _) = compose_printing_estimate(filter, indexes, offsets, printings.len());
+    // The gather's own decline is about the composed set it would page over, so it reads `result`.
+    let printing_matches = compose_printing_estimate(filter, indexes, offsets, printings.len()).result;
     // Artwork's domain is n_artworks, not n_cards. That used to be approximated by `cards.len()`
     // because the exact figure meant prefix-summing `artwork_groups` here -- real O(n_cards) work
     // paid just to maybe decline. It is a stored index now, so read the truth: the stand-in is
@@ -9697,7 +9740,8 @@ fn acquire_plan_features(
         // and compose was costed as if it returned everything for nothing. Applicability, estimate and
         // execution have to agree on which representation this plan is being judged on.
         let composed = compose_source(filter, unsplit, plane);
-        let (printing_matches, broadcast, scatter) = compose_printing_estimate(composed, indexes, offsets, n_printings as usize);
+        let est = compose_printing_estimate(composed, indexes, offsets, n_printings as usize);
+        let (printing_matches, broadcast, scatter) = (est.result, est.broadcast, est.scatter);
         // Two build kinds, charged at different rates: `broadcast` = legality broadcast-down (linear
         // pass), `scatter` = range-slice scatter (cheap). `project` = the second pass (printing→
         // card/artwork), 0 for printing mode. Keeping all three separate is what lets a bare range's
@@ -9724,6 +9768,20 @@ fn acquire_plan_features(
         };
         let est_cards =
             exact_cards.unwrap_or_else(|| calibrated_balls_into_bins(printing_matches, n_cards as usize));
+        // The card count the MATERIALIZING alternatives walk, which stops being `est_cards` once the
+        // estimate has been tightened. `est.candidate` is the untightened `min` over single leaves, and
+        // that is what narrowing actually leaves them: it declines broad children (`border:black` at 87%
+        // under `broad_ok: false`), so `border:white border:black` hands them `border:white`'s 5,131
+        // printings, not the empty intersection. Charging the intersection priced `GatheredScan` at
+        // 0.2 us against a measured 199.3 us -- a plan still has to scan to DISCOVER a set is empty.
+        //
+        // Identical to `est_cards` whenever nothing was tightened, which is every query that reached here
+        // before the pair table existed, so no already-calibrated cell moves.
+        let domain_cards = if est.candidate == est.result {
+            est_cards
+        } else {
+            calibrated_balls_into_bins(est.candidate, n_cards as usize)
+        };
         // What the MATERIALIZING alternatives scan if compose loses. Every mode narrows -- a
         // composable filter has an index for every leaf -- so all three are the NARROWED counts.
         // Printing mode took the unnarrowed universe while card/artwork took a narrowed count; only
@@ -9754,7 +9812,7 @@ fn acquire_plan_features(
                 // would under-charge the scan on exactly the divergent-legality cards the superset exists
                 // for. `f:modern` reads 68,687 against a true 73,783; `banned:modern` 160 against 399.
                 let total = if *EXACT_VALUE_TOTALS { exact_total.unwrap_or(printing_matches) } else { printing_matches };
-                (total, 0, (n_printings as usize).div_ceil(64), est_cards, scan_all(est_cards))
+                (total, 0, (n_printings as usize).div_ceil(64), domain_cards, scan_all(domain_cards))
             }
             Mode::Card => {
                 // Card mode's result total IS the distinct-card count, which is precisely what
@@ -9762,7 +9820,7 @@ fn acquire_plan_features(
                 // `printing_matches.min(n_cards)`, which reads a median 1.99x the deduped
                 // `matches_pushed` counter -- p10 1.01, so it is over on nearly every query. Two
                 // names for one quantity, one of them wrong.
-                (est_cards, printing_matches, (n_cards as usize).div_ceil(64), est_cards, scan_all(est_cards))
+                (est_cards, printing_matches, (n_cards as usize).div_ceil(64), domain_cards, scan_all(domain_cards))
             }
             Mode::Artwork => {
                 // `result_total` is consumed as a per-RESULT count (GatheredScan's push term,
@@ -9788,7 +9846,7 @@ fn acquire_plan_features(
                 let rt = exact_total.unwrap_or_else(|| artwork_estimate(printing_matches, capacity_cards, n_cards as usize, n_artworks));
                 // The bitmap `printing_bits_to_artwork_bits` popcounts is n_artworks bits wide, not
                 // n_printings -- 46,112 against 97,206 here, so this was 2.1x over as well.
-                (rt, printing_matches, n_artworks.div_ceil(64), est_cards, scan_all(est_cards))
+                (rt, printing_matches, n_artworks.div_ceil(64), domain_cards, scan_all(domain_cards))
             }
         };
         // `eval_domain` and `scan_units` describe what the MATERIALIZING alternatives walk, and when the
