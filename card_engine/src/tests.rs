@@ -2,7 +2,7 @@ use super::{
     and_child_rank, assign_name_ranks,
     build_numeric_index, build_oracle_text_index, build_tag_index, build_trigram_index,
     build_rarity_index, build_flavor_index, build_hybrid_tag_index, bitmap_beats_postings, HybridTagIndex, build_sort_permutations,
-    assign_artwork_groups, build_artwork_base_from, build_bit_planes, build_border_printing_planes, build_rarity_printing_planes, build_divergent_ids, build_name_bigram_index, build_printing_to_card, flavor_fingerprint, flavor_match_sets,
+    assign_artwork_groups, build_artwork_base_from, build_bit_planes, build_border_printing_planes, build_rarity_printing_planes, build_divergent_ids, build_name_bigram_index, build_name_unigram_index, build_printing_to_card, flavor_fingerprint, flavor_match_sets,
     cards_of_printings, count_common_keywords, count_common_types,
     build_artist_index, build_printing_value_index, build_arith_tuple_index, is_arith_tuple_route, range_candidates, narrow_candidates, narrow_candidates_exact, rarity_candidates,
     range_too_broad_to_narrow, run_query, run_query_with_plan, explain, explain_analyze, AcquireFacts, PlanEstimate, PlanTrial,
@@ -293,6 +293,7 @@ fn store_of(cards: Vec<OracleCard>, printing_counts: &[usize], vocab: VocabInter
         // safe here -- the border-scatter loop skips every printing regardless.
         planes: build_bit_planes(&cards, &printings, &offsets, &[]),
         name_bigrams: build_name_bigram_index(&cards),
+        name_unigrams: build_name_unigram_index(&cards),
         legal_divergent: build_divergent_ids(&cards),
         sort_perms: build_sort_permutations(&cards),
         max_artwork_groups: artwork_groups.iter().copied().max().unwrap_or(0),
@@ -2454,6 +2455,7 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     // narrowing and the full-scan memoization; flavor is the printing-space CSR bind() resolves against.
     data.indexes.name_trigram = build_trigram_index(&data.cards, |c| c.card_name_folded.as_str());
     data.indexes.name_bigrams = build_name_bigram_index(&data.cards);
+    data.indexes.name_unigrams = build_name_unigram_index(&data.cards);
     data.indexes.oracle_trigram = build_oracle_text_index(&data.cards, &data.strings);
     data.indexes.flavor = build_flavor_index(&data.printings, &data.strings);
     data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
@@ -6240,6 +6242,7 @@ fn bench_checked_vs_unchecked_access() {
     let indexes = CardIndexes {
         artwork_base,
         name_trigram:   build_trigram_index(&cards, |c| c.card_name_folded.as_str()),
+        name_unigrams:  build_name_unigram_index(&cards),
         oracle_trigram: build_oracle_text_index(&cards, &strings),
         cmc:            build_numeric_index(&cards, |c| c.cmc.map(|v| v as i16)),
         power:          build_numeric_index(&cards, |c| c.creature_power.map(|v| v as i16)),
@@ -9312,7 +9315,9 @@ fn not_narrows_only_tight_children() {
     let goblin = || FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "goblin".into(), value_id: goblin_id };
     let rarity = || FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op: CmpOp::Eq, rhs: NumExpr::Const(0.0) };
     // 1-char: below even the bigram floor, so genuinely unindexable.
-    let name1 = || FilterExpr::TextContains { field: TextSearchField::NameLower, word: "q".into() };
+    // A sub-trigram ORACLE needle: names have unigram/bigram indexes (#858, #639) so they narrow
+    // tightly, but oracle text has neither and still cannot narrow at all.
+    let name1 = || FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: "q".into() };
 
     // Tight leaf → complement narrows, loose, and covers every ¬-match.
     let n = rec(&FilterExpr::Not(Box::new(goblin()))).expect("Not(subtype) must narrow");
@@ -9343,7 +9348,7 @@ fn not_narrows_only_tight_children() {
     }
 
     // Genuinely loose children with no dedicated Not arm still block it.
-    assert!(rec(&FilterExpr::Not(Box::new(name1()))).is_none(), "sub-bigram text cannot narrow at all");
+    assert!(rec(&FilterExpr::Not(Box::new(name1()))).is_none(), "sub-trigram oracle text cannot narrow at all");
     let double_not = FilterExpr::Not(Box::new(FilterExpr::Not(Box::new(goblin()))));
     assert!(rec(&double_not).is_none(), "complements are loose, so double negation stops narrowing");
 
@@ -9372,9 +9377,9 @@ fn or_composes_plane_and_complement_children() {
     let cand = n.set.into_cards(&archived.offsets, &archived.indexes.printing_to_card);
     assert_eq!(cand, vec![0, 1, 3], "goblins ∪ green");
 
-    // An unindexable child still vetoes: nothing can represent it (1-char is
-    // below even the bigram floor).
-    let or = FilterExpr::Or(vec![goblin(), FilterExpr::TextContains { field: TextSearchField::NameLower, word: "q".into() }]);
+    // An unindexable child still vetoes: nothing can represent it. Oracle rather than name, since a
+    // 1-byte name needle now resolves exactly through the unigram index (#858).
+    let or = FilterExpr::Or(vec![goblin(), FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: "q".into() }]);
     assert!(rec(&or).is_none());
 }
 
@@ -9431,7 +9436,12 @@ fn not_over_partial_and_is_blocked() {
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     let goblin_id = archived.coll_vocab.iter().position(|s| s.as_str() == "goblin").map(|i| i as u16);
     let goblin = || FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "goblin".into(), value_id: goblin_id };
-    let unindexable = || FilterExpr::TextContains { field: TextSearchField::NameLower, word: "q".into() };
+    // A 4+ byte name needle: unrepresentable for the Not arm (trigram sets are supersets, so
+    // `tight_narrow_space` declines it) while still evaluating cleanly FALSE for every card, which is what
+    // the total below pins. Not a 1-byte needle any more -- those resolve exactly through the unigram
+    // index now (#858) -- and not an oracle needle either, since this fixture leaves oracle text unset,
+    // making it Null rather than False and changing what the negation matches.
+    let unindexable = || FilterExpr::TextContains { field: TextSearchField::NameLower, word: "qqqq".into() };
 
     // Static check: And with an unrepresentable child can't be tight → Not
     // must refuse to narrow at all.
@@ -9439,7 +9449,7 @@ fn not_over_partial_and_is_blocked() {
     assert!(super::narrow_rec(&not_partial, &archived.indexes, &archived.offsets, &archived.cards, true).is_none());
 
     // Dynamic check via run_query: totals must equal brute force. Every card
-    // fails `name:q` here, so every card matches the negation — a complement
+    // fails `name:qqqq` here, so every card matches the negation — a complement
     // of the goblins-only set would have dropped cards 0 and 1.
     let brute = archived
         .cards
@@ -9453,7 +9463,7 @@ fn not_over_partial_and_is_blocked() {
     let mut f = FilterExpr::Not(Box::new(FilterExpr::And(vec![goblin(), unindexable()])));
     let (total, _) = run_query(&QueryCtx::from(archived), &mut f, None, "card", "default", "edhrec", "asc", 100, 0);
     assert_eq!(total, brute);
-    assert_eq!(total, 6, "every card matches -(goblin and name:q)");
+    assert_eq!(total, 6, "every card matches -(goblin and name:qqqq)");
 }
 
 
@@ -9525,9 +9535,56 @@ fn name_bigrams_tiers_and_exactness() {
     // Absent bigram: exact empty (no name contains it), not None.
     let n = rec("vw").expect("absent bigram is an exact empty narrowing");
     assert_eq!(n.set.len(), 0);
-    // 1-char stays unindexable.
-    let f = FilterExpr::TextContains { field: TextSearchField::NameLower, word: "z".to_string() };
+    // 1-char is indexed too now (#858) -- see name_unigrams_tiers_and_exactness for its tiers. What
+    // stays unindexable is a sub-trigram ORACLE needle, which has no unigram/bigram index.
+    let f = FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: "z".to_string() };
     assert!(super::narrow_rec(&f, &archived.indexes, &archived.offsets, &archived.cards, false).is_none());
+}
+
+/// The 1-byte name tier: both storage tiers, exactness against brute-force `contains`, and the empty
+/// case. Mirrors `name_bigrams_tiers_and_exactness` one length down (#858).
+#[test]
+fn name_unigrams_tiers_and_exactness() {
+    // 4,096 cards: every name contains 'z' (dense -> plane tier); every 64th contains 'q' (64 entries
+    // x 2 B <= the 512 B plane cost at this store size -> u16 postings tier). No name contains 'v'.
+    // Digits are unavoidable in the unique suffix, so the probe bytes are letters only.
+    let mut vocab = VocabInterner::new();
+    let cards: Vec<OracleCard> = (0..4096u32).map(|i| {
+        let mut c = stub_card(u128::from(i) + 1, TYPE_CREATURE, &[], &mut vocab);
+        let name = if i % 64 == 0 { format!("az q{i}") } else { format!("az b{i}") };
+        c.card_name_lower = InlineStr::from_str(&name);
+        c.card_name_folded = c.card_name_lower;
+        c
+    }).collect();
+    let data = store_of(cards, &vec![1usize; 4096], vocab);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let idx = &archived.indexes.name_unigrams;
+
+    assert!(idx.plane_of.get(&b'z').is_some(), "a byte in 4,096 names must promote to a plane");
+    assert!(idx.postings.get(&b'q').is_some(), "a byte in 64 names stays a posting list");
+
+    let rec = |w: &str| {
+        let f = FilterExpr::TextContains { field: TextSearchField::NameLower, word: w.to_string() };
+        super::narrow_rec(&f, &archived.indexes, &archived.offsets, &archived.cards, false)
+    };
+    // Dense tier: exact bitmap, tight.
+    let n = rec("z").expect("dense byte narrows");
+    assert!(n.tight);
+    assert!(matches!(n.set, Candidates::CardBits(_)));
+    assert_eq!(n.set.len(), 4096);
+    // Sparse tier: exact vec, tight, and byte-for-byte the contains() answer.
+    let n = rec("q").expect("sparse byte narrows");
+    assert!(n.tight);
+    let cand = n.set.into_cards(&archived.offsets, &archived.indexes.printing_to_card);
+    let brute: Vec<u32> = archived.cards.iter().enumerate()
+        .filter(|(_, c)| c.card_name_folded.as_str().contains('q'))
+        .map(|(i, _)| i as u32)
+        .collect();
+    assert_eq!(cand, brute, "byte membership IS containment for 1-byte needles");
+    // Absent byte: exact empty, not None -- the same convention the bigram tier uses.
+    let n = rec("v").expect("absent byte is an exact empty narrowing");
+    assert_eq!(n.set.len(), 0);
 }
 
 // The motivating composition: `name:xx or name:yy` previously full-scanned

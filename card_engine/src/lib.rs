@@ -1260,6 +1260,69 @@ fn build_name_bigram_index(cards: &[OracleCard]) -> NameBigramIndex {
     idx
 }
 
+/// Exact 1-byte name containment — the tier below `NameBigramIndex`, and the reason it exists is
+/// traffic rather than symmetry.
+///
+/// A bare query term parses to `card_name` contains (`parse_scryfall_query("s")`), and the UI searches
+/// on every keystroke behind a 50 ms debounce, so a ONE-CHARACTER name needle is the first query of
+/// every search session a user makes. It was also the only text tier with no index at all: three bytes
+/// narrow through `name_trigram`, two resolve exactly through `name_bigrams`, and one fell through to a
+/// full residual scan over every card — 446 µs against `name:so`'s 8 µs, a 54x cliff at the one length
+/// every search passes through.
+///
+/// Containment IS byte membership for a 1-byte needle, so the tier lookup is the complete answer and
+/// the narrowing is TIGHT — the same argument `name_bigrams` makes one length up.
+///
+/// Two tiers, not three: the corpus has 51 distinct bytes in folded names, and the cheaper-of-two split
+/// lands at 25 planes / 26 posting lists for **109 KB**. A complement tier (store the cards LACKING the
+/// byte) was measured and never wins here — the most common byte is `' '` at 92%, whose 8% complement is
+/// 2,520 ids = 5 KB against a 3,939 B plane. It would win on `oracle_text`, where 19 bytes exceed 75%,
+/// which is one reason this is names-only for now.
+#[derive(Archive, Serialize, Deserialize, Default)]
+struct NameUnigramIndex {
+    /// Sparse tier: byte → ascending card ids, u16 for the same reason as the bigram index.
+    postings: HashMap<u8, Vec<u16>>,
+    /// Dense tier: byte → plane index into `plane_words`.
+    plane_of: HashMap<u8, u32>,
+    /// `plane_of.len()` × `words_per_plane(n_cards)`, flattened plane-major.
+    plane_words: Vec<u64>,
+    n_cards: u32,
+}
+
+fn build_name_unigram_index(cards: &[OracleCard]) -> NameUnigramIndex {
+    let mut lists: HashMap<u8, Vec<u32>> = HashMap::new();
+    for (i, card) in cards.iter().enumerate() {
+        // Folded (#649), matching what `name_trigram` / `name_bigrams` index and what the walk evaluates
+        // — that agreement is what makes the tight narrowing sound.
+        let mut seen = [false; 256];
+        for &b in card.card_name_folded.as_str().as_bytes() {
+            if !seen[b as usize] {
+                seen[b as usize] = true;
+                lists.entry(b).or_default().push(i as u32);
+            }
+        }
+    }
+    let wpp = cards.len().div_ceil(64);
+    let plane_bytes = wpp * 8;
+    let mut idx = NameUnigramIndex { n_cards: cards.len() as u32, ..Default::default() };
+    // u16 ids require the card count to fit; past that every byte promotes to a plane, which is valid at
+    // any count. Same rule as the bigram index.
+    let u16_ok = cards.len() <= u16::MAX as usize + 1;
+    for (b, ids) in lists {
+        if u16_ok && ids.len() * 2 <= plane_bytes {
+            idx.postings.insert(b, ids.into_iter().map(|c| c as u16).collect());
+        } else {
+            let plane = idx.plane_of.len() as u32;
+            idx.plane_of.insert(b, plane);
+            idx.plane_words.resize((plane as usize + 1) * wpp, 0);
+            for c in ids {
+                idx.plane_words[plane as usize * wpp + (c >> 6) as usize] |= 1u64 << (c & 63);
+            }
+        }
+    }
+    idx
+}
+
 // Named lifetime (not elided/HRTB) so get_text may return text borrowed from the
 // string table rather than from the card itself.
 fn build_trigram_index<'a, T>(rows: &'a [T], get_text: impl Fn(&'a T) -> &'a str) -> SortedTrigramIndex {
@@ -3477,6 +3540,7 @@ struct CardIndexes {
     // `PrintingValueIndex` the three range dimensions use, so it costs a builder call and ~389 KB.
     rarity_printing_ordered: PrintingValueIndex,
     name_bigrams:   NameBigramIndex,           // card space: exact 2-byte name containment (#639)
+    name_unigrams:  NameUnigramIndex,          // card space: exact 1-byte name containment (#858)
     legal_divergent: Vec<u16>,                // card space: ids with divergent legality (#630 phase 2), postings not a plane — see build_divergent_ids
     arith_tuple:    ArithTupleIndex,           // card space: joint (cmc,power,toughness,loyalty) postings for arith predicates (#743)
 }
@@ -3863,8 +3927,8 @@ fn tight_narrow_space(f: &FilterExpr) -> Option<bool> {
         FilterExpr::ColorCmp { .. } | FilterExpr::TypeCmp { .. } => Some(false),
         // Exact names resolve exactly through the sorted name permutation.
         FilterExpr::ExactName(_) => Some(false),
-        // 2-byte name needles resolve exactly through the bigram index.
-        FilterExpr::TextContains { field: TextSearchField::NameLower, word } if word.len() == 2 => Some(false),
+        // 1- and 2-byte name needles resolve exactly through the unigram / bigram indexes.
+        FilterExpr::TextContains { field: TextSearchField::NameLower, word } if word.len() <= 2 => Some(false),
         // Ge-only guard is deliberate (#700): narrow_rec's CollectionCmp arm
         // now also narrows Eq/Gt through the same containment postings, but
         // only loosely — the postings prove `contains(value)`, not the
@@ -4375,6 +4439,28 @@ fn narrow_rec(
             let lo = perm.partition_point(|cid| name_of(cid) < needle.as_str());
             let width = perm[lo..].partition_point(|cid| name_of(cid) == needle.as_str());
             let ids: Vec<u32> = perm[lo..lo + width].iter().map(|x| u32::from(*x)).collect();
+            Narrowed::tight(Candidates::Cards(ids))
+        }
+
+        FilterExpr::TextContains { field: TextSearchField::NameLower, word } if word.len() == 1 => {
+            // A 1-byte needle's containment IS byte membership, so the tier lookup is the complete
+            // answer — tight, exactly as the 2-byte arm below. A byte absent from the index appears in
+            // no name, so the empty narrowing is exact too. (#858)
+            let idx = &indexes.name_unigrams;
+            if u32::from(idx.n_cards) as usize != n_cards {
+                return None; // archive without unigrams for this store
+            }
+            let b = word.as_bytes()[0];
+            if let Some(p) = idx.plane_of.get(&b) {
+                let wpp = n_cards.div_ceil(64);
+                let start = u32::from(*p) as usize * wpp;
+                let bits: Vec<u64> = idx.plane_words[start..start + wpp].iter().map(|w| u64::from(*w)).collect();
+                return Narrowed::tight(Candidates::CardBits(bits));
+            }
+            let ids: Vec<u32> = idx
+                .postings
+                .get(&b)
+                .map_or_else(Vec::new, |v| v.iter().map(|x| u32::from(u16::from(*x))).collect());
             Narrowed::tight(Candidates::Cards(ids))
         }
 
@@ -11273,11 +11359,10 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 /// catch (e.g. reordering same-size fields, changing an index type) — and on
 /// any FLAVOR_FP_FEATURES change: archived fingerprints are built with that
 /// table, so a new table reading old fingerprints breaks the superset test.
-// Stack layer 12: `PairTotals` -- exact totals for PAIRS of low-cardinality values -- is a new
-// archived type, so a store built against the previous layer must fail the header check and be
-// rebuilt rather than be read as garbage. Numbered by stack patch; the check is EQUALITY, so the
-// invariant is only that a value is never reused for a different layout.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026080512;
+// `NameUnigramIndex` (#858) is a new archived type, so a store built before it must fail the header
+// check and be rebuilt rather than be read as garbage. Dated 2026-08-06, patch 01; the check is
+// EQUALITY, so the invariant is only that a value is never reused for a different layout.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026080601;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -11894,6 +11979,7 @@ impl QueryEngine {
             value_totals,
             pair_totals,
             name_bigrams:   build_name_bigram_index(&cards),
+            name_unigrams:  build_name_unigram_index(&cards),
             legal_divergent: build_divergent_ids(&cards),
             arith_tuple:    build_arith_tuple_index(&cards),
         };
