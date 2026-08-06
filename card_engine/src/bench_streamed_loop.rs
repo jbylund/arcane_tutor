@@ -303,7 +303,6 @@ fn bench_streamed_loop() {
         }
     }
 
-    let mut best_loop = vec![f64::INFINITY; configs.len()];
     let mut best_setup = vec![f64::INFINITY; configs.len()];
     let mut best_finish = vec![f64::INFINITY; configs.len()];
     let mut counters = vec![(0.0, 0.0, 0.0); configs.len()];
@@ -383,7 +382,7 @@ fn bench_streamed_loop() {
         );
     }
 
-    println!("\n{:<34}{:>12}{:>16}{}", "fitted per (mode, residual)", "ns/card", "ns/printing", "   note");
+    println!("\n{:<34}{:>12}{:>16}   note", "fitted per (mode, residual)", "ns/card", "ns/printing");
     let mut recovered: Vec<(&str, f64, f64)> = Vec::new();
     for mode in ["card", "printing"] {
         for residual in [false, true] {

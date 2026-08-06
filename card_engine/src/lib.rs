@@ -2535,7 +2535,7 @@ fn build_pair_totals(
     // Assign compact ids to the survivors, one id space across all four dimensions.
     let mut out = PairTotals::default();
     let mut next = 0u16;
-    let mut assign = |n: usize, next: &mut u16| -> Option<u16> {
+    let assign = |n: usize, next: &mut u16| -> Option<u16> {
         (n >= PAIR_MIN_PRINTINGS).then(|| {
             let id = *next;
             *next += 1;
@@ -3222,7 +3222,7 @@ fn sorted_ids(ids: impl Iterator<Item = u32>, k: usize, domain: usize) -> Vec<u3
              duplicate, which the bitmap collapses and the sort keeps",
             collected.len(),
         );
-        return if bitmap { by_bitmap } else { by_sort };
+        if bitmap { by_bitmap } else { by_sort }
     }
     #[cfg(not(debug_assertions))]
     if bitmap {
@@ -7435,12 +7435,7 @@ fn leaves_are_disjoint(a: &FilterExpr, b: &FilterExpr) -> bool {
     }
 }
 
-fn exact_result_total(
-    composed: &FilterExpr,
-    indexes: &Archived<CardIndexes>,
-    n_cards: usize,
-    mode: Mode,
-) -> Option<usize> {
+fn exact_result_total(composed: &FilterExpr, indexes: &Archived<CardIndexes>, mode: Mode) -> Option<usize> {
     if let Some((idx, lo, hi)) = bare_range_bounds(composed, indexes) {
         // Printings come free from the index's own partition points; the other two spaces come from the
         // prefix/suffix tables, which now carry an artwork column as well as a card one.
@@ -9250,6 +9245,11 @@ fn exec_from_candidates<'a>(
 /// fallback it replaces on the model's own terms. Both paths are correct for any query either is
 /// applicable to — `force_plan_differential_agreement` holds every plan to identical results — so
 /// this changes only which correct plan runs.
+// Eight parameters: the declined plan, the three shared query artifacts (`ctx`, `params`, `filter`),
+// the two split-filter pieces a sibling needs to re-derive its own applicability (`unsplit`, `plane`),
+// and the router's `choose`. Bundling them would mean a struct whose only purpose is this call, and
+// whose fields the two call sites would immediately destructure again.
+#[allow(clippy::too_many_arguments, reason = "shared query artifacts plus the router's choose; a wrapper struct would only be unpacked again")]
 fn declined_sibling_fastpath<'a>(
     declined: PhysicalPlan,
     ctx: &QueryCtx<'a>,
@@ -9867,11 +9867,11 @@ fn acquire_plan_features(
         // mode, because `eval_domain`, `scan_all` and the artwork capacity all consume a card count.
         // `exact_total` is the answer in the query's OWN mode, and is what `result_total` wants.
         // Conflating them puts an artwork count where cards are expected in artwork mode.
-        let exact_cards = exact_result_total(composed, indexes, n_cards as usize, Mode::Card);
+        let exact_cards = exact_result_total(composed, indexes, Mode::Card);
         let exact_total = if matches!(mode, Mode::Card) {
             exact_cards
         } else {
-            exact_result_total(composed, indexes, n_cards as usize, mode)
+            exact_result_total(composed, indexes, mode)
         };
         let est_cards =
             exact_cards.unwrap_or_else(|| calibrated_balls_into_bins(printing_matches, n_cards as usize));
@@ -10890,6 +10890,9 @@ fn publish_popcount_phases(ns_setup: u64, ns_loop: u64, ns_finish: u64) {
 /// Streamed selection: match phase records per-card match counts (total is
 /// their sum), then either gathers (small totals — byte-identical to the
 /// gathered path) or walks the orderby permutation emitting only page cards.
+// Eight since `proven_conjuncts` joined `all_match_known`: the two are the same idea at two
+// granularities (see `Narrowed::proven`), and both have to reach `card_pass` at the bottom of the loop.
+#[allow(clippy::too_many_arguments, reason = "all_match_known and proven_conjuncts are one signal at two granularities, both needed by card_pass")]
 fn run_query_streamed<'a>(
     ctx: &QueryCtx<'a>,
     params: &QueryParams,
