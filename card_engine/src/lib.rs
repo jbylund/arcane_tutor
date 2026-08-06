@@ -1486,7 +1486,9 @@ fn negate_op(op: CmpOp) -> CmpOp {
 /// for the printing-space indexes): candidates are bounded by the ~3× smaller
 /// card count, so even a slice covering the whole index measures at worst
 /// break-even against the per-printing scan it would replace.
-fn numeric_candidates(idx: &Archived<NumericIndex>, op: CmpOp, val: f64) -> Option<Vec<u32>> {
+/// `n_cards` is the id DOMAIN, which is not `idx.len()`: the numeric indexes are nullable (a card with
+/// no power has no entry), so ids run past the index's length and a bitmap sized from it would panic.
+fn numeric_candidates(idx: &Archived<NumericIndex>, op: CmpOp, val: f64, n_cards: usize) -> Option<Vec<u32>> {
     let (start, end) = match op {
         CmpOp::Ne => return None,
         CmpOp::Eq => {
@@ -1500,9 +1502,9 @@ fn numeric_candidates(idx: &Archived<NumericIndex>, op: CmpOp, val: f64) -> Opti
         CmpOp::Gt => (idx.partition_point(|p| (i16::from(p.0) as f64) <= val), idx.len()),
         CmpOp::Ge => (idx.partition_point(|p| (i16::from(p.0) as f64) < val), idx.len()),
     };
-    let mut result: Vec<u32> = idx[start..end].iter().map(|p| u32::from(p.1)).collect();
-    result.sort_unstable();
-    Some(result)
+    // Card space, so the domain is `n_cards` -- `MATERIALIZE_BITMAP_RATIO` reads the domain rather than
+    // assuming printing space, which is the whole reason it is a ratio.
+    Some(sorted_ids(idx[start..end].iter().map(|p| u32::from(p.1)), end - start, n_cards))
 }
 
 // ─── Arith-expression tuple postings (#743) ──────────────────────────────────
@@ -1645,10 +1647,10 @@ fn arith_tuple_narrow(filter: &FilterExpr, idx: &Archived<ArithTupleIndex>, n_ca
     if count > *BITS_PROMOTE {
         return Narrowed::tight(Candidates::CardBits(scatter_bits(post_ids(), n_cards)));
     }
-    let mut result: Vec<u32> = Vec::with_capacity(count);
-    result.extend(post_ids());
-    result.sort_unstable();
-    Narrowed::tight(Candidates::Cards(result))
+    // The case that prompted docs/issues/local-engine-candidate-materialize.md: up to 564 posting rows
+    // concatenated, each sorted, the whole never so. Only reachable below `BITS_PROMOTE`, since the arm
+    // above already hands back a bitmap past it.
+    Narrowed::tight(Candidates::Cards(sorted_ids(post_ids(), count, n_cards)))
 }
 
 // ─── Tag index ───────────────────────────────────────────────────────────────
@@ -3189,15 +3191,47 @@ const MATERIALIZE_BITMAP_RATIO: usize = 490;
 /// An ascending id vector, by whichever route is cheaper at this size and domain. `ids` may arrive in
 /// any order -- `range_pids` yields key-major, which is the tiebreak order, not pid order.
 ///
-/// Same output either way, so this is a pure cost choice. See `MATERIALIZE_BITMAP_RATIO`, and
-/// docs/issues/local-engine-candidate-materialize.md for the k-way merge that lost to both by 3-30x.
+/// **Precondition: `ids` must be duplicate-free.** This is the one way the two routes differ, and it is
+/// silent: a bitmap DEDUPS and a sort does not, so a caller emitting an id twice gets a shorter vec from
+/// one route than the other. Every current caller satisfies it by construction -- a `PrintingValueIndex`
+/// holds one entry per printing with a value, `build_numeric_index` one per card, and a card lives in
+/// exactly one `arith_tuple` posting row -- and the debug build checks it on every call rather than
+/// trusting that list to stay true.
+///
+/// Ids must also be `< domain`; `scatter_bits` would panic otherwise, which is the loud failure.
+///
+/// Same output either way given that, so this is a pure cost choice with no consumer effect. See
+/// `MATERIALIZE_BITMAP_RATIO`, and docs/issues/local-engine-candidate-materialize.md for the k-way merge
+/// that lost to both by 3-30x.
 fn sorted_ids(ids: impl Iterator<Item = u32>, k: usize, domain: usize) -> Vec<u32> {
-    if !*RANGE_MATERIALIZE_BITMAP || k.saturating_mul(MATERIALIZE_BITMAP_RATIO) <= domain {
+    let bitmap = *RANGE_MATERIALIZE_BITMAP && k.saturating_mul(MATERIALIZE_BITMAP_RATIO) > domain;
+    // Debug builds run BOTH and compare, so every call site the fuzz suite reaches is a live check of
+    // the precondition above -- not a claim in a doc comment that drifts. Release picks one.
+    #[cfg(debug_assertions)]
+    {
+        let collected: Vec<u32> = ids.collect();
+        let by_sort = {
+            let mut v = collected.clone();
+            v.sort_unstable();
+            v
+        };
+        let by_bitmap = bitmap_card_ids(&scatter_bits(collected.iter().copied(), domain));
+        debug_assert_eq!(
+            by_sort, by_bitmap,
+            "sorted_ids routes disagree over {} ids in a domain of {domain} -- the caller emitted a \
+             duplicate, which the bitmap collapses and the sort keeps",
+            collected.len(),
+        );
+        return if bitmap { by_bitmap } else { by_sort };
+    }
+    #[cfg(not(debug_assertions))]
+    if bitmap {
+        bitmap_card_ids(&scatter_bits(ids, domain))
+    } else {
         let mut v: Vec<u32> = ids.collect();
         v.sort_unstable();
-        return v;
+        v
     }
-    bitmap_card_ids(&scatter_bits(ids, domain))
 }
 
 fn range_narrowed(idx: &Archived<PrintingValueIndex>, lo: u32, hi: u32, n_printings: usize, broad_ok: bool, exact: bool) -> Option<Narrowed> {
@@ -4479,7 +4513,7 @@ fn narrow_rec(
             // loose in the sense that matters for Not: a posted card can have
             // other printings that do NOT satisfy the comparison, so the
             // complement would wrongly exclude cards `-rarity:x` matches.
-            let numeric = |idx, op, v: &f64| numeric_candidates(idx, op, *v).and_then(|c| Narrowed::tight(Candidates::Cards(c)));
+            let numeric = |idx, op, v: &f64| numeric_candidates(idx, op, *v, n_cards).and_then(|c| Narrowed::tight(Candidates::Cards(c)));
             let rarity = |op, v: &f64| narrow_rarity(indexes, n_cards, op, *v);
             // Same shape as `cn` below now that price is integer cents, not lossy f32 dollars --
             // the only price-specific step is snapping the *PRICE_CENTS_PER_DOLLAR conversion

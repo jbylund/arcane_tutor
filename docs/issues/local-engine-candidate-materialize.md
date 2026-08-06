@@ -116,6 +116,38 @@ Note `usd<0.18 t:land` was never affected by the denominator at all — it was a
 already paying 134 µs to sort 13,328 ids. The sort cost was pre-existing across the whole mid band; the
 denominator change only made more queries visit it.
 
+## The remaining call sites: adopted, and measurably neutral
+
+`numeric_candidates` and `arith_tuple_narrow` now call `sorted_ids` too. Both are **within noise on every
+query sampled**, and the reason is worth recording so nobody re-measures it hoping for the range result:
+
+- **`numeric_candidates` is mostly shadowed.** `cmc`/`power`/`toughness` are `BitPlanes`, so `split_planes`
+  consumes them and this function is never reached for the queries that would have large `k`.
+- **`arith_tuple_narrow` is already capped.** Its vec path only runs below `BITS_PROMOTE` (4,096) —
+  past that the arm above already hands back `CardBits`. So the affected band is 65–4,096 ids in card
+  space, worth 0.3 µs at the bottom and 16 µs at the top.
+
+`range_narrowed` was the outlier because its vec path has **no such cap**: a mid-band price range
+materializes up to 24,301 ids through the sort, which is where the 2.4× came from.
+
+Keeping the adoption anyway: it is equivalence-checked (below), it costs nothing, and it removes the trap
+if `BITS_PROMOTE` ever moves — which is this doc's own open question.
+
+## Demonstrating the change respects the API
+
+The two routes differ in exactly one way, and it is silent: **a bitmap dedups, a sort does not.** A caller
+emitting an id twice gets a shorter vec from one route than the other, with no error.
+
+Every current caller is duplicate-free by construction — a `PrintingValueIndex` holds one entry per
+printing with a value, `build_numeric_index` one per card, and a card lives in exactly one `arith_tuple`
+posting row — but that is a list that can go stale. So the debug build **runs both routes on every call
+and compares them**, making the precondition a live check at every call site the test suite reaches
+rather than a claim in a doc comment.
+
+Verified live rather than assumed: sabotaging the bitmap route (dropping one id) fails **12 tests**
+across the suite, including the fuzz row-identity differentials. Release builds pick one route and pay
+nothing.
+
 ## What to change (original, for the remaining call sites)
 
 The sorted-vec path only runs below `BITS_PROMOTE` (4,096) — above it the engine
