@@ -72,46 +72,65 @@ Three or more leaves get a tighter bound rather than exactness — `min` over st
 | `f:modern frame:2015 border:black` | 64,139 (1.36×) | **51,925 (1.10×)** | 47,332 |
 | `f:pauper r:common border:black` | — | **1.01×** | 24,521 |
 
-## And wiring it into the estimate makes routing worse
+## Wiring it in first made routing 24x worse, and why
 
-Interleaved A/B, 8 rounds, 1,368 queries: whole mix **1.010**, and the regression list is one shape:
-
-| query | off | on | |
-| --- | --: | --: | --: |
-| `border:white border:black` | 9.0 µs | 220.5 µs | **24.5×** |
-| `border:white border:black` (other configs) | 8.8–16.1 µs | 210–242 µs | 15–24× |
-| `r:common r:rare` | 10.2 µs | 88.1 µs | 8.6× |
-
-With `matches = 0`:
+Interleaved A/B, before the fix below: whole mix 1.010, carried by one shape —
+`border:white border:black` 9.0 µs → 220.5 µs. With `matches = 0`:
 
     GatheredScan     pred=  0.2u   meas= 199.3u   <- picked
     StreamedSelect   pred=  0.8u   meas= 192.0u
     PrintingCompose  pred=  1.9u   meas=   1.0u   <- actually best
 
 **A result total is not a scan domain.** `eval_domain` and `scan_units` for the *materializing
-alternatives* are derived from the match estimate, so an exact zero makes them free — but they still walk
+alternatives* were derived from the match estimate, so an exact zero made them free — but they still walk
 their candidate set to discover the set is empty. Compose really is ~1 µs (AND two bitmaps, popcount) and
-loses on predicted cost.
+lost on predicted cost.
 
-This is the same distinction that `exact_cards` vs `exact_total` draws in the compose acquire, and that
-the printing-mode `result_total` change was careful about ("substituting the true match count there would
-under-charge the scan"). It was violated one level up: the pair answer flows into `exact_cards` →
-`est_cards` → `eval_domain`/`scan_all`.
+## The fix: `ComposeEstimate` returns both numbers
 
-## What it needs
+`compose_printing_estimate` now returns `{ result, candidate, broadcast, scatter }`:
 
-`compose_printing_estimate` should return **two** numbers: the best available *result* estimate (exact
-where the pair table answers) and a *candidate* bound (min over singles, which is what the alternatives
-actually walk). `result_total` takes the first; `eval_domain` and `scan_units` take the second. Then the
-disjoint cases price compose at 1.9 µs against alternatives charged for a real scan, and get the plan
-right instead of 24× wrong.
+- **`result`** — the best available estimate, exact where the pair table or a single-leaf table answers.
+  Feeds `result_total` and compose's own cost (`project`, `compose_scan_printings`), which are about the
+  set compose really builds.
+- **`candidate`** — the plain `min`-over-single-leaves bound, which is what the alternatives actually
+  walk. `narrow_rec` declines broad children (`border:black` at 87% under `broad_ok: false`), so
+  `border:white border:black` hands them `border:white`'s 5,131 printings, not the empty intersection.
+  Feeds `eval_domain` and `scan_units`.
 
-Worth doing alongside: an exact total of **0 should short-circuit to an empty result** before routing at
-all. `border:white border:black t:creature` scans 6,402 printings over 79 µs to return nothing, because
-its acquire is `candidates` and never consults these tables — a filter containing two disjoint conjuncts
-is empty regardless of what else it says.
+`domain_cards` falls back to `est_cards` whenever `candidate == result`, i.e. whenever nothing was
+tightened — which is every query that reached here before the pair table existed, so no already-calibrated
+cell moves.
+
+With the split, `GatheredScan` on `border:white border:black` prices at 107.9 µs instead of 0.2 and
+compose wins at 1.0 µs. A/B: target 0.987, control 1.001, whole mix **1.000** — neutral, with the 24x
+regression gone.
+
+## It also unblocked the legality scan-scope fix
+
+[That fix](./local-engine-legality-scan-scope.md) was a wash on its own because it moved CARD mode onto
+`PrintingCompose`, which then declined at dispatch and fell back having paid the build. The trigger was
+the `min` fold estimating 2,755 cards against a true 978 on a 1,024 floor. The pair table makes that
+total exact, so `compose_paging` predicts the decline instead of walking into it:
+
+| | printing | card | artwork |
+| --- | --: | --: | --: |
+| before both | 149.0 µs | 99.5 µs | 134.1 µs |
+| scan-scope alone | 75.5 µs | **163.1 µs** | 83.2 µs |
+| **both** | **76.4 µs** | **102.1 µs** | **83.2 µs** |
+
+Both are now on by default. Aggregate over 12 interleaved rounds is neutral (0.995 target, 0.997 whole
+mix, drift 0.991/1.000); the wins are per query and what actually shipped is two cost features that are
+no longer wrong.
+
+## Still open
+
+An exact total of **0 should short-circuit to an empty result** before routing at all.
+`border:white border:black t:creature` scans 6,402 printings over 79 µs to return nothing, because its
+acquire is `candidates` and never consults these tables — a filter containing two disjoint conjuncts is
+empty regardless of what else it says. `leaves_are_disjoint` already knows; nothing calls it early enough.
 
 ## Status
 
-Built, archived and measured; wiring switched off at `CARD_ENGINE_PAIR_TOTALS` (default 0) pending the
-result-vs-candidate split above. The table's own numbers are all measured on the production corpus.
+Built, archived, wired and measured on the production corpus. `CARD_ENGINE_PAIR_TOTALS` and
+`CARD_ENGINE_LEGALITY_SCAN_SCOPE` both default on; the toggles remain as the handles that priced them.

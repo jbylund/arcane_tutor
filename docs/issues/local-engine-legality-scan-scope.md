@@ -44,7 +44,8 @@ whole span like P4:
 `touches_printing_field` already treats `Legality` as card-level (it ranks by the common case), so
 `filter_touches_legality(composed) && !touches_printing_field(composed)` is the right condition and a
 bare legality filter still takes the divergent-share arm. Implemented behind
-`CARD_ENGINE_LEGALITY_SCAN_SCOPE`, **default off** — see below for why.
+`CARD_ENGINE_LEGALITY_SCAN_SCOPE`, **now default on** — it shipped off until the pair table fixed defect 2
+below.
 
 Per query, with the scope fixed, all four flip to the correct plan:
 
@@ -101,10 +102,20 @@ run. Three of the four are actually below it.
    for `f:modern border:white`), which is the second reason (1) has to come first: an estimate near a hard
    threshold will always sometimes fall the wrong side, so the threshold must not be a cliff.
 
+## Resolved
+
+Defect 2's trigger was the `min` fold, and [the pair table](./local-engine-pair-totals.md) makes the
+two-leaf card total exact (978, not 2,755), so `compose_paging` predicts the decline rather than walking
+into it. Card mode now routes to `GatheredScan` at 102.1 µs instead of picking a compose that bails at
+163.1 µs, while printing keeps 2.0x and artwork 1.6x. Both toggles are on; aggregate is neutral (0.995
+target / 0.997 whole mix over 12 interleaved rounds).
+
+Item (1) of the order below — `DeclineSparseExact` discarding paid work — is still open and still worth
+doing: the pair table removed the case that was biting, not the cliff.
+
 ## Status
 
-Defect 1 is implemented behind a **default-off** toggle, because on its own it is a wash and it moves card
-mode into defect 2's trap. Every number above is measured on the production corpus: per-query figures are
+Defect 1 is on by default. Every number above is measured on the production corpus: per-query figures are
 a minimum of 9–15 trials after warmup, and the A/B is 8 interleaved rounds with a control subset.
 
 Related: [#731](./00731-engine-compose-universal-evaluator.md) — this is the arm that would gain
