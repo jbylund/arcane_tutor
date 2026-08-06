@@ -34,6 +34,9 @@ QUERIES = [
     "o:s",
     "o:the",
     "ft:s",
+    "o:the or o:you",
+    "o:the or o:zap",
+    "o:tar or o:qua",
 ]
 
 
