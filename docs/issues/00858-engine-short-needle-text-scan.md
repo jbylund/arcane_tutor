@@ -97,7 +97,12 @@ Two notes for whoever builds it:
 
 **B is the more general mechanism**, and its case does not rest on 1-char needles: it also attacks the
 *verification* pass where narrowing happens but is broad. `o:the` narrows to 16,240 cards and still takes
-**732 µs** — A does nothing for that, and B would. They are not exclusive, and B is the deferred
+**732 µs** — A does nothing for that, and B would.
+
+**But check [#859](00859-engine-exact-trigram-no-verify.md) before costing B against `o:the`.** A 3-byte needle
+is exactly one trigram, so its verification is *provably redundant* and should be deleted rather than made
+faster. That removes `o:the` from B's case, and leaves B justified on needles of 4+ bytes, where the trigram
+intersection really is a superset and verification really is needed. They are not exclusive, and B is the deferred
 "memmem for `TextContains`" item from the #694/#731 text-search follow-ups.
 
 ## Not yet measured — read the estimates as estimates
@@ -120,5 +125,8 @@ shows the same effect costing 2–6× on a kernel that looked flat when measured
   pattern and its 5–6× came from.
 - [done/00649-accent-insensitive-name-search.md](done/00649-accent-insensitive-name-search.md) — why the scanned
   field is `card_name_folded` rather than `card_name_lower`.
+- [#859](00859-engine-exact-trigram-no-verify.md) — the tier above: 3-byte needles have an exact index and
+  verify anyway, *and* get declined by the same memoize gate that skips 1-byte needles. Independent fix, same
+  family.
 - [#856](00856-engine-compose-membership-bittest.md) — the latency profile this is measured against, and the
   density-curve caution above.
