@@ -649,8 +649,10 @@ fn bench_gather_loop() {
         // has a fixed component. Through the origin the slope has to absorb any constant, which inflates
         // it on the small-page rows -- the same error that made `GATHER_SELECT_PER_PAGE_SLOT_NS` look 5x
         // wrong earlier in this branch.
-        if let (Some(lo), Some(hi)) = (rows.first(), rows.iter().max_by(|a, b| a.0.total_cmp(&b.0))) {
-            if hi.0 > lo.0 {
+        if let (Some(lo), Some(hi)) = (rows.first(), rows.iter().max_by(|a, b| a.0.total_cmp(&b.0)))
+            && hi.0 > lo.0
+        {
+            {
                 let slope = (hi.1 - lo.1) / (hi.0 - lo.0);
                 println!(
                     "  two-point: {:.2} ns/slot + {:.0} ns fixed   (shipped GATHER_SELECT_PER_PAGE_SLOT_NS 3.51, no fixed term)",
