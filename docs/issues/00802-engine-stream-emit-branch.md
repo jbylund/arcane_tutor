@@ -49,11 +49,14 @@ real total lands at or below it takes the gather with no floor charged.
 ## Evidence it is live
 
 The calibration sweep in
-[`local-engine-plan-misselection.md`](./local-engine-plan-misselection.md) (not yet landed; branch
-`engine-plane-popcount-cost`) puts `StreamedSelect`'s acquire-netted measured/predicted at **0.58
+[`local-engine-plan-misselection.md`](done/local-engine-plan-misselection.md) (**since landed as #805**;
+was branch `engine-plane-popcount-cost`) puts `StreamedSelect`'s acquire-netted measured/predicted at **0.58
 median, 0.18 p25** — systematically over-costed, which is the direction a spurious 52 µs floor
-produces. That doc's item 3 currently defers it as a "13–33 µs `StreamedSelect`/`GatheredScan`
-cluster ... until something shows it matters". This is a mechanism for it, and the branch report
+produces. That doc's item 2 deferred it as a "13–33 µs `StreamedSelect`/`GatheredScan`
+cluster ... until something shows it matters" — **and that deferral is now withdrawn**: the pair is the
+engine's largest single routing error, tracked as
+[#852](00852-engine-compose-acquire-p3-p4-ranking.md). This is a candidate mechanism for part of it, and the
+branch report
 below is what would show whether it does.
 
 ## Why it stayed hidden

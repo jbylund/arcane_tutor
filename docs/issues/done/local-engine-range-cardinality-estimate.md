@@ -36,7 +36,7 @@ a proxy the branch's own comment flags. Measured against the true total on reali
 Not a tail problem — the median is 1.49x and p10 is already 1.14, so it over-estimates nearly
 everywhere, because printings outnumber cards.
 
-Split out of [local-engine-plan-misselection.md](../local-engine-plan-misselection.md), which found the
+Split out of [local-engine-plan-misselection.md](local-engine-plan-misselection.md), which found the
 proxy while investigating why every plan costed off that acquire is under-costed 2.0–2.6x.
 
 ## Nothing here ships alone

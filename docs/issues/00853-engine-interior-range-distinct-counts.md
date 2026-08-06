@@ -224,4 +224,4 @@ All four exist and are tracked. The offline studies read `benchmarks/bitplanes/c
 - [#852](00852-engine-compose-acquire-p3-p4-ranking.md) — the arm half of "nothing ships alone".
 - [#848](00848-engine-decline-sparse-exact-wasted-build.md) — why an exact `result_total` near
   `STREAM_MIN_MATCHES` matters.
-- [local-engine-plan-misselection.md](local-engine-plan-misselection.md) — where the proxy was found.
+- [local-engine-plan-misselection.md](done/local-engine-plan-misselection.md) — where the proxy was found.

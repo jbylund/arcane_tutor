@@ -166,5 +166,5 @@ Which tool answers which question, and the measurement traps this line of work p
   on this same population: P3 should not re-derive membership compose already computed exactly.
 - [local-engine-compose-build-rates.md](local-engine-compose-build-rates.md) — the rate measurements, and the
   `Perm` arm's missing `cards_visited` term.
-- [local-engine-plan-misselection.md](local-engine-plan-misselection.md) — the other open calibration gap,
+- [local-engine-plan-misselection.md](done/local-engine-plan-misselection.md) — the other open calibration gap,
   `PlanePopcountOrder` under-costed a median 1.61×.

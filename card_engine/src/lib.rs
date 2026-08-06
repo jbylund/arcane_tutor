@@ -9287,7 +9287,7 @@ fn declined_sibling_fastpath<'a>(
 /// `eval_domain` to the unnarrowed universe charges a walk-shaped compose for a full-corpus gather
 /// — measured at 33x over-costed from the `PrintingRangeScan` acquire (~125 µs predicted against
 /// ~2.4 µs measured on `usd>20`/printing), which is enough to rank compose last and leave a 46x
-/// faster plan unused. See docs/issues/local-engine-plan-misselection.md.
+/// faster plan unused. See docs/issues/done/local-engine-plan-misselection.md.
 /// The permutation-free gather branch's two decline gates: `Some(reason)` if `printing_compose_fastpath`
 /// will refuse this query, `None` if it will run it.
 ///
@@ -10466,7 +10466,7 @@ pub(crate) struct PlanTrial {
     pub(crate) predicted_ns: f64,
     /// Both carried through from `PlanEstimate` unchanged — see its fields. `picked` in particular
     /// is the router's choice, which is NOT necessarily the fastest `trials_ns`: that difference is
-    /// the whole point of docs/issues/local-engine-plan-misselection.md.
+    /// the whole point of docs/issues/done/local-engine-plan-misselection.md.
     pub(crate) materialize_ns: f64,
     pub(crate) picked: bool,
     pub(crate) trials_ns: Vec<u64>,

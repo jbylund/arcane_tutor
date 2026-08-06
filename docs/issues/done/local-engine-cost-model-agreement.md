@@ -556,5 +556,5 @@ Which tool answers which question, how to read the two matrices, and the measure
 paid for one at a time:
 **[reference-cost-model-measurement.md](../reference-cost-model-measurement.md)**.
 
-Related: [plan mis-selection](../local-engine-plan-misselection.md),
+Related: [plan mis-selection](local-engine-plan-misselection.md),
 [candidate materialization](local-engine-candidate-materialize.md).

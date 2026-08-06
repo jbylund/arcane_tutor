@@ -1,16 +1,29 @@
 # The decline fallback never reconsidered a non-materializing plan, at up to 260 µs (fixed)
 
-Status: **the headline fix shipped; this stays open for the calibration findings under "What is left".**
-Kept here rather than moved to `done/` because the largest of those — `PlanePopcountOrder` under-costed a
-median 1.61×, p90 6.16 over n=157, unexplained and not attributable to acquire netting — is still the
-engine's largest un-diagnosed calibration gap and has no other home.
+**DONE — the fix merged in [#805](https://github.com/jbylund/sylvan_librarian/pull/805)**
+(`declined_sibling_fastpath`, plus `compose_paging_for` shared by every branch that costs compose). `usd>20`
+at `unique=printing` went **111.0 µs → 2.4 µs**, `usd>5` **267.7 → 4.2**, and the random sweep's max regret
+**265.0 → 61.3 µs**. The 100 µs-class decline-fallback category is gone.
 
-Re-read after the cost-model stack (#833–#845): the numbers below predate it, and its "What to do" item 2
-(the 26–34 µs `StreamedSelect`/`GatheredScan` cluster) is now the subject of
-[#852](https://github.com/jbylund/sylvan_librarian/issues/852), which supersedes the advice to leave it
-alone — that pair turned out to be the engine's largest single routing error. **Re-measure before acting on
-any figure in this doc**; every one of them was taken against a cost model that has since had four feature
-corrections and a rate calibration.
+**Every calibration finding under "What is left" now has a home**, so this is the record rather than a live
+item:
+
+| finding | disposition |
+| --- | --- |
+| `PlanePopcountOrder` under-costed median 1.61×, p90 6.16 (n=157) | [#854](../00854-engine-plane-popcount-arm-remeasure.md) — narrowed to ~1.09× by #813's refit; needs confirming, and the `popcount_words` counter first |
+| the 26–34 µs `StreamedSelect`/`GatheredScan` cluster, "leave alone until something shows it matters" | **superseded** — [#852](../00852-engine-compose-acquire-p3-p4-ranking.md). Something did: that pair is the engine's largest single routing error |
+| `StreamedSelect`/`GatheredScan` off `card_range_popcount`, ~2.4×, n=13 (thin) | [#853](../00853-engine-interior-range-distinct-counts.md) — same acquire, and its `card_est` input is now exact for one-sided shapes, so the measurement has to be retaken anyway |
+| `PrintingCompose` ~1.5× over-costed generally | parked here and still parked: *"harmless at that size, and tightening it risks the ranking that now works."* |
+
+**Re-measure before acting on any figure below.** All of them predate the cost-model stack (#833–#845), which
+brought four feature corrections, a rate calibration, and — for the plane rows specifically — a re-basing of
+regret on dispatch, because plane rows had been getting *negative* regret. Note also that this doc's ratios
+are `measured / predicted` (so > 1 is under-costed), while `cost.rs`'s constant docs use `predicted / measured`;
+the two are easy to compare backwards.
+
+What is worth reading here rather than re-deriving: the mechanism, and the three methodology traps under "Why
+this stayed hidden through three earlier passes" — each produced a confidently wrong answer, and the netting
+lesson (`GatheredScan` at 6.47 raw against 0.84 net) is one anybody re-running this scan needs.
 
 When a `Prep::Range`-acquired query's chosen fast path declines at runtime, dispatch re-chooses
 among **materializing plans only** — so `PrintingCompose`, which is applicable and often 30–70x
@@ -22,7 +35,7 @@ Everything else the router does is fine. Across 249 wild-operator queries the me
 
 ## The mechanism
 
-[`run_query_routed`'s `Prep::Range` dispatch arm](../../card_engine/src/lib.rs) runs the chosen
+[`run_query_routed`'s `Prep::Range` dispatch arm](../../../card_engine/src/lib.rs) runs the chosen
 fast path, and on `None`:
 
 ```rust
@@ -163,13 +176,25 @@ Two calibration findings from the 2,500-query scan remain unaddressed, both pre-
 - `StreamedSelect`/`GatheredScan` costed off the `card_range_popcount` acquire are under-costed
   ~2.4x (n=13). Thin sample; re-measure before acting.
 
-## What to do
+## What to do — where each item went
 
-1. Re-measure `PlanePopcountOrder`'s 1.61x under-costing on a larger sample and find the term it is
-   missing. It is the largest remaining calibration gap and it is not explained by acquire.
-2. Leave the 26–34 µs `StreamedSelect`/`GatheredScan` cluster alone until something shows it matters.
+Kept as written, with its disposition, because two of the three judgements turned out wrong and that is worth
+seeing rather than quietly overwriting. The table at the top of this doc is the summary.
+
+1. ~~Re-measure `PlanePopcountOrder`'s 1.61x under-costing on a larger sample and find the term it is
+   missing. It is the largest remaining calibration gap and it is not explained by acquire.~~
+   → **[#854](../00854-engine-plane-popcount-arm-remeasure.md).** Still the right action. Two things it could
+   not have known: #813's refit has since taken the arm to ~1.09× (`measured / predicted`), and the arm's
+   `(n_cards / 64.0)` word term has no counter behind it — so "find the term it is missing" may be a *feature*
+   question, and the counter that would answer it is one call site.
+2. ~~Leave the 26–34 µs `StreamedSelect`/`GatheredScan` cluster alone until something shows it matters.~~
+   → **Wrong, and [#852](../00852-engine-compose-acquire-p3-p4-ranking.md) is what showed it.** That pair is
+   the engine's largest single routing error; it went 69% → 87% ordered right across the cost-model stack and
+   the oracle bound says perfect features would reach 83% with a 9× cut in lost time. Reading this cluster as
+   small was an artifact of scoring it on the bare-range population this doc was investigating.
 3. `PrintingCompose` is still ~1.5x over-costed generally (0.69 from its own acquire). Harmless at
    that size, and tightening it risks the ranking that now works.
+   → **Still parked, and still for that reason.** #836 calibrated the compose acquire without disturbing it.
 
 ## Method notes
 
