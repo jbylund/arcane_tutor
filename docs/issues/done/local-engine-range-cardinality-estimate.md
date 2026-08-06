@@ -41,37 +41,16 @@ proxy while investigating why every plan costed off that acquire is under-costed
 
 ## Nothing here ships alone
 
-The proxy over-costs ~1.48x; the plan arms under-cost ~1.5x at this operating point. The two errors
-point in opposite directions and **partially cancel**, which is why routing mostly survives them.
-Correcting the estimate without re-fitting the arms pushes the arm error from 1.6x to ~2.4x.
-
-The arm half belongs to the sibling doc, and cannot be fixed by re-fitting rates globally: the same
-two plans are over-costed (0.57) off `candidates` acquires and under-costed (2.56) off this one, and
-`STREAM_*`/`GATHER_*` are shared constants. This doc owns the estimate half only.
+Moved to [#853](../00853-engine-interior-range-distinct-counts.md#nothing-here-ships-alone), because it
+governs the work that is left rather than the work that shipped. In short: this estimate's error and the plan
+arms' error point in opposite directions and partially cancel, so correcting one alone regresses routing.
 
 ## The surviving candidates
 
-### 1. Build the card bitmap in acquire — exact, no storage
-
-`CardRangePopcount` already calls `build_card_range_bits` at dispatch, re-deriving the bounds to do
-so, and it wins **138 of 142** sampled range queries. `StreamedSelect`/`GatheredScan` would take
-`bitmap_card_ids` over their own `range_narrowed` → `into_cards`. Only `PrintingCompose` has no use
-for a card bitmap, and it wins **zero**.
-
-So promoting the build into the acquire branch and carrying it in `Prep` — the pattern `Prep::Plane`
-already uses for the plane bitmap — is a reordering of work already done. Its popcount is the exact
-`matches`/`eval_domain`, and it deletes a duplicate bounds derivation.
-
-| | |
-| --- | --- |
-| accuracy | **exact** |
-| memory | **none** — no archive data |
-| query time | 0 in the 97% case (the winner builds it anyway); 47 µs median, 106 µs p90 when a plan wins that does not want it |
-| risk | moves an O(k) build across the acquire/dispatch boundary; the both-fast-paths-decline case (`usd>50`) needs a test |
-
-That 47 µs is why the storage options below still matter — it is the cost when the artifact goes
-unused. Measured from `acquire.range_k`: median slice 38,245 printings at
-`CARD_RANGE_BUILD_PER_PRINTING_NS` = 1.22.
+Candidate 1 (build the card bitmap in acquire) and candidate 3 (prev-array + wavelet tree) were both
+unshipped and are now
+[the live options in #853](../00853-engine-interior-range-distinct-counts.md#the-live-options), along with the
+trapezoid-histogram fallback. Only candidate 2 shipped, and it is kept below as the record of what was built.
 
 ### 2. One boundary table, three counts — exact for every shape here, 159 KB
 
@@ -116,26 +95,9 @@ reason the arith-tuple index escapes it (each card has exactly one tuple).
 
 ### 3. prev-array + wavelet tree — exact for arbitrary ranges, 1.06 MB
 
-Kept for completeness; **probably not needed** — see the next section.
-
-The general problem is **range distinct count** (colored range counting). Let `prev[i]` be the index
-of the previous printing of the same card, or −1. Then
-
-    distinct cards in [a, b)  ==  #{ i in [a, b) : prev[i] < a }
-
-because each card in the window has exactly one occurrence that is its first there, and only that one
-points back outside it. A wavelet tree over `prev` answers that dominance count in O(log n), and the
-tree encodes `prev`, so the array need not be stored. Verified exact on 2,583 windows across all five
-dimensions — bounded, one-sided and random. Space is 1.06 MB, 134–252 KB per dimension.
-
-No maintained Rust crate exposes the operation. [`qwt`](https://docs.rs/qwt/) has rank/select/access
-only. [`sucds`](https://github.com/kampersanda/sucds) and [`vers`](https://github.com/Cydhra/vers) —
-both Apache-2.0, both actively maintained — expose `quantile(range, k)`, the inverse, which would have
-to be binary-searched at roughly 17x the work. [`wavelet-matrix`](https://github.com/sekineh/wavelet-matrix-rs)
-has exactly `count_lt(pos_range, value)` and is MIT (declared in `Cargo.toml`; there is no LICENSE
-file, which is why GitHub's API reports none) but was last touched in 2022. Vendoring the ~200 lines
-that path needs — `prefix_rank_op`, the struct, and a rank-capable bitvector the engine can supply
-itself — is viable under an MIT attribution header if it is ever wanted.
+**Moved to [#853](../00853-engine-interior-range-distinct-counts.md#3-prev-array--wavelet-tree--exact-for-arbitrary-ranges-106-mb).**
+It was parked here as "probably not needed" on the strength of the scoping argument immediately below, and
+that argument no longer holds.
 
 ## Which shapes actually reach this acquire
 
@@ -175,23 +137,19 @@ The engine's documented negation hazards are a different category and do not app
 away the boundary printings", is about the **tightness of the candidate set** — which cards come back.
 These arrays feed only the cost estimate, so an error there would degrade routing, not results.
 
-## Plan
+## Plan — how it actually went
 
-1. **The boundary table (candidate 2).** ~159 KB, O(1), no dependency, no tuning parameter — three
-   columns built in one pass, exact for every shape that reaches this acquire. Add the ~34 per-year
-   counts on `date` in the same change; after it the proxy is gone.
-2. **Re-ask the arm question.** With exact features, part of the arms' ~1.5x under-costing may
-   disappear — it may be the model charging `card_est`-shaped terms for true-card-shaped work. Re-fit
-   only afterwards, and only against prep-netted measurements.
+1. **The boundary table (candidate 2). SHIPPED**, at a measured 156.6 KB, with the artwork triple added in
+   [#841](https://github.com/jbylund/sylvan_librarian/pull/841). The *"add the ~34 per-year counts on `date`
+   in the same change; after it the proxy is gone"* half **did not ship**, which is why `year:Y` still falls
+   back to `k.min(n_cards)`.
+2. **Re-ask the arm question.** Not done. Now
+   [#852](../00852-engine-compose-acquire-p3-p4-ranking.md), whose oracle run answers the sequencing question
+   this item left open: features before rates, and `eval_domain` carries ~75% of the recoverable loss.
 
-Candidate (1), the prep artifact, is complementary and independent: it removes the proxy for the
-`CardRangePopcount` branch by reordering work already done, at no storage cost. Candidate (3) is parked
-unless two-sided conjunctions are ever routed to the range index.
-
-**Fallback if 107 KB is somehow unaffordable:** a trapezoid histogram — bucket widths doubling in from
-each edge, capped, uniform between — over prefix/suffix arrays reaches 1.19x worst case at 3.4 KB, or
-1.06x at 42 KB. Dominated by (2) on every axis except size, and for `date` not even that, since 1,048
-cuts exceeds the 915 possible answers.
+The per-year counts, candidate 1, candidate 3 and the trapezoid fallback are all
+[live options in #853](../00853-engine-interior-range-distinct-counts.md#the-live-options). Candidate 3's
+parking condition — *"unless two-sided conjunctions are ever routed to the range index"* — has since fired.
 
 ## What was tried and rejected
 
@@ -236,7 +194,12 @@ Four wrong answers here came from the same habit, so the note is itself the find
 directions and reports `acquire.matches / true total` per point — scans rather than a pooled median,
 because every pooled figure in this investigation hid structure that only showed up per cell.
 
-**Target:** every `unique=card` cell within 1% of true. Baseline today, 0 of 8 cells passing:
+**Target:** every `unique=card` cell within 1% of true. The baseline below is a **historical record** — these
+eight one-sided cells now answer exactly from `RangeCardCounts`. The cells that are still short are the
+interior ones, and the current acceptance bar lives in
+[#853](../00853-engine-interior-range-distinct-counts.md#acceptance).
+
+Baseline at the time of writing, 0 of 8 cells passing:
 
 | cell | n | median | worst |
 | ---- | -: | -----: | ----: |
@@ -253,8 +216,11 @@ because every pooled figure in this investigation hid structure that only showed
 already read 1.000 across 26 scan points: that branch sets `matches = k`, the in-range printing count,
 and in printing mode that *is* the result cardinality. Those rows must stay at 1.000.
 
-**Out of scope:** `eur` and `tix`, which have no range index and never reach this acquire — a separate
-and much larger defect, see [local-engine-eur-tix-range-index.md](local-engine-eur-tix-range-index.md).
+~~**Out of scope:** `eur` and `tix`, which have no range index and never reach this acquire — a separate
+and much larger defect, see [local-engine-eur-tix-range-index.md](local-engine-eur-tix-range-index.md).~~
+**No longer true.** [#838](https://github.com/jbylund/sylvan_librarian/pull/838) gave both a
+`PrintingValueIndex`, and both now carry a `RangeCardCounts` (`price_eur_cards`, `price_tix_cards`). They are
+in scope for the scan; see [#853](../00853-engine-interior-range-distinct-counts.md#acceptance).
 
 Routing is deliberately **not** an acceptance criterion for this change alone. Correcting the estimate
 lowers predicted cost for the materializing plans, which are already over-picked, so routing should
