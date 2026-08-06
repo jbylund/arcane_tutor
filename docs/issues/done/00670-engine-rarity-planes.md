@@ -1,7 +1,7 @@
 # Engine: card-level rarity bitplanes (common/uncommon/rare/mythic)
 
 Status: implemented, PR pending. GitHub: #670. Follows
-[docs/workflows/performance-pr-workflow.md](../workflows/performance-pr-workflow.md).
+[docs/workflows/performance-pr-workflow.md](../../workflows/performance-pr-workflow.md).
 Split out of #630 (bitplanes phase 3) after that issue closed with phases 1/2 shipped.
 Verification-side follow-on tracked separately: #674.
 

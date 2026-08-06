@@ -1,11 +1,28 @@
 # Cost-model: agreement 8/16 cells to 15/16, and why routing did not move
 
+**DONE — the feature and rate work here merged in
+[#834](https://github.com/jbylund/sylvan_librarian/pull/834) and
+[#836](https://github.com/jbylund/sylvan_librarian/pull/836)** (layers 2 and 4 of the cost-model stack),
+on the instrumentation substrate from [#833](https://github.com/jbylund/sylvan_librarian/pull/833).
+
+This doc's residuals were already extracted into their own docs while it was live, and both are still open:
+
+- **P3 should not re-derive membership at all** (the "larger prize" of the top-target section) —
+  [local-engine-compose-membership-bittest.md](../local-engine-compose-membership-bittest.md). Worth ~8× on
+  the highest-regret query class.
+- **Sparse compose should gather, not decline** —
+  [local-engine-sparse-compose-gather.md](../local-engine-sparse-compose-gather.md).
+
+The one cell in "What is still wrong" that was called real — `StreamedSelect/printing_compose` at 1.31 — is
+now tracked as part of [#852](https://github.com/jbylund/sylvan_librarian/issues/852), which carries the
+P3-vs-P4 ranking on this acquire and the oracle bound on what estimator work can buy.
+
 `cost::plan_cost` was accurate enough to rank plans correctly most of the time while being badly
 wrong in absolute terms on several arms — a state that holds until something competes closely, and
 then mis-routes. This is the record of measuring that gap and closing most of it.
 
 Bar, set before the work: **every (plan, acquire) cell's measured/predicted median inside
-[0.8, 1.25]**, measured by [`scripts/bench_cost_model_agreement.py`](../../scripts/bench_cost_model_agreement.py).
+[0.8, 1.25]**, measured by [`scripts/bench_cost_model_agreement.py`](../../../scripts/bench_cost_model_agreement.py).
 
 Measured baseline-to-branch on the same sampler (`92ecebf`, before any cost change, vs the branch tip):
 
@@ -36,7 +53,7 @@ the mode-split commit against the commit immediately before it, not against the 
 cost commit zeroed compose's verify tier for all three modes, which *introduced* that regression; the
 mode-split commit fixed it. The pair nets to zero, which is what the baseline comparison above shows.
 
-Use [`scripts/bench_pairwise_ordering.py`](../../scripts/bench_pairwise_ordering.py) to target routing
+Use [`scripts/bench_pairwise_ordering.py`](../../../scripts/bench_pairwise_ordering.py) to target routing
 work: it reports, per plan pair, how often the order is right and what being wrong costs. Its own
 limitation, measured: pairwise regret OVERSTATES routing loss, because argmin is over all plans. On
 the worst pair, compose beat StreamedSelect in 708 mis-ordered cases but beat the best of all plans
@@ -55,7 +72,7 @@ failures are worth keeping:
    noise was signal, and concluded "no detectable difference". That was also wrong, because the
    generator drew thresholds from hardcoded value lists (`year:2019`–`2024` on a 1993–2026 corpus)
    and never produced bounded ranges at all.
-3. **Paired, with corpus-drawn thresholds** ([`client/query_sampler.py`](../../client/query_sampler.py)).
+3. **Paired, with corpus-drawn thresholds** ([`client/query_sampler.py`](../../../client/query_sampler.py)).
    Found a 12x difference the first two could not see.
 
 The harness was validated in both directions before being believed: on a **null** (same engine
@@ -147,7 +164,7 @@ it): adding the term back still makes agreement worse, 0.74 → 0.70.
 
 ## Fitting the rates
 
-[`scripts/fit_cost_model.py`](../../scripts/fit_cost_model.py) regresses measured time on exactly the
+[`scripts/fit_cost_model.py`](../../../scripts/fit_cost_model.py) regresses measured time on exactly the
 vector `plan_cost` consumes. Three choices were forced by measurement, each after the obvious
 alternative failed:
 
@@ -264,7 +281,7 @@ times per query, so it needs a feature gate rather than an unconditional increme
 
 ## Where the remaining error is, and that it is reachable
 
-[`scripts/bench_cost_error_attribution.py`](../../scripts/bench_cost_error_attribution.py) splits each
+[`scripts/bench_cost_error_attribution.py`](../../../scripts/bench_cost_error_attribution.py) splits each
 cell's error three ways by substituting realized executor counters for estimated features (isolates
 cardinality error), refitting coefficients on those (isolates coefficient error), and calling what
 survives both the model's shape. Over 267,938 plan-rows realistic and 178,430 uniform:
@@ -370,7 +387,7 @@ REALIZED features it fits `push` to 0.00 against a shipped 3.30.
 ### Second attempt, after fixing the blocker — still reverted
 
 The blocker was real and is now fixed: `fit_cost_model.py` had drifted and is
-[synced and self-checking](../../scripts/fit_cost_model.py). With a trustworthy fitter, the feature was
+[synced and self-checking](../../../scripts/fit_cost_model.py). With a trustworthy fitter, the feature was
 reapplied and four cost forms tried. None beats the baseline:
 
 | variant | uniform | realistic |
@@ -408,7 +425,7 @@ leaves is ~1.15x on ~5% of queries, so it is genuinely marginal on its own.
 
 ## The percentile view, and the two defects it found
 
-[`scripts/bench_cost_error_percentiles.py`](../../scripts/bench_cost_error_percentiles.py) prints
+[`scripts/bench_cost_error_percentiles.py`](../../../scripts/bench_cost_error_percentiles.py) prints
 estimate/real at p1/p10/p20/p50/p70/p90/p99 per plan. Every other view here reports a median, and a
 median is structurally blind to a tail — which is where two real defects were hiding.
 
@@ -464,7 +481,7 @@ artwork total. `artwork_base.last()` is that total, now free.
 
 ## Sparse compose should gather, not decline — blocked on this arm
 
-Extracted to its own doc: **[local-engine-sparse-compose-gather.md](local-engine-sparse-compose-gather.md)**.
+Extracted to its own doc: **[local-engine-sparse-compose-gather.md](../local-engine-sparse-compose-gather.md)**.
 
 One line, verified byte-identical over 127,640 queries, and blocked twice on routing (+0.445 µs, then
 +0.377 µs after compose's artwork arm was corrected — which falsified the theory that mode-specific
@@ -537,7 +554,7 @@ printing-mode compose, and have the materializing executors bit-test instead of 
 
 Which tool answers which question, how to read the two matrices, and the measurement traps this work
 paid for one at a time:
-**[reference-cost-model-measurement.md](reference-cost-model-measurement.md)**.
+**[reference-cost-model-measurement.md](../reference-cost-model-measurement.md)**.
 
-Related: [plan mis-selection](local-engine-plan-misselection.md),
+Related: [plan mis-selection](../local-engine-plan-misselection.md),
 [candidate materialization](local-engine-candidate-materialize.md).

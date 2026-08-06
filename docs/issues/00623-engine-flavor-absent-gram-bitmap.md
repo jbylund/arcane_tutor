@@ -1,6 +1,6 @@
 # Engine: reject impossible flavor needles via absent-gram presence bitmap
 
-Status: filed 2026-07-07, follow-up to PR #622 / [00620-engine-flavor-text-narrowing.md](00620-engine-flavor-text-narrowing.md).
+Status: filed 2026-07-07, follow-up to PR #622 / [00620-engine-flavor-text-narrowing.md](done/00620-engine-flavor-text-narrowing.md).
 GitHub: #623.
 
 ## Idea

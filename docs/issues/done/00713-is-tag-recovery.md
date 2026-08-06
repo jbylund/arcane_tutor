@@ -160,7 +160,7 @@ aliases especially) trips a tripwire.
 
 - Frame synonyms + query-tree rewriting (this doc's parent thread) — the rewrite seam is
   `get_frame_data_comparison_object` / node-construction, feeding both SQL and engine.
-- [00667-engine-legality-divergent-carveout.md](done/00667-engine-legality-divergent-carveout.md) —
+- [00667-engine-legality-divergent-carveout.md](00667-engine-legality-divergent-carveout.md) —
   legality is the analogous per-printing existence-projection problem.
 - [00702-engine-plan-selection-layer.md](00702-engine-plan-selection-layer.md) — the "observed
   values" dictionary (leaf cardinality 0 for absent values) is the same build-time artifact this

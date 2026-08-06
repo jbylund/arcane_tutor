@@ -1,14 +1,30 @@
 # Measuring P3 and P4's loop and finish phases with built designs
 
+**DONE — this is the lab record behind layers 1, 2 and 4 of the cost-model stack:
+[#833](https://github.com/jbylund/sylvan_librarian/pull/833) (instrumentation and phase timing),
+[#834](https://github.com/jbylund/sylvan_librarian/pull/834) (calibration) and
+[#836](https://github.com/jbylund/sylvan_librarian/pull/836) (the compose acquire).** Several of its
+measurements deliberately declined to move a constant, and two findings are retractions of earlier
+conclusions — both preserved below, because the declined measurement is the deliverable either way.
+
+**The remaining work is [#852](https://github.com/jbylund/sylvan_librarian/issues/852)**, which carries
+"What is left" items 1 / 1b / 1c — ranking `GatheredScan` vs `StreamedSelect` on the compose acquire, the
+oracle bound (58% → 83% ordered right, 9× less lost time, rates untouched), the two counter-intuitive
+results (per-plan features are worth zero; a feature fix only pays when the arms weight it differently), and
+the smaller items 3–7 as carried-forward notes.
+
+At ~1,360 lines this is far past the point where a doc should have been split, and #852 is deliberately
+narrower. Read this one for the measurement history; read #852 for what to do next.
+
 Branch `engine-compose-feature-accuracy`. Companion to
-[reference-cost-model-measurement.md](./reference-cost-model-measurement.md), which covers which tool
+[reference-cost-model-measurement.md](../reference-cost-model-measurement.md), which covers which tool
 answers which question; this covers what the tools said about `StreamedSelect` (P3) and
 `GatheredScan` (P4), and what is left.
 
 The method this campaign arrived at, extracted so it can be reused without reading the whole file:
-[diagnosing-a-plan-cost-error.md](../workflows/diagnosing-a-plan-cost-error.md).
+[diagnosing-a-plan-cost-error.md](../../workflows/diagnosing-a-plan-cost-error.md).
 
-The earlier campaign in [local-engine-cost-model-agreement.md](./local-engine-cost-model-agreement.md)
+The earlier campaign in [local-engine-cost-model-agreement.md](local-engine-cost-model-agreement.md)
 fitted rates from sampled traffic. This one built designed experiments instead, because several rates
 are **unidentifiable from traffic at any corpus size** — and that turned out to be the least
 interesting thing it found.
@@ -1316,7 +1332,7 @@ is only the P3-vs-P4 difference among the fallbacks, because **regret compares o
 declining plan accumulates no trials. Second time today that blind spot hid the larger finding, after
 `r>=rare`.
 
-[local-engine-sparse-compose-gather.md](./local-engine-sparse-compose-gather.md) had already designed the
+[local-engine-sparse-compose-gather.md](../local-engine-sparse-compose-gather.md) had already designed the
 fix — `gather_composed_page` in place of the `return None` — and verified it byte-identical over 127,640
 queries. Its stated blocker was that `plan_cost` could not price the path, and this stack added the
 `ComposePaging::Gather` arm, so it looked unblocked.
@@ -1354,7 +1370,7 @@ Both halves have now shipped — `4991759` for the narrowing (15–33× on that 
 compose's builders, where the estimate was 38.5× off a count that was two binary searches away. Together:
 regret 1.42 → 1.30 µs, and the fusible traffic slice to 0.81× of baseline. The evidence, the noise analysis
 behind the sparsity gate, and what is left (the sparse gather, now that its prediction is correct):
-[local-engine-two-sided-range-fusion.md](./local-engine-two-sided-range-fusion.md).
+[local-engine-two-sided-range-fusion.md](local-engine-two-sided-range-fusion.md).
 
 ## A note on the test counts quoted throughout
 

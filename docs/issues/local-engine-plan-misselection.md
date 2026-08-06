@@ -1,5 +1,17 @@
 # The decline fallback never reconsidered a non-materializing plan, at up to 260 µs (fixed)
 
+Status: **the headline fix shipped; this stays open for the calibration findings under "What is left".**
+Kept here rather than moved to `done/` because the largest of those — `PlanePopcountOrder` under-costed a
+median 1.61×, p90 6.16 over n=157, unexplained and not attributable to acquire netting — is still the
+engine's largest un-diagnosed calibration gap and has no other home.
+
+Re-read after the cost-model stack (#833–#845): the numbers below predate it, and its "What to do" item 2
+(the 26–34 µs `StreamedSelect`/`GatheredScan` cluster) is now the subject of
+[#852](https://github.com/jbylund/sylvan_librarian/issues/852), which supersedes the advice to leave it
+alone — that pair turned out to be the engine's largest single routing error. **Re-measure before acting on
+any figure in this doc**; every one of them was taken against a cost model that has since had four feature
+corrections and a rate calibration.
+
 When a `Prep::Range`-acquired query's chosen fast path declines at runtime, dispatch re-chooses
 among **materializing plans only** — so `PrintingCompose`, which is applicable and often 30–70x
 faster, is never reconsidered. Measured worst case: a bare `year:` or `usd:` range at

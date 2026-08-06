@@ -1,6 +1,6 @@
 # Engine: legality postings with a selectivity threshold
 
-Split out of [done/00605-engine-unindexed-predicates.md](done/00605-engine-unindexed-predicates.md)
+Split out of [00605-engine-unindexed-predicates.md](00605-engine-unindexed-predicates.md)
 (approach 3 there — the one approach PR #605 didn't ship). Status: superseded.
 
 **Superseded**: the `legal` dimension shipped as exact planes instead
@@ -34,7 +34,7 @@ Advisory narrowing means the threshold is purely a size/speed dial, not a
 correctness concern — eval verifies every candidate against the exact word.
 
 **Divergent-legality cards** (the 556 with genuinely per-printing legality, see
-[done/00603-engine-card-printing-split.md](done/00603-engine-card-printing-split.md)) must
+[00603-engine-card-printing-split.md](00603-engine-card-printing-split.md)) must
 appear in any posting a minority printing qualifies for, or be excluded from
 postings entirely and left to the scan — decide during implementation.
 
@@ -64,9 +64,9 @@ posting lists (mythic/rare ≈ 20k printing ids ≈ 80 kB).
 
 ## Related
 
-- [done/00605-engine-unindexed-predicates.md](done/00605-engine-unindexed-predicates.md) —
+- [00605-engine-unindexed-predicates.md](00605-engine-unindexed-predicates.md) —
   parent doc; artist/set/date/price indexing shipped there (PR #605)
-- [done/00603-engine-card-printing-split.md](done/00603-engine-card-printing-split.md) —
+- [00603-engine-card-printing-split.md](00603-engine-card-printing-split.md) —
   candidate-space rules and the divergent-legality design
 - Selective-index thresholding (PR #600 discussion) — this is its first concrete
   application; frame_data indexing composes with it

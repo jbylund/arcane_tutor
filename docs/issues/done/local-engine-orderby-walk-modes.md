@@ -1,5 +1,13 @@
 # The orderby walk is printing-mode only, and card mode pays 18x for it
 
+**DONE — merged in [#839](https://github.com/jbylund/sylvan_librarian/pull/839)** (layer 7 of the
+cost-model stack). Target subset 0.931, p99 −8.1%. Nothing carried forward; the related open item is
+[cost-based OrderbyWalk vs Gather](../local-engine-compose-paging-cost-based.md), which is about choosing
+between two branches that are both available rather than about a branch being unavailable.
+
+(The `## Status` section below still reads "Measured, not implemented" — it describes the state at the time
+the investigation was written, and `## Outcome` immediately after it is what shipped.)
+
 **Shipped** (`b0618f0`, `38423f5`) — one walk for all three distinct-ons, via the group representative.
 The walk was the easy half; routing it took four attempts, and the thing that finally worked was
 realising that **breadth does not decide it — whether the compose build broadcasts does.** See
@@ -175,7 +183,7 @@ Whole-corpus-broad artwork queries on `usd`/`rarity` are 136 of the 200 slowest 
 dispatch time in uniform sampling. `unique=artwork` is 5% of realistic traffic
 (`REALISTIC_UNIQUE_WEIGHTS`: card 75, printing 20, artwork 5) and `usd`/`rarity` together are a
 meaningful slice of `REALISTIC_ORDERBY_WEIGHTS`, so unlike
-[the layout question](./local-engine-layout-postings.md) this shape is genuinely sampled by realistic
+[the layout question](../local-engine-layout-postings.md) this shape is genuinely sampled by realistic
 traffic — it just needs the realistic-mode number measured before the work is priced.
 
 Card mode was described here as "a separate case and mostly NOT this problem". That was wrong: it is
@@ -190,7 +198,7 @@ Measured, not implemented. Timings are the routed path through `engine.query` on
 minimum of 20 after warmup; the 200-slowest breakdown is one 150 s uniform sample of 52,330 priced
 queries.
 
-Related: [cost-based OrderbyWalk vs Gather](./local-engine-compose-paging-cost-based.md) is about
+Related: [cost-based OrderbyWalk vs Gather](../local-engine-compose-paging-cost-based.md) is about
 choosing between the two branches where BOTH are available; this is about the branch not being
 available at all.
 

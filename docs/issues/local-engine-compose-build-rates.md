@@ -115,7 +115,7 @@ disagreement between the branches was `walk_grouped_page`'s per-card work (1.89 
 to go. `plan_cost`'s `Perm` arm has no cards term at all today.
 
 That also explains an older observation in
-[local-engine-compose-walk-features.md](./local-engine-compose-walk-features.md): `printings_walked /
+[local-engine-compose-walk-features.md](done/local-engine-compose-walk-features.md): `printings_walked /
 cards_visited` graded 4.53 while `/printings_examined` graded 1.17. The model needs both columns, not a
 choice between them.
 

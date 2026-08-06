@@ -196,12 +196,12 @@ api/tests/test_engine_unit.py`: 158/158. CSVs under `benchmarks/compose-orderby-
 
 ## Related
 
-- [done/00740-engine-compose-permutation-fallback.md](done/00740-engine-compose-permutation-fallback.md) —
+- [00740-engine-compose-permutation-fallback.md](00740-engine-compose-permutation-fallback.md) —
   where `gather_composed_page` and `COMPOSE_GATHER_MAX_CARD_FRACTION` came from; this doc's paging
   fix is the case that guard was never meant to cover.
-- [done/00741-engine-negated-range-narrowing.md](done/00741-engine-negated-range-narrowing.md) —
+- [00741-engine-negated-range-narrowing.md](00741-engine-negated-range-narrowing.md) —
   sibling investigation from the same survey-driven thread; also has the `and_child_rank`/
   `narrow_rec` single-source-of-truth precedent this doc's paging branch should follow when it's
   implemented.
-- [done/00667-engine-legality-divergent-carveout.md](done/00667-engine-legality-divergent-carveout.md)
+- [00667-engine-legality-divergent-carveout.md](00667-engine-legality-divergent-carveout.md)
   — the existing `_EXISTS`/`_ABSENT` plane pair and divergent-repair mechanism this reuses.

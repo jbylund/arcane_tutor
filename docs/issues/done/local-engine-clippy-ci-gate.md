@@ -1,6 +1,6 @@
 # Engine: Clean Clippy and Gate It in CI
 
-Status: **implemented 2026-07-24** on `engine-clippy-clean` (stacked on
+**DONE.** Status: **implemented 2026-07-24** on `engine-clippy-clean` (stacked on
 [#757](00757-engine-query-ctx-arg-bundle.md)). Not filed as a GitHub issue — found while scoping #757,
 implemented immediately after it.
 
@@ -8,8 +8,8 @@ implemented immediately after it.
 
 Clippy was not running in CI at all, and was not clean.
 
-- [rust-tests.yml](../../.github/workflows/rust-tests.yml) ran only `cargo test` for the two crates.
-- [lint.yml](../../.github/workflows/lint.yml) is Python-only: its `paths` filter is `**/*.py`,
+- [rust-tests.yml](../../../.github/workflows/rust-tests.yml) ran only `cargo test` for the two crates.
+- [lint.yml](../../../.github/workflows/lint.yml) is Python-only: its `paths` filter is `**/*.py`,
   `requirements/**`, `pyproject.toml`, and itself. No Rust path can trigger it.
 - `cargo clippy --all-targets` emitted **68 warnings** on `card_engine` and 3 on `shared_cache`.
 
@@ -78,7 +78,7 @@ Two `cargo clippy --all-targets -- -D warnings` steps (one per crate) added to t
 `rust-test` job rather than as a new job. Three reasons, in order:
 
 1. A new job means a new required check, which means
-   [rust-tests-skip.yml](../../.github/workflows/rust-tests-skip.yml) needs a matching stub job or
+   [rust-tests-skip.yml](../../../.github/workflows/rust-tests-skip.yml) needs a matching stub job or
    PRs touching no `.rs` file hang forever on a check that never runs. Steps in the existing job need
    no such coordination.
 2. `rust-tests.yml`'s `paths` filter (`**/*.rs`, `**/Cargo.*`) is already exactly the right trigger.
@@ -97,7 +97,7 @@ and CI's `dtolnay/rust-toolchain@stable` resolved to **1.97.0**, which added tha
 `-D warnings` on a floating `@stable` means every Rust release (~6 weeks) turns into a red build on
 whichever PR is open at the time, for code that didn't change — and it can't be reproduced locally
 until the contributor happens to update. So the toolchain is now **pinned to 1.97.1** in
-[rust-tests.yml](../../.github/workflows/rust-tests.yml). Bumping it becomes a deliberate PR where the
+[rust-tests.yml](../../../.github/workflows/rust-tests.yml). Bumping it becomes a deliberate PR where the
 new lints get reviewed on purpose, instead of a surprise on unrelated work.
 
 The three literals were fixed (`*b"abc"`), not suppressed. Verified against 1.97.1 locally after

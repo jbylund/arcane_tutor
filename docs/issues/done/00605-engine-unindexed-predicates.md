@@ -6,7 +6,7 @@ released-at index) plus the survey's price index shipped in PR #605
 (2026-07-03): targeted-suite geomean 4.2× (artist ~10×, set 4–8×, year ~4×;
 the compound-Or worst case 4.7×), parity exact, archive +1.6 MB. Approach 3
 (legality postings) split out to
-[local-engine-legality-postings.md](../local-engine-legality-postings.md), along with the
+[local-engine-legality-postings.md](local-engine-legality-postings.md), along with the
 survey's rarity-postings suggestion.
 
 ## Problem
@@ -83,7 +83,7 @@ the existing card-space indexes via the Candidates space rules.
 - [x] Artist vocab + query-time id-set resolution + CSR artist index (PR #605)
 - [x] Set-code TagIndex in printing space + narrow_candidates arm (PR #605)
 - [x] Legality (format, status) postings — split out to
-      [local-engine-legality-postings.md](../local-engine-legality-postings.md)
+      [local-engine-legality-postings.md](local-engine-legality-postings.md)
 - [x] Released-at index in printing space for date/year filters (PR #605)
 - [x] Re-run the #604 benchmark suites; the compound Or config (4.7×) and
       `a:rebecca` (9.2×) were the acceptance cases (PR #605)
@@ -105,11 +105,11 @@ Implications, in value order:
   eur/tix are three more lines each if ever wanted.
 - **Rarity postings with the selectivity threshold**: six values; mythic/rare
   selective, common/uncommon dropped by the threshold. Folded into
-  [local-engine-legality-postings.md](../local-engine-legality-postings.md) (same mechanism).
+  [local-engine-legality-postings.md](local-engine-legality-postings.md) (same mechanism).
 - **Legality postings** (already task 3): 8 of the slowest 60. Split out to
-  [local-engine-legality-postings.md](../local-engine-legality-postings.md).
+  [local-engine-legality-postings.md](local-engine-legality-postings.md).
 - **Flavor text**: split out to
-  [00620-engine-flavor-text-narrowing.md](../00620-engine-flavor-text-narrowing.md) — a
+  [00620-engine-flavor-text-narrowing.md](00620-engine-flavor-text-narrowing.md) — a
   measured 9 MB trigram index was rejected in favor of a ~0.4 MB
   distinct-text-scan + CSR design.
 - Bounded non-items: 2-char name contains (0.89 ms worst case, inherent trigram
@@ -123,7 +123,7 @@ Implications, in value order:
   restructure whose benchmarks surfaced this list; candidate-space rules live there
 - [00598-engine-collection-vocab-interning.md](00598-engine-collection-vocab-interning.md) —
   the VocabInterner pattern approach 1 reuses
-- [local-engine-legality-postings.md](../local-engine-legality-postings.md) — the remaining
+- [local-engine-legality-postings.md](local-engine-legality-postings.md) — the remaining
   approach 3 + rarity postings, split out when this doc moved to done/
 - Selective-index thresholding (PR #600 discussion) — approach 3 is its first
   concrete application; frame_data indexing composes with it

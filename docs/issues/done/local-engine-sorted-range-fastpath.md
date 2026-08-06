@@ -431,7 +431,7 @@ compose source on top of it — reaching the same compound wins without a dedica
 
 ## Related
 
-- [local-engine-printing-plane-popcount-order.md](../local-engine-printing-plane-popcount-order.md) —
+- [local-engine-printing-plane-popcount-order.md](local-engine-printing-plane-popcount-order.md) —
   the consolidated plan for the deferred Idea-2 printing-space popcount plan (#656): parts, ship
   order, target queries, and the #656 assembly.
 - [local-engine-broad-range-fastpath.md](local-engine-broad-range-fastpath.md) — history:

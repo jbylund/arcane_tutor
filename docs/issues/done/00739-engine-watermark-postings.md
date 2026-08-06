@@ -72,7 +72,7 @@ no residual verification — same as an absent set code today.
 
 ## Related
 
-- Found via [`scripts/survey_queries.py`](../../scripts/survey_queries.py)'s broad realistic-traffic
+- Found via [`scripts/survey_queries.py`](../../../scripts/survey_queries.py)'s broad realistic-traffic
   survey.
 - [00664 border planes](00664-engine-border-planes.md) — the plane-vs-postings crossover this
   reasons from, for a field dense enough to go the other way.

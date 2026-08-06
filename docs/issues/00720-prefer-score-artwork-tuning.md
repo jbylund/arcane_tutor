@@ -273,7 +273,7 @@ special foil or a different promo product.
 ## Related
 
 - [local-prefer-score-label-harness.md](local-prefer-score-label-harness.md) — labelling instrument.
-- [00707-engine-3key-ordering-parity.md](00707-engine-3key-ordering-parity.md) — `prefer_score` is the
+- [00707-engine-3key-ordering-parity.md](done/00707-engine-3key-ordering-parity.md) — `prefer_score` is the
   third sort key and where plans may diverge.
 - [`api/sql/backfill_prefer_scores.sql`](../../api/sql/backfill_prefer_scores.sql) — the scoring
   definition.

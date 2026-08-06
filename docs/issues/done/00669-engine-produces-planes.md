@@ -1,7 +1,7 @@
 # Engine: bitplanes for produces: (produced mana)
 
 Status: proposed, not started until now. Follows
-[docs/workflows/performance-pr-workflow.md](../workflows/performance-pr-workflow.md).
+[docs/workflows/performance-pr-workflow.md](../../workflows/performance-pr-workflow.md).
 No GitHub issue filed yet — surfaced while investigating the broad-survey slow tail after #666.
 
 ## Measured problem

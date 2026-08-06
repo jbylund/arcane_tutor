@@ -1,5 +1,25 @@
 # `is:` and `frame:` are 24% of dispatch time and four unrelated bugs
 
+**MOSTLY DONE.** Of the four bugs plus the two mechanisms found while fixing them:
+
+| item | outcome |
+| --- | --- |
+| 1. `frame_data` drops its dense values | **merged in [#840](https://github.com/jbylund/sylvan_librarian/pull/840)** — hybrid index, 133 KB *smaller* and the scan gone. Whole mix 0.815, p99 0.648 |
+| 6. the mid-density regressions it shipped with | **merged in [#842](https://github.com/jbylund/sylvan_librarian/pull/842)** — `dense` and `broad` are eight times apart and the dense branch conflated them. `o:this frame:1993` 2,102 → 148 µs |
+| 5. the `And` arm's cost-based skip | **merged in [#836](https://github.com/jbylund/sylvan_librarian/pull/836)** (`3cfd441`) — total 0.969, p99 0.967 |
+| 2. `t:battle` poisons an `Or`'s plane path | refiled as [#850](https://github.com/jbylund/sylvan_librarian/issues/850) |
+| 3. `card_types` has no `Battle` | refiled as [#850](https://github.com/jbylund/sylvan_librarian/issues/850) — possibly a wrong answer, so it leads that issue |
+| 4. `card_layout` is unindexed | already its own doc, [layout postings](../local-engine-layout-postings.md), deprioritized |
+| `o:owner keyword:flying` at 1.56× | refiled as [#851](https://github.com/jbylund/sylvan_librarian/issues/851) |
+| the `is:old` / `is:historic` 6.8× gap | carried into [#850](https://github.com/jbylund/sylvan_librarian/issues/850) |
+
+The withdrawn item in section 7 — broad printing-space partners under a card-space driver — was fixed from a
+different direction entirely by [#843](https://github.com/jbylund/sylvan_librarian/pull/843); see
+[proven conjuncts](local-engine-proven-conjuncts.md).
+
+(The `## Status` section below still reads "Nothing is implemented", which was true when the audit was
+written. The per-section SHIPPED / FIXED markers are current.)
+
 After the value-major layout, the eur/tix indexes and the grouped orderby walk, `is:`/`frame:` queries
 are **24.0% of all remaining dispatch time** in uniform sampled traffic and none of them moved (0.97–1.03
 across every value). They are the largest remaining target, and the prefix hides at least four separate
@@ -175,7 +195,7 @@ So it is **130 KB smaller than today AND removes the full scan** — not a size-
 
 **A card-space existential bitmap is a different job, not a substitute.** 3.8 KB per value (112 KB for
 all 29), exact for card-mode TOTALS — which is the 132 µs `printing_bits_to_card_bits` projection
-discussed in [the walk-modes doc](./local-engine-orderby-walk-modes.md) — but LOOSE for row selection,
+discussed in [the walk-modes doc](local-engine-orderby-walk-modes.md) — but LOOSE for row selection,
 since "this card has ≥1 printing with frame 2015" does not say which printing. Printing and artwork mode
 still need the printing bitmap. Border already carries both (`PLANE_BORDER` card-space +
 `BorderPrintingPlanes` printing-space), and that pairing is the shape to copy.
@@ -225,7 +245,7 @@ Check the importer's type extraction before treating this as a corpus artifact. 
 ## 4. `card_layout` is unindexed
 
 Already scoped and deprioritized in
-[local-engine-layout-postings.md](./local-engine-layout-postings.md) — `is:dfc`/`is:transform`/
+[local-engine-layout-postings.md](../local-engine-layout-postings.md) — `is:dfc`/`is:transform`/
 `is:mdfc`/`is:split`/`is:meld`/`is:leveler`/`is:flip` all resolve to `card_layout`, which has no index
 and no `narrow_rec` arm, so each is a full 31,508-card scan for as few as 20 matches.
 
@@ -255,7 +275,7 @@ share (24.0%) is one 150 s uniform sample of 53,071 priced queries. Nothing is i
 mechanisms are explicitly open — (2)'s cause and the `is:old`/`is:historic` gap.
 
 `is:` and `frame:` are absent from `REALISTIC_FAMILY_WEIGHTS`, so the same caveat as
-[layout](./local-engine-layout-postings.md) applies: the 24% is a uniform-mode figure and the realistic
+[layout](../local-engine-layout-postings.md) applies: the 24% is a uniform-mode figure and the realistic
 share is unmodelled. Unlike layout, though, `frame:` IS in the realistic weights (0.5), and the
 `is:permanent`/`is:vanilla` shapes reach `card_types` and `oracle_text`, which are heavily weighted — so
 parts of this reach realistic traffic through other spellings.
@@ -360,6 +380,6 @@ this. Whether it costs anything is now an open question rather than an assumed c
   queries were slow because the candidate set's own card-space conjunct was being re-verified once per
   printing; narrowing with the border bitmap would not have helped, because the pass over printings was
   never where the time went. Fixed in
-  [local-engine-proven-conjuncts.md](./local-engine-proven-conjuncts.md), which took
+  [local-engine-proven-conjuncts.md](local-engine-proven-conjuncts.md), which took
   `o:this border:black` from 1,993 µs to 542 µs without changing the narrowing at all.
 - (2)'s `t:battle` plane poisoning and (3)'s missing `Battle` in `card_types`, both untouched.

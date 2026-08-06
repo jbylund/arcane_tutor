@@ -6,7 +6,7 @@ makes the router redo the same work with a full scan. It does not have to. The r
 
 It is nonetheless **blocked**, twice measured, and the blocker is not the change itself — it is that
 `plan_cost` cannot price the path the change routes to. Written up separately from
-[the cost-model work](local-engine-cost-model-agreement.md) because it is one shippable idea with a
+[the cost-model work](done/local-engine-cost-model-agreement.md) because it is one shippable idea with a
 clean acceptance test, waiting on a prerequisite that lives elsewhere.
 
 ## The change
@@ -100,7 +100,7 @@ mispricing was not the blocker, or not the only one.
 
 ## Re-measured 2026-08-04, after the two-sided range fusion
 
-[local-engine-two-sided-range-fusion.md](./local-engine-two-sided-range-fusion.md) made
+[local-engine-two-sided-range-fusion.md](done/local-engine-two-sided-range-fusion.md) made
 `compose_printing_estimate` exact on ranges, which removed the second stated blocker: the prediction
 can now tell a sparse query from a broad one (879 against a true 879, where it read 20,411). Both
 executors were then re-tried behind a runtime toggle on one binary.
@@ -169,7 +169,7 @@ sequencing:
 | all three realized | **0.57×** |
 
 So perfect features close about 40% of the gap and leave 1.75×. That is the **opposite** of the P3/P4
-result in [the loop-phase doc](./local-engine-loop-phase-measurement.md), where the oracle reached 83%
+result in [the loop-phase doc](done/local-engine-loop-phase-measurement.md), where the oracle reached 83%
 and features were the whole story — worth noting before reusing that conclusion on a different arm.
 
 **What is left is a missing term, not a level error.** The oracle column spans 0.32–0.79, so no single
@@ -230,7 +230,7 @@ population, with and without the term applied:
 | 5.0x | 0.855 | 1.061 |
 
 **Both curves SATURATE past ~3.5x** — the same phenomenon [the loop-phase
-doc](./local-engine-loop-phase-measurement.md) already records, and the reason a linear term shifts this
+doc](done/local-engine-loop-phase-measurement.md) already records, and the reason a linear term shifts this
 curve instead of flattening it. With the term the asymptote is ~1.045 (right) against ~0.845 (18% under)
 without, so the term is real here as well. But at the **production** size it makes Perm worse, 1.185 ->
 1.449, which is what happens when an arm's rates were fitted with the cost already absorbed into them.
@@ -391,7 +391,7 @@ more expensive -- the direction that lost argmins compose deserved. It lands wit
 before it. And the 14 intervals are hand-picked; grade it over the regret matrix's traffic first.
 
 Progress on the compose arm generally is tracked in
-[the cost-model doc](local-engine-cost-model-agreement.md).
+[the cost-model doc](done/local-engine-cost-model-agreement.md).
 
 ## Acceptance
 

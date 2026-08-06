@@ -22,7 +22,7 @@ they touch.
 Measured over 3,054 compose-acquired printing queries: **1,213 ms of match-loop time over 145 million
 printings scanned, 6.98 ns each**. An O(1) bit test is ~1 ns, so ~145 ms — **roughly 8x less**. This is
 the cell both the cost and regret matrices name as the top target
-([local-engine-cost-model-agreement.md](local-engine-cost-model-agreement.md)).
+([local-engine-cost-model-agreement.md](done/local-engine-cost-model-agreement.md)).
 
 There is in-tree precedent: `exec_card_range_popcount` threads `range_pbits` beside its card bitmap and
 membership-tests in O(1), for exactly this reason — "the shown printing must actually be in range, not

@@ -1,11 +1,22 @@
 # Compose's two walk branches, graded separately
 
+**DONE — resolved, and not by any of the three fixes this doc worked up.** All three were about *describing*
+the walk's bucket granularity better; the value-major layout in
+[#838](https://github.com/jbylund/sylvan_librarian/pull/838) deleted the granularity instead, along with
+`orderby_walk_scan` and `collect_orderby_page`. See "Where this stands" at the bottom for the item-by-item
+outcome.
+
+Two live follow-ups, both already their own docs:
+[compose paging on cost](../local-engine-compose-paging-cost-based.md) (item 3, clumping) and
+[compose build rates](../local-engine-compose-build-rates.md) (item 4, `Perm`'s missing `cards_visited`
+term).
+
 Branched off `engine-loop-phase-measurement` at `c11ad25`, which shipped the Gather arm's missing build
 term. That work left `Perm` and `OrderbyWalk` unaddressed and named them one problem. Measured, they
 are three, and only one of them is what it looked like.
 
 Context and the corpus-axis method:
-[local-engine-sparse-compose-gather.md](./local-engine-sparse-compose-gather.md).
+[local-engine-sparse-compose-gather.md](../local-engine-sparse-compose-gather.md).
 
 ## The walk feature was never graded, and a counter for it already existed
 
@@ -177,7 +188,7 @@ explain that cell too.
 
 **Resolved, and not by any of the three fixes this doc worked up.** All three were about *describing*
 the walk's bucket granularity better; the layout change deleted the granularity instead. See
-[done/local-engine-value-major-sort-indexes.md](./done/local-engine-value-major-sort-indexes.md) for
+[local-engine-value-major-sort-indexes.md](local-engine-value-major-sort-indexes.md) for
 what shipped and the measurements.
 
 Item by item, so the reasoning above is readable against the outcome:
@@ -191,10 +202,10 @@ Item by item, so the reasoning above is readable against the outcome:
    the patch never had to be resolved.
 2. **OW/rarity's two errors — both moot.** The rate split priced plane-bucket steps against entry steps;
    the walk reads no planes now. The 124x `special`/`bonus` over-charge was `orderby_walk_scan`, which is
-   deleted. [done/local-engine-rarity-walk-cost.md](./done/local-engine-rarity-walk-cost.md) carries
+   deleted. [local-engine-rarity-walk-cost.md](local-engine-rarity-walk-cost.md) carries
    that analysis with its resolution.
 3. **Clumping is still the ceiling, and still not a rate.**
-   [local-engine-compose-paging-cost-based.md](./local-engine-compose-paging-cost-based.md) is the live
+   [local-engine-compose-paging-cost-based.md](../local-engine-compose-paging-cost-based.md) is the live
    item: `compose_paging_with_total` picks `OrderbyWalk` by SHAPE, so compose has no argmin against
    `Gather` even though `plan_cost` has both arms. A router does not need to know how bad a clumped walk
    is, only that it is bad, and `Gather` is O(matches) — it gets safer exactly as the walk gets worse.
@@ -207,7 +218,7 @@ Item by item, so the reasoning above is readable against the outcome:
    `OrderbyWalk`'s (0.3135 against 0.3057). Which retires the puzzle above about `printings_walked /
    cards_visited` grading 4.53 while `/printings_examined` graded 1.17 — the arm needs BOTH columns, and
    has neither a cards term nor an estimator for one.
-   [local-engine-compose-build-rates.md](./local-engine-compose-build-rates.md) has the numbers.
+   [local-engine-compose-build-rates.md](../local-engine-compose-build-rates.md) has the numbers.
 
 The general lesson this branch keeps re-teaching: a partial accuracy fix on the compose arm loses regret
 (`compose_scan_printings`'s span patch 1.33 -> 1.41 µs, the build term applied build-wide 1.193 -> 1.544

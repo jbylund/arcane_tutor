@@ -1,6 +1,6 @@
 # Engine: flavor-text narrowing via distinct-text scan + CSR
 
-Follow-on to [00605-engine-unindexed-predicates.md](done/00605-engine-unindexed-predicates.md)
+Follow-on to [00605-engine-unindexed-predicates.md](00605-engine-unindexed-predicates.md)
 (PR #605). Status: written up 2026-07-03, not started. GitHub: #620.
 
 ## Problem
@@ -21,7 +21,7 @@ the same arithmetic reproduces the oracle trigram index's known ~15 MB.)
 
 ## Proposed: distinct-text scan at bind + CSR (~0.4 MB)
 
-The artist-vocab trick ([PR #605](done/00605-engine-unindexed-predicates.md)) scaled up.
+The artist-vocab trick ([PR #605](00605-engine-unindexed-predicates.md)) scaled up.
 Flavor has only 26.3k distinct texts (2.3 MB payload, already interned as
 `flavor_text_lower_id` in the strings table):
 
@@ -67,7 +67,7 @@ Expected: `ft:` ~1.4 → ~0.3–0.5 ms (bind-dominated), worst-case Or-combos
 
 ## Related
 
-- [00605-engine-unindexed-predicates.md](done/00605-engine-unindexed-predicates.md) — parent
+- [00605-engine-unindexed-predicates.md](00605-engine-unindexed-predicates.md) — parent
   ticket; artist vocab is the small-cardinality version of this pattern
-- [00603-engine-card-printing-split.md](done/00603-engine-card-printing-split.md) — candidate
+- [00603-engine-card-printing-split.md](00603-engine-card-printing-split.md) — candidate
   space rules the narrowing arm plugs into

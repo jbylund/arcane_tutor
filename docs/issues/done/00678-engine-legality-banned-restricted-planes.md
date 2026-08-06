@@ -1,6 +1,6 @@
 # Engine: banned:/restricted: legality planes (#678)
 
-Follows [docs/workflows/performance-pr-workflow.md](../workflows/performance-pr-workflow.md).
+Follows [docs/workflows/performance-pr-workflow.md](../../workflows/performance-pr-workflow.md).
 GitHub: #678. Extends the two-exact-plane design already shipped for `LEGAL`
 ([00667-engine-legality-divergent-carveout.md](00667-engine-legality-divergent-carveout.md), #667/#676) to the
 two `expected` values it deliberately left out of scope.

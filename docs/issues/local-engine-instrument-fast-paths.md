@@ -1,5 +1,26 @@
 # The four fast paths report features nobody can check
 
+Status: **still open, and re-verified against `main` after the cost-model stack merged (#833–#845).** None
+of the four counters exist: `popcount_words` appears nowhere in `card_engine/src/`, and `PhaseStats` carries
+`cards_visited` / `printing_span` / `printings_examined` / `matches_pushed` / `perm_steps` only.
+
+Two things moved underneath this doc, in opposite directions:
+
+- **The "what this does not cover" section is closed.** Phase timings shipped in
+  [#833](https://github.com/jbylund/sylvan_librarian/pull/833) — `ns_setup` / `ns_prepare` / `ns_loop` /
+  `ns_finish` per plan, with `plan_self_ns` computed by *adding* phases rather than subtracting a shared
+  prepare, because subtraction gave plane rows negative regret. So the lower-value half of this doc is done
+  and the counters — the half a rate constant cannot repair — are what remain.
+- **The prerequisite is partly settled.** [#844](https://github.com/jbylund/sylvan_librarian/pull/844) split
+  `ComposeEstimate` into `result` and `candidate`, which answers "what does `scan_units` mean under a compose
+  acquire" for that branch specifically: `candidate` is what the materializing alternatives walk, `result` is
+  the set compose builds. That is item 2's definition for one acquire branch. The **range** branch still
+  estimates its materializing alternatives unnarrowed, so a counter compared against `scan_units` there
+  would still be comparing a fast path's real work against a number that was never about it.
+
+The tracked remainder of the wider instrumentation gap is
+[#798](https://github.com/jbylund/sylvan_librarian/issues/798); item 3 there is this doc's item 3.
+
 `explain` reports a cost feature vector for all six plans. `explain_analyze` reports execution
 counters for two of them. The other four — `PrintingRangeScan`, `PrintingCompose`,
 `PlanePopcountOrder`, `CardRangePopcount` — return zeros, so every feature their cost arms key on is

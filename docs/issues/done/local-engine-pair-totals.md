@@ -1,5 +1,13 @@
 # Exact totals for PAIRS of low-cardinality values
 
+**DONE — merged in [#844](https://github.com/jbylund/sylvan_librarian/pull/844)** (layer 12 of the
+cost-model stack), archive `2026080512`. 42.6 KB, +0.2 s build; aggregate neutral (0.997 whole mix), and
+what shipped is two cost features that are no longer wrong plus the removal of a 24× and a 1.6× regression.
+
+The "Still open" item — an exact total of **0** should short-circuit to an empty result before routing at
+all — is refiled as [#847](https://github.com/jbylund/sylvan_librarian/issues/847), which carries this
+doc's warning that a result total is not a scan domain.
+
 `compose_printing_estimate`'s `And` folds with `m.min(cm)` — an intersection upper bound — so the most
 selective leaf decides alone and every other conjunct contributes nothing. Every `f:X border:white`
 estimates identically at 5,131 (`border:white`'s own count) against true totals of 658–5,072.
@@ -108,7 +116,7 @@ regression gone.
 
 ## It also unblocked the legality scan-scope fix
 
-[That fix](./local-engine-legality-scan-scope.md) was a wash on its own because it moved CARD mode onto
+[That fix](local-engine-legality-scan-scope.md) was a wash on its own because it moved CARD mode onto
 `PrintingCompose`, which then declined at dispatch and fell back having paid the build. The trigger was
 the `min` fold estimating 2,755 cards against a true 978 on a 1,024 floor. The pair table makes that
 total exact, so `compose_paging` predicts the decline instead of walking into it:

@@ -7,7 +7,7 @@ fix. This is the diagnosis in between.
 
 Every step below exists because skipping it produced a wrong answer at least once. The worked example
 throughout is `StreamedSelect` (P3) against `GatheredScan` (P4) and `PrintingCompose` on legality queries,
-from `local-engine-loop-phase-measurement.md`.
+from `done/local-engine-loop-phase-measurement.md`.
 
 ## Where you are trying to end up
 
@@ -141,7 +141,7 @@ discarded a correct change and left the real defect hidden, which is the trap th
 Two things make the reading trustworthy. **Regret TOTAL is a sum over however many queries the budget
 reached**, so it is not comparable across runs — compare the mean, and measure your own baseline in the same
 session rather than against a number in a doc. The 48.7 ms and 55.0 ms figures still quoted in the earlier
-sections of `local-engine-loop-phase-measurement.md` were taken at unrecorded settings and are **not** on the
+sections of `done/local-engine-loop-phase-measurement.md` were taken at unrecorded settings and are **not** on the
 same scale as the 81.7 → 61.2 ms above; that is why a fresh paired baseline was measured rather than compared
 against them. And a cost-only change
 needs **no new row-identity run**: `force_plan_differential_agreement` already proves every plan returns the

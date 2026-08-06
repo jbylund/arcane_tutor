@@ -136,7 +136,7 @@ argmin is already free.
 
 ## Cost model
 
-One formula per plan, constants fit on the real corpus ([cost.rs](../../card_engine/src/cost.rs)).
+One formula per plan, constants fit on the real corpus ([cost.rs](../../../card_engine/src/cost.rs)).
 `argmin` cares about *ratios*, which is what makes P1's bad tail visible: the tree
 took P1 unconditionally; here P1 competes and *loses* when its walk is pathological
 (narrow range under a misaligned sort — the idea-1/idea-2 crossover, the founding

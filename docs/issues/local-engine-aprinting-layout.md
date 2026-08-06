@@ -256,7 +256,7 @@ archive change.
 ## Precedent
 
 The engine already applies struct-of-arrays selectively — this generalizes it:
-[`printing_to_card`](00690-engine-direct-projection-arrays.md) (pid-indexed column), the bit-planes
+[`printing_to_card`](done/00690-engine-direct-projection-arrays.md) (pid-indexed column), the bit-planes
 (per-value bit-columns), and the value-sorted range indexes.
 
 ## Cost, open questions, priority
@@ -274,6 +274,6 @@ The engine already applies struct-of-arrays selectively — this generalizes it:
 
 ## Related
 
-- [#690](00690-engine-direct-projection-arrays.md) — direct-projection array precedent.
+- [#690](done/00690-engine-direct-projection-arrays.md) — direct-projection array precedent.
 - #629 — artwork groups (`artwork_group_id`); #664/#724 — border/rarity printing planes.
 - `exec_gathered_scan` / `push_card_matches` (`card_engine/src/lib.rs`) — the gather path this targets.

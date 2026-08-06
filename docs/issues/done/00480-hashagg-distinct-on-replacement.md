@@ -8,7 +8,7 @@ essentially identical to `DISTINCT ON` — the avoid-the-sort hypothesis did not
 data scale. What shipped instead: `DISTINCT ON` keyed on `oracle_id` (~23% faster than the
 `card_name` key) and dropping the no-op `DISTINCT ON` for `unique=printing` (~9% faster).
 Not pursuing further: SQL-path query-shape work is deprioritized in favor of the Rust engine
-path ([done/00490-rust-filter-extension.md](00490-rust-filter-extension.md)).
+path ([00490-rust-filter-extension.md](00490-rust-filter-extension.md)).
 
 ## Problem
 

@@ -1,5 +1,13 @@
 # Materializing a sorted candidate list: bitmap beats sort, merge loses badly
 
+**DONE for the range arms — merged in [#845](https://github.com/jbylund/sylvan_librarian/pull/845)** (layer
+13 of the cost-model stack). Whole mix 0.949, target 0.867.
+
+**The remaining call sites are [#849](https://github.com/jbylund/sylvan_librarian/issues/849)** —
+`arith_tuple_narrow` (the case that prompted this benchmark) and the other posting-union arms. They are
+card-space, so the ~490:1 domain:count crossover measured here has to be re-derived on that axis rather than
+reused.
+
 **Shipped for `range_narrowed` (the range arms).** See "What shipped" at the bottom; the crossover turned
 out to be a domain:count RATIO, not a count, and the remaining call sites (`arith_tuple_narrow` and the
 other posting-union arms) have not adopted it yet.
@@ -109,7 +117,7 @@ Interleaved A/B, 10 rounds, 1,362 queries, drift 0.978/1.010: range TARGET **0.8
 mix **0.949**, p90 0.902. No regression above 1.07 and all of those are sub-20 µs queries.
 
 This also retired the one regression from
-[the breadth-denominator change](./local-engine-range-breadth-denominator.md): `eur<0.13 t:land` went
+[the breadth-denominator change](local-engine-range-breadth-denominator.md): `eur<0.13 t:land` went
 208 µs before that change, 267 after it, and **71.5 µs** now.
 
 Note `usd<0.18 t:land` was never affected by the denominator at all — it was already narrowing, and

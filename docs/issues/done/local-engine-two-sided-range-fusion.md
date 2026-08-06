@@ -1,6 +1,20 @@
 # Fusing a two-sided range into one index interval
 
-Split out of [local-engine-loop-phase-measurement.md](./local-engine-loop-phase-measurement.md),
+**DONE — merged in [#837](https://github.com/jbylund/sylvan_librarian/pull/837)** (layer 5 of the
+cost-model stack). Fusible slice 0.81×; the `sparse_only` gate this doc argues for was later revisited and
+loosened in [#845](https://github.com/jbylund/sylvan_librarian/pull/845), which judged breadth against the
+corpus instead of the index.
+
+Of the three items under "What is left":
+
+- **`eur` and `tix` cannot fuse at all** — fixed. [#838](https://github.com/jbylund/sylvan_librarian/pull/838)
+  gave both a `PrintingValueIndex`, and `tix:2.94` went 1,243 µs → 11.5 µs.
+- **The sparse gather is still declined** — still open, and still its own doc:
+  [local-engine-sparse-compose-gather.md](../local-engine-sparse-compose-gather.md).
+- **Card-level numeric contradictions** (`power=3 power=5`) — refiled as
+  [#846](https://github.com/jbylund/sylvan_librarian/issues/846).
+
+Split out of [local-engine-loop-phase-measurement.md](local-engine-loop-phase-measurement.md),
 which found this while auditing plan-cost features and where the routing context lives. Shipped in two
 commits — `4991759` for the narrowing, `7374e19` for the compose builders.
 
@@ -119,7 +133,7 @@ ratios their one-sided forms already carry, since those project printings to dis
 `STREAM_MIN_MATCHES`, so `compose_paging_with_total` now predicts `Decline` where it predicted `Perm` —
 matching what the fastpath actually does — and the pick moves off `PrintingCompose` onto the plan that
 was already answering. That removes the blocker named in
-[local-engine-sparse-compose-gather.md](./local-engine-sparse-compose-gather.md): its `Decline` →
+[local-engine-sparse-compose-gather.md](../local-engine-sparse-compose-gather.md): its `Decline` →
 `Gather` flip regressed routing purely because `compose_paging_for` branches on `result_total`, the
 estimate, and so could not tell a sparse query from a broad one. It can now.
 
@@ -139,7 +153,7 @@ indexes fused inside one compose, unsatisfiable pairs, an `Or` of two fused `And
 ## What is left
 
 **The sparse gather was re-attempted and is still declined** — see
-[local-engine-sparse-compose-gather.md](./local-engine-sparse-compose-gather.md). The accurate estimate
+[local-engine-sparse-compose-gather.md](../local-engine-sparse-compose-gather.md). The accurate estimate
 did remove its stated blocker (the prediction can now tell sparse from broad), and a second stale
 blocker fell with it (the tie-ordering reason the code gives for the decline died with #815). What
 remains is narrower and better quantified: the arm under-prices the gather to 0.27–0.53 of real, the
@@ -153,7 +167,7 @@ rarity widening flagged.
 
 **`eur` and `tix` cannot fuse at all**, because `resolve_numeric_range_leaf` covers only `price_usd` and
 `collector_number` (plus `DateCmp`/`YearCmp` reaching `released_at` directly). That is the same root
-cause as [local-engine-eur-tix-range-index.md](./local-engine-eur-tix-range-index.md), and fusion adds
+cause as [local-engine-eur-tix-range-index.md](local-engine-eur-tix-range-index.md), and fusion adds
 one more reason to fix it: several top-100 regret rows are two-sided `eur:`/`tix:` ranges, which are
 exactly the shape that gains most and currently gains nothing.
 

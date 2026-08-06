@@ -1,6 +1,6 @@
 # CI: The Skip-Stub Workflow Pair Can Report a Passing Check While the Real Run Fails
 
-Status: **implemented 2026-07-24** on `ci-single-workflow-change-detection`. Not filed as a GitHub
+**DONE.** Status: **implemented 2026-07-24** on `ci-single-workflow-change-detection`. Not filed as a GitHub
 issue — found while landing [local-engine-clippy-ci-gate.md](local-engine-clippy-ci-gate.md) (#760),
 where it actively hid a red build.
 
@@ -41,7 +41,7 @@ filters are complements.
 One workflow per suite:
 
 - **No `paths:` filter at all**, so the workflow always runs and its check is reported exactly once.
-- A `changes` job that calls [`.github/scripts/changed-paths.sh`](../../.github/scripts/changed-paths.sh)
+- A `changes` job that calls [`.github/scripts/changed-paths.sh`](../../../.github/scripts/changed-paths.sh)
   and outputs a boolean.
 - The real job (`rust-test` / `python-test` / `js-test`) gains `needs: changes` and
   `if: needs.changes.outputs.relevant == 'true'`. The Python job was renamed from the bare `test` to

@@ -18,23 +18,23 @@ Two independent matching engines exist here — a Postgres SQL path and a Rust `
 same name" or the two would silently diverge on which cards a query returns.
 
 **Single source of truth in Python:** `fold_accents()` in
-[card_query_nodes.py](../../api/parsing/card_query_nodes.py) NFKD-decomposes each character and
+[card_query_nodes.py](../../../api/parsing/card_query_nodes.py) NFKD-decomposes each character and
 drops combining marks (stdlib `unicodedata`, no new dependency). Both engines consume its output
 rather than each re-implementing folding:
 
 - **Ingest:** `preprocess_card()` computes `card_name_folded = fold_accents(card_name.lower())`
   once per card and stores it as a real column
-  ([migration](../../api/db/2026-07-20-01-accent-folded-name.sql)) with its own trigram GIN index.
+  ([migration](../../../api/db/2026-07-20-01-accent-folded-name.sql)) with its own trigram GIN index.
   The Rust engine reads the same column at reload time (`ENGINE_COLUMNS`) into a new
   `card_name_folded: InlineStr<61>` field, so it needs zero folding logic of its own — it's plumbing,
   not computation. This is why `ARCHIVE_FORMAT_VERSION` bumped
-  ([lib.rs:5210](../../card_engine/src/lib.rs#L5210)).
+  ([lib.rs:5210](../../../card_engine/src/lib.rs#L5210)).
 - **Query side:** the fuzzy-match code path folds the search word the same way before it reaches
   either engine — `_handle_text_field_pattern_matching` for SQL, `_rhs_to_json` for the JSON that
   crosses into Rust's `build_text_filter`. Whether the user types "eowyn" or "Éowyn", both fold to
   the same word by the time either engine sees it.
 - **Rust internals:** `name_trigram`, `name_bigrams`, and the `TextSearchField::NameLower`
-  eval/verification path ([filter.rs](../../card_engine/src/filter.rs)) were repointed from
+  eval/verification path ([filter.rs](../../../card_engine/src/filter.rs)) were repointed from
   `card_name_lower` to `card_name_folded`. Both indexes exist *only* to serve this fuzzy path
   (confirmed via grep — `TextField::NameLower`/`TextExact`/`ExactName` are separate enums reading the
   unfolded field), so the swap is contained.
@@ -82,7 +82,7 @@ Both parsers were verified to agree via the shared `TESTCASES` parity fixture
 
 Folding is currently symmetric: an accented query (`name:Éowyn`) folds to the same term as its
 unaccented spelling and would match an unaccented card too, if one existed with the same base
-name. See [00718-accent-sensitive-literal-recheck.md](00718-accent-sensitive-literal-recheck.md)
+name. See [00718-accent-sensitive-literal-recheck.md](../00718-accent-sensitive-literal-recheck.md)
 (#718) for the planned fix — deliberately a separate follow-up PR rather than amending this one.
 
 ## Validation
@@ -104,4 +104,4 @@ name. See [00718-accent-sensitive-literal-recheck.md](00718-accent-sensitive-lit
 
 **Resolved — [PR #716](https://github.com/jbylund/sylvan_librarian/pull/716).**
 
-See [PR description](../prs/accent-insensitive-name-search.md) for full details of what shipped.
+See [PR description](../../prs/accent-insensitive-name-search.md) for full details of what shipped.

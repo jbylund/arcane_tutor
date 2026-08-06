@@ -1,5 +1,16 @@
 # Exact result totals in all three spaces, for the predicates that have a plane
 
+**DONE — merged in [#841](https://github.com/jbylund/sylvan_librarian/pull/841)** (layer 9 of the
+cost-model stack), archive `2026080509`. Nothing carried forward.
+
+Kept deliberately despite measuring flat: **zero plans changed** across 1,347 query configs and the whole
+mix read 1.001. The estimates were wrong by up to 10× and still on the correct side of every argmin,
+because the margin between best and next-best is wider than the error. What justified shipping it is that
+a later layer depends on the exactness: [#844](https://github.com/jbylund/sylvan_librarian/pull/844)'s pair
+table is what made the legality scan-scope fix in that same layer safe — see
+[local-engine-legality-scan-scope.md](local-engine-legality-scan-scope.md). (#841's own body credits that
+to "layer 11"; the scan-scope fix is in layer 12, alongside the pair table.)
+
 The router's biggest remaining estimation error is not a bad formula, it is asking a formula a question
 the store can already answer. `unique=` has three result spaces — printings, cards, artworks — and for a
 predicate backed by a plane or a value index, the exact count in each is a build-time aggregate that
@@ -42,7 +53,7 @@ Three implementation points worth keeping:
 
 Cost: **156.6 KB** of archive (12 bytes × ~13,400 distinct values), 0.22% of the store. That is more
 than the 133 KB `frame_data`'s hybrid handed back, so this is a real size-for-accuracy trade and not a
-free win — see [the `is:`/`frame:` doc](./local-engine-is-frame-predicates.md) for that one.
+free win — see [the `is:`/`frame:` doc](local-engine-is-frame-predicates.md) for that one.
 
 `range_card_counts_are_exact` checks both spaces exhaustively over every distinct value on three
 indexes, against a brute-force distinct count, plus the shapes the table must DECLINE (a genuinely
@@ -105,7 +116,7 @@ configs**, off and on. Estimates wrong by 0.63-1.35x were still on the correct s
 this mix. So the honest accounting is: exactness achieved, latency unchanged, ~3.2 KB spent.
 
 That is consistent with the 2.5%-of-dispatch-time ceiling on all cost-model work
-([measured](./local-engine-layout-postings.md#why-this-was-invisible-before)) — it just lands at the
+([measured](../local-engine-layout-postings.md#why-this-was-invisible-before)) — it just lands at the
 bottom of that range rather than the top. It does NOT vindicate the earlier reading that the artwork
 slice's 21% share of routing regret came from its missing exact totals: those totals are now exact and
 the regret did not move.
@@ -114,7 +125,7 @@ the regret did not move.
 
 `is:flip` reads **1,080x** over and `is:split` 135x, unchanged. Their acquire is `count_source:
 candidates`, not compose, so `exact_result_total` is never consulted — `card_layout` has no narrowing arm
-at all ([layout postings](./local-engine-layout-postings.md)). The `layout` map in `ValueTotals` is
+at all ([layout postings](../local-engine-layout-postings.md)). The `layout` map in `ValueTotals` is
 therefore correct but **unreachable today**; it is kept (14 entries, ~200 bytes) because it is what that
 work will need, not because anything reads it now.
 
@@ -125,7 +136,7 @@ rather than compose, so it too never reaches these arms.
 
 Estimation error does not cost time directly; it costs time by mis-routing. The bound on all
 cost-model work is small — 2.5% of dispatch time is the total recoverable regret over uniform traffic
-([measured](./local-engine-layout-postings.md#why-this-was-invisible-before)). But routing regret is
+([measured](../local-engine-layout-postings.md#why-this-was-invisible-before)). But routing regret is
 concentrated: the artwork slice alone carried 21% of it at p99 205 µs against 36–40 µs for the other two
 modes, and the reason is that artwork was the only space with no exact path at all.
 

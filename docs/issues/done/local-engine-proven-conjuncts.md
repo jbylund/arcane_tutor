@@ -1,5 +1,8 @@
 # A conjunct the candidate set proves was still re-verified per printing
 
+**DONE — merged in [#843](https://github.com/jbylund/sylvan_librarian/pull/843)** (layer 11 of the
+cost-model stack). Target 0.497, control 0.957, whole mix 0.718, p99 0.428. Nothing carried forward.
+
 `o:this` runs in **52 µs** and examines **zero** printings. `o:this border:black` runs in **1,993 µs**.
 Adding a predicate that cuts the result set from 55,004 to 49,278 made the query 38× slower.
 
@@ -124,7 +127,7 @@ to 0.74–1.34.
 - **`name:s border:black` also still routes wrong** — GatheredScan at 1,170 µs measured against
   StreamedSelect's 975 (predicted 1,470, p/m 1.51).
 - The earlier diagnosis in
-  [the `is:`/`frame:` doc](./local-engine-is-frame-predicates.md) — that broad printing-space partners
+  [the `is:`/`frame:` doc](local-engine-is-frame-predicates.md) — that broad printing-space partners
   under a card-space driver are wrongly declined, and that a stored bitmap's AND would be nearly free —
   **was measuring the wrong thing.** Narrowing with the border bitmap would not have helped: the pass over
   printings was never the cost. That item is withdrawn.

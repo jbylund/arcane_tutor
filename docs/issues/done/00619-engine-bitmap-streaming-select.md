@@ -97,7 +97,7 @@ this is not an approximate-counts design.
 - [00620-engine-flavor-text-narrowing.md](00620-engine-flavor-text-narrowing.md) — the
   other big tail item; independent, composes (its narrowing feeds this match
   phase)
-- [done/00603-engine-card-printing-split.md](done/00603-engine-card-printing-split.md) —
+- [00603-engine-card-printing-split.md](00603-engine-card-printing-split.md) —
   candidate spaces, contiguous printing ranges, prefer walk this reuses
 - PR #609 / #618 — measured-constant-instead-of-cost-model precedent for the
   popcount planner threshold; the ~2× random-access penalty measured there is

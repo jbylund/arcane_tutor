@@ -13,7 +13,7 @@ reload peak 549 → 291 MB) live in
   no fold-at-verify tradeoff — the 2.2k-entry vocab is lowercase-only and the
   fold happens once per query at bind.
 - `flavor_text_lower` (~2.3 MB distinct): expected to fall out of
-  [00620-engine-flavor-text-narrowing.md](00620-engine-flavor-text-narrowing.md) the same
+  [00620-engine-flavor-text-narrowing.md](done/00620-engine-flavor-text-narrowing.md) the same
   way — its bind-time distinct-text scan can fold case itself.
 - `oracle_text_lower` (~4.7 MB distinct): the only remaining field that needs
   this doc's gate benchmark. The card/printing split (PR #604) improved its
@@ -42,7 +42,7 @@ deciding. ~4.7 MB is the prize; a regression on a common query class is the risk
 
 - [done/00598-engine-collection-vocab-interning.md](done/00598-engine-collection-vocab-interning.md) — item 5
   of the same series (done)
-- [00620-engine-flavor-text-narrowing.md](00620-engine-flavor-text-narrowing.md) — would retire
+- [00620-engine-flavor-text-narrowing.md](done/00620-engine-flavor-text-narrowing.md) — would retire
   flavor_text_lower as a side effect
 - [local-engine-reload-publish-transient.md](local-engine-reload-publish-transient.md) — the other open
   engine-memory ticket; staging-structure size (this item) sets its live-heap floor

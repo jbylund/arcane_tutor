@@ -1,5 +1,14 @@
 # Range breadth was measured against the index's own length, so nullable columns looked broader
 
+**DONE — merged in [#845](https://github.com/jbylund/sylvan_librarian/pull/845)** (layer 13, the top of the
+cost-model stack). Whole mix 0.905, p99 0.680.
+
+The follow-up this doc names at the end — splitting "is this worth narrowing" from "vec or bitmap", which
+would retire the `eur<0.13 t:land` regression — **shipped in the same PR** as its second change: materialize
+by bitmap scatter rather than by sorting, whole mix 0.949. So nothing carries forward from here. The
+remaining call sites for that materialization are
+[#849](https://github.com/jbylund/sylvan_librarian/issues/849).
+
 `eur>0.15 tix>=0.03 tix<=0.03 id:bgruw` took **1.5 ms**. The same query without the last leaf takes
 **39 µs**. Adding `id:bgruw` — which matches *every* card, since identity ⊆ {W,U,B,R,G} is universally
 true — took the query from a `PrintingCompose` to a whole-corpus scan with `narrowed_repr: none`: the
@@ -84,7 +93,7 @@ that sort; scattering the same 16,664 into 1,519 words would be ~20–30 µs.
 
 Splitting them — bitmap above some absolute size, vec below — is the follow-up, worth ~90 µs on the
 headline query and it should retire the `eur<0.13` class entirely. Same shape as the `dense` vs `broad`
-conflation in [the frame gate](./local-engine-is-frame-predicates.md).
+conflation in [the frame gate](local-engine-is-frame-predicates.md).
 
 ## Status
 

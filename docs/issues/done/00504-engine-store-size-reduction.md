@@ -140,7 +140,7 @@ it.
    48 B/card (~4.6 MB) and keeps the ids queryable — wanted for future lookup by scryfall /
    oracle / illustration id (Scryfall supports this undocumented). That makes
    `oracle_group`/`artwork_group` (introduced by
-   [done/local-engine-broad-query-selection.md](local-engine-broad-query-selection.md)) redundant: the
+   [local-engine-broad-query-selection.md](local-engine-broad-query-selection.md)) redundant: the
    linear dedup paths only need "did the key change between adjacent cards" (u128 equality —
    same cost as the u32 compares, so no perf regression), the HashMap path can key on u128, and
    the dense ids that items 2–3 need as array indices come from the interner (it assigns

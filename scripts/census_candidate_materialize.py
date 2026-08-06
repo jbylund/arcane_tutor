@@ -1,6 +1,6 @@
 """Census: which real queries would a change to candidate materialization actually touch?
 
-Step 1 of docs/issues/local-engine-candidate-materialize.md. Six engine sites turn selected
+Step 1 of docs/issues/done/local-engine-candidate-materialize.md. Six engine sites turn selected
 index rows into a sorted candidate list via `collect` + `sort_unstable`; replacing that with
 a bitmap scatter pays off from roughly `n_cards / 460` candidates up. This asks how many
 queries land in that band before any engine code changes.

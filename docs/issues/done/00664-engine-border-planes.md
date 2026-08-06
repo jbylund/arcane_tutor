@@ -1,7 +1,7 @@
 # Engine: card-level narrowing planes for border:
 
 Status: proposed, not started. GitHub: #664. Follows
-[docs/workflows/performance-pr-workflow.md](../workflows/performance-pr-workflow.md).
+[docs/workflows/performance-pr-workflow.md](../../workflows/performance-pr-workflow.md).
 
 ## Measured problem
 

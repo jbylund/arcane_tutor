@@ -344,7 +344,7 @@ corner (though #656 flags it as a known ~1.07ms gap). **Decision pending:** buil
 deferred. This is a prioritization call, not a technical unknown.
 
 → Extracted to an active plan (parts, ship order, target queries):
-[local-engine-printing-plane-popcount-order.md](../local-engine-printing-plane-popcount-order.md).
+[local-engine-printing-plane-popcount-order.md](local-engine-printing-plane-popcount-order.md).
 
 ## Keeping costs/plans current as the engine changes
 

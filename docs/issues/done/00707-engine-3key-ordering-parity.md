@@ -1,8 +1,30 @@
 # 3-Key Ordering Parity Across Plans
 
+**DONE — resolved, and by neither of the options this doc proposed.** Key 3 was **dropped from cross-card
+comparison entirely** rather than made consistent: `page_cmp` no longer reads `prefer_score`, so within a
+key the order is `(edhrec_rank, cid, pid)` ascending for every plan (`card_engine/src/lib.rs`, and the
+comment at the permutation build site says as much). With no key 3, the perm-vs-gathered divergence
+described below cannot occur — option (A)'s cost to the fast paths was avoided and option (F)'s
+product-semantics decision never had to be made.
+
+**One thing this does not cover, and it is a different question.** The SQL path still carries
+`prefer_score DESC NULLS LAST` as its third `ORDER BY` term
+([api/api_resource.py](../../../api/api_resource.py)). So engine and SQL can now order a
+`(primary, edhrec_rank)` tie differently — the *engine* is internally consistent, which is what #707 asked
+for, but engine-vs-SQL tie order is not asserted anywhere. Not filed: the same "SQL's `ORDER BY` is only
+three terms then arbitrary" argument below applies, and the engine is the serving path.
+
+Two related findings, both separate:
+
+- [`PrintingRangeScan` orders tied rows differently from every other plan](../local-engine-range-scan-row-order.md)
+  — still open. Probed directly and it is **not** this bug: with the `cid` tiebreak removed from `page_cmp`
+  it fails identically.
+- The 2-key ordering contract that used to hide both is now a full row-order assertion, which is how the
+  range-scan divergence became visible at all.
+
 [#707](https://github.com/jbylund/sylvan_librarian/issues/707) — deferred from
 [#706](https://github.com/jbylund/sylvan_librarian/pull/706) /
-[00702](./00702-engine-plan-selection-layer.md).
+[00702](00702-engine-plan-selection-layer.md).
 
 The plan-selection layer enforces **2-key** ordering parity (primary sort
 column → `edhrec_rank`). Key 3 (`prefer_score`) is deliberately not enforced

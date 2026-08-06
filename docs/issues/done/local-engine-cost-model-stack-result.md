@@ -1,5 +1,11 @@
 # What the cost-model stack measured, end to end
 
+**DONE — the end-to-end measurement record for the #804–#816 stack, which has merged.** Kept as the results
+record rather than as open work.
+
+The successor stack (#833–#845) reports its own end-to-end numbers on
+[#830](https://github.com/jbylund/sylvan_librarian/pull/830), the reference PR that carried it.
+
 The eight PRs from #804 to #816 against `origin/main`, on the query distribution the work was
 targeted at. Recorded here because the individual PRs each report a component metric — agreement,
 feature-vs-counter ratios, paging-prediction rates — and none of them answers "did queries get
@@ -8,7 +14,7 @@ faster".
 ## The measurement
 
 `bench_query_latency_ab.py`, uniform weighting from
-[`query_sampler.py`](../../client/query_sampler.py), 120,000 sampled queries per side, 1 warmup and
+[`query_sampler.py`](../../../client/query_sampler.py), 120,000 sampled queries per side, 1 warmup and
 3 trials each, **interleaved A/B/A/B** across two reps with a separate store per side. Two reps
 because one number is not a measurement here: at `--sample 400` the same engine and seed has
 produced 0.26 and 0.82 µs on consecutive runs.

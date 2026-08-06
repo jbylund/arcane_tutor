@@ -2,7 +2,7 @@
 
 **Status: proposed**, filed as [#745](https://github.com/jbylund/sylvan_librarian/issues/745). Builds
 directly on
-[00702-engine-plan-selection-layer.md](done/00702-engine-plan-selection-layer.md)
+[00702-engine-plan-selection-layer.md](00702-engine-plan-selection-layer.md)
 (landed): that issue gave the engine a single cost-based router
 (`run_query_routed`, lib.rs) that argmins `cost::plan_cost` over
 `PhysicalPlan::ALL.filter(applicable)` (6 variants: `PrintingRangeScan`,
@@ -53,7 +53,7 @@ looking at right now" without writing a new `#[bench]`.
   Returning raw timings rather than a summary lets the caller compute a
   median themselves and — as important — see whether a plan's timing is
   bimodal, which this engine has measured happening on identical work
-  before ([00648-engine-verifier-cost-ordering.md](done/00648-engine-verifier-cost-ordering.md)'s
+  before ([00648-engine-verifier-cost-ordering.md](00648-engine-verifier-cost-ordering.md)'s
   measurement-traps section). Given plans here run sub-few-ms, 3 warmups +
   10 trials × 6 plans is a small fraction of a second per call.
 
@@ -104,10 +104,10 @@ which is fine for an on-demand debug call and wrong for every query.
 
 ## Related
 
-- [00702-engine-plan-selection-layer.md](done/00702-engine-plan-selection-layer.md) —
+- [00702-engine-plan-selection-layer.md](00702-engine-plan-selection-layer.md) —
   the cost model, `PhysicalPlan`, `run_query_with_plan`, and the calibration
   harness this builds on.
-- [00648-engine-verifier-cost-ordering.md](done/00648-engine-verifier-cost-ordering.md) —
+- [00648-engine-verifier-cost-ordering.md](00648-engine-verifier-cost-ordering.md) —
   source of the interleaved-measurement discipline and the documented
   bimodal-timing / env-var-size measurement traps.
 - [docs/prs/verifier-cost-ordering.md](../prs/verifier-cost-ordering.md) —

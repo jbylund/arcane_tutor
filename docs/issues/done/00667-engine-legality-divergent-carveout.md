@@ -2,7 +2,7 @@
 
 Status: implemented, including the row-selection fix (see "Row selection for `unique=card`" below),
 benchmarked, pending PR merge. GitHub: #667.
-Follows [docs/workflows/performance-pr-workflow.md](../workflows/performance-pr-workflow.md).
+Follows [docs/workflows/performance-pr-workflow.md](../../workflows/performance-pr-workflow.md).
 Follow-on to #634 (Steps 1/2, shipped in #658), flagged in that issue's own comment thread.
 
 ## Measured problem

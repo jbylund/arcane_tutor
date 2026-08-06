@@ -1647,7 +1647,7 @@ fn arith_tuple_narrow(filter: &FilterExpr, idx: &Archived<ArithTupleIndex>, n_ca
     if count > *BITS_PROMOTE {
         return Narrowed::tight(Candidates::CardBits(scatter_bits(post_ids(), n_cards)));
     }
-    // The case that prompted docs/issues/local-engine-candidate-materialize.md: up to 564 posting rows
+    // The case that prompted docs/issues/done/local-engine-candidate-materialize.md: up to 564 posting rows
     // concatenated, each sorted, the whole never so. Only reachable below `BITS_PROMOTE`, since the arm
     // above already hands back a bitmap past it.
     Narrowed::tight(Candidates::Cards(sorted_ids(post_ids(), count, n_cards)))
@@ -3201,7 +3201,7 @@ const MATERIALIZE_BITMAP_RATIO: usize = 490;
 /// Ids must also be `< domain`; `scatter_bits` would panic otherwise, which is the loud failure.
 ///
 /// Same output either way given that, so this is a pure cost choice with no consumer effect. See
-/// `MATERIALIZE_BITMAP_RATIO`, and docs/issues/local-engine-candidate-materialize.md for the k-way merge
+/// `MATERIALIZE_BITMAP_RATIO`, and docs/issues/done/local-engine-candidate-materialize.md for the k-way merge
 /// that lost to both by 3-30x.
 fn sorted_ids(ids: impl Iterator<Item = u32>, k: usize, domain: usize) -> Vec<u32> {
     let bitmap = *RANGE_MATERIALIZE_BITMAP && k.saturating_mul(MATERIALIZE_BITMAP_RATIO) > domain;
@@ -3710,7 +3710,7 @@ impl Candidates {
     /// events: `or_all` can scatter a vec-shaped arm into bits, hiding a sort that did
     /// happen, and a bits-shaped arm can be extracted into a vec by `and_all`. Exact
     /// per-site accounting needs the shared materialization helper that
-    /// docs/issues/local-engine-candidate-materialize.md proposes.
+    /// docs/issues/done/local-engine-candidate-materialize.md proposes.
     fn repr(&self) -> NarrowedRepr {
         match self {
             Candidates::Cards(_) => NarrowedRepr::Cards,
@@ -5869,7 +5869,7 @@ static RANGE_BREADTH_VS_CORPUS: LazyLock<bool> = LazyLock::new(|| guard_env("CAR
 /// candidate bound: an exact 0 was collapsing `eval_domain`/`scan_units` for the MATERIALIZING
 /// alternatives, pricing `GatheredScan` at 0.2 us against a measured 199.3 us, because a plan still has
 /// to scan to discover a set is empty. With the split it is neutral in aggregate and it is what lets
-/// `LEGALITY_SCAN_SCOPE` be on -- docs/issues/local-engine-pair-totals.md.
+/// `LEGALITY_SCAN_SCOPE` be on -- docs/issues/done/local-engine-pair-totals.md.
 static PAIR_TOTALS: LazyLock<bool> = LazyLock::new(|| guard_env("CARD_ENGINE_PAIR_TOTALS", 1u8) != 0);
 
 /// Whether the legality divergent-share correction to `stream_scan_units` is scoped to filters whose
@@ -9623,7 +9623,7 @@ fn candidate_feats(ctx: &QueryCtx, params: &QueryParams, prep: &PreparedCandidat
     // The exact answer needs the residual evaluated over the candidates, which is the work being costed. A
     // bitmap AND of the candidate set with an indexed leaf's set would give it for that same 9%; nothing
     // cheap covers the rest. See the candidates-acquire section of
-    // docs/issues/local-engine-loop-phase-measurement.md.
+    // docs/issues/done/local-engine-loop-phase-measurement.md.
     let matches = match params.mode {
         Mode::Card => count,
         Mode::Printing | Mode::Artwork => {

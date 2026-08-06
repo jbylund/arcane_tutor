@@ -2,7 +2,7 @@
 
 [#718](https://github.com/jbylund/sylvan_librarian/issues/718)
 
-Follow-up to [00649-accent-insensitive-name-search.md](00649-accent-insensitive-name-search.md)
+Follow-up to [00649-accent-insensitive-name-search.md](done/00649-accent-insensitive-name-search.md)
 (#649, shipped in #716). That change made fuzzy `name:` folding **symmetric**: both the stored
 name and the query word are diacritic-folded, so `name:eowyn` and `name:Éowyn` produce the
 identical folded search term and match identically.

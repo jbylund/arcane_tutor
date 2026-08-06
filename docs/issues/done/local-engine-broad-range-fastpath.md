@@ -344,7 +344,7 @@ fifth (tight/loose) axis to worry about — every field behaves identically ther
 
 ## Related
 
-- [local-engine-printing-plane-popcount-order.md](../local-engine-printing-plane-popcount-order.md) —
+- [local-engine-printing-plane-popcount-order.md](local-engine-printing-plane-popcount-order.md) —
   the consolidated forward plan for idea 2 (the printing-space popcount plan, #656): parts, ship
   order, target queries, and the #656 assembly. This doc is history; that one is the plan.
 - [00690-engine-direct-projection-arrays.md](00690-engine-direct-projection-arrays.md) —

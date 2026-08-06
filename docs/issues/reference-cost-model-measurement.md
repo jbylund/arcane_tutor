@@ -1,7 +1,7 @@
 # Measuring the cost model: which tool answers which question
 
 Eight harnesses, built while doing the work in
-[local-engine-cost-model-agreement.md](local-engine-cost-model-agreement.md). They exist because each
+[local-engine-cost-model-agreement.md](done/local-engine-cost-model-agreement.md). They exist because each
 answers a question the others structurally cannot, and reaching for the wrong one wastes days — three
 successive reworkings of one term improved the metric being watched and moved routing by
 `-0.003 µs, CI [-0.206, +0.214]`.
@@ -41,7 +41,7 @@ declining compose, which no `predicted_ns <= 0` guard catches, and any ratio bui
 poisons the percentile cell it lands in.
 
 The end-to-end answer for the whole cost-model stack is recorded in
-[local-engine-cost-model-stack-result.md](local-engine-cost-model-stack-result.md) — including the
+[local-engine-cost-model-stack-result.md](done/local-engine-cost-model-stack-result.md) — including the
 bands, because a mean over this distribution understates the tail and a p99 overstates it.
 
 Most of them draw queries from one universe, [`query_sampler.py`](../../client/query_sampler.py), in
@@ -62,7 +62,7 @@ the question is what users actually lose.
 
 For built designs — kernel harnesses that control the ratios instead of sampling them — and the rule
 that came out of them (**shape from a built design, levels from traffic**), see
-[local-engine-loop-phase-measurement.md](./local-engine-loop-phase-measurement.md). It also records
+[local-engine-loop-phase-measurement.md](done/local-engine-loop-phase-measurement.md). It also records
 why a min-of-N benchmark over one candidate list measures a cache state production never reaches, and
 why a whole-arm fit's intercept cannot be read as a fixed cost.
 

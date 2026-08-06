@@ -222,7 +222,7 @@ already read 1.000 across 26 scan points: that branch sets `matches = k`, the in
 and in printing mode that *is* the result cardinality. Those rows must stay at 1.000.
 
 **Out of scope:** `eur` and `tix`, which have no range index and never reach this acquire — a separate
-and much larger defect, see [local-engine-eur-tix-range-index.md](local-engine-eur-tix-range-index.md).
+and much larger defect, see [local-engine-eur-tix-range-index.md](done/local-engine-eur-tix-range-index.md).
 
 Routing is deliberately **not** an acceptance criterion for this change alone. Correcting the estimate
 lowers predicted cost for the materializing plans, which are already over-picked, so routing should

@@ -4,10 +4,10 @@
 Filed investigating why `-set:dmu year:2023`
 (0.451ms, printing/edhrec) costs noticeably more than `year:2023` alone (0.268ms) despite excluding
 only 2 of its 9,234 matches. A step 4 for
-[#731](00731-engine-compose-universal-evaluator.md)'s leaf-source table, alongside step 1 (range
+[#731](../00731-engine-compose-universal-evaluator.md)'s leaf-source table, alongside step 1 (range
 leaves, shipped) and the sibling work this session added:
-[done/00740-engine-compose-permutation-fallback.md](done/00740-engine-compose-permutation-fallback.md)
-and [done/00741-engine-negated-range-narrowing.md](done/00741-engine-negated-range-narrowing.md).
+[00740-engine-compose-permutation-fallback.md](00740-engine-compose-permutation-fallback.md)
+and [00741-engine-negated-range-narrowing.md](00741-engine-negated-range-narrowing.md).
 
 ## The finding
 
@@ -15,7 +15,7 @@ and [done/00741-engine-negated-range-narrowing.md](done/00741-engine-negated-ran
 for the *whole* filter) — a non-materializing binary-search plan, effectively free. `-set:dmu
 year:2023` is an `And`, so `bare_range_bounds` returns `None` for the compound as a whole regardless
 of how cheap one side is; `PrintingRangeScan` is inapplicable and the query falls to a materializing
-plan. There, `narrow_rec`'s `And` arm ([lib.rs:3338](../../card_engine/src/lib.rs#L3338)) narrows via
+plan. There, `narrow_rec`'s `And` arm ([lib.rs:3338](../../../card_engine/src/lib.rs#L3338)) narrows via
 `year:2023` (rank 1) to 9,234 candidates, then correctly skips `-set:dmu`'s narrowing contribution
 (rank 2, "complements only pay as sole source") — `-set:dmu` becomes a per-candidate residual check
 instead. Per the engine's own measured cost model (`MASK_COMPARE_NS100` ≈ 4ns/candidate,
@@ -25,15 +25,15 @@ computation, accumulator bookkeeping), not the predicate itself.
 
 ## The idea
 
-`is_printing_composable`/`compose_printing_bits` ([lib.rs:4393](../../card_engine/src/lib.rs#L4393),
-[lib.rs:4551](../../card_engine/src/lib.rs#L4551)) already turn border, rarity, legality, and
+`is_printing_composable`/`compose_printing_bits` ([lib.rs:4393](../../../card_engine/src/lib.rs#L4393),
+[lib.rs:4551](../../../card_engine/src/lib.rs#L4551)) already turn border, rarity, legality, and
 range leaves into exact printing-space bitmaps, composed with `AND`/`OR` — #731's model. `set:`/
 `watermark:` aren't in that table at all today: they're backed by a plain postings `TagIndex`
 (`indexes.set_codes`/`indexes.watermarks`, a `HashMap<String, Vec<u32>>` of sorted printing ids), no
 plane, no leaf-bits function, positive or negated.
 
 Adding one is cheap and reuses an existing primitive: `scatter_bits`
-([lib.rs:2406](../../card_engine/src/lib.rs#L2406)) already does exactly this for border's
+([lib.rs:2406](../../../card_engine/src/lib.rs#L2406)) already does exactly this for border's
 non-plane postings fallback (`border_leaf_bits`, lib.rs:4443). A `set:dmu` leaf is
 `scatter_bits(indexes.set_codes["dmu"], n_printings)` — the same shape, just keyed off a different
 index.
@@ -127,10 +127,10 @@ known-mask is built. See the correctness caveat below.
 `#731`'s own caveat applies here directly: **`NOT` over a nullable field needs a "known" mask** — a
 null-valued printing satisfies neither the direct predicate nor its negation (the same trivalent trap
 `tight_narrow_space` had for `DateCmp`/`YearCmp`, fixed this session in
-[done/00741-engine-negated-range-narrowing.md](done/00741-engine-negated-range-narrowing.md)). `set_code` has
+[00741-engine-negated-range-narrowing.md](00741-engine-negated-range-narrowing.md)). `set_code` has
 no null case (every printing belongs to exactly one set) — "all-ones minus postings" is exact.
 `watermark` **is** nullable (`card_watermark_id != NONE_STR` gates the postings build in
-`reload_commit`, see [00739-engine-watermark-postings.md](done/00739-engine-watermark-postings.md)) —
+`reload_commit`, see [00739-engine-watermark-postings.md](00739-engine-watermark-postings.md)) —
 "all-ones minus postings" would wrongly count no-watermark printings as matching `-watermark:x`. The
 negated compose leaf should therefore cover `set:` only, or `watermark:` needs an explicit
 known-mask subtraction (a third small postings-derived bitmap of "has any watermark") before its
@@ -156,12 +156,12 @@ known-mask question.
 
 ## Related
 
-- [#731](00731-engine-compose-universal-evaluator.md) — the parent plan; this is a step-4 leaf kind
+- [#731](../00731-engine-compose-universal-evaluator.md) — the parent plan; this is a step-4 leaf kind
   its table doesn't yet enumerate.
-- [done/00740-engine-compose-permutation-fallback.md](done/00740-engine-compose-permutation-fallback.md) —
+- [00740-engine-compose-permutation-fallback.md](00740-engine-compose-permutation-fallback.md) —
   sibling fix from the same broad-survey investigation.
-- [done/00741-engine-negated-range-narrowing.md](done/00741-engine-negated-range-narrowing.md) — where the
+- [00741-engine-negated-range-narrowing.md](00741-engine-negated-range-narrowing.md) — where the
   nullable-field `NOT` trap was found and fixed for dates; the same discipline applies to watermark
   here.
-- [done/00739-engine-watermark-postings.md](done/00739-engine-watermark-postings.md) — the
+- [00739-engine-watermark-postings.md](00739-engine-watermark-postings.md) — the
   `set_codes`/`watermarks` `TagIndex` this reuses.

@@ -341,7 +341,7 @@ range+range gap proves worth closing.
 
 ## Related
 
-- [done/00702-engine-plan-selection-layer.md](00702-engine-plan-selection-layer.md) — the cost
+- [00702-engine-plan-selection-layer.md](00702-engine-plan-selection-layer.md) — the cost
   router; where this was the deferred "one real win."
 - [local-engine-broad-range-fastpath.md](local-engine-broad-range-fastpath.md) — historical
   idea-1/idea-2 crossover analysis (the range-narrowing bitmap source).

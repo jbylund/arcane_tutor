@@ -275,7 +275,7 @@ pub(crate) const CARD_RANGE_BUILD_PER_PRINTING_NS: f64 = 0.93;
 // too small to help; it is identical for the plans that actually compete (`StreamedSelect` and
 // `GatheredScan` call the same `prepare_candidates`), so it cannot change an argmin; and its real
 // purpose is to price the bitmap-versus-sort question in
-// docs/issues/local-engine-candidate-materialize.md, which is what it does measure exactly.
+// docs/issues/done/local-engine-candidate-materialize.md, which is what it does measure exactly.
 
 /// `Vec::with_capacity` plus the run walk, before any comparison work
 /// (`bench_candidate_materialize`, axis A).

@@ -16,7 +16,7 @@ Cumulative vs `main` (97,206-printing corpus, artwork/usd, byte-identical output
 ## The lever
 
 For `unique=artwork`, the gather picks one best-`prefer_score` representative per artwork group.
-The [APrinting-layout investigation](./local-engine-aprinting-layout.md) established (after a
+The [APrinting-layout investigation](../local-engine-aprinting-layout.md) established (after a
 misattributed profile) that the real gather cost on `border:black -(names)` / artwork / usd is
 **per-printing residual verification of a printing-varying predicate** (`border`) — the loop calls
 `residual_matches(&printings[pid], …)` on every printing to find a black-bordered rep, reading the

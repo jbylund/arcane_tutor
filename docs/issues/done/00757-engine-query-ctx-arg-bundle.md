@@ -1,7 +1,7 @@
 # Engine: Bundle the Plan-Selection Layer's Repeated Args into Two Borrow Structs
 
-Status: **implemented 2026-07-24** on `engine-query-ctx-arg-bundle`. Tracked as #757. Filed from the
-#752 ([00745-engine-explain-analyze.md](done/00745-engine-explain-analyze.md)) review — the `explain`/
+**DONE.** Status: **implemented 2026-07-24** on `engine-query-ctx-arg-bundle`. Tracked as #757. Filed from the
+#752 ([00745-engine-explain-analyze.md](00745-engine-explain-analyze.md)) review — the `explain`/
 `explain_analyze` primitives pushed the plan-selection layer's argument lists past the point where
 threading them individually reads well. Revised the same day before implementing: scope widened (two
 structs, not one; 13 all-five-slice functions, not 6) and the priority re-argued — see
@@ -35,28 +35,28 @@ meaningful signal, and they are outnumbered better than 2:1 by the boilerplate.
 
 | Function | Args | of which cluster A | cluster B | varying | Location |
 | --- | --- | --- | --- | --- | --- |
-| `walk_printing_page` | 10 | 4 | 4 | 2 | [lib.rs:4442](../../card_engine/src/lib.rs#L4442) |
-| `printing_range_fastpath` | 10 | 5 | 4 | 1 | [lib.rs:4587](../../card_engine/src/lib.rs#L4587) |
-| `printing_compose_fastpath` | 11 | 4 | 6 | 1 | [lib.rs:5404](../../card_engine/src/lib.rs#L5404) |
-| `prepare_candidates` | 7 | 4 | 1 | 2 | [lib.rs:5789](../../card_engine/src/lib.rs#L5789) |
-| `exec_plane_popcount_order` | 11 | 5 | 5 | 1 | [lib.rs:5904](../../card_engine/src/lib.rs#L5904) |
-| `exec_plane_popcount_order_with_bitmap` | 12 | 5 | 5 | 2 | [lib.rs:5936](../../card_engine/src/lib.rs#L5936) |
-| `exec_card_range_popcount` | 12 | 5 | 5 | 2 | [lib.rs:5964](../../card_engine/src/lib.rs#L5964) |
-| `walk_grouped_page` | 12 | 3 | 6 | 3 | [lib.rs:6035](../../card_engine/src/lib.rs#L6035) |
-| `gather_composed_page` | 11 | 3 | 6 | 2 | [lib.rs:6139](../../card_engine/src/lib.rs#L6139) |
-| `exec_streamed_select` | 14 | 5 | 6 | 3 | [lib.rs:6226](../../card_engine/src/lib.rs#L6226) |
-| `exec_gathered_scan` | 14 | 5 | 6 | 3 | [lib.rs:6258](../../card_engine/src/lib.rs#L6258) |
-| `run_query` | 13 | 5 | 3 | 5 | [lib.rs:6324](../../card_engine/src/lib.rs#L6324) |
-| `exec_from_candidates` | 15 | 5 | 6 | 4 | [lib.rs:6376](../../card_engine/src/lib.rs#L6376) |
-| `mk_plan_feats` | 8 | 0 | 2 | 6 | [lib.rs:6407](../../card_engine/src/lib.rs#L6407) |
-| `candidate_feats` | 8 | 1 | 3 | 4 | [lib.rs:6443](../../card_engine/src/lib.rs#L6443) |
-| `acquire_plan_features` | 12 | 5 | 5 | 2 | [lib.rs:6469](../../card_engine/src/lib.rs#L6469) |
-| `run_query_routed` | 13 | 5 | 6 | 2 | [lib.rs:6595](../../card_engine/src/lib.rs#L6595) |
-| `run_query_with_plan` | 14 | 5 | 3 | 6 | [lib.rs:6696](../../card_engine/src/lib.rs#L6696) |
-| `explain` | 12 | 5 | 5 | 2 | [lib.rs:6792](../../card_engine/src/lib.rs#L6792) |
-| `explain_analyze` | 15 | 5 | 3 | 7 | [lib.rs:6859](../../card_engine/src/lib.rs#L6859) |
-| `run_query_streamed_popcount` | 13 | 4 | 3 | 6 | [lib.rs:6923](../../card_engine/src/lib.rs#L6923) |
-| `run_query_streamed` | 18 | 4 | 6 | 8 | [lib.rs:7052](../../card_engine/src/lib.rs#L7052) |
+| `walk_printing_page` | 10 | 4 | 4 | 2 | [lib.rs:4442](../../../card_engine/src/lib.rs#L4442) |
+| `printing_range_fastpath` | 10 | 5 | 4 | 1 | [lib.rs:4587](../../../card_engine/src/lib.rs#L4587) |
+| `printing_compose_fastpath` | 11 | 4 | 6 | 1 | [lib.rs:5404](../../../card_engine/src/lib.rs#L5404) |
+| `prepare_candidates` | 7 | 4 | 1 | 2 | [lib.rs:5789](../../../card_engine/src/lib.rs#L5789) |
+| `exec_plane_popcount_order` | 11 | 5 | 5 | 1 | [lib.rs:5904](../../../card_engine/src/lib.rs#L5904) |
+| `exec_plane_popcount_order_with_bitmap` | 12 | 5 | 5 | 2 | [lib.rs:5936](../../../card_engine/src/lib.rs#L5936) |
+| `exec_card_range_popcount` | 12 | 5 | 5 | 2 | [lib.rs:5964](../../../card_engine/src/lib.rs#L5964) |
+| `walk_grouped_page` | 12 | 3 | 6 | 3 | [lib.rs:6035](../../../card_engine/src/lib.rs#L6035) |
+| `gather_composed_page` | 11 | 3 | 6 | 2 | [lib.rs:6139](../../../card_engine/src/lib.rs#L6139) |
+| `exec_streamed_select` | 14 | 5 | 6 | 3 | [lib.rs:6226](../../../card_engine/src/lib.rs#L6226) |
+| `exec_gathered_scan` | 14 | 5 | 6 | 3 | [lib.rs:6258](../../../card_engine/src/lib.rs#L6258) |
+| `run_query` | 13 | 5 | 3 | 5 | [lib.rs:6324](../../../card_engine/src/lib.rs#L6324) |
+| `exec_from_candidates` | 15 | 5 | 6 | 4 | [lib.rs:6376](../../../card_engine/src/lib.rs#L6376) |
+| `mk_plan_feats` | 8 | 0 | 2 | 6 | [lib.rs:6407](../../../card_engine/src/lib.rs#L6407) |
+| `candidate_feats` | 8 | 1 | 3 | 4 | [lib.rs:6443](../../../card_engine/src/lib.rs#L6443) |
+| `acquire_plan_features` | 12 | 5 | 5 | 2 | [lib.rs:6469](../../../card_engine/src/lib.rs#L6469) |
+| `run_query_routed` | 13 | 5 | 6 | 2 | [lib.rs:6595](../../../card_engine/src/lib.rs#L6595) |
+| `run_query_with_plan` | 14 | 5 | 3 | 6 | [lib.rs:6696](../../../card_engine/src/lib.rs#L6696) |
+| `explain` | 12 | 5 | 5 | 2 | [lib.rs:6792](../../../card_engine/src/lib.rs#L6792) |
+| `explain_analyze` | 15 | 5 | 3 | 7 | [lib.rs:6859](../../../card_engine/src/lib.rs#L6859) |
+| `run_query_streamed_popcount` | 13 | 4 | 3 | 6 | [lib.rs:6923](../../../card_engine/src/lib.rs#L6923) |
+| `run_query_streamed` | 18 | 4 | 6 | 8 | [lib.rs:7052](../../../card_engine/src/lib.rs#L7052) |
 
 Thirteen of these take all five of cluster A. (The original filing listed six functions; it was
 scoped to the plan-selection entry points and missed the executors, the fastpaths, and the streamed
@@ -97,9 +97,9 @@ from 14 args to `(ctx, filter, prep, plane, params)`. Most of the 25 `#[allow]`s
 
 - **`QueryParams::from_strs(unique, prefer, orderby, direction, limit, offset)`.** The
   `orderby_to_col` / `direction == "desc"` / `prefer_from_str` / `mode_from_unique` block is
-  copy-pasted at four sites in `lib.rs` — [6339](../../card_engine/src/lib.rs#L6339),
-  [6712](../../card_engine/src/lib.rs#L6712), [6876](../../card_engine/src/lib.rs#L6876),
-  [7963](../../card_engine/src/lib.rs#L7963) — plus several in `tests.rs`. This is also what lets
+  copy-pasted at four sites in `lib.rs` — [6339](../../../card_engine/src/lib.rs#L6339),
+  [6712](../../../card_engine/src/lib.rs#L6712), [6876](../../../card_engine/src/lib.rs#L6876),
+  [7963](../../../card_engine/src/lib.rs#L7963) — plus several in `tests.rs`. This is also what lets
   `run_query`, `run_query_with_plan`, and `explain_analyze` stop taking four `&str`s each: they take
   `&QueryParams` and the string→enum adapter exists once.
 - **`impl<'a> From<&'a Archived<CardData>> for QueryCtx<'a>`.** Every construction site is
@@ -114,13 +114,13 @@ These are too small to be their own PRs and sit in exactly the signatures being 
 - `PhysicalPlan::applicable(filter, mode, cards, plane, sort_col, descending, indexes)` — 7 args, 6
   call sites in `run_query_routed`/`explain`/`acquire_plan_features` — becomes
   `applicable(&ctx, &params, filter, plane)`.
-- [exec_streamed_select](../../card_engine/src/lib.rs#L6244) and
-  [exec_gathered_scan](../../card_engine/src/lib.rs#L6276) both open with the identical
+- [exec_streamed_select](../../../card_engine/src/lib.rs#L6244) and
+  [exec_gathered_scan](../../../card_engine/src/lib.rs#L6276) both open with the identical
   `existential_plane_for` + `Box<dyn Iterator<Item = u32>>` candidate-ids preamble. One method on
   `PreparedCandidates`.
-- [exec_plane_popcount_order](../../card_engine/src/lib.rs#L5904) is a ten-line thread-local wrapper
+- [exec_plane_popcount_order](../../../card_engine/src/lib.rs#L5904) is a ten-line thread-local wrapper
   around `_with_bitmap`, and both spell out the full 11/12-arg list.
-- [mk_plan_feats](../../card_engine/src/lib.rs#L6407) exists purely to avoid an 8-field struct
+- [mk_plan_feats](../../../card_engine/src/lib.rs#L6407) exists purely to avoid an 8-field struct
   literal, and needs its own `#[allow]` to do it. With the two structs in place it takes those plus
   the four fields that actually vary by count source.
 
@@ -154,8 +154,8 @@ inverse one does:
 - **The layer is quiet.** The only open engine PR is #692, which touches `filter.rs` and nothing
   else. Every other open PR is images / fonts / query-runner / DFC work.
 - **The next four engine issues all land here.** #754 (plane-subtree compose leaf + general `Not`
-  arm), [#731](00731-engine-compose-universal-evaluator.md) (compose as the universal exact
-  evaluator), [#730](00730-engine-popcount-skip-walk.md) (popcount-skip walk generalized to all
+  arm), [#731](../00731-engine-compose-universal-evaluator.md) (compose as the universal exact
+  evaluator), [#730](../00730-engine-popcount-skip-walk.md) (popcount-skip walk generalized to all
   distinct-ons), and #656 each add plans or args to these exact signatures. Landing the bundle first
   means they build on 4-arg signatures instead of each pushing a 15-arg list to 16 — which is the
   "do it while the layer is open" intent, just resolved in the other direction.
@@ -241,17 +241,17 @@ docs rather than folded in here:
   [local-engine-clippy-ci-gate.md](local-engine-clippy-ci-gate.md), stacked directly on this change.
 - **`lib.rs` is 8146 lines** and already carved by 30 `// ───` section banners that map cleanly onto
   modules. The split is close to mechanical: `mod tests` sits at the crate root
-  ([lib.rs:8130](../../card_engine/src/lib.rs#L8130)) importing ~100 names via `use super::{…}`, and
+  ([lib.rs:8130](../../../card_engine/src/lib.rs#L8130)) importing ~100 names via `use super::{…}`, and
   a private `use newmod::*;` at the root keeps all of them resolving through `super::` unchanged.
   Sequence it *after* this change, so the new module boundaries carry 4-arg signatures rather than
   15-arg ones.
 
 ## Related
 
-- [00745-engine-explain-analyze.md](done/00745-engine-explain-analyze.md) — the diagnostic work (#752)
+- [00745-engine-explain-analyze.md](00745-engine-explain-analyze.md) — the diagnostic work (#752)
   that pushed the arg counts up and surfaced this.
-- [done/00702-engine-plan-selection-layer.md](done/00702-engine-plan-selection-layer.md) — the
+- [00702-engine-plan-selection-layer.md](00702-engine-plan-selection-layer.md) — the
   cost-based router (`run_query_routed`, `acquire_plan_features`) whose signatures this cleans up.
-- [local-engine-range-veto-redundancy.md](local-engine-range-veto-redundancy.md) — the other
+- [local-engine-range-veto-redundancy.md](../local-engine-range-veto-redundancy.md) — the other
   standing cleanup in this layer, but a *semantic* one (a hardcoded second copy of a cost decision)
   that needs measurement first, unlike this one.

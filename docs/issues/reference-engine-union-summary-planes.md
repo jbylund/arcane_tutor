@@ -62,8 +62,8 @@ flat (small closed algebras) or plain two-tier (membership-only) wins.
 
 ## Related
 
-- [00630-engine-card-bitplanes.md](00630-engine-card-bitplanes.md) — #630/#633 flat planes
-- [00636-engine-adaptive-candidate-sets.md](00636-engine-adaptive-candidate-sets.md) —
+- [00630-engine-card-bitplanes.md](done/00630-engine-card-bitplanes.md) — #630/#633 flat planes
+- [00636-engine-adaptive-candidate-sets.md](done/00636-engine-adaptive-candidate-sets.md) —
   #636/#637 scatter/complement machinery this leans on
 - [00623-engine-flavor-absent-gram-bitmap.md](00623-engine-flavor-absent-gram-bitmap.md) —
   #623, the same union-summary-as-rejector idea

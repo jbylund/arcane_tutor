@@ -109,7 +109,7 @@ def calibration(engine: card_engine.QueryEngine, queries: list[tuple[str, str, s
     < 1 means over-costed and under-picked.
     """
     # Two ratios, because `measured` includes the acquire step and `predicted` does not — that
-    # unpriced term (docs/issues/local-engine-candidate-materialize.md) would otherwise be read as
+    # unpriced term (docs/issues/done/local-engine-candidate-materialize.md) would otherwise be read as
     # the plan arm being wrong. `net` subtracts the measured acquire, isolating the arm itself.
     ratios: collections.defaultdict[str, list[float]] = collections.defaultdict(list)
     nets: collections.defaultdict[str, list[float]] = collections.defaultdict(list)

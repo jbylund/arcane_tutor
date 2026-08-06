@@ -1,6 +1,6 @@
 # Engine: generalize existential planes beyond legality (Y-predicate framework)
 
-Follows [docs/workflows/performance-pr-workflow.md](../workflows/performance-pr-workflow.md).
+Follows [docs/workflows/performance-pr-workflow.md](../../workflows/performance-pr-workflow.md).
 GitHub: #680. Status: done — merged and shipped (rarity + border). Remaining Y≥2/unique=printing
 scope split out to #681. Grew out of
 investigating #678's rarity follow-on

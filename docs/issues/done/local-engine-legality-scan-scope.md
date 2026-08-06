@@ -1,5 +1,15 @@
 # `f:modern border:white` picks a 100 µs plan over a 44 µs one, and the whole family estimates identically
 
+**DONE — merged in [#844](https://github.com/jbylund/sylvan_librarian/pull/844)** (layer 12 of the
+cost-model stack), alongside the pair table that unblocked it. `f:modern border:white` goes
+149.0/99.5/134.1 µs (printing/card/artwork) to 76.4/102.1/83.2.
+
+Defect 1 (the `stream_scan_units` correction scoped on the wrong question) shipped. Defect 2 resolved
+itself once the pair table made the two-leaf card total exact. **Item (1) of "What to do" — the
+`DeclineSparseExact` cliff that discards a compose build already paid for — is refiled as
+[#848](https://github.com/jbylund/sylvan_librarian/issues/848)**: the pair table removed the population
+that was hitting it, not the cliff.
+
 `f:modern border:white` measures **100.5 µs** on the `StreamedSelect` the router picks and **43.8 µs** on
 the `PrintingCompose` it passes over. The same holds across the family, and the reason is that the cost
 model cannot tell its members apart.
@@ -104,7 +114,7 @@ run. Three of the four are actually below it.
 
 ## Resolved
 
-Defect 2's trigger was the `min` fold, and [the pair table](./local-engine-pair-totals.md) makes the
+Defect 2's trigger was the `min` fold, and [the pair table](local-engine-pair-totals.md) makes the
 two-leaf card total exact (978, not 2,755), so `compose_paging` predicts the decline rather than walking
 into it. Card mode now routes to `GatheredScan` at 102.1 µs instead of picking a compose that bails at
 163.1 µs, while printing keeps 2.0x and artwork 1.6x. Both toggles are on; aggregate is neutral (0.995
@@ -118,5 +128,5 @@ doing: the pair table removed the case that was biting, not the cliff.
 Defect 1 is on by default. Every number above is measured on the production corpus: per-query figures are
 a minimum of 9–15 trials after warmup, and the A/B is 8 interleaved rounds with a control subset.
 
-Related: [#731](./00731-engine-compose-universal-evaluator.md) — this is the arm that would gain
+Related: [#731](../00731-engine-compose-universal-evaluator.md) — this is the arm that would gain
 `color`/`cmc` as broadcast sources, which is why it is worth fixing the router on it first.
