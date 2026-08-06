@@ -10376,6 +10376,9 @@ fn publish_popcount_phases(ns_setup: u64, ns_loop: u64, ns_finish: u64) {
 /// Streamed selection: match phase records per-card match counts (total is
 /// their sum), then either gathers (small totals — byte-identical to the
 /// gathered path) or walks the orderby permutation emitting only page cards.
+// Eight since `proven_conjuncts` joined `all_match_known`: the two are the same idea at two
+// granularities (see `Narrowed::proven`), and both have to reach `card_pass` at the bottom of the loop.
+#[allow(clippy::too_many_arguments, reason = "all_match_known and proven_conjuncts are one signal at two granularities, both needed by card_pass")]
 fn run_query_streamed<'a>(
     ctx: &QueryCtx<'a>,
     params: &QueryParams,
