@@ -9430,7 +9430,7 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 // current calendar date (20260723) and 20260724 were both already consumed by
 // earlier same-window archive changes (#737 columnar artwork_group_id, #741
 // watermark postings), so this takes the next distinct value — see the doc above.
-const ARCHIVE_FORMAT_VERSION: u32 = 20260803;
+const ARCHIVE_FORMAT_VERSION: u32 = 2026080503;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
