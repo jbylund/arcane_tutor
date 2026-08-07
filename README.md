@@ -8,17 +8,17 @@
 
 <table>
   <tr>
-    <td><img src="https://cdn.simpleicons.org/python" alt="Python" width="28" height="28"></td>
+    <td><img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/python/python-original.svg" alt="Python" width="28" height="28"></td>
     <td><a href="https://github.com/jbylund/sylvan_librarian/actions/workflows/python-tests.yml?query=branch%3Amain"><img src="https://img.shields.io/github/actions/workflow/status/jbylund/sylvan_librarian/python-tests.yml?branch=main&label=tests" alt="Python tests"></a></td>
     <td><a href="https://github.com/jbylund/sylvan_librarian/actions/workflows/python-tests.yml?query=branch%3Amain"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fd1hot9ps2xugbc.cloudfront.net%2Fbadges%2Ftests-python.json" alt="Python test count"></a></td>
   </tr>
   <tr>
-    <td><img src="https://cdn.simpleicons.org/rust" alt="Rust" width="28" height="28"></td>
+    <td><img src="https://cdn.simpleicons.org/rust/000000/ffffff" alt="Rust" width="28" height="28"></td>
     <td><a href="https://github.com/jbylund/sylvan_librarian/actions/workflows/rust-tests.yml?query=branch%3Amain"><img src="https://img.shields.io/github/actions/workflow/status/jbylund/sylvan_librarian/rust-tests.yml?branch=main&label=tests" alt="Rust tests"></a></td>
     <td><a href="https://github.com/jbylund/sylvan_librarian/actions/workflows/rust-tests.yml?query=branch%3Amain"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fd1hot9ps2xugbc.cloudfront.net%2Fbadges%2Ftests-rust.json" alt="Rust test count"></a></td>
   </tr>
   <tr>
-    <td><img src="https://cdn.simpleicons.org/javascript" alt="JavaScript" width="28" height="28"></td>
+    <td><img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/javascript/javascript-original.svg" alt="JavaScript" width="28" height="28"></td>
     <td><a href="https://github.com/jbylund/sylvan_librarian/actions/workflows/js-tests.yml?query=branch%3Amain"><img src="https://img.shields.io/github/actions/workflow/status/jbylund/sylvan_librarian/js-tests.yml?branch=main&label=tests" alt="JavaScript tests"></a></td>
     <td><a href="https://github.com/jbylund/sylvan_librarian/actions/workflows/js-tests.yml?query=branch%3Amain"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fd1hot9ps2xugbc.cloudfront.net%2Fbadges%2Ftests-js.json" alt="JavaScript test count"></a></td>
   </tr>
