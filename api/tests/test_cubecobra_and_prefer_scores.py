@@ -176,3 +176,48 @@ class TestBackfillPreferScores:
         result = api_resource.backfill_prefer_scores()
 
         assert result["cards_updated"] == 0
+
+    def test_reports_duration_and_scored_count(self, api_resource: APIResource) -> None:
+        """cards_scored counts the whole scored corpus, not just the rows this run moved."""
+        _insert_card(api_resource, make_raw_card(name=f"Stats Card {uuid.uuid4()}"))
+        api_resource.backfill_prefer_scores()
+
+        result = api_resource.backfill_prefer_scores()
+
+        assert result["duration_seconds"] >= 0
+        # Nothing moved on the second run, but the corpus is still fully scored.
+        assert result["cards_updated"] == 0
+        assert result["cards_scored"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# backfill_cubecobra_scores
+# ---------------------------------------------------------------------------
+
+
+class TestBackfillCubecobraScores:
+    def test_returns_success_status(self, api_resource: APIResource) -> None:
+        result = api_resource.backfill_cubecobra_scores()
+        assert result["status"] == "success"
+
+    def test_reports_duration_and_counts(self, api_resource: APIResource) -> None:
+        _insert_card(api_resource, make_raw_card(name=f"Cubecobra Stats Card {uuid.uuid4()}"))
+
+        result = api_resource.backfill_cubecobra_scores()
+
+        assert result["duration_seconds"] >= 0
+        assert result["cards_updated"] >= 0
+        assert result["cards_with_cubecobra_data"] >= 0
+
+    def test_counts_cards_carrying_cubecobra_data(self, api_resource: APIResource) -> None:
+        """Count the cards actually carrying CubeCobra data.
+
+        The normal import never populates cubecobra_elo, so this distinguishes a real ranking
+        from one computed over an all-NULL corpus.
+        """
+        oracle_id = _insert_card(api_resource, make_raw_card(name=f"Cubecobra Data Card {uuid.uuid4()}"))
+        before = api_resource.backfill_cubecobra_scores()["cards_with_cubecobra_data"]
+
+        api_resource._insert_cubecobra_data({oracle_id: {"elo": 1500.0, "cube_count": 7, "pick_count": 9}})
+
+        assert api_resource.backfill_cubecobra_scores()["cards_with_cubecobra_data"] == before + 1
