@@ -8009,17 +8009,60 @@ impl PhysicalPlan {
         }
     }
 
-    /// Whether the plan runs off the shared materialized prep (plane bitmap /
-    /// candidate list) — true for all but the printing-space fast paths
-    /// (`PrintingRangeScan`/`PrintingCompose`), whose whole benefit is answering from a cheap estimate
-    /// and composing/walking only if they win. The router costs non-materializing plans from a cheap
-    /// estimate first (phase 1) and only materializes (phase 2) when a materializing plan wins or the
-    /// non-materializing one declines.
-    fn materializing(self) -> bool {
-        !matches!(
-            self,
-            PhysicalPlan::PrintingRangeScan | PhysicalPlan::PrintingCompose | PhysicalPlan::CardRangePopcount
-        )
+}
+
+/// The two plans that run off a materialized candidate list (P3/P4) — `exec_from_candidates`'s
+/// whole repertoire, as a type.
+///
+/// Narrower than `PhysicalPlan` on purpose. The executor's `match` used to be over all six plans
+/// ending in `unreachable!`, which made "the router only ever hands me one of these two" an
+/// undocumented invariant of `run_query_routed`'s argmin rather than something either side
+/// enforced — and the argmin did not enforce it (see `PlanScope`). Over this type the executor's
+/// match is exhaustive, so adding a plan cannot silently re-open that hole: `of` is the one place
+/// that decides whether a candidate list can run it, and it is exhaustive over `PhysicalPlan`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CandidatePlan {
+    StreamedSelect,
+    GatheredScan,
+}
+
+impl CandidatePlan {
+    /// The candidate-list executor for `plan`, if it has one. Exhaustive over `PhysicalPlan` rather
+    /// than a `_` arm: a new plan variant must state here whether a candidate list can run it.
+    fn of(plan: PhysicalPlan) -> Option<Self> {
+        match plan {
+            PhysicalPlan::StreamedSelect => Some(CandidatePlan::StreamedSelect),
+            PhysicalPlan::GatheredScan => Some(CandidatePlan::GatheredScan),
+            PhysicalPlan::PrintingRangeScan
+            | PhysicalPlan::PrintingCompose
+            | PhysicalPlan::PlanePopcountOrder
+            | PhysicalPlan::CardRangePopcount => None,
+        }
+    }
+
+    /// `of`, with `GatheredScan` — which answers every query correctly — where `of` says the plan
+    /// has no candidate-list executor.
+    ///
+    /// `PlanScope` is what makes the fallback unreachable: every caller restricts its argmin to a
+    /// scope this conversion is total over. It exists anyway, in place of the `unreachable!` that was
+    /// here, because the right failure mode for a router/executor disagreement is "runs a correct
+    /// plan, possibly not the cheapest" and not "panics".
+    ///
+    /// Not because a panic would escape — the same change taught `_search` to catch `BaseException`,
+    /// so one here is caught and the request degrades to SQL. That is what made the `unreachable!`
+    /// user-visible before (a `PanicException` derives from `BaseException`, so the fallback missed it
+    /// and the request 500ed), and it is closed on the Python side independently of this.
+    ///
+    /// The reason not to panic is that the fallback is a last resort rather than a licence: reaching
+    /// it throws away a correct engine plan and pays a Postgres round trip because the router
+    /// disagreed with its own executor — a latency cliff, where running the plan that was sitting
+    /// right there costs nothing. The `debug_assert` keeps that from being a silent papering-over: a
+    /// debug build (which is what CI's rust-test job runs) still fails loudly.
+    fn of_or_gathered(plan: PhysicalPlan) -> Self {
+        CandidatePlan::of(plan).unwrap_or_else(|| {
+            debug_assert!(false, "no candidate-list executor for {plan:?} — the argmin's PlanScope did not restrict it");
+            CandidatePlan::GatheredScan
+        })
     }
 }
 
@@ -8080,6 +8123,68 @@ enum Prep {
     Plane,
     /// The general residual path: a materialized candidate list.
     Candidates(PreparedCandidates),
+}
+
+/// Which plans `run_query_routed`'s argmin may return — the set the caller's dispatch arm actually
+/// has an executor for.
+///
+/// The router is "argmin over `ALL.filter(applicable)`, then dispatch on `(plan, &prep)`", and
+/// `applicable` is a *correctness* predicate about the query, not a statement about which artifact
+/// the acquire step materialized. Those are different questions, and only `Prep::Range` answers
+/// both the same way (its arm can run every plan: the fast paths walk, a materializing winner
+/// materializes lazily). The other two acquires hold exactly one artifact and can run exactly the
+/// plans that read it — so without this the argmin can hand them a plan their arm has no executor
+/// for, which `exec_from_candidates` met with `unreachable!`.
+///
+/// What kept that from firing was a coincidence in somebody else's predicate, not anything the
+/// router did: all three printing-space fast paths require `plane.is_none()` and
+/// `PlanePopcountOrder` requires `plane.is_some()`, so a plane acquire's applicable set happens to
+/// land inside its scope. Those guards are about how a predicate is REPRESENTED — a bare border
+/// under `unique=card` folds into a plane, so compose declines it — and not about what a dispatch
+/// arm can execute. Work in flight to let compose cost the unsplit filter alongside a plane removes
+/// the coincidence while leaving the router's reasoning exactly as it was, which is the case for
+/// stating the constraint where it belongs instead of relying on the overlap.
+///
+/// Restricting the argmin rather than teaching the arms to run more plans is also the right
+/// performance answer: the acquire already paid for its artifact, and a plan outside the scope
+/// would throw that work away and redo it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlanScope {
+    /// Every applicable plan — `Prep::Range`, whose dispatch arm covers all six.
+    All,
+    /// The candidate-list executors only (`CandidatePlan`): `Prep::Candidates`, and `Prep::Range`'s
+    /// lazy-materialize fallback once it has a candidate list in hand.
+    ///
+    /// Not `PlanePopcountOrder`, even though that plan reads a materialized artifact too — the
+    /// artifact it reads (the plane bitmap) is exactly what these two paths did *not* build. This
+    /// is the distinction the old `materializing()` flag, which grouped it with P3/P4, did not draw.
+    Candidates,
+    /// `Candidates` plus `PlanePopcountOrder`: `Prep::Plane`, which holds the plane bitmap that
+    /// plan walks, and which P3/P4 can equally read as their candidate list.
+    Plane,
+}
+
+impl PlanScope {
+    /// Whether the argmin may return `plan` in this scope.
+    fn admits(self, plan: PhysicalPlan) -> bool {
+        match self {
+            PlanScope::All => true,
+            PlanScope::Candidates => CandidatePlan::of(plan).is_some(),
+            PlanScope::Plane => CandidatePlan::of(plan).is_some() || matches!(plan, PhysicalPlan::PlanePopcountOrder),
+        }
+    }
+}
+
+impl Prep {
+    /// The plans this acquire's dispatch arm can execute. Paired with the `match (plan, &prep)` in
+    /// `run_query_routed`: every arm there is reachable only for plans this admits.
+    fn scope(&self) -> PlanScope {
+        match self {
+            Prep::Range(_) => PlanScope::All,
+            Prep::Plane => PlanScope::Plane,
+            Prep::Candidates(_) => PlanScope::Candidates,
+        }
+    }
 }
 
 /// Row selection (docs/issues/00667-engine-legality-divergent-carveout.md "Row
@@ -9365,8 +9470,12 @@ fn scan_units(mode: Mode, candidate_cards: Option<&[u32]>, offsets: &AOffsets, n
 /// phase-2 prep branches funnel their P3/P4 winner through here, so the executor
 /// call site exists once. `PlanePopcountOrder` is handled by its own bitmap
 /// executor and `PrintingRangeScan` never reaches here (non-materializing).
+///
+/// Takes `CandidatePlan`, not `PhysicalPlan`: the match below is then exhaustive, and the
+/// "only P3/P4 reach here" precondition is the caller's to satisfy in the type rather than a
+/// comment backed by an `unreachable!`.
 fn exec_from_candidates<'a>(
-    plan: PhysicalPlan,
+    plan: CandidatePlan,
     ctx: &QueryCtx<'a>,
     params: &QueryParams,
     filter: &FilterExpr,
@@ -9374,17 +9483,16 @@ fn exec_from_candidates<'a>(
     plane: Option<&PlaneExpr>,
 ) -> (usize, Vec<(&'a AOracleCard, &'a APrinting)>) {
     match plan {
-        PhysicalPlan::StreamedSelect => exec_streamed_select(ctx, params, filter, prep, plane),
-        PhysicalPlan::GatheredScan => exec_gathered_scan(ctx, params, filter, prep, plane),
-        other => unreachable!("exec_from_candidates only runs P3/P4, got {other:?}"),
+        CandidatePlan::StreamedSelect => exec_streamed_select(ctx, params, filter, prep, plane),
+        CandidatePlan::GatheredScan => exec_gathered_scan(ctx, params, filter, prep, plane),
     }
 }
 
 /// When a `Prep::Range` fast path declines at runtime, try its non-materializing sibling before
 /// paying `prepare_candidates`.
 ///
-/// `run_query_routed`'s fallback re-chooses with `materializing_only = true`, and
-/// `PhysicalPlan::materializing()` excludes every fast path — so the sibling was unreachable even
+/// `run_query_routed`'s fallback re-chooses in `PlanScope::Candidates`, which excludes every fast
+/// path — so the sibling was unreachable even
 /// when it was applicable, would not decline, and was an order of magnitude cheaper. Measured on
 /// `usd>20` at `unique=printing`: `PrintingRangeScan` declines, the materializing fallback runs in
 /// ~105 µs, and `PrintingCompose` answers the same query in 2.3 µs.
@@ -9407,7 +9515,7 @@ fn declined_sibling_fastpath<'a>(
     unsplit: Option<&FilterExpr>,
     plane: Option<&PlaneExpr>,
     feats: &cost::PlanFeatures,
-    choose: &impl Fn(&FilterExpr, &cost::PlanFeatures, bool) -> PhysicalPlan,
+    choose: &impl Fn(&FilterExpr, &cost::PlanFeatures, PlanScope) -> PhysicalPlan,
 ) -> Option<(usize, Vec<(&'a AOracleCard, &'a APrinting)>)> {
     let sibling = match declined {
         PhysicalPlan::PrintingRangeScan => PhysicalPlan::PrintingCompose,
@@ -9417,7 +9525,7 @@ fn declined_sibling_fastpath<'a>(
     if !sibling.applicable(ctx, params, filter, unsplit, plane) {
         return None;
     }
-    if cost::plan_cost(sibling, feats) >= cost::plan_cost(choose(filter, feats, true), feats) {
+    if cost::plan_cost(sibling, feats) >= cost::plan_cost(choose(filter, feats, PlanScope::Candidates), feats) {
         return None;
     }
     match sibling {
@@ -10253,14 +10361,14 @@ fn acquire_plan_features(
 ///    a True-residual plane's popcount (`Prep::Plane`), a bare range's index-`k`
 ///    (`Prep::Range`, nothing materialized), or `prepare_candidates`
 ///    (`Prep::Candidates`). This 3-way is the engine's entire materialization story.
-/// 2. **choose** — `argmin cost::plan_cost` over `ALL.filter(applicable)`. No
-///    hand-written plan list; applicability encodes prep availability, so the right
-///    candidates fall out per acquire branch.
+/// 2. **choose** — `argmin cost::plan_cost` over `ALL.filter(applicable)`, narrowed to the plans
+///    step 3's arm for this prep can execute (`Prep::scope`). No hand-written plan list;
+///    applicability encodes prep availability, so the right candidates fall out per acquire branch.
 /// 3. **dispatch** — run the winner, reusing the acquired artifact.
 ///
 /// Plan choice is a pure performance decision — every plan returns identical rows
 /// (guaranteed by `force_plan_differential_agreement`). Adding a plan is declaring
-/// its `applicable`/`cost`/`materializing`/executor arms; only a genuinely new
+/// its `applicable`/`cost`/`PlanScope`/executor arms; only a genuinely new
 /// count source (a new `Prep`) touches acquire/dispatch. The one subtlety is
 /// `Prep::Range`: it costs `PrintingRangeScan` (non-materializing) from a cheap
 /// estimate, so if a *materializing* plan wins there — or `PrintingRangeScan` wins
@@ -10273,16 +10381,17 @@ fn run_query_routed<'a>(
     unsplit: Option<&FilterExpr>,
     plane: Option<&PlaneExpr>,
 ) -> (usize, Vec<(&'a AOracleCard, &'a APrinting)>) {
-    // Generic argmin: the cheapest applicable plan. `filter` is passed per call (not
-    // captured) so it stays free for `prepare_candidates`'s `&mut`. `materializing`
-    // restricts to plans runnable off a materialized prep (the lazy-materialize path
-    // below). GatheredScan is always applicable and materializing → min never empty.
-    let choose = |filter: &FilterExpr, feats: &cost::PlanFeatures, materializing_only: bool| -> PhysicalPlan {
+    // Generic argmin: the cheapest applicable plan the caller's dispatch arm can run. `filter` is
+    // passed per call (not captured) so it stays free for `prepare_candidates`'s `&mut`. `scope`
+    // narrows `ALL` to the plans that arm has an executor for — see `PlanScope`, and note that
+    // `applicable` alone does NOT imply runnable-here. GatheredScan is applicable to every query
+    // and admitted by every scope → the min is never empty.
+    let choose = |filter: &FilterExpr, feats: &cost::PlanFeatures, scope: PlanScope| -> PhysicalPlan {
         PhysicalPlan::ALL
             .into_iter()
-            .filter(|p| p.applicable(ctx, params, filter, unsplit, plane) && (!materializing_only || p.materializing()))
+            .filter(|p| p.applicable(ctx, params, filter, unsplit, plane) && scope.admits(*p))
             .min_by(|a, b| cost::plan_cost(*a, feats).partial_cmp(&cost::plan_cost(*b, feats)).expect("plan_cost is finite"))
-            .expect("GatheredScan is always applicable and materializing")
+            .expect("GatheredScan is always applicable and in every scope")
     };
 
     // Marks three disjoint phases covering the whole call — see `RoutedPhases` for why acquire needed
@@ -10294,8 +10403,8 @@ fn run_query_routed<'a>(
     let (feats, prep, plane_bits) = acquire_plan_features(ctx, params, filter, unsplit, plane);
     phases.acquired();
 
-    // ── choose: cheapest applicable plan ──
-    let plan = choose(filter, &feats, false);
+    // ── choose: cheapest applicable plan this acquire's dispatch arm can run ──
+    let plan = choose(filter, &feats, prep.scope());
     phases.chosen();
 
     // ── dispatch: run the winner, reusing the acquired artifact ──
@@ -10309,7 +10418,7 @@ fn run_query_routed<'a>(
         // P3/P4 reuse the plane bitmap as their candidate list — identical to what
         // prepare_candidates yields for a True-residual plane query.
         (p, Prep::Plane) => exec_from_candidates(
-            p, ctx, params, filter,
+            CandidatePlan::of_or_gathered(p), ctx, params, filter,
             // `None`, matching what `Prep::narrowed_repr` reports for a plane acquire: the field
             // means "what the residual NARROWING produced", and no narrowing ran here — the list
             // came from the plane bitmap. Diagnostic-only and unread on this path, but `CardBits`
@@ -10317,7 +10426,7 @@ fn run_query_routed<'a>(
             &PreparedCandidates { candidate_cards: Some(bitmap_card_ids(&plane_bits)), all_match_known: true, proven_conjuncts: 0, narrowed_repr: NarrowedRepr::None },
             plane,
         ),
-        (p, Prep::Candidates(prep)) => exec_from_candidates(p, ctx, params, filter, prep, plane),
+        (p, Prep::Candidates(prep)) => exec_from_candidates(CandidatePlan::of_or_gathered(p), ctx, params, filter, prep, plane),
         // `Prep::Range` = "cheap estimate acquired, nothing materialized" — shared by CardRangePopcount
         // (#725), PrintingRangeScan (#695), and PrintingCompose (#724). Each winner does its own O(k)
         // work here, so no plan eats a build for a competing winner:
@@ -10346,8 +10455,13 @@ fn run_query_routed<'a>(
                 None => {
                     let prep = prepare_candidates(ctx, params, filter, plane);
                     let feats = candidate_feats(ctx, params, &prep, filter);
-                    let plan = choose(filter, &feats, true);
-                    exec_from_candidates(plan, ctx, params, filter, &prep, plane)
+                    // `PlanScope::Candidates`, not the old "materializing plans", which admitted
+                    // `PlanePopcountOrder` too — and this path holds a candidate list, not the
+                    // plane bitmap that plan reads. Re-chosen on a filter `prepare_candidates` has
+                    // just rewritten in place, so the applicable set here is not the one acquire
+                    // saw and the scope is what states which of it this arm can run.
+                    let plan = choose(filter, &feats, PlanScope::Candidates);
+                    exec_from_candidates(CandidatePlan::of_or_gathered(plan), ctx, params, filter, &prep, plane)
                 }
             }
         }
@@ -10442,10 +10556,13 @@ pub(crate) struct PlanEstimate {
     /// (`eval_domain = n_cards`), so this figure has no referent there -- do not pool range-acquired
     /// rows with candidate-acquired ones when reading it.
     pub(crate) materialize_ns: f64,
-    /// Whether this is the plan `run_query_routed` would run: the cheapest `predicted_ns`, which
-    /// after the ascending sort is index 0. Reported explicitly so a caller never has to
-    /// reconstruct the argmin — doing that over only the plans that *ran* (dropping runtime
-    /// decliners) silently diverges from what the router picks.
+    /// Whether this is the plan `run_query_routed` would run: the cheapest `predicted_ns` among the
+    /// plans this acquire's dispatch arm can execute (`Prep::scope`). That is index 0 after the
+    /// ascending sort for a `Prep::Range` acquire, whose arm runs everything, but not necessarily
+    /// for the other two — the ranking below still lists every applicable plan, including ones the
+    /// router could not reach. Reported explicitly so a caller never has to reconstruct the argmin —
+    /// doing that over only the plans that *ran* (dropping runtime decliners), or over the full
+    /// ranking without the scope, silently diverges from what the router picks.
     ///
     /// One documented exception it cannot capture: for a `Prep::Range` acquire the router may
     /// re-materialize and re-choose at dispatch, so the executed plan can still differ. See the
@@ -10597,10 +10714,18 @@ fn explain(
         })
         .collect();
     estimates.sort_by(|a, b| a.predicted_ns.partial_cmp(&b.predicted_ns).expect("plan_cost is finite"));
-    // The router's argmin is index 0 after the sort. Marked here rather than left for the caller
-    // to re-derive, which is where a caller filtering out runtime decliners gets it wrong.
-    if let Some(first) = estimates.first_mut() {
-        first.picked = true;
+    // The router's argmin is the cheapest plan its dispatch arm for this acquire can RUN, which is
+    // index 0 only when the acquire's scope admits everything applicable (`Prep::Range`). Under a
+    // plane or candidate acquire the ranking can lead with a plan `run_query_routed` would never
+    // reach — reporting that one as picked is how the same conflation `PlanScope` fixes in the
+    // router used to show up here as a plausible-looking but wrong answer. Marked here rather than
+    // left for the caller to re-derive, which is where a caller filtering out runtime decliners
+    // gets it wrong. The full ranking still reports every applicable plan: a plan out of scope for
+    // this acquire is still real calibration data for `explain_analyze`, which forces plans through
+    // `run_query_with_plan` and does not route.
+    let scope = prep.scope();
+    if let Some(picked) = estimates.iter_mut().find(|e| scope.admits(e.plan)) {
+        picked.picked = true;
     }
     (facts, estimates)
 }

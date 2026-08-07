@@ -5,10 +5,10 @@ use super::{
     assign_artwork_groups, build_artwork_base_from, build_bit_planes, build_border_printing_planes, build_rarity_printing_planes, build_divergent_ids, build_name_bigram_index, build_name_unigram_index, build_printing_to_card, flavor_fingerprint, flavor_match_sets,
     cards_of_printings, count_common_keywords, count_common_types,
     build_artist_index, build_printing_value_index, build_arith_tuple_index, is_arith_tuple_route, range_candidates, narrow_candidates, narrow_candidates_exact, rarity_candidates,
-    range_too_broad_to_narrow, run_query, run_query_with_plan, explain, explain_analyze, AcquireFacts, PlanEstimate, PlanTrial,
+    range_too_broad_to_narrow, run_query, run_query_routed, run_query_with_plan, explain, explain_analyze, AcquireFacts, PlanEstimate, PlanTrial,
     acquire_plan_features, take_phase_stats, PagingTaken, CountSource, NarrowedRepr,
     EXACT_VALUE_TOTALS, RangeCardCounts, narrow_rec, ValueTotals, PairTotals, build_all_value_totals, build_pair_totals, build_range_card_counts, exact_result_total,
-    PhysicalPlan, ComposePaging, trigram_candidates, finalize_trigram_index, PrintingValueIndex, NARROW_FLOOR,
+    PhysicalPlan, PlanScope, CandidatePlan, ComposePaging, trigram_candidates, finalize_trigram_index, PrintingValueIndex, NARROW_FLOOR,
     gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
     walk_printing_page, aligned_page, bare_range_bounds, probe_range_k, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
     prepare_candidates, verify_cost_tier, scan_units, sort_col_bound, divergent_formats_of, Mode, QueryCtx, QueryParams, Prefer, SortBound,
@@ -3536,6 +3536,153 @@ fn exact_result_total_is_exact_for_rarity() {
     // every assertion above. The one shape that must decline is a negated `Eq`, i.e. `Ne`, which covers
     // two disjoint windows and so is not a range at all: 7 values x 3 modes of the 210 cells.
     assert_eq!(answered, (7 * 5 * 2 - 7) * 3, "the rarity arm should answer every op except `Ne`, in every mode");
+}
+
+/// #702 router invariant, as a table: every plan a `PlanScope` admits is one the dispatch arm that
+/// uses that scope can actually execute.
+///
+/// `PhysicalPlan::applicable` is a correctness predicate about the QUERY. It says nothing about
+/// which artifact `acquire_plan_features` materialized, and the two answers are different questions:
+/// a plane acquire holds the plane bitmap, so it can run the bitmap's own order walk or either
+/// candidate-list executor over that bitmap, but it has no candidate list for anything else and no
+/// business re-deriving one. An argmin over `applicable` alone can return a plan the arm has no
+/// executor for, which is a panic and not a wrong answer — and a panic is the one engine failure the
+/// API's engine-failed-fall-back-to-SQL wrapper did not absorb, because `PanicException` derives from
+/// `BaseException`. So a query the SQL path answers fine returned a bare 500 instead.
+///
+/// This is not hypothetical and it is not a second lock on a bolted door, which is what an earlier
+/// version of this comment claimed. The bolt was somebody else's — all three printing-space fast
+/// paths required `plane.is_none()`, which is a statement about how a predicate is REPRESENTED (a
+/// bare border under `unique=card` folds into a plane, so compose declined it) and not about what a
+/// dispatch arm can run. #836 lifted that guard so compose costs the unsplit filter alongside a
+/// plane, and the door came open: on the committed API fixture, `f:pauper` at `unique=card` with
+/// `limit=200` panicked. This test pins the property that has to hold regardless of whichever
+/// applicability predicate happens to be covering for the router this month.
+#[test]
+fn plan_scope_admits_only_plans_its_dispatch_arm_can_run() {
+    for plan in PhysicalPlan::ALL {
+        // `PlanScope::Candidates` — `Prep::Candidates` and `Prep::Range`'s lazy-materialize
+        // fallback — dispatches through `exec_from_candidates` and nothing else.
+        assert_eq!(
+            PlanScope::Candidates.admits(plan),
+            CandidatePlan::of(plan).is_some(),
+            "{plan:?}: PlanScope::Candidates must admit exactly the plans exec_from_candidates runs",
+        );
+        // `PlanScope::Plane` adds the one plan that reads the plane bitmap directly, and nothing
+        // else: `Prep::Plane`'s arm is that executor plus the candidate-list pair.
+        assert_eq!(
+            PlanScope::Plane.admits(plan),
+            CandidatePlan::of(plan).is_some() || plan == PhysicalPlan::PlanePopcountOrder,
+            "{plan:?}: PlanScope::Plane must admit exactly its own bitmap walk plus the candidate pair",
+        );
+        // `Prep::Range` is the only acquire whose arm covers every plan — the fast paths walk, and a
+        // materializing winner materializes lazily and re-chooses. That is what makes it `All`.
+        assert!(PlanScope::All.admits(plan), "{plan:?}: PlanScope::All must admit every plan");
+    }
+
+    // The scope a plane acquire hands the argmin must not admit a plan whose executor needs the
+    // candidate list that acquire never built... and must admit the one whose bitmap it did.
+    assert!(!PlanScope::Candidates.admits(PhysicalPlan::PlanePopcountOrder));
+    assert!(PlanScope::Plane.admits(PhysicalPlan::PlanePopcountOrder));
+    // The distinction the retired `materializing()` flag could not draw: it grouped
+    // `PlanePopcountOrder` with the candidate pair, so "restrict to materializing plans" — which is
+    // what `Prep::Range`'s fallback and `declined_sibling_fastpath` asked for — could hand a
+    // candidate-list-only path the one plan that reads a bitmap instead.
+    for plan in [PhysicalPlan::StreamedSelect, PhysicalPlan::GatheredScan] {
+        assert!(PlanScope::Candidates.admits(plan), "{plan:?} is a candidate-list executor");
+    }
+}
+
+/// The routed path agrees with `GatheredScan` at every page size, including the one the API sends
+/// when a request carries no `limit` at all.
+///
+/// `force_plan_differential_agreement` holds the plans to identical results, but forces each one and
+/// so never exercises the argmin; and it runs a single page size. This drives `run_query_routed`
+/// itself across a `limit` sweep, which is the axis the cost model reads most directly: several arms
+/// carry a per-emitted-row term, `_search_engine` turns an absent limit into 1,000,000, and
+/// `_validate_limit` sets no ceiling above that. A page size no plan can fill is an ordinary request
+/// shape here, not a synthetic one, so both the routing and the rows it produces have to hold up at
+/// the top of that range.
+#[test]
+fn routed_agrees_with_gathered_scan_across_page_sizes() {
+    use rand::SeedableRng;
+    const CORPUS_CARDS: usize = 2_000;
+    const RANDOM_QUERIES: usize = 60;
+    const MAX_DEPTH: u8 = 3;
+    /// What `_search_engine` sends when the request carries no limit at all.
+    const NO_LIMIT_SENTINEL: usize = 1_000_000;
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(806_001);
+    let data = fuzz_store_n(&mut rng, CORPUS_CARDS);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let ctx = QueryCtx::from(archived);
+
+    // Hand-built shapes that pin the acquires with a per-emitted-row cost term: a bare border or
+    // rarity leaf folds to a plane under `unique=card` (`Prep::Plane` → `PlanePopcountOrder`), a
+    // bare price range acquires as `Prep::Range`, and colour+type is the plane-only control.
+    let mut specs = vec![
+        FuzzSpec::Leaf(FuzzLeaf::Border { value: "black".to_string() }),
+        FuzzSpec::Leaf(FuzzLeaf::Rarity { op: CmpOp::Eq, val: 2.0 }),
+        FuzzSpec::Leaf(FuzzLeaf::Price { field: NumField::PriceUsd, op: CmpOp::Lt, val: 100_000.0 }),
+        FuzzSpec::And(vec![fuzz_leaf_color(&mut rng), fuzz_leaf_type(&mut rng)]),
+    ];
+    for _ in 0..RANDOM_QUERIES {
+        specs.push(fuzz_gen(&mut rng, MAX_DEPTH));
+    }
+
+    let modes = ["card", "printing", "artwork"];
+    // 1 and 60 are ordinary pages; 5,000 exceeds most totals in this corpus without reaching the
+    // sentinel, which is where the unclamped emit terms used to diverge fastest.
+    let limits = [1_usize, 60, 5_000, NO_LIMIT_SENTINEL];
+    let sorts = [("edhrec", "asc"), ("usd", "desc")];
+
+    let ids = |page: &[(&Archived<OracleCard>, &Archived<Printing>)]| -> Vec<u128> {
+        let mut v: Vec<u128> = page.iter().map(|(_, p)| u128::from(p.scryfall_id)).collect();
+        v.sort_unstable();
+        v
+    };
+
+    for spec in &specs {
+        for &mode in &modes {
+            for &limit in &limits {
+                for &(orderby, direction) in &sorts {
+                    let unique_is_card = mode == "card";
+                    let params = QueryParams::from_strs(mode, "default", orderby, direction, limit, 0);
+                    // A fresh bound + split filter per call throughout: both paths rewrite it.
+                    //
+                    // `unsplit` is supplied, as `bind_and_split_filter` does in production, and it is
+                    // load-bearing for what this test is for: without it `printing_compose_applicable`
+                    // fails its `plane.is_none()` guard and compose never reaches the argmin at all, so
+                    // the plane acquire's applicable set would stay inside its scope by accident and the
+                    // sweep below would prove nothing.
+                    let unsplit = fuzz_bound_filter(spec, archived);
+                    let (pe, mut filter) = split_planes(
+                        unsplit.clone(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, unique_is_card,
+                    );
+                    let (routed_total, routed_page) = run_query_routed(&ctx, &params, &mut filter, Some(&unsplit), pe.as_ref());
+
+                    let (ref_pe, mut ref_filter) = split_planes(
+                        unsplit.clone(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, unique_is_card,
+                    );
+                    let (ref_total, ref_page) =
+                        run_query_with_plan(PhysicalPlan::GatheredScan, &ctx, &params, &mut ref_filter, Some(&unsplit), ref_pe.as_ref())
+                            .expect("GatheredScan is always applicable");
+
+                    let where_ = format!("mode={mode}, limit={limit}, orderby={orderby} {direction}, filter={}", fuzz_describe(spec));
+                    assert_eq!(routed_total, ref_total, "routed total disagrees with GatheredScan ({where_})");
+                    assert_eq!(ids(&routed_page), ids(&ref_page), "routed rows disagree with GatheredScan ({where_})");
+                    // A limit past the total must not inflate the page: the router may only return
+                    // what the query matched, whatever the request asked for.
+                    assert!(
+                        routed_page.len() <= limit.min(routed_total),
+                        "routed page of {} rows exceeds min(limit, total) ({where_})",
+                        routed_page.len(),
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// The per-value count table must be EXACT, not close, in BOTH spaces it carries: every one-sided

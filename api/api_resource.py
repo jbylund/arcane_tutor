@@ -1252,7 +1252,25 @@ class APIResource:
                     timer=timer,
                     fields=resolved_fields,
                 )
-            except Exception as e:
+            except BaseException as e:
+                # BaseException, not Exception: a Rust panic anywhere under `self._engine.query`
+                # surfaces as pyo3's `PanicException`, which derives from BaseException and so went
+                # straight past this handler — the one whose entire job is to let an engine failure
+                # degrade to the SQL path instead of failing the request. Falcon's own error handling
+                # catches Exception too, so nothing of ours ran: the panic left the WSGI handler and
+                # bjoern turned it into a bare 500 on a query the SQL path answers fine.
+                #
+                # Measured, because the obvious guess is worse than the truth and was in this comment:
+                # bjoern prints the traceback and keeps serving. The worker does NOT die, so
+                # `_all_workers_alive` in entrypoint.py — which tears down every worker when one dies
+                # — is not in play. The cost is one wrong 500, not lost capacity.
+                #
+                # `pyo3_runtime.PanicException` is not imported and named directly: the module only
+                # exists once a pyo3 extension has registered it, so naming it would couple this
+                # fallback to the engine having loaded and to pyo3's own module layout. The two
+                # BaseExceptions that must still propagate are the ones that are not failures.
+                if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                    raise
                 logger.warning("Engine query failed for %r, falling back to SQL: %s", query, e, exc_info=True)
             else:
                 if settings.enable_cache:

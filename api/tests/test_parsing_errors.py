@@ -96,6 +96,40 @@ class TestSearchRouting:
         mock_sql.assert_called_once()
         assert result is sentinel
 
+    def test_falls_back_to_sql_when_engine_panics(self) -> None:
+        """A pyo3 panic derives from BaseException, not Exception.
+
+        The SQL fallback exists so an engine failure degrades instead of failing the request; a
+        handler catching only Exception let a panic past it and out of the WSGI handler, killing
+        the worker. Stood in for by a bare BaseException subclass so the test does not need a
+        loaded pyo3 extension (or a way to make it panic on demand) to pin the behaviour.
+        """
+
+        class _Panic(BaseException):
+            pass
+
+        self.api_resource._engine.size.return_value = 87
+        sentinel = {"cards": [], "total_cards": 0, "query": "name:opt"}
+        with (
+            patch.object(self.api_resource, "_search_engine", side_effect=_Panic("engine panicked")),
+            patch.object(self.api_resource, "_search_sql", return_value=sentinel) as mock_sql,
+        ):
+            result = self.api_resource._search(query="name:opt", limit=10)
+        mock_sql.assert_called_once()
+        assert result is sentinel
+
+    @pytest.mark.parametrize("exc", [KeyboardInterrupt, SystemExit])
+    def test_interpreter_shutdown_signals_still_propagate(self, exc: type[BaseException]) -> None:
+        """Widening the catch to BaseException must not swallow Ctrl-C or interpreter exit."""
+        self.api_resource._engine.size.return_value = 87
+        with (
+            patch.object(self.api_resource, "_search_engine", side_effect=exc()),
+            patch.object(self.api_resource, "_search_sql") as mock_sql,
+            pytest.raises(exc),
+        ):
+            self.api_resource._search(query="name:opt", limit=10)
+        mock_sql.assert_not_called()
+
     def test_negative_limit_raises_bad_request(self) -> None:
         with pytest.raises(falcon.HTTPBadRequest) as exc_info:
             self.api_resource._search(query="name:opt", limit=-1)
