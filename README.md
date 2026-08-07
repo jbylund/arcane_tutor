@@ -1,12 +1,19 @@
 # Sylvan Librarian
 
 [![Last commit](https://img.shields.io/github/last-commit/jbylund/sylvan_librarian)](https://github.com/jbylund/sylvan_librarian/commits/main)
-[![Issues](https://img.shields.io/github/issues/jbylund/sylvan_librarian)](https://github.com/jbylund/sylvan_librarian/issues)
-[![Pull requests](https://img.shields.io/github/issues-pr/jbylund/sylvan_librarian)](https://github.com/jbylund/sylvan_librarian/pulls)
-[![Stars](https://img.shields.io/github/stars/jbylund/sylvan_librarian)](https://github.com/jbylund/sylvan_librarian/stargazers)
 [![License](https://img.shields.io/github/license/jbylund/sylvan_librarian)](https://github.com/jbylund/sylvan_librarian/blob/main/LICENSE)
 
 <table>
+  <tr>
+    <td align="center"><img src="https://cdn.simpleicons.org/github/181717/ffffff" alt="GitHub" width="40" height="40"></td>
+    <td>
+      <a href="https://github.com/jbylund/sylvan_librarian/issues"><img src="https://img.shields.io/github/issues/jbylund/sylvan_librarian" alt="Issues"></a>
+      <br>
+      <a href="https://github.com/jbylund/sylvan_librarian/pulls"><img src="https://img.shields.io/github/issues-pr/jbylund/sylvan_librarian" alt="Pull requests"></a>
+      <br>
+      <a href="https://github.com/jbylund/sylvan_librarian/stargazers"><img src="https://img.shields.io/github/stars/jbylund/sylvan_librarian" alt="Stars"></a>
+    </td>
+  </tr>
   <tr>
     <td align="center"><img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/python/python-original.svg" alt="Python" width="40" height="40"></td>
     <td>
