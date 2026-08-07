@@ -42,6 +42,12 @@ env:
   # Short TTL: camo caches against the origin's max-age, and a badge that lags a day
   # behind the daily regeneration would defeat the point of regenerating daily.
   BADGE_CACHE_CONTROL: 'public, max-age=300'
+  # Literal rather than repo variables: both already appear in tracked files of this
+  # public repo (docs/technical/s3_image_storage.md names the bucket), so hiding them
+  # buys nothing and only adds a setup step that can be mistyped. The distribution ID
+  # stays a variable — it is not derivable from the public d1hot… domain.
+  AWS_REGION: us-east-1
+  BADGE_BUCKET: biblioplex
 
 jobs:
   # Most days main does not move, and republishing byte-identical badges costs the full
@@ -153,20 +159,32 @@ jobs:
       - name: Generate badge assets
         run: python scripts/gen_badges.py --out-dir dist/badges --tokei ~/.cargo/bin/tokei
 
+      # An unset secret or variable is the empty string, which reaches AWS as a baffling
+      # error ("Not authorized to perform sts:AssumeRoleWithWebIdentity") rather than as
+      # "you forgot a setting". Worth five lines on a job whose first run is a setup step.
+      - name: Check publish settings are configured
+        env:
+          PUBLISH_ROLE: ${{ secrets.AWS_BADGE_PUBLISH_ROLE }}
+          DISTRIBUTION_ID: ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}
+        run: |
+          set -euo pipefail
+          [ -n "${PUBLISH_ROLE}" ] || { echo "::error::secret AWS_BADGE_PUBLISH_ROLE is not set"; exit 1; }
+          [ -n "${DISTRIBUTION_ID}" ] || { echo "::error::variable CLOUDFRONT_DISTRIBUTION_ID is not set"; exit 1; }
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_BADGE_PUBLISH_ROLE }}
-          aws-region: ${{ vars.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
 
       # Content types are set explicitly: S3 defaults to application/octet-stream, and
       # camo will not render an image it was not told is an image.
       - name: Upload to S3
         run: |
-          aws s3 cp dist/badges "s3://${{ vars.BADGE_BUCKET }}/${BADGE_PREFIX}/" \
+          aws s3 cp dist/badges "s3://${BADGE_BUCKET}/${BADGE_PREFIX}/" \
             --recursive --exclude '*' --include '*.svg' \
             --content-type image/svg+xml --cache-control "${BADGE_CACHE_CONTROL}"
-          aws s3 cp dist/badges "s3://${{ vars.BADGE_BUCKET }}/${BADGE_PREFIX}/" \
+          aws s3 cp dist/badges "s3://${BADGE_BUCKET}/${BADGE_PREFIX}/" \
             --recursive --exclude '*' --include '*.json' \
             --content-type application/json --cache-control "${BADGE_CACHE_CONTROL}"
 
