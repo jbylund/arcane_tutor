@@ -224,7 +224,7 @@ fn bench_substring_finders() {
     // trigram index to a candidate superset (then verifies). Report that superset size — the rows the
     // rewritten query actually visits — against the full corpus the regex must scan.
     let cand = trigram_candidates(&data.indexes.oracle_trigram.trigrams, needle)
-        .map(|tids| expand_text_ids(&data.indexes.oracle_trigram, &tids).len())
+        .map(|tids| expand_text_ids(&data.indexes.oracle_trigram, &tids, n).len())
         .unwrap_or(n);
     println!("\n  rows visited: regex {n} (full scan) vs contains {cand} trigram-candidates ({:.1}% of corpus)", 100.0 * cand as f64 / n as f64);
     println!("  end-to-end match-phase estimate:");

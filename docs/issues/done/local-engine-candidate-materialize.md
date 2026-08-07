@@ -3,14 +3,14 @@
 **DONE for the range arms — merged in [#845](https://github.com/jbylund/sylvan_librarian/pull/845)** (layer
 13 of the cost-model stack). Whole mix 0.949, target 0.867.
 
-**The remaining call sites are [#849](https://github.com/jbylund/sylvan_librarian/issues/849)** —
-`arith_tuple_narrow` (the case that prompted this benchmark) and the other posting-union arms. They are
-card-space, so the ~490:1 domain:count crossover measured here has to be re-derived on that axis rather than
-reused.
+**The remaining call sites are DONE too — [#849](https://github.com/jbylund/sylvan_librarian/issues/849)**,
+recorded in [00849-engine-bitmap-materialize-remaining-sites.md](00849-engine-bitmap-materialize-remaining-sites.md).
+#845 had already swept `arith_tuple_narrow` and `numeric_candidates` in with the range arms; what was
+left was `expand_csr` (adopted, 1.4-4.6x) and `rarity_candidates` (measured, declined -- its fold unions
+at most 6 rows, which is not the 564-run heap that lost here).
 
 **Shipped for `range_narrowed` (the range arms).** See "What shipped" at the bottom; the crossover turned
-out to be a domain:count RATIO, not a count, and the remaining call sites (`arith_tuple_narrow` and the
-other posting-union arms) have not adopted it yet.
+out to be a domain:count RATIO, not a count.
 
 Any narrowing arm that unions several postings rows has sorted rows and no globally
 sorted output, because posting-row order is not card order. `arith_tuple_narrow` is

@@ -6,7 +6,7 @@ cost-model stack). Whole mix 0.905, p99 0.680.
 The follow-up this doc names at the end — splitting "is this worth narrowing" from "vec or bitmap", which
 would retire the `eur<0.13 t:land` regression — **shipped in the same PR** as its second change: materialize
 by bitmap scatter rather than by sorting, whole mix 0.949. So nothing carries forward from here. The
-remaining call sites for that materialization are
+remaining call sites for that materialization shipped in
 [#849](https://github.com/jbylund/sylvan_librarian/issues/849).
 
 `eur>0.15 tix>=0.03 tix<=0.03 id:bgruw` took **1.5 ms**. The same query without the last leaf takes

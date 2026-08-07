@@ -991,25 +991,27 @@ pub(crate) fn scan_oracle_words(idx: &Archived<OracleWordIndex>, needle: &str) -
 // archives as two contiguous zero-copy slices. Build and expand used to be
 // written out once per index; the convention lives here instead.
 
-/// Concatenate the `payload` rows named by `rows` and sort the result. Row ids are
-/// `u16` or `u32` depending on the index, so callers widen at the call site — `u32`
-/// deliberately has no `Into<usize>` (usize may be 16-bit) and a trait to hide three
-/// `as usize` casts costs more than it saves.
+/// The ascending union of the `payload` rows named by `rows`. Row ids are `u16` or `u32`
+/// depending on the index, so callers widen at the call site — `u32` deliberately has no
+/// `Into<usize>` (usize may be 16-bit) and a trait to hide three `as usize` casts costs more
+/// than it saves. `domain` is the id space the payload indexes (cards for the oracle-text
+/// table, printings for artist and flavor), which is NOT `payload.len()`: the flavor table
+/// omits printings without flavor text.
 ///
-/// Each row is internally sorted (placement below walks store order), but rows are
-/// not ordered relative to each other (dense ids are first-seen order), so the
-/// concatenation needs one final sort — required both by `intersect_sorted` when
-/// And-combining with other candidate sets and by the query driver, which assumes
-/// candidates arrive in store order.
-fn expand_csr(offsets: &AOffsets, payload: &AOffsets, rows: impl IntoIterator<Item = usize>) -> Vec<u32> {
-    let mut out: Vec<u32> = Vec::new();
-    for row in rows {
-        let start = u32::from(offsets[row]) as usize;
-        let end = u32::from(offsets[row + 1]) as usize;
-        out.extend(payload[start..end].iter().map(|x| u32::from(*x)));
-    }
-    out.sort_unstable();
-    out
+/// Each row is internally sorted (placement below walks store order), but rows are not
+/// ordered relative to each other (dense ids are first-seen order), so the union has to be
+/// ordered somehow — required both by `intersect_sorted` when And-combining with other
+/// candidate sets and by the query driver, which assumes candidates arrive in store order.
+/// `sorted_ids` picks the cheaper of the two ways; the rows are walked twice, once to size
+/// the answer for that choice and once to emit it, which costs one pass over `offsets`.
+///
+/// A row is one dense text/artist/flavor id's members, and every card or printing carries
+/// exactly one such id, so the rows are disjoint and `sorted_ids`'s duplicate-free
+/// precondition holds by construction.
+fn expand_csr(offsets: &AOffsets, payload: &AOffsets, rows: impl IntoIterator<Item = usize> + Clone, domain: usize) -> Vec<u32> {
+    let span = |row: usize| u32::from(offsets[row]) as usize..u32::from(offsets[row + 1]) as usize;
+    let k: usize = rows.clone().into_iter().map(|row| span(row).len()).sum();
+    sorted_ids(rows.into_iter().flat_map(|row| payload[span(row)].iter().map(|x| u32::from(*x))), k, domain)
 }
 
 /// Count → prefix-sum → place with a cursor. `row_of(i)` gives item `i`'s row, or
@@ -1193,8 +1195,8 @@ fn build_oracle_text_index(cards: &[OracleCard], strings: &[String]) -> OracleTe
 }
 
 /// Expand surviving dense text ids to card indices via the CSR table.
-fn expand_text_ids(idx: &Archived<OracleTextIndex>, text_ids: &[u32]) -> Vec<u32> {
-    expand_csr(&idx.offsets, &idx.card_indices, text_ids.iter().map(|&t| t as usize))
+fn expand_text_ids(idx: &Archived<OracleTextIndex>, text_ids: &[u32], n_cards: usize) -> Vec<u32> {
+    expand_csr(&idx.offsets, &idx.card_indices, text_ids.iter().map(|&t| t as usize), n_cards)
 }
 
 // ─── Name bigram index (#639 short-name narrowing) ──────────────────────────
@@ -1843,8 +1845,8 @@ fn build_artist_index(printings: &[Printing], n_artists: usize) -> ArtistIndex {
 }
 
 /// Expand matching artist vocab ids to sorted printing ids via the CSR table.
-fn expand_artist_ids(idx: &Archived<ArtistIndex>, artist_ids: &[u16]) -> Vec<u32> {
-    expand_csr(&idx.offsets, &idx.printings, artist_ids.iter().map(|&a| a as usize))
+fn expand_artist_ids(idx: &Archived<ArtistIndex>, artist_ids: &[u16], n_printings: usize) -> Vec<u32> {
+    expand_csr(&idx.offsets, &idx.printings, artist_ids.iter().map(|&a| a as usize), n_printings)
 }
 
 // ─── Flavor-text index ────────────────────────────────────────────────────────
@@ -1995,8 +1997,10 @@ pub(crate) fn flavor_match_sets(
 }
 
 /// Expand matched dense flavor text ids to sorted printing ids via the CSR.
-fn expand_flavor_ids(idx: &Archived<FlavorIndex>, dense_ids: &[u32]) -> Vec<u32> {
-    expand_csr(&idx.offsets, &idx.printings, dense_ids.iter().map(|&d| d as usize))
+/// `n_printings` is the corpus, not `idx.printings.len()` — the table omits printings
+/// without flavor text, and the bitmap route sizes itself from the id space, not the payload.
+fn expand_flavor_ids(idx: &Archived<FlavorIndex>, dense_ids: &[u32], n_printings: usize) -> Vec<u32> {
+    expand_csr(&idx.offsets, &idx.printings, dense_ids.iter().map(|&d| d as usize), n_printings)
 }
 
 // ─── Sort permutations (streamed selection) ──────────────────────────────────
@@ -3257,9 +3261,12 @@ const MATERIALIZE_BITMAP_RATIO: usize = 490;
 /// **Precondition: `ids` must be duplicate-free.** This is the one way the two routes differ, and it is
 /// silent: a bitmap DEDUPS and a sort does not, so a caller emitting an id twice gets a shorter vec from
 /// one route than the other. Every current caller satisfies it by construction -- a `PrintingValueIndex`
-/// holds one entry per printing with a value, `build_numeric_index` one per card, and a card lives in
-/// exactly one `arith_tuple` posting row -- and the debug build checks it on every call rather than
-/// trusting that list to stay true.
+/// holds one entry per printing with a value, `build_numeric_index` one per card, a card lives in
+/// exactly one `arith_tuple` posting row, and `expand_csr`'s rows are one dense text/artist/flavor id's
+/// members, of which every card or printing has exactly one -- and the debug build checks it on every
+/// call rather than trusting that list to stay true. `rarity_candidates` is the counterexample that
+/// makes the check worth having: a card printed at two rarities is in both buckets, so it must not be
+/// routed here (it also measures faster as a fold -- see #849).
 ///
 /// Ids must also be `< domain`; `scatter_bits` would panic otherwise, which is the loud failure.
 ///
@@ -4535,7 +4542,7 @@ fn narrow_rec(
                 ([], []) => Narrowed::tight(Candidates::Cards(Vec::new())),
                 ([], sparse) => {
                     let text_ids = sparse_text_ids(sparse);
-                    Narrowed::tight(Candidates::Cards(expand_text_ids(&indexes.oracle_trigram, &text_ids)))
+                    Narrowed::tight(Candidates::Cards(expand_text_ids(&indexes.oracle_trigram, &text_ids, n_cards)))
                 }
                 ([d], []) => {
                     let start = *d as usize * wpp;
@@ -4550,7 +4557,7 @@ fn narrow_rec(
                             *a |= u64::from(*w);
                         }
                     }
-                    for cid in expand_text_ids(&indexes.oracle_trigram, &sparse_text_ids(sparse)) {
+                    for cid in expand_text_ids(&indexes.oracle_trigram, &sparse_text_ids(sparse), n_cards) {
                         acc[(cid >> 6) as usize] |= 1u64 << (cid & 63);
                     }
                     Narrowed::tight(Candidates::CardBits(acc))
@@ -4572,7 +4579,7 @@ fn narrow_rec(
                 // intersect there, then expand the survivors to card indices
                 // through the CSR table.
                 _ => trigram_candidates(&indexes.oracle_trigram.trigrams, word)
-                    .and_then(|text_ids| mk(Candidates::Cards(expand_text_ids(&indexes.oracle_trigram, &text_ids)))),
+                    .and_then(|text_ids| mk(Candidates::Cards(expand_text_ids(&indexes.oracle_trigram, &text_ids, n_cards)))),
             }
         }
 
@@ -4613,7 +4620,7 @@ fn narrow_rec(
                 });
             }
             let acc = acc?; // no factor produced candidates ⇒ general path (full scan)
-            let ids = if is_name { acc } else { expand_text_ids(&indexes.oracle_trigram, &acc) };
+            let ids = if is_name { acc } else { expand_text_ids(&indexes.oracle_trigram, &acc, n_cards) };
             Narrowed::loose(Candidates::Cards(ids))
         }
 
@@ -4890,7 +4897,7 @@ fn narrow_rec(
             // ids resolved at bind time; empty means no artist satisfies the
             // predicate, which proves the empty candidate set. Every expanded
             // printing carries a matching artist — tight.
-            Narrowed::tight(Candidates::Printings(expand_artist_ids(&indexes.artists, ids)))
+            Narrowed::tight(Candidates::Printings(expand_artist_ids(&indexes.artists, ids, n_printings)))
         }
 
         FilterExpr::FlavorMatch { dense_ids, .. } => {
@@ -4907,7 +4914,7 @@ fn narrow_rec(
             if range_too_broad_to_narrow(total, flavor.printings.len()) {
                 return None;
             }
-            Narrowed::tight(Candidates::Printings(expand_flavor_ids(flavor, dense_ids)))
+            Narrowed::tight(Candidates::Printings(expand_flavor_ids(flavor, dense_ids, n_printings)))
         }
 
         FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value } => {
@@ -12562,3 +12569,5 @@ mod bench_gather_loop;
 mod bench_streamed_loop;
 #[cfg(test)]
 mod bench_membership_check;
+#[cfg(test)]
+mod bench_expand_materialize;
