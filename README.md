@@ -7,11 +7,12 @@
   <tr>
     <td align="center"><img src="https://cdn.simpleicons.org/github/181717/ffffff" alt="GitHub" width="40" height="40"></td>
     <td>
-      <a href="https://github.com/jbylund/sylvan_librarian/issues"><img src="https://img.shields.io/github/issues/jbylund/sylvan_librarian" alt="Issues"></a>
-      <br>
-      <a href="https://github.com/jbylund/sylvan_librarian/pulls"><img src="https://img.shields.io/github/issues-pr/jbylund/sylvan_librarian" alt="Pull requests"></a>
-      <br>
+      <a href="https://github.com/jbylund/sylvan_librarian/issues"><img src="https://img.shields.io/github/issues/jbylund/sylvan_librarian" alt="Issues"></a>      <br>
+      <a href="https://github.com/jbylund/sylvan_librarian/pulls"><img src="https://img.shields.io/github/issues-pr/jbylund/sylvan_librarian" alt="Pull requests"></a>      <br>
       <a href="https://github.com/jbylund/sylvan_librarian/stargazers"><img src="https://img.shields.io/github/stars/jbylund/sylvan_librarian" alt="Stars"></a>
+    </td>
+    <td rowspan="4" align="center">
+      <img src="https://d1hot9ps2xugbc.cloudfront.net/badges/languages.svg" alt="Lines of code by language">
     </td>
   </tr>
   <tr>
@@ -146,11 +147,6 @@ Based on [comprehensive functionality analysis](docs/technical/scryfall_function
 - **Data Quality**: Regular comparison testing against official Scryfall API
 
 ## Code Organization
-
-![Lines of code by language](https://d1hot9ps2xugbc.cloudfront.net/badges/languages.svg)
-
-*Source lines by language, excluding comments, blank lines, and benchmark harnesses.
-Regenerated daily — see [scripts/gen_badges.py](scripts/gen_badges.py).*
 
 ```
 sylvan_librarian/
