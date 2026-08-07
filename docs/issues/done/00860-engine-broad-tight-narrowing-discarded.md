@@ -1,11 +1,23 @@
 # The breadth guard discards exact narrowings — and is masking a tightness over-claim
 
-Status: **prototyped and measured 2026-08-06; NOT safe as written — it fails the fuzz suite.** Filed as
-[#860](https://github.com/jbylund/sylvan_librarian/issues/860). Depends on
-[#859](00859-engine-exact-trigram-no-verify.md).
+**DONE — shipped in [#862](https://github.com/jbylund/sylvan_librarian/pull/862)** (2026-08-07), together with
+[#859](00859-engine-exact-trigram-no-verify.md), which supplies the tightness that makes the union exact.
 
-The performance idea is worth 4.4×. The reason to read this doc is the second finding: attempting it exposes a
-narrowing that **already** claims tightness it does not have, which the breadth guard has been hiding.
+`o:the or o:you` **1,819 µs → 401 µs** on merged `main`, `narrowed_repr` going `none` → `card_bits`.
+
+**The latent bug was real, and it was not where this doc first guessed.** A diagnostic showed the narrowings in
+`AND(cmc<8, colors!=0b00011)` are all exact — len 14 against a brute-forced truth of 14, zero members failing
+`card_pass`. The fault was downstream: `prepare_candidates` carries a *second* breadth filter
+(`v.len() < cards.len() - cards.len() / 8`), and `all_match_known` was computed before it and never cleared when
+it dropped the set to `None`, so the walk fell back to `0..n_cards` with verification skipped and emitted every
+card. `residual_exact` now requires `candidate_cards.is_some()`.
+
+It was unreachable before this change because the 3/4 guard is stricter than the 7/8 filter at every corpus size
+— checked at 15, 16, 24, 40, 100, 1,000 and 31,508 — which made the second filter dead code. Relaxing the first
+is what woke it up.
+
+Sequel: [#863](https://github.com/jbylund/sylvan_librarian/pull/863) gave the 7/8 filter the same tightness
+exemption, which is what this doc listed as left for later.
 
 `o:the or o:you` takes **1,819 µs** and reports `narrowed_repr: none` — it does no narrowing at all, even though
 both children narrow individually and (after #859) both are *exact*. The union of two exact sets is exact, so
@@ -106,5 +118,5 @@ The prototype was: #859's `mk = if word.len() == 3 { Narrowed::tight } else { Na
 - [#859](00859-engine-exact-trigram-no-verify.md) — supplies the tightness. Safe on its own: full suite green,
   4.7× on `o:the`.
 - [#858](00858-engine-short-needle-text-scan.md) — the 1-byte tier, unaffected by either.
-- [#857](00857-engine-membership-merge-sorted-list.md) — wants the same class of debug assertion for its own
+- [#857](../00857-engine-membership-merge-sorted-list.md) — wants the same class of debug assertion for its own
   ordering precondition.

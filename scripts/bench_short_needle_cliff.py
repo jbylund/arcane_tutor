@@ -1,12 +1,18 @@
-"""Time the needle-length cliff for text containment -- the measurement behind #858.
+"""Time the needle-length cliff for text containment, per tier.
 
-Three tiers: trigram narrowing needs 3 bytes (`trigram_candidates` returns None below that), 2-byte needles
-resolve exactly through `NameBigramIndex`, and 1-byte needles have neither. The third case also loses
-memoization, because `memoize_text_predicates` is gated on `trigram_candidates` returning `Some`, so the
-filter stays a `TextContains` evaluated per card inside the match loop.
+Originally the measurement behind #858; now a regression guard for what shipped and the standing
+measurement of what did not.
 
-Reports routed time beside the acquire facts, because `narrowed_repr: none` is what distinguishes the broken
-tier from the working ones.
+NAME needles are fully tiered as of #862 / #863: 1 byte resolves exactly through `NameUnigramIndex`, 2 through
+`NameBigramIndex`, 3 through a single trigram (all three TIGHT, so `card_pass` never runs), and 4+ narrow to a
+trigram superset that the walk verifies. Every row below should read `narrowed_repr` of `cards` or `card_bits`.
+
+ORACLE and FLAVOR are untouched and still show the original cliff -- `o:s` and `ft:s` cost ~1 ms with
+`narrowed_repr: none`, because sub-trigram needles have no index there and lose memoization too
+(`memoize_text_predicates` is gated on `trigram_candidates` returning `Some`). Keeping them here is the point:
+`narrowed_repr` is what distinguishes a served tier from an unserved one at a glance.
+
+The `Or` rows are what surfaced #860 -- `o:the or o:you` reported `none` where both halves narrow.
 
     .venv/bin/python scripts/bench_short_needle_cliff.py --shm /tmp/needle.store
 """

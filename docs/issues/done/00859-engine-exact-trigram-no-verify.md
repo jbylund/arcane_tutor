@@ -1,10 +1,17 @@
 # A 3-byte needle's trigram set is exact, but `narrow_rec` marks it loose — so every candidate is re-verified
 
-Status: **prototyped and measured 2026-08-06; change reverted, not committed.** Filed as
-[#859](https://github.com/jbylund/sylvan_librarian/issues/859).
+**DONE — shipped in [#862](https://github.com/jbylund/sylvan_librarian/pull/862)** (2026-08-07), alongside
+[#860](00860-engine-broad-tight-narrowing-discarded.md), which had to land with it.
 
-**Measured: `o:the` 783.9 µs → 168.5 µs (4.7×), `o:tar` 9.3×, and 0 of 104 result cells changed.** The full
-engine test suite passes. Details under [Prototyped](#prototyped-and-measured).
+`o:the` **783.9 µs → 163.6 µs** on merged `main`, `o:tar` 9.1×, with 0 of 144 row-identity cells changed and
+the full suite green. The fix was one guard: `narrow_rec`'s text arm now returns `Narrowed::tight` at exactly
+3 bytes instead of `loose`, and the existing `residual_exact` → `all_match_known` → #634 Step 1 chain does the
+rest — `card_pass` stops running entirely.
+
+Two things the estimate got wrong, kept below because both generalize: it predicted 3–4× by deriving the emit
+floor from `name:the`, which was itself paying the same defect and improved 1.9×; and compositions gain *more*
+than the bare predicate (`o:the -t:land` 4.2× against `o:the`'s 3.9×), because a tight text child lets the whole
+`And` skip `card_pass` rather than just the leaf.
 
 **The fix is one guard, and it is not in `memoize_text_predicates`.** `narrow_rec`'s text arm returns
 `Narrowed::loose` for every needle of 3 bytes or more; at exactly 3 bytes the set is exact, so it should return
@@ -96,7 +103,7 @@ reason. The **bigram** arm one size down already gets this right, and states the
 And memoization is gated on the needle not being too common (`min <= oracle.gids.len() / 2 && memoize_pays(...)`)
 — a gate whose entire premise is that the verify scan must pay for itself. At 3 bytes there is no verify scan,
 so the premise does not hold, which is the same shape of error as
-[#856](00856-engine-compose-membership-bittest.md): a gate whose justification stopped applying, left in place.
+[#856](../00856-engine-compose-membership-bittest.md): a gate whose justification stopped applying, left in place.
 
 But once the narrowing is tight, none of this matters for correctness or cost — whether memoize fires becomes an
 optimisation of a path that no longer runs. Fix the narrowing; leave memoize alone unless it measures.
@@ -184,7 +191,7 @@ Exactness is a claim about the index, so **assert it rather than trusting the ar
 If any is, the index is not what its doc says and *that* is the finding — a debug assertion is the right home,
 since it is cheap to state and this is the invariant the whole change rests on.
 
-The same shape as the guard [#857](00857-engine-membership-merge-sorted-list.md) wants for its ordering
+The same shape as the guard [#857](../00857-engine-membership-merge-sorted-list.md) wants for its ordering
 precondition, and for the same reason: marking something tight that is not tight drops rows silently.
 
 Then rows before timings, as ever — this changes which cards a text predicate matches if the exactness claim is
@@ -199,7 +206,7 @@ wrong, which is a wrong-answer bug rather than a slow one.
 - [#858](00858-engine-short-needle-text-scan.md) — the tier below: 1-byte needles have no index at all, and
   lose memoization for the same gating reason. Same family, different mechanism, and the two fixes are
   independent.
-- [done/00663-engine-oracle-word-index.md](done/00663-engine-oracle-word-index.md) — the word index, which
+- [done/00663-engine-oracle-word-index.md](00663-engine-oracle-word-index.md) — the word index, which
   covers needles `> 3` bytes and so does not reach this case.
-- [done/00649-accent-insensitive-name-search.md](done/00649-accent-insensitive-name-search.md) — why the name
+- [done/00649-accent-insensitive-name-search.md](00649-accent-insensitive-name-search.md) — why the name
   index and verify both use `card_name_folded`, which is what makes exactness hold here.

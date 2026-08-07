@@ -1,11 +1,43 @@
 # Single-character text needles have no index and scan every card — 1.16 ms for `o:s`
 
-Status: **problem measured, neither fix measured.** Filed as
-[#858](https://github.com/jbylund/sylvan_librarian/issues/858).
+**DONE for the name tier — shipped in [#863](https://github.com/jbylund/sylvan_librarian/pull/863)**
+(2026-08-07), as Fix A below. `name:s` **446.6 µs → 58.5 µs** on merged `main`, with `name:1` 65× and
+`name:q` 51× end to end. 109 KB, 0.155% of the archive, matching the prediction exactly.
 
-This is the engine's actual slow tail. It is worse than anything in
-[#852](00852-engine-compose-acquire-p3-p4-ranking.md)'s or
-[#856](00856-engine-compose-membership-bittest.md)'s populations — #856's whole population tops out at 78.5 µs,
+`NameUnigramIndex` mirrors `NameBigramIndex` one length down, and the narrowing is **tight** because
+containment *is* byte membership. Negations came along too — `-name:q` 463 → 91 µs — via a `never_null` gate
+(names are the one text field whose `StrVal` is unconditionally `Known`) plus the 7/8 filter's tightness
+exemption that [#860](00860-engine-broad-tight-narrowing-discarded.md) had deferred.
+
+## What was NOT done, and why
+
+**Oracle and flavor 1-byte needles.** Deliberate scope call, not an oversight. A bare query term parses to
+`card_name` contains, so `name:s` is the first query of every search session; `o:s` is only reachable by typing
+`o:` first and is semantically useless besides. Sizing is recorded below if that judgement ever changes:
+**162 KB** for oracle with the cheaper-of-three encoding, and the builder is field-shaped so it is a build-site
+change rather than a rewrite.
+
+**They remain the measured slow tail**, and nothing tracks them now that this doc is closed:
+
+| query | on merged `main` |
+| --- | --: |
+| `o:s` | **1,168.7 µs** |
+| `ft:s` | **993.6 µs** |
+
+`ft:` is the more interesting of the two, and was never argued against — flavor has a CSR over ~29k distinct
+*texts* rather than 31.5k cards, so the index would be smaller and the scan shorter. That is a different shape
+from what shipped here and would want its own issue.
+
+**Fix B, the blob + `memmem`.** Untouched, and its case narrowed while this was open:
+[#859](00859-engine-exact-trigram-no-verify.md) removed `o:the` from it by making 3-byte needles exact, so B is
+now justified only on needles of 4+ bytes, where the trigram intersection really is a superset and verification
+really does run.
+
+---
+
+This was the engine's actual slow tail. It is worse than anything in
+[#852](../00852-engine-compose-acquire-p3-p4-ranking.md)'s or
+[#856](../00856-engine-compose-membership-bittest.md)'s populations — #856's whole population tops out at 78.5 µs,
 and `o:s` is **fifteen times** that on its own.
 
 ## Measured
@@ -23,7 +55,7 @@ and `o:s` is **fifteen times** that on its own.
 | `o:the` | 732.1 µs | cards | 16,240 |
 
 A **54× cliff** between one character and two. And `o:s` at 1.16 ms lines up with the overall max (~1,133 µs)
-in [#856's latency profile](00856-engine-compose-membership-bittest.md#it-touches-no-slow-queries-and-that-is-structural),
+in [#856's latency profile](../00856-engine-compose-membership-bittest.md#it-touches-no-slow-queries-and-that-is-structural),
 which is how we know this shape is the tail rather than merely slow in isolation.
 
 ## Why: three tiers, and the bottom one is missing
@@ -55,7 +87,7 @@ lowers to `memchr`, which over a ~20-byte name is a few cycles. So the search is
 - **The row stride.** `AOracleCard` is **288 bytes** (measured with `size_of`), and `card_name_folded` is an
   `InlineStr<61>` (62 bytes) inline in it. Reading every name therefore walks **9.07 MB** of card rows to touch
   **1.95 MB** of name field, of which the actual name content is ~630 KB. Same shape as
-  [the `APrinting` width problem](local-engine-aprinting-layout.md), one struct over.
+  [the `APrinting` width problem](../local-engine-aprinting-layout.md), one struct over.
 - **Per-card dispatch** through `FilterExpr` 31,508 times.
 
 ## Fix A: a unigram index, extending the tier that already works
@@ -86,7 +118,7 @@ and cuts traffic from 9.07 MB to ~630 KB.
 Two notes for whoever builds it:
 
 - memmem yields **ascending** positions, so a forward pointer over the offsets beats a binary search per match —
-  the same trick [#857](00857-engine-membership-merge-sorted-list.md) uses, and it matters here because
+  the same trick [#857](../00857-engine-membership-merge-sorted-list.md) uses, and it matters here because
   `name:s` matches 63% of cards.
 - Once a card matches, restart past the end of that name. That makes the work one short find per card rather
   than one per occurrence.
@@ -113,20 +145,20 @@ comparison before committing.
 
 One thing that comparison must model, because this session already produced a wrong answer by missing it: a
 1-char needle matching 63% of cards is a **branch-unpredictable** workload, where a scan stops being purely
-bandwidth-bound. [#856's density curve](00856-engine-compose-membership-bittest.md#what-the-bitmap-probe-costs)
+bandwidth-bound. [#856's density curve](../00856-engine-compose-membership-bittest.md#what-the-bitmap-probe-costs)
 shows the same effect costing 2–6× on a kernel that looked flat when measured only at the extremes.
 
 ## Related
 
-- [local-engine-aprinting-layout.md](local-engine-aprinting-layout.md) — the same row-width-versus-scan problem
+- [local-engine-aprinting-layout.md](../local-engine-aprinting-layout.md) — the same row-width-versus-scan problem
   for `APrinting`. Note its "don't implement" verdict was about a *misattributed* 55%; the mechanism it
   describes is real and this is another instance of it.
-- [done/00663-engine-oracle-word-index.md](done/00663-engine-oracle-word-index.md) — where the blob-plus-memmem
+- [done/00663-engine-oracle-word-index.md](00663-engine-oracle-word-index.md) — where the blob-plus-memmem
   pattern and its 5–6× came from.
-- [done/00649-accent-insensitive-name-search.md](done/00649-accent-insensitive-name-search.md) — why the scanned
+- [done/00649-accent-insensitive-name-search.md](00649-accent-insensitive-name-search.md) — why the scanned
   field is `card_name_folded` rather than `card_name_lower`.
 - [#859](00859-engine-exact-trigram-no-verify.md) — the tier above: 3-byte needles have an exact index and
   verify anyway, *and* get declined by the same memoize gate that skips 1-byte needles. Independent fix, same
   family.
-- [#856](00856-engine-compose-membership-bittest.md) — the latency profile this is measured against, and the
+- [#856](../00856-engine-compose-membership-bittest.md) — the latency profile this is measured against, and the
   density-curve caution above.
