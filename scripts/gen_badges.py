@@ -13,6 +13,9 @@ Two kinds of asset land in the output directory:
    three badges read alike in the README the way the three checks read alike in the PR
    checks list.
 
+3. ``logo-<language>.svg`` — the header's language marks, mirrored from upstream so the
+   README depends on our own CDN rather than on two third-party ones staying up.
+
 Both are uploaded to S3 and served through CloudFront by .github/workflows/badges.yml;
 nothing generated here is committed to the repo.
 
@@ -26,6 +29,7 @@ Usage:
     python scripts/gen_badges.py --out-dir dist/badges
     python scripts/gen_badges.py --out-dir dist/badges --skip-tests    # chart only
     python scripts/gen_badges.py --out-dir dist/badges --tokei ./tokei # non-PATH binary
+    python scripts/gen_badges.py --out-dir dist/badges --skip-logos    # no logo mirror
 """
 
 from __future__ import annotations
@@ -37,12 +41,45 @@ import math
 import re
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
 LOGGER = logging.getLogger("gen_badges")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Language marks for the README header, mirrored onto our own CDN rather than hotlinked.
+# A hotlinked header depends on two third-party CDNs staying up and keeping their URL
+# schemes; mirroring costs four small files a day and puts the whole header on
+# infrastructure we control.
+#
+# devicon is pinned to a release tag because its `main` is a moving target — an icon
+# redraw would land in the README unannounced. simple-icons has no versioned CDN path,
+# so the daily snapshot is the pin.
+#
+# Licensing: devicon is MIT, simple-icons is CC0-1.0. Both permit redistribution; the
+# attribution is recorded in docs/legal/legal.md.
+DEVICON_VERSION = "v2.17.0"
+DEVICON = f"https://cdn.jsdelivr.net/gh/devicons/devicon@{DEVICON_VERSION}/icons"
+LOGO_SOURCES = {
+    # The GitHub and Rust marks are near-black, so they use the simple-icons dual-color
+    # form, which emits a prefers-color-scheme rule instead of a fixed fill. Without it
+    # they disappear against a dark README.
+    "github": "https://cdn.simpleicons.org/github/181717/ffffff",
+    "rust": "https://cdn.simpleicons.org/rust/000000/ffffff",
+    "python": f"{DEVICON}/python/python-original.svg",
+    "javascript": f"{DEVICON}/javascript/javascript-original.svg",
+}
+LOGO_FETCH_TIMEOUT_SECONDS = 20
+
+# cdn.simpleicons.org answers 403 to clients that send no User-Agent, which is what
+# urllib does by default. The value does not matter; its presence does.
+LOGO_FETCH_USER_AGENT = "sylvan-librarian-badge-generator"
+
+# Enough of the response to tell an SVG from a CDN error page.
+MARKUP_SNIFF_BYTES = 512
 
 # Which tracked files count as source at all. Only languages GitHub's linguist treats as
 # code appear here; prose (.md) and data (.json, .toml, .yml) are excluded so the chart
@@ -342,11 +379,36 @@ def write_test_badges(out_dir: Path) -> None:
         LOGGER.info("wrote %s (%d tests)", target, count)
 
 
+def mirror_logos(out_dir: Path) -> None:
+    """Copy the header's language marks into the output directory.
+
+    A logo that cannot be fetched is skipped rather than written empty: the previous
+    upload stays in place on the CDN, so a transient upstream outage leaves yesterday's
+    mark in the README instead of a broken image.
+    """
+    for name, url in LOGO_SOURCES.items():
+        request = urllib.request.Request(url, headers={"User-Agent": LOGO_FETCH_USER_AGENT})  # noqa: S310
+        try:
+            with urllib.request.urlopen(request, timeout=LOGO_FETCH_TIMEOUT_SECONDS) as response:  # noqa: S310
+                body = response.read()
+        except (urllib.error.URLError, TimeoutError) as exc:
+            LOGGER.warning("could not fetch the %s logo from %s: %s", name, url, exc)
+            continue
+        # Guard against a CDN error page being mirrored as if it were the icon.
+        if b"<svg" not in body[:MARKUP_SNIFF_BYTES]:
+            LOGGER.warning("%s did not return SVG for %s; leaving the published copy alone", url, name)
+            continue
+        target = out_dir / f"logo-{name}.svg"
+        target.write_bytes(body)
+        LOGGER.info("wrote %s (%d bytes)", target, len(body))
+
+
 def main() -> int:
     """Render the badge assets into --out-dir."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir", type=Path, required=True, help="directory to write badge assets into")
-    parser.add_argument("--skip-tests", action="store_true", help="only render the language chart")
+    parser.add_argument("--skip-tests", action="store_true", help="skip the per-suite test counts")
+    parser.add_argument("--skip-logos", action="store_true", help="skip mirroring the header logos")
     parser.add_argument("--tokei", default="tokei", help="path to the tokei binary (default: found on PATH)")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
@@ -361,6 +423,8 @@ def main() -> int:
 
     if not args.skip_tests:
         write_test_badges(args.out_dir)
+    if not args.skip_logos:
+        mirror_logos(args.out_dir)
     return 0
 
 

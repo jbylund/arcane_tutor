@@ -2,7 +2,7 @@
 
 <table>
   <tr>
-    <td align="center"><img src="https://cdn.simpleicons.org/github/181717/ffffff" alt="GitHub" width="40" height="40"></td>
+    <td align="center"><img src="https://d1hot9ps2xugbc.cloudfront.net/badges/logo-github.svg" alt="GitHub" width="40" height="40"></td>
     <td>
       <a href="https://github.com/jbylund/sylvan_librarian/issues"><img src="https://img.shields.io/github/issues/jbylund/sylvan_librarian" alt="Issues"></a>      <br>
       <a href="https://github.com/jbylund/sylvan_librarian/pulls"><img src="https://img.shields.io/github/issues-pr/jbylund/sylvan_librarian" alt="Pull requests"></a>      <br>
@@ -16,7 +16,7 @@
     </td>
   </tr>
   <tr>
-    <td align="center"><img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/python/python-original.svg" alt="Python" width="40" height="40"></td>
+    <td align="center"><img src="https://d1hot9ps2xugbc.cloudfront.net/badges/logo-python.svg" alt="Python" width="40" height="40"></td>
     <td>
       <a href="https://github.com/jbylund/sylvan_librarian/actions/workflows/python-tests.yml?query=branch%3Amain"><img src="https://img.shields.io/github/actions/workflow/status/jbylund/sylvan_librarian/python-tests.yml?branch=main&label=tests" alt="Python tests"></a>
       <br>
@@ -24,7 +24,7 @@
     </td>
   </tr>
   <tr>
-    <td align="center"><img src="https://cdn.simpleicons.org/rust/000000/ffffff" alt="Rust" width="40" height="40"></td>
+    <td align="center"><img src="https://d1hot9ps2xugbc.cloudfront.net/badges/logo-rust.svg" alt="Rust" width="40" height="40"></td>
     <td>
       <a href="https://github.com/jbylund/sylvan_librarian/actions/workflows/rust-tests.yml?query=branch%3Amain"><img src="https://img.shields.io/github/actions/workflow/status/jbylund/sylvan_librarian/rust-tests.yml?branch=main&label=tests" alt="Rust tests"></a>
       <br>
@@ -32,7 +32,7 @@
     </td>
   </tr>
   <tr>
-    <td align="center"><img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/javascript/javascript-original.svg" alt="JavaScript" width="40" height="40"></td>
+    <td align="center"><img src="https://d1hot9ps2xugbc.cloudfront.net/badges/logo-javascript.svg" alt="JavaScript" width="40" height="40"></td>
     <td>
       <a href="https://github.com/jbylund/sylvan_librarian/actions/workflows/js-tests.yml?query=branch%3Amain"><img src="https://img.shields.io/github/actions/workflow/status/jbylund/sylvan_librarian/js-tests.yml?branch=main&label=tests" alt="JavaScript tests"></a>
       <br>

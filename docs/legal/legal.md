@@ -39,6 +39,18 @@ Card images are processed from Scryfall's PNG images and served via our own infr
 - **Beleren font**: Used for card text display (respecting font licensing)
 - **MPlantin font**: Used for flavor text and card names
 
+### Language Marks in the README
+
+The Python, Rust, JavaScript, and GitHub marks in the README header are redistributed from
+upstream icon sets rather than hotlinked — `scripts/gen_badges.py` mirrors them to this
+project's CDN on a schedule. Both source licenses permit that redistribution:
+
+- **[devicon](https://github.com/devicons/devicon)** (Python, JavaScript) — MIT
+- **[simple-icons](https://github.com/simple-icons/simple-icons)** (GitHub, Rust) — CC0-1.0
+
+The marks themselves remain the trademarks of their respective projects and are used only
+to identify the languages this codebase is written in.
+
 ## Intellectual Property Attribution
 
 ### Wizards of the Coast
