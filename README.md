@@ -1,8 +1,5 @@
 # Sylvan Librarian
 
-[![Last commit](https://img.shields.io/github/last-commit/jbylund/sylvan_librarian)](https://github.com/jbylund/sylvan_librarian/commits/main)
-[![License](https://img.shields.io/github/license/jbylund/sylvan_librarian)](https://github.com/jbylund/sylvan_librarian/blob/main/LICENSE)
-
 <table>
   <tr>
     <td align="center"><img src="https://cdn.simpleicons.org/github/181717/ffffff" alt="GitHub" width="40" height="40"></td>
@@ -13,6 +10,9 @@
     </td>
     <td rowspan="4" align="center">
       <img src="https://d1hot9ps2xugbc.cloudfront.net/badges/languages.svg" alt="Lines of code by language">
+      <br>
+      <a href="https://github.com/jbylund/sylvan_librarian/commits/main"><img src="https://img.shields.io/github/last-commit/jbylund/sylvan_librarian" alt="Last commit"></a>
+      <a href="https://github.com/jbylund/sylvan_librarian/blob/main/LICENSE"><img src="https://img.shields.io/github/license/jbylund/sylvan_librarian" alt="License"></a>
     </td>
   </tr>
   <tr>
