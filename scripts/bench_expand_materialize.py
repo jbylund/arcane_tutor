@@ -39,28 +39,34 @@ from scripts.costbench import load_engine  # noqa: E402
 
 # (group, query, unique, orderby, prefer) — direction=asc, limit=100, offset=0 throughout.
 #
-# `oracle` needles are multi-word on purpose: a single eligible word is answered by the
-# dictionary's dense bitplane and never reaches the CSR. `artist` and `flavor` narrow in
-# printing space, where the crossover sits three times higher than in card space.
-# `control` rows reach no CSR arm at all and must not move.
+# Which queries reach `expand_csr` was PROBED against the real corpus, not assumed — an
+# earlier version of this list guessed wrong. Single-word `o:` needles reach it too: the
+# dictionary's dense tier is only ~56 words, so `o:flying` skips the CSR and `o:trample`,
+# `o:sacrifice`, `o:landwalk` do not. `control` rows reach no CSR arm at all (probed: zero
+# calls) and must not move. `ft:the` is a control in disguise and is labelled as one —
+# `range_too_broad_to_narrow` declines it before the CSR, so it pins the flavor arm's ceiling.
 CONFIGS: list[tuple[str, str, str, str, str]] = [
+    ("oracle", "o:trample", "card", "edhrec", "default"),
+    ("oracle", "o:sacrifice", "card", "edhrec", "default"),
+    ("oracle", "o:landwalk", "card", "edhrec", "default"),
+    ("oracle", "o:the", "card", "edhrec", "default"),
     ("oracle", 'o:"draw a card"', "card", "edhrec", "default"),
-    ("oracle", 'o:"destroy target creature"', "card", "edhrec", "default"),
     ("oracle", 'o:"you control"', "card", "edhrec", "default"),
     ("oracle", 'o:"whenever you cast"', "card", "edhrec", "default"),
     ("oracle", 'o:"draw a card" t:creature', "card", "edhrec", "default"),
+    ("regex", "o:/counters? on/", "card", "edhrec", "default"),
     ("artist", "a:john", "printing", "edhrec", "default"),
     ("artist", "a:a", "printing", "edhrec", "default"),
     ("artist", "a:e", "card", "edhrec", "default"),
     ("artist", "a:rebecca", "printing", "edhrec", "default"),
     ("flavor", "ft:dragon", "printing", "edhrec", "default"),
-    ("flavor", "ft:the", "printing", "edhrec", "default"),
     ("flavor", "ft:death", "card", "edhrec", "default"),
     ("flavor", "ft:war t:creature", "printing", "edhrec", "default"),
+    ("control", "ft:the", "printing", "edhrec", "default"),
+    ("control", "o:flying", "card", "edhrec", "default"),
     ("control", "t:creature", "card", "edhrec", "default"),
     ("control", "f:modern", "card", "edhrec", "default"),
     ("control", "c:g", "card", "edhrec", "default"),
-    ("control", "r:common or r:uncommon", "card", "edhrec", "default"),
     ("control", "name:bolt", "card", "edhrec", "default"),
 ]
 

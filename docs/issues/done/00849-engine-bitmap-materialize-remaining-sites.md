@@ -83,20 +83,66 @@ That cost is inside every number above.
 ## End to end
 
 Same binary both sides — `CARD_ENGINE_RANGE_MATERIALIZE_BITMAP` picks the route — 3 interleaved
-rounds, 6 s per config, floor of the per-round floors. No config here is a range predicate, so the
-flag isolates `expand_csr`. `total` matched on every config.
+rounds, 4 s per config, floor of the per-round floors. No config here is a range predicate, so the
+flag isolates `expand_csr`. `total` matched on every config. Measured on the rebase onto
+[#829](https://github.com/jbylund/sylvan_librarian/pull/829), which reworked plan routing.
 
-| group | n | median ratio | worst |
+| group | n | median ratio | range |
 | --- | --: | --: | --- |
-| oracle | 5 | **0.907** | `o:"draw a card" t:creature` 0.888 |
-| artist | 4 | **0.854** | `a:e` 0.656, `a:a` 0.747 |
-| flavor | 4 | 0.981 | `ft:war t:creature` 0.946 |
-| control | 5 | 1.004 | 0.992 – 1.019 |
+| oracle | 8 | **0.914** | 0.679 – 1.007 |
+| regex | 1 | 0.960 | — |
+| artist | 4 | **0.856** | 0.669 – 1.009 |
+| flavor | 3 | 0.962 | 0.949 – 0.982 |
+| control | 6 | 0.999 | 0.985 – 1.016 |
 
-Flavor moves least because its biggest sets never reach the CSR: `ft:the` is 36,392 printings, which
-`range_too_broad_to_narrow` declines before `expand_flavor_ids` is called, so the 274 → 85 µs in the
-kernel table above is a win the query cannot collect. The flavor arm's realistic range is the middle
-of the distribution, where it is worth 2–5%.
+The per-query numbers matter more than the medians, because the win is a function of `k` and `k`
+spans three orders of magnitude within each group:
+
+| query | sort | bitmap | ratio |
+| --- | --: | --: | --: |
+| `a:a` | 1.506 ms | **1.140 ms** | 0.757 |
+| `a:e` | 0.924 ms | **0.618 ms** | 0.669 |
+| `o:the` | 200 µs | **136 µs** | 0.679 |
+| `o:"you control"` | 310 µs | **279 µs** | 0.898 |
+| `o:trample` | 70 µs | **64 µs** | 0.923 |
+| `o:sacrifice` | 68 µs | 67 µs | 0.993 |
+| `o:landwalk` | 40 µs | 41 µs | 1.007 |
+
+Below roughly a thousand rows the saving is a few µs and disappears into the noise floor — the
+controls put that floor at ±1.5%. That is the honest shape of this change: it does nothing for small
+text queries and takes 25–35% off the big ones.
+
+The same 22 configs were measured before and after the #829 rebase. Every group median moved by less
+than 0.02 and no query's verdict changed, so #829's routing rework neither helps nor hurts this: the
+plans these queries pick are the same on both sides (`PlanePopcountOrder` for the controls,
+`GatheredScan` / `StreamedSelect` for the targets).
+
+### Which queries reach the arm at all — probed, not assumed
+
+An `eprintln` in `expand_csr` against the real corpus, one query per row. This corrected a wrong
+assumption in the first version of this work, which held that a single eligible `o:` word is always
+answered by the word dictionary's dense bitplane:
+
+| query | calls | rows |
+| --- | --: | --: |
+| `o:flying` | **0** | — |
+| `o:trample` | 1 | 1,484 |
+| `o:landwalk` | 1 | 62 |
+| `o:the` | 1 | 15,884 |
+| `o:/counters? on/` | 1 | 4,593 |
+| `a:a` | 1 | 1,726 |
+| `ft:dragon` | 1 | 349 |
+| **`ft:the`** | **0** | — |
+| `t:creature`, `f:modern`, `c:g`, `name:bolt` | 0 | — |
+
+The dense tier is only ~56 words, so skipping the CSR is the exception (`o:flying`), not the rule —
+nearly every `o:` predicate lands here, as do the literal factors of a regex.
+
+`ft:the` is the other direction, and it is why flavor moves least: at 36,392 printings
+`range_too_broad_to_narrow` declines the flavor arm *before* `expand_flavor_ids` is called, so the
+274 → 85 µs in the kernel table above is a win the query cannot collect. It is a control in the
+end-to-end table, not a target. The flavor arm's reachable range is the middle of its distribution,
+where it is worth 2–6%.
 
 ## Acceptance, against the criteria as filed
 

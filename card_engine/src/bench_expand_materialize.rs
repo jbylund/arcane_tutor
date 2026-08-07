@@ -134,8 +134,12 @@ fn bench_expand_materialize() {
     );
 
     // ── expand_text_ids: oracle-text CSR, card space ─────────────────────────
-    // Multi-word needles: a single eligible word is answered by the dictionary's dense
-    // bitplane (`scan_oracle_words`) and never reaches the CSR at all.
+    // Almost every `o:` needle lands here. `scan_oracle_words` splits the dictionary into a
+    // dense tier (~56 words) answered by a bitplane and a sparse tier (~6,300) answered by
+    // these postings, and the CSR is skipped only when a needle's matches are ENTIRELY dense
+    // and there is exactly one of them -- `o:flying`, and not much else. `o:trample`,
+    // `o:sacrifice`, `o:landwalk` and every multi-word or short needle come through here,
+    // as do the literal factors of a regex. Probed against the real corpus, not assumed.
     println!("\n-- expand_text_ids: oracle text -> cards, domain {n_cards} --");
     let ot: &Archived<OracleTextIndex> = &data.indexes.oracle_trigram;
     for needle in [
@@ -171,6 +175,11 @@ fn bench_expand_materialize() {
     }
 
     // ── expand_flavor_ids: flavor CSR, printing space ────────────────────────
+    // `the` is measured but is NOT reachable as a query: at 36,392 printings
+    // `range_too_broad_to_narrow` declines the flavor arm before `expand_flavor_ids` is
+    // called (probed — `ft:the` makes zero `expand_csr` calls). It is kept as the kernel's
+    // wide-row data point, and as the reason the flavor arm's end-to-end win is the smallest
+    // of the three: its largest sets are the ones that never get here.
     println!("\n-- expand_flavor_ids: flavor text -> printings, domain {n_printings} --");
     let fi: &Archived<FlavorIndex> = &data.indexes.flavor;
     for needle in ["dragon", "death", "the", "war", "life"] {
