@@ -1,4 +1,4 @@
-name: Unit Tests
+name: Python Tests
 
 on:
   push:
@@ -28,10 +28,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: >-
           .github/scripts/changed-paths.sh
-          '\.py$|\.rs$|(^|/)Cargo\.(toml|lock)$|^requirements/|(^|/)pyproject\.toml$|^api/static/fixtures/|^\.github/(workflows/unit-tests\.yml|scripts/changed-paths\.sh)$'
+          '\.py$|\.rs$|(^|/)Cargo\.(toml|lock)$|^requirements/|(^|/)pyproject\.toml$|^api/static/fixtures/|^\.github/(workflows/python-tests\.yml|scripts/changed-paths\.sh)$'
 
   # Named python-test (not `test`) to match js-test / rust-test — the three check
   # names should read alike in the PR checks list and in the required-checks rule.
+  # The workflow was called "Unit Tests" until the Rust suites arrived and made that
+  # name ambiguous; the job name has always been python-test, so renaming the workflow
+  # did not disturb the required-checks rule, which matches on the check name.
   python-test:
     needs: changes
     if: needs.changes.outputs.relevant == 'true'

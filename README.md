@@ -1,5 +1,17 @@
 # Sylvan Librarian
 
+[![Python Tests](https://img.shields.io/github/actions/workflow/status/jbylund/sylvan_librarian/python-tests.yml?branch=main&label=python%20tests)](https://github.com/jbylund/sylvan_librarian/actions/workflows/python-tests.yml)
+[![Rust Tests](https://img.shields.io/github/actions/workflow/status/jbylund/sylvan_librarian/rust-tests.yml?branch=main&label=rust%20tests)](https://github.com/jbylund/sylvan_librarian/actions/workflows/rust-tests.yml)
+[![Last commit](https://img.shields.io/github/last-commit/jbylund/sylvan_librarian)](https://github.com/jbylund/sylvan_librarian/commits/main)
+[![Issues](https://img.shields.io/github/issues/jbylund/sylvan_librarian)](https://github.com/jbylund/sylvan_librarian/issues)
+[![Pull requests](https://img.shields.io/github/issues-pr/jbylund/sylvan_librarian)](https://github.com/jbylund/sylvan_librarian/pulls)
+[![Stars](https://img.shields.io/github/stars/jbylund/sylvan_librarian)](https://github.com/jbylund/sylvan_librarian/stargazers)
+[![License](https://img.shields.io/github/license/jbylund/sylvan_librarian)](https://github.com/jbylund/sylvan_librarian/blob/main/LICENSE)
+
+[![python tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fd1hot9ps2xugbc.cloudfront.net%2Fbadges%2Ftests-python.json)](https://github.com/jbylund/sylvan_librarian/actions/workflows/python-tests.yml)
+[![rust tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fd1hot9ps2xugbc.cloudfront.net%2Fbadges%2Ftests-rust.json)](https://github.com/jbylund/sylvan_librarian/actions/workflows/rust-tests.yml)
+[![js tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fd1hot9ps2xugbc.cloudfront.net%2Fbadges%2Ftests-js.json)](https://github.com/jbylund/sylvan_librarian/actions/workflows/js-tests.yml)
+
 ![Web Interface](screenshot.webp)
 
 *Web interface in dark mode: `t:beast` matching 525 cards, returned in 3 ms*
@@ -101,11 +113,16 @@ Based on [comprehensive functionality analysis](docs/technical/scryfall_function
 ### Implementation Status
 
 - **Current API Success Rate**: 100% for supported features (enhanced coverage with flavor text search)
-- **Test Coverage**: 1,821 total tests including 1,302 parser tests with comprehensive validation
+- **Test Coverage**: see the per-suite test-count badges at the top of this file — they are regenerated daily, so they do not go stale the way a number written into prose does
 - **Performance**: In-memory Rust query engine (sub-millisecond for most queries) backed by optimized PostgreSQL with proper indexing including full-text search capabilities
 - **Data Quality**: Regular comparison testing against official Scryfall API
 
 ## Code Organization
+
+![Lines of code by language](https://d1hot9ps2xugbc.cloudfront.net/badges/languages.svg)
+
+*Source lines by language, excluding comments, blank lines, and benchmark harnesses.
+Regenerated daily — see [scripts/gen_badges.py](scripts/gen_badges.py).*
 
 ```
 sylvan_librarian/

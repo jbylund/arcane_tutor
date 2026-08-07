@@ -90,7 +90,7 @@ When a CI failure issue is created:
 
 The CI Monitor currently tracks these workflows:
 - **Lint**: Python code style and quality checks
-- **Unit Tests**: Comprehensive test suite execution
+- **Python Tests**: Comprehensive test suite execution
 - **Any other workflows**: Automatically detects and monitors all repository workflows
 
 ## Testing

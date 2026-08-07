@@ -86,5 +86,5 @@ npx prettier --write <changed .html/.js files>
 
 ## CI
 
-GitHub Actions run on every push/PR: `unit-tests.yml` (pytest on Python 3.13 with cached Rust
+GitHub Actions run on every push/PR: `python-tests.yml` (pytest on Python 3.13 with cached Rust
 extension wheels) and `lint.yml` (ruff). All tests must pass and ruff must be clean before merge.

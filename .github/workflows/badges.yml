@@ -1,0 +1,177 @@
+name: Badges
+
+# Regenerates the README's two dynamic badge assets — the language donut and the
+# per-suite test counts — and publishes them to S3 behind the same CloudFront
+# distribution that already serves card images.
+#
+# Why a scheduled job rather than a committed artifact: the alternative is a bot commit
+# on every merge, or a drift check that fails PRs for a number nobody edited on purpose.
+# Neither is worth it for a decorative asset. Daily is fast enough for a line count.
+#
+# Why not a gist: shields.io reads endpoint JSON server-side and would be fine from a
+# gist, but the donut is an <img> and GitHub proxies those through camo, which refuses
+# gist raw URLs (they are served text/plain with nosniff). One host for both keeps the
+# publishing step single-purpose.
+
+on:
+  schedule:
+    # 07:20 UTC daily — off the hour, since the top of the hour is the busiest slot on
+    # shared runners and this job is in no hurry.
+    - cron: '20 7 * * *'
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'scripts/gen_badges.py'
+      - '.github/workflows/badges.yml'
+
+permissions:
+  contents: read
+  actions: read # the staleness gate reads this workflow's own run history
+  id-token: write # for the OIDC handshake in configure-aws-credentials
+
+# tokei ships no prebuilt binaries (v13 and v14 releases carry no assets), so it is built
+# from source and cached on the version key — the job already needs a Rust toolchain for
+# the cargo test --list count, so this costs a cache hit rather than a toolchain. Pinned
+# because an unpinned counter would silently reclassify languages under the badge one
+# morning.
+env:
+  TOKEI_VERSION: '14.0.0'
+  BADGE_PREFIX: badges
+  # Short TTL: camo caches against the origin's max-age, and a badge that lags a day
+  # behind the daily regeneration would defeat the point of regenerating daily.
+  BADGE_CACHE_CONTROL: 'public, max-age=300'
+
+jobs:
+  # Most days main does not move, and republishing byte-identical badges costs the full
+  # toolchain install for nothing. This gate is ~15s against the ~5min it guards.
+  #
+  # It compares against the head SHA of the last *successful* publish rather than asking
+  # "were there commits in the last 24h". The window version has a hole: if a run fails
+  # or a cron is skipped (GitHub drops scheduled runs on busy repos), a commit older than
+  # the window never triggers a publish and the badges stay stale indefinitely. Comparing
+  # SHAs is self-healing — whatever the reason the last publish did not happen, the SHAs
+  # still differ and the next run picks it up.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      stale: ${{ steps.gate.outputs.stale }}
+    steps:
+      - name: Has main moved since the last successful publish?
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          CURRENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # A manual run is someone asking for a rebuild on purpose, and a push here means
+          # the generator itself changed — the output can differ at an unchanged tree.
+          if [ "${EVENT_NAME}" != "schedule" ]; then
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            echo "${EVENT_NAME} run — publishing regardless of history"
+            exit 0
+          fi
+
+          # Fails open: this endpoint 404s until the workflow has been registered with at
+          # least one run, and `set -e` would otherwise turn that into a failed gate on
+          # the very first schedule. An extra publish is the cheap error here.
+          published_sha=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/badges.yml/runs?status=success&branch=main&per_page=1" \
+            --jq '.workflow_runs[0].head_sha // ""' 2>/dev/null || echo "")
+
+          if [ -z "${published_sha}" ]; then
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            echo "no successful publish on record — bootstrapping"
+          elif [ "${published_sha}" = "${CURRENT_SHA}" ]; then
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+            echo "main is still at ${CURRENT_SHA} — badges are current, skipping"
+          else
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            echo "main moved ${published_sha} -> ${CURRENT_SHA} — republishing"
+          fi
+
+  publish-badges:
+    needs: changes
+    if: needs.changes.outputs.stale == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        id: setup-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+          cache: 'npm'
+
+      # Pinned to match rust-tests.yml — see the comment there on why this is not @stable.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Cache Cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            card_engine
+            shared_cache
+
+      - name: Install uv dependencies
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          uv pip install --system --break-system-packages -r requirements/base.txt -r requirements/test.txt
+
+      # pytest --collect-only still imports the test modules, so the Rust extensions have
+      # to be importable or collection fails and the python badge is skipped.
+      - name: Install Rust extensions
+        run: |
+          pip install ./card_engine
+          pip install ./shared_cache
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: Cache tokei
+        id: tokei-cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/bin/tokei
+          key: tokei-${{ runner.os }}-${{ env.TOKEI_VERSION }}
+
+      - name: Install tokei
+        if: steps.tokei-cache.outputs.cache-hit != 'true'
+        run: cargo install tokei --version "${TOKEI_VERSION}" --locked
+
+      - name: Generate badge assets
+        run: python scripts/gen_badges.py --out-dir dist/badges --tokei ~/.cargo/bin/tokei
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_BADGE_PUBLISH_ROLE }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # Content types are set explicitly: S3 defaults to application/octet-stream, and
+      # camo will not render an image it was not told is an image.
+      - name: Upload to S3
+        run: |
+          aws s3 cp dist/badges "s3://${{ vars.BADGE_BUCKET }}/${BADGE_PREFIX}/" \
+            --recursive --exclude '*' --include '*.svg' \
+            --content-type image/svg+xml --cache-control "${BADGE_CACHE_CONTROL}"
+          aws s3 cp dist/badges "s3://${{ vars.BADGE_BUCKET }}/${BADGE_PREFIX}/" \
+            --recursive --exclude '*' --include '*.json' \
+            --content-type application/json --cache-control "${BADGE_CACHE_CONTROL}"
+
+      - name: Invalidate CloudFront
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}" \
+            --paths "/${BADGE_PREFIX}/*"
