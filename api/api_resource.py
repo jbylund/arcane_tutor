@@ -1042,10 +1042,14 @@ class APIResource:
                 total_time,
                 rate,
             )
+            # Art tags first: the prefer score's art_style component reads card_art_tags, so
+            # running the backfill ahead of the tag import scored every card as on-style on a
+            # first boot, and nothing rescored until the next import. Oracle tags feed search
+            # rather than scoring, so their position relative to the backfill does not matter.
+            _import_art_tags(self._conn_pool, self._bulk_data_fetcher)
             self.backfill_prefer_scores()
             self.backfill_cubecobra_scores()
             _import_oracle_tags(self._conn_pool, self._bulk_data_fetcher)
-            _import_art_tags(self._conn_pool, self._bulk_data_fetcher)
             self._reload_engine(force=True)
             self._clear_caches()
             self._last_import_time.value = time.time()
@@ -1841,9 +1845,7 @@ class APIResource:
 
         backfill_sql = db_utils.read_sql("backfill_prefer_scores")
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
-            statement_timeout = 120_000
-            # Validate and set statement timeout
-            self._set_statement_timeout(cursor, statement_timeout)
+            self._set_statement_timeout(cursor, settings.prefer_score_backfill_timeout_ms)
             cursor.execute(backfill_sql)
             updated_count = cursor.rowcount
 

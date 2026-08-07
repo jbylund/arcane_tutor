@@ -1,48 +1,60 @@
 -- Backfill prefer_score and prefer_score_components for all cards
 -- This script recalculates the prefer score for all existing cards based on multiple attributes
 
-WITH computed_components AS (
+-- How heavily each ARTWORK has been reprinted, as a proxy for how canonical it is. Counts
+-- only real printing events -- three kinds of row are not:
+--
+--   non-English  the same printing already counted in its English row. Mark Poole's Birds
+--                of Paradise art picked up 4bb (Spanish) and fbb (French) on top of the
+--                English 4th Edition printing.
+--   memorabilia  World Championship decks, Collectors' Edition and 30th Anniversary: not
+--                tournament-legal, not real sets. Four of the eight on that same artwork
+--                are BLACK-bordered (30a x2, ced, cei), so a border test alone misses half
+--                of them.
+--   gold/yellow  any remaining non-standard product Scryfall types as something other than
+--                memorabilia.
+--
+-- Together these took Poole's art from 21 counted printings to 11, against Marcelo
+-- Vignali's 12 -- reversing which artwork the site shows for that card.
+--
+-- White borders are deliberately NOT filtered: 2ed-6ed are white-bordered and perfectly
+-- real, and dropping them would penalise exactly the core-set reprints this component
+-- should reward.
+--
+-- Evidence (docs/issues/done/00720-prefer-score-artwork-tuning.md): a 47-card blind swap
+-- review returned 11 better, 36 same, 0 worse, and a later 378-card review against
+-- production added 2 more with no regressions. This changes only the numerator -- it does
+-- not stop such printings being displayed.
+--
+-- Aggregated once for the whole corpus rather than re-counted per card. As a correlated
+-- subquery this was one index lookup per row, and because the planner inlines the CTEs
+-- below it ran FOUR times per row -- once each for the target list and the IS DISTINCT
+-- FROM guard, in both the component object and the score sum.
+WITH artwork_printings AS MATERIALIZED (
     SELECT
-        scryfall_id,
+        illustration_id,
+        card_name,
+        COUNT(*) AS printings
+    FROM magic.cards
+    CROSS JOIN LATERAL JSONB_TO_RECORD(raw_card_blob) AS blob(lang text, set_type text)
+    WHERE (
+        illustration_id IS NOT NULL AND
+        blob.lang = 'en' AND
+        COALESCE(blob.set_type, '') <> 'memorabilia' AND
+        COALESCE(card_border, '') NOT IN ('gold', 'yellow')
+    )
+    GROUP BY illustration_id, card_name
+),
+-- MATERIALIZED on both CTEs is load-bearing, not decoration. Inlined, the whole
+-- JSONB_BUILD_OBJECT expression is substituted into the UPDATE's target list AND its
+-- IS DISTINCT FROM guard, so every component is computed twice over -- and any subquery
+-- inside it twice again.
+computed_components AS MATERIALIZED (
+    SELECT
+        source.scryfall_id,
         JSONB_BUILD_OBJECT(
-            -- How heavily this ARTWORK has been reprinted, as a proxy for how canonical it
-            -- is. The numerator counts rows sharing the illustration, so it must count only
-            -- real printing events -- three kinds of row are not:
-            --
-            --   non-English  the same printing already counted in its English row. Mark
-            --                Poole's Birds of Paradise art picked up 4bb (Spanish) and fbb
-            --                (French) on top of the English 4th Edition printing.
-            --   memorabilia  World Championship decks, Collectors' Edition and 30th
-            --                Anniversary: not tournament-legal, not real sets. Four of the
-            --                eight on that same artwork are BLACK-bordered (30a x2, ced,
-            --                cei), so a border test alone misses half of them.
-            --   gold/yellow  any remaining non-standard product Scryfall types as something
-            --                other than memorabilia.
-            --
-            -- Together these took Poole's art from 21 counted printings to 11, against
-            -- Marcelo Vignali's 12 -- reversing which artwork the site shows for that card.
-            --
-            -- White borders are deliberately NOT filtered: 2ed-6ed are white-bordered and
-            -- perfectly real, and dropping them would penalise exactly the core-set reprints
-            -- this component should reward.
-            --
-            -- Evidence (docs/issues/done/00720-prefer-score-artwork-tuning.md): a 47-card blind
-            -- swap review returned 11 better, 36 same, 0 worse, and a later 378-card review
-            -- against production added 2 more with no regressions. This changes only the
-            -- numerator -- it does not stop such printings being displayed.
-            'illustration_count', (
-                SELECT
-                    ROUND((23 * LN(1 + COUNT(*)) / LN(40))::numeric, 4)
-                FROM magic.cards query_target_cards
-                WHERE (
-                    query_target_cards.illustration_id = source.illustration_id AND
-                    query_target_cards.illustration_id IS NOT NULL AND
-                    query_target_cards.card_name = source.card_name AND
-                    query_target_cards.raw_card_blob ->> 'lang' = 'en' AND
-                    COALESCE(query_target_cards.raw_card_blob ->> 'set_type', '') <> 'memorabilia' AND
-                    COALESCE(query_target_cards.card_border, '') NOT IN ('gold', 'yellow')
-                )
-            ),
+            -- See the artwork_printings CTE above for what counts as a printing.
+            'illustration_count', ROUND((23 * LN(1 + COALESCE(artwork_printings.printings, 0)) / LN(40))::numeric, 4),
             'rarity', (
                 CASE
                     WHEN card_rarity_int = 0 THEN 16  -- common
@@ -77,39 +89,39 @@ WITH computed_components AS (
             ),
             'highres_scan', (
                 CASE
-                    WHEN raw_card_blob ->> 'image_status' = 'highres_scan' THEN 16
+                    WHEN blob.image_status = 'highres_scan' THEN 16
                     ELSE 0
                 END
             ),
             'has_paper', (
                 CASE
-                    WHEN raw_card_blob -> 'games' ? 'paper' THEN 6
+                    WHEN blob.games ? 'paper' THEN 6
                     ELSE 0
                 END
             ),
             'language', (
                 CASE
-                    WHEN raw_card_blob ->> 'lang' = 'en' THEN 40
+                    WHEN blob.lang = 'en' THEN 40
                     ELSE 0
                 END
             ),
             'legendary_frame', (
                 CASE
-                    WHEN raw_card_blob -> 'frame_effects' ? 'legendary' THEN 5
+                    WHEN blob.frame_effects ? 'legendary' THEN 5
                     ELSE 0
                 END
             ),
             'non_showcase', (
                 CASE
-                    WHEN NOT (COALESCE(raw_card_blob -> 'frame_effects', '[]'::jsonb) ? 'showcase') THEN 10
+                    WHEN NOT (COALESCE(blob.frame_effects, '[]'::jsonb) ? 'showcase') THEN 10
                     ELSE 0
                 END
             ),
             'finish', (
                 CASE
-                    WHEN raw_card_blob -> 'finishes' ? 'nonfoil' THEN 10
-                    WHEN raw_card_blob -> 'finishes' ? 'foil' THEN 5
-                    WHEN raw_card_blob -> 'finishes' ? 'etched' THEN 0
+                    WHEN blob.finishes ? 'nonfoil' THEN 10
+                    WHEN blob.finishes ? 'foil' THEN 5
+                    WHEN blob.finishes ? 'etched' THEN 0
                     ELSE 0
                 END
             ),
@@ -158,8 +170,18 @@ WITH computed_components AS (
             )
         ) AS new_components
     FROM magic.cards source
+    -- Pull every raw_card_blob field in one pass. Written as separate `->>` extractions,
+    -- each one detoasts the blob again -- seven times per row, and raw_card_blob is large
+    -- enough to be stored out of line.
+    CROSS JOIN LATERAL JSONB_TO_RECORD(source.raw_card_blob) AS blob(
+        image_status text, lang text, games jsonb, frame_effects jsonb, finishes jsonb
+    )
+    LEFT JOIN artwork_printings ON (
+        artwork_printings.illustration_id = source.illustration_id AND
+        artwork_printings.card_name = source.card_name
+    )
 ),
-computed_scores AS (
+computed_scores AS MATERIALIZED (
     SELECT
         scryfall_id,
         new_components,

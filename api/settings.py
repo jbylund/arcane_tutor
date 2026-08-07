@@ -4,6 +4,13 @@ from __future__ import annotations
 
 import os
 
+# Statement timeout for the prefer-score backfill, in milliseconds. The backfill rescores the
+# whole corpus in a single UPDATE, so its runtime scales with disk speed: on a virtualized
+# Docker-for-Mac volume it can exceed a limit that real Linux hardware clears comfortably, and
+# the import is then abandoned after the upsert has already succeeded (#876). Raise this in
+# environments with slow storage.
+DEFAULT_PREFER_SCORE_BACKFILL_TIMEOUT_MS = 120_000
+
 
 def _is_truthy(value: str | None) -> bool:
     """Check if a string value is truthy.
@@ -19,6 +26,37 @@ def _is_truthy(value: str | None) -> bool:
     return value.lower() in ("true", "1", "yes")
 
 
+def _non_negative_int(name: str, default: int) -> int:
+    """Read a non-negative integer from the environment, falling back to a default.
+
+    Raises rather than silently substituting the default on a malformed value: these tune
+    timeouts, and quietly ignoring a typo means the operator only finds out when the import
+    dies at the limit they thought they had raised.
+
+    Args:
+        name: Environment variable to read.
+        default: Value to use when the variable is unset or empty.
+
+    Returns:
+        The parsed value, or default if the variable is unset or empty.
+
+    Raises:
+        ValueError: If the variable is set to something that is not a non-negative integer.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        msg = f"{name} must be a non-negative integer, got: {raw!r}"
+        raise ValueError(msg) from None
+    if value < 0:
+        msg = f"{name} must be a non-negative integer, got: {raw!r}"
+        raise ValueError(msg)
+    return value
+
+
 class Settings:
     """Simple settings class for runtime configuration."""
 
@@ -27,6 +65,10 @@ class Settings:
         self._enable_cache = _is_truthy(os.environ.get("ENABLE_CACHE", "false"))
         self._enable_engine = _is_truthy(os.environ.get("ENABLE_ENGINE", "true"))
         self._shared_cache_path: str = os.environ.get("SHARED_CACHE_PATH", "/tmp/sylvan.cache")  # noqa: S108
+        self._prefer_score_backfill_timeout_ms = _non_negative_int(
+            "PREFER_SCORE_BACKFILL_TIMEOUT_MS",
+            DEFAULT_PREFER_SCORE_BACKFILL_TIMEOUT_MS,
+        )
 
     @property
     def enable_cache(self) -> bool:
@@ -58,6 +100,14 @@ class Settings:
     def shared_cache_path(self) -> str:
         """Filesystem path for the shared mmap cache file."""
         return self._shared_cache_path
+
+    @property
+    def prefer_score_backfill_timeout_ms(self) -> int:
+        """Statement timeout for the prefer-score backfill, in milliseconds.
+
+        Override with PREFER_SCORE_BACKFILL_TIMEOUT_MS. 0 disables the timeout entirely.
+        """
+        return self._prefer_score_backfill_timeout_ms
 
 
 # Global settings instance

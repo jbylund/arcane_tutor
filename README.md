@@ -307,6 +307,11 @@ applies every time that stack starts; exporting one in the shell overrides the f
 - `ENVIRONMENT` - Environment mode (default: `dev`)
   - Set to `prod` for production mode with restricted CORS
   - Controlled per environment in `envs/dev` / `envs/blue` / `envs/green`
+- `PREFER_SCORE_BACKFILL_TIMEOUT_MS` - Statement timeout for the prefer-score backfill (default: `120000`)
+  - The backfill rescores the whole corpus in one UPDATE, so its runtime tracks disk speed
+  - Raise it if an import dies in `backfill_prefer_scores` on slow storage (a virtualized
+    Docker-for-Mac volume, a small cloud disk); `0` disables the timeout
+  - Must be a non-negative integer — a malformed value fails at startup rather than being ignored
 - `CDN_URL` - CDN URL for static assets (default: `https://d1hot9ps2xugbc.cloudfront.net`)
   - Override to use a different CDN provider
   - Used in Content-Security-Policy headers
