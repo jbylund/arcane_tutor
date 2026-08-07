@@ -1,9 +1,40 @@
 # `card_types` Has No `Battle`, and `t:battle` Poisons an `Or`'s Plane Path
 
-Status: proposed, not started — **and (1) below may be a wrong-answer bug, which is why it outranks
-everything else carried out of that audit.** Filed as
-[#850](https://github.com/jbylund/sylvan_librarian/issues/850). Items 2 and 3 of
-[the `is:` / `frame:` audit](done/local-engine-is-frame-predicates.md), whose other findings shipped in
+**CLOSED — root cause found, and it is not type extraction. Folded into
+[#400](https://github.com/jbylund/sylvan_librarian/issues/400) (DFC support).**
+
+The suspicion in (1) was right — it *is* a wrong-answer bug — but the cause is one layer up, and far wider
+than battles. **The corpus stores the BACK face of every multi-face card.**
+
+Every battle is a Siege and every Siege is double-faced, so the front face is exactly what is dropped:
+`Invasion of Fiora // Marchesa, Resolute Monarch` is stored with `type_line` = `Legendary Creature — Human
+Noble`, its back. All 54 `Invasion of …` cards are present under their back sides, `Battle` appears in **zero**
+type lines corpus-wide, and `card_types` therefore has no `Battle`. So (1) is not a missing type — it is a
+missing *face*.
+
+It is not only the type line. On the same card, `oracle_text`, `creature_power`/`toughness`, `card_colors`
+(`{B}` where the cost is `{3}{W}{B}`) and `mana_cost_text` (empty) all come from the back too.
+
+**Blast radius, measured:** 1,102 printings / 461 distinct cards carry the mechanical signature — an empty
+`mana_cost_text` against a nonzero card-level `cmc`, which only a non-front face produces. `transform` 969 of
+984, `flip` 36 of 36, `meld` 21 of 63, `modal_dfc` 76 of 260. A lower bound, since MDFC backs *do* carry a
+cost; the real figure is nearer all 1,343 multi-face printings.
+
+So (2), the `t:battle` `Or` poisoning, should be **re-tested after the face fix rather than diagnosed now**:
+`TYPE_BATTLE` is currently an all-zero plane, and an empty plane is a plausible cause of the very behaviour
+that section could not explain.
+
+The measured detail and the correction to #400's stated premise — it says DFCs are *filtered out*, and they are
+not, which makes this a silent wrong answer rather than a visible gap — are in
+[that issue's thread](https://github.com/jbylund/sylvan_librarian/issues/400#issuecomment-5210677523).
+
+**One item here is NOT covered by #400 and is now untracked:** the `is:old` / `is:historic` 6.8× gap below
+(7,191 cards in 399 µs against 7,261 in 59 µs, both `Or`s over `card_frame_data`). It rode along on this issue
+and has nothing to do with faces. Still only a diagnostic, never explained; file it if it becomes worth
+chasing.
+
+*Original status, kept for dating* — proposed, items 2 and 3 of
+[the `is:` / `frame:` audit](local-engine-is-frame-predicates.md), whose other findings shipped in
 #840 and #842.
 
 ## 1. The data question — check this first
@@ -67,9 +98,9 @@ apply to (1), which is a correctness question regardless of how often the query 
 
 ## Related
 
-- [done/local-engine-is-frame-predicates.md](done/local-engine-is-frame-predicates.md) — the parent audit,
+- [done/local-engine-is-frame-predicates.md](local-engine-is-frame-predicates.md) — the parent audit,
   the `frame_data` hybrid that shipped, and the threshold-conflation fix.
-- [local-engine-layout-postings.md](local-engine-layout-postings.md) — item 4 of the same audit,
+- [local-engine-layout-postings.md](../local-engine-layout-postings.md) — item 4 of the same audit,
   deprioritized separately.
-- [local-engine-empty-text-narrowing.md](local-engine-empty-text-narrowing.md) — `is:vanilla` /
+- [local-engine-empty-text-narrowing.md](../local-engine-empty-text-narrowing.md) — `is:vanilla` /
   `is:permanent` from the other direction: a plane-composable `Or` falling back to the general path.

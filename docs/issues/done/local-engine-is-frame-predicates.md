@@ -7,11 +7,11 @@
 | 1. `frame_data` drops its dense values | **merged in [#840](https://github.com/jbylund/sylvan_librarian/pull/840)** — hybrid index, 133 KB *smaller* and the scan gone. Whole mix 0.815, p99 0.648 |
 | 6. the mid-density regressions it shipped with | **merged in [#842](https://github.com/jbylund/sylvan_librarian/pull/842)** — `dense` and `broad` are eight times apart and the dense branch conflated them. `o:this frame:1993` 2,102 → 148 µs |
 | 5. the `And` arm's cost-based skip | **merged in [#836](https://github.com/jbylund/sylvan_librarian/pull/836)** (`3cfd441`) — total 0.969, p99 0.967 |
-| 2. `t:battle` poisons an `Or`'s plane path | refiled as [#850](https://github.com/jbylund/sylvan_librarian/issues/850) |
-| 3. `card_types` has no `Battle` | refiled as [#850](https://github.com/jbylund/sylvan_librarian/issues/850) — possibly a wrong answer, so it leads that issue |
+| 2. `t:battle` poisons an `Or`'s plane path | **re-test after the DFC fix** — `TYPE_BATTLE` is an all-zero plane today, which is a plausible cause of the behaviour this could not explain. Via [#850](00850-engine-battle-type-plane-path.md) → [#400](https://github.com/jbylund/sylvan_librarian/issues/400) |
+| 3. `card_types` has no `Battle` | **root cause found, and it is not type extraction** — the corpus stores the BACK face of every multi-face card, and every battle is a double-faced Siege. Folded into [#400](https://github.com/jbylund/sylvan_librarian/issues/400); see [#850](00850-engine-battle-type-plane-path.md) |
 | 4. `card_layout` is unindexed | already its own doc, [layout postings](../local-engine-layout-postings.md), deprioritized |
 | `o:owner keyword:flying` at 1.56× | refiled as [#851](https://github.com/jbylund/sylvan_librarian/issues/851) |
-| the `is:old` / `is:historic` 6.8× gap | carried into [#850](https://github.com/jbylund/sylvan_librarian/issues/850) |
+| the `is:old` / `is:historic` 6.8× gap | **unresolved and currently untracked** — it rode on #850, which closed into #400 for an unrelated cause. Nothing to do with DFCs; still just a diagnostic. Recorded in [#850's doc](00850-engine-battle-type-plane-path.md) |
 
 The withdrawn item in section 7 — broad printing-space partners under a card-space driver — was fixed from a
 different direction entirely by [#843](https://github.com/jbylund/sylvan_librarian/pull/843); see
