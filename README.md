@@ -1,16 +1,16 @@
 # Sylvan Librarian
 
-[![Python Tests](https://img.shields.io/github/actions/workflow/status/jbylund/sylvan_librarian/python-tests.yml?branch=main&label=python%20tests)](https://github.com/jbylund/sylvan_librarian/actions/workflows/python-tests.yml)
-[![Rust Tests](https://img.shields.io/github/actions/workflow/status/jbylund/sylvan_librarian/rust-tests.yml?branch=main&label=rust%20tests)](https://github.com/jbylund/sylvan_librarian/actions/workflows/rust-tests.yml)
+[![Python Tests](https://img.shields.io/github/actions/workflow/status/jbylund/sylvan_librarian/python-tests.yml?branch=main&label=python%20tests)](https://github.com/jbylund/sylvan_librarian/actions/workflows/python-tests.yml?query=branch%3Amain)
+[![Rust Tests](https://img.shields.io/github/actions/workflow/status/jbylund/sylvan_librarian/rust-tests.yml?branch=main&label=rust%20tests)](https://github.com/jbylund/sylvan_librarian/actions/workflows/rust-tests.yml?query=branch%3Amain)
 [![Last commit](https://img.shields.io/github/last-commit/jbylund/sylvan_librarian)](https://github.com/jbylund/sylvan_librarian/commits/main)
 [![Issues](https://img.shields.io/github/issues/jbylund/sylvan_librarian)](https://github.com/jbylund/sylvan_librarian/issues)
 [![Pull requests](https://img.shields.io/github/issues-pr/jbylund/sylvan_librarian)](https://github.com/jbylund/sylvan_librarian/pulls)
 [![Stars](https://img.shields.io/github/stars/jbylund/sylvan_librarian)](https://github.com/jbylund/sylvan_librarian/stargazers)
 [![License](https://img.shields.io/github/license/jbylund/sylvan_librarian)](https://github.com/jbylund/sylvan_librarian/blob/main/LICENSE)
 
-[![python tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fd1hot9ps2xugbc.cloudfront.net%2Fbadges%2Ftests-python.json)](https://github.com/jbylund/sylvan_librarian/actions/workflows/python-tests.yml)
-[![rust tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fd1hot9ps2xugbc.cloudfront.net%2Fbadges%2Ftests-rust.json)](https://github.com/jbylund/sylvan_librarian/actions/workflows/rust-tests.yml)
-[![js tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fd1hot9ps2xugbc.cloudfront.net%2Fbadges%2Ftests-js.json)](https://github.com/jbylund/sylvan_librarian/actions/workflows/js-tests.yml)
+[![python tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fd1hot9ps2xugbc.cloudfront.net%2Fbadges%2Ftests-python.json)](https://github.com/jbylund/sylvan_librarian/actions/workflows/python-tests.yml?query=branch%3Amain)
+[![rust tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fd1hot9ps2xugbc.cloudfront.net%2Fbadges%2Ftests-rust.json)](https://github.com/jbylund/sylvan_librarian/actions/workflows/rust-tests.yml?query=branch%3Amain)
+[![js tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fd1hot9ps2xugbc.cloudfront.net%2Fbadges%2Ftests-js.json)](https://github.com/jbylund/sylvan_librarian/actions/workflows/js-tests.yml?query=branch%3Amain)
 
 ![Web Interface](screenshot.webp)
 
