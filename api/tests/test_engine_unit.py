@@ -376,7 +376,7 @@ class TestCollectionOperators:
         assert total == 56
 
     def test_keyword_eq_exact(self, engine: QueryEngine) -> None:
-        # Shivan Dragon has exactly {Flying}; Serra Angel has {Flying, Vigilance}.
+        # Shivan Dragon has exactly {flying}; Serra Angel has {flying, vigilance}.
         total_shivan, _ = _run(engine, 'keyword=flying name="Shivan Dragon"')
         total_serra, _ = _run(engine, 'keyword=flying name="Serra Angel"')
         assert total_shivan == 5
@@ -389,16 +389,16 @@ class TestCollectionOperators:
         assert total_shivan == 0
 
     def test_keyword_lt_matches_empty_keywords(self, engine: QueryEngine) -> None:
-        # Proper subset of {Flying} is the empty set: Sol Ring (no keywords)
-        # matches, Shivan Dragon (exactly {Flying}) does not.
+        # Proper subset of {flying} is the empty set: Sol Ring (no keywords)
+        # matches, Shivan Dragon (exactly {flying}) does not.
         total_sol, _ = _run(engine, 'keyword<flying name="Sol Ring"')
         total_shivan, _ = _run(engine, 'keyword<flying name="Shivan Dragon"')
         assert total_sol == 5
         assert total_shivan == 0
 
     def test_keyword_ne_not_exactly(self, engine: QueryEngine) -> None:
-        # != is not-exactly-equal: Serra ({Flying, Vigilance}) and Sol Ring (empty)
-        # match; Shivan (exactly {Flying}) does not.
+        # != is not-exactly-equal: Serra ({flying, vigilance}) and Sol Ring (empty)
+        # match; Shivan (exactly {flying}) does not.
         total_shivan, _ = _run(engine, 'keyword!=flying name="Shivan Dragon"')
         total_serra, _ = _run(engine, 'keyword!=flying name="Serra Angel"')
         total_sol, _ = _run(engine, 'keyword!=flying name="Sol Ring"')
@@ -1177,7 +1177,7 @@ class TestCommonCardKeywords:
     """Tests for engine.common_card_keywords().
 
     Counts keyword occurrences across preferred printings only (one per oracle card).
-    The fixture cards include keywords: Flying, Haste, Persist, Vigilance, Wither.
+    The fixture cards include keywords: flying, haste, persist, vigilance, wither.
     """
 
     def test_returns_dict(self, engine: QueryEngine) -> None:
@@ -1186,8 +1186,8 @@ class TestCommonCardKeywords:
 
     def test_known_keywords_present(self, engine: QueryEngine) -> None:
         result = engine.common_card_keywords()
-        # The fixture includes cards with Flying, Haste, Persist, Vigilance, Wither keywords.
-        known = {"Flying", "Haste", "Persist", "Vigilance", "Wither"}
+        # The fixture includes cards with flying, haste, persist, vigilance, wither keywords.
+        known = {"flying", "haste", "persist", "vigilance", "wither"}
         assert known & result.keys(), "Expected at least one known keyword in the result"
 
     def test_counts_are_positive(self, engine: QueryEngine) -> None:

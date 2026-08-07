@@ -54,8 +54,9 @@ image copies only that directory, and it imports nothing but stdlib.
   `keyword:"first strike"` asks for `First Strike` while the stored key is `First strike` and
   matches nothing. 5.6% of all keyword occurrences; `.title()` also mangles `Doctor's` → `Doctor'S`.
   Not fixed here — either fix needs a reimport, so it wants its own change. Filed as #825 with
-  `docs/issues/00825-keyword-title-case-mismatch.md`; the sampler skips the affected values via
-  `is_queryable_keyword`, which should be deleted along with the mismatch.
+  `docs/issues/done/00825-keyword-title-case-mismatch.md`; the sampler skips the affected values via
+  `is_queryable_keyword`, which should be deleted along with the mismatch. (Both since done —
+  see [2026-08-06-lowercase-keywords.md](2026-08-06-lowercase-keywords.md).)
 - `ORDERBY_VALUES` was duplicated across four scripts in **three different versions** — 13 values in
   two benches, 8 in the survey, 7 in `bench_guard_validation`. The authority is
   `api.enums.CardOrdering` (8). The 13-value copies passed `order=released`/`set`/`color` through to

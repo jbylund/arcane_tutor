@@ -3680,8 +3680,8 @@
       "permanent": true
     },
     "card_keywords": {
-      "Flying": true,
-      "Vigilance": true
+      "flying": true,
+      "vigilance": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -3767,8 +3767,8 @@
       "permanent": true
     },
     "card_keywords": {
-      "Flying": true,
-      "Vigilance": true
+      "flying": true,
+      "vigilance": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -3854,8 +3854,8 @@
       "permanent": true
     },
     "card_keywords": {
-      "Flying": true,
-      "Vigilance": true
+      "flying": true,
+      "vigilance": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -3941,8 +3941,8 @@
       "permanent": true
     },
     "card_keywords": {
-      "Flying": true,
-      "Vigilance": true
+      "flying": true,
+      "vigilance": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -4028,8 +4028,8 @@
       "permanent": true
     },
     "card_keywords": {
-      "Flying": true,
-      "Vigilance": true
+      "flying": true,
+      "vigilance": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -4115,8 +4115,8 @@
       "permanent": true
     },
     "card_keywords": {
-      "Flying": true,
-      "Vigilance": true
+      "flying": true,
+      "vigilance": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -4202,8 +4202,8 @@
       "permanent": true
     },
     "card_keywords": {
-      "Flying": true,
-      "Vigilance": true
+      "flying": true,
+      "vigilance": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -4289,7 +4289,7 @@
       "permanent": true
     },
     "card_keywords": {
-      "Flying": true
+      "flying": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -4375,7 +4375,7 @@
       "permanent": true
     },
     "card_keywords": {
-      "Flying": true
+      "flying": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -4461,7 +4461,7 @@
       "permanent": true
     },
     "card_keywords": {
-      "Flying": true
+      "flying": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -4547,7 +4547,7 @@
       "permanent": true
     },
     "card_keywords": {
-      "Flying": true
+      "flying": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -4633,7 +4633,7 @@
       "permanent": true
     },
     "card_keywords": {
-      "Flying": true
+      "flying": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -6014,8 +6014,8 @@
       "permanent": true
     },
     "card_keywords": {
-      "Haste": true,
-      "Wither": true
+      "haste": true,
+      "wither": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -6105,8 +6105,8 @@
       "permanent": true
     },
     "card_keywords": {
-      "Haste": true,
-      "Wither": true
+      "haste": true,
+      "wither": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -6196,8 +6196,8 @@
       "permanent": true
     },
     "card_keywords": {
-      "Haste": true,
-      "Wither": true
+      "haste": true,
+      "wither": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -6287,8 +6287,8 @@
       "permanent": true
     },
     "card_keywords": {
-      "Haste": true,
-      "Wither": true
+      "haste": true,
+      "wither": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -6378,7 +6378,7 @@
       "permanent": true
     },
     "card_keywords": {
-      "Persist": true
+      "persist": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -6466,7 +6466,7 @@
       "permanent": true
     },
     "card_keywords": {
-      "Persist": true
+      "persist": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -6554,7 +6554,7 @@
       "permanent": true
     },
     "card_keywords": {
-      "Persist": true
+      "persist": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -6643,7 +6643,7 @@
       "permanent": true
     },
     "card_keywords": {
-      "Persist": true
+      "persist": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -6731,7 +6731,7 @@
       "permanent": true
     },
     "card_keywords": {
-      "Persist": true
+      "persist": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -6819,7 +6819,7 @@
       "permanent": true
     },
     "card_keywords": {
-      "Persist": true
+      "persist": true
     },
     "card_layout": "normal",
     "card_legalities": {
@@ -7489,7 +7489,7 @@
     "card_frame_data": {},
     "card_is_tags": {},
     "card_keywords": {
-      "Defender": true
+      "defender": true
     },
     "card_layout": "normal",
     "card_legalities": {

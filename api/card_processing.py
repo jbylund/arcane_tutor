@@ -191,7 +191,10 @@ def preprocess_card(card: dict[str, Any]) -> list[dict[str, Any]]:  # noqa: PLR0
     # objects of keys to true
     card["card_colors"] = dict.fromkeys(card["colors"], True)
     card["card_color_identity"] = dict.fromkeys(card["color_identity"], True)
-    card["card_keywords"] = dict.fromkeys(card.get("keywords", []), True)
+    # Lowercased so the stored key matches what `keyword:` looks up -- Scryfall's own spelling is
+    # inconsistently cased ("First strike", "Doctor's companion"), and lowercase is the same
+    # normalization the oracle/art/is tag collections already use on both sides.
+    card["card_keywords"] = dict.fromkeys((keyword.lower() for keyword in card.get("keywords", [])), True)
     card["produced_mana"] = dict.fromkeys(card.get("produced_mana", []), True)
 
     card["edhrec_rank"] = card.get("edhrec_rank")

@@ -308,8 +308,8 @@ def get_keywords_comparison_object(val: str) -> dict[str, bool]:
     Returns:
         Dictionary mapping normalized keyword to True.
     """
-    # Normalize the input keyword
-    normalized_keyword = val.strip().title()
+    # Keywords are stored in lowercase (see card_processing.preprocess_card)
+    normalized_keyword = val.strip().lower()
     return {normalized_keyword: True}
 
 

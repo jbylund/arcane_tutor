@@ -449,74 +449,92 @@ def test_flavor_text_sql_translation(parse_query, input_query: str, expected_sql
         # Basic keyword search
         (
             "keyword:flying",
-            r"(card.card_keywords @> %(p_dict_eydGbHlpbmcnOiBUcnVlfQ)s)",
-            {"p_dict_eydGbHlpbmcnOiBUcnVlfQ": {"Flying": True}},
+            r"(card.card_keywords @> %(p_dict_eydmbHlpbmcnOiBUcnVlfQ)s)",
+            {"p_dict_eydmbHlpbmcnOiBUcnVlfQ": {"flying": True}},
         ),
         # Keyword search with colon operator (should behave like @>)
         (
             "keyword:trample",
-            r"(card.card_keywords @> %(p_dict_eydUcmFtcGxlJzogVHJ1ZX0)s)",
-            {"p_dict_eydUcmFtcGxlJzogVHJ1ZX0": {"Trample": True}},
+            r"(card.card_keywords @> %(p_dict_eyd0cmFtcGxlJzogVHJ1ZX0)s)",
+            {"p_dict_eyd0cmFtcGxlJzogVHJ1ZX0": {"trample": True}},
         ),
         # Keyword search (updated from alias 'k')
         (
             "keyword:haste",
-            r"(card.card_keywords @> %(p_dict_eydIYXN0ZSc6IFRydWV9)s)",
-            {"p_dict_eydIYXN0ZSc6IFRydWV9": {"Haste": True}},
+            r"(card.card_keywords @> %(p_dict_eydoYXN0ZSc6IFRydWV9)s)",
+            {"p_dict_eydoYXN0ZSc6IFRydWV9": {"haste": True}},
         ),
         # Keyword equality
         (
             "keyword=vigilance",
-            r"(card.card_keywords = %(p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ)s)",
-            {"p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ": {"Vigilance": True}},
+            r"(card.card_keywords = %(p_dict_eyd2aWdpbGFuY2UnOiBUcnVlfQ)s)",
+            {"p_dict_eyd2aWdpbGFuY2UnOiBUcnVlfQ": {"vigilance": True}},
         ),
         # Custom keyword (not in the predefined list)
         (
             "keyword:customability",
-            r"(card.card_keywords @> %(p_dict_eydDdXN0b21hYmlsaXR5JzogVHJ1ZX0)s)",
-            {"p_dict_eydDdXN0b21hYmlsaXR5JzogVHJ1ZX0": {"Customability": True}},
+            r"(card.card_keywords @> %(p_dict_eydjdXN0b21hYmlsaXR5JzogVHJ1ZX0)s)",
+            {"p_dict_eydjdXN0b21hYmlsaXR5JzogVHJ1ZX0": {"customability": True}},
         ),
         # Test different operators
         (
             "keyword>=flying",
-            r"(card.card_keywords @> %(p_dict_eydGbHlpbmcnOiBUcnVlfQ)s)",
-            {"p_dict_eydGbHlpbmcnOiBUcnVlfQ": {"Flying": True}},
+            r"(card.card_keywords @> %(p_dict_eydmbHlpbmcnOiBUcnVlfQ)s)",
+            {"p_dict_eydmbHlpbmcnOiBUcnVlfQ": {"flying": True}},
         ),
         (
             "keyword<=haste",
-            r"(card.card_keywords <@ %(p_dict_eydIYXN0ZSc6IFRydWV9)s)",
-            {"p_dict_eydIYXN0ZSc6IFRydWV9": {"Haste": True}},
+            r"(card.card_keywords <@ %(p_dict_eydoYXN0ZSc6IFRydWV9)s)",
+            {"p_dict_eydoYXN0ZSc6IFRydWV9": {"haste": True}},
         ),
         (
             "keyword>trample",
-            r"(card.card_keywords @> %(p_dict_eydUcmFtcGxlJzogVHJ1ZX0)s AND card.card_keywords <> %(p_dict_eydUcmFtcGxlJzogVHJ1ZX0)s)",
-            {"p_dict_eydUcmFtcGxlJzogVHJ1ZX0": {"Trample": True}},
+            r"(card.card_keywords @> %(p_dict_eyd0cmFtcGxlJzogVHJ1ZX0)s AND card.card_keywords <> %(p_dict_eyd0cmFtcGxlJzogVHJ1ZX0)s)",
+            {"p_dict_eyd0cmFtcGxlJzogVHJ1ZX0": {"trample": True}},
         ),
         (
             "keyword<vigilance",
-            r"(card.card_keywords <@ %(p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ)s AND card.card_keywords <> %(p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ)s)",
-            {"p_dict_eydWaWdpbGFuY2UnOiBUcnVlfQ": {"Vigilance": True}},
+            r"(card.card_keywords <@ %(p_dict_eyd2aWdpbGFuY2UnOiBUcnVlfQ)s AND card.card_keywords <> %(p_dict_eyd2aWdpbGFuY2UnOiBUcnVlfQ)s)",
+            {"p_dict_eyd2aWdpbGFuY2UnOiBUcnVlfQ": {"vigilance": True}},
         ),
         (
             "keyword!=flying",
-            r"(card.card_keywords <> %(p_dict_eydGbHlpbmcnOiBUcnVlfQ)s)",
-            {"p_dict_eydGbHlpbmcnOiBUcnVlfQ": {"Flying": True}},
+            r"(card.card_keywords <> %(p_dict_eydmbHlpbmcnOiBUcnVlfQ)s)",
+            {"p_dict_eydmbHlpbmcnOiBUcnVlfQ": {"flying": True}},
         ),
         # kw: shorthand for keyword:
         (
             "kw:flying",
-            r"(card.card_keywords @> %(p_dict_eydGbHlpbmcnOiBUcnVlfQ)s)",
-            {"p_dict_eydGbHlpbmcnOiBUcnVlfQ": {"Flying": True}},
+            r"(card.card_keywords @> %(p_dict_eydmbHlpbmcnOiBUcnVlfQ)s)",
+            {"p_dict_eydmbHlpbmcnOiBUcnVlfQ": {"flying": True}},
         ),
         (
             "kw:trample",
-            r"(card.card_keywords @> %(p_dict_eydUcmFtcGxlJzogVHJ1ZX0)s)",
-            {"p_dict_eydUcmFtcGxlJzogVHJ1ZX0": {"Trample": True}},
+            r"(card.card_keywords @> %(p_dict_eyd0cmFtcGxlJzogVHJ1ZX0)s)",
+            {"p_dict_eyd0cmFtcGxlJzogVHJ1ZX0": {"trample": True}},
         ),
         (
             "kw=haste",
-            r"(card.card_keywords = %(p_dict_eydIYXN0ZSc6IFRydWV9)s)",
-            {"p_dict_eydIYXN0ZSc6IFRydWV9": {"Haste": True}},
+            r"(card.card_keywords = %(p_dict_eydoYXN0ZSc6IFRydWV9)s)",
+            {"p_dict_eydoYXN0ZSc6IFRydWV9": {"haste": True}},
+        ),
+        # Multi-word keywords lowercase whole, whatever the caller typed -- `.title()` used to look
+        # these up as `First Strike`, which is not how Scryfall spells them, so they matched nothing.
+        (
+            'keyword:"first strike"',
+            r"(card.card_keywords @> %(p_dict_eydmaXJzdCBzdHJpa2UnOiBUcnVlfQ)s)",
+            {"p_dict_eydmaXJzdCBzdHJpa2UnOiBUcnVlfQ": {"first strike": True}},
+        ),
+        (
+            'keyword:"FIRST STRIKE"',
+            r"(card.card_keywords @> %(p_dict_eydmaXJzdCBzdHJpa2UnOiBUcnVlfQ)s)",
+            {"p_dict_eydmaXJzdCBzdHJpa2UnOiBUcnVlfQ": {"first strike": True}},
+        ),
+        # Apostrophes survive: `.title()` turned this into `Doctor'S Companion`.
+        (
+            'keyword:"Doctor\'s companion"',
+            "(card.card_keywords @> %(p_dict_eyJkb2N0b3IncyBjb21wYW5pb24iOiBUcnVlfQ)s)",
+            {"p_dict_eyJkb2N0b3IncyBjb21wYW5pb24iOiBUcnVlfQ": {"doctor's companion": True}},
         ),
     ],
 )

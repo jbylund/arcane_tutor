@@ -48,11 +48,11 @@ CONFIGS: list[tuple[str, str, str, str, str]] = [
     ("subtypes", "subtype=Human", "card", "edhrec", "default"),
     ("subtypes", "subtype>Human", "card", "edhrec", "default"),
     ("subtypes", "subtype:Human", "card", "edhrec", "default"),  # control: already indexed (Ge)
-    # Keywords (CollField::Keywords, card-space, complete index). "Flying" is the most common
+    # Keywords (CollField::Keywords, card-space, complete index). "flying" is the most common
     # keyword (9,060 postings).
-    ("keywords", "keyword=Flying", "card", "edhrec", "default"),
-    ("keywords", "keyword>Flying", "card", "edhrec", "default"),
-    ("keywords", "kw:Flying", "card", "edhrec", "default"),  # control
+    ("keywords", "keyword=flying", "card", "edhrec", "default"),
+    ("keywords", "keyword>flying", "card", "edhrec", "default"),
+    ("keywords", "kw:flying", "card", "edhrec", "default"),  # control
     # Oracle tags (CollField::OracleTags, card-space, complete index). "removal" is a mid-size tag
     # (18,275 postings); "triggered-ability" is the broadest tag in the corpus (40,924 postings) --
     # card-space narrowing pays no broadness guard, unlike the printing-space fields below.

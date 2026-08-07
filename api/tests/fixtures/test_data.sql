@@ -51,7 +51,7 @@ INSERT INTO magic.cards (
     '["Angel"]',
     '{"W": true}',
     '{"W": true}',
-    '{"Flying": true, "Vigilance": true}',
+    '{"flying": true, "vigilance": true}',
     'Flying, vigilance',
     4,
     4,

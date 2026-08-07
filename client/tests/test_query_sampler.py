@@ -30,7 +30,6 @@ from client.query_sampler import (
     STRUCTURES,
     QuerySampler,
     Shape,
-    is_queryable_keyword,
 )
 
 if TYPE_CHECKING:
@@ -190,22 +189,22 @@ class TestParams:
     def test_sampled_orderbys_are_engine_orderbys(self) -> None:
         assert set(REALISTIC_ORDERBY_WEIGHTS) == set(ENGINE_ORDERBYS)
 
-    def test_keyword_filter_matches_the_query_layer(self) -> None:
-        """`is_queryable_keyword` must agree with what the lookup actually normalizes to.
+    def test_every_keyword_survives_the_storage_round_trip(self) -> None:
+        """Whatever Scryfall's casing, and whatever the user types, the lookup finds the stored key.
 
-        Keywords are stored verbatim and looked up title-cased, so a keyword survives the round trip
-        only if it is already Title Case. Asserted against the real normalizer so the filter cannot
-        drift from it — and so this fails loudly once #825 is fixed and the filter should go.
+        Both sides lowercase (`api/card_processing.py` at ingest, `get_keywords_comparison_object`
+        at query time), so the sampler can draw from the whole vocabulary rather than the subset
+        Scryfall happens to spell in Title Case — which is what #825 was.
         """
         for keyword in ("Flying", "Brood Telepathy", "First strike", "Doctor's companion"):
-            stored = {keyword: True}
-            looked_up = get_keywords_comparison_object(keyword)
-            matches = looked_up.keys() <= stored.keys()
-            assert is_queryable_keyword(keyword) == matches, keyword
+            stored = {keyword.lower(): True}
+            for typed in (keyword, keyword.lower(), keyword.upper()):
+                assert get_keywords_comparison_object(typed).keys() <= stored.keys(), typed
 
-    def test_fallback_keywords_are_all_queryable(self) -> None:
+    def test_fallback_keywords_are_in_stored_form(self) -> None:
+        """Vocabulary values are emitted verbatim, so each must already be what storage holds."""
         for keyword in FALLBACK_VOCAB["keyword"]:
-            assert is_queryable_keyword(keyword.title()), keyword
+            assert get_keywords_comparison_object(keyword) == {keyword: True}, keyword
 
     def test_is_tags_match_the_rewrite_table(self) -> None:
         """An `is:` value the rewrite layer does not expand hits an empty column and matches nothing.

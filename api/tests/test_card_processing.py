@@ -322,6 +322,19 @@ class TestCardProcessing:
         expected = {}
         assert result == expected
 
+    def test_preprocess_card_lowercases_keywords(self) -> None:
+        """Keywords are stored lowercase so `keyword:` can find Scryfall's non-Title-Case spellings."""
+        card = create_test_card(keywords=["First strike", "Double strike", "Doctor's companion", "Flying"])
+
+        result = preprocess_card(card)[0]
+
+        assert result["card_keywords"] == {
+            "first strike": True,
+            "double strike": True,
+            "doctor's companion": True,
+            "flying": True,
+        }
+
     def test_preprocess_card_handles_missing_fields(self) -> None:
         """Test preprocess_card handles missing optional fields."""
         minimal_card = create_test_card(

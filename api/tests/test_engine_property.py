@@ -31,7 +31,9 @@ from card_engine import QueryEngine
 WORDS = ["ancient", "storm", "fire", "dragon", "counter", "force", "dark", "light", "path", "bolt", "angel", "wild"]
 ORACLE_WORDS = ["draw", "destroy", "exile", "flying", "trample", "token", "sacrifice", "haste", "vigilance", "return"]
 SUBTYPES = ["Goblin", "Elf", "Wizard", "Dragon", "Angel", "Zombie", "Human", "Merfolk"]
-KEYWORDS = ["Flying", "Trample", "Haste", "Vigilance", "Deathtouch", "Lifelink"]
+# Lowercase, matching what card_processing stores -- "first strike" is two words on purpose, so the
+# synthetic corpus exercises a keyword that .title() used to mangle.
+KEYWORDS = ["flying", "trample", "haste", "vigilance", "deathtouch", "lifelink", "first strike"]
 SETS = ["lea", "m21", "znr", "neo", "mom", "ltr", "woe", "mkm"]
 COLORS = "wubrg"
 N_CARDS = 3000
@@ -65,6 +67,7 @@ FRAGMENTS = [
     "t:wizard",
     "kw:flying",
     "kw:deathtouch",
+    'kw:"first strike"',
     "t:sliver",
     # numerics with nulls (power/toughness absent on non-creatures)
     "cmc=2",
@@ -212,7 +215,7 @@ def _ref_leaf(frag: str, card: dict[str, Any]) -> bool | None:  # noqa: PLR0911,
         want = rest.capitalize()
         return want in card["card_types"] or want in card["card_subtypes"]
     if field == "kw":
-        return rest.capitalize() in card["card_keywords"]
+        return rest.strip('"').lower() in card["card_keywords"]
     if frag.startswith("cmc"):
         m = _split_num(frag, "cmc")
         return _tri_cmp(card["cmc"], *m)
