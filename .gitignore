@@ -22,3 +22,17 @@ docs/issues/security-*
 # slash, so both match at every depth.
 .DS_Store
 ._*
+
+# Benchmark harness output. 22 GB as of 2026-08: engine .store archives (~68 MB each),
+# corpus .jsonl exports (hundreds of MB), and the .lock files beside them. None of it is
+# evidence — the CSVs the harnesses emit are, and posts cite those by path rather than
+# committing them. Nothing under benchmarks/ has ever been tracked.
+benchmarks/
+
+# The same two artifact kinds wherever else a harness drops them, so a run outside
+# benchmarks/ cannot quietly stage 68 MB. Nothing legitimate here carries either
+# extension: Scryfall's JSONL bulk data is fetched at runtime by
+# api/scryfall_bulk_data_fetcher.py and never committed. Neither pattern has a slash,
+# so both match at every depth. (*.store does not match .DS_Store — no dot before Store.)
+*.store
+*.jsonl
