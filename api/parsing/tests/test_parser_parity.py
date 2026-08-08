@@ -84,11 +84,12 @@ KNOWN_DIVERGENCES: dict[str, tuple[str, list[str]]] = {
             "(oracle:two oracle:or oracle:more oracle:opponents) type:land",
         ],
     ),
-    # Scryfall's exact-color operator is implemented by neither parser. pyparsing rejects it;
-    # the hand parser silently reads it as an implicit name plus an exact name, so 'c!w' becomes
+    # On Scryfall '!' is an alias for '=' on color/mana/numeric/rarity/year/date fields, and not an
+    # operator at all on text fields. Neither parser implements the alias: pyparsing rejects the
+    # shape, and the hand parser applies the text-field fallback everywhere, so 'c!w' becomes
     # name LIKE %c% AND name = "w" and quietly matches nothing.
-    "c_exact_color_operator": (
-        "#903 C: c!/id! exact-color unsupported — pyparsing rejects, hand parser mis-parses",
+    "c_bang_equals_alias": (
+        "#903 C: '!' as an '=' alias unimplemented — pyparsing rejects, hand parser mis-parses",
         [
             "c!w",
             "c!ubg cmc>=6 f:standard",

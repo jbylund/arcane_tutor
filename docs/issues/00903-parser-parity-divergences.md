@@ -71,27 +71,54 @@ the following `OR` token as the string `"OR"` — coincidentally what the user m
 is a comparison operator. The hand parser gets this right for free by parsing values in context
 rather than pre-tokenizing.
 
-## C. `c!` exact-color is unsupported, and one parser hides it — 3 of 15
+## C. `!` is Scryfall's `=` alias, unimplemented here — 3 of 15
 
-Scryfall's `c!ubg` ("colors are exactly UBG") is implemented by neither parser. pyparsing rejects
-it. The hand parser silently splits it into an implicit name and an exact name:
+`c!ubg` is not a distinct "exact color" operator. On Scryfall `!` is simply an alias for `=`.
+Verified live against api.scryfall.com, 2026-08-08 — `total_cards` for each spelling:
 
-```
-c!w  ->  name:"c" AND !w  ->  name LIKE %c% AND name = "w"
-```
+| query | with `!` | with `=` |
+|---|---|---|
+| `c!g` | 4,904 | 4,904 |
+| `c!ubg` | 57 | 57 |
+| `id!rg` | 471 | 471 |
+| `cmc!3` | 8,077 | 8,077 |
+| `pow!3` | 4,079 | 4,079 |
+| `usd!5` | 39 | 39 |
+| `r!rare` | 11,766 | 11,766 |
+| `mana!2G` | 1,014 | 1,014 |
+| `devotion!gg` | 1,090 | 1,090 |
+| `year!2020` | 3,886 | 3,886 |
+| `date!2020-01-01` | 17 | 17 |
 
-Zero rows, no error. The divergence is a symptom; the gap is that `c!`/`id!` is not implemented.
+The alias is **not** universal. For text-valued fields Scryfall does not treat `!` as an operator
+at all — it falls back to reading the `!` as its exact-name prefix, which is precisely what our
+hand parser does:
+
+| query | Scryfall | vs `=` spelling |
+|---|---|---|
+| `t!creature` | 0 | `t=creature` → 18,751 |
+| `o!flying` | 0 | `o=flying` → 4,574 |
+| `s!khm` | 0 | `s=khm` → 323 |
+| `f!modern` | 2 | `f=modern` → 22,450 |
+
+So the hand parser's `c!w` → `name:"c" AND !w` is the **correct** reading for TEXT and LEGALITY
+fields, and wrong only for the classes where `!` really is an operator. pyparsing rejects the shape
+outright, which is wrong in both directions.
+
 Affected: `c!ubg cmc>=6 f:standard`, `en-kor c!w`, `o:destroy o:creature o:with o:flying c!g`.
 
-This is a feature request wearing a bug's clothes, and splitting it out is reasonable — but the
-hand parser's silent mis-parse is worth fixing either way, independently of whether `c!` is ever
-implemented.
+**Fix sketch:** accept `!` as an `=` alias for `ParserClass` COLOR, MANA, NUMERIC, RARITY, YEAR and
+DATE; keep the existing implicit-name fallback for TEXT and LEGALITY. The wrinkle is tokenization:
+`!=` must keep winning over `!` (longest match), and the hand lexer emits `BANG` rather than `OP`,
+so `parse_word_primary` has to accept a `BANG` after an alias of a supporting class. That is a
+smaller and better-specified change than "implement exact-color matching" — the comparison
+semantics already exist, only the spelling is missing.
 
 ## Suggested order
 
 **A** first: it produces invalid SQL from a query shape users write, and the fix is one function.
-**C** is the worst user-visible behaviour (silent zero rows) but is a missing feature rather than a
-defect in an implemented one. **B** is the narrowest.
+**C** is a missing operator spelling rather than missing semantics, so it is cheap and it removes a
+silent-zero-rows case. **B** is the narrowest.
 
 ## What shipped so far
 
