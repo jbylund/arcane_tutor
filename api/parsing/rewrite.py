@@ -138,11 +138,13 @@ _DERIVED_EXPANSIONS: dict[tuple[str, str], str] = {
     # mirror; the local count carries the usual corpus-policy delta only.
     ("is", "adventure"): "layout:adventure",
     ("is", "frenchvanilla"): "otag:french-vanilla",  # community tag, ~+233 looser than "keywords only"
-    # is:modal is the community tag, not the wording: on Scryfall, is:modal and
-    # otag:modal agree to within 9 cards (800 vs 797 on 2026-08-08), while the
-    # "choose ..." wording union it replaces ran ~+100 locally (835 vs 734) in
-    # both directions -- it caught non-modal choosing ("choose two cards from
-    # it") and missed the modal cards that word it otherwise (Sieges, Confluences).
+    # The community tag tracks is:modal far better than the mode-introducing
+    # wording did, and is cheaper to evaluate. Scored on Scryfall's corpus
+    # against their own is:modal (800 cards, 2026-08-08), otag:modal disagrees
+    # on 9 while the 'o:"choose one" or ...' union it replaces disagrees on 197
+    # -- and in both directions, catching non-modal choosing ("choose two cards
+    # from it") while missing modal cards worded otherwise (Sieges, Confluences).
+    # Not an exact mirror of theirs, just a much closer one.
     ("is", "modal"): "otag:modal",
 }
 
