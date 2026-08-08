@@ -165,8 +165,9 @@ STATIC_VALUES: dict[str, list[str]] = {
     # this module ships in the client image, which contains no `api/`.
     #
     # Anything outside this set parses but falls through to a `card_is_tags` lookup, and that
-    # column is empty — `is:reprint`, `is:token`, `is:modal` and `is:spell` were in the old
-    # load-generator list and every one of them matched zero cards. All 44 are kept rather
+    # column only carries the few keys the import writes — `is:reserved` is the one to reach for,
+    # backfilled from the bulk blob's own boolean. Values with no key there match zero cards, as
+    # `is:token` and `is:spell` did in the old load-generator list. All 44 are kept rather
     # than a token few: the family's share of traffic is set by its weight, not by how many values
     # it holds, and each expands to a genuinely different shape — layout lookups, type unions, an
     # oracle-text heuristic, a numeric conjunction.

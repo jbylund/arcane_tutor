@@ -138,15 +138,12 @@ _DERIVED_EXPANSIONS: dict[tuple[str, str], str] = {
     # mirror; the local count carries the usual corpus-policy delta only.
     ("is", "adventure"): "layout:adventure",
     ("is", "frenchvanilla"): "otag:french-vanilla",  # community tag, ~+233 looser than "keywords only"
-    # is:modal by the mode-introducing wording. Runs ~+50 over Scryfall's own
-    # count (835 vs 800 live / 770 paper on 2026-08-09): the union reads any
-    # "choose ..." mode header, which is broader than their curated notion --
-    # accepted as a documented delta, per the trust-the-wording policy the
-    # land segment already follows.
-    (
-        "is",
-        "modal",
-    ): 'o:"choose one" or o:"choose two" or o:"choose three" or o:"choose four" or o:"choose up to"',
+    # is:modal is the community tag, not the wording: on Scryfall, is:modal and
+    # otag:modal agree to within 9 cards (800 vs 797 on 2026-08-08), while the
+    # "choose ..." wording union it replaces ran ~+100 locally (835 vs 734) in
+    # both directions -- it caught non-modal choosing ("choose two cards from
+    # it") and missed the modal cards that word it otherwise (Sieges, Confluences).
+    ("is", "modal"): "otag:modal",
 }
 
 
