@@ -106,6 +106,13 @@ TESTCASES = [
     {"query": "power>2 -toughness>0", "expected": "power>2 AND -toughness>0", "id": "cmp_then_neg_toughness"},
     {"query": "power>2 -(cmc-1)>0", "expected": "power>2 AND -(cmc-1)>0", "id": "cmp_then_neg_paren"},
     {"query": "power>2 cmc<3", "expected": "power>2 AND cmc<3", "id": "two_comparisons_and"},
+    # Negative literal as a comparison value (#891): the '-' is a sign, so no AND is inserted
+    {"query": "power>-1", "expected": "power>-1", "id": "cmp_negative_literal"},
+    {"query": "power > -1", "expected": "power>-1", "id": "cmp_negative_literal_spaces"},
+    {"query": "power>-1.5", "expected": "power>-1.5", "id": "cmp_negative_float_literal"},
+    {"query": "t:creature power>-1", "expected": "t:creature AND power>-1", "id": "attr_then_cmp_negative_literal"},
+    {"query": "power>-1 t:creature", "expected": "power>-1 AND t:creature", "id": "cmp_negative_literal_then_attr"},
+    {"query": "power>-1+2", "expected": "power>-1+2", "id": "cmp_negative_literal_arith_tail"},
     # Arithmetic within comparison (not after comparison RHS): must not insert AND
     {"query": "power*2 - 1 > 0", "expected": "power*2-1>0", "id": "arith_mul_sub_lit"},
     # Multi-term arithmetic chains (compact / no spaces): tokenizer absorbs as single tokens

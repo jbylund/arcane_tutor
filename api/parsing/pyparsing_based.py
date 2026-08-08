@@ -230,6 +230,11 @@ def create_basic_parsers() -> dict[str, ParserElement]:
     word = Regex(r"[^\W\d][\w-]*\w|[^\W\d]").set_parse_action(make_word)
 
     literal_number = float_number | integer
+    # Signed literals are wired into the right-hand side of a numeric comparison only (see
+    # numeric_comparison_rhs): everywhere else a leading '-' is filter negation or subtraction.
+    negative_float = Regex(r"-\d+\.\d*").set_parse_action(lambda t: float(t[0]))
+    negative_integer = Regex(r"-\d+\b").set_parse_action(lambda t: int(t[0]))
+    signed_literal_number = negative_float | negative_integer | literal_number
     string_value_word = Regex(r"\w[\w.-]*")
 
     return {
@@ -246,6 +251,7 @@ def create_basic_parsers() -> dict[str, ParserElement]:
         "regex_pattern": regex_pattern,
         "word": word,
         "literal_number": literal_number,
+        "signed_literal_number": signed_literal_number,
         "string_value_word": string_value_word,
     }
 
@@ -301,6 +307,7 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
     quoted_string = basic_parsers["quoted_string"]
     string_value_word = basic_parsers["string_value_word"]
     literal_number = basic_parsers["literal_number"]
+    signed_literal_number = basic_parsers["signed_literal_number"]
     arithmetic_op = basic_parsers["arithmetic_op"]
     lparen = basic_parsers["lparen"]
     rparen = basic_parsers["rparen"]
@@ -324,8 +331,14 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
     arithmetic_expr <<= arithmetic_term + arithmetic_op + arithmetic_term + ZeroOrMore(arithmetic_op + arithmetic_term)
     arithmetic_expr.set_parse_action(make_chained_arithmetic)
 
+    # Only the leading term of the RHS may be signed — 'power>-1+cmc' is (-1)+cmc, while
+    # 'power>cmc+-1' stays a parse error, matching parse_signed_num_term in the hand parser.
+    signed_arithmetic_expr = signed_literal_number + arithmetic_op + arithmetic_term + ZeroOrMore(arithmetic_op + arithmetic_term)
+    signed_arithmetic_expr.set_parse_action(make_chained_arithmetic)
+
     numeric_comparison_lhs = arithmetic_expr | paren_expr_term | numeric_attr_word | literal_number
-    unified_numeric_comparison = numeric_comparison_lhs + DEFAULT_OPERATORS + numeric_comparison_lhs
+    numeric_comparison_rhs = arithmetic_expr | signed_arithmetic_expr | paren_expr_term | numeric_attr_word | signed_literal_number
+    unified_numeric_comparison = numeric_comparison_lhs + DEFAULT_OPERATORS + numeric_comparison_rhs
     unified_numeric_comparison.set_parse_action(make_binary_operator_node)
 
     mana_value_or_string = mana_value | quoted_string | string_value_word

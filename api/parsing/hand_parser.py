@@ -448,7 +448,7 @@ class Parser:
         # ── dual-class alias (cn / number): dispatch on value shape ──
         if wl in _DUAL_NUM_TEXT and next_tok.type == TT.OP:
             op = self.consume().value
-            if self.peek().type == TT.NUMBER:
+            if self._value_starts_number():
                 return CardBinaryOperatorNode(CardAttributeNode(wl, ParserClass.NUMERIC), op, self.parse_num_expr_value())
             return CardBinaryOperatorNode(CardAttributeNode(wl, ParserClass.TEXT), op, self.parse_text_value(wl))
 
@@ -546,9 +546,29 @@ class Parser:
         msg = f"Expected numeric term, got {tok.value!r} at position {tok.pos}"
         raise ParseError(msg)
 
+    def _value_starts_number(self) -> bool:
+        """Return True if the value about to be parsed opens with a numeric literal, signed or not."""
+        if self.peek().type == TT.NUMBER:
+            return True
+        return self.peek().type == TT.MINUS and self.peek(1).type == TT.NUMBER
+
+    def parse_signed_num_term(self) -> QueryNode:
+        """Parse a numeric term that may carry a leading '-' sign (the -1 in 'power>-1').
+
+        Only the leading term of a value expression may be signed. A '-' there has no competing
+        reading — filter negation and binary subtraction both require a preceding operand, and a
+        comparison operator has just consumed that position — so no spacing rule is needed to
+        disambiguate it, unlike the '-' handling in _spaced_arith_tail.
+        """
+        if self.peek().type == TT.MINUS and self.peek(1).type == TT.NUMBER:
+            self.consume()  # MINUS
+            tok = self.consume()  # NUMBER
+            return NumericValueNode(-tok.value)
+        return self.parse_num_term()
+
     def parse_num_expr_value(self) -> QueryNode:
         """Numeric expression in value context (spaces around arith ops are OK)."""
-        lhs = self.parse_num_term()
+        lhs = self.parse_signed_num_term()
         while self.peek().type in _ARITH_OPS and self._num_term_start(self.peek(1)):
             tok = self.peek()
             if tok.type == TT.MINUS and tok.space_before and not self.peek(1).space_before:
