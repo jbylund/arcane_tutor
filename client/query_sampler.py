@@ -164,10 +164,10 @@ STATIC_VALUES: dict[str, list[str]] = {
     # _DERIVED_EXPANSIONS; test_query_sampler asserts they agree). Not imported from there because
     # this module ships in the client image, which contains no `api/`.
     #
-    # Anything outside this set parses but falls through to a `card_is_tags` lookup, and that
-    # column only carries the few keys the import writes — `is:reserved` is the one to reach for,
-    # backfilled from the bulk blob's own boolean. Values with no key there match zero cards, as
-    # `is:token` and `is:spell` did in the old load-generator list. All 44 are kept rather
+    # Anything outside this set parses but falls through to a `card_is_tags` lookup, and that column
+    # carries only the two booleans the import syncs from the bulk blob — `is:reserved` is the one to
+    # reach for. Values with no key there still match zero cards, as `is:reprint`, `is:token` and
+    # `is:spell` did in the old load-generator list. All 44 are kept rather
     # than a token few: the family's share of traffic is set by its weight, not by how many values
     # it holds, and each expands to a genuinely different shape — layout lookups, type unions, an
     # oracle-text heuristic, a numeric conjunction.
