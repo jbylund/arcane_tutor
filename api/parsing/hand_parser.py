@@ -205,19 +205,31 @@ def tokenize(src: str) -> list[Token]:  # noqa: C901, PLR0912, PLR0915
             pos += 1
             continue
 
-        # Slash: greedily try /regex/, fall back to arithmetic SLASH
+        # Slash: a regex only opens in value position — directly after a comparison operator, which
+        # is the only place the parser accepts one. Anywhere else '/' is arithmetic division.
+        #
+        # Without the guard the scan is greedy across the whole remaining query, so the division in
+        # "power/2>1 name:/a/" swallows "2>1 name:" as a pattern and the query cannot parse at all
+        # (#908). Value position is unambiguous: division needs a left operand, and the operator
+        # just consumed that slot.
         if c == "/":
-            i = pos + 1
-            while i < n:
-                if src[i] == "\\" and i + 1 < n:
-                    i += 2
-                elif src[i] == "/":
-                    pattern = src[pos + 1 : i].replace("\\/", "/")
-                    pos = i + 1
-                    tokens.append(Token(TT.REGEX, pattern, start, sb))
-                    break
+            prev = tokens[-1] if tokens else None
+            if prev is not None and prev.type == TT.OP:
+                i = pos + 1
+                while i < n:
+                    if src[i] == "\\" and i + 1 < n:
+                        i += 2
+                    elif src[i] == "/":
+                        pattern = src[pos + 1 : i].replace("\\/", "/")
+                        pos = i + 1
+                        tokens.append(Token(TT.REGEX, pattern, start, sb))
+                        break
+                    else:
+                        i += 1
                 else:
-                    i += 1
+                    # Unterminated: fall back to division, matching an unopenable regex elsewhere.
+                    tokens.append(Token(TT.SLASH, "/", start, sb))
+                    pos += 1
             else:
                 tokens.append(Token(TT.SLASH, "/", start, sb))
                 pos += 1

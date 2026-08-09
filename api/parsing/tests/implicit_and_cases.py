@@ -45,7 +45,10 @@ TESTCASES = [
     {"query": "a 'b c' d", "expected": "a AND 'b c' AND d", "id": "single_quoted_between"},
     # Regex patterns (slash-delimited, single token)
     {"query": "name:/bolt/", "expected": "name:/bolt/", "id": "regex_single"},
-    {"query": "/foo/ /bar/", "expected": "/foo/ AND /bar/", "id": "two_regex"},
+    # A regex only opens in value position, so two of them means two conditions. The bare form
+    # ("/foo/ /bar/") is not a supported shape — see the raises coverage in
+    # test_pyparsing_preprocess.py and test_regex_patterns.py.
+    {"query": "name:/foo/ o:/bar/", "expected": "name:/foo/ AND o:/bar/", "id": "two_regex"},
     {"query": "name:/bolt/ type:instant", "expected": "name:/bolt/ AND type:instant", "id": "regex_and_attr"},
     # Regex with escaped slash (searching for "/" in pattern, e.g. "life/death")
     {"query": r"name:/life\/death/", "expected": r"name:/life\/death/", "id": "regex_escaped_slash"},

@@ -29,6 +29,10 @@ def test_preprocess_implicit_and(query: str, expected: str) -> None:
         # Unclosed regex after a plain word token (prev_tok is not a numeric operand).
         ("type:instant /unclosed", "Unmatched"),
         ("a /unclosed", "Unmatched"),
+        # A regex only opens in value position, so a bare one is a stray '/' rather than a pattern.
+        # Both parsers reject these shapes; this pins where the pyparsing side rejects them.
+        ("/bolt/", "Unmatched"),
+        ("/foo/ /bar/", "Unmatched"),
     ],
     ids=[
         "unclosed_double_quote",
@@ -38,6 +42,8 @@ def test_preprocess_implicit_and(query: str, expected: str) -> None:
         "unclosed_regex_after_escaped_slash_regex",
         "unclosed_regex_after_plain_value",
         "unclosed_regex_after_plain_word",
+        "bare_regex_unsupported",
+        "two_bare_regexes_unsupported",
     ],
 )
 def test_preprocess_implicit_and_raises_on_invalid(query: str, match: str) -> None:

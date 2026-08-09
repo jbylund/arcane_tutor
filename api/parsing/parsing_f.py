@@ -11,13 +11,26 @@ if TYPE_CHECKING:
     from api.parsing.nodes import Query
 
 
-def _regex_close_index(query: str, start: int) -> int | None:
-    """Return the index of the '/' closing a regex that opened before *start*, or None if unterminated.
+# Last character of every comparison operator the lexer emits (':', '=', '!=', '>=', '<=', '>', '<').
+# A '/' directly after one of these is in value position, which is the only place a regex opens.
+_COMPARISON_TAIL_CHARS = frozenset(":=><")
 
-    Mirrors the lexer's rule in hand_parser.tokenize: scan for the next unescaped '/', and treat the
-    opening '/' as arithmetic division when there is none. The two must agree on what counts as
-    regex — where they disagree, the balancer "fixes" a quote the lexer never saw (#905).
+
+def _opens_regex(query: str, slash_index: int) -> bool:
+    """Return True if the '/' at *slash_index* opens a regex rather than being division.
+
+    Mirrors the lexer's rule in hand_parser.tokenize: a regex only opens in value position, i.e.
+    directly after a comparison operator. The two must agree on what counts as regex — where they
+    disagree, the balancer "fixes" a quote the lexer never saw (#905).
     """
+    pos = slash_index - 1
+    while pos >= 0 and query[pos].isspace():
+        pos -= 1
+    return pos >= 0 and query[pos] in _COMPARISON_TAIL_CHARS
+
+
+def _regex_close_index(query: str, start: int) -> int | None:
+    """Return the index of the '/' closing a regex that opened before *start*, or None if unterminated."""
     pos = start
     length = len(query)
     while pos < length:
@@ -54,12 +67,13 @@ def balance_partial_query(query: str) -> str:
             continue
 
         # A closed /regex/ is opaque: the quotes and parens inside it are pattern characters, not
-        # delimiters. An unterminated '/' is division, so it is left to fall through as an
-        # ordinary character.
+        # delimiters. A '/' that is division, or that opens an unterminated regex, falls through as
+        # an ordinary character.
         if char == "/":
-            close_index = _regex_close_index(query, pos)
-            if close_index is not None:
-                pos = close_index + 1
+            if _opens_regex(query, pos - 1):
+                close_index = _regex_close_index(query, pos)
+                if close_index is not None:
+                    pos = close_index + 1
             continue
 
         mirrored_char = char_to_mirror.get(char)

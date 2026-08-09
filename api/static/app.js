@@ -472,10 +472,20 @@ class CardSearch {
     });
   }
 
+  // True when the '/' at slashIndex opens a regex rather than being division. Mirrors the lexer's
+  // rule in hand_parser.tokenize: a regex only opens in value position, i.e. directly after a
+  // comparison operator (every one of : = != >= <= > < ends in one of these characters).
+  // The JS counterpart of _opens_regex in api/parsing/parsing_f.py.
+  opensRegex(query, slashIndex) {
+    let i = slashIndex - 1;
+    while (i >= 0 && /\s/.test(query[i])) {
+      i--;
+    }
+    return i >= 0 && ':=><'.includes(query[i]);
+  }
+
   // Returns the index of the '/' closing a regex that opened before start, or null when it is
-  // unterminated. Mirrors the lexer's rule in hand_parser.tokenize: scan for the next unescaped
-  // '/', and treat the opening '/' as arithmetic division when there is none. The JS counterpart
-  // of _regex_close_index in api/parsing/parsing_f.py.
+  // unterminated. The JS counterpart of _regex_close_index in api/parsing/parsing_f.py.
   regexCloseIndex(query, start) {
     for (let i = start; i < query.length; i++) {
       if (query[i] === '\\' && i + 1 < query.length) {
@@ -516,11 +526,14 @@ class CardSearch {
       }
 
       // A closed /regex/ is opaque: the quotes and parens inside it are pattern characters, not
-      // delimiters. An unterminated '/' is division, so it falls through as an ordinary character.
+      // delimiters. A '/' that is division, or that opens an unterminated regex, falls through as
+      // an ordinary character.
       if (char === '/') {
-        const closeIndex = this.regexCloseIndex(query, i + 1);
-        if (closeIndex !== null) {
-          i = closeIndex;
+        if (this.opensRegex(query, i)) {
+          const closeIndex = this.regexCloseIndex(query, i + 1);
+          if (closeIndex !== null) {
+            i = closeIndex;
+          }
         }
         continue;
       }

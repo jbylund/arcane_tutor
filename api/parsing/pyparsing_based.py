@@ -602,9 +602,15 @@ def _get_implicit_and_tokenizer() -> ParserElement:
     simple_mana_symbol = Regex(r"[0-9WUBRGCXYZwubrgcxyz]")
     mana_tok = Combine(OneOrMore(curly_mana_symbol | simple_mana_symbol)).set_parse_action(lambda t: t[0])
 
+    # A regex only opens in value position, so it is matched as a unit with the comparison operator
+    # that precedes it (emitting both tokens). A '/' anywhere else falls through to arithmetic_tok.
+    # Mirrors the lexer's rule in hand_parser.tokenize — without it the greedy QuotedString("/")
+    # swallows "2>1 name:" as a pattern in "power/2>1 name:/a/" (#908).
+    regex_after_op = comparison_tok + regex_raw
+
     one_token = (
         quoted_raw
-        | regex_raw
+        | regex_after_op
         | lparen_tok
         | rparen_tok
         | and_tok
