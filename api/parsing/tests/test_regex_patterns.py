@@ -73,8 +73,11 @@ class TestRegexPatternParsing:
     def test_bare_regex_is_not_a_supported_shape(self, parse_query, query: str) -> None:
         """A regex only opens in value position, so a bare one is rejected — as it was before #908.
 
-        Scryfall does accept these (a bare /bolt/ matches on name); supporting them here is a
-        separate feature gap, deliberately unchanged by the value-position rule.
+        Scryfall does not treat these as regexes either: it strips the slashes and runs a plain
+        name search, so /bolt/ == bolt == name:bolt (41 cards) while the real regex form
+        name:/bolt/ gives 48, and /^Lightning/ matches nothing because there is no anchoring to
+        apply. Giving the bare form regex semantics would be an extension beyond Scryfall, not
+        parity with it, so it stays unsupported.
         """
         with pytest.raises(ValueError, match=r"(Failed to parse query|Unmatched)"):
             parse_query(query)
