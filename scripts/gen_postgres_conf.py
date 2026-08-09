@@ -11,6 +11,36 @@ import subprocess
 from pathlib import Path
 from string import Template
 
+MB = 1024 * 1024
+GB = 1024 * MB
+
+# --- postgresql.conf ratios, as fractions of the memory available to the host ---
+SHARED_BUFFERS_RATIO = 0.05
+EFFECTIVE_CACHE_SIZE_RATIO = 0.40
+MAINTENANCE_WORK_MEM_RATIO = 0.02
+MAINTENANCE_WORK_MEM_MIN = 64 * MB
+MAINTENANCE_WORK_MEM_MAX = 2 * GB
+# Safe under 100 connections * 4 parallel workers.
+WORK_MEM_RATIO = 0.001
+WORK_MEM_MIN = 16 * MB
+
+# --- Docker memory limit headroom, above shared_buffers + maintenance_work_mem ---
+#
+# This was a flat 256 MB, which is less than one backend's peak anon RSS. A whole-table
+# UPDATE -- the prefer-score and CubeCobra backfills at the end of an import -- was measured
+# on a 15 GB host at 276 MB anon plus 831 MB shmem in a single backend, against a limit of
+# 1350 MB. The cgroup OOM killer took the backend and the import died with "server closed the
+# connection unexpectedly". The same limit also has to cover the other API workers'
+# connections, the autovacuum workers that the UPDATE's churn wakes up, and the dirty page
+# cache from its heap and WAL writes, which counts against the cgroup. memswap_limit equals
+# the memory limit, so there is no swap to absorb a spike -- overshooting is always a kill.
+#
+# The floor is what that measurement says one busy backend costs, doubled for the rest of the
+# container. The ratio takes over on larger hosts, where work_mem and maintenance_work_mem are
+# proportionally larger and so is every backend that touches them.
+CONTAINER_OVERHEAD_FLOOR = 768 * MB
+CONTAINER_OVERHEAD_SHARED_BUFFERS_RATIO = 0.5
+
 
 def get_available_memory_bytes() -> int:
     """Return available memory in bytes.
@@ -54,16 +84,34 @@ def fmt_mb(n_bytes: int) -> str:
 
 def _compute_raw(total_bytes: int) -> dict[str, int]:
     """Compute PostgreSQL memory settings in bytes, sized for two concurrent instances (blue/green)."""
-    mb = 1024 * 1024
-    gb = 1024 * mb
     return {
-        "shared_buffers": int(total_bytes * 0.05),
-        "effective_cache_size": int(total_bytes * 0.40),
-        # 2% of RAM, clamped to [64 MB, 2 GB]
-        "maintenance_work_mem": max(64 * mb, min(int(total_bytes * 0.02), 2 * gb)),
-        # 0.1% of RAM (safe under 100 connections * 4 parallel workers), minimum 16 MB
-        "work_mem": max(16 * mb, int(total_bytes * 0.001)),
+        "shared_buffers": int(total_bytes * SHARED_BUFFERS_RATIO),
+        "effective_cache_size": int(total_bytes * EFFECTIVE_CACHE_SIZE_RATIO),
+        "maintenance_work_mem": max(
+            MAINTENANCE_WORK_MEM_MIN,
+            min(int(total_bytes * MAINTENANCE_WORK_MEM_RATIO), MAINTENANCE_WORK_MEM_MAX),
+        ),
+        "work_mem": max(WORK_MEM_MIN, int(total_bytes * WORK_MEM_RATIO)),
     }
+
+
+def _memory_notes() -> str:
+    """Render the comment block that documents these ratios inside the generated conf.
+
+    Generated rather than written into the template: the hand-written version drifted to
+    describing ratios the script had stopped using, which is actively misleading to read
+    while debugging a memory problem.
+    """
+    return "\n".join(
+        [
+            f"# shared_buffers:       {SHARED_BUFFERS_RATIO:>5.1%} of available memory",
+            f"# effective_cache_size: {EFFECTIVE_CACHE_SIZE_RATIO:>5.1%} of available memory",
+            f"# maintenance_work_mem: {MAINTENANCE_WORK_MEM_RATIO:>5.1%} of available memory, clamped to "
+            f"[{fmt_mb(MAINTENANCE_WORK_MEM_MIN)}, {fmt_mb(MAINTENANCE_WORK_MEM_MAX)}]",
+            f"# work_mem:             {WORK_MEM_RATIO:>5.1%} of available memory, minimum {fmt_mb(WORK_MEM_MIN)} "
+            f"(safe at 100 conns * 4 parallel workers)",
+        ]
+    )
 
 
 def compute_settings(total_bytes: int) -> dict[str, str]:
@@ -75,16 +123,19 @@ def compute_settings(total_bytes: int) -> dict[str, str]:
         "effective_cache_size": fmt_mb(raw["effective_cache_size"]),
         "maintenance_work_mem": fmt_mb(raw["maintenance_work_mem"]),
         "work_mem": fmt_mb(raw["work_mem"]),
+        "memory_notes": _memory_notes(),
     }
 
 
 def compute_pg_mem_limit_bytes(total_bytes: int) -> int:
     """Compute Docker memory limit for a single postgres container.
 
-    shared_buffers + maintenance_work_mem + 256 MB overhead for process memory.
+    shared_buffers + maintenance_work_mem + headroom for backend process memory, autovacuum
+    workers and page cache. See CONTAINER_OVERHEAD_FLOOR for how the headroom was sized.
     """
     raw = _compute_raw(total_bytes)
-    return raw["shared_buffers"] + raw["maintenance_work_mem"] + 256 * 1024 * 1024
+    overhead = max(CONTAINER_OVERHEAD_FLOOR, int(raw["shared_buffers"] * CONTAINER_OVERHEAD_SHARED_BUFFERS_RATIO))
+    return raw["shared_buffers"] + raw["maintenance_work_mem"] + overhead
 
 
 def _is_gitignored(path: Path) -> bool:
@@ -143,7 +194,9 @@ def main() -> None:
 
     print(f"Generated {args.output}")
     for key, val in settings.items():
-        print(f"  {key}: {val}")
+        # memory_notes is the multi-line comment block rendered into the conf, not a setting.
+        if key != "memory_notes":
+            print(f"  {key}: {val}")
 
     if args.env_output:
         limit_mb = compute_pg_mem_limit_bytes(total_bytes) // (1024 * 1024)

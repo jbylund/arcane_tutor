@@ -833,10 +833,7 @@ log_line_prefix = '%m [%p] %u@%d %Q '
 
 # --- Memory Settings ---
 # Sized to fit two concurrent instances (blue/green); re-generate with: make postgres-config
-# shared_buffers:        15% of available memory
-# effective_cache_size:  40% of available memory
-# maintenance_work_mem:   4% of available memory, clamped to [64MB, 2GB]
-# work_mem:             0.1% of available memory, minimum 16MB (safe at 100 conns * 4 parallel workers)
+${memory_notes}
 shared_buffers = ${shared_buffers}
 effective_cache_size = ${effective_cache_size}
 work_mem = ${work_mem}
@@ -863,6 +860,11 @@ seq_page_cost = 1.0
 autovacuum = on
 autovacuum_max_workers = 5
 autovacuum_naptime = 30s
+# Left at the default of -1, each of the five workers may claim a full maintenance_work_mem --
+# 312MB on a 15GB host, 1.2GB on a 64GB one, several times the container's whole headroom. The
+# workers that matter here are woken by the churn from an import's whole-table UPDATEs, exactly
+# when a backend is at its peak, so this is not a hypothetical overlap.
+autovacuum_work_mem = 64MB
 
 # --- I/O ---
 # io_uring not available in docker on mac, so use worker
