@@ -24,6 +24,11 @@ GIT_SHA := $(shell git rev-parse HEAD 2>/dev/null || echo "unknown")
 GIT_BRANCH := $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
 MAYBENORUN := $(shell if echo | xargs --no-run-if-empty >/dev/null 2>/dev/null; then echo "--no-run-if-empty"; else echo ""; fi)
 BASE_COMPOSE := $(mkfile_dir)/docker-compose.yml
+# The two per-host env files every compose invocation reads before the stack's own envs/<stack>.
+# They are separate files because they have separate writers: .env is rebuilt from env.json by a
+# truncating make rule, .env.generated is written by scripts/gen_postgres_conf.py. Later files
+# win, so a POSTGRES_MEM_LIMIT stranded in an older .env is overridden by the generated one.
+COMPOSE_ENV_FILES := --env-file .env --env-file .env.generated
 ENVS := $(shell ls envs)
 LINTABLE_DIRS := .
 
@@ -85,11 +90,24 @@ IMAGE_TAG := $(BUILD_HASH)
 
 postgres-config: configs/postgres/conf/postgresql.conf # @doc generate postgresql.conf from template scaled to available memory
 
+# One command producing two files. GNU make 4.3's grouped targets (&:) would say that
+# directly, but macOS ships make 3.81, so instead the conf is generated from its own sources
+# and .env.generated is generated from the conf. In a run that rebuilds the conf, the recipe
+# writes .env.generated too, leaving it newer than the conf, so the second rule finds it up to
+# date and does not run twice. It fires on its own only when .env.generated is missing —
+# deleted by hand, or a checkout that predates it.
+define gen_postgres_conf
+$(PYTHON) scripts/gen_postgres_conf.py \
+	--template configs/postgres/conf/postgresql.conf.template \
+	--output configs/postgres/conf/postgresql.conf \
+	--env-output .env.generated
+endef
+
 configs/postgres/conf/postgresql.conf: configs/postgres/conf/postgresql.conf.template scripts/gen_postgres_conf.py
-	$(PYTHON) scripts/gen_postgres_conf.py \
-		--template $< \
-		--output $@ \
-		--env-output .env
+	$(gen_postgres_conf)
+
+.env.generated: configs/postgres/conf/postgresql.conf
+	$(gen_postgres_conf)
 
 help: # @doc show this help and exit
 	@$(PYTHON) ./scripts/show_makefile_help.py $(mkfile_path)
@@ -99,7 +117,7 @@ hlep: help
 
 ###  Entry points
 
-up_deps: images check_env .env api/static/app.min.js configs/postgres/conf/postgresql.conf
+up_deps: images check_env .env .env.generated api/static/app.min.js configs/postgres/conf/postgresql.conf
 
 deps-%: up_deps psql-dotfiles
 	mkdir -p $(GIT_ROOT)/data/api/$* && chmod 755 $(GIT_ROOT)/data/api/$*
@@ -117,25 +135,25 @@ env.json: # @doc create env.json with generated local credentials if missing (ne
 	cat env.json | jq -r 'to_entries[] | "\(.key)=\(.value)"' | sort > $@
 
 %-up: deps-% # @doc start an environment in the foreground, e.g. make dev-up
-	cd $(GIT_ROOT) && docker compose --project-name sylvan_$* --env-file .env --env-file envs/$* --file $(BASE_COMPOSE) up --remove-orphans --abort-on-container-exit
+	cd $(GIT_ROOT) && docker compose --project-name sylvan_$* $(COMPOSE_ENV_FILES) --env-file envs/$* --file $(BASE_COMPOSE) up --remove-orphans --abort-on-container-exit
 
 %-up-detach: deps-% # @doc start an environment in the background, e.g. make dev-up-detach
-	cd $(GIT_ROOT) && docker compose --project-name sylvan_$* --env-file .env --env-file envs/$* --file $(BASE_COMPOSE) up --remove-orphans --detach
+	cd $(GIT_ROOT) && docker compose --project-name sylvan_$* $(COMPOSE_ENV_FILES) --env-file envs/$* --file $(BASE_COMPOSE) up --remove-orphans --detach
 
-%-down: | .env # @doc stop an environment, e.g. make dev-down
-	cd $(GIT_ROOT) && docker compose --project-name sylvan_$* --env-file .env --env-file envs/$* --file $(BASE_COMPOSE) down --remove-orphans
+%-down: | .env .env.generated # @doc stop an environment, e.g. make dev-down
+	cd $(GIT_ROOT) && docker compose --project-name sylvan_$* $(COMPOSE_ENV_FILES) --env-file envs/$* --file $(BASE_COMPOSE) down --remove-orphans
 
-status: | .env # @doc show container status for all environments
+status: | .env .env.generated # @doc show container status for all environments
 	@$(foreach env,$(ENVS), \
 	  $(PYTHON) -c "import shutil; w=shutil.get_terminal_size().columns; print(' $(env) '.center(w, '='))" && \
-	  cd $(GIT_ROOT) && docker compose --project-name sylvan_$(env) --env-file .env --env-file envs/$(env) --file $(BASE_COMPOSE) ps --all ; \
+	  cd $(GIT_ROOT) && docker compose --project-name sylvan_$(env) $(COMPOSE_ENV_FILES) --env-file envs/$(env) --file $(BASE_COMPOSE) ps --all ; \
 	)
 
 rolling-deploy: deps-blue deps-green # @doc rolling blue/green deploy — update blue (wait for healthy), then green
 	@echo "=== Deploying blue ==="
-	cd $(GIT_ROOT) && docker compose --project-name sylvan_blue --env-file .env --env-file envs/blue --file $(BASE_COMPOSE) up --remove-orphans --detach --wait
+	cd $(GIT_ROOT) && docker compose --project-name sylvan_blue $(COMPOSE_ENV_FILES) --env-file envs/blue --file $(BASE_COMPOSE) up --remove-orphans --detach --wait
 	@echo "=== Blue healthy. Deploying green ==="
-	cd $(GIT_ROOT) && docker compose --project-name sylvan_green --env-file .env --env-file envs/green --file $(BASE_COMPOSE) up --remove-orphans --detach --wait
+	cd $(GIT_ROOT) && docker compose --project-name sylvan_green $(COMPOSE_ENV_FILES) --env-file envs/green --file $(BASE_COMPOSE) up --remove-orphans --detach --wait
 	@echo "=== Rolling deploy complete ==="
 
 down: $(addsuffix -down,$(ENVS)) # @doc stop every environment
@@ -144,14 +162,14 @@ images: build_images pull_images # @doc refresh images
 
 build_images: $(BUILD_STAMP) # @doc refresh locally built images
 
-$(BUILD_STAMP): $(image_sources) | .env
+$(BUILD_STAMP): $(image_sources) | .env .env.generated
 	mkdir -p $(BUILD_STAMP_DIR)
 	find $(BUILD_STAMP_DIR) -name "*.stamp" -mtime +3 -delete 2>/dev/null || true
-	cd $(GIT_ROOT) && docker compose --progress=plain --env-file .env --env-file envs/dev --file $(BASE_COMPOSE) build
+	cd $(GIT_ROOT) && docker compose --progress=plain $(COMPOSE_ENV_FILES) --env-file envs/dev --file $(BASE_COMPOSE) build
 	touch $@
 
-pull_images: $(BASE_COMPOSE) | .env # @doc pull images from remote repos
-	true || docker compose --env-file .env --env-file envs/dev --file $(BASE_COMPOSE) pull
+pull_images: $(BASE_COMPOSE) | .env .env.generated # @doc pull images from remote repos
+	true || docker compose $(COMPOSE_ENV_FILES) --env-file envs/dev --file $(BASE_COMPOSE) pull
 
 ensure_pydocker: ensure_uv
 	@$(PYTHON) -c "import docker" 2>/dev/null || \
@@ -191,13 +209,13 @@ dockerclean:
 	docker ps --all --format '{{.ID}}' | xargs $(MAYBENORUN) docker rm --force
 	docker images --format '{{.ID}}' | xargs $(MAYBENORUN) docker rmi --force
 
-dbconn-%: psql-dotfiles | .env # @doc open psql against an environment, e.g. make dbconn-blue
-	cd $(GIT_ROOT) && docker compose --project-name sylvan_$* --env-file .env --env-file envs/$* --file $(BASE_COMPOSE) \
+dbconn-%: psql-dotfiles | .env .env.generated # @doc open psql against an environment, e.g. make dbconn-blue
+	cd $(GIT_ROOT) && docker compose --project-name sylvan_$* $(COMPOSE_ENV_FILES) --env-file envs/$* --file $(BASE_COMPOSE) \
 	  exec -e PSQLRC=/var/lib/postgresql/.psqlrc -e PSQL_HISTORY=/var/lib/postgresql/.psql_history \
 	  postgres psql -U $(XPGUSER) -d $(XPGDATABASE) --host=localhost
 
-reset-%: | .env # @doc destroy an environment including its database volume
-	docker compose --project-name sylvan_$* --env-file .env --env-file envs/$* --file $(BASE_COMPOSE) down --volumes --remove-orphans
+reset-%: | .env .env.generated # @doc destroy an environment including its database volume
+	docker compose --project-name sylvan_$* $(COMPOSE_ENV_FILES) --env-file envs/$* --file $(BASE_COMPOSE) down --volumes --remove-orphans
 	rm -rvf data/api/$* data/postgres/$*
 
 reset: $(addprefix reset-,$(ENVS)) # @doc destroy every environment including databases

@@ -10,6 +10,11 @@ gatherer_data/
 .env
 prof
 *.min.js
+# Both derived from this host's memory by scripts/gen_postgres_conf.py and only meaningful
+# together, so neither is tracked. A committed limit would be reverted onto a host whose
+# untracked conf still expects it. ".env" above does not cover ".env.generated" — gitignore
+# patterns match whole names, not prefixes.
+.env.generated
 configs/postgres/conf/postgresql.conf
 
 # Unfixed security findings — this repo is public, so committing these publishes a
