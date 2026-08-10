@@ -424,10 +424,13 @@ class CardSearch {
 
   // Applies autocomplete, bracket-balancing, and whitespace normalisation to a raw query string.
   _processQuery(query) {
-    const autocompleted = this.autoCompleteQuery(query);
-    const balanced = this.balanceQuery(autocompleted);
-    const normalized = balanced.trim().replace(/\s+/g, ' ');
-    return normalized;
+    return this._balanceAndNormalize(this.autoCompleteQuery(query));
+  }
+
+  // The second half of _processQuery, split out so performSearch can inspect the autocompleted query
+  // before balancing hides whether a span was left empty.
+  _balanceAndNormalize(autocompleted) {
+    return this.balanceQuery(autocompleted).trim().replace(/\s+/g, ' ');
   }
 
   async fetchCommonCardTypes() {
@@ -507,6 +510,14 @@ class CardSearch {
     return this.closeIndex(query, start, quote);
   }
 
+  // Returns the index of the '}' closing a mana symbol whose content starts at start, or null when
+  // there is none. A plain search: no escape sequence exists inside a mana symbol.
+  // The JS counterpart of brace_close_index in api/parsing/spans.py.
+  braceCloseIndex(query, start) {
+    const index = query.indexOf('}', start);
+    return index < 0 ? null : index;
+  }
+
   // True when the span opening at start runs to the end of the query on an unfinished escape, so a
   // closer appended now would be escaped instead of ending the span.
   // The JS counterpart of has_dangling_escape in api/parsing/spans.py.
@@ -530,27 +541,33 @@ class CardSearch {
     return (this.hasDanglingEscape(query, contentStart) ? '\\' : '') + closer;
   }
 
-  // Scans the query and returns the closing suffix needed to balance it, or null when a closing
-  // paren with no matching opener makes it unbalance-able (the JS counterpart of
-  // balance_partial_query's ValueError in api/parsing/parsing_f.py).
-  balanceSuffix(query) {
+  // One pass over the query's spans and parens, reporting both things callers need:
+  //   suffix — the closing text needed to balance it, or null when a ')' has no matching opener
+  //            (the JS counterpart of balance_partial_query's ValueError in api/parsing/parsing_f.py)
+  //   openSpanContentStart — index where an unterminated span's content begins, or null if every span
+  //            is closed. Only used to tell an empty span from one with something in it.
+  // balanceSuffix and endsWithEmptySpan both read this, so there is one scan and one set of rules.
+  scanSpans(query) {
     const quoteChars = new Set(["'", '"']);
 
+    let openSpanContentStart = null;
     let openParens = 0;
-    // Closer for a quoted string or regex still open at the end of the query. A span only ever needs
-    // one, because everything after an unterminated opener is span content — there is nothing left to
-    // open, and nothing after it to close.
+    // Closer for whichever span is still open at the end of the query. Only one is ever needed,
+    // because everything after an unterminated opener is span content — there is nothing left to
+    // open, and nothing after it to close. That is also why it can be appended before the parens: an
+    // unterminated span is necessarily the innermost thing open.
     let spanSuffix = '';
 
     for (let i = 0; i < query.length; i++) {
       const char = query[i];
 
-      // A quoted string and a /regex/ are both opaque: the quotes and parens inside them are
-      // content, not delimiters.
+      // A quoted string, a /regex/ and a {mana symbol} are all opaque: the quotes and parens inside
+      // them are content, not delimiters.
       if (quoteChars.has(char)) {
         const closeIndex = this.quoteCloseIndex(query, i + 1, char);
         if (closeIndex === null) {
           spanSuffix = this.closerForPartialSpan(query, i + 1, char);
+          openSpanContentStart = i + 1;
           break;
         }
         i = closeIndex;
@@ -566,6 +583,7 @@ class CardSearch {
             // user has typed so far get balanced as query structure: `o:/[)` is a partial `o:/[)]/`,
             // not a stray ')'.
             spanSuffix = this.closerForPartialSpan(query, i + 1, '/');
+            openSpanContentStart = i + 1;
             break;
           }
           i = closeIndex;
@@ -573,21 +591,49 @@ class CardSearch {
         continue;
       }
 
+      // A {mana symbol} is opaque whatever it holds, and an unterminated one gets closed for the same
+      // reason an unterminated quote does: the lexer demands a '}' for every '{', so leaving it open
+      // would make `mana:{` — a prefix of `mana:{W}` — unlexable while it is being typed. No escapes
+      // exist inside a mana symbol, so there is no dangling-backslash case here.
+      if (char === '{') {
+        const closeIndex = this.braceCloseIndex(query, i + 1);
+        if (closeIndex === null) {
+          spanSuffix = '}';
+          openSpanContentStart = i + 1;
+          break;
+        }
+        i = closeIndex;
+        continue;
+      }
+
       if (char === '(') {
         openParens++;
       } else if (char === ')') {
         if (openParens === 0) {
-          return null; // closing paren with no opener — no suffix can fix this
+          return { suffix: null, openSpanContentStart: null }; // ')' with no opener — nothing fixes this
         }
         openParens--;
       }
     }
 
-    return spanSuffix + ')'.repeat(openParens);
+    return { suffix: spanSuffix + ')'.repeat(openParens), openSpanContentStart };
   }
 
-  // Balance quotes and parentheses for typeahead searches; unbalance-able
-  // queries are returned unchanged so validateQuery reports them.
+  balanceSuffix(query) {
+    return this.scanSpans(query).suffix;
+  }
+
+  // True when the query ends on a span with nothing in it yet: `o:/`, `o:'`, `o:"`, `mana:{`.
+  // Balancing closes those into something meaningless — `o://` is an empty pattern that matches every
+  // card and cannot use an index, and `mana:{}` is not a cost — so a caller mid-typing waits for
+  // another keystroke rather than searching on a span the user has not filled in.
+  endsWithEmptySpan(query) {
+    const { openSpanContentStart } = this.scanSpans(query);
+    return openSpanContentStart === query.length;
+  }
+
+  // Balance parentheses for typeahead searches, skipping over quotes, regexes and mana symbols;
+  // unbalance-able queries are returned unchanged so validateQuery reports them.
   balanceQuery(query) {
     const suffix = this.balanceSuffix(query);
     return suffix === null ? query : query + suffix;
@@ -655,7 +701,17 @@ class CardSearch {
       return;
     }
 
-    const normalizedQuery = this._processQuery(query);
+    const autocompleted = this.autoCompleteQuery(query);
+
+    // Mid-span with nothing typed after the opener: wait rather than search. Balancing would turn
+    // `o:/` into the empty pattern `o://`, which matches every card and cannot use an index, and
+    // `mana:{` into the non-cost `mana:{}`. Neither is what the user is on their way to typing, so
+    // this has to be asked before balancing closes the span and hides that it was empty.
+    if (this.endsWithEmptySpan(autocompleted)) {
+      return;
+    }
+
+    const normalizedQuery = this._balanceAndNormalize(autocompleted);
 
     const validationError = this.validateQuery(normalizedQuery);
     if (validationError) {

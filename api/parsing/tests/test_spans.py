@@ -1,4 +1,4 @@
-"""Tests for the regex-span rules shared by the lexer and the balancers."""
+"""Tests for the span rules shared by the lexer and the balancers."""
 
 from __future__ import annotations
 
@@ -10,11 +10,32 @@ import pytest
 from api.parsing import hand_parser
 from api.parsing.spans import (
     COMPARISON_TAIL_CHARS,
+    brace_close_index,
     has_dangling_escape,
     opens_regex,
     quote_close_index,
     regex_close_index,
     unescape,
+)
+
+# Every distinct braced symbol in the card corpus, from mana costs and oracle text alike (60 of them,
+# via `regexp_matches(mana_cost_text, '[{]([^}]*)[}]', 'g')` over magic.cards), plus the symbols on
+# card types that corpus does not carry: {CHAOS} and {PW} on planar cards, {TK} and {A} from Unfinity,
+# {Y}/{Z} and the half symbols from the Un-sets. The unloaded ones are deliberate — they are why the
+# span rule stays "opaque up to the '}'" rather than a charset fitted to whatever one corpus holds.
+_REAL_MANA_SYMBOLS = (
+    # Generic, including values no printing uses yet.
+    *[str(n) for n in (*range(21), 100, 1000000)],
+    # Single markers.
+    *"WUBRGCSXYZTQEPAH",
+    # Hybrid, generic-hybrid, phyrexian, and hybrid-phyrexian.
+    *("2/W", "2/U", "2/B", "2/R", "2/G"),
+    *("W/U", "W/B", "U/B", "U/R", "B/R", "B/G", "R/G", "R/W", "G/W", "G/U"),
+    *("C/W", "C/U", "C/B", "C/R", "C/G"),
+    *("W/P", "U/P", "B/P", "R/P", "G/P"),
+    *("G/U/P", "G/W/P", "R/G/P", "R/W/P"),
+    # Half mana, and the multi-letter markers.
+    *("HW", "HR", "CHAOS", "PW", "TK"),
 )
 
 # Matches the operator literals the lexer emits, e.g. Token(TT.OP, ">=", start, sb).
@@ -123,3 +144,47 @@ def test_has_dangling_escape(query: str, expected: bool) -> None:
 def test_unescape(text: str, expected: str) -> None:
     """Span content drops one level of backslash escaping, as the lexer's QUOTED token does."""
     assert unescape(text) == expected
+
+
+@pytest.mark.parametrize(argnames=["symbol"], argvalues=[(sym,) for sym in _REAL_MANA_SYMBOLS], ids=_REAL_MANA_SYMBOLS)
+def test_every_real_symbol_is_one_opaque_span(symbol: str) -> None:
+    """A real symbol has to end at its own '}', including symbols no card in the local corpus uses.
+
+    Pins the span rule against the vocabulary rather than against a hand-written charset: any future
+    attempt to bound brace content by shape has to keep every one of these working.
+    """
+    query = f"mana:{{{symbol}}}"
+    assert brace_close_index(query, 6) == len(query) - 1
+
+    mana_tokens = [tok for tok in hand_parser.tokenize(query) if tok.type is hand_parser.TT.MANA]
+    assert [tok.value for tok in mana_tokens] == [f"{{{symbol}}}"]
+
+
+@pytest.mark.parametrize(
+    argnames=["query", "start", "expected"],
+    argvalues=[
+        ("mana:{W}", 6, 7),
+        ("mana:{2/W}", 6, 9),
+        ("mana:{W}{U}", 9, 10),  # second symbol
+        ("mana:{)}", 6, 7),  # content is opaque, valid or not
+        ("mana:{'}", 6, 7),
+        ("mana:{}", 6, 6),  # empty symbol still terminates
+        ("mana:{W", 6, None),  # unterminated
+        ("mana:{ and o:bolt", 6, None),
+        (r"mana:{\}", 6, 7),  # no escapes inside a symbol, so the backslash does not shield the brace
+    ],
+    ids=[
+        "simple",
+        "hybrid",
+        "second_symbol",
+        "paren_content",
+        "quote_content",
+        "empty",
+        "unterminated",
+        "unterminated_with_junk",
+        "backslash_is_not_an_escape",
+    ],
+)
+def test_brace_close_index(query: str, start: int, expected: int | None) -> None:
+    """A '{...}' ends at the next '}' whatever it holds — the rule the lexer has always used."""
+    assert brace_close_index(query, start) == expected

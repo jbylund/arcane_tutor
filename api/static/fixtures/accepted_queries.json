@@ -18,5 +18,9 @@
   "(power+1)/2>1",
   "power/2>1 name:/a/",
   "power/2>1 name:/'/",
-  "power/2>1 o:/x:)/"
+  "power/2>1 o:/x:)/",
+  "mana:{W}",
+  "mana:{2/W}{U}",
+  "(mana:{W}) or t:elf",
+  "devotion:{U}{U}"
 ]

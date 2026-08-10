@@ -34,6 +34,24 @@ def opens_regex(query: str, slash_index: int) -> bool:
     return pos >= 0 and query[pos] in COMPARISON_TAIL_CHARS
 
 
+def brace_close_index(query: str, start: int) -> int | None:
+    """Return the index of the '}' closing a mana symbol whose content starts at *start*, or None if unterminated.
+
+    A plain search for the next '}': no escape sequence exists inside a mana symbol, so a '{...}' is
+    opaque whatever it holds. There is deliberately no charset bounding the content. Stopping the span
+    at the first character no real symbol could contain looks attractive — it would keep a stray '{'
+    from swallowing the rest of the query — but it cannot be done here, because the lexer demands a '}'
+    for every '{': a balancer that declined to close the '{' in 'mana:{'' would leave a prefix of the
+    accepted query "mana:{'}" unlexable halfway through being typed, which is #908's failure mode.
+
+    Whether the content is a *real* symbol is a separate question, and not one a charset could settle
+    in any case — every character of '{A/B/C/D}' is individually legal, so only checking the symbol as
+    a whole rejects it. That check belongs wherever mana values are validated.
+    """
+    index = query.find("}", start)
+    return None if index < 0 else index
+
+
 def regex_close_index(query: str, start: int) -> int | None:
     """Return the index of the '/' closing a regex that opened before *start*, or None if unterminated."""
     return _close_index(query, start, "/")

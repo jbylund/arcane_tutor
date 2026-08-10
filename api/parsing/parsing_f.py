@@ -6,7 +6,14 @@ from typing import TYPE_CHECKING
 
 from api.parsing.hand_parser import parse_query as _parse_query
 from api.parsing.rewrite import rewrite_query
-from api.parsing.spans import QUOTE_CHARS, has_dangling_escape, opens_regex, quote_close_index, regex_close_index
+from api.parsing.spans import (
+    QUOTE_CHARS,
+    brace_close_index,
+    has_dangling_escape,
+    opens_regex,
+    quote_close_index,
+    regex_close_index,
+)
 
 if TYPE_CHECKING:
     from api.parsing.nodes import Query
@@ -22,11 +29,17 @@ def _closer_for_partial_span(query: str, content_start: int, closer: str) -> str
 
 
 def balance_partial_query(query: str) -> str:
-    """Balance quotes, regexes, and parentheses for typeahead searches using a stack."""
+    """Balance parentheses for typeahead searches, skipping over quotes, regexes, and mana symbols.
+
+    Parentheses are the only construct that nests, so tracking depth is a counter rather than a stack.
+    The opaque spans never go on it: each one is resolved to its closer and stepped over whole, which
+    is what keeps the quotes, parens and metacharacters inside them from being read as structure.
+    """
     open_parens = 0
-    # Closer for a quoted string or regex still open at the end of the query. A span only ever needs
-    # one, because everything after an unterminated opener is span content — there is nothing left to
-    # open, and nothing after it to close.
+    # Closer for whichever span is still open at the end of the query. Only one is ever needed,
+    # because everything after an unterminated opener is span content — there is nothing left to open,
+    # and nothing after it to close. That is also why the closers below can be appended before the
+    # parens: an unterminated span is necessarily the innermost thing open.
     span_suffix = ""
 
     pos = 0
@@ -34,10 +47,10 @@ def balance_partial_query(query: str) -> str:
         char = query[pos]
         pos += 1
 
-        # A quoted string and a /regex/ are both opaque: the quotes and parens inside them are
-        # content, not delimiters. The span rules come from api.parsing.spans so the balancer and the
-        # lexer cannot drift apart — where they disagree, the balancer "fixes" a quote the lexer
-        # never saw (#905).
+        # A quoted string, a /regex/ and a {mana symbol} are all opaque: the quotes and parens inside
+        # them are content, not delimiters. The span rules come from api.parsing.spans so the balancer
+        # and the lexer cannot drift apart — where they disagree, the balancer "fixes" a quote the
+        # lexer never saw (#905).
         if char in QUOTE_CHARS:
             close_index = quote_close_index(query, pos, char)
             if close_index is None:
@@ -57,6 +70,18 @@ def balance_partial_query(query: str) -> str:
                     span_suffix = _closer_for_partial_span(query, pos, "/")
                     break
                 pos = close_index + 1
+            continue
+
+        # A '{mana symbol}' is opaque whatever it holds, and an unterminated one gets closed for the
+        # same reason an unterminated quote does: the lexer demands a '}' for every '{', so leaving it
+        # open would make 'mana:{' — a prefix of 'mana:{W}' — unlexable while it is being typed. No
+        # escapes exist inside a mana symbol, so there is no dangling-backslash case here.
+        if char == "{":
+            close_index = brace_close_index(query, pos)
+            if close_index is None:
+                span_suffix = "}"
+                break
+            pos = close_index + 1
             continue
 
         if char == "(":

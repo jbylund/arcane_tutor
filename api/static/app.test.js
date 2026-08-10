@@ -458,6 +458,45 @@ describe('CardSearch performSearch', () => {
     expect(search.showError).toHaveBeenCalledWith(expect.stringContaining('Invalid Search Query'));
     expect(global.fetch).not.toHaveBeenCalled();
   });
+
+  // A span with nothing in it is not a query yet. Balancing would close it into something that is
+  // valid but useless — `o://` matches every card with an unindexable empty pattern — so the request
+  // waits for the next keystroke, and unlike an unbalance-able query this is not an error.
+  it.each(['o:/', "o:'", 'o:"', 'mana:{', '(o:/', "t:elf o:'"])('waits instead of searching on %s', async query => {
+    global.fetch.mockClear();
+    search.showError.mockClear();
+
+    await search.performSearch(query);
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(search.showError).not.toHaveBeenCalled();
+  });
+
+  it.each(['o:/a', "o:'a", 'mana:{W', 'o:/^{T}:/'])('still searches once the span has content: %s', async query => {
+    global.fetch.mockClear();
+
+    await search.performSearch(query);
+
+    expect(global.fetch).toHaveBeenCalled();
+  });
+});
+
+describe('CardSearch endsWithEmptySpan', () => {
+  it.each(['o:/', "o:'", 'o:"', 'mana:{', '(mana:{', 'name:test o:/'])('is true for %s', query => {
+    expect(search.endsWithEmptySpan(query)).toBe(true);
+  });
+
+  it.each([
+    'o:/a', // content typed
+    'o:/a/', // closed
+    'mana:{W}', // closed
+    'power/2>1', // division, not a regex opener
+    '', // nothing at all
+    'hello)', // unbalance-able, reported by validateQuery instead
+    'o:/a\\', // a dangling escape is still content
+  ])('is false for %s', query => {
+    expect(search.endsWithEmptySpan(query)).toBe(false);
+  });
 });
 
 describe('CardSearch getColumnsFromViewportWidth', () => {

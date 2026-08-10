@@ -27,7 +27,7 @@ from api.parsing.nodes import (
     TrueNode,
     flatten_nested_operations,
 )
-from api.parsing.spans import QUOTE_CHARS, quote_close_index, regex_close_index, unescape
+from api.parsing.spans import QUOTE_CHARS, brace_close_index, quote_close_index, regex_close_index, unescape
 
 # ── Alias → parser-class lookup ──────────────────────────────────────────────
 
@@ -139,13 +139,16 @@ def tokenize(src: str) -> list[Token]:  # noqa: C901, PLR0912, PLR0915
         space_before = False
         c = src[pos]
 
-        # {mana symbol}
+        # {mana symbol}. brace_close_index is shared with the balancer in api.parsing.spans: both have
+        # to agree that a '{...}' is opaque whatever it holds, or the balancer reads the ')' in
+        # '(mana:{)})' as query structure and rejects a query the lexer accepts — #905's bug class,
+        # with braces in place of quotes.
         if c == "{":
-            end = src.find("}", pos + 1)
-            if end == -1:
+            close_index = brace_close_index(src, pos + 1)
+            if close_index is None:
                 msg = f"Unclosed '{{' at position {pos}"
                 raise LexError(msg)
-            pos = end + 1
+            pos = close_index + 1
             tokens.append(Token(TT.MANA, src[start:pos], start, sb))
             continue
 
