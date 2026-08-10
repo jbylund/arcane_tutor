@@ -13,6 +13,7 @@ from enum import Enum, auto
 
 from api.parsing.card_query_nodes import CardAttributeNode, CardBinaryOperatorNode, ExactNameNode
 from api.parsing.db_info import ALIAS_TO_FIELD_INFOS, COLOR_NAME_TO_CODE, ParserClass
+from api.parsing.mana_symbols import first_invalid_mana_symbol
 from api.parsing.nodes import (
     AndNode,
     BinaryOperatorNode,
@@ -655,7 +656,15 @@ class Parser:
         if not parts:
             msg = f"Expected mana value at position {self.peek().pos}"
             raise ParseError(msg)
-        return ManaValueNode("".join(parts).upper())
+        value = "".join(parts).upper()
+        # A mana cost can only hold certain symbols, so anything else is a query that cannot match.
+        # '{Q}' is a real symbol (untap) but never appears in a cost, which is why this asks what a
+        # cost may contain rather than what Magic prints.
+        invalid = first_invalid_mana_symbol(value)
+        if invalid is not None:
+            msg = f"Invalid mana symbol {invalid!r} at position {tok.pos}"
+            raise ParseError(msg)
+        return ManaValueNode(value)
 
     def parse_string_value(self) -> QueryNode:
         """Parse a simple string value: quoted string or bare word."""

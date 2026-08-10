@@ -29,6 +29,7 @@ from api.parsing.db_info import (
     PARSER_CLASS_TO_FIELD_INFOS,
     ParserClass,
 )
+from api.parsing.mana_symbols import first_invalid_mana_symbol
 from api.parsing.nodes import (
     AndNode,
     BinaryOperatorNode,
@@ -268,7 +269,14 @@ def create_mana_parsers() -> dict[str, ParserElement]:
 
     def make_mana_value_node(tokens: list[str]) -> ManaValueNode:
         """Create a ManaValueNode for mana cost strings."""
-        return ManaValueNode(tokens[0].upper())
+        value = tokens[0].upper()
+        # Shared with hand_parser.parse_mana_value, so the two parsers reject the same symbols.
+        # parse_search_query turns a ValueError from a parse action into a query-level parse error.
+        invalid = first_invalid_mana_symbol(value)
+        if invalid is not None:
+            msg = f"Invalid mana symbol {invalid!r}"
+            raise ValueError(msg)
+        return ManaValueNode(value)
 
     mana_value = mixed_mana_pattern.set_parse_action(make_mana_value_node)
 
