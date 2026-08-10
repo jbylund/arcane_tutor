@@ -627,9 +627,15 @@ class CardSearch {
   // Balancing closes those into something meaningless — `o://` is an empty pattern that matches every
   // card and cannot use an index, and `mana:{}` is not a cost — so a caller mid-typing waits for
   // another keystroke rather than searching on a span the user has not filled in.
+  //
+  // Trailing whitespace is stripped first because it is not content the user is searching for: the
+  // normalisation in _balanceAndNormalize trims only *after* balancing, so `o:/ ` would otherwise
+  // slip past this check and go out as `o:/ /` — a single-space pattern with exactly the
+  // match-everything, cannot-use-an-index behaviour the check exists to prevent.
   endsWithEmptySpan(query) {
-    const { openSpanContentStart } = this.scanSpans(query);
-    return openSpanContentStart === query.length;
+    const trimmed = query.trimEnd();
+    const { openSpanContentStart } = this.scanSpans(trimmed);
+    return openSpanContentStart === trimmed.length;
   }
 
   // Balance parentheses for typeahead searches, skipping over quotes, regexes and mana symbols;
@@ -707,7 +713,14 @@ class CardSearch {
     // `o:/` into the empty pattern `o://`, which matches every card and cannot use an index, and
     // `mana:{` into the non-cost `mana:{}`. Neither is what the user is on their way to typing, so
     // this has to be asked before balancing closes the span and hides that it was empty.
+    //
+    // clearMessages, not a bare return: handleSearch aborts the in-flight request as soon as the
+    // typed query stops matching it, so backspacing `o:/a/` down to `o:/` cancels the fetch and
+    // lands here with the previous showLoading still on screen. Returning without touching the
+    // status container left "Searching o:/a/…" over an empty grid until the next searchable
+    // keystroke. Clearing converges on the same "nothing to show" state as an empty query.
     if (this.endsWithEmptySpan(autocompleted)) {
+      this.clearMessages();
       return;
     }
 
