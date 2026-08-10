@@ -88,6 +88,20 @@ KNOWN_DIVERGENCES: dict[str, tuple[str, list[str]]] = {
     # operator at all on text fields. Neither parser implements the alias: pyparsing rejects the
     # shape, and the hand parser applies the text-field fallback everywhere, so 'c!w' becomes
     # name LIKE %c% AND name = "w" and quietly matches nothing.
+    # Not from the wild corpus — that corpus contains no mana or devotion query at all, which is why
+    # the sweep never surfaced this. Found by inspection while fixing bare mana values.
+    #
+    # A MANA-class field falls back to pyparsing's generic string value when its mana pattern does not
+    # match, so a bare value starting with a letter outside that pattern becomes a StringValueNode
+    # instead of being rejected as a cost. The hand parser has no such fallback. Fixing it means
+    # making the mana field's value parser mana-only, rather than widening a character class.
+    "d_bare_mana_string_fallback": (
+        "bare mana value falls back to a string in pyparsing, rejected by the hand parser",
+        [
+            "mana:hello",
+            "mana:hw",
+        ],
+    ),
     "c_bang_equals_alias": (
         "#903 C: '!' as an '=' alias unimplemented — pyparsing rejects, hand parser mis-parses",
         [

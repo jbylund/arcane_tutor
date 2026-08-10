@@ -18,6 +18,7 @@ from api.parsing.db_info import (
     FieldType,
     ParserClass,
 )
+from api.parsing.mana_symbols import MANA_COST_ATOMS, ZERO_COST_ATOMS
 from api.parsing.nodes import (
     AndNode,
     AttributeNode,
@@ -384,6 +385,10 @@ def get_legality_comparison_object(val: str, attr: str) -> dict[str, str]:
     return {format_name: status}
 
 
+# A run of digits, or one non-generic atom, in the unbraced part of a mana value.
+_UNBRACED_MANA_TOKEN = re.compile(r"\d+|[" + re.escape("".join(sorted(MANA_COST_ATOMS))) + r"]")
+
+
 def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
     """Convert a mana cost string to a dictionary of colored symbols and their counts.
 
@@ -408,10 +413,12 @@ def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
     # We don't care about digits here, only colored symbols
     unbraced_part = re.sub(r"{[^}]*}", " ", mana_cost_upper)
     for char in unbraced_part:
-        # Color characters (W, U, B, R, G, C) plus X, its own pip symbol —
-        # confirmed against the real Scryfall API: mana:x behaves identically
-        # to mana:{x}. calculate_cmc() already excludes X from cmc separately.
-        if char in "WUBRGCX":
+        # Every non-generic atom is a pip, exactly as the braced branch above treats it — bare 'x'
+        # behaves identically to '{x}', confirmed against the real Scryfall API, and calculate_cmc()
+        # excludes X from cmc separately. MANA_COST_ATOMS is shared so this cannot drift from the
+        # braced branch again: it used to read "WUBRGCX", which silently dropped bare 'S' and 'P' and
+        # left 'mana:s' asking for an empty cost — a subset of every cost, so it matched everything.
+        if char in MANA_COST_ATOMS:
             colored_symbol_counts[char] = colored_symbol_counts.get(char, 0) + 1
 
     as_dict = {}
@@ -448,13 +455,14 @@ def calculate_cmc(mana_cost_str: str) -> int:
     # Then, process unbraced part (after removing braced sections)
     # Replace braced sections with a space to prevent adjacent digits from merging
     unbraced_part = re.sub(r"{[^}]*}", " ", mana_cost_upper)
-    # Match either: sequences of digits OR single color characters
-    for token in re.findall(r"\d+|[WUBRGC]", unbraced_part):
+    # Match either: a run of digits, or one non-generic atom. Same rule as the braced branch above, off
+    # the same vocabulary — the copy here read "WUBRGC" and so counted bare 'S' and 'P' as nothing.
+    for token in _UNBRACED_MANA_TOKEN.findall(unbraced_part):
         if token.isdigit():
             # Multi-digit generic mana (e.g., "11" in "11R")
             cmc += int(token)
-        elif token in "WUBRGC":
-            # Color character counts as 1
+        elif token not in ZERO_COST_ATOMS:
+            # Any other atom is one pip; the variables contribute nothing.
             cmc += 1
 
     return cmc

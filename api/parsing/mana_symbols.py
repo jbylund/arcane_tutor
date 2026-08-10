@@ -24,7 +24,16 @@ _COLORS = frozenset("WUBRG")
 # Grounded in the 48 distinct symbols the card corpus uses in mana_cost_text, plus the Un-set symbols
 # that corpus holds no cards for — '∞' is Gleemax's whole mana cost, and 'H' + a colour is half mana
 # ({HW} on Little Girl). The frontend already renders both, in the mana maps in app.js.
-_ATOMS = _COLORS | frozenset("CSXYZP∞")
+#
+# Public because it is the one vocabulary: mana_cost_str_to_dict and calculate_cmc read a bare mana
+# value one character at a time and each used to carry its own copy of this list, both incomplete in
+# different ways. 'S' and 'P' missing from those copies is what made 'mana:s' match every card.
+MANA_COST_ATOMS = _COLORS | frozenset("CSXYZP∞")
+
+# Variables contribute nothing to mana value; every other non-generic atom counts as one pip.
+ZERO_COST_ATOMS = frozenset("X")
+
+_ATOMS = MANA_COST_ATOMS
 
 # Half mana is written as 'H' followed by a colour: {HW}, {HR}.
 _HALF_PREFIX = "H"
@@ -53,14 +62,20 @@ def is_valid_mana_symbol(symbol: str) -> bool:
 
 
 def first_invalid_mana_symbol(value: str) -> str | None:
-    """Return the first braced symbol in *value* that no mana cost could contain, or None if every one can.
+    """Return the first symbol in *value* that no mana cost could contain, or None if every one can.
 
-    Braced symbols only, for now. A mana value may also be written bare — '2WW' for '{2}{W}{W}' — but
-    the two parsers do not agree on what a bare value is: pyparsing's mana pattern does not match
-    'hello', so 'mana:hello' takes a different branch there and never becomes a mana value at all.
-    Checking bare text here would reject on one side and not the other. '{...}' has no such ambiguity.
+    Covers both notations: the braced '{2}{W}{W}' and the bare '2WW', which mana_cost_str_to_dict and
+    calculate_cmc read one character at a time. Checking the bare form matters more than it looks —
+    those readers used to *drop* any character they did not recognise, so 'mana:snow' kept the 'W' and
+    silently answered 'mana:w', and 'mana:hello' kept nothing and matched every card in the corpus
+    (an empty cost dict is a subset of every cost). Dropping quietly is worse than refusing.
     """
     for symbol in _BRACED_SYMBOL.findall(value):
         if not is_valid_mana_symbol(symbol):
             return f"{{{symbol}}}"
+
+    for char in _BRACED_SYMBOL.sub("", value):
+        if char not in _DIGITS and char not in MANA_COST_ATOMS:
+            return char
+
     return None

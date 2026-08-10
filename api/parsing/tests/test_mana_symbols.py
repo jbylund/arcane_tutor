@@ -87,8 +87,12 @@ def test_junk_is_rejected(symbol: str) -> None:
         ("{Q}{W}", "{Q}"),  # the first one, scanning left to right
         ("{W}{}", "{}"),
         ("{ AND O:BOLT)}", "{ AND O:BOLT)}"),  # what a swallowed stray brace balances to
-        ("HELLO", None),  # bare text is left alone: the two parsers disagree about what it is
-        ("{W}T", None),  # ... including a bare marker alongside a braced symbol
+        ("HELLO", "H"),  # bare text is checked too: dropping 'H','E','L','L','O' matched everything
+        ("SNOW", "N"),  # 'mana:snow' used to keep only the 'W' and quietly answer 'mana:w'
+        ("{W}T", "T"),  # a bare marker alongside a braced symbol
+        ("S", None),  # snow, dropped by the old charset
+        ("P", None),  # phyrexian, likewise
+        ("2WWS", None),
     ],
     ids=[
         "braced",
@@ -99,10 +103,14 @@ def test_junk_is_rejected(symbol: str) -> None:
         "invalid_first",
         "empty_symbol",
         "swallowed_brace",
-        "bare_word_untouched",
-        "bare_marker_untouched",
+        "bare_word",
+        "bare_word_keeping_one_letter",
+        "bare_marker",
+        "bare_snow",
+        "bare_phyrexian",
+        "bare_mixed",
     ],
 )
 def test_first_invalid_mana_symbol(value: str, expected: str | None) -> None:
-    """Only braced symbols are checked, and the first offender is named so the message can say which."""
+    """Both notations are checked, and the first offender is named so the message can say which."""
     assert first_invalid_mana_symbol(value) == expected

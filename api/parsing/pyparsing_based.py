@@ -29,7 +29,7 @@ from api.parsing.db_info import (
     PARSER_CLASS_TO_FIELD_INFOS,
     ParserClass,
 )
-from api.parsing.mana_symbols import first_invalid_mana_symbol
+from api.parsing.mana_symbols import MANA_COST_ATOMS, first_invalid_mana_symbol
 from api.parsing.nodes import (
     AndNode,
     BinaryOperatorNode,
@@ -62,8 +62,14 @@ _COMPARISON_OPERATORS = frozenset({">", "<", ">=", "<=", "=", "!=", ":"})
 
 # Characters that make a query ineligible for the fast preprocess_implicit_and path.
 _FP_UNSAFE_CHARS = frozenset("()\"'/{+*")
+
 _FP_TERM_START_OPS = frozenset("><=!:")
 _FP_TERM_END_OPS = frozenset("><=!:-")
+
+# One bare mana atom, either case. Built from the shared vocabulary rather than hand-listed: this
+# pattern used to read "[0-9WUBRGCXYZwubrgcxyz]", which left out 'S' and 'P', so a bare 'mana:s' fell
+# out of the mana branch entirely and matched as a plain string instead.
+_SIMPLE_MANA_SYMBOL_PATTERN = r"[0-9" + re.escape("".join(sorted(MANA_COST_ATOMS | {c.lower() for c in MANA_COST_ATOMS}))) + r"]"
 
 
 def make_regex_pattern(words: Iterable[str]) -> Regex:
@@ -264,7 +270,7 @@ def create_mana_parsers() -> dict[str, ParserElement]:
         Dictionary containing mana parser elements
     """
     curly_mana_symbol = Regex(r"\{[^}]+\}")
-    simple_mana_symbol = Regex(r"[0-9WUBRGCXYZwubrgcxyz]")
+    simple_mana_symbol = Regex(_SIMPLE_MANA_SYMBOL_PATTERN)
     mixed_mana_pattern = Combine(OneOrMore(curly_mana_symbol | simple_mana_symbol))
 
     def make_mana_value_node(tokens: list[str]) -> ManaValueNode:
@@ -607,7 +613,7 @@ def _get_implicit_and_tokenizer() -> ParserElement:
     string_value_tok = Regex(r"\w([\w.-]*[\w.])?").set_parse_action(lambda t: t[0])
 
     curly_mana_symbol = Regex(r"\{[^}]+\}")
-    simple_mana_symbol = Regex(r"[0-9WUBRGCXYZwubrgcxyz]")
+    simple_mana_symbol = Regex(_SIMPLE_MANA_SYMBOL_PATTERN)
     mana_tok = Combine(OneOrMore(curly_mana_symbol | simple_mana_symbol)).set_parse_action(lambda t: t[0])
 
     # A regex only opens in value position, so it is matched as a unit with the comparison operator
