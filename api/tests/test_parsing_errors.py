@@ -118,7 +118,49 @@ class TestSearchRouting:
         mock_sql.assert_called_once()
         assert result is sentinel
 
-    @pytest.mark.parametrize("exc", [KeyboardInterrupt, SystemExit])
+    def test_engine_declining_a_query_falls_back_without_a_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A query the engine cannot build is a user error, not an alertable engine failure.
+
+        _search_engine turns _QueryError into HTTPBadRequest and logs it at info. That reaches the
+        SQL fallback, which used to re-log it at warning with a stack trace — so every keystroke
+        inside a character class (`o:/^[`, balanced to `o:/^[/` by typeahead) produced an alertable
+        event. The Rust regex crate also rejects patterns Postgres accepts, so this path is reached
+        by working queries too; either way the SQL path decides the outcome.
+        """
+        self.api_resource._engine.size.return_value = 87
+        sentinel = {"cards": [], "total_cards": 0, "query": "o:/^[/"}
+        with (
+            patch.object(
+                self.api_resource,
+                "_search_engine",
+                side_effect=falcon.HTTPBadRequest(title="Invalid Search Query", description="nope"),
+            ),
+            patch.object(self.api_resource, "_search_sql", return_value=sentinel) as mock_sql,
+            caplog.at_level("INFO"),
+        ):
+            result = self.api_resource._search(query="o:/^[/", limit=10)
+
+        mock_sql.assert_called_once()
+        assert result is sentinel
+        assert [r.levelname for r in caplog.records if "falling back to SQL" in r.getMessage()] == ["INFO"]
+        assert not [r for r in caplog.records if r.exc_info]
+
+    def test_a_real_engine_failure_still_warns_with_a_traceback(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Quieting the declined-query case must not quiet an engine that actually broke."""
+        self.api_resource._engine.size.return_value = 87
+        sentinel = {"cards": [], "total_cards": 0, "query": "name:opt"}
+        with (
+            patch.object(self.api_resource, "_search_engine", side_effect=RuntimeError("engine failed")),
+            patch.object(self.api_resource, "_search_sql", return_value=sentinel),
+            caplog.at_level("INFO"),
+        ):
+            self.api_resource._search(query="name:opt", limit=10)
+
+        warnings = [r for r in caplog.records if "falling back to SQL" in r.getMessage()]
+        assert [r.levelname for r in warnings] == ["WARNING"]
+        assert all(r.exc_info for r in warnings)
+
+    @pytest.mark.parametrize(argnames=["exc"], argvalues=[(KeyboardInterrupt,), (SystemExit,)])
     def test_interpreter_shutdown_signals_still_propagate(self, exc: type[BaseException]) -> None:
         """Widening the catch to BaseException must not swallow Ctrl-C or interpreter exit."""
         self.api_resource._engine.size.return_value = 87
