@@ -27,7 +27,7 @@ from api.parsing.nodes import (
     TrueNode,
     flatten_nested_operations,
 )
-from api.parsing.spans import regex_close_index
+from api.parsing.spans import QUOTE_CHARS, quote_close_index, regex_close_index, unescape
 
 # ── Alias → parser-class lookup ──────────────────────────────────────────────
 
@@ -149,27 +149,16 @@ def tokenize(src: str) -> list[Token]:  # noqa: C901, PLR0912, PLR0915
             tokens.append(Token(TT.MANA, src[start:pos], start, sb))
             continue
 
-        # Quoted string
-        if c in ('"', "'"):
-            quote = c
-            pos += 1
-            chars: list[str] = []
-            while pos < n:
-                ch = src[pos]
-                if ch == "\\" and pos + 1 < n:
-                    pos += 1
-                    chars.append(src[pos])
-                    pos += 1
-                elif ch == quote:
-                    pos += 1
-                    break
-                else:
-                    chars.append(ch)
-                    pos += 1
-            else:
+        # Quoted string. quote_close_index is shared with the balancer in api.parsing.spans: both
+        # have to agree that a backslash escapes the next character, or the balancer reads the ' in
+        # 'don\'t' as the close and appends a quote the lexer never wanted (#905).
+        if c in QUOTE_CHARS:
+            close_index = quote_close_index(src, pos + 1, c)
+            if close_index is None:
                 msg = f"Unclosed quote at position {start}"
                 raise LexError(msg)
-            tokens.append(Token(TT.QUOTED, "".join(chars), start, sb))
+            tokens.append(Token(TT.QUOTED, unescape(src[pos + 1 : close_index]), start, sb))
+            pos = close_index + 1
             continue
 
         # Operators >= <= != : = > <  and  ! (bang)

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from api.parsing.hand_parser import parse_query as _parse_query
 from api.parsing.rewrite import rewrite_query
-from api.parsing.spans import opens_regex, regex_close_index
+from api.parsing.spans import QUOTE_CHARS, has_dangling_escape, opens_regex, quote_close_index, regex_close_index
 
 if TYPE_CHECKING:
     from api.parsing.nodes import Query
@@ -14,32 +14,32 @@ if TYPE_CHECKING:
 
 def balance_partial_query(query: str) -> str:
     """Balance quotes and parentheses for typeahead searches using a stack."""
-    char_to_mirror = {
-        "(": ")",
-        "'": "'",  # single quote is own mirror
-        '"': '"',  # double quote is own mirror
-        ")": "(",
-    }
-    unbalanced_closing_chars = {")"}
-    quote_chars = {"'", '"'}
+    open_parens = 0
+    # Closer for a quoted string still open at the end of the query. A quote only ever needs one,
+    # because everything after an unterminated quote is string content — there is nothing left to
+    # open, and nothing after it to close.
+    quote_suffix = ""
 
-    current_stack = []
     pos = 0
     while pos < len(query):
         char = query[pos]
         pos += 1
 
-        # When inside a quoted string, only the matching closing quote ends it.
-        if current_stack and current_stack[-1] in quote_chars:
-            if char == current_stack[-1]:
-                current_stack.pop()
-            continue
-
-        # A closed /regex/ is opaque: the quotes and parens inside it are pattern characters, not
-        # delimiters. A '/' that is division, or that opens an unterminated regex, falls through as
-        # an ordinary character. The span rules come from api.parsing.spans so the balancer and the
+        # A quoted string and a closed /regex/ are both opaque: the quotes and parens inside them are
+        # content, not delimiters. The span rules come from api.parsing.spans so the balancer and the
         # lexer cannot drift apart — where they disagree, the balancer "fixes" a quote the lexer
         # never saw (#905).
+        if char in QUOTE_CHARS:
+            close_index = quote_close_index(query, pos, char)
+            if close_index is None:
+                # Still being typed. A trailing backslash has nothing to escape yet, so it would
+                # escape the quote we append instead of ending the string — escape it first.
+                quote_suffix = ("\\" if has_dangling_escape(query, pos) else "") + char
+                break
+            pos = close_index + 1
+            continue
+
+        # A '/' that is division, or that opens an unterminated regex, is an ordinary character.
         if char == "/":
             if opens_regex(query, pos - 1):
                 close_index = regex_close_index(query, pos)
@@ -47,21 +47,15 @@ def balance_partial_query(query: str) -> str:
                     pos = close_index + 1
             continue
 
-        mirrored_char = char_to_mirror.get(char)
-        if not mirrored_char:
-            continue
-        if current_stack and current_stack[-1] == mirrored_char:
-            current_stack.pop()
-        else:
-            if char in unbalanced_closing_chars:
+        if char == "(":
+            open_parens += 1
+        elif char == ")":
+            if not open_parens:
                 msg = f"Unbalanced closing character '{char}' cannot be balanced"
                 raise ValueError(msg)
-            current_stack.append(char)
-    while current_stack:
-        char = current_stack.pop()
-        mirrored_char = char_to_mirror[char]
-        query += mirrored_char
-    return query
+            open_parens -= 1
+
+    return query + quote_suffix + ")" * open_parens
 
 
 def parse_scryfall_query(query: str) -> Query:

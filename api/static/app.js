@@ -475,7 +475,7 @@ class CardSearch {
   // True when the '/' at slashIndex opens a regex rather than being division. Mirrors the lexer's
   // rule in hand_parser.tokenize: a regex only opens in value position, i.e. directly after a
   // comparison operator (every one of : = != >= <= > < ends in one of these characters).
-  // The JS counterpart of _opens_regex in api/parsing/parsing_f.py.
+  // The JS counterpart of opens_regex in api/parsing/spans.py.
   opensRegex(query, slashIndex) {
     let i = slashIndex - 1;
     while (i >= 0 && /\s/.test(query[i])) {
@@ -484,50 +484,74 @@ class CardSearch {
     return i >= 0 && ':=><'.includes(query[i]);
   }
 
-  // Returns the index of the '/' closing a regex that opened before start, or null when it is
-  // unterminated. The JS counterpart of _regex_close_index in api/parsing/parsing_f.py.
-  regexCloseIndex(query, start) {
+  // Returns the index of the next unescaped closer at or after start, or null when there is none.
+  // A backslash escapes the character after it, so /a\/b/ is one pattern and 'don\'t' is one string
+  // — the lexer reads them that way, so everything here has to as well (#905).
+  // The JS counterpart of _close_index in api/parsing/spans.py.
+  closeIndex(query, start, closer) {
     for (let i = start; i < query.length; i++) {
       if (query[i] === '\\' && i + 1 < query.length) {
         i++;
-      } else if (query[i] === '/') {
+      } else if (query[i] === closer) {
         return i;
       }
     }
     return null;
   }
 
-  // Scans the query with a bracket/quote stack and returns the closing suffix
-  // needed to balance it, or null when a closing paren with no matching opener
-  // makes it unbalance-able (the JS counterpart of balance_partial_query's
-  // ValueError in api/parsing/parsing_f.py).
+  regexCloseIndex(query, start) {
+    return this.closeIndex(query, start, '/');
+  }
+
+  quoteCloseIndex(query, start, quote) {
+    return this.closeIndex(query, start, quote);
+  }
+
+  // True when the span opening at start runs to the end of the query on an unfinished escape, so a
+  // closer appended now would be escaped instead of ending the span.
+  // The JS counterpart of has_dangling_escape in api/parsing/spans.py.
+  hasDanglingEscape(query, start) {
+    for (let i = start; i < query.length; i++) {
+      if (query[i] === '\\') {
+        if (i + 1 >= query.length) {
+          return true;
+        }
+        i++;
+      }
+    }
+    return false;
+  }
+
+  // Scans the query and returns the closing suffix needed to balance it, or null when a closing
+  // paren with no matching opener makes it unbalance-able (the JS counterpart of
+  // balance_partial_query's ValueError in api/parsing/parsing_f.py).
   balanceSuffix(query) {
-    const charToMirror = {
-      '(': ')',
-      "'": "'", // single quote is own mirror
-      '"': '"', // double quote is own mirror
-      ')': '(',
-    };
     const quoteChars = new Set(["'", '"']);
 
-    const stack = [];
+    let openParens = 0;
+    // Closer for a quoted string still open at the end of the query. A quote only ever needs one,
+    // because everything after an unterminated quote is string content — there is nothing left to
+    // open, and nothing after it to close.
+    let quoteSuffix = '';
 
-    // Process each character in the query
     for (let i = 0; i < query.length; i++) {
       const char = query[i];
 
-      // When inside a quoted string, only the matching closing quote ends it.
-      // All other characters (including other quote types and parentheses) are ignored.
-      if (stack.length > 0 && quoteChars.has(stack[stack.length - 1])) {
-        if (char === stack[stack.length - 1]) {
-          stack.pop();
+      // A quoted string and a closed /regex/ are both opaque: the quotes and parens inside them are
+      // content, not delimiters.
+      if (quoteChars.has(char)) {
+        const closeIndex = this.quoteCloseIndex(query, i + 1, char);
+        if (closeIndex === null) {
+          // Still being typed. A trailing backslash has nothing to escape yet, so it would escape
+          // the quote we append instead of ending the string — escape it first.
+          quoteSuffix = (this.hasDanglingEscape(query, i + 1) ? '\\' : '') + char;
+          break;
         }
+        i = closeIndex;
         continue;
       }
 
-      // A closed /regex/ is opaque: the quotes and parens inside it are pattern characters, not
-      // delimiters. A '/' that is division, or that opens an unterminated regex, falls through as
-      // an ordinary character.
+      // A '/' that is division, or that opens an unterminated regex, is an ordinary character.
       if (char === '/') {
         if (this.opensRegex(query, i)) {
           const closeIndex = this.regexCloseIndex(query, i + 1);
@@ -538,27 +562,17 @@ class CardSearch {
         continue;
       }
 
-      const mirroredChar = charToMirror[char];
-
-      if (!mirroredChar) {
-        continue;
-      }
-
-      if (stack.length > 0 && stack[stack.length - 1] === mirroredChar) {
-        stack.pop();
+      if (char === '(') {
+        openParens++;
       } else if (char === ')') {
-        return null; // closing paren with no opener — no suffix can fix this
-      } else {
-        stack.push(char);
+        if (openParens === 0) {
+          return null; // closing paren with no opener — no suffix can fix this
+        }
+        openParens--;
       }
     }
 
-    // Build the closing characters from the stack in reverse order
-    let closing = '';
-    while (stack.length > 0) {
-      closing += charToMirror[stack.pop()];
-    }
-    return closing;
+    return quoteSuffix + ')'.repeat(openParens);
   }
 
   // Balance quotes and parentheses for typeahead searches; unbalance-able
@@ -580,8 +594,8 @@ class CardSearch {
       const char = query[i];
 
       if (char === '"' || char === "'") {
-        const closeIndex = query.indexOf(char, i + 1);
-        if (closeIndex !== -1) {
+        const closeIndex = this.quoteCloseIndex(query, i + 1, char);
+        if (closeIndex !== null) {
           out += char + char;
           i = closeIndex;
           continue;
