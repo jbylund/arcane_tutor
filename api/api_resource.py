@@ -91,6 +91,24 @@ FALLBACK_SITE_NAME = "MTG Search"
 # below can't accidentally match unrelated copy that happens to contain "MTG Search".
 _SITE_NAME_PLACEHOLDER = "%%%SITENAME%%%"
 
+# Postgres prefixes every 2201B message with this, e.g. "invalid regular expression: brackets []
+# not balanced". Stripped before the reason is quoted back, or the error message says it twice.
+_PG_REGEX_ERROR_PREFIX = "invalid regular expression: "
+# Used when Postgres gives no diagnostic message to quote (a synthesized error, mostly in tests).
+_FALLBACK_REGEX_ERROR_REASON = "the pattern could not be parsed"
+
+
+def regex_error_reason(message_primary: str | None) -> str:
+    """Return the quotable reason from a Postgres 2201B message, without repeating its prefix.
+
+    Args:
+        message_primary: The ``diag.message_primary`` of an InvalidRegularExpression, if it has one.
+
+    Returns:
+        The reason to show the user, e.g. "brackets [] not balanced".
+    """
+    return (message_primary or "").removeprefix(_PG_REGEX_ERROR_PREFIX).strip() or _FALLBACK_REGEX_ERROR_REASON
+
 
 _STATIC_DIR = pathlib.Path(__file__).parent / "static"
 _INDEX_HTML_PATH = _STATIC_DIR / "index.html"
@@ -1567,6 +1585,16 @@ class APIResource:
                 title="Invalid Search Query",
                 description=f"The search query '{query}' contains invalid syntax. "
                 "Arithmetic expressions like 'cmc+1' need to be part of a comparison (e.g., 'cmc+1>3').",
+            ) from err
+        except psycopg.errors.InvalidRegularExpression as err:
+            # The parser does not validate regex syntax, so Postgres is the first thing to see a bad
+            # pattern. That is a user error, not a server error: typeahead balances a half-typed regex
+            # into a complete one on every keystroke, so `o:/^[/` is an ordinary intermediate state.
+            logger.info("InvalidRegularExpression caught for query '%s', raising BadRequest", query)
+            reason = regex_error_reason(err.diag.message_primary)
+            raise falcon.HTTPBadRequest(
+                title="Invalid Search Query",
+                description=f"The search query '{query}' contains an invalid regular expression: {reason}.",
             ) from err
 
         cards = result_bag.pop("result", [])

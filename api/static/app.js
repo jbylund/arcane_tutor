@@ -522,6 +522,14 @@ class CardSearch {
     return false;
   }
 
+  // Returns the suffix that closes a span whose content starts at contentStart and runs to the end of
+  // the query. A trailing backslash has nothing to escape yet, so appending the closer on its own
+  // would escape that instead of ending the span — escape the backslash first.
+  // The JS counterpart of _closer_for_partial_span in api/parsing/parsing_f.py.
+  closerForPartialSpan(query, contentStart, closer) {
+    return (this.hasDanglingEscape(query, contentStart) ? '\\' : '') + closer;
+  }
+
   // Scans the query and returns the closing suffix needed to balance it, or null when a closing
   // paren with no matching opener makes it unbalance-able (the JS counterpart of
   // balance_partial_query's ValueError in api/parsing/parsing_f.py).
@@ -529,35 +537,38 @@ class CardSearch {
     const quoteChars = new Set(["'", '"']);
 
     let openParens = 0;
-    // Closer for a quoted string still open at the end of the query. A quote only ever needs one,
-    // because everything after an unterminated quote is string content — there is nothing left to
+    // Closer for a quoted string or regex still open at the end of the query. A span only ever needs
+    // one, because everything after an unterminated opener is span content — there is nothing left to
     // open, and nothing after it to close.
-    let quoteSuffix = '';
+    let spanSuffix = '';
 
     for (let i = 0; i < query.length; i++) {
       const char = query[i];
 
-      // A quoted string and a closed /regex/ are both opaque: the quotes and parens inside them are
+      // A quoted string and a /regex/ are both opaque: the quotes and parens inside them are
       // content, not delimiters.
       if (quoteChars.has(char)) {
         const closeIndex = this.quoteCloseIndex(query, i + 1, char);
         if (closeIndex === null) {
-          // Still being typed. A trailing backslash has nothing to escape yet, so it would escape
-          // the quote we append instead of ending the string — escape it first.
-          quoteSuffix = (this.hasDanglingEscape(query, i + 1) ? '\\' : '') + char;
+          spanSuffix = this.closerForPartialSpan(query, i + 1, char);
           break;
         }
         i = closeIndex;
         continue;
       }
 
-      // A '/' that is division, or that opens an unterminated regex, is an ordinary character.
+      // A '/' in value position opens a regex; anywhere else it is division, an ordinary character.
       if (char === '/') {
         if (this.opensRegex(query, i)) {
           const closeIndex = this.regexCloseIndex(query, i + 1);
-          if (closeIndex !== null) {
-            i = closeIndex;
+          if (closeIndex === null) {
+            // Still being typed. Close the regex rather than reading on, or the metacharacters the
+            // user has typed so far get balanced as query structure: `o:/[)` is a partial `o:/[)]/`,
+            // not a stray ')'.
+            spanSuffix = this.closerForPartialSpan(query, i + 1, '/');
+            break;
           }
+          i = closeIndex;
         }
         continue;
       }
@@ -572,7 +583,7 @@ class CardSearch {
       }
     }
 
-    return quoteSuffix + ')'.repeat(openParens);
+    return spanSuffix + ')'.repeat(openParens);
   }
 
   // Balance quotes and parentheses for typeahead searches; unbalance-able

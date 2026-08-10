@@ -1,10 +1,9 @@
-"""Tests for DatatypeMismatch error handling in the SQL search path.
+"""Tests for user-error Postgres exceptions in the SQL search path.
 
-This module tests that standalone arithmetic expressions in queries
-(like "cmc+1") are handled gracefully by raising HTTPBadRequest
-instead of leaking DatatypeMismatch exceptions. The handling lives in
-_search_sql, so the tests call it directly (routing between the engine
-and SQL paths is covered in test_parsing_errors.py).
+Two things the parser accepts but Postgres rejects have to come back as HTTPBadRequest rather than
+leaking as a 500: standalone arithmetic expressions like "cmc+1" (DatatypeMismatch), and invalid
+regex patterns like /^[/ (InvalidRegularExpression). The handling lives in _search_sql, so the tests
+call it directly (routing between the engine and SQL paths is covered in test_parsing_errors.py).
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ import falcon
 import psycopg.errors
 import pytest
 
-from api.api_resource import APIResource
+from api.api_resource import APIResource, regex_error_reason
 from api.tests.helpers import search_kwargs
 
 
@@ -93,6 +92,59 @@ class TestDatatypeMismatchHandling:
             assert result["cards"][0]["name"] == "Lightning Bolt"
             assert result["total_cards"] == 1
             assert result["query"] == "name:bolt"
+
+
+class TestInvalidRegularExpressionHandling:
+    """Test handling of InvalidRegularExpression errors in the SQL search path."""
+
+    def setup_method(self) -> None:
+        """Set up test fixtures."""
+        self.api_resource = APIResource(
+            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+        )
+
+    def teardown_method(self) -> None:
+        """Clean up test fixtures."""
+        if hasattr(self, "api_resource") and self.api_resource:
+            self.api_resource._conn_pool.close()
+
+    def test_search_sql_handles_invalid_regular_expression(self) -> None:
+        """An unparseable regex is the user's error, so it must be a 400 and not a 500.
+
+        Typeahead balances a half-typed regex into a complete one on every keystroke, so `o:/^[/` is
+        an ordinary intermediate state on the way to `o:/^[abc]/` — not something to alert on.
+        """
+        with patch.object(self.api_resource, "_run_query") as mock_run_query:
+            mock_run_query.side_effect = psycopg.errors.InvalidRegularExpression(
+                "invalid regular expression: brackets [] not balanced",
+            )
+
+            with pytest.raises(falcon.HTTPBadRequest) as exc_info:
+                self.api_resource._search_sql(**search_kwargs("o:/^[/"))
+
+            assert exc_info.value.title == "Invalid Search Query"
+            assert "o:/^[/" in exc_info.value.description
+            assert "invalid regular expression" in exc_info.value.description.lower()
+            assert mock_run_query.call_count == 1
+
+
+@pytest.mark.parametrize(
+    argnames=["message_primary", "expected_reason"],
+    argvalues=[
+        # Verbatim from Postgres 18 for `'abc' ~ '^['`; the prefix must not survive into a message
+        # that already says "invalid regular expression".
+        ("invalid regular expression: brackets [] not balanced", "brackets [] not balanced"),
+        ("invalid regular expression: quantifier operand invalid", "quantifier operand invalid"),
+        # A synthesized error carries no diagnostic to quote.
+        (None, "the pattern could not be parsed"),
+        ("", "the pattern could not be parsed"),
+        ("invalid regular expression: ", "the pattern could not be parsed"),
+    ],
+    ids=["brackets", "quantifier", "no_diag", "empty_diag", "prefix_only"],
+)
+def test_regex_error_reason(message_primary: str | None, expected_reason: str) -> None:
+    """The reason quoted back to the user drops Postgres's redundant prefix."""
+    assert regex_error_reason(message_primary) == expected_reason
 
 
 if __name__ == "__main__":
