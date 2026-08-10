@@ -27,6 +27,7 @@ from api.parsing.nodes import (
     TrueNode,
     flatten_nested_operations,
 )
+from api.parsing.spans import regex_close_index
 
 # ── Alias → parser-class lookup ──────────────────────────────────────────────
 
@@ -214,25 +215,18 @@ def tokenize(src: str) -> list[Token]:  # noqa: C901, PLR0912, PLR0915
         # just consumed that slot.
         if c == "/":
             prev = tokens[-1] if tokens else None
-            if prev is not None and prev.type == TT.OP:
-                i = pos + 1
-                while i < n:
-                    if src[i] == "\\" and i + 1 < n:
-                        i += 2
-                    elif src[i] == "/":
-                        pattern = src[pos + 1 : i].replace("\\/", "/")
-                        pos = i + 1
-                        tokens.append(Token(TT.REGEX, pattern, start, sb))
-                        break
-                    else:
-                        i += 1
-                else:
-                    # Unterminated: fall back to division, matching an unopenable regex elsewhere.
-                    tokens.append(Token(TT.SLASH, "/", start, sb))
-                    pos += 1
-            else:
+            in_value_position = prev is not None and prev.type == TT.OP
+            # regex_close_index is shared with the balancer in api.parsing.spans: both have to agree
+            # on where the span ends, or one of them treats a quote as a delimiter that the other
+            # treats as pattern content (#905).
+            close_index = regex_close_index(src, pos + 1) if in_value_position else None
+            if close_index is None:
+                # Division, or an unterminated regex falling back to division.
                 tokens.append(Token(TT.SLASH, "/", start, sb))
                 pos += 1
+            else:
+                tokens.append(Token(TT.REGEX, src[pos + 1 : close_index].replace("\\/", "/"), start, sb))
+                pos = close_index + 1
             continue
 
         # Single-char arithmetic / grouping

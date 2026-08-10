@@ -6,41 +6,10 @@ from typing import TYPE_CHECKING
 
 from api.parsing.hand_parser import parse_query as _parse_query
 from api.parsing.rewrite import rewrite_query
+from api.parsing.spans import opens_regex, regex_close_index
 
 if TYPE_CHECKING:
     from api.parsing.nodes import Query
-
-
-# Last character of every comparison operator the lexer emits (':', '=', '!=', '>=', '<=', '>', '<').
-# A '/' directly after one of these is in value position, which is the only place a regex opens.
-_COMPARISON_TAIL_CHARS = frozenset(":=><")
-
-
-def _opens_regex(query: str, slash_index: int) -> bool:
-    """Return True if the '/' at *slash_index* opens a regex rather than being division.
-
-    Mirrors the lexer's rule in hand_parser.tokenize: a regex only opens in value position, i.e.
-    directly after a comparison operator. The two must agree on what counts as regex — where they
-    disagree, the balancer "fixes" a quote the lexer never saw (#905).
-    """
-    pos = slash_index - 1
-    while pos >= 0 and query[pos].isspace():
-        pos -= 1
-    return pos >= 0 and query[pos] in _COMPARISON_TAIL_CHARS
-
-
-def _regex_close_index(query: str, start: int) -> int | None:
-    """Return the index of the '/' closing a regex that opened before *start*, or None if unterminated."""
-    pos = start
-    length = len(query)
-    while pos < length:
-        if query[pos] == "\\" and pos + 1 < length:
-            pos += 2
-        elif query[pos] == "/":
-            return pos
-        else:
-            pos += 1
-    return None
 
 
 def balance_partial_query(query: str) -> str:
@@ -68,10 +37,12 @@ def balance_partial_query(query: str) -> str:
 
         # A closed /regex/ is opaque: the quotes and parens inside it are pattern characters, not
         # delimiters. A '/' that is division, or that opens an unterminated regex, falls through as
-        # an ordinary character.
+        # an ordinary character. The span rules come from api.parsing.spans so the balancer and the
+        # lexer cannot drift apart — where they disagree, the balancer "fixes" a quote the lexer
+        # never saw (#905).
         if char == "/":
-            if _opens_regex(query, pos - 1):
-                close_index = _regex_close_index(query, pos)
+            if opens_regex(query, pos - 1):
+                close_index = regex_close_index(query, pos)
                 if close_index is not None:
                     pos = close_index + 1
             continue
