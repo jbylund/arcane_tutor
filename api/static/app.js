@@ -568,6 +568,40 @@ class CardSearch {
     return suffix === null ? query : query + suffix;
   }
 
+  // Blanks the body of every quoted string and closed /regex/ span, keeping the delimiters, so the
+  // structural checks in validateQuery cannot fire on a ':' or ')' that is really string or pattern
+  // content. Built on the same opensRegex/regexCloseIndex primitives as balanceSuffix and the
+  // lexer, because a fourth opinion about where a regex starts is a fourth way to reject a query
+  // the parser accepts (o:/x:)/).
+  blankOpaqueSpans(query) {
+    let out = '';
+
+    for (let i = 0; i < query.length; i++) {
+      const char = query[i];
+
+      if (char === '"' || char === "'") {
+        const closeIndex = query.indexOf(char, i + 1);
+        if (closeIndex !== -1) {
+          out += char + char;
+          i = closeIndex;
+          continue;
+        }
+      } else if (char === '/' && this.opensRegex(query, i)) {
+        const closeIndex = this.regexCloseIndex(query, i + 1);
+        if (closeIndex !== null) {
+          out += '//';
+          i = closeIndex;
+          continue;
+        }
+      }
+
+      // An unterminated quote or regex is not a span yet, so it stays an ordinary character.
+      out += char;
+    }
+
+    return out;
+  }
+
   // Returns an error string if the query is structurally invalid, or null if it looks ok.
   validateQuery(query) {
     // A closing paren with no matching opener can't be balanced away.
@@ -575,8 +609,8 @@ class CardSearch {
       return `Failed to parse query: "${query}"`;
     }
 
-    // Strip quoted strings so we don't match content inside them.
-    const q = query.replace(/"[^"]*"|'[^']*'/g, '""');
+    // Blank quoted strings and regex patterns so we don't match content inside them.
+    const q = this.blankOpaqueSpans(query);
 
     // Trailing AND/OR with no right operand: "name:test and", "power>1 or"
     if (/(?:^|\s)(and|or)\s*$/i.test(q)) {

@@ -51,6 +51,7 @@ const { CardSearch, CatalogMap, columnsToRows } = Function(
 const LIVE_CARD_TYPES = require('./fixtures/common_card_types.json');
 const BALANCE_QUERIES = require('./fixtures/balance_queries.json');
 const CARD_HTML_CASES = require('./fixtures/card_html_cases.json');
+const ACCEPTED_QUERIES = require('./fixtures/accepted_queries.json');
 
 // Derived fixture: new catalog format expected by the /get_catalog endpoint
 const LIVE_TYPES_MAP = Object.fromEntries(LIVE_CARD_TYPES.map(({ t, n }) => [t, n]));
@@ -429,6 +430,22 @@ describe('CardSearch validateQuery', () => {
   it('accepts balanced queries', () => {
     expect(search.validateQuery('(name:test)')).toBeNull();
     expect(search.validateQuery('oracle:"draw a card"')).toBeNull();
+  });
+
+  it('still reports a field with no value', () => {
+    expect(search.validateQuery('t:')).toBe('Failed to parse query: "t:"');
+    expect(search.validateQuery('(t:)')).toBe('Failed to parse query: "(t:)"');
+    expect(search.validateQuery('name:test and')).toBe('Failed to parse query: "name:test and"');
+  });
+});
+
+// The backend runs this same fixture through both parsers in test_balance_parity.py, so the client
+// cannot start rejecting a query the API would have answered — the failure mode in #908, where a
+// ':' inside a regex read as a field with no value and the request was never sent.
+describe('CardSearch accepts every shared accepted query', () => {
+  it.each(ACCEPTED_QUERIES)('%s', query => {
+    expect(search.validateQuery(query)).toBeNull();
+    expect(search.balanceQuery(query)).toBe(query);
   });
 });
 
