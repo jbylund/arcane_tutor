@@ -11355,3 +11355,104 @@ fn arith_tuple_key_budget_catches_a_blown_domain() {
 /// Above `ARITH_TUPLE_GUARD_MIN_CARDS`, and large enough that an all-distinct key space
 /// clears `10*sqrt(n)+32` by a wide margin.
 const ARITH_TUPLE_BLOWUP_CARDS: usize = 6_000;
+
+// ─── Price orderings pick the group's cheapest printing ───────────────────────
+//
+// See `prefer_for_sort`. Scryfall ranks a card by its CHEAPEST printing in the ordered
+// currency and returns that printing, so under `unique=card`/`unique=artwork` the
+// representative has to be chosen by the ordered price rather than by `prefer_score`.
+
+/// One card whose three printings disagree about which is cheapest in each currency,
+/// plus a `prefer_score` order that agrees with none of them. `store_of` stores printings
+/// prefer-descending, so scryfall_id 1 is the default-preferred one.
+fn priced_store(prices: &[(Option<u32>, Option<u32>, Option<u32>)]) -> CardData {
+    let mut vocab = VocabInterner::new();
+    let card = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
+    let mut data = store_of(vec![card], &[prices.len()], vocab);
+    for (p, &(usd, eur, tix)) in data.printings.iter_mut().zip(prices) {
+        p.price_usd = usd;
+        p.price_eur = eur;
+        p.price_tix = tix;
+    }
+    // Built, not left at their empty defaults: an empty index makes `walk_value_orderby_page`
+    // decline and fall back to the gather, which would leave the walk's `rep == pid` emission
+    // test — the one place the representative choice and the page order have to agree —
+    // silently uncovered.
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    data.indexes.price_eur = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_eur);
+    data.indexes.price_tix = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_tix);
+    data
+}
+
+/// The representative `unique=card` returns for `orderby`/`direction`, as a scryfall_id.
+fn representative(data: &CardData, prefer: &str, orderby: &str, direction: &str) -> u128 {
+    let bytes = rkyv::to_bytes::<Error>(data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let mut filter = FilterExpr::True;
+    let (total, page) = run_query(&QueryCtx::from(archived), &mut filter, None, "card", prefer, orderby, direction, 100, 0);
+    assert_eq!(total, 1, "unique=card collapses the fixture to one row");
+    u128::from(page[0].1.scryfall_id)
+}
+
+#[test]
+fn price_orderby_represents_the_card_by_its_cheapest_printing() {
+    // id 1 is prefer-best; the cheapest is a different printing in each currency.
+    let data = priced_store(&[
+        (Some(9_00), Some(1_00), Some(9_00)), // id 1 — cheapest in EUR
+        (Some(5_00), Some(5_00), Some(0_50)), // id 2 — cheapest in TIX
+        (Some(1_00), Some(3_00), Some(3_00)), // id 3 — cheapest in USD
+    ]);
+    // The non-price ordering is untouched: it still gets the prefer_score pick.
+    assert_eq!(representative(&data, "default", "edhrec", "asc"), 1);
+    assert_eq!(representative(&data, "default", "name", "desc"), 1);
+    // Each price ordering gets that currency's cheapest printing...
+    assert_eq!(representative(&data, "default", "usd", "desc"), 3);
+    assert_eq!(representative(&data, "default", "eur", "desc"), 1);
+    assert_eq!(representative(&data, "default", "tix", "desc"), 2);
+    // ...in BOTH directions. Direction reverses the page; it does not re-pick the printing.
+    assert_eq!(representative(&data, "default", "usd", "asc"), 3);
+    assert_eq!(representative(&data, "default", "eur", "asc"), 1);
+    assert_eq!(representative(&data, "default", "tix", "asc"), 2);
+}
+
+/// The Juzám Djinn shape: the prefer-best printing is an unpriced oversized promo, so
+/// leaving the pick to `prefer_score` gave the card no USD price at all and dropped it out
+/// of a price sort entirely. A missing price must lose to any real one.
+#[test]
+fn price_orderby_skips_a_printing_with_no_price_in_that_currency() {
+    let data = priced_store(&[
+        (None, None, Some(1_00)),          // id 1 — prefer-best, but unpriced in USD and EUR
+        (Some(1827_00), Some(1775_40), None), // id 2 — the only printing with a USD/EUR price
+    ]);
+    assert_eq!(representative(&data, "default", "edhrec", "asc"), 1);
+    assert_eq!(representative(&data, "default", "usd", "desc"), 2);
+    assert_eq!(representative(&data, "default", "eur", "desc"), 2);
+    // TIX is the mirror image: only the prefer-best printing has one.
+    assert_eq!(representative(&data, "default", "tix", "desc"), 1);
+}
+
+/// When NOTHING is priced there is no cheaper printing to prefer, so the card keeps its
+/// ordinary representative rather than silently changing which printing it shows.
+#[test]
+fn price_orderby_keeps_the_default_representative_when_no_printing_is_priced() {
+    let data = priced_store(&[(None, None, None), (None, None, None)]);
+    assert_eq!(representative(&data, "default", "usd", "desc"), 1);
+    assert_eq!(representative(&data, "default", "eur", "asc"), 1);
+    assert_eq!(representative(&data, "default", "tix", "desc"), 1);
+}
+
+/// An explicit `prefer=` is the caller naming the printing they want, and it still wins —
+/// `prefer_for_sort` only fills in a pick for callers that did not make one.
+#[test]
+fn an_explicit_prefer_still_beats_the_price_orderby() {
+    let data = priced_store(&[
+        (Some(9_00), Some(1_00), Some(9_00)), // id 1 — prefer-best, dearest in USD
+        (Some(5_00), Some(5_00), Some(0_50)),
+        (Some(1_00), Some(3_00), Some(3_00)), // id 3 — cheapest in USD
+    ]);
+    assert_eq!(representative(&data, "usd_high", "usd", "desc"), 1);
+    assert_eq!(representative(&data, "usd_low", "usd", "desc"), 3);
+    // `oldest`/`newest` are price-blind: store_of makes the LAST printing the oldest.
+    assert_eq!(representative(&data, "oldest", "usd", "desc"), 3);
+    assert_eq!(representative(&data, "newest", "usd", "desc"), 1);
+}

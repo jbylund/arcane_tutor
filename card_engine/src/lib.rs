@@ -5303,8 +5303,11 @@ fn narrow_rec(
 
 // ─── Sort / select / limit ────────────────────────────────────────────────────
 
+/// `EurLow`/`TixLow` have no `prefer=` spelling — they are not user-selectable, and
+/// `prefer_from_str` cannot produce them. They exist only so `prefer_for_sort` can
+/// express "cheapest printing" for the two price columns that have no `usd_low` twin.
 #[derive(Clone, Copy)]
-enum Prefer { Oldest, Newest, UsdLow, UsdHigh, Promo, Default }
+enum Prefer { Oldest, Newest, UsdLow, UsdHigh, EurLow, TixLow, Promo, Default }
 
 fn prefer_from_str(s: &str) -> Prefer {
     match s {
@@ -5314,6 +5317,39 @@ fn prefer_from_str(s: &str) -> Prefer {
         "usd_high" => Prefer::UsdHigh,
         "promo"    => Prefer::Promo,
         _          => Prefer::Default,
+    }
+}
+
+/// A price ordering ranks each card by its CHEAPEST printing, and the row it returns is
+/// that printing — so under `unique=card`/`unique=artwork` the group's representative has
+/// to be chosen by the price being ordered on, not by `prefer_score`.
+///
+/// Measured against api.scryfall.com on 2026-08-11, `unique=cards`, both directions:
+///
+/// ```text
+/// Birds of Paradise  order=usd -> msc #170 $9.60   (min; the dearest is leb #187 $1000)
+/// Counterspell       order=usd -> brb #15  $2.30   (min; the dearest is leb #55  $919.92)
+/// Gandalf the White  order=usd -> ltr #19  $10.22  (min; the dearest is ltr #299 $2999.99)
+/// Gandalf the White  order=tix -> ltr #470 0.02    (min; ltr #19 at 0.03 is NOT chosen)
+/// Juzám Djinn        order=usd -> arn #29  $1827   (its only priced printing)
+/// ```
+///
+/// Direction does not enter into it: `dir=asc` and `dir=desc` return the same printing and
+/// only reverse the list. Nor is the choice `prefer_score`-shaped — the cheapest printing is
+/// systematically the *least* canonical one (world-championship decks, bulk reprints), so no
+/// amount of `prefer_score` tuning reaches this answer. Left on `Prefer::Default` the engine
+/// instead ranks each card by whatever its most canonical printing costs, which drops cards
+/// whose canonical printing is unpriced (Juzám Djinn's oversized promo) and floats cards
+/// whose canonical printing is a premium variant (Gandalf's $2999.99 serialized ltr #299).
+///
+/// An explicit `prefer=` still wins: it is the caller saying which printing they want, and
+/// `usd_low` already IS this rule spelled out by hand.
+fn prefer_for_sort(prefer: Prefer, sort_col: SortCol) -> Prefer {
+    match (prefer, sort_col) {
+        (Prefer::Default, SortCol::PriceUsd) => Prefer::UsdLow,
+        (Prefer::Default, SortCol::PriceEur) => Prefer::EurLow,
+        (Prefer::Default, SortCol::PriceTix) => Prefer::TixLow,
+        _ => prefer,
     }
 }
 
@@ -5337,8 +5373,13 @@ fn prefer_score(card: &AOracleCard, p: &APrinting, prefer: Prefer) -> f64 {
     match prefer {
         Prefer::Oldest  => -(p.released_at_int.as_ref().map(|v| u32::from(*v)).unwrap_or(99_999_999) as f64),
         Prefer::Newest  => p.released_at_int.as_ref().map(|v| u32::from(*v)).unwrap_or(0) as f64,
+        // The `*Low` arms negate, so a MISSING price scores -inf and loses to every priced
+        // printing — a group with any priced printing is represented by one, and a group with
+        // none keeps its first-in-store-order (highest `prefer_score`) printing.
         Prefer::UsdLow  => -p.price_usd.as_ref().map(|v| f64::from(u32::from(*v)) / 100.0).unwrap_or(f64::INFINITY),
         Prefer::UsdHigh => p.price_usd.as_ref().map(|v| f64::from(u32::from(*v)) / 100.0).unwrap_or(0.0),
+        Prefer::EurLow  => -p.price_eur.as_ref().map(|v| f64::from(u32::from(*v)) / 100.0).unwrap_or(f64::INFINITY),
+        Prefer::TixLow  => -p.price_tix.as_ref().map(|v| f64::from(u32::from(*v)) / 100.0).unwrap_or(f64::INFINITY),
         // Card-level (edhrec is oracle-scoped): every printing ties, so the
         // first printing in store order is chosen — same as before the split.
         Prefer::Promo   => -(card.edhrec_rank.as_ref().map(|r| u32::from(*r) as f64).unwrap_or(f64::INFINITY)),
@@ -5677,10 +5718,14 @@ impl QueryParams {
     /// `orderby_to_col`/`== "desc"`/`prefer_from_str`/`mode_from_unique` block
     /// each used to repeat.
     fn from_strs(unique: &str, prefer: &str, orderby: &str, direction: &str, limit: usize, page_offset: usize) -> Self {
+        // `prefer` depends on `sort_col`, so bind the column first — see `prefer_for_sort`.
+        // This is the only `QueryParams` constructor, which is what makes one call here enough
+        // to cover `run_query`, `run_query_with_plan`, `explain_analyze` and `explain`.
+        let sort_col = orderby_to_col(orderby);
         QueryParams {
             mode: mode_from_unique(unique),
-            prefer: prefer_from_str(prefer),
-            sort_col: orderby_to_col(orderby),
+            prefer: prefer_for_sort(prefer_from_str(prefer), sort_col),
+            sort_col,
             descending: direction == "desc",
             limit,
             page_offset,
