@@ -1,6 +1,6 @@
 use super::{
     and_child_rank, assign_name_ranks,
-    build_numeric_index, build_oracle_text_index, build_tag_index, build_trigram_index,
+    build_numeric_index, build_oracle_text_index, build_trigram_index,
     build_rarity_index, build_flavor_index, build_hybrid_tag_index, bitmap_beats_postings, HybridTagIndex, build_sort_permutations,
     assign_artwork_groups, build_artwork_base_from, build_bit_planes, build_border_printing_planes, build_rarity_printing_planes, build_divergent_ids, build_name_bigram_index, build_name_unigram_index, build_printing_to_card, flavor_fingerprint, flavor_match_sets,
     cards_of_printings, count_common_keywords, count_common_types,
@@ -332,10 +332,12 @@ fn reassign_artwork_grouping(data: &mut CardData) -> Vec<u16> {
 // and card-space candidates for keywords, and None (no narrowing) for absent tags.
 #[test]
 fn narrow_candidates_spaces() {
-    let mut art_tags: TagIndex = HashMap::new();
-    art_tags.insert("wolf".to_string(), vec![0, 2]);
-    let mut keywords: TagIndex = HashMap::new();
-    keywords.insert("Flying".to_string(), vec![1]);
+    // Hand-built postings go in the SPARSE tier: two ids over a four-row domain is far below the
+    // 1/32 storage crossover, so this is what the builder would produce for them anyway.
+    let mut art_tags = HybridTagIndex::default();
+    art_tags.sparse.insert("wolf".to_string(), vec![0, 2]);
+    let mut keywords = HybridTagIndex::default();
+    keywords.sparse.insert("Flying".to_string(), vec![1]);
 
     // offsets for 2 cards with 2 printings each: printings 0-1 → card 0, 2-3 → card 1
     let raw_offsets = vec![0u32, 2, 4];
@@ -391,8 +393,8 @@ fn narrow_candidates_spaces() {
 // which would hide the Ge-vs-Eq/Gt distinction this test is checking).
 #[test]
 fn narrow_candidates_eq_gt_reuse_ge_postings_loosely() {
-    let mut keywords: TagIndex = HashMap::new();
-    keywords.insert("Flying".to_string(), vec![1]);
+    let mut keywords = HybridTagIndex::default();
+    keywords.sparse.insert("Flying".to_string(), vec![1]);
 
     // offsets for 2 cards with 2 printings each: printings 0-1 → card 0, 2-3 → card 1
     let raw_offsets = vec![0u32, 2, 4];
@@ -2444,11 +2446,11 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     // Collection narrowing indexes — load-bearing like the range indexes above: an unbuilt index
     // narrows a populated predicate to the empty set, disagreeing with the residual `matches` path.
     // frame_data is thresholded (drops the dominant "2015"), matching the engine's build.
-    data.indexes.subtypes = build_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
-    data.indexes.keywords = build_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_keywords);
-    data.indexes.oracle_tags = build_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_oracle_tags);
-    data.indexes.art_tags = build_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_art_tags);
-    data.indexes.is_tags = build_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_is_tags);
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    data.indexes.keywords = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_keywords);
+    data.indexes.oracle_tags = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_oracle_tags);
+    data.indexes.art_tags = build_hybrid_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_art_tags);
+    data.indexes.is_tags = build_hybrid_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_is_tags);
     data.indexes.frame_data = build_hybrid_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_frame_data);
     data.indexes.artists = build_artist_index(&data.printings, data.artist_vocab.len());
     // Text narrowing indexes — same load-bearing property. name/oracle drive trigram + bigram
@@ -6395,11 +6397,11 @@ fn bench_checked_vs_unchecked_access() {
         power:          build_numeric_index(&cards, |c| c.creature_power.map(|v| v as i16)),
         toughness:      build_numeric_index(&cards, |c| c.creature_toughness.map(|v| v as i16)),
         rarity:         build_rarity_index(&printings, &offsets),
-        subtypes:       build_tag_index(&cards, &vocab.strings, |c| &c.card_subtypes),
-        keywords:       build_tag_index(&cards, &vocab.strings, |c| &c.card_keywords),
-        oracle_tags:    build_tag_index(&cards, &vocab.strings, |c| &c.card_oracle_tags),
-        art_tags:       build_tag_index(&printings, &vocab.strings, |p| &p.card_art_tags),
-        is_tags:        build_tag_index(&printings, &vocab.strings, |p| &p.card_is_tags),
+        subtypes:       build_hybrid_tag_index(&cards, &vocab.strings, |c| &c.card_subtypes),
+        keywords:       build_hybrid_tag_index(&cards, &vocab.strings, |c| &c.card_keywords),
+        oracle_tags:    build_hybrid_tag_index(&cards, &vocab.strings, |c| &c.card_oracle_tags),
+        art_tags:       build_hybrid_tag_index(&printings, &vocab.strings, |p| &p.card_art_tags),
+        is_tags:        build_hybrid_tag_index(&printings, &vocab.strings, |p| &p.card_is_tags),
         frame_data:     HybridTagIndex::default(),
         artists:        ArtistIndex::default(),
         flavor:         build_flavor_index(&printings, &strings),
@@ -7554,11 +7556,11 @@ fn collection_compose_leaves() {
     }
     // Build the collection indexes the way reload_commit does (card-space over cards, printing-space
     // over printings), plus the released_at range for the mixes.
-    data.indexes.subtypes = build_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
-    data.indexes.keywords = build_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_keywords);
-    data.indexes.oracle_tags = build_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_oracle_tags);
-    data.indexes.art_tags = build_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_art_tags);
-    data.indexes.is_tags = build_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_is_tags);
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    data.indexes.keywords = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_keywords);
+    data.indexes.oracle_tags = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_oracle_tags);
+    data.indexes.art_tags = build_hybrid_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_art_tags);
+    data.indexes.is_tags = build_hybrid_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_is_tags);
     data.indexes.released_at = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.released_at_int);
 
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
@@ -9430,7 +9432,7 @@ fn narrow_fixture_store() -> CardData {
         p.card_set_code = InlineStr::from_str(if i % 2 == 0 { "lea" } else { "m21" });
         p.card_rarity_int = Some((i % 2) as u8); // even printings common, odd uncommon
     }
-    data.indexes.subtypes = build_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
     data.indexes.rarity = build_rarity_index(&data.printings, &data.offsets);
     // Rarity planes are built from the same printings, so they must be
     // rebuilt here too -- build_bit_planes already ran once inside store_of
@@ -9853,7 +9855,7 @@ fn broad_tag_postings_scatter_or_decline() {
         if i % 2 == 0 { p.card_is_tags.push(spell); }
         if i % 100 == 0 { p.card_is_tags.push(rare_tag); }
     }
-    data.indexes.is_tags = build_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_is_tags);
+    data.indexes.is_tags = build_hybrid_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_is_tags);
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
 

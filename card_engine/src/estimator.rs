@@ -421,21 +421,19 @@ fn estimate_leaf(f: &FilterExpr, indexes: &Archived<CardIndexes>, n_cards: u32, 
             // frame_data is the hybrid index: the count comes from `len_of` (a popcount for a bitmap)
             // and absence proves emptiness. Mirrors narrow_rec's branch so the estimate describes the
             // path that will actually run.
-            if matches!(field, CollField::FrameData) {
-                let cnt = indexes.frame_data.len_of(value.as_str()).unwrap_or(0) as u32;
-                return project(cnt, n_cards, n_printings);
-            }
             let (idx, card_space, complete) = match field {
                 CollField::Subtypes => (&indexes.subtypes, true, true),
                 CollField::Keywords => (&indexes.keywords, true, true),
                 CollField::OracleTags => (&indexes.oracle_tags, true, true),
                 CollField::ArtTags => (&indexes.art_tags, false, true),
                 CollField::IsTags => (&indexes.is_tags, false, true),
-                CollField::FrameData => unreachable!("handled above"),
+                CollField::FrameData => (&indexes.frame_data, false, true),
             };
-            match idx.get(value.as_str()) {
-                Some(v) => {
-                    let cnt = v.len() as u32;
+            // `len_of` is a popcount for a dense value and a postings length for a sparse one, so
+            // the count — and therefore the estimate — is independent of how the value is stored.
+            match idx.len_of(value.as_str()) {
+                Some(cnt) => {
+                    let cnt = cnt as u32;
                     if card_space {
                         exact(cnt)
                     } else {
