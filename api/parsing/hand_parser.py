@@ -28,7 +28,7 @@ from api.parsing.nodes import (
     TrueNode,
     flatten_nested_operations,
 )
-from api.parsing.spans import QUOTE_CHARS, brace_close_index, quote_close_index, regex_close_index, unescape
+from api.parsing.spans import QUOTE_CHARS, brace_close_index
 
 # ── Alias → parser-class lookup ──────────────────────────────────────────────
 
@@ -117,6 +117,61 @@ def _is_word_cont(c: str) -> bool:
 # ── Lexer ─────────────────────────────────────────────────────────────────────
 
 
+def _closed_quote(query: str, start: int, quote: str) -> tuple[int, str] | None:
+    """Find the *quote* closing a string opened before *start* and unescape its content in one walk.
+
+    A single-pass fusion of `spans.quote_close_index` + `spans.unescape`, since the lexer (unlike the
+    balancer, which only wants the boundary) needs both the index and the unescaped text, and finding
+    the boundary already means visiting every character `unescape` would need to inspect afterward.
+
+    Returns (close_index, unescaped_content), or None if the string is unterminated.
+    """
+    pos = start
+    length = len(query)
+    parts: list[str] = []
+    while pos < length:
+        ch = query[pos]
+        if ch == "\\":
+            if pos + 1 >= length:
+                return None
+            parts.append(query[pos + 1])
+            pos += 2
+        elif ch == quote:
+            return pos, "".join(parts)
+        else:
+            parts.append(ch)
+            pos += 1
+    return None
+
+
+def _closed_regex(query: str, start: int) -> tuple[int, str] | None:
+    r"""Find the '/' closing a regex opened before *start*, unescaping only '\\/' in the same walk.
+
+    A single-pass fusion of `spans.regex_close_index` + the `\\/` -> `/` unescape: every other
+    backslash sequence (e.g. `\\d`) is passed through untouched for the regex engine to interpret,
+    matching `hand_parser`'s previous two-pass `.replace("\\/", "/")` behavior.
+
+    Returns (close_index, unescaped_content), or None if the pattern is unterminated.
+    """
+    pos = start
+    length = len(query)
+    parts: list[str] = []
+    while pos < length:
+        ch = query[pos]
+        if ch == "\\":
+            if pos + 1 >= length:
+                return None
+            nxt = query[pos + 1]
+            parts.append(nxt if nxt == "/" else ch + nxt)
+            pos += 2
+        elif ch == "/":
+            return pos, "".join(parts)
+        else:
+            parts.append(ch)
+            pos += 1
+    return None
+
+
 class LexError(ValueError):
     """Raised when the lexer encounters an unexpected character or unclosed delimiter."""
 
@@ -153,15 +208,17 @@ def tokenize(src: str) -> list[Token]:  # noqa: C901, PLR0912, PLR0915
             tokens.append(Token(TT.MANA, src[start:pos], start, sb))
             continue
 
-        # Quoted string. quote_close_index is shared with the balancer in api.parsing.spans: both
-        # have to agree that a backslash escapes the next character, or the balancer reads the ' in
-        # 'don\'t' as the close and appends a quote the lexer never wanted (#905).
+        # Quoted string. The escape-skipping walk here has to agree with the balancer's
+        # `spans.quote_close_index`/`spans.find_close_index` that a backslash escapes the next
+        # character, or the balancer reads the ' in 'don\'t' as the close and appends a quote the
+        # lexer never wanted (#905).
         if c in QUOTE_CHARS:
-            close_index = quote_close_index(src, pos + 1, c)
-            if close_index is None:
+            closed = _closed_quote(src, pos + 1, c)
+            if closed is None:
                 msg = f"Unclosed quote at position {start}"
                 raise LexError(msg)
-            tokens.append(Token(TT.QUOTED, unescape(src[pos + 1 : close_index]), start, sb))
+            close_index, content = closed
+            tokens.append(Token(TT.QUOTED, content, start, sb))
             pos = close_index + 1
             continue
 
@@ -209,16 +266,17 @@ def tokenize(src: str) -> list[Token]:  # noqa: C901, PLR0912, PLR0915
         if c == "/":
             prev = tokens[-1] if tokens else None
             in_value_position = prev is not None and prev.type == TT.OP
-            # regex_close_index is shared with the balancer in api.parsing.spans: both have to agree
-            # on where the span ends, or one of them treats a quote as a delimiter that the other
-            # treats as pattern content (#905).
-            close_index = regex_close_index(src, pos + 1) if in_value_position else None
-            if close_index is None:
+            # The escape-skipping walk here has to agree with the balancer's
+            # `spans.regex_close_index`/`spans.find_close_index` on where the span ends, or one of
+            # them treats a quote as a delimiter that the other treats as pattern content (#905).
+            closed = _closed_regex(src, pos + 1) if in_value_position else None
+            if closed is None:
                 # Division, or an unterminated regex falling back to division.
                 tokens.append(Token(TT.SLASH, "/", start, sb))
                 pos += 1
             else:
-                tokens.append(Token(TT.REGEX, src[pos + 1 : close_index].replace("\\/", "/"), start, sb))
+                close_index, content = closed
+                tokens.append(Token(TT.REGEX, content, start, sb))
                 pos = close_index + 1
             continue
 

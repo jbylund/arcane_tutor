@@ -87,24 +87,6 @@ def find_close_index(query: str, start: int, closer: str) -> tuple[int | None, b
     return None, False
 
 
-def has_dangling_escape(query: str, start: int) -> bool:
-    """Return True if the span opening at *start* runs to the end of *query* on an unfinished escape.
-
-    A trailing backslash has nothing to escape yet, so appending a closer would escape *that* instead
-    of ending the span. Callers completing a partial query have to escape the backslash first.
-    """
-    pos = start
-    length = len(query)
-    while pos < length:
-        if query[pos] == "\\":
-            if pos + 1 >= length:
-                return True
-            pos += 2
-        else:
-            pos += 1
-    return False
-
-
 def unescape(text: str) -> str:
     r"""Resolve backslash escapes in span content, so ``a\'b`` becomes ``a'b``."""
     return _ESCAPED_CHAR.sub(r"\1", text)

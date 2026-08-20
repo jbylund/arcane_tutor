@@ -698,9 +698,11 @@ class CardSearch {
   }
 
   // Returns an error string if the query is structurally invalid, or null if it looks ok.
-  validateQuery(query) {
+  // alreadyBalanced lets a caller that just ran scanSpans itself (and knows the answer was not
+  // null) skip a second identical scan here, rather than re-discovering what it already knows.
+  validateQuery(query, { alreadyBalanced = false } = {}) {
     // A closing paren with no matching opener can't be balanced away.
-    if (this.balanceSuffix(query) === null) {
+    if (!alreadyBalanced && this.balanceSuffix(query) === null) {
       return `Failed to parse query: "${query}"`;
     }
 
@@ -756,7 +758,9 @@ class CardSearch {
     const balanced = suffix === null ? autocompleted : autocompleted + suffix;
     const normalizedQuery = this.collapseWhitespaceOutsideSpans(balanced).trim();
 
-    const validationError = this.validateQuery(normalizedQuery);
+    // suffix !== null means scanSpans already proved this string balanceable, so validateQuery
+    // doesn't need to run that same scan on normalizedQuery a second time to reach the same answer.
+    const validationError = this.validateQuery(normalizedQuery, { alreadyBalanced: suffix !== null });
     if (validationError) {
       this.showError(`Failed to search: Invalid Search Query: ${validationError}`);
       return;

@@ -11,7 +11,7 @@ from api.parsing import hand_parser
 from api.parsing.spans import (
     COMPARISON_TAIL_CHARS,
     brace_close_index,
-    has_dangling_escape,
+    find_close_index,
     opens_regex,
     quote_close_index,
     regex_close_index,
@@ -127,8 +127,12 @@ def test_quote_close_index(query: str, quote: str, expected: int | None) -> None
     ids=["no_backslash", "dangling", "escaped_backslash", "escape_consumed"],
 )
 def test_has_dangling_escape(query: str, expected: bool) -> None:
-    """A trailing backslash leaves an escape with nothing to apply to."""
-    assert has_dangling_escape(query, 1) is expected
+    """A trailing backslash leaves an escape with nothing to apply to.
+
+    `find_close_index`'s dangling-escape flag is what `has_dangling_escape` used to duplicate; none
+    of these queries contain an unescaped closer, so the closer char passed here doesn't matter.
+    """
+    assert find_close_index(query, 1, "'")[1] is expected
 
 
 @pytest.mark.parametrize(
