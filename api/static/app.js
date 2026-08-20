@@ -430,7 +430,45 @@ class CardSearch {
   // The second half of _processQuery, split out so performSearch can inspect the autocompleted query
   // before balancing hides whether a span was left empty.
   _balanceAndNormalize(autocompleted) {
-    return this.balanceQuery(autocompleted).trim().replace(/\s+/g, ' ');
+    return this.collapseWhitespaceOutsideSpans(this.balanceQuery(autocompleted)).trim();
+  }
+
+  // Collapses runs of whitespace to a single space, except inside a quoted string or /regex/ (mana
+  // symbols never contain whitespace, so they need no protection here). A plain `.replace(/\s+/g, ' ')`
+  // over the whole query would silently rewrite `o:/a  b/` to `o:/a b/` and `o:"draw  a  card"` to
+  // `o:"draw a card"`, changing what the user actually typed before it ever reaches the server.
+  collapseWhitespaceOutsideSpans(query) {
+    let out = '';
+
+    for (let i = 0; i < query.length; i++) {
+      const char = query[i];
+
+      if (char === '"' || char === "'") {
+        const closeIndex = this.quoteCloseIndex(query, i + 1, char);
+        if (closeIndex !== null) {
+          out += query.slice(i, closeIndex + 1);
+          i = closeIndex;
+          continue;
+        }
+      } else if (char === '/' && this.opensRegex(query, i)) {
+        const closeIndex = this.regexCloseIndex(query, i + 1);
+        if (closeIndex !== null) {
+          out += query.slice(i, closeIndex + 1);
+          i = closeIndex;
+          continue;
+        }
+      }
+
+      if (/\s/.test(char)) {
+        if (!out.endsWith(' ')) {
+          out += ' ';
+        }
+      } else {
+        out += char;
+      }
+    }
+
+    return out;
   }
 
   async fetchCommonCardTypes() {
@@ -645,11 +683,11 @@ class CardSearch {
     return suffix === null ? query : query + suffix;
   }
 
-  // Blanks the body of every quoted string and closed /regex/ span, keeping the delimiters, so the
-  // structural checks in validateQuery cannot fire on a ':' or ')' that is really string or pattern
-  // content. Built on the same opensRegex/regexCloseIndex primitives as balanceSuffix and the
-  // lexer, because a fourth opinion about where a regex starts is a fourth way to reject a query
-  // the parser accepts (o:/x:)/).
+  // Blanks the body of every quoted string, closed /regex/ span, and {mana symbol}, keeping the
+  // delimiters, so the structural checks in validateQuery cannot fire on a ':' or ')' that is
+  // really string, pattern, or mana content. Built on the same opensRegex/regexCloseIndex/
+  // braceCloseIndex primitives as balanceSuffix and the lexer, because a fourth opinion about
+  // where a span starts is a fourth way to reject a query the parser accepts (o:/x:)/).
   blankOpaqueSpans(query) {
     let out = '';
 
@@ -670,9 +708,16 @@ class CardSearch {
           i = closeIndex;
           continue;
         }
+      } else if (char === '{') {
+        const closeIndex = this.braceCloseIndex(query, i + 1);
+        if (closeIndex !== null) {
+          out += '{}';
+          i = closeIndex;
+          continue;
+        }
       }
 
-      // An unterminated quote or regex is not a span yet, so it stays an ordinary character.
+      // An unterminated quote, regex, or mana symbol is not a span yet, so it stays an ordinary character.
       out += char;
     }
 

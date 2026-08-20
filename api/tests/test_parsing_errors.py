@@ -121,19 +121,21 @@ class TestSearchRouting:
     def test_engine_declining_a_query_falls_back_without_a_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         """A query the engine cannot build is a user error, not an alertable engine failure.
 
-        _search_engine turns _QueryError into HTTPBadRequest and logs it at info. That reaches the
-        SQL fallback, which used to re-log it at warning with a stack trace — so every keystroke
-        inside a character class (`o:/^[`, balanced to `o:/^[/` by typeahead) produced an alertable
-        event. The Rust regex crate also rejects patterns Postgres accepts, so this path is reached
-        by working queries too; either way the SQL path decides the outcome.
+        _search_engine turns _QueryError into _EngineDeclinedQueryError and logs it at info. That
+        reaches the SQL fallback, which used to re-log it at warning with a stack trace — so every
+        keystroke inside a character class (`o:/^[`, balanced to `o:/^[/` by typeahead) produced an
+        alertable event. The Rust regex crate also rejects patterns Postgres accepts, so this path
+        is reached by working queries too; either way the SQL path decides the outcome.
         """
+        from api.api_resource import _EngineDeclinedQueryError  # noqa: PLC0415
+
         self.api_resource._engine.size.return_value = 87
         sentinel = {"cards": [], "total_cards": 0, "query": "o:/^[/"}
         with (
             patch.object(
                 self.api_resource,
                 "_search_engine",
-                side_effect=falcon.HTTPBadRequest(title="Invalid Search Query", description="nope"),
+                side_effect=_EngineDeclinedQueryError("nope"),
             ),
             patch.object(self.api_resource, "_search_sql", return_value=sentinel) as mock_sql,
             caplog.at_level("INFO"),
@@ -144,6 +146,36 @@ class TestSearchRouting:
         assert result is sentinel
         assert [r.levelname for r in caplog.records if "falling back to SQL" in r.getMessage()] == ["INFO"]
         assert not [r for r in caplog.records if r.exc_info]
+
+    def test_an_unrelated_bad_request_from_the_engine_still_warns_with_a_traceback(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Only _EngineDeclinedQueryError is a decline — a bare HTTPBadRequest from elsewhere is not.
+
+        Classifying by isinstance(e, falcon.HTTPBadRequest) used to treat any HTTPBadRequest raised
+        anywhere in _search_engine's call chain as a benign decline, purely because nothing else
+        happened to raise that type. A dedicated exception makes that true by construction: an
+        HTTPBadRequest raised for some other reason must still surface as an alertable failure.
+        """
+        self.api_resource._engine.size.return_value = 87
+        sentinel = {"cards": [], "total_cards": 0, "query": "name:opt"}
+        with (
+            patch.object(
+                self.api_resource,
+                "_search_engine",
+                side_effect=falcon.HTTPBadRequest(title="Invalid Search Query", description="nope"),
+            ),
+            patch.object(self.api_resource, "_search_sql", return_value=sentinel) as mock_sql,
+            caplog.at_level("INFO"),
+        ):
+            result = self.api_resource._search(query="name:opt", limit=10)
+
+        mock_sql.assert_called_once()
+        assert result is sentinel
+        warnings = [r for r in caplog.records if "falling back to SQL" in r.getMessage()]
+        assert [r.levelname for r in warnings] == ["WARNING"]
+        assert all(r.exc_info for r in warnings)
 
     def test_a_real_engine_failure_still_warns_with_a_traceback(self, caplog: pytest.LogCaptureFixture) -> None:
         """Quieting the declined-query case must not quiet an engine that actually broke."""
@@ -250,6 +282,14 @@ class TestSearchEngineDirect:
         self.api_resource._search_engine(**search_kwargs("name:opt", limit=5))
         call_kwargs = self.api_resource._engine.query.call_args.kwargs
         assert call_kwargs["limit"] == 5
+
+    def test_query_error_is_raised_as_engine_declined_query(self) -> None:
+        from api.api_resource import _EngineDeclinedQueryError  # noqa: PLC0415
+        from card_engine import QueryError  # noqa: PLC0415
+
+        self.api_resource._engine.query.side_effect = QueryError("cannot build")
+        with pytest.raises(_EngineDeclinedQueryError):
+            self.api_resource._search_engine(**search_kwargs("o:/^[/"))
 
 
 class TestResultFieldSelection:

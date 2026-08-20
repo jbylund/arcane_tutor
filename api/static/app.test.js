@@ -403,6 +403,43 @@ describe('CardSearch balanceQuery', () => {
   });
 });
 
+describe('CardSearch blankOpaqueSpans', () => {
+  it('blanks the body of a closed mana symbol the same way it blanks quotes and regexes', () => {
+    // Before this, only '"'/"'"/'/' were handled here, unlike scanSpans — a "fourth opinion" gap
+    // matching the exact bug class this blanking exists to prevent, just left open for braces.
+    expect(search.blankOpaqueSpans('mana:{2/W} and')).toBe('mana:{} and');
+  });
+
+  it('still blanks quotes and regexes', () => {
+    expect(search.blankOpaqueSpans('oracle:"and or"')).toBe('oracle:""');
+    expect(search.blankOpaqueSpans('o:/and:/')).toBe('o://');
+  });
+});
+
+describe('CardSearch collapseWhitespaceOutsideSpans', () => {
+  it('preserves internal whitespace inside a regex or quoted string', () => {
+    expect(search.collapseWhitespaceOutsideSpans('o:/a  b/')).toBe('o:/a  b/');
+    expect(search.collapseWhitespaceOutsideSpans('oracle:"draw  a  card"')).toBe('oracle:"draw  a  card"');
+  });
+
+  it('collapses runs of whitespace outside spans to a single space', () => {
+    expect(search.collapseWhitespaceOutsideSpans('t:elf   o:bolt')).toBe('t:elf o:bolt');
+  });
+});
+
+describe('CardSearch _balanceAndNormalize', () => {
+  // A plain `.replace(/\s+/g, ' ')` over the whole query would silently rewrite what a regex or
+  // quoted value actually matches before it ever reaches the server.
+  it('does not collapse whitespace inside a regex or quoted string', () => {
+    expect(search._balanceAndNormalize('o:/a  b/')).toBe('o:/a  b/');
+    expect(search._balanceAndNormalize('oracle:"draw  a  card"')).toBe('oracle:"draw  a  card"');
+  });
+
+  it('still trims and collapses whitespace outside spans', () => {
+    expect(search._balanceAndNormalize('  t:elf   o:bolt  ')).toBe('t:elf o:bolt');
+  });
+});
+
 describe('CardSearch createCardHTML no-JS parity', () => {
   // Keep in sync with normalize_card_html in api/tests/test_noscript_parity.py.
   // Strips the loading-hint attributes (fetchpriority/loading logic intentionally

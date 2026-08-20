@@ -642,24 +642,27 @@ class Parser:
         tok = self.peek()
         if tok.type == TT.QUOTED:
             self.consume()
-            return StringValueNode(str(tok.value))
-        parts: list[str] = []
-        while True:
-            t = self.peek()
-            if t.type == TT.MANA or t.type in (TT.WORD, TT.NUMBER):
-                if parts and t.space_before:
+            value = str(tok.value).upper()
+        else:
+            parts: list[str] = []
+            while True:
+                t = self.peek()
+                if t.type == TT.MANA or t.type in (TT.WORD, TT.NUMBER):
+                    if parts and t.space_before:
+                        break
+                    self.consume()
+                    parts.append(str(t.value))
+                else:
                     break
-                self.consume()
-                parts.append(str(t.value))
-            else:
-                break
-        if not parts:
-            msg = f"Expected mana value at position {self.peek().pos}"
-            raise ParseError(msg)
-        value = "".join(parts).upper()
+            if not parts:
+                msg = f"Expected mana value at position {self.peek().pos}"
+                raise ParseError(msg)
+            value = "".join(parts).upper()
         # A mana cost can only hold certain symbols, so anything else is a query that cannot match.
         # '{Q}' is a real symbol (untap) but never appears in a cost, which is why this asks what a
-        # cost may contain rather than what Magic prints.
+        # cost may contain rather than what Magic prints. Quoting a value is just an alternate way to
+        # type it (e.g. to protect spaces), not an opt-out of this check — a quoted 'mana:"q"' used to
+        # skip straight to StringValueNode, so it silently matched every card via an empty cost dict.
         invalid = first_invalid_mana_symbol(value)
         if invalid is not None:
             msg = f"Invalid mana symbol {invalid!r} at position {tok.pos}"
