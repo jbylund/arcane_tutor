@@ -25,13 +25,17 @@ _DIGITS = frozenset("0123456789")
 # about which letters they are.
 _COLORS = _BARE_ATOMS - frozenset("CX")
 
-# Single-character atoms: a colour, colourless, snow, the variables, and phyrexian. Grounded in the 48
-# distinct symbols the card corpus uses in mana_cost_text, plus generic values no printing has used
-# yet. Deliberately excludes symbols that appear only on cards from "funny" (Un-)sets — '∞' (Gleemax's
-# whole cost) and 'H' + a colour (half mana, e.g. Little Girl's {HW}) — since `preprocess_card` filters
-# every `set_type == "funny"` card out of the corpus, so no mana cost these queries can ever match
-# contains them: they belong with the rest of `_REAL_BUT_NOT_A_COST` in test_mana_symbols.py, not here.
-_ATOMS = _COLORS | frozenset("CSXYZP")
+# Single-character atoms: a colour, colourless, snow, and X (the only variable a real cost uses).
+# Grounded in the 48 distinct symbols the card corpus uses in mana_cost_text, plus generic values no
+# printing has used yet. Deliberately excludes symbols that appear only on cards from "funny" (Un-)sets
+# — '∞' (Gleemax's whole cost), 'H' + a colour (half mana, e.g. Little Girl's {HW}), and 'Y'/'Z' (only
+# ever printed together with X and each other, on The Ultimate Nightmare of Wizards of the Coast
+# Customer Service's {X}{Y}{Z}{R}{R}) — since `preprocess_card` filters every `set_type == "funny"`
+# card out of the corpus, so no mana cost these queries can ever match contains them: they belong with
+# the rest of `_REAL_BUT_NOT_A_COST` in test_mana_symbols.py, not here.
+# Phyrexian ('P') is deliberately absent too: it never appears unpaired in a real cost, only through
+# the paired shapes `_PART_SHAPES` already enumerates ({W/P}, {2/P}, hybrid-phyrexian).
+_ATOMS = _COLORS | frozenset("CSX")
 
 # The generic side of generic-hybrid mana is always specifically '2' ({2/W}, never {1/W} or {3/W}).
 _GENERIC_HYBRID_VALUE = "2"
