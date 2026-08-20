@@ -44,6 +44,27 @@ _HALF_SYMBOL_LENGTH = 2  # the 'H' and the colour it applies to
 _BRACED_SYMBOL = re.compile(r"\{([^}]*)\}")
 
 
+def mana_atom_char_class(*, include_digits: bool = False, include_lower: bool = False) -> str:
+    r"""Return a regex character-class body (the text that goes between '[' and ']') for MANA_COST_ATOMS.
+
+    The two regex-building callers each need a slightly different class from the same vocabulary, and
+    used to build it separately — one adding digits via a '0-9' literal and the other via a '\\d+'
+    alternation instead, one folding in lowercase and the other not, both re-deriving the escaping and
+    sort order by hand. Centralising the class itself, not just the set it is built from, means an
+    atom added to MANA_COST_ATOMS only needs verifying against one regex-construction site.
+
+    Args:
+        include_digits: Add '0-9', for a caller matching a mana value one character at a time.
+            Leave False for a caller that matches a run of digits as a separate alternative
+            (e.g. r"\\d+|[...]"), since digits inside this class would only ever match one at a time.
+        include_lower: Add the lower-cased form of every atom, for a caller reading raw query text
+            that has not already been upper-cased.
+    """
+    atoms = MANA_COST_ATOMS | ({char.lower() for char in MANA_COST_ATOMS} if include_lower else set())
+    prefix = "0-9" if include_digits else ""
+    return prefix + re.escape("".join(sorted(atoms)))
+
+
 def _is_atom(part: str) -> bool:
     """Return True if *part* is one side of a symbol: generic mana, a single atom, or half mana."""
     if part and all(char in _DIGITS for char in part):

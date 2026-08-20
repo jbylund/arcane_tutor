@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
-from api.parsing.mana_symbols import first_invalid_mana_symbol, is_valid_mana_symbol
+from api.parsing.mana_symbols import MANA_COST_ATOMS, first_invalid_mana_symbol, is_valid_mana_symbol, mana_atom_char_class
 
 # Every distinct symbol the card corpus uses in mana_cost_text — 48 of them, via
 # `regexp_matches(mana_cost_text, '[{]([^}]*)[}]', 'g')` over magic.cards — plus generic values no
@@ -118,3 +120,28 @@ def test_junk_is_rejected(symbol: str) -> None:
 def test_first_invalid_mana_symbol(value: str, expected: str | None) -> None:
     """Both notations are checked, and the first offender is named so the message can say which."""
     assert first_invalid_mana_symbol(value) == expected
+
+
+class TestManaAtomCharClass:
+    """The two regex-building call sites (card_query_nodes, pyparsing_based) share this builder."""
+
+    def test_bare_class_covers_every_atom_and_nothing_else(self) -> None:
+        """Default arguments: no digits, no lowercase — every atom matches, its lowercase does not."""
+        pattern = re.compile(f"[{mana_atom_char_class()}]")
+        for atom in MANA_COST_ATOMS:
+            assert pattern.fullmatch(atom), f"{atom!r} should match"
+        assert not pattern.fullmatch("0")
+        assert not pattern.fullmatch("w")
+
+    def test_include_digits_adds_0_through_9_only(self) -> None:
+        r"""include_digits matches single digit characters, not a run — callers alternate '\d+' for that."""
+        pattern = re.compile(f"[{mana_atom_char_class(include_digits=True)}]")
+        for digit in "0123456789":
+            assert pattern.fullmatch(digit)
+        assert not pattern.fullmatch("w")
+
+    def test_include_lower_adds_the_lowercase_form_of_every_atom(self) -> None:
+        pattern = re.compile(f"[{mana_atom_char_class(include_lower=True)}]")
+        for atom in MANA_COST_ATOMS:
+            assert pattern.fullmatch(atom.lower()), f"{atom.lower()!r} should match"
+        assert not pattern.fullmatch("0")

@@ -18,7 +18,7 @@ from api.parsing.db_info import (
     FieldType,
     ParserClass,
 )
-from api.parsing.mana_symbols import MANA_COST_ATOMS, ZERO_COST_ATOMS
+from api.parsing.mana_symbols import MANA_COST_ATOMS, ZERO_COST_ATOMS, mana_atom_char_class
 from api.parsing.nodes import (
     AndNode,
     AttributeNode,
@@ -386,7 +386,7 @@ def get_legality_comparison_object(val: str, attr: str) -> dict[str, str]:
 
 
 # A run of digits, or one non-generic atom, in the unbraced part of a mana value.
-_UNBRACED_MANA_TOKEN = re.compile(r"\d+|[" + re.escape("".join(sorted(MANA_COST_ATOMS))) + r"]")
+_UNBRACED_MANA_TOKEN = re.compile(r"\d+|[" + mana_atom_char_class() + r"]")
 
 
 def mana_cost_str_to_dict(mana_cost_str: str) -> dict:

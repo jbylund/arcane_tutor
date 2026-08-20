@@ -29,7 +29,7 @@ from api.parsing.db_info import (
     PARSER_CLASS_TO_FIELD_INFOS,
     ParserClass,
 )
-from api.parsing.mana_symbols import MANA_COST_ATOMS, first_invalid_mana_symbol
+from api.parsing.mana_symbols import first_invalid_mana_symbol, mana_atom_char_class
 from api.parsing.nodes import (
     AndNode,
     BinaryOperatorNode,
@@ -69,7 +69,7 @@ _FP_TERM_END_OPS = frozenset("><=!:-")
 # One bare mana atom, either case. Built from the shared vocabulary rather than hand-listed: this
 # pattern used to read "[0-9WUBRGCXYZwubrgcxyz]", which left out 'S' and 'P', so a bare 'mana:s' fell
 # out of the mana branch entirely and matched as a plain string instead.
-_SIMPLE_MANA_SYMBOL_PATTERN = r"[0-9" + re.escape("".join(sorted(MANA_COST_ATOMS | {c.lower() for c in MANA_COST_ATOMS}))) + r"]"
+_SIMPLE_MANA_SYMBOL_PATTERN = "[" + mana_atom_char_class(include_digits=True, include_lower=True) + "]"
 
 
 def make_regex_pattern(words: Iterable[str]) -> Regex:
