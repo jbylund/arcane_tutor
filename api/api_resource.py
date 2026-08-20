@@ -1279,11 +1279,7 @@ class APIResource:
             where_clause, params = get_where_clause(query)
         except ValueError as err:
             # Handle parsing errors from parse_scryfall_query
-            logger.info("ValueError caught for query '%s', raising BadRequest", query)
-            raise falcon.HTTPBadRequest(
-                title="Invalid Search Query",
-                description=f'Failed to parse query: "{query}"',
-            ) from err
+            _raise_query_bad_request(exc_name="ValueError", query=query, description=f'Failed to parse query: "{query}"', err=err)
         return where_clause, params
 
     def _search(  # noqa: PLR0913
@@ -1325,11 +1321,7 @@ class APIResource:
             with timer("parse"):
                 parsed_query = parse_scryfall_query(query)
         except ValueError as err:
-            logger.info("ValueError caught for query '%s', raising BadRequest", query)
-            raise falcon.HTTPBadRequest(
-                title="Invalid Search Query",
-                description=f'Failed to parse query: "{query}"',
-            ) from err
+            _raise_query_bad_request(exc_name="ValueError", query=query, description=f'Failed to parse query: "{query}"', err=err)
 
         if not settings.enable_engine:
             pass  # feature-gated off: SQL serves everything, the store never loads
@@ -1475,11 +1467,7 @@ class APIResource:
             with timer("get_where_clause"):
                 where_clause, params = generate_sql_query(parsed_query)
         except ValueError as err:
-            logger.info("ValueError caught for query '%s', raising BadRequest", query)
-            raise falcon.HTTPBadRequest(
-                title="Invalid Search Query",
-                description=f'Failed to parse query: "{query}"',
-            ) from err
+            _raise_query_bad_request(exc_name="ValueError", query=query, description=f'Failed to parse query: "{query}"', err=err)
         sql_orderby: str = {
             # what's in the query => the db column name
             CardOrdering.CMC: "cmc",
