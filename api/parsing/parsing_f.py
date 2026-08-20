@@ -45,7 +45,7 @@ def balance_partial_query(query: str) -> str:
         # and the lexer cannot drift apart — where they disagree, the balancer "fixes" a quote the
         # lexer never saw (#905).
         if char in QUOTE_CHARS:
-            close_index, dangling_escape = find_close_index(query, pos, char)
+            close_index, dangling_escape, _ = find_close_index(query, pos, char)
             if close_index is None:
                 span_suffix = _closer_for_partial_span(dangling_escape, char)
                 break
@@ -55,7 +55,7 @@ def balance_partial_query(query: str) -> str:
         # A '/' in value position opens a regex; anywhere else it is division, an ordinary character.
         if char == "/":
             if opens_regex(query, pos - 1):
-                close_index, dangling_escape = find_close_index(query, pos, "/")
+                close_index, dangling_escape, _ = find_close_index(query, pos, "/")
                 if close_index is None:
                     # Still being typed. Close the regex rather than reading on, or the metacharacters
                     # the user has typed so far get balanced as query structure: `o:/[)` is a partial

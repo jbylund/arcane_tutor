@@ -121,31 +121,35 @@ def _closed_quote(query: str, start: int, quote: str) -> tuple[int, str] | None:
     """Find the *quote* closing a string opened before *start* and unescape its content.
 
     Delegates the boundary walk to `spans.find_close_index` — the same walk the balancer uses — so
-    the lexer and balancer can't drift on where an escaped quote ends (#905). Unescaping via
-    `spans.unescape`'s compiled regex is also faster in practice than a hand-rolled char loop.
+    the lexer and balancer can't drift on where an escaped quote ends (#905). `saw_escape` comes free
+    from that same walk, so the common case (no backslash anywhere in the string) skips `unescape`'s
+    regex pass entirely instead of running it over content that's already exactly what it should be.
 
     Returns (close_index, unescaped_content), or None if the string is unterminated.
     """
-    close_index, _ = find_close_index(query, start, quote)
+    close_index, _, saw_escape = find_close_index(query, start, quote)
     if close_index is None:
         return None
-    return close_index, unescape(query[start:close_index])
+    content = query[start:close_index]
+    return close_index, unescape(content) if saw_escape else content
 
 
 def _closed_regex(query: str, start: int) -> tuple[int, str] | None:
     r"""Find the '/' closing a regex opened before *start*, unescaping only '\\/' -> '/'.
 
     Delegates the boundary walk to `spans.find_close_index`, the same walk the balancer uses, so the
-    two can't drift on where an escaped '/' ends (#905). Every other backslash sequence (e.g. `\\d`)
-    is left untouched for the regex engine to interpret — this only ever collapses an escaped slash,
-    never a full general unescape.
+    two can't drift on where an escaped '/' ends (#905). `saw_escape` comes free from that same walk,
+    so a pattern with no backslash at all — the common case — skips the `.replace()` pass entirely.
+    Every other backslash sequence (e.g. `\\d`) is left untouched for the regex engine to interpret —
+    this only ever collapses an escaped slash, never a full general unescape.
 
     Returns (close_index, unescaped_content), or None if the pattern is unterminated.
     """
-    close_index, _ = find_close_index(query, start, "/")
+    close_index, _, saw_escape = find_close_index(query, start, "/")
     if close_index is None:
         return None
-    return close_index, query[start:close_index].replace("\\/", "/")
+    content = query[start:close_index]
+    return close_index, content.replace("\\/", "/") if saw_escape else content
 
 
 class LexError(ValueError):
