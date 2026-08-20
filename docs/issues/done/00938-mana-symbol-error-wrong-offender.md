@@ -1,5 +1,8 @@
 # `first_invalid_mana_symbol` Can Name the Wrong Offending Symbol
 
+**DONE — fixed in [#940](https://github.com/jbylund/sylvan_librarian/pull/940)**, via the exact
+single-pass rewrite this doc proposed below.
+
 [#938](https://github.com/jbylund/sylvan_librarian/issues/938), filed alongside the #936 review follow-ups.
 
 [`first_invalid_mana_symbol`](../../api/parsing/mana_symbols.py#L82) checks every braced symbol
