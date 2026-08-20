@@ -582,12 +582,19 @@ class CardSearch {
     return (danglingEscape ? '\\' : '') + closer;
   }
 
-  // One pass over the query's spans and parens, reporting both things callers need:
+  // One pass over the query's spans and parens, reporting everything callers need:
   //   suffix — the closing text needed to balance it, or null when a ')' has no matching opener
   //            (the JS counterpart of balance_partial_query's ValueError in api/parsing/parsing_f.py)
   //   openSpanContentStart — index where an unterminated span's content begins, or null if every span
   //            is closed. Only used to tell an empty span from one with something in it.
-  // balanceSuffix and performSearch's empty-span guard both read this, so there is one scan and one set of rules.
+  //   blanked — query with every span's body blanked, the same output blankOpaqueSpans would produce
+  //            on `query + suffix` (computed here instead of by a second walk over the balanced
+  //            string — the boundaries are exactly what this scan already finds). An unterminated
+  //            span is blanked as though `suffix` had already closed it, since it always will be: per
+  //            the note above, nothing follows it in `query`, so its trailing ')'s (added once below,
+  //            the same way `suffix` itself is) reproduce what blanking `query + suffix` would give.
+  // balanceSuffix, performSearch's empty-span guard, and validateQuery's opaque-span check all read
+  // this, so there is one scan and one set of rules.
   scanSpans(query) {
     const quoteChars = new Set(["'", '"']);
 
@@ -598,6 +605,7 @@ class CardSearch {
     // open, and nothing after it to close. That is also why it can be appended before the parens: an
     // unterminated span is necessarily the innermost thing open.
     let spanSuffix = '';
+    let blanked = '';
 
     for (let i = 0; i < query.length; i++) {
       const char = query[i];
@@ -609,8 +617,10 @@ class CardSearch {
         if (closeIndex === null) {
           spanSuffix = this.closerForPartialSpan(danglingEscape, char);
           openSpanContentStart = i + 1;
+          blanked += char + char;
           break;
         }
+        blanked += char + char;
         i = closeIndex;
         continue;
       }
@@ -625,10 +635,14 @@ class CardSearch {
             // not a stray ')'.
             spanSuffix = this.closerForPartialSpan(danglingEscape, '/');
             openSpanContentStart = i + 1;
+            blanked += '//';
             break;
           }
+          blanked += '//';
           i = closeIndex;
+          continue;
         }
+        blanked += char;
         continue;
       }
 
@@ -641,8 +655,10 @@ class CardSearch {
         if (closeIndex === null) {
           spanSuffix = '}';
           openSpanContentStart = i + 1;
+          blanked += '{}';
           break;
         }
+        blanked += '{}';
         i = closeIndex;
         continue;
       }
@@ -651,13 +667,21 @@ class CardSearch {
         openParens++;
       } else if (char === ')') {
         if (openParens === 0) {
-          return { suffix: null, openSpanContentStart: null }; // ')' with no opener — nothing fixes this
+          return { suffix: null, openSpanContentStart: null, blanked: null }; // ')' with no opener — nothing fixes this
         }
         openParens--;
       }
+      blanked += char;
     }
 
-    return { suffix: spanSuffix + ')'.repeat(openParens), openSpanContentStart };
+    // The trailing ')'s are appended once here, the same way suffix's are — whether the loop broke
+    // on an unterminated span or ran to completion with parens still open, they're always the very
+    // last thing in `query + suffix`, and always outside any span at that point.
+    return {
+      suffix: spanSuffix + ')'.repeat(openParens),
+      openSpanContentStart,
+      blanked: blanked + ')'.repeat(openParens),
+    };
   }
 
   balanceSuffix(query) {
@@ -700,14 +724,16 @@ class CardSearch {
   // Returns an error string if the query is structurally invalid, or null if it looks ok.
   // alreadyBalanced lets a caller that just ran scanSpans itself (and knows the answer was not
   // null) skip a second identical scan here, rather than re-discovering what it already knows.
-  validateQuery(query, { alreadyBalanced = false } = {}) {
+  // blanked lets that same caller pass the scan's blanked-span output straight through too, rather
+  // than making blankOpaqueSpans re-walk the whole string to find the same span boundaries again.
+  validateQuery(query, { alreadyBalanced = false, blanked = null } = {}) {
     // A closing paren with no matching opener can't be balanced away.
     if (!alreadyBalanced && this.balanceSuffix(query) === null) {
       return `Failed to parse query: "${query}"`;
     }
 
     // Blank quoted strings and regex patterns so we don't match content inside them.
-    const q = this.blankOpaqueSpans(query);
+    const q = blanked ?? this.blankOpaqueSpans(query);
 
     // Trailing AND/OR with no right operand: "name:test and", "power>1 or"
     if (/(?:^|\s)(and|or)\s*$/i.test(q)) {
@@ -734,7 +760,7 @@ class CardSearch {
     // openSpanContentStart is a position in autocompleted, not in a trimmed copy of it, but that
     // doesn't change what it means: trailing whitespace can't be a span closer, so the position a
     // span was left open at is the same whether or not the string is trimmed first.
-    const { suffix, openSpanContentStart } = this.scanSpans(autocompleted);
+    const { suffix, openSpanContentStart, blanked } = this.scanSpans(autocompleted);
 
     // Mid-span with nothing typed after the opener: wait rather than search. Balancing would turn
     // `o:/` into the empty pattern `o://`, which matches every card and cannot use an index, and
@@ -758,9 +784,11 @@ class CardSearch {
     const balanced = suffix === null ? autocompleted : autocompleted + suffix;
     const normalizedQuery = this.collapseWhitespaceOutsideSpans(balanced).trim();
 
-    // suffix !== null means scanSpans already proved this string balanceable, so validateQuery
-    // doesn't need to run that same scan on normalizedQuery a second time to reach the same answer.
-    const validationError = this.validateQuery(normalizedQuery, { alreadyBalanced: suffix !== null });
+    // suffix !== null means scanSpans already proved this string balanceable, and its blanked output
+    // already reflects every span's boundaries (whitespace count and trimming don't change which
+    // structural checks fire, so it's as good a check-target as normalizedQuery's own blanked form)
+    // — so validateQuery doesn't need blankOpaqueSpans to re-walk the string a second time either.
+    const validationError = this.validateQuery(normalizedQuery, { alreadyBalanced: suffix !== null, blanked });
     if (validationError) {
       this.showError(`Failed to search: Invalid Search Query: ${validationError}`);
       return;
