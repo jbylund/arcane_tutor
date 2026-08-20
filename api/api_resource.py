@@ -1605,24 +1605,33 @@ class APIResource:
         try:
             with timer("run_query"):
                 result_bag = self._run_query(query=query_sql, params=params, explain=False)
-        except psycopg.errors.DatatypeMismatch as err:
-            # This happens with standalone arithmetic expressions like "cmc+1"
-            _raise_query_bad_request(
-                exc_name="DatatypeMismatch",
-                query=query,
-                description=f"The search query '{query}' contains invalid syntax. "
-                "Arithmetic expressions like 'cmc+1' need to be part of a comparison (e.g., 'cmc+1>3').",
-                err=err,
-            )
         except psycopg.errors.InvalidRegularExpression as err:
             # The parser does not validate regex syntax, so Postgres is the first thing to see a bad
             # pattern. That is a user error, not a server error: typeahead balances a half-typed regex
             # into a complete one on every keystroke, so `o:/^[/` is an ordinary intermediate state.
+            # Caught ahead of DataError below (InvalidRegularExpression is a subclass of it) purely
+            # for this nicer, prefix-stripped message; the fallback would still catch it otherwise.
             reason = regex_error_reason(err.diag.message_primary)
             _raise_query_bad_request(
                 exc_name="InvalidRegularExpression",
                 query=query,
                 description=f"The search query '{query}' contains an invalid regular expression: {reason}.",
+                err=err,
+            )
+        except (psycopg.errors.DatatypeMismatch, psycopg.errors.DataError) as err:
+            # DatatypeMismatch (class 42, e.g. a standalone arithmetic expression like "cmc+1" used
+            # bare as a WHERE clause) and DataError (class 22, e.g. DivisionByZero from "power/0>1",
+            # NumericValueOutOfRange, InvalidTextRepresentation) are Postgres's own two ways of saying
+            # "this query is syntactically valid SQL but the data doesn't work" — a user error to 400,
+            # not a server error to 500. Message comes straight from Postgres rather than a bespoke
+            # string per error class: covers every current and future member of either class for free,
+            # at the cost of a more technical-sounding message than a hand-written one per case would
+            # give (see the InvalidRegularExpression handler above for that tradeoff made the other way).
+            reason = (err.diag.message_primary or "").strip() or "the value is not valid for this comparison"
+            _raise_query_bad_request(
+                exc_name=type(err).__name__,
+                query=query,
+                description=f"The search query '{query}' is invalid: {reason}.",
                 err=err,
             )
 

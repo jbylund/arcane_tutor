@@ -1,9 +1,12 @@
 """Tests for user-error Postgres exceptions in the SQL search path.
 
-Two things the parser accepts but Postgres rejects have to come back as HTTPBadRequest rather than
-leaking as a 500: standalone arithmetic expressions like "cmc+1" (DatatypeMismatch), and invalid
-regex patterns like /^[/ (InvalidRegularExpression). The handling lives in _search_sql, so the tests
-call it directly (routing between the engine and SQL paths is covered in test_parsing_errors.py).
+Things the parser accepts but Postgres rejects have to come back as HTTPBadRequest rather than
+leaking as a 500: standalone arithmetic expressions like "cmc+1" (DatatypeMismatch), invalid regex
+patterns like /^[/ (InvalidRegularExpression), and any other class-22 "data exception" a
+syntactically-valid-but-semantically-bad query can raise — division by zero from "power/0>1"
+(DivisionByZero) being the motivating case (#948), but the handler covers the whole class, not just
+that one member. The handling lives in _search_sql, so the tests call it directly (routing between
+the engine and SQL paths is covered in test_parsing_errors.py).
 """
 
 from __future__ import annotations
@@ -38,31 +41,29 @@ class TestDatatypeMismatchHandling:
 
     def test_search_sql_handles_datatype_mismatch(self) -> None:
         """Test that DatatypeMismatch in _search_sql raises HTTPBadRequest."""
-        # Mock the _run_query method to raise DatatypeMismatch
-        with (
-            patch.object(self.api_resource, "_run_query") as mock_run_query,
-        ):
+        message = 'column "cmc" must appear in the GROUP BY clause or be used in an aggregate function'
+        # `info=` populates .diag.message_primary the way a real connection would — the plain
+        # constructor string does not (see TestInvalidRegularExpressionHandling below for the same note).
+        with patch.object(self.api_resource, "_run_query") as mock_run_query:
             mock_run_query.side_effect = psycopg.errors.DatatypeMismatch(
-                'column "cmc" must appear in the GROUP BY clause or be used in an aggregate function',
+                message,
+                info={DiagnosticField.MESSAGE_PRIMARY: message.encode()},
             )
 
-            # Call _search_sql with a problematic query and expect HTTPBadRequest
             with pytest.raises(falcon.HTTPBadRequest) as exc_info:
                 self.api_resource._search_sql(**search_kwargs("cmc+1"))
 
-            # Verify the error details
             assert exc_info.value.title == "Invalid Search Query"
             assert "cmc+1" in exc_info.value.description
-            assert "invalid syntax" in exc_info.value.description.lower()
+            assert message in exc_info.value.description
 
     def test_search_sql_handles_datatype_mismatch_main_query_only(self) -> None:
         """Test that DatatypeMismatch is only caught on the main query."""
-        # Mock _run_query to fail on first call (main query)
-        with (
-            patch.object(self.api_resource, "_run_query") as mock_run_query,
-        ):
+        message = "WHERE clause must be type boolean, not type integer"
+        with patch.object(self.api_resource, "_run_query") as mock_run_query:
             mock_run_query.side_effect = psycopg.errors.DatatypeMismatch(
-                "WHERE clause must be type boolean, not type integer",
+                message,
+                info={DiagnosticField.MESSAGE_PRIMARY: message.encode()},
             )
 
             # Call _search_sql with a problematic query and expect HTTPBadRequest
@@ -133,6 +134,53 @@ class TestInvalidRegularExpressionHandling:
             assert "brackets [] not balanced" in exc_info.value.description
             assert exc_info.value.description.count("invalid regular expression") == 1
             assert mock_run_query.call_count == 1
+
+
+class TestDataErrorHandling:
+    """Test handling of class-22 DataError exceptions other than InvalidRegularExpression.
+
+    DivisionByZero is #948's motivating case ("power/0>1" is a syntactically valid query Postgres
+    rejects at runtime), but the handler catches psycopg.errors.DataError itself, not one member at a
+    time — this pins that a DataError subclass no test names explicitly is still caught.
+    """
+
+    def setup_method(self) -> None:
+        """Set up test fixtures."""
+        self.api_resource = APIResource(
+            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+        )
+
+    def teardown_method(self) -> None:
+        """Clean up test fixtures."""
+        if hasattr(self, "api_resource") and self.api_resource:
+            self.api_resource._conn_pool.close()
+
+    def test_search_sql_handles_division_by_zero(self) -> None:
+        """power/0>1 parses cleanly but divides by zero at runtime — a 400, not a 500."""
+        with patch.object(self.api_resource, "_run_query") as mock_run_query:
+            mock_run_query.side_effect = psycopg.errors.DivisionByZero(
+                "division by zero",
+                info={DiagnosticField.MESSAGE_PRIMARY: b"division by zero"},
+            )
+
+            with pytest.raises(falcon.HTTPBadRequest) as exc_info:
+                self.api_resource._search_sql(**search_kwargs("power/0>1"))
+
+            assert exc_info.value.title == "Invalid Search Query"
+            assert "power/0>1" in exc_info.value.description
+            assert "division by zero" in exc_info.value.description
+            assert mock_run_query.call_count == 1
+
+    def test_search_sql_handles_data_error_with_no_diagnostic(self) -> None:
+        """A DataError with no diag.message_primary still gets a sensible fallback message."""
+        with patch.object(self.api_resource, "_run_query") as mock_run_query:
+            mock_run_query.side_effect = psycopg.errors.NumericValueOutOfRange("out of range")
+
+            with pytest.raises(falcon.HTTPBadRequest) as exc_info:
+                self.api_resource._search_sql(**search_kwargs("power=99999999999999"))
+
+            assert exc_info.value.title == "Invalid Search Query"
+            assert "the value is not valid for this comparison" in exc_info.value.description
 
 
 @pytest.mark.parametrize(
