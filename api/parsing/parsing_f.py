@@ -6,26 +6,19 @@ from typing import TYPE_CHECKING
 
 from api.parsing.hand_parser import parse_query as _parse_query
 from api.parsing.rewrite import rewrite_query
-from api.parsing.spans import (
-    QUOTE_CHARS,
-    brace_close_index,
-    has_dangling_escape,
-    opens_regex,
-    quote_close_index,
-    regex_close_index,
-)
+from api.parsing.spans import QUOTE_CHARS, brace_close_index, find_close_index, opens_regex
 
 if TYPE_CHECKING:
     from api.parsing.nodes import Query
 
 
-def _closer_for_partial_span(query: str, content_start: int, closer: str) -> str:
-    """Return the suffix that closes a span whose content starts at *content_start* and runs to the end.
+def _closer_for_partial_span(dangling_escape: bool, closer: str) -> str:
+    """Return the suffix that closes a span left open on a *dangling_escape* or not.
 
     A trailing backslash has nothing to escape yet, so appending *closer* on its own would escape
     *that* instead of ending the span — escape the backslash first.
     """
-    return ("\\" if has_dangling_escape(query, content_start) else "") + closer
+    return ("\\" if dangling_escape else "") + closer
 
 
 def balance_partial_query(query: str) -> str:
@@ -52,9 +45,9 @@ def balance_partial_query(query: str) -> str:
         # and the lexer cannot drift apart — where they disagree, the balancer "fixes" a quote the
         # lexer never saw (#905).
         if char in QUOTE_CHARS:
-            close_index = quote_close_index(query, pos, char)
+            close_index, dangling_escape = find_close_index(query, pos, char)
             if close_index is None:
-                span_suffix = _closer_for_partial_span(query, pos, char)
+                span_suffix = _closer_for_partial_span(dangling_escape, char)
                 break
             pos = close_index + 1
             continue
@@ -62,12 +55,12 @@ def balance_partial_query(query: str) -> str:
         # A '/' in value position opens a regex; anywhere else it is division, an ordinary character.
         if char == "/":
             if opens_regex(query, pos - 1):
-                close_index = regex_close_index(query, pos)
+                close_index, dangling_escape = find_close_index(query, pos, "/")
                 if close_index is None:
                     # Still being typed. Close the regex rather than reading on, or the metacharacters
                     # the user has typed so far get balanced as query structure: `o:/[)` is a partial
                     # `o:/[)]/`, not a stray ')'.
-                    span_suffix = _closer_for_partial_span(query, pos, "/")
+                    span_suffix = _closer_for_partial_span(dangling_escape, "/")
                     break
                 pos = close_index + 1
             continue

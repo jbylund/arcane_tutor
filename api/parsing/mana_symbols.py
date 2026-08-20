@@ -21,7 +21,9 @@ from api.parsing.card_query_nodes import BRACED_MANA_SYMBOL as _BRACED_SYMBOL
 
 _DIGITS = frozenset("0123456789")
 
-_COLORS = frozenset("WUBRG")
+# The five colours, derived from _BARE_ATOMS rather than retyped, so the two can't silently disagree
+# about which letters they are.
+_COLORS = _BARE_ATOMS - frozenset("CX")
 
 # Single-character atoms: a colour, colourless, snow, the variables, and phyrexian. Grounded in the 48
 # distinct symbols the card corpus uses in mana_cost_text, plus generic values no printing has used
@@ -87,11 +89,22 @@ def first_invalid_mana_symbol(value: str) -> str | None:
     count outside braces. Without this, a bare character neither function recognises — 'Q' in
     '2WWQ', or all of 'hello' — is silently dropped by both instead of rejected: 'mana:2WWQ' would
     quietly run as 'mana:2WW', matching cards the query never named.
+
+    One pass over `value`: `_BRACED_SYMBOL.finditer` walks it once, and the bare characters between
+    (and after) the matches it finds are checked as that single walk goes, left to right — rather than
+    a first pass collecting every braced symbol and a second re-deriving the bare characters by
+    stripping them back out.
     """
-    for symbol in _BRACED_SYMBOL.findall(value):
+    pos = 0
+    for match in _BRACED_SYMBOL.finditer(value):
+        for char in value[pos : match.start()]:
+            if char not in _DIGITS and char not in _BARE_ATOMS:
+                return char
+        symbol = match.group(1)
         if not is_valid_mana_symbol(symbol):
             return f"{{{symbol}}}"
-    for char in _BRACED_SYMBOL.sub("", value):
+        pos = match.end()
+    for char in value[pos:]:
         if char not in _DIGITS and char not in _BARE_ATOMS:
             return char
     return None
