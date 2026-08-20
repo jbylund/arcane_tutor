@@ -30,8 +30,9 @@ _COLORS = frozenset("WUBRG")
 # different ways. 'S' and 'P' missing from those copies is what made 'mana:s' match every card.
 MANA_COST_ATOMS = _COLORS | frozenset("CSXYZP∞")
 
-# Variables contribute nothing to mana value; every other non-generic atom counts as one pip.
-ZERO_COST_ATOMS = frozenset("X")
+# The variables (X, Y, Z) contribute nothing to mana value; every other non-generic atom counts as
+# one pip.
+ZERO_COST_ATOMS = frozenset("XYZ")
 
 _ATOMS = MANA_COST_ATOMS
 

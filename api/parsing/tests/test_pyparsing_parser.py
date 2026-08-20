@@ -911,6 +911,12 @@ def test_mana_cost_sql_generation() -> None:
         ("{W/U/P}", 1),
         # Test X costs (X counts as 0 for CMC calculation)
         ("{X}{X}{W}", 1),
+        # Y and Z are variables too, same as X
+        ("{Y}", 0),
+        ("{Z}", 0),
+        ("Y", 0),
+        ("Z", 0),
+        ("{X}{Y}{Z}{W}", 1),
         # Test unbraced format
         ("1WU", 3),  # 1 generic + W + U
         ("2RRG", 5),  # 2 generic + R + R + G

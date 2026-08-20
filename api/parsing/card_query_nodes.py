@@ -443,13 +443,13 @@ def calculate_cmc(mana_cost_str: str) -> int:
             # Generic mana symbols add to CMC
             cmc += int(mana_symbol)
         except ValueError:
-            # X costs count as 0 for CMC calculation
-            if mana_symbol == "X":
+            # The variables (X, Y, Z) count as 0 for CMC calculation
+            if mana_symbol in ZERO_COST_ATOMS:
                 continue
             # Colored mana symbols (W, U, B, R, G, etc.) each count as 1
             # Handle hybrid symbols like {W/U} as 1
             # Handle Phyrexian symbols like {W/P} as 1
-            # For simplicity, any non-numeric, non-X symbol counts as 1
+            # For simplicity, any non-numeric, non-variable symbol counts as 1
             cmc += 1
 
     # Then, process unbraced part (after removing braced sections)
