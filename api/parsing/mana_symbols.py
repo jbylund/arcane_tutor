@@ -56,6 +56,13 @@ _PART_SHAPES = frozenset(
 # A braced symbol anywhere in a mana value, e.g. the '2' and 'W' of '{2}{W}'.
 _BRACED_SYMBOL = re.compile(r"\{([^}]*)\}")
 
+# What card_query_nodes.mana_cost_str_to_dict/calculate_cmc actually count outside braces: a colour,
+# colourless, or X (its own real pip, per those two functions' comments). Digits are generic mana and
+# always fine bare, no matter the value. Nothing else bare — not even a single-character atom that's
+# only ever real inside braces, like 's' or 'p' — is one those two add up: they silently drop it
+# instead of erroring, which is exactly the gap this module exists to close.
+_BARE_ATOMS = frozenset("WUBRGCX")
+
 
 def _is_atom(part: str) -> bool:
     """Return True if *part* is a whole one-part symbol: generic mana or a single atom."""
@@ -81,14 +88,18 @@ def is_valid_mana_symbol(symbol: str) -> bool:
 
 
 def first_invalid_mana_symbol(value: str) -> str | None:
-    """Return the first braced symbol in *value* that no mana cost could contain, or None if every one can.
+    """Return the first symbol in *value* that no mana cost could contain, or None if every one can.
 
-    Braced symbols only, for now. A mana value may also be written bare — '2WW' for '{2}{W}{W}' — but
-    the two parsers do not agree on what a bare value is: pyparsing's mana pattern does not match
-    'hello', so 'mana:hello' takes a different branch there and never becomes a mana value at all.
-    Checking bare text here would reject on one side and not the other. '{...}' has no such ambiguity.
+    Braced symbols are checked as a whole (see `is_valid_mana_symbol`); bare characters are checked
+    one at a time against `_BARE_ATOMS`, the exact alphabet `mana_cost_str_to_dict`/`calculate_cmc`
+    count outside braces. Without this, a bare character neither function recognises — 'Q' in
+    '2WWQ', or all of 'hello' — is silently dropped by both instead of rejected: 'mana:2WWQ' would
+    quietly run as 'mana:2WW', matching cards the query never named.
     """
     for symbol in _BRACED_SYMBOL.findall(value):
         if not is_valid_mana_symbol(symbol):
             return f"{{{symbol}}}"
+    for char in _BRACED_SYMBOL.sub("", value):
+        if char not in _DIGITS and char not in _BARE_ATOMS:
+            return char
     return None
