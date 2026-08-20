@@ -121,13 +121,13 @@ class TestSearchRouting:
     def test_engine_declining_a_query_falls_back_without_a_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         """A query the engine cannot build is a user error, not an alertable engine failure.
 
-        _search_engine turns _QueryError into _EngineDeclinedQueryError and logs it at info. That
-        reaches the SQL fallback, which used to re-log it at warning with a stack trace — so every
-        keystroke inside a character class (`o:/^[`, balanced to `o:/^[/` by typeahead) produced an
-        alertable event. The Rust regex crate also rejects patterns Postgres accepts, so this path
-        is reached by working queries too; either way the SQL path decides the outcome.
+        _search_engine logs a QueryError at info and lets it propagate unwrapped. That reaches the
+        SQL fallback, which used to re-log it at warning with a stack trace — so every keystroke
+        inside a character class (`o:/^[`, balanced to `o:/^[/` by typeahead) produced an alertable
+        event. The Rust regex crate also rejects patterns Postgres accepts, so this path is reached
+        by working queries too; either way the SQL path decides the outcome.
         """
-        from api.api_resource import _EngineDeclinedQueryError  # noqa: PLC0415
+        from card_engine import QueryError  # noqa: PLC0415
 
         self.api_resource._engine.size.return_value = 87
         sentinel = {"cards": [], "total_cards": 0, "query": "o:/^[/"}
@@ -135,7 +135,7 @@ class TestSearchRouting:
             patch.object(
                 self.api_resource,
                 "_search_engine",
-                side_effect=_EngineDeclinedQueryError("nope"),
+                side_effect=QueryError("nope"),
             ),
             patch.object(self.api_resource, "_search_sql", return_value=sentinel) as mock_sql,
             caplog.at_level("INFO"),
@@ -151,12 +151,13 @@ class TestSearchRouting:
         self,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Only _EngineDeclinedQueryError is a decline — a bare HTTPBadRequest from elsewhere is not.
+        """Only QueryError is a decline — a bare HTTPBadRequest from elsewhere is not.
 
         Classifying by isinstance(e, falcon.HTTPBadRequest) used to treat any HTTPBadRequest raised
         anywhere in _search_engine's call chain as a benign decline, purely because nothing else
-        happened to raise that type. A dedicated exception makes that true by construction: an
-        HTTPBadRequest raised for some other reason must still surface as an alertable failure.
+        happened to raise that type. Classifying by isinstance(e, QueryError) instead is true by
+        construction: QueryError is card_engine's own exception type, so an HTTPBadRequest raised for
+        some other reason must still surface as an alertable failure.
         """
         self.api_resource._engine.size.return_value = 87
         sentinel = {"cards": [], "total_cards": 0, "query": "name:opt"}
@@ -283,12 +284,17 @@ class TestSearchEngineDirect:
         call_kwargs = self.api_resource._engine.query.call_args.kwargs
         assert call_kwargs["limit"] == 5
 
-    def test_query_error_is_raised_as_engine_declined_query(self) -> None:
-        from api.api_resource import _EngineDeclinedQueryError  # noqa: PLC0415
+    def test_query_error_propagates_unwrapped(self) -> None:
+        """QueryError reaches the caller as itself, not wrapped in a dedicated exception type.
+
+        _search_engine used to wrap it in a dedicated _EngineDeclinedQueryError; it no longer does,
+        since QueryError is already engine-specific and nothing else in this call chain raises it —
+        the wrapper added a type only _search's own handler understood, for no benefit.
+        """
         from card_engine import QueryError  # noqa: PLC0415
 
         self.api_resource._engine.query.side_effect = QueryError("cannot build")
-        with pytest.raises(_EngineDeclinedQueryError):
+        with pytest.raises(QueryError):
             self.api_resource._search_engine(**search_kwargs("o:/^[/"))
 
 

@@ -634,8 +634,10 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
 
     def to_human_explanation(self) -> str:
         """Convert to human-readable explanation with card-specific formatting."""
-        # Handle empty string values
-        if isinstance(self.rhs, StringValueNode) and not self.rhs.value.strip():
+        # Handle empty string values. Covers ManaValueNode too: a quoted empty mana/devotion value
+        # (mana:"") parses to one of these, not a StringValueNode, since parse_mana_value validates
+        # quoted values the same as bare ones (#909) — StringValueNode alone stopped catching it (#950).
+        if isinstance(self.rhs, StringValueNode | ManaValueNode) and not self.rhs.value.strip():
             return ""
         # Handle plain string rhs (for empty queries)
         if isinstance(self.rhs, str) and not self.rhs.strip():

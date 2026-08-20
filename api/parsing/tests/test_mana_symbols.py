@@ -13,7 +13,7 @@ from api.parsing.mana_symbols import first_invalid_mana_symbol, is_valid_mana_sy
 # Every one of these has to stay searchable.
 _VALID = (
     *[str(n) for n in (*range(21), 100, 1000000)],
-    *"WUBRGCSXYZP",
+    *"WUBRGCSX",
     *("2/W", "2/U", "2/B", "2/R", "2/G"),
     *("W/U", "W/B", "U/B", "U/R", "B/R", "B/G", "R/G", "R/W", "G/W", "G/U"),
     *("C/W", "C/U", "C/B", "C/R", "C/G"),
@@ -26,10 +26,11 @@ _VALID = (
 
 # Real Magic symbols that no mana cost can hold: tap, untap, energy, and the planar symbols. Searching
 # mana for one of these can never match, which is the whole reason this check exists. '∞' (Gleemax's
-# whole cost) and half mana ({HW}, {HR}, ...) belong here too, not in _VALID: both are real printed
-# symbols, but only on cards from "funny" (Un-)sets, which `preprocess_card` filters out of the corpus
-# entirely — so a mana cost containing them can never match a row either.
-_REAL_BUT_NOT_A_COST = ("T", "Q", "E", "A", "CHAOS", "PW", "TK", "∞", "HW", "HR")
+# whole cost), half mana ({HW}, {HR}, ...), and 'Y'/'Z' belong here too, not in _VALID: all are real
+# printed symbols, but only on cards from "funny" (Un-)sets — 'Y'/'Z' via The Ultimate Nightmare of
+# Wizards of the Coast Customer Service's {X}{Y}{Z}{R}{R} — which `preprocess_card` filters out of the
+# corpus entirely, so a mana cost containing them can never match a row either.
+_REAL_BUT_NOT_A_COST = ("T", "Q", "E", "A", "CHAOS", "PW", "TK", "∞", "HW", "HR", "Y", "Z")
 
 
 @pytest.mark.parametrize(argnames=["symbol"], argvalues=[(sym,) for sym in _VALID], ids=_VALID)
@@ -66,6 +67,7 @@ def test_symbols_that_cannot_appear_in_a_cost_are_rejected(symbol: str) -> None:
         ("W/1",),  # generic-hybrid's generic side is always '2'
         ("W/2",),  # ... and it's always first: {2/W}, never {W/2}
         ("P/W",),  # phyrexian is always last: {W/P}, never {P/W}
+        ("P",),  # phyrexian never appears unpaired: {P} matches no real cost (#941)
     ],
     ids=[
         "empty",
@@ -87,6 +89,7 @@ def test_symbols_that_cannot_appear_in_a_cost_are_rejected(symbol: str) -> None:
         "non_two_generic",
         "generic_wrong_position",
         "phyrexian_wrong_position",
+        "phyrexian_unpaired",
     ],
 )
 def test_junk_is_rejected(symbol: str) -> None:
@@ -112,6 +115,7 @@ def test_junk_is_rejected(symbol: str) -> None:
         ("2WWS", "S"),  # 'S' is a real atom braced ({S}), but calculate_cmc never counts it bare
         ("H{Q}", "H"),  # the bare 'H' comes before '{Q}' in the string, so it is the true first offender
         ("{Q}H", "{Q}"),  # here the braced symbol genuinely is first
+        ("{P}", "{P}"),  # phyrexian never appears unpaired: {P} matches no real cost (#941)
     ],
     ids=[
         "braced",
@@ -129,6 +133,7 @@ def test_junk_is_rejected(symbol: str) -> None:
         "bare_atom_not_bare_valid",
         "bare_before_braced",
         "braced_before_bare",
+        "braced_phyrexian_unpaired",
     ],
 )
 def test_first_invalid_mana_symbol(value: str, expected: str | None) -> None:
