@@ -1356,7 +1356,24 @@ class APIResource:
                 # BaseExceptions that must still propagate are the ones that are not failures.
                 if isinstance(e, (KeyboardInterrupt, SystemExit)):
                     raise
-                logger.warning("Engine query failed for %r, falling back to SQL: %s", query, e, exc_info=True)
+                # An HTTPBadRequest from _search_engine is a query the engine declined to build, not
+                # an engine that broke: _QueryError means "cannot be parsed or built", and
+                # _search_engine has already logged it at info. It reaches here for two different
+                # reasons, and the SQL path resolves both correctly on its own — a pattern that is
+                # invalid everywhere (o:/^[/) becomes the 400 raised below, and one the Rust regex
+                # crate rejects but Postgres accepts (backreferences, lookaround) simply gets
+                # answered. Re-logging it at warning with a stack trace turned every keystroke inside
+                # a character class into an alertable event for a user typo. Fall through quietly;
+                # anything else really is an engine failure and keeps its traceback.
+                declined = isinstance(e, falcon.HTTPBadRequest)
+                logger.log(
+                    logging.INFO if declined else logging.WARNING,
+                    "Engine %s %r, falling back to SQL: %s",
+                    "declined" if declined else "failed on",
+                    query,
+                    e,
+                    exc_info=not declined,
+                )
             else:
                 if settings.enable_cache:
                     search_cache[cache_key] = result

@@ -462,14 +462,30 @@ describe('CardSearch performSearch', () => {
   // A span with nothing in it is not a query yet. Balancing would close it into something that is
   // valid but useless — `o://` matches every card with an unindexable empty pattern — so the request
   // waits for the next keystroke, and unlike an unbalance-able query this is not an error.
-  it.each(['o:/', "o:'", 'o:"', 'mana:{', '(o:/', "t:elf o:'"])('waits instead of searching on %s', async query => {
+  it.each(['o:/', "o:'", 'o:"', 'mana:{', '(o:/', "t:elf o:'", 'o:/ ', 'mana:{  '])(
+    'waits instead of searching on %s',
+    async query => {
+      global.fetch.mockClear();
+      search.showError.mockClear();
+
+      await search.performSearch(query);
+
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(search.showError).not.toHaveBeenCalled();
+    }
+  );
+
+  // Backspacing a searched query down into an empty span used to leave the previous "Searching …"
+  // on screen forever, because handleSearch had already aborted the fetch and the guard returned
+  // before any status update.
+  it('does not leave a stale loading message when the query decays into an empty span', async () => {
     global.fetch.mockClear();
-    search.showError.mockClear();
+    search.clearMessages.mockClear();
 
-    await search.performSearch(query);
+    await search.performSearch('o:/');
 
+    expect(search.clearMessages).toHaveBeenCalled();
     expect(global.fetch).not.toHaveBeenCalled();
-    expect(search.showError).not.toHaveBeenCalled();
   });
 
   it.each(['o:/a', "o:'a", 'mana:{W', 'o:/^{T}:/'])('still searches once the span has content: %s', async query => {
@@ -486,6 +502,26 @@ describe('CardSearch endsWithEmptySpan', () => {
     expect(search.endsWithEmptySpan(query)).toBe(true);
   });
 
+  // Trailing whitespace is not content: _balanceAndNormalize trims after balancing, so without this
+  // `o:/ ` went out as the match-everything pattern `o:/ /`. Enumerated over every opener and every
+  // whitespace tail, because the guard is only as good as its least-covered opener.
+  const SPAN_OPENERS = ['o:/', "o:'", 'o:"', 'mana:{'];
+  const WHITESPACE_TAILS = [' ', '  ', '\t', ' \t '];
+  const QUERY_PREFIXES = ['', 't:elf ', '(', '-'];
+  it.each(
+    QUERY_PREFIXES.flatMap(prefix =>
+      SPAN_OPENERS.flatMap(opener => WHITESPACE_TAILS.map(tail => prefix + opener + tail))
+    )
+  )('is true for %j', query => {
+    expect(search.endsWithEmptySpan(query)).toBe(true);
+  });
+
+  // The line the trimEnd draws: an unclosed span holding only whitespace is still being typed, but a
+  // span the user closed around a space is a query they committed to, and still searches.
+  it.each(['o:/ /', "o:' '", 'o:" "', 'o:/ /  ', "t:elf o:' '"])('is false for %j', query => {
+    expect(search.endsWithEmptySpan(query)).toBe(false);
+  });
+
   it.each([
     'o:/a', // content typed
     'o:/a/', // closed
@@ -494,6 +530,8 @@ describe('CardSearch endsWithEmptySpan', () => {
     '', // nothing at all
     'hello)', // unbalance-able, reported by validateQuery instead
     'o:/a\\', // a dangling escape is still content
+    'o:/a /', // an interior space is content, and the span is closed
+    'o:/ a', // leading space inside the span is content
   ])('is false for %s', query => {
     expect(search.endsWithEmptySpan(query)).toBe(false);
   });
