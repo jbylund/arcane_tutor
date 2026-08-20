@@ -8,7 +8,9 @@ from api.parsing.mana_symbols import first_invalid_mana_symbol, is_valid_mana_sy
 
 # Every distinct symbol the card corpus uses in mana_cost_text — 48 of them, via
 # `regexp_matches(mana_cost_text, '[{]([^}]*)[}]', 'g')` over magic.cards — plus generic values no
-# printing has used yet. Every one of these has to stay searchable.
+# printing has used yet, plus every rule-valid hybrid-phyrexian colour pair (only 4 of the 10 have
+# actually been printed, but a mana search isn't limited to what's been printed — see mana_symbols.py).
+# Every one of these has to stay searchable.
 _VALID = (
     *[str(n) for n in (*range(21), 100, 1000000)],
     *"WUBRGCSXYZP",
@@ -16,10 +18,10 @@ _VALID = (
     *("W/U", "W/B", "U/B", "U/R", "B/R", "B/G", "R/G", "R/W", "G/W", "G/U"),
     *("C/W", "C/U", "C/B", "C/R", "C/G"),
     *("W/P", "U/P", "B/P", "R/P", "G/P"),
-    *("G/U/P", "G/W/P", "R/G/P", "R/W/P"),
-    # A side is a set, not a slot: whichever order a user types a real symbol's sides in, it's the
-    # same symbol. Only a sample of reversed forms — one per shape — not every pair reversed.
-    *("U/W", "W/C", "W/2", "P/W", "U/G/P"),
+    *("G/U/P", "G/W/P", "R/G/P", "R/W/P", "W/U/P", "W/B/P", "U/B/P", "U/R/P", "B/R/P", "B/G/P"),
+    # Hybrid and colourless hybrid are a set, not a slot: whichever order a user types a real symbol's
+    # colours in, it's the same symbol. Only a sample of reversed forms, not every pair reversed.
+    *("U/W", "W/C", "U/G/P"),
 )
 
 # Real Magic symbols that no mana cost can hold: tap, untap, energy, and the planar symbols. Searching
@@ -59,10 +61,11 @@ def test_symbols_that_cannot_appear_in_a_cost_are_rejected(symbol: str) -> None:
         ("2/2",),
         ("C/C",),
         ("W/U/B",),  # three plain colours: no 'P', so not a hybrid-phyrexian shape either
-        ("C/P",),  # colourless phyrexian mana was never printed
-        ("2/P",),  # nor generic phyrexian mana
+        ("C/P",),  # phyrexian mana is only ever a colour's, never colourless's
+        ("2/P",),  # nor generic's
         ("W/1",),  # generic-hybrid's generic side is always '2'
-        ("U/B/P",),  # a real colour pair, but this pairing has no hybrid-phyrexian printing
+        ("W/2",),  # ... and it's always first: {2/W}, never {W/2}
+        ("P/W",),  # phyrexian is always last: {W/P}, never {P/W}
     ],
     ids=[
         "empty",
@@ -82,7 +85,8 @@ def test_symbols_that_cannot_appear_in_a_cost_are_rejected(symbol: str) -> None:
         "colorless_phyrexian",
         "generic_phyrexian",
         "non_two_generic",
-        "unprinted_phyrexian_pair",
+        "generic_wrong_position",
+        "phyrexian_wrong_position",
     ],
 )
 def test_junk_is_rejected(symbol: str) -> None:
