@@ -1,5 +1,7 @@
 # `first_invalid_mana_symbol` Can Name the Wrong Offending Symbol
 
+[#938](https://github.com/jbylund/sylvan_librarian/issues/938), filed alongside the #936 review follow-ups.
+
 [`first_invalid_mana_symbol`](../../api/parsing/mana_symbols.py#L82) checks every braced symbol
 before checking any bare character, regardless of which one actually comes first in the string. On
 mixed input this can report a later invalid symbol while a genuinely earlier one goes unmentioned.

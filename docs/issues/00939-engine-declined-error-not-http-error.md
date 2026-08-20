@@ -1,5 +1,7 @@
 # `_EngineDeclinedQueryError` Is a Bare Exception, Safe Only Via Its Single Caller
 
+[#939](https://github.com/jbylund/sylvan_librarian/issues/939), filed alongside the #936 review follow-ups.
+
 [`_EngineDeclinedQueryError`](../../api/api_resource.py#L76) is a plain `Exception`, not a
 `falcon.HTTPError`. It is caught and handled correctly today only because `_search` is currently the
 sole caller of `_search_engine`.

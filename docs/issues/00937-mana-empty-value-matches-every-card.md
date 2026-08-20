@@ -1,5 +1,7 @@
 # `mana:""` and `devotion:""` Silently Match Every Card
 
+[#937](https://github.com/jbylund/sylvan_librarian/issues/937), filed alongside the #936 review follow-ups.
+
 `first_invalid_mana_symbol("")` returns `None`, so an empty mana value passes validation and reaches
 the database as a query that matches everything.
 
