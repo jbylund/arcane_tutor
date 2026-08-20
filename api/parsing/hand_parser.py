@@ -121,31 +121,35 @@ def _closed_quote(query: str, start: int, quote: str) -> tuple[int, str] | None:
     """Find the *quote* closing a string opened before *start* and unescape its content.
 
     Delegates the boundary walk to `spans.find_close_index` — the same walk the balancer uses — so
-    the lexer and balancer can't drift on where an escaped quote ends (#905). Unescaping via
-    `spans.unescape`'s compiled regex is also faster in practice than a hand-rolled char loop.
+    the lexer and balancer can't drift on where an escaped quote ends (#905). `saw_escape` comes free
+    from that same walk, so the common case (no backslash anywhere in the string) skips `unescape`'s
+    regex pass entirely instead of running it over content that's already exactly what it should be.
 
     Returns (close_index, unescaped_content), or None if the string is unterminated.
     """
-    close_index, _ = find_close_index(query, start, quote)
+    close_index, _, saw_escape = find_close_index(query, start, quote)
     if close_index is None:
         return None
-    return close_index, unescape(query[start:close_index])
+    content = query[start:close_index]
+    return close_index, unescape(content) if saw_escape else content
 
 
 def _closed_regex(query: str, start: int) -> tuple[int, str] | None:
     r"""Find the '/' closing a regex opened before *start*, unescaping only '\\/' -> '/'.
 
     Delegates the boundary walk to `spans.find_close_index`, the same walk the balancer uses, so the
-    two can't drift on where an escaped '/' ends (#905). Every other backslash sequence (e.g. `\\d`)
-    is left untouched for the regex engine to interpret — this only ever collapses an escaped slash,
-    never a full general unescape.
+    two can't drift on where an escaped '/' ends (#905). `saw_escape` comes free from that same walk,
+    so a pattern with no backslash at all — the common case — skips the `.replace()` pass entirely.
+    Every other backslash sequence (e.g. `\\d`) is left untouched for the regex engine to interpret —
+    this only ever collapses an escaped slash, never a full general unescape.
 
     Returns (close_index, unescaped_content), or None if the pattern is unterminated.
     """
-    close_index, _ = find_close_index(query, start, "/")
+    close_index, _, saw_escape = find_close_index(query, start, "/")
     if close_index is None:
         return None
-    return close_index, query[start:close_index].replace("\\/", "/")
+    content = query[start:close_index]
+    return close_index, content.replace("\\/", "/") if saw_escape else content
 
 
 class LexError(ValueError):
@@ -185,9 +189,8 @@ def tokenize(src: str) -> list[Token]:  # noqa: C901, PLR0912, PLR0915
             continue
 
         # Quoted string. The escape-skipping walk here has to agree with the balancer's
-        # `spans.quote_close_index`/`spans.find_close_index` that a backslash escapes the next
-        # character, or the balancer reads the ' in 'don\'t' as the close and appends a quote the
-        # lexer never wanted (#905).
+        # `spans.find_close_index` that a backslash escapes the next character, or the balancer
+        # reads the ' in 'don\'t' as the close and appends a quote the lexer never wanted (#905).
         if c in QUOTE_CHARS:
             closed = _closed_quote(src, pos + 1, c)
             if closed is None:
@@ -242,9 +245,9 @@ def tokenize(src: str) -> list[Token]:  # noqa: C901, PLR0912, PLR0915
         if c == "/":
             prev = tokens[-1] if tokens else None
             in_value_position = prev is not None and prev.type == TT.OP
-            # The escape-skipping walk here has to agree with the balancer's
-            # `spans.regex_close_index`/`spans.find_close_index` on where the span ends, or one of
-            # them treats a quote as a delimiter that the other treats as pattern content (#905).
+            # The escape-skipping walk here has to agree with the balancer's `spans.find_close_index`
+            # on where the span ends, or one of them treats a quote as a delimiter that the other
+            # treats as pattern content (#905).
             closed = _closed_regex(src, pos + 1) if in_value_position else None
             if closed is None:
                 # Division, or an unterminated regex falling back to division.

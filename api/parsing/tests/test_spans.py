@@ -13,8 +13,6 @@ from api.parsing.spans import (
     brace_close_index,
     find_close_index,
     opens_regex,
-    quote_close_index,
-    regex_close_index,
     unescape,
 )
 
@@ -93,9 +91,9 @@ def test_opens_regex(query: str, slash_index: int, expected: bool) -> None:
     ],
     ids=["simple", "first_close_wins", "escaped_delimiter", "unterminated", "trailing_backslash"],
 )
-def test_regex_close_index(query: str, start: int, expected: int | None) -> None:
+def test_find_close_index_for_regex(query: str, start: int, expected: int | None) -> None:
     """The close scan steps over escapes and returns None when the pattern never closes."""
-    assert regex_close_index(query, start) == expected
+    assert find_close_index(query, start, "/")[0] == expected
 
 
 @pytest.mark.parametrize(
@@ -111,9 +109,9 @@ def test_regex_close_index(query: str, start: int, expected: int | None) -> None
     ],
     ids=["plain", "escaped_quote", "escaped_backslash", "double_quoted", "other_quote_type", "unterminated", "escaped_close"],
 )
-def test_quote_close_index(query: str, quote: str, expected: int | None) -> None:
+def test_find_close_index_for_quote(query: str, quote: str, expected: int | None) -> None:
     """A backslash escapes the next character, so it cannot end the string."""
-    assert quote_close_index(query, 1, quote) == expected
+    assert find_close_index(query, 1, quote)[0] == expected
 
 
 @pytest.mark.parametrize(
@@ -133,6 +131,22 @@ def test_has_dangling_escape(query: str, expected: bool) -> None:
     of these queries contain an unescaped closer, so the closer char passed here doesn't matter.
     """
     assert find_close_index(query, 1, "'")[1] is expected
+
+
+@pytest.mark.parametrize(
+    argnames=["query", "quote", "expected"],
+    argvalues=[
+        ("'abc'", "'", False),  # nothing to unescape: a caller can use the slice as-is
+        (r"'don\'t'", "'", True),
+        (r"'a\\'", "'", True),  # an escaped backslash still counts, even though it's not the closer
+        ("'abc", "'", False),  # unterminated, and still nothing escaped
+        ("'abc\\", "'", True),  # unterminated on a dangling escape, which is itself an escape seen
+    ],
+    ids=["no_escape", "escaped_quote", "escaped_backslash", "unterminated_no_escape", "unterminated_dangling"],
+)
+def test_find_close_index_reports_whether_it_saw_an_escape(query: str, quote: str, expected: bool) -> None:
+    """The third element lets a caller skip unescaping entirely when the walk saw no backslash at all."""
+    assert find_close_index(query, 1, quote)[2] is expected
 
 
 @pytest.mark.parametrize(

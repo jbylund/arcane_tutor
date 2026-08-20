@@ -52,39 +52,33 @@ def brace_close_index(query: str, start: int) -> int | None:
     return None if index < 0 else index
 
 
-def regex_close_index(query: str, start: int) -> int | None:
-    """Return the index of the '/' closing a regex that opened before *start*, or None if unterminated."""
-    return find_close_index(query, start, "/")[0]
+def find_close_index(query: str, start: int, closer: str) -> tuple[int | None, bool, bool]:
+    """Return where the next unescaped *closer* is, whether a dangling escape ended the walk, and whether it saw one.
 
+    The first element is the index, or None if *closer* is never found. The second is True only when
+    the walk instead ran to the end of *query* on a dangling escape. The third is True if the walk
+    stepped over *any* backslash escape at all — a caller that wants the span's unescaped content can
+    skip the unescape pass entirely when this is False, since content is then just ``query[start:idx]``
+    unchanged. All three are already known once this one walk is done.
 
-def quote_close_index(query: str, start: int, quote: str) -> int | None:
-    """Return the index of the *quote* closing a string that opened before *start*, or None if unterminated."""
-    return find_close_index(query, start, quote)[0]
-
-
-def find_close_index(query: str, start: int, closer: str) -> tuple[int | None, bool]:
-    """Return the index of the next unescaped *closer* at or after *start* and whether a dangling escape ended it.
-
-    The first element is the index, or None if *closer* is never found; the second is True only when the
-    walk instead ran to the end of *query* on a dangling escape — both answers a single walk already has
-    to compute.
-
-    A caller that only needs the index (the lexer, `regex_close_index`/`quote_close_index`) can ignore
-    the second value; a balancer completing an unterminated span needs both, and calling this once is
-    the only way to get them without walking the same tail of *query* twice.
+    A caller that only needs the index can ignore the rest; a balancer completing an unterminated span
+    needs the second; a caller building unescaped content needs the third to avoid re-walking the same
+    text a second time just to learn it had nothing to unescape.
     """
     pos = start
     length = len(query)
+    saw_escape = False
     while pos < length:
         if query[pos] == "\\":
+            saw_escape = True
             if pos + 1 >= length:
-                return None, True
+                return None, True, saw_escape
             pos += 2
         elif query[pos] == closer:
-            return pos, False
+            return pos, False, saw_escape
         else:
             pos += 1
-    return None, False
+    return None, False, saw_escape
 
 
 def unescape(text: str) -> str:
