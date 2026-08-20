@@ -25,7 +25,7 @@ import uuid
 from collections.abc import Sequence  # noqa: TC003
 from datetime import timedelta
 from functools import lru_cache, wraps
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 from typing import cast as typecast
 
 import cachebox
@@ -120,6 +120,19 @@ def regex_error_reason(message_primary: str | None) -> str:
         The reason to show the user, e.g. "brackets [] not balanced".
     """
     return (message_primary or "").removeprefix(_PG_REGEX_ERROR_PREFIX).strip() or _FALLBACK_REGEX_ERROR_REASON
+
+
+def _raise_query_bad_request(*, exc_name: str, query: str, description: str, err: Exception) -> NoReturn:
+    """Log and re-raise a Postgres user-error exception as a 400, in the shape every such handler needs.
+
+    Args:
+        exc_name: The Postgres exception's name, for the info log (e.g. "DatatypeMismatch").
+        query: The raw search query string that triggered the error.
+        description: The user-facing description for the HTTPBadRequest.
+        err: The caught exception, chained onto the raised HTTPBadRequest via `from`.
+    """
+    logger.info("%s caught for query '%s', raising BadRequest", exc_name, query)
+    raise falcon.HTTPBadRequest(title="Invalid Search Query", description=description) from err
 
 
 _STATIC_DIR = pathlib.Path(__file__).parent / "static"
@@ -1604,24 +1617,25 @@ class APIResource:
             with timer("run_query"):
                 result_bag = self._run_query(query=query_sql, params=params, explain=False)
         except psycopg.errors.DatatypeMismatch as err:
-            # Raise BadRequest error for invalid query syntax
             # This happens with standalone arithmetic expressions like "cmc+1"
-            logger.info("DatatypeMismatch caught for query '%s', raising BadRequest", query)
-            raise falcon.HTTPBadRequest(
-                title="Invalid Search Query",
+            _raise_query_bad_request(
+                exc_name="DatatypeMismatch",
+                query=query,
                 description=f"The search query '{query}' contains invalid syntax. "
                 "Arithmetic expressions like 'cmc+1' need to be part of a comparison (e.g., 'cmc+1>3').",
-            ) from err
+                err=err,
+            )
         except psycopg.errors.InvalidRegularExpression as err:
             # The parser does not validate regex syntax, so Postgres is the first thing to see a bad
             # pattern. That is a user error, not a server error: typeahead balances a half-typed regex
             # into a complete one on every keystroke, so `o:/^[/` is an ordinary intermediate state.
-            logger.info("InvalidRegularExpression caught for query '%s', raising BadRequest", query)
             reason = regex_error_reason(err.diag.message_primary)
-            raise falcon.HTTPBadRequest(
-                title="Invalid Search Query",
+            _raise_query_bad_request(
+                exc_name="InvalidRegularExpression",
+                query=query,
                 description=f"The search query '{query}' contains an invalid regular expression: {reason}.",
-            ) from err
+                err=err,
+            )
 
         cards = result_bag.pop("result", [])
         count_row = cards.pop()

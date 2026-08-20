@@ -474,6 +474,13 @@ describe('CardSearch validateQuery', () => {
     expect(search.validateQuery('(t:)')).toBe('Failed to parse query: "(t:)"');
     expect(search.validateQuery('name:test and')).toBe('Failed to parse query: "name:test and"');
   });
+
+  it('alreadyBalanced skips the balance re-check, but not the other structural checks', () => {
+    // A caller vouching for balance it hasn't actually verified is a caller bug, not something
+    // validateQuery should paper over — the option exists for callers that just ran scanSpans.
+    expect(search.validateQuery('hello)', { alreadyBalanced: true })).toBeNull();
+    expect(search.validateQuery('t:', { alreadyBalanced: true })).toBe('Failed to parse query: "t:"');
+  });
 });
 
 // The backend runs this same fixture through both parsers in test_balance_parity.py, so the client
@@ -496,15 +503,16 @@ describe('CardSearch performSearch', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  // performSearch used to call scanSpans twice per keystroke for the empty-span guard and again
-  // for balancing, before reusing one scan for both. validateQuery's own balanceSuffix check
-  // is a separate, intentional third call over the post-balance string, not part of this guard.
-  it('scans spans only once for the empty-span guard and balancing', async () => {
+  // performSearch used to call scanSpans up to three times per keystroke: once for the empty-span
+  // guard, again for balancing, and a third time inside validateQuery's own balanceSuffix check —
+  // even though performSearch already knows the string is balanceable by the time it calls
+  // validateQuery. All three now share the one scan performSearch runs up front.
+  it('scans spans only once for the empty-span guard, balancing, and validation', async () => {
     const spy = jest.spyOn(search, 'scanSpans');
 
     await search.performSearch('name:bolt');
 
-    expect(spy).toHaveBeenCalledTimes(2);
+    expect(spy).toHaveBeenCalledTimes(1);
     spy.mockRestore();
   });
 
