@@ -14,42 +14,70 @@ than an empty result set.
 
 from __future__ import annotations
 
+import itertools
 import re
 
 _DIGITS = frozenset("0123456789")
 
 _COLORS = frozenset("WUBRG")
 
-# Single-character atoms: a colour, colourless, snow, the variables, phyrexian, and Gleemax's cost.
-# Grounded in the 48 distinct symbols the card corpus uses in mana_cost_text, plus the Un-set symbols
-# that corpus holds no cards for — '∞' is Gleemax's whole mana cost, and 'H' + a colour is half mana
-# ({HW} on Little Girl). The frontend already renders both, in the mana maps in app.js.
-_ATOMS = _COLORS | frozenset("CSXYZP∞")
+# Single-character atoms: a colour, colourless, snow, the variables, and phyrexian. Grounded in the 48
+# distinct symbols the card corpus uses in mana_cost_text, plus generic values no printing has used
+# yet. Deliberately excludes symbols that appear only on cards from "funny" (Un-)sets — '∞' (Gleemax's
+# whole cost) and 'H' + a colour (half mana, e.g. Little Girl's {HW}) — since `preprocess_card` filters
+# every `set_type == "funny"` card out of the corpus, so no mana cost these queries can ever match
+# contains them: they belong with the rest of `_REAL_BUT_NOT_A_COST` in test_mana_symbols.py, not here.
+_ATOMS = _COLORS | frozenset("CSXYZP")
 
-# Half mana is written as 'H' followed by a colour: {HW}, {HR}.
-_HALF_PREFIX = "H"
-_HALF_SYMBOL_LENGTH = 2  # the 'H' and the colour it applies to
+# The generic side of generic-hybrid mana is always specifically '2' ({2/W}, never {1/W} or {3/W}).
+_GENERIC_HYBRID_VALUE = "2"
+
+# Colourless joins colour on the "which side does this go on" ambiguity a hybrid pair has — a user
+# typing {C/W} from memory has as little reason to know it isn't printed {W/C} as they do for two
+# colours — so both share one permutation-generated set of ordered pairs. Generic and phyrexian don't:
+# every printing has the generic side first and the phyrexian side last, so those two are one-directional.
+_HYBRID_ATOMS = _COLORS | frozenset("C")
+
+# Every valid 2- or 3-part shape, as the exact ordered tuple `symbol.split("/")` must produce. Rule- not
+# corpus-derived: a colour pair or hybrid-phyrexian triple is valid because the game defines that shape,
+# whether or not a card has ever been printed with it (real corpus printings only cover 4 of the 10
+# possible hybrid-phyrexian colour pairs, but {U/B/P} is exactly as valid a request as the printed ones).
+# `itertools.permutations` never repeats an element in one draw, so {W/W}, {2/2} and {C/C} are excluded
+# for free — no separate duplicate-side check is needed.
+_PART_SHAPES = frozenset(
+    (
+        *itertools.permutations(_HYBRID_ATOMS, 2),  # hybrid & colourless hybrid, either order: {W/U}, {C/W}
+        *((_GENERIC_HYBRID_VALUE, c) for c in _COLORS),  # generic hybrid, generic first: {2/W}
+        *((c, "P") for c in _COLORS),  # phyrexian, colour first: {W/P}
+        *((a, b, "P") for a, b in itertools.permutations(_COLORS, 2)),  # hybrid-phyrexian, colours either order
+    )
+)
 
 # A braced symbol anywhere in a mana value, e.g. the '2' and 'W' of '{2}{W}'.
 _BRACED_SYMBOL = re.compile(r"\{([^}]*)\}")
 
 
 def _is_atom(part: str) -> bool:
-    """Return True if *part* is one side of a symbol: generic mana, a single atom, or half mana."""
+    """Return True if *part* is a whole one-part symbol: generic mana or a single atom."""
     if part and all(char in _DIGITS for char in part):
         return True  # generic mana of any size: {0}, {16}, {1000000}
-    if part in _ATOMS:
-        return True
-    return len(part) == _HALF_SYMBOL_LENGTH and part[0] == _HALF_PREFIX and part[1] in _COLORS
+    return part in _ATOMS
 
 
 def is_valid_mana_symbol(symbol: str) -> bool:
     """Return True if *symbol* — the text between the braces, upper-cased — can appear in a mana cost.
 
-    A symbol is either one atom or several joined by '/': hybrid ({W/U}), generic-hybrid ({2/W}),
-    phyrexian ({W/P}) and hybrid-phyrexian ({R/G/P}) all follow that one shape.
+    A symbol is either one atom, or two or three sides joined by '/'. See `_PART_SHAPES` for which
+    combinations, and in which order, are real: {W/U}/{U/W} are the same symbol, but {W/2} and {P/W}
+    are not — the generic and phyrexian sides never move — and a side never repeats: {W/W}, {2/2}
+    aren't symbols even though 'W' and '2' are each legal alone.
     """
-    return bool(symbol) and all(_is_atom(part) for part in symbol.split("/"))
+    if not symbol:
+        return False
+    parts = tuple(symbol.split("/"))
+    if len(parts) == 1:
+        return _is_atom(parts[0])
+    return parts in _PART_SHAPES
 
 
 def first_invalid_mana_symbol(value: str) -> str | None:

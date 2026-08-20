@@ -8,24 +8,28 @@ from api.parsing.mana_symbols import first_invalid_mana_symbol, is_valid_mana_sy
 
 # Every distinct symbol the card corpus uses in mana_cost_text — 48 of them, via
 # `regexp_matches(mana_cost_text, '[{]([^}]*)[}]', 'g')` over magic.cards — plus generic values no
-# printing has used yet and the Un-set symbols the corpus holds no cards for ({HW} half mana on Little
-# Girl, {∞} as Gleemax's whole cost). Every one of these has to stay searchable.
+# printing has used yet, plus every rule-valid hybrid-phyrexian colour pair (only 4 of the 10 have
+# actually been printed, but a mana search isn't limited to what's been printed — see mana_symbols.py).
+# Every one of these has to stay searchable.
 _VALID = (
     *[str(n) for n in (*range(21), 100, 1000000)],
     *"WUBRGCSXYZP",
-    "∞",
-    "HW",
-    "HR",
     *("2/W", "2/U", "2/B", "2/R", "2/G"),
     *("W/U", "W/B", "U/B", "U/R", "B/R", "B/G", "R/G", "R/W", "G/W", "G/U"),
     *("C/W", "C/U", "C/B", "C/R", "C/G"),
     *("W/P", "U/P", "B/P", "R/P", "G/P"),
-    *("G/U/P", "G/W/P", "R/G/P", "R/W/P"),
+    *("G/U/P", "G/W/P", "R/G/P", "R/W/P", "W/U/P", "W/B/P", "U/B/P", "U/R/P", "B/R/P", "B/G/P"),
+    # Hybrid and colourless hybrid are a set, not a slot: whichever order a user types a real symbol's
+    # colours in, it's the same symbol. Only a sample of reversed forms, not every pair reversed.
+    *("U/W", "W/C", "U/G/P"),
 )
 
 # Real Magic symbols that no mana cost can hold: tap, untap, energy, and the planar symbols. Searching
-# mana for one of these can never match, which is the whole reason this check exists.
-_REAL_BUT_NOT_A_COST = ("T", "Q", "E", "A", "CHAOS", "PW", "TK")
+# mana for one of these can never match, which is the whole reason this check exists. '∞' (Gleemax's
+# whole cost) and half mana ({HW}, {HR}, ...) belong here too, not in _VALID: both are real printed
+# symbols, but only on cards from "funny" (Un-)sets, which `preprocess_card` filters out of the corpus
+# entirely — so a mana cost containing them can never match a row either.
+_REAL_BUT_NOT_A_COST = ("T", "Q", "E", "A", "CHAOS", "PW", "TK", "∞", "HW", "HR")
 
 
 @pytest.mark.parametrize(argnames=["symbol"], argvalues=[(sym,) for sym in _VALID], ids=_VALID)
@@ -51,10 +55,17 @@ def test_symbols_that_cannot_appear_in_a_cost_are_rejected(symbol: str) -> None:
         ("W/",),  # trailing separator leaves an empty part
         ("/W",),
         ("W W",),
-        ("HX",),  # half mana only combines with a colour
-        ("HWW",),
         ("1.5",),
         ("-1",),
+        ("W/W",),  # a side never repeats, even though 'W' is legal alone
+        ("2/2",),
+        ("C/C",),
+        ("W/U/B",),  # three plain colours: no 'P', so not a hybrid-phyrexian shape either
+        ("C/P",),  # phyrexian mana is only ever a colour's, never colourless's
+        ("2/P",),  # nor generic's
+        ("W/1",),  # generic-hybrid's generic side is always '2'
+        ("W/2",),  # ... and it's always first: {2/W}, never {W/2}
+        ("P/W",),  # phyrexian is always last: {W/P}, never {P/W}
     ],
     ids=[
         "empty",
@@ -65,10 +76,17 @@ def test_symbols_that_cannot_appear_in_a_cost_are_rejected(symbol: str) -> None:
         "trailing_separator",
         "leading_separator",
         "inner_space",
-        "half_non_color",
-        "half_too_long",
         "decimal",
         "negative",
+        "repeated_color_side",
+        "repeated_generic_side",
+        "repeated_colorless_side",
+        "three_colors_no_phyrexian",
+        "colorless_phyrexian",
+        "generic_phyrexian",
+        "non_two_generic",
+        "generic_wrong_position",
+        "phyrexian_wrong_position",
     ],
 )
 def test_junk_is_rejected(symbol: str) -> None:
