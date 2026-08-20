@@ -110,6 +110,8 @@ def test_junk_is_rejected(symbol: str) -> None:
         ("2WWQ", "Q"),  # the bug this exists to close: silently dropped by calculate_cmc, not rejected
         ("2WWX", None),  # X is bare notation's own real pip, not a leftover from a braced check
         ("2WWS", "S"),  # 'S' is a real atom braced ({S}), but calculate_cmc never counts it bare
+        ("H{Q}", "H"),  # the bare 'H' comes before '{Q}' in the string, so it is the true first offender
+        ("{Q}H", "{Q}"),  # here the braced symbol genuinely is first
     ],
     ids=[
         "braced",
@@ -125,6 +127,8 @@ def test_junk_is_rejected(symbol: str) -> None:
         "bare_extra_char_rejected",
         "bare_x_accepted",
         "bare_atom_not_bare_valid",
+        "bare_before_braced",
+        "braced_before_bare",
     ],
 )
 def test_first_invalid_mana_symbol(value: str, expected: str | None) -> None:

@@ -433,6 +433,28 @@ class CardSearch {
     return this.collapseWhitespaceOutsideSpans(this.balanceQuery(autocompleted)).trim();
   }
 
+  // Returns the index closing the quoted string, /regex/, or {mana symbol} that opens at i, or null if
+  // `query[i]` doesn't open one there, or it never closes — callers that only act on a *closed* span
+  // treat both cases identically, so they don't need to tell them apart. scanSpans doesn't use this: it
+  // has to act on the unterminated case too (closing the span, reporting where its content started),
+  // so it calls quoteCloseIndex/regexCloseIndex/braceCloseIndex directly.
+  // The JS counterpart of no single Python function — spans.py's callers each make this same
+  // three-way dispatch themselves, since hand_parser's lexer and parsing_f's balancer need the
+  // unterminated case too.
+  closedSpanEnd(query, i) {
+    const char = query[i];
+    if (char === '"' || char === "'") {
+      return this.quoteCloseIndex(query, i + 1, char);
+    }
+    if (char === '/' && this.opensRegex(query, i)) {
+      return this.regexCloseIndex(query, i + 1);
+    }
+    if (char === '{') {
+      return this.braceCloseIndex(query, i + 1);
+    }
+    return null;
+  }
+
   // Collapses runs of whitespace to a single space, except inside a quoted string or /regex/ (mana
   // symbols never contain whitespace, so they need no protection here). A plain `.replace(/\s+/g, ' ')`
   // over the whole query would silently rewrite `o:/a  b/` to `o:/a b/` and `o:"draw  a  card"` to
@@ -441,24 +463,14 @@ class CardSearch {
     let out = '';
 
     for (let i = 0; i < query.length; i++) {
-      const char = query[i];
-
-      if (char === '"' || char === "'") {
-        const closeIndex = this.quoteCloseIndex(query, i + 1, char);
-        if (closeIndex !== null) {
-          out += query.slice(i, closeIndex + 1);
-          i = closeIndex;
-          continue;
-        }
-      } else if (char === '/' && this.opensRegex(query, i)) {
-        const closeIndex = this.regexCloseIndex(query, i + 1);
-        if (closeIndex !== null) {
-          out += query.slice(i, closeIndex + 1);
-          i = closeIndex;
-          continue;
-        }
+      const closeIndex = this.closedSpanEnd(query, i);
+      if (closeIndex !== null) {
+        out += query.slice(i, closeIndex + 1);
+        i = closeIndex;
+        continue;
       }
 
+      const char = query[i];
       if (/\s/.test(char)) {
         if (!out.endsWith(' ')) {
           out += ' ';
@@ -525,27 +537,33 @@ class CardSearch {
     return i >= 0 && ':=><'.includes(query[i]);
   }
 
-  // Returns the index of the next unescaped closer at or after start, or null when there is none.
-  // A backslash escapes the character after it, so /a\/b/ is one pattern and 'don\'t' is one string
-  // — the lexer reads them that way, so everything here has to as well (#905).
-  // The JS counterpart of _close_index in api/parsing/spans.py.
-  closeIndex(query, start, closer) {
+  // Returns { closeIndex, danglingEscape } from a single walk: closeIndex is the index of the next
+  // unescaped closer at or after start, or null if it never closes; danglingEscape is true only when
+  // the walk instead ran off the end of query on an unfinished backslash escape. A caller that only
+  // needs the index (regexCloseIndex/quoteCloseIndex, and every closed-span check) can ignore the
+  // second value; scanSpans, completing an unterminated span, needs both — computing them in one walk
+  // is the only way to get both without reading the same tail of query twice.
+  // The JS counterpart of find_close_index in api/parsing/spans.py.
+  findCloser(query, start, closer) {
     for (let i = start; i < query.length; i++) {
-      if (query[i] === '\\' && i + 1 < query.length) {
+      if (query[i] === '\\') {
+        if (i + 1 >= query.length) {
+          return { closeIndex: null, danglingEscape: true };
+        }
         i++;
       } else if (query[i] === closer) {
-        return i;
+        return { closeIndex: i, danglingEscape: false };
       }
     }
-    return null;
+    return { closeIndex: null, danglingEscape: false };
   }
 
   regexCloseIndex(query, start) {
-    return this.closeIndex(query, start, '/');
+    return this.findCloser(query, start, '/').closeIndex;
   }
 
   quoteCloseIndex(query, start, quote) {
-    return this.closeIndex(query, start, quote);
+    return this.findCloser(query, start, quote).closeIndex;
   }
 
   // Returns the index of the '}' closing a mana symbol whose content starts at start, or null when
@@ -556,27 +574,12 @@ class CardSearch {
     return index < 0 ? null : index;
   }
 
-  // True when the span opening at start runs to the end of the query on an unfinished escape, so a
-  // closer appended now would be escaped instead of ending the span.
-  // The JS counterpart of has_dangling_escape in api/parsing/spans.py.
-  hasDanglingEscape(query, start) {
-    for (let i = start; i < query.length; i++) {
-      if (query[i] === '\\') {
-        if (i + 1 >= query.length) {
-          return true;
-        }
-        i++;
-      }
-    }
-    return false;
-  }
-
-  // Returns the suffix that closes a span whose content starts at contentStart and runs to the end of
-  // the query. A trailing backslash has nothing to escape yet, so appending the closer on its own
+  // Returns the suffix that closes a span left open on a danglingEscape or not.
+  // A trailing backslash has nothing to escape yet, so appending the closer on its own
   // would escape that instead of ending the span — escape the backslash first.
   // The JS counterpart of _closer_for_partial_span in api/parsing/parsing_f.py.
-  closerForPartialSpan(query, contentStart, closer) {
-    return (this.hasDanglingEscape(query, contentStart) ? '\\' : '') + closer;
+  closerForPartialSpan(danglingEscape, closer) {
+    return (danglingEscape ? '\\' : '') + closer;
   }
 
   // One pass over the query's spans and parens, reporting both things callers need:
@@ -602,9 +605,9 @@ class CardSearch {
       // A quoted string, a /regex/ and a {mana symbol} are all opaque: the quotes and parens inside
       // them are content, not delimiters.
       if (quoteChars.has(char)) {
-        const closeIndex = this.quoteCloseIndex(query, i + 1, char);
+        const { closeIndex, danglingEscape } = this.findCloser(query, i + 1, char);
         if (closeIndex === null) {
-          spanSuffix = this.closerForPartialSpan(query, i + 1, char);
+          spanSuffix = this.closerForPartialSpan(danglingEscape, char);
           openSpanContentStart = i + 1;
           break;
         }
@@ -615,12 +618,12 @@ class CardSearch {
       // A '/' in value position opens a regex; anywhere else it is division, an ordinary character.
       if (char === '/') {
         if (this.opensRegex(query, i)) {
-          const closeIndex = this.regexCloseIndex(query, i + 1);
+          const { closeIndex, danglingEscape } = this.findCloser(query, i + 1, '/');
           if (closeIndex === null) {
             // Still being typed. Close the regex rather than reading on, or the metacharacters the
             // user has typed so far get balanced as query structure: `o:/[)` is a partial `o:/[)]/`,
             // not a stray ')'.
-            spanSuffix = this.closerForPartialSpan(query, i + 1, '/');
+            spanSuffix = this.closerForPartialSpan(danglingEscape, '/');
             openSpanContentStart = i + 1;
             break;
           }
@@ -670,36 +673,21 @@ class CardSearch {
 
   // Blanks the body of every quoted string, closed /regex/ span, and {mana symbol}, keeping the
   // delimiters, so the structural checks in validateQuery cannot fire on a ':' or ')' that is
-  // really string, pattern, or mana content. Built on the same opensRegex/regexCloseIndex/
-  // braceCloseIndex primitives as balanceSuffix and the lexer, because a fourth opinion about
-  // where a span starts is a fourth way to reject a query the parser accepts (o:/x:)/).
+  // really string, pattern, or mana content. Built on the same closedSpanEnd dispatch as
+  // collapseWhitespaceOutsideSpans, because a fourth opinion about where a span starts is a fourth way
+  // to reject a query the parser accepts (o:/x:)/).
   blankOpaqueSpans(query) {
     let out = '';
 
     for (let i = 0; i < query.length; i++) {
       const char = query[i];
-
-      if (char === '"' || char === "'") {
-        const closeIndex = this.quoteCloseIndex(query, i + 1, char);
-        if (closeIndex !== null) {
-          out += char + char;
-          i = closeIndex;
-          continue;
-        }
-      } else if (char === '/' && this.opensRegex(query, i)) {
-        const closeIndex = this.regexCloseIndex(query, i + 1);
-        if (closeIndex !== null) {
-          out += '//';
-          i = closeIndex;
-          continue;
-        }
-      } else if (char === '{') {
-        const closeIndex = this.braceCloseIndex(query, i + 1);
-        if (closeIndex !== null) {
-          out += '{}';
-          i = closeIndex;
-          continue;
-        }
+      const closeIndex = this.closedSpanEnd(query, i);
+      if (closeIndex !== null) {
+        // '""'/"''" for a quote and '//' for a regex share their open and close character; a mana
+        // symbol doesn't, so '{}' can't come from doubling char.
+        out += char === '{' ? '{}' : char + char;
+        i = closeIndex;
+        continue;
       }
 
       // An unterminated quote, regex, or mana symbol is not a span yet, so it stays an ordinary character.
@@ -761,7 +749,12 @@ class CardSearch {
       return;
     }
 
-    const normalizedQuery = (suffix === null ? autocompleted : autocompleted + suffix).trim().replace(/\s+/g, ' ');
+    // collapseWhitespaceOutsideSpans, not a plain `.replace(/\s+/g, ' ')`: the latter would collapse
+    // whitespace inside a quote or regex too, silently rewriting what the user typed (see that
+    // function's docstring). balanced reuses the suffix scanSpans already found above, rather than
+    // letting balanceQuery re-scan the same string for it.
+    const balanced = suffix === null ? autocompleted : autocompleted + suffix;
+    const normalizedQuery = this.collapseWhitespaceOutsideSpans(balanced).trim();
 
     const validationError = this.validateQuery(normalizedQuery);
     if (validationError) {
