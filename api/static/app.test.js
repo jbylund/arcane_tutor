@@ -459,6 +459,18 @@ describe('CardSearch performSearch', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
+  // performSearch used to call scanSpans twice per keystroke — once via endsWithEmptySpan, again
+  // via balanceQuery — before reusing one scan for both. validateQuery's own balanceSuffix check
+  // is a separate, intentional third call over the post-balance string, not part of this guard.
+  it('scans spans only once for the empty-span guard and balancing', async () => {
+    const spy = jest.spyOn(search, 'scanSpans');
+
+    await search.performSearch('name:bolt');
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    spy.mockRestore();
+  });
+
   // A span with nothing in it is not a query yet. Balancing would close it into something that is
   // valid but useless — `o://` matches every card with an unindexable empty pattern — so the request
   // waits for the next keystroke, and unlike an unbalance-able query this is not an error.

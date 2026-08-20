@@ -709,6 +709,14 @@ class CardSearch {
 
     const autocompleted = this.autoCompleteQuery(query);
 
+    // One scan of autocompleted serves both the empty-span guard below and the balancing that
+    // follows, instead of each independently re-scanning the same string on every keystroke
+    // (endsWithEmptySpan and balanceQuery both call scanSpans on their own). openSpanContentStart
+    // is a position in autocompleted, not in a trimmed copy of it, but that doesn't change what it
+    // means: trailing whitespace can't be a span closer, so the position a span was left open at
+    // is the same whether or not the string is trimmed first.
+    const { suffix, openSpanContentStart } = this.scanSpans(autocompleted);
+
     // Mid-span with nothing typed after the opener: wait rather than search. Balancing would turn
     // `o:/` into the empty pattern `o://`, which matches every card and cannot use an index, and
     // `mana:{` into the non-cost `mana:{}`. Neither is what the user is on their way to typing, so
@@ -719,12 +727,12 @@ class CardSearch {
     // lands here with the previous showLoading still on screen. Returning without touching the
     // status container left "Searching o:/a/…" over an empty grid until the next searchable
     // keystroke. Clearing converges on the same "nothing to show" state as an empty query.
-    if (this.endsWithEmptySpan(autocompleted)) {
+    if (openSpanContentStart !== null && autocompleted.slice(openSpanContentStart).trim() === '') {
       this.clearMessages();
       return;
     }
 
-    const normalizedQuery = this._balanceAndNormalize(autocompleted);
+    const normalizedQuery = (suffix === null ? autocompleted : autocompleted + suffix).trim().replace(/\s+/g, ' ');
 
     const validationError = this.validateQuery(normalizedQuery);
     if (validationError) {
