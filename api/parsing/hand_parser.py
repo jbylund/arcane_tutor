@@ -28,7 +28,7 @@ from api.parsing.nodes import (
     TrueNode,
     flatten_nested_operations,
 )
-from api.parsing.spans import QUOTE_CHARS, brace_close_index
+from api.parsing.spans import QUOTE_CHARS, brace_close_index, find_close_index, unescape
 
 # ── Alias → parser-class lookup ──────────────────────────────────────────────
 
@@ -118,58 +118,34 @@ def _is_word_cont(c: str) -> bool:
 
 
 def _closed_quote(query: str, start: int, quote: str) -> tuple[int, str] | None:
-    """Find the *quote* closing a string opened before *start* and unescape its content in one walk.
+    """Find the *quote* closing a string opened before *start* and unescape its content.
 
-    A single-pass fusion of `spans.quote_close_index` + `spans.unescape`, since the lexer (unlike the
-    balancer, which only wants the boundary) needs both the index and the unescaped text, and finding
-    the boundary already means visiting every character `unescape` would need to inspect afterward.
+    Delegates the boundary walk to `spans.find_close_index` — the same walk the balancer uses — so
+    the lexer and balancer can't drift on where an escaped quote ends (#905). Unescaping via
+    `spans.unescape`'s compiled regex is also faster in practice than a hand-rolled char loop.
 
     Returns (close_index, unescaped_content), or None if the string is unterminated.
     """
-    pos = start
-    length = len(query)
-    parts: list[str] = []
-    while pos < length:
-        ch = query[pos]
-        if ch == "\\":
-            if pos + 1 >= length:
-                return None
-            parts.append(query[pos + 1])
-            pos += 2
-        elif ch == quote:
-            return pos, "".join(parts)
-        else:
-            parts.append(ch)
-            pos += 1
-    return None
+    close_index, _ = find_close_index(query, start, quote)
+    if close_index is None:
+        return None
+    return close_index, unescape(query[start:close_index])
 
 
 def _closed_regex(query: str, start: int) -> tuple[int, str] | None:
-    r"""Find the '/' closing a regex opened before *start*, unescaping only '\\/' in the same walk.
+    r"""Find the '/' closing a regex opened before *start*, unescaping only '\\/' -> '/'.
 
-    A single-pass fusion of `spans.regex_close_index` + the `\\/` -> `/` unescape: every other
-    backslash sequence (e.g. `\\d`) is passed through untouched for the regex engine to interpret,
-    matching `hand_parser`'s previous two-pass `.replace("\\/", "/")` behavior.
+    Delegates the boundary walk to `spans.find_close_index`, the same walk the balancer uses, so the
+    two can't drift on where an escaped '/' ends (#905). Every other backslash sequence (e.g. `\\d`)
+    is left untouched for the regex engine to interpret — this only ever collapses an escaped slash,
+    never a full general unescape.
 
     Returns (close_index, unescaped_content), or None if the pattern is unterminated.
     """
-    pos = start
-    length = len(query)
-    parts: list[str] = []
-    while pos < length:
-        ch = query[pos]
-        if ch == "\\":
-            if pos + 1 >= length:
-                return None
-            nxt = query[pos + 1]
-            parts.append(nxt if nxt == "/" else ch + nxt)
-            pos += 2
-        elif ch == "/":
-            return pos, "".join(parts)
-        else:
-            parts.append(ch)
-            pos += 1
-    return None
+    close_index, _ = find_close_index(query, start, "/")
+    if close_index is None:
+        return None
+    return close_index, query[start:close_index].replace("\\/", "/")
 
 
 class LexError(ValueError):
