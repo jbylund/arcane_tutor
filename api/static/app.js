@@ -584,7 +584,7 @@ class CardSearch {
   //            (the JS counterpart of balance_partial_query's ValueError in api/parsing/parsing_f.py)
   //   openSpanContentStart — index where an unterminated span's content begins, or null if every span
   //            is closed. Only used to tell an empty span from one with something in it.
-  // balanceSuffix and endsWithEmptySpan both read this, so there is one scan and one set of rules.
+  // balanceSuffix and performSearch's empty-span guard both read this, so there is one scan and one set of rules.
   scanSpans(query) {
     const quoteChars = new Set(["'", '"']);
 
@@ -659,21 +659,6 @@ class CardSearch {
 
   balanceSuffix(query) {
     return this.scanSpans(query).suffix;
-  }
-
-  // True when the query ends on a span with nothing in it yet: `o:/`, `o:'`, `o:"`, `mana:{`.
-  // Balancing closes those into something meaningless — `o://` is an empty pattern that matches every
-  // card and cannot use an index, and `mana:{}` is not a cost — so a caller mid-typing waits for
-  // another keystroke rather than searching on a span the user has not filled in.
-  //
-  // Trailing whitespace is stripped first because it is not content the user is searching for: the
-  // normalisation in _balanceAndNormalize trims only *after* balancing, so `o:/ ` would otherwise
-  // slip past this check and go out as `o:/ /` — a single-space pattern with exactly the
-  // match-everything, cannot-use-an-index behaviour the check exists to prevent.
-  endsWithEmptySpan(query) {
-    const trimmed = query.trimEnd();
-    const { openSpanContentStart } = this.scanSpans(trimmed);
-    return openSpanContentStart === trimmed.length;
   }
 
   // Balance parentheses for typeahead searches, skipping over quotes, regexes and mana symbols;
@@ -755,11 +740,10 @@ class CardSearch {
     const autocompleted = this.autoCompleteQuery(query);
 
     // One scan of autocompleted serves both the empty-span guard below and the balancing that
-    // follows, instead of each independently re-scanning the same string on every keystroke
-    // (endsWithEmptySpan and balanceQuery both call scanSpans on their own). openSpanContentStart
-    // is a position in autocompleted, not in a trimmed copy of it, but that doesn't change what it
-    // means: trailing whitespace can't be a span closer, so the position a span was left open at
-    // is the same whether or not the string is trimmed first.
+    // follows, instead of each independently re-scanning the same string on every keystroke.
+    // openSpanContentStart is a position in autocompleted, not in a trimmed copy of it, but that
+    // doesn't change what it means: trailing whitespace can't be a span closer, so the position a
+    // span was left open at is the same whether or not the string is trimmed first.
     const { suffix, openSpanContentStart } = this.scanSpans(autocompleted);
 
     // Mid-span with nothing typed after the opener: wait rather than search. Balancing would turn
