@@ -781,6 +781,19 @@ def test_parse_combined_mana_queries() -> None:
     assert result2.root == expected2
 
 
+def test_parse_quoted_mana_value() -> None:
+    """A quoted mana value validates the same as an unquoted one, not an opt-out of that check."""
+    observed = parsing.parse_search_query('mana:"2WW"')
+    expected = BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("2WW"))
+    assert observed.root == expected
+
+
+def test_quoted_invalid_mana_symbol_is_rejected() -> None:
+    """'mana:"q"' used to skip validation entirely and resolve to an empty cost, matching every card."""
+    with pytest.raises(ValueError, match="Failed to parse query"):
+        parsing.parse_search_query('mana:"q"')
+
+
 def test_mana_cost_with_comparison_operators() -> None:
     """Test that mana cost searches work with different operators."""
     # Test colon operator (most common)
