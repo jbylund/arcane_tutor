@@ -52,16 +52,6 @@ def brace_close_index(query: str, start: int) -> int | None:
     return None if index < 0 else index
 
 
-def regex_close_index(query: str, start: int) -> int | None:
-    """Return the index of the '/' closing a regex that opened before *start*, or None if unterminated."""
-    return find_close_index(query, start, "/")[0]
-
-
-def quote_close_index(query: str, start: int, quote: str) -> int | None:
-    """Return the index of the *quote* closing a string that opened before *start*, or None if unterminated."""
-    return find_close_index(query, start, quote)[0]
-
-
 def find_close_index(query: str, start: int, closer: str) -> tuple[int | None, bool]:
     """Return the index of the next unescaped *closer* at or after *start* and whether a dangling escape ended it.
 
@@ -69,9 +59,9 @@ def find_close_index(query: str, start: int, closer: str) -> tuple[int | None, b
     walk instead ran to the end of *query* on a dangling escape — both answers a single walk already has
     to compute.
 
-    A caller that only needs the index (the lexer, `regex_close_index`/`quote_close_index`) can ignore
-    the second value; a balancer completing an unterminated span needs both, and calling this once is
-    the only way to get them without walking the same tail of *query* twice.
+    A caller that only needs the index can ignore the second value; a balancer completing an
+    unterminated span needs both, and calling this once is the only way to get them without walking
+    the same tail of *query* twice.
     """
     pos = start
     length = len(query)
