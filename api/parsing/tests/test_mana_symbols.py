@@ -105,8 +105,11 @@ def test_junk_is_rejected(symbol: str) -> None:
         ("{Q}{W}", "{Q}"),  # the first one, scanning left to right
         ("{W}{}", "{}"),
         ("{ AND O:BOLT)}", "{ AND O:BOLT)}"),  # what a swallowed stray brace balances to
-        ("HELLO", None),  # bare text is left alone: the two parsers disagree about what it is
-        ("{W}T", None),  # ... including a bare marker alongside a braced symbol
+        ("HELLO", "H"),  # bare text is checked one character at a time, not as a word
+        ("{W}T", "T"),  # ... including a bare marker alongside a braced symbol
+        ("2WWQ", "Q"),  # the bug this exists to close: silently dropped by calculate_cmc, not rejected
+        ("2WWX", None),  # X is bare notation's own real pip, not a leftover from a braced check
+        ("2WWS", "S"),  # 'S' is a real atom braced ({S}), but calculate_cmc never counts it bare
     ],
     ids=[
         "braced",
@@ -117,10 +120,13 @@ def test_junk_is_rejected(symbol: str) -> None:
         "invalid_first",
         "empty_symbol",
         "swallowed_brace",
-        "bare_word_untouched",
-        "bare_marker_untouched",
+        "bare_word_rejected",
+        "bare_marker_rejected",
+        "bare_extra_char_rejected",
+        "bare_x_accepted",
+        "bare_atom_not_bare_valid",
     ],
 )
 def test_first_invalid_mana_symbol(value: str, expected: str | None) -> None:
-    """Only braced symbols are checked, and the first offender is named so the message can say which."""
+    """Braced symbols are checked as a whole; bare characters are checked one at a time."""
     assert first_invalid_mana_symbol(value) == expected
