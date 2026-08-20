@@ -496,8 +496,8 @@ describe('CardSearch performSearch', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  // performSearch used to call scanSpans twice per keystroke — once via endsWithEmptySpan, again
-  // via balanceQuery — before reusing one scan for both. validateQuery's own balanceSuffix check
+  // performSearch used to call scanSpans twice per keystroke for the empty-span guard and again
+  // for balancing, before reusing one scan for both. validateQuery's own balanceSuffix check
   // is a separate, intentional third call over the post-balance string, not part of this guard.
   it('scans spans only once for the empty-span guard and balancing', async () => {
     const spy = jest.spyOn(search, 'scanSpans');
@@ -543,46 +543,6 @@ describe('CardSearch performSearch', () => {
     await search.performSearch(query);
 
     expect(global.fetch).toHaveBeenCalled();
-  });
-});
-
-describe('CardSearch endsWithEmptySpan', () => {
-  it.each(['o:/', "o:'", 'o:"', 'mana:{', '(mana:{', 'name:test o:/'])('is true for %s', query => {
-    expect(search.endsWithEmptySpan(query)).toBe(true);
-  });
-
-  // Trailing whitespace is not content: _balanceAndNormalize trims after balancing, so without this
-  // `o:/ ` went out as the match-everything pattern `o:/ /`. Enumerated over every opener and every
-  // whitespace tail, because the guard is only as good as its least-covered opener.
-  const SPAN_OPENERS = ['o:/', "o:'", 'o:"', 'mana:{'];
-  const WHITESPACE_TAILS = [' ', '  ', '\t', ' \t '];
-  const QUERY_PREFIXES = ['', 't:elf ', '(', '-'];
-  it.each(
-    QUERY_PREFIXES.flatMap(prefix =>
-      SPAN_OPENERS.flatMap(opener => WHITESPACE_TAILS.map(tail => prefix + opener + tail))
-    )
-  )('is true for %j', query => {
-    expect(search.endsWithEmptySpan(query)).toBe(true);
-  });
-
-  // The line the trimEnd draws: an unclosed span holding only whitespace is still being typed, but a
-  // span the user closed around a space is a query they committed to, and still searches.
-  it.each(['o:/ /', "o:' '", 'o:" "', 'o:/ /  ', "t:elf o:' '"])('is false for %j', query => {
-    expect(search.endsWithEmptySpan(query)).toBe(false);
-  });
-
-  it.each([
-    'o:/a', // content typed
-    'o:/a/', // closed
-    'mana:{W}', // closed
-    'power/2>1', // division, not a regex opener
-    '', // nothing at all
-    'hello)', // unbalance-able, reported by validateQuery instead
-    'o:/a\\', // a dangling escape is still content
-    'o:/a /', // an interior space is content, and the span is closed
-    'o:/ a', // leading space inside the span is content
-  ])('is false for %s', query => {
-    expect(search.endsWithEmptySpan(query)).toBe(false);
   });
 });
 

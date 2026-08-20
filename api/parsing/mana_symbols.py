@@ -15,7 +15,9 @@ than an empty result set.
 from __future__ import annotations
 
 import itertools
-import re
+
+from api.parsing.card_query_nodes import BARE_MANA_ATOMS as _BARE_ATOMS
+from api.parsing.card_query_nodes import BRACED_MANA_SYMBOL as _BRACED_SYMBOL
 
 _DIGITS = frozenset("0123456789")
 
@@ -52,16 +54,6 @@ _PART_SHAPES = frozenset(
         *((a, b, "P") for a, b in itertools.permutations(_COLORS, 2)),  # hybrid-phyrexian, colours either order
     )
 )
-
-# A braced symbol anywhere in a mana value, e.g. the '2' and 'W' of '{2}{W}'.
-_BRACED_SYMBOL = re.compile(r"\{([^}]*)\}")
-
-# What card_query_nodes.mana_cost_str_to_dict/calculate_cmc actually count outside braces: a colour,
-# colourless, or X (its own real pip, per those two functions' comments). Digits are generic mana and
-# always fine bare, no matter the value. Nothing else bare — not even a single-character atom that's
-# only ever real inside braces, like 's' or 'p' — is one those two add up: they silently drop it
-# instead of erroring, which is exactly the gap this module exists to close.
-_BARE_ATOMS = frozenset("WUBRGCX")
 
 
 def _is_atom(part: str) -> bool:
