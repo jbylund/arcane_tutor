@@ -70,12 +70,23 @@ def first_invalid_mana_symbol(value: str) -> str | None:
     those readers used to *drop* any character they did not recognise, so 'mana:snow' kept the 'W' and
     silently answered 'mana:w', and 'mana:hello' kept nothing and matched every card in the corpus
     (an empty cost dict is a subset of every cost). Dropping quietly is worse than refusing.
+
+    Bare and braced symbols can appear side by side in one value, e.g. 'T{Q}' from a stray marker
+    next to a braced one, so the two notations are walked in the order they actually occur rather
+    than braced-then-bare, or an invalid bare character after a valid braced run would report the
+    later, braced offender as "first".
     """
-    for symbol in _BRACED_SYMBOL.findall(value):
+    pos = 0
+    for match in _BRACED_SYMBOL.finditer(value):
+        for char in value[pos : match.start()]:
+            if char not in _DIGITS and char not in MANA_COST_ATOMS:
+                return char
+        symbol = match.group(1)
         if not is_valid_mana_symbol(symbol):
             return f"{{{symbol}}}"
+        pos = match.end()
 
-    for char in _BRACED_SYMBOL.sub("", value):
+    for char in value[pos:]:
         if char not in _DIGITS and char not in MANA_COST_ATOMS:
             return char
 

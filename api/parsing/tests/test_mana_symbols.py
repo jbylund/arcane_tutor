@@ -93,6 +93,8 @@ def test_junk_is_rejected(symbol: str) -> None:
         ("S", None),  # snow, dropped by the old charset
         ("P", None),  # phyrexian, likewise
         ("2WWS", None),
+        ("T{Q}", "T"),  # an invalid bare marker before an invalid braced symbol: bare wins, left to right
+        ("{W}T{Q}", "T"),  # valid braced, then invalid bare, then invalid braced: the bare one is still first
     ],
     ids=[
         "braced",
@@ -109,6 +111,8 @@ def test_junk_is_rejected(symbol: str) -> None:
         "bare_snow",
         "bare_phyrexian",
         "bare_mixed",
+        "bare_before_braced",
+        "bare_between_braced",
     ],
 )
 def test_first_invalid_mana_symbol(value: str, expected: str | None) -> None:
