@@ -14,42 +14,77 @@ than an empty result set.
 
 from __future__ import annotations
 
+import itertools
 import re
 
 _DIGITS = frozenset("0123456789")
 
 _COLORS = frozenset("WUBRG")
 
-# Single-character atoms: a colour, colourless, snow, the variables, phyrexian, and Gleemax's cost.
-# Grounded in the 48 distinct symbols the card corpus uses in mana_cost_text, plus the Un-set symbols
-# that corpus holds no cards for — '∞' is Gleemax's whole mana cost, and 'H' + a colour is half mana
-# ({HW} on Little Girl). The frontend already renders both, in the mana maps in app.js.
-_ATOMS = _COLORS | frozenset("CSXYZP∞")
+# Single-character atoms: a colour, colourless, snow, the variables, and phyrexian. Grounded in the 48
+# distinct symbols the card corpus uses in mana_cost_text, plus generic values no printing has used
+# yet. Deliberately excludes symbols that appear only on cards from "funny" (Un-)sets — '∞' (Gleemax's
+# whole cost) and 'H' + a colour (half mana, e.g. Little Girl's {HW}) — since `preprocess_card` filters
+# every `set_type == "funny"` card out of the corpus, so no mana cost these queries can ever match
+# contains them: they belong with the rest of `_REAL_BUT_NOT_A_COST` in test_mana_symbols.py, not here.
+_ATOMS = _COLORS | frozenset("CSXYZP")
 
-# Half mana is written as 'H' followed by a colour: {HW}, {HR}.
-_HALF_PREFIX = "H"
-_HALF_SYMBOL_LENGTH = 2  # the 'H' and the colour it applies to
+# The generic side of generic-hybrid mana is always specifically '2' ({2/W}, never {1/W} or {3/W}).
+_GENERIC_HYBRID_VALUE = "2"
+
+_TWO_PARTS = 2
+_THREE_PARTS = 3
+
+# A multi-part symbol's sides can appear in either order — a user typing from memory has no reason to
+# know Scryfall prints hybrid as '{W/U}' rather than '{U/W}', and the two name the same symbol — so
+# each shape is stored as a frozenset of its sides, not a tuple. What a *set* can't capture is a side
+# repeating itself: '{W/W}' and '{2/2}' aren't symbols even though 'W' and '2' are each legal alone, so
+# duplicate-side combinations are rejected before this table is ever consulted.
+_TWO_PART_SHAPES = frozenset(
+    frozenset(pair)
+    for pair in (
+        *itertools.combinations(_COLORS, 2),  # hybrid: any two colours, e.g. {W/U}
+        *((c, "C") for c in _COLORS),  # colourless hybrid: {C/W}
+        *((c, _GENERIC_HYBRID_VALUE) for c in _COLORS),  # generic hybrid: {2/W}
+        *((c, "P") for c in _COLORS),  # phyrexian: {W/P}
+    )
+)
+
+# Hybrid-phyrexian, e.g. {R/G/P}: corpus-grounded rather than every 2-colour combination + 'P', since
+# real printings don't cover all ten colour pairs for this one.
+_THREE_PART_SHAPES = frozenset(frozenset((*pair, "P")) for pair in (("G", "U"), ("G", "W"), ("R", "G"), ("R", "W")))
 
 # A braced symbol anywhere in a mana value, e.g. the '2' and 'W' of '{2}{W}'.
 _BRACED_SYMBOL = re.compile(r"\{([^}]*)\}")
 
 
 def _is_atom(part: str) -> bool:
-    """Return True if *part* is one side of a symbol: generic mana, a single atom, or half mana."""
+    """Return True if *part* is one side of a symbol: generic mana or a single atom."""
     if part and all(char in _DIGITS for char in part):
         return True  # generic mana of any size: {0}, {16}, {1000000}
-    if part in _ATOMS:
-        return True
-    return len(part) == _HALF_SYMBOL_LENGTH and part[0] == _HALF_PREFIX and part[1] in _COLORS
+    return part in _ATOMS
 
 
 def is_valid_mana_symbol(symbol: str) -> bool:
     """Return True if *symbol* — the text between the braces, upper-cased — can appear in a mana cost.
 
-    A symbol is either one atom or several joined by '/': hybrid ({W/U}), generic-hybrid ({2/W}),
-    phyrexian ({W/P}) and hybrid-phyrexian ({R/G/P}) all follow that one shape.
+    A symbol is either one atom, or two or three sides joined by '/' in either order: hybrid ({W/U} or
+    {U/W}), generic-hybrid ({2/W}), phyrexian ({W/P}) and hybrid-phyrexian ({R/G/P}). Repeating a side
+    is never real, even when the side is: {W/W} and {2/2} aren't symbols.
     """
-    return bool(symbol) and all(_is_atom(part) for part in symbol.split("/"))
+    if not symbol:
+        return False
+    parts = symbol.split("/")
+    if len(parts) == 1:
+        return _is_atom(parts[0])
+    if len(set(parts)) != len(parts):
+        return False
+    combo = frozenset(parts)
+    if len(parts) == _TWO_PARTS:
+        return combo in _TWO_PART_SHAPES
+    if len(parts) == _THREE_PARTS:
+        return combo in _THREE_PART_SHAPES
+    return False
 
 
 def first_invalid_mana_symbol(value: str) -> str | None:
