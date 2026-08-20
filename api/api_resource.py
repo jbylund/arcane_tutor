@@ -73,18 +73,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class _EngineDeclinedQueryError(Exception):
-    """Raised by ``_search_engine`` when the engine cannot build a query that SQL can still answer.
-
-    Kept distinct from ``falcon.HTTPBadRequest``: ``_search``'s fallback handler used to tell a
-    decline apart from a real engine failure by ``isinstance(e, falcon.HTTPBadRequest)``, which is
-    only a reliable signal because nothing else in ``_search_engine`` happens to raise that type
-    today. A dedicated exception makes "this was a decline" true by construction instead of by
-    convention, so a future HTTPBadRequest raised anywhere else in that call chain for an unrelated
-    reason can't be silently downgraded to an info-level log with no traceback.
-    """
-
-
 def _rss_mb() -> str:
     """Return current RSS in MB as a string, or 'unknown' if /proc is unavailable."""
     try:
@@ -1381,16 +1369,17 @@ class APIResource:
                 # BaseExceptions that must still propagate are the ones that are not failures.
                 if isinstance(e, (KeyboardInterrupt, SystemExit)):
                     raise
-                # An _EngineDeclinedQueryError from _search_engine is a query the engine declined to
-                # build, not an engine that broke: _QueryError means "cannot be parsed or built",
-                # and _search_engine has already logged it at info. It reaches here for two
-                # different reasons, and the SQL path resolves both correctly on its own — a
-                # pattern that is invalid everywhere (o:/^[/) becomes the 400 raised below, and one
-                # the Rust regex crate rejects but Postgres accepts (backreferences, lookaround)
-                # simply gets answered. Re-logging it at warning with a stack trace turned every
-                # keystroke inside a character class into an alertable event for a user typo. Fall
-                # through quietly; anything else really is an engine failure and keeps its traceback.
-                declined = isinstance(e, _EngineDeclinedQueryError)
+                # _QueryError (raised by card_engine, not this module) means the engine declined to
+                # build the query, not that it broke — _search_engine has already logged it at info.
+                # It reaches here for several different reasons (an unsupported regex feature, an
+                # attribute the engine hasn't wired a filter up for, ...), and the SQL path resolves
+                # all of them correctly on its own. Re-logging it at warning with a stack trace turned
+                # every keystroke inside a character class into an alertable event for a user typo.
+                # Fall through quietly; anything else really is an engine failure and keeps its
+                # traceback. isinstance rather than a dedicated wrapper type: QueryError is already
+                # engine-specific and nothing else in this call chain raises it, so wrapping it added
+                # a type only this handler understood without narrowing what gets caught.
+                declined = isinstance(e, _QueryError)
                 logger.log(
                     logging.INFO if declined else logging.WARNING,
                     "Engine %s %r, falling back to SQL: %s",
@@ -1449,9 +1438,9 @@ class APIResource:
                     offset=offset,
                     fields=fields,
                 )
-        except _QueryError as err:
+        except _QueryError:
             logger.info("QueryError caught for query '%s', declining to SQL", query)
-            raise _EngineDeclinedQueryError(str(err)) from err
+            raise
         with timer("engine_collect"):
             cards = list(cards)
         return {
