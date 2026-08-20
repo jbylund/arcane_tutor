@@ -15,6 +15,7 @@ from unittest.mock import patch
 import falcon
 import psycopg.errors
 import pytest
+from psycopg.pq import DiagnosticField
 
 from api.api_resource import APIResource, regex_error_reason
 from api.tests.helpers import search_kwargs
@@ -115,8 +116,12 @@ class TestInvalidRegularExpressionHandling:
         an ordinary intermediate state on the way to `o:/^[abc]/` — not something to alert on.
         """
         with patch.object(self.api_resource, "_run_query") as mock_run_query:
+            # `info=` populates .diag.message_primary the way a real connection would — the plain
+            # constructor string does not, so a test built on it can't tell whether
+            # `err.diag.message_primary` is actually wired through to the user-facing description.
             mock_run_query.side_effect = psycopg.errors.InvalidRegularExpression(
                 "invalid regular expression: brackets [] not balanced",
+                info={DiagnosticField.MESSAGE_PRIMARY: b"invalid regular expression: brackets [] not balanced"},
             )
 
             with pytest.raises(falcon.HTTPBadRequest) as exc_info:
@@ -124,7 +129,9 @@ class TestInvalidRegularExpressionHandling:
 
             assert exc_info.value.title == "Invalid Search Query"
             assert "o:/^[/" in exc_info.value.description
-            assert "invalid regular expression" in exc_info.value.description.lower()
+            # The Postgres prefix must be stripped exactly once, not left in twice.
+            assert "brackets [] not balanced" in exc_info.value.description
+            assert exc_info.value.description.count("invalid regular expression") == 1
             assert mock_run_query.call_count == 1
 
 
