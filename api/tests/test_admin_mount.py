@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import multiprocessing
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import falcon
 import falcon.testing
@@ -59,14 +59,17 @@ EXPECTED_ADMIN_ROUTES = {
 
 @pytest.fixture(name="resource")
 def resource_fixture() -> APIResource:
-    """An APIResource with its child mounted, against mocked pools.
+    """An APIResource with its child mounted, against distinct mocked pools.
 
-    A fresh MagicMock per call (rather than a fixed return_value) so the parent's and the child's
-    pools are distinct objects, matching that AdminResource now opens its own pool instead of
-    sharing the parent's.
+    conn_pool and admin_conn_pool are injected separately (rather than left to default) so the
+    parent's and the child's pools are distinct objects, matching that AdminResource now opens its
+    own pool instead of sharing the parent's.
     """
-    with patch("api.api_resource.db_utils.make_pool", side_effect=MagicMock):
-        return APIResource(last_import_time=multiprocessing.Value("d", time.time(), lock=True))
+    return APIResource(
+        last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+        conn_pool=MagicMock(),
+        admin_conn_pool=MagicMock(),
+    )
 
 
 class TestRouteTable:

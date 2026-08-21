@@ -11,7 +11,7 @@ import pytest
 
 from api.admin_resource import AdminResource
 from api.api_resource import APIResource
-from api.tests.support import stub_conn_pools
+from api.tests.support import mock_conn_pool_kwargs
 
 
 class TestImportCardsBySearch(unittest.TestCase):
@@ -19,10 +19,11 @@ class TestImportCardsBySearch(unittest.TestCase):
 
     def setUp(self) -> None:
         """Set up test fixtures."""
+        self.mock_conn_pool, pool_kwargs = mock_conn_pool_kwargs()
         self.api_resource = APIResource(
             last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+            **pool_kwargs,
         )
-        self.mock_conn_pool = stub_conn_pools(self.api_resource)
 
     def test_import_cards_by_search_validates_input(self) -> None:
         """Test that import_cards_by_search validates search_query parameter."""

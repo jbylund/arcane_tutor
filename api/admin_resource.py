@@ -20,7 +20,9 @@ the routing fix does not need.
 The child keeps its own `_conn_pool` rather than sharing the parent's: nothing here needs the
 parent's query-result cache or EXPLAIN plumbing, only a connection, so a second pool removes that
 coupling for the price of a second `psycopg_pool.ConnectionPool` (and its own connections) per
-worker process.
+worker process. `APIResource.__init__` builds both pools and hands this one over at construction,
+rather than this module building its own — so a test can inject a mock in place of either without
+a real connection ever opening.
 """
 
 from __future__ import annotations
@@ -183,16 +185,26 @@ CARD_IS_TAGS = LAND_IS_TAGS + [  # noqa: RUF005
 class AdminResource:
     """Data-management routes, mounted behind a path prefix by APIResource."""
 
-    def __init__(self, parent: APIResource, *, import_guard: LockType, schema_setup_event: EventType) -> None:
+    def __init__(
+        self,
+        parent: APIResource,
+        *,
+        conn_pool: psycopg_pool.ConnectionPool,
+        import_guard: LockType,
+        schema_setup_event: EventType,
+    ) -> None:
         """Attach to the parent resource and take ownership of the admin-only handles.
 
         Args:
             parent: The resource this is mounted on, for the shared methods and handles.
+            conn_pool: This resource's own connection pool -- built by the caller (mirroring the
+                parent's own `_conn_pool`), so a test can inject a mock without a real pool ever
+                opening a connection.
             import_guard: Cross-process lock serialising imports.
             schema_setup_event: Set once the schema has been created.
         """
         self._parent = parent
-        self._conn_pool: psycopg_pool.ConnectionPool = db_utils.make_pool()
+        self._conn_pool = conn_pool
         self._import_guard = import_guard
         self._schema_setup_event = schema_setup_event
         self._session = requests.Session()

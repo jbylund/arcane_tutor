@@ -247,7 +247,7 @@ def _columnarize_cards(cards: list[dict[str, Any]]) -> dict[str, list[Any]]:
 class APIResource:
     """Class implementing request handling for our simple API."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         import_guard: LockType = multiprocessing_utils.DEFAULT_LOCK,
@@ -255,13 +255,28 @@ class APIResource:
         schema_setup_event: EventType = multiprocessing_utils.DEFAULT_EVENT,
         cache_generation: Synchronized | None = None,
         engine_reload_guard: LockType | None = None,
+        conn_pool: psycopg_pool.ConnectionPool | None = None,
+        admin_conn_pool: psycopg_pool.ConnectionPool | None = None,
     ) -> None:
         """Initialize an APIResource object, set up connection pool and action map.
 
         Sets up the database connection pool and action mapping for the API.
+
+        Args:
+            import_guard: Cross-process lock serialising imports.
+            last_import_time: Shared timestamp of the last completed import.
+            schema_setup_event: Set once the schema has been created.
+            cache_generation: Shared counter bumped to invalidate the query-result cache.
+            engine_reload_guard: Cross-process lock serialising engine reloads.
+            conn_pool: This resource's own connection pool. Built via `db_utils.make_pool()` if not
+                given, matching every other handle here -- a caller (a test, mainly) can inject one
+                without a real pool ever opening a connection.
+            admin_conn_pool: The connection pool handed to the mounted AdminResource. Built the same
+                way if not given; kept separate from `conn_pool` so a test can inject the two
+                independently.
         """
         self._critical_css: str = build_critical_css(STATIC_DIR / "styles.css")
-        self._conn_pool: psycopg_pool.ConnectionPool = db_utils.make_pool()
+        self._conn_pool: psycopg_pool.ConnectionPool = conn_pool or db_utils.make_pool()
         # Build the route table from methods marked with @route, scanning the class rather than this
         # instance so nothing assigned below can become a route. Each entry carries everything
         # dispatch needs — the wrapped handler, how many positional path segments it absorbs, and
@@ -285,7 +300,12 @@ class APIResource:
         # Mounted after the parent's own state exists, since the child reaches back for the handles
         # they share. advertise=False is set here rather than on each handler: forgetting it is then
         # a property of this one call, not a hole in one route.
-        self.admin = AdminResource(self, import_guard=import_guard, schema_setup_event=schema_setup_event)
+        self.admin = AdminResource(
+            self,
+            conn_pool=admin_conn_pool or db_utils.make_pool(),
+            import_guard=import_guard,
+            schema_setup_event=schema_setup_event,
+        )
         self.routes.update(build_route_table(self.admin, prefix=ADMIN_MOUNT_PREFIX, advertise=False))
         self._not_found_routes = build_routes_listing(self.routes)
 

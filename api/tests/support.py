@@ -2,34 +2,24 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
-if TYPE_CHECKING:
-    from api.api_resource import APIResource
 
+def mock_conn_pool_kwargs() -> tuple[MagicMock, dict[str, MagicMock]]:
+    """A mock pool plus the APIResource(...) kwargs that inject it as both `_conn_pool`s.
 
-def stub_conn_pools(api_resource: APIResource) -> MagicMock:
-    """Close the real pools opened during construction and replace both with one mock.
-
-    APIResource.__init__ and the AdminResource it constructs each open a real
-    psycopg_pool.ConnectionPool immediately (min_size=1, open=True). A test that doesn't need a
-    real database must close both before dropping the reference, or the sockets and the pool's
-    background thread outlive the test. Returns one mock shared by both attributes, matching how
-    a single `_conn_pool` mock covered every code path before AdminResource had its own pool.
-
-    Args:
-        api_resource: An already-constructed APIResource whose pools should be replaced.
+    APIResource.__init__ takes `conn_pool` and `admin_conn_pool` precisely so a test can hand it a
+    mock at construction time; passed the return value here as `**kwargs`, no real
+    psycopg_pool.ConnectionPool is ever opened, so there is nothing to close afterward. One mock
+    covers both attributes, matching how a single `_conn_pool` mock covered every code path before
+    AdminResource had its own pool.
 
     Returns:
-        The MagicMock now assigned to both `api_resource._conn_pool` and `api_resource.admin._conn_pool`.
+        The mock, and a `{"conn_pool": ..., "admin_conn_pool": ...}` dict to spread into the
+        APIResource(...) call.
     """
-    api_resource._conn_pool.close()
-    api_resource.admin._conn_pool.close()
     mock_pool = MagicMock()
-    api_resource._conn_pool = mock_pool
-    api_resource.admin._conn_pool = mock_pool
-    return mock_pool
+    return mock_pool, {"conn_pool": mock_pool, "admin_conn_pool": mock_pool}
 
 
 def override_attr(obj: object, name: str, value: object) -> None:

@@ -13,7 +13,7 @@ import requests
 
 from api.admin_resource import AdminResource
 from api.api_resource import APIResource
-from api.tests.support import stub_conn_pools
+from api.tests.support import mock_conn_pool_kwargs
 
 
 class TestImportCardByName(unittest.TestCase):
@@ -21,10 +21,11 @@ class TestImportCardByName(unittest.TestCase):
 
     def setUp(self) -> None:
         """Set up test fixtures."""
+        self.mock_conn_pool, pool_kwargs = mock_conn_pool_kwargs()
         self.api_resource = APIResource(
             last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+            **pool_kwargs,
         )
-        self.mock_conn_pool = stub_conn_pools(self.api_resource)
         self.mock_cursor = MagicMock()
         self.mock_cursor.fetchone.return_value = None
         self.mock_conn_pool.connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value = (
