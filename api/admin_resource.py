@@ -16,9 +16,11 @@ reference to at construction (see `api/app_context.py`). Neither resource owns t
 peers that reach into a neutral shared object instead of into each other.
 
 `import_guard`/`schema_setup_event` are not part of `AppContext`: they're cross-worker-shared, but
-only *within* `AdminResource`'s own copies across processes (serialising concurrent import
-attempts) — nothing on the search side ever touches either one. They get their own small bundle,
-`AdminContext`, defined here since nothing outside this module needs it.
+only *within* `AdminResource`'s own copies across processes. `import_guard` serialises concurrent
+*schema setup* only — the import flow itself serialises on `AppContext.last_import_time`'s own lock
+instead (see `import_data`) — and nothing on the search side ever touches either primitive. They get
+their own small bundle, `AdminContext`, defined here. `APIResource` and `api_worker` import the type
+to construct and forward it, but nothing outside this module reads or writes its fields.
 """
 
 from __future__ import annotations
@@ -178,7 +180,11 @@ CARD_IS_TAGS = LAND_IS_TAGS + [  # noqa: RUF005
 
 
 class AdminContext:
-    """Cross-worker primitives private to AdminResource: not shared with any other resource."""
+    """Cross-worker primitives private to AdminResource's own use.
+
+    The type itself is imported by `APIResource` and `api_worker` to construct and forward an
+    instance, but nothing outside `AdminResource` reads or writes the primitives it holds.
+    """
 
     def __init__(
         self,
@@ -189,7 +195,9 @@ class AdminContext:
         """Build the primitives, or accept ones a caller already built.
 
         Args:
-            import_guard: Cross-process lock serialising imports.
+            import_guard: Cross-process lock serialising concurrent schema setup (see
+                `setup_schema`) -- not the import flow itself, which serialises on
+                `AppContext.last_import_time`'s own lock instead (see `import_data`).
             schema_setup_event: Set once the schema has been created.
         """
         self.import_guard = import_guard
@@ -210,8 +218,8 @@ class AdminResource:
         Args:
             app_context: State and resources shared with the resource this is mounted on --
                 connection pools, the query engine, the cross-worker cache/import signals.
-            admin_context: Import-serialisation primitives private to this resource. Built fresh if
-                not given, matching every other handle here.
+            admin_context: Schema-setup-serialisation primitives private to this resource. Built
+                fresh if not given, matching every other handle here.
         """
         self.app_context = app_context
         self.admin_context = admin_context or AdminContext()
@@ -283,9 +291,7 @@ class AdminResource:
             logger.info("Schema setup complete in pid %d", os.getpid())
 
     def _import_recent(self) -> bool:
-        """Return True if a bulk import completed in the last 5 minutes (or setup is complete when no shared timestamp)."""
-        if self.app_context.last_import_time is None:
-            return self.app_context.setup_complete()
+        """Return True if a bulk import completed in the last 5 minutes."""
         # Unlocked read: c_double is atomic on typical platforms; avoids lock contention on fast path
         t = self.app_context.last_import_time.get_obj().value
         if not t:
@@ -310,8 +316,7 @@ class AdminResource:
         after_transfer = time.monotonic()
 
         if result["status"] == "success":
-            if self.app_context.last_import_time is not None:
-                self.app_context.last_import_time.value = time.time()
+            self.app_context.last_import_time.value = time.time()
             total_time = after_transfer - before
             cards_sent = result.get("cards_sent", result["cards_loaded"])
             rate = cards_sent / total_time if total_time > 0 else 0
@@ -945,6 +950,7 @@ class AdminResource:
 
         # Check if card already exists in database for backward compatibility
         with self.app_context.writer_pool.connection() as conn, conn.cursor() as cursor:
+            db_utils.set_statement_timeout(cursor, 10_000)
             cursor.execute(
                 "SELECT card_name FROM magic.cards WHERE card_name = %(card_name)s",
                 {"card_name": card_name},

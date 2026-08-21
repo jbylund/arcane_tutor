@@ -61,7 +61,7 @@ Browser → GET /search?q=<query>
 
 - **`api/parsing/`** — Core query parser (~2,500 lines). `parsing_f.py` drives the pyparsing grammar; `nodes.py` defines AST node types; `card_query_nodes.py` has card-specific nodes; `db_info.py` maps query fields to DB columns.
 - **`api/api_resource.py`** — Dispatch (Falcon sink), search logic, SQL generation from AST, and the public routes.
-- **`api/admin_resource.py`** — Data-management handlers (import, backfill, tagging), mounted by `APIResource` under a path prefix rather than sharing the public namespace. Holds a reference to its parent for the handful of methods and handles they share.
+- **`api/admin_resource.py`** — Data-management handlers (import, backfill, tagging), mounted by `APIResource` under a path prefix rather than sharing the public namespace. Holds no reference to its parent; state the two resources share (connection pools, the query engine, cross-worker cache/import signals) lives on the `AppContext` both take a reference to at construction (`api/app_context.py`).
 - **`api/utils/routing.py`** — The `@route` marker, route-table construction, and the 404 listing. A handler is reachable only if marked; the listing skips anything registered `advertise=False`, which is what makes the mount a boundary rather than a URL prefix.
 - **`api/utils/param_binding.py`** — Resolves each handler's annotations once at registration and binds request parameters against a fixed plan.
 - **`api/utils/page_rendering.py`**, **`api/utils/css_utils.py`**, **`api/utils/site_name.py`**, **`api/utils/caching.py`** — Page assembly, critical-CSS extraction, Host-header display names, and the settings-aware cache decorator.
