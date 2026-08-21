@@ -172,9 +172,14 @@ class AppContext:
 
         Reads via `writer_pool`, not `reader_pool`: this is a single giant SELECT (the whole
         corpus) triggered by a write completing, and the cross-process guard means only one worker
-        ever runs it at a time -- but that one in-flight reload can run for minutes, and for that
-        whole window a connection borrowed from the reader pool is a connection live search traffic
-        doesn't have.
+        ever runs it at a time. Measured 2026-08-21 against a ~98k-card corpus: ~3 seconds
+        end-to-end, not the "minutes" an earlier version of this docstring assumed -- so this isn't
+        a high-stakes call. It's also lower-stakes than a naive pool split suggests either way: the
+        in-process engine serves the large majority of search traffic directly, with no pool
+        involved at all, so reader_pool contention during those ~3 seconds would only ever touch the
+        minority of requests that fall back to SQL. Kept on `writer_pool` anyway on the same
+        reasoning as the pool split itself (a write-triggered bulk operation belongs with other
+        writes, not with reads), just without claiming a bigger effect than the numbers support.
 
         Args:
             force: If False, skip entirely when another worker holds the lock or the
