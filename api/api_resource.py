@@ -35,7 +35,6 @@ from api.noscript_helpers import generate_results_count_html, generate_results_h
 from api.parsing import generate_sql_query, parse_scryfall_query
 from api.settings import settings
 from api.utils import db_utils, error_monitoring, multiprocessing_utils
-from api.utils.caching import cached
 from api.utils.css_utils import build_critical_css
 from api.utils.generation_cache import GenerationCache
 from api.utils.page_rendering import SITE_NAME_PLACEHOLDER, STATIC_DIR, build_base_html, build_card_html
@@ -209,20 +208,6 @@ def set_no_store_header(falcon_response: falcon.Response | None) -> None:
     falcon_response.set_header("Cache-Control", "no-store")
 
 
-@cached(cache=LRUCache(maxsize=10_000))
-def get_where_clause(query: str) -> tuple[str, dict]:
-    """Generate SQL WHERE clause and parameters from a search query.
-
-    Args:
-        query: The search query string to parse.
-
-    Returns:
-        Tuple of (SQL WHERE clause, parameter dictionary).
-    """
-    parsed_query = parse_scryfall_query(query)
-    return generate_sql_query(parsed_query)
-
-
 def rewrap(query: str) -> str:
     """Normalize whitespace in a SQL query string.
 
@@ -300,10 +285,6 @@ class APIResource:
 
         self.admin.setup_schema()
         self.admin.import_data()  # ensures that database is setup
-
-    def _get_timer(self, req: falcon.Request) -> Timer:
-        """Get the timer for the request."""
-        return req.context.setdefault("timer", Timer())
 
     def _set_statement_timeout(self, cursor: Cursor, statement_timeout: int) -> None:
         """Validate and set the statement timeout for a database cursor.
@@ -752,14 +733,6 @@ class APIResource:
                 description="Limit must be an integer.",
             )
         return limit
-
-    def _get_where_clause(self, query: str | None) -> tuple[str, dict[str, Any]]:
-        try:
-            where_clause, params = get_where_clause(query)
-        except ValueError as err:
-            # Handle parsing errors from parse_scryfall_query
-            _raise_query_bad_request(exc_name="ValueError", query=query, description=f'Failed to parse query: "{query}"', err=err)
-        return where_clause, params
 
     def _search(  # noqa: PLR0913
         self,
