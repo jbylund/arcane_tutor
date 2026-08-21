@@ -122,9 +122,15 @@ silent-zero-rows case. **B** is the narrowest.
 
 ## What shipped so far
 
-No fixes — only the pin. [`test_parser_parity.py`](../../api/parsing/tests/test_parser_parity.py)
-gains `test_known_parser_divergences`, parameterized over all 15 wild queries plus 4 minimal repros,
-each `xfail(strict=True)`. Fixing any cause turns its entries into `XPASS(strict)` failures, so a
-fix cannot land without deleting the entries it resolves — the list can only shrink.
+First, only the pin: [`test_parser_parity.py`](../../api/parsing/tests/test_parser_parity.py) gained
+`test_known_parser_divergences`, parameterized over all 15 wild queries plus 4 minimal repros, each
+`xfail(strict=True)`. Fixing any cause turns its entries into `XPASS(strict)` failures, so a fix
+cannot land without deleting the entries it resolves — the list can only shrink.
 
 The shared assertion moved into `assert_parsers_agree()` so both parity tests use one comparison.
+
+**A fixed**: `_rhs_introduces_comparison` now counts a comparison operator at any paren depth, not
+just depth 0 — a one-line change (dropping `and depth == 0` from the comparison branch). All 12
+cause-A entries removed from `KNOWN_DIVERGENCES`; regression cases added to
+[`implicit_and_cases.py`](../../api/parsing/tests/implicit_and_cases.py) covering the numeric-LHS,
+year-LHS, and single-vs-`OR`-group shapes. B and C remain open.

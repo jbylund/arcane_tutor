@@ -91,27 +91,6 @@ def test_bare_mana_character_parity(query: str) -> None:
 # cannot land without deleting its entry here. Keep the minimal repro alongside the wild query —
 # it is what a fixer works from, and it fails for the same reason.
 KNOWN_DIVERGENCES: dict[str, tuple[str, list[str]]] = {
-    # pyparsing's preprocess_implicit_and misreads the '-' as subtraction and inserts no AND,
-    # because _rhs_introduces_comparison only counts comparison operators at depth 0 — the ones
-    # inside the group are invisible to it. Numeric LHS yields `int - boolean` (invalid SQL);
-    # a year LHS yields a parse error.
-    "a_minus_before_group_after_numeric": (
-        "#903 A: comparison nested in the group is invisible to _rhs_introduces_comparison",
-        [
-            "cmc>1 -(t:elf)",
-            "pow=3 -(name:force or type:elf)",
-            "usd>50 -(format:modern or format:commander)",
-            "year:2019 -(t:elf)",
-            "year:2019 -(oracle:exile or type:enchantment)",
-            "year:2022 -(id:rg or usd<0.25)",
-            "year:2022 -(id:ub or artist:avon)",
-            "year:2022 -(set:mid or color:ubr)",
-            "year:2022 -(tou=4 or set:mom)",
-            "year:2023 -(id:rg or name:dark)",
-            "year:2023 -(year:2020 or set:mom)",
-            "year:2024 -(name:co or set:khm)",
-        ],
-    ),
     # The implicit-AND tokenizer matches CaselessKeyword("AND"/"OR") before it knows it is in
     # value position, so 'o:or' preprocesses to 'o: OR' and the value is gone. Only on the slow
     # path — a query with none of ()"'/{+* takes the fast path and is unaffected.

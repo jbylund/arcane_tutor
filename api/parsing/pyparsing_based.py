@@ -702,7 +702,9 @@ def _is_numeric_operand(t: str) -> bool:
 def _rhs_introduces_comparison(tokens: list[str], start_index: int) -> bool:
     """Return True if scanning forward from start_index hits a comparison operator before AND/OR/).
 
-    Used to disambiguate binary subtraction on the RHS of a comparison.
+    Used to disambiguate binary subtraction on the RHS of a comparison. A comparison operator
+    counts wherever it appears, including nested inside a parenthesized group — `cmc>1 -(t:elf)`
+    has its `:` one paren deep, and it still means the group is a filter, not an arithmetic term.
     """
     depth = 0
     for j in range(start_index, len(tokens)):
@@ -713,7 +715,7 @@ def _rhs_introduces_comparison(tokens: list[str], start_index: int) -> bool:
             if depth == 0:
                 return False
             depth -= 1
-        elif t in _COMPARISON_OPERATORS and depth == 0:
+        elif t in _COMPARISON_OPERATORS:
             return True
         elif t in {"AND", "OR"} and depth == 0:
             return False
