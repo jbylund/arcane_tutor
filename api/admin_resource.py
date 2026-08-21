@@ -291,9 +291,7 @@ class AdminResource:
             logger.info("Schema setup complete in pid %d", os.getpid())
 
     def _import_recent(self) -> bool:
-        """Return True if a bulk import completed in the last 5 minutes (or setup is complete when no shared timestamp)."""
-        if self.app_context.last_import_time is None:
-            return self.app_context.setup_complete()
+        """Return True if a bulk import completed in the last 5 minutes."""
         # Unlocked read: c_double is atomic on typical platforms; avoids lock contention on fast path
         t = self.app_context.last_import_time.get_obj().value
         if not t:
@@ -318,8 +316,7 @@ class AdminResource:
         after_transfer = time.monotonic()
 
         if result["status"] == "success":
-            if self.app_context.last_import_time is not None:
-                self.app_context.last_import_time.value = time.time()
+            self.app_context.last_import_time.value = time.time()
             total_time = after_transfer - before
             cards_sent = result.get("cards_sent", result["cards_loaded"])
             rate = cards_sent / total_time if total_time > 0 else 0
