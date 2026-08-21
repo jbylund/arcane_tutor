@@ -43,7 +43,7 @@ REPEATS = 3  # independent timed windows per cell (report min to reduce noise)
 
 print("Connecting to DB and loading engine store…", flush=True)
 api = APIResource(app_context=AppContext(last_import_time=multiprocessing.Value("d", time.time(), lock=True)))
-override_attr(api, "_import_recent", lambda: True)
+override_attr(api.admin, "_import_recent", lambda: True)
 override_attr(api.app_context, "setup_complete", lambda: True)
 api.app_context.reload_engine(force=True)
 total_printings = api.app_context.engine.size()
