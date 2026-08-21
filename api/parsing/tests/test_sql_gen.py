@@ -678,6 +678,24 @@ def test_is_tag_sql_translation(parse_query, input_query: str, expected_sql: str
 
 
 @pytest.mark.parametrize(
+    argnames="tag_value",
+    argvalues=["creature", "modal-dfc", "spell"],
+)
+def test_has_is_alias(parse_query, tag_value: str) -> None:
+    """Test that has: is a full synonym for is:.
+
+    Scryfall treats has: as a full synonym for is:, for every tag value -- not just the
+    handful of "does this card have X" examples its docs happen to show (has:indicator,
+    has:watermark). Confirmed live against api.scryfall.com: is:X and has:X return identical
+    card counts for every value tried.
+    """
+    is_context = QueryContext()
+    has_context = QueryContext()
+    assert parse_query(f"is:{tag_value}").to_sql(is_context) == parse_query(f"has:{tag_value}").to_sql(has_context)
+    assert is_context == has_context
+
+
+@pytest.mark.parametrize(
     argnames=("input_query", "expected_sql", "expected_parameters"),
     argvalues=[
         # Case-insensitive oracle tag search

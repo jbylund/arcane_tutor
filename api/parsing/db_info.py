@@ -208,7 +208,7 @@ DB_COLUMNS = [
     FieldInfo(
         db_column_name="card_is_tags",
         field_type=FieldType.JSONB_OBJECT,
-        search_aliases=["is"],
+        search_aliases=["is", "has"],
         parser_class=ParserClass.TEXT,
     ),
     # A distinct FieldInfo from "is" above, sharing its db_column_name, so a `not:` leaf
