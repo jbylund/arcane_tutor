@@ -16,9 +16,10 @@ reference to at construction (see `api/app_context.py`). Neither resource owns t
 peers that reach into a neutral shared object instead of into each other.
 
 `import_guard`/`schema_setup_event` are not part of `AppContext`: they're cross-worker-shared, but
-only *within* `AdminResource`'s own copies across processes (serialising concurrent import
-attempts) — nothing on the search side ever touches either one. They get their own small bundle,
-`AdminContext`, defined here since nothing outside this module needs it.
+only *within* `AdminResource`'s own copies across processes. `import_guard` serialises concurrent
+*schema setup* only — the import flow itself serialises on `AppContext.last_import_time`'s own lock
+instead (see `import_data`) — and nothing on the search side ever touches either primitive. They get
+their own small bundle, `AdminContext`, defined here since nothing outside this module needs it.
 """
 
 from __future__ import annotations
@@ -189,7 +190,9 @@ class AdminContext:
         """Build the primitives, or accept ones a caller already built.
 
         Args:
-            import_guard: Cross-process lock serialising imports.
+            import_guard: Cross-process lock serialising concurrent schema setup (see
+                `setup_schema`) -- not the import flow itself, which serialises on
+                `AppContext.last_import_time`'s own lock instead (see `import_data`).
             schema_setup_event: Set once the schema has been created.
         """
         self.import_guard = import_guard
@@ -210,8 +213,8 @@ class AdminResource:
         Args:
             app_context: State and resources shared with the resource this is mounted on --
                 connection pools, the query engine, the cross-worker cache/import signals.
-            admin_context: Import-serialisation primitives private to this resource. Built fresh if
-                not given, matching every other handle here.
+            admin_context: Schema-setup-serialisation primitives private to this resource. Built
+                fresh if not given, matching every other handle here.
         """
         self.app_context = app_context
         self.admin_context = admin_context or AdminContext()
