@@ -153,7 +153,7 @@ def import_missing_card(card_name: str, api_base_url: str, session: requests.Ses
     """
     try:
         response = session.post(
-            f"{api_base_url}/import_card_by_name",
+            f"{api_base_url}/_admin/import_card_by_name",
             params={"card_name": card_name},
             timeout=30,
         )
