@@ -97,20 +97,6 @@ Browser → GET /search?q=<query>
 - **HTML/JS:** `prettier` (config in `.prettierrc`).
 - Tests relax many ruff rules (see `per-file-ignores` in `pyproject.toml`).
 
-## Blog Posts
-
-Blog posts live in `docs/blog/posts/<slug>/index.md`. Writing guidance:
-
-- **Rubric:** `docs/blog/post-grading-rubric.md` — 100-point rubric covering technical accuracy,
-  concrete evidence, clarity, narrative cohesion, honest tradeoffs, and writing quality. Read before
-  writing or reviewing a post.
-- **HN guidance:** `docs/blog/hn-content-guidance.md` and `docs/blog/hn-title-guidance.md` — what
-  makes a post land on Hacker News vs. get ignored.
-- **Post plan:** `docs/blog/blog-post-plan.md` — planned and in-progress posts.
-
-Blog posts are not subject to the 100-line length convention in the global markdown rules. Length
-should match the story: long enough to explain the mechanism and show evidence, no longer.
-
 ## Issue Tracking
 
 `docs/issues/` holds the deep design/implementation notes for engine and product work — the primary

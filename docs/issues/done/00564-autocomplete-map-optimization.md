@@ -74,8 +74,8 @@ Both approaches are fast enough that neither will ever be user-visible — 2µs 
 lost inside the 50ms debounce. The case for implementing anyway:
 
 - It is the right data structure given alphabetically-sorted input: index once, read cheap.
-- The post describing this feature (`docs/blog/posts/00256_autocomplete-card-types/`)
-  currently says the linear scan is "already fast enough not to matter," which is true
+- The post describing this feature (`00256_autocomplete-card-types`, now in the `jbylund.github.io`
+  blog repo) currently says the linear scan is "already fast enough not to matter," which is true
   but slightly unsatisfying as an explanation.
 
 The case against: adds a `buildTypeMap` call at init and requires `typeMap` alongside
