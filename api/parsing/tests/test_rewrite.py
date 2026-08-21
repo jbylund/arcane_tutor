@@ -109,6 +109,39 @@ def test_real_frame_value_not_rewritten(parse_query) -> None:
     assert root.rhs.value == "2003"
 
 
+# ── #982: not: is the same as -is: ────────────────────────────────────────────
+# (not: query, equivalent -is: query) -- the two must produce identical ASTs, including
+# on values with their own is:-expansion (vanilla, new, ...): not:vanilla negates the
+# same subtree is:vanilla expands to, not a raw card_is_tags lookup for a key nothing
+# ever stores.
+NOT_EQUIVALENCES = [
+    ("not:creature", "-is:creature"),
+    ("not:vanilla", "-is:vanilla"),
+    ("not:new", "-is:new"),
+    ("not:reprint", "-is:reprint"),
+]
+
+
+@pytest.mark.parametrize(
+    argnames=["not_query", "expansion"],
+    argvalues=NOT_EQUIVALENCES,
+    ids=[s for s, _ in NOT_EQUIVALENCES],
+)
+def test_not_expands_to_negated_is(parse_query, not_query: str, expansion: str) -> None:
+    """Each not: query parses to the same AST as the equivalent -is: query (both parsers)."""
+    assert parse_query(not_query) == parse_query(expansion)
+
+
+@pytest.mark.parametrize(
+    argnames=["not_query", "expansion"],
+    argvalues=NOT_EQUIVALENCES,
+    ids=[s for s, _ in NOT_EQUIVALENCES],
+)
+def test_not_generates_same_sql_as_negated_is(not_query: str, expansion: str) -> None:
+    """The rewrite is real end-to-end: not: and -is: emit identical SQL + params."""
+    assert generate_sql_query(parse_scryfall_query(not_query)) == generate_sql_query(parse_scryfall_query(expansion))
+
+
 # ── #734: plain-literal regex -> substring lowering ──────────────────────────
 # A metacharacter-free, unanchored regex is a substring search, so it must parse to exactly the same
 # AST as its quoted-substring form (which is index-backed, where an arbitrary regex is a full scan).

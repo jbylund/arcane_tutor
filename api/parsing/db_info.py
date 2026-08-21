@@ -211,6 +211,16 @@ DB_COLUMNS = [
         search_aliases=["is"],
         parser_class=ParserClass.TEXT,
     ),
+    # A distinct FieldInfo from "is" above, sharing its db_column_name, so a `not:` leaf
+    # generates the identical SQL/explanation as `is:` on its own -- rewrite.py's
+    # negate_not_prefix distinguishes the two via original_attribute and supplies the
+    # negation Scryfall's docs describe ("not: is the same as -is:").
+    FieldInfo(
+        db_column_name="card_is_tags",
+        field_type=FieldType.JSONB_OBJECT,
+        search_aliases=["not"],
+        parser_class=ParserClass.TEXT,
+    ),
     FieldInfo(
         db_column_name="card_rarity_int",
         field_type=FieldType.NUMERIC,
