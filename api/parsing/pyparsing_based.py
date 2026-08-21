@@ -55,6 +55,10 @@ ParserElement.enable_packrat(cache_size_limit=2**13)  # 8192 cache entries
 # Constants
 NEGATION_TOKEN_COUNT = 2
 DEFAULT_OPERATORS = one_of(": > < >= <= = !=")
+# On Scryfall '!' is an alias for '=' on COLOR/MANA/NUMERIC/RARITY/YEAR/DATE only (verified live,
+# #903 cause C) — not on TEXT/LEGALITY, so those conditions keep using DEFAULT_OPERATORS. '!='
+# still wins over bare '!' here: DEFAULT_OPERATORS is tried first and already matches it whole.
+EQ_ALIAS_OPERATORS = DEFAULT_OPERATORS | Literal("!").set_parse_action(lambda: "=")
 
 _NUMERIC_LITERAL_RE = re.compile(r"^\d+(\.\d+)?$")
 _COMPARISON_OPERATORS = frozenset({">", "<", ">=", "<=", "=", "!=", ":"})
@@ -366,27 +370,27 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
 
     numeric_comparison_lhs = arithmetic_expr | paren_expr_term | numeric_attr_word | literal_number
     numeric_comparison_rhs = arithmetic_expr | signed_arithmetic_expr | paren_expr_term | numeric_attr_word | signed_literal_number
-    unified_numeric_comparison = numeric_comparison_lhs + DEFAULT_OPERATORS + numeric_comparison_rhs
+    unified_numeric_comparison = numeric_comparison_lhs + EQ_ALIAS_OPERATORS + numeric_comparison_rhs
     unified_numeric_comparison.set_parse_action(make_binary_operator_node)
 
     # No string_value_word fallback: a mana/devotion condition's rhs is always a validated
     # ManaValueNode, one of these two, never an unchecked StringValueNode (#954) — mirroring
     # hand_parser.parse_mana_value, which has no plain-string case for this attribute class either.
     mana_value_or_string = mana_value | mana_quoted_value
-    mana_condition = create_condition_parser(mana_attr_word, mana_value_or_string)
+    mana_condition = create_condition_parser(mana_attr_word, mana_value_or_string, operators=EQ_ALIAS_OPERATORS)
 
-    color_condition = create_condition_parser(color_attr_word, color_value | quoted_string)
+    color_condition = create_condition_parser(color_attr_word, color_value | quoted_string, operators=EQ_ALIAS_OPERATORS)
 
     regex_pattern = basic_parsers["regex_pattern"]
-    rarity_condition = create_condition_parser(rarity_attr_word, quoted_string | string_value_word)
+    rarity_condition = create_condition_parser(rarity_attr_word, quoted_string | string_value_word, operators=EQ_ALIAS_OPERATORS)
     legality_condition = create_condition_parser(legality_attr_word, quoted_string | string_value_word)
     text_condition = create_condition_parser(text_attr_word, regex_pattern | quoted_string | string_value_word)
 
     date_value = Regex(r"\d{4}(?:-\d{2}-\d{2})?")
-    date_condition = create_condition_parser(date_attr_word, date_value)
+    date_condition = create_condition_parser(date_attr_word, date_value, operators=EQ_ALIAS_OPERATORS)
 
     year_value = Regex(r"\d{4}")
-    year_condition = create_condition_parser(year_attr_word, year_value)
+    year_condition = create_condition_parser(year_attr_word, year_value, operators=EQ_ALIAS_OPERATORS)
 
     attr_attr_condition = (
         (numeric_attr_word + DEFAULT_OPERATORS + numeric_attr_word)

@@ -2,6 +2,7 @@
 
 import pytest
 
+from api.parsing import parse_scryfall_query
 from api.parsing.card_query_nodes import ExactNameNode
 from api.parsing.nodes import AndNode, NotNode, QueryContext
 
@@ -99,6 +100,30 @@ def test_exact_name_sql_generation(parse_query, query: str, expected_sql: str, e
     observed_sql = parsed.to_sql(context)
     assert observed_sql == expected_sql, f"SQL mismatch: {observed_sql!r}"
     assert context == expected_parameters, f"Params mismatch: {context!r}"
+
+
+@pytest.mark.parametrize(
+    argnames="query",
+    argvalues=[
+        "t!creature",
+        "o!flying",
+        "s!khm",
+        "f!modern",
+    ],
+)
+def test_bang_not_an_operator_on_text_and_legality_fields(query: str) -> None:
+    """On Scryfall '!' is an '=' alias only on COLOR/MANA/NUMERIC/RARITY/YEAR/DATE fields (#903 C).
+
+    On TEXT/LEGALITY fields it isn't an operator at all, so the hand parser must keep its
+    pre-existing fallback: the field alias as an implicit-name term, the rest as an exact-name
+    term, joined by AND. (pyparsing errors on this shape today regardless of field class — a
+    separate, undiscovered divergence, not one of the wild-corpus queries #903 tracks.)
+    """
+    result = parse_scryfall_query(query)
+    assert isinstance(result.root, AndNode), f"Expected AndNode, got {type(result.root)}"
+    assert len(result.root.operands) == 2
+    exact_name_nodes = [op for op in result.root.operands if isinstance(op, ExactNameNode)]
+    assert len(exact_name_nodes) == 1, "Expected exactly one ExactNameNode in AND"
 
 
 def test_exact_name_node_equality() -> None:

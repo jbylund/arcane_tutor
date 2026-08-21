@@ -84,6 +84,52 @@ def test_bare_mana_character_parity(query: str) -> None:
     assert_parsers_agree(query)
 
 
+@pytest.mark.parametrize(
+    argnames=["query"],
+    argvalues=[
+        ("c!w",),
+        ("c!ubg cmc>=6 f:standard",),
+        ("en-kor c!w",),
+        ("o:destroy o:creature o:with o:flying c!g",),
+        ("cmc!3",),
+        ("r!rare",),
+        ("mana!2G",),
+        ("year!2020",),
+        ("date!2020-01-01",),
+    ],
+    ids=[
+        "wild_color_bang",
+        "wild_color_bang_with_cmc_and_legality",
+        "wild_color_bang_after_hyphenated_word",
+        "wild_color_bang_after_oracle_terms",
+        "numeric_bang",
+        "rarity_bang",
+        "mana_bang",
+        "year_bang",
+        "date_bang",
+    ],
+)
+def test_bang_equals_alias_parity(query: str) -> None:
+    """'!' is Scryfall's '=' alias on COLOR/MANA/NUMERIC/RARITY/YEAR/DATE fields (#903 C)."""
+    assert_parsers_agree(query)
+
+
+@pytest.mark.parametrize(
+    argnames=["bang_query", "eq_query"],
+    argvalues=[
+        ("c!ubg", "c=ubg"),
+        ("cmc!3", "cmc=3"),
+        ("r!rare", "r=rare"),
+        ("mana!2G", "mana=2G"),
+        ("year!2020", "year=2020"),
+        ("date!2020-01-01", "date=2020-01-01"),
+    ],
+)
+def test_bang_equals_alias_matches_eq_spelling(bang_query: str, eq_query: str) -> None:
+    """The '!' spelling must produce identical SQL to the '=' spelling it aliases (#903 C)."""
+    assert generate_sql_query(parse_scryfall_query(bang_query)) == generate_sql_query(parse_scryfall_query(eq_query))
+
+
 # Real queries from benchmarks/wild-queries/wild-corpus.jsonl on which the two parsers disagree
 # today, grouped by the root cause in #903. Sweeping that 14k-query corpus found exactly these.
 #
@@ -100,19 +146,6 @@ KNOWN_DIVERGENCES: dict[str, tuple[str, list[str]]] = {
             "o:and power+toughness>10",
             "(o:or o:more) t:land",
             "(oracle:two oracle:or oracle:more oracle:opponents) type:land",
-        ],
-    ),
-    # On Scryfall '!' is an alias for '=' on color/mana/numeric/rarity/year/date fields, and not an
-    # operator at all on text fields. Neither parser implements the alias: pyparsing rejects the
-    # shape, and the hand parser applies the text-field fallback everywhere, so 'c!w' becomes
-    # name LIKE %c% AND name = "w" and quietly matches nothing.
-    "c_bang_equals_alias": (
-        "#903 C: '!' as an '=' alias unimplemented — pyparsing rejects, hand parser mis-parses",
-        [
-            "c!w",
-            "c!ubg cmc>=6 f:standard",
-            "en-kor c!w",
-            "o:destroy o:creature o:with o:flying c!g",
         ],
     ),
 }

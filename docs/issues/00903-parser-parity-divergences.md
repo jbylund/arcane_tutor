@@ -133,4 +133,20 @@ The shared assertion moved into `assert_parsers_agree()` so both parity tests us
 just depth 0 — a one-line change (dropping `and depth == 0` from the comparison branch). All 12
 cause-A entries removed from `KNOWN_DIVERGENCES`; regression cases added to
 [`implicit_and_cases.py`](../../api/parsing/tests/implicit_and_cases.py) covering the numeric-LHS,
-year-LHS, and single-vs-`OR`-group shapes. B and C remain open.
+year-LHS, and single-vs-`OR`-group shapes.
+
+**C fixed**: `!` now aliases `=` on COLOR/MANA/NUMERIC/RARITY/YEAR/DATE in both parsers — the hand
+parser accepts a `BANG` token wherever it accepted `OP` for those classes (`parse_word_primary` in
+`hand_parser.py`); pyparsing gained an `EQ_ALIAS_OPERATORS = DEFAULT_OPERATORS | Literal("!").set_parse_action(lambda: "=")`
+used only by the five eligible `condition`s (`mana_condition`, `color_condition`,
+`rarity_condition`, `date_condition`, `year_condition`) plus `unified_numeric_comparison`;
+`legality_condition`/`text_condition` are untouched, so `!=` still wins over bare `!` by
+longest-match and TEXT/LEGALITY still fall through to the pre-existing exact-name fallback. All 4
+cause-C entries removed from `KNOWN_DIVERGENCES`.
+
+Residual, out of scope for this fix: pyparsing hard-rejects `field!value` on TEXT/LEGALITY fields
+(e.g. `t!creature`) regardless of class, where the hand parser has always had the fallback
+reading — this divergence was never in the wild-corpus sweep (no such query appeared), so it isn't
+one of the tracked 15 and is left for a future pass.
+
+B remains open.

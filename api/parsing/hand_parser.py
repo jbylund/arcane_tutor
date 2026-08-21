@@ -49,6 +49,13 @@ _DUAL_NUM_TEXT: frozenset[str] = frozenset(
 
 _NUMERIC_ALIASES: frozenset[str] = frozenset(alias for alias, pc in _ALIAS_TO_PC.items() if pc == ParserClass.NUMERIC)
 
+# On Scryfall '!' is an alias for '=' on these classes only (verified live, #903 cause C) — on
+# TEXT/LEGALITY it isn't an operator at all, and a trailing bang there falls through to the
+# existing exact-name-prefix reading of the next factor instead.
+_BANG_ALIAS_CLASSES: frozenset[ParserClass] = frozenset(
+    {ParserClass.COLOR, ParserClass.MANA, ParserClass.RARITY, ParserClass.YEAR, ParserClass.DATE}
+)
+
 _VALID_COLOR_NAMES: frozenset[str] = frozenset(COLOR_NAME_TO_CODE)
 _COLOR_LETTERS: frozenset[str] = frozenset("wubrgcWUBRGC")
 _MIN_MTG_YEAR: int = 1992
@@ -490,8 +497,9 @@ class Parser:
 
         # ── NUMERIC attribute ──
         if pc == ParserClass.NUMERIC:
-            if next_tok.type == TT.OP:
-                op = self.consume().value
+            if next_tok.type in (TT.OP, TT.BANG):
+                op = "=" if next_tok.type == TT.BANG else next_tok.value
+                self.consume()
                 return CardBinaryOperatorNode(CardAttributeNode(wl, ParserClass.NUMERIC), op, self.parse_num_expr_value())
             if next_tok.type in _ARITH_OPS and not next_tok.space_before:
                 lhs = self._arith_tail(CardAttributeNode(wl, ParserClass.NUMERIC))
@@ -510,8 +518,10 @@ class Parser:
             return lhs
 
         # ── known non-NUMERIC attribute ──
-        if pc is not None and next_tok.type == TT.OP:
-            op = self.consume().value
+        bang_alias = pc is not None and next_tok.type == TT.BANG and pc in _BANG_ALIAS_CLASSES
+        if pc is not None and (next_tok.type == TT.OP or bang_alias):
+            op = "=" if bang_alias else next_tok.value
+            self.consume()
             return CardBinaryOperatorNode(CardAttributeNode(wl, pc), op, self.parse_value_for_class(pc, wl))
         if pc is not None:
             # alias recognised but no operator → might still be a hyphenated bare word (e.g. "a-b-c")
