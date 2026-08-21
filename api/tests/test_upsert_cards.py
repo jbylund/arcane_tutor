@@ -6,7 +6,7 @@ import logging
 import multiprocessing
 import uuid
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import psycopg
 
@@ -16,6 +16,7 @@ from api.card_processing import preprocess_card
 from api.db.bulk_upsert import bulk_upsert
 from api.scryfall_bulk_data_fetcher import BulkDataKey
 from api.tests.helpers import make_raw_card
+from api.tests.support import stub_conn_pools
 
 if TYPE_CHECKING:
     import pytest
@@ -239,8 +240,7 @@ class TestRunImportUnderLockStreaming:
         # unpatched import_data with last_import_time=0.0 performs a real full Scryfall import.
         with patch.object(AdminResource, "setup_schema"), patch.object(AdminResource, "import_data"):
             api = APIResource(last_import_time=multiprocessing.Value("d", 0.0, lock=True))
-        api._conn_pool.close()
-        api._conn_pool = MagicMock()
+        stub_conn_pools(api)
         return api
 
     def test_calls_stream_data_for_key(self) -> None:

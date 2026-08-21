@@ -36,8 +36,9 @@ class TestDatatypeMismatchHandling:
     def teardown_method(self) -> None:
         """Clean up test fixtures."""
         if hasattr(self, "api_resource") and self.api_resource:
-            # Close the connection pool to prevent thread pool warnings
+            # Close both connection pools to prevent thread pool warnings
             self.api_resource._conn_pool.close()
+            self.api_resource.admin._conn_pool.close()
 
     def test_search_sql_handles_datatype_mismatch(self) -> None:
         """Test that DatatypeMismatch in _search_sql raises HTTPBadRequest."""
@@ -109,6 +110,7 @@ class TestInvalidRegularExpressionHandling:
         """Clean up test fixtures."""
         if hasattr(self, "api_resource") and self.api_resource:
             self.api_resource._conn_pool.close()
+            self.api_resource.admin._conn_pool.close()
 
     def test_search_sql_handles_invalid_regular_expression(self) -> None:
         """An unparseable regex is the user's error, so it must be a 400 and not a 500.
@@ -154,6 +156,7 @@ class TestDataErrorHandling:
         """Clean up test fixtures."""
         if hasattr(self, "api_resource") and self.api_resource:
             self.api_resource._conn_pool.close()
+            self.api_resource.admin._conn_pool.close()
 
     def test_search_sql_handles_division_by_zero(self) -> None:
         """power/0>1 parses cleanly but divides by zero at runtime — a 400, not a 500."""

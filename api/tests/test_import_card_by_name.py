@@ -13,6 +13,7 @@ import requests
 
 from api.admin_resource import AdminResource
 from api.api_resource import APIResource
+from api.tests.support import stub_conn_pools
 
 
 class TestImportCardByName(unittest.TestCase):
@@ -20,16 +21,15 @@ class TestImportCardByName(unittest.TestCase):
 
     def setUp(self) -> None:
         """Set up test fixtures."""
-        self.mock_conn_pool = MagicMock()
+        self.api_resource = APIResource(
+            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+        )
+        self.mock_conn_pool = stub_conn_pools(self.api_resource)
         self.mock_cursor = MagicMock()
         self.mock_cursor.fetchone.return_value = None
         self.mock_conn_pool.connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value = (
             self.mock_cursor
         )
-        self.api_resource = APIResource(
-            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
-        )
-        self.api_resource._conn_pool = self.mock_conn_pool
 
     def test_import_card_by_name_validates_input(self) -> None:
         """Test that import_card_by_name validates card_name parameter."""

@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import falcon
 
 from api.api_resource import APIResource
+from api.tests.support import stub_conn_pools
 from api.utils import page_rendering
 
 
@@ -45,11 +46,10 @@ class TestHtmlMinification(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.mock_conn_pool = MagicMock()
         self.api_resource = APIResource(
             last_import_time=multiprocessing.Value("d", time.time(), lock=True),
         )
-        self.api_resource._conn_pool = self.mock_conn_pool
+        self.mock_conn_pool = stub_conn_pools(self.api_resource)
 
     def test_minifies_whitespace_by_default(self) -> None:
         # minify_html also drops the redundant closing </p> (valid HTML5 tag-omission), hence

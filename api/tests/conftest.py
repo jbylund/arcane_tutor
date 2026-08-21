@@ -27,7 +27,7 @@ def engine_enabled_fixture() -> Generator[None]:
 
 @pytest.fixture(name="stub_api_resource")
 def stub_api_resource_fixture() -> Generator[APIResource]:
-    """A fresh APIResource per test, readiness stubbed, connection pool closed afterward.
+    """A fresh APIResource per test, readiness stubbed, both connection pools closed afterward.
 
     Function-scoped on purpose: it replaces per-class `setup_method` construction, and tests using it
     mutate the instance (`_engine`, feature gates), so sharing one across a module would couple them.
@@ -46,6 +46,7 @@ def stub_api_resource_fixture() -> Generator[APIResource]:
     override_attr(api, "_setup_complete", lambda: True)
     yield api
     api._conn_pool.close()
+    api.admin._conn_pool.close()
 
 
 @pytest.fixture(scope="module")
@@ -65,3 +66,4 @@ def api_resource(postgres_container: None) -> Generator[APIResource]:
     api.admin.setup_schema()
     yield api
     api._conn_pool.close()
+    api.admin._conn_pool.close()

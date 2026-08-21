@@ -59,8 +59,13 @@ EXPECTED_ADMIN_ROUTES = {
 
 @pytest.fixture(name="resource")
 def resource_fixture() -> APIResource:
-    """An APIResource with its child mounted, against a mocked pool."""
-    with patch("api.api_resource.db_utils.make_pool", return_value=MagicMock()):
+    """An APIResource with its child mounted, against mocked pools.
+
+    A fresh MagicMock per call (rather than a fixed return_value) so the parent's and the child's
+    pools are distinct objects, matching that AdminResource now opens its own pool instead of
+    sharing the parent's.
+    """
+    with patch("api.api_resource.db_utils.make_pool", side_effect=MagicMock):
         return APIResource(last_import_time=multiprocessing.Value("d", time.time(), lock=True))
 
 
@@ -148,5 +153,12 @@ class TestSharedSurface:
             assert not hasattr(resource, handle), f"{handle} should have moved to the child"
 
     def test_shared_handles_stay_on_the_parent(self, resource: APIResource) -> None:
-        for handle in ("_conn_pool", "_cache_generation", "_last_import_time"):
+        for handle in ("_cache_generation", "_last_import_time"):
             assert hasattr(resource, handle), handle
+
+    def test_admin_has_its_own_conn_pool(self, resource: APIResource) -> None:
+        # Not a shared handle: each side opens its own psycopg_pool.ConnectionPool, so nothing
+        # here reaches through the parent for a connection, its query cache, or EXPLAIN plumbing.
+        assert hasattr(resource, "_conn_pool")
+        assert hasattr(resource.admin, "_conn_pool")
+        assert resource.admin._conn_pool is not resource._conn_pool

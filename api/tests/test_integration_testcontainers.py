@@ -136,9 +136,11 @@ class TestContainerIntegration:
         # Yield the fully configured APIResource for tests to use
         yield api
 
-        # Clean up connection pool
+        # Clean up connection pools
         if hasattr(api, "_conn_pool"):
             api._conn_pool.close()
+        if hasattr(api.admin, "_conn_pool"):
+            api.admin._conn_pool.close()
 
     def test_query_parsing_with_database(self: TestContainerIntegration, api_resource: APIResource) -> None:
         """Test query parsing and execution against real database."""
