@@ -79,7 +79,7 @@ def get_available_memory_bytes() -> int:
 
 def fmt_mb(n_bytes: int) -> str:
     """Format bytes as a PostgreSQL memory string in MB."""
-    return f"{n_bytes // (1024 * 1024)}MB"
+    return f"{n_bytes // MB}MB"
 
 
 def _compute_raw(total_bytes: int) -> dict[str, int]:
@@ -196,7 +196,7 @@ def main() -> None:
             print(f"  {key}: {val}")
 
     if args.env_output:
-        limit_mb = compute_pg_mem_limit_bytes(total_bytes) // (1024 * 1024)
+        limit_mb = compute_pg_mem_limit_bytes(total_bytes) // MB
         limit_str = f"{limit_mb}m"
         # A file of its own, and specifically not .env or the tracked envs/ directory.
         # POSTGRES_MEM_LIMIT has to agree with the shared_buffers in the postgresql.conf generated
