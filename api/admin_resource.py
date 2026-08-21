@@ -9,8 +9,8 @@ public method became a route, and the only lever was a leading underscore, which
 method's Python visibility. Mounting a separate resource replaces that lever with a boundary, and
 keeps the honest names.
 
-The child holds a reference to its parent for the small surface they genuinely share — five methods
-(`_reload_engine`, `_run_query`, `_serve_static_file`, `_set_statement_timeout`, `_setup_complete`)
+The child holds a reference to its parent for the small surface they genuinely share — four methods
+(`_reload_engine`, `_serve_static_file`, `_set_statement_timeout`, `_setup_complete`)
 and four handles (`_conn_pool`, `_cache_generation`, `_last_import_time`, `_setup_complete_cache`).
 That is deliberately not a decoupling: the boundary here is about routing, and pretending otherwise
 would mean an `AppContext` refactor that the routing fix does not need.
@@ -914,13 +914,14 @@ class AdminResource:
         logger.info("Importing card by name: '%s'", card_name)
 
         # Check if card already exists in database for backward compatibility
-        existing_check = self._parent._run_query(
-            query="SELECT card_name FROM magic.cards WHERE card_name = %(card_name)s",
-            params={"card_name": card_name},
-            explain=False,
-        )
+        with self._parent._conn_pool.connection() as conn, conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT card_name FROM magic.cards WHERE card_name = %(card_name)s",
+                {"card_name": card_name},
+            )
+            card_already_exists = cursor.fetchone() is not None
 
-        if existing_check["result"]:
+        if card_already_exists:
             return {
                 "card_name": card_name,
                 "status": "already_exists",
