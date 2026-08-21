@@ -320,6 +320,10 @@ applies every time that stack starts; exporting one in the shell overrides the f
   - Comma-separated list of origins to allow
   - Example: `https://example.com,https://app.example.com`
   - Supplements environment-specific defaults
+- `ADMIN_PASSWORD` - Shared secret required to reach any `_admin/` route (see [Admin Endpoints](#admin-endpoints))
+  - Generated automatically into `env.json` on first boot; never overwrites an existing value
+  - Retrieve it with `jq -r .ADMIN_PASSWORD env.json`
+  - If unset, every `_admin/` request is rejected rather than left open
 
 **Client Service:**
 - `API_URL` - URL of the API service (default: `http://apiservice:8080`)
@@ -387,10 +391,24 @@ python -m client.query_runner
 - **GET /search** - Card search with query parameter support
 - **GET /favicon.ico** - Favicon for web interface
 
-### Tagging Endpoints
+### Admin Endpoints
 
-- **GET /update_tagged_cards** - Import cards for specific tags
-- **GET /discover_and_import_all_tags** - Bulk tag discovery and import
+Data-management routes — importing card data, running score/tag backfills, applying schema
+migrations — live under `_admin/` rather than the public namespace, and require HTTP Basic Auth.
+`setup_schema` and `import_data` both run automatically on startup, so a fresh instance already has
+card data; these exist for triggering a re-import or backfill on demand.
+
+- **GET /_admin/import_data** - Re-import card data from Scryfall's bulk data API
+- **GET /_admin/backfill_prefer_scores** - Recompute `prefer_score` for all cards
+- **GET /_admin/backfill_cubecobra_scores** - Recompute `cubecobra_score` for all cards
+- **GET /_admin/import_oracle_tags** / **/_admin/import_art_tags** / **/_admin/import_all_is_tags** - Import Scryfall's oracle, art, and `is:` tags
+
+Authenticate with any username and the `ADMIN_PASSWORD` value from `env.json` (see
+[Environment Variables](#environment-variables)):
+
+```bash
+curl -u admin:$(jq -r .ADMIN_PASSWORD env.json) http://localhost:28080/_admin/import_data
+```
 
 ### Query Parameters
 
