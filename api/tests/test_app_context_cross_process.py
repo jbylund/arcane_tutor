@@ -18,9 +18,8 @@ from __future__ import annotations
 
 import multiprocessing
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
 
-from api.app_context import AppContext
+from api.tests.support import mock_app_context
 
 if TYPE_CHECKING:
     from multiprocessing.sharedctypes import Synchronized
@@ -30,22 +29,16 @@ if TYPE_CHECKING:
 _JOIN_TIMEOUT = 5
 
 
-def _mock_app_context(**overrides: object) -> AppContext:
-    kwargs: dict[str, object] = {"reader_pool": MagicMock(), "writer_pool": MagicMock(), "engine": MagicMock()}
-    kwargs.update(overrides)
-    return AppContext(**kwargs)
-
-
 def _child_bumps_cache_generation(cache_generation: Synchronized) -> None:
-    _mock_app_context(cache_generation=cache_generation).bump_cache_generation()
+    mock_app_context(cache_generation=cache_generation).bump_cache_generation()
 
 
 def _child_writes_last_import_time(last_import_time: Synchronized, value: float) -> None:
-    _mock_app_context(last_import_time=last_import_time).last_import_time.value = value
+    mock_app_context(last_import_time=last_import_time).last_import_time.value = value
 
 
 def _child_holds_the_guard(guard: LockType, acquired: EventType, release: EventType) -> None:
-    ctx = _mock_app_context(engine_reload_guard=guard)
+    ctx = mock_app_context(engine_reload_guard=guard)
     ctx.engine_reload_guard.acquire()
     acquired.set()
     release.wait(timeout=_JOIN_TIMEOUT)
@@ -65,7 +58,7 @@ class TestSharedSignalsCrossProcesses:
         assert process.exitcode == 0
         # A *different* AppContext instance, in this (parent) process, built from the same shared
         # Value -- not the one the child mutated -- must see the child's write.
-        parent_ctx = _mock_app_context(cache_generation=cache_generation)
+        parent_ctx = mock_app_context(cache_generation=cache_generation)
         assert parent_ctx.cache_generation.value == 1
 
     def test_last_import_time_write_is_visible_across_processes(self) -> None:
@@ -76,7 +69,7 @@ class TestSharedSignalsCrossProcesses:
         process.join(timeout=_JOIN_TIMEOUT)
 
         assert process.exitcode == 0
-        parent_ctx = _mock_app_context(last_import_time=last_import_time)
+        parent_ctx = mock_app_context(last_import_time=last_import_time)
         assert parent_ctx.last_import_time.value == 12345.0
 
     def test_engine_reload_guard_serialises_across_processes(self) -> None:
@@ -89,7 +82,7 @@ class TestSharedSignalsCrossProcesses:
         try:
             assert acquired.wait(timeout=_JOIN_TIMEOUT), "child never signalled that it holds the guard"
 
-            parent_ctx = _mock_app_context(engine_reload_guard=guard)
+            parent_ctx = mock_app_context(engine_reload_guard=guard)
             # The child holds the lock from a different process: a non-blocking acquire here must fail.
             assert parent_ctx.engine_reload_guard.acquire(block=False) is False
 

@@ -6,8 +6,6 @@ admin handlers reachable, or advertises them, would otherwise pass every other t
 
 from __future__ import annotations
 
-import multiprocessing
-import time
 from unittest.mock import MagicMock
 
 import falcon
@@ -16,7 +14,7 @@ import pytest
 
 from api.admin_resource import ADMIN_MOUNT_PREFIX, AdminResource
 from api.api_resource import APIResource
-from api.app_context import AppContext
+from api.tests.support import mock_app_context
 
 # The complete public surface, as a literal. A route appearing or disappearing here is a deliberate
 # act, and this is the guard that makes it one — the failure this whole change exists to prevent was
@@ -66,12 +64,7 @@ def resource_fixture() -> APIResource:
     are distinct objects, matching that AdminResource reads/writes via its own pool rather than
     the one search-shaped resources use.
     """
-    app_context = AppContext(
-        reader_pool=MagicMock(),
-        writer_pool=MagicMock(),
-        engine=MagicMock(),
-        last_import_time=multiprocessing.Value("d", time.time(), lock=True),
-    )
+    app_context = mock_app_context(reader_pool=MagicMock(), writer_pool=MagicMock())
     return APIResource(app_context=app_context)
 
 
