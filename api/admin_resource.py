@@ -945,6 +945,7 @@ class AdminResource:
 
         # Check if card already exists in database for backward compatibility
         with self.app_context.writer_pool.connection() as conn, conn.cursor() as cursor:
+            db_utils.set_statement_timeout(cursor, 10_000)
             cursor.execute(
                 "SELECT card_name FROM magic.cards WHERE card_name = %(card_name)s",
                 {"card_name": card_name},
