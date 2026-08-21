@@ -149,4 +149,15 @@ Residual, out of scope for this fix: pyparsing hard-rejects `field!value` on TEX
 reading — this divergence was never in the wild-corpus sweep (no such query appeared), so it isn't
 one of the tracked 15 and is left for a future pass.
 
-B remains open.
+**B fixed**: added `word_after_op = comparison_tok + string_value_tok` to
+`_get_implicit_and_tokenizer`'s `one_token` alternation, ahead of `and_tok`/`or_tok`/`comparison_tok`
+— mirroring `regex_after_op`'s existing trick of matching a value together with the operator that
+precedes it, so a bare word right after `:`/`=`/etc. is captured as one unit before the AND/OR
+keyword check ever gets a look at it. All 3 cause-B entries removed.
+
+All 15 wild-corpus queries (19 including minimal repros) now agree between the two parsers.
+`test_known_parser_divergences` and `KNOWN_DIVERGENCES` were removed from
+[`test_parser_parity.py`](../../api/parsing/tests/test_parser_parity.py) — nothing left to pin —
+and replaced with `test_reserved_word_as_value_parity` covering the 3 cause-B queries directly. A
+future wild-corpus sweep (see "How they were found" above) is the way to check for new divergences,
+should parser changes introduce any.

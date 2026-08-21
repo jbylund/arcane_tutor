@@ -130,35 +130,24 @@ def test_bang_equals_alias_matches_eq_spelling(bang_query: str, eq_query: str) -
     assert generate_sql_query(parse_scryfall_query(bang_query)) == generate_sql_query(parse_scryfall_query(eq_query))
 
 
-# Real queries from benchmarks/wild-queries/wild-corpus.jsonl on which the two parsers disagree
-# today, grouped by the root cause in #903. Sweeping that 14k-query corpus found exactly these.
-#
-# Each is xfail(strict=True): fixing one turns it into an XPASS and fails the suite, so the fix
-# cannot land without deleting its entry here. Keep the minimal repro alongside the wild query —
-# it is what a fixer works from, and it fails for the same reason.
-KNOWN_DIVERGENCES: dict[str, tuple[str, list[str]]] = {
-    # The implicit-AND tokenizer matches CaselessKeyword("AND"/"OR") before it knows it is in
-    # value position, so 'o:or' preprocesses to 'o: OR' and the value is gone. Only on the slow
-    # path — a query with none of ()"'/{+* takes the fast path and is unaffected.
-    "b_reserved_word_as_value": (
-        "#903 B: and/or in value position consumed as a boolean operator by the tokenizer",
-        [
-            "o:and power+toughness>10",
-            "(o:or o:more) t:land",
-            "(oracle:two oracle:or oracle:more oracle:opponents) type:land",
-        ],
-    ),
-}
-
-
 @pytest.mark.parametrize(
     argnames=["query"],
     argvalues=[
-        pytest.param(query, marks=pytest.mark.xfail(strict=True, reason=reason), id=f"{cause}-{index}")
-        for cause, (reason, queries) in KNOWN_DIVERGENCES.items()
-        for index, query in enumerate(queries)
+        ("o:and power+toughness>10",),
+        ("(o:or o:more) t:land",),
+        ("(oracle:two oracle:or oracle:more oracle:opponents) type:land",),
+    ],
+    ids=[
+        "reserved_word_value_with_arithmetic_comparison",
+        "reserved_word_value_in_group",
+        "reserved_word_values_repeated_in_group",
     ],
 )
-def test_known_parser_divergences(query: str) -> None:
-    """Queries the parsers disagree on today (#903) — remove an entry when its cause is fixed."""
+def test_reserved_word_as_value_parity(query: str) -> None:
+    """'and'/'or' in value position is a value, not a boolean operator (#903 B).
+
+    All 3 take the slow preprocess_implicit_and path (each has a '(' or '+'), where the
+    implicit-AND tokenizer used to match CaselessKeyword("AND"/"OR") before knowing it was in
+    value position, so e.g. 'o:or' silently lost its value and became 'o: OR'.
+    """
     assert_parsers_agree(query)

@@ -645,9 +645,15 @@ def _get_implicit_and_tokenizer() -> ParserElement:
     # swallows "2>1 name:" as a pattern in "power/2>1 name:/a/" (#908).
     regex_after_op = comparison_tok + regex_raw
 
+    # A bare word in value position is a value even when it spells 'and'/'or' (#903 cause B) — so
+    # match it as a unit with the preceding operator, before and_tok/or_tok get a chance to see it
+    # as a standalone keyword. Mirrors regex_after_op's same trick for the same reason.
+    word_after_op = comparison_tok + string_value_tok
+
     one_token = (
         quoted_raw
         | regex_after_op
+        | word_after_op
         | lparen_tok
         | rparen_tok
         | and_tok
