@@ -1,10 +1,9 @@
 # Changelog
 
 All notable changes to this project are documented here. Versions follow
-[CalVer](https://calver.org/) (`YYYY.MM.DD.PATCH`) rather than semantic versioning — see
-[#778](https://github.com/jbylund/sylvan_librarian/issues/778) for why.
+[CalVer](https://calver.org/) (`YYYY.MM.DD.PATCH`) rather than semantic versioning.
 
-## [Unreleased]
+## [2026.08.21.0]
 
 Initial release.
 
