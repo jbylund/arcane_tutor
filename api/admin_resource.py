@@ -9,8 +9,8 @@ public method became a route, and the only lever was a leading underscore, which
 method's Python visibility. Mounting a separate resource replaces that lever with a boundary, and
 keeps the honest names.
 
-The child holds a reference to its parent for the small surface they genuinely share — four methods
-(`_reload_engine`, `_serve_static_file`, `_set_statement_timeout`, `_setup_complete`)
+The child holds a reference to its parent for the small surface they genuinely share — three methods
+(`_reload_engine`, `_serve_static_file`, `_setup_complete`)
 and four handles (`_conn_pool`, `_cache_generation`, `_last_import_time`, `_setup_complete_cache`).
 That is deliberately not a decoupling: the boundary here is about routing, and pretending otherwise
 would mean an `AppContext` refactor that the routing fix does not need.
@@ -384,7 +384,7 @@ class AdminResource:
 
         backfill_sql = db_utils.read_sql("backfill_prefer_scores")
         with self._parent._conn_pool.connection() as conn, conn.cursor() as cursor:
-            self._parent._set_statement_timeout(cursor, settings.prefer_score_backfill_timeout_ms)
+            db_utils.set_statement_timeout(cursor, settings.prefer_score_backfill_timeout_ms)
             cursor.execute(backfill_sql)
             updated_count = cursor.rowcount
 
@@ -531,7 +531,7 @@ class AdminResource:
 
         backfill_sql = db_utils.read_sql("backfill_cubecobra_scores")
         with self._parent._conn_pool.connection() as conn, conn.cursor() as cursor:
-            self._parent._set_statement_timeout(cursor, 600_000)
+            db_utils.set_statement_timeout(cursor, 600_000)
             cursor.execute(backfill_sql, weights)
             updated_count = cursor.rowcount
 
@@ -1089,7 +1089,7 @@ class AdminResource:
         try:
             with self._parent._conn_pool.connection() as conn:
                 with conn.cursor() as cursor:
-                    self._parent._set_statement_timeout(cursor, 30_000)
+                    db_utils.set_statement_timeout(cursor, 30_000)
 
                 class _CardStream:
                     """Preprocesses raw cards lazily, tracking stage counts."""

@@ -26,7 +26,7 @@ import orjson
 import psycopg
 import psycopg_pool
 from cachebox import LRUCache, TTLCache
-from psycopg import Connection, Cursor
+from psycopg import Connection
 
 from api.admin_resource import ADMIN_MOUNT_PREFIX, AdminResource
 from api.enums import CardOrdering, PreferOrder, ResponseShape, SortDirection, UniqueOn
@@ -286,24 +286,6 @@ class APIResource:
         self.admin.setup_schema()
         self.admin.import_data()  # ensures that database is setup
 
-    def _set_statement_timeout(self, cursor: Cursor, statement_timeout: int) -> None:
-        """Validate and set the statement timeout for a database cursor.
-
-        PostgreSQL SET commands don't support parameterized values, so we must
-        validate the value before using it in string interpolation.
-
-        Args:
-            cursor: Database cursor to execute the SET command on
-            statement_timeout: The statement timeout value in milliseconds
-
-        Raises:
-            ValueError: If statement_timeout is not a non-negative integer
-        """
-        if not isinstance(statement_timeout, int) or statement_timeout < 0:
-            msg = f"statement_timeout must be a non-negative integer, got: {statement_timeout}"
-            raise ValueError(msg)
-        cursor.execute(f"set statement_timeout = {statement_timeout}")
-
     def _resolve_action(self, path: str) -> tuple[BoundRoute | None, list[str]]:
         """Map a request path to the route that answers it.
 
@@ -472,7 +454,7 @@ class APIResource:
         result: dict[str, Any] = {}
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             # Validate and set statement timeout
-            self._set_statement_timeout(cursor, statement_timeout)
+            db_utils.set_statement_timeout(cursor, statement_timeout)
             if explain:
                 explain_query = f"EXPLAIN (FORMAT JSON) {query}"
                 cursor.execute(explain_query, params)
