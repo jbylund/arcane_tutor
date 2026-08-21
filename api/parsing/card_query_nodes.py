@@ -595,10 +595,16 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
 
     def to_human_explanation(self) -> str:
         """Convert to human-readable explanation with card-specific formatting."""
-        # Handle empty string values. Covers ManaValueNode too: a quoted empty mana/devotion value
-        # (mana:"") parses to one of these, not a StringValueNode, since parse_mana_value validates
-        # quoted values the same as bare ones (#909) — StringValueNode alone stopped catching it (#950).
-        if isinstance(self.rhs, StringValueNode | ManaValueNode) and not self.rhs.value.strip():
+        # `:` (contains / JSONB containment) against an empty value is always vacuous --
+        # `LIKE '%'` matches every row, `{} <@ anything` is always true -- so it carries no
+        # real constraint and explains to "". `=` against an empty value is the opposite: a
+        # real, narrow constraint (the field is exactly empty, e.g. is:vanilla's `o=""`), so
+        # it must NOT collapse here -- `_format_card_attribute_explanation` renders that case
+        # below instead. Covers ManaValueNode too: a quoted empty mana/devotion value
+        # (mana:"") parses to one of these, not a StringValueNode, since parse_mana_value
+        # validates quoted values the same as bare ones (#909) — StringValueNode alone
+        # stopped catching it (#950).
+        if self.operator == ":" and isinstance(self.rhs, StringValueNode | ManaValueNode) and not self.rhs.value.strip():
             return ""
         # Handle plain string rhs (for empty queries)
         if isinstance(self.rhs, str) and not self.rhs.strip():
@@ -627,9 +633,15 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
         # Default format
         return f"{lhs_str} {operator_str} {rhs_str}"
 
-    def _format_card_attribute_explanation(self, attr_node: CardAttributeNode, operator_str: str, rhs_str: str) -> str:  # noqa: PLR0911
+    def _format_card_attribute_explanation(self, attr_node: CardAttributeNode, operator_str: str, rhs_str: str) -> str:  # noqa: PLR0911, PLR0912
         """Format explanation for card attribute comparisons."""
         db_column_name = attr_node.attribute_name.lower()
+
+        # `=` against an empty value reaches here (see to_human_explanation) as a real
+        # constraint, not the vacuous `:` case -- state it plainly rather than falling into
+        # "the X contains " with nothing after it.
+        if self.operator == "=" and not rhs_str:
+            return f"the {attr_node.to_human_explanation()} is empty"
 
         # Special formatting for certain attributes
         if db_column_name == "card_color_identity" and self.operator in ("=", ":"):
@@ -644,16 +656,21 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
             return f"the toughness {operator_str} {rhs_str}"
         if db_column_name == "cmc":
             return f"the mana value {operator_str} {rhs_str}"
+        # `:` is substring containment on these; `=` is real equality against the whole
+        # field (verified against the actual SQL: `name=X` -> `card_name = X`, `name:X` ->
+        # `card_name_folded LIKE %X%`, same split for oracle_text/card_types/card_artist) --
+        # so `=` reads as "is", not "contains", to describe what it actually checks. Any
+        # other operator (e.g. `!=`) falls through to the generic default below.
         if db_column_name == "card_name" and self.operator in (":", "="):
-            return f"the name contains {rhs_str}"
+            return f"the name is {rhs_str}" if self.operator == "=" else f"the name contains {rhs_str}"
         if db_column_name == "oracle_text" and self.operator in (":", "="):
-            return f"the oracle text contains {rhs_str}"
+            return f"the oracle text is {rhs_str}" if self.operator == "=" else f"the oracle text contains {rhs_str}"
         if db_column_name == "card_types" and self.operator in (":", "="):
-            return f"the type contains {rhs_str}"
+            return f"the type is {rhs_str}" if self.operator == "=" else f"the type contains {rhs_str}"
         if db_column_name == "card_rarity_int":
             return f"the rarity {operator_str} {rhs_str}"
         if db_column_name == "card_artist" and self.operator in (":", "="):
-            return f"the artist contains {rhs_str}"
+            return f"the artist is {rhs_str}" if self.operator == "=" else f"the artist contains {rhs_str}"
         if db_column_name == "card_set_code" and self.operator in (":", "="):
             return f"the set contains {rhs_str}"
 
