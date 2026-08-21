@@ -89,4 +89,3 @@ def can_serialize(iobj: object) -> bool:
         return len(s) < max_json_object_length
     except TypeError:
         return False
-    return True

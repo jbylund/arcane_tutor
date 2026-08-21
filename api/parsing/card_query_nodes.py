@@ -13,7 +13,6 @@ from api.parsing.db_info import (
     CARD_TYPES,
     COLOR_CODE_TO_NAME,
     COLOR_NAME_TO_CODE,
-    DB_NAME_TO_FIELD_TYPE,
     FORMAT_CODE_TO_NAME,
     FieldType,
     ParserClass,
@@ -60,18 +59,6 @@ color < query
 color @> query AND color <> query # as object
 query ?& color AND not(color ?& query) # as array
 """
-
-
-def get_field_type(attr: str) -> str:
-    """Get the field type for a given attribute name.
-
-    Args:
-        attr: The attribute name to look up.
-
-    Returns:
-        The field type for the attribute, or TEXT if not found.
-    """
-    return DB_NAME_TO_FIELD_TYPE.get(attr, FieldType.TEXT)
 
 
 # Rarity ordering for comparison operations
@@ -270,33 +257,6 @@ def get_frame_data_comparison_object(val: str) -> dict[str, bool]:
     normalized_val = val.title()
 
     return {normalized_val: True}
-
-
-def extract_frame_data_from_raw_card(raw_card: dict) -> dict[str, bool]:
-    """Extract frame data from a raw card dictionary.
-
-    Combines frame version and frame effects into a single JSONB object,
-    following the same pattern as _preprocess_card method.
-
-    Args:
-        raw_card: Raw card dictionary from Scryfall API.
-
-    Returns:
-        Dictionary mapping frame data keys to True.
-    """
-    frame_data = {}
-
-    # Add frame version if present (titlecased for consistency)
-    frame_version = raw_card.get("frame")
-    if frame_version:
-        frame_data[frame_version.title()] = True
-
-    # Add frame effects if present (titlecased for consistency)
-    frame_effects = raw_card.get("frame_effects", [])
-    for effect in frame_effects:
-        frame_data[effect.title()] = True
-
-    return frame_data
 
 
 def get_keywords_comparison_object(val: str) -> dict[str, bool]:

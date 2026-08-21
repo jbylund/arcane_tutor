@@ -276,7 +276,6 @@ DB_COLUMNS = [
 KNOWN_CARD_ATTRIBUTES = set()
 NUMERIC_CARD_ATTRIBUTES: set[str] = set()
 SEARCH_NAME_TO_DB_NAME = {}
-DB_NAME_TO_FIELD_TYPE = {}
 
 ALIAS_TO_FIELD_INFOS: dict[str, list[FieldInfo]] = {}
 COLNAME_TO_FIELD_INFOS: dict[str, list[FieldInfo]] = {}
@@ -295,7 +294,6 @@ for col in DB_COLUMNS:
         NUMERIC_CARD_ATTRIBUTES.add(col.db_column_name.lower())
         NUMERIC_CARD_ATTRIBUTES.update(alias.lower() for alias in col.search_aliases)
     SEARCH_NAME_TO_DB_NAME[col.db_column_name.lower()] = col.db_column_name
-    DB_NAME_TO_FIELD_TYPE[col.db_column_name] = col.field_type
 
     for ialias in col.search_aliases:
         SEARCH_NAME_TO_DB_NAME[ialias.lower()] = col.db_column_name
@@ -341,5 +339,3 @@ FORMAT_CODE_TO_NAME = {
     "v": "vintage",
     "h": "historic",
 }
-
-FORMAT_NAME_TO_CODE = {v: k for k, v in FORMAT_CODE_TO_NAME.items()}

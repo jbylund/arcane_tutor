@@ -303,10 +303,6 @@ MAX_FAMILY_DRAWS = 8
 #: range query" is a thing targeted benchmarks ask for, and the one-family-per-field split — needed
 #: so `usd<5 cn>100` is reachable at all — would otherwise make it a literal at every call site.
 RANGE_FAMILIES = frozenset({"usd", "eur", "tix", "cn", "released"})
-#: The numeric families that are NOT range-indexed. Deliberately separate: they place thresholds the
-#: same way but reach different engine machinery, so a benchmark aimed at the range index must not
-#: draw them. `RANGE_FAMILIES | CARD_NUMERIC_FAMILIES == set(NUMERIC_COLUMNS)`.
-CARD_NUMERIC_FAMILIES = frozenset({"pow", "tou", "cmc", "loyalty"})
 
 
 @dataclasses.dataclass(frozen=True)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from api.api_resource import get_where_clause, rewrap
+from api.api_resource import rewrap
 from api.utils.error_monitoring import can_serialize
 
 
@@ -44,14 +44,3 @@ def test_rewrap_normalizes_whitespace() -> None:
     assert rewrap("SELECT\n*\nFROM\ntable") == "SELECT * FROM table"
     assert rewrap("SELECT\t*\tFROM\ttable") == "SELECT * FROM table"
     assert rewrap("  \n  SELECT  \n  *  \n  FROM  \n  table  \n  ") == "SELECT * FROM table"
-
-
-def test_get_where_clause_caching() -> None:
-    """Test that get_where_clause uses caching."""
-    # This tests the @cached decorator functionality
-    query = "cmc:3"
-    result1 = get_where_clause(query)
-    result2 = get_where_clause(query)
-
-    # Results should be identical (cached)
-    assert result1 == result2

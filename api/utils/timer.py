@@ -77,7 +77,3 @@ class Timer:
 
         _recurse_round(res)
         return res.get("_children", {})
-
-    def reset(self) -> None:
-        """Clear all recorded timings."""
-        self.timings_dict.clear()

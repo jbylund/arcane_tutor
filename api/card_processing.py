@@ -13,15 +13,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
-def extract_image_location_uuid(card: dict[str, Any]) -> str:
-    """Extract the image location UUID from a card."""
-    for image_location in card.get("image_uris", {}).values():
-        if ".jpg" in image_location:
-            return image_location.rpartition("/")[-1].partition(".")[0]
-    msg = f"No image location found for card: {card}"
-    raise AssertionError(msg)
-
-
 # Card types that can exist as a permanent on the battlefield. Devotion (MTG
 # comprehensive rules) is defined only over permanents' mana costs, confirmed
 # against the real Scryfall API (devotion: never matches a pure Instant/Sorcery,
@@ -92,6 +83,33 @@ def extract_collector_number_int(collector_number: str | int | float | None) -> 
         except (ValueError, OverflowError):
             pass
     return None  # Field will be null by default
+
+
+def extract_frame_data_from_raw_card(raw_card: dict) -> dict[str, bool]:
+    """Extract frame data from a raw card dictionary.
+
+    Combines frame version and frame effects into a single JSONB object,
+    following the same pattern as _preprocess_card method.
+
+    Args:
+        raw_card: Raw card dictionary from Scryfall API.
+
+    Returns:
+        Dictionary mapping frame data keys to True.
+    """
+    frame_data = {}
+
+    # Add frame version if present (titlecased for consistency)
+    frame_version = raw_card.get("frame")
+    if frame_version:
+        frame_data[frame_version.title()] = True
+
+    # Add frame effects if present (titlecased for consistency)
+    frame_effects = raw_card.get("frame_effects", [])
+    for effect in frame_effects:
+        frame_data[effect.title()] = True
+
+    return frame_data
 
 
 def preprocess_card(card: dict[str, Any]) -> list[dict[str, Any]]:  # noqa: PLR0915,C901,PLR0912
@@ -199,17 +217,7 @@ def preprocess_card(card: dict[str, Any]) -> list[dict[str, Any]]:  # noqa: PLR0
 
     card["edhrec_rank"] = card.get("edhrec_rank")
 
-    # Extract frame data - combine frame version and frame effects into single JSONB object
-    frame_data = {}
-    # Add frame version if present (titlecased for consistency)
-    frame_version = card.get("frame")
-    if frame_version:
-        frame_data[frame_version.title()] = True
-    # Add frame effects if present (titlecased for consistency)
-    frame_effects = card.get("frame_effects", [])
-    for effect in frame_effects:
-        frame_data[effect.title()] = True
-    card["card_frame_data"] = frame_data
+    card["card_frame_data"] = extract_frame_data_from_raw_card(card)
 
     # Extract pricing data if available - ensure they are floats for jsonb_populate_record
     prices = card.get("prices", {})

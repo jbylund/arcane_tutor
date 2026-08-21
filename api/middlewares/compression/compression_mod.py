@@ -17,22 +17,6 @@ MIN_SIZE: int = 200
 logger = logging.getLogger(__name__)
 
 
-def parse_q_list(
-    accept_encoding: str,
-    server_priorities: dict[str, int],
-) -> list[str]:
-    """Parse the Accept-Encoding header and return a list of encodings sorted by client and server priority.
-
-    Args:
-        accept_encoding (str): The Accept-Encoding header value.
-        server_priorities (dict[str, int]): Mapping of encoding names to server priorities.
-
-    Returns:
-        list[str]: List of encoding names sorted by priority.
-    """
-    # TODO: add client priority
-
-
 class CompressionMiddleware:
     """Middleware for handling response compression using various algorithms."""
 
