@@ -9,20 +9,16 @@ public method became a route, and the only lever was a leading underscore, which
 method's Python visibility. Mounting a separate resource replaces that lever with a boundary, and
 keeps the honest names.
 
-The child holds a reference to its parent for the small surface they genuinely share — two methods
-(`_reload_engine`, `_setup_complete`) and three handles (`_cache_generation`, `_last_import_time`,
-`_setup_complete_cache`). All three of those handles are `multiprocessing` primitives: the actual
-mechanism by which one worker process tells every other worker "the corpus changed" or "check
-whether setup finished," not incidental references. That is deliberately not a decoupling: the
-boundary here is about routing, and pretending otherwise would mean an `AppContext` refactor that
-the routing fix does not need.
+`AdminResource` no longer holds a reference to `APIResource` at all. What it used to reach a parent
+for — `reload_engine`, `setup_complete`, `cache_generation`, `last_import_time`,
+`invalidate_setup_complete`, the connection pool — all live on the `AppContext` both resources take a
+reference to at construction (see `api/app_context.py`). Neither resource owns that state; both are
+peers that reach into a neutral shared object instead of into each other.
 
-The child keeps its own `_conn_pool` rather than sharing the parent's: nothing here needs the
-parent's query-result cache or EXPLAIN plumbing, only a connection, so a second pool removes that
-coupling for the price of a second `psycopg_pool.ConnectionPool` (and its own connections) per
-worker process. `APIResource.__init__` builds both pools and hands this one over at construction,
-rather than this module building its own — so a test can inject a mock in place of either without
-a real connection ever opening.
+`import_guard`/`schema_setup_event` are not part of `AppContext`: they're cross-worker-shared, but
+only *within* `AdminResource`'s own copies across processes (serialising concurrent import
+attempts) — nothing on the search side ever touches either one. They get their own small bundle,
+`AdminContext`, defined here since nothing outside this module needs it.
 """
 
 from __future__ import annotations
@@ -52,7 +48,7 @@ from api.scryfall_bulk_data_fetcher import BulkDataKey, ScryfallBulkDataFetcher
 from api.settings import settings
 from api.tag_import import import_art_tags as _import_art_tags
 from api.tag_import import import_oracle_tags as _import_oracle_tags
-from api.utils import db_utils
+from api.utils import db_utils, multiprocessing_utils
 from api.utils.caching import cached
 from api.utils.http_utils import make_user_agent
 from api.utils.page_rendering import serve_static_file
@@ -63,10 +59,9 @@ if TYPE_CHECKING:
     from multiprocessing.synchronize import Event as EventType
     from multiprocessing.synchronize import RLock as LockType
 
-    import psycopg_pool
     from psycopg import Connection
 
-    from api.api_resource import APIResource
+    from api.app_context import AppContext
 
 # Path prefix the child mounts under. Underscore-prefixed to match the convention API namespaces use
 # for internal routes (Elasticsearch _search, CouchDB _all_docs), and to stay clear of /admin, which
@@ -182,31 +177,44 @@ CARD_IS_TAGS = LAND_IS_TAGS + [  # noqa: RUF005
 ]
 
 
+class AdminContext:
+    """Cross-worker primitives private to AdminResource: not shared with any other resource."""
+
+    def __init__(
+        self,
+        *,
+        import_guard: LockType = multiprocessing_utils.DEFAULT_LOCK,
+        schema_setup_event: EventType = multiprocessing_utils.DEFAULT_EVENT,
+    ) -> None:
+        """Build the primitives, or accept ones a caller already built.
+
+        Args:
+            import_guard: Cross-process lock serialising imports.
+            schema_setup_event: Set once the schema has been created.
+        """
+        self.import_guard = import_guard
+        self.schema_setup_event = schema_setup_event
+
+
 class AdminResource:
     """Data-management routes, mounted behind a path prefix by APIResource."""
 
     def __init__(
         self,
-        parent: APIResource,
         *,
-        conn_pool: psycopg_pool.ConnectionPool,
-        import_guard: LockType,
-        schema_setup_event: EventType,
+        app_context: AppContext,
+        admin_context: AdminContext | None = None,
     ) -> None:
-        """Attach to the parent resource and take ownership of the admin-only handles.
+        """Take ownership of the admin-only handles.
 
         Args:
-            parent: The resource this is mounted on, for the shared methods and handles.
-            conn_pool: This resource's own connection pool -- built by the caller (mirroring the
-                parent's own `_conn_pool`), so a test can inject a mock without a real pool ever
-                opening a connection.
-            import_guard: Cross-process lock serialising imports.
-            schema_setup_event: Set once the schema has been created.
+            app_context: State and resources shared with the resource this is mounted on --
+                connection pools, the query engine, the cross-worker cache/import signals.
+            admin_context: Import-serialisation primitives private to this resource. Built fresh if
+                not given, matching every other handle here.
         """
-        self._parent = parent
-        self._conn_pool = conn_pool
-        self._import_guard = import_guard
-        self._schema_setup_event = schema_setup_event
+        self.app_context = app_context
+        self.admin_context = admin_context or AdminContext()
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": make_user_agent()})
         self._bulk_data_fetcher = ScryfallBulkDataFetcher()
@@ -214,21 +222,21 @@ class AdminResource:
     @route()
     def setup_schema(self, *_: object, **__: object) -> None:
         """Set up the database schema and apply migrations as needed."""
-        if self._schema_setup_event.is_set():
+        if self.admin_context.schema_setup_event.is_set():
             logger.info("Schema already setup (fastpath) in pid %d", os.getpid())
             return
 
         filesystem_migrations = db_utils.get_migrations()
 
-        with self._import_guard:
-            if self._schema_setup_event.is_set():
+        with self.admin_context.import_guard:
+            if self.admin_context.schema_setup_event.is_set():
                 logger.info("Schema already setup (slowpath) in pid %d", os.getpid())
                 return
             logger.info("Setting up schema in pid %d", os.getpid())
             # read migrations from the db dir...
             # if any already applied migrations differ from what we want
             # to apply then drop everything
-            with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            with self.app_context.writer_pool.connection() as conn, conn.cursor() as cursor:
                 cursor.execute(
                     """CREATE TABLE IF NOT EXISTS migrations (
                         file_name text not null,
@@ -271,15 +279,15 @@ class AdminResource:
                     )
                     conn.commit()
 
-            self._schema_setup_event.set()
+            self.admin_context.schema_setup_event.set()
             logger.info("Schema setup complete in pid %d", os.getpid())
 
     def _import_recent(self) -> bool:
         """Return True if a bulk import completed in the last 5 minutes (or setup is complete when no shared timestamp)."""
-        if self._parent._last_import_time is None:
-            return self._parent._setup_complete()
+        if self.app_context.last_import_time is None:
+            return self.app_context.setup_complete()
         # Unlocked read: c_double is atomic on typical platforms; avoids lock contention on fast path
-        t = self._parent._last_import_time.get_obj().value
+        t = self.app_context.last_import_time.get_obj().value
         if not t:
             logger.info("No import recorded...")
             return False
@@ -302,8 +310,8 @@ class AdminResource:
         after_transfer = time.monotonic()
 
         if result["status"] == "success":
-            if self._parent._last_import_time is not None:
-                self._parent._last_import_time.value = time.time()
+            if self.app_context.last_import_time is not None:
+                self.app_context.last_import_time.value = time.time()
             total_time = after_transfer - before
             cards_sent = result.get("cards_sent", result["cards_loaded"])
             rate = cards_sent / total_time if total_time > 0 else 0
@@ -319,14 +327,14 @@ class AdminResource:
             # running the backfill ahead of the tag import scored every card as on-style on a
             # first boot, and nothing rescored until the next import. Oracle tags feed search
             # rather than scoring, so their position relative to the backfill does not matter.
-            _import_art_tags(self._conn_pool, self._bulk_data_fetcher)
+            _import_art_tags(self.app_context.writer_pool, self._bulk_data_fetcher)
             self.backfill_prefer_scores()
             self.backfill_cubecobra_scores()
-            _import_oracle_tags(self._conn_pool, self._bulk_data_fetcher)
-            self._parent._reload_engine(force=True)
+            _import_oracle_tags(self.app_context.writer_pool, self._bulk_data_fetcher)
+            self.app_context.reload_engine(force=True)
             self._clear_caches()
-            self._parent._last_import_time.value = time.time()
-            self._parent._setup_complete_cache = None
+            self.app_context.last_import_time.value = time.time()
+            self.app_context.invalidate_setup_complete()
             # Every step above logs its own duration; this closes the sequence with the wall
             # clock the operator actually waited, upsert through engine reload.
             logger.info("Import complete in %.2f seconds", time.monotonic() - before)
@@ -350,11 +358,11 @@ class AdminResource:
 
         logger.info("Hitting slowpath in pid %d", os.getpid())
 
-        import_lock = self._parent._last_import_time.get_lock()
+        import_lock = self.app_context.last_import_time.get_lock()
 
         acquired = import_lock.acquire(timeout=IMPORT_LOCK_TIMEOUT)
         if not acquired:
-            if self._parent._setup_complete():
+            if self.app_context.setup_complete():
                 logger.info(
                     "Timed out waiting %.0fs for import lock; setup complete, skipping in pid %d",
                     IMPORT_LOCK_TIMEOUT,
@@ -405,7 +413,7 @@ class AdminResource:
         logger.info("Starting prefer score backfill")
 
         backfill_sql = db_utils.read_sql("backfill_prefer_scores")
-        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with self.app_context.writer_pool.connection() as conn, conn.cursor() as cursor:
             db_utils.set_statement_timeout(cursor, settings.prefer_score_backfill_timeout_ms)
             cursor.execute(backfill_sql)
             updated_count = cursor.rowcount
@@ -500,7 +508,7 @@ class AdminResource:
             ]
         )
 
-        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with self.app_context.writer_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute(
                 """
                 WITH incoming AS (
@@ -552,7 +560,7 @@ class AdminResource:
         logger.info("Starting CubeCobra score backfill with weights: %s", weights)
 
         backfill_sql = db_utils.read_sql("backfill_cubecobra_scores")
-        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with self.app_context.writer_pool.connection() as conn, conn.cursor() as cursor:
             db_utils.set_statement_timeout(cursor, 600_000)
             cursor.execute(backfill_sql, weights)
             updated_count = cursor.rowcount
@@ -592,7 +600,7 @@ class AdminResource:
         """
         logger.info("Starting CubeCobra ingest")
         # fetch the distinct, non-null oracle ids that are in the db
-        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with self.app_context.writer_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute(
                 "SELECT DISTINCT oracle_id FROM magic.cards WHERE oracle_id IS NOT NULL",
             )
@@ -678,7 +686,7 @@ class AdminResource:
         # Update cards in database with the new is: tag
         updated_count = 0
         new_tag = orjson.dumps({is_tag: True}).decode("utf-8")
-        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with self.app_context.writer_pool.connection() as conn, conn.cursor() as cursor:
             # Use SQL update with jsonb concatenation to add the is: tag
             for card_name_batch in itertools.batched(sorted(card_names), 500):
                 cursor.execute(
@@ -760,7 +768,7 @@ class AdminResource:
         updated_count = 0
         new_tag = orjson.dumps({is_tag: True}).decode("utf-8")
         scryfall_ids = {p["id"] for p in printings}
-        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with self.app_context.writer_pool.connection() as conn, conn.cursor() as cursor:
             # Use SQL update with jsonb concatenation to add the is: tag
             for scryfall_id_batch in itertools.batched(sorted(scryfall_ids), 500):
                 cursor.execute(
@@ -822,12 +830,12 @@ class AdminResource:
     @route()
     def import_oracle_tags(self, **_: object) -> dict[str, Any]:
         """Import oracle tags from Scryfall bulk data into oracle_tags, oracle_tag_relationships, and card_oracle_tags."""
-        return _import_oracle_tags(self._conn_pool, self._bulk_data_fetcher)
+        return _import_oracle_tags(self.app_context.writer_pool, self._bulk_data_fetcher)
 
     @route()
     def import_art_tags(self, **_: object) -> dict[str, Any]:
         """Import art tags from Scryfall bulk data into art_tags, art_tag_relationships, and card_art_tags."""
-        return _import_art_tags(self._conn_pool, self._bulk_data_fetcher)
+        return _import_art_tags(self.app_context.writer_pool, self._bulk_data_fetcher)
 
     @route()
     def import_all_is_tags(self, **_: object) -> dict[str, Any]:
@@ -936,7 +944,7 @@ class AdminResource:
         logger.info("Importing card by name: '%s'", card_name)
 
         # Check if card already exists in database for backward compatibility
-        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with self.app_context.writer_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute(
                 "SELECT card_name FROM magic.cards WHERE card_name = %(card_name)s",
                 {"card_name": card_name},
@@ -1001,7 +1009,7 @@ class AdminResource:
         load_result = self._upsert_cards(cards)
 
         if load_result["status"] == "success":
-            self._parent._reload_engine(force=True)
+            self.app_context.reload_engine(force=True)
 
         # Add search_query to the result for consistency
         load_result["search_query"] = search_query
@@ -1109,7 +1117,7 @@ class AdminResource:
         self.setup_schema()
 
         try:
-            with self._conn_pool.connection() as conn:
+            with self.app_context.writer_pool.connection() as conn:
                 with conn.cursor() as cursor:
                     db_utils.set_statement_timeout(cursor, 30_000)
 
@@ -1183,5 +1191,4 @@ class AdminResource:
             }
 
     def _clear_caches(self) -> None:
-        with self._parent._cache_generation.get_lock():
-            self._parent._cache_generation.value += 1
+        self.app_context.bump_cache_generation()

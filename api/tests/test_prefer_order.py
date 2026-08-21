@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from api.api_resource import APIResource
+from api.app_context import AppContext
 from api.enums import CardOrdering, PreferOrder, SortDirection, UniqueOn
 from api.parsing import parse_scryfall_query
 from api.utils.timer import Timer
@@ -22,20 +23,20 @@ class TestPreferOrder(unittest.TestCase):
         here calls an import path afterwards, so no suppression override is needed.
         """
         self.api_resource = APIResource(
-            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+            app_context=AppContext(last_import_time=multiprocessing.Value("d", time.time(), lock=True)),
         )
 
     def tearDown(self) -> None:
         """Close the connection pools this test case opened."""
-        self.api_resource._conn_pool.close()
-        self.api_resource.admin._conn_pool.close()
+        self.api_resource.app_context.reader_pool.close()
+        self.api_resource.app_context.writer_pool.close()
 
     def _search_sql(self, query: str, prefer: PreferOrder) -> dict:
         """Run _search_sql directly, bypassing engine dispatch."""
         parsed_query = parse_scryfall_query(query)
         with (
-            patch.object(self.api_resource, "_conn_pool") as mock_pool,
-            patch.object(self.api_resource, "_setup_complete", return_value=True),
+            patch.object(self.api_resource.app_context, "reader_pool") as mock_pool,
+            patch.object(self.api_resource.app_context, "setup_complete", return_value=True),
         ):
             mock_cursor = MagicMock()
             mock_cursor.fetchall.return_value = [{"total_cards_count": 0, "name": None}]

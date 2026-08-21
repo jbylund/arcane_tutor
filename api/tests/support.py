@@ -2,24 +2,40 @@
 
 from __future__ import annotations
 
+import multiprocessing
+import time
 from unittest.mock import MagicMock
 
+from api.app_context import AppContext
 
-def mock_conn_pool_kwargs() -> tuple[MagicMock, dict[str, MagicMock]]:
-    """A mock pool plus the APIResource(...) kwargs that inject it as both `_conn_pool`s.
 
-    APIResource.__init__ takes `conn_pool` and `admin_conn_pool` precisely so a test can hand it a
-    mock at construction time; passed the return value here as `**kwargs`, no real
-    psycopg_pool.ConnectionPool is ever opened, so there is nothing to close afterward. One mock
-    covers both attributes, matching how a single `_conn_pool` mock covered every code path before
-    AdminResource had its own pool.
+def mock_app_context(**overrides: object) -> AppContext:
+    """An AppContext with mock pools/engine, for injecting into APIResource(app_context=...).
+
+    No real `psycopg_pool.ConnectionPool` is ever opened, so there is nothing to close afterward.
+    `reader_pool`/`writer_pool` default to one shared `MagicMock()`, matching how a single
+    `_conn_pool` mock covered every code path before AdminResource had its own pool. `last_import_time`
+    defaults to now rather than `AppContext`'s own "nothing imported yet" default: `APIResource.__init__`
+    calls `self.admin.import_data()`, and a stale `last_import_time` would make its fast path
+    (`_import_recent`) miss and kick off a real Scryfall import during construction. Pass an
+    explicit `reader_pool=`/`writer_pool=`/`last_import_time=` (or anything else `AppContext` takes)
+    to override just that field.
+
+    Args:
+        **overrides: Any `AppContext.__init__` keyword to set explicitly instead of defaulting.
 
     Returns:
-        The mock, and a `{"conn_pool": ..., "admin_conn_pool": ...}` dict to spread into the
-        APIResource(...) call.
+        A ready `AppContext`.
     """
     mock_pool = MagicMock()
-    return mock_pool, {"conn_pool": mock_pool, "admin_conn_pool": mock_pool}
+    kwargs: dict[str, object] = {
+        "reader_pool": mock_pool,
+        "writer_pool": mock_pool,
+        "engine": MagicMock(),
+        "last_import_time": multiprocessing.Value("d", time.time(), lock=True),
+    }
+    kwargs.update(overrides)
+    return AppContext(**kwargs)
 
 
 def override_attr(obj: object, name: str, value: object) -> None:

@@ -16,7 +16,7 @@ from api.card_processing import preprocess_card
 from api.db.bulk_upsert import bulk_upsert
 from api.scryfall_bulk_data_fetcher import BulkDataKey
 from api.tests.helpers import make_raw_card
-from api.tests.support import mock_conn_pool_kwargs
+from api.tests.support import mock_app_context
 
 if TYPE_CHECKING:
     import pytest
@@ -68,7 +68,7 @@ class TestUpsertCardsStatus:
 
 
 def _is_tags_for(api_resource: APIResource, scryfall_id: str) -> dict:
-    with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
+    with api_resource.app_context.reader_pool.connection() as conn, conn.cursor() as cursor:
         cursor.execute(
             "SELECT card_is_tags FROM magic.cards WHERE scryfall_id = %(sid)s",
             {"sid": scryfall_id},
@@ -112,7 +112,7 @@ class TestBooleanIsTags:
         card = make_raw_card(name="Historic Bystander Test")
         card["reserved"] = True
         api_resource.admin._upsert_cards([card])
-        with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with api_resource.app_context.reader_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute(
                 """UPDATE magic.cards SET card_is_tags = card_is_tags || '{"historic": true}'::jsonb
                    WHERE scryfall_id = %(sid)s""",
@@ -238,9 +238,9 @@ class TestRunImportUnderLockStreaming:
     def _make_api(self) -> APIResource:
         # Patch out setup_schema and import_data during construction: __init__ calls both, and an
         # unpatched import_data with last_import_time=0.0 performs a real full Scryfall import.
-        _, pool_kwargs = mock_conn_pool_kwargs()
+        app_context = mock_app_context(last_import_time=multiprocessing.Value("d", 0.0, lock=True))
         with patch.object(AdminResource, "setup_schema"), patch.object(AdminResource, "import_data"):
-            return APIResource(last_import_time=multiprocessing.Value("d", 0.0, lock=True), **pool_kwargs)
+            return APIResource(app_context=app_context)
 
     def test_calls_stream_data_for_key(self) -> None:
         api = self._make_api()
@@ -289,7 +289,7 @@ class TestBulkUpsertDedup:
         card_id = str(uuid.uuid4())
         (row_a,) = preprocess_card(make_raw_card(card_id=card_id, rarity="common"))
         (row_b,) = preprocess_card(make_raw_card(card_id=card_id, rarity="rare"))
-        with api_resource._conn_pool.connection() as conn:
+        with api_resource.app_context.reader_pool.connection() as conn:
             result = bulk_upsert(
                 conn,
                 "cards",
@@ -299,7 +299,7 @@ class TestBulkUpsertDedup:
             )
             conn.commit()
         assert result["inserted"] == 1
-        with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with api_resource.app_context.reader_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute("SELECT card_rarity_text FROM magic.cards WHERE scryfall_id = %s", (card_id,))
             row = cursor.fetchone()
         assert row["card_rarity_text"] == "rare"
@@ -332,7 +332,7 @@ class TestUpsertBehavior:
         assert result["cards_inserted"] == 0
         assert result["cards_updated"] == 1
 
-        with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with api_resource.app_context.reader_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute("SELECT card_rarity_text FROM magic.cards WHERE scryfall_id = %s", (card_id,))
             row = cursor.fetchone()
         assert row["card_rarity_text"] == "rare"
@@ -342,7 +342,7 @@ class TestUpsertBehavior:
         card_id = str(uuid.uuid4())
         api_resource.admin._upsert_cards([make_raw_card(card_id=card_id)])
 
-        with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with api_resource.app_context.reader_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute(
                 "UPDATE magic.cards SET prefer_score = 42.0, card_is_tags = '{\"is:instant\": true}'::jsonb WHERE scryfall_id = %s",
                 (card_id,),
@@ -351,7 +351,7 @@ class TestUpsertBehavior:
 
         api_resource.admin._upsert_cards([make_raw_card(card_id=card_id, rarity="rare")])
 
-        with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with api_resource.app_context.reader_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute("SELECT prefer_score, card_is_tags FROM magic.cards WHERE scryfall_id = %s", (card_id,))
             row = cursor.fetchone()
         assert row["prefer_score"] == 42.0

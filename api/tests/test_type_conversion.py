@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from api.api_resource import APIResource
+from api.app_context import AppContext
 from api.utils.type_conversions import make_type_converting_wrapper
 
 
@@ -112,11 +113,11 @@ class TestTypeConversion:
     def test_action_map_uses_type_converting_wrappers(self) -> None:
         """Test that APIResource action map uses type converting wrappers."""
         with (
-            patch("api.api_resource.db_utils.make_pool"),
+            patch("api.app_context.db_utils.make_pool"),
             patch("api.admin_resource.requests.Session"),
         ):
             api_resource = APIResource(
-                last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+                app_context=AppContext(last_import_time=multiprocessing.Value("d", time.time(), lock=True)),
             )
 
             # Check that import_oracle_tags is wrapped

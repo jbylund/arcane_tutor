@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 sys.path.insert(0, "/app")
 
 from api.api_resource import APIResource
+from api.app_context import AppContext
 from api.enums import CardOrdering, PreferOrder, SortDirection, UniqueOn
 from api.parsing import parse_scryfall_query
 from api.tests.support import override_attr
@@ -41,11 +42,11 @@ REPEATS = 3  # independent timed windows per cell (report min to reduce noise)
 # ─── Setup ────────────────────────────────────────────────────────────────────
 
 print("Connecting to DB and loading engine store…", flush=True)
-api = APIResource(last_import_time=multiprocessing.Value("d", time.time(), lock=True))
+api = APIResource(app_context=AppContext(last_import_time=multiprocessing.Value("d", time.time(), lock=True)))
 override_attr(api, "_import_recent", lambda: True)
-override_attr(api, "_setup_complete", lambda: True)
-api._reload_engine(force=True)
-total_printings = api._engine.size()
+override_attr(api.app_context, "setup_complete", lambda: True)
+api.app_context.reload_engine(force=True)
+total_printings = api.app_context.engine.size()
 print(f"Engine loaded: {total_printings:,} printings", flush=True)
 
 # Build the prebuilt list that the old implementation kept in memory.
@@ -53,7 +54,7 @@ print(f"Engine loaded: {total_printings:,} printings", flush=True)
 print("Building prebuilt card list (old approach)…", flush=True)
 tracemalloc.start()
 snapshot_before = tracemalloc.take_snapshot()
-_, prebuilt = api._engine.query(
+_, prebuilt = api.app_context.engine.query(
     filters=parse_scryfall_query(""),
     unique=str(UniqueOn.CARD),
     prefer=str(PreferOrder.DEFAULT),
@@ -89,9 +90,9 @@ def _time_fn(fn: Callable[[], object], warmup: int, window: float) -> float:
 def bench(n: int) -> tuple[float, float, float, float]:
     """Return (py_sample_us, preferred_us, reservoir_us, indexed_us) as min over REPEATS windows."""
     py_timings = [_time_fn(lambda: random.sample(prebuilt, n), WARMUP, WINDOW) for _ in range(REPEATS)]
-    pref_timings = [_time_fn(lambda: api._engine.sample_preferred(n), WARMUP, WINDOW) for _ in range(REPEATS)]
-    res_timings = [_time_fn(lambda: api._engine.sample_reservoir(n), WARMUP, WINDOW) for _ in range(REPEATS)]
-    idx_timings = [_time_fn(lambda: api._engine.sample_indexed(n), WARMUP, WINDOW) for _ in range(REPEATS)]
+    pref_timings = [_time_fn(lambda: api.app_context.engine.sample_preferred(n), WARMUP, WINDOW) for _ in range(REPEATS)]
+    res_timings = [_time_fn(lambda: api.app_context.engine.sample_reservoir(n), WARMUP, WINDOW) for _ in range(REPEATS)]
+    idx_timings = [_time_fn(lambda: api.app_context.engine.sample_indexed(n), WARMUP, WINDOW) for _ in range(REPEATS)]
     return min(py_timings), min(pref_timings), min(res_timings), min(idx_timings)
 
 

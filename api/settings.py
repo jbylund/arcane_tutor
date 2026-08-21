@@ -85,7 +85,7 @@ class Settings:
         """Check if the Rust card filter engine serves searches.
 
         Enabled by default. When disabled, the engine is fully inert: _search
-        routes every query to SQL and _reload_engine never runs. Disable via
+        routes every query to SQL and AppContext.reload_engine never runs. Disable via
         ENABLE_ENGINE=false for environments where the full-table fetch cost is
         unacceptable (e.g. low-memory dev machines).
         """

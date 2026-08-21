@@ -19,8 +19,8 @@ def _compiled_sql(stub_api_resource: APIResource, ordering: CardOrdering) -> str
     """Return the compiled SQL string via the SQL path directly."""
     parsed_query = parse_scryfall_query("cmc=1")
     with (
-        patch.object(stub_api_resource, "_conn_pool") as mock_pool,
-        patch.object(stub_api_resource, "_setup_complete", return_value=True),
+        patch.object(stub_api_resource.app_context, "reader_pool") as mock_pool,
+        patch.object(stub_api_resource.app_context, "setup_complete", return_value=True),
     ):
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = [{"total_cards_count": 0, "name": None}]

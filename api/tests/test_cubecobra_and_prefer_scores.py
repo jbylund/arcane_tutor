@@ -38,7 +38,7 @@ class TestInsertCubecobraData:
 
         assert rows_updated >= 1
 
-        with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with api_resource.app_context.reader_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute(
                 "SELECT cubecobra_elo, cubecobra_cube_count, cubecobra_pick_count FROM magic.cards WHERE oracle_id = %s LIMIT 1",
                 (oracle_id,),
@@ -161,7 +161,7 @@ class TestBackfillPreferScores:
         oracle_id = _insert_card(api_resource, make_raw_card(name=f"Prefer Score Check {uuid.uuid4()}"))
         api_resource.admin.backfill_prefer_scores()
 
-        with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with api_resource.app_context.reader_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute("SELECT prefer_score FROM magic.cards WHERE oracle_id = %s LIMIT 1", (oracle_id,))
             row = cursor.fetchone()
 
