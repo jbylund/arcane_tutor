@@ -8,6 +8,7 @@ Exports:
 
 from __future__ import annotations
 
+from api.middlewares.admin_auth_middleware import AdminAuthMiddleware
 from api.middlewares.caching_middleware import CachingMiddleware
 from api.middlewares.compression import CompressionMiddleware
 from api.middlewares.cors_middleware import CORSMiddleware
@@ -17,6 +18,7 @@ from api.middlewares.security_headers import SecurityHeadersMiddleware
 from api.middlewares.timing import ProfilingMiddleware, TimingMiddleware
 
 __all__ = [
+    "AdminAuthMiddleware",
     "CORSMiddleware",
     "CachingMiddleware",
     "CompressionMiddleware",

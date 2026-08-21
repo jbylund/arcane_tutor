@@ -180,25 +180,32 @@ def build_route_table(
     return table
 
 
-def build_routes_listing(route_table: dict[str, BoundRoute]) -> dict[str, dict[str, Any]]:
+def build_routes_listing(route_table: dict[str, BoundRoute], *, include_unadvertised: bool = False) -> dict[str, dict[str, Any]]:
     """Build the {route: {doc, args, kwargs}} listing served in 404 responses.
 
-    Only routes that declared themselves advertisable appear. A mounted child is registered with
-    advertise=False, so the listing cannot turn the mount into a directory of what is behind it —
-    which would undo the boundary while leaving every test passing.
+    By default only routes that declared themselves advertisable appear. A mounted child is
+    registered with advertise=False, so the default listing cannot turn the mount into a directory
+    of what is behind it — which would undo the boundary while leaving every test passing.
 
     Depends only on the table's contents, fixed once construction finishes, so it is built once
-    there rather than on every 404 (inspect.signature() per route isn't free).
+    there rather than on every 404 (inspect.signature() per route isn't free) — true for both the
+    default listing and the include_unadvertised=True one, which callers precompute separately
+    rather than filtering the default one at request time.
 
     Args:
         route_table: Path to bound route.
+        include_unadvertised: Include routes that declared advertise=False too. For a second,
+            separately-built listing shown only to callers who have already authenticated past
+            the boundary those routes sit behind — never as a request-time toggle on this one
+            table, since that would make the boundary a formatting choice instead of a fact about
+            what a given caller can see.
 
     Returns:
         Route name to its doc, args and kwargs.
     """
     routes = {}
     for endpoint_name, entry in route_table.items():
-        if not entry.spec.advertise:
+        if not entry.spec.advertise and not include_unadvertised:
             continue
         wrapped_func = entry.action
         # Get the original function from the wrapper

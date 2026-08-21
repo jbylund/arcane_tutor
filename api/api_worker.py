@@ -103,6 +103,7 @@ class ApiWorker(multiprocessing.Process):
         from api.api_resource import APIResource  # pylint: disable=import-outside-toplevel
         from api.app_context import AppContext  # pylint: disable=import-outside-toplevel
         from api.middlewares import (
+            AdminAuthMiddleware,
             CachingMiddleware,
             CompressionMiddleware,
             CORSMiddleware,
@@ -125,6 +126,7 @@ class ApiWorker(multiprocessing.Process):
         api = falcon.App(
             middleware=[
                 TimingMiddleware(),
+                AdminAuthMiddleware(),  # ahead of caching: a rejected admin request must never hit the cache
                 QueryLogMiddleware(),  # process_response fires before TimingMiddleware's
                 CachingMiddleware(cache=shared_cache),
                 CompressionMiddleware(),

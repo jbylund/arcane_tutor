@@ -260,6 +260,10 @@ class APIResource:
         self.admin = AdminResource(app_context=self.app_context, admin_context=admin_context)
         self.routes.update(build_route_table(self.admin, prefix=ADMIN_MOUNT_PREFIX, advertise=False))
         self._not_found_routes = build_routes_listing(self.routes)
+        # Shown only once AdminAuthMiddleware has stamped req.context["admin_authenticated"] —
+        # see _raise_not_found. Precomputed here for the same reason as _not_found_routes:
+        # inspect.signature() per route isn't free, and the table never changes after construction.
+        self._authenticated_not_found_routes = build_routes_listing(self.routes, include_unadvertised=True)
 
         self.admin.setup_schema()
         self.admin.import_data()  # ensures that database is setup
@@ -287,6 +291,27 @@ class APIResource:
         if entry is None or len(action_args) > entry.positional_capacity:
             return None, []
         return entry, action_args
+
+    def _build_action_kwargs(self, req: falcon.Request, resp: falcon.Response, entry: BoundRoute | None) -> dict[str, Any]:
+        """Assemble the keyword arguments passed to a route's action.
+
+        Args:
+            req: The incoming request.
+            resp: The response the action will populate.
+            entry: The matched route, or None when the path didn't resolve to anything -- in which
+                case action is _raise_not_found rather than a real route handler.
+
+        Returns:
+            Keyword arguments for the action call.
+        """
+        params = {k: v for k, v in req.params.items() if k not in DISALLOWED_QUERY_ARGS}
+        if entry is None:
+            # Only _raise_not_found reads this; set after the query string so a request can't
+            # spoof it via ?admin_authenticated=1 on a path that doesn't resolve to anything.
+            params["admin_authenticated"] = req.context.get("admin_authenticated", False)
+        params["falcon_response"] = resp
+        params["request_host"] = req.get_header("X-Proxy-Host") or req.host
+        return params
 
     def _handle(self, req: falcon.Request, resp: falcon.Response) -> None:
         """Handle a Falcon request and set the response.
@@ -322,8 +347,7 @@ class APIResource:
         res = None
         before = time.monotonic()
         try:
-            params = {k: v for k, v in req.params.items() if k not in DISALLOWED_QUERY_ARGS}
-            res = action(*action_args, falcon_response=resp, request_host=req.get_header("X-Proxy-Host") or req.host, **params)
+            res = action(*action_args, **self._build_action_kwargs(req, resp, entry))
             resp.media = res
         except ParamCoercionError as oops:
             # A value the client sent is not valid for the parameter it names. The message contains only
@@ -372,12 +396,20 @@ class APIResource:
                 for span_name, span_data in res.get("outer_timings", {}).items():
                     record_span(req, span_name, span_data.get("_meta", {}).get("duration_ms", 0))
 
-    def _raise_not_found(self, *_args: object, **_: object) -> None:
-        """Raise a Falcon HTTPNotFound error with available routes."""
+    def _raise_not_found(self, *_args: object, admin_authenticated: bool = False, **_: object) -> None:
+        """Raise a Falcon HTTPNotFound error with available routes.
+
+        Args:
+            admin_authenticated: Whether this request already carried a valid admin credential
+                (AdminAuthMiddleware, via req.context). A caller who has already proven they hold
+                the shared secret gains nothing from the admin routes being hidden, so they get the
+                full listing instead of just the public one.
+        """
+        routes = self._authenticated_not_found_routes if admin_authenticated else self._not_found_routes
         raise falcon.HTTPNotFound(
             title="Not Found",
             description={
-                "routes": self._not_found_routes,
+                "routes": routes,
             },
         )
 

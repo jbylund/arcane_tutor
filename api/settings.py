@@ -69,6 +69,7 @@ class Settings:
             "PREFER_SCORE_BACKFILL_TIMEOUT_MS",
             DEFAULT_PREFER_SCORE_BACKFILL_TIMEOUT_MS,
         )
+        self._admin_password: str = os.environ.get("ADMIN_PASSWORD", "")
 
     @property
     def enable_cache(self) -> bool:
@@ -108,6 +109,21 @@ class Settings:
         Override with PREFER_SCORE_BACKFILL_TIMEOUT_MS. 0 disables the timeout entirely.
         """
         return self._prefer_score_backfill_timeout_ms
+
+    @property
+    def admin_password(self) -> str:
+        """Shared secret gating every route under the admin mount.
+
+        Read from ADMIN_PASSWORD, generated into env.json on first boot by
+        scripts/gen_env_json.sh. Empty means unset -- AdminAuthMiddleware treats that as "reject
+        everything" rather than "no password required".
+        """
+        return self._admin_password
+
+    @admin_password.setter
+    def admin_password(self, value: str) -> None:
+        """Set the admin password, for tests -- no process re-reads ADMIN_PASSWORD after startup."""
+        self._admin_password = value
 
 
 # Global settings instance
