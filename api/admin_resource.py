@@ -19,7 +19,8 @@ peers that reach into a neutral shared object instead of into each other.
 only *within* `AdminResource`'s own copies across processes. `import_guard` serialises concurrent
 *schema setup* only — the import flow itself serialises on `AppContext.last_import_time`'s own lock
 instead (see `import_data`) — and nothing on the search side ever touches either primitive. They get
-their own small bundle, `AdminContext`, defined here since nothing outside this module needs it.
+their own small bundle, `AdminContext`, defined here. `APIResource` and `api_worker` import the type
+to construct and forward it, but nothing outside this module reads or writes its fields.
 """
 
 from __future__ import annotations
@@ -179,7 +180,11 @@ CARD_IS_TAGS = LAND_IS_TAGS + [  # noqa: RUF005
 
 
 class AdminContext:
-    """Cross-worker primitives private to AdminResource: not shared with any other resource."""
+    """Cross-worker primitives private to AdminResource's own use.
+
+    The type itself is imported by `APIResource` and `api_worker` to construct and forward an
+    instance, but nothing outside `AdminResource` reads or writes the primitives it holds.
+    """
 
     def __init__(
         self,
