@@ -45,6 +45,37 @@ def cacheable_headers(headers: Mapping[str, str]) -> list[tuple[str, str]]:
     return [(k, v) for k, v in headers.items() if not k.lower().startswith(_UNCACHEABLE_HEADER_PREFIXES)]
 
 
+def status_is_cacheable(status: str) -> bool:
+    """Check whether a response status is safe to store and replay.
+
+    5xx is a transient failure, not a repeatable answer. Most 4xx isn't cacheable either, on
+    different grounds: the path space behind a 404 is effectively unbounded (bots, scanners,
+    typos), so almost none of it repeats -- caching it buys nothing while spending LRU slots that
+    would otherwise hold a reusable /search response. It also sidesteps a real hazard for free: a
+    404's content can depend on the caller (see APIResource._raise_not_found, which serves
+    admin-authenticated callers a different route listing), and the cache key here has no notion
+    of that -- caching it would need to partition by caller to avoid leaking or masking that
+    listing across callers. Not caching 4xx at all makes that a non-issue rather than something to
+    get right.
+
+    400 is the one exception: it's a deterministic function of the request shape already in the
+    cache key (a query parameter that fails type coercion, e.g. ParamCoercionError), never varies
+    by caller, and -- unlike a 404's effectively unbounded path space -- a client retrying the same
+    malformed request genuinely repeats the same key.
+
+    Args:
+        status: A response's HTTP status line, e.g. "404 Not Found".
+
+    Returns:
+        True if the response may be cached.
+    """
+    if status.startswith("5"):
+        return False
+    if status.startswith("400"):
+        return True
+    return not status.startswith("4")
+
+
 class CachedResponse(NamedTuple):
     """Fully rendered response, detached from the falcon.Response that produced it.
 
@@ -157,16 +188,7 @@ class CachingMiddleware:
         del resource, req_succeeded
         if req.context.get("cache_hit"):
             return
-        # Neither is cacheable. 5xx is a transient failure, not a repeatable answer. 4xx isn't
-        # cached either, on different grounds: the path space behind a 404 is effectively
-        # unbounded (bots, scanners, typos), so almost none of it repeats -- caching it buys
-        # nothing while spending LRU slots that would otherwise hold a reusable /search response.
-        # It also sidesteps a real hazard for free: a 404's content can depend on the caller (see
-        # APIResource._raise_not_found, which serves admin-authenticated callers a different route
-        # listing), and the cache key here has no notion of that -- caching it would need to
-        # partition by caller to avoid leaking or masking that listing across callers. Not caching
-        # 4xx at all makes that a non-issue rather than something to get right.
-        if resp.status and resp.status[0] in ("4", "5"):
+        if resp.status and not status_is_cacheable(resp.status):
             return
         if "no-store" in (resp.get_header("Cache-Control") or ""):
             return
