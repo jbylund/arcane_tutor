@@ -388,10 +388,11 @@ def get_legality_comparison_object(val: str, attr: str) -> dict[str, str]:
 # api.parsing.mana_symbols, which validates every symbol this finds.
 BRACED_MANA_SYMBOL = re.compile(r"{([^}]*)}")
 
-# Bare (unbraced) pip characters counted below: a colour, colourless, or X, confirmed against the
-# real Scryfall API (mana:x behaves identically to mana:{x}). Shared with api.parsing.mana_symbols,
-# which rejects any bare character outside this alphabet — see that module's docstring for why.
-BARE_MANA_ATOMS = frozenset("WUBRGCX")
+# Bare (unbraced) pip characters counted below: a colour, colourless, snow, or X, confirmed against
+# the real Scryfall API (mana:x behaves identically to mana:{x}, and mana:s to mana:{s}). Shared with
+# api.parsing.mana_symbols, which rejects any bare character outside this alphabet — see that
+# module's docstring for why.
+BARE_MANA_ATOMS = frozenset("WUBRGCXS")
 
 
 def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
@@ -455,13 +456,13 @@ def calculate_cmc(mana_cost_str: str) -> int:
     # Then, process unbraced part (after removing braced sections)
     # Replace braced sections with a space to prevent adjacent digits from merging
     unbraced_part = BRACED_MANA_SYMBOL.sub(" ", mana_cost_upper)
-    # Match either: sequences of digits OR single color characters
-    for token in re.findall(r"\d+|[WUBRGC]", unbraced_part):
+    # Match either: sequences of digits OR single color/colourless/snow characters
+    for token in re.findall(r"\d+|[WUBRGCS]", unbraced_part):
         if token.isdigit():
             # Multi-digit generic mana (e.g., "11" in "11R")
             cmc += int(token)
-        elif token in "WUBRGC":
-            # Color character counts as 1
+        elif token in "WUBRGCS":
+            # Color (or snow) character counts as 1, same as its braced form
             cmc += 1
 
     return cmc

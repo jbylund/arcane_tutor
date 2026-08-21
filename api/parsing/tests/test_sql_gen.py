@@ -207,6 +207,17 @@ def test_full_sql_translation(parse_query, input_query: str, expected_sql: str, 
             r"(%(p_dict_eydYJzogWzFdLCAnUic6IFsxXX0)s <@ card.mana_cost_jsonb AND card.cmc >= %(p_int_MQ)s)",
             {"p_dict_eydYJzogWzFdLCAnUic6IFsxXX0": {"X": [1], "R": [1]}, "p_int_MQ": 1},
         ),
+        # Snow, likewise: bare 's' means the same thing as braced '{s}' (#954).
+        (
+            "mana:{S}",
+            r"(%(p_dict_eydTJzogWzFdfQ)s <@ card.mana_cost_jsonb AND card.cmc >= %(p_int_MQ)s)",
+            {"p_dict_eydTJzogWzFdfQ": {"S": [1]}, "p_int_MQ": 1},
+        ),
+        (
+            "mana:s",
+            r"(%(p_dict_eydTJzogWzFdfQ)s <@ card.mana_cost_jsonb AND card.cmc >= %(p_int_MQ)s)",
+            {"p_dict_eydTJzogWzFdfQ": {"S": [1]}, "p_int_MQ": 1},
+        ),
     ],
 )
 def test_full_sql_translation_jsonb_colors(parse_query, input_query: str, expected_sql: str, expected_parameters: dict) -> None:

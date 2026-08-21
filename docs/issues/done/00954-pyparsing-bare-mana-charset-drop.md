@@ -55,3 +55,35 @@ A fresh fix needs to unify the vocabulary (closing this issue's gap) while keepi
 `mana_cost_str_to_dict`, `calculate_cmc`, and `pyparsing_based`'s two `simple_mana_symbol` patterns
 each read their own hardcoded charset (all incomplete in different, overlapping ways), while
 `mana_symbols.py`'s (post-#941) `_ATOMS` is the one that's actually correct today.
+
+## Fix
+
+The "confirmed reachable" repro above says the hand parser "correctly rejects" `mana:s` — that
+framing turned out to be half right. `mana:{s}` (braced) already resolved correctly on both parsers
+to `{'S': [1]}`, `cmc >= 1`; `mana:s` (bare) should mean the same thing, per real Scryfall behavior,
+but both parsers rejected/mishandled it because `BARE_MANA_ATOMS` in `card_query_nodes.py` — the
+bare-character alphabet `mana_cost_str_to_dict`, `calculate_cmc`, and (via `mana_symbols.py`)
+`first_invalid_mana_symbol` all read — was `frozenset("WUBRGCX")`, missing `S`. Fixing that one
+constant fixed the hand parser and `first_invalid_mana_symbol` together (single source of truth), so
+`mana:s` now agrees with `mana:{s}` on both parsers, and `calculate_cmc`'s bare-character regex
+gained `S` too (a bare `S` now contributes 1 to cmc, same as its braced form).
+
+The other half — `mana:snow`/`mana:p`/`mana:hello` silently resolving to a plain string comparison
+on the pyparsing path — was the grammar gap from "Why" above. `pyparsing_based.py`'s two
+`simple_mana_symbol` regexes were widened from an enumerated letter subset to `[0-9A-Za-z]`: which
+bare characters are *valid* is `first_invalid_mana_symbol`'s call, not the tokenizer's — a narrower
+tokenizer charset just means some bare values never reach that validator and fall through to
+`string_value_word` instead. That fallback was also dropped from `mana_value_or_string` entirely
+(`mana_value | mana_quoted_value`, no more `| string_value_word`): a mana/devotion condition's rhs is
+now always a validated `ManaValueNode`, never an unchecked `StringValueNode`, mirroring
+`hand_parser.parse_mana_value`'s shape directly rather than relying on the tokenizer to always be
+wide enough.
+
+## Tests
+
+- `first_invalid_mana_symbol("2WWS")` → `None` (was `"S"`); `first_invalid_mana_symbol("SNOW")` →
+  `"N"` (the same offender `{s}{n}{o}{w}` reports as `"{N}"`)
+- `test_bare_mana_character_parity` (`test_parser_parity.py`): `mana:s`, `mana:snow`, `mana:p`,
+  `mana:hello` — hand and pyparsing parsers agree on all four
+- `test_full_sql_translation_jsonb_colors` (`test_sql_gen.py`): `mana:s` and `mana:{S}` produce
+  identical SQL/parameters, on both parsers

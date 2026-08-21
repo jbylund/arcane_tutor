@@ -264,18 +264,18 @@ def create_mana_parsers() -> dict[str, ParserElement]:
         Dictionary containing mana parser elements
     """
     curly_mana_symbol = Regex(r"\{[^}]+\}")
-    simple_mana_symbol = Regex(r"[0-9WUBRGCXYZwubrgcxyz]")
+    # Any letter or digit, not an enumerated subset of them: which bare characters are actually
+    # valid mana atoms is first_invalid_mana_symbol's call below, not this tokenizer's. A narrower
+    # charset here just means some bare values (e.g. "hello", "snow") never reach that validator at
+    # all and silently fall through to a plain string comparison instead (#954) — the grammar has to
+    # recognize a value as mana-shaped before it can be rejected as invalid mana.
+    simple_mana_symbol = Regex(r"[0-9A-Za-z]")
     mixed_mana_pattern = Combine(OneOrMore(curly_mana_symbol | simple_mana_symbol))
 
     def make_mana_value_node(tokens: list[str]) -> ManaValueNode:
         """Create a ManaValueNode for mana cost strings."""
         value = tokens[0].upper()
-        # Shared with hand_parser.parse_mana_value, so the two parsers reject the same symbols —
-        # for any value this grammar recognizes as mana-shaped in the first place. A bare value
-        # this pattern doesn't match (e.g. "hello") never reaches this parse action at all and
-        # falls through to a plain string comparison instead; that gap is pyparsing-only (this is
-        # the test-only reference parser, not the one serving traffic) and left unfixed, since
-        # closing it means widening the grammar rather than tightening this validator.
+        # Shared with hand_parser.parse_mana_value, so the two parsers reject the same symbols.
         # parse_search_query turns a ValueError from a parse action into a query-level parse error.
         invalid = first_invalid_mana_symbol(value)
         if invalid is not None:
@@ -370,7 +370,10 @@ def create_all_condition_parsers(basic_parsers: dict, mana_parsers: dict, color_
     unified_numeric_comparison = numeric_comparison_lhs + DEFAULT_OPERATORS + numeric_comparison_rhs
     unified_numeric_comparison.set_parse_action(make_binary_operator_node)
 
-    mana_value_or_string = mana_value | mana_quoted_value | string_value_word
+    # No string_value_word fallback: a mana/devotion condition's rhs is always a validated
+    # ManaValueNode, one of these two, never an unchecked StringValueNode (#954) — mirroring
+    # hand_parser.parse_mana_value, which has no plain-string case for this attribute class either.
+    mana_value_or_string = mana_value | mana_quoted_value
     mana_condition = create_condition_parser(mana_attr_word, mana_value_or_string)
 
     color_condition = create_condition_parser(color_attr_word, color_value | quoted_string)
@@ -628,7 +631,9 @@ def _get_implicit_and_tokenizer() -> ParserElement:
     string_value_tok = Regex(r"\w([\w.-]*[\w.])?").set_parse_action(lambda t: t[0])
 
     curly_mana_symbol = Regex(r"\{[^}]+\}")
-    simple_mana_symbol = Regex(r"[0-9WUBRGCXYZwubrgcxyz]")
+    # Mirrors create_mana_parsers' simple_mana_symbol (#954): any letter or digit, so a bare run
+    # mixed with braces (e.g. "s{w}") still tokenizes as one unit instead of splitting at the brace.
+    simple_mana_symbol = Regex(r"[0-9A-Za-z]")
     mana_tok = Combine(OneOrMore(curly_mana_symbol | simple_mana_symbol)).set_parse_action(lambda t: t[0])
 
     # A regex only opens in value position, so it is matched as a unit with the comparison operator
