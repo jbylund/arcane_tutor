@@ -130,19 +130,17 @@ class CachingMiddleware:
         req.context["cache_key"] = cache_key  # reused by process_response — one serialization per request
         authenticated = req.context.get("admin_authenticated", False)
 
-        cached: CachedResponse | None = None
-        if authenticated:
+        cached = self.cache.get(cache_key)
+        if cached is not None and authenticated and cached.status.startswith("4"):
+            # The ordinary slot isn't trustworthy here: it may hold a 4xx written by (or for) an
+            # anonymous caller, and a 4xx's content can depend on admin_authenticated (see
+            # APIResource._raise_not_found) -- check the admin-only slot instead. Only reached when
+            # the ordinary lookup above already found *something* and it was a 4xx, so the common
+            # case (every anonymous request, and every admin request that hits a 2xx) never pays
+            # for this second lookup.
             admin_key = cache_key + _ADMIN_4XX_KEY_SUFFIX
             req.context["admin_4xx_cache_key"] = admin_key
             cached = self.cache.get(admin_key)
-
-        if cached is None:
-            candidate = self.cache.get(cache_key)
-            # The ordinary slot is only safe to serve an admin-authenticated caller if it isn't a
-            # 4xx: a 2xx/3xx there is identical for every caller, but a 4xx may have been written
-            # by (or for) an anonymous caller and carry the wrong route listing for this one.
-            if candidate is not None and not (authenticated and candidate.status.startswith("4")):
-                cached = candidate
 
         if cached is not None:
             if TYPE_CHECKING:

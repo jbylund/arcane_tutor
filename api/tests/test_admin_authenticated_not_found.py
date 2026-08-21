@@ -108,15 +108,39 @@ class TestNotFoundCachingIsPartitionedByAuth:
         assert second.headers.get("X-Cache") == "hit"
         assert "setup_schema" not in second.json["description"]["routes"]
 
-    def test_repeated_authenticated_404_is_a_cache_hit(self, resource: APIResource, admin_password: str) -> None:
+    def test_repeated_authenticated_404_with_no_prior_anonymous_visit_recomputes_each_time(
+        self, resource: APIResource, admin_password: str
+    ) -> None:
+        # The lookup only ever consults the admin-only slot when the ordinary slot already holds
+        # *something* and it's a 4xx (see CachingMiddleware.process_request) -- an admin 404 is
+        # never written to the ordinary slot, so with no anonymous caller in the picture the
+        # ordinary slot stays empty and every repeat looks like a fresh miss. Content stays
+        # correct either way; this documents the accepted cost (a cheap recompute, not a query).
         del admin_password
         client = _client(resource, cache=True)
         first = client.simulate_get("/totally/bogus", headers=_AUTH_HEADERS)
         second = client.simulate_get("/totally/bogus", headers=_AUTH_HEADERS)
 
         assert first.headers.get("X-Cache") == "miss"
-        assert second.headers.get("X-Cache") == "hit"
+        assert second.headers.get("X-Cache") == "miss"
         assert f"{ADMIN_MOUNT_PREFIX}/setup_schema" in second.json["description"]["routes"]
+
+    def test_authenticated_404_hits_the_admin_slot_once_an_anonymous_visit_populated_the_ordinary_one(
+        self, resource: APIResource, admin_password: str
+    ) -> None:
+        # The one scenario the admin-only slot's second lookup exists for: an anonymous caller
+        # cached a plain 404 at the ordinary key first, so the *next* authenticated request finds
+        # something there, sees it's a 4xx, and checks (and populates, then hits) the admin slot
+        # instead of trusting it.
+        del admin_password
+        client = _client(resource, cache=True)
+        client.simulate_get("/totally/bogus")  # anonymous: populates the ordinary slot
+        first_authed = client.simulate_get("/totally/bogus", headers=_AUTH_HEADERS)
+        second_authed = client.simulate_get("/totally/bogus", headers=_AUTH_HEADERS)
+
+        assert f"{ADMIN_MOUNT_PREFIX}/setup_schema" in first_authed.json["description"]["routes"]
+        assert second_authed.headers.get("X-Cache") == "hit"
+        assert f"{ADMIN_MOUNT_PREFIX}/setup_schema" in second_authed.json["description"]["routes"]
 
     def test_authenticated_404_is_not_served_to_a_later_unauthenticated_caller(
         self, resource: APIResource, admin_password: str
