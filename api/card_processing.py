@@ -13,15 +13,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
-def extract_image_location_uuid(card: dict[str, Any]) -> str:
-    """Extract the image location UUID from a card."""
-    for image_location in card.get("image_uris", {}).values():
-        if ".jpg" in image_location:
-            return image_location.rpartition("/")[-1].partition(".")[0]
-    msg = f"No image location found for card: {card}"
-    raise AssertionError(msg)
-
-
 # Card types that can exist as a permanent on the battlefield. Devotion (MTG
 # comprehensive rules) is defined only over permanents' mana costs, confirmed
 # against the real Scryfall API (devotion: never matches a pure Instant/Sorcery,
