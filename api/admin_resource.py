@@ -9,8 +9,8 @@ public method became a route, and the only lever was a leading underscore, which
 method's Python visibility. Mounting a separate resource replaces that lever with a boundary, and
 keeps the honest names.
 
-The child holds a reference to its parent for the small surface they genuinely share — three methods
-(`_reload_engine`, `_serve_static_file`, `_setup_complete`)
+The child holds a reference to its parent for the small surface they genuinely share — two methods
+(`_reload_engine`, `_setup_complete`)
 and four handles (`_conn_pool`, `_cache_generation`, `_last_import_time`, `_setup_complete_cache`).
 That is deliberately not a decoupling: the boundary here is about routing, and pretending otherwise
 would mean an `AppContext` refactor that the routing fix does not need.
@@ -46,6 +46,7 @@ from api.tag_import import import_oracle_tags as _import_oracle_tags
 from api.utils import db_utils
 from api.utils.caching import cached
 from api.utils.http_utils import make_user_agent
+from api.utils.page_rendering import serve_static_file
 from api.utils.routing import route
 
 if TYPE_CHECKING:
@@ -355,7 +356,7 @@ class AdminResource:
             falcon_response (falcon.Response): The Falcon response to write to.
 
         """
-        self._parent._serve_static_file(filename="prefer_score_tuner.html", falcon_response=falcon_response)
+        serve_static_file(filename="prefer_score_tuner.html", falcon_response=falcon_response)
         falcon_response.content_type = "text/html"
 
     @route()

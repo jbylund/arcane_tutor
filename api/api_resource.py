@@ -37,7 +37,13 @@ from api.settings import settings
 from api.utils import db_utils, error_monitoring, multiprocessing_utils
 from api.utils.css_utils import build_critical_css
 from api.utils.generation_cache import GenerationCache
-from api.utils.page_rendering import SITE_NAME_PLACEHOLDER, STATIC_DIR, build_base_html, build_card_html
+from api.utils.page_rendering import (
+    SITE_NAME_PLACEHOLDER,
+    STATIC_DIR,
+    build_base_html,
+    build_card_html,
+    serve_static_file,
+)
 from api.utils.param_binding import ParamCoercionError
 from api.utils.routing import build_route_table, build_routes_listing, route
 from api.utils.site_name import hostname_to_site_name
@@ -1218,7 +1224,7 @@ class APIResource:
         """
         if falcon_response is None:
             return
-        self._serve_static_file(filename="styles.css", falcon_response=falcon_response)
+        serve_static_file(filename="styles.css", falcon_response=falcon_response)
         falcon_response.content_type = "text/css"
         set_cache_header(falcon_response, duration=timedelta(days=30))
 
@@ -1232,7 +1238,7 @@ class APIResource:
         """
         if falcon_response is None:
             return
-        self._serve_static_file(filename="app.js", falcon_response=falcon_response)
+        serve_static_file(filename="app.js", falcon_response=falcon_response)
         falcon_response.content_type = "application/javascript"
         # Cache JavaScript for 1 hour - it changes infrequently
         set_cache_header(falcon_response, duration=timedelta(hours=1))
@@ -1247,7 +1253,7 @@ class APIResource:
         """
         if falcon_response is None:
             return
-        self._serve_static_file(filename="app.min.js", falcon_response=falcon_response)
+        serve_static_file(filename="app.min.js", falcon_response=falcon_response)
         falcon_response.content_type = "application/javascript"
         set_cache_header(falcon_response, duration=timedelta(days=30))
 
@@ -1256,7 +1262,7 @@ class APIResource:
         """Return the robots.txt file."""
         if falcon_response is None:
             return
-        self._serve_static_file(filename="robots.txt", falcon_response=falcon_response)
+        serve_static_file(filename="robots.txt", falcon_response=falcon_response)
         falcon_response.content_type = "text/plain"
 
     @route(paths=("static/card.js",))
@@ -1269,7 +1275,7 @@ class APIResource:
         """
         if falcon_response is None:
             return
-        self._serve_static_file(filename="card.js", falcon_response=falcon_response)
+        serve_static_file(filename="card.js", falcon_response=falcon_response)
         falcon_response.content_type = "application/javascript"
         set_cache_header(falcon_response, duration=timedelta(hours=1))
 
@@ -1300,29 +1306,6 @@ class APIResource:
         falcon_response.text = html.replace(SITE_NAME_PLACEHOLDER, site_name)
         falcon_response.content_type = "text/html"
         set_cache_header(falcon_response, duration=timedelta(hours=1))
-
-    def _serve_static_file(self, *, filename: str, falcon_response: falcon.Response) -> None:
-        """Serve a static file to the Falcon response.
-
-        Args:
-        ----
-            filename (str): The file to serve.
-            falcon_response (falcon.Response): The Falcon response to write to.
-
-        """
-        full_filename = STATIC_DIR / filename
-        try:
-            with pathlib.Path(full_filename).open() as f:
-                falcon_response.text = f.read()
-        except FileNotFoundError:
-            falcon_response.status = falcon.HTTP_404
-            falcon_response.text = f"File not found: {filename}"
-        except PermissionError:
-            falcon_response.status = falcon.HTTP_403
-            falcon_response.text = f"Permission denied: {filename}"
-        except OSError as e:
-            falcon_response.status = falcon.HTTP_500
-            falcon_response.text = f"Error reading file {filename}: {e}"
 
     @route()
     def get_catalog(

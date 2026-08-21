@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import pathlib
 
+import falcon
 import minify_html
 from cachebox import LRUCache
 
@@ -39,6 +40,30 @@ _PRECONNECTS_HTML = (_FRAGMENTS_DIR / "preconnects.html").read_text()
 _FONTS_HTML = (_FRAGMENTS_DIR / "fonts.html").read_text()
 _CSS_HTML = (_FRAGMENTS_DIR / "css.html").read_text()
 _FOOTER_HTML = (_FRAGMENTS_DIR / "footer.html").read_text()
+
+
+def serve_static_file(*, filename: str, falcon_response: falcon.Response) -> None:
+    """Serve a static file to the Falcon response.
+
+    Args:
+    ----
+        filename (str): The file to serve.
+        falcon_response (falcon.Response): The Falcon response to write to.
+
+    """
+    full_filename = STATIC_DIR / filename
+    try:
+        with pathlib.Path(full_filename).open() as f:
+            falcon_response.text = f.read()
+    except FileNotFoundError:
+        falcon_response.status = falcon.HTTP_404
+        falcon_response.text = f"File not found: {filename}"
+    except PermissionError:
+        falcon_response.status = falcon.HTTP_403
+        falcon_response.text = f"Permission denied: {filename}"
+    except OSError as e:
+        falcon_response.status = falcon.HTTP_500
+        falcon_response.text = f"Error reading file {filename}: {e}"
 
 
 def _static_hash(filename: str) -> str | None:

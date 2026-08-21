@@ -659,19 +659,6 @@ class TestAPIResourceStaticFileServing(unittest.TestCase):
         )
         self.api_resource._conn_pool = self.mock_conn_pool
 
-    def test_serve_static_file_reads_file_content(self) -> None:
-        """Test _serve_static_file reads and serves file content."""
-        mock_response = MagicMock()
-
-        with patch("api.api_resource.pathlib.Path") as mock_path:
-            mock_file = MagicMock()
-            mock_file.open.return_value.__enter__.return_value.read.return_value = "file content"
-            mock_path.return_value = mock_file
-
-            self.api_resource._serve_static_file(filename="test.html", falcon_response=mock_response)
-
-            assert mock_response.text == "file content"
-
     def test_index_html_serves_static_file(self) -> None:
         """Test _root serves the index.html file."""
         mock_response = MagicMock()
