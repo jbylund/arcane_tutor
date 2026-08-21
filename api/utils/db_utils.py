@@ -83,6 +83,25 @@ def configure_connection(conn: psycopg.Connection) -> None:
     conn.row_factory = psycopg.rows.dict_row
 
 
+def set_statement_timeout(cursor: psycopg.Cursor, statement_timeout: int) -> None:
+    """Validate and set the statement timeout for a database cursor.
+
+    PostgreSQL SET commands don't support parameterized values, so we must
+    validate the value before using it in string interpolation.
+
+    Args:
+        cursor: Database cursor to execute the SET command on
+        statement_timeout: The statement timeout value in milliseconds
+
+    Raises:
+        ValueError: If statement_timeout is not a non-negative integer
+    """
+    if not isinstance(statement_timeout, int) or statement_timeout < 0:
+        msg = f"statement_timeout must be a non-negative integer, got: {statement_timeout}"
+        raise ValueError(msg)
+    cursor.execute(f"set statement_timeout = {statement_timeout}")
+
+
 def make_pool() -> psycopg_pool.ConnectionPool:
     """Create and return a psycopg3 ConnectionPool for PostgreSQL connections."""
     creds = get_pg_creds()

@@ -26,8 +26,9 @@ class TestPreferOrder(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
-        """Close the connection pool this test case opened."""
+        """Close the connection pools this test case opened."""
         self.api_resource._conn_pool.close()
+        self.api_resource.admin._conn_pool.close()
 
     def _search_sql(self, query: str, prefer: PreferOrder) -> dict:
         """Run _search_sql directly, bypassing engine dispatch."""

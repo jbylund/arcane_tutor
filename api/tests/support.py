@@ -2,6 +2,25 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
+
+def mock_conn_pool_kwargs() -> tuple[MagicMock, dict[str, MagicMock]]:
+    """A mock pool plus the APIResource(...) kwargs that inject it as both `_conn_pool`s.
+
+    APIResource.__init__ takes `conn_pool` and `admin_conn_pool` precisely so a test can hand it a
+    mock at construction time; passed the return value here as `**kwargs`, no real
+    psycopg_pool.ConnectionPool is ever opened, so there is nothing to close afterward. One mock
+    covers both attributes, matching how a single `_conn_pool` mock covered every code path before
+    AdminResource had its own pool.
+
+    Returns:
+        The mock, and a `{"conn_pool": ..., "admin_conn_pool": ...}` dict to spread into the
+        APIResource(...) call.
+    """
+    mock_pool = MagicMock()
+    return mock_pool, {"conn_pool": mock_pool, "admin_conn_pool": mock_pool}
+
 
 def override_attr(obj: object, name: str, value: object) -> None:
     """Replace an existing attribute on an instance, failing if it is not already there.

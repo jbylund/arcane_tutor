@@ -9,11 +9,20 @@ public method became a route, and the only lever was a leading underscore, which
 method's Python visibility. Mounting a separate resource replaces that lever with a boundary, and
 keeps the honest names.
 
-The child holds a reference to its parent for the small surface they genuinely share — five methods
-(`_reload_engine`, `_run_query`, `_serve_static_file`, `_set_statement_timeout`, `_setup_complete`)
-and four handles (`_conn_pool`, `_cache_generation`, `_last_import_time`, `_setup_complete_cache`).
-That is deliberately not a decoupling: the boundary here is about routing, and pretending otherwise
-would mean an `AppContext` refactor that the routing fix does not need.
+The child holds a reference to its parent for the small surface they genuinely share — two methods
+(`_reload_engine`, `_setup_complete`) and three handles (`_cache_generation`, `_last_import_time`,
+`_setup_complete_cache`). All three of those handles are `multiprocessing` primitives: the actual
+mechanism by which one worker process tells every other worker "the corpus changed" or "check
+whether setup finished," not incidental references. That is deliberately not a decoupling: the
+boundary here is about routing, and pretending otherwise would mean an `AppContext` refactor that
+the routing fix does not need.
+
+The child keeps its own `_conn_pool` rather than sharing the parent's: nothing here needs the
+parent's query-result cache or EXPLAIN plumbing, only a connection, so a second pool removes that
+coupling for the price of a second `psycopg_pool.ConnectionPool` (and its own connections) per
+worker process. `APIResource.__init__` builds both pools and hands this one over at construction,
+rather than this module building its own — so a test can inject a mock in place of either without
+a real connection ever opening.
 """
 
 from __future__ import annotations
@@ -46,6 +55,7 @@ from api.tag_import import import_oracle_tags as _import_oracle_tags
 from api.utils import db_utils
 from api.utils.caching import cached
 from api.utils.http_utils import make_user_agent
+from api.utils.page_rendering import serve_static_file
 from api.utils.routing import route
 
 if TYPE_CHECKING:
@@ -53,6 +63,7 @@ if TYPE_CHECKING:
     from multiprocessing.synchronize import Event as EventType
     from multiprocessing.synchronize import RLock as LockType
 
+    import psycopg_pool
     from psycopg import Connection
 
     from api.api_resource import APIResource
@@ -174,15 +185,26 @@ CARD_IS_TAGS = LAND_IS_TAGS + [  # noqa: RUF005
 class AdminResource:
     """Data-management routes, mounted behind a path prefix by APIResource."""
 
-    def __init__(self, parent: APIResource, *, import_guard: LockType, schema_setup_event: EventType) -> None:
+    def __init__(
+        self,
+        parent: APIResource,
+        *,
+        conn_pool: psycopg_pool.ConnectionPool,
+        import_guard: LockType,
+        schema_setup_event: EventType,
+    ) -> None:
         """Attach to the parent resource and take ownership of the admin-only handles.
 
         Args:
             parent: The resource this is mounted on, for the shared methods and handles.
+            conn_pool: This resource's own connection pool -- built by the caller (mirroring the
+                parent's own `_conn_pool`), so a test can inject a mock without a real pool ever
+                opening a connection.
             import_guard: Cross-process lock serialising imports.
             schema_setup_event: Set once the schema has been created.
         """
         self._parent = parent
+        self._conn_pool = conn_pool
         self._import_guard = import_guard
         self._schema_setup_event = schema_setup_event
         self._session = requests.Session()
@@ -206,7 +228,7 @@ class AdminResource:
             # read migrations from the db dir...
             # if any already applied migrations differ from what we want
             # to apply then drop everything
-            with self._parent._conn_pool.connection() as conn, conn.cursor() as cursor:
+            with self._conn_pool.connection() as conn, conn.cursor() as cursor:
                 cursor.execute(
                     """CREATE TABLE IF NOT EXISTS migrations (
                         file_name text not null,
@@ -297,10 +319,10 @@ class AdminResource:
             # running the backfill ahead of the tag import scored every card as on-style on a
             # first boot, and nothing rescored until the next import. Oracle tags feed search
             # rather than scoring, so their position relative to the backfill does not matter.
-            _import_art_tags(self._parent._conn_pool, self._bulk_data_fetcher)
+            _import_art_tags(self._conn_pool, self._bulk_data_fetcher)
             self.backfill_prefer_scores()
             self.backfill_cubecobra_scores()
-            _import_oracle_tags(self._parent._conn_pool, self._bulk_data_fetcher)
+            _import_oracle_tags(self._conn_pool, self._bulk_data_fetcher)
             self._parent._reload_engine(force=True)
             self._clear_caches()
             self._parent._last_import_time.value = time.time()
@@ -355,7 +377,7 @@ class AdminResource:
             falcon_response (falcon.Response): The Falcon response to write to.
 
         """
-        self._parent._serve_static_file(filename="prefer_score_tuner.html", falcon_response=falcon_response)
+        serve_static_file(filename="prefer_score_tuner.html", falcon_response=falcon_response)
         falcon_response.content_type = "text/html"
 
     @route()
@@ -383,8 +405,8 @@ class AdminResource:
         logger.info("Starting prefer score backfill")
 
         backfill_sql = db_utils.read_sql("backfill_prefer_scores")
-        with self._parent._conn_pool.connection() as conn, conn.cursor() as cursor:
-            self._parent._set_statement_timeout(cursor, settings.prefer_score_backfill_timeout_ms)
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            db_utils.set_statement_timeout(cursor, settings.prefer_score_backfill_timeout_ms)
             cursor.execute(backfill_sql)
             updated_count = cursor.rowcount
 
@@ -478,7 +500,7 @@ class AdminResource:
             ]
         )
 
-        with self._parent._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute(
                 """
                 WITH incoming AS (
@@ -530,8 +552,8 @@ class AdminResource:
         logger.info("Starting CubeCobra score backfill with weights: %s", weights)
 
         backfill_sql = db_utils.read_sql("backfill_cubecobra_scores")
-        with self._parent._conn_pool.connection() as conn, conn.cursor() as cursor:
-            self._parent._set_statement_timeout(cursor, 600_000)
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            db_utils.set_statement_timeout(cursor, 600_000)
             cursor.execute(backfill_sql, weights)
             updated_count = cursor.rowcount
 
@@ -570,7 +592,7 @@ class AdminResource:
         """
         logger.info("Starting CubeCobra ingest")
         # fetch the distinct, non-null oracle ids that are in the db
-        with self._parent._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute(
                 "SELECT DISTINCT oracle_id FROM magic.cards WHERE oracle_id IS NOT NULL",
             )
@@ -656,7 +678,7 @@ class AdminResource:
         # Update cards in database with the new is: tag
         updated_count = 0
         new_tag = orjson.dumps({is_tag: True}).decode("utf-8")
-        with self._parent._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             # Use SQL update with jsonb concatenation to add the is: tag
             for card_name_batch in itertools.batched(sorted(card_names), 500):
                 cursor.execute(
@@ -738,7 +760,7 @@ class AdminResource:
         updated_count = 0
         new_tag = orjson.dumps({is_tag: True}).decode("utf-8")
         scryfall_ids = {p["id"] for p in printings}
-        with self._parent._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             # Use SQL update with jsonb concatenation to add the is: tag
             for scryfall_id_batch in itertools.batched(sorted(scryfall_ids), 500):
                 cursor.execute(
@@ -800,12 +822,12 @@ class AdminResource:
     @route()
     def import_oracle_tags(self, **_: object) -> dict[str, Any]:
         """Import oracle tags from Scryfall bulk data into oracle_tags, oracle_tag_relationships, and card_oracle_tags."""
-        return _import_oracle_tags(self._parent._conn_pool, self._bulk_data_fetcher)
+        return _import_oracle_tags(self._conn_pool, self._bulk_data_fetcher)
 
     @route()
     def import_art_tags(self, **_: object) -> dict[str, Any]:
         """Import art tags from Scryfall bulk data into art_tags, art_tag_relationships, and card_art_tags."""
-        return _import_art_tags(self._parent._conn_pool, self._bulk_data_fetcher)
+        return _import_art_tags(self._conn_pool, self._bulk_data_fetcher)
 
     @route()
     def import_all_is_tags(self, **_: object) -> dict[str, Any]:
@@ -914,13 +936,14 @@ class AdminResource:
         logger.info("Importing card by name: '%s'", card_name)
 
         # Check if card already exists in database for backward compatibility
-        existing_check = self._parent._run_query(
-            query="SELECT card_name FROM magic.cards WHERE card_name = %(card_name)s",
-            params={"card_name": card_name},
-            explain=False,
-        )
+        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT card_name FROM magic.cards WHERE card_name = %(card_name)s",
+                {"card_name": card_name},
+            )
+            card_already_exists = cursor.fetchone() is not None
 
-        if existing_check["result"]:
+        if card_already_exists:
             return {
                 "card_name": card_name,
                 "status": "already_exists",
@@ -1086,9 +1109,9 @@ class AdminResource:
         self.setup_schema()
 
         try:
-            with self._parent._conn_pool.connection() as conn:
+            with self._conn_pool.connection() as conn:
                 with conn.cursor() as cursor:
-                    self._parent._set_statement_timeout(cursor, 30_000)
+                    db_utils.set_statement_timeout(cursor, 30_000)
 
                 class _CardStream:
                     """Preprocesses raw cards lazily, tracking stage counts."""

@@ -26,7 +26,7 @@ import orjson
 import psycopg
 import psycopg_pool
 from cachebox import LRUCache, TTLCache
-from psycopg import Connection, Cursor
+from psycopg import Connection
 
 from api.admin_resource import ADMIN_MOUNT_PREFIX, AdminResource
 from api.enums import CardOrdering, PreferOrder, ResponseShape, SortDirection, UniqueOn
@@ -37,7 +37,13 @@ from api.settings import settings
 from api.utils import db_utils, error_monitoring, multiprocessing_utils
 from api.utils.css_utils import build_critical_css
 from api.utils.generation_cache import GenerationCache
-from api.utils.page_rendering import SITE_NAME_PLACEHOLDER, STATIC_DIR, build_base_html, build_card_html
+from api.utils.page_rendering import (
+    SITE_NAME_PLACEHOLDER,
+    STATIC_DIR,
+    build_base_html,
+    build_card_html,
+    serve_static_file,
+)
 from api.utils.param_binding import ParamCoercionError
 from api.utils.routing import build_route_table, build_routes_listing, route
 from api.utils.site_name import hostname_to_site_name
@@ -241,7 +247,7 @@ def _columnarize_cards(cards: list[dict[str, Any]]) -> dict[str, list[Any]]:
 class APIResource:
     """Class implementing request handling for our simple API."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         import_guard: LockType = multiprocessing_utils.DEFAULT_LOCK,
@@ -249,13 +255,28 @@ class APIResource:
         schema_setup_event: EventType = multiprocessing_utils.DEFAULT_EVENT,
         cache_generation: Synchronized | None = None,
         engine_reload_guard: LockType | None = None,
+        conn_pool: psycopg_pool.ConnectionPool | None = None,
+        admin_conn_pool: psycopg_pool.ConnectionPool | None = None,
     ) -> None:
         """Initialize an APIResource object, set up connection pool and action map.
 
         Sets up the database connection pool and action mapping for the API.
+
+        Args:
+            import_guard: Cross-process lock serialising imports.
+            last_import_time: Shared timestamp of the last completed import.
+            schema_setup_event: Set once the schema has been created.
+            cache_generation: Shared counter bumped to invalidate the query-result cache.
+            engine_reload_guard: Cross-process lock serialising engine reloads.
+            conn_pool: This resource's own connection pool. Built via `db_utils.make_pool()` if not
+                given, matching every other handle here -- a caller (a test, mainly) can inject one
+                without a real pool ever opening a connection.
+            admin_conn_pool: The connection pool handed to the mounted AdminResource. Built the same
+                way if not given; kept separate from `conn_pool` so a test can inject the two
+                independently.
         """
         self._critical_css: str = build_critical_css(STATIC_DIR / "styles.css")
-        self._conn_pool: psycopg_pool.ConnectionPool = db_utils.make_pool()
+        self._conn_pool: psycopg_pool.ConnectionPool = conn_pool or db_utils.make_pool()
         # Build the route table from methods marked with @route, scanning the class rather than this
         # instance so nothing assigned below can become a route. Each entry carries everything
         # dispatch needs — the wrapped handler, how many positional path segments it absorbs, and
@@ -279,30 +300,17 @@ class APIResource:
         # Mounted after the parent's own state exists, since the child reaches back for the handles
         # they share. advertise=False is set here rather than on each handler: forgetting it is then
         # a property of this one call, not a hole in one route.
-        self.admin = AdminResource(self, import_guard=import_guard, schema_setup_event=schema_setup_event)
+        self.admin = AdminResource(
+            self,
+            conn_pool=admin_conn_pool or db_utils.make_pool(),
+            import_guard=import_guard,
+            schema_setup_event=schema_setup_event,
+        )
         self.routes.update(build_route_table(self.admin, prefix=ADMIN_MOUNT_PREFIX, advertise=False))
         self._not_found_routes = build_routes_listing(self.routes)
 
         self.admin.setup_schema()
         self.admin.import_data()  # ensures that database is setup
-
-    def _set_statement_timeout(self, cursor: Cursor, statement_timeout: int) -> None:
-        """Validate and set the statement timeout for a database cursor.
-
-        PostgreSQL SET commands don't support parameterized values, so we must
-        validate the value before using it in string interpolation.
-
-        Args:
-            cursor: Database cursor to execute the SET command on
-            statement_timeout: The statement timeout value in milliseconds
-
-        Raises:
-            ValueError: If statement_timeout is not a non-negative integer
-        """
-        if not isinstance(statement_timeout, int) or statement_timeout < 0:
-            msg = f"statement_timeout must be a non-negative integer, got: {statement_timeout}"
-            raise ValueError(msg)
-        cursor.execute(f"set statement_timeout = {statement_timeout}")
 
     def _resolve_action(self, path: str) -> tuple[BoundRoute | None, list[str]]:
         """Map a request path to the route that answers it.
@@ -472,7 +480,7 @@ class APIResource:
         result: dict[str, Any] = {}
         with self._conn_pool.connection() as conn, conn.cursor() as cursor:
             # Validate and set statement timeout
-            self._set_statement_timeout(cursor, statement_timeout)
+            db_utils.set_statement_timeout(cursor, statement_timeout)
             if explain:
                 explain_query = f"EXPLAIN (FORMAT JSON) {query}"
                 cursor.execute(explain_query, params)
@@ -1236,7 +1244,7 @@ class APIResource:
         """
         if falcon_response is None:
             return
-        self._serve_static_file(filename="styles.css", falcon_response=falcon_response)
+        serve_static_file(filename="styles.css", falcon_response=falcon_response)
         falcon_response.content_type = "text/css"
         set_cache_header(falcon_response, duration=timedelta(days=30))
 
@@ -1250,7 +1258,7 @@ class APIResource:
         """
         if falcon_response is None:
             return
-        self._serve_static_file(filename="app.js", falcon_response=falcon_response)
+        serve_static_file(filename="app.js", falcon_response=falcon_response)
         falcon_response.content_type = "application/javascript"
         # Cache JavaScript for 1 hour - it changes infrequently
         set_cache_header(falcon_response, duration=timedelta(hours=1))
@@ -1265,7 +1273,7 @@ class APIResource:
         """
         if falcon_response is None:
             return
-        self._serve_static_file(filename="app.min.js", falcon_response=falcon_response)
+        serve_static_file(filename="app.min.js", falcon_response=falcon_response)
         falcon_response.content_type = "application/javascript"
         set_cache_header(falcon_response, duration=timedelta(days=30))
 
@@ -1274,7 +1282,7 @@ class APIResource:
         """Return the robots.txt file."""
         if falcon_response is None:
             return
-        self._serve_static_file(filename="robots.txt", falcon_response=falcon_response)
+        serve_static_file(filename="robots.txt", falcon_response=falcon_response)
         falcon_response.content_type = "text/plain"
 
     @route(paths=("static/card.js",))
@@ -1287,7 +1295,7 @@ class APIResource:
         """
         if falcon_response is None:
             return
-        self._serve_static_file(filename="card.js", falcon_response=falcon_response)
+        serve_static_file(filename="card.js", falcon_response=falcon_response)
         falcon_response.content_type = "application/javascript"
         set_cache_header(falcon_response, duration=timedelta(hours=1))
 
@@ -1318,29 +1326,6 @@ class APIResource:
         falcon_response.text = html.replace(SITE_NAME_PLACEHOLDER, site_name)
         falcon_response.content_type = "text/html"
         set_cache_header(falcon_response, duration=timedelta(hours=1))
-
-    def _serve_static_file(self, *, filename: str, falcon_response: falcon.Response) -> None:
-        """Serve a static file to the Falcon response.
-
-        Args:
-        ----
-            filename (str): The file to serve.
-            falcon_response (falcon.Response): The Falcon response to write to.
-
-        """
-        full_filename = STATIC_DIR / filename
-        try:
-            with pathlib.Path(full_filename).open() as f:
-                falcon_response.text = f.read()
-        except FileNotFoundError:
-            falcon_response.status = falcon.HTTP_404
-            falcon_response.text = f"File not found: {filename}"
-        except PermissionError:
-            falcon_response.status = falcon.HTTP_403
-            falcon_response.text = f"Permission denied: {filename}"
-        except OSError as e:
-            falcon_response.status = falcon.HTTP_500
-            falcon_response.text = f"Error reading file {filename}: {e}"
 
     @route()
     def get_catalog(

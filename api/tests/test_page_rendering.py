@@ -7,8 +7,35 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+import falcon
+
 from api.api_resource import APIResource
+from api.tests.support import mock_conn_pool_kwargs
 from api.utils import page_rendering
+
+
+class TestServeStaticFile(unittest.TestCase):
+    """serve_static_file reads a file under STATIC_DIR and writes it to the response."""
+
+    def test_reads_file_content(self) -> None:
+        mock_response = MagicMock()
+
+        with patch("api.utils.page_rendering.pathlib.Path") as mock_path:
+            mock_file = MagicMock()
+            mock_file.open.return_value.__enter__.return_value.read.return_value = "file content"
+            mock_path.return_value = mock_file
+
+            page_rendering.serve_static_file(filename="test.html", falcon_response=mock_response)
+
+            assert mock_response.text == "file content"
+
+    def test_missing_file_serves_404(self) -> None:
+        mock_response = MagicMock()
+
+        page_rendering.serve_static_file(filename="does-not-exist.html", falcon_response=mock_response)
+
+        assert mock_response.status == falcon.HTTP_404
+        assert "does-not-exist.html" in mock_response.text
 
 
 class TestHtmlMinification(unittest.TestCase):
@@ -19,11 +46,11 @@ class TestHtmlMinification(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.mock_conn_pool = MagicMock()
+        self.mock_conn_pool, pool_kwargs = mock_conn_pool_kwargs()
         self.api_resource = APIResource(
             last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+            **pool_kwargs,
         )
-        self.api_resource._conn_pool = self.mock_conn_pool
 
     def test_minifies_whitespace_by_default(self) -> None:
         # minify_html also drops the redundant closing </p> (valid HTML5 tag-omission), hence

@@ -13,6 +13,7 @@ import requests
 
 from api.admin_resource import AdminResource
 from api.api_resource import APIResource
+from api.tests.support import mock_conn_pool_kwargs
 
 
 class TestImportCardByName(unittest.TestCase):
@@ -20,11 +21,16 @@ class TestImportCardByName(unittest.TestCase):
 
     def setUp(self) -> None:
         """Set up test fixtures."""
-        self.mock_conn_pool = MagicMock()
+        self.mock_conn_pool, pool_kwargs = mock_conn_pool_kwargs()
         self.api_resource = APIResource(
             last_import_time=multiprocessing.Value("d", time.time(), lock=True),
+            **pool_kwargs,
         )
-        self.api_resource._conn_pool = self.mock_conn_pool
+        self.mock_cursor = MagicMock()
+        self.mock_cursor.fetchone.return_value = None
+        self.mock_conn_pool.connection.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value = (
+            self.mock_cursor
+        )
 
     def test_import_card_by_name_validates_input(self) -> None:
         """Test that import_card_by_name validates card_name parameter."""
@@ -83,11 +89,10 @@ class TestImportCardByName(unittest.TestCase):
         with pytest.raises(ValueError, match="Failed to fetch data from Scryfall API"):
             self.api_resource.admin._scryfall_search(query="name:'Lightning Bolt'")
 
-    @patch.object(APIResource, "_run_query")
-    def test_import_card_by_name_returns_already_exists_for_existing_card(self, mock_run_query: MagicMock) -> None:
+    def test_import_card_by_name_returns_already_exists_for_existing_card(self) -> None:
         """Test that import_card_by_name returns already_exists status for existing cards."""
-        # Mock _run_query to return existing card
-        mock_run_query.return_value = {"result": [{"card_name": "Lightning Bolt"}]}
+        # Mock the existence-check query to find a row
+        self.mock_cursor.fetchone.return_value = {"card_name": "Lightning Bolt"}
 
         result = self.api_resource.admin.import_card_by_name(card_name="Lightning Bolt")
 
@@ -95,17 +100,12 @@ class TestImportCardByName(unittest.TestCase):
         assert result["card_name"] == "Lightning Bolt"
         assert "already exists in database" in result["message"]
 
-    @patch.object(APIResource, "_run_query")
     @patch.object(AdminResource, "_scryfall_search")
     def test_import_card_by_name_returns_not_found_for_missing_card(
         self,
         mock_search: MagicMock,
-        mock_run_query: MagicMock,
     ) -> None:
         """Test that import_card_by_name returns not_found status when card doesn't exist in Scryfall."""
-        # Mock _run_query to return no existing card
-        mock_run_query.return_value = {"result": []}
-
         # Mock Scryfall API to return empty list (not found)
         mock_search.return_value = []
 
@@ -115,17 +115,12 @@ class TestImportCardByName(unittest.TestCase):
         assert result["search_query"] == '!"NonexistentCard"'
         assert "No cards found for search query" in result["message"]
 
-    @patch.object(APIResource, "_run_query")
     @patch.object(AdminResource, "_scryfall_search")
     def test_import_card_by_name_returns_error_for_scryfall_exceptions(
         self,
         mock_search: MagicMock,
-        mock_run_query: MagicMock,
     ) -> None:
         """Test that import_card_by_name returns error status for Scryfall API exceptions."""
-        # Mock _run_query to return no existing card
-        mock_run_query.return_value = {"result": []}
-
         # Mock Scryfall API to raise exception
         mock_search.side_effect = ValueError("API Error")
 
@@ -135,19 +130,14 @@ class TestImportCardByName(unittest.TestCase):
         assert result["search_query"] == '!"TestCard"'
         assert "Error fetching cards from Scryfall" in result["message"]
 
-    @patch.object(APIResource, "_run_query")
     @patch.object(AdminResource, "_scryfall_search")
     @patch("api.card_processing.preprocess_card")
     def test_import_card_by_name_returns_filtered_out_for_invalid_cards(
         self,
         mock_preprocess: MagicMock,
         mock_search: MagicMock,
-        mock_run_query: MagicMock,
     ) -> None:
         """Test that import_card_by_name returns filtered_out status for cards filtered during preprocessing."""
-        # Mock _run_query to return no existing card
-        mock_run_query.return_value = {"result": []}
-
         # Mock Scryfall API to return card data
         mock_search.return_value = [{"name": "TestCard", "legalities": {"standard": "not_legal"}}]
 
