@@ -13,6 +13,7 @@ from enum import Enum, auto
 
 from api.parsing.card_query_nodes import CardAttributeNode, CardBinaryOperatorNode, ExactNameNode
 from api.parsing.db_info import ALIAS_TO_FIELD_INFOS, COLOR_NAME_TO_CODE, ParserClass
+from api.parsing.mana_symbols import first_invalid_mana_symbol
 from api.parsing.nodes import (
     AndNode,
     BinaryOperatorNode,
@@ -27,6 +28,7 @@ from api.parsing.nodes import (
     TrueNode,
     flatten_nested_operations,
 )
+from api.parsing.spans import QUOTE_CHARS, brace_close_index, find_close_index, unescape
 
 # ── Alias → parser-class lookup ──────────────────────────────────────────────
 
@@ -115,6 +117,41 @@ def _is_word_cont(c: str) -> bool:
 # ── Lexer ─────────────────────────────────────────────────────────────────────
 
 
+def _closed_quote(query: str, start: int, quote: str) -> tuple[int, str] | None:
+    """Find the *quote* closing a string opened before *start* and unescape its content.
+
+    Delegates the boundary walk to `spans.find_close_index` — the same walk the balancer uses — so
+    the lexer and balancer can't drift on where an escaped quote ends (#905). `saw_escape` comes free
+    from that same walk, so the common case (no backslash anywhere in the string) skips `unescape`'s
+    regex pass entirely instead of running it over content that's already exactly what it should be.
+
+    Returns (close_index, unescaped_content), or None if the string is unterminated.
+    """
+    close_index, _, saw_escape = find_close_index(query, start, quote)
+    if close_index is None:
+        return None
+    content = query[start:close_index]
+    return close_index, unescape(content) if saw_escape else content
+
+
+def _closed_regex(query: str, start: int) -> tuple[int, str] | None:
+    r"""Find the '/' closing a regex opened before *start*, unescaping only '\\/' -> '/'.
+
+    Delegates the boundary walk to `spans.find_close_index`, the same walk the balancer uses, so the
+    two can't drift on where an escaped '/' ends (#905). `saw_escape` comes free from that same walk,
+    so a pattern with no backslash at all — the common case — skips the `.replace()` pass entirely.
+    Every other backslash sequence (e.g. `\\d`) is left untouched for the regex engine to interpret —
+    this only ever collapses an escaped slash, never a full general unescape.
+
+    Returns (close_index, unescaped_content), or None if the pattern is unterminated.
+    """
+    close_index, _, saw_escape = find_close_index(query, start, "/")
+    if close_index is None:
+        return None
+    content = query[start:close_index]
+    return close_index, content.replace("\\/", "/") if saw_escape else content
+
+
 class LexError(ValueError):
     """Raised when the lexer encounters an unexpected character or unclosed delimiter."""
 
@@ -138,37 +175,30 @@ def tokenize(src: str) -> list[Token]:  # noqa: C901, PLR0912, PLR0915
         space_before = False
         c = src[pos]
 
-        # {mana symbol}
+        # {mana symbol}. brace_close_index is shared with the balancer in api.parsing.spans: both have
+        # to agree that a '{...}' is opaque whatever it holds, or the balancer reads the ')' in
+        # '(mana:{)})' as query structure and rejects a query the lexer accepts — #905's bug class,
+        # with braces in place of quotes.
         if c == "{":
-            end = src.find("}", pos + 1)
-            if end == -1:
+            close_index = brace_close_index(src, pos + 1)
+            if close_index is None:
                 msg = f"Unclosed '{{' at position {pos}"
                 raise LexError(msg)
-            pos = end + 1
+            pos = close_index + 1
             tokens.append(Token(TT.MANA, src[start:pos], start, sb))
             continue
 
-        # Quoted string
-        if c in ('"', "'"):
-            quote = c
-            pos += 1
-            chars: list[str] = []
-            while pos < n:
-                ch = src[pos]
-                if ch == "\\" and pos + 1 < n:
-                    pos += 1
-                    chars.append(src[pos])
-                    pos += 1
-                elif ch == quote:
-                    pos += 1
-                    break
-                else:
-                    chars.append(ch)
-                    pos += 1
-            else:
+        # Quoted string. The escape-skipping walk here has to agree with the balancer's
+        # `spans.find_close_index` that a backslash escapes the next character, or the balancer
+        # reads the ' in 'don\'t' as the close and appends a quote the lexer never wanted (#905).
+        if c in QUOTE_CHARS:
+            closed = _closed_quote(src, pos + 1, c)
+            if closed is None:
                 msg = f"Unclosed quote at position {start}"
                 raise LexError(msg)
-            tokens.append(Token(TT.QUOTED, "".join(chars), start, sb))
+            close_index, content = closed
+            tokens.append(Token(TT.QUOTED, content, start, sb))
+            pos = close_index + 1
             continue
 
         # Operators >= <= != : = > <  and  ! (bang)
@@ -205,22 +235,28 @@ def tokenize(src: str) -> list[Token]:  # noqa: C901, PLR0912, PLR0915
             pos += 1
             continue
 
-        # Slash: greedily try /regex/, fall back to arithmetic SLASH
+        # Slash: a regex only opens in value position — directly after a comparison operator, which
+        # is the only place the parser accepts one. Anywhere else '/' is arithmetic division.
+        #
+        # Without the guard the scan is greedy across the whole remaining query, so the division in
+        # "power/2>1 name:/a/" swallows "2>1 name:" as a pattern and the query cannot parse at all
+        # (#908). Value position is unambiguous: division needs a left operand, and the operator
+        # just consumed that slot.
         if c == "/":
-            i = pos + 1
-            while i < n:
-                if src[i] == "\\" and i + 1 < n:
-                    i += 2
-                elif src[i] == "/":
-                    pattern = src[pos + 1 : i].replace("\\/", "/")
-                    pos = i + 1
-                    tokens.append(Token(TT.REGEX, pattern, start, sb))
-                    break
-                else:
-                    i += 1
-            else:
+            prev = tokens[-1] if tokens else None
+            in_value_position = prev is not None and prev.type == TT.OP
+            # The escape-skipping walk here has to agree with the balancer's `spans.find_close_index`
+            # on where the span ends, or one of them treats a quote as a delimiter that the other
+            # treats as pattern content (#905).
+            closed = _closed_regex(src, pos + 1) if in_value_position else None
+            if closed is None:
+                # Division, or an unterminated regex falling back to division.
                 tokens.append(Token(TT.SLASH, "/", start, sb))
                 pos += 1
+            else:
+                close_index, content = closed
+                tokens.append(Token(TT.REGEX, content, start, sb))
+                pos = close_index + 1
             continue
 
         # Single-char arithmetic / grouping
@@ -643,21 +679,32 @@ class Parser:
         tok = self.peek()
         if tok.type == TT.QUOTED:
             self.consume()
-            return StringValueNode(str(tok.value))
-        parts: list[str] = []
-        while True:
-            t = self.peek()
-            if t.type == TT.MANA or t.type in (TT.WORD, TT.NUMBER):
-                if parts and t.space_before:
+            value = str(tok.value).upper()
+        else:
+            parts: list[str] = []
+            while True:
+                t = self.peek()
+                if t.type == TT.MANA or t.type in (TT.WORD, TT.NUMBER):
+                    if parts and t.space_before:
+                        break
+                    self.consume()
+                    parts.append(str(t.value))
+                else:
                     break
-                self.consume()
-                parts.append(str(t.value))
-            else:
-                break
-        if not parts:
-            msg = f"Expected mana value at position {self.peek().pos}"
+            if not parts:
+                msg = f"Expected mana value at position {self.peek().pos}"
+                raise ParseError(msg)
+            value = "".join(parts).upper()
+        # A mana cost can only hold certain symbols, so anything else is a query that cannot match.
+        # '{Q}' is a real symbol (untap) but never appears in a cost, which is why this asks what a
+        # cost may contain rather than what Magic prints. Quoting a value is just an alternate way to
+        # type it (e.g. to protect spaces), not an opt-out of this check — a quoted 'mana:"q"' used to
+        # skip straight to StringValueNode, so it silently matched every card via an empty cost dict.
+        invalid = first_invalid_mana_symbol(value)
+        if invalid is not None:
+            msg = f"Invalid mana symbol {invalid!r} at position {tok.pos}"
             raise ParseError(msg)
-        return ManaValueNode("".join(parts).upper())
+        return ManaValueNode(value)
 
     def parse_string_value(self) -> QueryNode:
         """Parse a simple string value: quoted string or bare word."""

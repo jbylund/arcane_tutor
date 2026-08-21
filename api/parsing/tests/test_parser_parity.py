@@ -45,6 +45,45 @@ def test_both_parsers_agree(query: str) -> None:
     assert_parsers_agree(query)
 
 
+@pytest.mark.parametrize(
+    argnames=["query"],
+    argvalues=[
+        ('mana:"2WW"',),
+        ('mana:"q"',),
+        ('mana:"2WWQ"',),
+    ],
+    ids=["quoted_valid", "quoted_invalid_bare_char", "quoted_invalid_trailing_char"],
+)
+def test_quoted_mana_value_parity(query: str) -> None:
+    """A quoted mana value is validated the same as bare/braced notation in both parsers.
+
+    'mana:"q"' used to skip the alphabet check entirely in both parsers, resolving to an empty
+    cost dict that matched every card instead of 400ing or matching nothing.
+    """
+    assert_parsers_agree(query)
+
+
+@pytest.mark.parametrize(
+    argnames=["query"],
+    argvalues=[
+        ("mana:s",),
+        ("mana:snow",),
+        ("mana:p",),
+        ("mana:hello",),
+    ],
+    ids=["bare_snow_valid", "bare_snow_word_invalid", "bare_phyrexian_unpaired", "bare_junk_word"],
+)
+def test_bare_mana_character_parity(query: str) -> None:
+    """A bare mana character is validated the same as its braced form in both parsers (#954).
+
+    pyparsing's tokenizer used to only recognize a fixed subset of bare letters as mana-shaped at
+    all; anything outside it (including 's', valid braced as '{s}') fell through to a plain string
+    comparison and silently matched the wrong cards instead of 400ing or agreeing with the hand
+    parser's rejection.
+    """
+    assert_parsers_agree(query)
+
+
 # Real queries from benchmarks/wild-queries/wild-corpus.jsonl on which the two parsers disagree
 # today, grouped by the root cause in #903. Sweeping that 14k-query corpus found exactly these.
 #

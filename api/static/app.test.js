@@ -51,6 +51,7 @@ const { CardSearch, CatalogMap, columnsToRows } = Function(
 const LIVE_CARD_TYPES = require('./fixtures/common_card_types.json');
 const BALANCE_QUERIES = require('./fixtures/balance_queries.json');
 const CARD_HTML_CASES = require('./fixtures/card_html_cases.json');
+const ACCEPTED_QUERIES = require('./fixtures/accepted_queries.json');
 
 // Derived fixture: new catalog format expected by the /get_catalog endpoint
 const LIVE_TYPES_MAP = Object.fromEntries(LIVE_CARD_TYPES.map(({ t, n }) => [t, n]));
@@ -402,6 +403,43 @@ describe('CardSearch balanceQuery', () => {
   });
 });
 
+describe('CardSearch blankOpaqueSpans', () => {
+  it('blanks the body of a closed mana symbol the same way it blanks quotes and regexes', () => {
+    // Before this, only '"'/"'"/'/' were handled here, unlike scanSpans — a "fourth opinion" gap
+    // matching the exact bug class this blanking exists to prevent, just left open for braces.
+    expect(search.blankOpaqueSpans('mana:{2/W} and')).toBe('mana:{} and');
+  });
+
+  it('still blanks quotes and regexes', () => {
+    expect(search.blankOpaqueSpans('oracle:"and or"')).toBe('oracle:""');
+    expect(search.blankOpaqueSpans('o:/and:/')).toBe('o://');
+  });
+});
+
+describe('CardSearch collapseWhitespaceOutsideSpans', () => {
+  it('preserves internal whitespace inside a regex or quoted string', () => {
+    expect(search.collapseWhitespaceOutsideSpans('o:/a  b/')).toBe('o:/a  b/');
+    expect(search.collapseWhitespaceOutsideSpans('oracle:"draw  a  card"')).toBe('oracle:"draw  a  card"');
+  });
+
+  it('collapses runs of whitespace outside spans to a single space', () => {
+    expect(search.collapseWhitespaceOutsideSpans('t:elf   o:bolt')).toBe('t:elf o:bolt');
+  });
+});
+
+describe('CardSearch _balanceAndNormalize', () => {
+  // A plain `.replace(/\s+/g, ' ')` over the whole query would silently rewrite what a regex or
+  // quoted value actually matches before it ever reaches the server.
+  it('does not collapse whitespace inside a regex or quoted string', () => {
+    expect(search._balanceAndNormalize('o:/a  b/')).toBe('o:/a  b/');
+    expect(search._balanceAndNormalize('oracle:"draw  a  card"')).toBe('oracle:"draw  a  card"');
+  });
+
+  it('still trims and collapses whitespace outside spans', () => {
+    expect(search._balanceAndNormalize('  t:elf   o:bolt  ')).toBe('t:elf o:bolt');
+  });
+});
+
 describe('CardSearch createCardHTML no-JS parity', () => {
   // Keep in sync with normalize_card_html in api/tests/test_noscript_parity.py.
   // Strips the loading-hint attributes (fetchpriority/loading logic intentionally
@@ -430,6 +468,29 @@ describe('CardSearch validateQuery', () => {
     expect(search.validateQuery('(name:test)')).toBeNull();
     expect(search.validateQuery('oracle:"draw a card"')).toBeNull();
   });
+
+  it('still reports a field with no value', () => {
+    expect(search.validateQuery('t:')).toBe('Failed to parse query: "t:"');
+    expect(search.validateQuery('(t:)')).toBe('Failed to parse query: "(t:)"');
+    expect(search.validateQuery('name:test and')).toBe('Failed to parse query: "name:test and"');
+  });
+
+  it('alreadyBalanced skips the balance re-check, but not the other structural checks', () => {
+    // A caller vouching for balance it hasn't actually verified is a caller bug, not something
+    // validateQuery should paper over — the option exists for callers that just ran scanSpans.
+    expect(search.validateQuery('hello)', { alreadyBalanced: true })).toBeNull();
+    expect(search.validateQuery('t:', { alreadyBalanced: true })).toBe('Failed to parse query: "t:"');
+  });
+});
+
+// The backend runs this same fixture through both parsers in test_balance_parity.py, so the client
+// cannot start rejecting a query the API would have answered — the failure mode in #908, where a
+// ':' inside a regex read as a field with no value and the request was never sent.
+describe('CardSearch accepts every shared accepted query', () => {
+  it.each(ACCEPTED_QUERIES)('%s', query => {
+    expect(search.validateQuery(query)).toBeNull();
+    expect(search.balanceQuery(query)).toBe(query);
+  });
 });
 
 describe('CardSearch performSearch', () => {
@@ -440,6 +501,56 @@ describe('CardSearch performSearch', () => {
 
     expect(search.showError).toHaveBeenCalledWith(expect.stringContaining('Invalid Search Query'));
     expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  // performSearch used to call scanSpans up to three times per keystroke: once for the empty-span
+  // guard, again for balancing, and a third time inside validateQuery's own balanceSuffix check —
+  // even though performSearch already knows the string is balanceable by the time it calls
+  // validateQuery. All three now share the one scan performSearch runs up front.
+  it('scans spans only once for the empty-span guard, balancing, and validation', async () => {
+    const spy = jest.spyOn(search, 'scanSpans');
+
+    await search.performSearch('name:bolt');
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
+
+  // A span with nothing in it is not a query yet. Balancing would close it into something that is
+  // valid but useless — `o://` matches every card with an unindexable empty pattern — so the request
+  // waits for the next keystroke, and unlike an unbalance-able query this is not an error.
+  it.each(['o:/', "o:'", 'o:"', 'mana:{', '(o:/', "t:elf o:'", 'o:/ ', 'mana:{  '])(
+    'waits instead of searching on %s',
+    async query => {
+      global.fetch.mockClear();
+      search.showError.mockClear();
+
+      await search.performSearch(query);
+
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(search.showError).not.toHaveBeenCalled();
+    }
+  );
+
+  // Backspacing a searched query down into an empty span used to leave the previous "Searching …"
+  // on screen forever, because handleSearch had already aborted the fetch and the guard returned
+  // before any status update.
+  it('does not leave a stale loading message when the query decays into an empty span', async () => {
+    global.fetch.mockClear();
+    search.clearMessages.mockClear();
+
+    await search.performSearch('o:/');
+
+    expect(search.clearMessages).toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(['o:/a', "o:'a", 'mana:{W', 'o:/^{T}:/'])('still searches once the span has content: %s', async query => {
+    global.fetch.mockClear();
+
+    await search.performSearch(query);
+
+    expect(global.fetch).toHaveBeenCalled();
   });
 });
 

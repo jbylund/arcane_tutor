@@ -384,6 +384,17 @@ def get_legality_comparison_object(val: str, attr: str) -> dict[str, str]:
     return {format_name: status}
 
 
+# A braced symbol anywhere in a mana cost string, e.g. the '2' and 'W' of '{2}{W}'. Shared with
+# api.parsing.mana_symbols, which validates every symbol this finds.
+BRACED_MANA_SYMBOL = re.compile(r"{([^}]*)}")
+
+# Bare (unbraced) pip characters counted below: a colour, colourless, snow, or X, confirmed against
+# the real Scryfall API (mana:x behaves identically to mana:{x}, and mana:s to mana:{s}). Shared with
+# api.parsing.mana_symbols, which rejects any bare character outside this alphabet — see that
+# module's docstring for why.
+BARE_MANA_ATOMS = frozenset("WUBRGCXS")
+
+
 def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
     """Convert a mana cost string to a dictionary of colored symbols and their counts.
 
@@ -395,7 +406,7 @@ def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
     mana_cost_upper = mana_cost_str.upper()
 
     # First, extract all braced symbols
-    braced_symbols = re.findall(r"{([^}]*)}", mana_cost_upper)
+    braced_symbols = BRACED_MANA_SYMBOL.findall(mana_cost_upper)
     for mana_symbol in braced_symbols:
         try:
             int(mana_symbol)
@@ -406,12 +417,9 @@ def mana_cost_str_to_dict(mana_cost_str: str) -> dict:
 
     # Then, process unbraced characters (replace braced sections with space to prevent merging)
     # We don't care about digits here, only colored symbols
-    unbraced_part = re.sub(r"{[^}]*}", " ", mana_cost_upper)
+    unbraced_part = BRACED_MANA_SYMBOL.sub(" ", mana_cost_upper)
     for char in unbraced_part:
-        # Color characters (W, U, B, R, G, C) plus X, its own pip symbol —
-        # confirmed against the real Scryfall API: mana:x behaves identically
-        # to mana:{x}. calculate_cmc() already excludes X from cmc separately.
-        if char in "WUBRGCX":
+        if char in BARE_MANA_ATOMS:
             colored_symbol_counts[char] = colored_symbol_counts.get(char, 0) + 1
 
     as_dict = {}
@@ -430,7 +438,7 @@ def calculate_cmc(mana_cost_str: str) -> int:
     mana_cost_upper = mana_cost_str.upper()
 
     # First, process all braced symbols
-    braced_symbols = re.findall(r"{([^}]*)}", mana_cost_upper)
+    braced_symbols = BRACED_MANA_SYMBOL.findall(mana_cost_upper)
     for mana_symbol in braced_symbols:
         try:
             # Generic mana symbols add to CMC
@@ -447,14 +455,14 @@ def calculate_cmc(mana_cost_str: str) -> int:
 
     # Then, process unbraced part (after removing braced sections)
     # Replace braced sections with a space to prevent adjacent digits from merging
-    unbraced_part = re.sub(r"{[^}]*}", " ", mana_cost_upper)
-    # Match either: sequences of digits OR single color characters
-    for token in re.findall(r"\d+|[WUBRGC]", unbraced_part):
+    unbraced_part = BRACED_MANA_SYMBOL.sub(" ", mana_cost_upper)
+    # Match either: sequences of digits OR single color/colourless/snow characters
+    for token in re.findall(r"\d+|[WUBRGCS]", unbraced_part):
         if token.isdigit():
             # Multi-digit generic mana (e.g., "11" in "11R")
             cmc += int(token)
-        elif token in "WUBRGC":
-            # Color character counts as 1
+        elif token in "WUBRGCS":
+            # Color (or snow) character counts as 1, same as its braced form
             cmc += 1
 
     return cmc
@@ -627,8 +635,10 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
 
     def to_human_explanation(self) -> str:
         """Convert to human-readable explanation with card-specific formatting."""
-        # Handle empty string values
-        if isinstance(self.rhs, StringValueNode) and not self.rhs.value.strip():
+        # Handle empty string values. Covers ManaValueNode too: a quoted empty mana/devotion value
+        # (mana:"") parses to one of these, not a StringValueNode, since parse_mana_value validates
+        # quoted values the same as bare ones (#909) — StringValueNode alone stopped catching it (#950).
+        if isinstance(self.rhs, StringValueNode | ManaValueNode) and not self.rhs.value.strip():
             return ""
         # Handle plain string rhs (for empty queries)
         if isinstance(self.rhs, str) and not self.rhs.strip():

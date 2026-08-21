@@ -18,7 +18,7 @@ import time
 # unnecessary once handlers carry a route decorator.
 from collections.abc import Sequence  # noqa: TC003
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 from typing import cast as typecast
 
 import falcon
@@ -71,6 +71,38 @@ def _rss_mb() -> str:
     return "unknown"
 
 
+# Postgres prefixes every 2201B message with this, e.g. "invalid regular expression: brackets []
+# not balanced". Stripped before the reason is quoted back, or the error message says it twice.
+_PG_REGEX_ERROR_PREFIX = "invalid regular expression: "
+# Used when Postgres gives no diagnostic message to quote (a synthesized error, mostly in tests).
+_FALLBACK_REGEX_ERROR_REASON = "the pattern could not be parsed"
+
+
+def regex_error_reason(message_primary: str | None) -> str:
+    """Return the quotable reason from a Postgres 2201B message, without repeating its prefix.
+
+    Args:
+        message_primary: The ``diag.message_primary`` of an InvalidRegularExpression, if it has one.
+
+    Returns:
+        The reason to show the user, e.g. "brackets [] not balanced".
+    """
+    return (message_primary or "").removeprefix(_PG_REGEX_ERROR_PREFIX).strip() or _FALLBACK_REGEX_ERROR_REASON
+
+
+def _raise_query_bad_request(*, exc_name: str, query: str, description: str, err: Exception) -> NoReturn:
+    """Log and re-raise a Postgres user-error exception as a 400, in the shape every such handler needs.
+
+    Args:
+        exc_name: The Postgres exception's name, for the info log (e.g. "DatatypeMismatch").
+        query: The raw search query string that triggered the error.
+        description: The user-facing description for the HTTPBadRequest.
+        err: The caught exception, chained onto the raised HTTPBadRequest via `from`.
+    """
+    logger.info("%s caught for query '%s', raising BadRequest", exc_name, query)
+    raise falcon.HTTPBadRequest(title="Invalid Search Query", description=description) from err
+
+
 # Query parameters that must not be forwarded to action handlers.
 DISALLOWED_QUERY_ARGS: frozenset[str] = frozenset(["falcon_response", "request_host"])
 
@@ -112,7 +144,32 @@ RESULT_FIELD_COLUMNS: dict[str, str] = {
     "scryfall_id": "scryfall_id",
     "price_usd": "price_usd",
     "prefer_score": "prefer_score",
+    # Card-data fields consumers need to run their own downstream filtering
+    # (Scryfall JSON names and shapes): layout and rarity are plain text,
+    # cmc an integer, legalities the imported {format: status} object, and
+    # color_identity a WUBRG-ordered letter list (the raw column is a JSONB
+    # object -- _search_sql reshapes it; the engine emits the list directly).
+    "layout": "card_layout",
+    "cmc": "cmc",
+    "rarity": "card_rarity_text",
+    "color_identity": "card_color_identity",
+    "legalities": "card_legalities",
 }
+
+# Scryfall's canonical color order, used to reshape identity objects into lists.
+_COLOR_ORDER: tuple[str, ...] = ("W", "U", "B", "R", "G", "C")
+
+
+def _identity_letters(identity: dict[str, object] | None) -> list[str]:
+    """Reshape a JSONB color-identity object into Scryfall's WUBRG-ordered letter list."""
+    if not identity:
+        return []
+    if len(identity) == 1:
+        # A single color is trivially already in WUBRG order -- no need to walk _COLOR_ORDER.
+        return list(identity)
+    return [letter for letter in _COLOR_ORDER if letter in identity]
+
+
 # `fields=None` resolves to these 9 — the fixed set every caller got before field selection
 # existed. Order/membership must match DEFAULT_FIELDS in card_engine/src/lib.rs.
 DEFAULT_RESULT_FIELDS: tuple[str, ...] = (
@@ -701,11 +758,7 @@ class APIResource:
             where_clause, params = get_where_clause(query)
         except ValueError as err:
             # Handle parsing errors from parse_scryfall_query
-            logger.info("ValueError caught for query '%s', raising BadRequest", query)
-            raise falcon.HTTPBadRequest(
-                title="Invalid Search Query",
-                description=f'Failed to parse query: "{query}"',
-            ) from err
+            _raise_query_bad_request(exc_name="ValueError", query=query, description=f'Failed to parse query: "{query}"', err=err)
         return where_clause, params
 
     def _search(  # noqa: PLR0913
@@ -747,11 +800,7 @@ class APIResource:
             with timer("parse"):
                 parsed_query = parse_scryfall_query(query)
         except ValueError as err:
-            logger.info("ValueError caught for query '%s', raising BadRequest", query)
-            raise falcon.HTTPBadRequest(
-                title="Invalid Search Query",
-                description=f'Failed to parse query: "{query}"',
-            ) from err
+            _raise_query_bad_request(exc_name="ValueError", query=query, description=f'Failed to parse query: "{query}"', err=err)
 
         if not settings.enable_engine:
             pass  # feature-gated off: SQL serves everything, the store never loads
@@ -791,7 +840,25 @@ class APIResource:
                 # BaseExceptions that must still propagate are the ones that are not failures.
                 if isinstance(e, (KeyboardInterrupt, SystemExit)):
                     raise
-                logger.warning("Engine query failed for %r, falling back to SQL: %s", query, e, exc_info=True)
+                # _QueryError (raised by card_engine, not this module) means the engine declined to
+                # build the query, not that it broke — _search_engine has already logged it at info.
+                # It reaches here for several different reasons (an unsupported regex feature, an
+                # attribute the engine hasn't wired a filter up for, ...), and the SQL path resolves
+                # all of them correctly on its own. Re-logging it at warning with a stack trace turned
+                # every keystroke inside a character class into an alertable event for a user typo.
+                # Fall through quietly; anything else really is an engine failure and keeps its
+                # traceback. isinstance rather than a dedicated wrapper type: QueryError is already
+                # engine-specific and nothing else in this call chain raises it, so wrapping it added
+                # a type only this handler understood without narrowing what gets caught.
+                declined = isinstance(e, _QueryError)
+                logger.log(
+                    logging.INFO if declined else logging.WARNING,
+                    "Engine %s %r, falling back to SQL: %s",
+                    "declined" if declined else "failed on",
+                    query,
+                    e,
+                    exc_info=not declined,
+                )
             else:
                 if settings.enable_cache:
                     search_cache[cache_key] = result
@@ -842,12 +909,9 @@ class APIResource:
                     offset=offset,
                     fields=fields,
                 )
-        except _QueryError as err:
-            logger.info("QueryError caught for query '%s', raising BadRequest", query)
-            raise falcon.HTTPBadRequest(
-                title="Invalid Search Query",
-                description=f'Failed to parse query: "{query}"',
-            ) from err
+        except _QueryError:
+            logger.info("QueryError caught for query '%s', declining to SQL", query)
+            raise
         with timer("engine_collect"):
             cards = list(cards)
         return {
@@ -882,11 +946,7 @@ class APIResource:
             with timer("get_where_clause"):
                 where_clause, params = generate_sql_query(parsed_query)
         except ValueError as err:
-            logger.info("ValueError caught for query '%s', raising BadRequest", query)
-            raise falcon.HTTPBadRequest(
-                title="Invalid Search Query",
-                description=f'Failed to parse query: "{query}"',
-            ) from err
+            _raise_query_bad_request(exc_name="ValueError", query=query, description=f'Failed to parse query: "{query}"', err=err)
         sql_orderby: str = {
             # what's in the query => the db column name
             CardOrdering.CMC: "cmc",
@@ -1012,21 +1072,45 @@ class APIResource:
         try:
             with timer("run_query"):
                 result_bag = self._run_query(query=query_sql, params=params, explain=False)
-        except psycopg.errors.DatatypeMismatch as err:
-            # Raise BadRequest error for invalid query syntax
-            # This happens with standalone arithmetic expressions like "cmc+1"
-            logger.info("DatatypeMismatch caught for query '%s', raising BadRequest", query)
-            raise falcon.HTTPBadRequest(
-                title="Invalid Search Query",
-                description=f"The search query '{query}' contains invalid syntax. "
-                "Arithmetic expressions like 'cmc+1' need to be part of a comparison (e.g., 'cmc+1>3').",
-            ) from err
+        except psycopg.errors.InvalidRegularExpression as err:
+            # The parser does not validate regex syntax, so Postgres is the first thing to see a bad
+            # pattern. That is a user error, not a server error: typeahead balances a half-typed regex
+            # into a complete one on every keystroke, so `o:/^[/` is an ordinary intermediate state.
+            # Caught ahead of DataError below (InvalidRegularExpression is a subclass of it) purely
+            # for this nicer, prefix-stripped message; the fallback would still catch it otherwise.
+            reason = regex_error_reason(err.diag.message_primary)
+            _raise_query_bad_request(
+                exc_name="InvalidRegularExpression",
+                query=query,
+                description=f"The search query '{query}' contains an invalid regular expression: {reason}.",
+                err=err,
+            )
+        except (psycopg.errors.DatatypeMismatch, psycopg.errors.DataError) as err:
+            # DatatypeMismatch (class 42, e.g. a standalone arithmetic expression like "cmc+1" used
+            # bare as a WHERE clause) and DataError (class 22, e.g. DivisionByZero from "power/0>1",
+            # NumericValueOutOfRange, InvalidTextRepresentation) are Postgres's own two ways of saying
+            # "this query is syntactically valid SQL but the data doesn't work" — a user error to 400,
+            # not a server error to 500. Message comes straight from Postgres rather than a bespoke
+            # string per error class: covers every current and future member of either class for free,
+            # at the cost of a more technical-sounding message than a hand-written one per case would
+            # give (see the InvalidRegularExpression handler above for that tradeoff made the other way).
+            reason = (err.diag.message_primary or "").strip() or "the value is not valid for this comparison"
+            _raise_query_bad_request(
+                exc_name=type(err).__name__,
+                query=query,
+                description=f"The search query '{query}' is invalid: {reason}.",
+                err=err,
+            )
 
         cards = result_bag.pop("result", [])
         count_row = cards.pop()
         total_cards = count_row["total_cards_count"]
+        reshape_identity = "color_identity" in resolved_fields
         for icard in cards:
             icard.pop("total_cards_count")
+            if reshape_identity:
+                # Match the engine path's shape (see FIELD_TABLE in card_engine).
+                icard["color_identity"] = _identity_letters(icard["color_identity"])
         return {
             "cards": cards,
             "compiled": query_sql,

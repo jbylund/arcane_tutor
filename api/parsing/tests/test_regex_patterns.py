@@ -44,6 +44,44 @@ class TestRegexPatternParsing:
         # The escaped forward slash should be preserved
         assert result.root.rhs.value == "a/b.*"
 
+    @pytest.mark.parametrize(
+        argnames=["query", "expected_pattern"],
+        argvalues=[
+            ("power/2>1 name:/a.*/", "a.*"),
+            ("cmc/2>1 o:/fly.*/", "fly.*"),
+            ("(power+1)/2>1 flavor:/gob.*/", "gob.*"),
+        ],
+        ids=["division_then_name_regex", "division_then_oracle_regex", "paren_division_then_flavor_regex"],
+    )
+    def test_division_before_a_regex(self, parse_query, query: str, expected_pattern: str) -> None:
+        """Arithmetic division and a regex coexist: the '/' only opens a regex in value position.
+
+        The scan used to run greedily from any '/', so the division slash swallowed everything up
+        to the regex's opening slash and neither half parsed (#908).
+        """
+        sql, params = generate_sql_query(parse_query(query))
+
+        assert " / " in sql, f"division did not survive in {sql}"
+        assert "~*" in sql, f"regex did not survive as a regex in {sql}"
+        assert expected_pattern in params.values()
+
+    @pytest.mark.parametrize(
+        argnames=["query"],
+        argvalues=[("/bolt/",), ("/foo/ /bar/",), ("(t:elf) /foo/",)],
+        ids=["bare_regex", "two_bare_regexes", "bare_regex_after_group"],
+    )
+    def test_bare_regex_is_not_a_supported_shape(self, parse_query, query: str) -> None:
+        """A regex only opens in value position, so a bare one is rejected — as it was before #908.
+
+        Scryfall does not treat these as regexes either: it strips the slashes and runs a plain
+        name search, so /bolt/ == bolt == name:bolt (41 cards) while the real regex form
+        name:/bolt/ gives 48, and /^Lightning/ matches nothing because there is no anchoring to
+        apply. Giving the bare form regex semantics would be an extension beyond Scryfall, not
+        parity with it, so it stays unsupported.
+        """
+        with pytest.raises(ValueError, match=r"(Failed to parse query|Unmatched)"):
+            parse_query(query)
+
     def test_combined_regex_and_regular_search(self, parse_query) -> None:
         """Test combining regex searches with regular text searches."""
         query = "t:creature o:/^{T}:/"

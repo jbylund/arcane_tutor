@@ -424,10 +424,63 @@ class CardSearch {
 
   // Applies autocomplete, bracket-balancing, and whitespace normalisation to a raw query string.
   _processQuery(query) {
-    const autocompleted = this.autoCompleteQuery(query);
-    const balanced = this.balanceQuery(autocompleted);
-    const normalized = balanced.trim().replace(/\s+/g, ' ');
-    return normalized;
+    return this._balanceAndNormalize(this.autoCompleteQuery(query));
+  }
+
+  // The second half of _processQuery, split out so performSearch can inspect the autocompleted query
+  // before balancing hides whether a span was left empty.
+  _balanceAndNormalize(autocompleted) {
+    return this.collapseWhitespaceOutsideSpans(this.balanceQuery(autocompleted)).trim();
+  }
+
+  // Returns the index closing the quoted string, /regex/, or {mana symbol} that opens at i, or null if
+  // `query[i]` doesn't open one there, or it never closes — callers that only act on a *closed* span
+  // treat both cases identically, so they don't need to tell them apart. scanSpans doesn't use this: it
+  // has to act on the unterminated case too (closing the span, reporting where its content started),
+  // so it calls quoteCloseIndex/regexCloseIndex/braceCloseIndex directly.
+  // The JS counterpart of no single Python function — spans.py's callers each make this same
+  // three-way dispatch themselves, since hand_parser's lexer and parsing_f's balancer need the
+  // unterminated case too.
+  closedSpanEnd(query, i) {
+    const char = query[i];
+    if (char === '"' || char === "'") {
+      return this.quoteCloseIndex(query, i + 1, char);
+    }
+    if (char === '/' && this.opensRegex(query, i)) {
+      return this.regexCloseIndex(query, i + 1);
+    }
+    if (char === '{') {
+      return this.braceCloseIndex(query, i + 1);
+    }
+    return null;
+  }
+
+  // Collapses runs of whitespace to a single space, except inside a quoted string or /regex/ (mana
+  // symbols never contain whitespace, so they need no protection here). A plain `.replace(/\s+/g, ' ')`
+  // over the whole query would silently rewrite `o:/a  b/` to `o:/a b/` and `o:"draw  a  card"` to
+  // `o:"draw a card"`, changing what the user actually typed before it ever reaches the server.
+  collapseWhitespaceOutsideSpans(query) {
+    let out = '';
+
+    for (let i = 0; i < query.length; i++) {
+      const closeIndex = this.closedSpanEnd(query, i);
+      if (closeIndex !== null) {
+        out += query.slice(i, closeIndex + 1);
+        i = closeIndex;
+        continue;
+      }
+
+      const char = query[i];
+      if (/\s/.test(char)) {
+        if (!out.endsWith(' ')) {
+          out += ' ';
+        }
+      } else {
+        out += char;
+      }
+    }
+
+    return out;
   }
 
   async fetchCommonCardTypes() {
@@ -472,73 +525,215 @@ class CardSearch {
     });
   }
 
-  // Scans the query with a bracket/quote stack and returns the closing suffix
-  // needed to balance it, or null when a closing paren with no matching opener
-  // makes it unbalance-able (the JS counterpart of balance_partial_query's
-  // ValueError in api/parsing/parsing_f.py).
-  balanceSuffix(query) {
-    const charToMirror = {
-      '(': ')',
-      "'": "'", // single quote is own mirror
-      '"': '"', // double quote is own mirror
-      ')': '(',
-    };
+  // True when the '/' at slashIndex opens a regex rather than being division. Mirrors the lexer's
+  // rule in hand_parser.tokenize: a regex only opens in value position, i.e. directly after a
+  // comparison operator (every one of : = != >= <= > < ends in one of these characters).
+  // The JS counterpart of opens_regex in api/parsing/spans.py.
+  opensRegex(query, slashIndex) {
+    let i = slashIndex - 1;
+    while (i >= 0 && /\s/.test(query[i])) {
+      i--;
+    }
+    return i >= 0 && ':=><'.includes(query[i]);
+  }
+
+  // Returns { closeIndex, danglingEscape } from a single walk: closeIndex is the index of the next
+  // unescaped closer at or after start, or null if it never closes; danglingEscape is true only when
+  // the walk instead ran off the end of query on an unfinished backslash escape. A caller that only
+  // needs the index (regexCloseIndex/quoteCloseIndex, and every closed-span check) can ignore the
+  // second value; scanSpans, completing an unterminated span, needs both — computing them in one walk
+  // is the only way to get both without reading the same tail of query twice.
+  // The JS counterpart of find_close_index in api/parsing/spans.py.
+  findCloser(query, start, closer) {
+    for (let i = start; i < query.length; i++) {
+      if (query[i] === '\\') {
+        if (i + 1 >= query.length) {
+          return { closeIndex: null, danglingEscape: true };
+        }
+        i++;
+      } else if (query[i] === closer) {
+        return { closeIndex: i, danglingEscape: false };
+      }
+    }
+    return { closeIndex: null, danglingEscape: false };
+  }
+
+  regexCloseIndex(query, start) {
+    return this.findCloser(query, start, '/').closeIndex;
+  }
+
+  quoteCloseIndex(query, start, quote) {
+    return this.findCloser(query, start, quote).closeIndex;
+  }
+
+  // Returns the index of the '}' closing a mana symbol whose content starts at start, or null when
+  // there is none. A plain search: no escape sequence exists inside a mana symbol.
+  // The JS counterpart of brace_close_index in api/parsing/spans.py.
+  braceCloseIndex(query, start) {
+    const index = query.indexOf('}', start);
+    return index < 0 ? null : index;
+  }
+
+  // Returns the suffix that closes a span left open on a danglingEscape or not.
+  // A trailing backslash has nothing to escape yet, so appending the closer on its own
+  // would escape that instead of ending the span — escape the backslash first.
+  // The JS counterpart of _closer_for_partial_span in api/parsing/parsing_f.py.
+  closerForPartialSpan(danglingEscape, closer) {
+    return (danglingEscape ? '\\' : '') + closer;
+  }
+
+  // One pass over the query's spans and parens, reporting everything callers need:
+  //   suffix — the closing text needed to balance it, or null when a ')' has no matching opener
+  //            (the JS counterpart of balance_partial_query's ValueError in api/parsing/parsing_f.py)
+  //   openSpanContentStart — index where an unterminated span's content begins, or null if every span
+  //            is closed. Only used to tell an empty span from one with something in it.
+  //   blanked — query with every span's body blanked, the same output blankOpaqueSpans would produce
+  //            on `query + suffix` (computed here instead of by a second walk over the balanced
+  //            string — the boundaries are exactly what this scan already finds). An unterminated
+  //            span is blanked as though `suffix` had already closed it, since it always will be: per
+  //            the note above, nothing follows it in `query`, so its trailing ')'s (added once below,
+  //            the same way `suffix` itself is) reproduce what blanking `query + suffix` would give.
+  // balanceSuffix, performSearch's empty-span guard, and validateQuery's opaque-span check all read
+  // this, so there is one scan and one set of rules.
+  scanSpans(query) {
     const quoteChars = new Set(["'", '"']);
 
-    const stack = [];
+    let openSpanContentStart = null;
+    let openParens = 0;
+    // Closer for whichever span is still open at the end of the query. Only one is ever needed,
+    // because everything after an unterminated opener is span content — there is nothing left to
+    // open, and nothing after it to close. That is also why it can be appended before the parens: an
+    // unterminated span is necessarily the innermost thing open.
+    let spanSuffix = '';
+    let blanked = '';
 
-    // Process each character in the query
     for (let i = 0; i < query.length; i++) {
       const char = query[i];
 
-      // When inside a quoted string, only the matching closing quote ends it.
-      // All other characters (including other quote types and parentheses) are ignored.
-      if (stack.length > 0 && quoteChars.has(stack[stack.length - 1])) {
-        if (char === stack[stack.length - 1]) {
-          stack.pop();
+      // A quoted string, a /regex/ and a {mana symbol} are all opaque: the quotes and parens inside
+      // them are content, not delimiters.
+      if (quoteChars.has(char)) {
+        const { closeIndex, danglingEscape } = this.findCloser(query, i + 1, char);
+        if (closeIndex === null) {
+          spanSuffix = this.closerForPartialSpan(danglingEscape, char);
+          openSpanContentStart = i + 1;
+          blanked += char + char;
+          break;
         }
+        blanked += char + char;
+        i = closeIndex;
         continue;
       }
 
-      const mirroredChar = charToMirror[char];
-
-      if (!mirroredChar) {
+      // A '/' in value position opens a regex; anywhere else it is division, an ordinary character.
+      if (char === '/') {
+        if (this.opensRegex(query, i)) {
+          const { closeIndex, danglingEscape } = this.findCloser(query, i + 1, '/');
+          if (closeIndex === null) {
+            // Still being typed. Close the regex rather than reading on, or the metacharacters the
+            // user has typed so far get balanced as query structure: `o:/[)` is a partial `o:/[)]/`,
+            // not a stray ')'.
+            spanSuffix = this.closerForPartialSpan(danglingEscape, '/');
+            openSpanContentStart = i + 1;
+            blanked += '//';
+            break;
+          }
+          blanked += '//';
+          i = closeIndex;
+          continue;
+        }
+        blanked += char;
         continue;
       }
 
-      if (stack.length > 0 && stack[stack.length - 1] === mirroredChar) {
-        stack.pop();
+      // A {mana symbol} is opaque whatever it holds, and an unterminated one gets closed for the same
+      // reason an unterminated quote does: the lexer demands a '}' for every '{', so leaving it open
+      // would make `mana:{` — a prefix of `mana:{W}` — unlexable while it is being typed. No escapes
+      // exist inside a mana symbol, so there is no dangling-backslash case here.
+      if (char === '{') {
+        const closeIndex = this.braceCloseIndex(query, i + 1);
+        if (closeIndex === null) {
+          spanSuffix = '}';
+          openSpanContentStart = i + 1;
+          blanked += '{}';
+          break;
+        }
+        blanked += '{}';
+        i = closeIndex;
+        continue;
+      }
+
+      if (char === '(') {
+        openParens++;
       } else if (char === ')') {
-        return null; // closing paren with no opener — no suffix can fix this
-      } else {
-        stack.push(char);
+        if (openParens === 0) {
+          return { suffix: null, openSpanContentStart: null, blanked: null }; // ')' with no opener — nothing fixes this
+        }
+        openParens--;
       }
+      blanked += char;
     }
 
-    // Build the closing characters from the stack in reverse order
-    let closing = '';
-    while (stack.length > 0) {
-      closing += charToMirror[stack.pop()];
-    }
-    return closing;
+    // The trailing ')'s are appended once here, the same way suffix's are — whether the loop broke
+    // on an unterminated span or ran to completion with parens still open, they're always the very
+    // last thing in `query + suffix`, and always outside any span at that point.
+    return {
+      suffix: spanSuffix + ')'.repeat(openParens),
+      openSpanContentStart,
+      blanked: blanked + ')'.repeat(openParens),
+    };
   }
 
-  // Balance quotes and parentheses for typeahead searches; unbalance-able
-  // queries are returned unchanged so validateQuery reports them.
+  balanceSuffix(query) {
+    return this.scanSpans(query).suffix;
+  }
+
+  // Balance parentheses for typeahead searches, skipping over quotes, regexes and mana symbols;
+  // unbalance-able queries are returned unchanged so validateQuery reports them.
   balanceQuery(query) {
     const suffix = this.balanceSuffix(query);
     return suffix === null ? query : query + suffix;
   }
 
+  // Blanks the body of every quoted string, closed /regex/ span, and {mana symbol}, keeping the
+  // delimiters, so the structural checks in validateQuery cannot fire on a ':' or ')' that is
+  // really string, pattern, or mana content. Built on the same closedSpanEnd dispatch as
+  // collapseWhitespaceOutsideSpans, because a fourth opinion about where a span starts is a fourth way
+  // to reject a query the parser accepts (o:/x:)/).
+  blankOpaqueSpans(query) {
+    let out = '';
+
+    for (let i = 0; i < query.length; i++) {
+      const char = query[i];
+      const closeIndex = this.closedSpanEnd(query, i);
+      if (closeIndex !== null) {
+        // '""'/"''" for a quote and '//' for a regex share their open and close character; a mana
+        // symbol doesn't, so '{}' can't come from doubling char.
+        out += char === '{' ? '{}' : char + char;
+        i = closeIndex;
+        continue;
+      }
+
+      // An unterminated quote, regex, or mana symbol is not a span yet, so it stays an ordinary character.
+      out += char;
+    }
+
+    return out;
+  }
+
   // Returns an error string if the query is structurally invalid, or null if it looks ok.
-  validateQuery(query) {
+  // alreadyBalanced lets a caller that just ran scanSpans itself (and knows the answer was not
+  // null) skip a second identical scan here, rather than re-discovering what it already knows.
+  // blanked lets that same caller pass the scan's blanked-span output straight through too, rather
+  // than making blankOpaqueSpans re-walk the whole string to find the same span boundaries again.
+  validateQuery(query, { alreadyBalanced = false, blanked = null } = {}) {
     // A closing paren with no matching opener can't be balanced away.
-    if (this.balanceSuffix(query) === null) {
+    if (!alreadyBalanced && this.balanceSuffix(query) === null) {
       return `Failed to parse query: "${query}"`;
     }
 
-    // Strip quoted strings so we don't match content inside them.
-    const q = query.replace(/"[^"]*"|'[^']*'/g, '""');
+    // Blank quoted strings and regex patterns so we don't match content inside them.
+    const q = blanked ?? this.blankOpaqueSpans(query);
 
     // Trailing AND/OR with no right operand: "name:test and", "power>1 or"
     if (/(?:^|\s)(and|or)\s*$/i.test(q)) {
@@ -558,9 +753,42 @@ class CardSearch {
       return;
     }
 
-    const normalizedQuery = this._processQuery(query);
+    const autocompleted = this.autoCompleteQuery(query);
 
-    const validationError = this.validateQuery(normalizedQuery);
+    // One scan of autocompleted serves both the empty-span guard below and the balancing that
+    // follows, instead of each independently re-scanning the same string on every keystroke.
+    // openSpanContentStart is a position in autocompleted, not in a trimmed copy of it, but that
+    // doesn't change what it means: trailing whitespace can't be a span closer, so the position a
+    // span was left open at is the same whether or not the string is trimmed first.
+    const { suffix, openSpanContentStart, blanked } = this.scanSpans(autocompleted);
+
+    // Mid-span with nothing typed after the opener: wait rather than search. Balancing would turn
+    // `o:/` into the empty pattern `o://`, which matches every card and cannot use an index, and
+    // `mana:{` into the non-cost `mana:{}`. Neither is what the user is on their way to typing, so
+    // this has to be asked before balancing closes the span and hides that it was empty.
+    //
+    // clearMessages, not a bare return: handleSearch aborts the in-flight request as soon as the
+    // typed query stops matching it, so backspacing `o:/a/` down to `o:/` cancels the fetch and
+    // lands here with the previous showLoading still on screen. Returning without touching the
+    // status container left "Searching o:/a/…" over an empty grid until the next searchable
+    // keystroke. Clearing converges on the same "nothing to show" state as an empty query.
+    if (openSpanContentStart !== null && autocompleted.slice(openSpanContentStart).trim() === '') {
+      this.clearMessages();
+      return;
+    }
+
+    // collapseWhitespaceOutsideSpans, not a plain `.replace(/\s+/g, ' ')`: the latter would collapse
+    // whitespace inside a quote or regex too, silently rewriting what the user typed (see that
+    // function's docstring). balanced reuses the suffix scanSpans already found above, rather than
+    // letting balanceQuery re-scan the same string for it.
+    const balanced = suffix === null ? autocompleted : autocompleted + suffix;
+    const normalizedQuery = this.collapseWhitespaceOutsideSpans(balanced).trim();
+
+    // suffix !== null means scanSpans already proved this string balanceable, and its blanked output
+    // already reflects every span's boundaries (whitespace count and trimming don't change which
+    // structural checks fire, so it's as good a check-target as normalizedQuery's own blanked form)
+    // — so validateQuery doesn't need blankOpaqueSpans to re-walk the string a second time either.
+    const validationError = this.validateQuery(normalizedQuery, { alreadyBalanced: suffix !== null, blanked });
     if (validationError) {
       this.showError(`Failed to search: Invalid Search Query: ${validationError}`);
       return;

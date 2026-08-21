@@ -73,6 +73,18 @@ def test_explain_empty_query(parse_query) -> None:
     assert explanation == ""
 
 
+@pytest.mark.parametrize(argnames="query_str", argvalues=['mana:""', 'devotion:""'])
+def test_explain_empty_mana_value(parse_query, query_str: str) -> None:
+    """Empty mana/devotion values must produce an empty explanation.
+
+    An empty mana/devotion value parses to a ManaValueNode (#909), not a StringValueNode — the
+    empty-value guard has to cover both or this regresses to a garbled explanation (#950).
+    """
+    parsed_query = parse_query(query_str)
+    explanation = parsed_query.to_human_explanation()
+    assert explanation == ""
+
+
 def test_explain_multiple_and_conditions(parse_query) -> None:
     """Test explanation with multiple AND conditions."""
     parsed_query = parse_query("power>3 toughness>3 cmc=5")
