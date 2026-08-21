@@ -454,7 +454,7 @@ class AdminResource:
             Mapping of oracle_id -> {elo, cube_count, pick_count, popularity}.
         """
         cubecobra_url = "https://cubecobra.com/tool/api/topcards/"
-        page = 1
+        page = 0  # CubeCobra's `p` query param is 0-indexed; starting at 1 skips the top page.
 
         while True:
             time.sleep(0.5)
@@ -553,11 +553,15 @@ class AdminResource:
         Returns:
             Dict with status and count of cards updated.
         """
+        # pick_count is heavily discounted: it's largely redundant with cube_count (both are
+        # volume/adoption proxies), and elo already captures in-draft preference in a
+        # volume-normalized way, so pick_count mostly adds noise from cards that rack up big
+        # totals just by living in one high-traffic cube.
         weights = {
             "w_cube_count": 1,
             "w_edhrec": 1,
             "w_elo": 1,
-            "w_pick_count": 1,
+            "w_pick_count": 0.1,
         }
         start = time.monotonic()
         scale_factor = sum(weights.values()) / 100.0
