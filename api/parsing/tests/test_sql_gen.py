@@ -1519,3 +1519,29 @@ testcases_proper_subset_masks = {
 )
 def test_proper_subset_masks(query_mask: int, expected: list[int]) -> None:
     assert _proper_subset_masks(query_mask) == expected
+
+
+# ── #976: commander:/colour:/colours: as aliases, not a literal name search ──────────────
+# (alias query, canonical query) -- alias spelling must generate byte-identical SQL to the
+# canonical one, not fall through to a literal name search on card_name.
+COMMANDER_COLOUR_ALIAS_EQUIVALENCES = [
+    ("commander:wub", "id:wub"),
+    ("commander<=wub", "id<=wub"),
+    ("colour:blue", "color:blue"),
+    ("colours:wu", "colors:wu"),
+]
+
+
+@pytest.mark.parametrize(
+    argnames=["alias_query", "canonical_query"],
+    argvalues=COMMANDER_COLOUR_ALIAS_EQUIVALENCES,
+    ids=[q for q, _ in COMMANDER_COLOUR_ALIAS_EQUIVALENCES],
+)
+def test_commander_colour_alias_generates_same_sql(parse_query, alias_query: str, canonical_query: str) -> None:
+    """commander:/colour:/colours: generate identical SQL to id:/color:/colors:, for both parsers."""
+    alias_context = QueryContext()
+    canonical_context = QueryContext()
+    alias_sql = parse_query(alias_query).to_sql(alias_context)
+    canonical_sql = parse_query(canonical_query).to_sql(canonical_context)
+    assert alias_sql == canonical_sql
+    assert alias_context == canonical_context

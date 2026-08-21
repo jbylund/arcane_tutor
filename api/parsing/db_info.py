@@ -70,13 +70,15 @@ DB_COLUMNS = [
     FieldInfo(
         db_column_name="card_colors",
         field_type=FieldType.JSONB_OBJECT,
-        search_aliases=["color", "colors", "c"],
+        search_aliases=["color", "colors", "colour", "colours", "c"],
         parser_class=ParserClass.COLOR,
     ),
     FieldInfo(
         db_column_name="card_color_identity",
         field_type=FieldType.JSONB_OBJECT,
-        search_aliases=["color_identity", "coloridentity", "id", "identity", "ci"],
+        # `commander:` is how players search a commander's colour identity -- a deck built
+        # around it must stay within it, so a commander query is a color-identity query.
+        search_aliases=["color_identity", "coloridentity", "id", "identity", "ci", "commander"],
         parser_class=ParserClass.COLOR,
     ),
     FieldInfo(
