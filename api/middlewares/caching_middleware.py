@@ -39,17 +39,6 @@ _UNCACHEABLE_HEADER_PREFIXES: tuple[str, ...] = ("access-control-", "x-cache")
 # Responses to POST/PUT/DELETE are not replayable in the first place.
 CACHEABLE_METHODS = frozenset({"GET", "HEAD"})
 
-# Appended to a request's ordinary cache key to get the slot its 4xx response goes in when the
-# caller is admin-authenticated. A 4xx's content can depend on req.context["admin_authenticated"]
-# (APIResource._raise_not_found serves a different route listing to each), which the ordinary key
-# doesn't encode -- so an admin-authenticated 4xx needs its own slot, or it would either leak that
-# listing forward to a later anonymous caller on the same path, or (stored the other way around) get
-# masked by an anonymous 404 cached first. Plain bytes appended to the ordinary orjson-encoded key
-# rather than folded into a new orjson.dumps call: orjson can't re-serialize the raw bytes the first
-# call already produced, and a suffix can never collide with a distinct request's key, because every
-# orjson array encoding ends in "]" with nothing after it.
-_ADMIN_4XX_KEY_SUFFIX = b":admin-4xx"
-
 
 def cacheable_headers(headers: Mapping[str, str]) -> list[tuple[str, str]]:
     """Return the subset of headers safe to replay on a cache hit for a different request."""
@@ -128,20 +117,7 @@ class CachingMiddleware:
 
         cache_key = self._cache_key(req)
         req.context["cache_key"] = cache_key  # reused by process_response — one serialization per request
-        authenticated = req.context.get("admin_authenticated", False)
-
-        cached = self.cache.get(cache_key)
-        if cached is not None and authenticated and cached.status.startswith("4"):
-            # The ordinary slot isn't trustworthy here: it may hold a 4xx written by (or for) an
-            # anonymous caller, and a 4xx's content can depend on admin_authenticated (see
-            # APIResource._raise_not_found) -- check the admin-only slot instead. Only reached when
-            # the ordinary lookup above already found *something* and it was a 4xx, so the common
-            # case (every anonymous request, and every admin request that hits a 2xx) never pays
-            # for this second lookup.
-            admin_key = cache_key + _ADMIN_4XX_KEY_SUFFIX
-            req.context["admin_4xx_cache_key"] = admin_key
-            cached = self.cache.get(admin_key)
-
+        cached: CachedResponse | None = self.cache.get(cache_key)
         if cached is not None:
             if TYPE_CHECKING:
                 cached = typecast("CachedResponse", cached)
@@ -181,24 +157,22 @@ class CachingMiddleware:
         del resource, req_succeeded
         if req.context.get("cache_hit"):
             return
-        if resp.status and resp.status.startswith("5"):
+        # Neither is cacheable. 5xx is a transient failure, not a repeatable answer. 4xx isn't
+        # cached either, on different grounds: the path space behind a 404 is effectively
+        # unbounded (bots, scanners, typos), so almost none of it repeats -- caching it buys
+        # nothing while spending LRU slots that would otherwise hold a reusable /search response.
+        # It also sidesteps a real hazard for free: a 404's content can depend on the caller (see
+        # APIResource._raise_not_found, which serves admin-authenticated callers a different route
+        # listing), and the cache key here has no notion of that -- caching it would need to
+        # partition by caller to avoid leaking or masking that listing across callers. Not caching
+        # 4xx at all makes that a non-issue rather than something to get right.
+        if resp.status and resp.status[0] in ("4", "5"):
             return
         if "no-store" in (resp.get_header("Cache-Control") or ""):
             return
-
-        is_4xx = bool(resp.status) and resp.status.startswith("4")
-        authenticated = req.context.get("admin_authenticated", False)
-        if is_4xx and authenticated:
-            # See process_request: this response's content can depend on admin_authenticated, so
-            # it gets its own slot rather than the one every other caller's request maps to --
-            # otherwise the next anonymous 404 on this path would replay it verbatim.
-            cache_key = req.context.get("admin_4xx_cache_key")
-            if cache_key is None:
-                cache_key = self._cache_key(req) + _ADMIN_4XX_KEY_SUFFIX
-        else:
-            cache_key = req.context.get("cache_key")
-            if cache_key is None:
-                cache_key = self._cache_key(req)
+        cache_key = req.context.get("cache_key")
+        if cache_key is None:
+            cache_key = self._cache_key(req)
         # __contains__ on SharedCache does a full slot probe (filter check + lock + active-page
         # probe + lock-free sealed-page probes) — no false positives. On lock timeout it returns
         # False, which causes a redundant set() that also silently drops under contention.

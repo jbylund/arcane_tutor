@@ -2,12 +2,12 @@
 
 Hiding admin routes from the public 404 listing (test_admin_mount.py) protects against a caller who
 has not proven they hold the shared secret. It buys nothing once they have, so an authenticated
-request gets the full listing instead -- and since the listing shown now depends on who's asking,
-these also cover the caching hazard that creates: CachingMiddleware still caches 4xx responses (an
-admin-authenticated 404 is itself a good candidate -- typo'd admin URLs repeat), but an
-admin-authenticated 4xx and an anonymous 4xx to the same path go in separate cache slots, so
-neither leaks into or gets masked by the other. 2xx/3xx traffic is untouched: nothing in this app
-varies a successful response by auth state, so it keeps sharing the ordinary slot for everyone.
+request gets the full listing instead. Since the listing shown now depends on who's asking,
+these also cover the caching hazard that would create: CachingMiddleware doesn't cache 4xx
+responses at all (a 404's path space is effectively unbounded -- bots, scanners, typos -- so almost
+none of it repeats, and caching it would need to be partitioned by caller to avoid leaking or
+masking the admin listing across callers). 2xx/3xx traffic is untouched and keeps sharing one
+cache slot regardless of auth state, since nothing in this app varies a successful response by it.
 """
 
 from __future__ import annotations
@@ -89,8 +89,8 @@ class TestAuthenticatedNotFoundListing:
         assert f"{ADMIN_MOUNT_PREFIX}/setup_schema" in result.json["description"]["routes"]
 
 
-class TestNotFoundCachingIsPartitionedByAuth:
-    """4xx responses are still cached -- just never across the auth boundary."""
+class TestNotFoundIsNeverCached:
+    """404s are never cached, for anyone -- see CachingMiddleware.process_response."""
 
     @pytest.fixture(autouse=True)
     def _enable_cache(self) -> Generator[None]:
@@ -98,24 +98,17 @@ class TestNotFoundCachingIsPartitionedByAuth:
             mock_settings.enable_cache = True
             yield
 
-    def test_repeated_anonymous_404_is_a_cache_hit(self, resource: APIResource, admin_password: str) -> None:
+    def test_repeated_anonymous_404_is_never_a_cache_hit(self, resource: APIResource, admin_password: str) -> None:
         del admin_password
         client = _client(resource, cache=True)
         first = client.simulate_get("/totally/bogus")
         second = client.simulate_get("/totally/bogus")
 
         assert first.headers.get("X-Cache") == "miss"
-        assert second.headers.get("X-Cache") == "hit"
+        assert second.headers.get("X-Cache") == "miss"
         assert "setup_schema" not in second.json["description"]["routes"]
 
-    def test_repeated_authenticated_404_with_no_prior_anonymous_visit_recomputes_each_time(
-        self, resource: APIResource, admin_password: str
-    ) -> None:
-        # The lookup only ever consults the admin-only slot when the ordinary slot already holds
-        # *something* and it's a 4xx (see CachingMiddleware.process_request) -- an admin 404 is
-        # never written to the ordinary slot, so with no anonymous caller in the picture the
-        # ordinary slot stays empty and every repeat looks like a fresh miss. Content stays
-        # correct either way; this documents the accepted cost (a cheap recompute, not a query).
+    def test_repeated_authenticated_404_is_never_a_cache_hit(self, resource: APIResource, admin_password: str) -> None:
         del admin_password
         client = _client(resource, cache=True)
         first = client.simulate_get("/totally/bogus", headers=_AUTH_HEADERS)
@@ -124,23 +117,6 @@ class TestNotFoundCachingIsPartitionedByAuth:
         assert first.headers.get("X-Cache") == "miss"
         assert second.headers.get("X-Cache") == "miss"
         assert f"{ADMIN_MOUNT_PREFIX}/setup_schema" in second.json["description"]["routes"]
-
-    def test_authenticated_404_hits_the_admin_slot_once_an_anonymous_visit_populated_the_ordinary_one(
-        self, resource: APIResource, admin_password: str
-    ) -> None:
-        # The one scenario the admin-only slot's second lookup exists for: an anonymous caller
-        # cached a plain 404 at the ordinary key first, so the *next* authenticated request finds
-        # something there, sees it's a 4xx, and checks (and populates, then hits) the admin slot
-        # instead of trusting it.
-        del admin_password
-        client = _client(resource, cache=True)
-        client.simulate_get("/totally/bogus")  # anonymous: populates the ordinary slot
-        first_authed = client.simulate_get("/totally/bogus", headers=_AUTH_HEADERS)
-        second_authed = client.simulate_get("/totally/bogus", headers=_AUTH_HEADERS)
-
-        assert f"{ADMIN_MOUNT_PREFIX}/setup_schema" in first_authed.json["description"]["routes"]
-        assert second_authed.headers.get("X-Cache") == "hit"
-        assert f"{ADMIN_MOUNT_PREFIX}/setup_schema" in second_authed.json["description"]["routes"]
 
     def test_authenticated_404_is_not_served_to_a_later_unauthenticated_caller(
         self, resource: APIResource, admin_password: str
@@ -167,8 +143,8 @@ class TestNotFoundCachingIsPartitionedByAuth:
         assert authed.headers.get("X-Cache") != "hit"
 
     def test_public_2xx_cache_is_shared_regardless_of_auth(self, resource: APIResource, admin_password: str) -> None:
-        # The ordinary slot stays shared for successful responses: nothing in this app varies a
-        # 2xx by auth state, so partitioning it would only fragment the cache real traffic uses.
+        # Unaffected by any of the above: nothing in this app varies a 2xx by auth state, so it
+        # keeps sharing the one cache slot every caller maps to.
         del admin_password
         client = _client(resource, cache=True)
         anon = client.simulate_get("/robots.txt")
