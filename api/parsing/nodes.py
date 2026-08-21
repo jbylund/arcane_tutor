@@ -308,6 +308,15 @@ class NaryOperatorNode(QueryNode):
                 explanation = f"({explanation})"
             parts.append(explanation)
 
+        # An operand that explains to "" is not a constraint and has no clause to contribute;
+        # joining it anyway leaves a dangling connector (e.g. is:vanilla's `t:creature o=""`
+        # explaining as "the type contains creature and " with nothing after the "and").
+        parts = [part for part in parts if part]
+        if not parts:
+            return ""
+        if len(parts) == 1:
+            return parts[0]
+
         return self._join_explanations(parts)
 
     def _join_explanations(self: NaryOperatorNode, parts: list[str]) -> str:

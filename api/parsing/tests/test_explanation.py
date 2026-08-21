@@ -85,6 +85,26 @@ def test_explain_empty_mana_value(parse_query, query_str: str) -> None:
     assert explanation == ""
 
 
+@pytest.mark.parametrize(
+    argnames=["query_str", "expected_explanation"],
+    argvalues=[
+        # is:vanilla expands to `t:creature o=""`; the empty-oracle operand explains to ""
+        # and must be filtered out of the AND join, not left as a dangling connector.
+        ("is:vanilla", "the type contains creature"),
+        ("not:vanilla", "not (the type contains creature)"),
+        ("-is:vanilla", "not (the type contains creature)"),
+        # A typeahead balancer auto-closing a half-typed "urza'" produces `name:urza''`,
+        # which parses as `name:urza AND name:''` -- the second operand explains to "".
+        ("name:urza''", "the name contains urza"),
+    ],
+)
+def test_explain_filters_empty_string_operand(parse_query, query_str: str, expected_explanation: str) -> None:
+    """An operand that explains to "" contributes no clause and must not leave a dangling connector."""
+    parsed_query = parse_query(query_str)
+    explanation = parsed_query.to_human_explanation()
+    assert explanation == expected_explanation
+
+
 def test_explain_multiple_and_conditions(parse_query) -> None:
     """Test explanation with multiple AND conditions."""
     parsed_query = parse_query("power>3 toughness>3 cmc=5")
