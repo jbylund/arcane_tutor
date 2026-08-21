@@ -55,7 +55,6 @@ ParserElement.enable_packrat(cache_size_limit=2**13)  # 8192 cache entries
 # Constants
 NEGATION_TOKEN_COUNT = 2
 DEFAULT_OPERATORS = one_of(": > < >= <= = !=")
-COMPARISON_OPERATORS = frozenset([":", "=", "!=", ">", "<", ">=", "<="])
 
 _NUMERIC_LITERAL_RE = re.compile(r"^\d+(\.\d+)?$")
 _COMPARISON_OPERATORS = frozenset({">", "<", ">=", "<=", "=", "!=", ":"})

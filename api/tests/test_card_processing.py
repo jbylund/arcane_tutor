@@ -7,8 +7,7 @@ import pathlib
 import uuid
 from typing import Any
 
-from api.card_processing import preprocess_card
-from api.parsing.card_query_nodes import extract_frame_data_from_raw_card
+from api.card_processing import extract_frame_data_from_raw_card, preprocess_card
 
 # Project root directory for accessing sample data
 _PROJECT_ROOT = pathlib.Path(__file__).parent.parent.parent
