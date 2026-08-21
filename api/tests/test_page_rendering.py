@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import multiprocessing
-import time
 import unittest
 from unittest.mock import MagicMock, patch
 
 import falcon
 
 from api.api_resource import APIResource
-from api.tests.support import mock_conn_pool_kwargs
+from api.tests.support import mock_app_context
 from api.utils import page_rendering
 
 
@@ -46,11 +44,9 @@ class TestHtmlMinification(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.mock_conn_pool, pool_kwargs = mock_conn_pool_kwargs()
-        self.api_resource = APIResource(
-            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
-            **pool_kwargs,
-        )
+        self.app_context = mock_app_context()
+        self.mock_conn_pool = self.app_context.reader_pool
+        self.api_resource = APIResource(app_context=self.app_context)
 
     def test_minifies_whitespace_by_default(self) -> None:
         # minify_html also drops the redundant closing </p> (valid HTML5 tag-omission), hence

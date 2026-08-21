@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import inspect
 import logging
-import multiprocessing
 import os
 import pathlib
 import threading
@@ -19,22 +18,20 @@ import time
 from collections.abc import Sequence  # noqa: TC003
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, NoReturn
-from typing import cast as typecast
 
 import falcon
 import orjson
 import psycopg
-import psycopg_pool
 from cachebox import LRUCache, TTLCache
-from psycopg import Connection
 
-from api.admin_resource import ADMIN_MOUNT_PREFIX, AdminResource
+from api.admin_resource import ADMIN_MOUNT_PREFIX, AdminContext, AdminResource
+from api.app_context import AppContext
 from api.enums import CardOrdering, PreferOrder, ResponseShape, SortDirection, UniqueOn
 from api.middlewares.timing import record_span
 from api.noscript_helpers import generate_results_count_html, generate_results_html
 from api.parsing import generate_sql_query, parse_scryfall_query
 from api.settings import settings
-from api.utils import db_utils, error_monitoring, multiprocessing_utils
+from api.utils import db_utils, error_monitoring
 from api.utils.css_utils import build_critical_css
 from api.utils.generation_cache import GenerationCache
 from api.utils.page_rendering import (
@@ -48,32 +45,14 @@ from api.utils.param_binding import ParamCoercionError
 from api.utils.routing import build_route_table, build_routes_listing, route
 from api.utils.site_name import hostname_to_site_name
 from api.utils.timer import Timer
-from card_engine import ENGINE_COLUMNS as _ENGINE_COLUMNS_FROM_MODULE
-from card_engine import QueryEngine as _QueryEngine
 from card_engine import QueryError as _QueryError
 
 if TYPE_CHECKING:
-    from multiprocessing.sharedctypes import Synchronized
-    from multiprocessing.synchronize import Event as EventType
-    from multiprocessing.synchronize import RLock as LockType
-
     from api.parsing.nodes import Query
     from api.utils.routing import BoundRoute
 
 
 logger = logging.getLogger(__name__)
-
-
-def _rss_mb() -> str:
-    """Return current RSS in MB as a string, or 'unknown' if /proc is unavailable."""
-    try:
-        with pathlib.Path("/proc/self/status").open() as f:
-            for line in f:
-                if line.startswith("VmRSS:"):
-                    return f"{int(line.split()[1]) // 1024} MB"
-    except OSError:
-        pass
-    return "unknown"
 
 
 # Postgres prefixes every 2201B message with this, e.g. "invalid regular expression: brackets []
@@ -116,13 +95,6 @@ DISALLOWED_QUERY_ARGS: frozenset[str] = frozenset(["falcon_response", "request_h
 # to the log and the error monitor, which are not attacker-readable; the client gets this and nothing
 # more. Callers must not append exception detail to it.
 INTERNAL_ERROR_DESCRIPTION = "An internal error occurred."
-
-MIN_IMPORT_CARDS = 90_000
-# Rows per batch streamed into the engine during a reload. The reload's memory
-# floor is the Rust-side build (~305 MB), so the batch only needs to be small
-# relative to that: ~2k rows ≈ 18 MB of dicts. Smaller adds round trips for no
-# measurable gain (see docs/issues/00505-engine-incremental-loading.md).
-_ENGINE_RELOAD_BATCH_SIZE = 2_000
 
 # Public field name -> magic.cards column. The `fields=` vocabulary for /search. This is
 # deliberately a subset of FIELD_TABLE in card_engine/src/lib.rs, not a mirror of it — not
@@ -247,65 +219,45 @@ def _columnarize_cards(cards: list[dict[str, Any]]) -> dict[str, list[Any]]:
 class APIResource:
     """Class implementing request handling for our simple API."""
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         *,
-        import_guard: LockType = multiprocessing_utils.DEFAULT_LOCK,
-        last_import_time: Synchronized | None = None,
-        schema_setup_event: EventType = multiprocessing_utils.DEFAULT_EVENT,
-        cache_generation: Synchronized | None = None,
-        engine_reload_guard: LockType | None = None,
-        conn_pool: psycopg_pool.ConnectionPool | None = None,
-        admin_conn_pool: psycopg_pool.ConnectionPool | None = None,
+        app_context: AppContext | None = None,
+        admin_context: AdminContext | None = None,
     ) -> None:
         """Initialize an APIResource object, set up connection pool and action map.
 
         Sets up the database connection pool and action mapping for the API.
 
         Args:
-            import_guard: Cross-process lock serialising imports.
-            last_import_time: Shared timestamp of the last completed import.
-            schema_setup_event: Set once the schema has been created.
-            cache_generation: Shared counter bumped to invalidate the query-result cache.
-            engine_reload_guard: Cross-process lock serialising engine reloads.
-            conn_pool: This resource's own connection pool. Built via `db_utils.make_pool()` if not
+            app_context: State and resources shared with the mounted AdminResource (connection
+                pools, the query engine, the cross-worker cache/import signals). Built fresh if not
                 given, matching every other handle here -- a caller (a test, mainly) can inject one
                 without a real pool ever opening a connection.
-            admin_conn_pool: The connection pool handed to the mounted AdminResource. Built the same
-                way if not given; kept separate from `conn_pool` so a test can inject the two
-                independently.
+            admin_context: Forwarded to the mounted AdminResource untouched; APIResource has no use
+                for its contents (import-serialisation primitives) and doesn't default it -- that's
+                AdminResource's own job, same as `app_context`.
         """
         self._critical_css: str = build_critical_css(STATIC_DIR / "styles.css")
-        self._conn_pool: psycopg_pool.ConnectionPool = conn_pool or db_utils.make_pool()
+        self.app_context = app_context or AppContext()
         # Build the route table from methods marked with @route, scanning the class rather than this
         # instance so nothing assigned below can become a route. Each entry carries everything
         # dispatch needs — the wrapped handler, how many positional path segments it absorbs, and
         # what it declared — computed once here rather than per-request in _handle.
         self.routes = build_route_table(self)
 
-        self._cache_generation: Synchronized = cache_generation or multiprocessing.Value("i", 0)
         self._query_cache: GenerationCache = GenerationCache(
             factory=lambda: LRUCache(maxsize=1_000 if settings.enable_cache else 1),
-            generation=self._cache_generation,
+            generation=self.app_context.cache_generation,
         )
         self._search_gen_cache: LRUCache = LRUCache(maxsize=1)  # generation → TTLCache
-        self._last_import_time: Synchronized = last_import_time or multiprocessing.Value("d", 0.0, lock=True)
-        self._engine = _QueryEngine()
         self._engine_reload_lock = threading.Lock()
-        # Cross-worker guard: the full-table fetch in _reload_engine is memory-hungry,
-        # so only one worker process should run it at a time (see _reload_engine).
-        self._engine_reload_guard: LockType = engine_reload_guard or multiprocessing.Lock()
-        logger.info("Worker with pid %d has conn pool %s", os.getpid(), self._conn_pool)
+        logger.info("Worker with pid %d has conn pool %s", os.getpid(), self.app_context.reader_pool)
 
         # Mounted after the parent's own state exists, since the child reaches back for the handles
         # they share. advertise=False is set here rather than on each handler: forgetting it is then
         # a property of this one call, not a hole in one route.
-        self.admin = AdminResource(
-            self,
-            conn_pool=admin_conn_pool or db_utils.make_pool(),
-            import_guard=import_guard,
-            schema_setup_event=schema_setup_event,
-        )
+        self.admin = AdminResource(app_context=self.app_context, admin_context=admin_context)
         self.routes.update(build_route_table(self.admin, prefix=ADMIN_MOUNT_PREFIX, advertise=False))
         self._not_found_routes = build_routes_listing(self.routes)
 
@@ -478,7 +430,7 @@ class APIResource:
         root_timing_key = "root_timing_key"
         timer = Timer()
         result: dict[str, Any] = {}
-        with self._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with self.app_context.reader_pool.connection() as conn, conn.cursor() as cursor:
             # Validate and set statement timeout
             db_utils.set_statement_timeout(cursor, statement_timeout)
             if explain:
@@ -510,54 +462,9 @@ class APIResource:
         set_no_store_header(falcon_response)
         return os.getpid()
 
-    _SETUP_COMPLETE_TTL = 60 * 60  # 1 hour; also invalidated when _last_import_time changes
-    _setup_complete_cache: tuple[bool, float, float] | None = None  # (result, expires_at, import_time)
-
-    def _setup_complete(self) -> bool:
-        """Return True if the setup is complete."""
-        now = time.monotonic()
-        current_import_time = self._last_import_time.get_obj().value
-        if self._setup_complete_cache is not None:
-            result, expires_at, cached_import_time = self._setup_complete_cache
-            if now < expires_at and current_import_time == cached_import_time:
-                logger.debug(
-                    "_setup_complete cache hit: result=%s, expires in %.0fs, pid %d",
-                    result,
-                    expires_at - now,
-                    os.getpid(),
-                )
-                return result
-        try:
-            with self._conn_pool.connection() as conn:
-                conn = typecast("Connection", conn)
-                with conn.cursor() as cursor:
-                    cursor.execute("SELECT COUNT(1) AS num_cards FROM magic.cards")
-                    cards_found = cursor.fetchall()[0]["num_cards"]
-                    result = cards_found > MIN_IMPORT_CARDS
-                    if result:
-                        logger.info("Found %d cards in pid %d", cards_found, os.getpid())
-                    else:
-                        logger.warning(
-                            "Setup not complete: found %d cards, need more than %d (pid %d)",
-                            cards_found,
-                            MIN_IMPORT_CARDS,
-                            os.getpid(),
-                        )
-        except Exception as oops:
-            logger.error(
-                "Error checking if setup is complete (pid %d): %s: %s",
-                os.getpid(),
-                type(oops).__name__,
-                oops,
-                exc_info=True,
-            )
-            result = False
-        self._setup_complete_cache = (result, now + self._SETUP_COMPLETE_TTL, current_import_time)
-        return result
-
     def _require_setup_complete(self) -> None:
         """Require that setup is complete or raise a ServiceUnavailable error."""
-        if not self._setup_complete():
+        if not self.app_context.setup_complete():
             logger.warning("Rejecting request in pid %d: setup is not complete", os.getpid())
             raise falcon.HTTPServiceUnavailable(
                 title="Service Unavailable",
@@ -565,76 +472,17 @@ class APIResource:
             ) from None
 
     def _trigger_background_reload_if_needed(self) -> None:
-        if self._engine.size() == 0 and self._engine_reload_lock.acquire(blocking=False):
+        if self.app_context.engine.size() == 0 and self._engine_reload_lock.acquire(blocking=False):
 
             def _bg_reload() -> None:
                 try:
-                    self._reload_engine()
+                    self.app_context.reload_engine()
                 except Exception as e:
                     logger.error("Background engine reload failed: %s", e, exc_info=True)
                 finally:
                     self._engine_reload_lock.release()
 
             threading.Thread(target=_bg_reload, daemon=True).start()
-
-    def _reload_engine(self, *, force: bool = False) -> None:
-        """Stream all cards from the DB into the Rust engine's card store in batches.
-
-        A server-side cursor feeds the engine's staged reload API
-        (reload_begin / add_batch / reload_commit) one batch at a time, so the
-        Python-side transient is one batch of row dicts (~18 MB at 2k rows)
-        instead of the whole corpus (~840 MB) — measurements in
-        docs/issues/00505-engine-incremental-loading.md. The reload is guarded by a
-        cross-worker lock so only one worker pays the build cost at a time.
-        With force=False (cold-start warming), losers of the race return
-        immediately and pick up the winner's archive via the engine's
-        inode-based remap. With force=True (data just changed), callers wait
-        their turn but skip the rebuild if another worker refreshed the store
-        while they were waiting.
-
-        Args:
-            force: If False, skip entirely when another worker holds the lock or the
-                store is already populated. If True, wait for the lock and always
-                reload (the data just changed, so the archive must be rebuilt).
-        """
-        if not settings.enable_engine:
-            logger.debug("Engine reload skipped: feature-gated off (ENABLE_ENGINE)")
-            return
-        if self._engine is None:
-            return
-        logger.info("Engine reload requested (force=%s, pid=%d, rss=%s)", force, os.getpid(), _rss_mb())
-        if not self._engine_reload_guard.acquire(block=force):
-            logger.info("Engine reload already in progress in another worker, skipping (pid=%d)", os.getpid())
-            return
-        try:
-            if not force and self._engine.size() > 0:
-                # Another worker populated the store while we raced for the lock.
-                return
-            logger.info("Engine reload starting (force=%s, pid=%d, rss=%s)", force, os.getpid(), _rss_mb())
-            cols_sql = ", ".join(f"card.{col}" for col in _ENGINE_COLUMNS_FROM_MODULE)
-            try:
-                with self._conn_pool.connection() as conn:
-                    # Named cursor => server-side: psycopg buffers one batch, not the full result.
-                    with conn.cursor(name="engine_reload") as cursor:
-                        cursor.itersize = _ENGINE_RELOAD_BATCH_SIZE
-                        cursor.execute(f"SELECT {cols_sql} FROM magic.cards AS card")
-                        if not self._engine.reload_begin():
-                            # Another process published a fresh archive while we
-                            # waited for the engine's write lock; it was remapped.
-                            return
-                        try:
-                            while batch := cursor.fetchmany(_ENGINE_RELOAD_BATCH_SIZE):
-                                self._engine.add_batch(batch)
-                            self._engine.reload_commit()
-                        except BaseException:
-                            self._engine.reload_abort()
-                            raise
-            except psycopg_pool.PoolClosed:
-                logger.debug("Connection pool closed during engine reload, skipping (pid=%d)", os.getpid())
-                return
-            logger.info("Engine reloaded with %d cards (pid=%d, rss=%s)", self._engine.size(), os.getpid(), _rss_mb())
-        finally:
-            self._engine_reload_guard.release()
 
     def _resolve_result_fields(self, fields: Sequence[str] | None) -> list[str]:
         """Validate a `fields=` request against RESULT_FIELD_COLUMNS, deduping repeats.
@@ -764,7 +612,7 @@ class APIResource:
 
         if settings.enable_cache:
             cache_key = (direction, limit, offset, orderby, prefer, query, unique, tuple(resolved_fields))
-            gen = self._cache_generation.value
+            gen = self.app_context.cache_generation.value
             try:
                 search_cache = self._search_gen_cache[gen]
             except KeyError:
@@ -785,7 +633,7 @@ class APIResource:
 
         if not settings.enable_engine:
             pass  # feature-gated off: SQL serves everything, the store never loads
-        elif self._engine.size() == 0:
+        elif self.app_context.engine.size() == 0:
             logger.info("Engine store empty, using SQL path for query=%r", query)
             self._trigger_background_reload_if_needed()
         else:
@@ -803,7 +651,7 @@ class APIResource:
                     fields=resolved_fields,
                 )
             except BaseException as e:
-                # BaseException, not Exception: a Rust panic anywhere under `self._engine.query`
+                # BaseException, not Exception: a Rust panic anywhere under `self.app_context.engine.query`
                 # surfaces as pyo3's `PanicException`, which derives from BaseException and so went
                 # straight past this handler — the one whose entire job is to let an engine failure
                 # degrade to the SQL path instead of failing the request. Falcon's own error handling
@@ -879,7 +727,7 @@ class APIResource:
         query_explanation = parsed_query.to_human_explanation() if query else ""
         try:
             with timer("engine_query"):
-                total_cards, cards = self._engine.query(
+                total_cards, cards = self.app_context.engine.query(
                     filters=parsed_query,
                     unique=str(unique),
                     prefer=str(prefer),
@@ -1335,18 +1183,18 @@ class APIResource:
         **_: object,
     ) -> dict[str, dict[str, int]]:
         """Get type and keyword frequency catalogs from the engine."""
-        if self._engine.size() == 0:
+        if self.app_context.engine.size() == 0:
             raise falcon.HTTPServiceUnavailable(
                 title="Service Unavailable",
                 description="Engine is not loaded, please try again later.",
             ) from None
         set_cache_header(falcon_response, duration=timedelta(hours=1))
-        type_counts: dict[str, int] = self._engine.common_card_types()
+        type_counts: dict[str, int] = self.app_context.engine.common_card_types()
         # tribal is the old name for kindred
         kindred_count = type_counts.get("Kindred", 0)
         if kindred_count:
             type_counts["Tribal"] = kindred_count
-        keyword_counts: dict[str, int] = self._engine.common_card_keywords()
+        keyword_counts: dict[str, int] = self.app_context.engine.common_card_keywords()
         keyword_catalog = {keyword.lower(): count for keyword, count in keyword_counts.items()}
         # Sorted keys compress ~5% smaller (adjacent keys share prefixes, so the
         # compressor's back-references stay short) and make the payload deterministic.
@@ -1387,11 +1235,11 @@ class APIResource:
         """
         set_no_store_header(falcon_response)
         num_cards = min(max(num_cards, 1), 1000)
-        if self._engine.size() == 0:
+        if self.app_context.engine.size() == 0:
             self._trigger_background_reload_if_needed()
             cards = []
         else:
-            cards = list(self._engine.sample_preferred(num_cards))
+            cards = list(self.app_context.engine.sample_preferred(num_cards))
         total_cards = len(cards)
         if shape == ResponseShape.COLUMNAR:
             cards = _columnarize_cards(cards)

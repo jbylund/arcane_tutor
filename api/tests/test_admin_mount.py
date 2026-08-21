@@ -16,6 +16,7 @@ import pytest
 
 from api.admin_resource import ADMIN_MOUNT_PREFIX, AdminResource
 from api.api_resource import APIResource
+from api.app_context import AppContext
 
 # The complete public surface, as a literal. A route appearing or disappearing here is a deliberate
 # act, and this is the guard that makes it one — the failure this whole change exists to prevent was
@@ -61,15 +62,17 @@ EXPECTED_ADMIN_ROUTES = {
 def resource_fixture() -> APIResource:
     """An APIResource with its child mounted, against distinct mocked pools.
 
-    conn_pool and admin_conn_pool are injected separately (rather than left to default) so the
-    parent's and the child's pools are distinct objects, matching that AdminResource now opens its
-    own pool instead of sharing the parent's.
+    reader_pool and writer_pool are injected separately (rather than left to default) so the two
+    are distinct objects, matching that AdminResource reads/writes via its own pool rather than
+    the one search-shaped resources use.
     """
-    return APIResource(
+    app_context = AppContext(
+        reader_pool=MagicMock(),
+        writer_pool=MagicMock(),
+        engine=MagicMock(),
         last_import_time=multiprocessing.Value("d", time.time(), lock=True),
-        conn_pool=MagicMock(),
-        admin_conn_pool=MagicMock(),
     )
+    return APIResource(app_context=app_context)
 
 
 class TestRouteTable:
@@ -144,24 +147,29 @@ class TestDispatch:
 
 
 class TestSharedSurface:
-    """The child reaches the parent for exactly the surface they share."""
+    """Both resources reach into one shared AppContext rather than one holding a reference to the other."""
 
-    def test_child_holds_its_parent(self, resource: APIResource) -> None:
+    def test_admin_holds_no_reference_to_the_parent(self, resource: APIResource) -> None:
         assert isinstance(resource.admin, AdminResource)
-        assert resource.admin._parent is resource
+        assert not hasattr(resource.admin, "_parent")
+
+    def test_both_resources_share_one_app_context(self, resource: APIResource) -> None:
+        assert resource.admin.app_context is resource.app_context
 
     def test_admin_only_handles_live_on_the_child(self, resource: APIResource) -> None:
-        for handle in ("_session", "_bulk_data_fetcher", "_import_guard", "_schema_setup_event"):
+        for handle in ("_session", "_bulk_data_fetcher", "admin_context"):
             assert hasattr(resource.admin, handle), handle
             assert not hasattr(resource, handle), f"{handle} should have moved to the child"
 
-    def test_shared_handles_stay_on_the_parent(self, resource: APIResource) -> None:
-        for handle in ("_cache_generation", "_last_import_time"):
-            assert hasattr(resource, handle), handle
+    def test_admin_context_holds_the_import_serialisation_primitives(self, resource: APIResource) -> None:
+        assert hasattr(resource.admin.admin_context, "import_guard")
+        assert hasattr(resource.admin.admin_context, "schema_setup_event")
 
-    def test_admin_has_its_own_conn_pool(self, resource: APIResource) -> None:
-        # Not a shared handle: each side opens its own psycopg_pool.ConnectionPool, so nothing
-        # here reaches through the parent for a connection, its query cache, or EXPLAIN plumbing.
-        assert hasattr(resource, "_conn_pool")
-        assert hasattr(resource.admin, "_conn_pool")
-        assert resource.admin._conn_pool is not resource._conn_pool
+    def test_shared_signals_live_on_app_context(self, resource: APIResource) -> None:
+        for handle in ("cache_generation", "last_import_time"):
+            assert hasattr(resource.app_context, handle), handle
+
+    def test_admin_reads_and_writes_via_its_own_pool(self, resource: APIResource) -> None:
+        # Each side reads/writes via its own pool, so nothing here needs the reader's query cache
+        # or EXPLAIN plumbing.
+        assert resource.app_context.writer_pool is not resource.app_context.reader_pool

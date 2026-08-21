@@ -14,7 +14,9 @@ import psycopg
 import pytest
 from testcontainers.postgres import PostgresContainer
 
+from api.admin_resource import AdminContext
 from api.api_resource import APIResource
+from api.app_context import AppContext
 from api.enums import CardOrdering, ResponseShape, SortDirection
 from api.tests.helpers import search_kwargs
 from api.tests.support import override_attr
@@ -110,14 +112,14 @@ class TestContainerIntegration:
         # Create APIResource instance
         schema_setup_event = multiprocessing.Event()
         api = APIResource(
-            last_import_time=multiprocessing.Value("d", time.time(), lock=True),
-            schema_setup_event=schema_setup_event,
+            app_context=AppContext(last_import_time=multiprocessing.Value("d", time.time(), lock=True)),
+            admin_context=AdminContext(schema_setup_event=schema_setup_event),
         )
 
         def always_true() -> bool:
             return True
 
-        override_attr(api, "_setup_complete", always_true)
+        override_attr(api.app_context, "setup_complete", always_true)
         override_attr(api.admin, "_import_recent", always_true)
 
         # Set up the schema using real migrations
@@ -127,20 +129,18 @@ class TestContainerIntegration:
         test_dir = pathlib.Path(__file__).parent
         data_file = test_dir / "fixtures" / "test_data.sql"
 
-        with api._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with api.app_context.reader_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute(data_file.read_text())
             conn.commit()
 
-        api._reload_engine(force=True)
+        api.app_context.reload_engine(force=True)
 
         # Yield the fully configured APIResource for tests to use
         yield api
 
         # Clean up connection pools
-        if hasattr(api, "_conn_pool"):
-            api._conn_pool.close()
-        if hasattr(api.admin, "_conn_pool"):
-            api.admin._conn_pool.close()
+        api.app_context.reader_pool.close()
+        api.app_context.writer_pool.close()
 
     def test_query_parsing_with_database(self: TestContainerIntegration, api_resource: APIResource) -> None:
         """Test query parsing and execution against real database."""
@@ -368,7 +368,7 @@ class TestContainerIntegration:
         assert import_result["status"] == "success"
         assert import_result["cards_loaded"] >= 35
 
-        with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with api_resource.app_context.reader_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute("SELECT COUNT(*) as count FROM magic.cards WHERE card_name = %s", (card_name,))
             count_result = cursor.fetchone()
             card_count = count_result["count"] if count_result else 0
@@ -405,7 +405,7 @@ class TestContainerIntegration:
             assert import_result["cards_loaded"] == 3, f"Expected 3 cards loaded, got {import_result['cards_loaded']}"
 
         # Verify the card exists in database and has set information
-        with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with api_resource.app_context.reader_pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute(
                 "SELECT card_name, card_set_code FROM magic.cards WHERE card_name = %s",
                 (card_name,),
@@ -520,7 +520,7 @@ class TestContainerIntegration:
             "Black Lotus": 50.0,
             "Serra Angel": 90.0,
         }
-        with api_resource._conn_pool.connection() as conn, conn.cursor() as cursor:
+        with api_resource.app_context.reader_pool.connection() as conn, conn.cursor() as cursor:
             for name, score in scores.items():
                 cursor.execute(
                     "UPDATE magic.cards SET cubecobra_score = %s WHERE card_name = %s",
@@ -532,11 +532,11 @@ class TestContainerIntegration:
         # store would shadow this test DB's data: swap in a private store for
         # this test (the api_resource fixture is class-scoped, so restore it).
         shm_path = pathlib.Path(tempfile.gettempdir()) / f"sylvan_librarian_it_{uuid.uuid4().hex}"
-        saved_engine = api_resource._engine
-        api_resource._engine = QueryEngine(shm_path=str(shm_path))
+        saved_engine = api_resource.app_context.engine
+        api_resource.app_context.engine = QueryEngine(shm_path=str(shm_path))
         try:
             # Reload the engine so it picks up the direct DB update
-            api_resource._reload_engine(force=True)
+            api_resource.app_context.reload_engine(force=True)
 
             result = api_resource._search_engine(
                 **search_kwargs("cmc>=0", limit=100, orderby=CardOrdering.CUBECOBRA, direction=SortDirection.ASC)
@@ -550,6 +550,6 @@ class TestContainerIntegration:
             names = [card["name"] for card in result["cards"] if card["name"] in scores]
             assert names == ["Serra Angel", "Black Lotus", "Lightning Bolt"]
         finally:
-            api_resource._engine = saved_engine
+            api_resource.app_context.engine = saved_engine
             shm_path.unlink(missing_ok=True)
             shm_path.with_suffix(".lock").unlink(missing_ok=True)
