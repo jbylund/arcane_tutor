@@ -775,11 +775,12 @@ class APIResource:
             raise
         with timer("engine_collect"):
             cards = list(cards)
+        timings = timer.get_timings()
         return {
             "cards": cards,
             "compiled": "(rust engine)",
-            "inner_timings": timer.get_timings(),
-            "outer_timings": timer.get_timings(),
+            "inner_timings": timings,
+            "outer_timings": timings,
             "params": {},
             "query": query,
             "query_explanation": query_explanation,

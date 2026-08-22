@@ -13,7 +13,8 @@ from api.middlewares.query_log_middleware import QueryLogMiddleware
 def _make_middleware() -> QueryLogMiddleware:
     """Create a QueryLogMiddleware without starting the background writer thread."""
     mw = QueryLogMiddleware.__new__(QueryLogMiddleware)
-    mw._queue = queue.Queue(maxsize=10_000)
+    mw._queue = queue.SimpleQueue()
+    mw._pending_upper_bound = 0
     mw._stop = threading.Event()
     return mw
 
@@ -117,11 +118,29 @@ class TestQueryLogMiddlewareProcessResponse:
 
     def test_queue_full_logs_warning_and_does_not_raise(self, caplog: object) -> None:
         mw = _make_middleware()
-        for _ in range(mw._queue.maxsize):
+        for _ in range(mw._MAX_PENDING):
             mw._queue.put_nowait({"dummy": True})
+        mw._pending_upper_bound = mw._MAX_PENDING
         with caplog.at_level(logging.WARNING, logger="api.middlewares.query_log_middleware"):
             mw.process_response(_make_req(), _make_resp(), None, True)
         assert "log queue full" in caplog.text
+
+    def test_pending_upper_bound_only_resyncs_at_cap(self) -> None:
+        """The common-case fast path never calls qsize(): the bound is just incremented."""
+        mw = _make_middleware()
+        for _ in range(5):
+            mw.process_response(_make_req(), _make_resp(), None, True)
+        assert mw._pending_upper_bound == 5
+        assert mw._queue.qsize() == 5
+
+    def test_pending_upper_bound_resyncs_after_writer_drains(self) -> None:
+        """Once the optimistic bound hits the cap, it resyncs to the queue's real (smaller) size."""
+        mw = _make_middleware()
+        mw._pending_upper_bound = mw._MAX_PENDING
+        mw._queue.put_nowait({"dummy": True})  # writer thread drained everything but this one
+        mw.process_response(_make_req(), _make_resp(), None, True)
+        assert mw._pending_upper_bound == 2  # resynced to qsize()==1, then incremented for this put
+        assert mw._queue.qsize() == 2
 
     def test_stop_exits_drain_thread(self) -> None:
         mw = QueryLogMiddleware()

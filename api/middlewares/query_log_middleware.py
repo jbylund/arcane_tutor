@@ -32,7 +32,7 @@ class _QueryLogWriter:
     _FLUSH_EVERY_N = 50
     _FLUSH_EVERY_S = 2.0
 
-    def __init__(self, q: queue.Queue[dict], stop: threading.Event) -> None:
+    def __init__(self, q: queue.SimpleQueue[dict], stop: threading.Event) -> None:
         self._q = q
         self._stop = stop
         self._conn: psycopg.Connection | None = None
@@ -109,9 +109,21 @@ class QueryLogMiddleware:
     NULL DB timings) so query frequency can be analysed alongside raw latency.
     """
 
+    _MAX_PENDING = 10_000
+
     def __init__(self) -> None:
         """Start the background writer thread."""
-        self._queue: queue.Queue[dict] = queue.Queue(maxsize=10_000)
+        # SimpleQueue over Queue: no maxsize support, but also no Condition/Lock wait
+        # machinery -- ~28x cheaper put() in a producer/consumer microbenchmark of this
+        # exact pattern. Bounding is reimplemented below via _pending_upper_bound instead.
+        self._queue: queue.SimpleQueue[dict] = queue.SimpleQueue()
+        # A provable upper bound on the queue's true length: it counts puts since the last
+        # resync and never accounts for the writer thread's concurrent gets, so it can only
+        # over-count, never under-count. That makes "is there definitely room" a plain
+        # compare-and-increment in the common case -- qsize() (the only call that needs to
+        # touch the queue's internal lock) is paid for only once the bound reaches the cap,
+        # at which point it resyncs to the real (possibly much smaller) size.
+        self._pending_upper_bound = 0
         self._stop = threading.Event()
         self._writer = threading.Thread(
             target=_QueryLogWriter(self._queue, self._stop).run,
@@ -119,6 +131,16 @@ class QueryLogMiddleware:
             name="query-log-writer",
         )
         self._writer.start()
+
+    def _enqueue(self, entry: dict) -> None:
+        """Push a log entry, dropping it (with a warning) once the queue is backed up."""
+        if self._pending_upper_bound >= self._MAX_PENDING:
+            self._pending_upper_bound = self._queue.qsize()
+            if self._pending_upper_bound >= self._MAX_PENDING:
+                logger.warning("QueryLogMiddleware: log queue full, dropping entry for %s", entry.get("q"))
+                return
+        self._queue.put_nowait(entry)
+        self._pending_upper_bound += 1
 
     def stop(self) -> None:
         """Signal the background writer to exit and wait for it to finish."""
@@ -178,7 +200,4 @@ class QueryLogMiddleware:
             "orderby": req.params.get("orderby"),
             "unique_by": req.params.get("unique"),
         }
-        try:
-            self._queue.put(entry, timeout=0.001)
-        except queue.Full:
-            logger.warning("QueryLogMiddleware: log queue full, dropping entry for %s", req.params.get("q"))
+        self._enqueue(entry)
