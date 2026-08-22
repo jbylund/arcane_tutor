@@ -52,3 +52,28 @@ every caller would need to branch on.
 - `mana:""`, `devotion:""` → 400, not a 200 with every card
 - confirm the fix doesn't affect `mana:0` or `mana:{0}` (a real, zero-cost value that must keep
   parsing and matching only colorless-free cards, not "empty")
+
+## Status: deferred, not scheduled
+
+Checked live against `api.scryfall.com` (2026-08-22) before implementing this, since the fix above
+assumes "reject the whole query" is the right target behavior — it isn't obviously so:
+
+- `mana:""` and `mana=""` both return a genuine HTTP 500 from Scryfall's own API. There is no
+  working reference behavior to copy for the mana case specifically.
+- The closest non-crashing analogues, `o:""` and `devotion:""` standalone, return "All of your
+  terms were ignored" — but embedded in a compound query, Scryfall does not reject the whole
+  query: `t:creature devotion:""` returns the same 18,753 cards as plain `t:creature`. Scryfall's
+  actual behavior is "silently drop just the empty term," not "reject the whole query."
+
+That means the fix as scoped above would diverge from Scryfall in the compound case: it rejects
+`t:creature devotion:""` outright, where Scryfall answers it (correctly, matching `t:creature`
+alone) by dropping the empty term. The bug is real for the standalone case (matching the entire
+unfiltered corpus is clearly wrong), but "reject the whole query" overcorrects for the compound
+one, and "drop just the term" would need different, more invasive plumbing (the empty leaf would
+need to disappear from the AST rather than erroring at parse time).
+
+Decided not to act on this for now. If revisited: the stated preference leans toward "reject the
+whole query" over "silently drop the term" on general principle (`P AND (invalid Q)` should not
+silently reduce to just `P` — an invalid subexpression should poison the whole expression), even
+though that's a deliberate divergence from Scryfall's own "ignore the bad term" behavior rather
+than a faithful port of it.
