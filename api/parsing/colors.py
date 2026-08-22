@@ -52,6 +52,14 @@ COLOR_ALIAS_TO_CODES = {
     "golgari": "bg",
     "boros": "rw",
     "simic": "gu",
+    # the five Strixhaven colleges -- verified live the same way, corpus-wide: c:lorehold =
+    # c:rw = 682, c:prismari = c:ur = 668, c:quandrix = c:gu = 638, c:silverquill = c:wb = 614,
+    # c:witherbloom = c:bg = 606.
+    "lorehold": "rw",
+    "prismari": "ur",
+    "quandrix": "gu",
+    "silverquill": "wb",
+    "witherbloom": "bg",
     # the five Alara shards
     "bant": "gwu",
     "esper": "wub",

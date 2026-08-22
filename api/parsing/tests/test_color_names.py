@@ -11,6 +11,10 @@ with almost any mapping: `c:bant` = `c:gwu` = 153, `c:yore-tiller` = `c:wubr` = 
 The list is a boundary rather than a superset: `yore`, `glint`, `dune`, `ink` and `witch` on
 their own are rejected by Scryfall, so the un-hyphenated four-colour nicknames are not in its
 table, and neither are `five`, `mono`, `guild`, `shard` or `wedge`.
+
+The five Strixhaven colleges (Lorehold, Prismari, Quandrix, Silverquill, Witherbloom) were added
+later, verified the same way: `c:witherbloom` = `c:bg` = 606 corpus-wide, and so on for all five.
+`college`, `colleges`, and `strixhaven` are rejected by Scryfall, same boundary-not-superset rule.
 """
 
 import pytest
@@ -31,6 +35,12 @@ COLOR_NAME_CASES = [
     ("c:golgari", "c:bg"),
     ("c:boros", "c:rw"),
     ("c:simic", "c:gu"),
+    # the five Strixhaven colleges
+    ("c:lorehold", "c:rw"),
+    ("c:prismari", "c:ur"),
+    ("c:quandrix", "c:gu"),
+    ("c:silverquill", "c:wb"),
+    ("c:witherbloom", "c:bg"),
     ("c:bant", "c:gwu"),
     ("c:esper", "c:wub"),
     ("c:grixis", "c:ubr"),
@@ -106,6 +116,9 @@ def test_color_names_are_case_insensitive(query: str) -> None:
         "c:nephilim",
         "c:azorius-senate",
         "c:boros-legion",
+        "c:college",
+        "c:colleges",
+        "c:strixhaven",
     ],
 )
 def test_rejected_color_names_still_fail(invalid_query: str) -> None:
