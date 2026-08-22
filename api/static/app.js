@@ -1299,7 +1299,11 @@ class CardSearch {
     }
     if (this.statusMessage) {
       const cssClass = count === 0 ? 'no-results' : 'results-count';
-      this.statusMessage.innerHTML = `<div class="${cssClass}">${this.escapeHtml(msg)}</div>`;
+      // Escape first, then convert: escaping preserves protection for any raw query text
+      // embedded in msg, and convertManaSymbols only ever turns an exact, server-controlled
+      // {W}/{U}/etc. token vocabulary into markup -- never anything derived from unescaped
+      // user text -- so this composes safely with the escaping rather than replacing it.
+      this.statusMessage.innerHTML = `<div class="${cssClass}">${this.convertManaSymbols(this.escapeHtml(msg))}</div>`;
     }
   }
 

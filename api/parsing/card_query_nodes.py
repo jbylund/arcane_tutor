@@ -186,6 +186,10 @@ class CardAttributeNode(AttributeNode):
 
 _COLOR_BITS: dict[str, int] = {"W": 16, "U": 8, "B": 4, "R": 2, "G": 1}
 
+# Canonical WUBRG(C) ordering for rendering a set of color codes back to a human, e.g. so
+# "brgb" explains as "Black/Red/Green" rather than echoing input order.
+_CANONICAL_COLOR_ORDER = "wubrgc"
+
 
 def _color_dict_to_mask(color_dict: dict[str, bool]) -> int:
     return sum(bit for color, bit in _COLOR_BITS.items() if color_dict.get(color))
@@ -688,13 +692,32 @@ class CardBinaryOperatorNode(BinaryOperatorNode):
         if isinstance(context_node, CardAttributeNode):
             db_column_name = context_node.attribute_name.lower()
             if db_column_name in ("card_colors", "card_color_identity"):
+                # A color NAME ('temur', 'azorius', 'blue', 'colorless') spells a letter set
+                # via COLOR_ALIAS_TO_CODES. Single-letter spellings expand the same as bare
+                # letter codes below ('blue' -> 'Blue'); multi-letter names show the letters
+                # alongside the name as {G}{U}{R}-style bracket tokens so the reader isn't left
+                # to memorize which colors a guild/shard/wedge name means (#990). The frontend's
+                # showResults() runs the whole message through convertManaSymbols() after
+                # escaping, which turns exactly these tokens into real mana-font icons -- so
+                # this is the one spot in the string a server response is allowed to steer
+                # frontend HTML, and only ever with this fixed A-Z/digit token vocabulary.
+                alias_codes = COLOR_ALIAS_TO_CODES.get(value.lower())
+                if alias_codes is not None:
+                    if len(alias_codes) == 1:
+                        return COLOR_CODE_TO_NAME[alias_codes].capitalize()
+                    tokens = "".join(f"{{{c.upper()}}}" for c in alias_codes)
+                    return f"{value.capitalize()} ({tokens})"
                 # Try to expand single-letter color codes
                 if len(value) == 1 and value.lower() in COLOR_CODE_TO_NAME:
                     return COLOR_CODE_TO_NAME[value.lower()].capitalize()
-                # Try to expand multi-letter color codes (e.g., "ug" -> "Blue/Green")
+                # Try to expand multi-letter color codes (e.g., "ug" -> "Blue/Green"), deduped
+                # and in canonical WUBRG(C) order so a repeated/scrambled letter string like
+                # "brgb" reads as "Black/Red/Green" rather than echoing every input letter in
+                # input order ("Black/Red/Green/Black").
                 max_colors = 5
                 if len(value) <= max_colors and all(c.lower() in COLOR_CODE_TO_NAME for c in value):
-                    color_names = [COLOR_CODE_TO_NAME[c.lower()].capitalize() for c in value.lower()]
+                    present = {c.lower() for c in value}
+                    color_names = [COLOR_CODE_TO_NAME[c].capitalize() for c in _CANONICAL_COLOR_ORDER if c in present]
                     return "/".join(color_names)
 
             # If context is a format-related attribute, try to expand format codes

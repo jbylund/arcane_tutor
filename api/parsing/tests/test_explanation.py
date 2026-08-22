@@ -194,6 +194,29 @@ def test_explain_color_combinations(parse_query) -> None:
         assert expected_colors in explanation
 
 
+@pytest.mark.parametrize(
+    argnames=["query_str", "expected_explanation"],
+    argvalues=[
+        # Repeated/scrambled letters dedupe and land in canonical WUBRG order, not input order.
+        ("c=brgb", "the color is Black/Red/Green"),
+        ("id=brgb", "the color identity is Black/Red/Green"),
+        ("c=gwbur", "the color is White/Blue/Black/Red/Green"),
+        # Guild/shard/wedge names show the letters they spell alongside the name, as
+        # {G}{U}{R}-style bracket tokens the frontend renders into mana-font icons (#990).
+        ("c=temur", "the color is Temur ({G}{U}{R})"),
+        ("id=temur", "the color identity is Temur ({G}{U}{R})"),
+        ("c=azorius", "the color is Azorius ({W}{U})"),
+        # Single-color names expand the same as bare letter codes.
+        ("c=blue", "the color is Blue"),
+        ("c=colorless", "the color is Colorless"),
+    ],
+)
+def test_explain_color_dedup_and_names(parse_query, query_str: str, expected_explanation: str) -> None:
+    """Color explanations dedupe/canonicalize letters and expand alias names with their letters."""
+    parsed_query = parse_query(query_str)
+    assert parsed_query.to_human_explanation() == expected_explanation
+
+
 def test_explain_format_expansion(parse_query) -> None:
     """Test format code expansion."""
     test_cases = [

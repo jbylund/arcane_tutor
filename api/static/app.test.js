@@ -396,6 +396,55 @@ describe('CardSearch convertManaSymbolsToText', () => {
   });
 });
 
+describe('CardSearch showResults', () => {
+  // beforeEach() at the top of this file replaces showResults with a jest.fn() mock on
+  // `search` (an existence check only), so real behavior needs its own un-mocked instance.
+  const manaSpan = css => `<span class="mana-symbol ${css}"></span>`;
+  const temurIcons = manaSpan('ms ms-g ms-cost') + manaSpan('ms ms-u ms-cost') + manaSpan('ms ms-r ms-cost');
+
+  let realSearch;
+
+  beforeEach(() => {
+    buildDOM();
+    realSearch = new CardSearch();
+  });
+
+  it('renders {G}{U}{R}-style server tokens as mana-font icons', () => {
+    realSearch.showResults(1, 'c:temur', 'the color is Temur ({G}{U}{R})', 5);
+    expect(realSearch.statusMessage.innerHTML).toBe(
+      `<div class="results-count">1 card where the color is Temur (${temurIcons}) (completed in 5ms)</div>`
+    );
+  });
+
+  it('escapes HTML in the raw query when there is no explanation to fall back to', () => {
+    realSearch.showResults(0, '<script>alert(1)</script>', '', 2);
+    expect(realSearch.statusMessage.innerHTML).toBe(
+      '<div class="no-results">No cards found matching "&lt;script&gt;alert(1)&lt;/script&gt;" (completed in 2ms)</div>'
+    );
+  });
+
+  it('pluralizes the item type based on count', () => {
+    realSearch.showResults(0, 'c:temur', 'the color is Temur ({G}{U}{R})', 3);
+    expect(realSearch.statusMessage.innerHTML).toBe(
+      `<div class="no-results">No cards found where the color is Temur (${temurIcons}) (completed in 3ms)</div>`
+    );
+  });
+
+  it('shows a random-selection message when there is no query', () => {
+    realSearch.showResults(12, null, null, null);
+    expect(realSearch.statusMessage.innerHTML).toBe(
+      '<div class="results-count">Showing a random selection of 12 cards</div>'
+    );
+  });
+
+  it('omits the elapsed-time suffix when elapsed is not a number', () => {
+    realSearch.showResults(1, 'c:temur', 'the color is Temur ({G}{U}{R})', null);
+    expect(realSearch.statusMessage.innerHTML).toBe(
+      `<div class="results-count">1 card where the color is Temur (${temurIcons})</div>`
+    );
+  });
+});
+
 describe('CardSearch balanceQuery', () => {
   it.each(BALANCE_QUERIES)('matches parity fixture for $input', ({ input, suffix }) => {
     expect(search.balanceSuffix(input)).toBe(suffix);
