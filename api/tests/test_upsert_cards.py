@@ -134,6 +134,35 @@ class TestBooleanIsTags:
         api_resource.admin._upsert_cards([card])
         assert _is_tags_for(api_resource, card["id"]).get("spotlight") is True
 
+    def test_hybrid_mana_symbol_lands_as_is_tag(self, api_resource: APIResource) -> None:
+        """hybrid/phyrexian read mana_cost_text, not raw_card_blob.
+
+        A regex, not a rewrite, per docs/issues/done/00713-is-tag-recovery.md (an open,
+        growing symbol set makes an enumerated rewrite brittle).
+        """
+        card = make_raw_card(name="Hybrid Mana Import Test")
+        card["mana_cost"] = "{R/G}"
+        api_resource.admin._upsert_cards([card])
+        tags = _is_tags_for(api_resource, card["id"])
+        assert tags.get("hybrid") is True
+        assert "phyrexian" not in tags
+
+    def test_phyrexian_mana_symbol_lands_as_is_tag(self, api_resource: APIResource) -> None:
+        card = make_raw_card(name="Phyrexian Mana Import Test")
+        card["mana_cost"] = "{W/P}"
+        api_resource.admin._upsert_cards([card])
+        tags = _is_tags_for(api_resource, card["id"])
+        assert tags.get("phyrexian") is True
+        assert "hybrid" not in tags
+
+    def test_plain_mana_cost_does_not_set_hybrid_or_phyrexian(self, api_resource: APIResource) -> None:
+        card = make_raw_card(name="Plain Mana Import Test")
+        card["mana_cost"] = "{2}{W}{W}"
+        api_resource.admin._upsert_cards([card])
+        tags = _is_tags_for(api_resource, card["id"])
+        assert "hybrid" not in tags
+        assert "phyrexian" not in tags
+
     def test_promo_types_membership_lands_as_is_tag(self, api_resource: APIResource) -> None:
         card = make_raw_card(name="FNM Import Test")
         card["promo_types"] = ["fnm"]
