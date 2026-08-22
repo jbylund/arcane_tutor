@@ -188,7 +188,9 @@ async function main() {
   try {
     const resp = await fetch(`/search?q=${encodeURIComponent(`set:${setCode} cn:${collectorNumber}`)}&unique=printing`);
     const data = await resp.json();
-    card = data.cards?.[0];
+    // cn: matches on collector_number_int, which collapses numbers differing only by
+    // letters/symbols (e.g. "2018" vs "2018A") — pick the exact printing, not data.cards[0].
+    card = data.cards?.find(c => c.collector_number === collectorNumber) ?? data.cards?.[0];
   } catch (_) {
     document.getElementById('card-loading').textContent = 'Failed to load card.';
     return;
