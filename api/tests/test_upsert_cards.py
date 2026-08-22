@@ -127,6 +127,71 @@ class TestBooleanIsTags:
         assert tags.get("historic") is True
         assert tags.get("reserved") is True
 
+    def test_plain_boolean_lands_as_is_tag(self, api_resource: APIResource) -> None:
+        """story_spotlight -> spotlight, same top-level-boolean shape as reserved/gamechanger."""
+        card = make_raw_card(name="Spotlight Import Test")
+        card["story_spotlight"] = True
+        api_resource.admin._upsert_cards([card])
+        assert _is_tags_for(api_resource, card["id"]).get("spotlight") is True
+
+    def test_promo_types_membership_lands_as_is_tag(self, api_resource: APIResource) -> None:
+        card = make_raw_card(name="FNM Import Test")
+        card["promo_types"] = ["fnm"]
+        api_resource.admin._upsert_cards([card])
+        assert _is_tags_for(api_resource, card["id"]).get("fnm") is True
+
+    def test_promo_types_absent_does_not_set_unrelated_tags(self, api_resource: APIResource) -> None:
+        card = make_raw_card(name="Instore Import Test")
+        card["promo_types"] = ["instore"]
+        api_resource.admin._upsert_cards([card])
+        tags = _is_tags_for(api_resource, card["id"])
+        assert tags.get("instore") is True
+        assert "fnm" not in tags
+        assert "buyabox" not in tags
+
+    def test_partner_keyword_lands_as_is_tag(self, api_resource: APIResource) -> None:
+        card = make_raw_card(name="Partner Import Test")
+        card["keywords"] = ["Partner"]
+        api_resource.admin._upsert_cards([card])
+        assert _is_tags_for(api_resource, card["id"]).get("partner") is True
+
+    def test_partner_with_keyword_alone_does_not_set_partner(self, api_resource: APIResource) -> None:
+        """Verify the sync itself, not the corpus assumption it relies on.
+
+        Real bulk data always pairs "Partner with" alongside a plain "Partner" keyword
+        (verified against the corpus); a card carrying only "Partner with" is not tagged,
+        so `is:partner` stays exact rather than papering over a blob that turns out not to
+        follow the usual pairing.
+        """
+        card = make_raw_card(name="Partner With Alone Test")
+        card["keywords"] = ["Partner with"]
+        api_resource.admin._upsert_cards([card])
+        assert "partner" not in _is_tags_for(api_resource, card["id"])
+
+    def test_etched_finish_lands_as_is_tag(self, api_resource: APIResource) -> None:
+        card = make_raw_card(name="Etched Import Test")
+        card["finishes"] = ["nonfoil", "etched"]
+        api_resource.admin._upsert_cards([card])
+        assert _is_tags_for(api_resource, card["id"]).get("etched") is True
+
+    def test_masterpiece_set_type_lands_as_is_tag(self, api_resource: APIResource) -> None:
+        card = make_raw_card(name="Masterpiece Import Test")
+        card["set_type"] = "masterpiece"
+        api_resource.admin._upsert_cards([card])
+        assert _is_tags_for(api_resource, card["id"]).get("masterpiece") is True
+
+    def test_scryfallpreview_source_lands_as_is_tag(self, api_resource: APIResource) -> None:
+        card = make_raw_card(name="Scryfall Preview Import Test")
+        card["preview"] = {"source": "Scryfall"}
+        api_resource.admin._upsert_cards([card])
+        assert _is_tags_for(api_resource, card["id"]).get("scryfallpreview") is True
+
+    def test_other_preview_source_does_not_set_scryfallpreview(self, api_resource: APIResource) -> None:
+        card = make_raw_card(name="Other Preview Source Test")
+        card["preview"] = {"source": "The Command Zone"}
+        api_resource.admin._upsert_cards([card])
+        assert "scryfallpreview" not in _is_tags_for(api_resource, card["id"])
+
 
 # ---------------------------------------------------------------------------
 # _CardStream counting tests

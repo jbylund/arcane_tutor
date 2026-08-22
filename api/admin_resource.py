@@ -90,34 +90,79 @@ IMPORT_LOCK_TIMEOUT = 2
 # total, and it halves the logged parameter too (see log_parameter_max_length in the pg config).
 _UPSERT_PAGE_SIZE = 3_000
 
-# is: values Scryfall ships as BOOLEANS on every bulk card object, synced
-# in one set-based statement from raw_card_blob after each import (see
-# _sync_boolean_is_tags) -- no per-tag API sweep, unlike CUSTOM_IS_TAGS
-# below, and no accumulation in the import loop. card_is_tags key -> raw
-# blob key; adding a field here is the whole change. foil/promo/reprint are
-# deliberately NOT here yet (higher cardinality, memory check first).
+# is: values derivable from a single boolean SQL expression against a card's own
+# raw_card_blob, synced in one set-based statement after each import (see
+# _sync_boolean_is_tags) -- no per-tag API sweep, unlike CUSTOM_IS_TAGS below, and no
+# accumulation in the import loop. Each expression must reference the row alias `cards`
+# (it runs inside a correlated subquery, not a plain WHERE) -- adding a tag here is the
+# whole change. Density-gated at ~2% of the corpus (see docs/issues/00985): reserved
+# (1.1%) and gamechanger (0.4%) were the original two; the rest were added after a
+# corpus-wide survey of every is: tag on Scryfall's syntax page found these sitting at
+# or under masterpiece's 1.8%. foil/nonfoil/reprint/booster/hires (50-97%) are
+# deliberately NOT here -- "higher cardinality, memory check first" -- and stay a
+# candidate for a separate, more careful pass.
 BOOLEAN_IS_TAGS: dict[str, str] = {
-    "reserved": "reserved",
-    "gamechanger": "game_changer",
+    # Plain top-level booleans, same shape as the original two.
+    "reserved": "cards.raw_card_blob->'reserved' = 'true'::jsonb",
+    "gamechanger": "cards.raw_card_blob->'game_changer' = 'true'::jsonb",
+    "spotlight": "cards.raw_card_blob->'story_spotlight' = 'true'::jsonb",
+    # Nested/array fields: promo_types membership (bulk's own vocabulary, no renaming),
+    # keywords/finishes array membership, and two single-field lookups (set_type,
+    # preview.source).
+    "league": "cards.raw_card_blob->'promo_types' @> '\"league\"'",
+    "glossy": "cards.raw_card_blob->'promo_types' @> '\"glossy\"'",
+    "giftbox": "cards.raw_card_blob->'promo_types' @> '\"giftbox\"'",
+    "intro_pack": "cards.raw_card_blob->'promo_types' @> '\"intropack\"'",
+    "convention": "cards.raw_card_blob->'promo_types' @> '\"convention\"'",
+    "player_rewards": "cards.raw_card_blob->'promo_types' @> '\"playerrewards\"'",
+    "release": "cards.raw_card_blob->'promo_types' @> '\"release\"'",
+    "arena_league": "cards.raw_card_blob->'promo_types' @> '\"arenaleague\"'",
+    "gameday": "cards.raw_card_blob->'promo_types' @> '\"gameday\"'",
+    "buyabox": "cards.raw_card_blob->'promo_types' @> '\"buyabox\"'",
+    "judge_gift": "cards.raw_card_blob->'promo_types' @> '\"judgegift\"'",
+    "instore": "cards.raw_card_blob->'promo_types' @> '\"instore\"'",
+    "planeswalker_deck": "cards.raw_card_blob->'promo_types' @> '\"planeswalkerdeck\"'",
+    "fnm": "cards.raw_card_blob->'promo_types' @> '\"fnm\"'",
+    "media_insert": "cards.raw_card_blob->'promo_types' @> '\"mediainsert\"'",
+    "set_promo": "cards.raw_card_blob->'promo_types' @> '\"setpromo\"'",
+    # "Partner with <name>" cards carry a plain "Partner" keyword alongside it (verified
+    # against the corpus), so checking for "Partner" alone already covers both.
+    "partner": "cards.raw_card_blob->'keywords' @> '\"Partner\"'",
+    "etched": "cards.raw_card_blob->'finishes' @> '\"etched\"'",
+    "masterpiece": "cards.raw_card_blob->>'set_type' = 'masterpiece'",
+    "scryfallpreview": "cards.raw_card_blob->'preview'->>'source' = 'Scryfall'",
 }
 
-_SYNC_BOOLEAN_IS_TAGS_SQL = """
-WITH tag_map(tag, blob_key) AS (
-    SELECT key, value FROM jsonb_each_text(%(tag_map)s::jsonb)
-),
-proposed AS (
+
+def _build_boolean_is_tags_sql(tags: dict[str, str]) -> str:
+    """Build the one-shot BOOLEAN_IS_TAGS sync statement from `tags`.
+
+    Each `(tag, expr)` pair becomes one row of a VALUES list correlated against the outer
+    `cards` row (`expr` reads `cards.raw_card_blob`), so `expr` may be any boolean SQL
+    expression -- not just "this top-level key is literally true" -- letting one mechanism
+    cover both plain booleans and promo_types/keywords/finishes array membership or
+    nested-object lookups. `tags` is a static, developer-authored module constant, never
+    user input, so embedding its keys and expressions as literal SQL text here (rather than
+    binding them as query parameters, which can't carry per-tag SQL syntax anyway) is safe.
+    """
+    managed = ", ".join(f"'{tag}'" for tag in tags)
+    values = ",\n                        ".join(f"('{tag}', ({expr}))" for tag, expr in tags.items())
+    return f"""
+WITH proposed AS (
     SELECT
         cards.scryfall_id,
-        (cards.card_is_tags - (SELECT array_agg(tag_map.tag) FROM tag_map))
+        (cards.card_is_tags - ARRAY[{managed}]::text[])
             || COALESCE(
                    (
-                       SELECT jsonb_object_agg(tag_map.tag, true)
-                       FROM tag_map
-                       WHERE cards.raw_card_blob -> tag_map.blob_key = 'true'::jsonb
+                       SELECT jsonb_object_agg(t.tag, true)
+                       FROM (VALUES
+                        {values}
+                       ) AS t(tag, is_true)
+                       WHERE t.is_true
                    ),
-                   '{}'::jsonb
+                   '{{}}'::jsonb
                ) AS proposed_is_tags
-    FROM magic.cards
+    FROM magic.cards cards
 )
 UPDATE magic.cards
 SET card_is_tags = proposed.proposed_is_tags
@@ -126,6 +171,9 @@ WHERE
     cards.scryfall_id = proposed.scryfall_id AND
     cards.card_is_tags IS DISTINCT FROM proposed.proposed_is_tags
 """
+
+
+_SYNC_BOOLEAN_IS_TAGS_SQL = _build_boolean_is_tags_sql(BOOLEAN_IS_TAGS)
 
 CUSTOM_IS_TAGS = [
     "historic",  # artifact, legendary, saga
@@ -730,9 +778,9 @@ class AdminResource:
         """Sync the boolean-backed is: tags (BOOLEAN_IS_TAGS) from raw_card_blob, one-shot.
 
         Rebuilds each card's managed keys as (existing minus managed) plus the keys whose
-        blob boolean is true, touching only rows whose result actually differs -- so list
-        churn (a card entering or leaving the game-changer roster) converges on every
-        import, and unrelated card_is_tags entries are never disturbed.
+        blob-derived expression is true, touching only rows whose result actually differs
+        -- so list churn (a card entering or leaving the game-changer roster) converges on
+        every import, and unrelated card_is_tags entries are never disturbed.
 
         Args:
         ----
@@ -744,7 +792,7 @@ class AdminResource:
 
         """
         with conn.cursor() as cursor:
-            cursor.execute(_SYNC_BOOLEAN_IS_TAGS_SQL, {"tag_map": orjson.dumps(BOOLEAN_IS_TAGS).decode("utf-8")})
+            cursor.execute(_SYNC_BOOLEAN_IS_TAGS_SQL)
             updated_count = cursor.rowcount
         conn.commit()
         if updated_count:
