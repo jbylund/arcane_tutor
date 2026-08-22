@@ -736,27 +736,25 @@ class Parser:
             self.consume()
             return StringValueNode(str(tok.value))
         if tok.type == TT.WORD:
+            self.consume()
             val = str(tok.value)
             # The four-colour names are HYPHENATED (`yore-tiller`, `witch-maw`), and `-` is not a
-            # word-continuation character, so the lexer hands this WORD MINUS WORD. Glue the three
-            # back together — but only when the result is a name, so an ordinary `c:w-1` still
-            # ends the value at the `w` and lets arithmetic have the rest. Same adjacency rule
-            # parse_date_value uses for YYYY-MM-DD: no space on either side of the hyphen.
-            if (
-                self.peek(1).type == TT.MINUS
+            # word-continuation character, so the lexer hands this WORD MINUS WORD. Same greedy
+            # hyphen-continuation rule parse_text_value uses (no space on either side) -- glue
+            # first, validate once at the end, rather than checking membership before consuming.
+            # WORD-only (not NUMBER, unlike parse_text_value's continuation): a color value is
+            # never numeric, so `c:w-1` still stops at `w` and leaves `-1` for whatever comes next.
+            while (
+                self.peek().type == TT.MINUS
+                and not self.peek().space_before
+                and self.peek(1).type == TT.WORD
                 and not self.peek(1).space_before
-                and self.peek(2).type == TT.WORD
-                and not self.peek(2).space_before
-                and f"{val}-{self.peek(2).value}".lower() in _VALID_COLOR_NAMES
             ):
                 self.consume()
-                self.consume()
-                tail = self.consume()
-                return StringValueNode(f"{val}-{tail.value}")
+                val += "-" + str(self.consume().value)
             if val.lower() not in _VALID_COLOR_NAMES and not all(c in _COLOR_LETTERS for c in val):
                 msg = f"Invalid color value {val!r} at position {tok.pos}"
                 raise ParseError(msg)
-            self.consume()
             return StringValueNode(val)
         msg = f"Expected color value, got {tok.value!r} at position {tok.pos}"
         raise ParseError(msg)
