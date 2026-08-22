@@ -182,7 +182,6 @@ _SYNC_BOOLEAN_IS_TAGS_SQL = _build_boolean_is_tags_sql(BOOLEAN_IS_TAGS)
 
 CUSTOM_IS_TAGS = [
     "historic",  # artifact, legendary, saga
-    "pathway",  # land and name contains pathway
     "permanent",  # ...
     "reprint",
     "spell",  # ...

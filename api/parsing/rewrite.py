@@ -85,6 +85,7 @@ _DERIVED_EXPANSIONS: dict[tuple[str, str], str] = {
     # enters-tapped-gain-life cycles Scryfall's list lacks -- with counts
     # last validated against api.scryfall.com on 2026-08-07.
     ("is", "battleland"): "otag:cycle-tangoland",  # 10
+    ("is", "bikeland"): "otag:cycle-dual-cycling-land",  # 10, exact
     ("is", "bondland"): "otag:cycle-bondland",  # 10
     ("is", "bounceland"): "otag:bounceland",  # 17, exact
     ("is", "canopyland"): "otag:cycle-horizon-land",  # 6, exact
@@ -97,6 +98,7 @@ _DERIVED_EXPANSIONS: dict[tuple[str, str], str] = {
     ("is", "gainland"): "otag:gainland",  # 42, self-updating superset of Scryfall's 15
     ("is", "manland"): "t:land o:become o:creature o:/still a.* land/",
     ("is", "painland"): "otag:cycle-painland",  # 10, exact
+    ("is", "pathway"): "otag:cycle-pathway",  # 10, exact
     ("is", "scryland"): "otag:cycle-block-ths-scry-land",  # 10, exact
     # shadowland/snarl: the reveal-or-tapped lands that reveal a BASIC LAND
     # TYPE card -- the basic-type regex is what separates them from the
@@ -111,7 +113,11 @@ _DERIVED_EXPANSIONS: dict[tuple[str, str], str] = {
         "is",
         "storageland",
     ): "otag:cycle-fem-storage-land or otag:cycle-mmq-storage-land or otag:cycle-tsp-storage-land",  # 15 vs 12
+    ("is", "surveilland"): "otag:cycle-dual-surveil-land",  # 10, exact
     ("is", "tangoland"): "otag:cycle-tangoland",  # 10; Scryfall accepts both names
+    # Same 10 cards as is:triome below (verified by name) -- another case of Scryfall
+    # accepting two names for one cycle, like tangoland/battleland above.
+    ("is", "tricycleland"): "otag:tricycle-land",  # 10, exact
     ("is", "triland"): "otag:cycle-ala-shardland or otag:cycle-ktk-wedgeland",  # 10, name-verified
     ("is", "triome"): "otag:cycle-iko-triome or otag:cycle-snc-triland",  # 10, name-verified
     # ── Non-land derivables ──────────────────────────────────────────────
