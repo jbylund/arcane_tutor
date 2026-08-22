@@ -11,30 +11,10 @@ import re
 
 QUOTE_CHARS = frozenset("'\"")
 
-# The four typographic quotes Scryfall folds before lexing, and the only four.
-#
-# Every word processor and phone keyboard turns a typed apostrophe into U+2019 and typed double
-# quotes into U+201C/U+201D, so a pasted query carries them constantly -- and this parser read them
-# as ordinary letters, which made a query for Gaea<U+2019>s Blessing a search for a card whose name
-# contains a curly apostrophe: no rows, no error, no clue.
-#
-# Measured against api.scryfall.com (2026-08-16) by putting each candidate around a phrase and
-# asking whether the phrase searched as ONE term (`o:Xdraw a cardX` -> 2,544 rows means X delimits
-# a string). U+2018/U+2019 fold to the ASCII apostrophe and U+201C/U+201D to the ASCII double
-# quote; every other quotation-shaped character stays literal and matches nothing -- the guillemets
-# (U+00AB/BB, U+2039/203A), the low-9 pair (U+201E, U+201A), the primes (U+2032, U+2033, U+2035),
-# the fullwidth quotes (U+FF02, U+FF07), the CJK brackets (U+300C..U+300F), the ornate pairs
-# (U+275B..U+275E), backtick, acute, U+02BC.
-#
-# It is a CHARACTER substitution over the whole query, not a rule about quoted regions: a curly
-# apostrophe INSIDE double quotes folds too, which is the only reason `name:"Gaea<U+2019>s
-# Blessing"` finds the card; and `name:<U+2018>Gaea"s Blessing<U+2019>` finds nothing, exactly as
-# `name:'Gaea"s Blessing'` does. Both directions had to be measured, because folding all four to
-# `"` fits the first observation and fails the second.
-#
-# Lives here rather than in hand_parser, alongside QUOTE_CHARS: the balancer (parsing_f) and both
-# parsers all need it applied before they read a single character as a delimiter, and this is
-# already the leaf module below all three (see the module docstring).
+# Curly quotes (U+2018/U+2019 single, U+201C/U+201D double) are read as ordinary letters otherwise,
+# so a pasted `name:'Gaea's Blessing'` (curly apostrophe) silently matches nothing. Only these four
+# fold -- everything else quotation-shaped stays literal, matched against what api.scryfall.com
+# itself treats as a quote (measured 2026-08-16).
 _TYPOGRAPHIC_QUOTES = str.maketrans({chr(0x2018): "'", chr(0x2019): "'", chr(0x201C): '"', chr(0x201D): '"'})
 
 
