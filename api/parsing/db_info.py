@@ -331,17 +331,6 @@ CARD_TYPES = {
     "Tribal",
 }
 
-COLOR_CODE_TO_NAME = {
-    "b": "black",
-    "c": "colorless",
-    "g": "green",
-    "r": "red",
-    "u": "blue",
-    "w": "white",
-}
-
-COLOR_NAME_TO_CODE = {v: k for k, v in COLOR_CODE_TO_NAME.items()}
-
 FORMAT_CODE_TO_NAME = {
     "m": "modern",
     "s": "standard",

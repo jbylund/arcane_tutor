@@ -7,12 +7,11 @@ import unicodedata
 
 from titlecase import titlecase
 
+from api.parsing.colors import COLOR_ALIAS_TO_CODES, COLOR_CODE_TO_NAME
 from api.parsing.db_info import (
     ALIAS_TO_FIELD_INFOS,
     CARD_SUPERTYPES,
     CARD_TYPES,
-    COLOR_CODE_TO_NAME,
-    COLOR_NAME_TO_CODE,
     FORMAT_CODE_TO_NAME,
     FieldType,
     ParserClass,
@@ -204,7 +203,9 @@ def get_colors_comparison_object(val: str, attr: str = "card_colors") -> dict[st
     """Convert color string to comparison object for database queries.
 
     Args:
-        val: Color string (either color codes like 'WUBRG' or color name like 'red').
+        val: Color string (either color codes like 'WUBRG' or a color name like 'red' or
+            'azorius' — every name in COLOR_ALIAS_TO_CODES, which is the vocabulary Scryfall
+            itself accepts).
         attr: The DB column this value is being compared against. Colorless means two
             different things depending on the field: for card_colors/card_color_identity
             it's the *absence* of any color (Scryfall stores both as `[]`, verified
@@ -220,23 +221,20 @@ def get_colors_comparison_object(val: str, attr: str = "card_colors") -> dict[st
         ValueError: If the color string is invalid.
     """
     colorless_is_value = attr == "produced_mana"
-    # If all chars are color codes
+    # A color NAME spells a set of letters ('azorius' -> 'wu', 'brown' -> 'c', 'colorless' -> 'c');
+    # a letter string already is one. Expanding the name FIRST leaves a single code path, so
+    # `c:azorius` and `c:wu` serialize to the identical rhs and cannot drift apart, and the
+    # colorless-is-a-value distinction below is stated once instead of once per spelling.
+    codes = COLOR_ALIAS_TO_CODES.get(val, val)
     color_code_set = set(COLOR_CODE_TO_NAME)
-    if val and set(val) <= color_code_set:
+    if codes and set(codes) <= color_code_set:
         if colorless_is_value:
-            return {c.upper(): True for c in val}
+            return {c.upper(): True for c in codes}
         # Colorless-only queries use an empty dict, matching how colorless cards
         # are stored (card_color_identity = {}) rather than {"C": True}.
-        return {c.upper(): True for c in val if c != "c"}
-    # If it's a color name (e.g. 'red', 'blue', etc.)
-    try:
-        letter_code = COLOR_NAME_TO_CODE[val]
-        if letter_code == "c":
-            return {"C": True} if colorless_is_value else {}
-        return {letter_code.upper(): True}
-    except KeyError as e:
-        msg = f"Invalid color string: {val}"
-        raise ValueError(msg) from e
+        return {c.upper(): True for c in codes if c != "c"}
+    msg = f"Invalid color string: {val}"
+    raise ValueError(msg)
 
 
 def get_frame_data_comparison_object(val: str) -> dict[str, bool]:
