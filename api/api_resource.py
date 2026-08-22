@@ -773,8 +773,9 @@ class APIResource:
         except _QueryError:
             logger.info("QueryError caught for query '%s', declining to SQL", query)
             raise
-        with timer("engine_collect"):
-            cards = list(cards)
+        # `cards` is already a plain, freshly-built, unshared list -- card_engine's query()
+        # eagerly materializes a PyList before returning, it's never a lazy iterator -- so
+        # there's nothing left to collect here.
         timings = timer.get_timings()
         return {
             "cards": cards,

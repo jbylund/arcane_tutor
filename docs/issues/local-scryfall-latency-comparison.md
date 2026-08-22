@@ -65,7 +65,7 @@ getting right for correctness of labelling, not because it moves the number.
 
 ### Server compute can be differenced out
 
-We publish `Server-Timing` (`handler`, `parse`, `engine_query`, `engine_collect`, `total`); Scryfall
+We publish `Server-Timing` (`handler`, `parse`, `engine_query`, `total`); Scryfall
 does not. Compute is recoverable for both by differencing a known-cached against a known-uncached
 request on one warm connection — network cancels, the remainder is server work.
 
