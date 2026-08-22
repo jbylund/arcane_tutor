@@ -139,6 +139,27 @@ class TestFetchCubecobraData:
 
 
 # ---------------------------------------------------------------------------
+# ingest_cubecobra
+# ---------------------------------------------------------------------------
+
+
+class TestIngestCubecobra:
+    def _mock_response(self, cards: list[dict]) -> MagicMock:
+        resp = MagicMock()
+        resp.json.return_value = {"data": cards}
+        return resp
+
+    def test_empty_first_page_does_not_raise(self, api_resource: APIResource) -> None:
+        """Regression test for #965: an empty first page must not leave cards_updated unbound."""
+        with patch.object(api_resource.admin, "_session") as mock_session, patch("api.api_resource.time.sleep"):
+            mock_session.get.side_effect = [self._mock_response([])]
+            result = api_resource.admin.ingest_cubecobra()
+
+        assert result["status"] == "success"
+        assert result["cards_updated"] == 0
+
+
+# ---------------------------------------------------------------------------
 # backfill_prefer_scores
 # ---------------------------------------------------------------------------
 

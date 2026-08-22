@@ -615,6 +615,7 @@ class AdminResource:
             )
             db_oracle_ids = {r["oracle_id"] for r in cursor.fetchall()}
 
+        cards_updated = 0
         for cubecobra_page in self._fetch_cubecobra_data(db_oracle_ids):
             logger.info("Fetched %d oracle_ids from CubeCobra", len(cubecobra_page))
             cards_updated = self._insert_cubecobra_data(cubecobra_page)
