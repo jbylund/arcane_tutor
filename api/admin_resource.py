@@ -617,8 +617,10 @@ class AdminResource:
 
         cards_updated = 0
         for cubecobra_page in self._fetch_cubecobra_data(db_oracle_ids):
-            logger.info("Fetched %d oracle_ids from CubeCobra", len(cubecobra_page))
-            cards_updated = self._insert_cubecobra_data(cubecobra_page)
+            num_fetched = len(cubecobra_page)
+            updated_on_page = self._insert_cubecobra_data(cubecobra_page)
+            logger.info("Fetched %d oracle_ids from CubeCobra, updated %d cards", num_fetched, updated_on_page)
+            cards_updated += updated_on_page
         logger.info("CubeCobra ingest complete: %d card rows updated", cards_updated)
 
         backfill_result = self.backfill_cubecobra_scores()
