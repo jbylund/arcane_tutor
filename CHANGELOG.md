@@ -1,9 +1,10 @@
 # Changelog
 
 All notable changes to this project are documented here. Versions follow
-[CalVer](https://calver.org/) (`YYYY.MM.DD.PATCH`) rather than semantic versioning.
+[CalVer](https://calver.org/) (`YYYY.MM.DD.PATCH`) rather than semantic versioning. Each release also
+gets a hand-picked Magic card name, purely for fun — no meaning beyond vibes.
 
-## [2026.08.21.0]
+## [2026.08.21.0] — "Ancestral Recall"
 
 Initial release.
 
