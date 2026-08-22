@@ -37,15 +37,14 @@ if TYPE_CHECKING:
 #
 # `frame:modern/old/new` are undocumented-but-live Scryfall aliases (the syntax docs list
 # only the numeric frames + frame-effects); mirrored because they see real use. `is:old`
-# and `is:new` ARE documented. Note `is:new` is the 2015 frame *only* -- deliberately
-# narrower than `frame:new` (every post-"classic" frame) -- and both are mirrored as-is
-# rather than reconciled, since diverging from Scryfall would be the real bug.
+# and `is:new` ARE documented, and match their `frame:` counterparts exactly (live count
+# 2026-08-22: `is:new` = `frame:new` = 90058, vs `frame:2015` alone at 72564 -- issue #974).
 _DERIVED_EXPANSIONS: dict[tuple[str, str], str] = {
     ("frame", "modern"): "frame:2003",
     ("frame", "old"): "frame:1993 or frame:1997",
     ("frame", "new"): "frame:2003 or frame:2015 or frame:future",
     ("is", "old"): "frame:1993 or frame:1997",
-    ("is", "new"): "frame:2015",
+    ("is", "new"): "frame:2003 or frame:2015 or frame:future",
     # Type / subtype based. `kw:changeling` (an ability keyword, subtype is Shapeshifter) picks up
     # the all-creature-type cards Scryfall counts. Note party IS creature-restricted while outlaw is
     # NOT (it also matches Kindred non-creature cards carrying an outlaw subtype).

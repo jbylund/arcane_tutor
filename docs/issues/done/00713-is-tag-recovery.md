@@ -76,7 +76,7 @@ Confidence: ✓ = definition doc-confirmed / measured; ~ = approximate, **valida
 |---|---|---|
 | `frame:modern` | `frame:2003` | ✓ |
 | `is:old` / `frame:old` | `(frame:1993 or frame:1997)` | ✓ |
-| `is:new` | `frame:2015` | ✓ |
+| `is:new` | `frame:2003 or frame:2015 or frame:future` — matches `frame:new` exactly (live count 90058 == 90058); the original `frame:2015`-only mapping undercounted by ~9,201 cards, fixed in #974 | ✓ |
 | `frame:new` | `frame:2003 or frame:2015 or frame:future` (undocumented alias; positive union — matches the validated Scryfall count and is safe against any frameless printing, unlike a `-(old)` complement) | ✓ |
 | `is:historic` | `t:legendary or t:artifact or t:saga` | ✓ **exact** (7881=7881) |
 | `is:permanent` | `t:creature or t:artifact or t:enchantment or t:land or t:planeswalker or t:battle` | ✓ near-exact (+2 / 25954) |

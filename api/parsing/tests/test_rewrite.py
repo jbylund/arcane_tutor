@@ -18,7 +18,7 @@ EQUIVALENCES = [
     ("frame:old", "frame:1993 or frame:1997"),
     ("frame:new", "frame:2003 or frame:2015 or frame:future"),
     ("is:old", "frame:1993 or frame:1997"),
-    ("is:new", "frame:2015"),
+    ("is:new", "frame:2003 or frame:2015 or frame:future"),
     # type / subtype based
     ("is:historic", "t:legendary or t:artifact or t:saga"),
     ("is:permanent", "t:creature or t:artifact or t:enchantment or t:land or t:planeswalker or t:battle"),
