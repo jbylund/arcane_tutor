@@ -1,10 +1,10 @@
 """The four typographic quotes Scryfall folds before lexing, and the only four.
 
 Curly quotes (U+2018/U+2019 single, U+201C/U+201D double) show up in pasted text and were read as
-ordinary letters, silently turning a search for Gaea's Blessing (curly apostrophe) into zero
-results. Fold table matched against what api.scryfall.com itself treats as a quote (2026-08-16);
-everything else quotation-shaped -- guillemets, low-9 quotes, primes, fullwidth forms, CJK
-brackets, ornate quotes, backtick, acute, U+02BC -- stays literal.
+ordinary letters, silently turning a search for Gaea<U+2019>s Blessing into zero results. Fold
+table matched against what api.scryfall.com itself treats as a quote (2026-08-16); everything else
+quotation-shaped -- guillemets, low-9 quotes, primes, fullwidth forms, CJK brackets, ornate quotes,
+backtick, acute, U+02BC -- stays literal.
 """
 
 import pytest

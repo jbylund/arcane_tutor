@@ -12,9 +12,9 @@ import re
 QUOTE_CHARS = frozenset("'\"")
 
 # Curly quotes (U+2018/U+2019 single, U+201C/U+201D double) are read as ordinary letters otherwise,
-# so a pasted `name:'Gaea's Blessing'` (curly apostrophe) silently matches nothing. Only these four
-# fold -- everything else quotation-shaped stays literal, matched against what api.scryfall.com
-# itself treats as a quote (measured 2026-08-16).
+# so a pasted `name:'Gaea<U+2019>s Blessing'` silently matches nothing. Only these four fold --
+# everything else quotation-shaped stays literal, matched against what api.scryfall.com itself
+# treats as a quote (measured 2026-08-16).
 _TYPOGRAPHIC_QUOTES = str.maketrans({chr(0x2018): "'", chr(0x2019): "'", chr(0x201C): '"', chr(0x201D): '"'})
 
 
