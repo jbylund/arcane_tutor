@@ -102,35 +102,34 @@ _UPSERT_PAGE_SIZE = 3_000
 # deliberately NOT here -- "higher cardinality, memory check first" -- and stay a
 # candidate for a separate, more careful pass.
 BOOLEAN_IS_TAGS: dict[str, str] = {
-    # Plain top-level booleans, same shape as the original two.
-    "reserved": "cards.raw_card_blob->'reserved' = 'true'::jsonb",
-    "gamechanger": "cards.raw_card_blob->'game_changer' = 'true'::jsonb",
-    "spotlight": "cards.raw_card_blob->'story_spotlight' = 'true'::jsonb",
-    # Nested/array fields: promo_types membership (bulk's own vocabulary, no renaming),
-    # keywords/finishes array membership, and two single-field lookups (set_type,
-    # preview.source).
-    "league": "cards.raw_card_blob->'promo_types' @> '\"league\"'",
-    "glossy": "cards.raw_card_blob->'promo_types' @> '\"glossy\"'",
-    "giftbox": "cards.raw_card_blob->'promo_types' @> '\"giftbox\"'",
-    "intro_pack": "cards.raw_card_blob->'promo_types' @> '\"intropack\"'",
-    "convention": "cards.raw_card_blob->'promo_types' @> '\"convention\"'",
-    "player_rewards": "cards.raw_card_blob->'promo_types' @> '\"playerrewards\"'",
-    "release": "cards.raw_card_blob->'promo_types' @> '\"release\"'",
+    # Alphabetized by key. Expressions read either a plain top-level boolean (reserved,
+    # gamechanger, spotlight), promo_types/keywords/finishes array membership, or a
+    # single-field lookup (set_type, preview.source).
     "arena_league": "cards.raw_card_blob->'promo_types' @> '\"arenaleague\"'",
-    "gameday": "cards.raw_card_blob->'promo_types' @> '\"gameday\"'",
     "buyabox": "cards.raw_card_blob->'promo_types' @> '\"buyabox\"'",
-    "judge_gift": "cards.raw_card_blob->'promo_types' @> '\"judgegift\"'",
-    "instore": "cards.raw_card_blob->'promo_types' @> '\"instore\"'",
-    "planeswalker_deck": "cards.raw_card_blob->'promo_types' @> '\"planeswalkerdeck\"'",
+    "convention": "cards.raw_card_blob->'promo_types' @> '\"convention\"'",
+    "etched": "cards.raw_card_blob->'finishes' @> '\"etched\"'",
     "fnm": "cards.raw_card_blob->'promo_types' @> '\"fnm\"'",
+    "gamechanger": "cards.raw_card_blob->'game_changer' = 'true'::jsonb",
+    "gameday": "cards.raw_card_blob->'promo_types' @> '\"gameday\"'",
+    "giftbox": "cards.raw_card_blob->'promo_types' @> '\"giftbox\"'",
+    "glossy": "cards.raw_card_blob->'promo_types' @> '\"glossy\"'",
+    "instore": "cards.raw_card_blob->'promo_types' @> '\"instore\"'",
+    "intro_pack": "cards.raw_card_blob->'promo_types' @> '\"intropack\"'",
+    "judge_gift": "cards.raw_card_blob->'promo_types' @> '\"judgegift\"'",
+    "league": "cards.raw_card_blob->'promo_types' @> '\"league\"'",
+    "masterpiece": "cards.raw_card_blob->>'set_type' = 'masterpiece'",
     "media_insert": "cards.raw_card_blob->'promo_types' @> '\"mediainsert\"'",
-    "set_promo": "cards.raw_card_blob->'promo_types' @> '\"setpromo\"'",
     # "Partner with <name>" cards carry a plain "Partner" keyword alongside it (verified
     # against the corpus), so checking for "Partner" alone already covers both.
     "partner": "cards.raw_card_blob->'keywords' @> '\"Partner\"'",
-    "etched": "cards.raw_card_blob->'finishes' @> '\"etched\"'",
-    "masterpiece": "cards.raw_card_blob->>'set_type' = 'masterpiece'",
+    "planeswalker_deck": "cards.raw_card_blob->'promo_types' @> '\"planeswalkerdeck\"'",
+    "player_rewards": "cards.raw_card_blob->'promo_types' @> '\"playerrewards\"'",
+    "release": "cards.raw_card_blob->'promo_types' @> '\"release\"'",
+    "reserved": "cards.raw_card_blob->'reserved' = 'true'::jsonb",
     "scryfallpreview": "cards.raw_card_blob->'preview'->>'source' = 'Scryfall'",
+    "set_promo": "cards.raw_card_blob->'promo_types' @> '\"setpromo\"'",
+    "spotlight": "cards.raw_card_blob->'story_spotlight' = 'true'::jsonb",
 }
 
 
