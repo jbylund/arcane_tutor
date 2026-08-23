@@ -210,6 +210,11 @@ pub(crate) struct PlanFeatures {
     /// in ~`page_span/selectivity` steps), while the permutation-free gather visits every match — so
     /// the formula branches on this rather than assuming one. Ignored by every other plan.
     pub compose_paging: super::ComposePaging,
+    /// Interpolated walk length from `WalkCheckpoints`, when the acquire branch found one for this
+    /// value/sort-column -- `printings_walked` uses this directly instead of assuming matches spread
+    /// uniformly across the whole permutation. `None` everywhere except a bare card-space collection
+    /// leaf ordered by EDHREC, which is the only dimension `WalkCheckpoints` covers today.
+    pub walked_hint: Option<f64>,
 }
 
 // ─── P1: PrintingRangeScan ──────────────────────────────────────────────────
@@ -709,6 +714,11 @@ const COMPOSE_BUILD_PER_PRINTING_NS: f64 = 0.0835;
 /// entirely on this quantity and nothing else validates them.
 pub(crate) fn printings_walked(f: &PlanFeatures) -> f64 {
     let page_span = f64::from((f.offset.saturating_add(f.limit)).min(f.matches));
+    // `WalkCheckpoints`: an exact-anchored interpolation for a value whose cards' EDHREC positions are
+    // known, in place of assuming they spread uniformly across the whole permutation. See its doc.
+    if let Some(hint) = f.walked_hint {
+        return hint;
+    }
     let match_rate = (f64::from(f.matches) / f64::from(f.n_printings.max(1))).max(MATCH_RATE_FLOOR);
     page_span / match_rate * WALK_LENGTH_BIAS
 }
