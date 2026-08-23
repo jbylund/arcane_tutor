@@ -1885,6 +1885,48 @@ impl ArchivedHybridTagIndex {
         }
         self.sparse.get(value).map(|v| v.iter().map(|x| u32::from(*x)).collect())
     }
+
+    /// The value's rows as ascending ids, like `ids_of`, but without materializing a `Vec` — for a
+    /// caller that only folds over the ids once (sum a range per id, set a range of bits per id) and
+    /// would otherwise pay for an allocation whose contents get read back exactly once. Absent from
+    /// both tiers yields nothing, matching `ids_of`'s `None`.
+    fn iter_ids(&self, value: &str) -> HybridIdsIter<'_> {
+        if let Some(b) = self.dense.get(value) {
+            let words = &b.words[..];
+            return HybridIdsIter::Dense { words, word: 0, bits: words.first().map_or(0, |w| u64::from(*w)) };
+        }
+        if let Some(v) = self.sparse.get(value) {
+            return HybridIdsIter::Sparse(v.iter());
+        }
+        HybridIdsIter::Empty
+    }
+}
+
+/// Ascending row ids from a `HybridTagIndex` value, produced lazily. See `iter_ids`.
+enum HybridIdsIter<'a> {
+    Dense { words: &'a [Archived<u64>], word: usize, bits: u64 },
+    Sparse(std::slice::Iter<'a, Archived<u32>>),
+    Empty,
+}
+
+impl Iterator for HybridIdsIter<'_> {
+    type Item = u32;
+
+    fn next(&mut self) -> Option<u32> {
+        match self {
+            HybridIdsIter::Dense { words, word, bits } => {
+                while *bits == 0 {
+                    *word += 1;
+                    *bits = u64::from(*words.get(*word)?);
+                }
+                let id = (*word as u32) * 64 + bits.trailing_zeros();
+                *bits &= *bits - 1;
+                Some(id)
+            }
+            HybridIdsIter::Sparse(it) => it.next().map(|x| u32::from(*x)),
+            HybridIdsIter::Empty => None,
+        }
+    }
 }
 
 fn build_artist_index(printings: &[Printing], n_artists: usize) -> ArtistIndex {
@@ -6822,18 +6864,16 @@ fn collection_compose_index(indexes: &Archived<CardIndexes>, field: CollField) -
 /// collection-length condition, ~lib.rs:3441), and the compose path has no residual re-check, so
 /// `Eq`/`Gt` stay on the general path.
 fn collection_leaf_bits(src: &CollComposeSource, value: &str, offsets: &AOffsets, n_printings: usize) -> Vec<u64> {
-    let empty = || vec![0u64; words_per_plane(n_printings)];
     if src.card_space {
-        // Card ids have to be projected up whichever way they were stored, so this reads them as
-        // ids and broadcasts exactly as before.
-        return match src.idx.ids_of(value) {
-            None => empty(),
-            Some(ids) => broadcast_card_ids_to_printings(ids.into_iter(), offsets, n_printings),
-        };
+        // Card ids have to be projected up whichever way they were stored. `iter_ids` walks them
+        // (dense: bit by bit off the stored words; sparse: the stored ids directly) without
+        // collecting a `Vec` first -- broadcast is the only consumer, so nothing needs it built.
+        // Absent yields nothing, which broadcasts to all-zero, matching the old `None => empty()`.
+        return broadcast_card_ids_to_printings(src.idx.iter_ids(value), offsets, n_printings);
     }
     // Printing space lands in the target space already: a dense value IS a printing bitmap, so this
     // is a copy rather than a scatter, and the sparse tail scatters as it always did.
-    src.idx.bits(value, n_printings).unwrap_or_else(empty)
+    src.idx.bits(value, n_printings).unwrap_or_else(|| vec![0u64; words_per_plane(n_printings)])
 }
 
 /// The number of printings a containment collection leaf matches (its exact `unique=printing` total),
@@ -6843,15 +6883,17 @@ fn collection_leaf_bits(src: &CollComposeSource, value: &str, offsets: &AOffsets
 /// same order as the eventual scatter, cheap for the sparse subtype/keyword/oracle-tag posting lists.
 fn collection_leaf_printing_count(src: &CollComposeSource, value: &str, offsets: &AOffsets) -> usize {
     if src.card_space {
-        // One posting = one CARD here, so the printing total is the sum of their ranges.
-        return src.idx.ids_of(value).map_or(0, |ids| {
-            ids.into_iter()
-                .map(|c| {
-                    let c = c as usize;
-                    (u32::from(offsets[c + 1]) - u32::from(offsets[c])) as usize
-                })
-                .sum()
-        });
+        // One posting = one CARD here, so the printing total is the sum of their ranges. `iter_ids`
+        // folds directly over the ids (dense or sparse) with no intermediate `Vec` -- this consumes
+        // each id exactly once, so there was never a reason to collect them first.
+        return src
+            .idx
+            .iter_ids(value)
+            .map(|c| {
+                let c = c as usize;
+                (u32::from(offsets[c + 1]) - u32::from(offsets[c])) as usize
+            })
+            .sum();
     }
     // Printing space: one posting = one printing, so a popcount when the value is a bitmap and a
     // postings length otherwise — `len_of` is both.
