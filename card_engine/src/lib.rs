@@ -10053,6 +10053,10 @@ fn mk_plan_feats(
         // artwork mode only — so it rides `eval_domain` there and vanishes elsewhere. See
         // STREAM_ARTWORK_SEEN_PER_CARD_NS for the mechanism and the measurement.
         artwork_seen_cards: if matches!(params.mode, Mode::Artwork) { eval_domain } else { 0 },
+        // `exec_gathered_scan` pays its dedupe check unconditionally (no `all_match_known` shortcut
+        // like `run_query_streamed`'s stored-group-count fast path), so unlike `artwork_seen_cards`
+        // above this is never zeroed by `candidate_feats`'s all-match/card-invariant overrides.
+        artwork_seen_printings: if matches!(params.mode, Mode::Artwork) { scan_units } else { 0 },
         compose_scan_printings: 0, // set by every branch that costs a PrintingCompose (its own, or as a competitor)
         gather_group_printings: 0, // only the compose branch, and only when its grouping arm runs
     }

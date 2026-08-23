@@ -136,6 +136,14 @@ pub(crate) struct PlanFeatures {
     /// Cards `run_query_streamed` visits in ARTWORK mode, i.e. `eval_domain` there and `0` in card and
     /// printing mode. Charged at `STREAM_ARTWORK_SEEN_PER_CARD_NS`.
     pub artwork_seen_cards: u32,
+    /// Printings `exec_gathered_scan` visits in ARTWORK mode, i.e. `scan_units` there and `0` in card
+    /// and printing mode. `push_card_matches`'s `Mode::Artwork` branch does a `group_best`/`touched`
+    /// dedupe check on every printing in a candidate's span (`Mode::Printing` does not), so unlike
+    /// `artwork_seen_cards` this rides `scan_units` (a printing count) rather than `eval_domain` (a
+    /// card count) -- the two plans' artwork overhead differ in SHAPE, not just rate, because
+    /// `run_query_streamed` dedupes with a fixed per-card bitmask while this loop dedupes per
+    /// printing. Charged at `GATHER_ARTWORK_PER_PRINTING_NS`.
+    pub artwork_seen_printings: u32,
     /// Printings compose's **Gather** paging branch bit-tests, which is NOT `scan_units`.
     ///
     /// `scan_units` is every printing under a candidate card — right for GatheredScan and
@@ -453,6 +461,20 @@ const STREAM_EMIT_PER_MATCH_NS: f64 = 0.12;
 /// sign. One mechanism showing up twice, so it belongs in its own term rather than as a mode-specific
 /// copy of each rate. ~16 word-ops per card is the right order for 2.4 ns.
 const STREAM_ARTWORK_SEEN_PER_CARD_NS: f64 = 1.21;
+/// ns per printing scanned, for `GatheredScan`'s ARTWORK-mode dedupe check
+/// (`push_card_matches`'s `Mode::Artwork` branch: read `artwork_group_col[pid]`, check
+/// `group_best[gid].is_some()`, on every printing in the candidate's span). Unlike
+/// `STREAM_ARTWORK_SEEN_PER_CARD_NS` this could not be fit from an end-to-end query A/B: the two
+/// modes' `matches_pushed` differ sharply (printing pushes every printing, artwork only distinct
+/// groups), so `GATHER_PUSH_PER_MATCH_NS`'s much larger swing dominated the raw delta and even its
+/// sign, and a pooled regression over natural queries hit multicollinearity between
+/// cards_visited/printing_span/matches_pushed and came back negative.
+///
+/// Fit from a kernel test instead (`gather_artwork_kernel_costs`): `push_card_matches` called
+/// directly over the same 5,000-card real-corpus slice with `all_match: true` (no residual
+/// evaluation cost), `Mode::Printing` vs `Mode::Artwork`, min-of-150 rounds. Four runs (two repeats,
+/// one on a different 5,000-card slice): 0.489, 0.528, 0.508, 0.489 ns/printing.
+const GATHER_ARTWORK_PER_PRINTING_NS: f64 = 0.50;
 /// ns per card scanned in the small-total gather (`for cid in 0..n_cards`,
 /// counts[cid]==0 check). Cheaper than a match-phase visit (no filter work). Fit
 /// from the narrow-query floor: cmc>=15 / o:annihilator / cmc==7 card SHALLOW all
@@ -875,6 +897,7 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
                 + matches * GATHER_PUSH_PER_MATCH_NS
                 + page_span * GATHER_SELECT_PER_PAGE_SLOT_NS
                 + page_rows * GATHER_COLLECT_PER_PAGE_ROW_NS
+                + f64::from(f.artwork_seen_printings) * GATHER_ARTWORK_PER_PRINTING_NS
                 + GATHER_FIXED_COST_NS
         }
     }
