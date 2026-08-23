@@ -10405,6 +10405,25 @@ fn candidate_feats(ctx: &QueryCtx, params: &QueryParams, prep: &PreparedCandidat
         } else {
             verify_cost_tier_unproven(filter, prep.proven_conjuncts)
         });
+    // Card mode, default prefer, all_match_known: `push_card_matches`/`card_match_count`'s Mode::Card
+    // arm breaks at the FIRST printing every time (`all_match` is true unconditionally, so the loop's
+    // `if all_match || ...` fires on `pid == start`), so `printings_examined` is exactly `count` (one
+    // per candidate) -- never the `n_printings/n_cards` SPAN `scan` estimates. Measured: GatheredScan's
+    // `scan_units/printings_examined` on this population reads flat at 3.08 (== n_printings/n_cards)
+    // from p10 to p90, not a tail effect. Only `all_match_known` -- with a residual, `card_match_count`
+    // still breaks at the first MATCHING printing, but which one that is depends on the residual's
+    // selectivity, so `count` would under-charge instead; that harder case is unfixed here. Only
+    // `Prefer::Default` -- custom prefer's arm scores every printing even under `all_match` (it must,
+    // to find the best-scoring one), so `span` is the right estimate there and already reads 1.00.
+    //
+    // GatheredScan reads this directly (no tier gate on its scan term, unlike StreamedSelect's), so the
+    // 3.08x error rides straight into `GATHER_SCAN_PER_ROW_NS * scan_units` on every such query. Harmless
+    // for StreamedSelect: its own term is `if tier_ns > 0.0 { stream_scan_units * RATE } else { 0.0 }`,
+    // and `all_match_known` means `tier_ns == 0`, so it never reads this value in the case it is wrong.
+    if matches!(params.mode, Mode::Card) && matches!(params.prefer, Prefer::Default) && prep.all_match_known {
+        feats.scan_units = count;
+        feats.stream_scan_units = count; // inherited default; harmless per the tier gate above, kept in sync
+    }
     // Diagnostic only (`explain`), so the residual-pass-rate population can be split by traffic before any
     // rate moves. A card-invariant residual answers `True`/`False` per card and never `PrintingDep`, so a
     // matching candidate contributes its WHOLE printing span and a non-matching one none of it — the
