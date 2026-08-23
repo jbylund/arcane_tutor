@@ -12,6 +12,7 @@ use super::{
     gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
     walk_printing_page, aligned_page, bare_range_bounds, probe_range_k, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
     prepare_candidates, verify_cost_tier, scan_units, sort_col_bound, divergent_formats_of, Mode, QueryCtx, QueryParams, Prefer, SortBound,
+    push_card_matches,
     GatherSelect, select_page, GATHER_PRUNE_CHUNK, Match,
     archive_header, archive_payload, ARCHIVE_HEADER_LEN, Mmap,
     bitmap_contains, bitmap_card_ids, compile_plane, eval_planes, split_planes,
@@ -5159,6 +5160,7 @@ fn plan_cost_model_matches_gold() {
                     offset: offset as u32,
                     broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather, walked_hint: None, collection_broadcast_printings: 0,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
+                artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
                 };
@@ -5401,6 +5403,7 @@ fn plan_cost_refit() {
                     limit: limit as u32, offset: offset as u32,
                     broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather, walked_hint: None, collection_broadcast_printings: 0,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
+                artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
                 };
@@ -5606,6 +5609,7 @@ fn printing_range_route_probe() {
                 limit: LIMIT as u32, offset: offset as u32,
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather, walked_hint: None, collection_broadcast_printings: 0,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
+                artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
             };
@@ -5969,6 +5973,7 @@ fn plan_regret_report() {
                 offset: offset as u32,
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather, walked_hint: None, collection_broadcast_printings: 0,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
+                artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
             };
@@ -6099,6 +6104,7 @@ fn plan_regret_fuzz() {
                 limit: limit as u32, offset: offset as u32,
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather, walked_hint: None, collection_broadcast_printings: 0,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
+                artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
             };
@@ -10982,6 +10988,91 @@ fn range_compose_kernel_costs() {
             "{hi:>8}  {set_prtg:>10}  {scatter_ns:>10}  {per_prtg:>11.3}  {proj_ns:>10}  {exists_cards:>10}  {walk_ns:>9}"
         );
     }
+}
+
+/// `GatheredScan`'s artwork-mode overhead: `push_card_matches`'s `Mode::Artwork` branch does a
+/// `group_best`/`touched` dedupe scan over every printing in `[start, end)` that `Mode::Printing`
+/// does not — see the doc on `STREAM_ARTWORK_SEEN_PER_CARD_NS` for `StreamedSelect`'s analogous
+/// (but differently-shaped: fixed per-CARD there, per-PRINTING here) overhead. `cost::plan_cost`'s
+/// `GatheredScan` arm charges no such term at all, unlike `StreamedSelect`'s.
+///
+/// Calls `push_card_matches` directly (not through a full query) with `all_match: true` so no
+/// residual evaluation cost pollutes the measurement -- isolating exactly the mode-dependent match-
+/// collection cost the two modes' loop bodies differ by, over the same real card/printing data. An
+/// end-to-end `explain_analyze` A/B (`unique=printing` vs `unique=artwork`, same filter) was tried
+/// first and was unusable: `matches_pushed` differs sharply between modes (printing pushes every
+/// printing, artwork only distinct groups), so `GATHER_PUSH_PER_MATCH_NS`'s much larger swing
+/// dominates the raw delta and even its SIGN. A pooled OLS regression over natural corpus queries
+/// (cards_visited/printing_span/matches_pushed as features, `is_artwork*printing_span` for the term
+/// of interest) came back with a negative coefficient and a negative per-match rate too --
+/// multicollinearity between those three features in real query data, not a real negative cost.
+///
+/// `cargo test --release gather_artwork_kernel_costs -- --ignored --nocapture`
+#[test]
+#[ignore = "gather-artwork kernel cost; needs real.store; cargo test --release gather_artwork_kernel_costs -- --ignored --nocapture"]
+fn gather_artwork_kernel_costs() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 15;
+    const ITERS: usize = 150;
+    // Enough cards that the printing span dwarfs per-call fixed overhead (Instant::now, branch
+    // mispredicts on the first card of a round), so the resulting rate is dominated by the loop body.
+    const N_CARDS: usize = 5000;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let offsets = &archived.offsets;
+    let printings = &archived.printings;
+    let strings = &archived.strings;
+    let indexes = &archived.indexes;
+    let max_groups = usize::from(u16::from(indexes.max_artwork_groups));
+    let printing_span: u64 =
+        (0..N_CARDS).map(|cid| u64::from(u32::from(offsets[cid + 1])) - u64::from(u32::from(offsets[cid]))).sum();
+
+    let bench_mode = |mode: Mode| -> u128 {
+        let mut group_best: Vec<Option<(u32, f64)>> = vec![None; max_groups];
+        let mut touched: Vec<u16> = Vec::new();
+        let mut out: Vec<(u128, u32, u32)> = Vec::with_capacity(4096);
+        let mut best = u128::MAX;
+        for it in 0..(WARMUP + ITERS) {
+            out.clear();
+            let t0 = Instant::now();
+            for cid in 0..N_CARDS {
+                let card = &archived.cards[cid];
+                let start = u32::from(offsets[cid]) as usize;
+                let end = u32::from(offsets[cid + 1]) as usize;
+                black_box(push_card_matches(
+                    card, cid as u32, printings, &indexes.artwork_group_col, start, end, true, &[], false, mode,
+                    Prefer::Default, SortCol::EdhrecRank, false, strings, None, &mut out, &mut group_best, &mut touched,
+                ));
+            }
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                best = best.min(dt);
+            }
+        }
+        best
+    };
+
+    let printing_ns = bench_mode(Mode::Printing);
+    let artwork_ns = bench_mode(Mode::Artwork);
+    let delta = artwork_ns as i128 - printing_ns as i128;
+    println!("\ngather-artwork kernel costs ({N_CARDS} cards, {printing_span} printings)");
+    println!("  Printing: {printing_ns} ns total, {:.4} ns/printing", printing_ns as f64 / printing_span.max(1) as f64);
+    println!("  Artwork:  {artwork_ns} ns total, {:.4} ns/printing", artwork_ns as f64 / printing_span.max(1) as f64);
+    println!(
+        "  delta: {delta} ns / {printing_span} printings = {:.4} ns/printing (candidate GATHER_ARTWORK_PER_PRINTING_NS)",
+        delta as f64 / printing_span.max(1) as f64
+    );
 }
 
 /// #724 build-side correctness oracle: projecting a printing-space border plane up to card-existence
