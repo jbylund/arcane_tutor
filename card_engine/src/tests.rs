@@ -5195,7 +5195,7 @@ fn plan_cost_model_matches_gold() {
                 let eval_domain = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
                 // Tier reflects the residual AFTER memoize (what the walk pays).
                 let residual_tier_ns100 = if prep.all_match_known { 0 } else { verify_cost_tier(&res) };
-                let su = scan_units(mode_enum, prep.candidate_cards.as_deref(), &archived.offsets, n_printings, eval_domain);
+                let su = scan_units(mode_enum, prep.candidate_cards.as_deref(), &archived.offsets, n_printings, n_cards);
                 let feats = PlanFeatures {
                     n_cards, n_printings,
                     matches: total as u32,
@@ -5441,7 +5441,7 @@ fn plan_cost_refit() {
                 );
                 let prep = prepare_candidates(&QueryCtx::from(archived), &mode_only_params(mode_enum), &mut res, pe.as_ref());
                 let eval_domain = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
-                let su = scan_units(mode_enum, prep.candidate_cards.as_deref(), &archived.offsets, n_printings, eval_domain);
+                let su = scan_units(mode_enum, prep.candidate_cards.as_deref(), &archived.offsets, n_printings, n_cards);
                 let feats = PlanFeatures {
                     n_cards, n_printings, matches: total as u32, eval_domain,
                     scan_units: su,
@@ -5646,7 +5646,7 @@ fn printing_range_route_probe() {
             let prep = prepare_candidates(&QueryCtx::from(archived), &mode_only_params(Mode::Printing), &mut res, pe.as_ref());
             let eval_domain = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
             let residual_tier_ns100 = if prep.all_match_known { 0 } else { verify_cost_tier(&res) };
-            let su = scan_units(Mode::Printing, prep.candidate_cards.as_deref(), &archived.offsets, n_printings as u32, eval_domain);
+            let su = scan_units(Mode::Printing, prep.candidate_cards.as_deref(), &archived.offsets, n_printings as u32, n_cards);
             let feats = PlanFeatures {
                 n_cards, n_printings, matches: total as u32, eval_domain,
                 scan_units: su,
