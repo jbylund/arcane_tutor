@@ -102,6 +102,54 @@
 //!     P4 reparameterised                        +40%
 //!     P3 and P4 both refit                      +30%
 //!     ... plus symmetric residual floors        +90%
+//!     P3+P4 refit AGAIN after fixing scan_units +54% (mean regret 0.50 -> 0.56 us/query)
+//!
+//! **The sixth attempt (2026-08-23) is not a repeat of the first four.** It came after fixing a real
+//! feature bug (`scan_units`'s card-mode overcharge, `local-engine-card-residual-pass-rate.md`'s
+//! companion) and refitting P3+P4 jointly on the corrected data -- the exact prerequisite this file's
+//! own conclusion asked for. It still regressed, but through a DIFFERENT mechanism than the first five:
+//! not P3-vs-P4 compensating error (fixing the feature and refitting both arms together handles that),
+//! but P3/P4-vs-`PrintingCompose` distortion. `PrintingCompose` was deliberately left unrefit (its own
+//! `Perm` arm is missing a `cards_visited` feature -- see `local-engine-compose-build-rates.md`), so
+//! making P3/P4 cheaper without touching it made them win against `PrintingCompose` in cases where
+//! `PrintingCompose` was actually correct: `PrintingCompose -> StreamedSelect` went from a minor cell to
+//! 309 queries at 99% miss rate and 32% of all lost time, and the `printing_compose` acquire branch's
+//! total share jumped to 72%. Reverted. The lesson generalizes past this one pair: **a joint refit is
+//! only as joint as every plan that competes in the same argmin, not just the two you fixed a feature
+//! for.** `PrintingCompose` needs its own feature fix (the `cards_visited` estimator) before ANY of its
+//! rates -- or any rate for a plan that regularly competes against it -- can be safely moved again.
+//! Full mechanism and revert data:
+//! [local-engine-p3-p4-joint-refit-vs-compose.md](../../docs/issues/local-engine-p3-p4-joint-refit-vs-compose.md).
+//!
+//! The fitted values that attempt computed, for whoever builds the `PrintingCompose` feature fix and
+//! retries this (`fit_cost_model.py` on ~111k/~83k rows post `scan_units` fix, `mirror_matches_engine`
+//! 99.8%; `x` is fitted/shipped):
+//!
+//!     GatheredScan                          shipped  fitted     x
+//!       GATHER_LOOP_PER_CARD_NS                3.88    4.52  1.17
+//!       GATHER_SCAN_PER_ROW_NS                 2.06    2.71  1.32
+//!       CARD_PASS+FLOOR (call held at 3.00)   21.89   24.07  1.10   -> floor 21.07
+//!       GATHER_PUSH_PER_MATCH_NS               2.24    2.05  0.92
+//!       GATHER_SELECT_PER_PAGE_SLOT_NS         3.51    3.32  0.94
+//!       GATHER_COLLECT_PER_PAGE_ROW_NS         9.79    8.41  0.86
+//!       GATHER_ARTWORK_PER_PRINTING_NS         0.50    0.51  1.02   (kernel-measured; left alone)
+//!       GATHER_FIXED_COST_NS                 169.60   93.59  0.55   (curvature-confounded; NOT applied)
+//!
+//!     StreamedSelect                         shipped  fitted     x
+//!       STREAM_LOOP_PER_CARD_NS                2.58    3.20  1.24
+//!       STREAM_SCAN_PER_ROW_NS                 5.97    5.90  0.99
+//!       CARD_PASS+FLOOR (call held at 2.47)    9.05   10.42  1.15   -> floor 7.95
+//!       STREAM_EMIT_PER_MATCH_NS               0.12    0.11  0.95
+//!       STREAM_PERM_STEP_NS                    1.00    1.24  1.24
+//!       STREAM_ARTWORK_SEEN_PER_CARD_NS        1.21    1.10  0.91
+//!       STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS   1.02    0.98  0.96   (already confirmed; left alone)
+//!       STREAM_CORPUS_PASS_PER_CARD_NS         0.02    0.01  0.67   (2 sig figs on an unseparable
+//!                                                                    constant; left alone)
+//!       STREAM_FIXED_COST_NS                 217.00  192.69  0.89   (curvature-confounded; NOT applied)
+//!
+//! `plan_cost_model_matches_gold` on these: 97.7% -> 98.9%. Total routing regret on a uniform sample:
+//! 0.50 -> 0.56 us/query mean, i.e. the gold-test metric improved while the thing that actually matters
+//! got worse -- the reason to gate on the full regret-matrix breakdown, not a single summary number.
 //!
 //! Every one regressed, and the best was the one that moved LEAST from the shipped values. Two of the
 //! attempts were diagnosed and corrected mid-flight -- artwork needed its own arm, and leaving P4's
