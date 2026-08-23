@@ -5363,7 +5363,7 @@ fn plan_cost_model_matches_gold() {
                     residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
                     limit: limit as u32,
                     offset: offset as u32,
-                    broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
+                    broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather, collection_broadcast_printings: 0,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
                 compose_scan_printings: 0,
@@ -5606,7 +5606,7 @@ fn plan_cost_refit() {
                     residual_tier_ns100: if prep.all_match_known { 0 } else { verify_cost_tier(&res) },
                     residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
                     limit: limit as u32, offset: offset as u32,
-                    broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
+                    broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather, collection_broadcast_printings: 0,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
                 compose_scan_printings: 0,
@@ -5812,7 +5812,7 @@ fn printing_range_route_probe() {
                 residual_tier_ns100,
                 residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
                 limit: LIMIT as u32, offset: offset as u32,
-                broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
+                broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather, collection_broadcast_printings: 0,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
                 compose_scan_printings: 0,
@@ -6176,7 +6176,7 @@ fn plan_regret_report() {
                 residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
                 limit: limit as u32,
                 offset: offset as u32,
-                broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
+                broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather, collection_broadcast_printings: 0,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
                 compose_scan_printings: 0,
@@ -6307,7 +6307,7 @@ fn plan_regret_fuzz() {
                 residual_tier_ns100: tier,
                 residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
                 limit: limit as u32, offset: offset as u32,
-                broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
+                broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather, collection_broadcast_printings: 0,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
                 compose_scan_printings: 0,
