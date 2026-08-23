@@ -18,7 +18,19 @@ same properties and reached two of the three:
   not the *selectivity* — and selectivity is the axis a cost model varies along. The shared sampler
   also reaches `eur`/`tix` and two-sided bounds, neither of which the private table produced.
 
-Reports measured/predicted per (plan, acquire branch), plus the two phases no cost term describes:
+Reports `costbench.plan_self_ns` / predicted per (plan, acquire branch) -- NOT raw `min(trials_ns)`,
+which this collected until a routing-regret sweep found `GatheredScan`/`candidates` reading p90 32.9x
+"over-costed" and traced it here: a forced trial re-runs `prepare_candidates` from scratch, but the
+real routed path pays it once during acquire and dispatch just reuses the artifact (see
+`acquire_plan_features`/`run_query_routed`'s `Prep::Candidates` arm), so charging every forced trial
+for a rebuild the router never repeats inflated `candidates`/`plane` rows by however expensive that
+query's narrowing happened to be -- pure benchmark artifact, not a cost-model error.
+`costbench.plan_self_ns` already encoded the right rule (net it out for `candidates`/`plane`, add it
+back for `RANGE_ACQUIRES`, where dispatch really does rebuild); this module just was not using it yet.
+Netted, `GatheredScan`/`candidates` reads p90 1.05, median 0.69 -- a real, much smaller over-prediction
+worth its own investigation, not the crisis the raw number implied.
+
+Plus the two phases no cost term describes:
 `prepare_candidates` — 21-33% of a range-acquired query against 7-10% of a plane-acquired one — and
 the per-query scratch setup, which for `StreamedSelect` is an O(`n_cards`) counts zeroing that grows
 with the corpus rather than with the answer. Both shares are keyed by acquire branch as well as plan,
@@ -170,9 +182,9 @@ def main() -> None:
                 agr.declines[p["plan"], p["paging_taken"]].append(min(p["declined_ns"]))
                 continue
             predicted = costbench.predicted_ns(p)
-            if not p["trials_ns"] or predicted is None:
+            measured = costbench.plan_self_ns(p, acq)
+            if predicted is None or measured is None:
                 continue
-            measured = min(p["trials_ns"])
             agr.ratios[p["plan"], acq["count_source"]].append(measured / predicted)
             agr.by_unique[p["plan"], unique].append(measured / predicted)
             # Keyed by acquire branch as well as plan: the whole point of this row is that the
@@ -393,7 +405,7 @@ def report(agr: Agreement, seconds: float) -> None:
     if agr.skip_reasons:
         breakdown = ", ".join(f"{name} x{n:,}" for name, n in sorted(agr.skip_reasons.items(), key=lambda kv: -kv[1]))
         print(f"  skipped by reason: {breakdown}")
-    summarise("measured/predicted by acquire branch. 1.00 is agreement; >1 under-costed.", agr.ratios, "acquire")
+    summarise("measured (plan_self_ns) / predicted by acquire branch. 1.00 is agreement; >1 under-costed.", agr.ratios, "acquire")
     summarise("the same, split by distinct-on rather than acquire.", agr.by_unique, "unique")
 
     report_phase_share(agr.prep_frac, "prepare_candidates as a share of the plan's run — the term no cost arm carries.")

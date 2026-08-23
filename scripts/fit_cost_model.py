@@ -95,7 +95,10 @@ CURRENT: dict[str, list[float]] = {
     # `card_pass` call (3.00) on top of the floor (18.89), because the arm gates the call on
     # `tier_ns > 0` -- `all_match_known` skips it. The design matrix already had these as two
     # columns; only the arm and these labels changed.
-    "GatheredScan": [3.88, 2.06, 21.89, 2.24, 3.51, 9.79, 169.6],
+    # ..., artwork_seen_printings, fixed -- new (this session): `exec_gathered_scan`'s Mode::Artwork
+    # branch pays a per-printing group_best/touched dedupe check StreamedSelect's artwork_seen_cards
+    # column does not describe (that one is per-CARD; this is per-PRINTING, see cost.rs).
+    "GatheredScan": [3.88, 2.06, 21.89, 2.24, 3.51, 9.79, 0.50, 169.6],
     # eval_domain, scan_units, residual floor, matches, artwork_seen_cards, n_cards floor, corpus pass, fixed
     # Refit once `printings_examined` existed: this plan's fit was vetoed for as long as the only
     # available counter was the printing SPAN, which its all_match rows disagree with by ~3x over a
@@ -234,8 +237,13 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
     excess = eval_domain * max(tier_ns - floor, 0.0) if tier_ns > 0.0 else 0.0
 
     if plan == "GatheredScan":
+        # NOT `artwork_seen_cards`-if-nonzero: `exec_gathered_scan`'s per-printing dedupe loop runs
+        # unconditionally (no `all_match_known` shortcut like StreamedSelect's stored-group-count
+        # fast path), so `artwork_seen_cards` can read 0 (zeroed by all_match_known) on the same row
+        # where `artwork_seen_printings` is correctly nonzero -- read the real field directly.
+        artwork_seen_printings = float(acq.get("artwork_seen_printings", 0))
         return (
-            [eval_domain, scan_units, eval_domain * residual_on, matches, page_span, page_rows, 1.0],
+            [eval_domain, scan_units, eval_domain * residual_on, matches, page_span, page_rows, artwork_seen_printings, 1.0],
             [
                 "LOOP_PER_CARD",
                 "SCAN_PER_ROW",
@@ -243,6 +251,7 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
                 "PUSH_PER_MATCH",
                 "SELECT_PER_PAGE_SLOT",
                 "COLLECT_PER_PAGE_ROW",
+                "ARTWORK_PER_PRINTING",
                 "FIXED",
             ],
             excess,
