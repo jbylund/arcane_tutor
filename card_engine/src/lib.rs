@@ -10407,11 +10407,19 @@ fn acquire_plan_features(
         // accuracy, beating every threshold on the two alternative signals tried. Its 26% false positives
         // over-cost both materializing plans by the same factor, which an argmin largely absorbs; the false
         // negatives are what were losing `GatheredScan vs StreamedSelect`, so recall is the side to favour.
-        let (eval_domain, scan_units) = if range_too_broad_to_narrow(printing_matches, n_printings as usize) {
-            (n_cards as usize, n_printings as usize)
-        } else {
-            (eval_domain, scan_units)
-        };
+        // The broadness guard this asks about is `MAX_NARROW_FRACTION`, which card-space collection
+        // narrowing does not have ("Card-space lists need no guard" — narrow_rec's CollectionCmp Ge
+        // arm). So a bare card-space collection leaf never actually falls back to visiting every card
+        // the way a broad range or legality predicate can; charging it as if it did is the same gap
+        // `compose_leaf_nothing_to_verify` closes for the tier, applied to this feature instead (#1005).
+        // Scoped to that check alone, not the wider `nothing_to_verify` OR: legality's own broadness
+        // behavior here is untouched, and unverified by this fix.
+        let (eval_domain, scan_units) =
+            if !compose_leaf_nothing_to_verify(filter) && range_too_broad_to_narrow(printing_matches, n_printings as usize) {
+                (n_cards as usize, n_printings as usize)
+            } else {
+                (eval_domain, scan_units)
+            };
         // The tier is what the MATERIALIZING alternatives pay per candidate, so it must be asked about
         // the predicate THEY see (`filter` + `plane`), not about `composed` — and gated exactly as
         // `prepare_candidates` gates it, or the router charges a `card_pass` the kernels will skip. On a
