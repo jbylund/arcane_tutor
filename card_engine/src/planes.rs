@@ -1601,8 +1601,15 @@ pub(crate) fn bitmap_contains(bitmap: &[u64], cid: u32) -> bool {
 /// Materialize a bitmap's set bits as ascending card ids.
 pub(crate) fn bitmap_card_ids(bitmap: &[u64]) -> Vec<u32> {
     let count: usize = bitmap.iter().map(|w| w.count_ones() as usize).sum();
+    decode_bitmap_ids(bitmap.iter().copied(), count)
+}
+
+/// The decode loop `bitmap_card_ids` runs, generalized over the word source so a caller already
+/// holding a popcount (e.g. `DenseBits.count`) or an archived (non-`u64`) word type can drive it
+/// without a fresh popcount pass or a copy into a plain `&[u64]` first.
+pub(crate) fn decode_bitmap_ids(words: impl Iterator<Item = u64>, count: usize) -> Vec<u32> {
     let mut out: Vec<u32> = Vec::with_capacity(count);
-    for (i, &word) in bitmap.iter().enumerate() {
+    for (i, word) in words.enumerate() {
         let mut w = word;
         while w != 0 {
             out.push((i as u32) << 6 | w.trailing_zeros());

@@ -1838,6 +1838,12 @@ impl ArchivedHybridTagIndex {
         self.dense.get(value).is_some()
     }
 
+    /// The value's `DenseBits` entry, for a caller that needs both the presence check and the data —
+    /// one lookup instead of `is_dense` followed by `bits`/`len_of` each redoing it.
+    fn dense(&self, value: &str) -> Option<&Archived<DenseBits>> {
+        self.dense.get(value)
+    }
+
     /// The value's printing-space bitmap, materialized from postings if that is how it is stored.
     /// `None` only when the value is absent from the store entirely — nothing is dropped, so that is a
     /// proof rather than a gap.
@@ -1870,19 +1876,12 @@ impl ArchivedHybridTagIndex {
     /// deliberately does not have.
     ///
     /// Decode is a popcount walk, `w & (w - 1)` clearing one bit at a time, so it costs one
-    /// iteration per SET bit plus one per word rather than one per row.
+    /// iteration per SET bit plus one per word rather than one per row. Shares its loop with
+    /// `bitmap_card_ids` via `decode_bitmap_ids`, driven here by the stored count (no fresh popcount
+    /// pass) over archived words (no copy into a plain `&[u64]` first).
     fn ids_of(&self, value: &str) -> Option<Vec<u32>> {
         if let Some(b) = self.dense.get(value) {
-            // Exact capacity from the stored count: one allocation, no growth.
-            let mut out = Vec::with_capacity(u32::from(b.count) as usize);
-            for (wi, word) in b.words.iter().enumerate() {
-                let mut w = u64::from(*word);
-                while w != 0 {
-                    out.push((wi * 64) as u32 + w.trailing_zeros());
-                    w &= w - 1;
-                }
-            }
-            return Some(out);
+            return Some(decode_bitmap_ids(b.words.iter().map(|w| u64::from(*w)), u32::from(b.count) as usize));
         }
         self.sparse.get(value).map(|v| v.iter().map(|x| u32::from(*x)).collect())
     }
@@ -4972,8 +4971,11 @@ fn narrow_rec(
                     // 1/32-to-1/4 band — where handing bits measured no better than decoding and
                     // sometimes worse, while card space measured a clean win. Promoting there as
                     // well would be a change made on symmetry rather than evidence.
-                    if card_space && k > *BITS_PROMOTE && idx.is_dense(value.as_str()) {
-                        return mk(Candidates::CardBits(idx.bits(value.as_str(), n_cards)?));
+                    if card_space
+                        && k > *BITS_PROMOTE
+                        && let Some(b) = idx.dense(value.as_str())
+                    {
+                        return mk(Candidates::CardBits(b.words.iter().map(|w| u64::from(*w)).collect()));
                     }
                     let ids = idx.ids_of(value.as_str())?;
                     mk(if card_space { Candidates::Cards(ids) } else { Candidates::Printings(ids) })
