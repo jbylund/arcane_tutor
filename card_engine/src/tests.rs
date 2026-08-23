@@ -1,7 +1,7 @@
 use super::{
     and_child_rank, assign_name_ranks,
     build_numeric_index, build_oracle_text_index, build_trigram_index,
-    build_rarity_index, build_flavor_index, build_hybrid_tag_index, bitmap_beats_postings, HybridTagIndex, build_sort_permutations,
+    build_rarity_index, build_flavor_index, build_hybrid_tag_index, build_layout_hybrid_index, bitmap_beats_postings, HybridTagIndex, build_sort_permutations,
     assign_artwork_groups, build_artwork_base_from, build_bit_planes, build_border_printing_planes, build_rarity_printing_planes, build_divergent_ids, build_name_bigram_index, build_name_unigram_index, build_printing_to_card, flavor_fingerprint, flavor_match_sets,
     cards_of_printings, count_common_keywords, count_common_types,
     build_artist_index, build_printing_value_index, build_arith_tuple_index, is_arith_tuple_route, range_candidates, narrow_candidates, narrow_candidates_exact, rarity_candidates,
@@ -6469,6 +6469,7 @@ fn bench_checked_vs_unchecked_access() {
         subtypes:       build_hybrid_tag_index(&cards, &vocab.strings, |c| &c.card_subtypes),
         keywords:       build_hybrid_tag_index(&cards, &vocab.strings, |c| &c.card_keywords),
         oracle_tags:    build_hybrid_tag_index(&cards, &vocab.strings, |c| &c.card_oracle_tags),
+        layout:         build_layout_hybrid_index(&cards, &strings),
         art_tags:       build_hybrid_tag_index(&printings, &vocab.strings, |p| &p.card_art_tags),
         is_tags:        build_hybrid_tag_index(&printings, &vocab.strings, |p| &p.card_is_tags),
         frame_data:     HybridTagIndex::default(),

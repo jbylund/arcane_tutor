@@ -1814,9 +1814,15 @@ struct DenseBits {
 }
 
 fn build_hybrid_tag_index<T>(rows: &[T], vocab: &[String], get_ids: impl Fn(&T) -> &Vec<u16>) -> HybridTagIndex {
-    let n = rows.len();
+    finish_hybrid_tag_index(build_tag_index(rows, vocab, get_ids), rows.len())
+}
+
+/// The bitmap-vs-postings storage decision `build_hybrid_tag_index` makes, factored out so a caller
+/// with values already grouped by String (not a `coll_vocab` id) can share it without going through
+/// `build_tag_index`'s `Vec<u16>` id scheme -- see `build_layout_hybrid_index`.
+fn finish_hybrid_tag_index(by_value: HashMap<String, Vec<u32>>, n: usize) -> HybridTagIndex {
     let mut out = HybridTagIndex::default();
-    for (value, postings) in build_tag_index(rows, vocab, get_ids) {
+    for (value, postings) in by_value {
         if bitmap_beats_postings(postings.len(), n) {
             // Popcounted from the scattered bitmap, not `postings.len()`: a duplicate row id in
             // `postings` sets the same bit twice, which `postings.len()` would over-count and the
@@ -1830,6 +1836,20 @@ fn build_hybrid_tag_index<T>(rows: &[T], vocab: &[String], get_ids: impl Fn(&T) 
         }
     }
     out
+}
+
+/// `layout` is a CARD-scalar text field (every printing of a card shares one layout, unlike
+/// `border`/`frame_data` which vary printing to printing) interned through the general string table
+/// rather than `coll_vocab`, so it cannot use `build_hybrid_tag_index`'s `Vec<u16>`-of-vocab-ids
+/// shape directly -- this groups by the resolved String instead and hands the result to the same
+/// storage decision. Card ids land in each bucket in ascending order because `cards` is walked in
+/// order, matching every other index's sorted-postings convention.
+fn build_layout_hybrid_index(cards: &[OracleCard], strings: &[String]) -> HybridTagIndex {
+    let mut by_value: HashMap<String, Vec<u32>> = HashMap::new();
+    for (cid, card) in cards.iter().enumerate() {
+        by_value.entry(strings[card.card_layout_id as usize].clone()).or_default().push(cid as u32);
+    }
+    finish_hybrid_tag_index(by_value, cards.len())
 }
 
 impl ArchivedHybridTagIndex {
@@ -3634,6 +3654,12 @@ struct CardIndexes {
     subtypes:       HybridTagIndex,  // card space
     keywords:       HybridTagIndex,  // card space
     oracle_tags:    HybridTagIndex,  // card space
+    // Scalar, not a collection (every card has exactly one layout) -- narrow_rec's TextExact::Eq
+    // arm for it is a direct tight bucket lookup, unlike the CollectionCmp arm above it shares
+    // storage with. `layout:` (is:split/dfc/meld/...) had NO narrowing at all before this, so an
+    // unnarrowable `is:` predicate fell back to "assume ~everything matches" and badly mis-costed
+    // both materializing plans by different factors, flipping routing between them.
+    layout:         HybridTagIndex,  // card space (scalar, not a collection)
     art_tags:       HybridTagIndex,  // printing space
     is_tags:        HybridTagIndex,  // printing space
     frame_data:     HybridTagIndex,  // printing space (bitmap for dense values, postings for the sparse tail)
@@ -5088,6 +5114,35 @@ fn narrow_rec(
                 return None;
             }
             Narrowed::tight(Candidates::Printings(expand_flavor_ids(flavor, dense_ids, n_printings)))
+        }
+
+        // layout: (`is:split`/`is:dfc`/`is:meld`/... rewrite to this in api/parsing/rewrite.py) is a
+        // CARD-scalar text field -- every printing of a card shares one
+        // layout, unlike `border`/`frame_data` which vary printing to printing -- narrowed the same
+        // way `subtypes`/`keywords`/`oracle_tags` are: a `HybridTagIndex` bucket per value. Tight,
+        // unlike those fields' own Eq/Gt (which need a downstream length check because containment
+        // isn't equality for a multi-valued collection): a scalar field's bucket membership IS
+        // equality, so there is no ambiguity to re-verify.
+        //
+        // Before this, `layout:` had no narrowing arm at all, so `is:split eur>0.07`-shaped queries
+        // fell through with `raw_candidates: None` and the acquire path assumed ~100% selectivity
+        // (`matches` read 31,724 of 31,724 cards) against a real match rate of 0.4-1.6% --
+        // mis-costing StreamedSelect and GatheredScan by different multipliers of the same wrong
+        // scan_units and flipping which one the router picked.
+        FilterExpr::TextExact { field: TextField::Layout, op: CmpOp::Eq, value } => {
+            let idx = &indexes.layout;
+            match idx.len_of(value.as_str()) {
+                // No card has this layout value: proves the predicate false everywhere.
+                None => Narrowed::tight(Candidates::Cards(Vec::new())),
+                Some(k) => {
+                    if k > *BITS_PROMOTE
+                        && let Some(b) = idx.dense(value.as_str())
+                    {
+                        return Narrowed::tight(Candidates::CardBits(b.words.iter().map(|w| u64::from(*w)).collect()));
+                    }
+                    Narrowed::tight(Candidates::Cards(idx.ids_of(value.as_str())?))
+                }
+            }
         }
 
         FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value } => {
@@ -11790,7 +11845,11 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 // 2026082301 — `ValueTotals` gains `colors`/`color_identity`/`produced_mana`, exact per-combination
 // totals for `ColorCmp`. Same blind spot as the previous bump: entirely inside `CardIndexes`, so the
 // header's `AOracleCard`/`APrinting` sizes don't move and can't catch it.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026082301;
+//
+// 2026082302 — new `CardIndexes` field `layout` (a `HybridTagIndex` giving `layout:` -- and so
+// `is:split`/`is:dfc`/`is:meld`/... -- real candidate narrowing for the first time). Same blind spot
+// again: entirely inside `CardIndexes`.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026082302;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -12353,6 +12412,7 @@ impl QueryEngine {
             subtypes:       build_hybrid_tag_index(&cards, &coll_vocab, |c| &c.card_subtypes),
             keywords:       build_hybrid_tag_index(&cards, &coll_vocab, |c| &c.card_keywords),
             oracle_tags:    build_hybrid_tag_index(&cards, &coll_vocab, |c| &c.card_oracle_tags),
+            layout:         build_layout_hybrid_index(&cards, &strings),
             art_tags:       build_hybrid_tag_index(&printings, &coll_vocab, |p| &p.card_art_tags),
             is_tags:        build_hybrid_tag_index(&printings, &coll_vocab, |p| &p.card_is_tags),
             frame_data:     build_hybrid_tag_index(&printings, &coll_vocab, |p| &p.card_frame_data),
