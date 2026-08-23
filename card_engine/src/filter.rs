@@ -301,6 +301,25 @@ fn card_colors(card: &AOracleCard, f: ColorField) -> u8 {
     }
 }
 
+/// The `ColorCmp` predicate against one card's (or, for an exact-total lookup, one stored
+/// combination's) bits. Shared by `matches()` and `exact_result_total`'s color arm so the two answers
+/// cannot drift apart -- a query bare enough to reach the totals table still has to agree with the
+/// residual path a compound query would fall back to.
+pub(crate) fn color_cmp_matches(op: CmpOp, mask: u8, bits: u8) -> bool {
+    match op {
+        // mask == 0 means the query was literally "c"/"colorless" (see
+        // get_colors_comparison_object on the Python side), not "at
+        // least zero colors" -- bits & 0 == 0 is vacuously true for
+        // every card, so Ge must fall back to exact equality here.
+        CmpOp::Ge => if mask == 0 { bits == 0 } else { bits & mask == mask },
+        CmpOp::Eq => bits == mask,
+        CmpOp::Le => bits & !mask == 0,
+        CmpOp::Lt => bits & !mask == 0 && bits != mask,
+        CmpOp::Gt => bits & mask == mask && bits != mask,
+        CmpOp::Ne => bits != mask,
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum CollField {
     Subtypes,
@@ -1401,21 +1420,7 @@ impl FilterExpr {
                 }
             }
 
-            FilterExpr::ColorCmp { field, op, mask } => {
-                let bits = card_colors(card, *field);
-                tri_bool(match op {
-                    // mask == 0 means the query was literally "c"/"colorless" (see
-                    // get_colors_comparison_object on the Python side), not "at
-                    // least zero colors" -- bits & 0 == 0 is vacuously true for
-                    // every card, so Ge must fall back to exact equality here.
-                    CmpOp::Ge => if *mask == 0 { bits == 0 } else { bits & mask == *mask },
-                    CmpOp::Eq => bits == *mask,
-                    CmpOp::Le => bits & !mask == 0,
-                    CmpOp::Lt => bits & !mask == 0 && bits != *mask,
-                    CmpOp::Gt => bits & mask == *mask && bits != *mask,
-                    CmpOp::Ne => bits != *mask,
-                })
-            }
+            FilterExpr::ColorCmp { field, op, mask } => tri_bool(color_cmp_matches(*op, *mask, card_colors(card, *field))),
 
             FilterExpr::TypeCmp { mask, op } => {
                 let bits = u16::from(card.card_types);

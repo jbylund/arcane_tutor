@@ -2532,6 +2532,20 @@ struct ValueTotals {
     layout: HashMap<String, SpaceTotals>,
     /// `frame:` and `is:new`/`is:old` — printing-space, 29 values. Keyed by the `coll_vocab` string.
     frame_data: HashMap<String, SpaceTotals>,
+    /// `t:`/`keyword:`/`otag:` — card-space, one entry per distinct `coll_vocab` string the field uses.
+    /// `HybridTagIndex::len_of` already gives these an exact CARD count for nothing; what it cannot
+    /// give is printings or artworks, the same gap `frame_data` closes for its own dimension. A bare
+    /// `otag:triggered-ability` under `unique=printing`/`artwork` had NO exact answer before this and
+    /// fell to the same biased `scan_all` estimate a plane-backed field would (#1005/#1006's `otag:`
+    /// mis-routing was this gap's first symptom, closed there for the router's OWN cost features;
+    /// this closes it for `compose_printing_estimate`'s answer too).
+    subtypes: HashMap<String, SpaceTotals>,
+    keywords: HashMap<String, SpaceTotals>,
+    oracle_tags: HashMap<String, SpaceTotals>,
+    /// `art:`/`is:` — printing-space, the mirror gap: `bits`/`len_of` already give these an exact
+    /// PRINTING count for nothing; cards and artworks are what's missing.
+    art_tags: HashMap<String, SpaceTotals>,
+    is_tags: HashMap<String, SpaceTotals>,
     /// `f:X` / `banned:X` / `restricted:X`, keyed `(shift << 2) | status`.
     ///
     /// One entry per (format, status) pair rather than per format, because `FilterExpr::Legality`
@@ -2543,6 +2557,15 @@ struct ValueTotals {
     /// gold border) contribute their printings' own words. Reading the card word for those would
     /// mis-count exactly the cards the divergence flag exists to flag.
     legality: HashMap<u16, SpaceTotals>,
+    /// `c:`/`id:`/`produces:` — card-space, keyed by the raw bitmask byte. Unlike the other dimensions
+    /// here, a bare leaf rarely names one combination exactly: `c:>=g` (`Ge`) matches every combination
+    /// whose bits are a superset of green, not just the all-green one. `exact_result_total` sums over
+    /// every stored combination `color_cmp_matches` accepts, which is why this stays a `HashMap<u8, _>`
+    /// (iterable in full) rather than needing a dedicated range-style structure -- at most 256 keys,
+    /// almost all of them absent, and even a full scan is a few dozen entries at most.
+    colors: HashMap<u8, SpaceTotals>,
+    color_identity: HashMap<u8, SpaceTotals>,
+    produced_mana: HashMap<u8, SpaceTotals>,
 }
 
 /// The key `ValueTotals::legality` uses. `shift` is even and < 64, so this cannot collide.
@@ -2842,10 +2865,28 @@ fn build_all_value_totals(
         frame_data: totals!(|_card: &OracleCard, p: &Printing| {
             p.card_frame_data.iter().map(|v| coll_vocab[*v as usize].clone()).collect()
         }),
+        subtypes: totals!(|card: &OracleCard, _p: &Printing| {
+            card.card_subtypes.iter().map(|v| coll_vocab[*v as usize].clone()).collect()
+        }),
+        keywords: totals!(|card: &OracleCard, _p: &Printing| {
+            card.card_keywords.iter().map(|v| coll_vocab[*v as usize].clone()).collect()
+        }),
+        oracle_tags: totals!(|card: &OracleCard, _p: &Printing| {
+            card.card_oracle_tags.iter().map(|v| coll_vocab[*v as usize].clone()).collect()
+        }),
+        art_tags: totals!(|_card: &OracleCard, p: &Printing| {
+            p.card_art_tags.iter().map(|v| coll_vocab[*v as usize].clone()).collect()
+        }),
+        is_tags: totals!(|_card: &OracleCard, p: &Printing| {
+            p.card_is_tags.iter().map(|v| coll_vocab[*v as usize].clone()).collect()
+        }),
         legality: totals!(|card: &OracleCard, p: &Printing| {
             let word = if card.legality_divergent { p.card_legalities } else { card.card_legalities };
             shifts.iter().map(|&shift| legality_totals_key(shift, (word >> shift) & 0b11)).collect()
         }),
+        colors: totals!(|card: &OracleCard, _p: &Printing| vec![card.card_colors]),
+        color_identity: totals!(|card: &OracleCard, _p: &Printing| vec![card.card_color_identity]),
+        produced_mana: totals!(|card: &OracleCard, _p: &Printing| vec![card.produced_mana]),
     }
 }
 
@@ -7763,39 +7804,41 @@ fn exact_result_total(composed: &FilterExpr, indexes: &Archived<CardIndexes>, mo
         FilterExpr::CollectionCmp { field: CollField::FrameData, op: CmpOp::Ge, value, .. } => {
             return Some(vt.frame_data.get(value.as_str()).map_or(0, |t| t.get(mode)));
         }
+        FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value, .. } => {
+            return Some(vt.subtypes.get(value.as_str()).map_or(0, |t| t.get(mode)));
+        }
+        FilterExpr::CollectionCmp { field: CollField::Keywords, op: CmpOp::Ge, value, .. } => {
+            return Some(vt.keywords.get(value.as_str()).map_or(0, |t| t.get(mode)));
+        }
+        FilterExpr::CollectionCmp { field: CollField::OracleTags, op: CmpOp::Ge, value, .. } => {
+            return Some(vt.oracle_tags.get(value.as_str()).map_or(0, |t| t.get(mode)));
+        }
+        FilterExpr::CollectionCmp { field: CollField::ArtTags, op: CmpOp::Ge, value, .. } => {
+            return Some(vt.art_tags.get(value.as_str()).map_or(0, |t| t.get(mode)));
+        }
+        FilterExpr::CollectionCmp { field: CollField::IsTags, op: CmpOp::Ge, value, .. } => {
+            return Some(vt.is_tags.get(value.as_str()).map_or(0, |t| t.get(mode)));
+        }
         FilterExpr::Legality { shift: Some(shift), expected } => {
             return Some(vt.legality.get(&legality_totals_key(*shift, *expected).into()).map_or(0, |t| t.get(mode)));
         }
         // A format absent from all loaded data matches nothing, in every space.
         FilterExpr::Legality { shift: None, .. } => return Some(0),
+        // Unlike the dimensions above, a bare leaf rarely names one stored combination exactly -- `c:>=g`
+        // matches every combination whose bits are a superset of green. Sum over every combination the
+        // corpus actually produced (a HashMap of at most 256 entries, almost always far fewer), filtered
+        // by the same predicate `matches()` uses, so the two can't disagree about which combos qualify.
+        FilterExpr::ColorCmp { field, op, mask } => {
+            let table = match field {
+                ColorField::Colors => &vt.colors,
+                ColorField::ColorIdentity => &vt.color_identity,
+                ColorField::ProducedMana => &vt.produced_mana,
+            };
+            return Some(
+                table.iter().filter(|(bits, _)| color_cmp_matches(*op, *mask, **bits)).map(|(_, t)| t.get(mode)).sum(),
+            );
+        }
         _ => {}
-    }
-    // The remaining shapes are exact in CARD space only, so any other mode falls back to the estimator.
-    if !matches!(mode, Mode::Card) {
-        return None;
-    }
-    // A CARD-space containment leaf (`t:`/`keyword:`/`otag:`) posts card ids, so its postings length IS
-    // the exact distinct-card count -- the same "the answer was already computed and then discarded"
-    // shape the legality arm above fixes. The acquire was projecting the leaf's PRINTING count through
-    // balls-into-bins instead, which reads 1.27x on `t:human` (5,411 estimated against 4,249 exact) and
-    // up to 2.24x on `t:angel`.
-    //
-    // `Ge` only. `Eq`/`Gt` share these postings as a loose superset -- they prove containment but not the
-    // collection-length condition -- so their count is an upper bound, not a total.
-    if let FilterExpr::CollectionCmp { field, op: CmpOp::Ge, value, .. } = composed {
-        let card_space_idx = match field {
-            CollField::Subtypes => Some(&indexes.subtypes),
-            CollField::Keywords => Some(&indexes.keywords),
-            CollField::OracleTags => Some(&indexes.oracle_tags),
-            // Printing-space: postings are printing ids, so their length is not a card count. These want
-            // an import-time count table (the artwork side needs one for every family, including the
-            // ranges and formats that are already exact in card space).
-            CollField::ArtTags | CollField::IsTags | CollField::FrameData => None,
-        };
-        // Absent from a complete index is an exact ZERO, not "no answer".
-        // `len_of` counts a dense value by popcount and a sparse one by postings length — the same
-        // card count either way, so the exactness argument above is untouched by storage.
-        return card_space_idx.map(|idx| idx.len_of(value.as_str()).unwrap_or(0));
     }
     None
 }
@@ -11743,7 +11786,11 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 // are `AOracleCard` and `APrinting`, and neither moves, because the change is entirely inside
 // `CardIndexes`. So this constant is the only thing stopping a reader from accessing an older
 // store's `HashMap<String, Vec<u32>>` as a `HybridTagIndex` through `access_unchecked`.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026081301;
+//
+// 2026082301 — `ValueTotals` gains `colors`/`color_identity`/`produced_mana`, exact per-combination
+// totals for `ColorCmp`. Same blind spot as the previous bump: entirely inside `CardIndexes`, so the
+// header's `AOracleCard`/`APrinting` sizes don't move and can't catch it.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026082301;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {

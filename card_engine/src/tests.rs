@@ -3454,6 +3454,25 @@ fn value_totals_are_exact_in_all_three_spaces() {
             value_id: None,
         }));
     }
+    // The five siblings `frame_data` already covered here: each gets an exact total from `HybridTagIndex`
+    // in its OWN space for nothing (card for subtypes/keywords/oracle_tags, printing for art_tags/is_tags)
+    // -- this table's job is the other two, the same gap frame_data closed for its dimension.
+    for (label, field, values) in [
+        ("subtypes", CollField::Subtypes, FUZZ_SUBTYPES.as_slice()),
+        ("keywords", CollField::Keywords, FUZZ_KEYWORDS.as_slice()),
+        ("oracle_tags", CollField::OracleTags, FUZZ_ORACLE_TAGS.as_slice()),
+        ("art_tags", CollField::ArtTags, FUZZ_ART_TAGS.as_slice()),
+        ("is_tags", CollField::IsTags, FUZZ_IS_TAGS.as_slice()),
+    ] {
+        for &(value, _) in values {
+            leaves.push((format!("{label}:{value}"), FilterExpr::CollectionCmp {
+                field,
+                op: CmpOp::Ge,
+                value: value.to_string(),
+                value_id: None,
+            }));
+        }
+    }
     for shift in FUZZ_SHIFTS {
         for expected in 0..4u64 {
             leaves.push((format!("legality shift={shift} status={expected}"), FilterExpr::Legality {
