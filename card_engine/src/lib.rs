@@ -7362,12 +7362,27 @@ struct ComposeEstimate {
     candidate: usize,
     broadcast: usize,
     scatter: usize,
+    /// Printings a CARD-SPACE collection leaf's build broadcasts (`ids_of` +
+    /// `broadcast_card_ids_to_printings`) -- kept apart from `scatter` because it is a different,
+    /// pricier operation (a card-cursor lookup per id, then a variable-width printing-range fill) than
+    /// a range's contiguous slice-scatter. Measured riding `scatter`'s rate on `otag:triggered-ability`
+    /// /`otag:cycle`/`otag:activated-ability`: 2.7-2.9x too cheap, consistently across all three (see
+    /// `COMPOSE_COLLECTION_BROADCAST_PER_PRINTING_NS`). Printing-space collection leaves (art_tags/
+    /// is_tags) still ride `scatter`: their build IS a contiguous `bits()` copy, the same shape a
+    /// range's is, and measured fine.
+    collection_broadcast: usize,
 }
 
 impl ComposeEstimate {
     /// A leaf: nothing to tighten, so both figures are the same count.
     fn leaf(k: usize, broadcast: usize, scatter: usize) -> Self {
-        Self { result: k, candidate: k, broadcast, scatter }
+        Self { result: k, candidate: k, broadcast, scatter, collection_broadcast: 0 }
+    }
+
+    /// A card-space collection leaf specifically -- see `collection_broadcast`'s doc for why this
+    /// isn't just `leaf(k, 0, k)`.
+    fn collection_leaf(k: usize) -> Self {
+        Self { result: k, candidate: k, broadcast: 0, scatter: 0, collection_broadcast: k }
     }
 }
 
@@ -7397,6 +7412,7 @@ fn compose_printing_estimate(
                     candidate: a.candidate.min(c.candidate),
                     broadcast: a.broadcast + c.broadcast,
                     scatter: a.scatter + c.scatter,
+                    collection_broadcast: a.collection_broadcast + c.collection_broadcast,
                 });
             // Tighten the `min` bound with every PAIR of children the table stores. `min` over singles
             // lets the most selective leaf decide alone, which is why `f:modern r:rare border:white`
@@ -7419,6 +7435,7 @@ fn compose_printing_estimate(
                     candidate: a.candidate + c.candidate,
                     broadcast: a.broadcast + c.broadcast,
                     scatter: a.scatter + c.scatter,
+                    collection_broadcast: a.collection_broadcast + c.collection_broadcast,
                 });
             ComposeEstimate {
                 result: summed.result.min(n_printings),
@@ -7454,17 +7471,20 @@ fn compose_printing_estimate(
         }
         // Collection containment leaf (`type:`/`kw:`/`otag:`/`art:`/`is:`, `Ge`): `k` = the exact
         // printing count the leaf matches (card-space sums the matching cards' printing ranges,
-        // printing-space is the postings length). The build scatters `k` printings → rides `scatter`,
-        // the cheap range-slice rate.
+        // printing-space is the postings length). Card-space fields build via `ids_of` +
+        // `broadcast_card_ids_to_printings` (a card-cursor lookup per id) -- `collection_broadcast`,
+        // not `scatter`. Printing-space fields build via a contiguous `bits()` copy, the same shape a
+        // range's scatter is, so they keep riding `scatter`'s rate.
         FilterExpr::CollectionCmp { field, op: CmpOp::Ge, value, .. }
             if collection_compose_index(indexes, *field).is_some() =>
         {
             let src = collection_compose_index(indexes, *field).expect("guarded by the if");
             let k = collection_leaf_printing_count(&src, value.as_str(), offsets);
-            ComposeEstimate::leaf(k, 0, k)
+            if src.card_space { ComposeEstimate::collection_leaf(k) } else { ComposeEstimate::leaf(k, 0, k) }
         }
-        // Negated collection leaf: all printings minus the positive `k`; the scatter cost rides the
-        // (small) positive `k` cleared, not the (large) complement it produces — same shape as `-set:`.
+        // Negated collection leaf: all printings minus the positive `k`; the build cost rides the
+        // (small) positive `k` cleared, not the (large) complement it produces — same shape as `-set:`,
+        // and the same card-space-vs-printing-space split as the positive leaf above.
         FilterExpr::Not(inner)
             if matches!(inner.as_ref(), FilterExpr::CollectionCmp { field, op: CmpOp::Ge, .. } if collection_compose_index(indexes, *field).is_some()) =>
         {
@@ -7473,7 +7493,12 @@ fn compose_printing_estimate(
             };
             let src = collection_compose_index(indexes, *field).expect("guarded by the matches!");
             let k = collection_leaf_printing_count(&src, value.as_str(), offsets);
-            ComposeEstimate::leaf(n_printings.saturating_sub(k), 0, k)
+            let complement = n_printings.saturating_sub(k);
+            if src.card_space {
+                ComposeEstimate { result: complement, candidate: complement, broadcast: 0, scatter: 0, collection_broadcast: k }
+            } else {
+                ComposeEstimate::leaf(complement, 0, k)
+            }
         }
         FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op, rhs: NumExpr::Const(c) } => {
             ComposeEstimate::leaf(popcount(&rarity_cmp_leaf_bits(*op, *c, &indexes.rarity_printing, n_printings)), 0, 0)
@@ -10247,6 +10272,7 @@ fn mk_plan_feats(
         popcount_words: 0,     // PrintingCompose overrides this (result-space bitmap words)
         compose_paging: ComposePaging::Gather, // PrintingCompose overrides this (which paging strategy it'll actually use)
         walked_hint: None, // PrintingCompose's bare-collection-leaf-on-EDHREC branch overrides this
+        collection_broadcast_printings: 0, // PrintingCompose overrides this for a card-space collection leaf
         // `run_query_streamed`'s per-card artwork overhead applies to every candidate it visits, in
         // artwork mode only — so it rides `eval_domain` there and vanishes elsewhere. See
         // STREAM_ARTWORK_SEEN_PER_CARD_NS for the mechanism and the measurement.
@@ -10521,7 +10547,7 @@ fn acquire_plan_features(
         // execution have to agree on which representation this plan is being judged on.
         let composed = compose_source(filter, unsplit, plane);
         let est = compose_printing_estimate(composed, indexes, offsets, n_printings as usize);
-        let (printing_matches, broadcast, scatter) = (est.result, est.broadcast, est.scatter);
+        let (printing_matches, broadcast, scatter, collection_broadcast) = (est.result, est.broadcast, est.scatter, est.collection_broadcast);
         // Two build kinds, charged at different rates: `broadcast` = legality broadcast-down (linear
         // pass), `scatter` = range-slice scatter (cheap). `project` = the second pass (printing→
         // card/artwork), 0 for printing mode. Keeping all three separate is what lets a bare range's
@@ -10741,6 +10767,7 @@ fn acquire_plan_features(
         };
         feats.broadcast_printings = broadcast as u32;
         feats.scatter_printings = scatter as u32;
+        feats.collection_broadcast_printings = collection_broadcast as u32;
         feats.project_printings = project as u32;
         feats.popcount_words = popcount_words as u32;
         feats.compose_scan_printings = (printing_matches as f64 * COMPOSE_GATHER_SPAN_PER_MATCH) as u32;
