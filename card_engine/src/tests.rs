@@ -1,7 +1,7 @@
 use super::{
     and_child_rank, assign_name_ranks,
     build_numeric_index, build_oracle_text_index, build_trigram_index,
-    build_rarity_index, build_flavor_index, build_hybrid_tag_index, bitmap_beats_postings, HybridTagIndex, build_sort_permutations,
+    build_rarity_index, build_flavor_index, build_hybrid_tag_index, bitmap_beats_postings, HybridTagIndex, build_sort_permutations, EdhrecWalkCheckpoints,
     assign_artwork_groups, build_artwork_base_from, build_bit_planes, build_border_printing_planes, build_rarity_printing_planes, build_divergent_ids, build_name_bigram_index, build_name_unigram_index, build_printing_to_card, flavor_fingerprint, flavor_match_sets,
     cards_of_printings, count_common_keywords, count_common_types,
     build_artist_index, build_printing_value_index, build_arith_tuple_index, is_arith_tuple_route, range_candidates, narrow_candidates, narrow_candidates_exact, rarity_candidates,
@@ -5157,7 +5157,7 @@ fn plan_cost_model_matches_gold() {
                     residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
                     limit: limit as u32,
                     offset: offset as u32,
-                    broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
+                    broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather, walked_hint: None,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
@@ -5399,7 +5399,7 @@ fn plan_cost_refit() {
                     residual_tier_ns100: if prep.all_match_known { 0 } else { verify_cost_tier(&res) },
                     residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
                     limit: limit as u32, offset: offset as u32,
-                    broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
+                    broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather, walked_hint: None,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
@@ -5604,7 +5604,7 @@ fn printing_range_route_probe() {
                 residual_tier_ns100,
                 residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
                 limit: LIMIT as u32, offset: offset as u32,
-                broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
+                broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather, walked_hint: None,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
@@ -5967,7 +5967,7 @@ fn plan_regret_report() {
                 residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
                 limit: limit as u32,
                 offset: offset as u32,
-                broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
+                broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather, walked_hint: None,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
@@ -6097,7 +6097,7 @@ fn plan_regret_fuzz() {
                 residual_tier_ns100: tier,
                 residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
                 limit: limit as u32, offset: offset as u32,
-                broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather,
+                broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather, walked_hint: None,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
@@ -6422,6 +6422,7 @@ fn bench_checked_vs_unchecked_access() {
         art_tags:       build_hybrid_tag_index(&printings, &vocab.strings, |p| &p.card_art_tags),
         is_tags:        build_hybrid_tag_index(&printings, &vocab.strings, |p| &p.card_is_tags),
         frame_data:     HybridTagIndex::default(),
+        edhrec_walk_checkpoints: EdhrecWalkCheckpoints::default(),
         artists:        ArtistIndex::default(),
         flavor:         build_flavor_index(&printings, &strings),
         set_codes:      HashMap::new(),

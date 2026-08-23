@@ -2573,6 +2573,183 @@ fn legality_totals_key(shift: u8, expected: u64) -> u16 {
     (u16::from(shift) << 2) | (expected as u16 & 0b11)
 }
 
+/// Cumulative PRINTING counts at which `WalkCheckpoints` records a position (see
+/// `WalkCheckpoints::from_weighted_positions` for why printings, not cards). Chosen to bracket real
+/// traffic rather than spread evenly: `REALISTIC_OFFSET_WEIGHTS`/`LIMITS` in the client's sampler top
+/// out around `offset + limit` ~875, so checkpoint[800] sits almost exactly at the deepest page real
+/// queries ask for, and the four gaps below it give the interpolation four independent anchors across
+/// the range that matters instead of one.
+const WALK_CHECKPOINT_COUNTS: [u32; 5] = [1, 100, 200, 400, 800];
+
+/// Positions (within one EDHREC permutation direction) at which cumulative PRINTINGS from matching
+/// cards reaches 1/100/200/400/800, for card-space collection fields whose `Perm`-branch walk length
+/// (`cost::printings_walked`) is otherwise a single global rate blind to WHERE a value's cards sit in
+/// EDHREC order.
+///
+/// #1005/#1006/#1007 fixed the tier and candidate-count features on this branch; this is the
+/// remaining piece docs/issues/local-engine-compose-paging-cost-based.md leaves unresolved --
+/// `otag:triggered-ability` measured a 3.2x walk-length miss (predicted 602, realized 1,942) that a
+/// ~10% printings-per-matching-card skew cannot explain, so the error is genuine EDHREC-order
+/// clumping, not a rate. `matches`/`SpaceTotals` give an exact total; this gives the SHAPE of where
+/// those matches fall, which no scalar total can.
+///
+/// 20 bytes per (value, direction) — five `u32` positions, no separate rate to fit.
+#[derive(Archive, Serialize, Deserialize, Default, Clone, Copy)]
+struct WalkCheckpoints {
+    /// Ascending by construction (each is a position further into the walk than the last). Fewer than
+    /// `WALK_CHECKPOINT_COUNTS.len()` meaningful entries when the value has fewer total matches --
+    /// `len` says how many of `positions` are real; the rest are zero and must not be read.
+    positions: [u32; 5],
+    len: u8,
+}
+
+impl WalkCheckpoints {
+    /// Builds from a value's `(position, printing_span)` pairs in ONE permutation direction, not
+    /// necessarily sorted yet -- one pair per matching card, `printing_span` that card's own printing
+    /// count. NOT one card per checkpoint slot: `unique=printing` needs "cumulative PRINTINGS reaches
+    /// N", and a card-level predicate's matching cards can each contribute more than one printing at
+    /// once, so this walks matches in permutation order accumulating printing span, not card count,
+    /// and records a checkpoint's position the moment that running total reaches it.
+    fn from_weighted_positions(mut entries: Vec<(u32, u32)>) -> WalkCheckpoints {
+        entries.sort_unstable_by_key(|&(pos, _)| pos);
+        let mut out = WalkCheckpoints::default();
+        let mut cumulative: u64 = 0;
+        let mut next = 0usize;
+        for (pos, span) in entries {
+            cumulative += u64::from(span);
+            while next < WALK_CHECKPOINT_COUNTS.len() && cumulative >= u64::from(WALK_CHECKPOINT_COUNTS[next]) {
+                out.positions[next] = pos;
+                out.len = (next + 1) as u8;
+                next += 1;
+            }
+            if next >= WALK_CHECKPOINT_COUNTS.len() {
+                break;
+            }
+        }
+        out
+    }
+}
+
+impl ArchivedWalkCheckpoints {
+    /// Estimated walk length (permutation entries to visit) to accumulate `k` matches, by linear
+    /// interpolation between the two stored checkpoints bracketing `k` -- or extrapolation from the
+    /// last segment's slope past the final checkpoint. `None` when there are no checkpoints at all
+    /// (an empty value, which `len_of`/`SpaceTotals` already answer as an exact zero elsewhere).
+    fn walk_length_for(&self, k: u32) -> Option<f64> {
+        let len = usize::from(self.len);
+        if len == 0 {
+            return None;
+        }
+        let count_at = |i: usize| WALK_CHECKPOINT_COUNTS[i] as f64;
+        let pos_at = |i: usize| f64::from(u32::from(self.positions[i]));
+        // Below the first checkpoint: interpolate from the origin (position 0, count 0) -- the walk
+        // has not found anything yet at that point, so the origin is an exact anchor, not an estimate.
+        if k as f64 <= count_at(0) {
+            return Some(pos_at(0) * (k as f64 / count_at(0)));
+        }
+        // Between two stored checkpoints: interpolate the segment they bound.
+        for i in 1..len {
+            if k as f64 <= count_at(i) {
+                let (c0, c1, p0, p1) = (count_at(i - 1), count_at(i), pos_at(i - 1), pos_at(i));
+                return Some(p0 + (p1 - p0) * (k as f64 - c0) / (c1 - c0));
+            }
+        }
+        // Past the last checkpoint: extrapolate the final segment's slope. `len == 1` has no segment to
+        // slope from, so it falls back to the same origin-to-first-checkpoint rate used below count(0).
+        let (c0, c1, p0, p1) = if len >= 2 {
+            (count_at(len - 2), count_at(len - 1), pos_at(len - 2), pos_at(len - 1))
+        } else {
+            (0.0, count_at(0), 0.0, pos_at(0))
+        };
+        let rate = (p1 - p0) / (c1 - c0);
+        Some(p1 + rate * (k as f64 - c1))
+    }
+}
+
+/// One value's `(position, printing_span)` pairs in each EDHREC direction, in one pass over `cards`.
+/// Generic over the key exactly like `build_value_totals`, for the same reason: subtypes/keywords/
+/// oracle_tags are the same shape of dimension (multi-valued, `coll_vocab`-keyed, card-space), just
+/// answering a different question here.
+/// Prefix sum, in EACH permutation direction, of every VISITED card's printing span -- matching or
+/// not. The walk bit-tests every card it steps past, so "how many printings has the walk examined by
+/// position P" is this, not P itself: a card position is a CARD-count quantity (0..n_cards), while
+/// `printings_walked` answers in PRINTING units (0..n_printings, ~3.1x larger on this corpus) because
+/// that is what it is compared against (`printings_examined`). One array per direction, shared by
+/// every value's checkpoints -- not itself keyed by value.
+fn build_perm_prefix_printings(offsets: &[u32], edhrec_perm: &[Vec<u32>; 2]) -> [Vec<u32>; 2] {
+    let prefix_of = |perm: &[u32]| -> Vec<u32> {
+        let mut cumulative = 0u32;
+        perm.iter()
+            .map(|&cid| {
+                cumulative += offsets[cid as usize + 1] - offsets[cid as usize];
+                cumulative
+            })
+            .collect()
+    };
+    [prefix_of(&edhrec_perm[0]), prefix_of(&edhrec_perm[1])]
+}
+
+fn build_walk_checkpoints<K: Eq + std::hash::Hash>(
+    cards: &[OracleCard],
+    offsets: &[u32],
+    edhrec_inv: &[Vec<u32>; 2],
+    perm_prefix_printings: &[Vec<u32>; 2],
+    keys_of: impl Fn(&OracleCard) -> Vec<K>,
+) -> HashMap<K, [WalkCheckpoints; 2]> {
+    let mut entries: HashMap<K, [Vec<(u32, u32)>; 2]> = HashMap::new();
+    for (cid, card) in cards.iter().enumerate() {
+        let span = offsets[cid + 1] - offsets[cid];
+        for key in keys_of(card) {
+            let e = entries.entry(key).or_insert_with(|| [Vec::new(), Vec::new()]);
+            for dir in 0..2 {
+                let pos = edhrec_inv[dir][cid] as usize;
+                // The "position" a checkpoint records is printings examined walking up to and
+                // including THIS card, not the card's own rank -- exact, since it comes straight off
+                // the prefix sum, not an averaged printings-per-card ratio.
+                e[dir].push((perm_prefix_printings[dir][pos], span));
+            }
+        }
+    }
+    entries
+        .into_iter()
+        .map(|(k, [asc, desc])| {
+            (k, [WalkCheckpoints::from_weighted_positions(asc), WalkCheckpoints::from_weighted_positions(desc)])
+        })
+        .collect()
+}
+
+/// `WalkCheckpoints` for the three card-space collection fields, EDHREC only -- the dimension that
+/// produced every `Perm`-branch mis-route measured this session, and (per `REALISTIC_FAMILY_WEIGHTS`)
+/// the dominant orderby by far. `art_tags`/`is_tags` are printing-space (no card permutation to build
+/// checkpoints against) and `frame_data` already routes around this via its own gate; not attempted.
+#[derive(Archive, Serialize, Deserialize, Default)]
+struct EdhrecWalkCheckpoints {
+    subtypes: HashMap<String, [WalkCheckpoints; 2]>,
+    keywords: HashMap<String, [WalkCheckpoints; 2]>,
+    oracle_tags: HashMap<String, [WalkCheckpoints; 2]>,
+}
+
+fn build_edhrec_walk_checkpoints(
+    cards: &[OracleCard],
+    offsets: &[u32],
+    coll_vocab: &[String],
+    edhrec_perm: &[Vec<u32>; 2],
+    edhrec_inv: &[Vec<u32>; 2],
+) -> EdhrecWalkCheckpoints {
+    let perm_prefix_printings = build_perm_prefix_printings(offsets, edhrec_perm);
+    EdhrecWalkCheckpoints {
+        subtypes: build_walk_checkpoints(cards, offsets, edhrec_inv, &perm_prefix_printings, |card| {
+            card.card_subtypes.iter().map(|v| coll_vocab[*v as usize].clone()).collect()
+        }),
+        keywords: build_walk_checkpoints(cards, offsets, edhrec_inv, &perm_prefix_printings, |card| {
+            card.card_keywords.iter().map(|v| coll_vocab[*v as usize].clone()).collect()
+        }),
+        oracle_tags: build_walk_checkpoints(cards, offsets, edhrec_inv, &perm_prefix_printings, |card| {
+            card.card_oracle_tags.iter().map(|v| coll_vocab[*v as usize].clone()).collect()
+        }),
+    }
+}
+
 /// A value is worth PAIRING only if it is broad enough that an estimate about it can change a routing
 /// decision. `STREAM_MIN_MATCHES` is that line: below it the sparse floor decides the plan, not the
 /// estimate's precision, and min-over-singles is already within a small factor of the truth.
@@ -3669,6 +3846,9 @@ struct CardIndexes {
     /// Exact 3-space totals for PAIRS of dense low-cardinality values (~14 KB), so a two-leaf `And` over
     /// them is answered rather than bounded by `min`.
     pair_totals:    PairTotals,
+    /// Where a card-space collection value's cards fall in EDHREC order, so the `Perm`-branch walk
+    /// length can be interpolated instead of assumed uniform. See `WalkCheckpoints`.
+    edhrec_walk_checkpoints: EdhrecWalkCheckpoints,
     sort_perms:     SortPermutations,          // card space (streamed selection)
     artwork_groups: Vec<u16>,                  // card space: distinct illustration groups
     // card space, n_cards+1 entries: prefix sum of artwork_groups, so card c's artworks are the
@@ -8589,6 +8769,23 @@ fn compose_leaf_nothing_to_verify(filter: &FilterExpr) -> bool {
     )
 }
 
+/// `WalkCheckpoints` for a bare card-space collection leaf, in the direction the query walks --
+/// `None` for every other filter shape (compound, wrong field, wrong op) and for a value the table
+/// happens not to cover (never built, so `len == 0`). Deliberately the SAME shape
+/// `compose_leaf_nothing_to_verify` matches: both ask "is this filter a bare Ge leaf on one of the
+/// three card-space fields", just for different reasons.
+fn edhrec_walk_checkpoints_for<'i>(indexes: &'i Archived<CardIndexes>, filter: &FilterExpr, descending: bool) -> Option<&'i Archived<WalkCheckpoints>> {
+    let FilterExpr::CollectionCmp { field, op: CmpOp::Ge, value, .. } = filter else { return None };
+    let table = match field {
+        CollField::Subtypes => &indexes.edhrec_walk_checkpoints.subtypes,
+        CollField::Keywords => &indexes.edhrec_walk_checkpoints.keywords,
+        CollField::OracleTags => &indexes.edhrec_walk_checkpoints.oracle_tags,
+        CollField::ArtTags | CollField::IsTags | CollField::FrameData => return None,
+    };
+    let cp = &table.get(value.as_str())?[usize::from(descending)];
+    (cp.len > 0).then_some(cp)
+}
+
 /// The candidate materialization + filter rewriting shared by `StreamedSelect`
 /// and `GatheredScan`, extracted verbatim from `run_query`. Mutates `filter` via
 /// `memoize_text_predicates` + `order_children_by_verify_cost` under the same
@@ -10049,6 +10246,7 @@ fn mk_plan_feats(
         project_printings: 0,  // PrintingCompose's card/artwork projection pass; CardRangePopcount sets it too (for costing compose)
         popcount_words: 0,     // PrintingCompose overrides this (result-space bitmap words)
         compose_paging: ComposePaging::Gather, // PrintingCompose overrides this (which paging strategy it'll actually use)
+        walked_hint: None, // PrintingCompose's bare-collection-leaf-on-EDHREC branch overrides this
         // `run_query_streamed`'s per-card artwork overhead applies to every candidate it visits, in
         // artwork mode only — so it rides `eval_domain` there and vanishes elsewhere. See
         // STREAM_ARTWORK_SEEN_PER_CARD_NS for the mechanism and the measurement.
@@ -10571,6 +10769,14 @@ fn acquire_plan_features(
             .flatten();
         feats.compose_paging =
             compose_paging_with_total(indexes, cards.len(), composed, mode, sort_col, descending, Some(result_total), gather_declines);
+        // `WalkCheckpoints` only covers `unique=printing` ordered by EDHREC today (see its doc for why
+        // printing mode specifically: a card-level match can contribute more than one printing at
+        // once, which is what the table is built to weight by). `filter`, not `composed`: the same
+        // "ask about what the WALK sees" reasoning `compose_leaf_nothing_to_verify`'s call site uses.
+        if matches!(mode, Mode::Printing) && matches!(sort_col, SortCol::EdhrecRank) {
+            let k = (params.page_offset as u32).saturating_add(params.limit as u32).min(result_total as u32);
+            feats.walked_hint = edhrec_walk_checkpoints_for(indexes, filter, descending).and_then(|cp| cp.walk_length_for(k));
+        }
         (feats, Prep::Range(CountSource::PrintingCompose))
     } else {
         let prep = prepare_candidates(ctx, params, filter, plane);
@@ -11790,7 +11996,10 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 // 2026082301 — `ValueTotals` gains `colors`/`color_identity`/`produced_mana`, exact per-combination
 // totals for `ColorCmp`. Same blind spot as the previous bump: entirely inside `CardIndexes`, so the
 // header's `AOracleCard`/`APrinting` sizes don't move and can't catch it.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026082301;
+//
+// 2026082302 — new `CardIndexes` field `edhrec_walk_checkpoints` (`WalkCheckpoints` for subtypes/
+// keywords/oracle_tags against the EDHREC permutation). Same blind spot again.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026082302;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -12335,6 +12544,11 @@ impl QueryEngine {
             &coll_vocab,
             usize::from(artwork_group_counts.iter().copied().max().unwrap_or(0)),
         );
+        // Out here (rather than inline in the struct literal, like `pair_totals`/`value_totals` above)
+        // because `edhrec_walk_checkpoints` needs its `edhrec_inv` before the literal moves `cards`.
+        let sort_perms = build_sort_permutations(&cards);
+        let edhrec_walk_checkpoints =
+            build_edhrec_walk_checkpoints(&cards, &offsets, &coll_vocab, &sort_perms.edhrec, &sort_perms.edhrec_inv);
         let value_totals = build_all_value_totals(
             &cards,
             &printings,
@@ -12388,7 +12602,8 @@ impl QueryEngine {
             price_eur_cards,
             price_tix_cards,
             collector_number_cards,
-            sort_perms:     build_sort_permutations(&cards),
+            sort_perms,
+            edhrec_walk_checkpoints,
             max_artwork_groups: artwork_group_counts.iter().copied().max().unwrap_or(0),
             artwork_groups: artwork_group_counts,
             // Columnar copy of each printing's assigned artwork_group_id, derived here — the single
