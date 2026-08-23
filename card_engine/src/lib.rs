@@ -1818,8 +1818,13 @@ fn build_hybrid_tag_index<T>(rows: &[T], vocab: &[String], get_ids: impl Fn(&T) 
     let mut out = HybridTagIndex::default();
     for (value, postings) in build_tag_index(rows, vocab, get_ids) {
         if bitmap_beats_postings(postings.len(), n) {
-            let count = postings.len() as u32;
-            out.dense.insert(value, DenseBits { count, words: scatter_bits(postings, n) });
+            // Popcounted from the scattered bitmap, not `postings.len()`: a duplicate row id in
+            // `postings` sets the same bit twice, which `postings.len()` would over-count and the
+            // popcount does not, so `count` stays exactly the bitmap's true popcount by construction.
+            // A one-time cost at archive-build time, not the query-time cost this field exists to avoid.
+            let words = scatter_bits(postings, n);
+            let count = words.iter().map(|w| w.count_ones()).sum();
+            out.dense.insert(value, DenseBits { count, words });
         } else {
             out.sparse.insert(value, postings);
         }
