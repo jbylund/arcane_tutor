@@ -125,3 +125,16 @@ Nothing shipped. The rate measurements are on the production corpus across 0.5x-
 justified by two instruments on two seeds. Not attempted: the joint refit, and the `Perm` per-card
 feature (which needs an estimator for `cards_visited`, plausibly `printings_walked / printings_per_card`,
 ungraded).
+
+**Still true, reconfirmed while joint-refitting `GatheredScan`/`StreamedSelect` in the same session
+that fixed `scan_units`'s card-mode overcharge.** `fit_cost_model.py`'s general fit still cannot
+separate `WALK_STEP` cleanly for the same reason: it fits against the ESTIMATED feature vector
+`plan_cost` reads today, which has no `cards_visited` column for `Perm` to fit against, so the
+question this doc's own hand-built design already answered (add the column, the rate resolves to
+0.31 against `OrderbyWalk`'s near-identical 0.31) never gets re-asked by the general harness — it
+just reports whatever number the wrong shape produces. `PrintingCompose` was excluded from that
+joint refit for exactly this reason: fitting a arm whose shape is known-wrong would ship coefficients
+that compensate for the missing column, which is the same mistake the original 1.07 popcount rate was
+already compensating for. The `GatheredScan`/`StreamedSelect` pair had no equivalent known gap, so it
+went ahead alone. Whoever picks this up next needs the `cards_visited` ESTIMATOR (not just the
+diagnostic column) built and graded before `PrintingCompose`'s rates are worth touching at all.
