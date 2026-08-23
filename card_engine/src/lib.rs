@@ -8518,6 +8518,34 @@ fn plane_leaves_nothing_to_verify(
         })
 }
 
+/// The compose-side counterpart to `plane_leaves_nothing_to_verify`: whether a bare `Ge` (containment)
+/// `CollectionCmp` on a CARD-space field leaves the match kernels nothing to verify.
+///
+/// `subtypes`/`keywords`/`oracle_tags` are pure card properties — every printing of a card agrees —
+/// unlike `art_tags`/`is_tags`/`frame_data`, which vary printing to printing (see `collection`,
+/// filter.rs). So when the WHOLE filter is one of these leaves, `card_pass`/`card_match_count` resolve
+/// it at the card level for every candidate, exactly like a card-invariant legality format: nothing is
+/// left to check per printing, or even per candidate beyond the narrowing that already happened.
+///
+/// `Ge` only: `Eq`/`Gt` need the collection-length check a containment leaf does not prove, so
+/// `is_printing_composable` never hands compose a bare `Eq`/`Gt` collection leaf in the first place
+/// (see `collection_leaf_bits`'s doc) — this mirrors that gate rather than re-deriving it.
+///
+/// Bare leaf only, deliberately: `otag:X t:human` loses the guarantee the moment a printing-varying
+/// predicate joins it as a partner — `card_pass` then returns `PrintingDep` and the kernels must walk
+/// every printing regardless, the same caveat `plane_leaves_nothing_to_verify`'s legality callers
+/// already live with for a divergent format.
+///
+/// #1005: `otag:triggered-ability` (47% dense) measured `StreamedSelect` predicted at 1026us against
+/// 45.7us real — a 22x over-charge from this gap — which routed the query to `PrintingCompose`
+/// (176.5us measured) despite it being ~4x slower.
+fn compose_leaf_nothing_to_verify(filter: &FilterExpr) -> bool {
+    matches!(
+        filter,
+        FilterExpr::CollectionCmp { field: CollField::Subtypes | CollField::Keywords | CollField::OracleTags, op: CmpOp::Ge, .. }
+    )
+}
+
 /// The candidate materialization + filter rewriting shared by `StreamedSelect`
 /// and `GatheredScan`, extracted verbatim from `run_query`. Mutates `filter` via
 /// `memoize_text_predicates` + `order_children_by_verify_cost` under the same
@@ -10392,7 +10420,15 @@ fn acquire_plan_features(
         // terms; charging them anyway was 92-94% of P3's predicted cost on `f:modern`, `f:gladiator`,
         // `f:commander` and `f:predh`. `residual_exact` is unavailable here (this branch never narrows),
         // so this is the conservative half of the executor's disjunction: it can over-charge, never under.
-        let nothing_to_verify = plane_leaves_nothing_to_verify(filter, mode, plane, indexes);
+        //
+        // `compose_leaf_nothing_to_verify` closes the analogous gap for a bare compose-exact collection
+        // leaf: `otag:triggered-ability` (47% dense) measured StreamedSelect predicted at 1026us against
+        // 45.7us real, a 22x over-charge from exactly this branch's `False` default, which routed the
+        // query to `PrintingCompose` (176.5us) despite it being ~4x slower (#1005). `plane_leaves_
+        // nothing_to_verify` cannot see this — it only recognizes the legality plane's rewrite to `True`,
+        // and a compose-exact leaf is never rewritten that way.
+        let nothing_to_verify =
+            plane_leaves_nothing_to_verify(filter, mode, plane, indexes) || compose_leaf_nothing_to_verify(filter);
         let tier = if nothing_to_verify { 0 } else { verify_cost_tier(composed) };
         // `GatheredScan` walks every printing of every candidate card, so its scan feature is the candidate
         // SPAN. `scan_all` estimates that span as `est_cards x` the corpus-average printings-per-card `x 2.1`,
