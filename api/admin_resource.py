@@ -102,22 +102,28 @@ _UPSERT_PAGE_SIZE = 3_000
 # at ~2% of the corpus (see docs/issues/00985): reserved (1.1%) and gamechanger (0.4%)
 # were the original two; the rest were added after a corpus-wide survey of every is: tag
 # on Scryfall's syntax page found these sitting at or under masterpiece's 1.8%.
-# foil/nonfoil/reprint/booster/hires (50-97%) are deliberately NOT here -- "higher
-# cardinality, memory check first" -- and stay a candidate for a separate, more careful
-# pass.
+# foil/nonfoil/reprint/booster/hires/universesbeyond/promo/full/datestamped/prerelease
+# were excluded here too ("higher cardinality, memory check first") but are now included:
+# the Postgres row-growth cost is accepted, and #1003 made a dense value cost a bitmap
+# instead of a posting list on the engine side, so density no longer argues against them.
 BOOLEAN_IS_TAGS: dict[str, str] = {
     # Alphabetized by key. Expressions read either a plain top-level boolean (reserved,
     # gamechanger, spotlight), promo_types/keywords/finishes array membership, or a
     # single-field lookup (set_type, preview.source).
     "arena_league": "cards.raw_card_blob->'promo_types' @> '\"arenaleague\"'",
+    "booster": "cards.raw_card_blob->'booster' = 'true'::jsonb",
     "buyabox": "cards.raw_card_blob->'promo_types' @> '\"buyabox\"'",
     "convention": "cards.raw_card_blob->'promo_types' @> '\"convention\"'",
+    "datestamped": "cards.raw_card_blob->'promo_types' @> '\"datestamped\"'",
     "etched": "cards.raw_card_blob->'finishes' @> '\"etched\"'",
     "fnm": "cards.raw_card_blob->'promo_types' @> '\"fnm\"'",
+    "foil": "cards.raw_card_blob->'foil' = 'true'::jsonb",
+    "full": "cards.raw_card_blob->'full_art' = 'true'::jsonb",
     "gamechanger": "cards.raw_card_blob->'game_changer' = 'true'::jsonb",
     "gameday": "cards.raw_card_blob->'promo_types' @> '\"gameday\"'",
     "giftbox": "cards.raw_card_blob->'promo_types' @> '\"giftbox\"'",
     "glossy": "cards.raw_card_blob->'promo_types' @> '\"glossy\"'",
+    "hires": "cards.raw_card_blob->'highres_image' = 'true'::jsonb",
     "hybrid": r"cards.mana_cost_text ~ '\{[WUBRG]/[WUBRG]\}'",
     "instore": "cards.raw_card_blob->'promo_types' @> '\"instore\"'",
     "intro_pack": "cards.raw_card_blob->'promo_types' @> '\"intropack\"'",
@@ -125,17 +131,22 @@ BOOLEAN_IS_TAGS: dict[str, str] = {
     "league": "cards.raw_card_blob->'promo_types' @> '\"league\"'",
     "masterpiece": "cards.raw_card_blob->>'set_type' = 'masterpiece'",
     "media_insert": "cards.raw_card_blob->'promo_types' @> '\"mediainsert\"'",
+    "nonfoil": "cards.raw_card_blob->'nonfoil' = 'true'::jsonb",
     # "Partner with <name>" cards carry a plain "Partner" keyword alongside it (verified
     # against the corpus), so checking for "Partner" alone already covers both.
     "partner": "cards.raw_card_blob->'keywords' @> '\"Partner\"'",
     "phyrexian": r"cards.mana_cost_text ~ '\{[WUBRG]/P\}'",
     "planeswalker_deck": "cards.raw_card_blob->'promo_types' @> '\"planeswalkerdeck\"'",
     "player_rewards": "cards.raw_card_blob->'promo_types' @> '\"playerrewards\"'",
+    "prerelease": "cards.raw_card_blob->'promo_types' @> '\"prerelease\"'",
+    "promo": "cards.raw_card_blob->'promo' = 'true'::jsonb",
     "release": "cards.raw_card_blob->'promo_types' @> '\"release\"'",
+    "reprint": "cards.raw_card_blob->'reprint' = 'true'::jsonb",
     "reserved": "cards.raw_card_blob->'reserved' = 'true'::jsonb",
     "scryfallpreview": "cards.raw_card_blob->'preview'->>'source' = 'Scryfall'",
     "set_promo": "cards.raw_card_blob->'promo_types' @> '\"setpromo\"'",
     "spotlight": "cards.raw_card_blob->'story_spotlight' = 'true'::jsonb",
+    "universesbeyond": "cards.raw_card_blob->'promo_types' @> '\"universesbeyond\"'",
 }
 
 
@@ -183,17 +194,10 @@ _SYNC_BOOLEAN_IS_TAGS_SQL = _build_boolean_is_tags_sql(BOOLEAN_IS_TAGS)
 CUSTOM_IS_TAGS = [
     "historic",  # artifact, legendary, saga
     "permanent",  # ...
-    "reprint",
     "spell",  # ...
     "unique",  # has exactly one printing
     "old",  # 93/97 frame
     "new",  # newer frames
-    "foil",  # foil version of a card
-    "nonfoil",  # non-foil version of a card
-    "datestamped",  # can get from the json promo_types array
-    "universesbeyond",  # can get from the json promo_types array
-    # I don't know how to do this, I just don't want to make the normal requests
-    "booster",
     "default",
 ]
 
@@ -704,6 +708,13 @@ class AdminResource:
             msg = "is_tag parameter is required"
             raise ValueError(msg)
 
+        if is_tag in BOOLEAN_IS_TAGS:
+            return {
+                "cards_updated": 0,
+                "is_tag": is_tag,
+                "message": f"is:{is_tag} is synced automatically from BOOLEAN_IS_TAGS on every import, no manual action needed",
+                "total_cards_found": 0,
+            }
         if is_tag in CUSTOM_IS_TAGS:
             return self._add_is_tag_to_custom(is_tag=is_tag)
         if is_tag in CARD_IS_TAGS:
