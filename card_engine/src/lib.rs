@@ -3656,9 +3656,7 @@ struct CardIndexes {
     oracle_tags:    HybridTagIndex,  // card space
     // Scalar, not a collection (every card has exactly one layout) -- narrow_rec's TextExact::Eq
     // arm for it is a direct tight bucket lookup, unlike the CollectionCmp arm above it shares
-    // storage with. `layout:` (is:split/dfc/meld/...) had NO narrowing at all before this, so an
-    // unnarrowable `is:` predicate fell back to "assume ~everything matches" and badly mis-costed
-    // both materializing plans by different factors, flipping routing between them.
+    // storage with.
     layout:         HybridTagIndex,  // card space (scalar, not a collection)
     art_tags:       HybridTagIndex,  // printing space
     is_tags:        HybridTagIndex,  // printing space
@@ -5116,19 +5114,11 @@ fn narrow_rec(
             Narrowed::tight(Candidates::Printings(expand_flavor_ids(flavor, dense_ids, n_printings)))
         }
 
-        // layout: (`is:split`/`is:dfc`/`is:meld`/... rewrite to this in api/parsing/rewrite.py) is a
-        // CARD-scalar text field -- every printing of a card shares one
-        // layout, unlike `border`/`frame_data` which vary printing to printing -- narrowed the same
-        // way `subtypes`/`keywords`/`oracle_tags` are: a `HybridTagIndex` bucket per value. Tight,
-        // unlike those fields' own Eq/Gt (which need a downstream length check because containment
-        // isn't equality for a multi-valued collection): a scalar field's bucket membership IS
-        // equality, so there is no ambiguity to re-verify.
-        //
-        // Before this, `layout:` had no narrowing arm at all, so `is:split eur>0.07`-shaped queries
-        // fell through with `raw_candidates: None` and the acquire path assumed ~100% selectivity
-        // (`matches` read 31,724 of 31,724 cards) against a real match rate of 0.4-1.6% --
-        // mis-costing StreamedSelect and GatheredScan by different multipliers of the same wrong
-        // scan_units and flipping which one the router picked.
+        // layout: (`is:split`/`is:dfc`/`is:meld`/... rewrite to this in api/parsing/rewrite.py) narrows
+        // the same way `subtypes`/`keywords`/`oracle_tags` do: a `HybridTagIndex` bucket per value.
+        // Tight, unlike those fields' own Eq/Gt (which need a downstream length check because
+        // containment isn't equality for a multi-valued collection): a scalar field's bucket
+        // membership IS equality, so there is no ambiguity to re-verify.
         FilterExpr::TextExact { field: TextField::Layout, op: CmpOp::Eq, value } => {
             let idx = &indexes.layout;
             match idx.len_of(value.as_str()) {
