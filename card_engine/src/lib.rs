@@ -1847,6 +1847,9 @@ fn finish_hybrid_tag_index(by_value: HashMap<String, Vec<u32>>, n: usize) -> Hyb
 fn build_layout_hybrid_index(cards: &[OracleCard], strings: &[String]) -> HybridTagIndex {
     let mut by_value: HashMap<String, Vec<u32>> = HashMap::new();
     for (cid, card) in cards.iter().enumerate() {
+        if card.card_layout_id == NONE_STR {
+            continue;
+        }
         by_value.entry(strings[card.card_layout_id as usize].clone()).or_default().push(cid as u32);
     }
     finish_hybrid_tag_index(by_value, cards.len())
