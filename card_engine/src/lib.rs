@@ -2829,7 +2829,7 @@ fn build_pair_totals(
     out
 }
 
-/// Build all four `ValueTotals` maps. One call site, so the four cannot be built from different
+/// Build all twelve `ValueTotals` maps. One call site, so they cannot be built from different
 /// snapshots of the same printings.
 fn build_all_value_totals(
     cards: &[OracleCard],
@@ -2840,7 +2840,7 @@ fn build_all_value_totals(
     max_artwork_groups: usize,
 ) -> ValueTotals {
     // A macro rather than a closure alias: each `keys_of` is a distinct closure type returning a
-    // distinct key type, so one generic-over-both helper binding cannot serve all four.
+    // distinct key type, so one generic-over-both helper binding cannot serve all twelve.
     macro_rules! totals {
         ($keys_of:expr) => {
             build_value_totals(cards, printings, printing_to_card, max_artwork_groups, $keys_of)

@@ -3503,6 +3503,56 @@ fn value_totals_are_exact_in_all_three_spaces() {
     assert!(nonzero >= leaves.len(), "too many zero totals ({nonzero}); the sweep is not exercising the table");
 }
 
+/// `exact_result_total`'s `ColorCmp` arm (colors/color_identity/produced_mana) must be exact in all
+/// three spaces, for every op against every one of the 32 possible WUBRG masks, against the same
+/// brute-force reference the fuzz differential uses.
+///
+/// This arm is not yet reachable via real routing (`is_printing_composable` has no `ColorCmp` arm,
+/// so `PrintingCompose` never applies to a bare color query), which is exactly why it needs its own
+/// direct sweep rather than relying on the fuzz differential to exercise it incidentally.
+#[test]
+fn value_totals_are_exact_for_color_fields() {
+    // Same rationale as `value_totals_are_exact_in_all_three_spaces`: this only asserts something
+    // when the table is switched on.
+    if !*EXACT_VALUE_TOTALS {
+        return;
+    }
+
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(20_260_805);
+    let data = fuzz_store_n(&mut rng, 2_000);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let mut nonzero = 0usize;
+    let mut checked = 0usize;
+    for (label, field) in [
+        ("colors", ColorField::Colors),
+        ("color_identity", ColorField::ColorIdentity),
+        ("produced_mana", ColorField::ProducedMana),
+    ] {
+        for op in [CmpOp::Ge, CmpOp::Eq, CmpOp::Le, CmpOp::Lt, CmpOp::Gt, CmpOp::Ne] {
+            for mask in 0u8..32 {
+                let f = FilterExpr::ColorCmp { field, op, mask };
+                for (mode_label, mode) in [("printing", Mode::Printing), ("card", Mode::Card), ("artwork", Mode::Artwork)] {
+                    let got = exact_result_total(&f, &archived.indexes, mode)
+                        .unwrap_or_else(|| panic!("{label} op={op:?} mask={mask} / {mode_label}: the table must answer, not decline"));
+                    assert_eq!(
+                        got,
+                        fuzz_reference_total(archived, &f, mode_label),
+                        "{label} op={op:?} mask={mask} / {mode_label}",
+                    );
+                    nonzero += usize::from(got > 0);
+                    checked += 1;
+                }
+            }
+        }
+    }
+    // Otherwise a table that answered 0 to everything would pass every assertion above.
+    assert!(nonzero > 0, "no color-field case produced a nonzero total; the sweep is not exercising the table");
+    assert_eq!(checked, 3 * 6 * 32 * 3, "field x op x mask x mode combinations swept");
+}
+
 /// `exact_result_total`'s rarity arm must be exact in all three spaces, for every op against every
 /// rarity value, against the same brute-force reference the fuzz differential uses.
 ///
