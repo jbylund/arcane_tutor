@@ -9644,6 +9644,378 @@ fn walk_grouped_page<'a>(
     (page, work)
 }
 
+/// PROTOTYPE, not called by the fastpath: `Mode::Card`'s equivalent of `walk_grouped_page`, using the
+/// same scatter + popcount-skip technique `run_query_streamed_popcount` already uses for
+/// `PlanePopcountOrder`/`CardRangePopcount`, instead of walking the permutation card by card.
+///
+/// Scatter, in one pass over `pbits`' set printings, straight to a RANK-ordered card-existence
+/// bitmap — not `printing_bits_to_card_bits` followed by a second scatter of ITS set bits; that
+/// two-pass shape costs the projection's `O(popcount(pbits))` and then the re-scatter's
+/// `O(popcount(card_bits))` on top, where visiting each matching printing once here (deduplicating
+/// per card in-line) gets the same rank-existence bitmap for the projection's cost alone. Then skip
+/// to `page_offset` by popcounting 64-card WORDS instead of testing cards one at a time. Cost is
+/// `O(popcount(pbits) + n_cards/64)` — proportional to how many matches the filter has corpus-wide,
+/// completely insensitive to WHERE in the permutation they happen to sit.
+///
+/// `walk_grouped_page`'s cost is the opposite shape: insensitive to match density, sensitive to how
+/// deep the walk has to go to accumulate a page — which is exactly why `cards_visited` has been hard
+/// to estimate (`local-engine-compose-perm-cards-visited-estimator.md`): EDHREC-order clumping means
+/// "how deep" has no simple relationship to the query's own match count. This sidesteps needing that
+/// estimate at all for the population where it would help most — sparse, clumped matches, where
+/// `walk_grouped_page` has to visit many non-matching cards to find enough. It is not a universal
+/// replacement: a shallow page against matches that happen to cluster early costs `walk_grouped_page`
+/// very little and this approach a full `O(popcount(pbits))` scatter regardless, which is why this is
+/// a candidate THIRD strategy to pick between, not a blanket swap — see the doc for the cost trade.
+///
+/// `Mode::Card` only, for now: `Artwork` needs a per-card GROUP count (not existence) and `Printing`
+/// needs a per-card PRINTING count — both a WEIGHTED extension of this same idea, not attempted here.
+// Promoted out of `#[cfg(test)]` (#730); not yet called from the dispatch path -- the sigma decision
+// rule that will call it is a later, separate PR. Correctness stays covered by the differential test
+// against `walk_grouped_page` in the meantime.
+#[allow(dead_code)]
+fn walk_card_page_via_popcount_skip<'a>(
+    ctx: &QueryCtx<'a>,
+    params: &QueryParams,
+    pbits: &[u64],
+    order: SortOrder<'_>,
+) -> (Vec<(&'a AOracleCard, &'a APrinting)>, ComposePageWork) {
+    debug_assert!(matches!(params.mode, Mode::Card), "prototype is Mode::Card only");
+    let QueryCtx { cards, printings, offsets, indexes, .. } = *ctx;
+    let QueryParams { prefer, limit, page_offset, .. } = *params;
+    let n_cards = cards.len();
+    let mut work = ComposePageWork::default();
+
+    // Scatter, in ONE pass over `pbits`' set PRINTINGS -- not a separate `printing_bits_to_card_bits`
+    // projection followed by a second scatter of ITS set bits. That two-pass shape cost
+    // `O(popcount(pbits))` for the projection alone (as much as this entire scatter) plus
+    // `O(popcount(card_bits))` on top for re-scattering it; visiting each matching printing once,
+    // here, and deduplicating in-line (a card reached via several of its own matching printings
+    // still counts once) gets the same result for `O(popcount(pbits))` total, not more.
+    let mut permuted = vec![0u64; n_cards.div_ceil(64)];
+    let mut total: usize = 0;
+    for (i, &word) in pbits.iter().enumerate() {
+        let mut w = word;
+        while w != 0 {
+            let pid = ((i as u32) << 6 | w.trailing_zeros()) as usize;
+            w &= w - 1;
+            let cid = u32::from(indexes.printing_to_card[pid]) as usize;
+            let rank = u32::from(order.inv[cid]) as usize;
+            let (block, bit) = (rank / 64, 1u64 << (rank % 64));
+            if permuted[block] & bit == 0 {
+                permuted[block] |= bit;
+                total += 1;
+            }
+        }
+    }
+    if total == 0 || page_offset >= total {
+        return (Vec::new(), work);
+    }
+
+    // Skip: accumulate word popcounts until the boundary word containing `page_offset` -- 64 cards
+    // per word read, so a deep offset is an `n_cards/64`-word scan, not a card-by-card walk.
+    let mut skip = page_offset;
+    let mut word_idx = 0;
+    while word_idx < permuted.len() {
+        let wc = permuted[word_idx].count_ones() as usize;
+        if skip < wc {
+            break;
+        }
+        skip -= wc;
+        word_idx += 1;
+    }
+
+    // Emit: walk set bits from the boundary word onward, mapping rank -> card id via the forward
+    // permutation, and pick each emitted card's best-`prefer_score` printing exactly the way
+    // `walk_grouped_page`'s Card branch does (ties keep the first-found printing). Re-scanning each
+    // emitted card's span here, not during the scatter, is what keeps this bounded by `limit` rather
+    // than by total matches -- the same reason `run_query_streamed_popcount`'s own emit phase does it.
+    let is_set = |pid: usize| pbits[pid >> 6] & (1u64 << (pid & 63)) != 0;
+    let mut page: Vec<(&AOracleCard, &APrinting)> = Vec::with_capacity(limit);
+    'walk: while word_idx < permuted.len() {
+        let mut w = permuted[word_idx];
+        while w != 0 {
+            let bit = w.trailing_zeros();
+            w &= w - 1;
+            if skip > 0 {
+                skip -= 1;
+                continue;
+            }
+            let pos = (word_idx as u32) << 6 | bit;
+            let cid = u32::from(order.perm[pos as usize]);
+            let card = &cards[cid as usize];
+            let start = u32::from(offsets[cid as usize]) as usize;
+            let end = u32::from(offsets[cid as usize + 1]) as usize;
+            work.cards_visited += 1;
+            work.printings_examined += (end - start) as u64;
+            let mut best: Option<(u32, f64)> = None;
+            #[allow(clippy::needless_range_loop)] // pid also drives is_set/printings[pid] together, same shape as walk_grouped_page
+            for pid in start..end {
+                if !is_set(pid) {
+                    continue;
+                }
+                let score = prefer_score(card, &printings[pid], prefer);
+                if best.is_none_or(|(_, s)| score > s) {
+                    best = Some((pid as u32, score));
+                }
+            }
+            let (bp, _) = best.expect("card_bits set this card because some printing of it matched");
+            page.push((card, &printings[bp as usize]));
+            if page.len() == limit {
+                break 'walk;
+            }
+        }
+        word_idx += 1;
+    }
+    (page, work)
+}
+
+/// PROTOTYPE, not called by the fastpath: the general `Mode::Printing` counterpart to
+/// `walk_card_page_via_popcount_skip`. `Printing` mode's page-fill differs from `Card`'s in the one
+/// way that matters here: a card can contribute more than one row (one per matching printing), so
+/// the scatter needs a per-card COUNT, not a bare existence bit.
+///
+/// Scatter per matching PRINTING rather than per matching card (`printing_to_card[pid] ->
+/// order.inv[cid] -> increment` a per-64-card-block counter) -- `O(popcount(pbits))`, still
+/// density-dependent and insensitive to where those matches sit, same shape as the `Card`-mode
+/// prototype, just weighted instead of bit-set. The skip phase sums those block counts instead of
+/// popcounting bitmap words. Once the target block is found, the fine phase walks forward
+/// card-by-card from its first rank -- same per-card bit-test loop `walk_grouped_page`'s `Printing`
+/// branch already uses, just starting from the located block instead of from rank 0, and continuing
+/// into subsequent blocks if that one block doesn't hold enough remaining matches to fill the page.
+///
+/// A card-invariant filter (every printing of a matching card matches, `!touches_printing_field`)
+/// could scatter over matching CARDS instead, weighted by a static `card_id -> num_printings` lookup
+/// -- `O(matching cards)` instead of `O(matching printings)`. Measured at ~12% of real `Perm`-paging
+/// traffic (`scripts/bench_compose_card_invariance_split.py`); not attempted here, see
+/// `local-engine-compose-perm-popcount-skip-prototype.md` for why it's a targeted speedup on top of
+/// this general version rather than a prerequisite for it.
+// Promoted out of `#[cfg(test)]` (#730); not yet called from the dispatch path.
+#[allow(dead_code)]
+fn walk_printing_page_via_popcount_skip<'a>(
+    ctx: &QueryCtx<'a>,
+    params: &QueryParams,
+    pbits: &[u64],
+    order: SortOrder<'_>,
+) -> (Vec<(&'a AOracleCard, &'a APrinting)>, ComposePageWork) {
+    debug_assert!(matches!(params.mode, Mode::Printing), "prototype is Mode::Printing only");
+    let QueryCtx { cards, printings, offsets, indexes, .. } = *ctx;
+    let QueryParams { limit, page_offset, .. } = *params;
+    let n_cards = cards.len();
+    let mut work = ComposePageWork::default();
+
+    let total: u64 = pbits.iter().map(|w| u64::from(w.count_ones())).sum();
+    if total == 0 || page_offset as u64 >= total {
+        return (Vec::new(), work);
+    }
+
+    // Scatter: each matching printing's card contributes one unit of weight to that card's RANK
+    // block -- one increment per match, not per card visited, and completely blind to whether that
+    // match is a rank away or ten thousand.
+    let n_blocks = n_cards.div_ceil(64);
+    let mut block_weight = vec![0u32; n_blocks];
+    for (i, &word) in pbits.iter().enumerate() {
+        let mut w = word;
+        while w != 0 {
+            let pid = ((i as u32) << 6 | w.trailing_zeros()) as usize;
+            w &= w - 1;
+            let cid = u32::from(indexes.printing_to_card[pid]) as usize;
+            let rank = u32::from(order.inv[cid]) as usize;
+            block_weight[rank / 64] += 1;
+        }
+    }
+
+    // Skip: accumulate BLOCK weights (cumulative matching printings, not cumulative cards) until
+    // the block containing `page_offset`.
+    let mut skip = page_offset as u64;
+    let mut block_idx = 0;
+    while block_idx < n_blocks {
+        let bw = u64::from(block_weight[block_idx]);
+        if skip < bw {
+            break;
+        }
+        skip -= bw;
+        block_idx += 1;
+    }
+
+    // Emit: walk cards rank-by-rank from this block's first rank, bit-testing each one's span (the
+    // same loop shape `walk_grouped_page`'s `Printing` branch uses), skipping `skip` more matching
+    // printings before pushing rows -- bounded by one block's worth of cards plus however many more
+    // it takes to fill `limit`, not by how deep the walk would otherwise need to go.
+    let is_set = |pid: usize| pbits[pid >> 6] & (1u64 << (pid & 63)) != 0;
+    let mut page: Vec<(&AOracleCard, &APrinting)> = Vec::with_capacity(limit);
+    let start_rank = block_idx * 64;
+    'walk: for rank in start_rank..n_cards {
+        let cid = u32::from(order.perm[rank]) as usize;
+        let card = &cards[cid];
+        let start = u32::from(offsets[cid]) as usize;
+        let end = u32::from(offsets[cid + 1]) as usize;
+        work.cards_visited += 1;
+        work.printings_examined += (end - start) as u64;
+        #[allow(clippy::needless_range_loop)] // pid also drives is_set/printings[pid] together, same shape as walk_grouped_page
+        for pid in start..end {
+            if !is_set(pid) {
+                continue;
+            }
+            if skip > 0 {
+                skip -= 1;
+                continue;
+            }
+            page.push((card, &printings[pid]));
+            if page.len() == limit {
+                break 'walk;
+            }
+        }
+    }
+    (page, work)
+}
+
+/// PROTOTYPE, not called by the fastpath: the `Mode::Artwork` counterpart to the two prototypes
+/// above. `Artwork` mode's page-fill differs from `Printing`'s in what a "match" is: one row per
+/// DISTINCT `artwork_group_id` a card touches, not one row per matching printing — several matching
+/// printings of one card can share a group and still contribute only one row, so weighting by raw
+/// printing count (`Printing`'s approach) would overcount.
+///
+/// Still one pass over `pbits`' set printings, still `O(popcount(pbits))`: printings of one card are
+/// contiguous in pid-space (`offsets` partitions it that way), so a card's matching printings arrive
+/// consecutively in this scan too, and `finalize_artwork_card` dedupes the groups touched by ONE card
+/// with a small linear-scan buffer (bounded by how many distinct groups that one card actually has,
+/// not the corpus total) rather than a per-corpus structure. The fine/emit phase, once the target
+/// block is found, is `walk_grouped_page`'s own `Artwork` branch verbatim (`group_best`/`touched`,
+/// best-`prefer_score` representative per group, `page_cmp` order across a card's own multiple
+/// group-rows) -- just starting from the located block's first rank instead of rank 0.
+// Promoted out of `#[cfg(test)]` (#730); not yet called from the dispatch path.
+#[allow(dead_code)]
+fn finalize_artwork_card(order: SortOrder<'_>, block_weight: &mut [u32], total: &mut u64, cid: usize, groups_touched: u32) {
+    if groups_touched == 0 {
+        return;
+    }
+    let rank = u32::from(order.inv[cid]) as usize;
+    block_weight[rank / 64] += groups_touched;
+    *total += u64::from(groups_touched);
+}
+
+// Promoted out of `#[cfg(test)]` (#730); not yet called from the dispatch path.
+#[allow(dead_code)]
+fn walk_artwork_page_via_popcount_skip<'a>(
+    ctx: &QueryCtx<'a>,
+    params: &QueryParams,
+    pbits: &[u64],
+    order: SortOrder<'_>,
+) -> (Vec<(&'a AOracleCard, &'a APrinting)>, ComposePageWork) {
+    debug_assert!(matches!(params.mode, Mode::Artwork), "prototype is Mode::Artwork only");
+    let QueryCtx { cards, printings, offsets, indexes, .. } = *ctx;
+    let QueryParams { prefer, sort_col, descending, limit, page_offset, .. } = *params;
+    let n_cards = cards.len();
+    let max_artwork_groups = usize::from(u16::from(indexes.max_artwork_groups));
+    let mut work = ComposePageWork::default();
+
+    // Scatter: dedupe groups touched per card inline, exploiting that one card's matching printings
+    // arrive consecutively (a card boundary is detected the moment `cid` changes, not by a separate
+    // lookup) -- `seen_groups` never grows past one card's own distinct-group count before it's
+    // cleared for the next.
+    let n_blocks = n_cards.div_ceil(64);
+    let mut block_weight = vec![0u32; n_blocks];
+    let mut total: u64 = 0;
+    let mut current_cid: Option<usize> = None;
+    let mut seen_groups: Vec<u16> = Vec::new();
+    for (i, &word) in pbits.iter().enumerate() {
+        let mut w = word;
+        while w != 0 {
+            let pid = ((i as u32) << 6 | w.trailing_zeros()) as usize;
+            w &= w - 1;
+            let cid = u32::from(indexes.printing_to_card[pid]) as usize;
+            if current_cid != Some(cid) {
+                if let Some(prev) = current_cid {
+                    finalize_artwork_card(order, &mut block_weight, &mut total, prev, seen_groups.len() as u32);
+                }
+                current_cid = Some(cid);
+                seen_groups.clear();
+            }
+            let gid = u16::from(printings[pid].artwork_group_id);
+            if !seen_groups.contains(&gid) {
+                seen_groups.push(gid);
+            }
+        }
+    }
+    if let Some(prev) = current_cid {
+        finalize_artwork_card(order, &mut block_weight, &mut total, prev, seen_groups.len() as u32);
+    }
+
+    if total == 0 || page_offset as u64 >= total {
+        return (Vec::new(), work);
+    }
+
+    // Skip: accumulate BLOCK weights (cumulative distinct groups touched, not cumulative cards or
+    // printings) until the block containing `page_offset`.
+    let mut skip = page_offset as u64;
+    let mut block_idx = 0;
+    while block_idx < n_blocks {
+        let bw = u64::from(block_weight[block_idx]);
+        if skip < bw {
+            break;
+        }
+        skip -= bw;
+        block_idx += 1;
+    }
+
+    // Emit: `walk_grouped_page`'s own `Artwork` branch, verbatim, starting from the located block's
+    // first rank instead of rank 0.
+    let is_set = |pid: usize| pbits[pid >> 6] & (1u64 << (pid & 63)) != 0;
+    let mut group_best: Vec<Option<(u32, f64)>> = vec![None; max_artwork_groups];
+    let mut touched: Vec<u16> = Vec::new();
+    let mut scratch: Vec<Match> = Vec::new();
+    let mut skip = skip as usize;
+    let mut page: Vec<(&AOracleCard, &APrinting)> = Vec::with_capacity(limit);
+    let start_rank = block_idx * 64;
+    for rank in start_rank..n_cards {
+        let cid = u32::from(order.perm[rank]);
+        let card = &cards[cid as usize];
+        let start = u32::from(offsets[cid as usize]) as usize;
+        let end = u32::from(offsets[cid as usize + 1]) as usize;
+        work.cards_visited += 1;
+        work.printings_examined += (end - start) as u64;
+        scratch.clear();
+        touched.clear();
+        #[allow(clippy::needless_range_loop)] // pid also drives is_set/printings[pid] together, same shape as walk_grouped_page
+        for pid in start..end {
+            if !is_set(pid) {
+                continue;
+            }
+            let gid = u16::from(printings[pid].artwork_group_id) as usize;
+            debug_assert!(gid < group_best.len(), "group_best must be pre-sized to max_artwork_groups");
+            let score = prefer_score(card, &printings[pid], prefer);
+            match &group_best[gid] {
+                None => {
+                    group_best[gid] = Some((pid as u32, score));
+                    touched.push(gid as u16);
+                }
+                Some((_, best)) if score > *best => group_best[gid] = Some((pid as u32, score)),
+                _ => {}
+            }
+        }
+        for &gid in &touched {
+            let (bp, _) = group_best[gid as usize].take().unwrap();
+            scratch.push((sort_key_bits(card, &printings[bp as usize], sort_col, descending), cid, bp));
+        }
+        if scratch.is_empty() {
+            continue;
+        }
+        if skip >= scratch.len() {
+            skip -= scratch.len();
+            continue;
+        }
+        scratch.sort_unstable_by(page_cmp);
+        for m in scratch.iter().skip(skip) {
+            page.push((&cards[m.1 as usize], &printings[m.2 as usize]));
+            if page.len() == limit {
+                return (page, work);
+            }
+        }
+        skip = 0;
+    }
+    (page, work)
+}
+
 /// Permutation-free counterpart to `walk_grouped_page`, for when `orderby` has no card-space
 /// permutation (`rarity`/`usd` — the representative printing depends on `prefer` and can't be
 /// precomputed, see `ArchivedSortPermutations::get`'s doc). Same per-card grouping logic (`pbits`
@@ -11060,6 +11432,12 @@ fn acquire_plan_features(
         // and compose was costed as if it returned everything for nothing. Applicability, estimate and
         // execution have to agree on which representation this plan is being judged on.
         let composed = compose_source(filter, unsplit, plane);
+        // Diagnostic only, for measuring how much of compose's own traffic is card-invariant --
+        // shares the field the `candidates` acquire already sets from the identical
+        // `!touches_printing_field(..)` question (just against `composed`, compose's own predicate,
+        // not the pre-split residual). Assigned to `feats` below, once it exists. Not read by
+        // `plan_cost`.
+        let composed_card_invariant = !touches_printing_field(composed);
         let est = compose_printing_estimate(composed, indexes, offsets, n_printings as usize);
         let (printing_matches, broadcast, scatter) = (est.result, est.broadcast, est.scatter);
         // Two build kinds, charged at different rates: `broadcast` = legality broadcast-down (linear
@@ -11268,6 +11646,7 @@ fn acquire_plan_features(
         // count's own variance (`eval_domain` grades p90/p10 3.1 here) and is not a scan-feature problem.
         let scan_units = if nothing_to_verify { printing_matches } else { scan_units };
         let mut feats = mk_plan_feats(ctx, params, result_total as u32, eval_domain as u32, scan_units as u32, tier);
+        feats.residual_card_invariant = composed_card_invariant;
         // What `StreamedSelect` actually examines here, which is NOT `scan_units`. P4 walks a card's whole
         // span to push every match; P3's `card_match_count` answers from span arithmetic for every card
         // `card_pass` resolves at card level, and on a legality-composed filter that is every non-divergent
