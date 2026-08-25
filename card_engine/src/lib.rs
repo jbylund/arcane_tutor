@@ -7530,6 +7530,10 @@ struct ComposePageWork {
     ns_paging: u64,
 }
 
+// Production publishes this whole value on every successful compose run. Keep its footprint explicit:
+// three counters plus two phase timings, with no accidental padding or future silent growth.
+const _: [(); 5 * std::mem::size_of::<u64>()] = [(); std::mem::size_of::<ComposePageWork>()];
+
 /// The `prefer`-best MATCHING printing of the group `pid` belongs to.
 ///
 /// Byte-identical selection to `walk_grouped_page`'s grouping arm, and that is the whole requirement:
@@ -9466,9 +9470,9 @@ thread_local! {
     /// `take_phase_stats` reassembles the two into one `PhaseStats`, so consumers see no seam.
     static PAGING_TAKEN: std::cell::Cell<PagingTaken> = const { std::cell::Cell::new(PagingTaken::NotEntered) };
 
-    /// The compose fastpath's three counters, stored apart from `PHASE_STATS` for exactly the reason
-    /// `PAGING_TAKEN` is: this is the production compose path, and a whole-struct publish there is a
-    /// read-modify-write of ~80 bytes to report 24.
+    /// The compose fastpath's three counters and two phase timings, stored apart from `PHASE_STATS`
+    /// for exactly the reason `PAGING_TAKEN` is: this is the production compose path, and a
+    /// whole-struct publish there is a read-modify-write of ~80 bytes to report 40.
     ///
     /// Measured, because the first version did write the whole struct: a paired A/B against the same
     /// build without it read `+1.4 µs` and `+3.1 µs` on a 129 µs mean (slower on 619 and 863 queries
@@ -9549,7 +9553,7 @@ fn note_pending_prepare_ns(ns: u64) {
 /// Publish what a compose paging branch did, so `PrintingCompose` reports the same three quantities
 /// the two materializing plans do.
 ///
-/// A 24-byte store into `COMPOSE_WORK`, not a write of the whole `PhaseStats` — see that slot's doc
+/// A 40-byte store into `COMPOSE_WORK`, not a write of the whole `PhaseStats` — see that slot's doc
 /// for the measurement that forced the split. `take_phase_stats` merges the two, so consumers see no
 /// seam, and the phase timings are no longer zero: `ns_build`/`ns_paging` land in `ns_setup`/`ns_loop`
 /// the same as the other plans, checked against a real run by
