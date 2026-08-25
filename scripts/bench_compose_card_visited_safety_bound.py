@@ -167,27 +167,6 @@ def sigma_bound(n_cards: int, matches: int, k: int, knob: float) -> float:
     return mean + knob * math.sqrt(nhg_variance(n_cards, matches, k))
 
 
-def abort_budget_ns(walk_ns: float, matches: int, safety_factor: float, ceiling_ns: float) -> tuple[float, bool]:
-    """Cost under a RUNTIME circuit breaker instead of an a-priori decision: let the walk run, and only abort into three-phase once the walk's OWN elapsed cost crosses `budget = safety_factor * three_phase_ns_model(matches)` -- a budget anchored to the alternative's own (offset-independent) cost, not to `k`. A `k`-scaled budget was tried first and does not work: `k = offset + limit` already includes the offset, so at a deep offset the budget outgrows `n_cards` and the abort can never trip at all -- exactly the population (deep, expensive walks) this exists to catch. Tracking elapsed cost is free in the real executor (`work.cards_visited += 1` already runs every iteration); this models "compare it against a threshold every so often," not new instrumentation.
-
-    Naively, an abort caps the total at `(safety_factor + 1) * three_phase_ns_model(matches)` -- but
-    that cap ITSELF grows with `matches` (three-phase costs more for a high-selectivity query), and a
-    high `safety_factor` on top of an already-large baseline let the capped outcome exceed what a
-    plain walk would have cost -- measured: `abort at 3x` had a WORSE max than `always_walk` on this
-    dataset. `ceiling_ns` is the fix: an absolute cap independent of `matches` entirely (the caller
-    passes `walk_rate * n_cards` -- no real walk, however clumped, can cost more than visiting the
-    whole corpus once). A row that finishes within budget still pays EXACTLY its own real `walk_ns`.
-
-    Returns:
-        `(ns, aborted)` -- `aborted` is whether the breaker tripped, returned alongside the cost
-        instead of recomputed by the caller from the same `budget`.
-    """
-    budget = safety_factor * three_phase_ns_model(matches)
-    if walk_ns <= budget:
-        return walk_ns, False
-    return min(budget + three_phase_ns_model(matches), ceiling_ns), True
-
-
 METHODS = {
     "blend": (blend_bound, [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0]),
     "sigma": (sigma_bound, [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0]),
@@ -468,18 +447,14 @@ def report(rows: list[dict]) -> None:
     _report_worst_outliers(rows)
 
 
-def _walk_rate_and_ceiling(rows: list[dict]) -> tuple[float, float]:
-    """Fit `walk_rate` from real (`walk_ns`, `realized`) pairs and derive the abort ceiling from it, printing both."""
+def _walk_rate(rows: list[dict]) -> float:
+    """Fit `walk_rate` from real (`walk_ns`, `realized`) pairs and print it."""
     walk_rate = percentile(sorted(r["walk_ns"] / r["realized"] for r in rows), 50)
     print(f"\nwalk_grouped_page rate fit from real (walk_ns, realized) pairs: {walk_rate:.3f} ns/card visited (median)\n")
-    # No real walk, however clumped, visits more cards than the whole corpus once -- an absolute
-    # backstop independent of `matches`, unlike the naive `(safety_factor + 1) * three_phase` cap.
-    ceiling_ns = walk_rate * max(r["n_cards"] for r in rows)
-    print(f"abort ceiling: {ceiling_ns:.0f} ns (walk_rate * n_cards -- a full-corpus walk, absolute worst case)\n")
-    return walk_rate, ceiling_ns
+    return walk_rate
 
 
-def _build_policies(walk_rate: float, ceiling_ns: float) -> dict[str, object]:
+def _build_policies(walk_rate: float) -> dict[str, object]:
     """The named decision policies `simulate_policies` grades against each other, keyed by display name."""
 
     def gated(gate: int, bound_fn) -> object:  # noqa: ANN001 - bound_fn is one of the module's *_bound callables
@@ -490,12 +465,6 @@ def _build_policies(walk_rate: float, ceiling_ns: float) -> dict[str, object]:
             if predicted_walk_ns <= three_phase_ns_model(r["matches"]):
                 return r["walk_ns"], False
             return three_phase_ns_model(r["matches"]), True
-
-        return cost
-
-    def abort_at(safety_factor: float) -> object:
-        def cost(r: dict) -> tuple[float, bool]:
-            return abort_budget_ns(r["walk_ns"], r["matches"], safety_factor, ceiling_ns)
 
         return cost
 
@@ -517,11 +486,6 @@ def _build_policies(walk_rate: float, ceiling_ns: float) -> dict[str, object]:
         "gate=4000, worst_case": gated(4_000, worst_case_bound),
         "gate=2000, blend(0.6)": gated(2_000, lambda n, m, k: blend_bound(n, m, k, 0.6)),
         "gate=4000, blend(0.6)": gated(4_000, lambda n, m, k: blend_bound(n, m, k, 0.6)),
-        "abort at 2x 3phase": abort_at(2.0),
-        "abort at 3x 3phase": abort_at(3.0),
-        "abort at 5x 3phase": abort_at(5.0),
-        "abort at 10x 3phase": abort_at(10.0),
-        "abort at 20x 3phase": abort_at(20.0),
     }
 
 
@@ -533,8 +497,7 @@ def _print_pooled_latency_table(rows: list[dict], policies: dict) -> dict[str, l
     print(" deliberately offset-heavy stress grid, not a production latency estimate; see the by-offset")
     print(" breakdown below for the number that matters -- reweight it by your own traffic's real offset")
     print(" distribution instead of trusting a blended average here. 'diverted' means routed to")
-    print(" three-phase outright for the a-priori policies, or actually ABORTED past budget for the")
-    print(" abort policies -- not the same event, so don't compare the percentages across the two kinds.)")
+    print(" three-phase instead of running the native walk.)")
     latencies_by_policy: dict[str, list[float]] = {}
     for name, cost_fn in policies.items():
         latencies = []
@@ -567,11 +530,10 @@ def _print_worst_surviving_rows(rows: list[dict], policies: dict) -> None:
         "no gate, sigma(4.0)",
         "no gate, sigma(6.0)",
         "no gate, sigma(8.0)",
-        "abort at 2x 3phase",
     ):
         cost_fn = policies[name]
         results = [(*cost_fn(r), r) for r in rows]
-        walked = [(ns, r) for ns, aborted, r in results if not aborted]
+        walked = [(ns, r) for ns, diverted, r in results if not diverted]
         if not walked:
             continue
         worst_ns, r = max(walked, key=lambda t: t[0])
@@ -619,15 +581,15 @@ def _print_by_offset_tables(rows: list[dict], policies: dict) -> None:
         "always_walk": policies["always_walk (today)"],
         "always_three_phase": policies["always_three_phase"],
         "no gate, blend(0.6)": policies["no gate, blend(0.6)"],
-        "abort at 3x 3phase": policies["abort at 3x 3phase"],
-        "abort at 5x 3phase": policies["abort at 5x 3phase"],
-        "abort at 10x 3phase": policies["abort at 10x 3phase"],
+        "no gate, sigma(2.0)": policies["no gate, sigma(2.0)"],
+        "no gate, sigma(3.0)": policies["no gate, sigma(3.0)"],
+        "no gate, sigma(4.0)": policies["no gate, sigma(4.0)"],
     }
     by_offset_rows: dict[int, list[dict]] = {}
     for r in rows:
         by_offset_rows.setdefault(r["offset"], []).append(r)
 
-    print("\n% diverted (routed/aborted), BY OFFSET:")
+    print("\n% diverted (routed to three-phase), BY OFFSET:")
     header = f"{'offset':<8}" + "".join(f"{name:>24}" for name in shortlist)
     print(header)
     for off, off_rows in sorted(by_offset_rows.items()):
@@ -661,8 +623,8 @@ def simulate_policies(rows: list[dict], chart_path: pathlib.Path | None) -> None
     measurement at all (not wired into dispatch -- see the module docstring), so it stays modeled via
     `three_phase_ns_model`.
     """
-    walk_rate, ceiling_ns = _walk_rate_and_ceiling(rows)
-    policies = _build_policies(walk_rate, ceiling_ns)
+    walk_rate = _walk_rate(rows)
+    policies = _build_policies(walk_rate)
     latencies_by_policy = _print_pooled_latency_table(rows, policies)
     _print_worst_surviving_rows(rows, policies)
     headline = [
