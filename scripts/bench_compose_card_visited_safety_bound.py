@@ -1,7 +1,4 @@
-"""Two candidate SAFETY BOUNDS on `walk_grouped_page`'s (`Mode::Card`) worst-case `cards_visited`,
-built from the one thing EDHREC clumping cannot corrupt: the exact matching-card count `matches`
-(`M`), already computed before the `Perm` branch runs (`compose_paging_with_total`/the fastpath's own
-`compose_total_for_mode`) -- never a position estimate, which is exactly what clumping defeats.
+"""Two candidate SAFETY BOUNDS on `walk_grouped_page`'s (`Mode::Card`) worst-case `cards_visited`, built from the one thing EDHREC clumping cannot corrupt: the exact matching-card count `matches` (`M`), already computed before the `Perm` branch runs (`compose_paging_with_total`/the fastpath's own `compose_total_for_mode`) -- never a position estimate, which is exactly what clumping defeats.
 
 Two closed-form anchors, no calibration needed for either:
 
@@ -126,8 +123,7 @@ def worst_case_bound(n_cards: int, matches: int, k: int) -> float:
 
 
 def uniform_mean(n_cards: int, matches: int, k: int) -> float:
-    """Expected position of the k-th match if `matches` cards were scattered with NO clumping --
-    the order-statistic mean of a uniformly random `matches`-subset of `n_cards` slots."""
+    """Expected position of the k-th match if `matches` cards were scattered with NO clumping -- the order-statistic mean of a uniformly random `matches`-subset of `n_cards` slots."""
     return k * (n_cards + 1) / (matches + 1)
 
 
@@ -161,21 +157,13 @@ def blend_bound(n_cards: int, matches: int, k: int, knob: float) -> float:
 
 
 def sigma_bound(n_cards: int, matches: int, k: int, knob: float) -> float:
-    """`knob` = how many std devs above the no-clumping mean, same random-placement model as
-    `blend_bound`'s low anchor -- just a different (distribution-shaped, not linear) margin."""
+    """`knob` = how many std devs above the no-clumping mean, same random-placement model as `blend_bound`'s low anchor -- just a different (distribution-shaped, not linear) margin."""
     mean = uniform_mean(n_cards, matches, k)
     return mean + knob * math.sqrt(nhg_variance(n_cards, matches, k))
 
 
-def abort_budget_ns(walk_ns: float, matches: int, safety_factor: float, ceiling_ns: float) -> float:
-    """Cost under a RUNTIME circuit breaker instead of an a-priori decision: let the walk run, and
-    only abort into three-phase once the walk's OWN elapsed cost crosses `budget = safety_factor *
-    three_phase_ns_model(matches)` -- a budget anchored to the alternative's own (offset-independent)
-    cost, not to `k`. A `k`-scaled budget was tried first and does not work: `k = offset + limit`
-    already includes the offset, so at a deep offset the budget outgrows `n_cards` and the abort can
-    never trip at all -- exactly the population (deep, expensive walks) this exists to catch. Tracking
-    elapsed cost is free in the real executor (`work.cards_visited += 1` already runs every
-    iteration); this models "compare it against a threshold every so often," not new instrumentation.
+def abort_budget_ns(walk_ns: float, matches: int, safety_factor: float, ceiling_ns: float) -> tuple[float, bool]:
+    """Cost under a RUNTIME circuit breaker instead of an a-priori decision: let the walk run, and only abort into three-phase once the walk's OWN elapsed cost crosses `budget = safety_factor * three_phase_ns_model(matches)` -- a budget anchored to the alternative's own (offset-independent) cost, not to `k`. A `k`-scaled budget was tried first and does not work: `k = offset + limit` already includes the offset, so at a deep offset the budget outgrows `n_cards` and the abort can never trip at all -- exactly the population (deep, expensive walks) this exists to catch. Tracking elapsed cost is free in the real executor (`work.cards_visited += 1` already runs every iteration); this models "compare it against a threshold every so often," not new instrumentation.
 
     Naively, an abort caps the total at `(safety_factor + 1) * three_phase_ns_model(matches)` -- but
     that cap ITSELF grows with `matches` (three-phase costs more for a high-selectivity query), and a
@@ -184,11 +172,15 @@ def abort_budget_ns(walk_ns: float, matches: int, safety_factor: float, ceiling_
     dataset. `ceiling_ns` is the fix: an absolute cap independent of `matches` entirely (the caller
     passes `walk_rate * n_cards` -- no real walk, however clumped, can cost more than visiting the
     whole corpus once). A row that finishes within budget still pays EXACTLY its own real `walk_ns`.
+
+    Returns:
+        `(ns, aborted)` -- `aborted` is whether the breaker tripped, returned alongside the cost
+        instead of recomputed by the caller from the same `budget`.
     """
     budget = safety_factor * three_phase_ns_model(matches)
     if walk_ns <= budget:
-        return walk_ns
-    return min(budget + three_phase_ns_model(matches), ceiling_ns)
+        return walk_ns, False
+    return min(budget + three_phase_ns_model(matches), ceiling_ns), True
 
 
 METHODS = {
@@ -198,9 +190,7 @@ METHODS = {
 
 
 def selfcheck_nhg_moments(rng: random.Random) -> None:
-    """Monte Carlo check of `uniform_mean`/`nhg_variance` against simulated random placements --
-    quoting a variance formula from memory is exactly the kind of thing this repo's conventions say
-    to verify, not assume."""
+    """Monte Carlo check of `uniform_mean`/`nhg_variance` against simulated random placements -- quoting a variance formula from memory is exactly the kind of thing this repo's conventions say to verify, not assume."""
     trials = 20_000
     cases = [(500, 50, 10), (5_000, 200, 80), (2_000, 1_800, 500)]
     print("selfcheck: analytic vs Monte Carlo (negative hypergeometric position of the k-th match)")
@@ -261,6 +251,7 @@ def evaluate(engine: object, query: str, orderby: str, direction: str, offset: i
         num_warmups=NUM_WARMUPS,
         num_trials=NUM_TRIALS,
     )
+    costbench.require_schema(full)
     compose = next((p for p in full["plans"] if p["plan"] == "PrintingCompose"), None)
     if compose is None or not compose["trials_ns"] or compose.get("paging_taken") != "Perm":
         return None
@@ -293,13 +284,13 @@ def evaluate(engine: object, query: str, orderby: str, direction: str, offset: i
 
 
 def report(rows: list[dict]) -> None:
-    """Per-(method, knob) violation rate and bound tightness, so a knob can be picked by matching
-    violation rates across methods and comparing which gives the smaller (tighter) bound there."""
+    """Per-(method, knob) violation rate and bound tightness, so a knob can be picked by matching violation rates across methods and comparing which gives the smaller (tighter) bound there."""
     if not rows:
         print("Nothing landed on Card-mode Perm for both explain() and explain_analyze() -- nothing to grade.")
         return
     print(f"\nn={len(rows)} (query, orderby, direction, offset) points graded\n")
-    prod_ratio = sorted(prod_cost_model_ns(r["printings_walked_pred"], LIMIT) / r["walk_ns"] for r in rows)
+    prod_ratios_by_row = [(prod_cost_model_ns(r["printings_walked_pred"], LIMIT) / r["walk_ns"], r) for r in rows]
+    prod_ratio = sorted(ratio for ratio, _ in prod_ratios_by_row)
     print(
         f"PRODUCTION cost model (cost::plan_cost, PrintingCompose/Perm) vs real walk_ns, "
         f"ratio = predicted/realized (>1 over-costs, <1 under-costs):"
@@ -310,8 +301,8 @@ def report(rows: list[dict]) -> None:
     print("traffic rarely reaches -- i.e. is the model actually fine for the shallow case it was likely")
     print("tuned against, and only broken for the population this whole investigation is about?):")
     by_offset_prod: dict[int, list[float]] = {}
-    for r in rows:
-        by_offset_prod.setdefault(r["offset"], []).append(prod_cost_model_ns(r["printings_walked_pred"], LIMIT) / r["walk_ns"])
+    for ratio, r in prod_ratios_by_row:
+        by_offset_prod.setdefault(r["offset"], []).append(ratio)
     for off, vals in sorted(by_offset_prod.items()):
         vals.sort()
         print(f"  offset={off:<8} n={len(vals):<4} p50={percentile(vals, 50):>7.3f}  p90={percentile(vals, 90):>7.3f}")
@@ -423,8 +414,7 @@ def report(rows: list[dict]) -> None:
 
 
 def simulate_policies(rows: list[dict], chart_path: pathlib.Path | None) -> None:
-    """For each decision POLICY, what fraction of real traffic gets routed to the three-phase
-    fallback, and what does that do to the resulting latency distribution?
+    """For each decision POLICY, what fraction of real traffic gets routed to the three-phase fallback, and what does that do to the resulting latency distribution?
 
     The walk side uses each row's REAL `walk_ns` (see `evaluate()`) whenever a policy picks it,
     including `oracle` (the reference point: the best any policy COULD do, using the row's real
@@ -458,9 +448,7 @@ def simulate_policies(rows: list[dict], chart_path: pathlib.Path | None) -> None
 
     def abort_at(safety_factor: float) -> object:
         def cost(r: dict) -> tuple[float, bool]:
-            budget = safety_factor * three_phase_ns_model(r["matches"])
-            ns = abort_budget_ns(r["walk_ns"], r["matches"], safety_factor, ceiling_ns)
-            return ns, r["walk_ns"] > budget
+            return abort_budget_ns(r["walk_ns"], r["matches"], safety_factor, ceiling_ns)
 
         return cost
 
@@ -528,7 +516,8 @@ def simulate_policies(rows: list[dict], chart_path: pathlib.Path | None) -> None
         "abort at 2x 3phase",
     ):
         cost_fn = policies[name]
-        walked = [(cost_fn(r)[0], r) for r in rows if not cost_fn(r)[1]]
+        results = [(*cost_fn(r), r) for r in rows]
+        walked = [(ns, r) for ns, aborted, r in results if not aborted]
         if not walked:
             continue
         worst_ns, r = max(walked, key=lambda t: t[0])
