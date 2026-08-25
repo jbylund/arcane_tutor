@@ -8003,14 +8003,19 @@ struct ComposePageWork {
     /// Rows the branch pushed. For the gather this is every match (it visits every candidate); for
     /// the two walks it is bounded by the page, which is the whole point of their cost shape.
     matches_pushed: u64,
-    /// The whole fastpath's wall time, merged into `ns_loop` by `take_phase_stats`.
-    ///
-    /// One span, not three. Compose's arm is not decomposed into setup/loop/finish -- it is a build
-    /// plus one of three structurally different paging branches -- so there is nothing to attribute
-    /// between phases. What the harnesses need is that the phase sum equals the executor's own time,
-    /// and one span gives that. Carried here rather than written to `PHASE_STATS` separately so the
-    /// production compose path still pays ONE store; see this slot's doc for what that cost.
-    ns_total: u64,
+    /// Wall time of composing `pbits` (`compose_printing_bits` + the card-space projection + the
+    /// exact total) -- everything before the paging branch is chosen. Reported as `ns_setup` by
+    /// `take_phase_stats`, the same slot the other plans use for pre-loop work, so a harness reading
+    /// `plan_self_ns`'s `ns_setup + ns_loop + ns_finish` sees no change, but one that wants the build
+    /// separated from the walk (a natural-query harness cannot otherwise tell "the filter was
+    /// expensive to compose" from "the walk visited a lot of cards" -- see
+    /// `reference-engine-compose-perm-cards-visited-estimator.md`'s decision-rule work, which needed
+    /// exactly this split and initially had to fall back to a kernel-bench proxy without it) now can.
+    ns_build: u64,
+    /// Wall time of the paging branch alone (`walk_grouped_page` / `gather_composed_page` /
+    /// `walk_value_orderby_page`) -- reported as `ns_loop`, same reasoning as `ns_build` above.
+    /// Zero for the empty/past-the-end early return, which never reaches a paging branch at all.
+    ns_paging: u64,
 }
 
 /// The `prefer`-best MATCHING printing of the group `pid` belongs to.
@@ -8174,8 +8179,9 @@ fn walk_value_orderby_page<'a>(
             printings_examined: examined,
             // Page-bounded, which is what this counter's doc always claimed.
             matches_pushed: pushed,
-            // Filled by `printing_compose_fastpath`, which owns the span; this only reports work.
-            ns_total: 0,
+            // Filled by `printing_compose_fastpath`, which owns the spans; this only reports work.
+            ns_build: 0,
+            ns_paging: 0,
         },
     ))
 }
@@ -8493,7 +8499,7 @@ fn printing_compose_fastpath<'a>(
     params: &QueryParams,
     filter: &FilterExpr,
 ) -> Option<(usize, Vec<(&'a AOracleCard, &'a APrinting)>)> {
-    // Ends at whichever exit produces a page; see `ComposePageWork::ns_total`. Declines return before
+    // Ends at whichever exit produces a page; see `ComposePageWork::ns_build`/`ns_paging`. Declines return before
     // any publish and so leave the slot as `take_phase_stats` cleared it.
     let t_start = std::time::Instant::now();
     let QueryCtx { cards, printings, offsets, indexes, .. } = *ctx;
@@ -8536,14 +8542,20 @@ fn printing_compose_fastpath<'a>(
     // those same bits. Built once here and threaded through, instead of twice.
     let card_bits = matches!(mode, Mode::Card).then(|| printing_bits_to_card_bits(&pbits, offsets, cards.len()));
     let total = compose_total_for_mode(&pbits, mode, indexes, printings, card_bits.as_deref());
+    // Everything up to here (compose `pbits` + the card-space projection + the exact total) is the
+    // BUILD; timed on its own so a harness can tell "the filter was expensive to compose" apart from
+    // "the walk visited a lot of cards" -- see `ComposePageWork::ns_build`'s doc for why that split
+    // didn't exist before and what it cost to not have it.
+    let ns_build = t_start.elapsed().as_nanos() as u64;
     // Now the exact total exists, so make the real walk-vs-gather call on it. See
     // `orderby_walk_beats_gather` for why this is the total rather than the gather's own broad verdict.
     let walk_col = walk_possible && orderby_walk_beats_gather(mode, filter, total);
     if total == 0 || page_offset >= total {
         note_paging_taken(PagingTaken::EmptyPage);
-        publish_compose_work(ComposePageWork { ns_total: t_start.elapsed().as_nanos() as u64, ..Default::default() });
+        publish_compose_work(ComposePageWork { ns_build, ns_paging: 0, ..Default::default() });
         return Some((total, Vec::new()));
     }
+    let t_paging_start = std::time::Instant::now();
     let (page, mut work) = match perm {
         Some(perm) => {
             if total <= *STREAM_MIN_MATCHES {
@@ -8616,7 +8628,8 @@ fn printing_compose_fastpath<'a>(
             }
         }
     };
-    work.ns_total = t_start.elapsed().as_nanos() as u64;
+    work.ns_build = ns_build;
+    work.ns_paging = t_paging_start.elapsed().as_nanos() as u64;
     publish_compose_work(work);
     Some((total, page))
 }
@@ -10000,7 +10013,7 @@ thread_local! {
     /// participant runs, so a plan that does not publish here reads zeros rather than the last
     /// compose's numbers. Outside that window nothing reads it at all.
     static COMPOSE_WORK: std::cell::Cell<ComposePageWork> = const { std::cell::Cell::new(ComposePageWork {
-        cards_visited: 0, printings_examined: 0, matches_pushed: 0, ns_total: 0,
+        cards_visited: 0, printings_examined: 0, matches_pushed: 0, ns_build: 0, ns_paging: 0,
     }) };
 
     /// The routed path's disjoint phase split — see `RoutedPhases`. Its own slot for the same reason
@@ -10092,13 +10105,14 @@ fn take_phase_stats() -> PhaseStats {
     // `PHASE_STATS` and never `COMPOSE_WORK`, compose the reverse -- so this cannot double-count, and
     // taking both together is what stops either leaking into the next participant.
     let compose = COMPOSE_WORK.with(|c| c.replace(ComposePageWork::default()));
-    if compose.cards_visited | compose.printings_examined | compose.matches_pushed | compose.ns_total != 0 {
+    if compose.cards_visited | compose.printings_examined | compose.matches_pushed | compose.ns_build | compose.ns_paging != 0 {
         stats.cards_visited = compose.cards_visited;
         stats.printings_examined = compose.printings_examined;
         stats.matches_pushed = compose.matches_pushed;
-        // Compose reports one undivided span; `ns_loop` is where it belongs so the phase sum equals
-        // the executor's time. See `ComposePageWork::ns_total`.
-        stats.ns_loop = compose.ns_total;
+        // Same setup/loop split the other plans use: build (compose `pbits`) is pre-loop work, the
+        // paging branch is the loop. See `ComposePageWork::ns_build`/`ns_paging`.
+        stats.ns_setup = compose.ns_build;
+        stats.ns_loop = compose.ns_paging;
     }
     stats
 }
