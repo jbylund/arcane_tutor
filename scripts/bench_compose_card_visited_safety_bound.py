@@ -1,7 +1,4 @@
-"""Two candidate SAFETY BOUNDS on `walk_grouped_page`'s (`Mode::Card`) worst-case `cards_visited`,
-built from the one thing EDHREC clumping cannot corrupt: the exact matching-card count `matches`
-(`M`), already computed before the `Perm` branch runs (`compose_paging_with_total`/the fastpath's own
-`compose_total_for_mode`) -- never a position estimate, which is exactly what clumping defeats.
+"""Two candidate SAFETY BOUNDS on `walk_grouped_page`'s (`Mode::Card`) worst-case `cards_visited`, built from the one thing EDHREC clumping cannot corrupt: the exact matching-card count `matches` (`M`), already computed before the `Perm` branch runs (`compose_paging_with_total`/the fastpath's own `compose_total_for_mode`) -- never a position estimate, which is exactly what clumping defeats.
 
 Two closed-form anchors, no calibration needed for either:
 
@@ -83,16 +80,21 @@ PROD_COMPOSE_WALK_EMIT_PER_ROW_NS = 2.19
 
 
 def prod_cost_model_ns(printings_walked_pred: float, limit: int) -> float:
+    """The PRODUCTION cost model's own prediction (`cost::plan_cost`'s `PrintingCompose`/`Perm` arm), for grading against real `walk_ns`."""
     return printings_walked_pred * PROD_COMPOSE_WALK_STEP_NS + limit * PROD_COMPOSE_WALK_EMIT_PER_ROW_NS
+
+
+NS_PER_US = 1_000
+NS_PER_MS = 1_000_000
 
 
 def fmt_ns(ns: float) -> str:
     """Human units, fixed width -- raw nanosecond counts (`606542`) are hard to eyeball at a glance."""
-    if ns < 1_000:
+    if ns < NS_PER_US:
         return f"{ns:.0f} ns"
-    if ns < 1_000_000:
-        return f"{ns / 1_000:.1f} us"
-    return f"{ns / 1_000_000:.2f} ms"
+    if ns < NS_PER_MS:
+        return f"{ns / NS_PER_US:.1f} us"
+    return f"{ns / NS_PER_MS:.2f} ms"
 
 
 # `walk_grouped_page`'s own real cost, unlike three-phase's, IS directly observable now: `explain_
@@ -126,8 +128,7 @@ def worst_case_bound(n_cards: int, matches: int, k: int) -> float:
 
 
 def uniform_mean(n_cards: int, matches: int, k: int) -> float:
-    """Expected position of the k-th match if `matches` cards were scattered with NO clumping --
-    the order-statistic mean of a uniformly random `matches`-subset of `n_cards` slots."""
+    """Expected position of the k-th match if `matches` cards were scattered with NO clumping -- the order-statistic mean of a uniformly random `matches`-subset of `n_cards` slots."""
     return k * (n_cards + 1) / (matches + 1)
 
 
@@ -161,21 +162,13 @@ def blend_bound(n_cards: int, matches: int, k: int, knob: float) -> float:
 
 
 def sigma_bound(n_cards: int, matches: int, k: int, knob: float) -> float:
-    """`knob` = how many std devs above the no-clumping mean, same random-placement model as
-    `blend_bound`'s low anchor -- just a different (distribution-shaped, not linear) margin."""
+    """`knob` = how many std devs above the no-clumping mean, same random-placement model as `blend_bound`'s low anchor -- just a different (distribution-shaped, not linear) margin."""
     mean = uniform_mean(n_cards, matches, k)
     return mean + knob * math.sqrt(nhg_variance(n_cards, matches, k))
 
 
-def abort_budget_ns(walk_ns: float, matches: int, safety_factor: float, ceiling_ns: float) -> float:
-    """Cost under a RUNTIME circuit breaker instead of an a-priori decision: let the walk run, and
-    only abort into three-phase once the walk's OWN elapsed cost crosses `budget = safety_factor *
-    three_phase_ns_model(matches)` -- a budget anchored to the alternative's own (offset-independent)
-    cost, not to `k`. A `k`-scaled budget was tried first and does not work: `k = offset + limit`
-    already includes the offset, so at a deep offset the budget outgrows `n_cards` and the abort can
-    never trip at all -- exactly the population (deep, expensive walks) this exists to catch. Tracking
-    elapsed cost is free in the real executor (`work.cards_visited += 1` already runs every
-    iteration); this models "compare it against a threshold every so often," not new instrumentation.
+def abort_budget_ns(walk_ns: float, matches: int, safety_factor: float, ceiling_ns: float) -> tuple[float, bool]:
+    """Cost under a RUNTIME circuit breaker instead of an a-priori decision: let the walk run, and only abort into three-phase once the walk's OWN elapsed cost crosses `budget = safety_factor * three_phase_ns_model(matches)` -- a budget anchored to the alternative's own (offset-independent) cost, not to `k`. A `k`-scaled budget was tried first and does not work: `k = offset + limit` already includes the offset, so at a deep offset the budget outgrows `n_cards` and the abort can never trip at all -- exactly the population (deep, expensive walks) this exists to catch. Tracking elapsed cost is free in the real executor (`work.cards_visited += 1` already runs every iteration); this models "compare it against a threshold every so often," not new instrumentation.
 
     Naively, an abort caps the total at `(safety_factor + 1) * three_phase_ns_model(matches)` -- but
     that cap ITSELF grows with `matches` (three-phase costs more for a high-selectivity query), and a
@@ -184,11 +177,15 @@ def abort_budget_ns(walk_ns: float, matches: int, safety_factor: float, ceiling_
     dataset. `ceiling_ns` is the fix: an absolute cap independent of `matches` entirely (the caller
     passes `walk_rate * n_cards` -- no real walk, however clumped, can cost more than visiting the
     whole corpus once). A row that finishes within budget still pays EXACTLY its own real `walk_ns`.
+
+    Returns:
+        `(ns, aborted)` -- `aborted` is whether the breaker tripped, returned alongside the cost
+        instead of recomputed by the caller from the same `budget`.
     """
     budget = safety_factor * three_phase_ns_model(matches)
     if walk_ns <= budget:
-        return walk_ns
-    return min(budget + three_phase_ns_model(matches), ceiling_ns)
+        return walk_ns, False
+    return min(budget + three_phase_ns_model(matches), ceiling_ns), True
 
 
 METHODS = {
@@ -198,9 +195,7 @@ METHODS = {
 
 
 def selfcheck_nhg_moments(rng: random.Random) -> None:
-    """Monte Carlo check of `uniform_mean`/`nhg_variance` against simulated random placements --
-    quoting a variance formula from memory is exactly the kind of thing this repo's conventions say
-    to verify, not assume."""
+    """Monte Carlo check of `uniform_mean`/`nhg_variance` against simulated random placements -- quoting a variance formula from memory is exactly the kind of thing this repo's conventions say to verify, not assume."""
     trials = 20_000
     cases = [(500, 50, 10), (5_000, 200, 80), (2_000, 1_800, 500)]
     print("selfcheck: analytic vs Monte Carlo (negative hypergeometric position of the k-th match)")
@@ -261,6 +256,7 @@ def evaluate(engine: object, query: str, orderby: str, direction: str, offset: i
         num_warmups=NUM_WARMUPS,
         num_trials=NUM_TRIALS,
     )
+    costbench.require_schema(full)
     compose = next((p for p in full["plans"] if p["plan"] == "PrintingCompose"), None)
     if compose is None or not compose["trials_ns"] or compose.get("paging_taken") != "Perm":
         return None
@@ -292,17 +288,13 @@ def evaluate(engine: object, query: str, orderby: str, direction: str, offset: i
     }
 
 
-def report(rows: list[dict]) -> None:
-    """Per-(method, knob) violation rate and bound tightness, so a knob can be picked by matching
-    violation rates across methods and comparing which gives the smaller (tighter) bound there."""
-    if not rows:
-        print("Nothing landed on Card-mode Perm for both explain() and explain_analyze() -- nothing to grade.")
-        return
-    print(f"\nn={len(rows)} (query, orderby, direction, offset) points graded\n")
-    prod_ratio = sorted(prod_cost_model_ns(r["printings_walked_pred"], LIMIT) / r["walk_ns"] for r in rows)
+def _report_prod_cost_model(rows: list[dict]) -> None:
+    """PRODUCTION cost model (`cost::plan_cost`) vs real `walk_ns`, pooled and by offset."""
+    prod_ratios_by_row = [(prod_cost_model_ns(r["printings_walked_pred"], LIMIT) / r["walk_ns"], r) for r in rows]
+    prod_ratio = sorted(ratio for ratio, _ in prod_ratios_by_row)
     print(
-        f"PRODUCTION cost model (cost::plan_cost, PrintingCompose/Perm) vs real walk_ns, "
-        f"ratio = predicted/realized (>1 over-costs, <1 under-costs):"
+        "PRODUCTION cost model (cost::plan_cost, PrintingCompose/Perm) vs real walk_ns, "
+        "ratio = predicted/realized (>1 over-costs, <1 under-costs):"
     )
     for p in (0, 5, 10, 25, 50, 75, 90, 95, 100):
         print(f"  p{p:<3} {percentile(prod_ratio, p):.3f}")
@@ -310,17 +302,25 @@ def report(rows: list[dict]) -> None:
     print("traffic rarely reaches -- i.e. is the model actually fine for the shallow case it was likely")
     print("tuned against, and only broken for the population this whole investigation is about?):")
     by_offset_prod: dict[int, list[float]] = {}
-    for r in rows:
-        by_offset_prod.setdefault(r["offset"], []).append(prod_cost_model_ns(r["printings_walked_pred"], LIMIT) / r["walk_ns"])
+    for ratio, r in prod_ratios_by_row:
+        by_offset_prod.setdefault(r["offset"], []).append(ratio)
     for off, vals in sorted(by_offset_prod.items()):
         vals.sort()
         print(f"  offset={off:<8} n={len(vals):<4} p50={percentile(vals, 50):>7.3f}  p90={percentile(vals, 90):>7.3f}")
+
+
+def _report_acquire_estimate_error(rows: list[dict]) -> None:
+    """Acquire-time estimate of `matches` vs the exact count -- the second-order error `evaluate()` keeps separate from the bound's own grading."""
     print()
     est_ratio = sorted(r["est_matches"] / r["matches"] for r in rows)
     print(
         f"acquire-estimate matches / exact matches (>1 over-estimates M, shrinks worst_case's margin): "
         f"p10={percentile(est_ratio, 10):.2f}  p50={percentile(est_ratio, 50):.2f}  p90={percentile(est_ratio, 90):.2f}"
     )
+
+
+def _report_worst_case_bound(rows: list[dict]) -> None:
+    """`worst_case_bound` alone: violation count and slack, pooled and by offset."""
     wc_slack = [worst_case_bound(r["n_cards"], r["matches"], r["k"]) / r["realized"] for r in rows]
     print(f"worst_case_bound alone: 0 violations by construction; slack (bound/realized) p50={percentile(sorted(wc_slack), 50):.2f}")
     print("\nworst_case_bound slack BY OFFSET (does the bound stay huge even at shallow offset, where\n"
@@ -332,6 +332,10 @@ def report(rows: list[dict]) -> None:
     for off, vals in sorted(by_offset.items()):
         vals.sort()
         print(f"  offset={off:<8} n={len(vals):<4} p50 slack={percentile(vals, 50):>8.1f}  p90 slack={percentile(vals, 90):>8.1f}")
+
+
+def _report_blend_bound_by_offset(rows: list[dict]) -> None:
+    """`blend_bound(knob=0.6)` slack by offset, for comparison against `worst_case_bound`'s table."""
     print("\nblend_bound(knob=0.6) slack BY OFFSET, for comparison against worst_case's table above --")
     print("does the better-behaved knob still stay tight at shallow offset (where it matters for keeping")
     print("walk_grouped_page in play), not just safe at deep offset?")
@@ -341,12 +345,20 @@ def report(rows: list[dict]) -> None:
     for off, vals in sorted(by_offset_blend.items()):
         vals.sort()
         print(f"  offset={off:<8} n={len(vals):<4} p50 slack={percentile(vals, 50):>8.2f}  p90 slack={percentile(vals, 90):>8.2f}")
+
+
+def _dump_worst_case_violations(rows: list[dict]) -> None:
+    """Dump any row where `worst_case_bound` undershot `realized` -- should never fire; diagnostic only."""
     wc_violations = [r for r in rows if worst_case_bound(r["n_cards"], r["matches"], r["k"]) < r["realized"]]
     if wc_violations:
         print(f"  !! {len(wc_violations)} worst_case_bound violations (should be impossible) -- dumping for diagnosis:")
         for r in wc_violations:
             wc = worst_case_bound(r["n_cards"], r["matches"], r["k"])
             print(f"     n_cards={r['n_cards']} matches={r['matches']} k={r['k']} offset={r['offset']} realized={r['realized']} worst_case={wc}")
+
+
+def _report_method_knob_table(rows: list[dict]) -> None:
+    """Per-(method, knob) violation rate and slack percentiles -- the table a knob gets picked from."""
     print(f"{'method':<8} {'knob':>6} {'violations':>11} {'viol%':>8} {'p50 slack':>10} {'p90 slack':>10} {'p99 slack':>10}")
     for name, (fn, knobs) in METHODS.items():
         for knob in knobs:
@@ -367,8 +379,13 @@ def report(rows: list[dict]) -> None:
                 f"{p50:>10.2f} {p90:>10.2f} {p99:>10.2f}"
             )
 
-    # ─── How bad are violations, not just how many? A "95% safe" bound is only useful if the 5% that ─
-    # miss don't reintroduce the exact unbounded tail this whole effort exists to remove.
+
+def _report_overshoot_among_violations(rows: list[dict]) -> None:
+    """Overshoot (realized/bound) among violations only, every knob -- how bad a miss is, not just how often.
+
+    A "95% safe" bound is only useful if the 5% that miss don't reintroduce the exact unbounded tail
+    this whole effort exists to remove.
+    """
     print("\novershoot (realized/bound) AMONG VIOLATIONS ONLY, EVERY knob -- if this stays near 1.0, a")
     print("violation is a near-miss; if it's large/growing, relaxing the violation-rate target doesn't cap")
     print("the pathological case, it just makes it rarer:")
@@ -387,7 +404,12 @@ def report(rows: list[dict]) -> None:
                 f"p50={percentile(overshoots, 50):.2f}  p90={percentile(overshoots, 90):.2f}  max={overshoots[-1]:.2f}"
             )
 
-    # ─── Does clumping severity correlate with anything cheap to know a priori? ─────────────────────
+
+def _report_clumping_by_selectivity(rows: list[dict]) -> None:
+    """`clumping_factor` by selectivity decile -- does a low- or high-selectivity query clump worse?
+
+    Does clumping severity correlate with anything cheap to know a priori?
+    """
     print("\nclumping_factor (realized/uniform_mean) BY SELECTIVITY DECILE (does a low-M/n_cards query")
     print("clump worse than a high-selectivity one, or is it roughly uniform across selectivity?):")
     by_sel: list[tuple[float, dict]] = sorted(((r["matches"] / r["n_cards"], r) for r in rows), key=lambda t: t[0])
@@ -403,6 +425,9 @@ def report(rows: list[dict]) -> None:
             f"p50={percentile(cfs, 50):>8.2f}  p90={percentile(cfs, 90):>8.2f}  max={cfs[-1]:>8.2f}"
         )
 
+
+def _report_clumping_by_orderby(rows: list[dict]) -> None:
+    """`clumping_factor` by orderby column -- does a semantically-loaded sort column clump worse than an arbitrary one?"""
     print("\nclumping_factor BY ORDERBY COLUMN (does a real, semantically-loaded sort column like edhrec")
     print("clump worse than an arbitrary one like name?):")
     by_orderby: dict[str, list[float]] = {}
@@ -412,6 +437,9 @@ def report(rows: list[dict]) -> None:
         cfs.sort()
         print(f"  {col:<12} n={len(cfs):<5} p50={percentile(cfs, 50):>8.2f}  p90={percentile(cfs, 90):>8.2f}  max={cfs[-1]:>8.2f}")
 
+
+def _report_worst_outliers(rows: list[dict]) -> None:
+    """The 10 rows with the highest `clumping_factor`, for manual inspection."""
     print("\nworst 10 outliers by clumping_factor (manual-inspection candidates):")
     worst = sorted(rows, key=lambda r: -r["clumping_factor"])[:10]
     for r in worst:
@@ -422,23 +450,37 @@ def report(rows: list[dict]) -> None:
         )
 
 
-def simulate_policies(rows: list[dict]) -> None:
-    """For each decision POLICY, what fraction of real traffic gets routed to the three-phase
-    fallback, and what does that do to the resulting latency distribution?
+def report(rows: list[dict]) -> None:
+    """Per-(method, knob) violation rate and bound tightness, so a knob can be picked by matching violation rates across methods and comparing which gives the smaller (tighter) bound there."""
+    if not rows:
+        print("Nothing landed on Card-mode Perm for both explain() and explain_analyze() -- nothing to grade.")
+        return
+    print(f"\nn={len(rows)} (query, orderby, direction, offset) points graded\n")
+    _report_prod_cost_model(rows)
+    _report_acquire_estimate_error(rows)
+    _report_worst_case_bound(rows)
+    _report_blend_bound_by_offset(rows)
+    _dump_worst_case_violations(rows)
+    _report_method_knob_table(rows)
+    _report_overshoot_among_violations(rows)
+    _report_clumping_by_selectivity(rows)
+    _report_clumping_by_orderby(rows)
+    _report_worst_outliers(rows)
 
-    The walk side uses each row's REAL `walk_ns` (see `evaluate()`) whenever a policy picks it,
-    including `oracle` (the reference point: the best any policy COULD do, using the row's real
-    `walk_ns` directly -- unknowable in advance, but it bounds how much more there is to gain over a
-    real decision rule, which only ever gets `matches`/`n_cards`/`k`, never the outcome). The
-    bound-based policies still have to PREDICT a hypothetical walk cost from a card estimate before
-    running anything, so they convert it via `walk_rate` -- fit from this same dataset's real
-    (`walk_ns`, `realized`) pairs now that `walk_ns` is a clean, confound-free measurement, not an
-    externally recalled or kernel-modeled constant. The three-phase side has no per-row real
-    measurement at all (not wired into dispatch -- see the module docstring), so it stays modeled via
-    `three_phase_ns_model`.
-    """
+
+def _walk_rate_and_ceiling(rows: list[dict]) -> tuple[float, float]:
+    """Fit `walk_rate` from real (`walk_ns`, `realized`) pairs and derive the abort ceiling from it, printing both."""
     walk_rate = percentile(sorted(r["walk_ns"] / r["realized"] for r in rows), 50)
     print(f"\nwalk_grouped_page rate fit from real (walk_ns, realized) pairs: {walk_rate:.3f} ns/card visited (median)\n")
+    # No real walk, however clumped, visits more cards than the whole corpus once -- an absolute
+    # backstop independent of `matches`, unlike the naive `(safety_factor + 1) * three_phase` cap.
+    ceiling_ns = walk_rate * max(r["n_cards"] for r in rows)
+    print(f"abort ceiling: {ceiling_ns:.0f} ns (walk_rate * n_cards -- a full-corpus walk, absolute worst case)\n")
+    return walk_rate, ceiling_ns
+
+
+def _build_policies(walk_rate: float, ceiling_ns: float) -> dict[str, object]:
+    """The named decision policies `simulate_policies` grades against each other, keyed by display name."""
 
     def gated(gate: int, bound_fn) -> object:  # noqa: ANN001 - bound_fn is one of the module's *_bound callables
         def cost(r: dict) -> tuple[float, bool]:
@@ -451,20 +493,13 @@ def simulate_policies(rows: list[dict]) -> None:
 
         return cost
 
-    # No real walk, however clumped, visits more cards than the whole corpus once -- an absolute
-    # backstop independent of `matches`, unlike the naive `(safety_factor + 1) * three_phase` cap.
-    ceiling_ns = walk_rate * max(r["n_cards"] for r in rows)
-    print(f"abort ceiling: {ceiling_ns:.0f} ns (walk_rate * n_cards -- a full-corpus walk, absolute worst case)\n")
-
     def abort_at(safety_factor: float) -> object:
         def cost(r: dict) -> tuple[float, bool]:
-            budget = safety_factor * three_phase_ns_model(r["matches"])
-            ns = abort_budget_ns(r["walk_ns"], r["matches"], safety_factor, ceiling_ns)
-            return ns, r["walk_ns"] > budget
+            return abort_budget_ns(r["walk_ns"], r["matches"], safety_factor, ceiling_ns)
 
         return cost
 
-    policies = {
+    return {
         "always_walk (today)": lambda r: (r["walk_ns"], False),
         "always_three_phase": lambda r: (three_phase_ns_model(r["matches"]), True),
         "oracle (best possible)": lambda r: (
@@ -489,6 +524,9 @@ def simulate_policies(rows: list[dict]) -> None:
         "abort at 20x 3phase": abort_at(20.0),
     }
 
+
+def _print_pooled_latency_table(rows: list[dict], policies: dict) -> dict[str, list[float]]:
+    """% diverted and latency percentiles for every policy, pooled across the whole offset sweep."""
     print(f"{'policy':<26} {'%diverted':>10} {'p50':>10} {'p90':>10} {'p99':>10} {'max':>10}")
     print("(pooled across OFFSET_SWEEP, which weights shallow and deep offsets EQUALLY -- nothing like")
     print(" real traffic's offset~0-heavy mix, so this table is a policy-vs-policy comparison on a")
@@ -512,7 +550,11 @@ def simulate_policies(rows: list[dict]) -> None:
             f"{fmt_ns(percentile(latencies, 50)):>10} {fmt_ns(percentile(latencies, 90)):>10} "
             f"{fmt_ns(percentile(latencies, 99)):>10} {fmt_ns(latencies[-1]):>10}"
         )
+    return latencies_by_policy
 
+
+def _print_worst_surviving_rows(rows: list[dict], policies: dict) -> None:
+    """Worst SURVIVING (non-diverted) row for a shortlist of policies -- does a bound's own worst case walk a row that should have been diverted?"""
     print("\nworst SURVIVING (non-diverted) row for each policy -- oracle's max is capped by construction")
     print("at always_three_phase's own max (see the earlier discussion); does sigma's/blend's own worst")
     print("case walk a row that should have been diverted, and by how much does it miss?")
@@ -528,7 +570,8 @@ def simulate_policies(rows: list[dict]) -> None:
         "abort at 2x 3phase",
     ):
         cost_fn = policies[name]
-        walked = [(cost_fn(r)[0], r) for r in rows if not cost_fn(r)[1]]
+        results = [(*cost_fn(r), r) for r in rows]
+        walked = [(ns, r) for ns, aborted, r in results if not aborted]
         if not walked:
             continue
         worst_ns, r = max(walked, key=lambda t: t[0])
@@ -538,17 +581,11 @@ def simulate_policies(rows: list[dict]) -> None:
             f"n_cards={r['n_cards']}  three_phase_would_be={fmt_ns(tp):>10}  clumping_factor={r['clumping_factor']:.2f}"
         )
 
-    headline = [
-        "always_walk (today)",
-        "always_three_phase",
-        "oracle (best possible)",
-        "no gate, sigma(1.0)",
-        "no gate, sigma(2.0)",
-        "no gate, sigma(3.0)",
-        "no gate, sigma(4.0)",
-        "no gate, sigma(6.0)",
-        "no gate, sigma(8.0)",
-    ]
+
+def _print_headline_percentiles(
+    latencies_by_policy: dict[str, list[float]], headline: list[str], chart_path: pathlib.Path | None
+) -> None:
+    """5%-granularity percentile-vs-latency table for the headline policies, plus the tail-concentrated chart export."""
     print(f"\npercentile vs latency (ns), 5% granularity, for the {len(headline)} headline policies:")
     pcts_print = list(range(0, 101, 5))
     header2 = f"{'pct':<5}" + "".join(f"{name:>24}" for name in headline)
@@ -558,7 +595,7 @@ def simulate_policies(rows: list[dict]) -> None:
     # and a flat step size leaves only 2-3 points there -- not enough to see curve shape once a chart
     # zooms in. 1% steps 0-89, 0.5% steps 90-100 (n=2705 real rows underlies each, so 0.5% steps
     # average ~14 rows/bucket in the tail -- real resolution, not pure sampling noise).
-    pcts = [float(p) for p in range(0, 90)] + [90 + 0.5 * i for i in range(21)]
+    pcts = [float(p) for p in range(90)] + [90 + 0.5 * i for i in range(21)]
     chart_data = {"pcts": pcts, "series": {}}
     for name in headline:
         chart_data["series"][name] = [percentile(latencies_by_policy[name], p) for p in pcts]
@@ -568,14 +605,14 @@ def simulate_policies(rows: list[dict]) -> None:
             line += f"{percentile(latencies_by_policy[name], p):>24.0f}"
         print(line)
 
-    chart_path = pathlib.Path(
-        "/private/tmp/claude-502/-Users-joseph-bylund-scratch-sylvan-librarian/"
-        "06741293-793d-446c-823a-cac4758bff9c/scratchpad/policy_latency_percentiles.json"
-    )
-    chart_path.write_text(json.dumps(chart_data))
-    print(f"\nchart data written to {chart_path}")
+    if chart_path is not None:
+        chart_path.write_text(json.dumps(chart_data))
+        print(f"\nchart data written to {chart_path}")
 
-    # ─── By offset instead of pooled: this is the view to actually trust, since it doesn't require ──
+
+def _print_by_offset_tables(rows: list[dict], policies: dict) -> None:
+    """% diverted and median latency, BY OFFSET, for a policy shortlist -- the view to trust over the pooled tables above."""
+    # By offset instead of pooled: this is the view to actually trust, since it doesn't require
     # guessing how real traffic distributes across offsets -- read it against YOUR OWN traffic's depth
     # distribution instead of a blended average that bakes in an arbitrary sweep weighting.
     shortlist = {
@@ -610,6 +647,39 @@ def simulate_policies(rows: list[dict]) -> None:
         print(line)
 
 
+def simulate_policies(rows: list[dict], chart_path: pathlib.Path | None) -> None:
+    """For each decision POLICY, what fraction of real traffic gets routed to the three-phase fallback, and what does that do to the resulting latency distribution?
+
+    The walk side uses each row's REAL `walk_ns` (see `evaluate()`) whenever a policy picks it,
+    including `oracle` (the reference point: the best any policy COULD do, using the row's real
+    `walk_ns` directly -- unknowable in advance, but it bounds how much more there is to gain over a
+    real decision rule, which only ever gets `matches`/`n_cards`/`k`, never the outcome). The
+    bound-based policies still have to PREDICT a hypothetical walk cost from a card estimate before
+    running anything, so they convert it via `walk_rate` -- fit from this same dataset's real
+    (`walk_ns`, `realized`) pairs now that `walk_ns` is a clean, confound-free measurement, not an
+    externally recalled or kernel-modeled constant. The three-phase side has no per-row real
+    measurement at all (not wired into dispatch -- see the module docstring), so it stays modeled via
+    `three_phase_ns_model`.
+    """
+    walk_rate, ceiling_ns = _walk_rate_and_ceiling(rows)
+    policies = _build_policies(walk_rate, ceiling_ns)
+    latencies_by_policy = _print_pooled_latency_table(rows, policies)
+    _print_worst_surviving_rows(rows, policies)
+    headline = [
+        "always_walk (today)",
+        "always_three_phase",
+        "oracle (best possible)",
+        "no gate, sigma(1.0)",
+        "no gate, sigma(2.0)",
+        "no gate, sigma(3.0)",
+        "no gate, sigma(4.0)",
+        "no gate, sigma(6.0)",
+        "no gate, sigma(8.0)",
+    ]
+    _print_headline_percentiles(latencies_by_policy, headline, chart_path)
+    _print_by_offset_tables(rows, policies)
+
+
 def main() -> None:
     """Sample uniform real queries, sweep deep offsets explicitly, grade both bound candidates."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -617,6 +687,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--corpus", type=pathlib.Path, default=REPO_ROOT / "benchmarks/bitplanes/corpus.jsonl")
     parser.add_argument("--shm-path", type=pathlib.Path, default=None)
+    parser.add_argument("--chart-path", type=pathlib.Path, default=None, help="write chart series JSON here")
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
@@ -628,13 +699,13 @@ def main() -> None:
     rows: list[dict] = []
     considered = 0
     for _ in range(args.n_queries):
-        # Pinned to ONE predicate: `PrintingCompose`'s own phase reporting doesn't split "build pbits
-        # from the filter" out from "page it" (`ComposePageWork`'s doc: "Compose's arm is not
-        # decomposed into setup/loop/finish... there is nothing to attribute between phases" -- both
-        # land in `ns_loop` as one undivided span). A multi-predicate AND's compose cost can dwarf the
-        # walk itself and swamp any attempt to fit a per-card WALK rate from `ns`. A single predicate
-        # makes that shared cost small and roughly constant instead, so it acts like the intercept in
-        # `WALK_RATE`'s fit rather than dominating its slope.
+        # Pinned to ONE predicate: this used to be required because `PrintingCompose` reported one
+        # undivided `ns_total` span, so a multi-predicate AND's compose cost could dwarf the walk
+        # itself and swamp any attempt to fit a per-card WALK rate from `ns`. `ComposePageWork`'s
+        # `ns_build`/`ns_paging` split (this same session, `card_engine/src/lib.rs`) fixed that at the
+        # source -- `ns_loop` is now the paging branch alone regardless of predicate count. Kept anyway
+        # as the simpler default: single-predicate is still the case this bound targets, and narrowing
+        # the sampler to it costs nothing here.
         query = sampler.query(rng, shape=Shape(predicates=1))
         orderby = rng.choice(ORDERBYS)
         direction = rng.choice(("asc", "desc"))
@@ -646,7 +717,7 @@ def main() -> None:
 
     print(f"\n{considered} (query, orderby, direction, offset) points considered, {len(rows)} landed on Card-mode Perm both ways.")
     report(rows)
-    simulate_policies(rows)
+    simulate_policies(rows, args.chart_path)
 
 
 if __name__ == "__main__":

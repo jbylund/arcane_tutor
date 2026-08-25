@@ -4676,6 +4676,15 @@ fn plan_stats_never_leak_between_participants() {
                             p.paging_taken, PagingTaken::NotEntered,
                             "compose ran but recorded no paging branch, so leak 2 has no source: {case}",
                         );
+                        // Same statement `SILENT_PLANS` gets above: `plan_self_ns` reads dispatch
+                        // time from `ns_setup + ns_loop + ns_finish`, so a compose run that published
+                        // nothing here would price as zero. Unlike `SILENT_PLANS`, compose's split is
+                        // two fields (`ns_build`/`ns_paging`, landing in `ns_setup`/`ns_loop`), not
+                        // three, but the sum still has to be positive on every real run.
+                        assert!(
+                            p.ns_setup + p.ns_loop + p.ns_finish > 0,
+                            "compose produced a page but published no phase timing, so it prices as zero: {case}",
+                        );
                         compose_labelled += 1;
                     }
                 }
