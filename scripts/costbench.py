@@ -351,11 +351,11 @@ def plan_self_ns(plan: dict, acquire: dict) -> float | None:
 # ── statistics and tables ─────────────────────────────────────────────────────────────────────
 
 
-def percentile(sorted_vals: list[float], pct: int) -> float:
+def percentile(sorted_vals: list[float], pct: float) -> float:
     """Nearest-rank percentile; no interpolation, so every printed number is a real observation."""
     if not sorted_vals:
         return float("nan")
-    idx = min(round(pct / 100.0 * len(sorted_vals) + 0.5) - 1, len(sorted_vals) - 1)
+    idx = min(math.ceil(pct / 100.0 * len(sorted_vals)) - 1, len(sorted_vals) - 1)
     return sorted_vals[max(idx, 0)]
 
 
