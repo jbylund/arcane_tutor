@@ -45,6 +45,7 @@ from api.parsing.nodes import (
     flatten_nested_operations,
 )
 from api.parsing.rewrite import rewrite_query
+from api.parsing.spans import fold_typographic_quotes
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -588,10 +589,15 @@ def parse_search_query(query: str | None) -> Query:
     Raises:
         ValueError: If parsing fails due to syntax errors or invalid operators.
     """
-    original_query = query
     if query is None or not query.strip():
         return Query(TrueNode())
 
+    # The same pre-lex fold `parse_query` applies, for the same reason and in the same position:
+    # the two parsers must agree about which characters are quotes (test_parser_parity), including
+    # in the "Failed to parse" message below -- so original_query is captured after the fold, not
+    # before, and echoes the query the parser actually read rather than the one the user pasted.
+    query = fold_typographic_quotes(query)
+    original_query = query
     query = preprocess_implicit_and(query)
     expr = get_parse_expr()
 

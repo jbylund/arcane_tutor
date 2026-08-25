@@ -29,7 +29,7 @@ from api.parsing.nodes import (
     TrueNode,
     flatten_nested_operations,
 )
-from api.parsing.spans import QUOTE_CHARS, brace_close_index, find_close_index, unescape
+from api.parsing.spans import QUOTE_CHARS, brace_close_index, find_close_index, fold_typographic_quotes, unescape
 
 # ── Alias → parser-class lookup ──────────────────────────────────────────────
 
@@ -816,6 +816,10 @@ def parse_query(src: str | None) -> Query:
     """
     if not src or not src.strip():
         return Query(TrueNode())
+    # Before the lexer, because a curly quote has to BE a quote by the time a term boundary is
+    # decided; and rebinding `src` so the "Failed to lex/parse" messages echo the query the parser
+    # actually read rather than the one the user pasted.
+    src = fold_typographic_quotes(src)
     try:
         tokens = tokenize(src)
     except LexError as exc:
