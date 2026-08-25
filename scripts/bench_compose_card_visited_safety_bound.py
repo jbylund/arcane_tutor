@@ -121,7 +121,7 @@ OFFSET_SWEEP = (0, 50, 200, 500, 1_000, 2_000, 4_000, 8_000, 15_000, 25_000)
 LIMIT = 20
 NUM_WARMUPS = costbench.NUM_WARMUPS
 NUM_TRIALS = costbench.NUM_TRIALS
-MIN_REALIZED = 5  # below this, `cards_visited` is too noisy/trivial to grade a bound against
+MIN_DIAGNOSTIC_CARDS = 5  # tiny walks are retained for policies but omitted from ratio diagnostics
 POLICY_SPLIT_SEED = 730_1009
 MIN_POLICY_GROUPS = 2
 
@@ -177,7 +177,11 @@ def blend_bound(n_cards: int, matches: int, k: int, knob: float) -> float:
 def sigma_bound(n_cards: int, matches: int, k: int, knob: float) -> float:
     """`knob` = how many std devs above the no-clumping mean, same random-placement model as `blend_bound`'s low anchor -- just a different (distribution-shaped, not linear) margin."""
     mean = uniform_mean(n_cards, matches, k)
-    return mean + knob * math.sqrt(nhg_variance(n_cards, matches, k))
+    statistical = mean + knob * math.sqrt(nhg_variance(n_cards, matches, k))
+    # A statistical margin can cross the finite population's unconditional ceiling, especially for
+    # dense filters near their final page. More than the exact worst case is valid but never useful:
+    # it can only divert a walk that the tighter unconditional bound would keep.
+    return min(statistical, worst_case_bound(n_cards, matches, k))
 
 
 METHODS = {
@@ -235,7 +239,7 @@ def evaluate(engine: object, query: str, orderby: str, direction: str, offset: i
     acq = quick["acquire"]
     if acq["compose_paging"] != "Perm":
         return None
-    n_cards, est_matches = acq["n_cards"], acq["matches"]
+    n_cards, n_printings, est_matches = acq["n_cards"], acq["n_printings"], acq["matches"]
     printings_walked_pred = acq["printings_walked"]  # cost::printings_walked(f) -- the router's OWN input, acquire-time
     k = offset + LIMIT
     full = engine.explain_analyze(
@@ -254,7 +258,7 @@ def evaluate(engine: object, query: str, orderby: str, direction: str, offset: i
         return None
     matches = compose["result_total"]
     realized = compose["cards_visited"]
-    if matches <= 0 or offset >= matches or matches >= n_cards or realized < MIN_REALIZED:
+    if matches <= 0 or offset >= matches or matches >= n_cards:
         return None
     # `ns_loop` is now the paging branch ALONE -- `card_engine/src/lib.rs`'s `ComposePageWork` split
     # (this session) separated it from `ns_setup` (the compose-build cost that used to be bundled in
@@ -265,6 +269,7 @@ def evaluate(engine: object, query: str, orderby: str, direction: str, offset: i
         return None
     return {
         "n_cards": n_cards,
+        "n_printings": n_printings,
         "matches": matches,
         "est_matches": est_matches,
         "k": k,
@@ -509,9 +514,15 @@ def _split_policy_rows(rows: list[dict]) -> tuple[list[dict], list[dict]]:
 
 
 def _predicted_printings_for_bound(r: dict, bound_cards: float) -> float:
-    """Scale acquire's printing-walk estimate from the uniform card depth to the candidate bound."""
-    uniform_cards = uniform_mean(r["n_cards"], r["matches"], r["k"])
-    return r["printings_walked_pred"] * bound_cards / uniform_cards
+    """Convert a card-depth bound to printing probes at the corpus's exact average span.
+
+    Do not scale acquire's `printings_walked_pred`: it was built from acquire's estimated match
+    count, while `bound_cards` uses the fastpath's exact count, and it already carries production's
+    1.45 clumping correction. Mixing those populations injects an `exact/estimated` factor; retaining
+    the correction also counts clumping twice because the candidate bound already supplies that
+    margin in card space.
+    """
+    return bound_cards * r["n_printings"] / r["n_cards"]
 
 
 def _build_policies(walk_model: WalkCostModel, three_phase: ThreePhaseModel) -> dict[str, object]:
@@ -576,8 +587,11 @@ def _offset_weighted_rows(rows: list[dict]) -> list[tuple[dict, float]]:
 
 
 def _print_pooled_latency_table(rows: list[dict], policies: dict) -> dict[str, list[tuple[float, float]]]:
-    """% diverted and latency percentiles for every policy, pooled across the whole offset sweep."""
+    """% diverted and paging-latency percentiles for every policy, pooled across the offset sweep."""
     print(f"{'policy':<26} {'%diverted':>10} {'p50':>10} {'p90':>10} {'p99':>10} {'max':>10}")
+    print("(latencies are the paging branch only; every policy pays the same compose build before")
+    print(" this local decision, so ns_setup is deliberately excluded rather than presented as")
+    print(" end-to-end query latency.)")
     print("(pooled across OFFSET_SWEEP, which weights shallow and deep offsets EQUALLY -- nothing like")
     print(" real traffic's offset~0-heavy mix, so this table is a policy-vs-policy comparison on a")
     print(" deliberately offset-heavy stress grid, not a production latency estimate; see the by-offset")
@@ -636,7 +650,7 @@ def _print_headline_percentiles(
     latencies_by_policy: dict[str, list[tuple[float, float]]], headline: list[str], chart_path: pathlib.Path | None
 ) -> None:
     """5%-granularity percentile-vs-latency table for the headline policies, plus the tail-concentrated chart export."""
-    print(f"\npercentile vs latency (ns), 5% granularity, for the {len(headline)} headline policies:")
+    print(f"\npercentile vs paging-branch latency (ns), 5% granularity, for the {len(headline)} headline policies:")
     pcts_print = list(range(0, 101, 5))
     header2 = f"{'pct':<5}" + "".join(f"{name:>24}" for name in headline)
     print(header2)
@@ -646,7 +660,7 @@ def _print_headline_percentiles(
     # zooms in. Use 1% steps 0-89 and 0.5% steps 90-100; the policy-split line above reports the
     # evaluation population that underlies each point.
     pcts = [float(p) for p in range(90)] + [90 + 0.5 * i for i in range(21)]
-    chart_data = {"pcts": pcts, "series": {}}
+    chart_data = {"metric": "paging_branch_ns", "pcts": pcts, "series": {}}
     for name in headline:
         chart_data["series"][name] = [_weighted_percentile(latencies_by_policy[name], p) for p in pcts]
     for p in pcts_print:
@@ -687,7 +701,7 @@ def _print_by_offset_tables(rows: list[dict], policies: dict) -> None:
             line += f"{100 * frac:>23.1f}%"
         print(line)
 
-    print("\nmedian realized latency (ns), BY OFFSET:")
+    print("\nmedian realized paging-branch latency (ns), BY OFFSET:")
     print(header)
     for off, off_rows in sorted(by_offset_rows.items()):
         line = f"{off:<8}"
@@ -781,7 +795,14 @@ def main() -> None:
                 rows.append(row)
 
     print(f"\n{considered} (query, orderby, direction, offset) points considered, {len(rows)} landed on Card-mode Perm both ways.")
-    report(rows)
+    diagnostic_rows = [r for r in rows if r["realized"] >= MIN_DIAGNOSTIC_CARDS]
+    omitted = len(rows) - len(diagnostic_rows)
+    if omitted:
+        print(
+            f"{omitted} walks below {MIN_DIAGNOSTIC_CARDS} cards are omitted from ratio diagnostics "
+            "but retained in policy simulation."
+        )
+    report(diagnostic_rows)
     if not rows:
         return
     simulate_policies(rows, args.chart_path, three_phase)
