@@ -124,11 +124,17 @@ MIN_REALIZED = 5  # below this, `cards_visited` is too noisy/trivial to grade a 
 
 def worst_case_bound(n_cards: int, matches: int, k: int) -> float:
     """Every non-matching card clumped before the k-th match -- an exact, unconditional ceiling."""
+    if k > matches:
+        # A partial final page never fills, so `walk_grouped_page` exhausts the permutation rather
+        # than stopping at the last match.
+        return float(n_cards)
     return max(n_cards - matches, 0) + k
 
 
 def uniform_mean(n_cards: int, matches: int, k: int) -> float:
     """Expected position of the k-th match if `matches` cards were scattered with NO clumping -- the order-statistic mean of a uniformly random `matches`-subset of `n_cards` slots."""
+    if k > matches:
+        return float(n_cards)
     return k * (n_cards + 1) / (matches + 1)
 
 
@@ -241,7 +247,7 @@ def evaluate(engine: object, query: str, orderby: str, direction: str, offset: i
         return None
     matches = compose["result_total"]
     realized = compose["cards_visited"]
-    if matches <= 0 or k >= matches or matches >= n_cards or realized < MIN_REALIZED:
+    if matches <= 0 or offset >= matches or matches >= n_cards or realized < MIN_REALIZED:
         return None
     # `ns_loop` is now the paging branch ALONE -- `card_engine/src/lib.rs`'s `ComposePageWork` split
     # (this session) separated it from `ns_setup` (the compose-build cost that used to be bundled in
