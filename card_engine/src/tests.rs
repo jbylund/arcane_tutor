@@ -296,7 +296,7 @@ fn store_of(cards: Vec<OracleCard>, printing_counts: &[usize], vocab: VocabInter
         name_bigrams: build_name_bigram_index(&cards),
         name_unigrams: build_name_unigram_index(&cards),
         legal_divergent: build_divergent_ids(&cards),
-        sort_perms: build_sort_permutations(&cards),
+        sort_perms: build_sort_permutations(&cards, &offsets),
         max_artwork_groups: artwork_groups.iter().copied().max().unwrap_or(0),
         artwork_groups,
         artwork_group_col: printings.iter().map(|p| p.artwork_group_id).collect(),
@@ -2481,7 +2481,7 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     data.indexes.flavor = build_flavor_index(&data.printings, &data.strings);
     data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
     data.indexes.legal_divergent = build_divergent_ids(&data.cards);
-    data.indexes.sort_perms = build_sort_permutations(&data.cards);
+    data.indexes.sort_perms = build_sort_permutations(&data.cards, &data.offsets);
     data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(i16::from));
     data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power.map(i16::from));
     data.indexes.toughness = build_numeric_index(&data.cards, |c| c.creature_toughness.map(i16::from));
@@ -4705,7 +4705,8 @@ fn plan_stats_never_leak_between_participants() {
     let empty_params = kernel_params(Mode::Card, SortCol::EdhrecRank, false, 60, CORPUS_SIZE * 2);
     let empty_filter = fuzz_bound_filter(specs.last().expect("specs is non-empty"), archived);
     take_phase_stats();
-    printing_compose_fastpath(&ctx, &empty_params, &empty_filter).expect("PrintingCompose must serve the explicit empty-page case");
+    printing_compose_fastpath(&ctx, &empty_params, &empty_filter, true)
+        .expect("PrintingCompose must serve the explicit empty-page case");
     let empty_phases = take_phase_stats();
     assert_eq!(empty_phases.paging_taken, PagingTaken::EmptyPage);
     assert!(empty_phases.ns_setup > 0, "empty compose page omitted its build timing");
@@ -6634,7 +6635,7 @@ fn bench_checked_vs_unchecked_access() {
         rarity_cards:   RangeCardCounts::default(),
         value_totals:   ValueTotals::default(),
         pair_totals:    PairTotals::default(),
-        sort_perms:     build_sort_permutations(&cards),
+        sort_perms:     build_sort_permutations(&cards, &offsets),
         max_artwork_groups: artwork_groups.iter().copied().max().unwrap_or(0),
         artwork_groups,
         artwork_group_col: printings.iter().map(|p| p.artwork_group_id).collect(),
@@ -7263,7 +7264,7 @@ fn streamed_selection_matches_gathered() {
             p.price_usd = Some((pid % 7) as u32 * 100 + 50); // $0.50, $1.50, ... $6.50
         }
         if with_perms {
-            data.indexes.sort_perms = build_sort_permutations(&data.cards);
+            data.indexes.sort_perms = build_sort_permutations(&data.cards, &data.offsets);
             reassign_artwork_grouping(&mut data);
         }
         rkyv::to_bytes::<Error>(&data).expect("serialize")
@@ -7511,10 +7512,31 @@ fn sort_permutations_nulls_last_both_directions() {
     cards[0].cmc = Some(5);
     cards[1].cmc = None;
     cards[2].cmc = Some(1);
-    let data = store_of(cards, &[1, 1, 1], vocab);
-    let perms = build_sort_permutations(&data.cards);
-    assert_eq!(perms.cmc[0], vec![2, 0, 1], "asc: 1, 5, null");
-    assert_eq!(perms.cmc[1], vec![0, 2, 1], "desc: 5, 1, null");
+    let mut data = store_of(cards, &[2, 1, 3], vocab);
+    data.indexes.sort_perms = build_sort_permutations(&data.cards, &data.offsets);
+    assert_eq!(data.indexes.sort_perms.cmc[0], vec![2, 0, 1], "asc: 1, 5, null");
+    assert_eq!(data.indexes.sort_perms.cmc[1], vec![0, 2, 1], "desc: 5, 1, null");
+    assert_eq!(
+        data.indexes.sort_perms.cmc_printings_prefix[0],
+        vec![0, 3, 5, 6],
+        "asc printing spans follow card order",
+    );
+    assert_eq!(
+        data.indexes.sort_perms.cmc_printings_prefix[1],
+        vec![0, 2, 5, 6],
+        "desc printing spans follow card order",
+    );
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    assert_eq!(
+        archived
+            .indexes
+            .sort_perms
+            .printings_examined_upper(SortCol::Cmc, false, 1.01, archived.cards.len()),
+        Some(5),
+        "fractional card bounds ceil before the O(1) printing-prefix lookup",
+    );
 }
 
 #[test]
@@ -10413,7 +10435,7 @@ fn named_store() -> CardData {
         .collect();
     assign_name_ranks(&mut cards);
     let mut data = store_of(cards, &[1; 6], vocab);
-    data.indexes.sort_perms = build_sort_permutations(&data.cards);
+    data.indexes.sort_perms = build_sort_permutations(&data.cards, &data.offsets);
     data
 }
 

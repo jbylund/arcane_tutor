@@ -2128,7 +2128,7 @@ fn expand_flavor_ids(idx: &Archived<FlavorIndex>, dense_ids: &[u32], n_printings
 // column and edhrec rank. Two permutations per column because direction folds
 // into the primary key only — secondaries keep their fixed order in both
 // directions, so a reversed ascending walk would be wrong inside ties.
-// 10 × ~126 kB ≈ 1.26 MB.
+// 12 × ~126 kB ≈ 1.51 MB.
 //
 // `inv` mirrors `perm` one-for-one (inv[col][dir][card] = card's position in
 // that sort order) for #634 Step 2's popcount-skip order phase: scattering a
@@ -2140,7 +2140,11 @@ fn expand_flavor_ids(idx: &Archived<FlavorIndex>, dense_ids: &[u32], n_printings
 // both directions (see above), so reversing one inverse gets tied groups'
 // internal order backwards — verified by re-deriving the sort key construction
 // before implementing, not assumed from the general "arrays can be negated"
-// intuition. Same size as `perm`: another ~1.26 MB.
+// intuition. Same size as `perm`: another ~1.51 MB.
+//
+// A third parallel family stores cumulative printing spans in permutation order. The compose Perm
+// walk touches every printing under every visited card, so this turns a cards-visited bound into a
+// sound printing-work bound with one lookup rather than an O(bound) query-time scan. Another ~1.51 MB.
 
 #[derive(Archive, Serialize, Deserialize, Default)]
 struct SortPermutations {
@@ -2161,6 +2165,16 @@ struct SortPermutations {
     power_inv:     [Vec<u32>; 2],
     toughness_inv: [Vec<u32>; 2],
     name_inv:      [Vec<u32>; 2],
+    // Prefix sums of each permutation's per-card printing spans. Entry k is the exact number of
+    // printings examined by walking the first k cards in that order, so a bound on cards visited can
+    // be converted to a sound printing-work bound with one lookup. Same [ascending, descending]
+    // layout as the permutations; every vector has n_cards+1 entries.
+    edhrec_printings_prefix:    [Vec<u32>; 2],
+    cubecobra_printings_prefix: [Vec<u32>; 2],
+    cmc_printings_prefix:       [Vec<u32>; 2],
+    power_printings_prefix:     [Vec<u32>; 2],
+    toughness_printings_prefix: [Vec<u32>; 2],
+    name_printings_prefix:      [Vec<u32>; 2],
 }
 
 impl ArchivedSortPermutations {
@@ -2192,6 +2206,42 @@ impl ArchivedSortPermutations {
             SortCol::Rarity | SortCol::PriceUsd => return None,
         };
         Some(&pair[descending as usize])
+    }
+
+    fn get_printings_prefix(&self, col: SortCol, descending: bool) -> Option<&Archived<Vec<u32>>> {
+        let pair = match col {
+            SortCol::EdhrecRank => &self.edhrec_printings_prefix,
+            SortCol::Cubecobra  => &self.cubecobra_printings_prefix,
+            SortCol::Cmc        => &self.cmc_printings_prefix,
+            SortCol::Power      => &self.power_printings_prefix,
+            SortCol::Toughness  => &self.toughness_printings_prefix,
+            SortCol::Name       => &self.name_printings_prefix,
+            SortCol::Rarity | SortCol::PriceUsd => return None,
+        };
+        Some(&pair[descending as usize])
+    }
+
+    /// Exact printing span of the first `ceil(cards_visited_bound)` entries in this permutation.
+    ///
+    /// If the supplied card count is an upper bound on the forward walk's cards visited, monotonicity
+    /// makes this a sound upper bound on its printings examined. `ceil` is required because the
+    /// statistical bounds are fractional while the executor visits whole cards.
+    fn printings_examined_upper(
+        &self,
+        col: SortCol,
+        descending: bool,
+        cards_visited_bound: f64,
+        n_cards: usize,
+    ) -> Option<u32> {
+        if !cards_visited_bound.is_finite() || cards_visited_bound < 0.0 {
+            return None;
+        }
+        let prefix = self.get_printings_prefix(col, descending)?;
+        if prefix.len() != n_cards + 1 {
+            return None;
+        }
+        let k = (cards_visited_bound.ceil() as usize).min(n_cards);
+        Some(u32::from(prefix[k]))
     }
 
     /// Both directions of one streamable column, length-checked against the card count, or `None` if
@@ -2412,9 +2462,24 @@ fn partition_point(len: usize, pred: impl Fn(usize) -> bool) -> usize {
     lo
 }
 
-fn build_sort_permutations(cards: &[OracleCard]) -> SortPermutations {
-    // Purely card-space now: the printings/offsets arguments existed only to read the first stored
-    // printing's prefer_score, which is no longer a sort key (see the closure below).
+fn build_perm_printings_prefix(perm: &[u32], offsets: &[u32]) -> Vec<u32> {
+    let mut prefix = Vec::with_capacity(perm.len() + 1);
+    prefix.push(0);
+    for &cid in perm {
+        let cid = cid as usize;
+        let span = offsets[cid + 1] - offsets[cid];
+        let total = prefix
+            .last()
+            .copied()
+            .unwrap_or(0u32)
+            .checked_add(span)
+            .expect("printing count fits u32");
+        prefix.push(total);
+    }
+    prefix
+}
+
+fn build_sort_permutations(cards: &[OracleCard], offsets: &[u32]) -> SortPermutations {
     let perm = |get: &dyn Fn(&OracleCard) -> Option<f32>, descending: bool| -> Vec<u32> {
         let mut ids: Vec<u32> = (0..cards.len() as u32).collect();
         ids.sort_unstable_by_key(|&i| {
@@ -2447,9 +2512,23 @@ fn build_sort_permutations(cards: &[OracleCard]) -> SortPermutations {
     let (power, power_inv) = both(&|c| c.creature_power.map(|v| v as f32));
     let (toughness, toughness_inv) = both(&|c| c.creature_toughness.map(|v| v as f32));
     let (name, name_inv) = both(&|c| Some(c.name_rank as f32));
+    let printings_prefixes = |pair: &[Vec<u32>; 2]| {
+        [
+            build_perm_printings_prefix(&pair[0], offsets),
+            build_perm_printings_prefix(&pair[1], offsets),
+        ]
+    };
+    let edhrec_printings_prefix = printings_prefixes(&edhrec);
+    let cubecobra_printings_prefix = printings_prefixes(&cubecobra);
+    let cmc_printings_prefix = printings_prefixes(&cmc);
+    let power_printings_prefix = printings_prefixes(&power);
+    let toughness_printings_prefix = printings_prefixes(&toughness);
+    let name_printings_prefix = printings_prefixes(&name);
     SortPermutations {
         edhrec, cubecobra, cmc, power, toughness, name,
         edhrec_inv, cubecobra_inv, cmc_inv, power_inv, toughness_inv, name_inv,
+        edhrec_printings_prefix, cubecobra_printings_prefix, cmc_printings_prefix,
+        power_printings_prefix, toughness_printings_prefix, name_printings_prefix,
     }
 }
 
@@ -8003,24 +8082,30 @@ struct ComposePageWork {
     /// Rows the branch pushed. For the gather this is every match (it visits every candidate); for
     /// the two walks it is bounded by the page, which is the whole point of their cost shape.
     matches_pushed: u64,
-    /// Wall time of composing `pbits` (`compose_printing_bits` + the card-space projection + the
-    /// exact total) -- everything before the paging branch is chosen. Reported as `ns_setup` by
-    /// `take_phase_stats`, the same slot the other plans use for pre-loop work, so a harness reading
-    /// `plan_self_ns`'s `ns_setup + ns_loop + ns_finish` sees no change, but one that wants the build
-    /// separated from the walk (a natural-query harness cannot otherwise tell "the filter was
-    /// expensive to compose" from "the walk visited a lot of cards" -- see
-    /// `reference-engine-compose-perm-cards-visited-estimator.md`'s decision-rule work, which needed
-    /// exactly this split and initially had to fall back to a kernel-bench proxy without it) now can.
+    /// The whole fastpath's wall time. `take_phase_stats` uses this as the unsplit fallback outside
+    /// `explain_analyze`; diagnostic runs replace it with `ComposePhases`' build/paging split.
+    ns_total: u64,
+}
+
+/// Compose's diagnostic-only build/paging split.
+///
+/// Kept out of `ComposePageWork` because that value is published on every production compose run.
+/// A paired A/B measured the combined larger publish plus extra clock read at +4.09 µs and +4.37 µs
+/// on a ~74 µs mean. The forced `PrintingCompose` path enables this separate slot; production keeps
+/// the old 32-byte publish and two clock reads while diagnostic runs pay for the detail they consume.
+#[derive(Default, Clone, Copy)]
+struct ComposePhases {
+    /// Composing `pbits`, projecting to card space, calculating the exact total, and choosing paging.
     ns_build: u64,
-    /// Wall time of the paging branch alone (`walk_grouped_page` / `gather_composed_page` /
-    /// `walk_value_orderby_page`) -- reported as `ns_loop`, same reasoning as `ns_build` above.
+    /// The paging branch alone (`walk_grouped_page` / `gather_composed_page` /
+    /// `walk_value_orderby_page`).
     /// Zero for the empty/past-the-end early return, which never reaches a paging branch at all.
     ns_paging: u64,
 }
 
-// Production publishes this whole value on every successful compose run. Keep its footprint explicit:
-// three counters plus two phase timings, with no accidental padding or future silent growth.
-const _: [(); 5 * std::mem::size_of::<u64>()] = [(); std::mem::size_of::<ComposePageWork>()];
+// Pin both publication footprints: production's three counters + total, and diagnostics' two phases.
+const _: [(); 4 * std::mem::size_of::<u64>()] = [(); std::mem::size_of::<ComposePageWork>()];
+const _: [(); 2 * std::mem::size_of::<u64>()] = [(); std::mem::size_of::<ComposePhases>()];
 
 /// The `prefer`-best MATCHING printing of the group `pid` belongs to.
 ///
@@ -8183,9 +8268,8 @@ fn walk_value_orderby_page<'a>(
             printings_examined: examined,
             // Page-bounded, which is what this counter's doc always claimed.
             matches_pushed: pushed,
-            // Filled by `printing_compose_fastpath`, which owns the spans; this only reports work.
-            ns_build: 0,
-            ns_paging: 0,
+            // Filled by `printing_compose_fastpath`, which owns the span; this only reports work.
+            ns_total: 0,
         },
     ))
 }
@@ -8502,9 +8586,10 @@ fn printing_compose_fastpath<'a>(
     ctx: &QueryCtx<'a>,
     params: &QueryParams,
     filter: &FilterExpr,
+    collect_phases: bool,
 ) -> Option<(usize, Vec<(&'a AOracleCard, &'a APrinting)>)> {
-    // Ends at whichever exit produces a page; see `ComposePageWork::ns_build`/`ns_paging`. Declines return before
-    // any publish and so leave the slot as `take_phase_stats` cleared it.
+    // Ends at whichever exit produces a page; diagnostics split it through `ComposePhases`. Declines
+    // return before any publish and so leave the slot as `take_phase_stats` cleared it.
     let t_start = std::time::Instant::now();
     let QueryCtx { cards, printings, offsets, indexes, .. } = *ctx;
     let QueryParams { mode, sort_col, descending, page_offset, .. } = *params;
@@ -8553,17 +8638,20 @@ fn printing_compose_fastpath<'a>(
     // to BUILD. Snapshot immediately before publishing so the decision and its label are not omitted.
     if total == 0 || page_offset >= total {
         note_paging_taken(PagingTaken::EmptyPage);
-        publish_compose_work(ComposePageWork { ns_build: t_start.elapsed().as_nanos() as u64, ns_paging: 0, ..Default::default() });
+        let ns_total = t_start.elapsed().as_nanos() as u64;
+        if collect_phases {
+            publish_compose_phases(ComposePhases { ns_build: ns_total, ns_paging: 0 });
+        }
+        publish_compose_work(ComposePageWork { ns_total, ..Default::default() });
         return Some((total, Vec::new()));
     }
     // Everything up to here (compose `pbits` + the card-space projection + the exact total + the
     // walk-vs-gather and empty-page decisions) is the BUILD; timed on its own so a harness can tell
     // "the filter was expensive to compose" apart from "the walk visited a lot of cards" -- see
-    // `ComposePageWork::ns_build`'s doc for why that split didn't exist before and what it cost to not
-    // have it. One read, two phases, same as `exec_gathered_scan`'s `t_loop`, so no cost between the
-    // two snapshots goes uncounted regardless of which branch runs below.
-    let t_paging_start = std::time::Instant::now();
-    let ns_build = (t_paging_start - t_start).as_nanos() as u64;
+    // `ComposePhases::ns_build`'s doc for why that split didn't exist before. The extra boundary read
+    // is diagnostic-only: production keeps the pre-split clock/store footprint after a paired A/B
+    // found the always-on version measurably slower.
+    let t_paging_start = collect_phases.then(std::time::Instant::now);
     let (page, mut work) = match perm {
         Some(perm) => {
             if total <= *STREAM_MIN_MATCHES {
@@ -8636,8 +8724,14 @@ fn printing_compose_fastpath<'a>(
             }
         }
     };
-    work.ns_build = ns_build;
-    work.ns_paging = t_paging_start.elapsed().as_nanos() as u64;
+    let t_end = std::time::Instant::now();
+    work.ns_total = (t_end - t_start).as_nanos() as u64;
+    if let Some(t_paging_start) = t_paging_start {
+        publish_compose_phases(ComposePhases {
+            ns_build: (t_paging_start - t_start).as_nanos() as u64,
+            ns_paging: (t_end - t_paging_start).as_nanos() as u64,
+        });
+    }
     publish_compose_work(work);
     Some((total, page))
 }
@@ -10007,9 +10101,9 @@ thread_local! {
     /// `take_phase_stats` reassembles the two into one `PhaseStats`, so consumers see no seam.
     static PAGING_TAKEN: std::cell::Cell<PagingTaken> = const { std::cell::Cell::new(PagingTaken::NotEntered) };
 
-    /// The compose fastpath's three counters and two phase timings, stored apart from `PHASE_STATS`
+    /// The compose fastpath's three counters and undivided wall time, stored apart from `PHASE_STATS`
     /// for exactly the reason `PAGING_TAKEN` is: this is the production compose path, and a
-    /// whole-struct publish there is a read-modify-write of ~80 bytes to report 40.
+    /// whole-struct publish there is a read-modify-write of ~80 bytes to report 32.
     ///
     /// Measured, because the first version did write the whole struct: a paired A/B against the same
     /// build without it read `+1.4 µs` and `+3.1 µs` on a 129 µs mean (slower on 619 and 863 queries
@@ -10021,8 +10115,14 @@ thread_local! {
     /// participant runs, so a plan that does not publish here reads zeros rather than the last
     /// compose's numbers. Outside that window nothing reads it at all.
     static COMPOSE_WORK: std::cell::Cell<ComposePageWork> = const { std::cell::Cell::new(ComposePageWork {
-        cards_visited: 0, printings_examined: 0, matches_pushed: 0, ns_build: 0, ns_paging: 0,
+        cards_visited: 0, printings_examined: 0, matches_pushed: 0, ns_total: 0,
     }) };
+
+    /// Diagnostic-only compose phase detail. `run_query_with_plan(PrintingCompose)` requests it and
+    /// `take_phase_stats` clears it alongside `COMPOSE_WORK`; routed/production runs never write it.
+    static COMPOSE_PHASES: std::cell::Cell<ComposePhases> = const {
+        std::cell::Cell::new(ComposePhases { ns_build: 0, ns_paging: 0 })
+    };
 
     /// The routed path's disjoint phase split — see `RoutedPhases`. Its own slot for the same reason
     /// the two above have theirs: `run_query_routed` is the production entry point, and one 24-byte
@@ -10090,13 +10190,16 @@ fn note_pending_prepare_ns(ns: u64) {
 /// Publish what a compose paging branch did, so `PrintingCompose` reports the same three quantities
 /// the two materializing plans do.
 ///
-/// A 40-byte store into `COMPOSE_WORK`, not a write of the whole `PhaseStats` — see that slot's doc
-/// for the measurement that forced the split. `take_phase_stats` merges the two, so consumers see no
-/// seam, and the phase timings are no longer zero: `ns_build`/`ns_paging` land in `ns_setup`/`ns_loop`
-/// the same as the other plans, checked against a real run by
+/// A 32-byte store into `COMPOSE_WORK`, not a write of the whole `PhaseStats` — see that slot's doc.
+/// `take_phase_stats` merges it with diagnostic-only `COMPOSE_PHASES`, so consumers see no seam and
+/// `ns_build`/`ns_paging` land in `ns_setup`/`ns_loop` when collection is enabled, checked by
 /// `plan_stats_never_leak_between_participants`'s `PrintingCompose` branch.
 fn publish_compose_work(work: ComposePageWork) {
     COMPOSE_WORK.with(|c| c.set(work));
+}
+
+fn publish_compose_phases(phases: ComposePhases) {
+    COMPOSE_PHASES.with(|c| c.set(phases));
 }
 
 /// Last executor run's phase stats, and clear them. `explain_analyze` reads this immediately after a
@@ -10111,16 +10214,21 @@ fn take_phase_stats() -> PhaseStats {
     // Compose's counters live in their own slot; fold them in so a consumer cannot tell which
     // executor wrote them. Only ONE of the two publishes per run -- a materializing executor writes
     // `PHASE_STATS` and never `COMPOSE_WORK`, compose the reverse -- so this cannot double-count, and
-    // taking both together is what stops either leaking into the next participant.
+    // taking every slot together is what stops any of them leaking into the next participant.
     let compose = COMPOSE_WORK.with(|c| c.replace(ComposePageWork::default()));
-    if compose.cards_visited | compose.printings_examined | compose.matches_pushed | compose.ns_build | compose.ns_paging != 0 {
+    let compose_phases = COMPOSE_PHASES.with(|c| c.replace(ComposePhases::default()));
+    if compose.cards_visited | compose.printings_examined | compose.matches_pushed | compose.ns_total != 0 {
         stats.cards_visited = compose.cards_visited;
         stats.printings_examined = compose.printings_examined;
         stats.matches_pushed = compose.matches_pushed;
-        // Same setup/loop split the other plans use: build (compose `pbits`) is pre-loop work, the
-        // paging branch is the loop. See `ComposePageWork::ns_build`/`ns_paging`.
-        stats.ns_setup = compose.ns_build;
-        stats.ns_loop = compose.ns_paging;
+        if compose_phases.ns_build | compose_phases.ns_paging != 0 {
+            stats.ns_setup = compose_phases.ns_build;
+            stats.ns_loop = compose_phases.ns_paging;
+        } else {
+            // Production preserves the old undivided span and never consumes it. This fallback also
+            // keeps an accidental reader honest instead of silently pricing compose as zero.
+            stats.ns_loop = compose.ns_total;
+        }
     }
     stats
 }
@@ -10350,7 +10458,7 @@ fn declined_sibling_fastpath<'a>(
     }
     match sibling {
         PhysicalPlan::PrintingRangeScan => printing_range_fastpath(ctx, params, filter),
-        PhysicalPlan::PrintingCompose => printing_compose_fastpath(ctx, params, compose_source(filter, unsplit, plane)),
+        PhysicalPlan::PrintingCompose => printing_compose_fastpath(ctx, params, compose_source(filter, unsplit, plane), false),
         _ => unreachable!("sibling is one of the two printing-space fast paths"),
     }
 }
@@ -11336,7 +11444,9 @@ fn run_query_routed<'a>(
         (plan, Prep::Range(_)) => {
             let fast_page = match plan {
                 PhysicalPlan::PrintingRangeScan => printing_range_fastpath(ctx, params, filter),
-                PhysicalPlan::PrintingCompose => printing_compose_fastpath(ctx, params, compose_source(filter, unsplit, plane)),
+                PhysicalPlan::PrintingCompose => {
+                    printing_compose_fastpath(ctx, params, compose_source(filter, unsplit, plane), false)
+                }
                 _ => None, // a materializing plan won the estimate — materialize + run it below
             };
             match fast_page.or_else(|| declined_sibling_fastpath(plan, ctx, params, filter, unsplit, plane, &feats, &choose)) {
@@ -11392,7 +11502,7 @@ fn run_query_with_plan<'a>(
             }
             // The fastpath composes, projects per mode, and walks — or declines (None) on a sparse
             // total, exactly as under the router.
-            printing_compose_fastpath(ctx, params, compose_source(filter, unsplit, plane))
+            printing_compose_fastpath(ctx, params, compose_source(filter, unsplit, plane), true)
         }
         PhysicalPlan::PlanePopcountOrder => {
             if !plane_popcount_order_applicable(filter, mode, cards, plane, sort_col, descending, indexes) {
@@ -12460,7 +12570,10 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 // 2026082302 — new `CardIndexes` field `layout` (a `HybridTagIndex` giving `layout:` -- and so
 // `is:split`/`is:dfc`/`is:meld`/... -- real candidate narrowing for the first time). Same blind spot
 // again: entirely inside `CardIndexes`.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026082302;
+//
+// 2026082501 — `SortPermutations` gains per-order printing-span prefix sums, used to turn a bound on
+// cards visited into a sound O(1) bound on printings examined. Entirely inside `CardIndexes` again.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026082501;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -13081,7 +13194,7 @@ impl QueryEngine {
             price_eur_cards,
             price_tix_cards,
             collector_number_cards,
-            sort_perms:     build_sort_permutations(&cards),
+            sort_perms:     build_sort_permutations(&cards, &offsets),
             max_artwork_groups: artwork_group_counts.iter().copied().max().unwrap_or(0),
             artwork_groups: artwork_group_counts,
             // Columnar copy of each printing's assigned artwork_group_id, derived here — the single
@@ -13258,6 +13371,55 @@ impl QueryEngine {
             .collect::<PyResult<Vec<_>>>()?;
         let matches_list = PyList::new(py, matches)?;
         PyTuple::new(py, [total.into_pyobject(py)?.into_any(), matches_list.into_any()])
+    }
+
+    /// Diagnostic seam for the sigma-bound harness. Production's eventual decision rule calls the
+    /// same archived-prefix helper directly; Python gets only the derived scalar, never the arrays.
+    #[pyo3(signature = (cards_visited_bound, *, orderby="edhrec", direction="asc"))]
+    fn perm_printings_examined_upper(
+        &self,
+        cards_visited_bound: f64,
+        orderby: &str,
+        direction: &str,
+    ) -> PyResult<u32> {
+        if !cards_visited_bound.is_finite() || cards_visited_bound < 0.0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "cards_visited_bound must be finite and non-negative",
+            ));
+        }
+        let sort_col = match orderby {
+            "edhrec" | "cubecobra" | "cmc" | "power" | "toughness" | "name" => orderby_to_col(orderby),
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "orderby must name a card-space sort permutation",
+                ));
+            }
+        };
+        let descending = match direction {
+            "asc" => false,
+            "desc" => true,
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "direction must be 'asc' or 'desc'",
+                ));
+            }
+        };
+        let mmap = self.get_mmap()?;
+        // Safety: see query()'s access_unchecked justification.
+        let data = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+        data.indexes
+            .sort_perms
+            .printings_examined_upper(
+                sort_col,
+                descending,
+                cards_visited_bound,
+                data.cards.len(),
+            )
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(
+                    "orderby has no complete card-space printing-prefix permutation",
+                )
+            })
     }
 
     /// #745 primitive 1: every applicable plan's predicted cost for this query,
