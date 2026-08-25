@@ -552,7 +552,30 @@ def _build_policies(walk_model: WalkCostModel, three_phase: ThreePhaseModel) -> 
     }
 
 
-def _print_pooled_latency_table(rows: list[dict], policies: dict) -> dict[str, list[float]]:
+def _weighted_percentile(sorted_weighted: list[tuple[float, float]], pct: float) -> float:
+    """Nearest-rank percentile where each row carries an explicit weight."""
+    if not sorted_weighted:
+        return float("nan")
+    if pct <= 0:
+        return sorted_weighted[0][0]
+    target = pct / 100 * sum(weight for _, weight in sorted_weighted)
+    cumulative = 0.0
+    for value, weight in sorted_weighted:
+        cumulative += weight
+        if cumulative >= target:
+            return value
+    return sorted_weighted[-1][0]
+
+
+def _offset_weighted_rows(rows: list[dict]) -> list[tuple[dict, float]]:
+    """Give every represented offset the same total weight."""
+    counts: dict[int, int] = {}
+    for r in rows:
+        counts[r["offset"]] = counts.get(r["offset"], 0) + 1
+    return [(r, 1 / counts[r["offset"]]) for r in rows]
+
+
+def _print_pooled_latency_table(rows: list[dict], policies: dict) -> dict[str, list[tuple[float, float]]]:
     """% diverted and latency percentiles for every policy, pooled across the whole offset sweep."""
     print(f"{'policy':<26} {'%diverted':>10} {'p50':>10} {'p90':>10} {'p99':>10} {'max':>10}")
     print("(pooled across OFFSET_SWEEP, which weights shallow and deep offsets EQUALLY -- nothing like")
@@ -561,20 +584,22 @@ def _print_pooled_latency_table(rows: list[dict], policies: dict) -> dict[str, l
     print(" breakdown below for the number that matters -- reweight it by your own traffic's real offset")
     print(" distribution instead of trusting a blended average here. 'diverted' means routed to")
     print(" three-phase instead of running the native walk.)")
-    latencies_by_policy: dict[str, list[float]] = {}
+    weighted_rows = _offset_weighted_rows(rows)
+    total_weight = sum(weight for _, weight in weighted_rows)
+    latencies_by_policy: dict[str, list[tuple[float, float]]] = {}
     for name, cost_fn in policies.items():
         latencies = []
-        diverted_count = 0
-        for r in rows:
+        diverted_weight = 0.0
+        for r, weight in weighted_rows:
             ns, diverted = cost_fn(r)
-            latencies.append(ns)
-            diverted_count += diverted
+            latencies.append((ns, weight))
+            diverted_weight += weight * diverted
         latencies.sort()
         latencies_by_policy[name] = latencies
         print(
-            f"{name:<26} {100 * diverted_count / len(rows):>9.1f}% "
-            f"{fmt_ns(percentile(latencies, 50)):>10} {fmt_ns(percentile(latencies, 90)):>10} "
-            f"{fmt_ns(percentile(latencies, 99)):>10} {fmt_ns(latencies[-1]):>10}"
+            f"{name:<26} {100 * diverted_weight / total_weight:>9.1f}% "
+            f"{fmt_ns(_weighted_percentile(latencies, 50)):>10} {fmt_ns(_weighted_percentile(latencies, 90)):>10} "
+            f"{fmt_ns(_weighted_percentile(latencies, 99)):>10} {fmt_ns(latencies[-1][0]):>10}"
         )
     return latencies_by_policy
 
@@ -608,7 +633,7 @@ def _print_worst_surviving_rows(rows: list[dict], policies: dict, three_phase: T
 
 
 def _print_headline_percentiles(
-    latencies_by_policy: dict[str, list[float]], headline: list[str], chart_path: pathlib.Path | None
+    latencies_by_policy: dict[str, list[tuple[float, float]]], headline: list[str], chart_path: pathlib.Path | None
 ) -> None:
     """5%-granularity percentile-vs-latency table for the headline policies, plus the tail-concentrated chart export."""
     print(f"\npercentile vs latency (ns), 5% granularity, for the {len(headline)} headline policies:")
@@ -623,11 +648,11 @@ def _print_headline_percentiles(
     pcts = [float(p) for p in range(90)] + [90 + 0.5 * i for i in range(21)]
     chart_data = {"pcts": pcts, "series": {}}
     for name in headline:
-        chart_data["series"][name] = [percentile(latencies_by_policy[name], p) for p in pcts]
+        chart_data["series"][name] = [_weighted_percentile(latencies_by_policy[name], p) for p in pcts]
     for p in pcts_print:
         line = f"{p:<5}"
         for name in headline:
-            line += f"{percentile(latencies_by_policy[name], p):>24.0f}"
+            line += f"{_weighted_percentile(latencies_by_policy[name], p):>24.0f}"
         print(line)
 
     if chart_path is not None:
