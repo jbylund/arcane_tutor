@@ -30,7 +30,9 @@ shape, since it never reads WHERE matches sit in the permutation, only how many 
 explicit deep-offset sweep (real traffic is offset~0-heavy by design, `costbench.OFFSETS`, so it can't
 supply the tail this bound exists for).
 
-    .venv/bin/python scripts/bench_compose_card_visited_safety_bound.py --n-queries 400
+    .venv/bin/python scripts/bench_compose_card_visited_safety_bound.py --n-queries 400 \
+        --three-phase-rate-ns-per-match 5.3444 --three-phase-fixed-ns -4809 \
+        --three-phase-floor-ns 5000
 
 """
 
@@ -42,6 +44,7 @@ import math
 import pathlib
 import random
 import sys
+from dataclasses import dataclass
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -53,20 +56,22 @@ from scripts.costbench import load_engine  # noqa: E402
 
 percentile = costbench.percentile
 
-# Three-phase (`walk_card_page_via_popcount_skip`) is a `#[cfg(test)]` Rust prototype with no Python
-# binding, so there's no per-row REAL measurement of it for the general uniform-query population (only
-# two named-tag queries were ever benched against it directly, in `tests.rs`). Modeled instead, from
-# THIS session's own real measurement: `compose_popcount_skip_kernel_costs`'s fit of the scatter rate
-# against `matching_cards`, `card_engine/src/tests.rs`. Approximate, not measured-per-row -- good enough
-# for a DIRECTIONAL choice-frequency/latency simulation, not for pricing an individual query.
-THREE_PHASE_RATE_NS_PER_MATCH = 5.3444
-THREE_PHASE_FIXED_NS = -4809.0
-THREE_PHASE_FLOOR_NS = 5_000.0  # the fit goes negative below ~900 matches; floor at the smallest real dispatch cost seen this session
+@dataclass(frozen=True)
+class ThreePhaseModel:
+    """Explicit calibration for the modeled three-phase fallback.
 
+    The fallback has no Python binding, so the harness cannot measure it per row. Requiring these
+    coefficients on the command line keeps a machine-specific calibration out of source and makes
+    every reported result reproducible from its invocation.
+    """
 
-def three_phase_ns_model(matches: int) -> float:
-    """Modeled `walk_card_page_via_popcount_skip` cost -- see the module-level note on its provenance."""
-    return max(THREE_PHASE_RATE_NS_PER_MATCH * matches + THREE_PHASE_FIXED_NS, THREE_PHASE_FLOOR_NS)
+    rate_ns_per_match: float
+    fixed_ns: float
+    floor_ns: float
+
+    def estimate(self, matches: int) -> float:
+        """Estimate `walk_card_page_via_popcount_skip` latency."""
+        return max(self.rate_ns_per_match * matches + self.fixed_ns, self.floor_ns)
 
 
 # The PRODUCTION cost model's own `PhysicalPlan::PrintingCompose` / `ComposePaging::Perm` formula
@@ -460,7 +465,7 @@ def _walk_rate(rows: list[dict]) -> float:
     return walk_rate
 
 
-def _build_policies(walk_rate: float) -> dict[str, object]:
+def _build_policies(walk_rate: float, three_phase: ThreePhaseModel) -> dict[str, object]:
     """The named decision policies `simulate_policies` grades against each other, keyed by display name."""
 
     def gated(gate: int, bound_fn) -> object:  # noqa: ANN001 - bound_fn is one of the module's *_bound callables
@@ -468,17 +473,19 @@ def _build_policies(walk_rate: float) -> dict[str, object]:
             if r["offset"] < gate:
                 return r["walk_ns"], False
             predicted_walk_ns = walk_rate * bound_fn(r["n_cards"], r["matches"], r["k"])
-            if predicted_walk_ns <= three_phase_ns_model(r["matches"]):
+            if predicted_walk_ns <= three_phase.estimate(r["matches"]):
                 return r["walk_ns"], False
-            return three_phase_ns_model(r["matches"]), True
+            return three_phase.estimate(r["matches"]), True
 
         return cost
 
     return {
         "always_walk (today)": lambda r: (r["walk_ns"], False),
-        "always_three_phase": lambda r: (three_phase_ns_model(r["matches"]), True),
+        "always_three_phase": lambda r: (three_phase.estimate(r["matches"]), True),
         "oracle (best possible)": lambda r: (
-            (r["walk_ns"], False) if r["walk_ns"] <= three_phase_ns_model(r["matches"]) else (three_phase_ns_model(r["matches"]), True)
+            (r["walk_ns"], False)
+            if r["walk_ns"] <= three_phase.estimate(r["matches"])
+            else (three_phase.estimate(r["matches"]), True)
         ),
         "no gate, worst_case": gated(0, worst_case_bound),
         "no gate, blend(0.6)": gated(0, lambda n, m, k: blend_bound(n, m, k, 0.6)),
@@ -522,7 +529,7 @@ def _print_pooled_latency_table(rows: list[dict], policies: dict) -> dict[str, l
     return latencies_by_policy
 
 
-def _print_worst_surviving_rows(rows: list[dict], policies: dict) -> None:
+def _print_worst_surviving_rows(rows: list[dict], policies: dict, three_phase: ThreePhaseModel) -> None:
     """Worst SURVIVING (non-diverted) row for a shortlist of policies -- does a bound's own worst case walk a row that should have been diverted?"""
     print("\nworst SURVIVING (non-diverted) row for each policy -- oracle's max is capped by construction")
     print("at always_three_phase's own max (see the earlier discussion); does sigma's/blend's own worst")
@@ -543,7 +550,7 @@ def _print_worst_surviving_rows(rows: list[dict], policies: dict) -> None:
         if not walked:
             continue
         worst_ns, r = max(walked, key=lambda t: t[0])
-        tp = three_phase_ns_model(r["matches"])
+        tp = three_phase.estimate(r["matches"])
         print(
             f"  {name:<24} worst_walked={fmt_ns(worst_ns):>10}  offset={r['offset']:<6} matches={r['matches']:<6} "
             f"n_cards={r['n_cards']}  three_phase_would_be={fmt_ns(tp):>10}  clumping_factor={r['clumping_factor']:.2f}"
@@ -615,7 +622,7 @@ def _print_by_offset_tables(rows: list[dict], policies: dict) -> None:
         print(line)
 
 
-def simulate_policies(rows: list[dict], chart_path: pathlib.Path | None) -> None:
+def simulate_policies(rows: list[dict], chart_path: pathlib.Path | None, three_phase: ThreePhaseModel) -> None:
     """For each decision POLICY, what fraction of real traffic gets routed to the three-phase fallback, and what does that do to the resulting latency distribution?
 
     The walk side uses each row's REAL `walk_ns` (see `evaluate()`) whenever a policy picks it,
@@ -626,13 +633,13 @@ def simulate_policies(rows: list[dict], chart_path: pathlib.Path | None) -> None
     running anything, so they convert it via `walk_rate` -- fit from this same dataset's real
     (`walk_ns`, `realized`) pairs now that `walk_ns` is a clean, confound-free measurement, not an
     externally recalled or kernel-modeled constant. The three-phase side has no per-row real
-    measurement at all (not wired into dispatch -- see the module docstring), so it stays modeled via
-    `three_phase_ns_model`.
+    measurement at all (not wired into dispatch -- see the module docstring), so it stays modeled by
+    the explicit `ThreePhaseModel` calibration supplied for this run.
     """
     walk_rate = _walk_rate(rows)
-    policies = _build_policies(walk_rate)
+    policies = _build_policies(walk_rate, three_phase)
     latencies_by_policy = _print_pooled_latency_table(rows, policies)
-    _print_worst_surviving_rows(rows, policies)
+    _print_worst_surviving_rows(rows, policies, three_phase)
     headline = [
         "always_walk (today)",
         "always_three_phase",
@@ -656,10 +663,23 @@ def main() -> None:
     parser.add_argument("--corpus", type=pathlib.Path, default=REPO_ROOT / "benchmarks/bitplanes/corpus.jsonl")
     parser.add_argument("--shm-path", type=pathlib.Path, default=None)
     parser.add_argument("--chart-path", type=pathlib.Path, default=None, help="write chart series JSON here")
+    parser.add_argument("--three-phase-rate-ns-per-match", type=float, required=True)
+    parser.add_argument("--three-phase-fixed-ns", type=float, required=True)
+    parser.add_argument("--three-phase-floor-ns", type=float, required=True)
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
     selfcheck_nhg_moments(rng)
+    three_phase = ThreePhaseModel(
+        rate_ns_per_match=args.three_phase_rate_ns_per_match,
+        fixed_ns=args.three_phase_fixed_ns,
+        floor_ns=args.three_phase_floor_ns,
+    )
+    print(
+        "three-phase model: "
+        f"rate={three_phase.rate_ns_per_match:g} ns/match "
+        f"fixed={three_phase.fixed_ns:g} ns floor={three_phase.floor_ns:g} ns"
+    )
 
     engine = load_engine(args.corpus, args.shm_path or args.corpus.with_suffix(".cardvisitedbound.store"))
     sampler = QuerySampler(args.corpus, "uniform")
@@ -685,7 +705,7 @@ def main() -> None:
 
     print(f"\n{considered} (query, orderby, direction, offset) points considered, {len(rows)} landed on Card-mode Perm both ways.")
     report(rows)
-    simulate_policies(rows, args.chart_path)
+    simulate_policies(rows, args.chart_path, three_phase)
 
 
 if __name__ == "__main__":
