@@ -8040,20 +8040,22 @@ fn printing_compose_fastpath<'a>(
     // those same bits. Built once here and threaded through, instead of twice.
     let card_bits = matches!(mode, Mode::Card).then(|| printing_bits_to_card_bits(&pbits, offsets, cards.len()));
     let total = compose_total_for_mode(&pbits, mode, indexes, printings, card_bits.as_deref());
-    // Everything up to here (compose `pbits` + the card-space projection + the exact total) is the
-    // BUILD; timed on its own so a harness can tell "the filter was expensive to compose" apart from
-    // "the walk visited a lot of cards" -- see `ComposePageWork::ns_build`'s doc for why that split
-    // didn't exist before and what it cost to not have it.
-    let ns_build = t_start.elapsed().as_nanos() as u64;
     // Now the exact total exists, so make the real walk-vs-gather call on it. See
     // `orderby_walk_beats_gather` for why this is the total rather than the gather's own broad verdict.
     let walk_col = walk_possible && orderby_walk_beats_gather(mode, filter, total);
+    // Everything up to here (compose `pbits` + the card-space projection + the exact total + the
+    // walk-vs-gather decision) is the BUILD; timed on its own so a harness can tell "the filter was
+    // expensive to compose" apart from "the walk visited a lot of cards" -- see
+    // `ComposePageWork::ns_build`'s doc for why that split didn't exist before and what it cost to not
+    // have it. One read, two phases, same as `exec_gathered_scan`'s `t_loop`, so no cost between the
+    // two snapshots goes uncounted regardless of which branch runs below.
+    let t_paging_start = std::time::Instant::now();
+    let ns_build = (t_paging_start - t_start).as_nanos() as u64;
     if total == 0 || page_offset >= total {
         note_paging_taken(PagingTaken::EmptyPage);
         publish_compose_work(ComposePageWork { ns_build, ns_paging: 0, ..Default::default() });
         return Some((total, Vec::new()));
     }
-    let t_paging_start = std::time::Instant::now();
     let (page, mut work) = match perm {
         Some(perm) => {
             if total <= *STREAM_MIN_MATCHES {
