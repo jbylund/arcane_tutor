@@ -746,6 +746,8 @@ def main() -> None:
     parser.add_argument("--three-phase-fixed-ns", type=float, required=True)
     parser.add_argument("--three-phase-floor-ns", type=float, required=True)
     args = parser.parse_args()
+    if args.n_queries <= 0:
+        parser.error("--n-queries must be greater than zero")
 
     rng = random.Random(args.seed)
     selfcheck_nhg_moments(rng)
@@ -780,6 +782,8 @@ def main() -> None:
 
     print(f"\n{considered} (query, orderby, direction, offset) points considered, {len(rows)} landed on Card-mode Perm both ways.")
     report(rows)
+    if not rows:
+        return
     simulate_policies(rows, args.chart_path, three_phase)
 
 
