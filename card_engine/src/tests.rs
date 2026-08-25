@@ -11292,6 +11292,569 @@ fn gather_artwork_kernel_costs() {
     );
 }
 
+/// A printing-space bitmap with each bit independently set at probability `density`, tail padding
+/// above `n_printings` cleared -- a real composed bitmap never sets those, and
+/// `printing_bits_to_card_bits`'s cursor walk assumes it (a set bit past the last real printing has
+/// no card to advance the cursor to). Shared by both popcount-skip prototypes' differential tests:
+/// the algorithms' correctness doesn't depend on what the bitmap MEANS, only on its shape.
+fn random_pbits(rng: &mut rand::rngs::SmallRng, words: usize, n_printings: usize, density: f64) -> Vec<u64> {
+    use rand::RngExt;
+    let mut pbits = vec![0u64; words];
+    for word in &mut pbits {
+        for bit in 0..64u32 {
+            if rng.random_bool(density) {
+                *word |= 1u64 << bit;
+            }
+        }
+    }
+    for pid in n_printings..words * 64 {
+        pbits[pid / 64] &= !(1u64 << (pid % 64));
+    }
+    pbits
+}
+
+/// `walk_card_page_via_popcount_skip`'s prototype scatter+skip technique must produce the IDENTICAL
+/// page `walk_grouped_page`'s card-by-card walk does, for it to be a candidate replacement rather than
+/// just a faster wrong answer. Checked against random printing bitmaps (not a specific composed
+/// filter's semantics -- the algorithm's correctness doesn't depend on what the bitmap MEANS, only on
+/// its shape) across several densities (sparse and dense exercise different code paths: a sparse
+/// bitmap's scatter loop does little work and its skip-scan crosses many empty words; a dense one is
+/// closer to `walk_grouped_page`'s own no-early-stop worst case), several sort columns with a real
+/// permutation (this technique is not EDHREC-specific, unlike `WalkCheckpoints` -- see
+/// `local-engine-compose-perm-cards-visited-estimator.md`), both directions, and several page points
+/// including ones past the total (must agree on `Vec::new()`, not panic).
+///
+/// `cargo test --release walk_card_page_via_popcount_skip_matches_walk_grouped_page -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release walk_card_page_via_popcount_skip_matches_walk_grouped_page -- --ignored --nocapture"]
+fn walk_card_page_via_popcount_skip_matches_walk_grouped_page() {
+    use rand::SeedableRng;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let words = n_printings.div_ceil(64);
+
+    const DENSITIES: [f64; 4] = [0.0005, 0.01, 0.2, 0.6];
+    const TRIALS_PER_DENSITY: usize = 3;
+    const PAGE_POINTS: [(usize, usize); 5] = [(0, 1), (0, 50), (10, 200), (5_000, 100), (1_000_000, 20)]; // last: past the total
+    const SORT_COLS: [(super::SortCol, &str); 3] =
+        [(super::SortCol::EdhrecRank, "edhrec"), (super::SortCol::Cmc, "cmc"), (super::SortCol::Name, "name")];
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(0);
+    for &density in &DENSITIES {
+        for _ in 0..TRIALS_PER_DENSITY {
+            let pbits = random_pbits(&mut rng, words, n_printings, density);
+            for &(sort_col, label) in &SORT_COLS {
+                for descending in [false, true] {
+                    let order = archived.indexes.sort_perms.order(sort_col, descending, n_cards).expect("permutation exists");
+                    for &(offset, limit) in &PAGE_POINTS {
+                        let params = kernel_params(Mode::Card, sort_col, descending, limit, offset);
+                        let (old_page, _) = super::walk_grouped_page(&ctx, &params, &pbits, order.perm);
+                        let (new_page, _) = super::walk_card_page_via_popcount_skip(&ctx, &params, &pbits, order);
+                        let old_ids: Vec<(*const _, *const _)> = old_page.iter().map(|(c, p)| (*c as *const _, *p as *const _)).collect();
+                        let new_ids: Vec<(*const _, *const _)> = new_page.iter().map(|(c, p)| (*c as *const _, *p as *const _)).collect();
+                        assert_eq!(
+                            old_ids, new_ids,
+                            "density={density}, sort={label}, desc={descending}, offset={offset}, limit={limit}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `walk_printing_page_via_popcount_skip`'s general (not card-invariance-gated) weighted scatter must
+/// produce the IDENTICAL page `walk_grouped_page`'s `Mode::Printing` branch does -- same rationale
+/// and same random-bitmap methodology as the `Mode::Card` differential test above, since one matching
+/// card can now contribute more than one row and the weighted scatter has its own off-by-one surface
+/// (block-level skip, then a fine per-printing skip within the located block) that a bare existence
+/// scatter doesn't.
+///
+/// `cargo test --release walk_printing_page_via_popcount_skip_matches_walk_grouped_page -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release walk_printing_page_via_popcount_skip_matches_walk_grouped_page -- --ignored --nocapture"]
+fn walk_printing_page_via_popcount_skip_matches_walk_grouped_page() {
+    use rand::SeedableRng;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let words = n_printings.div_ceil(64);
+
+    const DENSITIES: [f64; 4] = [0.0005, 0.01, 0.2, 0.6];
+    const TRIALS_PER_DENSITY: usize = 3;
+    const PAGE_POINTS: [(usize, usize); 5] = [(0, 1), (0, 50), (10, 200), (5_000, 100), (1_000_000, 20)]; // last: past the total
+    const SORT_COLS: [(super::SortCol, &str); 3] =
+        [(super::SortCol::EdhrecRank, "edhrec"), (super::SortCol::Cmc, "cmc"), (super::SortCol::Name, "name")];
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(1);
+    for &density in &DENSITIES {
+        for _ in 0..TRIALS_PER_DENSITY {
+            let pbits = random_pbits(&mut rng, words, n_printings, density);
+            for &(sort_col, label) in &SORT_COLS {
+                for descending in [false, true] {
+                    let order = archived.indexes.sort_perms.order(sort_col, descending, n_cards).expect("permutation exists");
+                    for &(offset, limit) in &PAGE_POINTS {
+                        let params = kernel_params(Mode::Printing, sort_col, descending, limit, offset);
+                        let (old_page, _) = super::walk_grouped_page(&ctx, &params, &pbits, order.perm);
+                        let (new_page, _) = super::walk_printing_page_via_popcount_skip(&ctx, &params, &pbits, order);
+                        let old_ids: Vec<(*const _, *const _)> = old_page.iter().map(|(c, p)| (*c as *const _, *p as *const _)).collect();
+                        let new_ids: Vec<(*const _, *const _)> = new_page.iter().map(|(c, p)| (*c as *const _, *p as *const _)).collect();
+                        assert_eq!(
+                            old_ids, new_ids,
+                            "density={density}, sort={label}, desc={descending}, offset={offset}, limit={limit}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `walk_artwork_page_via_popcount_skip`'s weighted-by-distinct-group scatter must produce the
+/// IDENTICAL page `walk_grouped_page`'s `Mode::Artwork` branch does -- same methodology as the other
+/// two differential tests, but the one most likely to catch a real bug: the scatter's per-card group
+/// dedup (`seen_groups`) and the emit phase's own group/prefer-score grouping have to agree on what
+/// counts as "one row" for a card with several matching printings, or the two implementations would
+/// diverge exactly where a card straddles multiple artwork groups.
+///
+/// `cargo test --release walk_artwork_page_via_popcount_skip_matches_walk_grouped_page -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release walk_artwork_page_via_popcount_skip_matches_walk_grouped_page -- --ignored --nocapture"]
+fn walk_artwork_page_via_popcount_skip_matches_walk_grouped_page() {
+    use rand::SeedableRng;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let words = n_printings.div_ceil(64);
+
+    const DENSITIES: [f64; 4] = [0.0005, 0.01, 0.2, 0.6];
+    const TRIALS_PER_DENSITY: usize = 3;
+    const PAGE_POINTS: [(usize, usize); 5] = [(0, 1), (0, 50), (10, 200), (5_000, 100), (1_000_000, 20)]; // last: past the total
+    const SORT_COLS: [(super::SortCol, &str); 3] =
+        [(super::SortCol::EdhrecRank, "edhrec"), (super::SortCol::Cmc, "cmc"), (super::SortCol::Name, "name")];
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(2);
+    for &density in &DENSITIES {
+        for _ in 0..TRIALS_PER_DENSITY {
+            let pbits = random_pbits(&mut rng, words, n_printings, density);
+            for &(sort_col, label) in &SORT_COLS {
+                for descending in [false, true] {
+                    let order = archived.indexes.sort_perms.order(sort_col, descending, n_cards).expect("permutation exists");
+                    for &(offset, limit) in &PAGE_POINTS {
+                        let params = kernel_params(Mode::Artwork, sort_col, descending, limit, offset);
+                        let (old_page, _) = super::walk_grouped_page(&ctx, &params, &pbits, order.perm);
+                        let (new_page, _) = super::walk_artwork_page_via_popcount_skip(&ctx, &params, &pbits, order);
+                        let old_ids: Vec<(*const _, *const _)> = old_page.iter().map(|(c, p)| (*c as *const _, *p as *const _)).collect();
+                        let new_ids: Vec<(*const _, *const _)> = new_page.iter().map(|(c, p)| (*c as *const _, *p as *const _)).collect();
+                        assert_eq!(
+                            old_ids, new_ids,
+                            "density={density}, sort={label}, desc={descending}, offset={offset}, limit={limit}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `walk_grouped_page`'s per-CARD fixed overhead vs its per-PRINTING bit-test cost, isolated the way
+/// `gather_artwork_kernel_costs` isolates `GATHER_ARTWORK_PER_PRINTING_NS`: reproduce the `Mode::
+/// Printing` loop body directly (`pbits` all-zero, so nothing ever matches and no downstream sort/
+/// emit work runs -- that's `COMPOSE_WALK_EMIT_PER_ROW_NS`'s job, not this kernel's), over several
+/// EDHREC-order card ranges chosen to vary the average printings/card sharply. That variation is the
+/// whole point: `local-engine-compose-perm-cards-visited-estimator.md` measured the first ranks of
+/// ascending EDHREC order at ~73 printings/card (reprint-heavy staples) against a corpus mean of ~3,
+/// so a two-term regression (ns ~= a*cards + b*printings) can actually separate the two rates here --
+/// unlike `local-engine-compose-build-rates.md`'s pooled-OLS-over-natural-queries attempt, which hit
+/// multicollinearity between cards_visited/printings_walked/matches and came back unusable.
+///
+/// `cargo test --release compose_walk_kernel_costs -- --ignored --nocapture`
+#[test]
+#[ignore = "compose-walk kernel cost; needs real.store; cargo test --release compose_walk_kernel_costs -- --ignored --nocapture"]
+fn compose_walk_kernel_costs() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 20;
+    const ITERS: usize = 200;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let offsets = &archived.offsets;
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    // Materialized once, outside the timed section -- `walk_grouped_page` itself takes the archived
+    // permutation directly, but a plain `Vec<u32>` lets this kernel slice arbitrary rank RANGES the
+    // real function's own always-start-at-0 signature can't address.
+    let perm: Vec<u32> =
+        archived.indexes.sort_perms.get(super::SortCol::EdhrecRank, false).expect("edhrec perm").iter().map(|x| u32::from(*x)).collect();
+    // All-zero: no printing is ever "set", so `is_set` is always false, `scratch` never receives a
+    // push, and the loop never does the sort/skip/emit work below it -- exactly the isolation
+    // `gather_artwork_kernel_costs` gets from `all_match: true`, just for the opposite reason (there,
+    // every printing matches and residual cost is what's removed; here, none does, and match-handling
+    // cost is what's removed). What's left is only the walk itself: `cards_visited`'s per-step
+    // overhead and `printings_walked`'s per-printing bit-test, which is exactly what
+    // `COMPOSE_WALK_STEP_NS` and the candidate `COMPOSE_WALK_CARD_STEP_NS` are meant to price.
+    let pbits: Vec<u64> = vec![0u64; n_printings.div_ceil(64)];
+    let is_set = |pid: usize| pbits[pid >> 6] & (1u64 << (pid & 63)) != 0;
+
+    // (start, end) rank ranges spanning very different printings/card densities -- the labels are
+    // for readability, the regression only reads each range's own measured (cards, printings).
+    let ranges: [(usize, usize, &str); 6] = [
+        (0, 200, "edhrec top 200 (staples)"),
+        (200, 2_000, "edhrec 200-2k"),
+        (2_000, 6_000, "edhrec 2k-6k"),
+        (10_000, 16_000, "edhrec 10k-16k"),
+        (20_000, 28_000, "edhrec 20k-28k"),
+        (n_cards - 6_000, n_cards, "edhrec tail"),
+    ];
+
+    let bench_range = |start: usize, end: usize| -> (u128, u64, u64) {
+        let mut best = u128::MAX;
+        let (mut cards_visited, mut printings_examined) = (0u64, 0u64);
+        let mut scratch: Vec<Match> = Vec::new();
+        for it in 0..(WARMUP + ITERS) {
+            let (mut cv, mut pe) = (0u64, 0u64);
+            let t0 = Instant::now();
+            for &cid in &perm[start..end] {
+                let c = cid as usize;
+                let s = u32::from(offsets[c]) as usize;
+                let e = u32::from(offsets[c + 1]) as usize;
+                cv += 1;
+                pe += (e - s) as u64;
+                scratch.clear();
+                for pid in s..e {
+                    if is_set(pid) {
+                        scratch.push((0u128, cid, pid as u32)); // unreachable: pbits is all-zero
+                    }
+                }
+                if scratch.is_empty() {
+                    continue;
+                }
+                unreachable!("pbits is all-zero; scratch can never receive a push");
+            }
+            black_box(&scratch);
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                best = best.min(dt);
+                cards_visited = cv;
+                printings_examined = pe;
+            }
+        }
+        (best, cards_visited, printings_examined)
+    };
+
+    println!("\ncompose-walk kernel costs (real.store: {n_cards} cards, {n_printings} printings)");
+    println!("{:>28}  {:>8}  {:>10}  {:>10}  {:>12}", "range", "cards", "printings", "ns", "ns/card@0pr");
+    let mut rows: Vec<(f64, f64, f64)> = Vec::new();
+    for &(start, end, label) in &ranges {
+        let (ns, cards, printings) = bench_range(start, end);
+        println!("{label:>28}  {cards:>8}  {printings:>10}  {ns:>10}  {:>12.3}", ns as f64 / cards.max(1) as f64);
+        rows.push((cards as f64, printings as f64, ns as f64));
+    }
+
+    // Two-term, no-intercept OLS (`ns ~= a*cards + b*printings`): all-zero pbits means the loop body
+    // has no per-call fixed setup an intercept would legitimately absorb, so forcing one to zero
+    // spends both degrees of freedom on the two rates the kernel exists to separate. Normal equations
+    // for a 2x2 system, solved directly rather than pulling in a linear-algebra crate for two numbers.
+    let (mut sxx, mut sxy, mut syy, mut sxz, mut syz) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    for &(cards, printings, ns) in &rows {
+        sxx += cards * cards;
+        sxy += cards * printings;
+        syy += printings * printings;
+        sxz += cards * ns;
+        syz += printings * ns;
+    }
+    let det = sxx * syy - sxy * sxy;
+    println!("\ncompose-walk kernel costs: two-term fit (ns = a*cards + b*printings, no intercept)");
+    if det.abs() < 1e-6 {
+        println!("  singular normal equations (ranges too collinear) — cannot separate the two rates");
+    } else {
+        let a = (syy * sxz - sxy * syz) / det; // candidate COMPOSE_WALK_CARD_STEP_NS
+        let b = (sxx * syz - sxy * sxz) / det; // candidate COMPOSE_WALK_STEP_NS, re-fit
+        println!("  a (ns/card)     = {a:.4}   <- candidate COMPOSE_WALK_CARD_STEP_NS");
+        println!("  b (ns/printing) = {b:.4}   <- candidate COMPOSE_WALK_STEP_NS, re-fit");
+        for &(cards, printings, ns) in &rows {
+            let pred = a * cards + b * printings;
+            println!("    cards={cards:>8.0}  printings={printings:>10.0}  meas={ns:>10.0}  pred={pred:>10.0}  pred/meas={:.3}", pred / ns);
+        }
+    }
+}
+
+/// Real-traffic wall-clock comparison of `walk_grouped_page` (`Mode::Card`) against the prototype
+/// `walk_card_page_via_popcount_skip`, over real keyword/oracle-tag values chosen to span the two
+/// regimes the two algorithms trade off on -- see `local-engine-compose-perm-cards-visited-estimator.md`:
+///
+/// - a COMMON value (`keyword:flying`, matches most of the corpus) at a SHALLOW page: the old walk
+///   should win, since it stops almost immediately and the new one pays a full scatter over every
+///   match regardless of how little of the walk was actually needed.
+/// - a SPARSE, CLUMPED value (`otag:triggered-ability` -- this session's own worked example, whose
+///   matches sit disproportionately among reprint-heavy EDHREC-early staples) at a deep page: the old
+///   walk has to step past many non-matching cards to accumulate enough matches, while the new one's
+///   cost is bounded by the match count alone, independent of where those matches happen to sit.
+///
+/// `cargo test --release compose_walk_popcount_skip_vs_walk -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release compose_walk_popcount_skip_vs_walk -- --ignored --nocapture"]
+fn compose_walk_popcount_skip_vs_walk() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 20;
+    const ITERS: usize = 300;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let offsets = &archived.offsets;
+
+    let pbits_for = |field_ids: Option<Vec<u32>>| -> Vec<u64> {
+        let ids = field_ids.expect("value exists in this corpus");
+        super::broadcast_card_ids_to_printings(ids.into_iter(), offsets, n_printings)
+    };
+    let flying = pbits_for(archived.indexes.keywords.ids_of("flying"));
+    let triggered = pbits_for(archived.indexes.oracle_tags.ids_of("triggered-ability"));
+
+    let bench = |label: &str, pbits: &[u64], offset: usize, limit: usize| {
+        let order = archived.indexes.sort_perms.order(SortCol::EdhrecRank, false, n_cards).expect("edhrec perm");
+        let params = kernel_params(Mode::Card, SortCol::EdhrecRank, false, limit, offset);
+        let mut old_best = u128::MAX;
+        let mut new_best = u128::MAX;
+        for it in 0..(WARMUP + ITERS) {
+            let t0 = Instant::now();
+            let page = black_box(super::walk_grouped_page(&ctx, &params, pbits, order.perm).0);
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                old_best = old_best.min(dt);
+            }
+            black_box(page.len());
+        }
+        for it in 0..(WARMUP + ITERS) {
+            let t0 = Instant::now();
+            let page = black_box(super::walk_card_page_via_popcount_skip(&ctx, &params, pbits, order).0);
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                new_best = new_best.min(dt);
+            }
+            black_box(page.len());
+        }
+        println!(
+            "{label:<48} offset={offset:<8} limit={limit:<5} old={old_best:>8}ns  new={new_best:>8}ns  old/new={:.2}x",
+            old_best as f64 / new_best.max(1) as f64
+        );
+    };
+
+    println!("\ncompose walk: popcount-skip prototype vs walk_grouped_page ({n_cards} cards, {n_printings} printings)");
+    bench("keyword:flying (common, shallow page)", &flying, 0, 20);
+    bench("keyword:flying (common, deep-ish page)", &flying, 2_000, 20);
+    for &offset in &[0usize, 500, 1_000, 2_000, 4_000, 8_000, 15_000, 25_000] {
+        bench("otag:triggered-ability (offset sweep)", &triggered, offset, 20);
+    }
+}
+
+/// Same real-traffic comparison as `compose_walk_popcount_skip_vs_walk`, `Mode::Printing` instead of
+/// `Mode::Card` -- `walk_printing_page_via_popcount_skip` against `walk_grouped_page`'s `Printing`
+/// branch. The general (not card-invariance-shortcut) weighted scatter costs more per match than the
+/// bare existence one (a card-space lookup plus a rank lookup per matching PRINTING, not per matching
+/// card), so the crossover point is expected to sit further out than the `Mode::Card` sweep found --
+/// this measures where, rather than assuming the same offset carries over.
+///
+/// `cargo test --release compose_printing_walk_popcount_skip_vs_walk -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release compose_printing_walk_popcount_skip_vs_walk -- --ignored --nocapture"]
+fn compose_printing_walk_popcount_skip_vs_walk() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 20;
+    const ITERS: usize = 300;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let offsets = &archived.offsets;
+
+    let pbits_for = |field_ids: Option<Vec<u32>>| -> Vec<u64> {
+        let ids = field_ids.expect("value exists in this corpus");
+        super::broadcast_card_ids_to_printings(ids.into_iter(), offsets, n_printings)
+    };
+    let flying = pbits_for(archived.indexes.keywords.ids_of("flying"));
+    let triggered = pbits_for(archived.indexes.oracle_tags.ids_of("triggered-ability"));
+
+    let bench = |label: &str, pbits: &[u64], offset: usize, limit: usize| {
+        let order = archived.indexes.sort_perms.order(SortCol::EdhrecRank, false, n_cards).expect("edhrec perm");
+        let params = kernel_params(Mode::Printing, SortCol::EdhrecRank, false, limit, offset);
+        let mut old_best = u128::MAX;
+        let mut new_best = u128::MAX;
+        for it in 0..(WARMUP + ITERS) {
+            let t0 = Instant::now();
+            let page = black_box(super::walk_grouped_page(&ctx, &params, pbits, order.perm).0);
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                old_best = old_best.min(dt);
+            }
+            black_box(page.len());
+        }
+        for it in 0..(WARMUP + ITERS) {
+            let t0 = Instant::now();
+            let page = black_box(super::walk_printing_page_via_popcount_skip(&ctx, &params, pbits, order).0);
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                new_best = new_best.min(dt);
+            }
+            black_box(page.len());
+        }
+        println!(
+            "{label:<48} offset={offset:<8} limit={limit:<5} old={old_best:>8}ns  new={new_best:>8}ns  old/new={:.2}x",
+            old_best as f64 / new_best.max(1) as f64
+        );
+    };
+
+    println!("\ncompose PRINTING-mode walk: popcount-skip prototype vs walk_grouped_page ({n_cards} cards, {n_printings} printings)");
+    bench("keyword:flying (common, shallow page)", &flying, 0, 20);
+    bench("keyword:flying (common, deep-ish page)", &flying, 2_000, 20);
+    for &offset in &[0usize, 500, 1_000, 2_000, 4_000, 8_000, 15_000, 25_000] {
+        bench("otag:triggered-ability (offset sweep)", &triggered, offset, 20);
+    }
+}
+
+/// Same real-traffic comparison again, `Mode::Artwork` instead of `Mode::Printing` --
+/// `walk_artwork_page_via_popcount_skip` against `walk_grouped_page`'s `Artwork` branch. The scatter
+/// here does more per-printing work than either other mode (a linear `seen_groups` scan on top of
+/// the card/rank lookups), so the crossover is expected to sit further out still; this measures
+/// where, rather than assuming it.
+///
+/// `cargo test --release compose_artwork_walk_popcount_skip_vs_walk -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release compose_artwork_walk_popcount_skip_vs_walk -- --ignored --nocapture"]
+fn compose_artwork_walk_popcount_skip_vs_walk() {
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    const WARMUP: usize = 20;
+    const ITERS: usize = 300;
+
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let offsets = &archived.offsets;
+
+    let pbits_for = |field_ids: Option<Vec<u32>>| -> Vec<u64> {
+        let ids = field_ids.expect("value exists in this corpus");
+        super::broadcast_card_ids_to_printings(ids.into_iter(), offsets, n_printings)
+    };
+    let flying = pbits_for(archived.indexes.keywords.ids_of("flying"));
+    let triggered = pbits_for(archived.indexes.oracle_tags.ids_of("triggered-ability"));
+
+    let bench = |label: &str, pbits: &[u64], offset: usize, limit: usize| {
+        let order = archived.indexes.sort_perms.order(SortCol::EdhrecRank, false, n_cards).expect("edhrec perm");
+        let params = kernel_params(Mode::Artwork, SortCol::EdhrecRank, false, limit, offset);
+        let mut old_best = u128::MAX;
+        let mut new_best = u128::MAX;
+        for it in 0..(WARMUP + ITERS) {
+            let t0 = Instant::now();
+            let page = black_box(super::walk_grouped_page(&ctx, &params, pbits, order.perm).0);
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                old_best = old_best.min(dt);
+            }
+            black_box(page.len());
+        }
+        for it in 0..(WARMUP + ITERS) {
+            let t0 = Instant::now();
+            let page = black_box(super::walk_artwork_page_via_popcount_skip(&ctx, &params, pbits, order).0);
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                new_best = new_best.min(dt);
+            }
+            black_box(page.len());
+        }
+        println!(
+            "{label:<48} offset={offset:<8} limit={limit:<5} old={old_best:>8}ns  new={new_best:>8}ns  old/new={:.2}x",
+            old_best as f64 / new_best.max(1) as f64
+        );
+    };
+
+    println!("\ncompose ARTWORK-mode walk: popcount-skip prototype vs walk_grouped_page ({n_cards} cards, {n_printings} printings)");
+    bench("keyword:flying (common, shallow page)", &flying, 0, 20);
+    bench("keyword:flying (common, deep-ish page)", &flying, 2_000, 20);
+    for &offset in &[0usize, 500, 1_000, 2_000, 4_000, 8_000, 15_000, 25_000] {
+        bench("otag:triggered-ability (offset sweep)", &triggered, offset, 20);
+    }
+}
+
 /// #724 build-side correctness oracle: projecting a printing-space border plane up to card-existence
 /// (`printing_bits_to_card_bits`) must equal #664's card-space border plane for the same value —
 /// both mean "this card has a printing with border=value" (existence projection). Diffed for the
