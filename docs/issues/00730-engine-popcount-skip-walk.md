@@ -1,6 +1,7 @@
 # Engine: Popcount-Skip Walk for Deep Pagination, Generalized to All Distinct-Ons
 
-Status: **prototyped and measured for all three distinct-ons, not wired in.** Filed as
+Status: **prototyped, measured, and a calibrated decision rule found for Card mode — not wired in.**
+Filed as
 [#730](https://github.com/jbylund/sylvan_librarian/issues/730). Deferred optimization split out of
 the #724 printing-space compose work ([00724](done/00724-engine-printing-existential-planes.md)). See
 [local-engine-compose-perm-popcount-skip-prototype.md](local-engine-compose-perm-popcount-skip-prototype.md)
@@ -95,8 +96,27 @@ selector; both lose to the three-phase design in the offset range that matters, 
 top-*k* structure's cost grows with `offset + limit` in a way the three-phase design's cheap-count /
 bounded-materialize split avoids. The three-phase design is the one to keep.
 
-None of this is wired into the fastpath yet — see the prototype doc's own open items (no decision
-rule for `Card`/`Artwork`) before the reasoning below about whether it's worth building applies.
+None of this is wired into the fastpath yet — see the prototype doc's own open items before the
+reasoning below about whether it's worth building applies.
+
+## The decision rule: answered for Card mode
+
+The open item above — no validated way to decide walk-vs-three-phase outside the narrow
+`unique=printing`/bare-leaf/EDHREC population — now has a real answer for `Mode::Card`, the
+population this doc's own #856/#857 second-consumer angle cares about most.
+`sigma(knob)`, a statistical margin over a closed-form no-clumping model (not `WalkCheckpoints` —
+generic negative-hypergeometric statistics from just offset/limit/matches/n_cards), beats every other
+policy tested through p99 against 2,705 real queries and tracks the theoretical best-possible policy
+almost exactly. Real residual risk stated plainly: it assumes matches are placed independently of
+sort position, which real filter/sort-correlated outliers violate — not yet a problem at this
+corpus's size.
+
+Ships as a concrete, independently-landable 7-step plan (see the sigma doc below); tracked as a
+checklist in this issue's own GitHub description.
+
+A real, unrelated cost-model bug (`PrintingCompose`/`Perm` under-costs the walk ~5.5x at the median)
+was found as a side effect of this measurement and filed separately as #1025, since it doesn't depend
+on any of the above shipping.
 
 ## Why deferred (the original reasoning, before the above)
 
@@ -117,6 +137,9 @@ worth serving. Which is currently **unmeasured**: it never appeared in #856's sa
   — collapsing the skip+re-walk into the scatter itself, and which structure should hold the page.
 - [reference-engine-compose-perm-cards-visited-estimator.md](reference-engine-compose-perm-cards-visited-estimator.md)
   — the cost-model-estimation path that turned out to be the harder alternative to this doc's own idea.
+- [local-engine-compose-perm-sigma-decision-rule.md](local-engine-compose-perm-sigma-decision-rule.md)
+  — the sigma decision rule for Card mode, and the 7-step landing plan tracked in this issue.
+- #1025 — the independent cost-model bug found while measuring the decision rule above.
 - [00724](done/00724-engine-printing-existential-planes.md) — the printing-space compose plan whose
   unification this splits off from.
 - `run_query_streamed_popcount` (`card_engine/src/lib.rs`) — the existing card-space popcount-skip walk
