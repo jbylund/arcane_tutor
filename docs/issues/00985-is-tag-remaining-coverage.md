@@ -21,80 +21,88 @@ exact, so each definition needs a live count-check against Scryfall before it sh
 The endpoint reflects the syntax page, not the full vocabulary — `is:token`, `is:textless`, and
 `is:firstprinting` are real filters absent from this list.
 
-## Unsupported (75)
+## Unsupported (14)
 
 - [ ] `is:alchemy`
-- [ ] `is:arena_league`
 - [ ] `is:atypical`
-- [ ] `is:bikeland`
-- [ ] `is:bondland`
-- [ ] `is:booster`
-- [ ] `is:bounceland`
 - [ ] `is:brawler`
-- [ ] `is:buyabox`
-- [ ] `is:canopyland`
-- [ ] `is:checkland`
-- [ ] `is:commander`
-- [ ] `is:companion`
-- [ ] `is:convention`
-- [ ] `is:creatureland`
-- [ ] `is:datestamped`
 - [ ] `is:default`
 - [ ] `is:digital`
-- [ ] `is:dual`
 - [ ] `is:duelcommander`
-- [ ] `is:etched`
-- [ ] `is:fastland`
-- [ ] `is:fetchland`
-- [ ] `is:filterland`
-- [ ] `is:fnm`
-- [ ] `is:foil`
-- [ ] `is:frenchvanilla`
-- [ ] `is:full`
 - [ ] `is:funny`
-- [ ] `is:gainland`
-- [ ] `is:gamechanger`
-- [ ] `is:gameday`
-- [ ] `is:giftbox`
-- [ ] `is:glossy`
-- [ ] `is:hires`
-- [ ] `is:hybrid`
-- [ ] `is:instore`
-- [ ] `is:intro_pack`
-- [ ] `is:judge_gift`
-- [ ] `is:league`
-- [ ] `is:masterpiece`
-- [ ] `is:media_insert`
 - [ ] `is:meldpart`
 - [ ] `is:meldresult`
-- [ ] `is:modal`
 - [ ] `is:newinpauper`
-- [ ] `is:nonfoil`
 - [ ] `is:oathbreaker`
-- [ ] `is:painland`
-- [ ] `is:partner`
-- [ ] `is:pathway`
-- [ ] `is:phyrexian`
-- [ ] `is:planeswalker_deck`
-- [ ] `is:player_rewards`
-- [ ] `is:prerelease`
-- [ ] `is:promo`
 - [ ] `is:rebalanced`
-- [ ] `is:release`
-- [ ] `is:reprint`
-- [ ] `is:reserved`
-- [ ] `is:scryfallpreview`
-- [ ] `is:scryland`
-- [ ] `is:set_promo`
-- [ ] `is:shadowland`
-- [ ] `is:shockland`
-- [ ] `is:slowland`
 - [ ] `is:spell`
-- [ ] `is:spotlight`
-- [ ] `is:storageland`
-- [ ] `is:surveilland`
-- [ ] `is:tangoland`
-- [ ] `is:tricycleland`
-- [ ] `is:triland`
 - [ ] `is:unique`
-- [ ] `is:universesbeyond`
+
+## Supported (61)
+
+Via `_DERIVED_EXPANSIONS` in `api/parsing/rewrite.py`:
+
+- [x] `is:bikeland`
+- [x] `is:bondland`
+- [x] `is:bounceland`
+- [x] `is:canopyland`
+- [x] `is:checkland`
+- [x] `is:commander`
+- [x] `is:companion`
+- [x] `is:creatureland`
+- [x] `is:dual`
+- [x] `is:fastland`
+- [x] `is:fetchland`
+- [x] `is:filterland`
+- [x] `is:frenchvanilla`
+- [x] `is:gainland`
+- [x] `is:modal`
+- [x] `is:painland`
+- [x] `is:pathway`
+- [x] `is:scryland`
+- [x] `is:shadowland`
+- [x] `is:shockland`
+- [x] `is:slowland`
+- [x] `is:storageland`
+- [x] `is:surveilland`
+- [x] `is:tangoland`
+- [x] `is:tricycleland`
+- [x] `is:triland`
+
+Via `BOOLEAN_IS_TAGS` in `api/admin_resource.py` (synced from raw_card_blob on every import):
+
+- [x] `is:arena_league`
+- [x] `is:booster`
+- [x] `is:buyabox`
+- [x] `is:convention`
+- [x] `is:datestamped`
+- [x] `is:etched`
+- [x] `is:fnm`
+- [x] `is:foil`
+- [x] `is:full`
+- [x] `is:gamechanger`
+- [x] `is:gameday`
+- [x] `is:giftbox`
+- [x] `is:glossy`
+- [x] `is:hires`
+- [x] `is:hybrid`
+- [x] `is:instore`
+- [x] `is:intro_pack`
+- [x] `is:judge_gift`
+- [x] `is:league`
+- [x] `is:masterpiece`
+- [x] `is:media_insert`
+- [x] `is:nonfoil`
+- [x] `is:partner`
+- [x] `is:phyrexian`
+- [x] `is:planeswalker_deck`
+- [x] `is:player_rewards`
+- [x] `is:prerelease`
+- [x] `is:promo`
+- [x] `is:release`
+- [x] `is:reprint`
+- [x] `is:reserved`
+- [x] `is:scryfallpreview`
+- [x] `is:set_promo`
+- [x] `is:spotlight`
+- [x] `is:universesbeyond`
