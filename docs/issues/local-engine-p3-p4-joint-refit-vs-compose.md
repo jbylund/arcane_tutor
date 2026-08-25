@@ -51,7 +51,11 @@ refit-and-gate cycle. It cannot be, until its own feature gap closes first.
 ## If someone wants to try this again
 
 1. Build the `cards_visited` estimator `local-engine-compose-build-rates.md` names as missing (it names
-   `printings_walked / printings_per_card` as one candidate, explicitly ungraded).
+   `printings_walked / printings_per_card` as one candidate, explicitly ungraded). **Done, partially**
+   — see [reference-engine-compose-perm-cards-visited-estimator.md](reference-engine-compose-perm-cards-visited-estimator.md):
+   that named candidate fails grading, but a second one (reusing `WalkCheckpoints`) passes for the
+   bare-collection-leaf/EDHREC/printing-mode slice of `Perm` traffic. Not wired into `plan_cost`, and
+   the rest of `Perm`'s traffic still has no validated estimator.
 2. Wire it into `PrintingCompose`'s `Perm` arm as a real `plan_cost` feature, not just a diagnostic
    column.
 3. Grade it against the realized `cards_visited` counter the way `scan_units` is graded against
