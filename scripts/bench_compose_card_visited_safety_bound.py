@@ -422,7 +422,7 @@ def report(rows: list[dict]) -> None:
         )
 
 
-def simulate_policies(rows: list[dict]) -> None:
+def simulate_policies(rows: list[dict], chart_path: pathlib.Path | None) -> None:
     """For each decision POLICY, what fraction of real traffic gets routed to the three-phase
     fallback, and what does that do to the resulting latency distribution?
 
@@ -568,12 +568,9 @@ def simulate_policies(rows: list[dict]) -> None:
             line += f"{percentile(latencies_by_policy[name], p):>24.0f}"
         print(line)
 
-    chart_path = pathlib.Path(
-        "/private/tmp/claude-502/-Users-joseph-bylund-scratch-sylvan-librarian/"
-        "06741293-793d-446c-823a-cac4758bff9c/scratchpad/policy_latency_percentiles.json"
-    )
-    chart_path.write_text(json.dumps(chart_data))
-    print(f"\nchart data written to {chart_path}")
+    if chart_path is not None:
+        chart_path.write_text(json.dumps(chart_data))
+        print(f"\nchart data written to {chart_path}")
 
     # ─── By offset instead of pooled: this is the view to actually trust, since it doesn't require ──
     # guessing how real traffic distributes across offsets -- read it against YOUR OWN traffic's depth
@@ -617,6 +614,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--corpus", type=pathlib.Path, default=REPO_ROOT / "benchmarks/bitplanes/corpus.jsonl")
     parser.add_argument("--shm-path", type=pathlib.Path, default=None)
+    parser.add_argument("--chart-path", type=pathlib.Path, default=None, help="write chart series JSON here")
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
@@ -646,7 +644,7 @@ def main() -> None:
 
     print(f"\n{considered} (query, orderby, direction, offset) points considered, {len(rows)} landed on Card-mode Perm both ways.")
     report(rows)
-    simulate_policies(rows)
+    simulate_policies(rows, args.chart_path)
 
 
 if __name__ == "__main__":
