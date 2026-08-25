@@ -50,7 +50,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from api.parsing import parse_scryfall_query  # noqa: E402
-from client.query_sampler import QuerySampler, Shape  # noqa: E402
+from client.query_sampler import QuerySampler  # noqa: E402
 from scripts import costbench  # noqa: E402
 from scripts.costbench import load_engine  # noqa: E402
 
@@ -766,14 +766,10 @@ def main() -> None:
     rows: list[dict] = []
     considered = 0
     for _ in range(args.n_queries):
-        # Pinned to ONE predicate: this used to be required because `PrintingCompose` reported one
-        # undivided `ns_total` span, so a multi-predicate AND's compose cost could dwarf the walk
-        # itself and swamp any attempt to fit a per-card WALK rate from `ns`. `ComposePageWork`'s
-        # `ns_build`/`ns_paging` split (this same session, `card_engine/src/lib.rs`) fixed that at the
-        # source -- `ns_loop` is now the paging branch alone regardless of predicate count. Kept anyway
-        # as the simpler default: single-predicate is still the case this bound targets, and narrowing
-        # the sampler to it costs nothing here.
-        query = sampler.query(rng, shape=Shape(predicates=1))
+        # Exercise the sampler's normal predicate counts and connective structures. The
+        # `ns_build`/`ns_paging` split keeps multi-predicate compose work out of the measured walk, so
+        # there is no longer a measurement reason to narrow this to one flat predicate.
+        query = sampler.structured_query(rng)["query"]
         orderby = rng.choice(ORDERBYS)
         direction = rng.choice(("asc", "desc"))
         for offset in OFFSET_SWEEP:
