@@ -119,9 +119,11 @@ ORDERBYS = ("edhrec", "cubecobra", "cmc", "power", "toughness", "name")
 # that distribution can't exercise the deep tail this bound exists for, so sweep it explicitly instead.
 OFFSET_SWEEP = (0, 50, 200, 500, 1_000, 2_000, 4_000, 8_000, 15_000, 25_000)
 LIMIT = 20
-NUM_WARMUPS = 1
-NUM_TRIALS = 2
+NUM_WARMUPS = costbench.NUM_WARMUPS
+NUM_TRIALS = costbench.NUM_TRIALS
 MIN_REALIZED = 5  # below this, `cards_visited` is too noisy/trivial to grade a bound against
+POLICY_SPLIT_SEED = 730_1009
+MIN_POLICY_GROUPS = 2
 
 
 # ─── The two closed-form anchors ───────────────────────────────────────────────
@@ -458,21 +460,69 @@ def report(rows: list[dict]) -> None:
     _report_worst_outliers(rows)
 
 
-def _walk_rate(rows: list[dict]) -> float:
-    """Fit `walk_rate` from real (`walk_ns`, `realized`) pairs and print it."""
-    walk_rate = percentile(sorted(r["walk_ns"] / r["realized"] for r in rows), 50)
-    print(f"\nwalk_grouped_page rate fit from real (walk_ns, realized) pairs: {walk_rate:.3f} ns/card visited (median)\n")
-    return walk_rate
+@dataclass(frozen=True)
+class WalkCostModel:
+    """Non-negative two-term fit for the native walk's measured work."""
+
+    ns_per_card: float
+    ns_per_printing: float
+
+    def estimate(self, cards_visited: float, printings_examined: float) -> float:
+        """Estimate walk latency from both operations the loop reports."""
+        return self.ns_per_card * cards_visited + self.ns_per_printing * printings_examined
 
 
-def _build_policies(walk_rate: float, three_phase: ThreePhaseModel) -> dict[str, object]:
+def _fit_walk_cost_model(rows: list[dict]) -> WalkCostModel:
+    """Fit non-negative least squares for cards visited plus printings examined."""
+    cc = sum(r["realized"] ** 2 for r in rows)
+    cp = sum(r["realized"] * r["printings_examined"] for r in rows)
+    pp = sum(r["printings_examined"] ** 2 for r in rows)
+    cy = sum(r["realized"] * r["walk_ns"] for r in rows)
+    py = sum(r["printings_examined"] * r["walk_ns"] for r in rows)
+    candidates = [
+        WalkCostModel(cy / cc if cc else 0.0, 0.0),
+        WalkCostModel(0.0, py / pp if pp else 0.0),
+    ]
+    determinant = cc * pp - cp * cp
+    if determinant > 0:
+        both = WalkCostModel((cy * pp - py * cp) / determinant, (py * cc - cy * cp) / determinant)
+        if both.ns_per_card >= 0 and both.ns_per_printing >= 0:
+            candidates.append(both)
+
+    def squared_error(model: WalkCostModel) -> float:
+        return sum((model.estimate(r["realized"], r["printings_examined"]) - r["walk_ns"]) ** 2 for r in rows)
+
+    return min(candidates, key=squared_error)
+
+
+def _split_policy_rows(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split by query shape so no offset sibling appears in both calibration and evaluation."""
+    keys = sorted({(r["query"], r["orderby"], r["direction"]) for r in rows})
+    if len(keys) < MIN_POLICY_GROUPS:
+        msg = "policy simulation needs at least two distinct query/orderby/direction groups"
+        raise ValueError(msg)
+    random.Random(POLICY_SPLIT_SEED).shuffle(keys)
+    calibration_keys = set(keys[: len(keys) // 2])
+    calibration = [r for r in rows if (r["query"], r["orderby"], r["direction"]) in calibration_keys]
+    evaluation = [r for r in rows if (r["query"], r["orderby"], r["direction"]) not in calibration_keys]
+    return calibration, evaluation
+
+
+def _predicted_printings_for_bound(r: dict, bound_cards: float) -> float:
+    """Scale acquire's printing-walk estimate from the uniform card depth to the candidate bound."""
+    uniform_cards = uniform_mean(r["n_cards"], r["matches"], r["k"])
+    return r["printings_walked_pred"] * bound_cards / uniform_cards
+
+
+def _build_policies(walk_model: WalkCostModel, three_phase: ThreePhaseModel) -> dict[str, object]:
     """The named decision policies `simulate_policies` grades against each other, keyed by display name."""
 
     def gated(gate: int, bound_fn) -> object:  # noqa: ANN001 - bound_fn is one of the module's *_bound callables
         def cost(r: dict) -> tuple[float, bool]:
             if r["offset"] < gate:
                 return r["walk_ns"], False
-            predicted_walk_ns = walk_rate * bound_fn(r["n_cards"], r["matches"], r["k"])
+            bound_cards = bound_fn(r["n_cards"], r["matches"], r["k"])
+            predicted_walk_ns = walk_model.estimate(bound_cards, _predicted_printings_for_bound(r, bound_cards))
             if predicted_walk_ns <= three_phase.estimate(r["matches"]):
                 return r["walk_ns"], False
             return three_phase.estimate(r["matches"]), True
@@ -568,8 +618,8 @@ def _print_headline_percentiles(
     # Chart export uses a TAIL-CONCENTRATED grid, not the flat 5% steps printed above: the policies
     # only visibly separate past p90 (pooling-heavy shallow offsets dominate the bulk of the range),
     # and a flat step size leaves only 2-3 points there -- not enough to see curve shape once a chart
-    # zooms in. 1% steps 0-89, 0.5% steps 90-100 (n=2705 real rows underlies each, so 0.5% steps
-    # average ~14 rows/bucket in the tail -- real resolution, not pure sampling noise).
+    # zooms in. Use 1% steps 0-89 and 0.5% steps 90-100; the policy-split line above reports the
+    # evaluation population that underlies each point.
     pcts = [float(p) for p in range(90)] + [90 + 0.5 * i for i in range(21)]
     chart_data = {"pcts": pcts, "series": {}}
     for name in headline:
@@ -629,17 +679,21 @@ def simulate_policies(rows: list[dict], chart_path: pathlib.Path | None, three_p
     including `oracle` (the reference point: the best any policy COULD do, using the row's real
     `walk_ns` directly -- unknowable in advance, but it bounds how much more there is to gain over a
     real decision rule, which only ever gets `matches`/`n_cards`/`k`, never the outcome). The
-    bound-based policies still have to PREDICT a hypothetical walk cost from a card estimate before
-    running anything, so they convert it via `walk_rate` -- fit from this same dataset's real
-    (`walk_ns`, `realized`) pairs now that `walk_ns` is a clean, confound-free measurement, not an
-    externally recalled or kernel-modeled constant. The three-phase side has no per-row real
+    bound-based policies still have to PREDICT a hypothetical walk cost before running anything, so
+    they convert bound cards and acquire's corresponding printing-walk estimate through a two-term
+    model fit on a disjoint calibration half. The three-phase side has no per-row real
     measurement at all (not wired into dispatch -- see the module docstring), so it stays modeled by
     the explicit `ThreePhaseModel` calibration supplied for this run.
     """
-    walk_rate = _walk_rate(rows)
-    policies = _build_policies(walk_rate, three_phase)
-    latencies_by_policy = _print_pooled_latency_table(rows, policies)
-    _print_worst_surviving_rows(rows, policies, three_phase)
+    calibration_rows, evaluation_rows = _split_policy_rows(rows)
+    walk_model = _fit_walk_cost_model(calibration_rows)
+    print(
+        f"\npolicy split: calibration={len(calibration_rows)} rows, evaluation={len(evaluation_rows)} rows; "
+        f"walk fit={walk_model.ns_per_card:.3f} ns/card + {walk_model.ns_per_printing:.3f} ns/printing\n"
+    )
+    policies = _build_policies(walk_model, three_phase)
+    latencies_by_policy = _print_pooled_latency_table(evaluation_rows, policies)
+    _print_worst_surviving_rows(evaluation_rows, policies, three_phase)
     headline = [
         "always_walk (today)",
         "always_three_phase",
@@ -652,7 +706,7 @@ def simulate_policies(rows: list[dict], chart_path: pathlib.Path | None, three_p
         "no gate, sigma(8.0)",
     ]
     _print_headline_percentiles(latencies_by_policy, headline, chart_path)
-    _print_by_offset_tables(rows, policies)
+    _print_by_offset_tables(evaluation_rows, policies)
 
 
 def main() -> None:
