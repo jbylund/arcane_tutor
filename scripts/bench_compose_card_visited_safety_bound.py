@@ -30,7 +30,9 @@ shape, since it never reads WHERE matches sit in the permutation, only how many 
 explicit deep-offset sweep (real traffic is offset~0-heavy by design, `costbench.OFFSETS`, so it can't
 supply the tail this bound exists for).
 
-    .venv/bin/python scripts/bench_compose_card_visited_safety_bound.py --n-queries 400
+    .venv/bin/python scripts/bench_compose_card_visited_safety_bound.py --n-queries 400 \
+        --three-phase-rate-ns-per-match 5.3444 --three-phase-fixed-ns -4809 \
+        --three-phase-floor-ns 5000
 
 """
 
@@ -42,31 +44,34 @@ import math
 import pathlib
 import random
 import sys
+from dataclasses import dataclass
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from api.parsing import parse_scryfall_query  # noqa: E402
-from client.query_sampler import QuerySampler, Shape  # noqa: E402
+from client.query_sampler import QuerySampler  # noqa: E402
 from scripts import costbench  # noqa: E402
 from scripts.costbench import load_engine  # noqa: E402
 
 percentile = costbench.percentile
 
-# Three-phase (`walk_card_page_via_popcount_skip`) is a `#[cfg(test)]` Rust prototype with no Python
-# binding, so there's no per-row REAL measurement of it for the general uniform-query population (only
-# two named-tag queries were ever benched against it directly, in `tests.rs`). Modeled instead, from
-# THIS session's own real measurement: `compose_popcount_skip_kernel_costs`'s fit of the scatter rate
-# against `matching_cards`, `card_engine/src/tests.rs`. Approximate, not measured-per-row -- good enough
-# for a DIRECTIONAL choice-frequency/latency simulation, not for pricing an individual query.
-THREE_PHASE_RATE_NS_PER_MATCH = 5.3444
-THREE_PHASE_FIXED_NS = -4809.0
-THREE_PHASE_FLOOR_NS = 5_000.0  # the fit goes negative below ~900 matches; floor at the smallest real dispatch cost seen this session
+@dataclass(frozen=True)
+class ThreePhaseModel:
+    """Explicit calibration for the modeled three-phase fallback.
 
+    The fallback has no Python binding, so the harness cannot measure it per row. Requiring these
+    coefficients on the command line keeps a machine-specific calibration out of source and makes
+    every reported result reproducible from its invocation.
+    """
 
-def three_phase_ns_model(matches: int) -> float:
-    """Modeled `walk_card_page_via_popcount_skip` cost -- see the module-level note on its provenance."""
-    return max(THREE_PHASE_RATE_NS_PER_MATCH * matches + THREE_PHASE_FIXED_NS, THREE_PHASE_FLOOR_NS)
+    rate_ns_per_match: float
+    fixed_ns: float
+    floor_ns: float
+
+    def estimate(self, matches: int) -> float:
+        """Estimate `walk_card_page_via_popcount_skip` latency."""
+        return max(self.rate_ns_per_match * matches + self.fixed_ns, self.floor_ns)
 
 
 # The PRODUCTION cost model's own `PhysicalPlan::PrintingCompose` / `ComposePaging::Perm` formula
@@ -114,9 +119,11 @@ ORDERBYS = ("edhrec", "cubecobra", "cmc", "power", "toughness", "name")
 # that distribution can't exercise the deep tail this bound exists for, so sweep it explicitly instead.
 OFFSET_SWEEP = (0, 50, 200, 500, 1_000, 2_000, 4_000, 8_000, 15_000, 25_000)
 LIMIT = 20
-NUM_WARMUPS = 1
-NUM_TRIALS = 2
+NUM_WARMUPS = costbench.NUM_WARMUPS
+NUM_TRIALS = costbench.NUM_TRIALS
 MIN_REALIZED = 5  # below this, `cards_visited` is too noisy/trivial to grade a bound against
+POLICY_SPLIT_SEED = 730_1009
+MIN_POLICY_GROUPS = 2
 
 
 # ─── The two closed-form anchors ───────────────────────────────────────────────
@@ -124,11 +131,17 @@ MIN_REALIZED = 5  # below this, `cards_visited` is too noisy/trivial to grade a 
 
 def worst_case_bound(n_cards: int, matches: int, k: int) -> float:
     """Every non-matching card clumped before the k-th match -- an exact, unconditional ceiling."""
+    if k > matches:
+        # A partial final page never fills, so `walk_grouped_page` exhausts the permutation rather
+        # than stopping at the last match.
+        return float(n_cards)
     return max(n_cards - matches, 0) + k
 
 
 def uniform_mean(n_cards: int, matches: int, k: int) -> float:
     """Expected position of the k-th match if `matches` cards were scattered with NO clumping -- the order-statistic mean of a uniformly random `matches`-subset of `n_cards` slots."""
+    if k > matches:
+        return float(n_cards)
     return k * (n_cards + 1) / (matches + 1)
 
 
@@ -165,27 +178,6 @@ def sigma_bound(n_cards: int, matches: int, k: int, knob: float) -> float:
     """`knob` = how many std devs above the no-clumping mean, same random-placement model as `blend_bound`'s low anchor -- just a different (distribution-shaped, not linear) margin."""
     mean = uniform_mean(n_cards, matches, k)
     return mean + knob * math.sqrt(nhg_variance(n_cards, matches, k))
-
-
-def abort_budget_ns(walk_ns: float, matches: int, safety_factor: float, ceiling_ns: float) -> tuple[float, bool]:
-    """Cost under a RUNTIME circuit breaker instead of an a-priori decision: let the walk run, and only abort into three-phase once the walk's OWN elapsed cost crosses `budget = safety_factor * three_phase_ns_model(matches)` -- a budget anchored to the alternative's own (offset-independent) cost, not to `k`. A `k`-scaled budget was tried first and does not work: `k = offset + limit` already includes the offset, so at a deep offset the budget outgrows `n_cards` and the abort can never trip at all -- exactly the population (deep, expensive walks) this exists to catch. Tracking elapsed cost is free in the real executor (`work.cards_visited += 1` already runs every iteration); this models "compare it against a threshold every so often," not new instrumentation.
-
-    Naively, an abort caps the total at `(safety_factor + 1) * three_phase_ns_model(matches)` -- but
-    that cap ITSELF grows with `matches` (three-phase costs more for a high-selectivity query), and a
-    high `safety_factor` on top of an already-large baseline let the capped outcome exceed what a
-    plain walk would have cost -- measured: `abort at 3x` had a WORSE max than `always_walk` on this
-    dataset. `ceiling_ns` is the fix: an absolute cap independent of `matches` entirely (the caller
-    passes `walk_rate * n_cards` -- no real walk, however clumped, can cost more than visiting the
-    whole corpus once). A row that finishes within budget still pays EXACTLY its own real `walk_ns`.
-
-    Returns:
-        `(ns, aborted)` -- `aborted` is whether the breaker tripped, returned alongside the cost
-        instead of recomputed by the caller from the same `budget`.
-    """
-    budget = safety_factor * three_phase_ns_model(matches)
-    if walk_ns <= budget:
-        return walk_ns, False
-    return min(budget + three_phase_ns_model(matches), ceiling_ns), True
 
 
 METHODS = {
@@ -262,7 +254,7 @@ def evaluate(engine: object, query: str, orderby: str, direction: str, offset: i
         return None
     matches = compose["result_total"]
     realized = compose["cards_visited"]
-    if matches <= 0 or k >= matches or matches >= n_cards or realized < MIN_REALIZED:
+    if matches <= 0 or offset >= matches or matches >= n_cards or realized < MIN_REALIZED:
         return None
     # `ns_loop` is now the paging branch ALONE -- `card_engine/src/lib.rs`'s `ComposePageWork` split
     # (this session) separated it from `ns_setup` (the compose-build cost that used to be bundled in
@@ -468,42 +460,82 @@ def report(rows: list[dict]) -> None:
     _report_worst_outliers(rows)
 
 
-def _walk_rate_and_ceiling(rows: list[dict]) -> tuple[float, float]:
-    """Fit `walk_rate` from real (`walk_ns`, `realized`) pairs and derive the abort ceiling from it, printing both."""
-    walk_rate = percentile(sorted(r["walk_ns"] / r["realized"] for r in rows), 50)
-    print(f"\nwalk_grouped_page rate fit from real (walk_ns, realized) pairs: {walk_rate:.3f} ns/card visited (median)\n")
-    # No real walk, however clumped, visits more cards than the whole corpus once -- an absolute
-    # backstop independent of `matches`, unlike the naive `(safety_factor + 1) * three_phase` cap.
-    ceiling_ns = walk_rate * max(r["n_cards"] for r in rows)
-    print(f"abort ceiling: {ceiling_ns:.0f} ns (walk_rate * n_cards -- a full-corpus walk, absolute worst case)\n")
-    return walk_rate, ceiling_ns
+@dataclass(frozen=True)
+class WalkCostModel:
+    """Non-negative two-term fit for the native walk's measured work."""
+
+    ns_per_card: float
+    ns_per_printing: float
+
+    def estimate(self, cards_visited: float, printings_examined: float) -> float:
+        """Estimate walk latency from both operations the loop reports."""
+        return self.ns_per_card * cards_visited + self.ns_per_printing * printings_examined
 
 
-def _build_policies(walk_rate: float, ceiling_ns: float) -> dict[str, object]:
+def _fit_walk_cost_model(rows: list[dict]) -> WalkCostModel:
+    """Fit non-negative least squares for cards visited plus printings examined."""
+    cc = sum(r["realized"] ** 2 for r in rows)
+    cp = sum(r["realized"] * r["printings_examined"] for r in rows)
+    pp = sum(r["printings_examined"] ** 2 for r in rows)
+    cy = sum(r["realized"] * r["walk_ns"] for r in rows)
+    py = sum(r["printings_examined"] * r["walk_ns"] for r in rows)
+    candidates = [
+        WalkCostModel(cy / cc if cc else 0.0, 0.0),
+        WalkCostModel(0.0, py / pp if pp else 0.0),
+    ]
+    determinant = cc * pp - cp * cp
+    if determinant > 0:
+        both = WalkCostModel((cy * pp - py * cp) / determinant, (py * cc - cy * cp) / determinant)
+        if both.ns_per_card >= 0 and both.ns_per_printing >= 0:
+            candidates.append(both)
+
+    def squared_error(model: WalkCostModel) -> float:
+        return sum((model.estimate(r["realized"], r["printings_examined"]) - r["walk_ns"]) ** 2 for r in rows)
+
+    return min(candidates, key=squared_error)
+
+
+def _split_policy_rows(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split by query shape so no offset sibling appears in both calibration and evaluation."""
+    keys = sorted({(r["query"], r["orderby"], r["direction"]) for r in rows})
+    if len(keys) < MIN_POLICY_GROUPS:
+        msg = "policy simulation needs at least two distinct query/orderby/direction groups"
+        raise ValueError(msg)
+    random.Random(POLICY_SPLIT_SEED).shuffle(keys)
+    calibration_keys = set(keys[: len(keys) // 2])
+    calibration = [r for r in rows if (r["query"], r["orderby"], r["direction"]) in calibration_keys]
+    evaluation = [r for r in rows if (r["query"], r["orderby"], r["direction"]) not in calibration_keys]
+    return calibration, evaluation
+
+
+def _predicted_printings_for_bound(r: dict, bound_cards: float) -> float:
+    """Scale acquire's printing-walk estimate from the uniform card depth to the candidate bound."""
+    uniform_cards = uniform_mean(r["n_cards"], r["matches"], r["k"])
+    return r["printings_walked_pred"] * bound_cards / uniform_cards
+
+
+def _build_policies(walk_model: WalkCostModel, three_phase: ThreePhaseModel) -> dict[str, object]:
     """The named decision policies `simulate_policies` grades against each other, keyed by display name."""
 
     def gated(gate: int, bound_fn) -> object:  # noqa: ANN001 - bound_fn is one of the module's *_bound callables
         def cost(r: dict) -> tuple[float, bool]:
             if r["offset"] < gate:
                 return r["walk_ns"], False
-            predicted_walk_ns = walk_rate * bound_fn(r["n_cards"], r["matches"], r["k"])
-            if predicted_walk_ns <= three_phase_ns_model(r["matches"]):
+            bound_cards = bound_fn(r["n_cards"], r["matches"], r["k"])
+            predicted_walk_ns = walk_model.estimate(bound_cards, _predicted_printings_for_bound(r, bound_cards))
+            if predicted_walk_ns <= three_phase.estimate(r["matches"]):
                 return r["walk_ns"], False
-            return three_phase_ns_model(r["matches"]), True
-
-        return cost
-
-    def abort_at(safety_factor: float) -> object:
-        def cost(r: dict) -> tuple[float, bool]:
-            return abort_budget_ns(r["walk_ns"], r["matches"], safety_factor, ceiling_ns)
+            return three_phase.estimate(r["matches"]), True
 
         return cost
 
     return {
         "always_walk (today)": lambda r: (r["walk_ns"], False),
-        "always_three_phase": lambda r: (three_phase_ns_model(r["matches"]), True),
+        "always_three_phase": lambda r: (three_phase.estimate(r["matches"]), True),
         "oracle (best possible)": lambda r: (
-            (r["walk_ns"], False) if r["walk_ns"] <= three_phase_ns_model(r["matches"]) else (three_phase_ns_model(r["matches"]), True)
+            (r["walk_ns"], False)
+            if r["walk_ns"] <= three_phase.estimate(r["matches"])
+            else (three_phase.estimate(r["matches"]), True)
         ),
         "no gate, worst_case": gated(0, worst_case_bound),
         "no gate, blend(0.6)": gated(0, lambda n, m, k: blend_bound(n, m, k, 0.6)),
@@ -517,15 +549,33 @@ def _build_policies(walk_rate: float, ceiling_ns: float) -> dict[str, object]:
         "gate=4000, worst_case": gated(4_000, worst_case_bound),
         "gate=2000, blend(0.6)": gated(2_000, lambda n, m, k: blend_bound(n, m, k, 0.6)),
         "gate=4000, blend(0.6)": gated(4_000, lambda n, m, k: blend_bound(n, m, k, 0.6)),
-        "abort at 2x 3phase": abort_at(2.0),
-        "abort at 3x 3phase": abort_at(3.0),
-        "abort at 5x 3phase": abort_at(5.0),
-        "abort at 10x 3phase": abort_at(10.0),
-        "abort at 20x 3phase": abort_at(20.0),
     }
 
 
-def _print_pooled_latency_table(rows: list[dict], policies: dict) -> dict[str, list[float]]:
+def _weighted_percentile(sorted_weighted: list[tuple[float, float]], pct: float) -> float:
+    """Nearest-rank percentile where each row carries an explicit weight."""
+    if not sorted_weighted:
+        return float("nan")
+    if pct <= 0:
+        return sorted_weighted[0][0]
+    target = pct / 100 * sum(weight for _, weight in sorted_weighted)
+    cumulative = 0.0
+    for value, weight in sorted_weighted:
+        cumulative += weight
+        if cumulative >= target:
+            return value
+    return sorted_weighted[-1][0]
+
+
+def _offset_weighted_rows(rows: list[dict]) -> list[tuple[dict, float]]:
+    """Give every represented offset the same total weight."""
+    counts: dict[int, int] = {}
+    for r in rows:
+        counts[r["offset"]] = counts.get(r["offset"], 0) + 1
+    return [(r, 1 / counts[r["offset"]]) for r in rows]
+
+
+def _print_pooled_latency_table(rows: list[dict], policies: dict) -> dict[str, list[tuple[float, float]]]:
     """% diverted and latency percentiles for every policy, pooled across the whole offset sweep."""
     print(f"{'policy':<26} {'%diverted':>10} {'p50':>10} {'p90':>10} {'p99':>10} {'max':>10}")
     print("(pooled across OFFSET_SWEEP, which weights shallow and deep offsets EQUALLY -- nothing like")
@@ -533,27 +583,28 @@ def _print_pooled_latency_table(rows: list[dict], policies: dict) -> dict[str, l
     print(" deliberately offset-heavy stress grid, not a production latency estimate; see the by-offset")
     print(" breakdown below for the number that matters -- reweight it by your own traffic's real offset")
     print(" distribution instead of trusting a blended average here. 'diverted' means routed to")
-    print(" three-phase outright for the a-priori policies, or actually ABORTED past budget for the")
-    print(" abort policies -- not the same event, so don't compare the percentages across the two kinds.)")
-    latencies_by_policy: dict[str, list[float]] = {}
+    print(" three-phase instead of running the native walk.)")
+    weighted_rows = _offset_weighted_rows(rows)
+    total_weight = sum(weight for _, weight in weighted_rows)
+    latencies_by_policy: dict[str, list[tuple[float, float]]] = {}
     for name, cost_fn in policies.items():
         latencies = []
-        diverted_count = 0
-        for r in rows:
+        diverted_weight = 0.0
+        for r, weight in weighted_rows:
             ns, diverted = cost_fn(r)
-            latencies.append(ns)
-            diverted_count += diverted
+            latencies.append((ns, weight))
+            diverted_weight += weight * diverted
         latencies.sort()
         latencies_by_policy[name] = latencies
         print(
-            f"{name:<26} {100 * diverted_count / len(rows):>9.1f}% "
-            f"{fmt_ns(percentile(latencies, 50)):>10} {fmt_ns(percentile(latencies, 90)):>10} "
-            f"{fmt_ns(percentile(latencies, 99)):>10} {fmt_ns(latencies[-1]):>10}"
+            f"{name:<26} {100 * diverted_weight / total_weight:>9.1f}% "
+            f"{fmt_ns(_weighted_percentile(latencies, 50)):>10} {fmt_ns(_weighted_percentile(latencies, 90)):>10} "
+            f"{fmt_ns(_weighted_percentile(latencies, 99)):>10} {fmt_ns(latencies[-1][0]):>10}"
         )
     return latencies_by_policy
 
 
-def _print_worst_surviving_rows(rows: list[dict], policies: dict) -> None:
+def _print_worst_surviving_rows(rows: list[dict], policies: dict, three_phase: ThreePhaseModel) -> None:
     """Worst SURVIVING (non-diverted) row for a shortlist of policies -- does a bound's own worst case walk a row that should have been diverted?"""
     print("\nworst SURVIVING (non-diverted) row for each policy -- oracle's max is capped by construction")
     print("at always_three_phase's own max (see the earlier discussion); does sigma's/blend's own worst")
@@ -567,15 +618,14 @@ def _print_worst_surviving_rows(rows: list[dict], policies: dict) -> None:
         "no gate, sigma(4.0)",
         "no gate, sigma(6.0)",
         "no gate, sigma(8.0)",
-        "abort at 2x 3phase",
     ):
         cost_fn = policies[name]
         results = [(*cost_fn(r), r) for r in rows]
-        walked = [(ns, r) for ns, aborted, r in results if not aborted]
+        walked = [(ns, r) for ns, diverted, r in results if not diverted]
         if not walked:
             continue
         worst_ns, r = max(walked, key=lambda t: t[0])
-        tp = three_phase_ns_model(r["matches"])
+        tp = three_phase.estimate(r["matches"])
         print(
             f"  {name:<24} worst_walked={fmt_ns(worst_ns):>10}  offset={r['offset']:<6} matches={r['matches']:<6} "
             f"n_cards={r['n_cards']}  three_phase_would_be={fmt_ns(tp):>10}  clumping_factor={r['clumping_factor']:.2f}"
@@ -583,7 +633,7 @@ def _print_worst_surviving_rows(rows: list[dict], policies: dict) -> None:
 
 
 def _print_headline_percentiles(
-    latencies_by_policy: dict[str, list[float]], headline: list[str], chart_path: pathlib.Path | None
+    latencies_by_policy: dict[str, list[tuple[float, float]]], headline: list[str], chart_path: pathlib.Path | None
 ) -> None:
     """5%-granularity percentile-vs-latency table for the headline policies, plus the tail-concentrated chart export."""
     print(f"\npercentile vs latency (ns), 5% granularity, for the {len(headline)} headline policies:")
@@ -593,16 +643,16 @@ def _print_headline_percentiles(
     # Chart export uses a TAIL-CONCENTRATED grid, not the flat 5% steps printed above: the policies
     # only visibly separate past p90 (pooling-heavy shallow offsets dominate the bulk of the range),
     # and a flat step size leaves only 2-3 points there -- not enough to see curve shape once a chart
-    # zooms in. 1% steps 0-89, 0.5% steps 90-100 (n=2705 real rows underlies each, so 0.5% steps
-    # average ~14 rows/bucket in the tail -- real resolution, not pure sampling noise).
+    # zooms in. Use 1% steps 0-89 and 0.5% steps 90-100; the policy-split line above reports the
+    # evaluation population that underlies each point.
     pcts = [float(p) for p in range(90)] + [90 + 0.5 * i for i in range(21)]
     chart_data = {"pcts": pcts, "series": {}}
     for name in headline:
-        chart_data["series"][name] = [percentile(latencies_by_policy[name], p) for p in pcts]
+        chart_data["series"][name] = [_weighted_percentile(latencies_by_policy[name], p) for p in pcts]
     for p in pcts_print:
         line = f"{p:<5}"
         for name in headline:
-            line += f"{percentile(latencies_by_policy[name], p):>24.0f}"
+            line += f"{_weighted_percentile(latencies_by_policy[name], p):>24.0f}"
         print(line)
 
     if chart_path is not None:
@@ -619,15 +669,15 @@ def _print_by_offset_tables(rows: list[dict], policies: dict) -> None:
         "always_walk": policies["always_walk (today)"],
         "always_three_phase": policies["always_three_phase"],
         "no gate, blend(0.6)": policies["no gate, blend(0.6)"],
-        "abort at 3x 3phase": policies["abort at 3x 3phase"],
-        "abort at 5x 3phase": policies["abort at 5x 3phase"],
-        "abort at 10x 3phase": policies["abort at 10x 3phase"],
+        "no gate, sigma(2.0)": policies["no gate, sigma(2.0)"],
+        "no gate, sigma(3.0)": policies["no gate, sigma(3.0)"],
+        "no gate, sigma(4.0)": policies["no gate, sigma(4.0)"],
     }
     by_offset_rows: dict[int, list[dict]] = {}
     for r in rows:
         by_offset_rows.setdefault(r["offset"], []).append(r)
 
-    print("\n% diverted (routed/aborted), BY OFFSET:")
+    print("\n% diverted (routed to three-phase), BY OFFSET:")
     header = f"{'offset':<8}" + "".join(f"{name:>24}" for name in shortlist)
     print(header)
     for off, off_rows in sorted(by_offset_rows.items()):
@@ -647,24 +697,28 @@ def _print_by_offset_tables(rows: list[dict], policies: dict) -> None:
         print(line)
 
 
-def simulate_policies(rows: list[dict], chart_path: pathlib.Path | None) -> None:
+def simulate_policies(rows: list[dict], chart_path: pathlib.Path | None, three_phase: ThreePhaseModel) -> None:
     """For each decision POLICY, what fraction of real traffic gets routed to the three-phase fallback, and what does that do to the resulting latency distribution?
 
     The walk side uses each row's REAL `walk_ns` (see `evaluate()`) whenever a policy picks it,
     including `oracle` (the reference point: the best any policy COULD do, using the row's real
     `walk_ns` directly -- unknowable in advance, but it bounds how much more there is to gain over a
     real decision rule, which only ever gets `matches`/`n_cards`/`k`, never the outcome). The
-    bound-based policies still have to PREDICT a hypothetical walk cost from a card estimate before
-    running anything, so they convert it via `walk_rate` -- fit from this same dataset's real
-    (`walk_ns`, `realized`) pairs now that `walk_ns` is a clean, confound-free measurement, not an
-    externally recalled or kernel-modeled constant. The three-phase side has no per-row real
-    measurement at all (not wired into dispatch -- see the module docstring), so it stays modeled via
-    `three_phase_ns_model`.
+    bound-based policies still have to PREDICT a hypothetical walk cost before running anything, so
+    they convert bound cards and acquire's corresponding printing-walk estimate through a two-term
+    model fit on a disjoint calibration half. The three-phase side has no per-row real
+    measurement at all (not wired into dispatch -- see the module docstring), so it stays modeled by
+    the explicit `ThreePhaseModel` calibration supplied for this run.
     """
-    walk_rate, ceiling_ns = _walk_rate_and_ceiling(rows)
-    policies = _build_policies(walk_rate, ceiling_ns)
-    latencies_by_policy = _print_pooled_latency_table(rows, policies)
-    _print_worst_surviving_rows(rows, policies)
+    calibration_rows, evaluation_rows = _split_policy_rows(rows)
+    walk_model = _fit_walk_cost_model(calibration_rows)
+    print(
+        f"\npolicy split: calibration={len(calibration_rows)} rows, evaluation={len(evaluation_rows)} rows; "
+        f"walk fit={walk_model.ns_per_card:.3f} ns/card + {walk_model.ns_per_printing:.3f} ns/printing\n"
+    )
+    policies = _build_policies(walk_model, three_phase)
+    latencies_by_policy = _print_pooled_latency_table(evaluation_rows, policies)
+    _print_worst_surviving_rows(evaluation_rows, policies, three_phase)
     headline = [
         "always_walk (today)",
         "always_three_phase",
@@ -677,7 +731,7 @@ def simulate_policies(rows: list[dict], chart_path: pathlib.Path | None) -> None
         "no gate, sigma(8.0)",
     ]
     _print_headline_percentiles(latencies_by_policy, headline, chart_path)
-    _print_by_offset_tables(rows, policies)
+    _print_by_offset_tables(evaluation_rows, policies)
 
 
 def main() -> None:
@@ -688,10 +742,25 @@ def main() -> None:
     parser.add_argument("--corpus", type=pathlib.Path, default=REPO_ROOT / "benchmarks/bitplanes/corpus.jsonl")
     parser.add_argument("--shm-path", type=pathlib.Path, default=None)
     parser.add_argument("--chart-path", type=pathlib.Path, default=None, help="write chart series JSON here")
+    parser.add_argument("--three-phase-rate-ns-per-match", type=float, required=True)
+    parser.add_argument("--three-phase-fixed-ns", type=float, required=True)
+    parser.add_argument("--three-phase-floor-ns", type=float, required=True)
     args = parser.parse_args()
+    if args.n_queries <= 0:
+        parser.error("--n-queries must be greater than zero")
 
     rng = random.Random(args.seed)
     selfcheck_nhg_moments(rng)
+    three_phase = ThreePhaseModel(
+        rate_ns_per_match=args.three_phase_rate_ns_per_match,
+        fixed_ns=args.three_phase_fixed_ns,
+        floor_ns=args.three_phase_floor_ns,
+    )
+    print(
+        "three-phase model: "
+        f"rate={three_phase.rate_ns_per_match:g} ns/match "
+        f"fixed={three_phase.fixed_ns:g} ns floor={three_phase.floor_ns:g} ns"
+    )
 
     engine = load_engine(args.corpus, args.shm_path or args.corpus.with_suffix(".cardvisitedbound.store"))
     sampler = QuerySampler(args.corpus, "uniform")
@@ -699,14 +768,10 @@ def main() -> None:
     rows: list[dict] = []
     considered = 0
     for _ in range(args.n_queries):
-        # Pinned to ONE predicate: this used to be required because `PrintingCompose` reported one
-        # undivided `ns_total` span, so a multi-predicate AND's compose cost could dwarf the walk
-        # itself and swamp any attempt to fit a per-card WALK rate from `ns`. `ComposePageWork`'s
-        # `ns_build`/`ns_paging` split (this same session, `card_engine/src/lib.rs`) fixed that at the
-        # source -- `ns_loop` is now the paging branch alone regardless of predicate count. Kept anyway
-        # as the simpler default: single-predicate is still the case this bound targets, and narrowing
-        # the sampler to it costs nothing here.
-        query = sampler.query(rng, shape=Shape(predicates=1))
+        # Exercise the sampler's normal predicate counts and connective structures. The
+        # `ns_build`/`ns_paging` split keeps multi-predicate compose work out of the measured walk, so
+        # there is no longer a measurement reason to narrow this to one flat predicate.
+        query = sampler.structured_query(rng)["query"]
         orderby = rng.choice(ORDERBYS)
         direction = rng.choice(("asc", "desc"))
         for offset in OFFSET_SWEEP:
@@ -717,7 +782,9 @@ def main() -> None:
 
     print(f"\n{considered} (query, orderby, direction, offset) points considered, {len(rows)} landed on Card-mode Perm both ways.")
     report(rows)
-    simulate_policies(rows, args.chart_path)
+    if not rows:
+        return
+    simulate_policies(rows, args.chart_path, three_phase)
 
 
 if __name__ == "__main__":
