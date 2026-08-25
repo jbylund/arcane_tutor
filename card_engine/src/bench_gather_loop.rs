@@ -153,6 +153,11 @@
 //! support for that ordering -- P3's dispatch median is 32 us against P4's 4 us, and its finish phase is
 //! 12% of all measured ns at mean |log| 2.06.
 //!
+//! **That "applying both arms together" attempt happened (2026-08-23, `bench_streamed_loop`'s own
+//! module docs), after a real feature fix, and still regressed -- through P3/P4-vs-`PrintingCompose`
+//! distortion, not P3-vs-P4 compensating error. See the sixth row of that file's history table before
+//! trying this again: a joint refit needs every plan in the same argmin refit together, not just P3+P4.
+//!
 //! One further limit on all of these: `LIMIT` is fixed, so nothing here constrains how the rates
 //! behave as the page grows.
 //!

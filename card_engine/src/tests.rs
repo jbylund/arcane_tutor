@@ -1,7 +1,7 @@
 use super::{
     and_child_rank, assign_name_ranks,
     build_numeric_index, build_oracle_text_index, build_trigram_index,
-    build_rarity_index, build_flavor_index, build_hybrid_tag_index, bitmap_beats_postings, HybridTagIndex, build_sort_permutations,
+    build_rarity_index, build_flavor_index, build_hybrid_tag_index, build_layout_hybrid_index, bitmap_beats_postings, HybridTagIndex, build_sort_permutations,
     assign_artwork_groups, build_artwork_base_from, build_bit_planes, build_border_printing_planes, build_rarity_printing_planes, build_divergent_ids, build_name_bigram_index, build_name_unigram_index, build_printing_to_card, flavor_fingerprint, flavor_match_sets,
     cards_of_printings, count_common_keywords, count_common_types,
     build_artist_index, build_printing_value_index, build_arith_tuple_index, is_arith_tuple_route, range_candidates, narrow_candidates, narrow_candidates_exact, rarity_candidates,
@@ -1584,6 +1584,7 @@ enum FuzzLeaf {
     Date { op: CmpOp, value: u32 },     // printing-varying (released_at, DateCmp)
     Year { op: CmpOp, year: i32 },      // printing-varying (released_at, YearCmp)
     Border { value: String },           // printing-varying
+    Layout { value: String },           // card-invariant (#1015's narrow_rec arm; see fuzz_leaf_layout)
     Legality { shift: Option<u8>, expected: u64 }, // printing-dependent for divergent cards
     // Arithmetic (NumExpr::Arith), mixing a card-level and a printing-level field — exercises
     // field_num on both operands and PrintingDep propagation through arithmetic. `shape` selects
@@ -1690,6 +1691,15 @@ fn fuzz_leaf_border(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
     // evaluated correctly via the residual path.
     const BORDERS: [&str; 5] = ["black", "white", "borderless", "gold", "yellow"];
     FuzzSpec::Leaf(FuzzLeaf::Border { value: BORDERS[rng.random_range(0..BORDERS.len())].to_string() })
+}
+fn fuzz_leaf_layout(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
+    // Mostly draws from FUZZ_LAYOUTS (the same values `fuzz_store` assigns cards from), so the leaf
+    // reliably hits both the "normal"-sized dense bucket and the sparser tail values. 10% of the time
+    // an unassigned value, to exercise `len_of` returning `None` (the "no card has this layout" arm).
+    if rng.random_bool(0.1) {
+        return FuzzSpec::Leaf(FuzzLeaf::Layout { value: "unassigned_layout".to_string() });
+    }
+    FuzzSpec::Leaf(FuzzLeaf::Layout { value: FUZZ_LAYOUTS[rng.random_range(0..FUZZ_LAYOUTS.len())].to_string() })
 }
 fn fuzz_leaf_legality(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
     // 10% of the time an absent format (shift: None), which matches nothing.
@@ -1945,7 +1955,7 @@ fn fuzz_leaf_devotion(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
 }
 
 fn fuzz_leaf(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
-    match rng.random_range(0..27u8) {
+    match rng.random_range(0..28u8) {
         0 => fuzz_leaf_color(rng),
         1 => fuzz_leaf_type(rng),
         2 => fuzz_leaf_cmc(rng),
@@ -1972,6 +1982,7 @@ fn fuzz_leaf(rng: &mut rand::rngs::SmallRng) -> FuzzSpec {
         23 => fuzz_leaf_name_exact(rng),
         24 => fuzz_leaf_mana_cost(rng),
         25 => fuzz_leaf_devotion(rng),
+        26 => fuzz_leaf_layout(rng),
         _ => fuzz_leaf_arith(rng),
     }
 }
@@ -2087,6 +2098,7 @@ fn fuzz_build_filter(spec: &FuzzSpec) -> FilterExpr {
         },
         FuzzSpec::Leaf(FuzzLeaf::Devotion { op, pips }) => FilterExpr::Devotion { op: *op, pips: *pips },
         FuzzSpec::Leaf(FuzzLeaf::Border { value }) => FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value: value.clone() },
+        FuzzSpec::Leaf(FuzzLeaf::Layout { value }) => FilterExpr::TextExact { field: TextField::Layout, op: CmpOp::Eq, value: value.clone() },
         FuzzSpec::Leaf(FuzzLeaf::Legality { shift, expected }) => FilterExpr::Legality { shift: *shift, expected: *expected },
         FuzzSpec::And(v) => FilterExpr::And(v.iter().map(fuzz_build_filter).collect()),
         FuzzSpec::Or(v) => FilterExpr::Or(v.iter().map(fuzz_build_filter).collect()),
@@ -2169,6 +2181,7 @@ fn fuzz_describe(spec: &FuzzSpec) -> String {
         }
         FuzzSpec::Leaf(FuzzLeaf::Devotion { op, pips }) => format!("devotion{}{pips:#014x}", fuzz_op_str(*op)),
         FuzzSpec::Leaf(FuzzLeaf::Border { value }) => format!("border=={value}"),
+        FuzzSpec::Leaf(FuzzLeaf::Layout { value }) => format!("layout=={value}"),
         FuzzSpec::Leaf(FuzzLeaf::Legality { shift, expected }) => format!("legality(shift={shift:?}, expected={expected:#04b})"),
         FuzzSpec::And(v) => format!("AND({})", v.iter().map(fuzz_describe).collect::<Vec<_>>().join(", ")),
         FuzzSpec::Or(v) => format!("OR({})", v.iter().map(fuzz_describe).collect::<Vec<_>>().join(", ")),
@@ -2450,6 +2463,11 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
     data.indexes.keywords = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_keywords);
     data.indexes.oracle_tags = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_oracle_tags);
+    // layout: same load-bearing property, and the one this list was missing -- every card above
+    // already gets a layout via FUZZ_LAYOUTS, but with this unbuilt `layout:`/`is:split`-shaped
+    // predicates narrowed to the empty set (`len_of` returns `None`) instead of matching, disagreeing
+    // with the residual `matches` reference the moment a fuzzed query drew a `FuzzLeaf::Layout` leaf.
+    data.indexes.layout = build_layout_hybrid_index(&data.cards, &data.strings);
     data.indexes.art_tags = build_hybrid_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_art_tags);
     data.indexes.is_tags = build_hybrid_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_is_tags);
     data.indexes.frame_data = build_hybrid_tag_index(&data.printings, &data.coll_vocab, |p| &p.card_frame_data);
@@ -5196,7 +5214,7 @@ fn plan_cost_model_matches_gold() {
                 let eval_domain = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
                 // Tier reflects the residual AFTER memoize (what the walk pays).
                 let residual_tier_ns100 = if prep.all_match_known { 0 } else { verify_cost_tier(&res) };
-                let su = scan_units(mode_enum, prep.candidate_cards.as_deref(), &archived.offsets, n_printings, eval_domain);
+                let su = scan_units(mode_enum, prep.candidate_cards.as_deref(), &archived.offsets, n_printings, n_cards);
                 let feats = PlanFeatures {
                     n_cards, n_printings,
                     matches: total as u32,
@@ -5443,7 +5461,7 @@ fn plan_cost_refit() {
                 );
                 let prep = prepare_candidates(&QueryCtx::from(archived), &mode_only_params(mode_enum), &mut res, pe.as_ref());
                 let eval_domain = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
-                let su = scan_units(mode_enum, prep.candidate_cards.as_deref(), &archived.offsets, n_printings, eval_domain);
+                let su = scan_units(mode_enum, prep.candidate_cards.as_deref(), &archived.offsets, n_printings, n_cards);
                 let feats = PlanFeatures {
                     n_cards, n_printings, matches: total as u32, eval_domain,
                     scan_units: su,
@@ -5649,7 +5667,7 @@ fn printing_range_route_probe() {
             let prep = prepare_candidates(&QueryCtx::from(archived), &mode_only_params(Mode::Printing), &mut res, pe.as_ref());
             let eval_domain = prep.candidate_cards.as_ref().map_or(n_cards, |v| v.len() as u32);
             let residual_tier_ns100 = if prep.all_match_known { 0 } else { verify_cost_tier(&res) };
-            let su = scan_units(Mode::Printing, prep.candidate_cards.as_deref(), &archived.offsets, n_printings as u32, eval_domain);
+            let su = scan_units(Mode::Printing, prep.candidate_cards.as_deref(), &archived.offsets, n_printings as u32, n_cards);
             let feats = PlanFeatures {
                 n_cards, n_printings, matches: total as u32, eval_domain,
                 scan_units: su,
@@ -6475,6 +6493,7 @@ fn bench_checked_vs_unchecked_access() {
         subtypes:       build_hybrid_tag_index(&cards, &vocab.strings, |c| &c.card_subtypes),
         keywords:       build_hybrid_tag_index(&cards, &vocab.strings, |c| &c.card_keywords),
         oracle_tags:    build_hybrid_tag_index(&cards, &vocab.strings, |c| &c.card_oracle_tags),
+        layout:         build_layout_hybrid_index(&cards, &strings),
         art_tags:       build_hybrid_tag_index(&printings, &vocab.strings, |p| &p.card_art_tags),
         is_tags:        build_hybrid_tag_index(&printings, &vocab.strings, |p| &p.card_is_tags),
         frame_data:     HybridTagIndex::default(),
@@ -7075,6 +7094,29 @@ fn hybrid_tag_index_splits_dense_from_sparse_at_the_size_crossover() {
     }
 }
 
+// `stub_card` (and any fuzz/bench fixture built from it without overwriting `card_layout_id`)
+// leaves the field at `NONE_STR`, same as a real card would only if `layout:` import ever used
+// `intern_opt`. `build_layout_hybrid_index` must skip those cards rather than indexing
+// `strings[NONE_STR as usize]`, which panics -- this previously crashed
+// `bench_checked_vs_unchecked_access` before it could measure anything.
+#[test]
+fn layout_hybrid_index_skips_cards_with_no_layout() {
+    let mut vocab = VocabInterner::new();
+    let mut interner = Interner::new();
+    let split_id = interner.intern("split".to_string());
+    let cards: Vec<OracleCard> = vec![
+        stub_card(1, TYPE_CREATURE, &[], &mut vocab),
+        {
+            let mut c = stub_card(2, TYPE_CREATURE, &[], &mut vocab);
+            c.card_layout_id = split_id;
+            c
+        },
+    ];
+    let idx = build_layout_hybrid_index(&cards, &interner.strings);
+    let split_count = idx.dense.get("split").map(|b| b.count as usize).or_else(|| idx.sparse.get("split").map(|v| v.len()));
+    assert_eq!(split_count, Some(1), "the card with a layout is indexed");
+    assert_eq!(idx.dense.len() + idx.sparse.len(), 1, "the NONE_STR card contributes no bucket");
+}
 
 // Streamed selection must agree with the gathered path. Two stores identical
 // except for the presence of sort permutations: the perm-less store takes the
