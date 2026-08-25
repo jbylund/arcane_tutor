@@ -9549,9 +9549,9 @@ fn note_pending_prepare_ns(ns: u64) {
 ///
 /// A 24-byte store into `COMPOSE_WORK`, not a write of the whole `PhaseStats` — see that slot's doc
 /// for the measurement that forced the split. `take_phase_stats` merges the two, so consumers see no
-/// seam, and the phase timings stay zero: compose's arm is not decomposed into setup/loop/finish, so
-/// there is nothing to check them against, and publishing an unvalidatable number is how
-/// `printing_span` became load-bearing in the first place.
+/// seam, and the phase timings are no longer zero: `ns_build`/`ns_paging` land in `ns_setup`/`ns_loop`
+/// the same as the other plans, checked against a real run by
+/// `plan_stats_never_leak_between_participants`'s `PrintingCompose` branch.
 fn publish_compose_work(work: ComposePageWork) {
     COMPOSE_WORK.with(|c| c.set(work));
 }

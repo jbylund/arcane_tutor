@@ -316,10 +316,11 @@ def plan_self_ns(plan: dict, acquire: dict) -> float | None:
 
     **The executor**, from `ns_setup + ns_loop + ns_finish`. Contiguous by construction, so the sum IS
     the executor -- exact, with nothing to overshoot. Every plan publishes these; the two materializing
-    ones split them three ways, and the four others report one undivided span in `ns_loop` because they
-    have no three phases to attribute between. Verified against the old netted figure on 45k paired
-    rows before the switch: median ratio 0.998 (GatheredScan) and 0.997 (StreamedSelect), 0.08us of the
-    round unaccounted.
+    ones split them three ways, `PrintingCompose` splits them two ways (`ns_setup` for the build,
+    `ns_loop` for the paging branch, no `ns_finish`), and the three remaining plans report one
+    undivided span in `ns_loop` because they have no phases to attribute between at all. Verified
+    against the old netted figure on 45k paired rows before the switch: median ratio 0.998
+    (GatheredScan) and 0.997 (StreamedSelect), 0.08us of the round unaccounted.
 
     **Plus any shared artifact DISPATCH pays for**, which depends on the acquire and not on the plan:
 

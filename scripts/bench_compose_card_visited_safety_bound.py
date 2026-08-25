@@ -626,13 +626,13 @@ def main() -> None:
     rows: list[dict] = []
     considered = 0
     for _ in range(args.n_queries):
-        # Pinned to ONE predicate: `PrintingCompose`'s own phase reporting doesn't split "build pbits
-        # from the filter" out from "page it" (`ComposePageWork`'s doc: "Compose's arm is not
-        # decomposed into setup/loop/finish... there is nothing to attribute between phases" -- both
-        # land in `ns_loop` as one undivided span). A multi-predicate AND's compose cost can dwarf the
-        # walk itself and swamp any attempt to fit a per-card WALK rate from `ns`. A single predicate
-        # makes that shared cost small and roughly constant instead, so it acts like the intercept in
-        # `WALK_RATE`'s fit rather than dominating its slope.
+        # Pinned to ONE predicate: this used to be required because `PrintingCompose` reported one
+        # undivided `ns_total` span, so a multi-predicate AND's compose cost could dwarf the walk
+        # itself and swamp any attempt to fit a per-card WALK rate from `ns`. `ComposePageWork`'s
+        # `ns_build`/`ns_paging` split (this same session, `card_engine/src/lib.rs`) fixed that at the
+        # source -- `ns_loop` is now the paging branch alone regardless of predicate count. Kept anyway
+        # as the simpler default: single-predicate is still the case this bound targets, and narrowing
+        # the sampler to it costs nothing here.
         query = sampler.query(rng, shape=Shape(predicates=1))
         orderby = rng.choice(ORDERBYS)
         direction = rng.choice(("asc", "desc"))
