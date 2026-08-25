@@ -10,7 +10,7 @@ use super::{
     EXACT_VALUE_TOTALS, RangeCardCounts, narrow_rec, ValueTotals, PairTotals, build_all_value_totals, build_pair_totals, build_range_card_counts, exact_result_total,
     PhysicalPlan, PlanScope, CandidatePlan, ComposePaging, trigram_candidates, finalize_trigram_index, PrintingValueIndex, NARROW_FLOOR,
     gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
-    walk_printing_page, aligned_page, bare_range_bounds, probe_range_k, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
+    walk_printing_page, aligned_page, bare_range_bounds, probe_range_k, printing_compose_fastpath, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
     prepare_candidates, verify_cost_tier, scan_units, sort_col_bound, divergent_formats_of, Mode, QueryCtx, QueryParams, Prefer, SortBound,
     push_card_matches,
     GatherSelect, select_page, GATHER_PRUNE_CHUNK, Match,
@@ -4594,12 +4594,31 @@ fn plan_stats_never_leak_between_participants() {
                             p.ns_setup + p.ns_loop + p.ns_finish > 0,
                             "compose produced a page but published no phase timing, so it prices as zero: {case}",
                         );
+                        let phase_ns = p.ns_setup + p.ns_loop + p.ns_finish;
+                        assert!(
+                            phase_ns <= p.ns_round_total && phase_ns.saturating_mul(2) >= p.ns_round_total,
+                            "compose phases leave more than half the measured round unaccounted: \
+                             phases={phase_ns} round={} {case}",
+                            p.ns_round_total,
+                        );
                         compose_labelled += 1;
                     }
                 }
             }
         }
     }
+
+    // Empty pages have no paging branch, but the build still includes the exact-total calculation
+    // and the empty-page decision. Exercise that exit explicitly: the general coverage sweep uses
+    // offset 0, so it cannot prove the empty path reports build time and zero paging time.
+    let empty_params = kernel_params(Mode::Card, SortCol::EdhrecRank, false, 60, CORPUS_SIZE * 2);
+    let empty_filter = fuzz_bound_filter(specs.last().expect("specs is non-empty"), archived);
+    take_phase_stats();
+    printing_compose_fastpath(&ctx, &empty_params, &empty_filter).expect("PrintingCompose must serve the explicit empty-page case");
+    let empty_phases = take_phase_stats();
+    assert_eq!(empty_phases.paging_taken, PagingTaken::EmptyPage);
+    assert!(empty_phases.ns_setup > 0, "empty compose page omitted its build timing");
+    assert_eq!(empty_phases.ns_loop, 0, "empty compose page reported paging work it never ran");
 
     println!(
         "stat isolation: {silent_checked} uninstrumented-plan runs ({range_labelled} range-labelled), \
