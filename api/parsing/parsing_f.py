@@ -5,9 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from api.parsing.hand_parser import parse_query as _parse_query
+from api.parsing.post_parse import finalize_query
 from api.parsing.query_budget import check_query_byte_length
-from api.parsing.regex_budget import validate_regex_patterns
-from api.parsing.rewrite import rewrite_query
 from api.parsing.spans import QUOTE_CHARS, brace_close_index, find_close_index, opens_regex
 
 if TYPE_CHECKING:
@@ -105,7 +104,4 @@ def parse_scryfall_query(query: str | None) -> Query:
     """
     if query is not None:
         check_query_byte_length(query)
-    parsed = _parse_query(query)
-    rewritten = rewrite_query(parsed)
-    validate_regex_patterns(rewritten)
-    return rewritten
+    return finalize_query(_parse_query(query))

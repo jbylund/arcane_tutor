@@ -1,9 +1,9 @@
 """Post-parse query rewriting: expand derived predicates into subtrees of primitives.
 
-Applied once at the shared parse seam (`parse_scryfall_query`), so both the production
-hand parser and the legacy pyparsing parser get identical treatment: the transform
-operates on the common AST, after parsing and before SQL / Rust-engine serialization
-(`parse => transform => rest`). Nothing parser-specific lives here.
+Applied once at the shared post-parse seam (`post_parse.finalize_query`), so both the
+production hand parser and the legacy pyparsing parser get identical treatment: the
+transform operates on the common AST, after parsing and before SQL / Rust-engine
+serialization (`parse => finalize_query => rest`). Nothing parser-specific lives here.
 
 Each expansion is written as a DSL string and re-parsed with the production parser, so a
 definition is expressed in the same language it targets and stays correct by construction
@@ -316,6 +316,61 @@ def expand_derived_predicates(query: Query) -> Query:
     return flatten_nested_operations(Query(root))
 
 
+def _deduplicate_operand_list(operands: list[QueryNode]) -> list[QueryNode]:
+    """Drop duplicate operands, keeping the first (order-insensitive within one compound)."""
+    unique: list[QueryNode] = []
+    for operand in operands:
+        if not any(operand == existing for existing in unique):
+            unique.append(operand)
+    return unique
+
+
+def _normalize_compound_operands(node: QueryNode) -> tuple[QueryNode, bool]:
+    """Bottom-up flatten, dedupe, and unwrap singleton And/Or nodes."""
+    cls = node.__class__
+    if cls is AndNode or cls is OrNode:
+        changed = False
+        operands: list[QueryNode] = []
+        for operand in node.operands:
+            normalized, operand_changed = _normalize_compound_operands(operand)
+            changed |= operand_changed
+            if isinstance(normalized, cls):
+                operands.extend(normalized.operands)
+                changed = True
+            else:
+                operands.append(normalized)
+        deduped = _deduplicate_operand_list(operands)
+        if len(deduped) != len(operands):
+            changed = True
+        if len(deduped) <= 1:
+            return (deduped[0], True) if deduped else (node, changed)
+        if not changed:
+            return node, False
+        return cls(deduped), True
+    if cls is NotNode:
+        normalized, changed = _normalize_compound_operands(node.operand)
+        return (NotNode(normalized), True) if changed else (node, False)
+    return node, False
+
+
+def flatten_and_deduplicate_compounds(query: Query) -> Query:
+    """Flatten nested AND/OR chains, drop duplicate operands, unwrap singleton compounds.
+
+    Runs after semantic rewrites and regex-budget checks. Child normalization can expose new
+    duplicates at the parent (``AND(AND(a,a), b)``), so iterate flatten+dedupe to a fixpoint.
+    """
+    root = query.root
+    while True:
+        flattened = flatten_nested_operations(root)
+        normalized, changed = _normalize_compound_operands(flattened)
+        if not changed and normalized == flattened:
+            break
+        root = normalized
+    if root is query.root:
+        return query
+    return Query(root)
+
+
 # The post-parse rewrite pipeline, applied in order at the shared parse seam. Add future AST
 # rewrites to this tuple — both parsers call `rewrite_query`, so a new pass lands in exactly one
 # place and is guaranteed identical treatment across parsers (enforced by test_parser_parity).
@@ -330,6 +385,10 @@ def rewrite_query(query: Query) -> Query:
     `expand_derived_predicates` (a synonym may expand into a subtree that itself contains a
     regex or other rewritable leaf), then `lower_literal_regexes`, then any future pass
     appended to `_REWRITE_PASSES`.
+
+    ``flatten_and_deduplicate_compounds`` runs later in ``post_parse.finalize_query`` — after
+    regex-budget validation — so duplicate identical regex leaves still count toward the public
+    leaf limit.
     """
     for rewrite_pass in _REWRITE_PASSES:
         query = rewrite_pass(query)

@@ -1,7 +1,7 @@
 """Query parsing and AST generation for Scryfall search queries."""
 
 from api.parsing.hand_parser import ParseError
-from api.parsing.hand_parser import parse_query as parse_search_query
+from api.parsing.hand_parser import parse_query as parse_query_raw
 from api.parsing.nodes import (
     AndNode,
     AttributeNode,
@@ -39,6 +39,10 @@ __all__ = [
     "TrueNode",
     "balance_partial_query",
     "generate_sql_query",
+    "parse_query_raw",
     "parse_scryfall_query",
     "parse_search_query",
 ]
+
+# Full production pipeline (hand parser → post-parse). Prefer ``parse_scryfall_query``.
+parse_search_query = parse_scryfall_query

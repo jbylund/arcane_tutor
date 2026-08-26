@@ -122,7 +122,7 @@ from api.parsing.db_info import ParserClass
 )
 def test_parse_to_nodes(test_input: str, expected_ast: QueryNode) -> None:
     """Test that queries parse into the expected AST structure."""
-    observed = parsing.parse_search_query(test_input).root
+    observed = parsing.parse_query_raw(test_input).root
 
     # Compare the full AST structure
     assert observed == expected_ast, f"\nExpected: {expected_ast}\nObserved: {observed}"
@@ -131,7 +131,7 @@ def test_parse_to_nodes(test_input: str, expected_ast: QueryNode) -> None:
 def test_parse_simple_condition() -> None:
     """Test parsing a simple condition."""
     query = "cmc:2"
-    result = parsing.parse_search_query(query)
+    result = parsing.parse_query_raw(query)
     expected = BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), ":", NumericValueNode(2))
     assert result.root == expected
 
@@ -139,7 +139,7 @@ def test_parse_simple_condition() -> None:
 def test_parse_and_operation() -> None:
     """Test parsing AND operations."""
     query = "a AND b"
-    result = parsing.parse_search_query(query).root
+    result = parsing.parse_query_raw(query).root
 
     assert result == AndNode(
         [
@@ -152,7 +152,7 @@ def test_parse_and_operation() -> None:
 def test_parse_or_operation() -> None:
     """Test parsing OR operations."""
     query = "a OR b"
-    result = parsing.parse_search_query(query).root
+    result = parsing.parse_query_raw(query).root
     assert result == OrNode(
         [
             BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("a")),
@@ -164,7 +164,7 @@ def test_parse_or_operation() -> None:
 def test_parse_implicit_and() -> None:
     """Test parsing implicit AND operations."""
     query = "a b"
-    result = parsing.parse_search_query(query).root
+    result = parsing.parse_query_raw(query).root
     assert result == AndNode(
         [
             BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("a")),
@@ -176,7 +176,7 @@ def test_parse_implicit_and() -> None:
 def test_parse_complex_nested() -> None:
     """Test parsing complex nested queries."""
     query = "cmc:2 AND (oracle:flying OR oracle:haste)"
-    result = parsing.parse_search_query(query)
+    result = parsing.parse_query_raw(query)
 
     assert isinstance(result, parsing.Query)
     assert isinstance(result.root, AndNode)
@@ -186,7 +186,7 @@ def test_parse_complex_nested() -> None:
 
     # Test with flavor text as well
     query2 = "cmc:3 AND (flavor:magic OR oracle:flying)"
-    result2 = parsing.parse_search_query(query2)
+    result2 = parsing.parse_query_raw(query2)
     assert isinstance(result2, parsing.Query)
     assert isinstance(result2.root, AndNode)
     assert len(result2.root.operands) == 2
@@ -195,7 +195,7 @@ def test_parse_complex_nested() -> None:
 def test_parse_quoted_strings() -> None:
     """Test parsing quoted strings."""
     query = 'name:"Lightning Bolt"'
-    observed_ast = parsing.parse_search_query(query)
+    observed_ast = parsing.parse_query_raw(query)
     expected_ast = BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("Lightning Bolt"))
     assert observed_ast.root == expected_ast
 
@@ -204,19 +204,19 @@ def test_parse_set_searches() -> None:
     """Test parsing set search queries."""
     # Test full 'set:' syntax
     query = "set:iko"
-    result = parsing.parse_search_query(query)
+    result = parsing.parse_query_raw(query)
     expected = BinaryOperatorNode(CardAttributeNode("set", ParserClass.TEXT), ":", StringValueNode("iko"))
     assert result.root == expected
 
     # Test 's:' shorthand
     query = "s:thb"
-    result = parsing.parse_search_query(query)
+    result = parsing.parse_query_raw(query)
     expected = BinaryOperatorNode(CardAttributeNode("s", ParserClass.TEXT), ":", StringValueNode("thb"))
     assert result.root == expected
 
     # Test case insensitivity
     query = "SET:m21"
-    result = parsing.parse_search_query(query)
+    result = parsing.parse_query_raw(query)
     expected = BinaryOperatorNode(CardAttributeNode("SET", ParserClass.TEXT), ":", StringValueNode("m21"))
     assert result.root == expected
 
@@ -227,7 +227,7 @@ def test_parse_different_operators() -> None:
 
     for op in operators:
         query = f"cmc{op}3"
-        result = parsing.parse_search_query(query)
+        result = parsing.parse_query_raw(query)
         expected = BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), op, NumericValueNode(3))
         assert result.root == expected
 
@@ -253,7 +253,7 @@ def _generate_pricing_operator_test_cases() -> list[tuple[str, BinaryOperatorNod
 )
 def test_parse_pricing_operators(test_input: str, expected_ast: BinaryOperatorNode) -> None:
     """Test parsing different comparison operators with pricing attributes."""
-    result = parsing.parse_search_query(test_input)
+    result = parsing.parse_query_raw(test_input)
     assert result.root == expected_ast, f"Failed for {test_input}"
 
 
@@ -261,7 +261,7 @@ def test_parse_combined_pricing_queries() -> None:
     """Test parsing combined queries with pricing attributes."""
     # Test combining pricing with other attributes
     query1 = "cmc<=3 usd<5"
-    result1 = parsing.parse_search_query(query1)
+    result1 = parsing.parse_query_raw(query1)
     expected1 = AndNode(
         [
             BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), "<=", NumericValueNode(3)),
@@ -272,7 +272,7 @@ def test_parse_combined_pricing_queries() -> None:
 
     # Test combining multiple pricing attributes
     query2 = "usd>10 OR eur<5"
-    result2 = parsing.parse_search_query(query2)
+    result2 = parsing.parse_query_raw(query2)
     expected2 = OrNode(
         [
             BinaryOperatorNode(CardAttributeNode("usd", ParserClass.NUMERIC), ">", NumericValueNode(10)),
@@ -288,7 +288,7 @@ def test_parse_combined_pricing_queries() -> None:
 )
 def test_parse_empty_query(query: str | None) -> None:
     """Test that empty/whitespace/None queries produce a TrueNode root."""
-    result = parsing.parse_search_query(query)
+    result = parsing.parse_query_raw(query)
     assert isinstance(result, parsing.Query)
     assert isinstance(result.root, parsing.TrueNode)
 
@@ -297,31 +297,31 @@ def test_name_vs_name_attribute() -> None:
     """Test that we can distinguish between the string 'name' and card names."""
     # This should create a BinaryOperatorNode for "name" (searching for cards with "name" in their name)
     query1 = "name"
-    result1 = parsing.parse_search_query(query1)
+    result1 = parsing.parse_query_raw(query1)
     expected = BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("name"))
     assert result1.root == expected
 
     # This should create a BinaryOperatorNode for name:value (same as bare word "value")
     query2 = "name:value"
-    result2 = parsing.parse_search_query(query2)
+    result2 = parsing.parse_query_raw(query2)
     expected = BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("value"))
     assert result2.root == expected
 
     # This should create a BinaryOperatorNode for cmc operations
     query3 = "cmc:3"
-    result3 = parsing.parse_search_query(query3)
+    result3 = parsing.parse_query_raw(query3)
     expected = BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), ":", NumericValueNode(3))
     assert result3.root == expected
 
     # This should create a BinaryOperatorNode for other attributes
     query4 = "oracle:flying"
-    result4 = parsing.parse_search_query(query4)
+    result4 = parsing.parse_query_raw(query4)
     expected = BinaryOperatorNode(CardAttributeNode("oracle", ParserClass.TEXT), ":", StringValueNode("flying"))
     assert result4.root == expected
 
     # Test flavor text search
     query5 = "flavor:magic"
-    result5 = parsing.parse_search_query(query5)
+    result5 = parsing.parse_query_raw(query5)
     expected = BinaryOperatorNode(CardAttributeNode("flavor", ParserClass.TEXT), ":", StringValueNode("magic"))
     assert result5.root == expected
 
@@ -336,8 +336,8 @@ def test_nary_operator_associativity(operator: str) -> None:
     query1 = f"a {operator} (b {operator} c)"
     query2 = f"(a {operator} b) {operator} c"
 
-    result1 = parsing.parse_search_query(query1)
-    result2 = parsing.parse_search_query(query2)
+    result1 = parsing.parse_query_raw(query1)
+    result2 = parsing.parse_query_raw(query2)
 
     # With n-ary operations, both should now create the same AST structure
     # Both should be: AndNode([a, b, c])
@@ -372,7 +372,7 @@ def test_arithmetic_vs_negation_ambiguity() -> None:
     ]
 
     for query, expected in arithmetic_cases:
-        result = parsing.parse_search_query(query)
+        result = parsing.parse_query_raw(query)
         assert result.root == expected, f"Failed for query: {query}"
 
     # These should be treated as negation (one side is not a known attribute)
@@ -409,7 +409,7 @@ def test_arithmetic_vs_negation_ambiguity() -> None:
     ]
 
     for query, expected in negation_cases:
-        result = parsing.parse_search_query(query)
+        result = parsing.parse_query_raw(query)
         assert result.root == expected, f"Failed for query: {query}"
 
 
@@ -458,7 +458,7 @@ def test_arithmetic_parser_consolidation(query: str, expected_ast: BinaryOperato
     This verifies that after removing redundant rules and consolidating into a single
     unified_numeric_comparison rule, all arithmetic parsing still works correctly.
     """
-    observed = parsing.parse_search_query(query).root
+    observed = parsing.parse_query_raw(query).root
     assert observed == expected_ast, f"Query '{query}' failed\nExpected: {expected_ast}\nObserved: {observed}"
 
 
@@ -547,7 +547,7 @@ def test_standalone_numeric_query_parses() -> None:
 )
 def test_parse_artist_searches(input_query: str, expected_ast: BinaryOperatorNode) -> None:
     """Test parsing artist search queries."""
-    result = parsing.parse_search_query(input_query)
+    result = parsing.parse_query_raw(input_query)
     assert result.root == expected_ast
 
 
@@ -555,7 +555,7 @@ def test_parse_combined_artist_queries() -> None:
     """Test parsing combined queries with artist attributes."""
     # Test combining artist with other attributes
     query1 = "cmc<=3 artist:moeller"
-    result1 = parsing.parse_search_query(query1)
+    result1 = parsing.parse_query_raw(query1)
     expected1 = AndNode(
         [
             BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), "<=", NumericValueNode(3)),
@@ -566,7 +566,7 @@ def test_parse_combined_artist_queries() -> None:
 
     # Test combining multiple text attributes including artist
     query2 = "name:lightning OR artist:moeller"
-    result2 = parsing.parse_search_query(query2)
+    result2 = parsing.parse_query_raw(query2)
     expected2 = OrNode(
         [
             BinaryOperatorNode(CardAttributeNode("name", ParserClass.TEXT), ":", StringValueNode("lightning")),
@@ -612,7 +612,7 @@ def test_parse_combined_artist_queries() -> None:
 )
 def test_parse_legality_searches(test_input: str, expected_ast: QueryNode) -> None:
     """Test that legality search queries parse to expected AST nodes."""
-    result = parsing.parse_search_query(test_input)
+    result = parsing.parse_query_raw(test_input)
     assert result.root == expected_ast
 
 
@@ -620,7 +620,7 @@ def test_parse_combined_legality_queries() -> None:
     """Test parsing of complex queries combining legality searches."""
     # Test AND combination
     query1 = "format:standard banned:modern"
-    result1 = parsing.parse_search_query(query1)
+    result1 = parsing.parse_query_raw(query1)
     expected1 = AndNode(
         [
             BinaryOperatorNode(CardAttributeNode("format", ParserClass.LEGALITY), ":", StringValueNode("standard")),
@@ -631,7 +631,7 @@ def test_parse_combined_legality_queries() -> None:
 
     # Test OR combination
     query2 = "legal:legacy or restricted:vintage"
-    result2 = parsing.parse_search_query(query2)
+    result2 = parsing.parse_query_raw(query2)
     expected2 = OrNode(
         [
             BinaryOperatorNode(CardAttributeNode("legal", ParserClass.LEGALITY), ":", StringValueNode("legacy")),
@@ -665,7 +665,7 @@ def test_parse_combined_legality_queries() -> None:
 )
 def test_parse_collector_number_searches(test_input: str, expected_ast: BinaryOperatorNode) -> None:
     """Test parsing of collector number searches with various aliases and formats."""
-    observed = parsing.parse_search_query(test_input)
+    observed = parsing.parse_query_raw(test_input)
     assert observed.root == expected_ast
 
 
@@ -673,7 +673,7 @@ def test_parse_combined_collector_number_queries() -> None:
     """Test parsing of complex queries combining collector number searches."""
     # Test AND combination
     query1 = "number:123 set:dom"
-    result1 = parsing.parse_search_query(query1)
+    result1 = parsing.parse_query_raw(query1)
     expected1 = AndNode(
         [
             BinaryOperatorNode(CardAttributeNode("number", ParserClass.NUMERIC), ":", NumericValueNode(123)),
@@ -684,7 +684,7 @@ def test_parse_combined_collector_number_queries() -> None:
 
     # Test OR combination
     query2 = "cn:1 or cn:2"
-    result2 = parsing.parse_search_query(query2)
+    result2 = parsing.parse_query_raw(query2)
     expected2 = OrNode(
         [
             BinaryOperatorNode(CardAttributeNode("cn", ParserClass.NUMERIC), ":", NumericValueNode(1)),
@@ -752,7 +752,7 @@ def test_parse_combined_collector_number_queries() -> None:
 )
 def test_parse_mixed_mana_notation(test_input: str, expected_ast: BinaryOperatorNode) -> None:
     """Test parsing mana cost searches with mixed notation (per Scryfall rules)."""
-    observed = parsing.parse_search_query(test_input)
+    observed = parsing.parse_query_raw(test_input)
     assert observed.root == expected_ast
 
 
@@ -760,7 +760,7 @@ def test_parse_combined_mana_queries() -> None:
     """Test parsing combined queries with mana cost searches."""
     # Test combining mana with other attributes
     query1 = "cmc<=3 mana:{1}{G}"
-    result1 = parsing.parse_search_query(query1)
+    result1 = parsing.parse_query_raw(query1)
     expected1 = parsing.AndNode(
         [
             BinaryOperatorNode(CardAttributeNode("cmc", ParserClass.NUMERIC), "<=", NumericValueNode(3)),
@@ -771,7 +771,7 @@ def test_parse_combined_mana_queries() -> None:
 
     # Test combining multiple mana attributes
     query2 = "mana:{W} OR m:{U}"
-    result2 = parsing.parse_search_query(query2)
+    result2 = parsing.parse_query_raw(query2)
     expected2 = parsing.OrNode(
         [
             BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("{W}")),
@@ -783,7 +783,7 @@ def test_parse_combined_mana_queries() -> None:
 
 def test_parse_quoted_mana_value() -> None:
     """A quoted mana value validates the same as an unquoted one, not an opt-out of that check."""
-    observed = parsing.parse_search_query('mana:"2WW"')
+    observed = parsing.parse_query_raw('mana:"2WW"')
     expected = BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("2WW"))
     assert observed.root == expected
 
@@ -791,20 +791,20 @@ def test_parse_quoted_mana_value() -> None:
 def test_quoted_invalid_mana_symbol_is_rejected() -> None:
     """'mana:"q"' used to skip validation entirely and resolve to an empty cost, matching every card."""
     with pytest.raises(ValueError, match="Failed to parse query"):
-        parsing.parse_search_query('mana:"q"')
+        parsing.parse_query_raw('mana:"q"')
 
 
 def test_mana_cost_with_comparison_operators() -> None:
     """Test that mana cost searches work with different operators."""
     # Test colon operator (most common)
     query1 = "mana:{1}{G}"
-    result1 = parsing.parse_search_query(query1)
+    result1 = parsing.parse_query_raw(query1)
     expected1 = BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ":", parsing.ManaValueNode("{1}{G}"))
     assert result1.root == expected1
 
     # Test equals operator
     query2 = "m={W}{U}"
-    result2 = parsing.parse_search_query(query2)
+    result2 = parsing.parse_query_raw(query2)
     expected2 = BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), "=", parsing.ManaValueNode("{W}{U}"))
     assert result2.root == expected2
 
@@ -820,8 +820,8 @@ def test_mana_cost_with_comparison_operators() -> None:
 )
 def test_mana_symbol_case_insensitivity(lowercase_query: str, uppercase_query: str) -> None:
     """Test that mana symbols like {x} and {X} parse to the same AST."""
-    lowercase_result = parsing.parse_search_query(lowercase_query)
-    uppercase_result = parsing.parse_search_query(uppercase_query)
+    lowercase_result = parsing.parse_query_raw(lowercase_query)
+    uppercase_result = parsing.parse_query_raw(uppercase_query)
 
     # Both should parse to the same AST structure
     assert lowercase_result == uppercase_result, (
@@ -836,25 +836,25 @@ def test_mana_cost_approximate_comparisons() -> None:
     """Test mana cost approximate comparisons with <, <=, >, >= operators."""
     # Test <= operator - use regular parser for AST structure validation
     query1 = "mana<={2}{R}{R}"
-    result1 = parsing.parse_search_query(query1)
+    result1 = parsing.parse_query_raw(query1)
     expected1 = BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), "<=", parsing.ManaValueNode("{2}{R}{R}"))
     assert result1.root == expected1
 
     # Test < operator
     query2 = "m<{1}{G}"
-    result2 = parsing.parse_search_query(query2)
+    result2 = parsing.parse_query_raw(query2)
     expected2 = BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), "<", parsing.ManaValueNode("{1}{G}"))
     assert result2.root == expected2
 
     # Test >= operator (parsing test)
     query3 = "mana>={W}{U}"
-    result3 = parsing.parse_search_query(query3)
+    result3 = parsing.parse_query_raw(query3)
     expected3 = BinaryOperatorNode(CardAttributeNode("mana", ParserClass.MANA), ">=", parsing.ManaValueNode("{W}{U}"))
     assert result3.root == expected3
 
     # Test > operator
     query4 = "m>{0}"
-    result4 = parsing.parse_search_query(query4)
+    result4 = parsing.parse_query_raw(query4)
     expected4 = BinaryOperatorNode(CardAttributeNode("m", ParserClass.MANA), ">", parsing.ManaValueNode("{0}"))
     assert result4.root == expected4
 
@@ -1005,7 +1005,7 @@ def test_mana_cost_dict_conversion(mana_cost_str: str, expected_dict: dict) -> N
 )
 def test_parse_devotion_searches(test_input: str, expected_ast: BinaryOperatorNode) -> None:
     """Test parsing devotion searches with various operators."""
-    observed = parsing.parse_search_query(test_input)
+    observed = parsing.parse_query_raw(test_input)
     assert observed.root == expected_ast
 
 
@@ -1088,7 +1088,7 @@ def test_mana_cost_string_format_comparisons(query: str, description: str) -> No
 )
 def test_parse_produces_searches(test_input: str, expected_ast: BinaryOperatorNode) -> None:
     """Test parsing of produces searches for mana production."""
-    observed = parsing.parse_search_query(test_input)
+    observed = parsing.parse_query_raw(test_input)
     assert observed.root == expected_ast
 
 
@@ -1096,7 +1096,7 @@ def test_parse_combined_produces_queries() -> None:
     """Test parsing of complex queries combining produces searches."""
     # Test combining produces with other attributes
     query1 = "produces:g type:land"
-    result1 = parsing.parse_search_query(query1)
+    result1 = parsing.parse_query_raw(query1)
     expected1 = parsing.AndNode(
         [
             BinaryOperatorNode(CardAttributeNode("produces", ParserClass.COLOR), ":", StringValueNode("g")),
@@ -1107,7 +1107,7 @@ def test_parse_combined_produces_queries() -> None:
 
     # Test OR with produces
     query2 = "produces:w OR produces:u"
-    result2 = parsing.parse_search_query(query2)
+    result2 = parsing.parse_query_raw(query2)
     expected2 = parsing.OrNode(
         [
             BinaryOperatorNode(CardAttributeNode("produces", ParserClass.COLOR), ":", StringValueNode("w")),
@@ -1118,7 +1118,7 @@ def test_parse_combined_produces_queries() -> None:
 
     # Test produces with comparison operators
     query3 = "produces=wu"
-    result3 = parsing.parse_search_query(query3)
+    result3 = parsing.parse_query_raw(query3)
     expected3 = BinaryOperatorNode(CardAttributeNode("produces", ParserClass.COLOR), "=", StringValueNode("wu"))
     assert result3.root == expected3
 
@@ -1232,7 +1232,7 @@ def test_parse_hyphenated_words(test_input: str, expected_ast: QueryNode) -> Non
     - Complex hyphenated terms with multiple hyphens
     - Integration with other query features
     """
-    observed = parsing.parse_search_query(test_input).root
+    observed = parsing.parse_query_raw(test_input).root
 
     # Compare the full AST structure
     assert observed == expected_ast, f"\nExpected: {expected_ast}\nObserved: {observed}"
@@ -1256,4 +1256,4 @@ def test_hyphenated_words_edge_cases_fail(invalid_query: str) -> None:
       trailing hyphens since they use string_value_word which accepts any hyphen placement.
     """
     with pytest.raises(ValueError, match="Failed to parse query"):
-        parsing.parse_search_query(invalid_query)
+        parsing.parse_query_raw(invalid_query)
