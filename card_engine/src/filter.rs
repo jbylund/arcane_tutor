@@ -1,5 +1,5 @@
 use memchr::memmem;
-use fancy_regex::Regex;
+use fancy_regex::{Error as FancyError, Regex};
 use serde_json::Value;
 use super::{AOracleCard, APrinting, AStrings, str_at, mana_lane, lane_add, lanes_ge, LANES6_HI, LANES8_HI, mana_pip_counts, mana_cmc, color_list_to_mask, card_type_str_to_bit, trigram_candidates, trigram_min_posting, ARTIST_NONE, NONE_STR, FlavorIndex, NameBigramIndex, OracleTextIndex, SortedTrigramIndex, flavor_fingerprint, flavor_match_sets};
 use super::legality::{LEGALITY_LEGAL, LEGALITY_BANNED, LEGALITY_RESTRICTED, format_shift};
@@ -10,6 +10,9 @@ pub(crate) const REGEX_BACKTRACK_LIMIT: usize = 8192;
 /// Prefix on `build_filter` errors that must surface as `UnsupportedRegexError`, not `RetryableQueryError`.
 pub(crate) const REGEX_COMPILE_ERR_PREFIX: &str = "regex_compile:";
 
+/// Prefix on runtime regex match failures (`is_match` backtrack exhaustion, etc.).
+pub(crate) const REGEX_MATCH_ERR_PREFIX: &str = "regex_match:";
+
 pub(crate) fn compile_search_regex(pattern: &str) -> Result<Regex, String> {
     fancy_regex::RegexBuilder::new(&format!("(?i){pattern}"))
         .backtrack_limit(REGEX_BACKTRACK_LIMIT)
@@ -17,8 +20,46 @@ pub(crate) fn compile_search_regex(pattern: &str) -> Result<Regex, String> {
         .map_err(|e| format!("{REGEX_COMPILE_ERR_PREFIX}{e}"))
 }
 
+use std::cell::Cell;
+
+thread_local! {
+    static REGEX_MATCH_FAILED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Reset before bind/evaluate so a prior query on this thread cannot poison the next.
+pub(crate) fn clear_regex_match_failed() {
+    REGEX_MATCH_FAILED.with(|c| c.set(false));
+}
+
+/// Take and clear the failure flag; `Some(message)` when a match aborted at runtime.
+pub(crate) fn take_regex_match_failed() -> Option<String> {
+    REGEX_MATCH_FAILED.with(|c| {
+        if c.get() {
+            c.set(false);
+            Some(format!("{REGEX_MATCH_ERR_PREFIX}regex execution limit exceeded"))
+        } else {
+            None
+        }
+    })
+}
+
 fn regex_is_match(re: &Regex, hay: &str) -> bool {
-    re.is_match(hay).unwrap_or(false)
+    if REGEX_MATCH_FAILED.with(|c| c.get()) {
+        return false;
+    }
+    match re.is_match(hay) {
+        Ok(m) => m,
+        Err(e) if matches!(e, FancyError::RuntimeError(_)) => {
+            REGEX_MATCH_FAILED.with(|c| c.set(true));
+            false
+        }
+        Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn regex_is_match_for_test(re: &Regex, hay: &str) -> bool {
+    regex_is_match(re, hay)
 }
 
 #[cfg(test)]
@@ -1356,6 +1397,9 @@ impl FilterExpr {
         residual: &[&FilterExpr],
         residual_is_or: bool,
     ) -> bool {
+        if REGEX_MATCH_FAILED.with(|c| c.get()) {
+            return false;
+        }
         if residual_is_or {
             residual.iter().any(|c| c.tri(card, Some(printing), strings) == Tri::True)
         } else {

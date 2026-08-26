@@ -10358,6 +10358,24 @@ fn regex_tier_classifies_pattern_shapes() {
     assert_eq!(regex_tier("(?<=draw )a card"), REGEX_BACKTRACK_NS100);
 }
 
+#[test]
+fn regex_backtrack_exhaustion_surfaces_as_match_failure() {
+    use crate::filter::{
+        clear_regex_match_failed, regex_is_match_for_test, take_regex_match_failed, REGEX_MATCH_ERR_PREFIX,
+    };
+    use fancy_regex::RegexBuilder;
+
+    clear_regex_match_failed();
+    let re = RegexBuilder::new("(?i)(?=a)(a+)+b")
+        .backtrack_limit(8)
+        .build()
+        .expect("pattern compiles");
+    let hay = format!("{}c", "a".repeat(40));
+    assert!(!regex_is_match_for_test(&re, &hay));
+    let msg = take_regex_match_failed().expect("backtrack exhaustion must set failure flag");
+    assert!(msg.starts_with(REGEX_MATCH_ERR_PREFIX));
+}
+
 // And children reorder cheapest-tier-first regardless of written order, and
 // equal-tier children keep their written order (stable sort).
 #[test]

@@ -11986,6 +11986,18 @@ fn map_build_filter_err(err: String) -> PyErr {
     }
 }
 
+fn map_regex_match_err(msg: String) -> PyErr {
+    let detail = msg.strip_prefix(REGEX_MATCH_ERR_PREFIX).unwrap_or(&msg);
+    UnsupportedRegexError::new_err(detail.to_string())
+}
+
+fn check_regex_match_failed() -> PyResult<()> {
+    if let Some(msg) = take_regex_match_failed() {
+        return Err(map_regex_match_err(msg));
+    }
+    Ok(())
+}
+
 fn bind_and_split_filter(
     py: Python<'_>,
     filters: &Bound<PyAny>,
@@ -12006,8 +12018,10 @@ fn bind_and_split_filter(
     // Must run before build_filter so legality shifts resolve in workers that
     // never executed the load path themselves.
     sync_format_shifts(&data.format_shifts);
+    clear_regex_match_failed();
     let mut filter_expr = build_filter(&json_val).map_err(map_build_filter_err)?;
     filter_expr.bind(&data.coll_vocab, &data.coll_vocab_sorted, &data.artist_vocab, &data.mana_vocab, &data.indexes.flavor, &data.strings);
+    check_regex_match_failed()?;
 
     // Read before the split consumes the tree.
     let sort_bound = sort_col_bound(&filter_expr, sort_col);
@@ -12639,6 +12653,7 @@ impl QueryEngine {
         // the params: `from_strs` is still the single interpretation of the four strings.
         let (total, page) =
             run_query_routed(&ctx, &params.with_sort_bound(sort_bound), &mut filter_expr, Some(&unsplit), plane_expr.as_ref());
+        check_regex_match_failed()?;
 
         let matches: Vec<Bound<PyDict>> = page
             .iter()
@@ -12734,6 +12749,7 @@ impl QueryEngine {
         let ctx = QueryCtx::from(data);
         let params = params.with_sort_bound(sort_bound);
         let (facts, trials) = py.detach(|| explain_analyze(&ctx, &params, &filter_expr, Some(&unsplit), plane_expr.as_ref(), num_warmups, num_trials));
+        check_regex_match_failed()?;
 
         let rows: Vec<Bound<PyDict>> = trials.iter().map(|t| plan_trial_to_pydict(py, t)).collect::<PyResult<Vec<_>>>()?;
         let out = PyDict::new(py);
