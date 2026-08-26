@@ -70,9 +70,13 @@ def _check_pattern(pattern: str) -> None:
 
     try:
         parsed = sre_parser.parse(pattern, re.IGNORECASE)
-    except re.error:
-        # Stacked `{n}{n}`, backrefs the parser rejects, and other ill-formed patterns.
-        raise QueryBudgetExceeded(kind="regex_pattern") from None
+    except re.error as exc:
+        # Stacked `{n}{n}` is a compile-bomb shape we reject statically. Other parse failures
+        # (unclosed classes, half-typed typeahead like `^[[`, ...) are left to engine/SQL —
+        # Postgres accepts patterns Python's parser rejects.
+        if "multiple repeat" in str(exc):
+            raise QueryBudgetExceeded(kind="regex_pattern") from None
+        return
 
     metrics = _analyze_pattern(parsed)
     if metrics.backreferences > 0:

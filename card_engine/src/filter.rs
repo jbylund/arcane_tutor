@@ -49,7 +49,7 @@ fn regex_is_match(re: &Regex, hay: &str) -> bool {
     }
     match re.is_match(hay) {
         Ok(m) => m,
-        Err(e) if matches!(e, FancyError::RuntimeError(_)) => {
+        Err(FancyError::RuntimeError(_)) => {
             REGEX_MATCH_FAILED.with(|c| c.set(true));
             false
         }
