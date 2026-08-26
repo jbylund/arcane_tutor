@@ -155,13 +155,8 @@ BOOLEAN_IS_TAGS: dict[str, str] = {
 }
 
 
-def _build_boolean_is_tags_sql(
-    tags: dict[str, str],
-    *,
-    chunk_index: int | None = None,
-    num_chunks: int | None = None,
-) -> str:
-    """Build a BOOLEAN_IS_TAGS sync statement from `tags`, optionally scoped to one chunk.
+def _build_boolean_is_tags_sql(tags: dict[str, str]) -> str:
+    """Build a BOOLEAN_IS_TAGS sync statement from `tags`.
 
     Each `(tag, expr)` pair becomes one ``jsonb_build_object`` entry: ``expr`` reads the
     outer `cards` row (`cards.raw_card_blob`, `cards.mana_cost_text`, etc.), so it may be
@@ -172,25 +167,10 @@ def _build_boolean_is_tags_sql(
     expressions as literal SQL text here (rather than binding them as query parameters, which
     can't carry per-tag SQL syntax anyway) is safe.
 
-    When `chunk_index` and `num_chunks` are set, only cards whose ``hashtext(scryfall_id)``
-    falls in that slice are scanned -- keeping each import-time sync under statement_timeout
-    as the corpus and tag list grow.
+    Callers pass ``num_chunks`` and ``chunk_index`` as query parameters. Use
+    ``num_chunks=1, chunk_index=0`` to scan the whole corpus; otherwise only cards whose
+    ``hashtext(scryfall_id)`` falls in that slice are touched.
     """
-    chunk_filter = ""
-    if chunk_index is not None or num_chunks is not None:
-        if chunk_index is None or num_chunks is None:
-            msg = "chunk_index and num_chunks must both be set or both omitted"
-            raise ValueError(msg)
-        if num_chunks < 1:
-            msg = f"num_chunks must be >= 1, got {num_chunks}"
-            raise ValueError(msg)
-        if not 0 <= chunk_index < num_chunks:
-            msg = f"chunk_index must be in [0, {num_chunks}), got {chunk_index}"
-            raise ValueError(msg)
-        chunk_filter = (
-            f"\n    WHERE (abs(hashtext(cards.scryfall_id::text)) % {num_chunks}) = {chunk_index}"
-        )
-
     managed = ", ".join(f"'{tag}'" for tag in tags)
     object_entries = ",\n            ".join(
         f"'{tag}', CASE WHEN ({expr}) THEN true END" for tag, expr in tags.items()
@@ -205,7 +185,8 @@ WITH proposed AS (
             {object_entries}
                 )
             ) AS proposed_is_tags
-    FROM magic.cards cards{chunk_filter}
+    FROM magic.cards cards
+    WHERE (abs(hashtext(cards.scryfall_id::text)) %% %(num_chunks)s) = %(chunk_index)s
 )
 UPDATE magic.cards
 SET card_is_tags = proposed.proposed_is_tags
@@ -834,14 +815,15 @@ class AdminResource:
 
         """
         updated_count = 0
+        sync_sql = _build_boolean_is_tags_sql(BOOLEAN_IS_TAGS)
         with conn.cursor() as cursor:
             for chunk_index in range(_BOOLEAN_IS_TAGS_SYNC_CHUNK_COUNT):
                 cursor.execute(
-                    _build_boolean_is_tags_sql(
-                        BOOLEAN_IS_TAGS,
-                        chunk_index=chunk_index,
-                        num_chunks=_BOOLEAN_IS_TAGS_SYNC_CHUNK_COUNT,
-                    ),
+                    sync_sql,
+                    {
+                        "num_chunks": _BOOLEAN_IS_TAGS_SYNC_CHUNK_COUNT,
+                        "chunk_index": chunk_index,
+                    },
                 )
                 updated_count += cursor.rowcount
                 conn.commit()

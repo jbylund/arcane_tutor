@@ -68,24 +68,16 @@ class TestUpsertCardsStatus:
 
 
 class TestBuildBooleanIsTagsSql:
-    """_build_boolean_is_tags_sql emits hash-scoped chunk filters when requested."""
+    """_build_boolean_is_tags_sql always binds chunk scope via query parameters."""
 
-    def test_unscoped_sql_scans_all_cards(self) -> None:
+    def test_sql_uses_bound_chunk_parameters(self) -> None:
         sql = _build_boolean_is_tags_sql({"reserved": "cards.raw_card_blob->'reserved' = 'true'::jsonb"})
         assert "jsonb_build_object" in sql
         assert "jsonb_strip_nulls" in sql
-        assert "FROM magic.cards cards\n)" in sql
-        assert "hashtext" not in sql
-        assert "jsonb_object_agg" not in sql
-
-    def test_chunk_filter_scopes_by_scryfall_id_hash(self) -> None:
-        sql = _build_boolean_is_tags_sql(
-            {"reserved": "cards.raw_card_blob->'reserved' = 'true'::jsonb"},
-            chunk_index=2,
-            num_chunks=4,
-        )
         assert "hashtext(cards.scryfall_id::text)" in sql
-        assert "% 4) = 2" in sql
+        assert "%(num_chunks)s" in sql
+        assert "%(chunk_index)s" in sql
+        assert "jsonb_object_agg" not in sql
 
 
 def _is_tags_for(api_resource: APIResource, scryfall_id: str) -> dict:
