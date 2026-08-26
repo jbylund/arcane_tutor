@@ -92,9 +92,8 @@ _UPSERT_PAGE_SIZE = 3_000
 
 # BOOLEAN_IS_TAGS sync runs once per import over the whole corpus, evaluating every
 # managed expression per row. Chunk by scryfall_id hash so each statement stays within
-# the import's statement_timeout; the per-chunk timeout is raised separately below.
+# the import's statement_timeout as the tag list grows.
 _BOOLEAN_IS_TAGS_SYNC_CHUNK_COUNT = 4
-_BOOLEAN_IS_TAGS_SYNC_TIMEOUT_MS = 60_000
 
 # is: values derivable from a single boolean SQL expression against a card's own row,
 # synced in chunked set-based statements after each import (see _sync_boolean_is_tags) -- no
@@ -822,8 +821,8 @@ class AdminResource:
         -- so list churn (a card entering or leaving the game-changer roster) converges on
         every import, and unrelated card_is_tags entries are never disturbed.
 
-        The sync is split into hash-scoped chunks so each statement stays within
-        ``_BOOLEAN_IS_TAGS_SYNC_TIMEOUT_MS`` even as the corpus grows.
+        The sync is split into hash-scoped chunks so each statement stays within the
+        import's statement_timeout even as the corpus grows.
 
         Args:
         ----
@@ -836,7 +835,6 @@ class AdminResource:
         """
         updated_count = 0
         with conn.cursor() as cursor:
-            db_utils.set_statement_timeout(cursor, _BOOLEAN_IS_TAGS_SYNC_TIMEOUT_MS)
             for chunk_index in range(_BOOLEAN_IS_TAGS_SYNC_CHUNK_COUNT):
                 cursor.execute(
                     _build_boolean_is_tags_sql(
