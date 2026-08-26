@@ -10342,7 +10342,7 @@ fn machinery_regex() -> FilterExpr {
 // shares REGEX_MACHINERY_NS100.
 #[test]
 fn regex_tier_classifies_pattern_shapes() {
-    use super::{regex_tier, REGEX_MACHINERY_NS100, SET_LOOKUP_NS100};
+    use super::{regex_tier, REGEX_BACKTRACK_NS100, REGEX_MACHINERY_NS100, SET_LOOKUP_NS100};
     assert_eq!(regex_tier("(?i)^flying$"), SET_LOOKUP_NS100);
     assert_eq!(regex_tier("dragon$"), SET_LOOKUP_NS100);
     assert_eq!(regex_tier("(?i)^\\{t\\}: add"), SET_LOOKUP_NS100, "escaped punctuation is literal");
@@ -10353,6 +10353,9 @@ fn regex_tier_classifies_pattern_shapes() {
     assert_eq!(regex_tier("(?i)^\\d+$"), REGEX_MACHINERY_NS100, "class escapes are machinery");
     assert_eq!(regex_tier("a|b"), REGEX_MACHINERY_NS100);
     assert_eq!(regex_tier("ends with backslash\\"), REGEX_MACHINERY_NS100, "dangling escape: not literal");
+    assert_eq!(regex_tier("(?i)draw (?!two)"), REGEX_BACKTRACK_NS100);
+    assert_eq!(regex_tier("(?=.*sacrifice)draw"), REGEX_BACKTRACK_NS100);
+    assert_eq!(regex_tier("(?<=draw )a card"), REGEX_BACKTRACK_NS100);
 }
 
 // And children reorder cheapest-tier-first regardless of written order, and
@@ -10372,6 +10375,20 @@ fn verify_order_sorts_and_children_cheap_first() {
     assert!(matches!(children[2], FilterExpr::TypeCmp { .. }));
     assert!(matches!(children[3], FilterExpr::TextContains { .. }));
     assert!(matches!(children[4], FilterExpr::TextRegex { .. }));
+}
+
+#[test]
+fn verify_order_puts_lookaround_regex_last() {
+    let lookaround = FilterExpr::TextRegex {
+        field: TextField::OracleTextLower,
+        regex: crate::filter::compile_search_regex_for_test("draw (?!two)"),
+    };
+    let mut f = FilterExpr::And(vec![lookaround, contains_scan(), type_mask()]);
+    f.order_children_by_verify_cost(&mut 0);
+    let FilterExpr::And(children) = &f else { panic!("still an And") };
+    assert!(matches!(children[0], FilterExpr::TypeCmp { .. }));
+    assert!(matches!(children[1], FilterExpr::TextContains { .. }));
+    assert!(matches!(children[2], FilterExpr::TextRegex { .. }));
 }
 
 // Within the memoized-set tier, And children refine to ascending set size

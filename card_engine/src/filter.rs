@@ -627,6 +627,13 @@ pub(crate) const TEXT_SCAN_NS100: u32 = 2_300;
 ///   left as a known conservative overestimate, not fixed here (would need a
 ///   regex_tier() classification change, not just a constant recalibration).
 pub(crate) const REGEX_MACHINERY_NS100: u32 = 5_000;
+/// - fancy-regex lookarounds / backrefs / conditionals: measured 89–430×
+///   REGEX_MACHINERY on the text corpus for PR-907-shaped patterns
+///   (`bench_regex_backtrack_tier`, 2026-08; e.g. `draw (?!two)` ~2.1 µs/card vs
+///   `draw .* cards?` ~24 ns/card). Deliberately dwarfs machinery so And reordering
+///   runs cheap predicates first; `(?=.*…)` shapes can cost more still — the tier
+///   prices ordering, not worst-case plan latency.
+pub(crate) const REGEX_BACKTRACK_NS100: u32 = 380_000;
 
 /// Per-candidate verification cost of a node in the tri walk. Composites take
 /// the max of their children: their short-circuit may have to evaluate every
@@ -691,8 +698,14 @@ pub(crate) fn verify_cost_tier(f: &FilterExpr) -> u32 {
 ///   REGEX_MACHINERY_NS100 — everything else: bare literal (measured the
 ///                         same cost as live metacharacters, not the same as
 ///                         TextContains — see REGEX_MACHINERY_NS100's doc)
+///   REGEX_BACKTRACK_NS100 — lookarounds and other fancy-regex backtracking
+///                         features (see bench_regex_backtrack_tier)
 pub(crate) fn regex_tier(pattern: &str) -> u32 {
-    let mut p = pattern.strip_prefix("(?i)").unwrap_or(pattern);
+    let p = pattern.strip_prefix("(?i)").unwrap_or(pattern);
+    if pattern_requires_backtrack(p) {
+        return REGEX_BACKTRACK_NS100;
+    }
+    let mut p = p;
     let anchored_start = p.starts_with('^');
     if anchored_start {
         p = &p[1..];
@@ -717,6 +730,40 @@ pub(crate) fn regex_tier(pattern: &str) -> u32 {
         }
     }
     if anchored_start || anchored_end { SET_LOOKUP_NS100 } else { REGEX_MACHINERY_NS100 }
+}
+
+/// True when *pattern* needs fancy-regex's backtracking VM (lookarounds, etc.).
+pub(crate) fn pattern_requires_backtrack(pattern: &str) -> bool {
+    const LOOKAROUNDS: &[&str] = &["(?=", "(?!", "(?<=", "(?<!"];
+    let bytes = pattern.as_bytes();
+    let mut in_class = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'[' => in_class = true,
+            b']' if in_class => in_class = false,
+            b'(' if !in_class && i + 1 < bytes.len() && bytes[i + 1] == b'?' => {
+                let rest = &pattern[i..];
+                if LOOKAROUNDS.iter().any(|tok| rest.starts_with(tok)) {
+                    return true;
+                }
+                if rest.starts_with("(?>") || rest.starts_with("(?(") {
+                    return true;
+                }
+            }
+            b'\\' if !in_class && i + 1 < bytes.len() => {
+                let nxt = bytes[i + 1];
+                if (b'1'..=b'9').contains(&nxt) || matches!(nxt, b'g' | b'G' | b'k' | b'K') {
+                    return true;
+                }
+                i += 1;
+            }
+            _ if !in_class && pattern[i..].starts_with("(?P=") => return true,
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Whether a node can NEVER settle the card-level pass — it compares only
