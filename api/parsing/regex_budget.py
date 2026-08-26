@@ -39,7 +39,9 @@ class _PatternMetrics:
     lookarounds: int = 0
     alternations: int = 0
     backreferences: int = 0
+    conditionals: int = 0
     quantifier_bounds: tuple[tuple[int, int], ...] = ()
+    max_explicit_repeat: int = 1
 
 
 def check_regex_cost(query: Query) -> None:
@@ -80,7 +82,7 @@ def _collect_regex_patterns(node: QueryNode) -> list[str]:
         return out
     if isinstance(node, NotNode):
         return _collect_regex_patterns(node.operand)
-    if isinstance(node, BinaryOperatorNode) and node.operator == ":" and isinstance(node.rhs, RegexValueNode):
+    if isinstance(node, BinaryOperatorNode) and isinstance(node.rhs, RegexValueNode):
         return [node.rhs.value]
     return []
 
@@ -96,7 +98,9 @@ def _check_pattern_budget(pattern: str) -> None:
         return
 
     metrics = _analyze_pattern(parsed)
-    if metrics.backreferences > 0:
+    if metrics.backreferences > 0 or metrics.conditionals > 0:
+        raise QueryBudgetExceeded(kind="regex_pattern")
+    if metrics.max_explicit_repeat > MAX_QUANTIFIER_BOUND:
         raise QueryBudgetExceeded(kind="regex_pattern")
     if metrics.lookarounds > MAX_LOOKAROUNDS_PER_PATTERN:
         raise QueryBudgetExceeded(kind="regex_pattern")
@@ -115,7 +119,9 @@ def _analyze_pattern(code: list[tuple[int, object]], *, depth: int = 1) -> _Patt
     lookarounds = 0
     alternations = 0
     backreferences = 0
+    conditionals = 0
     quantifier_bounds: list[tuple[int, int]] = []
+    max_explicit_repeat = 1
 
     for op, av in code:
         if op is sre.LITERAL:
@@ -123,6 +129,7 @@ def _analyze_pattern(code: list[tuple[int, object]], *, depth: int = 1) -> _Patt
         nodes += 1
         child_depth = depth + 1 if op not in (sre.AT,) else depth
         sub: _PatternMetrics | None = None
+        local_max_explicit_repeat = 1
 
         if op in (sre.ASSERT, sre.ASSERT_NOT):
             lookarounds += 1
@@ -133,11 +140,25 @@ def _analyze_pattern(code: list[tuple[int, object]], *, depth: int = 1) -> _Patt
             sub = _merge_metrics(*(_analyze_pattern(branch, depth=child_depth) for branch in branches))
         elif op is sre.GROUPREF:
             backreferences += 1
+        elif op is sre.GROUPREF_EXISTS:
+            conditionals += 1
+            _group_ref, if_branch, else_branch = av
+            branches = [if_branch]
+            if else_branch is not None:
+                branches.append(else_branch)
+            sub = _merge_metrics(*(_analyze_pattern(branch, depth=child_depth) for branch in branches))
         elif op in (sre.MAX_REPEAT, sre.MIN_REPEAT):
-            quantifier_bounds.append((av[0], av[1]))
+            lower, upper = av[0], av[1]
+            quantifier_bounds.append((lower, upper))
             sub = _analyze_pattern(av[-1], depth=child_depth)
-        elif op in (sre.SUBPATTERN, sre.GROUPREF_EXISTS):
+            if _explicit_numeric_quantifier(lower, upper):
+                factor = upper if upper != sre.MAXREPEAT else lower
+                local_max_explicit_repeat = factor * sub.max_explicit_repeat
+            else:
+                local_max_explicit_repeat = sub.max_explicit_repeat
+        elif op is sre.SUBPATTERN:
             sub = _analyze_pattern(av[-1], depth=child_depth)
+            local_max_explicit_repeat = sub.max_explicit_repeat
 
         if sub is not None:
             nodes += sub.nodes
@@ -145,7 +166,12 @@ def _analyze_pattern(code: list[tuple[int, object]], *, depth: int = 1) -> _Patt
             lookarounds += sub.lookarounds
             alternations += sub.alternations
             backreferences += sub.backreferences
+            conditionals += sub.conditionals
             quantifier_bounds.extend(sub.quantifier_bounds)
+            if op in (sre.MAX_REPEAT, sre.MIN_REPEAT, sre.SUBPATTERN):
+                max_explicit_repeat = max(max_explicit_repeat, local_max_explicit_repeat)
+            else:
+                max_explicit_repeat = max(max_explicit_repeat, sub.max_explicit_repeat)
 
     return _PatternMetrics(
         nodes=nodes,
@@ -153,7 +179,9 @@ def _analyze_pattern(code: list[tuple[int, object]], *, depth: int = 1) -> _Patt
         lookarounds=lookarounds,
         alternations=alternations,
         backreferences=backreferences,
+        conditionals=conditionals,
         quantifier_bounds=tuple(quantifier_bounds),
+        max_explicit_repeat=max_explicit_repeat,
     )
 
 
@@ -165,12 +193,30 @@ def _merge_metrics(*metrics: _PatternMetrics) -> _PatternMetrics:
     lookarounds = sum(m.lookarounds for m in metrics)
     alternations = sum(m.alternations for m in metrics)
     backreferences = sum(m.backreferences for m in metrics)
+    conditionals = sum(m.conditionals for m in metrics)
     quantifier_bounds = tuple(bound for m in metrics for bound in m.quantifier_bounds)
-    return _PatternMetrics(nodes, depth, lookarounds, alternations, backreferences, quantifier_bounds)
+    max_explicit_repeat = max(m.max_explicit_repeat for m in metrics)
+    return _PatternMetrics(
+        nodes,
+        depth,
+        lookarounds,
+        alternations,
+        backreferences,
+        conditionals,
+        quantifier_bounds,
+        max_explicit_repeat,
+    )
+
+
+def _explicit_numeric_quantifier(lower: int, upper: int) -> bool:
+    """True for ``{m}`` / ``{m,n}`` / ``{m,}`` shapes, not for ``*`` / ``+`` / ``?``."""
+    if upper == sre.MAXREPEAT:
+        return lower > 1
+    return True
 
 
 def _explicit_numeric_quantifier_exceeds_bound(lower: int, upper: int) -> bool:
-    """True for ``{m}`` / ``{m,n}`` / ``{m,}`` shapes, not for ``*`` / ``+`` / ``?``."""
+    """True when a single explicit numeric quantifier exceeds the public bound."""
     if upper == sre.MAXREPEAT:
         # ``{m,}`` with m > 1 is an explicit numeric unbounded quantifier; ``*``/``+`` are not.
         return lower > 1
