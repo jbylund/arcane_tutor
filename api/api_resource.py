@@ -29,7 +29,8 @@ from api.app_context import AppContext
 from api.enums import CardOrdering, PreferOrder, ResponseShape, SortDirection, UniqueOn
 from api.middlewares.timing import record_span
 from api.noscript_helpers import generate_results_count_html, generate_results_html
-from api.parsing import generate_sql_query, parse_scryfall_query
+from api.parsing import QueryBudgetExceeded, generate_sql_query, parse_scryfall_query
+from api.parsing.query_budget import bounded_query_log_context
 from api.settings import settings
 from api.utils import db_utils, error_monitoring
 from api.utils.css_utils import build_critical_css
@@ -622,7 +623,7 @@ class APIResource:
             )
         return limit
 
-    def _search(  # noqa: PLR0913
+    def _search(  # noqa: PLR0912, PLR0913
         self,
         *,
         direction: SortDirection = SortDirection.ASC,
@@ -660,6 +661,18 @@ class APIResource:
         try:
             with timer("parse"):
                 parsed_query = parse_scryfall_query(query)
+        except QueryBudgetExceeded as err:
+            log_ctx = bounded_query_log_context(query)
+            logger.info(
+                "Query budget exceeded (%s) preview=%r digest=%s",
+                err.kind,
+                log_ctx["query_preview"],
+                log_ctx["query_digest"],
+            )
+            raise falcon.HTTPBadRequest(
+                title="Invalid Search Query",
+                description=err.user_message,
+            ) from err
         except ValueError as err:
             _raise_query_bad_request(exc_name="ValueError", query=query, description=f'Failed to parse query: "{query}"', err=err)
 

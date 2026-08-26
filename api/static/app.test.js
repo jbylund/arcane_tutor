@@ -5,6 +5,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const { TextEncoder } = require('util');
+
+global.TextEncoder = TextEncoder;
 
 // ---------------------------------------------------------------------------
 // Load CardSearch class
@@ -508,6 +511,12 @@ describe('CardSearch createCardHTML no-JS parity', () => {
 });
 
 describe('CardSearch validateQuery', () => {
+  it('rejects queries over the UTF-8 byte limit without echoing them', () => {
+    const overLimit = 'a'.repeat(1025);
+    expect(search.validateQuery(overLimit)).toBe('Search query exceeds the maximum allowed length.');
+    expect(search.validateQuery(overLimit)).not.toContain(overLimit);
+  });
+
   it('rejects queries with an unmatched closing parenthesis', () => {
     expect(search.validateQuery('hello)(')).toBe('Failed to parse query: "hello)("');
     expect(search.validateQuery('hello)')).toBe('Failed to parse query: "hello)"');
@@ -543,6 +552,17 @@ describe('CardSearch accepts every shared accepted query', () => {
 });
 
 describe('CardSearch performSearch', () => {
+  it('shows an error and skips the http request for over-limit queries', async () => {
+    global.fetch.mockClear();
+
+    await search.performSearch('a'.repeat(1025));
+
+    expect(search.showError).toHaveBeenCalledWith(
+      expect.stringContaining('Search query exceeds the maximum allowed length.')
+    );
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   it('shows an error and skips the http request for unbalance-able queries', async () => {
     global.fetch.mockClear();
 

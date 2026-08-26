@@ -1,6 +1,8 @@
 const UNIQUE_PRINTING = 'printing';
 const DWELL_MS = 2500; // milliseconds user must stay on results before adding a history entry
 const MAX_EXPLANATION_LENGTH = 140; // truncate very long query explanations (e.g. giant OR chains)
+const MAX_QUERY_UTF8_BYTES = 1024;
+const QUERY_TOO_LONG_MESSAGE = 'Search query exceeds the maximum allowed length.';
 
 // Hoisted so escapeHtml() doesn't allocate a new RegExp or callback on every call.
 const HTML_ESCAPE_RE = /[&<>"]/g;
@@ -721,12 +723,20 @@ class CardSearch {
     return out;
   }
 
+  queryUtf8ByteLength(query) {
+    return new TextEncoder().encode(query).length;
+  }
+
   // Returns an error string if the query is structurally invalid, or null if it looks ok.
   // alreadyBalanced lets a caller that just ran scanSpans itself (and knows the answer was not
   // null) skip a second identical scan here, rather than re-discovering what it already knows.
   // blanked lets that same caller pass the scan's blanked-span output straight through too, rather
   // than making blankOpaqueSpans re-walk the whole string to find the same span boundaries again.
   validateQuery(query, { alreadyBalanced = false, blanked = null } = {}) {
+    if (this.queryUtf8ByteLength(query) > MAX_QUERY_UTF8_BYTES) {
+      return QUERY_TOO_LONG_MESSAGE;
+    }
+
     // A closing paren with no matching opener can't be balanced away.
     if (!alreadyBalanced && this.balanceSuffix(query) === null) {
       return `Failed to parse query: "${query}"`;

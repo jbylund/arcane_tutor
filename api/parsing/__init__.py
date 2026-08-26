@@ -18,6 +18,7 @@ from api.parsing.nodes import (
     TrueNode,
 )
 from api.parsing.parsing_f import balance_partial_query, parse_scryfall_query
+from api.parsing.query_budget import QueryBudgetExceeded
 from api.parsing.sql_generation import generate_sql_query
 
 __all__ = [
@@ -30,6 +31,7 @@ __all__ = [
     "OrNode",
     "ParseError",
     "Query",
+    "QueryBudgetExceeded",
     "QueryContext",
     "QueryNode",
     "RegexValueNode",
