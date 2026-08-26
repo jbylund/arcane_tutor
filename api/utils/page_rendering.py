@@ -146,7 +146,7 @@ def build_card_html(critical_css: str) -> str:
 
 
 def serialize_embedded_json(data: object) -> str:
-    """Serialize data to JSON safe for inlining inside an HTML script tag.
+    r"""Serialize data to JSON safe for inlining inside an HTML script tag.
 
     Replaces literal `<` with `\\u003c` so strings containing `</script>` or `<!--`
     cannot prematurely close the script context in HTML parsers.

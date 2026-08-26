@@ -140,7 +140,7 @@ class TestSerializeEmbeddedJson(unittest.TestCase):
             "booleans": [True, False],
             "null": None,
             "html_entities": "&amp; &lt; &gt; &quot;",
-            "script_tags": "</script><script src=\"evil.js\"></script>",
+            "script_tags": '</script><script src="evil.js"></script>',
         }
         serialized = serialize_embedded_json(payload)
 
