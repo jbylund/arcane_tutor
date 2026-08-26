@@ -26,15 +26,16 @@ MAX_GROUP_DEPTH = 10
 MAX_QUERY_LOG_PREVIEW_CHARS = 80
 
 QUERY_TOO_LONG_MESSAGE = "Search query exceeds the maximum allowed length."
+QUERY_REGEX_REJECTED_MESSAGE = "Search query contains an unsupported regular expression."
 
 
 class QueryBudgetExceeded(ValueError):  # noqa: N818
     """Raised when a query exceeds a measured public bound."""
 
-    def __init__(self, *, kind: Literal["length", "depth"]) -> None:
+    def __init__(self, *, kind: Literal["length", "depth", "regex_leaves", "regex_pattern"]) -> None:
         """Initialize with a stable, non-disclosing user message."""
         self.kind = kind
-        self.user_message = QUERY_TOO_LONG_MESSAGE
+        self.user_message = QUERY_REGEX_REJECTED_MESSAGE if kind.startswith("regex") else QUERY_TOO_LONG_MESSAGE
         super().__init__(self.user_message)
 
 
