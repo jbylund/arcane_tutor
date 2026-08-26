@@ -45,6 +45,7 @@ from api.utils.page_rendering import (
     STATIC_DIR,
     build_base_html,
     build_card_html,
+    serialize_embedded_json,
     serve_static_file,
 )
 from api.utils.param_binding import ParamCoercionError
@@ -1105,7 +1106,7 @@ class APIResource:
                     )
 
                 # Convert search results to JSON and embed for JavaScript enhancement
-                search_results_json = orjson.dumps(search_results).decode("utf-8")
+                search_results_json = serialize_embedded_json(search_results)
                 embedded_data = f"""// Server-side embedded search results
       window.EMBEDDED_SEARCH_RESULTS = {search_results_json};
       """

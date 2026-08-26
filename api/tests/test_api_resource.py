@@ -1,5 +1,6 @@
 """Comprehensive tests for APIResource class functionality."""
 
+import json
 import multiprocessing
 import os
 import pathlib
@@ -814,6 +815,30 @@ class TestAPIResourceStaticFileServing(unittest.TestCase):
 
         # Verify it sets appropriate cache control header (shorter for search results)
         mock_response.set_header.assert_called_with("Cache-Control", "public, max-age=90")
+
+    def test_index_html_with_hostile_query_escapes_script_context(self) -> None:
+        """Test _root prevents script context breakout when query/results contain closing script tags."""
+        mock_response = MagicMock()
+        hostile_query = "</script><script>alert('xss')</script>"
+        mock_search_results = {
+            "cards": [{"name": "<script>alert(1)</script>", "set_code": "m14", "collector_number": "1"}],
+            "total_cards": 1,
+            "query": hostile_query,
+        }
+
+        with patch.object(self.api_resource, "_search", return_value=mock_search_results):
+            self.api_resource._root(falcon_response=mock_response, q=hostile_query)
+
+        # Response must not contain unescaped closing script tags in embedded JSON
+        marker = "window.EMBEDDED_SEARCH_RESULTS = "
+        assert marker in mock_response.text
+        start = mock_response.text.index(marker) + len(marker)
+        end = mock_response.text.index(";", start)
+        embedded_json = mock_response.text[start:end]
+
+        assert "<" not in embedded_json
+        assert "</script>" not in embedded_json
+        assert json.loads(embedded_json) == mock_search_results
 
     def test_index_html_with_query_embeds_results_count_in_status_message(self) -> None:
         """Test _root injects the results count into the #statusMessage container.

@@ -16,6 +16,7 @@ import pathlib
 
 import falcon
 import minify_html
+import orjson
 from cachebox import LRUCache
 
 from api.utils.caching import cached
@@ -142,3 +143,19 @@ def build_card_html(critical_css: str) -> str:
     if _CARD_JS_HASH:
         html = html.replace("/static/card.js", f"/static/card.js?v={_CARD_JS_HASH}")
     return _minify_html(html)
+
+
+def serialize_embedded_json(data: object) -> str:
+    """Serialize data to JSON safe for inlining inside an HTML script tag.
+
+    Replaces literal `<` with `\\u003c` so strings containing `</script>` or `<!--`
+    cannot prematurely close the script context in HTML parsers.
+
+    Args:
+        data: The JSON-serializable Python data structure.
+
+    Returns:
+        JSON string safe for embedding inside an inline HTML <script> block.
+    """
+    return orjson.dumps(data).decode("utf-8").replace("<", "\\u003c")
+
