@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from api.parsing.hand_parser import parse_query as _parse_query
 from api.parsing.query_budget import check_query_byte_length
-from api.parsing.regex_budget import check_regex_cost
+from api.parsing.regex_budget import validate_regex_patterns
 from api.parsing.rewrite import rewrite_query
 from api.parsing.spans import QUOTE_CHARS, brace_close_index, find_close_index, opens_regex
 
@@ -98,10 +98,14 @@ def parse_scryfall_query(query: str | None) -> Query:
 
     Returns:
         A Scryfall-specific Query AST.
+
+    Raises:
+        QueryBudgetExceeded: When a regex leaf exceeds a public static bound.
+        InvalidRegexPatternError: When a regex leaf fails the stdlib parser.
     """
     if query is not None:
         check_query_byte_length(query)
     parsed = _parse_query(query)
     rewritten = rewrite_query(parsed)
-    check_regex_cost(rewritten)
+    validate_regex_patterns(rewritten)
     return rewritten

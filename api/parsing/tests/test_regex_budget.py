@@ -46,11 +46,8 @@ class TestRegexPatternLimits:
         assert exc_info.value.kind == "regex_pattern"
 
     def test_rejects_stacked_numeric_quantifiers(self) -> None:
-        from api.parsing.regex_budget import validate_regex_patterns  # noqa: PLC0415
-
-        parsed = parse_scryfall_query("o:/a{10}{10}{10}{10}{10}/")
         with pytest.raises(InvalidRegexPatternError):
-            validate_regex_patterns(parsed)
+            parse_scryfall_query("o:/a{10}{10}{10}{10}{10}/")
 
     def test_rejects_wide_alternation(self) -> None:
         alts = "|".join(f"w{i}" for i in range(500))

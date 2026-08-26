@@ -44,19 +44,13 @@ class _PatternMetrics:
     max_explicit_repeat: int = 1
 
 
-def check_regex_cost(query: Query) -> None:
-    """Reject *query* when any surviving regex leaf exceeds a public static bound."""
+def validate_regex_patterns(query: Query) -> None:
+    """Reject *query* when any regex leaf is ill-formed or over budget."""
     patterns = _collect_regex_patterns(query.root)
     if len(patterns) > MAX_REGEX_LEAVES_PER_QUERY:
         raise QueryBudgetExceeded(kind="regex_leaves")
     for pattern in patterns:
-        _check_pattern_budget(pattern)
-
-
-def validate_regex_patterns(query: Query) -> None:
-    """Reject *query* when any regex leaf is ill-formed for the stdlib parser."""
-    for pattern in _collect_regex_patterns(query.root):
-        _require_parseable_pattern(pattern)
+        _enforce_pattern_limits(pattern)
 
 
 def _python_regex_error_reason(exc: re.error) -> str:
@@ -65,13 +59,6 @@ def _python_regex_error_reason(exc: re.error) -> str:
     if " at position " in message:
         return message.rsplit(" at position ", maxsplit=1)[0]
     return message
-
-
-def _require_parseable_pattern(pattern: str) -> None:
-    try:
-        sre_parser.parse(pattern, re.IGNORECASE)
-    except re.error as exc:
-        raise InvalidRegexPatternError(reason=_python_regex_error_reason(exc)) from None
 
 
 def _collect_regex_patterns(node: QueryNode) -> list[str]:
@@ -87,15 +74,14 @@ def _collect_regex_patterns(node: QueryNode) -> list[str]:
     return []
 
 
-def _check_pattern_budget(pattern: str) -> None:
+def _enforce_pattern_limits(pattern: str) -> None:
     if len(pattern.encode("utf-8")) > MAX_PATTERN_UTF8_BYTES:
         raise QueryBudgetExceeded(kind="regex_pattern")
 
     try:
         parsed = sre_parser.parse(pattern, re.IGNORECASE)
-    except re.error:
-        # Syntax validation runs in ``validate_regex_patterns`` at search time.
-        return
+    except re.error as exc:
+        raise InvalidRegexPatternError(reason=_python_regex_error_reason(exc)) from None
 
     metrics = _analyze_pattern(parsed)
     if metrics.backreferences > 0 or metrics.conditionals > 0:
