@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import falcon
 import pytest
 
+import api.api_resource as api_resource_module
 from api.settings import settings
 from api.tests.helpers import search_kwargs
 from api.tests.support import override_attr
@@ -209,6 +210,18 @@ class TestSearchRouting:
         with pytest.raises(falcon.HTTPBadRequest) as exc_info:
             self.api_resource._search(query="name:opt", limit=-1)
         assert exc_info.value.title == "Invalid Limit"
+
+    def test_limit_above_ceiling_raises_bad_request(self) -> None:
+        ceiling = api_resource_module.pagination_ceiling()
+        with pytest.raises(falcon.HTTPBadRequest) as exc_info:
+            self.api_resource._search(query="name:opt", limit=ceiling + 1)
+        assert exc_info.value.title == "Invalid Limit"
+
+    def test_offset_above_ceiling_raises_bad_request(self) -> None:
+        ceiling = api_resource_module.pagination_ceiling()
+        with pytest.raises(falcon.HTTPBadRequest) as exc_info:
+            self.api_resource._search(query="name:opt", offset=ceiling + 1)
+        assert exc_info.value.title == "Invalid Offset"
 
     def test_raises_service_unavailable_when_setup_incomplete(self) -> None:
         override_attr(self.api_resource.app_context, "setup_complete", lambda: False)

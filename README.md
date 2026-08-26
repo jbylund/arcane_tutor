@@ -412,8 +412,17 @@ curl -u admin:$(jq -r .ADMIN_PASSWORD env.json) http://localhost:28080/_admin/im
 
 ### Query Parameters
 
-The search endpoint supports comprehensive Scryfall syntax.
-See [syntax analysis](docs/technical/scryfall_syntax_analysis.md) for complete documentation.
+The `/search` endpoint accepts the following query parameters:
+
+- `q` or `query` (string): The search query in Scryfall-compatible syntax (see [syntax analysis](docs/technical/scryfall_syntax_analysis.md) for complete documentation).
+- `limit` (integer, default `100`): Maximum number of results to return. Must be an integer between `0` and the annual pagination ceiling: `(UTC current year - 2013) * 10_000` (e.g. 130,000 in 2026).
+- `offset` (integer, default `0`): Number of results to skip before returning cards. Must be an integer between `0` and the annual pagination ceiling: `(UTC current year - 2013) * 10_000` (e.g. 130,000 in 2026).
+- `orderby` (string, default `edhrec`): Field to sort by (`name`, `cmc`, `power`, `toughness`, `edhrec`, `rarity`, `usd`, `cubecobra`).
+- `direction` (string, default `asc`): Sort direction (`asc` or `desc`).
+- `unique` (string, default `card`): Result deduplication mode (`card`, `art`/`artwork`, `prints`/`printing`).
+- `prefer` (string, default `default`): Preferred printing selection when grouping (`oldest`, `newest`, `usd-low`, `usd-high`, `promo`, `default`).
+- `fields` (string): Comma-separated list of fields to return per card (see `RESULT_FIELD_COLUMNS` in `api/api_resource.py`).
+- `shape` (string, default `rows`): Response layout format (`rows` for list of card objects, `columnar` for columnar field dictionary).
 
 ## Development Notes
 
