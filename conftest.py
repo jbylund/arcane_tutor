@@ -13,6 +13,10 @@ import random
 import time
 from typing import TYPE_CHECKING
 
+# Ryuk is for orphan cleanup when a process dies without stopping containers; the session
+# fixture always calls container.stop(), so skip the extra sidecar pull/start in CI.
+os.environ["TESTCONTAINERS_RYUK_DISABLED"] = "true"
+
 import psycopg
 import pytest
 from testcontainers.postgres import PostgresContainer
@@ -43,6 +47,7 @@ def _wait_for_database_ready(host: str, port: str, timeout: int = 30) -> None:
             time.sleep(0.5)
     msg = f"Database not ready within {timeout} seconds"
     raise RuntimeError(msg)
+
 
 logging.basicConfig(
     force=True,
