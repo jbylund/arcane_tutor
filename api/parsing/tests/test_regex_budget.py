@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from api.parsing import parse_scryfall_query
-from api.parsing.query_budget import QUERY_REGEX_REJECTED_MESSAGE, QueryBudgetExceeded
+from api.parsing.query_budget import QUERY_REGEX_REJECTED_MESSAGE, InvalidRegexPatternError, QueryBudgetExceeded
 from api.parsing.regex_budget import MAX_PATTERN_UTF8_BYTES, MAX_REGEX_LEAVES_PER_QUERY
 
 
@@ -46,9 +46,11 @@ class TestRegexPatternLimits:
         assert exc_info.value.kind == "regex_pattern"
 
     def test_rejects_stacked_numeric_quantifiers(self) -> None:
-        with pytest.raises(QueryBudgetExceeded) as exc_info:
-            parse_scryfall_query("o:/a{10}{10}{10}{10}{10}/")
-        assert exc_info.value.kind == "regex_pattern"
+        from api.parsing.regex_budget import validate_regex_patterns  # noqa: PLC0415
+
+        parsed = parse_scryfall_query("o:/a{10}{10}{10}{10}{10}/")
+        with pytest.raises(InvalidRegexPatternError):
+            validate_regex_patterns(parsed)
 
     def test_rejects_wide_alternation(self) -> None:
         alts = "|".join(f"w{i}" for i in range(500))

@@ -122,16 +122,14 @@ class TestSearchRouting:
     def test_engine_declining_a_query_falls_back_without_a_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         """A query the engine cannot build is a user error, not an alertable engine failure.
 
-        _search_engine logs a RetryableQueryError at info and lets it propagate unwrapped. That reaches the
-        SQL fallback, which used to re-log it at warning with a stack trace — so every keystroke
-        inside a character class (`o:/^[`, balanced to `o:/^[/` by typeahead) produced an alertable
-        event. The Rust regex crate also rejects patterns Postgres accepts, so this path is reached
-        by working queries too; either way the SQL path decides the outcome.
+        _search_engine logs a RetryableQueryError at info and lets it propagate unwrapped. That
+        reaches the SQL fallback without a warning stack trace. Ill-formed regex (``o:/^[/``) is
+        rejected before either backend runs — see ``test_invalid_regex_pattern_returns_400``.
         """
         from card_engine import RetryableQueryError  # noqa: PLC0415
 
         self.api_resource.app_context.engine.size.return_value = 87
-        sentinel = {"cards": [], "total_cards": 0, "query": "o:/^[/"}
+        sentinel = {"cards": [], "total_cards": 0, "query": "o:/draw/"}
         with (
             patch.object(
                 self.api_resource,
@@ -141,12 +139,28 @@ class TestSearchRouting:
             patch.object(self.api_resource, "_search_sql", return_value=sentinel) as mock_sql,
             caplog.at_level("INFO"),
         ):
-            result = self.api_resource._search(query="o:/^[/", limit=10)
+            result = self.api_resource._search(query="o:/draw/", limit=10)
 
         mock_sql.assert_called_once()
         assert result is sentinel
         assert [r.levelname for r in caplog.records if "falling back to SQL" in r.getMessage()] == ["INFO"]
         assert not [r for r in caplog.records if r.exc_info]
+
+    def test_invalid_regex_pattern_returns_400_before_engine(self) -> None:
+        """Ill-formed regex must not reach the engine or SQL fallback."""
+        self.api_resource.app_context.engine.size.return_value = 87
+        with (
+            patch.object(self.api_resource, "_search_engine") as mock_engine,
+            patch.object(self.api_resource, "_search_sql") as mock_sql,
+            pytest.raises(falcon.HTTPBadRequest) as exc_info,
+        ):
+            self.api_resource._search(query="o:/^[/", limit=10)
+
+        mock_engine.assert_not_called()
+        mock_sql.assert_not_called()
+        assert exc_info.value.title == "Invalid Search Query"
+        assert "o:/^[/" in exc_info.value.description
+        assert "unterminated character set" in exc_info.value.description
 
     def test_fatal_query_error_returns_400_without_sql_fallback(self) -> None:
         """FatalQueryError subclasses must not retry on PostgreSQL."""
@@ -327,7 +341,7 @@ class TestSearchEngineDirect:
 
         self.api_resource.app_context.engine.query.side_effect = RetryableQueryError("cannot build")
         with pytest.raises(RetryableQueryError):
-            self.api_resource._search_engine(**search_kwargs("o:/^[/"))
+            self.api_resource._search_engine(**search_kwargs("o:/draw/"))
 
 
 class TestResultFieldSelection:

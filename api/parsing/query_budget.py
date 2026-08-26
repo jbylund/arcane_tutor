@@ -29,6 +29,19 @@ QUERY_TOO_LONG_MESSAGE = "Search query exceeds the maximum allowed length."
 QUERY_REGEX_REJECTED_MESSAGE = "Search query contains an unsupported regular expression."
 
 
+class InvalidRegexPatternError(ValueError):
+    """Raised when a regex leaf fails Python's regex parser before search runs."""
+
+    def __init__(self, *, reason: str) -> None:
+        """Initialize with the quotable reason (no `` at position N`` suffix)."""
+        self.reason = reason
+        super().__init__(reason)
+
+    def user_message_for_query(self, query: str) -> str:
+        """Return the same shape as the SQL InvalidRegularExpression handler."""
+        return f"The search query '{query}' contains an invalid regular expression: {self.reason}."
+
+
 class QueryBudgetExceeded(ValueError):  # noqa: N818
     """Raised when a query exceeds a measured public bound."""
 

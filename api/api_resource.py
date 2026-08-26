@@ -30,7 +30,8 @@ from api.enums import CardOrdering, PreferOrder, ResponseShape, SortDirection, U
 from api.middlewares.timing import record_span
 from api.noscript_helpers import generate_results_count_html, generate_results_html
 from api.parsing import QueryBudgetExceeded, generate_sql_query, parse_scryfall_query
-from api.parsing.query_budget import QUERY_REGEX_REJECTED_MESSAGE, bounded_query_log_context
+from api.parsing.query_budget import QUERY_REGEX_REJECTED_MESSAGE, InvalidRegexPatternError, bounded_query_log_context
+from api.parsing.regex_budget import validate_regex_patterns
 from api.settings import settings
 from api.utils import db_utils, error_monitoring
 from api.utils.css_utils import build_critical_css
@@ -632,7 +633,7 @@ class APIResource:
             )
         return limit
 
-    def _search(  # noqa: PLR0912, PLR0913
+    def _search(  # noqa: PLR0912, PLR0913, PLR0915
         self,
         *,
         direction: SortDirection = SortDirection.ASC,
@@ -684,6 +685,16 @@ class APIResource:
             ) from err
         except ValueError as err:
             _raise_query_bad_request(exc_name="ValueError", query=query, description=f'Failed to parse query: "{query}"', err=err)
+
+        try:
+            validate_regex_patterns(parsed_query)
+        except InvalidRegexPatternError as err:
+            _raise_query_bad_request(
+                exc_name="InvalidRegexPattern",
+                query=query,
+                description=err.user_message_for_query(query),
+                err=err,
+            )
 
         if not settings.enable_engine:
             pass  # feature-gated off: SQL serves everything, the store never loads

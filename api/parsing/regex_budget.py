@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from api.parsing.nodes import AndNode, BinaryOperatorNode, NotNode, OrNode, QueryNode, RegexValueNode
-from api.parsing.query_budget import QueryBudgetExceeded
+from api.parsing.query_budget import InvalidRegexPatternError, QueryBudgetExceeded
 
 if TYPE_CHECKING:
     from api.parsing.nodes import Query
@@ -48,7 +48,28 @@ def check_regex_cost(query: Query) -> None:
     if len(patterns) > MAX_REGEX_LEAVES_PER_QUERY:
         raise QueryBudgetExceeded(kind="regex_leaves")
     for pattern in patterns:
-        _check_pattern(pattern)
+        _check_pattern_budget(pattern)
+
+
+def validate_regex_patterns(query: Query) -> None:
+    """Reject *query* when any regex leaf is ill-formed for the stdlib parser."""
+    for pattern in _collect_regex_patterns(query.root):
+        _require_parseable_pattern(pattern)
+
+
+def _python_regex_error_reason(exc: re.error) -> str:
+    """Drop the trailing `` at position N`` so the reason reads like Postgres's."""
+    message = str(exc)
+    if " at position " in message:
+        return message.rsplit(" at position ", maxsplit=1)[0]
+    return message
+
+
+def _require_parseable_pattern(pattern: str) -> None:
+    try:
+        sre_parser.parse(pattern, re.IGNORECASE)
+    except re.error as exc:
+        raise InvalidRegexPatternError(reason=_python_regex_error_reason(exc)) from None
 
 
 def _collect_regex_patterns(node: QueryNode) -> list[str]:
@@ -64,18 +85,14 @@ def _collect_regex_patterns(node: QueryNode) -> list[str]:
     return []
 
 
-def _check_pattern(pattern: str) -> None:
+def _check_pattern_budget(pattern: str) -> None:
     if len(pattern.encode("utf-8")) > MAX_PATTERN_UTF8_BYTES:
         raise QueryBudgetExceeded(kind="regex_pattern")
 
     try:
         parsed = sre_parser.parse(pattern, re.IGNORECASE)
-    except re.error as exc:
-        # Stacked `{n}{n}` is a compile-bomb shape we reject statically. Other parse failures
-        # (unclosed classes, half-typed typeahead like `^[[`, ...) are left to engine/SQL —
-        # Postgres accepts patterns Python's parser rejects.
-        if "multiple repeat" in str(exc):
-            raise QueryBudgetExceeded(kind="regex_pattern") from None
+    except re.error:
+        # Syntax validation runs in ``validate_regex_patterns`` at search time.
         return
 
     metrics = _analyze_pattern(parsed)
