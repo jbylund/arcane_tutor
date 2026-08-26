@@ -399,7 +399,7 @@ def test_honeybadger_end_to_end_local_variable_sanitization() -> None:
             captured_payload = notice.payload
             return "test-notice-id"
 
-    hb._connection = lambda: MockConnection()
+    hb._connection = MockConnection
 
     def frame_with_sensitive_locals() -> None:
         admin_password = "super_secret_admin_pass"  # noqa: F841
