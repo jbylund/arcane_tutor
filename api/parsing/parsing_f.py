@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from api.parsing.hand_parser import parse_query as _parse_query
-from api.parsing.query_budget import check_ast_budget, check_query_byte_length
+from api.parsing.query_budget import check_query_byte_length
 from api.parsing.rewrite import rewrite_query
 from api.parsing.spans import QUOTE_CHARS, brace_close_index, find_close_index, opens_regex
 
@@ -101,8 +101,4 @@ def parse_scryfall_query(query: str) -> Query:
     check_query_byte_length(query)
     # parse => transform => rest: the whole rewrite pipeline runs on the common AST at this shared
     # seam, so it applies identically regardless of which parser _parse_query is.
-    parsed = _parse_query(query)
-    check_ast_budget(parsed)
-    result = rewrite_query(parsed)
-    check_ast_budget(result)
-    return result
+    return rewrite_query(_parse_query(query))

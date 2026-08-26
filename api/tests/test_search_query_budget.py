@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import falcon
 import pytest
 
-from api.parsing.query_budget import MAX_QUERY_UTF8_BYTES, QUERY_TOO_COMPLEX_MESSAGE, QUERY_TOO_LONG_MESSAGE
+from api.parsing.query_budget import MAX_GROUP_DEPTH, MAX_QUERY_UTF8_BYTES, QUERY_TOO_LONG_MESSAGE
 
 if TYPE_CHECKING:
     from api.api_resource import APIResource
@@ -34,15 +34,15 @@ class TestSearchQueryBudget:
         mock_engine.assert_not_called()
         mock_sql.assert_not_called()
 
-    def test_rejects_derived_predicate_expansion_without_engine_or_sql(self) -> None:
-        query = " or ".join(["is:permanent"] * 6)
+    def test_rejects_excessive_nesting_without_engine_or_sql(self) -> None:
+        query = "(" * (MAX_GROUP_DEPTH + 1) + "name:a" + ")" * (MAX_GROUP_DEPTH + 1)
         with (
             patch.object(self.api_resource, "_search_engine") as mock_engine,
             patch.object(self.api_resource, "_search_sql") as mock_sql,
             pytest.raises(falcon.HTTPBadRequest) as exc_info,
         ):
             self.api_resource._search(query=query, limit=10)
-        assert exc_info.value.description == QUERY_TOO_COMPLEX_MESSAGE
+        assert exc_info.value.description == QUERY_TOO_LONG_MESSAGE
         mock_engine.assert_not_called()
         mock_sql.assert_not_called()
 

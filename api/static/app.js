@@ -1,7 +1,7 @@
 const UNIQUE_PRINTING = 'printing';
 const DWELL_MS = 2500; // milliseconds user must stay on results before adding a history entry
 const MAX_EXPLANATION_LENGTH = 140; // truncate very long query explanations (e.g. giant OR chains)
-const MAX_QUERY_UTF8_BYTES = 1024;
+const MAX_QUERY_UTF8_BYTES = 3500;
 const QUERY_TOO_LONG_MESSAGE = 'Search query exceeds the maximum allowed length.';
 
 // Hoisted so escapeHtml() doesn't allocate a new RegExp or callback on every call.

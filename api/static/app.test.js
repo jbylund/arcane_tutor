@@ -512,7 +512,7 @@ describe('CardSearch createCardHTML no-JS parity', () => {
 
 describe('CardSearch validateQuery', () => {
   it('rejects queries over the UTF-8 byte limit without echoing them', () => {
-    const overLimit = 'a'.repeat(1025);
+    const overLimit = 'a'.repeat(3501);
     expect(search.validateQuery(overLimit)).toBe('Search query exceeds the maximum allowed length.');
     expect(search.validateQuery(overLimit)).not.toContain(overLimit);
   });
@@ -555,7 +555,7 @@ describe('CardSearch performSearch', () => {
   it('shows an error and skips the http request for over-limit queries', async () => {
     global.fetch.mockClear();
 
-    await search.performSearch('a'.repeat(1025));
+    await search.performSearch('a'.repeat(3501));
 
     expect(search.showError).toHaveBeenCalledWith(
       expect.stringContaining('Search query exceeds the maximum allowed length.')

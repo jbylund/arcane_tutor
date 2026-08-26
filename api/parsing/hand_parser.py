@@ -29,12 +29,7 @@ from api.parsing.nodes import (
     TrueNode,
     flatten_nested_operations,
 )
-from api.parsing.query_budget import (
-    MAX_GROUP_DEPTH,
-    MAX_QUERY_TOKENS,
-    QueryBudgetExceeded,
-    check_query_byte_length,
-)
+from api.parsing.query_budget import MAX_GROUP_DEPTH, QueryBudgetExceeded, check_query_byte_length
 from api.parsing.spans import QUOTE_CHARS, brace_close_index, find_close_index, unescape
 
 # ── Alias → parser-class lookup ──────────────────────────────────────────────
@@ -327,8 +322,6 @@ def tokenize(src: str) -> list[Token]:  # noqa: C901, PLR0912, PLR0915
         msg = f"Unexpected character {c!r} at position {pos}"
         raise LexError(msg)
 
-    if len(tokens) > MAX_QUERY_TOKENS:
-        raise QueryBudgetExceeded(kind="complexity")
     tokens.append(Token(TT.EOF, "", n, space_before))
     return tokens
 
@@ -466,7 +459,7 @@ class Parser:
     def parse_group(self) -> QueryNode:
         """Parse a parenthesised sub-expression."""
         if self.group_depth >= MAX_GROUP_DEPTH:
-            raise QueryBudgetExceeded(kind="complexity")
+            raise QueryBudgetExceeded(kind="depth")
         self.group_depth += 1
         try:
             self.consume()  # LPAREN

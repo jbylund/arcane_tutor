@@ -1,4 +1,4 @@
-"""Early rejection for /search queries that exceed measured complexity bounds."""
+"""Early rejection for /search queries that exceed public size or nesting bounds."""
 
 from __future__ import annotations
 

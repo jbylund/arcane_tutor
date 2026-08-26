@@ -1,35 +1,40 @@
-"""Measured complexity bounds for public search queries."""
+"""Public search query size and parenthesis-nesting bounds.
+
+Limits are calibrated on distinct ``magic.cards`` names from the blue database
+(``scripts/measure_decklist_query_budget.py``):
+
+* **3500 UTF-8 bytes** — 100k random 100-card decklist queries in the shape
+  ``(!"…" OR …) f:commander`` landed at p99.9 ≈ 2547 B and max ≈ 2631 B; a
+  real cEDH reference list (MTGTop8 Witherbloom) was ≈ 2655 B. The limit adds
+  headroom for longer names and trailing filters.
+* **10 parenthesis nesting levels** — maximum ``( … ( … ) … )`` depth during
+  parse (sibling ``(a) (b)`` groups do not accumulate). Legitimate Scryfall
+  syntax is almost always depth 0–3; depth 10 was verified cheap in parse/SQL
+  benchmarks; unbounded nesting hits ``RecursionError`` around depth 200.
+"""
 
 from __future__ import annotations
 
 import hashlib
 from typing import TYPE_CHECKING, Literal
 
-from api.parsing.nodes import AndNode, BinaryOperatorNode, NotNode, OrNode, Query
-
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from api.parsing.nodes import QueryNode
-
-MAX_QUERY_UTF8_BYTES = 1024
-MAX_QUERY_TOKENS = 256
-MAX_AST_NODES = 128
-MAX_BOOLEAN_CLAUSES = 32
-MAX_GROUP_DEPTH = 32
+MAX_QUERY_UTF8_BYTES = 3500
+MAX_GROUP_DEPTH = 10
 MAX_QUERY_LOG_PREVIEW_CHARS = 80
 
 QUERY_TOO_LONG_MESSAGE = "Search query exceeds the maximum allowed length."
-QUERY_TOO_COMPLEX_MESSAGE = "Search query exceeds the maximum allowed complexity."
 
 
 class QueryBudgetExceeded(ValueError):  # noqa: N818
-    """Raised when a query exceeds a measured public complexity bound."""
+    """Raised when a query exceeds a measured public bound."""
 
-    def __init__(self, *, kind: Literal["length", "complexity"]) -> None:
+    def __init__(self, *, kind: Literal["length", "depth"]) -> None:
         """Initialize with a stable, non-disclosing user message."""
         self.kind = kind
-        self.user_message = QUERY_TOO_LONG_MESSAGE if kind == "length" else QUERY_TOO_COMPLEX_MESSAGE
+        self.user_message = QUERY_TOO_LONG_MESSAGE
         super().__init__(self.user_message)
 
 
@@ -67,41 +72,3 @@ def bounded_query_log_context(query: str) -> dict[str, str]:
     preview = query if len(query) <= preview_limit else f"{query[:preview_limit]}…"
     digest = hashlib.sha256(query.encode("utf-8")).hexdigest()[:16]
     return {"query_preview": preview, "query_digest": digest}
-
-
-def _measure_node(node: QueryNode, *, depth: int) -> tuple[int, int, int]:
-    """Return ``(node_count, boolean_clauses, max_depth)`` for *node*."""
-    node_count = 1
-    boolean_clauses = 0
-    max_depth = depth
-
-    if isinstance(node, Query):
-        child_nodes, child_clauses, child_depth = _measure_node(node.root, depth=depth + 1)
-        return node_count + child_nodes, boolean_clauses + child_clauses, max(max_depth, child_depth)
-    if isinstance(node, (AndNode, OrNode)):
-        boolean_clauses += len(node.operands)
-        for operand in node.operands:
-            child_nodes, child_clauses, child_depth = _measure_node(operand, depth=depth + 1)
-            node_count += child_nodes
-            boolean_clauses += child_clauses
-            max_depth = max(max_depth, child_depth)
-        return node_count, boolean_clauses, max_depth
-    if isinstance(node, NotNode):
-        child_nodes, child_clauses, child_depth = _measure_node(node.operand, depth=depth + 1)
-        return node_count + child_nodes, boolean_clauses + child_clauses, max(max_depth, child_depth)
-    if isinstance(node, BinaryOperatorNode):
-        lhs_nodes, lhs_clauses, lhs_depth = _measure_node(node.lhs, depth=depth + 1)
-        rhs_nodes, rhs_clauses, rhs_depth = _measure_node(node.rhs, depth=depth + 1)
-        return (
-            node_count + lhs_nodes + rhs_nodes,
-            boolean_clauses + lhs_clauses + rhs_clauses,
-            max(max_depth, lhs_depth, rhs_depth),
-        )
-    return node_count, boolean_clauses, max_depth
-
-
-def check_ast_budget(query: Query) -> None:
-    """Reject *query* when its AST exceeds node, clause, or depth limits."""
-    node_count, boolean_clauses, max_depth = _measure_node(query, depth=1)
-    if node_count > MAX_AST_NODES or boolean_clauses > MAX_BOOLEAN_CLAUSES or max_depth > MAX_GROUP_DEPTH:
-        raise QueryBudgetExceeded(kind="complexity")
