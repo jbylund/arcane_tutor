@@ -90,11 +90,17 @@ IMPORT_LOCK_TIMEOUT = 2
 # total, and it halves the logged parameter too (see log_parameter_max_length in the pg config).
 _UPSERT_PAGE_SIZE = 3_000
 
+# BOOLEAN_IS_TAGS sync runs once per import over the whole corpus, evaluating every
+# managed expression per row. Chunk by scryfall_id hash so each statement stays within
+# the import's statement_timeout; the per-chunk timeout is raised separately below.
+_BOOLEAN_IS_TAGS_SYNC_CHUNK_COUNT = 4
+_BOOLEAN_IS_TAGS_SYNC_TIMEOUT_MS = 60_000
+
 # is: values derivable from a single boolean SQL expression against a card's own row,
-# synced in one set-based statement after each import (see _sync_boolean_is_tags) -- no
+# synced in chunked set-based statements after each import (see _sync_boolean_is_tags) -- no
 # per-tag API sweep, unlike CUSTOM_IS_TAGS below, and no accumulation in the import loop.
-# Each expression must reference the row alias `cards` (it runs inside a correlated
-# subquery, not a plain WHERE) -- adding a tag here is the whole change. Most read
+# Each expression must reference the row alias `cards` -- adding a tag here is the whole
+# change. Most read
 # `cards.raw_card_blob`; hybrid/phyrexian read `cards.mana_cost_text` instead, per
 # docs/issues/done/00713-is-tag-recovery.md's own reasoning for putting them here rather
 # than in the query-rewrite table: the DSL only does exact-symbol containment, so a
@@ -150,35 +156,57 @@ BOOLEAN_IS_TAGS: dict[str, str] = {
 }
 
 
-def _build_boolean_is_tags_sql(tags: dict[str, str]) -> str:
-    """Build the one-shot BOOLEAN_IS_TAGS sync statement from `tags`.
+def _build_boolean_is_tags_sql(
+    tags: dict[str, str],
+    *,
+    chunk_index: int | None = None,
+    num_chunks: int | None = None,
+) -> str:
+    """Build a BOOLEAN_IS_TAGS sync statement from `tags`, optionally scoped to one chunk.
 
-    Each `(tag, expr)` pair becomes one row of a VALUES list correlated against the outer
-    `cards` row (`expr` reads `cards.raw_card_blob`), so `expr` may be any boolean SQL
-    expression -- not just "this top-level key is literally true" -- letting one mechanism
-    cover both plain booleans and promo_types/keywords/finishes array membership or
-    nested-object lookups. `tags` is a static, developer-authored module constant, never
-    user input, so embedding its keys and expressions as literal SQL text here (rather than
-    binding them as query parameters, which can't carry per-tag SQL syntax anyway) is safe.
+    Each `(tag, expr)` pair becomes one ``jsonb_build_object`` entry: ``expr`` reads the
+    outer `cards` row (`cards.raw_card_blob`, `cards.mana_cost_text`, etc.), so it may be
+    any boolean SQL expression -- not just "this top-level key is literally true" -- letting
+    one mechanism cover plain booleans, promo_types/keywords/finishes membership, and nested
+    lookups. ``jsonb_strip_nulls`` drops keys whose ``CASE WHEN`` did not fire. `tags` is a
+    static, developer-authored module constant, never user input, so embedding its keys and
+    expressions as literal SQL text here (rather than binding them as query parameters, which
+    can't carry per-tag SQL syntax anyway) is safe.
+
+    When `chunk_index` and `num_chunks` are set, only cards whose ``hashtext(scryfall_id)``
+    falls in that slice are scanned -- keeping each import-time sync under statement_timeout
+    as the corpus and tag list grow.
     """
+    chunk_filter = ""
+    if chunk_index is not None or num_chunks is not None:
+        if chunk_index is None or num_chunks is None:
+            msg = "chunk_index and num_chunks must both be set or both omitted"
+            raise ValueError(msg)
+        if num_chunks < 1:
+            msg = f"num_chunks must be >= 1, got {num_chunks}"
+            raise ValueError(msg)
+        if not 0 <= chunk_index < num_chunks:
+            msg = f"chunk_index must be in [0, {num_chunks}), got {chunk_index}"
+            raise ValueError(msg)
+        chunk_filter = (
+            f"\n    WHERE (abs(hashtext(cards.scryfall_id::text)) % {num_chunks}) = {chunk_index}"
+        )
+
     managed = ", ".join(f"'{tag}'" for tag in tags)
-    values = ",\n                        ".join(f"('{tag}', ({expr}))" for tag, expr in tags.items())
+    object_entries = ",\n            ".join(
+        f"'{tag}', CASE WHEN ({expr}) THEN true END" for tag, expr in tags.items()
+    )
     return f"""
 WITH proposed AS (
     SELECT
         cards.scryfall_id,
         (cards.card_is_tags - ARRAY[{managed}]::text[])
-            || COALESCE(
-                   (
-                       SELECT jsonb_object_agg(t.tag, true)
-                       FROM (VALUES
-                        {values}
-                       ) AS t(tag, is_true)
-                       WHERE t.is_true
-                   ),
-                   '{{}}'::jsonb
-               ) AS proposed_is_tags
-    FROM magic.cards cards
+            || jsonb_strip_nulls(
+                jsonb_build_object(
+            {object_entries}
+                )
+            ) AS proposed_is_tags
+    FROM magic.cards cards{chunk_filter}
 )
 UPDATE magic.cards
 SET card_is_tags = proposed.proposed_is_tags
@@ -187,9 +215,6 @@ WHERE
     cards.scryfall_id = proposed.scryfall_id AND
     cards.card_is_tags IS DISTINCT FROM proposed.proposed_is_tags
 """
-
-
-_SYNC_BOOLEAN_IS_TAGS_SQL = _build_boolean_is_tags_sql(BOOLEAN_IS_TAGS)
 
 CUSTOM_IS_TAGS = [
     "historic",  # artifact, legendary, saga
@@ -790,26 +815,38 @@ class AdminResource:
         }
 
     def _sync_boolean_is_tags(self, conn: Connection) -> int:
-        """Sync the boolean-backed is: tags (BOOLEAN_IS_TAGS) from raw_card_blob, one-shot.
+        """Sync the boolean-backed is: tags (BOOLEAN_IS_TAGS) from raw_card_blob.
 
         Rebuilds each card's managed keys as (existing minus managed) plus the keys whose
         blob-derived expression is true, touching only rows whose result actually differs
         -- so list churn (a card entering or leaving the game-changer roster) converges on
         every import, and unrelated card_is_tags entries are never disturbed.
 
+        The sync is split into hash-scoped chunks so each statement stays within
+        ``_BOOLEAN_IS_TAGS_SYNC_TIMEOUT_MS`` even as the corpus grows.
+
         Args:
         ----
-            conn (Connection): open connection; committed here.
+            conn (Connection): open connection; committed here once per chunk.
 
         Returns:
         -------
             int: rows whose card_is_tags changed.
 
         """
+        updated_count = 0
         with conn.cursor() as cursor:
-            cursor.execute(_SYNC_BOOLEAN_IS_TAGS_SQL)
-            updated_count = cursor.rowcount
-        conn.commit()
+            db_utils.set_statement_timeout(cursor, _BOOLEAN_IS_TAGS_SYNC_TIMEOUT_MS)
+            for chunk_index in range(_BOOLEAN_IS_TAGS_SYNC_CHUNK_COUNT):
+                cursor.execute(
+                    _build_boolean_is_tags_sql(
+                        BOOLEAN_IS_TAGS,
+                        chunk_index=chunk_index,
+                        num_chunks=_BOOLEAN_IS_TAGS_SYNC_CHUNK_COUNT,
+                    ),
+                )
+                updated_count += cursor.rowcount
+                conn.commit()
         if updated_count:
             logger.info("Synced boolean is: tags on %d printings", updated_count)
         return updated_count

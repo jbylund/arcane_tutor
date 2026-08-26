@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import psycopg
 
-from api.admin_resource import AdminResource
+from api.admin_resource import AdminResource, _build_boolean_is_tags_sql
 from api.api_resource import APIResource
 from api.card_processing import preprocess_card
 from api.db.bulk_upsert import bulk_upsert
@@ -65,6 +65,27 @@ class TestUpsertCardsStatus:
 # ---------------------------------------------------------------------------
 # Boolean-backed is: tags (reserved / game_changer)
 # ---------------------------------------------------------------------------
+
+
+class TestBuildBooleanIsTagsSql:
+    """_build_boolean_is_tags_sql emits hash-scoped chunk filters when requested."""
+
+    def test_unscoped_sql_scans_all_cards(self) -> None:
+        sql = _build_boolean_is_tags_sql({"reserved": "cards.raw_card_blob->'reserved' = 'true'::jsonb"})
+        assert "jsonb_build_object" in sql
+        assert "jsonb_strip_nulls" in sql
+        assert "FROM magic.cards cards\n)" in sql
+        assert "hashtext" not in sql
+        assert "jsonb_object_agg" not in sql
+
+    def test_chunk_filter_scopes_by_scryfall_id_hash(self) -> None:
+        sql = _build_boolean_is_tags_sql(
+            {"reserved": "cards.raw_card_blob->'reserved' = 'true'::jsonb"},
+            chunk_index=2,
+            num_chunks=4,
+        )
+        assert "hashtext(cards.scryfall_id::text)" in sql
+        assert "% 4) = 2" in sql
 
 
 def _is_tags_for(api_resource: APIResource, scryfall_id: str) -> dict:
