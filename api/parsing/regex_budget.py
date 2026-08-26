@@ -114,64 +114,85 @@ def _check_pattern_budget(pattern: str) -> None:
 
 
 def _analyze_pattern(code: list[tuple[int, object]], *, depth: int = 1) -> _PatternMetrics:
-    nodes = 0
-    max_depth = depth
-    lookarounds = 0
-    alternations = 0
-    backreferences = 0
-    conditionals = 0
-    quantifier_bounds: list[tuple[int, int]] = []
-    max_explicit_repeat = 1
-
+    acc = _PatternMetrics()
     for op, av in code:
         if op is sre.LITERAL:
             continue
-        nodes += 1
-        child_depth = depth + 1 if op not in (sre.AT,) else depth
-        sub: _PatternMetrics | None = None
-        local_max_explicit_repeat = 1
+        piece = _analyze_pattern_op(op, av, depth=depth)
+        acc = _fold_pattern_metrics(acc, op, piece)
+    return acc
 
-        if op in (sre.ASSERT, sre.ASSERT_NOT):
-            lookarounds += 1
-            sub = _analyze_pattern(av[1], depth=child_depth)
-        elif op is sre.BRANCH:
-            branches = av[1]
-            alternations += max(0, len(branches) - 1)
-            sub = _merge_metrics(*(_analyze_pattern(branch, depth=child_depth) for branch in branches))
-        elif op is sre.GROUPREF:
-            backreferences += 1
-        elif op is sre.GROUPREF_EXISTS:
-            conditionals += 1
-            _group_ref, if_branch, else_branch = av
-            branches = [if_branch]
-            if else_branch is not None:
-                branches.append(else_branch)
-            sub = _merge_metrics(*(_analyze_pattern(branch, depth=child_depth) for branch in branches))
-        elif op in (sre.MAX_REPEAT, sre.MIN_REPEAT):
-            lower, upper = av[0], av[1]
-            quantifier_bounds.append((lower, upper))
-            sub = _analyze_pattern(av[-1], depth=child_depth)
-            if _explicit_numeric_quantifier(lower, upper):
-                factor = upper if upper != sre.MAXREPEAT else lower
-                local_max_explicit_repeat = factor * sub.max_explicit_repeat
-            else:
-                local_max_explicit_repeat = sub.max_explicit_repeat
-        elif op is sre.SUBPATTERN:
-            sub = _analyze_pattern(av[-1], depth=child_depth)
-            local_max_explicit_repeat = sub.max_explicit_repeat
 
-        if sub is not None:
-            nodes += sub.nodes
-            max_depth = max(max_depth, sub.depth)
-            lookarounds += sub.lookarounds
-            alternations += sub.alternations
-            backreferences += sub.backreferences
-            conditionals += sub.conditionals
-            quantifier_bounds.extend(sub.quantifier_bounds)
-            if op in (sre.MAX_REPEAT, sre.MIN_REPEAT, sre.SUBPATTERN):
-                max_explicit_repeat = max(max_explicit_repeat, local_max_explicit_repeat)
-            else:
-                max_explicit_repeat = max(max_explicit_repeat, sub.max_explicit_repeat)
+@dataclass(frozen=True)
+class _OpMetrics:
+    sub: _PatternMetrics | None = None
+    lookarounds: int = 0
+    alternations: int = 0
+    backreferences: int = 0
+    conditionals: int = 0
+    quantifier_bound: tuple[int, int] | None = None
+    max_explicit_repeat: int = 1
+
+
+def _analyze_pattern_op(op: int, av: object, *, depth: int) -> _OpMetrics:
+    child_depth = depth + 1 if op not in (sre.AT,) else depth
+    if op in (sre.ASSERT, sre.ASSERT_NOT):
+        return _OpMetrics(sub=_analyze_pattern(av[1], depth=child_depth), lookarounds=1)
+    if op is sre.BRANCH:
+        branches = av[1]
+        return _OpMetrics(
+            sub=_merge_metrics(*(_analyze_pattern(branch, depth=child_depth) for branch in branches)),
+            alternations=max(0, len(branches) - 1),
+        )
+    if op is sre.GROUPREF:
+        return _OpMetrics(backreferences=1)
+    if op is sre.GROUPREF_EXISTS:
+        _group_ref, if_branch, else_branch = av
+        branches = [if_branch] if else_branch is None else [if_branch, else_branch]
+        return _OpMetrics(
+            sub=_merge_metrics(*(_analyze_pattern(branch, depth=child_depth) for branch in branches)),
+            conditionals=1,
+        )
+    if op in (sre.MAX_REPEAT, sre.MIN_REPEAT):
+        lower, upper = av[0], av[1]
+        sub = _analyze_pattern(av[-1], depth=child_depth)
+        repeat = sub.max_explicit_repeat
+        if _explicit_numeric_quantifier(lower, upper):
+            factor = upper if upper != sre.MAXREPEAT else lower
+            repeat = factor * repeat
+        return _OpMetrics(sub=sub, quantifier_bound=(lower, upper), max_explicit_repeat=repeat)
+    if op is sre.SUBPATTERN:
+        sub = _analyze_pattern(av[-1], depth=child_depth)
+        return _OpMetrics(sub=sub, max_explicit_repeat=sub.max_explicit_repeat)
+    return _OpMetrics()
+
+
+def _fold_pattern_metrics(acc: _PatternMetrics, op: int, piece: _OpMetrics) -> _PatternMetrics:
+    nodes = acc.nodes + 1
+    max_depth = acc.depth
+    lookarounds = acc.lookarounds + piece.lookarounds
+    alternations = acc.alternations + piece.alternations
+    backreferences = acc.backreferences + piece.backreferences
+    conditionals = acc.conditionals + piece.conditionals
+    quantifier_bounds = list(acc.quantifier_bounds)
+    max_explicit_repeat = acc.max_explicit_repeat
+
+    if piece.quantifier_bound is not None:
+        quantifier_bounds.append(piece.quantifier_bound)
+
+    sub = piece.sub
+    if sub is not None:
+        nodes += sub.nodes
+        max_depth = max(max_depth, sub.depth)
+        lookarounds += sub.lookarounds
+        alternations += sub.alternations
+        backreferences += sub.backreferences
+        conditionals += sub.conditionals
+        quantifier_bounds.extend(sub.quantifier_bounds)
+        if op in (sre.MAX_REPEAT, sre.MIN_REPEAT, sre.SUBPATTERN):
+            max_explicit_repeat = max(max_explicit_repeat, piece.max_explicit_repeat)
+        else:
+            max_explicit_repeat = max(max_explicit_repeat, sub.max_explicit_repeat)
 
     return _PatternMetrics(
         nodes=nodes,
