@@ -376,7 +376,9 @@ def _gen_queries(rng: random.Random, count: int, fragments: list[str]) -> list[t
 
 
 @pytest.fixture(scope="module", name="property_setup")
-def property_setup_fixture(tmp_path_factory: pytest.TempPathFactory) -> Generator[tuple[QueryEngine, list[dict[str, Any]], dict[str, list[dict[str, Any]]]]]:
+def property_setup_fixture(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Generator[tuple[QueryEngine, list[dict[str, Any]], dict[str, list[dict[str, Any]]]]]:
     rng = random.Random(20260708)
     cards = _make_cards(rng)
     engine = QueryEngine(str(tmp_path_factory.mktemp("prop") / "prop.store"))

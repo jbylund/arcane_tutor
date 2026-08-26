@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture(scope="class")
-def api_resource(postgres_container: None) -> Generator[APIResource]:  # noqa: ARG001
+def api_resource(postgres_container: None) -> Generator[APIResource]:
     """APIResource with schema, fixture data, and engine loaded against the session postgres."""
     schema_setup_event = multiprocessing.Event()
     api = APIResource(

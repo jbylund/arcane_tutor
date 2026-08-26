@@ -1,0 +1,18 @@
+---
+description: Run fast ruff lint before git push (matches CI lint job)
+alwaysApply: true
+---
+
+# Lint before push
+
+Before any `git push`, run the same check CI uses:
+
+```bash
+python -m ruff check
+```
+
+This takes well under a second on this repo. If it reports fixable issues, run `python -m ruff check --fix`, then `python -m ruff format` on any touched Python files, and re-run `python -m ruff check` before pushing.
+
+When the branch also changes Rust (`**/*.rs`), run `cargo clippy --manifest-path card_engine/Cargo.toml --all-targets -- -D warnings` if those files were edited — but do not block a Python-only push on clippy.
+
+Do not push while `python -m ruff check` fails.
