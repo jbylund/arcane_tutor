@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from typing import Any
-
-import pytest
-import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
@@ -15,12 +13,26 @@ COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
 POSTGRES_CAP_ADD = frozenset({"CHOWN", "FOWNER", "SETGID", "SETUID", "DAC_READ_SEARCH"})
 
 
-def _load_compose_services() -> dict[str, Any]:
-    compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
-    data = yaml.safe_load(compose_text)
-    services = data.get("services")
-    assert isinstance(services, dict)
-    return services
+def _render_compose_config() -> dict[str, Any]:
+    proc = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--file",
+            str(COMPOSE_FILE),
+            "config",
+            "--format",
+            "json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+    if proc.returncode != 0:
+        msg = proc.stderr.strip() or proc.stdout.strip() or "docker compose config failed"
+        raise AssertionError(msg)
+    return json.loads(proc.stdout)
 
 
 def _cap_set(service: dict[str, Any], key: str) -> frozenset[str]:
@@ -32,18 +44,12 @@ def _cap_set(service: dict[str, Any], key: str) -> frozenset[str]:
 
 
 def test_compose_config_renders_with_hardened_capabilities() -> None:
-    result = subprocess.run(
-        ["docker", "compose", "--file", str(COMPOSE_FILE), "config", "--quiet"],
-        check=False,
-        capture_output=True,
-        text=True,
-        cwd=REPO_ROOT,
-    )
-    assert result.returncode == 0, result.stderr
+    config = _render_compose_config()
+    assert "services" in config
 
 
 def test_postgres_uses_measured_minimal_capability_profile() -> None:
-    postgres = _load_compose_services()["postgres"]
+    postgres = _render_compose_config()["services"]["postgres"]
 
     assert _cap_set(postgres, "cap_drop") == frozenset({"ALL"})
     assert _cap_set(postgres, "cap_add") == POSTGRES_CAP_ADD
@@ -51,7 +57,7 @@ def test_postgres_uses_measured_minimal_capability_profile() -> None:
 
 
 def test_apiservice_drops_all_capabilities() -> None:
-    apiservice = _load_compose_services()["apiservice"]
+    apiservice = _render_compose_config()["services"]["apiservice"]
 
     assert _cap_set(apiservice, "cap_drop") == frozenset({"ALL"})
     assert _cap_set(apiservice, "cap_add") == frozenset()
@@ -59,6 +65,6 @@ def test_apiservice_drops_all_capabilities() -> None:
 
 
 def test_compose_never_grants_cap_add_all() -> None:
-    for service_name, service in _load_compose_services().items():
+    for service_name, service in _render_compose_config()["services"].items():
         cap_add = _cap_set(service, "cap_add")
         assert "ALL" not in cap_add, f"{service_name} must not use cap_add: ALL"
