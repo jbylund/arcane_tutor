@@ -34,12 +34,12 @@ MAX_QUANTIFIER_BOUND = 1024
 
 @dataclass(frozen=True)
 class _PatternMetrics:
-    nodes: int
-    depth: int
-    lookarounds: int
-    alternations: int
-    backreferences: int
-    quantifier_bounds: tuple[tuple[int, int], ...]
+    nodes: int = 0
+    depth: int = 1
+    lookarounds: int = 0
+    alternations: int = 0
+    backreferences: int = 0
+    quantifier_bounds: tuple[tuple[int, int], ...] = ()
 
 
 def check_regex_cost(query: Query) -> None:
@@ -127,18 +127,18 @@ def _analyze_pattern(code: list[tuple[int, object]], *, depth: int = 1) -> _Patt
             quantifier_bounds.extend(sub.quantifier_bounds)
 
     return _PatternMetrics(
-        nodes,
-        max_depth,
-        lookarounds,
-        alternations,
-        backreferences,
-        tuple(quantifier_bounds),
+        nodes=nodes,
+        depth=max_depth,
+        lookarounds=lookarounds,
+        alternations=alternations,
+        backreferences=backreferences,
+        quantifier_bounds=tuple(quantifier_bounds),
     )
 
 
 def _merge_metrics(*metrics: _PatternMetrics) -> _PatternMetrics:
     if not metrics:
-        return _PatternMetrics(0, 1, 0, 0, 0, ())
+        return _PatternMetrics()
     nodes = sum(m.nodes for m in metrics)
     depth = max(m.depth for m in metrics)
     lookarounds = sum(m.lookarounds for m in metrics)
