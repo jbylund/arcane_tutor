@@ -4,6 +4,7 @@ import enum
 
 from .card_engine import QueryEngine as QueryEngine
 from .card_engine import QueryError as QueryError
+from .card_engine import RegexCompileError as RegexCompileError
 from .card_engine import UnknownFieldError as UnknownFieldError
 
 

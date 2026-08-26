@@ -18,6 +18,11 @@ use std::os::unix::fs::MetadataExt;
 // this specifically to distinguish "the query was bad" from unrelated ValueErrors.
 create_exception!(card_engine, QueryError, PyValueError, "Raised when a query cannot be parsed or built.");
 
+// Regex compilation/execution failure for a pattern the parse-time budget accepted but the
+// fancy-regex engine rejects. Sibling of QueryError (not a subclass) so `_search` does not
+// fall back to PostgreSQL — PG's regex engine is a separate attack surface.
+create_exception!(card_engine, RegexCompileError, PyValueError, "Raised when a query regex cannot be compiled for the engine.");
+
 // Subclass of QueryError (not a sibling) so `except QueryError` already catches it; callers that
 // need to distinguish "requested a field that doesn't exist" from other query errors can catch
 // this specifically instead.
@@ -11980,6 +11985,14 @@ pub(crate) fn count_common_keywords(data: &Archived<CardData>) -> HashMap<String
 /// `FilterExpr::True` behind, so by the time a plan runs there is nothing left to read the bound from.
 /// Every caller that does not want it can ignore it and get `UNBOUNDED` behaviour — a longer walk, never
 /// a different page.
+fn map_build_filter_err(err: String) -> PyErr {
+    if let Some(msg) = err.strip_prefix(REGEX_COMPILE_ERR_PREFIX) {
+        RegexCompileError::new_err(msg.to_string())
+    } else {
+        QueryError::new_err(format!("build_filter: {err}"))
+    }
+}
+
 fn bind_and_split_filter(
     py: Python<'_>,
     filters: &Bound<PyAny>,
@@ -12000,8 +12013,7 @@ fn bind_and_split_filter(
     // Must run before build_filter so legality shifts resolve in workers that
     // never executed the load path themselves.
     sync_format_shifts(&data.format_shifts);
-    let mut filter_expr = build_filter(&json_val)
-        .map_err(|e| QueryError::new_err(format!("build_filter: {e}")))?;
+    let mut filter_expr = build_filter(&json_val).map_err(map_build_filter_err)?;
     filter_expr.bind(&data.coll_vocab, &data.coll_vocab_sorted, &data.artist_vocab, &data.mana_vocab, &data.indexes.flavor, &data.strings);
 
     // Read before the split consumes the tree.
@@ -12865,6 +12877,7 @@ mod card_engine {
     #[pymodule_init]
     fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add("QueryError", m.py().get_type::<super::QueryError>())?;
+        m.add("RegexCompileError", m.py().get_type::<super::RegexCompileError>())?;
         m.add("UnknownFieldError", m.py().get_type::<super::UnknownFieldError>())
     }
 }

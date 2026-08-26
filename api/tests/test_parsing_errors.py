@@ -148,6 +148,25 @@ class TestSearchRouting:
         assert [r.levelname for r in caplog.records if "falling back to SQL" in r.getMessage()] == ["INFO"]
         assert not [r for r in caplog.records if r.exc_info]
 
+    def test_regex_compile_error_returns_400_without_sql_fallback(self) -> None:
+        """Engine regex compile failures must not retry on PostgreSQL."""
+        from card_engine import RegexCompileError  # noqa: PLC0415
+
+        self.api_resource.app_context.engine.size.return_value = 87
+        with (
+            patch.object(
+                self.api_resource,
+                "_search_engine",
+                side_effect=RegexCompileError("fancy-regex rejected pattern"),
+            ),
+            patch.object(self.api_resource, "_search_sql") as mock_sql,
+            pytest.raises(falcon.HTTPBadRequest) as exc_info,
+        ):
+            self.api_resource._search(query="o:/(?=.*draw)/", limit=10)
+
+        mock_sql.assert_not_called()
+        assert exc_info.value.description == "Search query contains an unsupported regular expression."
+
     def test_an_unrelated_bad_request_from_the_engine_still_warns_with_a_traceback(
         self,
         caplog: pytest.LogCaptureFixture,

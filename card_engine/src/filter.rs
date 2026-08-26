@@ -1,8 +1,30 @@
 use memchr::memmem;
-use regex::Regex;
+use fancy_regex::Regex;
 use serde_json::Value;
 use super::{AOracleCard, APrinting, AStrings, str_at, mana_lane, lane_add, lanes_ge, LANES6_HI, LANES8_HI, mana_pip_counts, mana_cmc, color_list_to_mask, card_type_str_to_bit, trigram_candidates, trigram_min_posting, ARTIST_NONE, NONE_STR, FlavorIndex, NameBigramIndex, OracleTextIndex, SortedTrigramIndex, flavor_fingerprint, flavor_match_sets};
 use super::legality::{LEGALITY_LEGAL, LEGALITY_BANNED, LEGALITY_RESTRICTED, format_shift};
+
+/// Public search TextRegex backtrack cap — calibrated in docs/issues/security-regex-execution-budget.md.
+pub(crate) const REGEX_BACKTRACK_LIMIT: usize = 8192;
+
+/// Prefix on `build_filter` errors that must surface as `RegexCompileError`, not `QueryError`.
+pub(crate) const REGEX_COMPILE_ERR_PREFIX: &str = "regex_compile:";
+
+pub(crate) fn compile_search_regex(pattern: &str) -> Result<Regex, String> {
+    fancy_regex::RegexBuilder::new(&format!("(?i){pattern}"))
+        .backtrack_limit(REGEX_BACKTRACK_LIMIT)
+        .build()
+        .map_err(|e| format!("{REGEX_COMPILE_ERR_PREFIX}{e}"))
+}
+
+fn regex_is_match(re: &Regex, hay: &str) -> bool {
+    re.is_match(hay).unwrap_or(false)
+}
+
+#[cfg(test)]
+pub(crate) fn compile_search_regex_for_test(pattern: &str) -> Regex {
+    compile_search_regex(pattern).expect("test regex should compile")
+}
 
 // ─── Comparison / arithmetic operators ───────────────────────────────────────
 
@@ -964,7 +986,7 @@ impl FilterExpr {
                 *self = FilterExpr::ArtistMatch { ids };
             }
             FilterExpr::TextRegex { field: TextField::ArtistLower, regex } => {
-                let ids = artist_match_ids(artist_vocab, |s| regex.is_match(s));
+                let ids = artist_match_ids(artist_vocab, |s| regex_is_match(regex, s));
                 *self = FilterExpr::ArtistMatch { ids };
             }
             FilterExpr::TextContains { field: TextSearchField::FlavorTextLower, word } => {
@@ -989,7 +1011,7 @@ impl FilterExpr {
                 *self = FilterExpr::FlavorMatch { gids, dense_ids };
             }
             FilterExpr::TextRegex { field: TextField::FlavorTextLower, regex } => {
-                let (gids, dense_ids) = flavor_match_sets(flavor, strings, 0, |s| regex.is_match(s));
+                let (gids, dense_ids) = flavor_match_sets(flavor, strings, 0, |s| regex_is_match(regex, s));
                 *self = FilterExpr::FlavorMatch { gids, dense_ids };
             }
             _ => {}
@@ -1414,7 +1436,7 @@ impl FilterExpr {
 
             FilterExpr::TextRegex { field, regex } => {
                 match text_field_value(card, printing, strings, *field) {
-                    StrVal::Known(s) => tri_bool(regex.is_match(s)),
+                    StrVal::Known(s) => tri_bool(regex_is_match(regex, s)),
                     StrVal::Null => Tri::Null,
                     StrVal::PDep => Tri::PrintingDep,
                 }
@@ -1834,8 +1856,7 @@ fn build_text_filter(attr: &str, op: &str, rhs: &Value) -> Result<FilterExpr, St
 
     if rhs_node_type == "RegexValueNode" {
         let pattern  = rhs["kwargs"]["value"].as_str().unwrap_or("");
-        let re = Regex::new(&format!("(?i){pattern}"))
-            .map_err(|e| format!("invalid regex '{pattern}': {e}"))?;
+        let re = compile_search_regex(pattern)?;
         let field = match attr {
             "card_name"   => TextField::NameLower,
             "oracle_text" => TextField::OracleTextLower,

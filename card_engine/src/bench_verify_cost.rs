@@ -39,6 +39,7 @@ use super::{
     archive_header, archive_payload, expand_text_ids, str_at, trigram_candidates, CardData, CmpOp, ColorField, CollField, FilterExpr,
     Mmap, NumExpr, NumField, TextField, TextSearchField, TYPE_CREATURE, ARCHIVE_HEADER_LEN,
 };
+use crate::filter::compile_search_regex_for_test;
 
 const ITERS: usize = 50;
 const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
@@ -139,19 +140,19 @@ fn bench_verify_cost_clusters() {
     println!("\n-- regex shapes --");
     let anchored_ns = run(
         "TextRegex (anchored literal)",
-        &FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: Regex::new("(?i)^flying$").unwrap() },
+        &FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: compile_search_regex_for_test("^flying$") },
     );
     let bare_ns = run(
         "TextRegex (bare literal)",
-        &FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: Regex::new("(?i)flying").unwrap() },
+        &FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: compile_search_regex_for_test("flying") },
     );
     let machinery_ns = run(
         "TextRegex (machinery, literal prefix)",
-        &FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: Regex::new("(?i)draw .* cards?").unwrap() },
+        &FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: compile_search_regex_for_test("draw .* cards?") },
     );
     let machinery_noprefix_ns = run(
         "TextRegex (machinery, no prefix)",
-        &FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: Regex::new("(?i)^[aeiou]").unwrap() },
+        &FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: compile_search_regex_for_test("^[aeiou]") },
     );
 
     println!("\n-- cluster summary (ns/card) --");

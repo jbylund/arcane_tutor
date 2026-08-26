@@ -6761,7 +6761,7 @@ fn flavor_match_bind_eval_and_narrow() {
     }
     let mut rx = FilterExpr::TextRegex {
         field: super::TextField::FlavorTextLower,
-        regex: regex::Regex::new("qu.et").unwrap(),
+        regex: crate::filter::compile_search_regex_for_test("qu.et"),
     };
     bound(&mut rx);
     assert!(rx.matches(card0, &archived.printings[1], &archived.strings));
@@ -10333,7 +10333,7 @@ fn contains_scan() -> FilterExpr {
 }
 
 fn machinery_regex() -> FilterExpr {
-    FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: regex::Regex::new("draw .* cards?").unwrap() }
+    FilterExpr::TextRegex { field: TextField::OracleTextLower, regex: crate::filter::compile_search_regex_for_test("draw .* cards?") }
 }
 
 // Pattern-shape cost classification: anchored literals are memcmp-cheap

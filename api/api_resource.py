@@ -30,7 +30,7 @@ from api.enums import CardOrdering, PreferOrder, ResponseShape, SortDirection, U
 from api.middlewares.timing import record_span
 from api.noscript_helpers import generate_results_count_html, generate_results_html
 from api.parsing import QueryBudgetExceeded, generate_sql_query, parse_scryfall_query
-from api.parsing.query_budget import bounded_query_log_context
+from api.parsing.query_budget import QUERY_REGEX_REJECTED_MESSAGE, bounded_query_log_context
 from api.settings import settings
 from api.utils import db_utils, error_monitoring
 from api.utils.css_utils import build_critical_css
@@ -47,6 +47,7 @@ from api.utils.routing import build_route_table, build_routes_listing, route
 from api.utils.site_name import hostname_to_site_name
 from api.utils.timer import Timer
 from card_engine import QueryError as _QueryError
+from card_engine import RegexCompileError as _RegexCompileError
 
 if TYPE_CHECKING:
     from api.parsing.nodes import Query
@@ -722,6 +723,18 @@ class APIResource:
                 # BaseExceptions that must still propagate are the ones that are not failures.
                 if isinstance(e, (KeyboardInterrupt, SystemExit)):
                     raise
+                if isinstance(e, _RegexCompileError):
+                    log_ctx = bounded_query_log_context(query)
+                    logger.info(
+                        "Regex compile rejected for engine (%s) preview=%r digest=%s",
+                        e,
+                        log_ctx["query_preview"],
+                        log_ctx["query_digest"],
+                    )
+                    raise falcon.HTTPBadRequest(
+                        title="Invalid Search Query",
+                        description=QUERY_REGEX_REJECTED_MESSAGE,
+                    ) from e
                 # _QueryError (raised by card_engine, not this module) means the engine declined to
                 # build the query, not that it broke — _search_engine has already logged it at info.
                 # It reaches here for several different reasons (an unsupported regex feature, an
