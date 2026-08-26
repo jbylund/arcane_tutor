@@ -3775,9 +3775,91 @@ fn routed_agrees_with_gathered_scan_across_page_sizes() {
     }
 }
 
+/// O(n) independent reference for `RangeCardCounts`: forward pass for `below`, backward pass for
+/// `at_or_above` and per-block `at`. Same artwork-id derivation as the builder
+/// (`artwork_base[card] + artwork_group_id`).
+fn linear_range_card_counts_reference(
+    idx: &Archived<PrintingValueIndex>,
+    p2c: &Archived<Vec<u32>>,
+    printings: &Archived<Vec<Printing>>,
+    artwork_base: &Archived<Vec<u32>>,
+    n_cards: usize,
+) -> (Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>) {
+    let n_values = idx.keys.len();
+    if idx.pids.is_empty() {
+        return (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    }
+    let n_artworks = artwork_base.last().map(|b| u32::from(*b)).unwrap_or(0) as usize;
+    let ids = |pid: usize| {
+        let cid = u32::from(p2c[pid]) as usize;
+        let aid = u32::from(artwork_base[cid]) as usize + u16::from(printings[pid].artwork_group_id) as usize;
+        (cid, aid)
+    };
+    let bump = |seen: &mut [u64], n: &mut u32, id: usize| {
+        let (w, bit) = (id >> 6, 1u64 << (id & 63));
+        if seen[w] & bit == 0 {
+            seen[w] |= bit;
+            *n += 1;
+        }
+    };
+
+    let mut below = Vec::with_capacity(n_values);
+    let mut below_artworks = Vec::with_capacity(n_values);
+    let mut seen_c = vec![0u64; n_cards.div_ceil(64)];
+    let mut seen_a = vec![0u64; n_artworks.div_ceil(64)];
+    let (mut nc, mut na) = (0u32, 0u32);
+    for b in 0..n_values {
+        below.push(nc);
+        below_artworks.push(na);
+        for t in idx.run(b) {
+            let (cid, aid) = ids(idx.pid_at(t));
+            bump(&mut seen_c, &mut nc, cid);
+            bump(&mut seen_a, &mut na, aid);
+        }
+    }
+
+    let mut at_or_above = vec![0; n_values];
+    let mut at = vec![0; n_values];
+    let mut at_or_above_artworks = vec![0; n_values];
+    let mut at_artworks = vec![0; n_values];
+    seen_c.fill(0);
+    seen_a.fill(0);
+    nc = 0;
+    na = 0;
+    let mut block_c = vec![0u64; n_cards.div_ceil(64)];
+    let mut block_a = vec![0u64; n_artworks.div_ceil(64)];
+    let (mut touched_c, mut touched_a): (Vec<usize>, Vec<usize>) = (Vec::new(), Vec::new());
+    for b in (0..n_values).rev() {
+        touched_c.clear();
+        touched_a.clear();
+        for t in idx.run(b) {
+            let (cid, aid) = ids(idx.pid_at(t));
+            bump(&mut seen_c, &mut nc, cid);
+            bump(&mut seen_a, &mut na, aid);
+            for (blk, touched, id) in [(&mut block_c, &mut touched_c, cid), (&mut block_a, &mut touched_a, aid)] {
+                let (w, bit) = (id >> 6, 1u64 << (id & 63));
+                if blk[w] & bit == 0 {
+                    blk[w] |= bit;
+                    touched.push(id);
+                }
+            }
+        }
+        at_or_above[b] = nc;
+        at[b] = touched_c.len() as u32;
+        at_or_above_artworks[b] = na;
+        at_artworks[b] = touched_a.len() as u32;
+        for (blk, touched) in [(&mut block_c, &touched_c), (&mut block_a, &touched_a)] {
+            for &id in touched {
+                blk[id >> 6] &= !(1u64 << (id & 63));
+            }
+        }
+    }
+    (below, below_artworks, at_or_above, at_or_above_artworks, at, at_artworks)
+}
+
 /// The per-value count table must be EXACT, not close, in BOTH spaces it carries: every one-sided
-/// cut and every single value, on all three range indexes, checked against a brute-force distinct
-/// count over the store for cards and for artworks alike.
+/// cut and every single value, on all three range indexes, checked against an independent linear
+/// reference over the store for cards and for artworks alike.
 ///
 /// Exhaustive over the distinct values rather than sampled. There are only a few thousand per
 /// dimension — the same property that makes the table affordable — and this investigation's errors
@@ -3791,6 +3873,7 @@ fn range_card_counts_are_exact() {
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     let indexes = &archived.indexes;
     let p2c = &indexes.printing_to_card;
+    let n_cards = archived.cards.len();
 
     for (name, idx, counts) in [
         ("released_at", &indexes.released_at, &indexes.released_at_cards),
@@ -3807,28 +3890,14 @@ fn range_card_counts_are_exact() {
         assert_eq!(counts.values.len(), counts.at_or_above_artworks.len(), "{name}: parallel vectors");
         assert_eq!(counts.values.len(), counts.at_artworks.len(), "{name}: parallel vectors");
 
-        // Brute force: distinct cards, and distinct artworks, among printings whose value satisfies
-        // the predicate. The artwork id is global -- `artwork_base[card] + artwork_group_id` -- so a
-        // group id colliding across two cards must not merge them, which is why the base is added.
-        let distinct = |keep: &dyn Fn(u32) -> bool| -> (u32, u32) {
-            let (mut cards, mut arts) = (std::collections::HashSet::new(), std::collections::HashSet::new());
-            for (i, key) in idx.keys.iter().enumerate() {
-                if !keep(u32::from(*key)) {
-                    continue;
-                }
-                for t in idx.run(i) {
-                    let pid = idx.pid_at(t);
-                    let cid = u32::from(p2c[pid]);
-                    cards.insert(cid);
-                    arts.insert(u32::from(archived.indexes.artwork_base[cid as usize]) + u32::from(u16::from(archived.printings[pid].artwork_group_id)));
-                }
-            }
-            (cards.len() as u32, arts.len() as u32)
-        };
+        let (ref_below, ref_below_artworks, ref_at_or_above, ref_at_or_above_artworks, ref_at, ref_at_artworks) =
+            linear_range_card_counts_reference(idx, p2c, &archived.printings, &indexes.artwork_base, n_cards);
 
         for (i, value) in counts.values.iter().enumerate() {
             let v = u32::from(*value);
-            let (lt, ge, eq) = (distinct(&|x| x < v), distinct(&|x| x >= v), distinct(&|x| x == v));
+            let lt = (ref_below[i], ref_below_artworks[i]);
+            let ge = (ref_at_or_above[i], ref_at_or_above_artworks[i]);
+            let eq = (ref_at[i], ref_at_artworks[i]);
             assert_eq!((u32::from(counts.below[i]), u32::from(counts.below_artworks[i])), lt, "{name}: below[{i}] at {v}");
             assert_eq!(
                 (u32::from(counts.at_or_above[i]), u32::from(counts.at_or_above_artworks[i])),
