@@ -54,7 +54,14 @@ const { CardSearch, CatalogMap, columnsToRows } = Function(
 const LIVE_CARD_TYPES = require('./fixtures/common_card_types.json');
 const BALANCE_QUERIES = require('./fixtures/balance_queries.json');
 const CARD_HTML_CASES = require('./fixtures/card_html_cases.json');
+const CARD_TEXT_ESCAPING_CASES = require('./fixtures/card_text_escaping_cases.json');
 const ACCEPTED_QUERIES = require('./fixtures/accepted_queries.json');
+
+const cardCode = fs.readFileSync(path.resolve(__dirname, 'card.js'), 'utf8');
+const cardModuleCode = cardCode.replace(/\(function initTheme[\s\S]*?\}\)\(\);/, '').replace(/\bmain\(\);/, '');
+const cardModule = Function(
+  cardModuleCode + '; return { formatCardText, convertManaSymbols, formatOracleText, renderCardFace, escapeHtml };'
+)();
 
 // Derived fixture: new catalog format expected by the /get_catalog endpoint
 const LIVE_TYPES_MAP = Object.fromEntries(LIVE_CARD_TYPES.map(({ t, n }) => [t, n]));
@@ -372,8 +379,97 @@ describe('CardSearch convertManaSymbols', () => {
     );
   });
 
+  it('safely escapes hostile html tags and attributes while converting mana', () => {
+    expect(search.convertManaSymbols('<script>alert(1)</script>{W}<img src=x onerror=1>')).toBe(
+      `&lt;script&gt;alert(1)&lt;/script&gt;${manaSpan('ms ms-w ms-cost')}&lt;img src=x onerror=1&gt;`
+    );
+  });
+
   it('returns empty string for empty input', () => {
     expect(search.convertManaSymbols('')).toBe('');
+  });
+});
+
+describe('CardSearch formatCardText and formatOracleText', () => {
+  const manaSpan = css => `<span class="mana-symbol ${css}"></span>`;
+  const modalManaSpan = css => `<span class="modal-mana-symbol ${css}"></span>`;
+
+  it.each(CARD_TEXT_ESCAPING_CASES)('matches shared fixture for $id', caseItem => {
+    const raw = caseItem.input;
+    expect(search.formatCardText(raw, false, false)).toBe(caseItem.non_modal_no_newlines);
+    expect(search.formatCardText(raw, false, true)).toBe(caseItem.non_modal_newlines);
+    expect(search.formatCardText(raw, true, false)).toBe(caseItem.modal_no_newlines);
+    expect(search.formatCardText(raw, true, true)).toBe(caseItem.modal_newlines);
+
+    // Also verify options object parameter format
+    expect(search.formatCardText(raw, { isModal: false, convertNewlines: false })).toBe(caseItem.non_modal_no_newlines);
+    expect(search.formatCardText(raw, { isModal: true, convertNewlines: true })).toBe(caseItem.modal_newlines);
+  });
+
+  it('handles null, undefined, and empty string', () => {
+    expect(search.formatCardText(null)).toBe('');
+    expect(search.formatCardText(undefined)).toBe('');
+    expect(search.formatCardText('')).toBe('');
+    expect(search.formatOracleText(null)).toBe('');
+    expect(search.formatOracleText(undefined)).toBe('');
+    expect(search.formatOracleText('')).toBe('');
+  });
+
+  it('formatOracleText escapes html and converts newlines to <br>', () => {
+    const raw = 'Deal 3 damage to <script>alert(1)</script>.\nPay {R} & "draw".';
+    expect(search.formatOracleText(raw, false)).toBe(
+      `Deal 3 damage to &lt;script&gt;alert(1)&lt;/script&gt;.<br>Pay ${manaSpan('ms ms-r ms-cost')} &amp; &quot;draw&quot;.`
+    );
+    expect(search.formatOracleText(raw, true)).toBe(
+      `Deal 3 damage to &lt;script&gt;alert(1)&lt;/script&gt;.<br>Pay ${modalManaSpan('ms ms-r ms-cost')} &amp; &quot;draw&quot;.`
+    );
+  });
+});
+
+describe('card.js formatting and rendering', () => {
+  const modalManaSpan = css => `<span class="modal-mana-symbol ${css}"></span>`;
+
+  it.each(CARD_TEXT_ESCAPING_CASES)('matches shared fixture for $id in card.js', caseItem => {
+    const raw = caseItem.input;
+    expect(cardModule.formatCardText(raw, false, false)).toBe(caseItem.non_modal_no_newlines);
+    expect(cardModule.formatCardText(raw, false, true)).toBe(caseItem.non_modal_newlines);
+    expect(cardModule.formatCardText(raw, true, false)).toBe(caseItem.modal_no_newlines);
+    expect(cardModule.formatCardText(raw, true, true)).toBe(caseItem.modal_newlines);
+  });
+
+  it('convertManaSymbols and formatOracleText in card.js default to modal styling', () => {
+    expect(cardModule.convertManaSymbols('{R}')).toBe(modalManaSpan('ms ms-r ms-cost'));
+    expect(cardModule.formatOracleText('{R}\n{G}')).toBe(
+      `${modalManaSpan('ms ms-r ms-cost')}<br>${modalManaSpan('ms ms-g ms-cost')}`
+    );
+  });
+
+  it('renderCardFace escapes all hostile fields', () => {
+    const hostileCard = {
+      name: 'Hostile <script>alert("name")</script>',
+      mana_cost: '{W}<img src=x onerror=alert("cost")>',
+      type_line: 'Creature <b onclick="alert(1)">Inert</b>',
+      oracle_text: 'Deal 3 damage to <script>alert("oracle")</script>.\nPay {R} & "draw".',
+      power: '<svg/onload=alert(1)>',
+      toughness: '4" onmouseover="alert(2)',
+      set_name: 'Dangerous <iframe src="evil.com">Set</iframe>',
+      set_code: 'tst',
+      collector_number: '1',
+    };
+
+    const rendered = cardModule.renderCardFace(hostileCard);
+
+    expect(rendered).not.toContain('<script>');
+    expect(rendered).not.toContain('<img src=x onerror=');
+    expect(rendered).not.toContain('<svg');
+    expect(rendered).not.toContain('<iframe');
+    expect(rendered).not.toContain('onclick="alert(1)"');
+
+    expect(rendered).toContain('&lt;script&gt;alert(&quot;name&quot;)&lt;/script&gt;');
+    expect(rendered).toContain(`${modalManaSpan('ms ms-w ms-cost')}&lt;img src=x onerror=alert(&quot;cost&quot;)&gt;`);
+    expect(rendered).toContain(
+      `Deal 3 damage to &lt;script&gt;alert(&quot;oracle&quot;)&lt;/script&gt;.<br>Pay ${modalManaSpan('ms ms-r ms-cost')} &amp; &quot;draw&quot;.`
+    );
   });
 });
 

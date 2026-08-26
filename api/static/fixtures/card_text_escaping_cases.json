@@ -1,0 +1,130 @@
+[
+  {
+    "id": "tags-script",
+    "input": "<script>alert('xss')</script>",
+    "non_modal_no_newlines": "&lt;script&gt;alert('xss')&lt;/script&gt;",
+    "non_modal_newlines": "&lt;script&gt;alert('xss')&lt;/script&gt;",
+    "modal_no_newlines": "&lt;script&gt;alert('xss')&lt;/script&gt;",
+    "modal_newlines": "&lt;script&gt;alert('xss')&lt;/script&gt;"
+  },
+  {
+    "id": "tags-img-onerror",
+    "input": "<img src=x onerror=alert(1)>",
+    "non_modal_no_newlines": "&lt;img src=x onerror=alert(1)&gt;",
+    "non_modal_newlines": "&lt;img src=x onerror=alert(1)&gt;",
+    "modal_no_newlines": "&lt;img src=x onerror=alert(1)&gt;",
+    "modal_newlines": "&lt;img src=x onerror=alert(1)&gt;"
+  },
+  {
+    "id": "tags-svg-onload",
+    "input": "<svg onload=alert(1)>",
+    "non_modal_no_newlines": "&lt;svg onload=alert(1)&gt;",
+    "non_modal_newlines": "&lt;svg onload=alert(1)&gt;",
+    "modal_no_newlines": "&lt;svg onload=alert(1)&gt;",
+    "modal_newlines": "&lt;svg onload=alert(1)&gt;"
+  },
+  {
+    "id": "quotes-and-ampersand",
+    "input": "\"double\" & 'single'",
+    "non_modal_no_newlines": "&quot;double&quot; &amp; 'single'",
+    "non_modal_newlines": "&quot;double&quot; &amp; 'single'",
+    "modal_no_newlines": "&quot;double&quot; &amp; 'single'",
+    "modal_newlines": "&quot;double&quot; &amp; 'single'"
+  },
+  {
+    "id": "event-handler-attributes",
+    "input": "<a href=\"javascript:alert(1)\" onclick=\"alert(2)\">Click</a> {U}",
+    "non_modal_no_newlines": "&lt;a href=&quot;javascript:alert(1)&quot; onclick=&quot;alert(2)&quot;&gt;Click&lt;/a&gt; <span class=\"mana-symbol ms ms-u ms-cost\"></span>",
+    "non_modal_newlines": "&lt;a href=&quot;javascript:alert(1)&quot; onclick=&quot;alert(2)&quot;&gt;Click&lt;/a&gt; <span class=\"mana-symbol ms ms-u ms-cost\"></span>",
+    "modal_no_newlines": "&lt;a href=&quot;javascript:alert(1)&quot; onclick=&quot;alert(2)&quot;&gt;Click&lt;/a&gt; <span class=\"modal-mana-symbol ms ms-u ms-cost\"></span>",
+    "modal_newlines": "&lt;a href=&quot;javascript:alert(1)&quot; onclick=&quot;alert(2)&quot;&gt;Click&lt;/a&gt; <span class=\"modal-mana-symbol ms ms-u ms-cost\"></span>"
+  },
+  {
+    "id": "valid-mana-single",
+    "input": "{W}",
+    "non_modal_no_newlines": "<span class=\"mana-symbol ms ms-w ms-cost\"></span>",
+    "non_modal_newlines": "<span class=\"mana-symbol ms ms-w ms-cost\"></span>",
+    "modal_no_newlines": "<span class=\"modal-mana-symbol ms ms-w ms-cost\"></span>",
+    "modal_newlines": "<span class=\"modal-mana-symbol ms ms-w ms-cost\"></span>"
+  },
+  {
+    "id": "valid-mana-all-categories",
+    "input": "{W}{U}{B}{R}{G}{C}{0}{16}{X}{T}{Q}{E}{P}{S}{CHAOS}{PW}{∞}{W/U}{2/W}{W/P}{W/U/P}",
+    "non_modal_no_newlines": "<span class=\"mana-symbol ms ms-w ms-cost\"></span><span class=\"mana-symbol ms ms-u ms-cost\"></span><span class=\"mana-symbol ms ms-b ms-cost\"></span><span class=\"mana-symbol ms ms-r ms-cost\"></span><span class=\"mana-symbol ms ms-g ms-cost\"></span><span class=\"mana-symbol ms ms-c ms-cost\"></span><span class=\"mana-symbol ms ms-0 ms-cost\"></span><span class=\"mana-symbol ms ms-16 ms-cost\"></span><span class=\"mana-symbol ms ms-x ms-cost\"></span><span class=\"mana-symbol ms ms-tap\"></span><span class=\"mana-symbol ms ms-untap\"></span><span class=\"mana-symbol ms ms-energy\"></span><span class=\"mana-symbol ms ms-p ms-cost\"></span><span class=\"mana-symbol ms ms-s ms-cost\"></span><span class=\"mana-symbol ms ms-chaos\"></span><span class=\"mana-symbol ms ms-pw\"></span><span class=\"mana-symbol ms ms-infinity\"></span><span class=\"mana-symbol ms ms-wu ms-cost\"></span><span class=\"mana-symbol ms ms-2w ms-cost\"></span><span class=\"mana-symbol ms ms-wp ms-cost\"></span><span class=\"mana-symbol ms ms-wup ms-cost\"></span>",
+    "non_modal_newlines": "<span class=\"mana-symbol ms ms-w ms-cost\"></span><span class=\"mana-symbol ms ms-u ms-cost\"></span><span class=\"mana-symbol ms ms-b ms-cost\"></span><span class=\"mana-symbol ms ms-r ms-cost\"></span><span class=\"mana-symbol ms ms-g ms-cost\"></span><span class=\"mana-symbol ms ms-c ms-cost\"></span><span class=\"mana-symbol ms ms-0 ms-cost\"></span><span class=\"mana-symbol ms ms-16 ms-cost\"></span><span class=\"mana-symbol ms ms-x ms-cost\"></span><span class=\"mana-symbol ms ms-tap\"></span><span class=\"mana-symbol ms ms-untap\"></span><span class=\"mana-symbol ms ms-energy\"></span><span class=\"mana-symbol ms ms-p ms-cost\"></span><span class=\"mana-symbol ms ms-s ms-cost\"></span><span class=\"mana-symbol ms ms-chaos\"></span><span class=\"mana-symbol ms ms-pw\"></span><span class=\"mana-symbol ms ms-infinity\"></span><span class=\"mana-symbol ms ms-wu ms-cost\"></span><span class=\"mana-symbol ms ms-2w ms-cost\"></span><span class=\"mana-symbol ms ms-wp ms-cost\"></span><span class=\"mana-symbol ms ms-wup ms-cost\"></span>",
+    "modal_no_newlines": "<span class=\"modal-mana-symbol ms ms-w ms-cost\"></span><span class=\"modal-mana-symbol ms ms-u ms-cost\"></span><span class=\"modal-mana-symbol ms ms-b ms-cost\"></span><span class=\"modal-mana-symbol ms ms-r ms-cost\"></span><span class=\"modal-mana-symbol ms ms-g ms-cost\"></span><span class=\"modal-mana-symbol ms ms-c ms-cost\"></span><span class=\"modal-mana-symbol ms ms-0 ms-cost\"></span><span class=\"modal-mana-symbol ms ms-16 ms-cost\"></span><span class=\"modal-mana-symbol ms ms-x ms-cost\"></span><span class=\"modal-mana-symbol ms ms-tap\"></span><span class=\"modal-mana-symbol ms ms-untap\"></span><span class=\"modal-mana-symbol ms ms-energy\"></span><span class=\"modal-mana-symbol ms ms-p ms-cost\"></span><span class=\"modal-mana-symbol ms ms-s ms-cost\"></span><span class=\"modal-mana-symbol ms ms-chaos\"></span><span class=\"modal-mana-symbol ms ms-pw\"></span><span class=\"modal-mana-symbol ms ms-infinity\"></span><span class=\"modal-mana-symbol ms ms-wu ms-cost\"></span><span class=\"modal-mana-symbol ms ms-2w ms-cost\"></span><span class=\"modal-mana-symbol ms ms-wp ms-cost\"></span><span class=\"modal-mana-symbol ms ms-wup ms-cost\"></span>",
+    "modal_newlines": "<span class=\"modal-mana-symbol ms ms-w ms-cost\"></span><span class=\"modal-mana-symbol ms ms-u ms-cost\"></span><span class=\"modal-mana-symbol ms ms-b ms-cost\"></span><span class=\"modal-mana-symbol ms ms-r ms-cost\"></span><span class=\"modal-mana-symbol ms ms-g ms-cost\"></span><span class=\"modal-mana-symbol ms ms-c ms-cost\"></span><span class=\"modal-mana-symbol ms ms-0 ms-cost\"></span><span class=\"modal-mana-symbol ms ms-16 ms-cost\"></span><span class=\"modal-mana-symbol ms ms-x ms-cost\"></span><span class=\"modal-mana-symbol ms ms-tap\"></span><span class=\"modal-mana-symbol ms ms-untap\"></span><span class=\"modal-mana-symbol ms ms-energy\"></span><span class=\"modal-mana-symbol ms ms-p ms-cost\"></span><span class=\"modal-mana-symbol ms ms-s ms-cost\"></span><span class=\"modal-mana-symbol ms ms-chaos\"></span><span class=\"modal-mana-symbol ms ms-pw\"></span><span class=\"modal-mana-symbol ms ms-infinity\"></span><span class=\"modal-mana-symbol ms ms-wu ms-cost\"></span><span class=\"modal-mana-symbol ms ms-2w ms-cost\"></span><span class=\"modal-mana-symbol ms ms-wp ms-cost\"></span><span class=\"modal-mana-symbol ms ms-wup ms-cost\"></span>"
+  },
+  {
+    "id": "mana-with-hostile-tags",
+    "input": "<script>alert(1)</script>{W}<img src=x onerror=alert(1)>",
+    "non_modal_no_newlines": "&lt;script&gt;alert(1)&lt;/script&gt;<span class=\"mana-symbol ms ms-w ms-cost\"></span>&lt;img src=x onerror=alert(1)&gt;",
+    "non_modal_newlines": "&lt;script&gt;alert(1)&lt;/script&gt;<span class=\"mana-symbol ms ms-w ms-cost\"></span>&lt;img src=x onerror=alert(1)&gt;",
+    "modal_no_newlines": "&lt;script&gt;alert(1)&lt;/script&gt;<span class=\"modal-mana-symbol ms ms-w ms-cost\"></span>&lt;img src=x onerror=alert(1)&gt;",
+    "modal_newlines": "&lt;script&gt;alert(1)&lt;/script&gt;<span class=\"modal-mana-symbol ms ms-w ms-cost\"></span>&lt;img src=x onerror=alert(1)&gt;"
+  },
+  {
+    "id": "unknown-mana-token",
+    "input": "{UNKNOWN}",
+    "non_modal_no_newlines": "{UNKNOWN}",
+    "non_modal_newlines": "{UNKNOWN}",
+    "modal_no_newlines": "{UNKNOWN}",
+    "modal_newlines": "{UNKNOWN}"
+  },
+  {
+    "id": "malformed-brace-open",
+    "input": "{W and {U}",
+    "non_modal_no_newlines": "{W and <span class=\"mana-symbol ms ms-u ms-cost\"></span>",
+    "non_modal_newlines": "{W and <span class=\"mana-symbol ms ms-u ms-cost\"></span>",
+    "modal_no_newlines": "{W and <span class=\"modal-mana-symbol ms ms-u ms-cost\"></span>",
+    "modal_newlines": "{W and <span class=\"modal-mana-symbol ms ms-u ms-cost\"></span>"
+  },
+  {
+    "id": "malformed-brace-close",
+    "input": "W} and {U}",
+    "non_modal_no_newlines": "W} and <span class=\"mana-symbol ms ms-u ms-cost\"></span>",
+    "non_modal_newlines": "W} and <span class=\"mana-symbol ms ms-u ms-cost\"></span>",
+    "modal_no_newlines": "W} and <span class=\"modal-mana-symbol ms ms-u ms-cost\"></span>",
+    "modal_newlines": "W} and <span class=\"modal-mana-symbol ms ms-u ms-cost\"></span>"
+  },
+  {
+    "id": "malformed-empty-braces",
+    "input": "{}",
+    "non_modal_no_newlines": "{}",
+    "non_modal_newlines": "{}",
+    "modal_no_newlines": "{}",
+    "modal_newlines": "{}"
+  },
+  {
+    "id": "malformed-nested-braces",
+    "input": "{{W}}",
+    "non_modal_no_newlines": "{{W}}",
+    "non_modal_newlines": "{{W}}",
+    "modal_no_newlines": "{{W}}",
+    "modal_newlines": "{{W}}"
+  },
+  {
+    "id": "malformed-brace-with-tags",
+    "input": "{<script>alert(1)</script>}",
+    "non_modal_no_newlines": "{&lt;script&gt;alert(1)&lt;/script&gt;}",
+    "non_modal_newlines": "{&lt;script&gt;alert(1)&lt;/script&gt;}",
+    "modal_no_newlines": "{&lt;script&gt;alert(1)&lt;/script&gt;}",
+    "modal_newlines": "{&lt;script&gt;alert(1)&lt;/script&gt;}"
+  },
+  {
+    "id": "newlines-conversion",
+    "input": "First line\nSecond line\n{W}\nThird line",
+    "non_modal_no_newlines": "First line\nSecond line\n<span class=\"mana-symbol ms ms-w ms-cost\"></span>\nThird line",
+    "non_modal_newlines": "First line<br>Second line<br><span class=\"mana-symbol ms ms-w ms-cost\"></span><br>Third line",
+    "modal_no_newlines": "First line\nSecond line\n<span class=\"modal-mana-symbol ms ms-w ms-cost\"></span>\nThird line",
+    "modal_newlines": "First line<br>Second line<br><span class=\"modal-mana-symbol ms ms-w ms-cost\"></span><br>Third line"
+  },
+  {
+    "id": "double-escaping-protection",
+    "input": "Fish &amp; Chips & {W}",
+    "non_modal_no_newlines": "Fish &amp;amp; Chips &amp; <span class=\"mana-symbol ms ms-w ms-cost\"></span>",
+    "non_modal_newlines": "Fish &amp;amp; Chips &amp; <span class=\"mana-symbol ms ms-w ms-cost\"></span>",
+    "modal_no_newlines": "Fish &amp;amp; Chips &amp; <span class=\"modal-mana-symbol ms ms-w ms-cost\"></span>",
+    "modal_newlines": "Fish &amp;amp; Chips &amp; <span class=\"modal-mana-symbol ms ms-w ms-cost\"></span>"
+  }
+]

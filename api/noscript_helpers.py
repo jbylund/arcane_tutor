@@ -25,6 +25,118 @@ def escape_html(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
+# Mana symbol mapping - matches JavaScript manaMap and hybridMap
+_MANA_MAP = {
+    # Basic colors
+    "{R}": "ms ms-r ms-cost",
+    "{G}": "ms ms-g ms-cost",
+    "{W}": "ms ms-w ms-cost",
+    "{U}": "ms ms-u ms-cost",
+    "{B}": "ms ms-b ms-cost",
+    "{C}": "ms ms-c ms-cost",
+    # Numbers
+    "{0}": "ms ms-0 ms-cost",
+    "{1}": "ms ms-1 ms-cost",
+    "{2}": "ms ms-2 ms-cost",
+    "{3}": "ms ms-3 ms-cost",
+    "{4}": "ms ms-4 ms-cost",
+    "{5}": "ms ms-5 ms-cost",
+    "{6}": "ms ms-6 ms-cost",
+    "{7}": "ms ms-7 ms-cost",
+    "{8}": "ms ms-8 ms-cost",
+    "{9}": "ms ms-9 ms-cost",
+    "{10}": "ms ms-10 ms-cost",
+    "{11}": "ms ms-11 ms-cost",
+    "{12}": "ms ms-12 ms-cost",
+    "{13}": "ms ms-13 ms-cost",
+    "{14}": "ms ms-14 ms-cost",
+    "{15}": "ms ms-15 ms-cost",
+    "{16}": "ms ms-16 ms-cost",
+    # Variables
+    "{X}": "ms ms-x ms-cost",
+    "{Y}": "ms ms-y ms-cost",
+    "{Z}": "ms ms-z ms-cost",
+    # Special
+    "{T}": "ms ms-tap",
+    "{Q}": "ms ms-untap",
+    "{E}": "ms ms-energy",
+    "{P}": "ms ms-p ms-cost",
+    "{S}": "ms ms-s ms-cost",
+    "{CHAOS}": "ms ms-chaos",
+    "{PW}": "ms ms-pw",
+    "{∞}": "ms ms-infinity",
+    # Hybrid mana
+    "{W/U}": "ms ms-wu ms-cost",
+    "{U/B}": "ms ms-ub ms-cost",
+    "{B/R}": "ms ms-br ms-cost",
+    "{R/G}": "ms ms-rg ms-cost",
+    "{G/W}": "ms ms-gw ms-cost",
+    "{W/B}": "ms ms-wb ms-cost",
+    "{U/R}": "ms ms-ur ms-cost",
+    "{B/G}": "ms ms-bg ms-cost",
+    "{R/W}": "ms ms-rw ms-cost",
+    "{G/U}": "ms ms-gu ms-cost",
+    # Hybrid with generic
+    "{2/W}": "ms ms-2w ms-cost",
+    "{2/U}": "ms ms-2u ms-cost",
+    "{2/B}": "ms ms-2b ms-cost",
+    "{2/R}": "ms ms-2r ms-cost",
+    "{2/G}": "ms ms-2g ms-cost",
+    # Phyrexian
+    "{W/P}": "ms ms-wp ms-cost",
+    "{U/P}": "ms ms-up ms-cost",
+    "{B/P}": "ms ms-bp ms-cost",
+    "{R/P}": "ms ms-rp ms-cost",
+    "{G/P}": "ms ms-gp ms-cost",
+    # Phyrexian hybrid
+    "{W/U/P}": "ms ms-wup ms-cost",
+    "{W/B/P}": "ms ms-wbp ms-cost",
+    "{U/B/P}": "ms ms-ubp ms-cost",
+    "{U/R/P}": "ms ms-urp ms-cost",
+    "{B/R/P}": "ms ms-brp ms-cost",
+    "{B/G/P}": "ms ms-bgp ms-cost",
+    "{R/W/P}": "ms ms-rwp ms-cost",
+    "{R/G/P}": "ms ms-rgp ms-cost",
+    "{G/W/P}": "ms ms-gwp ms-cost",
+    "{G/U/P}": "ms ms-gup ms-cost",
+}
+
+
+def format_card_text(text: str, is_modal: bool = False, convert_newlines: bool = False) -> str:
+    """Format raw card text with HTML-escaping, mana symbol replacement, and optional newlines.
+
+    Accepts raw untrusted text, always HTML-escapes exactly once, replaces only recognized
+    mana tokens with fixed span markup, and optionally converts newlines to <br>.
+
+    Args:
+    ----
+        text: Raw untrusted text containing mana symbols, text, and/or newlines
+        is_modal: Whether this is for a modal display (uses modal-mana-symbol class)
+        convert_newlines: Whether to convert newlines to <br> tags
+
+    Returns:
+    -------
+        Formatted safe HTML string
+    """
+    if not text:
+        return ""
+
+    escaped = escape_html(text)
+    symbol_class = "modal-mana-symbol" if is_modal else "mana-symbol"
+
+    def replace_symbol(match: re.Match) -> str:
+        symbol = match.group(0)
+        css_classes = _MANA_MAP.get(symbol)
+        if css_classes:
+            return f'<span class="{symbol_class} {css_classes}"></span>'
+        return symbol
+
+    formatted = re.sub(r"\{[^}]{1,5}\}", replace_symbol, escaped)
+    if convert_newlines:
+        formatted = formatted.replace("\n", "<br>")
+    return formatted
+
+
 def convert_mana_symbols(text: str, is_modal: bool = False) -> str:
     """Convert mana cost symbols to HTML with CSS classes.
 
@@ -37,96 +149,7 @@ def convert_mana_symbols(text: str, is_modal: bool = False) -> str:
     -------
         HTML with mana symbol spans
     """
-    if not text:
-        return ""
-
-    # Mana symbol mapping - matches JavaScript manaMap and hybridMap
-    mana_map = {
-        # Basic colors
-        "{R}": "ms ms-r ms-cost",
-        "{G}": "ms ms-g ms-cost",
-        "{W}": "ms ms-w ms-cost",
-        "{U}": "ms ms-u ms-cost",
-        "{B}": "ms ms-b ms-cost",
-        "{C}": "ms ms-c ms-cost",
-        # Numbers
-        "{0}": "ms ms-0 ms-cost",
-        "{1}": "ms ms-1 ms-cost",
-        "{2}": "ms ms-2 ms-cost",
-        "{3}": "ms ms-3 ms-cost",
-        "{4}": "ms ms-4 ms-cost",
-        "{5}": "ms ms-5 ms-cost",
-        "{6}": "ms ms-6 ms-cost",
-        "{7}": "ms ms-7 ms-cost",
-        "{8}": "ms ms-8 ms-cost",
-        "{9}": "ms ms-9 ms-cost",
-        "{10}": "ms ms-10 ms-cost",
-        "{11}": "ms ms-11 ms-cost",
-        "{12}": "ms ms-12 ms-cost",
-        "{13}": "ms ms-13 ms-cost",
-        "{14}": "ms ms-14 ms-cost",
-        "{15}": "ms ms-15 ms-cost",
-        "{16}": "ms ms-16 ms-cost",
-        # Variables
-        "{X}": "ms ms-x ms-cost",
-        "{Y}": "ms ms-y ms-cost",
-        "{Z}": "ms ms-z ms-cost",
-        # Special
-        "{T}": "ms ms-tap",
-        "{Q}": "ms ms-untap",
-        "{E}": "ms ms-energy",
-        "{P}": "ms ms-p ms-cost",
-        "{S}": "ms ms-s ms-cost",
-        "{CHAOS}": "ms ms-chaos",
-        "{PW}": "ms ms-pw",
-        "{∞}": "ms ms-infinity",
-        # Hybrid mana
-        "{W/U}": "ms ms-wu ms-cost",
-        "{U/B}": "ms ms-ub ms-cost",
-        "{B/R}": "ms ms-br ms-cost",
-        "{R/G}": "ms ms-rg ms-cost",
-        "{G/W}": "ms ms-gw ms-cost",
-        "{W/B}": "ms ms-wb ms-cost",
-        "{U/R}": "ms ms-ur ms-cost",
-        "{B/G}": "ms ms-bg ms-cost",
-        "{R/W}": "ms ms-rw ms-cost",
-        "{G/U}": "ms ms-gu ms-cost",
-        # Hybrid with generic
-        "{2/W}": "ms ms-2w ms-cost",
-        "{2/U}": "ms ms-2u ms-cost",
-        "{2/B}": "ms ms-2b ms-cost",
-        "{2/R}": "ms ms-2r ms-cost",
-        "{2/G}": "ms ms-2g ms-cost",
-        # Phyrexian
-        "{W/P}": "ms ms-wp ms-cost",
-        "{U/P}": "ms ms-up ms-cost",
-        "{B/P}": "ms ms-bp ms-cost",
-        "{R/P}": "ms ms-rp ms-cost",
-        "{G/P}": "ms ms-gp ms-cost",
-        # Phyrexian hybrid
-        "{W/U/P}": "ms ms-wup ms-cost",
-        "{W/B/P}": "ms ms-wbp ms-cost",
-        "{U/B/P}": "ms ms-ubp ms-cost",
-        "{U/R/P}": "ms ms-urp ms-cost",
-        "{B/R/P}": "ms ms-brp ms-cost",
-        "{B/G/P}": "ms ms-bgp ms-cost",
-        "{R/W/P}": "ms ms-rwp ms-cost",
-        "{R/G/P}": "ms ms-rgp ms-cost",
-        "{G/W/P}": "ms ms-gwp ms-cost",
-        "{G/U/P}": "ms ms-gup ms-cost",
-    }
-
-    symbol_class = "modal-mana-symbol" if is_modal else "mana-symbol"
-
-    # Use regex to find and replace mana symbols in a single pass
-    def replace_symbol(match: re.Match) -> str:
-        symbol = match.group(0)
-        css_classes = mana_map.get(symbol)
-        if css_classes:
-            return f'<span class="{symbol_class} {css_classes}"></span>'
-        return symbol  # Return unchanged if not in map
-
-    return re.sub(r"\{[^}]{1,5}\}", replace_symbol, text)
+    return format_card_text(text, is_modal=is_modal, convert_newlines=False)
 
 
 # Unicode text representations of mana symbols — matches JavaScript manaTextMap
@@ -216,25 +239,18 @@ def convert_mana_symbols_to_text(text: str) -> str:
 
 
 def format_oracle_text(oracle_text: str, is_modal: bool = False) -> str:
-    """Format oracle text with mana symbols and line breaks.
+    """Format oracle text with mana symbols and line breaks (accepts raw text).
 
     Args:
     ----
-        oracle_text: The oracle text to format
+        oracle_text: The raw oracle text to format
         is_modal: Whether this is for a modal display
 
     Returns:
     -------
-        Formatted HTML
+        Formatted safe HTML
     """
-    if not oracle_text:
-        return ""
-
-    # Convert mana symbols first
-    formatted = convert_mana_symbols(oracle_text, is_modal)
-
-    # Convert newlines to HTML line breaks
-    return formatted.replace("\n", "<br>")
+    return format_card_text(oracle_text, is_modal=is_modal, convert_newlines=True)
 
 
 def build_image_url(card: dict, size: str) -> str:
