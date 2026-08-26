@@ -16,7 +16,7 @@ import time
 # of coercion. Ruff's TC003 wants it moved; the runtime-evaluated-decorators setting will make the noqa
 # unnecessary once handlers carry a route decorator.
 from collections.abc import Sequence  # noqa: TC003
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, NoReturn
 
 import falcon
@@ -107,13 +107,13 @@ INTERNAL_ERROR_DESCRIPTION = "An internal error occurred."
 # search methods keep it optional (per review) and route/internal defaults can
 # never drift apart.
 DEFAULT_OFFSET = 0
-PAGINATION_BASE_YEAR = 2013
-PAGINATION_ANNUAL_STEP = 10_000
+PAGINATION_BASE_TIMESTAMP = 1_409_018_789
+PAGINATION_GROWTH_INTERVAL_SECONDS = 3_155
 
 
 def pagination_ceiling() -> int:
-    """Return the annual pagination ceiling for limit and offset: (UTC current year - 2013) * 10_000."""
-    return (datetime.now(tz=UTC).year - PAGINATION_BASE_YEAR) * PAGINATION_ANNUAL_STEP
+    """Return the continuously growing pagination ceiling for limit and offset."""
+    return int((time.time() - PAGINATION_BASE_TIMESTAMP) // PAGINATION_GROWTH_INTERVAL_SECONDS)
 
 
 RESULT_FIELD_COLUMNS: dict[str, str] = {
@@ -575,13 +575,15 @@ class APIResource:
             fields: Which fields to return per card (comma-separated in the query string). Defaults
                 to the usual 9 (name, set_code, collector_number, power, toughness, mana_cost,
                 oracle_text, set_name, type_line). See RESULT_FIELD_COLUMNS for the full vocabulary.
-            limit: Maximum number of results to return. Must be between 0 and the annual
-                pagination ceiling ((UTC current year - 2013) * 10,000; 130,000 in 2026). Defaults to 100.
+            limit: Maximum number of results to return. Must be between 0 and the
+                continuously growing pagination ceiling (approximately 10,000 additional
+                results per year). Defaults to 100.
             offset: Number of results to skip before the first returned card, in the
                 same sort order the query uses -- limit/offset together give clients
                 pagination over the full result set (total_cards is always the
-                unpaginated count). Must be between 0 and the annual pagination ceiling
-                ((UTC current year - 2013) * 10,000; 130,000 in 2026). Defaults to 0.
+                unpaginated count). Must be between 0 and the continuously growing
+                pagination ceiling (approximately 10,000 additional results per year).
+                Defaults to 0.
             orderby: Field to sort by.
             shape: Shape of the "cards" list: 'rows' (list of card objects, default) or
                 'columnar' (one list per field, keyed by field name — smaller on the wire).
