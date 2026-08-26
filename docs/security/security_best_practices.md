@@ -202,27 +202,25 @@ The application implements the following security headers via `SecurityHeadersMi
 
 ### CORS Configuration
 
-**✅ DO:**
-- Restrict origins to known domains in production
-- Use environment-specific configurations
-- Log unauthorized CORS requests
+Sylvan Librarian's public search API intentionally responds with `Access-Control-Allow-Origin: *`
+on every response, matching Scryfall's browser-readable API contract. `CORSMiddleware` always sets
+the wildcard; neither `ENVIRONMENT` nor `CORS_ALLOWED_ORIGINS` currently changes this behavior.
 
-```python
-# Good: Production CORS
-allowed_origins = [
-    "https://sylvan-librarian.com",
-    "https://www.sylvan-librarian.com"
-]
-```
+**Current contract:**
+- Public, read-only JSON API with no cookies or session credentials sent cross-origin
+- Wildcard origin allows third-party sites and browser tools to call the API directly
 
-**❌ DON'T:**
-- Don't use wildcard `*` in production
-- Don't allow untrusted origins
+**If you add cookie or session authentication:**
+- Revisit CORS before shipping — wildcard origins are incompatible with credentialed cross-origin
+  requests
 
-```python
-# Bad: Too permissive
-Access-Control-Allow-Origin: *
-```
+**Future (not implemented):**
+- Operator-configurable origin allowlists may be added later for deployments that need tighter
+  boundaries
+
+**When changing CORS middleware:**
+- Preserve the wildcard unless deliberately changing the public API contract
+- Document any contract change in README and this file
 
 ---
 
@@ -404,7 +402,7 @@ Before merging any PR, verify:
 - [ ] HTML output is properly escaped
 - [ ] No hardcoded secrets in code
 - [ ] Security headers remain configured
-- [ ] CORS is properly restricted
+- [ ] CORS behavior matches the documented wildcard public API contract (or any deliberate change is documented)
 - [ ] Dependencies scanned for vulnerabilities
 - [ ] Tests cover security-critical paths
 - [ ] Code passes security linting

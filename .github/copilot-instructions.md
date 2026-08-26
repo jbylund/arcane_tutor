@@ -62,7 +62,9 @@ npx prettier --write <changed .html/.js files>
 - `api/parsing/` — query parser: `parsing_f.py` (grammar), `nodes.py` / `card_query_nodes.py`
   (AST nodes), `db_info.py` (field → DB column mapping); unit tests in `api/parsing/tests/`
 - `api/api_resource.py` — all HTTP routing (Falcon sink), search logic, AST → SQL generation
-- `api/middlewares/` — timing, caching, compression, security headers, CORS (applied in that order)
+- `api/middlewares/` — timing, caching, compression, security headers, CORS (applied in that order);
+  `CORSMiddleware` always sets `Access-Control-Allow-Origin: *` (Scryfall-compatible public API;
+  not env-configurable today; revisit if cookie/session auth is added)
 - `api/entrypoint.py` + `api/api_worker.py` — multi-process server startup
 - `api/db/` — PostgreSQL schema and migration SQL files
 - `api/static/` — frontend (`app.js`, minified `app.min.js`, `card.html`, …)

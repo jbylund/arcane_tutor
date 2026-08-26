@@ -1,4 +1,8 @@
-"""Tests for CORS middleware."""
+"""Tests for CORS middleware.
+
+Public API contract: every response must carry Access-Control-Allow-Origin: * (Scryfall-compatible).
+Do not narrow origins without an explicit, documented contract change.
+"""
 
 from __future__ import annotations
 

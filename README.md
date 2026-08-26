@@ -304,9 +304,9 @@ applies every time that stack starts; exporting one in the shell overrides the f
   - Set to `true`, `1`, or `yes` to enable caching
   - Improves performance for repeated queries
   - Can be set in docker-compose.yml or exported before starting services
-- `ENVIRONMENT` - Environment mode (default: `dev`)
-  - Set to `prod` for production mode with restricted CORS
-  - Controlled per environment in `envs/dev` / `envs/blue` / `envs/green`
+- `ENVIRONMENT` - Deployment label for logging and monitoring (default: `dev`)
+  - Set to `prod` for production deployments (`envs/blue` and `envs/green` use this)
+  - Does not change CORS behavior; see **CORS** below
 - `PREFER_SCORE_BACKFILL_TIMEOUT_MS` - Statement timeout for the prefer-score backfill (default: `120000`)
   - The backfill rescores the whole corpus in one UPDATE, so its runtime tracks disk speed
   - Raise it if an import dies in `backfill_prefer_scores` on slow storage (a virtualized
@@ -316,10 +316,11 @@ applies every time that stack starts; exporting one in the shell overrides the f
   - Override to use a different CDN provider
   - Used in Content-Security-Policy headers
   - Format: `https://your-cdn-domain.com`
-- `CORS_ALLOWED_ORIGINS` - Additional CORS allowed origins (optional)
-  - Comma-separated list of origins to allow
-  - Example: `https://example.com,https://app.example.com`
-  - Supplements environment-specific defaults
+- **CORS** — The public search API intentionally sets `Access-Control-Allow-Origin: *` on every
+  response (Scryfall-compatible, browser-readable from any origin). `CORSMiddleware` always emits
+  the wildcard; neither `ENVIRONMENT` nor any env var currently restricts origins. Operator-configurable
+  origin allowlists may be added in a future release but are **not implemented today**. Introducing
+  cookie- or session-based authentication would require revisiting this policy.
 - `ADMIN_PASSWORD` - Shared secret required to reach any `_admin/` route (see [Admin Endpoints](#admin-endpoints))
   - Generated automatically into `env.json` on first boot; never overwrites an existing value
   - Retrieve it with `jq -r .ADMIN_PASSWORD env.json`
@@ -456,7 +457,10 @@ Not approved/endorsed by Wizards of the Coast.
 
 ### Security
 
-All user input reaches the database only via parameterized queries; HTTP responses include CSP, X-Frame-Options, and CORS headers. See [docs/security/security_best_practices.md](docs/security/security_best_practices.md) for development guidelines. To report a vulnerability, see [SECURITY.md](SECURITY.md).
+All user input reaches the database only via parameterized queries; HTTP responses include CSP,
+X-Frame-Options, and `Access-Control-Allow-Origin: *` (intentional public API contract). See
+[docs/security/security_best_practices.md](docs/security/security_best_practices.md) for development
+guidelines. To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ### Legal Compliance
 
