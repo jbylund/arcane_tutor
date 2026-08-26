@@ -3775,6 +3775,16 @@ fn routed_agrees_with_gathered_scan_across_page_sizes() {
     }
 }
 
+/// Six parallel count vectors returned by `linear_range_card_counts_reference`.
+struct RangeCardCountsRef {
+    below: Vec<u32>,
+    below_artworks: Vec<u32>,
+    at_or_above: Vec<u32>,
+    at_or_above_artworks: Vec<u32>,
+    at: Vec<u32>,
+    at_artworks: Vec<u32>,
+}
+
 /// O(n) independent reference for `RangeCardCounts`: forward pass for `below`, backward pass for
 /// `at_or_above` and per-block `at`. Same artwork-id derivation as the builder
 /// (`artwork_base[card] + artwork_group_id`).
@@ -3784,10 +3794,17 @@ fn linear_range_card_counts_reference(
     printings: &Archived<Vec<Printing>>,
     artwork_base: &Archived<Vec<u32>>,
     n_cards: usize,
-) -> (Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>) {
+) -> RangeCardCountsRef {
     let n_values = idx.keys.len();
     if idx.pids.is_empty() {
-        return (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        return RangeCardCountsRef {
+            below: Vec::new(),
+            below_artworks: Vec::new(),
+            at_or_above: Vec::new(),
+            at_or_above_artworks: Vec::new(),
+            at: Vec::new(),
+            at_artworks: Vec::new(),
+        };
     }
     let n_artworks = artwork_base.last().map(|b| u32::from(*b)).unwrap_or(0) as usize;
     let ids = |pid: usize| {
@@ -3854,7 +3871,7 @@ fn linear_range_card_counts_reference(
             }
         }
     }
-    (below, below_artworks, at_or_above, at_or_above_artworks, at, at_artworks)
+    RangeCardCountsRef { below, below_artworks, at_or_above, at_or_above_artworks, at, at_artworks }
 }
 
 /// The per-value count table must be EXACT, not close, in BOTH spaces it carries: every one-sided
@@ -3890,14 +3907,14 @@ fn range_card_counts_are_exact() {
         assert_eq!(counts.values.len(), counts.at_or_above_artworks.len(), "{name}: parallel vectors");
         assert_eq!(counts.values.len(), counts.at_artworks.len(), "{name}: parallel vectors");
 
-        let (ref_below, ref_below_artworks, ref_at_or_above, ref_at_or_above_artworks, ref_at, ref_at_artworks) =
+        let reference =
             linear_range_card_counts_reference(idx, p2c, &archived.printings, &indexes.artwork_base, n_cards);
 
         for (i, value) in counts.values.iter().enumerate() {
             let v = u32::from(*value);
-            let lt = (ref_below[i], ref_below_artworks[i]);
-            let ge = (ref_at_or_above[i], ref_at_or_above_artworks[i]);
-            let eq = (ref_at[i], ref_at_artworks[i]);
+            let lt = (reference.below[i], reference.below_artworks[i]);
+            let ge = (reference.at_or_above[i], reference.at_or_above_artworks[i]);
+            let eq = (reference.at[i], reference.at_artworks[i]);
             assert_eq!((u32::from(counts.below[i]), u32::from(counts.below_artworks[i])), lt, "{name}: below[{i}] at {v}");
             assert_eq!(
                 (u32::from(counts.at_or_above[i]), u32::from(counts.at_or_above_artworks[i])),
