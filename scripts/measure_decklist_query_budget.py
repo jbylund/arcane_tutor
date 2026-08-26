@@ -36,6 +36,7 @@ DEFAULT_SAMPLES = 100_000
 DEFAULT_DECK_SIZE = 100
 DEFAULT_FORMAT = "commander"
 DEFAULT_OUT = REPO_ROOT / "benchmarks" / "decklist_query_budget.json"
+HISTOGRAM_COLUMN_COUNT = 3
 
 HISTOGRAM_SQL = """
 WITH distinct_card_names AS (
@@ -138,7 +139,8 @@ def fetch_names_from_db() -> list[str]:
     raw = _run_psql(NAMES_SQL)
     names = [line.strip() for line in raw.splitlines() if line.strip()]
     if not names:
-        raise SystemExit("No card names returned from database.")
+        msg = "No card names returned from database."
+        raise SystemExit(msg)
     return names
 
 
@@ -184,12 +186,13 @@ def simulate_deck_queries(
 
 
 def parse_histogram(raw: str) -> list[dict[str, int]]:
+    """Parse tab-separated histogram rows from psql output."""
     rows: list[dict[str, int]] = []
     for line in raw.splitlines():
         if not line.strip():
             continue
         parts = line.split("\t")
-        if len(parts) != 3:
+        if len(parts) != HISTOGRAM_COLUMN_COUNT:
             continue
         rows.append(
             {
@@ -202,6 +205,7 @@ def parse_histogram(raw: str) -> list[dict[str, int]]:
 
 
 def summarize_bytes(values: list[int]) -> dict[str, float | int]:
+    """Return count/min/max/mean/percentiles for UTF-8 byte lengths."""
     sorted_values = sorted(values)
     return {
         "count": len(sorted_values),
@@ -216,6 +220,7 @@ def summarize_bytes(values: list[int]) -> dict[str, float | int]:
 
 
 def main() -> None:
+    """Load card names, simulate decklist queries, and write summary JSON."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--names", type=Path, help="Optional file of distinct card names (one per line).")
     parser.add_argument("--samples", type=int, default=DEFAULT_SAMPLES)

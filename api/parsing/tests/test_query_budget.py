@@ -54,7 +54,7 @@ class TestGroupDepthLimit:
 
 class TestDecklistShape:
     def test_accepts_long_flat_or_chain_within_byte_limit(self) -> None:
-        query = " or ".join(f'name:n{i}' for i in range(80))
+        query = " or ".join(f"name:n{i}" for i in range(80))
         assert len(query.encode("utf-8")) <= MAX_QUERY_UTF8_BYTES
         parse_scryfall_query(query)
 

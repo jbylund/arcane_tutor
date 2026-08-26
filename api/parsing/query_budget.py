@@ -3,13 +3,13 @@
 Limits are calibrated on distinct ``magic.cards`` names from the blue database
 (``scripts/measure_decklist_query_budget.py``):
 
-* **3500 UTF-8 bytes** — 100k random 100-card decklist queries in the shape
-  ``(!"…" OR …) f:commander`` landed at p99.9 ≈ 2547 B and max ≈ 2631 B; a
-  real cEDH reference list (MTGTop8 Witherbloom) was ≈ 2655 B. The limit adds
+* **3500 UTF-8 bytes** - 100k random 100-card decklist queries in the shape
+  ``(!"…" OR …) f:commander`` landed at p99.9 ~2547 B and max ~2631 B; a
+  real cEDH reference list (MTGTop8 Witherbloom) was ~2655 B. The limit adds
   headroom for longer names and trailing filters.
-* **10 parenthesis nesting levels** — maximum ``( … ( … ) … )`` depth during
+* **10 parenthesis nesting levels** - maximum ``( … ( … ) … )`` depth during
   parse (sibling ``(a) (b)`` groups do not accumulate). Legitimate Scryfall
-  syntax is almost always depth 0–3; depth 10 was verified cheap in parse/SQL
+  syntax is almost always depth 0-3; depth 10 was verified cheap in parse/SQL
   benchmarks; unbounded nesting hits ``RecursionError`` around depth 200.
 """
 
