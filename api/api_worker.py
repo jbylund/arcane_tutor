@@ -128,7 +128,7 @@ class ApiWorker(multiprocessing.Process):
             middleware=[
                 TimingMiddleware(),
                 AdminAuthMiddleware(),  # ahead of caching: a rejected admin request must never hit the cache
-                SearchBudgetMiddleware(),  # ahead of logging/caching: reject over-budget /search early
+                SearchBudgetMiddleware(),  # ahead of logging/caching: skip parser/handler on over-budget /search
                 QueryLogMiddleware(),  # process_response fires before TimingMiddleware's
                 CachingMiddleware(cache=shared_cache),
                 CompressionMiddleware(),

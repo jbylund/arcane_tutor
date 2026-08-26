@@ -16,10 +16,11 @@ logger = logging.getLogger(__name__)
 
 
 class SearchBudgetMiddleware:
-    """Reject over-budget /search requests before query logging or caching.
+    """Reject over-budget ``/search`` byte lengths before parsing or the search handler.
 
-    Runs ahead of QueryLogMiddleware and CachingMiddleware so rejected requests
-    never allocate cache keys, log rows, or parser work.
+    Runs ahead of ``QueryLogMiddleware`` and ``CachingMiddleware`` so rejected requests
+    skip parsing and never reach ``_search``. Downstream ``process_response`` hooks may
+    still record or cache the 400.
     """
 
     def process_request(self, req: falcon.Request, resp: falcon.Response) -> None:
