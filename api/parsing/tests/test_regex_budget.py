@@ -67,3 +67,6 @@ class TestRegexPatternLimits:
 
     def test_accepts_grouped_numeric_repeat(self) -> None:
         parse_scryfall_query("o:/(?:a{10}){10}/")
+
+    def test_accepts_escaped_lookaround_literal(self) -> None:
+        parse_scryfall_query(r"o:/\(\?=not a lookaround/")
