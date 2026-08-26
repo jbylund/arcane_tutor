@@ -32,8 +32,6 @@ services:
       - /usr/local/bin/docker-entrypoint.sh
       - -c
       - config_file=/postgresql.conf
-    env_file:
-      - .env
     environment:
       PGDATA: /data/pg
       POSTGRES_DB: ${XPGDATABASE}
@@ -88,9 +86,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    env_file:
-      - .env
     environment:
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      CDN_URL: ${CDN_URL:-https://d1hot9ps2xugbc.cloudfront.net}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
       ENABLE_CACHE: ${ENABLE_CACHE:-false}
       ENABLE_ENGINE: ${ENABLE_ENGINE:-false}
       ENVIRONMENT: ${ENVIRONMENT:-dev}
@@ -100,7 +99,9 @@ services:
       PGHOST: postgres
       PGPASSWORD: ${XPGPASSWORD}
       PGUSER: ${XPGUSER}
+      PREFER_SCORE_BACKFILL_TIMEOUT_MS: ${PREFER_SCORE_BACKFILL_TIMEOUT_MS:-120000}
       PYTHONUNBUFFERED: true
+      SHARED_CACHE_PATH: ${SHARED_CACHE_PATH:-/tmp/sylvan.cache}
     healthcheck:
       test:
         - CMD
@@ -145,13 +146,13 @@ services:
     depends_on:
       apiservice:
         condition: service_started
-    env_file:
-      - .env
     environment:
       API_URL: http://apiservice:8080
-      BATCH_SIZE: 50
+      BATCH_SIZE: ${BATCH_SIZE:-50}
+      CORPUS: ${CORPUS:-}
       PYTHONUNBUFFERED: true
-      QUERY_DELAY: 0.1
+      QUERY_DELAY: ${QUERY_DELAY:-0.1}
+      QUERY_MODE: ${QUERY_MODE:-realistic}
     deploy:
       resources:
         limits:
