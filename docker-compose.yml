@@ -13,8 +13,20 @@ volumes:
 
 services:
   postgres:
+    # Drop every capability, then add back only what the official entrypoint needs:
+    # CHOWN/FOWNER for fresh-volume PGDATA ownership; SETUID/SETGID to drop to the
+    # postgres user; DAC_READ_SEARCH so the root entrypoint can inspect an existing
+    # PGDATA tree owned by postgres on restart (verified on Linux containers).
     cap_add:
+      - CHOWN
+      - FOWNER
+      - SETGID
+      - SETUID
+      - DAC_READ_SEARCH
+    cap_drop:
       - ALL
+    security_opt:
+      - no-new-privileges:true
     init: true
     command:
       - /usr/local/bin/docker-entrypoint.sh
@@ -62,8 +74,11 @@ services:
     pull_policy: never
     image: sylvan_librarian/apiservice:${IMAGE_TAG:-latest}
     shm_size: 3000M
-    cap_add:
+    # Non-root API binds one port and needs no Linux capabilities in practice.
+    cap_drop:
       - ALL
+    security_opt:
+      - no-new-privileges:true
     command:
       - dumb-init
       - --
