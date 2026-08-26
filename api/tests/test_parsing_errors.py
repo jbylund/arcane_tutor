@@ -122,13 +122,13 @@ class TestSearchRouting:
     def test_engine_declining_a_query_falls_back_without_a_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         """A query the engine cannot build is a user error, not an alertable engine failure.
 
-        _search_engine logs a QueryError at info and lets it propagate unwrapped. That reaches the
+        _search_engine logs a RetryableQueryError at info and lets it propagate unwrapped. That reaches the
         SQL fallback, which used to re-log it at warning with a stack trace — so every keystroke
         inside a character class (`o:/^[`, balanced to `o:/^[/` by typeahead) produced an alertable
         event. The Rust regex crate also rejects patterns Postgres accepts, so this path is reached
         by working queries too; either way the SQL path decides the outcome.
         """
-        from card_engine import QueryError  # noqa: PLC0415
+        from card_engine import RetryableQueryError  # noqa: PLC0415
 
         self.api_resource.app_context.engine.size.return_value = 87
         sentinel = {"cards": [], "total_cards": 0, "query": "o:/^[/"}
@@ -136,7 +136,7 @@ class TestSearchRouting:
             patch.object(
                 self.api_resource,
                 "_search_engine",
-                side_effect=QueryError("nope"),
+                side_effect=RetryableQueryError("nope"),
             ),
             patch.object(self.api_resource, "_search_sql", return_value=sentinel) as mock_sql,
             caplog.at_level("INFO"),
@@ -148,16 +148,16 @@ class TestSearchRouting:
         assert [r.levelname for r in caplog.records if "falling back to SQL" in r.getMessage()] == ["INFO"]
         assert not [r for r in caplog.records if r.exc_info]
 
-    def test_regex_compile_error_returns_400_without_sql_fallback(self) -> None:
-        """Engine regex compile failures must not retry on PostgreSQL."""
-        from card_engine import RegexCompileError  # noqa: PLC0415
+    def test_fatal_query_error_returns_400_without_sql_fallback(self) -> None:
+        """FatalQueryError subclasses must not retry on PostgreSQL."""
+        from card_engine import UnsupportedRegexError  # noqa: PLC0415
 
         self.api_resource.app_context.engine.size.return_value = 87
         with (
             patch.object(
                 self.api_resource,
                 "_search_engine",
-                side_effect=RegexCompileError("fancy-regex rejected pattern"),
+                side_effect=UnsupportedRegexError("fancy-regex rejected pattern"),
             ),
             patch.object(self.api_resource, "_search_sql") as mock_sql,
             pytest.raises(falcon.HTTPBadRequest) as exc_info,
@@ -171,12 +171,12 @@ class TestSearchRouting:
         self,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Only QueryError is a decline — a bare HTTPBadRequest from elsewhere is not.
+        """Only RetryableQueryError is a decline — a bare HTTPBadRequest from elsewhere is not.
 
         Classifying by isinstance(e, falcon.HTTPBadRequest) used to treat any HTTPBadRequest raised
         anywhere in _search_engine's call chain as a benign decline, purely because nothing else
-        happened to raise that type. Classifying by isinstance(e, QueryError) instead is true by
-        construction: QueryError is card_engine's own exception type, so an HTTPBadRequest raised for
+        happened to raise that type. Classifying by isinstance(e, RetryableQueryError) instead is true by
+        construction: RetryableQueryError is card_engine's own exception type, so an HTTPBadRequest raised for
         some other reason must still surface as an alertable failure.
         """
         self.api_resource.app_context.engine.size.return_value = 87
@@ -317,16 +317,16 @@ class TestSearchEngineDirect:
         assert call_kwargs["limit"] == 5
 
     def test_query_error_propagates_unwrapped(self) -> None:
-        """QueryError reaches the caller as itself, not wrapped in a dedicated exception type.
+        """RetryableQueryError reaches the caller as itself, not wrapped in a dedicated exception type.
 
         _search_engine used to wrap it in a dedicated _EngineDeclinedQueryError; it no longer does,
-        since QueryError is already engine-specific and nothing else in this call chain raises it —
-        the wrapper added a type only _search's own handler understood, for no benefit.
+        since RetryableQueryError is already engine-specific and nothing else in this call chain
+        raises it — the wrapper added a type only _search's own handler understood, for no benefit.
         """
-        from card_engine import QueryError  # noqa: PLC0415
+        from card_engine import RetryableQueryError  # noqa: PLC0415
 
-        self.api_resource.app_context.engine.query.side_effect = QueryError("cannot build")
-        with pytest.raises(QueryError):
+        self.api_resource.app_context.engine.query.side_effect = RetryableQueryError("cannot build")
+        with pytest.raises(RetryableQueryError):
             self.api_resource._search_engine(**search_kwargs("o:/^[/"))
 
 

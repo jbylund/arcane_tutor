@@ -7,7 +7,7 @@ use super::legality::{LEGALITY_LEGAL, LEGALITY_BANNED, LEGALITY_RESTRICTED, form
 /// Public search TextRegex backtrack cap — calibrated in docs/issues/security-regex-execution-budget.md.
 pub(crate) const REGEX_BACKTRACK_LIMIT: usize = 8192;
 
-/// Prefix on `build_filter` errors that must surface as `RegexCompileError`, not `QueryError`.
+/// Prefix on `build_filter` errors that must surface as `UnsupportedRegexError`, not `RetryableQueryError`.
 pub(crate) const REGEX_COMPILE_ERR_PREFIX: &str = "regex_compile:";
 
 pub(crate) fn compile_search_regex(pattern: &str) -> Result<Regex, String> {

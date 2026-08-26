@@ -55,6 +55,9 @@ def _collect_regex_patterns(node: QueryNode) -> list[str]:
 
 
 def _check_pattern(pattern: str) -> None:
+    if _has_backreference(pattern):
+        raise QueryBudgetExceeded(kind="regex_pattern")
+
     if len(pattern.encode("utf-8")) > MAX_PATTERN_UTF8_BYTES:
         raise QueryBudgetExceeded(kind="regex_pattern")
 
@@ -77,6 +80,35 @@ def _check_pattern(pattern: str) -> None:
         nodes, depth = metrics
         if nodes > MAX_REGEX_AST_NODES or depth > MAX_REGEX_PARSE_DEPTH:
             raise QueryBudgetExceeded(kind="regex_pattern")
+
+
+def _has_backreference(pattern: str) -> bool:
+    """True when *pattern* uses numeric/named backreferences Scryfall forbids."""
+    in_class = False
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "\\":
+            if in_class:
+                i += 2
+                continue
+            if i + 1 >= len(pattern):
+                return False
+            nxt = pattern[i + 1]
+            if "1" <= nxt <= "9":
+                return True
+            if nxt in "gGk":
+                return True
+            i += 2
+            continue
+        if ch == "[":
+            in_class = True
+        elif ch == "]" and in_class:
+            in_class = False
+        elif not in_class and pattern.startswith("(?P=", i):
+            return True
+        i += 1
+    return False
 
 
 def _count_alternations(pattern: str) -> int:

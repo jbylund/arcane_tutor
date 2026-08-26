@@ -13,20 +13,13 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 
-// Raised for malformed query input (bad filter JSON, unbuildable filter expression). Subclasses
-// ValueError so existing `except ValueError` call sites keep working; new call sites can catch
-// this specifically to distinguish "the query was bad" from unrelated ValueErrors.
+// Query engine errors. `RetryableQueryError` declines to the SQL path; `FatalQueryError`
+// (and subclasses) return HTTP 400 without SQL retry. `except QueryError` catches both.
 create_exception!(card_engine, QueryError, PyValueError, "Raised when a query cannot be parsed or built.");
-
-// Regex compilation/execution failure for a pattern the parse-time budget accepted but the
-// fancy-regex engine rejects. Sibling of QueryError (not a subclass) so `_search` does not
-// fall back to PostgreSQL — PG's regex engine is a separate attack surface.
-create_exception!(card_engine, RegexCompileError, PyValueError, "Raised when a query regex cannot be compiled for the engine.");
-
-// Subclass of QueryError (not a sibling) so `except QueryError` already catches it; callers that
-// need to distinguish "requested a field that doesn't exist" from other query errors can catch
-// this specifically instead.
-create_exception!(card_engine, UnknownFieldError, QueryError, "Raised when `fields` names an unknown field.");
+create_exception!(card_engine, RetryableQueryError, QueryError, "Raised when the engine declines a query the SQL path may still serve.");
+create_exception!(card_engine, FatalQueryError, QueryError, "Raised when a query is invalid for both engine and public search.");
+create_exception!(card_engine, UnsupportedRegexError, FatalQueryError, "Raised when a query regex is unsupported or cannot be compiled.");
+create_exception!(card_engine, UnknownFieldError, FatalQueryError, "Raised when `fields` names an unknown field.");
 
 // ─── Feature-gated counting allocator (memory measurement only) ──────────────
 // Counts live bytes / live allocations of this extension's Rust heap and records
@@ -11987,9 +11980,9 @@ pub(crate) fn count_common_keywords(data: &Archived<CardData>) -> HashMap<String
 /// a different page.
 fn map_build_filter_err(err: String) -> PyErr {
     if let Some(msg) = err.strip_prefix(REGEX_COMPILE_ERR_PREFIX) {
-        RegexCompileError::new_err(msg.to_string())
+        UnsupportedRegexError::new_err(msg.to_string())
     } else {
-        QueryError::new_err(format!("build_filter: {err}"))
+        RetryableQueryError::new_err(format!("build_filter: {err}"))
     }
 }
 
@@ -12006,9 +11999,9 @@ fn bind_and_split_filter(
         .call_method1("dumps", (to_json,))?
         .extract()?;
     let json_str = std::str::from_utf8(&json_bytes)
-        .map_err(|e| QueryError::new_err(format!("bad UTF-8 from orjson: {e}")))?;
+        .map_err(|e| RetryableQueryError::new_err(format!("bad UTF-8 from orjson: {e}")))?;
     let json_val: Value = serde_json::from_str(json_str)
-        .map_err(|e| QueryError::new_err(format!("bad query JSON: {e}")))?;
+        .map_err(|e| RetryableQueryError::new_err(format!("bad query JSON: {e}")))?;
 
     // Must run before build_filter so legality shifts resolve in workers that
     // never executed the load path themselves.
@@ -12877,7 +12870,9 @@ mod card_engine {
     #[pymodule_init]
     fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add("QueryError", m.py().get_type::<super::QueryError>())?;
-        m.add("RegexCompileError", m.py().get_type::<super::RegexCompileError>())?;
+        m.add("RetryableQueryError", m.py().get_type::<super::RetryableQueryError>())?;
+        m.add("FatalQueryError", m.py().get_type::<super::FatalQueryError>())?;
+        m.add("UnsupportedRegexError", m.py().get_type::<super::UnsupportedRegexError>())?;
         m.add("UnknownFieldError", m.py().get_type::<super::UnknownFieldError>())
     }
 }

@@ -60,5 +60,10 @@ class TestRegexPatternLimits:
         long_literal = "a" * (MAX_PATTERN_UTF8_BYTES + 1)
         parse_scryfall_query(f"o:/{long_literal}/")
 
+    def test_rejects_backreferences(self) -> None:
+        with pytest.raises(QueryBudgetExceeded) as exc_info:
+            parse_scryfall_query("o:/(a)\\1/")
+        assert exc_info.value.kind == "regex_pattern"
+
     def test_accepts_grouped_numeric_repeat(self) -> None:
         parse_scryfall_query("o:/(?:a{10}){10}/")

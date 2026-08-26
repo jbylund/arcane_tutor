@@ -2,10 +2,12 @@
 
 import enum
 
+from .card_engine import FatalQueryError as FatalQueryError
 from .card_engine import QueryEngine as QueryEngine
 from .card_engine import QueryError as QueryError
-from .card_engine import RegexCompileError as RegexCompileError
+from .card_engine import RetryableQueryError as RetryableQueryError
 from .card_engine import UnknownFieldError as UnknownFieldError
+from .card_engine import UnsupportedRegexError as UnsupportedRegexError
 
 
 class EngineField(enum.StrEnum):

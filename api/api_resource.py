@@ -46,8 +46,8 @@ from api.utils.param_binding import ParamCoercionError
 from api.utils.routing import build_route_table, build_routes_listing, route
 from api.utils.site_name import hostname_to_site_name
 from api.utils.timer import Timer
-from card_engine import QueryError as _QueryError
-from card_engine import RegexCompileError as _RegexCompileError
+from card_engine import FatalQueryError as _FatalQueryError
+from card_engine import RetryableQueryError as _RetryableQueryError
 
 if TYPE_CHECKING:
     from api.parsing.nodes import Query
@@ -723,10 +723,10 @@ class APIResource:
                 # BaseExceptions that must still propagate are the ones that are not failures.
                 if isinstance(e, (KeyboardInterrupt, SystemExit)):
                     raise
-                if isinstance(e, _RegexCompileError):
+                if isinstance(e, _FatalQueryError):
                     log_ctx = bounded_query_log_context(query)
                     logger.info(
-                        "Regex compile rejected for engine (%s) preview=%r digest=%s",
+                        "Fatal query error from engine (%s) preview=%r digest=%s",
                         e,
                         log_ctx["query_preview"],
                         log_ctx["query_digest"],
@@ -735,17 +735,15 @@ class APIResource:
                         title="Invalid Search Query",
                         description=QUERY_REGEX_REJECTED_MESSAGE,
                     ) from e
-                # _QueryError (raised by card_engine, not this module) means the engine declined to
-                # build the query, not that it broke — _search_engine has already logged it at info.
-                # It reaches here for several different reasons (an unsupported regex feature, an
-                # attribute the engine hasn't wired a filter up for, ...), and the SQL path resolves
-                # all of them correctly on its own. Re-logging it at warning with a stack trace turned
-                # every keystroke inside a character class into an alertable event for a user typo.
-                # Fall through quietly; anything else really is an engine failure and keeps its
-                # traceback. isinstance rather than a dedicated wrapper type: QueryError is already
-                # engine-specific and nothing else in this call chain raises it, so wrapping it added
-                # a type only this handler understood without narrowing what gets caught.
-                declined = isinstance(e, _QueryError)
+                # _RetryableQueryError means the engine declined to build the query, not that it
+                # broke — _search_engine has already logged it at info. It reaches here for
+                # several different reasons (an unsupported regex feature on the linear path, an
+                # attribute the engine hasn't wired a filter up for, ...), and the SQL path
+                # resolves all of them correctly on its own. Re-logging it at warning with a stack
+                # trace turned every keystroke inside a character class into an alertable event for
+                # a user typo. Fall through quietly; anything else really is an engine failure and
+                # keeps its traceback.
+                declined = isinstance(e, _RetryableQueryError)
                 logger.log(
                     logging.INFO if declined else logging.WARNING,
                     "Engine %s %r, falling back to SQL: %s",
@@ -804,8 +802,8 @@ class APIResource:
                     offset=offset,
                     fields=fields,
                 )
-        except _QueryError:
-            logger.info("QueryError caught for query '%s', declining to SQL", query)
+        except _RetryableQueryError:
+            logger.info("RetryableQueryError caught for query '%s', declining to SQL", query)
             raise
         # `cards` is already a plain, freshly-built, unshared list -- card_engine's query()
         # eagerly materializes a PyList before returning, it's never a lazy iterator -- so
