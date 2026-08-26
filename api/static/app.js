@@ -701,7 +701,7 @@ class CardSearch {
   // delimiters, so the structural checks in validateQuery cannot fire on a ':' or ')' that is
   // really string, pattern, or mana content. Built on the same closedSpanEnd dispatch as
   // collapseWhitespaceOutsideSpans, because a fourth opinion about where a span starts is a fourth way
-  // to reject a query the parser accepts (o:/x:)/).
+  // to reject a query the parser accepts (o:/x:\)/).
   blankOpaqueSpans(query) {
     let out = '';
 

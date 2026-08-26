@@ -114,11 +114,7 @@ class TestInvalidRegularExpressionHandling:
             self.api_resource.app_context.writer_pool.close()
 
     def test_search_sql_handles_invalid_regular_expression(self) -> None:
-        """An unparseable regex is the user's error, so it must be a 400 and not a 500.
-
-        Typeahead balances a half-typed regex into a complete one on every keystroke, so `o:/^[/` is
-        an ordinary intermediate state on the way to `o:/^[abc]/` — not something to alert on.
-        """
+        """Postgres regex failures in the SQL path are the user's error — a 400, not a 500."""
         with patch.object(self.api_resource, "_run_query") as mock_run_query:
             # `info=` populates .diag.message_primary the way a real connection would — the plain
             # constructor string does not, so a test built on it can't tell whether
@@ -129,10 +125,10 @@ class TestInvalidRegularExpressionHandling:
             )
 
             with pytest.raises(falcon.HTTPBadRequest) as exc_info:
-                self.api_resource._search_sql(**search_kwargs("o:/^[/"))
+                self.api_resource._search_sql(**search_kwargs("o:/^abc/"))
 
             assert exc_info.value.title == "Invalid Search Query"
-            assert "o:/^[/" in exc_info.value.description
+            assert "o:/^abc/" in exc_info.value.description
             # The Postgres prefix must be stripped exactly once, not left in twice.
             assert "brackets [] not balanced" in exc_info.value.description
             assert exc_info.value.description.count("invalid regular expression") == 1
