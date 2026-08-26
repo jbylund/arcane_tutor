@@ -10,8 +10,10 @@ if True:
 import logging
 import os
 import random
+import time
 from typing import TYPE_CHECKING
 
+import psycopg
 import pytest
 from testcontainers.postgres import PostgresContainer
 
@@ -20,6 +22,28 @@ from api.settings import settings
 if TYPE_CHECKING:
     from collections.abc import Generator
 
+
+def _wait_for_database_ready(host: str, port: str, timeout: int = 30) -> None:
+    """Poll until the testcontainer accepts connections."""
+    connection_params = {
+        "host": host,
+        "port": port,
+        "dbname": "testdb",
+        "user": "testuser",
+        "password": "testpass",
+    }
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            with psycopg.connect(**connection_params) as conn, conn.cursor() as cursor:
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+            return
+        except (psycopg.Error, OSError):
+            time.sleep(0.5)
+    msg = f"Database not ready within {timeout} seconds"
+    raise RuntimeError(msg)
+
 logging.basicConfig(
     force=True,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -27,9 +51,9 @@ logging.basicConfig(
 )
 
 
-@pytest.fixture(scope="session", name="postgres_container", autouse=True)
+@pytest.fixture(scope="session", name="postgres_container")
 def postgres_container_fixture() -> Generator[None]:
-    """Fixture to start and stop a postgres container for the session."""
+    """Start one session-scoped postgres container and export PG* for tests that request it."""
     exposed_port = random.randint(1024, 49151)
     container = PostgresContainer(
         image="postgres:18",
@@ -38,12 +62,15 @@ def postgres_container_fixture() -> Generator[None]:
         dbname="testdb",
     ).with_bind_ports(5432, exposed_port)
     container.start()
+    host = container.get_container_host_ip()
+    port = str(container.get_exposed_port(5432))
+    _wait_for_database_ready(host, port)
     os.environ.update(
         {
             "PGDATABASE": "testdb",
-            "PGHOST": container.get_container_host_ip(),
+            "PGHOST": host,
             "PGPASSWORD": "testpass",
-            "PGPORT": str(container.get_exposed_port(5432)),
+            "PGPORT": port,
             "PGUSER": "testuser",
         },
     )

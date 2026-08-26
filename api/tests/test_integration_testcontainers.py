@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import multiprocessing
-import os
 import pathlib
 import tempfile
 import time
 import uuid
 from typing import TYPE_CHECKING
 
-import psycopg
 import pytest
-from testcontainers.postgres import PostgresContainer
 
 from api.admin_resource import AdminContext
 from api.api_resource import APIResource
@@ -26,121 +23,35 @@ if TYPE_CHECKING:
     from collections.abc import Generator
 
 
+@pytest.fixture(scope="class")
+def api_resource(postgres_container: None) -> Generator[APIResource]:  # noqa: ARG001
+    """APIResource with schema, fixture data, and engine loaded against the session postgres."""
+    schema_setup_event = multiprocessing.Event()
+    api = APIResource(
+        app_context=AppContext(last_import_time=multiprocessing.Value("d", time.time(), lock=True)),
+        admin_context=AdminContext(schema_setup_event=schema_setup_event),
+    )
+
+    def always_true() -> bool:
+        return True
+
+    override_attr(api.app_context, "setup_complete", always_true)
+    override_attr(api.admin, "_import_recent", always_true)
+    api.admin.setup_schema()
+
+    data_file = pathlib.Path(__file__).parent / "fixtures" / "test_data.sql"
+    with api.app_context.reader_pool.connection() as conn, conn.cursor() as cursor:
+        cursor.execute(data_file.read_text())
+        conn.commit()
+
+    api.app_context.reload_engine(force=True)
+    yield api
+    api.app_context.reader_pool.close()
+    api.app_context.writer_pool.close()
+
+
 class TestContainerIntegration:
     """Integration tests using testcontainers with real PostgreSQL."""
-
-    @pytest.fixture(scope="class")
-    def postgres_container(self: TestContainerIntegration) -> Generator[PostgresContainer]:
-        """Create and manage PostgreSQL test container."""
-        container = PostgresContainer(
-            image="postgres:18",
-            username="testuser",
-            password="testpass",  # noqa: S106
-            dbname="testdb",
-        ).with_bind_ports(
-            5432,
-            5433,
-        )  # Bind internal 5432 to host 5433
-
-        with container as postgres:
-            # Wait for database to be ready with proper health check
-            self._wait_for_database_ready(postgres)
-            yield postgres
-
-    def _wait_for_database_ready(self: TestContainerIntegration, postgres_container: PostgresContainer, timeout: int = 30) -> None:
-        """Wait for the database to be ready by running a simple query."""
-        host = postgres_container.get_container_host_ip()
-        port = postgres_container.get_exposed_port(5432)  # This should return 5433 due to bind_ports
-
-        connection_params = {
-            "host": host,
-            "port": port,
-            "dbname": "testdb",
-            "user": "testuser",
-            "password": "testpass",
-        }
-
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            try:
-                with psycopg.connect(**connection_params) as conn:
-                    with conn.cursor() as cursor:
-                        cursor.execute("SELECT 1")
-                        cursor.fetchone()
-                    return  # Database is ready
-            except (psycopg.Error, OSError):  # Catch specific database and connection errors
-                time.sleep(0.5)  # Wait before retrying
-                continue
-
-        msg = f"Database not ready within {timeout} seconds"
-        raise RuntimeError(msg)
-
-    @pytest.fixture(scope="class")
-    def test_db_environment(self: TestContainerIntegration, postgres_container: PostgresContainer) -> Generator[None]:
-        """Set up and restore environment variables for test database connection."""
-        # Store original environment variables
-        original_env = {key: os.environ.get(key) for key in ["PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD"]}
-
-        try:
-            # Set environment variables for test database
-            host = postgres_container.get_container_host_ip()
-            port = postgres_container.get_exposed_port(5432)
-
-            os.environ.update(
-                {
-                    "PGHOST": host,
-                    "PGPORT": str(port),
-                    "PGDATABASE": "testdb",
-                    "PGUSER": "testuser",
-                    "PGPASSWORD": "testpass",
-                },
-            )
-
-            yield  # Test runs here with environment configured
-
-        finally:
-            # Restore original environment variables
-            for key, value in original_env.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
-    @pytest.fixture(scope="class")
-    def api_resource(self: TestContainerIntegration, test_db_environment: None) -> Generator[APIResource]:  # noqa: ARG002
-        """Create APIResource instance, set up database schema and test data, then yield the configured instance."""
-        # Create APIResource instance
-        schema_setup_event = multiprocessing.Event()
-        api = APIResource(
-            app_context=AppContext(last_import_time=multiprocessing.Value("d", time.time(), lock=True)),
-            admin_context=AdminContext(schema_setup_event=schema_setup_event),
-        )
-
-        def always_true() -> bool:
-            return True
-
-        override_attr(api.app_context, "setup_complete", always_true)
-        override_attr(api.admin, "_import_recent", always_true)
-
-        # Set up the schema using real migrations
-        api.admin.setup_schema()
-
-        # Load test data
-        test_dir = pathlib.Path(__file__).parent
-        data_file = test_dir / "fixtures" / "test_data.sql"
-
-        with api.app_context.reader_pool.connection() as conn, conn.cursor() as cursor:
-            cursor.execute(data_file.read_text())
-            conn.commit()
-
-        api.app_context.reload_engine(force=True)
-
-        # Yield the fully configured APIResource for tests to use
-        yield api
-
-        # Clean up connection pools
-        api.app_context.reader_pool.close()
-        api.app_context.writer_pool.close()
 
     def test_query_parsing_with_database(self: TestContainerIntegration, api_resource: APIResource) -> None:
         """Test query parsing and execution against real database."""

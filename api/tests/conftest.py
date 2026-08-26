@@ -18,6 +18,11 @@ if TYPE_CHECKING:
     from collections.abc import Generator
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _ensure_postgres(postgres_container: None) -> None:
+    """Every test under api/tests/ shares the session postgres container."""
+
+
 @pytest.fixture(name="engine_enabled")
 def engine_enabled_fixture() -> Generator[None]:
     """Enable the engine feature gate (ENABLE_ENGINE) for the duration of a test."""

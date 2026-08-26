@@ -312,11 +312,15 @@ def _ref_eval(node: Any, card: dict[str, Any]) -> bool | None:
     return None if any(v is None for v in vals) else False
 
 
-def _ref_totals(shape: Any, cards: list[dict[str, Any]]) -> tuple[int, int]:
-    """(unique=card, unique=printing) totals: only True matches."""
+def _cards_by_oracle(cards: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     by_oracle: dict[str, list[dict[str, Any]]] = {}
     for c in cards:
         by_oracle.setdefault(c["oracle_id"], []).append(c)
+    return by_oracle
+
+
+def _ref_totals(shape: Any, by_oracle: dict[str, list[dict[str, Any]]]) -> tuple[int, int]:
+    """(unique=card, unique=printing) totals: only True matches."""
     card_total = printing_total = 0
     for printings in by_oracle.values():
         hits = sum(_ref_eval(shape, p) is True for p in printings)
@@ -372,7 +376,7 @@ def _gen_queries(rng: random.Random, count: int, fragments: list[str]) -> list[t
 
 
 @pytest.fixture(scope="module", name="property_setup")
-def property_setup_fixture(tmp_path_factory: pytest.TempPathFactory) -> Generator[tuple[QueryEngine, list[dict[str, Any]]]]:
+def property_setup_fixture(tmp_path_factory: pytest.TempPathFactory) -> Generator[tuple[QueryEngine, list[dict[str, Any]], dict[str, list[dict[str, Any]]]]]:
     rng = random.Random(20260708)
     cards = _make_cards(rng)
     engine = QueryEngine(str(tmp_path_factory.mktemp("prop") / "prop.store"))
@@ -380,7 +384,7 @@ def property_setup_fixture(tmp_path_factory: pytest.TempPathFactory) -> Generato
     for i in range(0, len(cards), 2000):
         engine.add_batch(cards[i : i + 2000])
     engine.reload_commit()
-    return engine, cards
+    return engine, cards, _cards_by_oracle(cards)
 
 
 def _engine_total(engine: QueryEngine, query: str, unique: str) -> int:
@@ -399,30 +403,39 @@ def _engine_total(engine: QueryEngine, query: str, unique: str) -> int:
 class TestEnginePropertyParity:
     """Engine totals equal the reference oracle across 250 seeded queries."""
 
-    def test_store_is_large_enough_to_cross_thresholds(self, property_setup: tuple[QueryEngine, list[dict[str, Any]]]) -> None:
-        engine, cards = property_setup
+    def test_store_is_large_enough_to_cross_thresholds(
+        self,
+        property_setup: tuple[QueryEngine, list[dict[str, Any]], dict[str, list[dict[str, Any]]]],
+    ) -> None:
+        engine, cards, _by_oracle = property_setup
         assert engine.size() == len(cards) >= 6000, "the whole point is crossing the size-gated paths"
         broad = _engine_total(engine, "usd<5", "printing")
         assert broad > 1000, "usd<5 must be broad enough to trip NARROW_FLOOR and the bitmap paths"
 
-    def test_totals_match_reference_across_shapes(self, property_setup: tuple[QueryEngine, list[dict[str, Any]]]) -> None:
-        engine, cards = property_setup
+    def test_totals_match_reference_across_shapes(
+        self,
+        property_setup: tuple[QueryEngine, list[dict[str, Any]], dict[str, list[dict[str, Any]]]],
+    ) -> None:
+        engine, cards, by_oracle = property_setup
         queries = _gen_queries(random.Random(42), 250, [*FRAGMENTS, *_exact_name_fragments(cards)])
         failures = []
         for q, shape in queries:
-            want_card, want_printing = _ref_totals(shape, cards)
+            want_card, want_printing = _ref_totals(shape, by_oracle)
             got_card = _engine_total(engine, q, "card")
             got_printing = _engine_total(engine, q, "printing")
             if (got_card, got_printing) != (want_card, want_printing):
                 failures.append(f"{q!r}: engine=({got_card},{got_printing}) reference=({want_card},{want_printing})")
         assert not failures, "engine/reference divergence:\n" + "\n".join(failures[:15])
 
-    def test_every_fragment_matches_reference_standalone(self, property_setup: tuple[QueryEngine, list[dict[str, Any]]]) -> None:
-        engine, cards = property_setup
+    def test_every_fragment_matches_reference_standalone(
+        self,
+        property_setup: tuple[QueryEngine, list[dict[str, Any]], dict[str, list[dict[str, Any]]]],
+    ) -> None:
+        engine, cards, by_oracle = property_setup
         failures = []
         for frag in [*FRAGMENTS, *_exact_name_fragments(cards)]:
             shape = ("not", ("leaf", frag[1:])) if frag.startswith("-") else ("leaf", frag)
-            want = _ref_totals(shape, cards)
+            want = _ref_totals(shape, by_oracle)
             got = (_engine_total(engine, frag, "card"), _engine_total(engine, frag, "printing"))
             if got != want:
                 failures.append(f"{frag!r}: engine={got} reference={want}")
