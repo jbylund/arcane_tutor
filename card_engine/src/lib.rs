@@ -8316,19 +8316,54 @@ struct PreparedCandidates {
     proven_conjuncts: u64,
 }
 
+/// The two shapes `PreparedCandidates::card_ids` can hand back: the narrowed list, or every
+/// card in the corpus. A concrete enum rather than `Box<dyn ExactSizeIterator<...>>` so P3's
+/// and P4's per-card loops — both hot, up to `n_cards` iterations — call a monomorphized
+/// `next()` the compiler can inline instead of going through a vtable on every card.
+enum CardIdIter<'s> {
+    List(std::iter::Copied<std::slice::Iter<'s, u32>>),
+    Range(std::ops::Range<u32>),
+}
+
+impl Iterator for CardIdIter<'_> {
+    type Item = u32;
+
+    fn next(&mut self) -> Option<u32> {
+        match self {
+            CardIdIter::List(it) => it.next(),
+            CardIdIter::Range(it) => it.next(),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            CardIdIter::List(it) => it.size_hint(),
+            CardIdIter::Range(it) => it.size_hint(),
+        }
+    }
+}
+
+impl ExactSizeIterator for CardIdIter<'_> {
+    fn len(&self) -> usize {
+        match self {
+            CardIdIter::List(it) => it.len(),
+            CardIdIter::Range(it) => it.len(),
+        }
+    }
+}
+
 impl PreparedCandidates {
     /// The card ids to visit: the narrowed list if one was materialized, else
-    /// every card. Boxed because the two arms are different iterator types and
-    /// both P3 and P4 want the same either-or — previously spelled out
+    /// every card. Both P3 and P4 want the same either-or — previously spelled out
     /// identically at the head of each.
     ///
     /// `ExactSizeIterator` rather than `Iterator`: both arms know their length (a `Vec` and a `Range`),
     /// so an executor that wants the candidate count before its loop can ask for it instead of being
     /// handed the count alongside the iterator and trusting the two to agree.
-    fn card_ids<'s>(&'s self, ctx: &QueryCtx) -> Box<dyn ExactSizeIterator<Item = u32> + 's> {
+    fn card_ids<'s>(&'s self, ctx: &QueryCtx) -> CardIdIter<'s> {
         match &self.candidate_cards {
-            Some(v) => Box::new(v.iter().copied()),
-            None => Box::new(0..ctx.n_cards()),
+            Some(v) => CardIdIter::List(v.iter().copied()),
+            None => CardIdIter::Range(0..ctx.n_cards()),
         }
     }
 }
@@ -11480,7 +11515,7 @@ fn run_query_streamed<'a>(
     // whole residual is settled, this says which parts of it are.
     proven_conjuncts: u64,
     walk: &[Archived<u32>],
-    card_ids: Box<dyn ExactSizeIterator<Item = u32> + '_>,
+    card_ids: CardIdIter<'_>,
     existential_plane: Option<(&PlaneExpr, &Archived<BitPlanes>)>,
 ) -> (usize, Vec<(&'a AOracleCard, &'a APrinting)>) {
     // First of the three phase boundaries — everything down to the match loop is `ns_setup`, which
@@ -12931,3 +12966,5 @@ mod bench_streamed_loop;
 mod bench_membership_check;
 #[cfg(test)]
 mod bench_expand_materialize;
+#[cfg(test)]
+mod bench_card_ids_dispatch;
