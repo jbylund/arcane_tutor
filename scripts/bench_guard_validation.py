@@ -28,6 +28,16 @@ not just checked for safety on the common case:
 Note `--env-old` defaults to `OLD_ENV` (the pre-calibration constants this tool was originally built
 to validate) when omitted -- pass `--env-old '{}'` explicitly for a clean "today's shipped defaults"
 baseline, or the old branch will also carry those unrelated overrides.
+
+The crossover the sigma rule guards is rare even under `--query-source uniform`: only ~1% of sampled
+queries land sparse+deep enough to divert. An unfiltered run's aggregate is ~99% queries the decision
+never touches, which buries the real effect in noise from the untouched majority. Add `--divert-only`
+to sample a larger candidate pool, probe each one under `--env-new`, and time only the ones that
+actually took `PermThreePhase`:
+
+    .venv/bin/python scripts/bench_guard_validation.py run --query-source uniform --divert-only \
+        --corpus <real corpus.jsonl> --count 5000 --env-old '{}' \
+        --env-new '{"CARD_ENGINE_COMPOSE_SIGMA_ENABLED": "1", "CARD_ENGINE_COMPOSE_SIGMA_KNOB": "3.0"}'
 """
 
 from __future__ import annotations
@@ -197,6 +207,43 @@ def build_query_set(store: pathlib.Path, sample_fn, count: int, seed: int, path:
     print(f"query set: {len(kept)} specs -> {path}")
 
 
+_PROBE_SCRIPT = """
+import json, sys
+sys.path.insert(0, {repo_root!r})
+import card_engine
+from api.parsing import parse_scryfall_query
+specs = json.loads(open({queries!r}).read())
+engine = card_engine.QueryEngine({store!r})
+diverted = []
+for qid, spec in enumerate(specs):
+    kw = dict(
+        filters=parse_scryfall_query(spec["query"]), unique=spec["unique"], prefer=spec.get("prefer", "default"),
+        orderby=spec["orderby"], direction=spec.get("direction", "asc"), limit=spec.get("limit", 100),
+        offset=spec.get("offset", 0),
+    )
+    res = engine.explain_analyze(num_warmups=0, num_trials=1, **kw)
+    for plan in res["plans"]:
+        if plan["plan"] == "PrintingCompose" and plan["paging_taken"] == "PermThreePhase":
+            diverted.append(qid)
+            break
+print(json.dumps(diverted))
+"""
+
+
+def probe_diverted(store: pathlib.Path, queries: pathlib.Path, env: dict) -> set[int]:
+    """Return the qids (indices into `queries`) whose `PrintingCompose` plan took `PermThreePhase` under `env`.
+
+    Runs in a fresh subprocess with `env` applied, since `CARD_ENGINE_COMPOSE_SIGMA_ENABLED`'s
+    `LazyLock` caches on first read -- this process's own import of `card_engine` may already have
+    read a different value.
+    """
+    script = _PROBE_SCRIPT.format(repo_root=str(REPO_ROOT), queries=str(queries), store=str(store))
+    out = subprocess.run(
+        [sys.executable, "-c", script], check=True, capture_output=True, text=True, env={**os.environ, **env}, cwd=REPO_ROOT
+    )
+    return set(json.loads(out.stdout.strip().splitlines()[-1]))
+
+
 def cmd_worker(args: argparse.Namespace) -> None:
     """Time every query in the frozen set in this process; append rows to the CSV."""
     engine = card_engine.QueryEngine(str(args.store))
@@ -227,22 +274,39 @@ def cmd_run(args: argparse.Namespace) -> None:
     from scripts.costbench import load_engine  # noqa: PLC0415 — heavy loader, workers don't need it
 
     store = OUTDIR / "real.store"
-    # Separate frozen sets per source -- a stale wild-sourced file must never silently serve a
-    # uniform-sourced run or vice versa; the two populations are not comparable to each other.
-    queries = OUTDIR / f"validation-queries-{args.query_source}.json"
     OUTDIR.mkdir(parents=True, exist_ok=True)
     if not store.exists():
         load_engine(args.corpus, store)
-    if not queries.exists():
-        if args.query_source == "wild":
-            sample_fn = lambda rng, count: sample_wild(rng, args.wild_corpus, count)  # noqa: E731
-        else:
-            sample_fn = lambda rng, count: sample_uniform(rng, args.corpus, count)  # noqa: E731
-        build_query_set(store, sample_fn, args.count, args.seed, queries)
-    if not args.out.exists():
-        args.out.write_text("branch,rep,qid,query,unique,orderby,total,n,med_ms,min_ms\n")
     env_old = json.loads(args.env_old) if args.env_old else OLD_ENV
     env_new = json.loads(args.env_new) if args.env_new else {}
+    if args.query_source == "wild":
+        sample_fn = lambda rng, count: sample_wild(rng, args.wild_corpus, count)  # noqa: E731
+    else:
+        sample_fn = lambda rng, count: sample_uniform(rng, args.corpus, count)  # noqa: E731
+    # Separate frozen sets per source -- a stale wild-sourced file must never silently serve a
+    # uniform-sourced run or vice versa; the two populations are not comparable to each other.
+    queries = OUTDIR / f"validation-queries-{args.query_source}{'-diverted' if args.divert_only else ''}.json"
+    if not queries.exists():
+        if args.divert_only:
+            # `--count` candidates almost all take bare `Perm` (the crossover is rare by design --
+            # it only fires on a sparse, deep page); filter down to the ones that actually diverted
+            # to `PermThreePhase` under env-new, so the timed A/B measures the population the sigma
+            # decision rule exists for, not a benchmark diluted 99% by queries it left untouched.
+            candidates = OUTDIR / f"validation-queries-{args.query_source}-candidates.json"
+            if not candidates.exists():
+                build_query_set(store, sample_fn, args.count, args.seed, candidates)
+            diverted = probe_diverted(store, candidates, env_new)
+            if not diverted:
+                msg = f"no candidate queries took PermThreePhase under env-new ({len(json.loads(candidates.read_text()))} candidates) -- raise --count"
+                raise SystemExit(msg)
+            specs = json.loads(candidates.read_text())
+            subset = [specs[i] for i in sorted(diverted)]
+            queries.write_text(json.dumps(subset, indent=1) + "\n")
+            print(f"divert-only: {len(subset)}/{len(specs)} candidates took PermThreePhase -> {queries}")
+        else:
+            build_query_set(store, sample_fn, args.count, args.seed, queries)
+    if not args.out.exists():
+        args.out.write_text("branch,rep,qid,query,unique,orderby,total,n,med_ms,min_ms\n")
     for rep in range(1, args.reps + 1):
         branches = [("old", env_old), ("new", env_new)]
         if rep % 2 == 0:
@@ -344,6 +408,14 @@ def main() -> None:
             p.add_argument("--seed", type=int, default=20260708)
             p.add_argument("--env-old", default="", help="JSON env dict for the 'old' branch (default: pre-calibration constants)")
             p.add_argument("--env-new", default="", help="JSON env dict for the 'new' branch (default: baked-in defaults)")
+            p.add_argument(
+                "--divert-only",
+                action="store_true",
+                help="Sample --count candidates, probe each under --env-new, and time only the ones whose "
+                "PrintingCompose plan actually took PermThreePhase. The crossover is rare (~1% of uniform "
+                "queries), so an unfiltered run is ~99% queries the decision left untouched -- this isolates "
+                "the population the sigma rule exists for.",
+            )
         if name == "worker":
             p.add_argument("--branch", required=True)
             p.add_argument("--rep", type=int, required=True)
