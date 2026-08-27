@@ -166,16 +166,6 @@ def _leaf_key(node: QueryNode) -> tuple[str, str] | None:
     return (alias, value.lower())
 
 
-def _parse_expansion(dsl: str) -> QueryNode:
-    """Parse an expansion DSL string into a subtree (the production parser's output root).
-
-    Uses the production hand parser directly (not the public ``parse_scryfall_query`` seam) so expansion of
-    a synonym does not recurse back through this transform; nesting is handled explicitly
-    by `_expand` re-walking the result.
-    """
-    return _parse_str_to_query(dsl).root
-
-
 def _expand(node: QueryNode, in_progress: frozenset[tuple[str, str]]) -> tuple[QueryNode, bool]:
     """Expand derived-predicate leaves in `node`; return `(node, changed)`.
 
@@ -197,9 +187,9 @@ def _expand(node: QueryNode, in_progress: frozenset[tuple[str, str]]) -> tuple[Q
         return (NotNode(new_op), True) if changed else (node, False)
     key = _leaf_key(node)
     if key is not None and key in _DERIVED_EXPANSIONS and key not in in_progress:
-        # Recurse into the expansion so a definition may itself reference another derived
-        # predicate; `in_progress` breaks any (mis)configured cycle (a -> ... -> a).
-        subtree, _ = _expand(_parse_expansion(_DERIVED_EXPANSIONS[key]), in_progress | {key})
+        # Parse the expansion with the hand parser only (not ``parse_scryfall_query``), so synonym
+        # expansion does not recurse through this transform; ``in_progress`` breaks any cycle.
+        subtree, _ = _expand(_parse_str_to_query(_DERIVED_EXPANSIONS[key]).root, in_progress | {key})
         return subtree, True
     return node, False
 
