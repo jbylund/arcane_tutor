@@ -60,3 +60,73 @@ pub(crate) fn sigma_bound(n_cards: usize, matches: usize, k: usize, knob: f64) -
     let margin = mean + knob * nhg_variance(n_cards, matches, k).sqrt();
     worst_case_bound(n_cards, matches, k).min(margin)
 }
+
+/// Piecewise-linear model of `walk_card_page_via_popcount_skip`'s real cost, keyed by `set_printings`
+/// (total set bits in the composed `pbits`), NOT the distinct-card `matches` count -- see
+/// `three_phase_walk_rate_fit` (`tests.rs`) for why `matches` is the wrong variable: it saturates
+/// toward `n_cards` at high density while the scatter's real work keeps growing with the number of
+/// set PRINTING bits it must visit. `set_printings` (`popcount(pbits)`) is cheap to compute -- one
+/// word-count pass, cheaper than the scatter itself -- but nothing currently computes it before the
+/// `Perm` branch runs; a caller wiring this in needs to add that.
+///
+/// A single straight line badly misprices this curve (R² caps around 0.98 with real, non-random
+/// residual structure, not noise): a fixed ~1,000ns floor dominates below roughly 1,000 set
+/// printings (the scatter's outer loop always scans every word of `pbits` regardless of how many are
+/// set), cost then grows well past a linear rate through a middle band, and roughly re-linearizes
+/// near saturation. `three_phase_scatter_phase_kernel_costs` (`tests.rs`) root-caused both ends: the
+/// floor to the fixed word-scan (confirmed by ruling OUT the per-call `permuted` allocation as an
+/// alternative explanation), the mid-band rise to a plausible cache-capacity effect in `order.inv`'s
+/// and `permuted`'s random-position accesses (plausible, not proven with a profiler -- no
+/// perf-counter access in this harness). Piecewise-linear interpolation between real measured points
+/// is exact at every knot and reasonable between them, without pretending the true curve is a line.
+///
+/// Fit on THIS session's `real.store` (31,724 cards, 97,812 printings) -- needs re-fitting against
+/// the production corpus/machine before any live use. Regenerate with `cargo test --release
+/// three_phase_walk_rate_fit -- --ignored --nocapture`, which prints this table ready to paste.
+/// Y-values are the raw measurements' running max (a handful of the lowest points measured a few
+/// hundred ns of run-to-run noise around the floor, which would otherwise make the table locally
+/// non-monotonic -- physically, more set printings should never measure as strictly faster).
+// Ported ahead of step 5; not yet called from the dispatch path.
+#[allow(dead_code)]
+pub(crate) const THREE_PHASE_BREAKPOINTS: [(u32, f64); 14] = [
+    (23, 1042.0),
+    (55, 1042.0),
+    (97, 1083.0),
+    (215, 1333.0),
+    (477, 2000.0),
+    (963, 2166.0),
+    (1960, 5042.0),
+    (4878, 7916.0),
+    (9918, 14334.0),
+    (19441, 20000.0),
+    (39008, 86416.0),
+    (58671, 151000.0),
+    (78165, 178917.0),
+    (97812, 208292.0),
+];
+
+/// Linear interpolation of `THREE_PHASE_BREAKPOINTS` at `set_printings`. Clamped below the first
+/// breakpoint and above the last -- extrapolating a two-regime curve past its measured range risks
+/// being wrong in either direction, and the last breakpoint already sits at the fitting corpus's
+/// `n_printings`, which `set_printings` can never exceed on that corpus.
+// Ported ahead of step 5; not yet called from the dispatch path.
+#[allow(dead_code)]
+pub(crate) fn three_phase_cost_ns(set_printings: usize) -> f64 {
+    let x = set_printings as u32;
+    let n = THREE_PHASE_BREAKPOINTS.len();
+    if x <= THREE_PHASE_BREAKPOINTS[0].0 {
+        return THREE_PHASE_BREAKPOINTS[0].1;
+    }
+    if x >= THREE_PHASE_BREAKPOINTS[n - 1].0 {
+        return THREE_PHASE_BREAKPOINTS[n - 1].1;
+    }
+    for i in 1..n {
+        let (x1, y1) = THREE_PHASE_BREAKPOINTS[i];
+        if x <= x1 {
+            let (x0, y0) = THREE_PHASE_BREAKPOINTS[i - 1];
+            let t = (x - x0) as f64 / (x1 - x0) as f64;
+            return y0 + t * (y1 - y0);
+        }
+    }
+    unreachable!("x is bounded by the first/last breakpoint checks above")
+}

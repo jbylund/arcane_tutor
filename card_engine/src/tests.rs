@@ -11697,9 +11697,10 @@ fn three_phase_walk_rate_fit() {
     const LIMIT: usize = 20;
     // A wider, denser spread than the correctness/rate-comparison tests use -- this fit's quality
     // depends on covering the real range of `matches` densely, not on covering the same handful of
-    // representative points those tests were built around.
-    const DENSITIES: [f64; 12] =
-        [0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.4, 0.6];
+    // representative points those tests were built around. Extends to 0.8/1.0 (full saturation) so
+    // the breakpoint table below covers the whole domain, not just up to 0.6.
+    const DENSITIES: [f64; 14] =
+        [0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0];
 
     let order = archived.indexes.sort_perms.order(SortCol::EdhrecRank, false, n_cards).expect("edhrec permutation exists");
     let mut rng = rand::rngs::SmallRng::seed_from_u64(5);
@@ -11816,6 +11817,20 @@ fn three_phase_walk_rate_fit() {
             predicted / ns.max(1.0)
         );
     }
+
+    // A single line badly misprices this curve (R² caps well short of 1.0 no matter which variable
+    // wins above, because the real shape is a fixed floor at low density then a super-linear rise --
+    // see `three_phase_scatter_phase_kernel_costs` for why). Piecewise-linear interpolation between
+    // real measured points is exact at every knot and reasonable between them, without pretending the
+    // true curve is a line. Printed as a ready-to-paste `const` for `sigma_bound::THREE_PHASE_BREAKPOINTS`.
+    let mut breakpoints: Vec<(f64, f64)> = rows.iter().map(|&(_, set_printings, ns)| (set_printings, ns)).collect();
+    breakpoints.sort_by(|a, b| a.0.total_cmp(&b.0));
+    println!("\n  breakpoint table for piecewise-linear interpolation (set_printings -> ns), sorted:");
+    println!("const THREE_PHASE_BREAKPOINTS: [(u32, f64); {}] = [", breakpoints.len());
+    for (x, y) in &breakpoints {
+        println!("    ({}, {y:.1}),", *x as u32);
+    }
+    println!("];");
 }
 
 /// Root-causing `three_phase_walk_rate_fit`'s unexplained residual structure: isolate
@@ -12840,5 +12855,37 @@ fn sigma_bound_matches_python_fixture() {
             let knob: f64 = knob_str.parse().expect("knob key parses as f64");
             agrees(sigma_bound(n_cards, matches, k, knob), want.as_f64().unwrap(), &format!("sigma_bound({case}, knob={knob})"));
         }
+    }
+}
+
+/// `sigma_bound::three_phase_cost_ns`'s interpolation must reproduce every measured breakpoint
+/// exactly (it is a lookup, not a model that merely passes near them) and never report a lower cost
+/// for more set printings -- the physical invariant the raw measurements' own run-to-run noise
+/// violated locally, which is exactly why `THREE_PHASE_BREAKPOINTS`'s y-values are a running max of
+/// the raw numbers, not the raw numbers themselves.
+#[test]
+fn three_phase_cost_ns_matches_breakpoints_and_is_monotonic() {
+    use super::sigma_bound::{three_phase_cost_ns, THREE_PHASE_BREAKPOINTS};
+
+    for &(x, y) in &THREE_PHASE_BREAKPOINTS {
+        let got = three_phase_cost_ns(x as usize);
+        assert!((got - y).abs() < 1e-6, "breakpoint ({x}, {y}): interpolation returned {got}");
+    }
+
+    // Clamped below the first and above the last breakpoint -- see that function's own doc for why
+    // extrapolating a two-regime curve past its measured range isn't attempted.
+    let (first, last) = (THREE_PHASE_BREAKPOINTS[0], THREE_PHASE_BREAKPOINTS[THREE_PHASE_BREAKPOINTS.len() - 1]);
+    assert_eq!(three_phase_cost_ns(0), first.1);
+    assert_eq!(three_phase_cost_ns(10), first.1);
+    assert_eq!(three_phase_cost_ns(last.0 as usize + 50_000), last.1);
+
+    // Monotonic non-decreasing across a fine sweep spanning the whole domain -- more set printings
+    // must never interpolate to a cheaper cost, which a naive per-segment interpolation over
+    // non-monotonic input (had the table not been cleaned up) could produce locally.
+    let mut prev = three_phase_cost_ns(0);
+    for x in (0..=(last.0 as usize + 1_000)).step_by(37) {
+        let cur = three_phase_cost_ns(x);
+        assert!(cur >= prev - 1e-6, "non-monotonic at set_printings={x}: {cur} < {prev}");
+        prev = cur;
     }
 }
