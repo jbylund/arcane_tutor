@@ -4698,6 +4698,17 @@ fn plan_stats_never_leak_between_participants() {
                              phases={phase_ns} round={} {case}",
                             p.ns_round_total,
                         );
+                        // `set_printings` (`popcount(pbits)`) and `result_total` are computed from
+                        // the same composed bitmap (directly equal in Mode::Printing; in Mode::Card/
+                        // Artwork, `result_total` is a projection of it that can only be nonzero if
+                        // some printing bit is), so they must agree on whether anything matched at
+                        // all -- one implies the other in both directions, regardless of mode.
+                        assert_eq!(
+                            p.set_printings > 0, p.result_total > 0,
+                            "set_printings and result_total disagree on whether this query matched anything: \
+                             set_printings={} result_total={} {case}",
+                            p.set_printings, p.result_total,
+                        );
                         compose_labelled += 1;
                     }
                 }
@@ -13286,6 +13297,8 @@ fn compose_perm_three_phase_order_only_fires_when_enabled_and_sparse() {
         count
     };
 
+    let set_printings_of = |pbits: &[u64]| -> usize { pbits.iter().map(|w| w.count_ones() as usize).sum() };
+
     // Sparse + deep offset: should_use_three_phase's own unit test already proved this population
     // says "divert". A fresh bitmap per call keeps the three sub-checks below independent.
     let sparse_params = kernel_params(Mode::Card, SortCol::EdhrecRank, false, 20, 200);
@@ -13293,13 +13306,15 @@ fn compose_perm_three_phase_order_only_fires_when_enabled_and_sparse() {
     let pbits = random_pbits(&mut rng, words, n_printings, 0.0005);
     let total = card_matches(&pbits);
     assert!(
-        super::compose_perm_three_phase_order(&ctx, &sparse_params, &pbits, Mode::Card, SortCol::EdhrecRank, false, total, false, KNOB).is_none(),
+        super::compose_perm_three_phase_order(&ctx, &sparse_params, set_printings_of(&pbits), Mode::Card, SortCol::EdhrecRank, false, total, false, KNOB)
+            .is_none(),
         "enabled=false must never divert, regardless of population"
     );
 
     let pbits = random_pbits(&mut rng, words, n_printings, 0.0005);
     let total = card_matches(&pbits);
-    let order = super::compose_perm_three_phase_order(&ctx, &sparse_params, &pbits, Mode::Card, SortCol::EdhrecRank, false, total, true, KNOB);
+    let order =
+        super::compose_perm_three_phase_order(&ctx, &sparse_params, set_printings_of(&pbits), Mode::Card, SortCol::EdhrecRank, false, total, true, KNOB);
     assert!(order.is_some(), "enabled=true + sparse + deep offset should divert to three-phase");
 
     for (label, mode) in [("printing", Mode::Printing), ("artwork", Mode::Artwork)] {
@@ -13307,7 +13322,7 @@ fn compose_perm_three_phase_order_only_fires_when_enabled_and_sparse() {
         let total = card_matches(&pbits); // not meaningful for these modes, but the mode gate must short-circuit before using it
         let params = kernel_params(mode, SortCol::EdhrecRank, false, 20, 200);
         assert!(
-            super::compose_perm_three_phase_order(&ctx, &params, &pbits, mode, SortCol::EdhrecRank, false, total, true, KNOB).is_none(),
+            super::compose_perm_three_phase_order(&ctx, &params, set_printings_of(&pbits), mode, SortCol::EdhrecRank, false, total, true, KNOB).is_none(),
             "{label}: the promoted walk is Mode::Card-only, so this must never divert regardless of enabled"
         );
     }

@@ -8114,11 +8114,20 @@ struct ComposePhases {
     /// `walk_value_orderby_page`).
     /// Zero for the empty/past-the-end early return, which never reaches a paging branch at all.
     ns_paging: u64,
+    /// `popcount(pbits)` -- total set bits in the composed printing-space bitmap, computed once,
+    /// unconditionally, regardless of mode/branch/gate state. Diagnostic only, like the three
+    /// counters above: nothing in the dispatch path reads this back. Exists so
+    /// `sigma_bound::three_phase_cost_ns` (keyed on exactly this quantity, not `matches`) can be
+    /// graded against real per-query values from Python instead of only the synthetic grid
+    /// `three_phase_walk_rate_fit`/`sigma_knob_sensitivity_sweep` use -- see
+    /// `docs/issues/local-engine-compose-perm-sigma-decision-rule.md` step 6/7.
+    set_printings: u64,
 }
 
-// Pin both publication footprints: production's three counters + total, and diagnostics' two phases.
+// Pin both publication footprints: production's three counters + total, and diagnostics' three
+// fields (two phase timings plus `set_printings`).
 const _: [(); 4 * std::mem::size_of::<u64>()] = [(); std::mem::size_of::<ComposePageWork>()];
-const _: [(); 2 * std::mem::size_of::<u64>()] = [(); std::mem::size_of::<ComposePhases>()];
+const _: [(); 3 * std::mem::size_of::<u64>()] = [(); std::mem::size_of::<ComposePhases>()];
 
 /// The `prefer`-best MATCHING printing of the group `pid` belongs to.
 ///
@@ -8639,6 +8648,9 @@ fn printing_compose_fastpath<'a>(
     // only because this plan won. The total is the popcount in the query's result space; the page is
     // the one grouped walk at the mode's granularity, using the composed bits as exact membership.
     let pbits = compose_printing_bits(filter, indexes, offsets, printings, printings.len());
+    // Diagnostic only (see `ComposePageWork::set_printings`'s own doc) -- computed unconditionally,
+    // regardless of mode/branch/gate state, same as the counters below.
+    let set_printings = pbits.iter().map(|w| w.count_ones() as u64).sum::<u64>();
     // Card mode's total *is* the popcount of the card-space projection, and the permutation-free
     // `gather_composed_page` below derives its candidate cards from that same projection over
     // those same bits. Built once here and threaded through, instead of twice.
@@ -8653,7 +8665,7 @@ fn printing_compose_fastpath<'a>(
         note_paging_taken(PagingTaken::EmptyPage);
         let ns_total = t_start.elapsed().as_nanos() as u64;
         if collect_phases {
-            publish_compose_phases(ComposePhases { ns_build: ns_total, ns_paging: 0 });
+            publish_compose_phases(ComposePhases { ns_build: ns_total, ns_paging: 0, set_printings });
         }
         publish_compose_work(ComposePageWork { ns_total, ..Default::default() });
         return Some((total, Vec::new()));
@@ -8702,7 +8714,7 @@ fn printing_compose_fastpath<'a>(
             let three_phase_order = compose_perm_three_phase_order(
                 ctx,
                 params,
-                &pbits,
+                set_printings as usize,
                 mode,
                 sort_col,
                 descending,
@@ -8765,6 +8777,7 @@ fn printing_compose_fastpath<'a>(
         publish_compose_phases(ComposePhases {
             ns_build: (t_paging_start - t_start).as_nanos() as u64,
             ns_paging: (t_end - t_paging_start).as_nanos() as u64,
+            set_printings,
         });
     }
     publish_compose_work(work);
@@ -8774,11 +8787,13 @@ fn printing_compose_fastpath<'a>(
 /// Step 5 of docs/issues/local-engine-compose-perm-sigma-decision-rule.md: should `Perm`'s paging
 /// divert to the promoted three-phase walk instead of `walk_grouped_page`, and if so, the `SortOrder`
 /// it needs? `enabled`/`knob` are taken as plain arguments rather than read from
-/// `COMPOSE_SIGMA_ENABLED`/`COMPOSE_SIGMA_KNOB` internally so this whole decision -- gate, `k`/
-/// `set_printings` computation, `should_use_three_phase`, and the `SortOrder` fetch -- is directly
-/// unit-testable without touching either `LazyLock` (which caches its env read on first access, so
-/// toggling it per-test in one process isn't reliable; see
-/// `compose_perm_three_phase_order_only_fires_when_enabled_and_sparse`).
+/// `COMPOSE_SIGMA_ENABLED`/`COMPOSE_SIGMA_KNOB` internally so this whole decision -- gate,
+/// `should_use_three_phase`, and the `SortOrder` fetch -- is directly unit-testable without touching
+/// either `LazyLock` (which caches its env read on first access, so toggling it per-test in one
+/// process isn't reliable; see `compose_perm_three_phase_order_only_fires_when_enabled_and_sparse`).
+/// `set_printings` is taken precomputed too -- the caller already has it as a diagnostic
+/// (`ComposePageWork::set_printings`), so recomputing it here would pay the same `popcount(pbits)`
+/// pass twice on every enabled `Mode::Card` `Perm` query.
 ///
 /// `Mode::Card` only, matching `walk_card_page_via_popcount_skip`'s own scope -- the promoted
 /// `Printing`/`Artwork` walks exist but this decision doesn't call them yet.
@@ -8786,7 +8801,7 @@ fn printing_compose_fastpath<'a>(
 fn compose_perm_three_phase_order<'a>(
     ctx: &QueryCtx<'a>,
     params: &QueryParams,
-    pbits: &[u64],
+    set_printings: usize,
     mode: Mode,
     sort_col: SortCol,
     descending: bool,
@@ -8799,7 +8814,6 @@ fn compose_perm_three_phase_order<'a>(
     }
     let QueryCtx { cards, printings, indexes, .. } = *ctx;
     let k = params.page_offset.saturating_add(params.limit);
-    let set_printings = pbits.iter().map(|w| w.count_ones() as usize).sum::<usize>();
     if !sigma_bound::should_use_three_phase(cards.len(), printings.len(), total, k, set_printings, knob) {
         return None;
     }
@@ -10266,6 +10280,11 @@ pub(crate) struct PhaseStats {
     /// span arithmetic alone, and the stored artwork group count answers without a printing either.
     pub(crate) printings_examined: u64,
     pub(crate) matches_pushed: u64,
+    /// `popcount(pbits)` -- `PrintingCompose` only, diagnostic only. See
+    /// `ComposePageWork::set_printings`'s own doc for why this exists (grading
+    /// `sigma_bound::three_phase_cost_ns` against real per-query values, not just a synthetic grid).
+    /// Zero for every other executor.
+    pub(crate) set_printings: u64,
     /// Permutation entries `run_query_streamed`'s walk stepped over. Zero for every other executor and
     /// for P3's other two exits (the empty/past-the-end return and the small-total gather).
     ///
@@ -10539,8 +10558,8 @@ thread_local! {
     /// owned elsewhere: `paging_taken` by `PAGING_TAKEN` below, `ns_round_total`/`result_total` by
     /// `explain_analyze`, which fills them after the take.
     static PHASE_STATS: std::cell::Cell<PhaseStats> = const { std::cell::Cell::new(PhaseStats {
-        cards_visited: 0, printing_span: 0, printings_examined: 0, matches_pushed: 0, perm_steps: 0, ns_setup: 0, ns_loop: 0,
-        ns_finish: 0, ns_round_total: 0, ns_prepare: 0, result_total: 0, paging_taken: PagingTaken::NotEntered,
+        cards_visited: 0, printing_span: 0, printings_examined: 0, matches_pushed: 0, set_printings: 0, perm_steps: 0, ns_setup: 0,
+        ns_loop: 0, ns_finish: 0, ns_round_total: 0, ns_prepare: 0, result_total: 0, paging_taken: PagingTaken::NotEntered,
     }) };
 
     /// The compose fastpath's branch label, stored apart from `PHASE_STATS` because it is the one
@@ -10558,7 +10577,8 @@ thread_local! {
 
     /// The compose fastpath's three counters and undivided wall time, stored apart from `PHASE_STATS`
     /// for exactly the reason `PAGING_TAKEN` is: this is the production compose path, and a
-    /// whole-struct publish there is a read-modify-write of ~80 bytes to report 32.
+    /// whole-struct publish there is a read-modify-write of ~80 bytes to report 32. The phase split
+    /// and `set_printings` live in the separate diagnostic-only `ComposePhases` slot below.
     ///
     /// Measured, because the first version did write the whole struct: a paired A/B against the same
     /// build without it read `+1.4 µs` and `+3.1 µs` on a 129 µs mean (slower on 619 and 863 queries
@@ -10576,7 +10596,7 @@ thread_local! {
     /// Diagnostic-only compose phase detail. `run_query_with_plan(PrintingCompose)` requests it and
     /// `take_phase_stats` clears it alongside `COMPOSE_WORK`; routed/production runs never write it.
     static COMPOSE_PHASES: std::cell::Cell<ComposePhases> = const {
-        std::cell::Cell::new(ComposePhases { ns_build: 0, ns_paging: 0 })
+        std::cell::Cell::new(ComposePhases { ns_build: 0, ns_paging: 0, set_printings: 0 })
     };
 
     /// The routed path's disjoint phase split — see `RoutedPhases`. Its own slot for the same reason
@@ -10646,8 +10666,9 @@ fn note_pending_prepare_ns(ns: u64) {
 /// the two materializing plans do.
 ///
 /// A 32-byte store into `COMPOSE_WORK`, not a write of the whole `PhaseStats` — see that slot's doc.
-/// `take_phase_stats` merges it with diagnostic-only `COMPOSE_PHASES`, so consumers see no seam and
-/// `ns_build`/`ns_paging` land in `ns_setup`/`ns_loop` when collection is enabled, checked by
+/// `take_phase_stats` merges it with diagnostic-only `COMPOSE_PHASES` (which also carries
+/// `set_printings`), so consumers see no seam and `ns_build`/`ns_paging` land in `ns_setup`/`ns_loop`
+/// when collection is enabled, checked by
 /// `plan_stats_never_leak_between_participants`'s `PrintingCompose` branch.
 fn publish_compose_work(work: ComposePageWork) {
     COMPOSE_WORK.with(|c| c.set(work));
@@ -10676,9 +10697,10 @@ fn take_phase_stats() -> PhaseStats {
         stats.cards_visited = compose.cards_visited;
         stats.printings_examined = compose.printings_examined;
         stats.matches_pushed = compose.matches_pushed;
-        if compose_phases.ns_build | compose_phases.ns_paging != 0 {
+        if compose_phases.ns_build | compose_phases.ns_paging | compose_phases.set_printings != 0 {
             stats.ns_setup = compose_phases.ns_build;
             stats.ns_loop = compose_phases.ns_paging;
+            stats.set_printings = compose_phases.set_printings;
         } else {
             // Production preserves the old undivided span and never consumes it. This fallback also
             // keeps an accidental reader honest instead of silently pricing compose as zero.
@@ -10770,6 +10792,7 @@ fn exec_gathered_scan<'a>(
             printing_span: n_printing_span,
             printings_examined: n_printings_examined,
             matches_pushed: n_matches_pushed,
+            set_printings: 0, // PrintingCompose-only; GatheredScan never composes pbits
             perm_steps: 0, // GatheredScan never walks the permutation
             ns_setup: (t_loop - t_start).as_nanos() as u64,
             ns_loop: (t_finish - t_loop).as_nanos() as u64,
@@ -12772,6 +12795,7 @@ fn run_query_streamed<'a>(
                 printing_span: n_printing_span,
                 printings_examined: n_printings_examined,
                 matches_pushed: n_matches_pushed,
+                set_printings: 0, // PrintingCompose-only; StreamedSelect never composes pbits
                 perm_steps,
                 ns_setup: (t_loop - t_start).as_nanos() as u64,
                 ns_loop: (t_finish - t_loop).as_nanos() as u64,
@@ -13236,6 +13260,9 @@ fn plan_trial_to_pydict<'py>(py: Python<'py>, t: &PlanTrial) -> PyResult<Bound<'
     d.set_item("printing_span", t.phases.printing_span)?;
     d.set_item("printings_examined", t.phases.printings_examined)?;
     d.set_item("matches_pushed", t.phases.matches_pushed)?;
+    // PrintingCompose only (0 for every other plan) -- popcount(pbits), for grading
+    // `sigma_bound::three_phase_cost_ns` against real per-query values from Python.
+    d.set_item("set_printings", t.phases.set_printings)?;
     d.set_item("perm_steps", t.phases.perm_steps)?;
     d.set_item("ns_setup", t.phases.ns_setup)?;
     d.set_item("ns_loop", t.phases.ns_loop)?;
