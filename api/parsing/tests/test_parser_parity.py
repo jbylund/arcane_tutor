@@ -1,10 +1,14 @@
 """Tests that both parser implementations produce identical SQL for the same queries."""
 
+from functools import partial
+
 import pytest
 
-from api.parsing import generate_sql_query, parse_scryfall_query
-from api.parsing.post_parse import parse_pyparsing_query
+from api.parsing import generate_sql_query, parse_query, parse_scryfall_query
+from api.parsing.pyparsing_based import parse_str_to_query as pyparsing_parse_str_to_query
 from api.parsing.tests.implicit_and_cases import TESTCASES
+
+parse_with_pyparsing = partial(parse_query, parser_fn=pyparsing_parse_str_to_query)
 
 
 def assert_parsers_agree(query: str) -> None:
@@ -20,7 +24,7 @@ def assert_parsers_agree(query: str) -> None:
         hand_exc = exc
 
     try:
-        pyp_result = generate_sql_query(parse_pyparsing_query(query))
+        pyp_result = generate_sql_query(parse_with_pyparsing(query))
     except Exception as exc:  # noqa: BLE001
         pyp_exc = exc
 

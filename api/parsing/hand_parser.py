@@ -816,12 +816,8 @@ class Parser:
 # ── entry point ───────────────────────────────────────────────────────────────
 
 
-def parse_query(src: str | None) -> Query:
-    """Parse a Scryfall query string into a Query AST.
-
-    Drop-in replacement for parse_search_query; handles implicit AND natively
-    without a separate preprocessing pass.
-    """
+def parse_str_to_query(src: str | None) -> Query:
+    """Parse a query string into a Query AST (lex + parse + flatten only)."""
     if not src or not src.strip():
         return Query(TrueNode())
     try:

@@ -574,8 +574,8 @@ def get_parse_expr() -> ParserElement:  # noqa: PLR0915
     return expr
 
 
-def parse_search_query_raw(query: str | None) -> Query:
-    """Parse with pyparsing only — no post-parse pipeline. For parity tests and AST diffs."""
+def parse_str_to_query(query: str | None) -> Query:
+    """Parse a query string into a Query AST (pyparsing front end, no post-parse pipeline)."""
     original_query = query
     if query is None or not query.strip():
         return Query(TrueNode())

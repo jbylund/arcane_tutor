@@ -17,11 +17,15 @@ later, verified the same way: `c:witherbloom` = `c:bg` = 606 corpus-wide, and so
 `college`, `colleges`, and `strixhaven` are rejected by Scryfall, same boundary-not-superset rule.
 """
 
+from functools import partial
+
 import pytest
 
-from api.parsing import generate_sql_query, parse_scryfall_query
+from api.parsing import generate_sql_query, parse_query, parse_scryfall_query
 from api.parsing.colors import COLOR_ALIAS_TO_CODES
-from api.parsing.post_parse import parse_pyparsing_query
+from api.parsing.pyparsing_based import parse_str_to_query as pyparsing_parse_str_to_query
+
+parse_with_pyparsing = partial(parse_query, parser_fn=pyparsing_parse_str_to_query)
 
 # (name query, the letter query it must mean). Every pair verified live before landing.
 COLOR_NAME_CASES = [
@@ -87,7 +91,7 @@ COLOR_NAME_CASES = [
 def test_color_name_matches_letters(query: str, canonical_query: str) -> None:
     """A colour name produces exactly the SQL its letter spelling does, in both parsers."""
     assert generate_sql_query(parse_scryfall_query(query)) == generate_sql_query(parse_scryfall_query(canonical_query))
-    assert generate_sql_query(parse_pyparsing_query(query)) == generate_sql_query(parse_pyparsing_query(canonical_query))
+    assert generate_sql_query(parse_with_pyparsing(query)) == generate_sql_query(parse_with_pyparsing(canonical_query))
 
 
 @pytest.mark.parametrize(

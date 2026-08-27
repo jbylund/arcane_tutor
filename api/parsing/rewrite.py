@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from api.parsing.card_query_nodes import CardAttributeNode
-from api.parsing.hand_parser import parse_query as _parse_query
+from api.parsing.hand_parser import parse_str_to_query as _parse_str_to_query
 from api.parsing.nodes import (
     AndNode,
     BinaryOperatorNode,
@@ -169,11 +169,11 @@ def _leaf_key(node: QueryNode) -> tuple[str, str] | None:
 def _parse_expansion(dsl: str) -> QueryNode:
     """Parse an expansion DSL string into a subtree (the production parser's output root).
 
-    Uses the production hand parser directly (not `parse_scryfall_query`) so expansion of
+    Uses the production hand parser directly (not the public ``parse_scryfall_query`` seam) so expansion of
     a synonym does not recurse back through this transform; nesting is handled explicitly
     by `_expand` re-walking the result.
     """
-    return _parse_query(dsl).root
+    return _parse_str_to_query(dsl).root
 
 
 def _expand(node: QueryNode, in_progress: frozenset[tuple[str, str]]) -> tuple[QueryNode, bool]:
