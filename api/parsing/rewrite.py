@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import cachebox
+
 from api.parsing.card_query_nodes import CardAttributeNode
 from api.parsing.hand_parser import parse_str_to_query as _parse_str_to_query
 from api.parsing.nodes import (
@@ -166,6 +168,45 @@ def _leaf_key(node: QueryNode) -> tuple[str, str] | None:
     return (alias, value.lower())
 
 
+@cachebox.cached(cache={})
+def _expanded_template(key: tuple[str, str]) -> QueryNode:
+    """Fully-expanded AST for one derived-predicate key, computed once per process.
+
+    Parses the expansion with the hand parser only (not ``parse_scryfall_query``), so synonym
+    expansion does not recurse through this transform; seeding ``in_progress`` with ``key``
+    breaks any cycle. Callers MUST ``_clone_expansion`` the result before splicing it into a
+    query tree -- see that function for why a plain ``copy.deepcopy`` is both unsafe and, on
+    these small subtrees, measured slower than re-parsing the DSL string outright.
+    """
+    subtree, _ = _expand(_parse_str_to_query(_DERIVED_EXPANSIONS[key]).root, frozenset({key}))
+    return subtree
+
+
+def _clone_expansion(node: QueryNode) -> QueryNode:
+    """Structural copy of a cached expansion subtree, cheap enough to be worth caching at all.
+
+    A later per-request pass mutates leaf nodes in place (case-normalization in
+    ``card_query_nodes.to_sql``, e.g. ``self.rhs.value = ...``, ``self.operator = ...``), which
+    would otherwise corrupt ``_expanded_template``'s cached result for every future query that
+    reuses the same synonym -- so each leaf needs its own node and its own ``rhs`` object.
+    ``lhs`` and each value node's own ``.value`` are never reassigned in place downstream, so
+    those are shared, not copied.
+
+    Deliberately not ``copy.deepcopy``: measured ~20x slower than this on these subtrees (a
+    6-leaf expansion: 32us vs 1.5us) because deepcopy's generic per-object reduce/memo machinery
+    dominates on custom classes -- slower, in fact, than just re-parsing the DSL string (17us),
+    which is what made caching the parse pointless until this clone replaced the copy step.
+    """
+    cls = node.__class__
+    if cls is AndNode or cls is OrNode:
+        return cls([_clone_expansion(op) for op in node.operands])
+    if cls is NotNode:
+        return NotNode(_clone_expansion(node.operand))
+    if isinstance(node, BinaryOperatorNode):
+        return type(node)(node.lhs, node.operator, type(node.rhs)(node.rhs.value))
+    return node
+
+
 def _expand(node: QueryNode, in_progress: frozenset[tuple[str, str]]) -> tuple[QueryNode, bool]:
     """Expand derived-predicate leaves in `node`; return `(node, changed)`.
 
@@ -187,10 +228,7 @@ def _expand(node: QueryNode, in_progress: frozenset[tuple[str, str]]) -> tuple[Q
         return (NotNode(new_op), True) if changed else (node, False)
     key = _leaf_key(node)
     if key is not None and key in _DERIVED_EXPANSIONS and key not in in_progress:
-        # Parse the expansion with the hand parser only (not ``parse_scryfall_query``), so synonym
-        # expansion does not recurse through this transform; ``in_progress`` breaks any cycle.
-        subtree, _ = _expand(_parse_str_to_query(_DERIVED_EXPANSIONS[key]).root, in_progress | {key})
-        return subtree, True
+        return _clone_expansion(_expanded_template(key)), True
     return node, False
 
 
