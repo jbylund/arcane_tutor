@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import inspect
 import logging
 import os
@@ -230,6 +229,22 @@ def _columnarize_cards(cards: list[dict[str, Any]]) -> dict[str, list[Any]]:
     """
     keys = list(cards[0]) if cards else []
     return {k: [c[k] for c in cards] for k in keys}
+
+
+def _copy_query_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Return a `_run_query` result that's independent of the cached/shared original.
+
+    Callers only ever pop or reassign top-level keys -- on the outer dict (`result_bag.pop(...)`)
+    and on each row (`icard.pop(...)`, `icard["color_identity"] = ...`) -- never a nested value
+    in place, so copying the outer dict and each row dict one level deep is enough to make this
+    call's result safe to mutate without disturbing the cache entry or a concurrent caller. A full
+    `copy.deepcopy` of the whole result (including every row's nested JSONB fields) recurses far
+    more than that guarantee requires.
+    """
+    copied = dict(result)
+    if "result" in copied:
+        copied["result"] = [dict(row) for row in copied["result"]]
+    return copied
 
 
 class APIResource:
@@ -471,7 +486,7 @@ class APIResource:
             )
             cached_val = self._query_cache.get(cachekey)
             if cached_val is not None:
-                return copy.deepcopy(cached_val)
+                return _copy_query_result(cached_val)
 
         params = {k: db_utils.maybe_json(v) for k, v in params.items()}
 
@@ -496,7 +511,7 @@ class APIResource:
         if use_cache:
             self._query_cache[cachekey] = result
 
-        return copy.deepcopy(result)
+        return _copy_query_result(result)
 
     @route()
     def get_pid(self, *, falcon_response: falcon.Response | None = None, **_: object) -> int:
