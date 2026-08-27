@@ -11698,9 +11698,15 @@ fn three_phase_walk_rate_fit() {
     // A wider, denser spread than the correctness/rate-comparison tests use -- this fit's quality
     // depends on covering the real range of `matches` densely, not on covering the same handful of
     // representative points those tests were built around. Extends to 0.8/1.0 (full saturation) so
-    // the breakpoint table below covers the whole domain, not just up to 0.6.
-    const DENSITIES: [f64; 14] =
-        [0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.4, 0.6, 0.8, 1.0];
+    // the breakpoint table below covers the whole domain, not just up to 0.6. 0.03/0.25/0.3 are
+    // TARGETED additions, not a uniform densify: `three_phase_cost_ns_predicts_held_out_densities`'s
+    // first run found its two worst held-out points inside the 0.02-0.05 and 0.2-0.4 gaps
+    // specifically (57.5% and 42.1% over-prediction), so bisecting those two gaps is where more
+    // points actually pay for themselves, rather than adding density evenly across gaps that already
+    // interpolate well.
+    const DENSITIES: [f64; 17] = [
+        0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.03, 0.05, 0.1, 0.2, 0.25, 0.3, 0.4, 0.6, 0.8, 1.0,
+    ];
 
     let order = archived.indexes.sort_perms.order(SortCol::EdhrecRank, false, n_cards).expect("edhrec permutation exists");
     let mut rng = rand::rngs::SmallRng::seed_from_u64(5);
@@ -12888,4 +12894,80 @@ fn three_phase_cost_ns_matches_breakpoints_and_is_monotonic() {
         assert!(cur >= prev - 1e-6, "non-monotonic at set_printings={x}: {cur} < {prev}");
         prev = cur;
     }
+}
+
+/// How well `three_phase_cost_ns` actually predicts -- against densities NOT in
+/// `THREE_PHASE_BREAKPOINTS`, not the breakpoints themselves (interpolation is exact there by
+/// construction, which would say nothing about prediction quality). Held-out densities are the
+/// log-midpoint between each pair of fitted breakpoints, so every held-out point sits maximally far
+/// from its nearest knots -- the worst case for a piecewise-linear model, not a favorable one.
+///
+/// `cargo test --release three_phase_cost_ns_predicts_held_out_densities -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release three_phase_cost_ns_predicts_held_out_densities -- --ignored --nocapture"]
+fn three_phase_cost_ns_predicts_held_out_densities() {
+    use rand::SeedableRng;
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let words = n_printings.div_ceil(64);
+
+    const WARMUP: usize = 20;
+    const ITERS: usize = 200;
+    const LIMIT: usize = 20;
+    // Log-midpoint of each pair of fitted densities -- deliberately the point on the curve farthest
+    // from both of its bracketing knots. Matches THREE_PHASE_BREAKPOINTS's 17 fitted densities
+    // (0.0002 .. 1.0, including the 0.03/0.25/0.3 gap-bisecting additions), so this always tests
+    // prediction quality against the CURRENT table's actual gaps, not stale ones from a smaller table.
+    const HELD_OUT_DENSITIES: [f64; 16] = [
+        0.000316, 0.000707, 0.001414, 0.003162, 0.007071, 0.014142, 0.024495, 0.038730, 0.070711, 0.141421, 0.223607,
+        0.273861, 0.346410, 0.489898, 0.692820, 0.894427,
+    ];
+
+    let order = archived.indexes.sort_perms.order(SortCol::EdhrecRank, false, n_cards).expect("edhrec permutation exists");
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(6); // distinct seed from the fitting run
+    let params = kernel_params(Mode::Card, SortCol::EdhrecRank, false, LIMIT, 0);
+
+    println!("\nthree_phase_cost_ns: held-out prediction quality (densities NOT used to fit the table)");
+    println!("{:>10}  {:>12}  {:>12}  {:>12}  {:>8}", "density", "set_printings", "actual_ns", "predicted", "ratio");
+    let mut ratios: Vec<f64> = Vec::new();
+    for &density in &HELD_OUT_DENSITIES {
+        let pbits = random_pbits(&mut rng, words, n_printings, density);
+        let set_printings = pbits.iter().map(|w| w.count_ones() as usize).sum::<usize>();
+
+        let mut best = u128::MAX;
+        for it in 0..(WARMUP + ITERS) {
+            let t0 = Instant::now();
+            let (page, _) = black_box(super::walk_card_page_via_popcount_skip(&ctx, &params, &pbits, order));
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                best = best.min(dt);
+            }
+            black_box(&page);
+        }
+
+        let predicted = super::sigma_bound::three_phase_cost_ns(set_printings);
+        let ratio = predicted / best.max(1) as f64;
+        println!("{density:>10.6}  {set_printings:>12}  {best:>12}  {predicted:>12.1}  {ratio:>8.3}");
+        ratios.push(ratio);
+    }
+
+    let n = ratios.len() as f64;
+    let mean = ratios.iter().sum::<f64>() / n;
+    let worst = ratios.iter().map(|r| (r - 1.0).abs()).fold(0.0, f64::max);
+    println!("\n  mean ratio = {mean:.3}  (1.0 = perfect)");
+    println!("  worst |ratio - 1| = {worst:.3}");
 }

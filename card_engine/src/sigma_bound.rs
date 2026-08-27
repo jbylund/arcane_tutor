@@ -12,6 +12,42 @@
 //! fills the requested page. That is what makes this immune to the EDHREC-order clumping that broke
 //! every attempt to estimate `cards_visited` directly (`reference-engine-compose-perm-cards-visited-
 //! estimator.md`) — it never reads WHERE matches sit in the permutation, only how many there are.
+//!
+//! ## Provenance and re-fitting `THREE_PHASE_BREAKPOINTS`
+//!
+//! Fit on this session's `real.store` (31,724 cards, 97,812 printings), same methodology `cost.rs`'s
+//! own module doc asks for its constants: named data points, a stated recalibration trigger, not just
+//! numbers. Recalibrate when the corpus size changes meaningfully (more cards/printings shifts every
+//! `set_printings` value this table is keyed by) or `walk_card_page_via_popcount_skip`'s scatter
+//! phase itself changes — a uniform hardware speed change alone does NOT require it, since step 5's
+//! use of this table is a within-process comparison against the real walk's own measured cost, not an
+//! absolute threshold.
+//!
+//! To regenerate:
+//!
+//! 1. `cargo test --release three_phase_walk_rate_fit -- --ignored --nocapture` against the target
+//!    corpus's `real.store`. Prints a ready-to-paste `const THREE_PHASE_BREAKPOINTS` block.
+//! 2. **Run it at least twice and compare.** A single run on this session's machine showed real
+//!    run-to-run variance of 5-15% at several points, not just the expected few-hundred-ns wobble
+//!    near the floor (this machine is shared with other concurrent work) -- one bad run produced a
+//!    table with a large spurious jump that a second run didn't reproduce. Take the ELEMENT-WISE MAX
+//!    across runs, then a running max in `set_printings` order (never decrease moving right) -- both
+//!    only ever move a value UP, the safe direction for a cost this table exists to avoid
+//!    under-predicting.
+//! 3. Paste the result in place of the block below.
+//! 4. `cargo test --release three_phase_cost_ns_matches_breakpoints_and_is_monotonic` — this is NOT
+//!    optional: it is what catches a new table that came out locally non-monotonic.
+//! 5. `cargo test --release three_phase_cost_ns_predicts_held_out_densities -- --ignored --nocapture`
+//!    to re-check prediction quality on densities the table was NOT fit from (interpolation is exact
+//!    at the fitted points by construction, which says nothing about accuracy between them). This
+//!    table (17 points): mean ratio 1.051, worst case 23.9% (safe-direction over-prediction at
+//!    density≈0.35). The original 14-point table's worst case was 57.5%, at density≈0.28, squarely
+//!    inside the widest, steepest-curvature gap in that table (19,441 to 39,008 set printings, cost
+//!    jumping 4.3x); THIS table's 3 extra points (0.03/0.25/0.3 density) were placed specifically to
+//!    bisect that gap and the second-worst one, not spread evenly -- 3 targeted points did more than a
+//!    blind jump to 20-30 uniformly-spaced ones would have. If a re-fit still needs tighter accuracy,
+//!    the same recipe applies: read this step's own output for whichever gap is worst NOW and bisect
+//!    it, rather than re-sampling gaps that already interpolate well.
 
 /// Every non-matching card clumped before the k-th match — an exact, unconditional ceiling on
 /// `walk_grouped_page`'s `cards_visited`. `k > matches` means the page never fills, so the walk
@@ -80,29 +116,33 @@ pub(crate) fn sigma_bound(n_cards: usize, matches: usize, k: usize, knob: f64) -
 /// perf-counter access in this harness). Piecewise-linear interpolation between real measured points
 /// is exact at every knot and reasonable between them, without pretending the true curve is a line.
 ///
-/// Fit on THIS session's `real.store` (31,724 cards, 97,812 printings) -- needs re-fitting against
-/// the production corpus/machine before any live use. Regenerate with `cargo test --release
-/// three_phase_walk_rate_fit -- --ignored --nocapture`, which prints this table ready to paste.
-/// Y-values are the raw measurements' running max (a handful of the lowest points measured a few
-/// hundred ns of run-to-run noise around the floor, which would otherwise make the table locally
-/// non-monotonic -- physically, more set printings should never measure as strictly faster).
+/// See this module's own doc ("Provenance and re-fitting") for what corpus/machine this was fit on,
+/// when to recalibrate, and the exact steps. Y-values are the ELEMENT-WISE MAX of two separate
+/// fitting runs, then a running max in `set_printings` order -- one run alone showed real run-to-run
+/// variance of 5-15% at several points (not just the expected few-hundred-ns wobble near the floor;
+/// this machine is shared with other concurrent work), so a single run's numbers were not trusted
+/// as-is. Combining two clean runs this way can only ever move a value UP, which is the safe direction
+/// for a cost this table exists to avoid under-predicting.
 // Ported ahead of step 5; not yet called from the dispatch path.
 #[allow(dead_code)]
-pub(crate) const THREE_PHASE_BREAKPOINTS: [(u32, f64); 14] = [
-    (23, 1042.0),
-    (55, 1042.0),
-    (97, 1083.0),
-    (215, 1333.0),
-    (477, 2000.0),
-    (963, 2166.0),
-    (1960, 5042.0),
-    (4878, 7916.0),
-    (9918, 14334.0),
-    (19441, 20000.0),
-    (39008, 86416.0),
-    (58671, 151000.0),
-    (78165, 178917.0),
-    (97812, 208292.0),
+pub(crate) const THREE_PHASE_BREAKPOINTS: [(u32, f64); 17] = [
+    (23, 750.0),
+    (55, 750.0),
+    (97, 750.0),
+    (215, 875.0),
+    (477, 1333.0),
+    (963, 2333.0),
+    (1960, 3458.0),
+    (2924, 4208.0),
+    (4885, 5583.0),
+    (9733, 9541.0),
+    (19356, 19083.0),
+    (24577, 25041.0),
+    (29453, 40708.0),
+    (39101, 68625.0),
+    (58725, 138667.0),
+    (78417, 175916.0),
+    (97812, 228750.0),
 ];
 
 /// Linear interpolation of `THREE_PHASE_BREAKPOINTS` at `set_printings`. Clamped below the first
