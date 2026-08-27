@@ -70,8 +70,13 @@ real production traffic's actual query shapes rather than a uniform sampler.
 
 ## What shipping this looks like, in independently-landable chunks
 
-1. **Fix the cost model first, separately**: [local-engine-compose-walk-cost-model-miscalibrated.md](local-engine-compose-walk-cost-model-miscalibrated.md).
-   Unrelated in scope to this doc's own decision rule — found as a side effect, ships on its own.
+1. **Fix the cost model first, separately**: [01025-engine-compose-walk-cost-miscalibrated.md](01025-engine-compose-walk-cost-miscalibrated.md).
+   Unrelated in scope to this doc's own decision rule — found as a side effect. **Only half of this
+   ships on its own**: the enabling `ns_build`/`ns_paging` split is genuinely independent and lands via
+   [#1009](https://github.com/jbylund/sylvan_librarian/pull/1009), but the refit itself turned out not
+   to be a standalone follow-up — it's gated on the same `cards_visited` feature-estimation gap
+   blocking [local-engine-p3-p4-joint-refit-vs-compose.md](local-engine-p3-p4-joint-refit-vs-compose.md)'s
+   joint refit. See `01025`'s own Status for the current split.
 2. **Promote the three-phase walk out of `#[cfg(test)]`**, Card mode first. Zero behavior change:
    nothing calls it yet. Correctness is already covered (360-case differential test against
    `walk_grouped_page`, passing).

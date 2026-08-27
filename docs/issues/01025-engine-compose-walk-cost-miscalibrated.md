@@ -65,15 +65,33 @@ explains away.
 
 A refit of `COMPOSE_WALK_STEP_NS`/`COMPOSE_WALK_EMIT_PER_ROW_NS` against real `(printings_walked,
 ns_paging)` pairs, now that they're cleanly separable — the same kind of natural-query rate
-regression `fit_cost_model.py` already does for other plans, pointed at this one. Independent of,
-and probably lower-risk than, the decision-rule work that found it: this only touches an existing
-cost-model constant used for routing `PrintingCompose` against `GatheredScan`/`StreamedSelect`, not
-new dispatch logic.
+regression `fit_cost_model.py` already does for other plans, pointed at this one.
+
+**Correction, this was wrong**: originally framed here as "independent of... this only touches an
+existing cost-model constant... not new dispatch logic," implying it's safe to ship standalone.
+[local-engine-p3-p4-joint-refit-vs-compose.md](local-engine-p3-p4-joint-refit-vs-compose.md) proves
+that assumption false for exactly this shape of change: `PrintingCompose` sits in the same
+`plan_cost` argmin as `GatheredScan`/`StreamedSelect`, and refitting any one of the three in isolation
+— in either direction — shifts routing across all of them, regressing total regret even when the
+isolated fix is individually correct. Raising `COMPOSE_WALK_STEP_NS` to its true rate (correcting the
+undercost this doc measures) would make `PrintingCompose`'s `Perm` arm look pricier and lose to
+`GatheredScan`/`StreamedSelect` more often, including where it's still actually the better choice.
+
+The rate to use once this is safe to wire in is already known — see
+[reference-engine-compose-perm-cards-visited-estimator.md](reference-engine-compose-perm-cards-visited-estimator.md)'s
+reconciliation: ~1.9 ns/card, ~0.32 ns/printing, cross-validated two independent ways. What's missing
+is not the number but an accurate `cards_visited` **feature** to multiply it against for general
+traffic — that doc's own conclusion is that this is still blocked on the same estimator gap gating the
+P3/P4 joint refit, not a smaller follow-up.
 
 ## Related
 
 - [local-engine-compose-perm-sigma-decision-rule.md](local-engine-compose-perm-sigma-decision-rule.md)
   — the work that surfaced this as a side finding.
+- [local-engine-p3-p4-joint-refit-vs-compose.md](local-engine-p3-p4-joint-refit-vs-compose.md) — why a
+  standalone refit of this constant isn't safe, and what a joint refit actually requires.
+- [reference-engine-compose-perm-cards-visited-estimator.md](reference-engine-compose-perm-cards-visited-estimator.md)
+  — the rate this doc's fix should use, and the feature-estimation gap still blocking it.
 - `card_engine/src/cost.rs` — `COMPOSE_WALK_STEP_NS`, `COMPOSE_WALK_EMIT_PER_ROW_NS`,
   `printings_walked`, `WALK_LENGTH_BIAS`.
 - Branch `engine-compose-cards-visited-estimator` — where the measurement lives
@@ -81,5 +99,7 @@ new dispatch logic.
 
 ## Status
 
-Measured, not fixed. Needs a real refit (not just a multiplier bump) against clean data the recent
-`ns_build`/`ns_paging` split now makes available.
+The enabling split (`ns_build`/`ns_paging`) is landing via
+[#1009](https://github.com/jbylund/sylvan_librarian/pull/1009). The refit itself is measured but
+**not fixable as a standalone next step**: it's gated on the same `cards_visited` feature-estimation
+gap blocking the P3/P4 joint refit (see Related), not just on someone doing the regression.
