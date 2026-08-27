@@ -520,6 +520,14 @@ def _predicted_printings_for_bound(r: dict, bound_cards: float) -> float:
     return bound_cards * r["n_printings"] / r["n_cards"]
 
 
+# The two rejected offset-gate thresholds (see the module's `Dead ends` doc elsewhere in this repo:
+# gating protects the wrong population, since clumping outliers sit at shallow offsets too). Kept as
+# comparison rows for `worst_case`/`blend` only -- named so the label can never drift from the value
+# it names, which a bare literal duplicated into a separate f-string label cannot guarantee.
+GATE_OFFSET_LOW = 2_000
+GATE_OFFSET_HIGH = 4_000
+
+
 def _build_policies(walk_model: WalkCostModel, three_phase: ThreePhaseModel) -> dict[str, object]:
     """The named decision policies `simulate_policies` grades against each other, keyed by display name."""
 
@@ -551,10 +559,10 @@ def _build_policies(walk_model: WalkCostModel, three_phase: ThreePhaseModel) -> 
         "no gate, sigma(4.0)": gated(0, lambda n, m, k: sigma_bound(n, m, k, 4.0)),
         "no gate, sigma(6.0)": gated(0, lambda n, m, k: sigma_bound(n, m, k, 6.0)),
         "no gate, sigma(8.0)": gated(0, lambda n, m, k: sigma_bound(n, m, k, 8.0)),
-        "gate=2000, worst_case": gated(2_000, worst_case_bound),
-        "gate=4000, worst_case": gated(4_000, worst_case_bound),
-        "gate=2000, blend(0.6)": gated(2_000, lambda n, m, k: blend_bound(n, m, k, 0.6)),
-        "gate=4000, blend(0.6)": gated(4_000, lambda n, m, k: blend_bound(n, m, k, 0.6)),
+        f"gate={GATE_OFFSET_LOW}, worst_case": gated(GATE_OFFSET_LOW, worst_case_bound),
+        f"gate={GATE_OFFSET_HIGH}, worst_case": gated(GATE_OFFSET_HIGH, worst_case_bound),
+        f"gate={GATE_OFFSET_LOW}, blend(0.6)": gated(GATE_OFFSET_LOW, lambda n, m, k: blend_bound(n, m, k, 0.6)),
+        f"gate={GATE_OFFSET_HIGH}, blend(0.6)": gated(GATE_OFFSET_HIGH, lambda n, m, k: blend_bound(n, m, k, 0.6)),
     }
 
 
