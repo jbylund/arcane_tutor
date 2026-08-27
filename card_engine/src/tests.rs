@@ -11692,8 +11692,14 @@ fn three_phase_walk_rate_fit() {
     let n_printings = archived.printings.len();
     let words = n_printings.div_ceil(64);
 
-    const WARMUP: usize = 20;
-    const ITERS: usize = 200;
+    // 200/5000, not the 20/200 most kernel benches in this file use: a first attempt at this fit
+    // found one point with 20.7% run-to-run CV against neighbors at 5-9%, looking like a genuine
+    // per-point hardware anomaly. It wasn't -- at 200/5000 that same point's CV dropped to 1.6%,
+    // matching every other point's 1-4%. 200 iterations simply wasn't enough for `min()` to reliably
+    // converge to the true floor at every point; more trials fixes that at the source, more
+    // effectively than averaging across many separately under-sampled runs would have.
+    const WARMUP: usize = 200;
+    const ITERS: usize = 5000;
     const LIMIT: usize = 20;
     // A wider, denser spread than the correctness/rate-comparison tests use -- this fit's quality
     // depends on covering the real range of `matches` densely, not on covering the same handful of
@@ -12925,8 +12931,13 @@ fn three_phase_cost_ns_predicts_held_out_densities() {
     let n_printings = archived.printings.len();
     let words = n_printings.div_ceil(64);
 
-    const WARMUP: usize = 20;
-    const ITERS: usize = 200;
+    // 200/5000, matching three_phase_walk_rate_fit's own trial count -- at 20/200 this validation's
+    // own reported mean/worst-case ratio swung wildly across repeat runs (mean 0.874-1.022, worst
+    // case 7.0%-28.2%, across 8 runs), which meant a single validation pass wasn't trustworthy
+    // evidence either. This isn't unique to the fit; any min-of-N measurement in this file needs
+    // enough N, not just enough repeated runs.
+    const WARMUP: usize = 200;
+    const ITERS: usize = 5000;
     const LIMIT: usize = 20;
     // Log-midpoint of each pair of fitted densities -- deliberately the point on the curve farthest
     // from both of its bracketing knots. Matches THREE_PHASE_BREAKPOINTS's 17 fitted densities
