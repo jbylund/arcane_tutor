@@ -14,6 +14,20 @@ spread.
     .venv/bin/python scripts/bench_guard_validation.py run \
         --corpus <real corpus.jsonl> --reps 5
     .venv/bin/python scripts/bench_guard_validation.py analyze
+
+`--query-source uniform` swaps the wild corpus for `QuerySampler("uniform")`-generated queries
+(offset/limit drawn from a wide spread, biased toward `Mode::Card`). Every row in the wild corpus is
+offset=0 -- real users almost never page deep -- so a feature gated on deep pages (the sigma decision
+rule, docs/issues/local-engine-compose-perm-sigma-decision-rule.md) needs this to be exercised at all,
+not just checked for safety on the common case:
+
+    .venv/bin/python scripts/bench_guard_validation.py run --query-source uniform \
+        --corpus <real corpus.jsonl> --env-old '{}' \
+        --env-new '{"CARD_ENGINE_COMPOSE_SIGMA_ENABLED": "1", "CARD_ENGINE_COMPOSE_SIGMA_KNOB": "3.0"}'
+
+Note `--env-old` defaults to `OLD_ENV` (the pre-calibration constants this tool was originally built
+to validate) when omitted -- pass `--env-old '{}'` explicitly for a clean "today's shipped defaults"
+baseline, or the old branch will also carry those unrelated overrides.
 """
 
 from __future__ import annotations
@@ -85,6 +99,57 @@ def sample_wild(rng: random.Random, wild_corpus: pathlib.Path, count: int) -> li
     ]
 
 
+# Permutation-backed orderbys only (`SortCol`'s six minus `usd`/`rarity`, which have no permutation)
+# -- the sigma decision rule this validation exists for only ever fires on `Perm`, so a query set
+# built from the other two never exercises it at all, regardless of offset/limit coverage.
+_PERM_ORDERBYS = ("edhrec", "cubecobra", "cmc", "power", "toughness", "name")
+# Mirrors OFFSET_SWEEP in bench_compose_card_visited_safety_bound.py / sigma_knob_sensitivity_sweep:
+# real traffic is offset~0-heavy by design (confirmed by the wild corpus itself: every row is
+# offset=0), which cannot exercise the tail the sigma decision rule is FOR. Drawing from this spread
+# instead of a fixed 0 is the whole point of using the sampler here rather than the wild corpus.
+_OFFSET_CHOICES = (0, 0, 0, 50, 200, 500, 1_000, 2_000, 4_000, 8_000, 15_000, 25_000)
+# Weighted toward smaller pages (real UI page sizes cluster low) but with enough spread that a
+# handful of large-limit queries exercise `k = offset + limit` reaching further into the permutation.
+_LIMIT_CHOICES = (20, 20, 20, 50, 100)
+
+
+def sample_uniform(rng: random.Random, corpus: pathlib.Path, count: int) -> list[dict]:
+    """Sample `count` query specs from `QuerySampler("uniform")`.
+
+    Biased toward the population the sigma decision rule actually decides for: `Mode::Card` (the only
+    mode `walk_card_page_via_popcount_skip` supports) on a permutation-backed orderby, with offset AND
+    limit drawn from a wide spread rather than pinned to the shallow-page default every real wild
+    query uses.
+
+    Query TEXT is synthetic (structured, not harvested), unlike `sample_wild` -- the trade this
+    validation makes deliberately: real user query text almost never exercises deep pages at all, so
+    a harness restricted to it can only validate SAFETY on the common case, never the population this
+    feature exists for. `bench_guard_validation.py`'s own wild-corpus run covers that safety case
+    already; this covers the coverage gap it structurally cannot.
+    """
+    from client.query_sampler import QuerySampler  # noqa: PLC0415 - only this path needs it
+
+    sampler = QuerySampler(corpus, "uniform")
+    specs: list[dict] = []
+    seen: set[str] = set()
+    while len(specs) < count:
+        query = sampler.structured_query(rng)["query"]
+        if query in seen:
+            continue
+        seen.add(query)
+        specs.append(
+            {
+                "query": query,
+                "unique": "card",
+                "orderby": rng.choice(_PERM_ORDERBYS),
+                "direction": rng.choice(("asc", "desc")),
+                "offset": rng.choice(_OFFSET_CHOICES),
+                "limit": rng.choice(_LIMIT_CHOICES),
+            }
+        )
+    return specs
+
+
 def bench_one(engine: card_engine.QueryEngine, spec: dict, window: float) -> tuple[int, int, float, float]:
     """Return (total, n, median_ms, min_ms) for one query spec over a timed window."""
     kw = {
@@ -93,7 +158,7 @@ def bench_one(engine: card_engine.QueryEngine, spec: dict, window: float) -> tup
         "prefer": spec.get("prefer", "default"),
         "orderby": spec["orderby"],
         "direction": spec.get("direction", "asc"),
-        "limit": 100,
+        "limit": spec.get("limit", 100),
         "offset": spec.get("offset", 0),
     }
     total = engine.query(**kw)[0]
@@ -108,11 +173,11 @@ def bench_one(engine: card_engine.QueryEngine, spec: dict, window: float) -> tup
     return total, len(samples), statistics.median(samples), min(samples)
 
 
-def build_query_set(store: pathlib.Path, wild_corpus: pathlib.Path, count: int, seed: int, path: pathlib.Path) -> None:
-    """Sample, dedupe, and pre-filter wild queries; write the frozen set to JSON."""
+def build_query_set(store: pathlib.Path, sample_fn, count: int, seed: int, path: pathlib.Path) -> None:  # noqa: ANN001 - sample_fn is sample_wild or sample_uniform, both (rng, count) -> list[dict]
+    """Sample, dedupe, and pre-filter query specs from `sample_fn`; write the frozen set to JSON."""
     rng = random.Random(seed)
     specs, seen = [], set()
-    for spec in sample_wild(rng, wild_corpus, count * 2):  # oversample: dedupe + parse failures shrink the pool
+    for spec in sample_fn(rng, count * 2):  # oversample: dedupe + parse failures shrink the pool
         if spec["query"] in seen:
             continue
         seen.add(spec["query"])
@@ -162,12 +227,18 @@ def cmd_run(args: argparse.Namespace) -> None:
     from scripts.costbench import load_engine  # noqa: PLC0415 — heavy loader, workers don't need it
 
     store = OUTDIR / "real.store"
-    queries = OUTDIR / "validation-queries.json"
+    # Separate frozen sets per source -- a stale wild-sourced file must never silently serve a
+    # uniform-sourced run or vice versa; the two populations are not comparable to each other.
+    queries = OUTDIR / f"validation-queries-{args.query_source}.json"
     OUTDIR.mkdir(parents=True, exist_ok=True)
     if not store.exists():
         load_engine(args.corpus, store)
     if not queries.exists():
-        build_query_set(store, args.wild_corpus, args.count, args.seed, queries)
+        if args.query_source == "wild":
+            sample_fn = lambda rng, count: sample_wild(rng, args.wild_corpus, count)  # noqa: E731
+        else:
+            sample_fn = lambda rng, count: sample_uniform(rng, args.corpus, count)  # noqa: E731
+        build_query_set(store, sample_fn, args.count, args.seed, queries)
     if not args.out.exists():
         args.out.write_text("branch,rep,qid,query,unique,orderby,total,n,med_ms,min_ms\n")
     env_old = json.loads(args.env_old) if args.env_old else OLD_ENV
@@ -260,6 +331,14 @@ def main() -> None:
         if name == "run":
             p.add_argument("--corpus", type=pathlib.Path, required=True)
             p.add_argument("--wild-corpus", type=pathlib.Path, default=REPO_ROOT / "benchmarks/wild-queries/wild-corpus.jsonl")
+            p.add_argument(
+                "--query-source",
+                choices=("wild", "uniform"),
+                default="wild",
+                help="'wild': real harvested query text, always offset=0 (safety on the common case). "
+                "'uniform': QuerySampler-generated Mode::Card queries with offset/limit drawn from a wide "
+                "spread (coverage of the population a feature gated on deep pages actually needs to exercise)",
+            )
             p.add_argument("--reps", type=int, default=5)
             p.add_argument("--count", type=int, default=180)
             p.add_argument("--seed", type=int, default=20260708)
