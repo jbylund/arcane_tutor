@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import pathlib
 
+import cachebox
 import falcon
 import minify_html
 import orjson
@@ -43,6 +44,30 @@ _CSS_HTML = (_FRAGMENTS_DIR / "css.html").read_text()
 _FOOTER_HTML = (_FRAGMENTS_DIR / "footer.html").read_text()
 
 
+@cachebox.cached(cache={})
+def read_static_bytes(filename: str) -> bytes:
+    """Read a static file's raw bytes, once per process.
+
+    The files under STATIC_DIR never change while a process is running (a deploy replaces them
+    underneath a fresh process, same as the content-hash comment on `_static_hash` above), so a
+    per-request disk read buys nothing -- callers serving binary assets (favicon.ico,
+    social-preview.webp) use this directly instead of re-reading on every hit.
+
+    Deliberately `cachebox.cached` (unconditional, like `pyparsing_based.get_parse_expr`), not the
+    settings-aware `cached` used below for `build_base_html`/`build_card_html`: that wrapper falls
+    through to an uncached call whenever `settings.enable_cache` is off (the test-suite default),
+    which is the right behavior for a query-result cache but would defeat the point here -- these
+    bytes are immutable for the life of the process regardless of that setting.
+    """
+    return (STATIC_DIR / filename).read_bytes()
+
+
+@cachebox.cached(cache={})
+def _read_static_text(filename: str) -> str:
+    """Read a static file's text, once per process. See `read_static_bytes` for why."""
+    return (STATIC_DIR / filename).read_text()
+
+
 def serve_static_file(*, filename: str, falcon_response: falcon.Response) -> None:
     """Serve a static file to the Falcon response.
 
@@ -52,10 +77,8 @@ def serve_static_file(*, filename: str, falcon_response: falcon.Response) -> Non
         falcon_response (falcon.Response): The Falcon response to write to.
 
     """
-    full_filename = STATIC_DIR / filename
     try:
-        with pathlib.Path(full_filename).open() as f:
-            falcon_response.text = f.read()
+        falcon_response.text = _read_static_text(filename)
     except FileNotFoundError:
         falcon_response.status = falcon.HTTP_404
         falcon_response.text = f"File not found: {filename}"
@@ -158,4 +181,3 @@ def serialize_embedded_json(data: object) -> str:
         JSON string safe for embedding inside an inline HTML <script> block.
     """
     return orjson.dumps(data).decode("utf-8").replace("<", "\\u003c")
-

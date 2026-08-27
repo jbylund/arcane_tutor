@@ -20,14 +20,10 @@ class TestServeStaticFile(unittest.TestCase):
     def test_reads_file_content(self) -> None:
         mock_response = MagicMock()
 
-        with patch("api.utils.page_rendering.pathlib.Path") as mock_path:
-            mock_file = MagicMock()
-            mock_file.open.return_value.__enter__.return_value.read.return_value = "file content"
-            mock_path.return_value = mock_file
-
+        with patch("api.utils.page_rendering._read_static_text", return_value="file content"):
             page_rendering.serve_static_file(filename="test.html", falcon_response=mock_response)
 
-            assert mock_response.text == "file content"
+        assert mock_response.text == "file content"
 
     def test_missing_file_serves_404(self) -> None:
         mock_response = MagicMock()
@@ -36,6 +32,32 @@ class TestServeStaticFile(unittest.TestCase):
 
         assert mock_response.status == falcon.HTTP_404
         assert "does-not-exist.html" in mock_response.text
+
+    def test_content_is_read_from_disk_only_once(self) -> None:
+        """_read_static_text is process-lifetime cached: a second call skips the disk read."""
+        mock_response_1 = MagicMock()
+        mock_response_2 = MagicMock()
+
+        with patch("pathlib.Path.read_text", return_value="cached content") as mock_read_text:
+            page_rendering.serve_static_file(filename="__test_cache_marker__.html", falcon_response=mock_response_1)
+            page_rendering.serve_static_file(filename="__test_cache_marker__.html", falcon_response=mock_response_2)
+
+        assert mock_response_1.text == "cached content"
+        assert mock_response_2.text == "cached content"
+        mock_read_text.assert_called_once()
+
+
+class TestReadStaticBytes(unittest.TestCase):
+    """read_static_bytes is process-lifetime cached, like _read_static_text."""
+
+    def test_content_is_read_from_disk_only_once(self) -> None:
+        with patch("pathlib.Path.read_bytes", return_value=b"cached bytes") as mock_read_bytes:
+            first = page_rendering.read_static_bytes("__test_bytes_cache_marker__.ico")
+            second = page_rendering.read_static_bytes("__test_bytes_cache_marker__.ico")
+
+        assert first == b"cached bytes"
+        assert second == b"cached bytes"
+        mock_read_bytes.assert_called_once()
 
 
 class TestHtmlMinification(unittest.TestCase):
@@ -146,4 +168,3 @@ class TestSerializeEmbeddedJson(unittest.TestCase):
 
         assert "<" not in serialized
         assert json.loads(serialized) == payload
-

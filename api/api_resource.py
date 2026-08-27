@@ -6,7 +6,6 @@ import copy
 import inspect
 import logging
 import os
-import pathlib
 import threading
 import time
 
@@ -45,6 +44,7 @@ from api.utils.page_rendering import (
     STATIC_DIR,
     build_base_html,
     build_card_html,
+    read_static_bytes,
     serialize_embedded_json,
     serve_static_file,
 )
@@ -1138,9 +1138,8 @@ class APIResource:
         """
         if falcon_response is None:
             return
-        full_filename = STATIC_DIR / "favicon.ico"
-        with pathlib.Path(full_filename).open(mode="rb") as f:
-            falcon_response.data = contents = f.read()
+        contents = read_static_bytes("favicon.ico")
+        falcon_response.data = contents
         falcon_response.content_type = "image/vnd.microsoft.icon"
         content_length = len(contents)
         logger.info("Favicon content length: %d", content_length)
@@ -1153,9 +1152,7 @@ class APIResource:
         """Return the social preview image."""
         if falcon_response is None:
             return
-        full_filename = STATIC_DIR / "social-preview.webp"
-        with full_filename.open(mode="rb") as f:
-            contents = f.read()
+        contents = read_static_bytes("social-preview.webp")
         falcon_response.data = contents
         falcon_response.content_type = "image/webp"
         falcon_response.headers["content-length"] = len(contents)
@@ -1286,9 +1283,14 @@ class APIResource:
 
     @route()
     def get_common_keywords(self, **_: object) -> list[dict[str, Any]]:
-        """Get the common keywords from the database."""
+        """Get the common keywords from the database.
+
+        Unlike /search, this has no engine-backed path -- it always queries SQL directly, so
+        `explain` matters every time it's called, not just on a fallback.
+        """
         return self._run_query(
             query=db_utils.read_sql("get_common_keywords"),
+            explain=False,
         )["result"]
 
     @route()
