@@ -11538,6 +11538,121 @@ fn walk_card_page_via_popcount_skip_matches_walk_grouped_page() {
     }
 }
 
+/// Step 4 of `docs/issues/local-engine-compose-perm-sigma-decision-rule.md`: get real, same-process
+/// nanosecond costs for both `Perm` branches, rather than trusting either side's cost from a
+/// different process or a hand-fit model. `walk_grouped_page` (today's production Card-mode walk)
+/// and `walk_card_page_via_popcount_skip` (#1030's promoted prototype) are timed back-to-back, same
+/// process, same corpus, same input, over a (density, offset) grid -- density stands in for how
+/// selective the composed filter is, offset for how deep the page sits.
+///
+/// This replaces the Python harness's `ThreePhaseModel`, which needed `--three-phase-rate-ns-per-
+/// match`/`--three-phase-fixed-ns`/`--three-phase-floor-ns` supplied by hand on the CLI, sourced from
+/// an earlier kernel-bench of the not-yet-promoted prototype (`local-engine-compose-perm-cards-
+/// visited-estimator.md`'s own kernel, in fact -- the ~1.9 ns/card figure that doc found and then
+/// distrusted in favor of a natural-query regression). This measures the ACTUAL promoted
+/// implementation directly, so there is nothing left to distrust on that side.
+///
+/// Prints a table rather than asserting anything -- there is no "right" cost to check against here,
+/// only real numbers for step 5's dispatch decision and step 7's eventual live validation to use.
+/// Card mode only, matching the plan's "Card mode first" scope; `Printing`/`Artwork` would need their
+/// own pass once `walk_printing_page_via_popcount_skip`/`walk_artwork_page_via_popcount_skip` are
+/// candidates for wiring too.
+///
+/// `cargo test --release perm_walk_vs_three_phase_same_process_rates -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release perm_walk_vs_three_phase_same_process_rates -- --ignored --nocapture"]
+fn perm_walk_vs_three_phase_same_process_rates() {
+    use rand::SeedableRng;
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let words = n_printings.div_ceil(64);
+
+    const WARMUP: usize = 20;
+    const ITERS: usize = 200;
+    const LIMIT: usize = 20;
+    // Mirrors OFFSET_SWEEP in bench_compose_card_visited_safety_bound.py: real Perm-paging traffic
+    // is offset~0-heavy by design, which can't exercise the deep tail this comparison is for.
+    const OFFSETS: [usize; 10] = [0, 50, 200, 500, 1_000, 2_000, 4_000, 8_000, 15_000, 25_000];
+    // Same four densities the correctness differential test above uses -- sparse and dense exercise
+    // different code paths in both implementations, so the SAME grid that validated correctness is
+    // the right one to cost.
+    const DENSITIES: [f64; 4] = [0.0005, 0.01, 0.2, 0.6];
+
+    let order = archived.indexes.sort_perms.order(SortCol::EdhrecRank, false, n_cards).expect("edhrec permutation exists");
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(4);
+
+    println!("\nperm walk vs three-phase, same-process real costs (real.store: {n_cards} cards, {n_printings} printings)");
+    println!("{:>10}  {:>8}  {:>10}  {:>12}  {:>14}  {:>8}", "density", "offset", "matches", "walk_ns", "three_phase_ns", "ratio");
+    for &density in &DENSITIES {
+        let pbits = random_pbits(&mut rng, words, n_printings, density);
+        // The exact count of distinct matching cards, computed directly from the bitmap once per
+        // density -- NOT derived from a page's length, which undercounts whenever the walk exhausts
+        // the permutation before filling (a real risk at low density / deep offset, exactly the
+        // population this whole comparison is about).
+        let matches = {
+            let mut card_seen = vec![false; n_cards];
+            let mut count = 0usize;
+            for (i, &word) in pbits.iter().enumerate() {
+                let mut w = word;
+                while w != 0 {
+                    let pid = ((i as u32) << 6 | w.trailing_zeros()) as usize;
+                    w &= w - 1;
+                    let cid = u32::from(archived.indexes.printing_to_card[pid]) as usize;
+                    if !card_seen[cid] {
+                        card_seen[cid] = true;
+                        count += 1;
+                    }
+                }
+            }
+            count
+        };
+        for &offset in &OFFSETS {
+            let params = kernel_params(Mode::Card, SortCol::EdhrecRank, false, LIMIT, offset);
+
+            let mut walk_best = u128::MAX;
+            for it in 0..(WARMUP + ITERS) {
+                let t0 = Instant::now();
+                let (page, _) = black_box(super::walk_grouped_page(&ctx, &params, &pbits, order.perm));
+                let dt = t0.elapsed().as_nanos();
+                if it >= WARMUP {
+                    walk_best = walk_best.min(dt);
+                }
+                black_box(&page);
+            }
+
+            let mut three_phase_best = u128::MAX;
+            for it in 0..(WARMUP + ITERS) {
+                let t0 = Instant::now();
+                let (page, _) = black_box(super::walk_card_page_via_popcount_skip(&ctx, &params, &pbits, order));
+                let dt = t0.elapsed().as_nanos();
+                if it >= WARMUP {
+                    three_phase_best = three_phase_best.min(dt);
+                }
+                black_box(&page);
+            }
+
+            println!(
+                "{density:>10}  {offset:>8}  {matches:>10}  {walk_best:>12}  {three_phase_best:>14}  {:>8.3}",
+                three_phase_best as f64 / walk_best.max(1) as f64,
+            );
+        }
+    }
+}
+
 /// `walk_printing_page_via_popcount_skip`'s general (not card-invariance-gated) weighted scatter must
 /// produce the IDENTICAL page `walk_grouped_page`'s `Mode::Printing` branch does -- same rationale
 /// and same random-bitmap methodology as the `Mode::Card` differential test above, since one matching
