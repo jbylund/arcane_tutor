@@ -11818,6 +11818,101 @@ fn three_phase_walk_rate_fit() {
     }
 }
 
+/// Root-causing `three_phase_walk_rate_fit`'s unexplained residual structure: isolate
+/// `walk_card_page_via_popcount_skip`'s SCATTER phase alone (the loop over `pbits`' set printings
+/// that builds the rank-ordered `permuted` existence bitmap -- lib.rs's own doc calls this the
+/// `O(popcount(pbits))` term) from the skip+emit phases that follow it, the same isolation technique
+/// `compose_walk_kernel_costs` already uses for `walk_grouped_page`.
+///
+/// Result: this reproduces the full function's U-shaped ns/unit curve almost exactly (compare this
+/// test's output to `three_phase_walk_rate_fit`'s table -- they agree to within a few hundred ns at
+/// every density), so the non-linearity lives entirely in scatter, not in skip/emit.
+///
+/// Two sub-findings from probing the two ends of that U separately:
+///
+/// - **The high cost at low density (~458ns floor below ~100 set printings) is NOT the per-call
+///   `vec![0u64; n_blocks]` allocation.** Hoisting that allocation out of the timed region (tested by
+///   hand, not committed as a second variant) left the same ~458ns floor unchanged. The real
+///   explanation: the outer `for (i, &word) in pbits.iter().enumerate())` loop always scans every one
+///   of `pbits.len()` (~1,529) words checking for zero, regardless of how many are actually set --
+///   at very low density that fixed linear scan, not the sparse handful of real hits, is most of the
+///   cost. This amortizes away as density rises past roughly 5-10%.
+/// - **The rising cost past ~20% density is real and still in scatter**, and got MORE pronounced, not
+///   less, once the allocation was removed -- ruling that out as a confound rather than explaining the
+///   rise. The likely mechanism (plausible, not proven -- no perf-counter access in this harness,
+///   same limitation `reference-engine-compose-perm-cards-visited-estimator.md`'s own kernel-bench
+///   investigation hit): `order.inv[cid]` and the `permuted` write are both accessed at positions with
+///   no relationship to the printing-scan order, so as density grows toward covering most of
+///   `n_cards`, the DISTINCT working set of cache lines touched in `order.inv` (~31,724 entries) grows
+///   toward the whole array, plausibly exceeding a cache level's capacity partway through this sweep.
+///
+/// `cargo test --release three_phase_scatter_phase_kernel_costs -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release three_phase_scatter_phase_kernel_costs -- --ignored --nocapture"]
+fn three_phase_scatter_phase_kernel_costs() {
+    use rand::SeedableRng;
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let words = n_printings.div_ceil(64);
+    let order = archived.indexes.sort_perms.order(SortCol::EdhrecRank, false, n_cards).expect("edhrec permutation exists");
+
+    const WARMUP: usize = 20;
+    const ITERS: usize = 200;
+    const DENSITIES: [f64; 12] =
+        [0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.4, 0.6];
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(5); // same seed as three_phase_walk_rate_fit: identical pbits per density
+
+    println!("\nscatter-phase-only kernel costs (real.store: {n_cards} cards, {n_printings} printings)");
+    println!("{:>10}  {:>12}  {:>12}  {:>10}", "density", "set_printings", "scatter_ns", "ns/unit");
+    for &density in &DENSITIES {
+        let pbits = random_pbits(&mut rng, words, n_printings, density);
+        let set_printings = pbits.iter().map(|w| w.count_ones() as usize).sum::<usize>();
+        let n_blocks = n_cards.div_ceil(64);
+
+        let mut best = u128::MAX;
+        for it in 0..(WARMUP + ITERS) {
+            let mut permuted = vec![0u64; n_blocks];
+            let t0 = Instant::now();
+            let mut total: usize = 0;
+            for (i, &word) in pbits.iter().enumerate() {
+                let mut w = word;
+                while w != 0 {
+                    let pid = ((i as u32) << 6 | w.trailing_zeros()) as usize;
+                    w &= w - 1;
+                    let cid = u32::from(archived.indexes.printing_to_card[pid]) as usize;
+                    let rank = u32::from(order.inv[cid]) as usize;
+                    let (block, bit) = (rank / 64, 1u64 << (rank % 64));
+                    if permuted[block] & bit == 0 {
+                        permuted[block] |= bit;
+                        total += 1;
+                    }
+                }
+            }
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                best = best.min(dt);
+            }
+            black_box((&permuted, total));
+        }
+
+        println!("{density:>10}  {set_printings:>12}  {best:>12}  {:>10.4}", best as f64 / set_printings.max(1) as f64);
+    }
+}
+
 /// `walk_printing_page_via_popcount_skip`'s general (not card-invariance-gated) weighted scatter must
 /// produce the IDENTICAL page `walk_grouped_page`'s `Mode::Printing` branch does -- same rationale
 /// and same random-bitmap methodology as the `Mode::Card` differential test above, since one matching
