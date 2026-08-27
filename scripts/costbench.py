@@ -137,6 +137,9 @@ PLAN_KEYS = frozenset(
         "printing_span",
         "printings_examined",
         "matches_pushed",
+        # PrintingCompose only (0 for every other plan): popcount(pbits), the composed printing-space
+        # bitmap. Keyed variable for sigma_bound::three_phase_cost_ns's grading, not matches.
+        "set_printings",
     # Permutation entries StreamedSelect's walk stepped. Realized ground truth for the estimate
     # `page_span * n_cards / matches`, which assumes matches are spread uniformly through the
     # permutation -- an assumption worth grading rather than trusting.

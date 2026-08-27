@@ -30,9 +30,7 @@ shape, since it never reads WHERE matches sit in the permutation, only how many 
 explicit deep-offset sweep (real traffic is offset~0-heavy by design, `costbench.OFFSETS`, so it can't
 supply the tail this bound exists for).
 
-    .venv/bin/python scripts/bench_compose_card_visited_safety_bound.py --n-queries 400 \
-        --three-phase-rate-ns-per-match 5.3444 --three-phase-fixed-ns -4809 \
-        --three-phase-floor-ns 5000
+    .venv/bin/python scripts/bench_compose_card_visited_safety_bound.py --n-queries 400
 
 """
 
@@ -40,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import itertools
 import json
 import math
 import pathlib
@@ -57,41 +56,55 @@ from scripts.costbench import load_engine  # noqa: E402
 
 percentile = costbench.percentile
 
+# Direct port of `card_engine::sigma_bound::THREE_PHASE_BREAKPOINTS` -- see that module's own
+# "Provenance and re-fitting" doc for what corpus/machine this was fit on, when to recalibrate, and
+# the exact steps to regenerate it. No shared source between Rust and this file for this table; keep
+# the two in sync by hand when the Rust side is re-fit.
+THREE_PHASE_BREAKPOINTS: tuple[tuple[int, float], ...] = (
+    (23, 666.0),
+    (55, 666.0),
+    (97, 708.0),
+    (215, 875.0),
+    (477, 1291.0),
+    (963, 2250.0),
+    (1960, 3292.0),
+    (2924, 4083.0),
+    (4885, 5375.0),
+    (9733, 9291.0),
+    (19356, 18333.0),
+    (24577, 24041.0),
+    (29453, 29667.0),
+    (39101, 41791.0),
+    (58725, 113208.0),
+    (78417, 155083.0),
+    (97812, 196791.0),
+)
 
-def finite_float(value: str) -> float:
-    """Parse a finite float for an argparse option."""
-    parsed = float(value)
-    if not math.isfinite(parsed):
-        msg = f"expected a finite number, got {value!r}"
-        raise argparse.ArgumentTypeError(msg)
-    return parsed
 
+def three_phase_cost_ns(set_printings: int) -> float:
+    """Piecewise-linear interpolation of `THREE_PHASE_BREAKPOINTS`.
 
-def non_negative_float(value: str) -> float:
-    """Parse a finite, non-negative float for an argparse option."""
-    parsed = finite_float(value)
-    if parsed < 0:
-        msg = f"expected a non-negative number, got {value!r}"
-        raise argparse.ArgumentTypeError(msg)
-    return parsed
+    Direct port of `card_engine::sigma_bound::three_phase_cost_ns`. Clamped below the first
+    breakpoint and above the last, same reasoning as the Rust original: extrapolating a two-regime
+    curve past its measured range risks being wrong in either direction, and the last breakpoint
+    already sits at the fitting corpus's `n_printings`, which `set_printings` can never exceed on
+    that corpus.
 
-
-@dataclass(frozen=True)
-class ThreePhaseModel:
-    """Explicit calibration for the modeled three-phase fallback.
-
-    The fallback has no Python binding, so the harness cannot measure it per row. Requiring these
-    coefficients on the command line keeps a machine-specific calibration out of source and makes
-    every reported result reproducible from its invocation.
+    Replaces the earlier hand-fit `ThreePhaseModel` (a single `rate*matches + fixed` line, calibrated
+    from an early kernel-bench of the not-yet-promoted prototype and supplied on the CLI) now that the
+    real promoted implementation has been measured directly and validated (~50% of predictions within
+    5% of true cost, ~90% within 10%, rarely worse than ~20-25% -- see the Rust module's doc).
     """
-
-    rate_ns_per_match: float
-    fixed_ns: float
-    floor_ns: float
-
-    def estimate(self, matches: int) -> float:
-        """Estimate `walk_card_page_via_popcount_skip` latency."""
-        return max(self.rate_ns_per_match * matches + self.fixed_ns, self.floor_ns)
+    if set_printings <= THREE_PHASE_BREAKPOINTS[0][0]:
+        return THREE_PHASE_BREAKPOINTS[0][1]
+    if set_printings >= THREE_PHASE_BREAKPOINTS[-1][0]:
+        return THREE_PHASE_BREAKPOINTS[-1][1]
+    for (x0, y0), (x1, y1) in itertools.pairwise(THREE_PHASE_BREAKPOINTS):
+        if set_printings <= x1:
+            t = (set_printings - x0) / (x1 - x0)
+            return y0 + t * (y1 - y0)
+    msg = "set_printings is bounded by the first/last breakpoint checks above"
+    raise AssertionError(msg)
 
 
 # The PRODUCTION cost model's own `PhysicalPlan::PrintingCompose` / `ComposePaging::Perm` formula
@@ -292,6 +305,10 @@ def evaluate(engine: object, query: str, orderby: str, direction: str, offset: i
         "offset": offset,
         "realized": realized,
         "printings_examined": compose["printings_examined"],
+        # Real popcount(pbits) for this exact query, keyed variable for `three_phase_cost_ns` --
+        # unlike `matches` (a bound-dependent quantity when a policy is grading a hypothetical, not
+        # this row's real filter), this is a fixed property of the query itself.
+        "set_printings": compose["set_printings"],
         "orderby": orderby,
         "direction": direction,
         "query": query,
@@ -569,7 +586,7 @@ GATE_OFFSET_LOW = 2_000
 GATE_OFFSET_HIGH = 4_000
 
 
-def _build_policies(engine: object, walk_model: WalkCostModel, three_phase: ThreePhaseModel) -> dict[str, object]:
+def _build_policies(engine: object, walk_model: WalkCostModel) -> dict[str, object]:
     """The named decision policies `simulate_policies` grades against each other, keyed by display name."""
 
     @functools.cache
@@ -591,19 +608,20 @@ def _build_policies(engine: object, walk_model: WalkCostModel, three_phase: Thre
                     math.ceil(bound_cards),
                 ),
             )
-            if predicted_walk_ns <= three_phase.estimate(r["matches"]):
+            three_phase_ns = three_phase_cost_ns(r["set_printings"])
+            if predicted_walk_ns <= three_phase_ns:
                 return r["walk_ns"], False
-            return three_phase.estimate(r["matches"]), True
+            return three_phase_ns, True
 
         return cost
 
     return {
         "always_walk (today)": lambda r: (r["walk_ns"], False),
-        "always_three_phase": lambda r: (three_phase.estimate(r["matches"]), True),
+        "always_three_phase": lambda r: (three_phase_cost_ns(r["set_printings"]), True),
         "oracle (best possible)": lambda r: (
             (r["walk_ns"], False)
-            if r["walk_ns"] <= three_phase.estimate(r["matches"])
-            else (three_phase.estimate(r["matches"]), True)
+            if r["walk_ns"] <= three_phase_cost_ns(r["set_printings"])
+            else (three_phase_cost_ns(r["set_printings"]), True)
         ),
         "no gate, worst_case": gated(0, worst_case_bound),
         "no gate, blend(0.6)": gated(0, lambda n, m, k: blend_bound(n, m, k, 0.6)),
@@ -673,7 +691,7 @@ def _print_pooled_latency_table(rows: list[dict], policies: dict) -> dict[str, l
     return latencies_by_policy
 
 
-def _print_worst_surviving_rows(rows: list[dict], policies: dict, three_phase: ThreePhaseModel) -> None:
+def _print_worst_surviving_rows(rows: list[dict], policies: dict) -> None:
     """Worst SURVIVING (non-diverted) row for a shortlist of policies -- does a bound's own worst case walk a row that should have been diverted?"""
     print("\nworst SURVIVING (non-diverted) row for each policy -- oracle's max is capped by construction")
     print("at always_three_phase's own max (see the earlier discussion); does sigma's/blend's own worst")
@@ -694,7 +712,7 @@ def _print_worst_surviving_rows(rows: list[dict], policies: dict, three_phase: T
         if not walked:
             continue
         worst_ns, r = max(walked, key=lambda t: t[0])
-        tp = three_phase.estimate(r["matches"])
+        tp = three_phase_cost_ns(r["set_printings"])
         print(
             f"  {name:<24} worst_walked={fmt_ns(worst_ns):>10}  offset={r['offset']:<6} matches={r['matches']:<6} "
             f"n_cards={r['n_cards']}  three_phase_would_be={fmt_ns(tp):>10}  clumping_factor={r['clumping_factor']:.2f}"
@@ -771,7 +789,6 @@ def simulate_policies(
     calibration_rows: list[dict],
     evaluation_rows: list[dict],
     chart_path: pathlib.Path | None,
-    three_phase: ThreePhaseModel,
 ) -> None:
     """For each policy, what fraction of traffic is diverted, and what happens to paging latency?
 
@@ -782,18 +799,19 @@ def simulate_policies(
     bound-based policies still have to PREDICT a hypothetical walk cost before running anything, so
     they convert bound cards to a sound printing-work bound through the engine's archived
     per-permutation prefix, then price both through a two-term model fit on a disjoint calibration
-    half. The three-phase side has no per-row real
-    measurement at all (not wired into dispatch -- see the module docstring), so it stays modeled by
-    the explicit `ThreePhaseModel` calibration supplied for this run.
+    half. The three-phase side is no longer modeled by a hand-fit calibration either: `three_phase_
+    cost_ns` is a direct port of the validated Rust breakpoint table, keyed on each row's REAL
+    `set_printings` -- the only thing not measured directly here is the promoted implementation's own
+    latency, since it has no Python binding to run.
     """
     walk_model = _fit_walk_cost_model(calibration_rows)
     print(
         f"\npolicy split: calibration={len(calibration_rows)} rows, evaluation={len(evaluation_rows)} rows; "
         f"walk fit={walk_model.ns_per_card:.3f} ns/card + {walk_model.ns_per_printing:.3f} ns/printing\n"
     )
-    policies = _build_policies(engine, walk_model, three_phase)
+    policies = _build_policies(engine, walk_model)
     latencies_by_policy = _print_pooled_latency_table(evaluation_rows, policies)
-    _print_worst_surviving_rows(evaluation_rows, policies, three_phase)
+    _print_worst_surviving_rows(evaluation_rows, policies)
     headline = [
         "always_walk (today)",
         "always_three_phase",
@@ -817,25 +835,12 @@ def main() -> None:
     parser.add_argument("--corpus", type=pathlib.Path, default=REPO_ROOT / "benchmarks/bitplanes/corpus.jsonl")
     parser.add_argument("--shm-path", type=pathlib.Path, default=None)
     parser.add_argument("--chart-path", type=pathlib.Path, default=None, help="write chart series JSON here")
-    parser.add_argument("--three-phase-rate-ns-per-match", type=non_negative_float, required=True)
-    parser.add_argument("--three-phase-fixed-ns", type=finite_float, required=True)
-    parser.add_argument("--three-phase-floor-ns", type=non_negative_float, required=True)
     args = parser.parse_args()
     if args.n_queries <= 0:
         parser.error("--n-queries must be greater than zero")
 
     rng = random.Random(args.seed)
     selfcheck_nhg_moments(rng)
-    three_phase = ThreePhaseModel(
-        rate_ns_per_match=args.three_phase_rate_ns_per_match,
-        fixed_ns=args.three_phase_fixed_ns,
-        floor_ns=args.three_phase_floor_ns,
-    )
-    print(
-        "three-phase model: "
-        f"rate={three_phase.rate_ns_per_match:g} ns/match "
-        f"fixed={three_phase.fixed_ns:g} ns floor={three_phase.floor_ns:g} ns"
-    )
 
     engine = load_engine(args.corpus, args.shm_path or args.corpus.with_suffix(".cardvisitedbound.store"))
     sampler = QuerySampler(args.corpus, "uniform")
@@ -875,7 +880,7 @@ def main() -> None:
     # that choice exploratory and require another held-out run.
     print(f"\nBOUND CALIBRATION ONLY ({len(calibration_rows)} rows; evaluation remains held out)")
     report(calibration_rows)
-    simulate_policies(engine, calibration_rows, evaluation_rows, args.chart_path, three_phase)
+    simulate_policies(engine, calibration_rows, evaluation_rows, args.chart_path)
 
 
 if __name__ == "__main__":
