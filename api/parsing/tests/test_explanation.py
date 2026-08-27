@@ -12,9 +12,9 @@ import pytest
         ("cmc=3", "the mana value is 3"),
         ("mv=3", "the mana value is 3"),
         # Color identity
-        ("id=g", "the color identity is Green"),
-        ("id=u", "the color identity is Blue"),
-        ("id=ug", "the color identity is Blue/Green"),
+        ("id=g", "the color identity is Green ({G})"),
+        ("id=u", "the color identity is Blue ({U})"),
+        ("id=ug", "the color identity is Blue/Green ({U}{G})"),
         # Format
         ("f=m", "it's legal in Modern"),
         ("f=s", "it's legal in Standard"),
@@ -31,14 +31,14 @@ import pytest
         # Complex query from the issue - with parens around each AND group
         (
             "(power>3 or toughness>3) and id=g f=m",
-            "(the power > 3 or the toughness > 3) and the color identity is Green and it's legal in Modern",
+            "(the power > 3 or the toughness > 3) and the color identity is Green ({G}) and it's legal in Modern",
         ),
         # Another complex query
-        ("power>3 and (id=g or id=u)", "the power > 3 and (the color identity is Green or the color identity is Blue)"),
+        ("power>3 and (id=g or id=u)", "the power > 3 and (the color identity is Green ({G}) or the color identity is Blue ({U}))"),
         # Complex OR with AND groups - matches ((...) or (...)) pattern
         (
             "(id=g and t:bird) or (id=r and t:goblin)",
-            "((the color identity is Green and the type contains bird) or (the color identity is Red and the type contains goblin))",
+            "((the color identity is Green ({G}) and the type contains bird) or (the color identity is Red ({R}) and the type contains goblin))",
         ),
         # NOT queries
         ("-power>3", "not (the power > 3)"),
@@ -50,8 +50,8 @@ import pytest
         ("toughness<=2", "the toughness ≤ 2"),
         ("power!=3", "the power is not 3"),
         # Color codes
-        ("c=w", "the color is White"),
-        ("c=b", "the color is Black"),
+        ("c=w", "the color is White ({W})"),
+        ("c=b", "the color is Black ({B})"),
         # Sets
         ("set:war", "the set contains war"),
         # Artist
@@ -198,17 +198,19 @@ def test_explain_color_combinations(parse_query) -> None:
     argnames=["query_str", "expected_explanation"],
     argvalues=[
         # Repeated/scrambled letters dedupe and land in canonical WUBRG order, not input order.
-        ("c=brgb", "the color is Black/Red/Green"),
-        ("id=brgb", "the color identity is Black/Red/Green"),
-        ("c=gwbur", "the color is White/Blue/Black/Red/Green"),
+        ("c=brgb", "the color is Black/Red/Green ({B}{R}{G})"),
+        ("id=brgb", "the color identity is Black/Red/Green ({B}{R}{G})"),
+        ("id=rug", "the color identity is Blue/Red/Green ({U}{R}{G})"),
+        ("c=gwbur", "the color is White/Blue/Black/Red/Green ({W}{U}{B}{R}{G})"),
         # Guild/shard/wedge names show the letters they spell alongside the name, as
         # {G}{U}{R}-style bracket tokens the frontend renders into mana-font icons (#990).
         ("c=temur", "the color is Temur ({G}{U}{R})"),
         ("id=temur", "the color identity is Temur ({G}{U}{R})"),
         ("c=azorius", "the color is Azorius ({W}{U})"),
         # Single-color names expand the same as bare letter codes.
-        ("c=blue", "the color is Blue"),
-        ("c=colorless", "the color is Colorless"),
+        ("c=blue", "the color is Blue ({U})"),
+        ("c=colorless", "the color is Colorless ({C})"),
+        ("id=green", "the color identity is Green ({G})"),
     ],
 )
 def test_explain_color_dedup_and_names(parse_query, query_str: str, expected_explanation: str) -> None:
