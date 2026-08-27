@@ -3,7 +3,6 @@
 import pytest
 
 from api import parsing
-from api.parsing import hand_parser
 from api.parsing import (
     AndNode,
     AttributeNode,
@@ -13,6 +12,7 @@ from api.parsing import (
     QueryContext,
     QueryNode,
     StringValueNode,
+    hand_parser,
 )
 from api.parsing.card_query_nodes import CardAttributeNode, calculate_cmc, mana_cost_str_to_dict
 from api.parsing.card_query_nodes import CardBinaryOperatorNode as BinaryOperatorNode
