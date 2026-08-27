@@ -2,7 +2,8 @@
 
 from functools import partial
 
-from api.parsing.hand_parser import ParseError, parse_str_to_query
+from api.parsing import hand_parser
+from api.parsing.hand_parser import ParseError
 from api.parsing.nodes import (
     AndNode,
     AttributeNode,
@@ -23,8 +24,8 @@ from api.parsing.post_parse import finalize_query, parse_query
 from api.parsing.query_budget import QueryBudgetExceeded
 from api.parsing.sql_generation import generate_sql_query
 
-parse_scryfall_query = partial(parse_query, parser_fn=parse_str_to_query)
-parse_search_query = parse_scryfall_query
+parse_str_to_query = hand_parser.parse_str_to_query
+parse_scryfall_query = partial(parse_query, parser_fn=hand_parser.parse_str_to_query)
 
 __all__ = [
     "AndNode",
@@ -47,6 +48,5 @@ __all__ = [
     "generate_sql_query",
     "parse_query",
     "parse_scryfall_query",
-    "parse_search_query",
     "parse_str_to_query",
 ]

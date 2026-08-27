@@ -231,7 +231,7 @@ or `python3`, and falls back to `sysctl` where GNU `nproc` is absent.
    python -m ruff check
 
    # Test parser functionality including rarity search
-   python -c "from api.parsing import parse_search_query; print(parse_search_query('rarity>uncommon'))"
+   python -c "from api.parsing import parse_scryfall_query; print(parse_scryfall_query('rarity>uncommon'))"
    ```
 
 ### Development Workflows
