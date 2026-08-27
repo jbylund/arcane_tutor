@@ -2,6 +2,7 @@ use std::fs::OpenOptions;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use memmap2::MmapMut;
 
@@ -147,9 +148,24 @@ pub fn read_value_seq(slot: *const u8) -> u32 {
 
 // ── Spinlock ──────────────────────────────────────────────────────────────────
 
+/// This process's pid, read via a syscall once and cached: it cannot change for the life of
+/// the process, and unlike Linux glibc (which caches `getpid()` itself post-2.25), macOS libc
+/// makes every `std::process::id()` call a real trap into the kernel.
+fn current_pid() -> u32 {
+    static PID: OnceLock<u32> = OnceLock::new();
+    *PID.get_or_init(std::process::id) // u32; PID 0 is unused on POSIX, safe as unlocked sentinel
+}
+
 pub fn try_lock(mmap: &MmapMut) -> bool {
     let lock = unsafe { &*(mmap.as_ptr() as *const AtomicU32) };
-    let my_pid = std::process::id(); // u32; PID 0 is unused on POSIX, safe as unlocked sentinel
+    let my_pid = current_pid();
+
+    // Uncontended fast path: no clock read. The overwhelming majority of calls land here, and
+    // `Instant::now()` is only needed to police a timeout on the contended path below.
+    if lock.compare_exchange(0, my_pid, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+        return true;
+    }
+
     let deadline = Instant::now() + LOCK_TIMEOUT;
     loop {
         if lock.compare_exchange(0, my_pid, Ordering::Acquire, Ordering::Relaxed).is_ok() {
@@ -223,4 +239,59 @@ pub fn open_mmap(
     under_lock(&mut mmap);
     unsafe { libc::flock(fd, libc::LOCK_UN) };
     Ok(mmap)
+}
+
+/// Perf-audit finding #6: `try_lock` computed `std::process::id()` and `Instant::now()`
+/// unconditionally, even on the uncontended fast path where neither is needed until the first
+/// CAS attempt fails. Times the uncontended case (the common one -- no other thread ever holds
+/// the lock here) before vs after deferring both.
+///
+///     cargo test --release bench_try_lock_fast_path -- --ignored --nocapture
+#[cfg(test)]
+mod bench_try_lock_fast_path {
+    use std::hint::black_box;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::Instant;
+
+    use super::{try_lock, unlock};
+    use memmap2::MmapMut;
+
+    const ITERS: usize = 500_000;
+
+    /// Pre-fix try_lock: recomputes pid + deadline on every call, even when uncontended.
+    #[inline(never)]
+    fn try_lock_prefix(mmap: &MmapMut) -> bool {
+        let lock = unsafe { &*(mmap.as_ptr() as *const AtomicU32) };
+        let my_pid = black_box(std::process::id());
+        let _deadline = black_box(Instant::now() + std::time::Duration::from_millis(1));
+        lock.compare_exchange(0, my_pid, Ordering::Acquire, Ordering::Relaxed).is_ok()
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_try_lock_fast_path() {
+        let mmap = MmapMut::map_anon(4096).expect("anon mmap");
+
+        let start = Instant::now();
+        for _ in 0..ITERS {
+            assert!(black_box(try_lock_prefix(black_box(&mmap))));
+            unlock(&mmap);
+        }
+        let prefix_ns = start.elapsed().as_nanos() as f64 / ITERS as f64;
+
+        let start = Instant::now();
+        for _ in 0..ITERS {
+            assert!(black_box(try_lock(black_box(&mmap))));
+            unlock(&mmap);
+        }
+        let fixed_ns = start.elapsed().as_nanos() as f64 / ITERS as f64;
+
+        println!("pre-fix (pid + clock every call): {prefix_ns:.1} ns/call");
+        println!("fixed   (cached pid, no clock):   {fixed_ns:.1} ns/call");
+        println!(
+            "delta: {:.1} ns/call ({:.0}% reduction)",
+            prefix_ns - fixed_ns,
+            100.0 * (prefix_ns - fixed_ns) / prefix_ns
+        );
+    }
 }
