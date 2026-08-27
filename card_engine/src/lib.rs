@@ -11668,16 +11668,22 @@ pub(crate) struct PlanTrial {
     /// not as an invariant that should reach zero.
     ///
     /// Populated for the two materializing plans — `GatheredScan` (`exec_gathered_scan`) and
-    /// `StreamedSelect` (`run_query_streamed`, which publishes from all three of its return paths).
-    /// The four fast paths — `PrintingRangeScan`, `PrintingCompose`, `PlanePopcountOrder`,
-    /// `CardRangePopcount` — are NOT instrumented and report zeros, except `paging_taken`, which
-    /// the two printing-space fastpaths set on their own. `PlanePopcountOrder` and
-    /// `CardRangePopcount` write nothing at all and are the only plans for which a `NotEntered`
-    /// label is expected on a successful run.
+    /// `StreamedSelect` (`run_query_streamed`, which publishes from all three of its return paths) —
+    /// and, in narrower ways, for all four fast paths too: `PrintingCompose` reports real execution
+    /// counters (`cards_visited`/`printings_examined`/`matches_pushed`) plus a build/paging split
+    /// (`ComposePageWork::ns_build`/`ns_paging`, landing in `ns_setup`/`ns_loop`); `PlanePopcountOrder`
+    /// and `CardRangePopcount` (`publish_popcount_phases`, shared by both) report a real three-phase
+    /// `ns_setup`/`ns_loop`/`ns_finish` split but zero counters — a popcount walk visits no cards to
+    /// count; `PrintingRangeScan` reports one undivided `ns_loop` span (the shape `PrintingCompose`
+    /// used before its split) and zero counters. `paging_taken` is set independently by the two
+    /// printing-space fastpaths (`PrintingRangeScan`, `PrintingCompose`); `PlanePopcountOrder` and
+    /// `CardRangePopcount` never set it and are the only plans for which a `NotEntered` label is
+    /// expected on a successful run.
     ///
-    /// A consumer must not read all-zero counters as "this plan did no work": `explain_analyze`
-    /// fills `ns_round_total` for every round it records, so `ns_round_total > 0 && ns_loop == 0` is
-    /// the uninstrumented case, and `ns_round_total == 0` means the plan completed no round.
+    /// A consumer must not read all-zero counters as "this plan did no work": a plan that produced a
+    /// page always publishes SOME nonzero phase information (at minimum `ns_loop` or `ns_setup`), so
+    /// `ns_round_total > 0` with every phase and counter field still zero only means a decline (see
+    /// `declined_ns` below) or a plan that never entered at all — not a plan that ran uninstrumented.
     ///
     /// `ns_round_total == 0` has two sub-cases, and `declined_ns` is what separates them:
     ///
