@@ -11,6 +11,14 @@ use crate::types::{CachedResponse, RawSlot};
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+/// Key hash + body fingerprint computed by `fast_check`, threaded into `set` so a cache write
+/// doesn't hash the key and sample the body a second time for the same call.
+pub struct PendingWrite {
+    hash: u64,
+    content_vh: u64,
+    new_body_len: u32,
+}
+
 struct SurvivorEntry {
     hash: u64,
     expiry_ns: u64,
@@ -628,18 +636,22 @@ impl GenerationalSharedCache {
         None // filter false positive
     }
 
-    /// Returns `true` if `key` is already cached with identical content — caller can skip `set()`.
+    /// Returns `None` if `key` is already cached with identical content — caller can skip `set()`.
+    /// Otherwise returns the key hash and body fingerprint `fast_check` had to compute anyway,
+    /// so a subsequent `set()` call for the same write doesn't hash the key and sample the body
+    /// a second time.
     /// Checks filter (lock-free) → active page under lock → sealed pages lock-free.
     /// Call this from the binding layer before extracting expensive fields (headers, counts).
-    pub fn fast_check(&mut self, key: &[u8], body: Option<&[u8]>) -> bool {
+    pub fn fast_check(&mut self, key: &[u8], body: Option<&[u8]>) -> Option<PendingWrite> {
         let hash = normalize_hash(xxh3_64(key));
         let new_body_len = body.map_or(u32::MAX, |b| b.len() as u32);
         let content_vh = sampled_body_hash(body);
+        let pending = PendingWrite { hash, content_vh, new_body_len };
 
         fence(Ordering::Acquire);
-        if !self.filter().lookup(hash) { return false; }
+        if !self.filter().lookup(hash) { return Some(pending); }
 
-        if !try_lock(&self.mmap) { return false; }
+        if !try_lock(&self.mmap) { return Some(pending); }
         let active_idx = self.active_idx();
         let active_snap = self.do_probe(active_idx, hash, key).map(|(_, _, si)| {
             let s = unsafe { &*self.slot_ptr(active_idx, si) };
@@ -648,7 +660,8 @@ impl GenerationalSharedCache {
         unlock(&self.mmap);
 
         if let Some((stored_len, stored_vh)) = active_snap {
-            return stored_len == new_body_len && content_vh == stored_vh;
+            let up_to_date = stored_len == new_body_len && content_vh == stored_vh;
+            return if up_to_date { None } else { Some(pending) };
         }
 
         for i in 1..self.n_pages {
@@ -658,11 +671,11 @@ impl GenerationalSharedCache {
             if let Some((_, _, si)) = self.do_probe(page_idx, hash, key) {
                 let s = unsafe { &*self.slot_ptr(page_idx, si) };
                 let matches = s.body_len == new_body_len && content_vh == s.value_hash;
-                if self.page_generation(page_idx) != gen_before { return false; }
-                return matches;
+                if self.page_generation(page_idx) != gen_before { return Some(pending); }
+                return if matches { None } else { Some(pending) };
             }
         }
-        false
+        Some(pending)
     }
 
     // too_many_arguments: this is the crate's public cache-write surface and mirrors the HTTP
@@ -672,6 +685,7 @@ impl GenerationalSharedCache {
     pub fn set(
         &mut self,
         key: &[u8],
+        pending: PendingWrite,
         status: &str,
         headers: Vec<(String, String)>,
         body: Option<&[u8]>,
@@ -679,9 +693,7 @@ impl GenerationalSharedCache {
         total_cards: Option<i64>,
         ttl_secs: Option<f64>,
     ) {
-        let hash = normalize_hash(xxh3_64(key));
-        let new_body_len = body.map_or(u32::MAX, |b| b.len() as u32);
-        let content_vh = sampled_body_hash(body);
+        let PendingWrite { hash, content_vh, new_body_len } = pending;
 
         let body_owned = body.map(|b| b.to_vec());
         let cr = CachedResponse { status: status.to_owned(), headers, body: body_owned, result_count, total_cards };
@@ -837,5 +849,64 @@ impl GenerationalSharedCache {
         let found = self.do_probe(active_idx, hash, key).is_some();
         unlock(&self.mmap);
         found
+    }
+}
+
+/// Micro-benchmark for the fast_check→set hashing duplication (perf-audit finding #3).
+///
+/// Before this fix, `SharedCache::set` (lib.rs) called `fast_check` to decide whether a write is
+/// needed, then — on the "content changed" branch — called `set`, which independently
+/// recomputed `normalize_hash(xxh3_64(key))` and `sampled_body_hash(body)`: the exact two values
+/// `fast_check` had just computed for the same call. This times that duplicated hashing work
+/// directly (no mmap, no lock, no rkyv), isolating just the arithmetic the fix removes.
+///
+///     cargo test --release bench_hash_reuse -- --ignored --nocapture
+#[cfg(test)]
+mod bench_hash_reuse {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    use super::{normalize_hash, sampled_body_hash, xxh3_64};
+
+    const ITERS: usize = 500_000;
+
+    #[test]
+    #[ignore]
+    fn bench_hash_reuse() {
+        let key = b"q:f:modern+is:permanent+cmc>=6&page=2&order=cmc&dir=asc";
+        let body = vec![0x42u8; 24 * 1024]; // representative cached search-response body size
+
+        // Baseline: current-before-fix behavior — hash key + sample body TWICE per write
+        // (once in fast_check, once in set).
+        let start = Instant::now();
+        let mut sink: u64 = 0;
+        for _ in 0..ITERS {
+            let h1 = normalize_hash(xxh3_64(black_box(key)));
+            let v1 = sampled_body_hash(Some(black_box(body.as_slice())));
+            let h2 = normalize_hash(xxh3_64(black_box(key)));
+            let v2 = sampled_body_hash(Some(black_box(body.as_slice())));
+            sink ^= h1 ^ v1 ^ h2 ^ v2;
+        }
+        let dup_ns = start.elapsed().as_nanos() as f64 / ITERS as f64;
+        black_box(sink);
+
+        // Fixed: hash key + sample body ONCE, reused via PendingWrite.
+        let start = Instant::now();
+        let mut sink2: u64 = 0;
+        for _ in 0..ITERS {
+            let h1 = normalize_hash(xxh3_64(black_box(key)));
+            let v1 = sampled_body_hash(Some(black_box(body.as_slice())));
+            sink2 ^= h1 ^ v1;
+        }
+        let once_ns = start.elapsed().as_nanos() as f64 / ITERS as f64;
+        black_box(sink2);
+
+        println!("dup  (fast_check + set, pre-fix): {dup_ns:.1} ns/call");
+        println!("once (hoisted via PendingWrite):  {once_ns:.1} ns/call");
+        println!(
+            "delta: {:.1} ns/call ({:.0}% of the pre-fix cost)",
+            dup_ns - once_ns,
+            100.0 * (dup_ns - once_ns) / dup_ns
+        );
     }
 }
