@@ -10,14 +10,18 @@ from api.parsing.regex_budget import MAX_REGEX_LEAVES_PER_QUERY
 
 
 @pytest.mark.parametrize(
-    ("query", "canonical_query"),
-    [
+    argnames=["query", "canonical_query"],
+    argvalues=[
         ("color=g color=g", "color=g"),
         ("color=g (color=g color=g)", "color=g"),
         ("cmc<2 c=w cmc<2 color=w", "cmc<2 c=w"),
         ("(cmc<2 c=w) (color=w cmc<2)", "cmc<2 c=w"),
         ("t:creature or t:instant or t:creature", "t:creature or t:instant"),
         ("is:dual is:dual", "is:dual"),
+        (
+            "t:instant or (cmc<2 c=w) or (c=w cmc<2)",
+            "t:instant or (cmc<2 c=w)",
+        ),
     ],
     ids=[
         "duplicate_leaf",
@@ -26,6 +30,7 @@ from api.parsing.regex_budget import MAX_REGEX_LEAVES_PER_QUERY
         "order_insensitive_and_group",
         "duplicate_or_disjunct",
         "duplicate_derived_predicate",
+        "order_insensitive_and_under_or",
     ],
 )
 def test_deduplicate_compound_operands(parse_query, query: str, canonical_query: str) -> None:

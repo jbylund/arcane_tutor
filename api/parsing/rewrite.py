@@ -306,12 +306,26 @@ def expand_derived_predicates(query: Query) -> Query:
     return flatten_nested_operations(Query(root))
 
 
+def _operand_dedup_key(node: QueryNode) -> tuple:
+    """Hashable key for order-insensitive dedup within one AND/OR operand list."""
+    cls = node.__class__
+    if cls is AndNode or cls is OrNode:
+        return (cls.__name__, frozenset(_operand_dedup_key(op) for op in node.operands))
+    if cls is NotNode:
+        return ("NotNode", _operand_dedup_key(node.operand))
+    return ("leaf", hash(node))
+
+
 def _deduplicate_operand_list(operands: list[QueryNode]) -> list[QueryNode]:
     """Drop duplicate operands, keeping the first (order-insensitive within one compound)."""
+    seen: set[tuple] = set()
     unique: list[QueryNode] = []
     for operand in operands:
-        if not any(operand == existing for existing in unique):
-            unique.append(operand)
+        key = _operand_dedup_key(operand)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(operand)
     return unique
 
 
@@ -346,17 +360,11 @@ def _normalize_compound_operands(node: QueryNode) -> tuple[QueryNode, bool]:
 def flatten_and_deduplicate_compounds(query: Query) -> Query:
     """Flatten nested AND/OR chains, drop duplicate operands, unwrap singleton compounds.
 
-    Runs after semantic rewrites and regex-budget checks. Child normalization can expose new
-    duplicates at the parent (``AND(AND(a,a), b)``), so iterate flatten+dedupe to a fixpoint.
+    A single bottom-up pass merges same-type children, dedupes with order-insensitive keys
+    (``AND(cmc<2, c=w)`` equals ``AND(c=w, cmc<2)`` under a shared OR), then unwraps.
     """
-    root = query.root
-    while True:
-        flattened = flatten_nested_operations(root)
-        normalized, changed = _normalize_compound_operands(flattened)
-        if not changed and normalized == flattened:
-            break
-        root = normalized
-    if root is query.root:
+    root, changed = _normalize_compound_operands(flatten_nested_operations(query.root))
+    if not changed:
         return query
     return Query(root)
 
