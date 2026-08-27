@@ -3,7 +3,7 @@
 import pytest
 
 from api.parsing import generate_sql_query, parse_scryfall_query
-from api.parsing.pyparsing_based import parse_search_query
+from api.parsing.post_parse import parse_pyparsing_query
 from api.parsing.tests.implicit_and_cases import TESTCASES
 
 
@@ -20,7 +20,7 @@ def assert_parsers_agree(query: str) -> None:
         hand_exc = exc
 
     try:
-        pyp_result = generate_sql_query(parse_search_query(query))
+        pyp_result = generate_sql_query(parse_pyparsing_query(query))
     except Exception as exc:  # noqa: BLE001
         pyp_exc = exc
 

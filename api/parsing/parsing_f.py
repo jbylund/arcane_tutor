@@ -1,16 +1,8 @@
-"""Public entry points for Scryfall query parsing."""
+"""Public entry points for Scryfall query parsing helpers."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-from api.parsing.hand_parser import parse_query as _parse_query
-from api.parsing.post_parse import finalize_query
-from api.parsing.query_budget import check_query_byte_length
 from api.parsing.spans import QUOTE_CHARS, brace_close_index, find_close_index, opens_regex
-
-if TYPE_CHECKING:
-    from api.parsing.nodes import Query
 
 
 def _closer_for_partial_span(dangling_escape: bool, closer: str) -> str:
@@ -87,21 +79,3 @@ def balance_partial_query(query: str) -> str:
             open_parens -= 1
 
     return query + span_suffix + ")" * open_parens
-
-
-def parse_scryfall_query(query: str | None) -> Query:
-    """Parse a Scryfall search query into a card-specific AST.
-
-    Args:
-        query: The search query string to parse.
-
-    Returns:
-        A Scryfall-specific Query AST.
-
-    Raises:
-        QueryBudgetExceeded: When a regex leaf exceeds a public static bound.
-        InvalidRegexPatternError: When a regex leaf fails the stdlib parser.
-    """
-    if query is not None:
-        check_query_byte_length(query)
-    return finalize_query(_parse_query(query))

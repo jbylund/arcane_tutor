@@ -44,7 +44,6 @@ from api.parsing.nodes import (
     TrueNode,
     flatten_nested_operations,
 )
-from api.parsing.post_parse import finalize_query
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -595,11 +594,6 @@ def parse_search_query_raw(query: str | None) -> Query:
     except ParseException as e:
         msg = f'Failed to parse query: "{original_query}"'
         raise ValueError(msg) from e
-
-
-def parse_search_query(query: str | None) -> Query:
-    """Parse with pyparsing, then run the shared post-parse pipeline."""
-    return finalize_query(parse_search_query_raw(query))
 
 
 @cachebox.cached(cache={})

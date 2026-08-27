@@ -17,7 +17,8 @@ from api.parsing.nodes import (
     StringValueNode,
     TrueNode,
 )
-from api.parsing.parsing_f import balance_partial_query, parse_scryfall_query
+from api.parsing.parsing_f import balance_partial_query
+from api.parsing.post_parse import parse_scryfall_query
 from api.parsing.query_budget import QueryBudgetExceeded
 from api.parsing.sql_generation import generate_sql_query
 

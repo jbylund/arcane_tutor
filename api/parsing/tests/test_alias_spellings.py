@@ -12,7 +12,7 @@ form, in both parsers.
 import pytest
 
 from api.parsing import generate_sql_query, parse_scryfall_query
-from api.parsing.pyparsing_based import parse_search_query
+from api.parsing.post_parse import parse_pyparsing_query
 
 # (alias spelling, the already-supported spelling it must match)
 TAG_ALIAS_CASES = [
@@ -31,7 +31,7 @@ TAG_ALIAS_CASES = [
 def test_tag_aliases_match_canonical(alias_query: str, canonical_query: str) -> None:
     """Each Scryfall tag-alias spelling produces identical SQL to its canonical form, in both parsers."""
     assert generate_sql_query(parse_scryfall_query(alias_query)) == generate_sql_query(parse_scryfall_query(canonical_query))
-    assert generate_sql_query(parse_search_query(alias_query)) == generate_sql_query(parse_search_query(canonical_query))
+    assert generate_sql_query(parse_pyparsing_query(alias_query)) == generate_sql_query(parse_pyparsing_query(canonical_query))
 
 
 CI_CASES = [
@@ -50,4 +50,4 @@ CI_CASES = [
 def test_ci_is_an_identity_alias(ci_query: str, id_query: str) -> None:
     """`ci` produces identical SQL to the established identity aliases, in both parsers."""
     assert generate_sql_query(parse_scryfall_query(ci_query)) == generate_sql_query(parse_scryfall_query(id_query))
-    assert generate_sql_query(parse_search_query(ci_query)) == generate_sql_query(parse_search_query(id_query))
+    assert generate_sql_query(parse_pyparsing_query(ci_query)) == generate_sql_query(parse_pyparsing_query(id_query))

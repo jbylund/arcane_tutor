@@ -29,7 +29,7 @@ from api.parsing.nodes import (
     TrueNode,
     flatten_nested_operations,
 )
-from api.parsing.query_budget import MAX_GROUP_DEPTH, QueryBudgetExceeded, check_query_byte_length
+from api.parsing.query_budget import MAX_GROUP_DEPTH, QueryBudgetExceeded
 from api.parsing.spans import QUOTE_CHARS, brace_close_index, find_close_index, unescape
 
 # ── Alias → parser-class lookup ──────────────────────────────────────────────
@@ -824,7 +824,6 @@ def parse_query(src: str | None) -> Query:
     """
     if not src or not src.strip():
         return Query(TrueNode())
-    check_query_byte_length(src)
     try:
         tokens = tokenize(src)
     except LexError as exc:
