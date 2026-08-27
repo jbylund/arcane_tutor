@@ -53,12 +53,22 @@
 //!    approximation error at a small number of points near real curvature, not leftover measurement
 //!    noise -- which point is "worst" shifts slightly between runs because several points sit in a
 //!    comparable error band, not because any one of them is itself unstable.
+//! 6. `cargo test --release three_phase_cost_ns_error_distribution -- --ignored --nocapture` for the
+//!    question the 16-point spot-check above can't answer: what FRACTION of the time is the
+//!    prediction actually close, not just what the single worst case is. A rare bad case can coexist
+//!    with an otherwise very usable prediction, or it can be typical -- only a real distribution over
+//!    many random points (150 here, log-uniform over the whole fitted density range, not just the 16
+//!    log-midpoints) tells the two apart. On this table: **50% of predictions land within 5% of the
+//!    real cost, ~90% within 10%, and 100% within 20%** (two runs: p50 error 0.050/0.051, p90
+//!    0.084/0.116, max observed 0.176/0.228) -- the spot-check's 14.6%-31.2% "worst case" was real but
+//!    rare, not representative of a typical prediction.
 //!
 //! **Open question for whoever wires step 5**: this table's mean prediction is now close to unbiased,
 //! unlike `worst_case_bound`/`sigma_bound` above, which are deliberately safe-biased ("never wrong to
-//! be too cautious"). Whether the dispatch decision needs an explicit safety multiplier on top of
-//! `three_phase_cost_ns`'s raw prediction -- to buy back that same margin given the ~15-30%
-//! approximation error this doc measures -- is a real design choice, not decided here.
+//! be too cautious"). Given the error distribution above (typically single-digit percent, rarely up
+//! to ~20-25%), whether the dispatch decision needs an explicit safety multiplier on top of
+//! `three_phase_cost_ns`'s raw prediction -- and how large, now that the shape of the risk is known
+//! rather than just its worst observed value -- is a real design choice, not decided here.
 
 /// Every non-matching card clumped before the k-th match — an exact, unconditional ceiling on
 /// `walk_grouped_page`'s `cards_visited`. `k > matches` means the page never fills, so the walk

@@ -12982,3 +12982,85 @@ fn three_phase_cost_ns_predicts_held_out_densities() {
     println!("\n  mean ratio = {mean:.3}  (1.0 = perfect)");
     println!("  worst |ratio - 1| = {worst:.3}");
 }
+
+/// `three_phase_cost_ns_predicts_held_out_densities` answers "how good is the fit at 16 chosen
+/// points"; this answers the more useful question -- across a properly randomized sample spanning
+/// the whole domain, what FRACTION of the time does the prediction actually land close to the real
+/// cost, not just what the single worst case happens to be. A worst case can be rare and still leave
+/// the prediction useful for most decisions it's actually used for.
+///
+/// Densities are drawn log-uniform over the whole fitted range (`~0.0002` to `1.0`) -- linear-uniform
+/// would oversample the dense end and barely touch the sparse end, where real `Perm` traffic actually
+/// lives. Same `WARMUP=200, ITERS=5000` trial count as the fit itself and the same reason: at this
+/// file's usual 20/200, the error distribution this test reports would itself be noisy enough to
+/// misread.
+///
+/// `cargo test --release three_phase_cost_ns_error_distribution -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release three_phase_cost_ns_error_distribution -- --ignored --nocapture"]
+fn three_phase_cost_ns_error_distribution() {
+    use rand::{RngExt, SeedableRng};
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let words = n_printings.div_ceil(64);
+
+    const WARMUP: usize = 200;
+    const ITERS: usize = 5000;
+    const LIMIT: usize = 20;
+    const N_SAMPLES: usize = 150;
+    const DENSITY_MIN: f64 = 0.0002;
+    const DENSITY_MAX: f64 = 1.0;
+
+    let order = archived.indexes.sort_perms.order(SortCol::EdhrecRank, false, n_cards).expect("edhrec permutation exists");
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(7); // distinct from both the fit's (5) and the spot-check's (6)
+    let params = kernel_params(Mode::Card, SortCol::EdhrecRank, false, LIMIT, 0);
+    let (log_min, log_max) = (DENSITY_MIN.ln(), DENSITY_MAX.ln());
+
+    let mut abs_errors: Vec<f64> = Vec::with_capacity(N_SAMPLES);
+    for _ in 0..N_SAMPLES {
+        let density = rng.random_range(log_min..log_max).exp();
+        let pbits = random_pbits(&mut rng, words, n_printings, density);
+        let set_printings = pbits.iter().map(|w| w.count_ones() as usize).sum::<usize>();
+
+        let mut best = u128::MAX;
+        for it in 0..(WARMUP + ITERS) {
+            let t0 = Instant::now();
+            let (page, _) = black_box(super::walk_card_page_via_popcount_skip(&ctx, &params, &pbits, order));
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                best = best.min(dt);
+            }
+            black_box(&page);
+        }
+
+        let predicted = super::sigma_bound::three_phase_cost_ns(set_printings);
+        let actual = best.max(1) as f64;
+        abs_errors.push((predicted - actual).abs() / actual);
+    }
+
+    abs_errors.sort_by(f64::total_cmp);
+    let n = abs_errors.len();
+    let pctile = |p: f64| -> f64 { abs_errors[((p / 100.0) * (n - 1) as f64).round() as usize] };
+    let within = |threshold: f64| -> f64 { 100.0 * abs_errors.iter().filter(|&&e| e <= threshold).count() as f64 / n as f64 };
+
+    println!("\nthree_phase_cost_ns error distribution ({n} random log-uniform samples, density {DENSITY_MIN}-{DENSITY_MAX})");
+    println!("  within  5% error: {:>5.1}%", within(0.05));
+    println!("  within 10% error: {:>5.1}%", within(0.10));
+    println!("  within 20% error: {:>5.1}%", within(0.20));
+    println!("  within 30% error: {:>5.1}%", within(0.30));
+    println!("  p50 error = {:.3}  p75 = {:.3}  p90 = {:.3}  p95 = {:.3}  max = {:.3}", pctile(50.0), pctile(75.0), pctile(90.0), pctile(95.0), abs_errors[n - 1]);
+}
