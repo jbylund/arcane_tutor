@@ -9,6 +9,14 @@ const HTML_ESCAPE_RE = /[&<>"]/g;
 const HTML_ESCAPE_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' };
 const htmlEscapeChar = c => HTML_ESCAPE_MAP[c];
 
+// Hoisted so queryUtf8ByteLength() doesn't allocate a new TextEncoder on every call —
+// TextEncoder is stateless and safe to reuse across calls.
+const QUERY_BYTE_ENCODER = new TextEncoder();
+
+// Debounce delay for the resize listener, to avoid recomputing grid columns (and writing
+// style.gridTemplateColumns) on every one of the many resize events a drag-resize fires.
+const RESIZE_DEBOUNCE_MS = 150;
+
 // Invert a columnar cards payload ({field: [values, ...]}) back into an array of
 // card objects. Row-shaped payloads (already arrays) pass through untouched, so
 // consumers are indifferent to which shape the server sent (e.g. a stale cached
@@ -92,6 +100,7 @@ class CardSearch {
 
     this.debounceTimeout = null;
     this.debounceDelay = 50; // milliseconds
+    this.resizeTimeout = null;
     this.currentController = null;
     this.currentRequestUrl = null; // URL of the in-flight request, if any
     this.imageObserver = null;
@@ -389,9 +398,14 @@ class CardSearch {
       this.toggleOrderDirection();
     });
 
-    // Add resize listener to update columns dynamically
+    // Add resize listener to update columns dynamically. Debounced because a drag-resize
+    // fires many resize events per second, and each recompute writes gridTemplateColumns,
+    // forcing a style/layout recalc.
     window.addEventListener('resize', () => {
-      this.updateGridColumns(this.currentCardCount);
+      clearTimeout(this.resizeTimeout);
+      this.resizeTimeout = setTimeout(() => {
+        this.updateGridColumns(this.currentCardCount);
+      }, RESIZE_DEBOUNCE_MS);
     });
   }
 
@@ -724,7 +738,7 @@ class CardSearch {
   }
 
   queryUtf8ByteLength(query) {
-    return new TextEncoder().encode(query).length;
+    return QUERY_BYTE_ENCODER.encode(query).length;
   }
 
   // Returns an error string if the query is structurally invalid, or null if it looks ok.
