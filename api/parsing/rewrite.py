@@ -399,9 +399,13 @@ def flatten_and_deduplicate_compounds(query: Query) -> Query:
     """Flatten nested AND/OR chains, drop duplicate operands, unwrap singleton compounds.
 
     A single bottom-up pass merges same-type children, dedupes with order-insensitive keys
-    (``AND(cmc<2, c=w)`` equals ``AND(c=w, cmc<2)`` under a shared OR), then unwraps.
+    (``AND(cmc<2, c=w)`` equals ``AND(c=w, cmc<2)`` under a shared OR), then unwraps. No separate
+    pre-flatten is needed: ``_normalize_compound_operands`` already merges a same-type child into
+    its parent's operand list as part of its own bottom-up walk (the ``isinstance(normalized, cls)``
+    branch below), which is exactly what ``flatten_nested_operations`` does -- so calling it first
+    would just flatten the same chains twice, rebuilding every node with nothing left to change.
     """
-    root, changed = _normalize_compound_operands(flatten_nested_operations(query.root))
+    root, changed = _normalize_compound_operands(query.root)
     if not changed:
         return query
     return Query(root)
