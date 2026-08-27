@@ -8696,18 +8696,20 @@ fn printing_compose_fastpath<'a>(
             // Step 5 of docs/issues/local-engine-compose-perm-sigma-decision-rule.md: an internal
             // choice of HOW to serve `Perm`, not a different top-level strategy -- `compose_paging`
             // still predicts bare `Perm` either way (`PagingTaken::PermThreePhase`'s own doc). Gated
-            // off by default (`COMPOSE_SIGMA_ENABLED`), so this whole block is a no-op today: the
-            // `then` closure never runs, `three_phase_order` is always `None`, and the classic walk
-            // below is byte-identical to before this existed.
-            let three_phase_order = (*COMPOSE_SIGMA_ENABLED && matches!(mode, Mode::Card))
-                .then(|| {
-                    let k = page_offset.saturating_add(params.limit);
-                    let set_printings = pbits.iter().map(|w| w.count_ones() as usize).sum::<usize>();
-                    sigma_bound::should_use_three_phase(cards.len(), printings.len(), total, k, set_printings, *COMPOSE_SIGMA_KNOB)
-                        .then(|| indexes.sort_perms.order(sort_col, descending, cards.len()))
-                        .flatten()
-                })
-                .flatten();
+            // off by default (`COMPOSE_SIGMA_ENABLED`), so this call is a no-op today: `enabled` is
+            // `false`, the function returns `None` before touching anything else, and the classic
+            // walk below is byte-identical to before this existed.
+            let three_phase_order = compose_perm_three_phase_order(
+                ctx,
+                params,
+                &pbits,
+                mode,
+                sort_col,
+                descending,
+                total,
+                *COMPOSE_SIGMA_ENABLED,
+                *COMPOSE_SIGMA_KNOB,
+            );
             if let Some(order) = three_phase_order {
                 note_paging_taken(PagingTaken::PermThreePhase);
                 walk_card_page_via_popcount_skip(ctx, params, &pbits, order)
@@ -8767,6 +8769,41 @@ fn printing_compose_fastpath<'a>(
     }
     publish_compose_work(work);
     Some((total, page))
+}
+
+/// Step 5 of docs/issues/local-engine-compose-perm-sigma-decision-rule.md: should `Perm`'s paging
+/// divert to the promoted three-phase walk instead of `walk_grouped_page`, and if so, the `SortOrder`
+/// it needs? `enabled`/`knob` are taken as plain arguments rather than read from
+/// `COMPOSE_SIGMA_ENABLED`/`COMPOSE_SIGMA_KNOB` internally so this whole decision -- gate, `k`/
+/// `set_printings` computation, `should_use_three_phase`, and the `SortOrder` fetch -- is directly
+/// unit-testable without touching either `LazyLock` (which caches its env read on first access, so
+/// toggling it per-test in one process isn't reliable; see
+/// `compose_perm_three_phase_order_only_fires_when_enabled_and_sparse`).
+///
+/// `Mode::Card` only, matching `walk_card_page_via_popcount_skip`'s own scope -- the promoted
+/// `Printing`/`Artwork` walks exist but this decision doesn't call them yet.
+#[allow(clippy::too_many_arguments)] // same shape as compose_paging_with_total's own decision inputs
+fn compose_perm_three_phase_order<'a>(
+    ctx: &QueryCtx<'a>,
+    params: &QueryParams,
+    pbits: &[u64],
+    mode: Mode,
+    sort_col: SortCol,
+    descending: bool,
+    total: usize,
+    enabled: bool,
+    knob: f64,
+) -> Option<SortOrder<'a>> {
+    if !(enabled && matches!(mode, Mode::Card)) {
+        return None;
+    }
+    let QueryCtx { cards, printings, indexes, .. } = *ctx;
+    let k = params.page_offset.saturating_add(params.limit);
+    let set_printings = pbits.iter().map(|w| w.count_ones() as usize).sum::<usize>();
+    if !sigma_bound::should_use_three_phase(cards.len(), printings.len(), total, k, set_printings, knob) {
+        return None;
+    }
+    indexes.sort_perms.order(sort_col, descending, cards.len())
 }
 
 /// The physical plans the cost router (`run_query_routed`) chooses among. Each

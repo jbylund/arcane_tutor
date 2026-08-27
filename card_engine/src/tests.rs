@@ -13098,3 +13098,71 @@ fn should_use_three_phase_picks_the_right_side_of_the_crossover() {
         "dense matches + shallow page should NOT divert to three-phase"
     );
 }
+
+/// `compose_perm_three_phase_order` is what step 5 actually wires into `printing_compose_fastpath` --
+/// exercising it directly, with `enabled` as an explicit argument, is what lets this run every time
+/// (no real.store, no fragile per-test toggling of `COMPOSE_SIGMA_ENABLED`'s `LazyLock`, which caches
+/// its env read on first access -- exactly the reason this function takes `enabled` as a plain
+/// argument instead of reading the static itself). Covers what `PagingTaken::PermThreePhase`'s own doc
+/// claims but the acquire/executor legality sweep can't check while the guard is off: the gate really
+/// is off unless `enabled` says so, `Mode::Printing`/`Mode::Artwork` never divert (the promoted walk
+/// is `Mode::Card`-only) regardless of `enabled`, and a real `SortOrder` comes back when it does fire.
+#[test]
+fn compose_perm_three_phase_order_only_fires_when_enabled_and_sparse() {
+    use rand::SeedableRng;
+    const CORPUS_SIZE: usize = 3_000;
+    const KNOB: f64 = 3.0;
+
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(8);
+    let data = fuzz_store_n(&mut rng, CORPUS_SIZE);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let words = n_printings.div_ceil(64);
+
+    let card_matches = |pbits: &[u64]| -> usize {
+        let mut card_seen = vec![false; n_cards];
+        let mut count = 0usize;
+        for (i, &word) in pbits.iter().enumerate() {
+            let mut w = word;
+            while w != 0 {
+                let pid = ((i as u32) << 6 | w.trailing_zeros()) as usize;
+                w &= w - 1;
+                let cid = u32::from(archived.indexes.printing_to_card[pid]) as usize;
+                if !card_seen[cid] {
+                    card_seen[cid] = true;
+                    count += 1;
+                }
+            }
+        }
+        count
+    };
+
+    // Sparse + deep offset: should_use_three_phase's own unit test already proved this population
+    // says "divert". A fresh bitmap per call keeps the three sub-checks below independent.
+    let sparse_params = kernel_params(Mode::Card, SortCol::EdhrecRank, false, 20, 200);
+
+    let pbits = random_pbits(&mut rng, words, n_printings, 0.0005);
+    let total = card_matches(&pbits);
+    assert!(
+        super::compose_perm_three_phase_order(&ctx, &sparse_params, &pbits, Mode::Card, SortCol::EdhrecRank, false, total, false, KNOB).is_none(),
+        "enabled=false must never divert, regardless of population"
+    );
+
+    let pbits = random_pbits(&mut rng, words, n_printings, 0.0005);
+    let total = card_matches(&pbits);
+    let order = super::compose_perm_three_phase_order(&ctx, &sparse_params, &pbits, Mode::Card, SortCol::EdhrecRank, false, total, true, KNOB);
+    assert!(order.is_some(), "enabled=true + sparse + deep offset should divert to three-phase");
+
+    for (label, mode) in [("printing", Mode::Printing), ("artwork", Mode::Artwork)] {
+        let pbits = random_pbits(&mut rng, words, n_printings, 0.0005);
+        let total = card_matches(&pbits); // not meaningful for these modes, but the mode gate must short-circuit before using it
+        let params = kernel_params(mode, SortCol::EdhrecRank, false, 20, 200);
+        assert!(
+            super::compose_perm_three_phase_order(&ctx, &params, &pbits, mode, SortCol::EdhrecRank, false, total, true, KNOB).is_none(),
+            "{label}: the promoted walk is Mode::Card-only, so this must never divert regardless of enabled"
+        );
+    }
+}
