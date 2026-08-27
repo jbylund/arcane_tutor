@@ -11653,6 +11653,171 @@ fn perm_walk_vs_three_phase_same_process_rates() {
     }
 }
 
+/// Bridge between step 4 and step 5 of `docs/issues/local-engine-compose-perm-sigma-decision-rule.md`:
+/// fit a closed-form `ns ~= a*matches + b` cost model for `walk_card_page_via_popcount_skip` (#1030)
+/// from real, same-process measurements, replacing the Python harness's hand-supplied
+/// `--three-phase-rate-ns-per-match`/`--three-phase-fixed-ns`/`--three-phase-floor-ns`, which were
+/// sourced from an earlier kernel-bench of the not-yet-promoted prototype -- the same category of
+/// stale-adjacent-measurement mistake step 1 fixed on the walk side.
+///
+/// `perm_walk_vs_three_phase_same_process_rates` already showed `three_phase_ns` tracks `matches`
+/// tightly and barely moves with `offset` (a popcount-skip scan's cost is structural, not
+/// position-dependent), so this fits at a single offset (0) over many densities instead of the fuller
+/// density x offset grid that comparison needed -- one input varies here, not two.
+///
+/// Prints the fit plus a predicted-vs-actual self-check (the same discipline
+/// `compose_walk_kernel_costs`'s own fit reports) so a low R² or a wrong-signed rate is visible before
+/// anyone plugs these numbers into the Python harness's CLI flags.
+///
+/// `cargo test --release three_phase_walk_rate_fit -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release three_phase_walk_rate_fit -- --ignored --nocapture"]
+fn three_phase_walk_rate_fit() {
+    use rand::SeedableRng;
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let words = n_printings.div_ceil(64);
+
+    const WARMUP: usize = 20;
+    const ITERS: usize = 200;
+    const LIMIT: usize = 20;
+    // A wider, denser spread than the correctness/rate-comparison tests use -- this fit's quality
+    // depends on covering the real range of `matches` densely, not on covering the same handful of
+    // representative points those tests were built around.
+    const DENSITIES: [f64; 12] =
+        [0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.4, 0.6];
+
+    let order = archived.indexes.sort_perms.order(SortCol::EdhrecRank, false, n_cards).expect("edhrec permutation exists");
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(5);
+    let params = kernel_params(Mode::Card, SortCol::EdhrecRank, false, LIMIT, 0);
+
+    println!("\nthree-phase walk rate fit, real same-process measurements (real.store: {n_cards} cards, {n_printings} printings)");
+    println!("{:>10}  {:>10}  {:>12}  {:>12}", "density", "matches", "set_printings", "three_phase_ns");
+    // (matches, set_printings, ns) -- both candidate cost drivers kept so the fit below can check
+    // which one the real cost actually tracks, rather than assuming `matches` is it.
+    let mut rows: Vec<(f64, f64, f64)> = Vec::new();
+    for &density in &DENSITIES {
+        let pbits = random_pbits(&mut rng, words, n_printings, density);
+        let set_printings = pbits.iter().map(|w| w.count_ones() as usize).sum::<usize>();
+        let matches = {
+            let mut card_seen = vec![false; n_cards];
+            let mut count = 0usize;
+            for (i, &word) in pbits.iter().enumerate() {
+                let mut w = word;
+                while w != 0 {
+                    let pid = ((i as u32) << 6 | w.trailing_zeros()) as usize;
+                    w &= w - 1;
+                    let cid = u32::from(archived.indexes.printing_to_card[pid]) as usize;
+                    if !card_seen[cid] {
+                        card_seen[cid] = true;
+                        count += 1;
+                    }
+                }
+            }
+            count
+        };
+
+        let mut best = u128::MAX;
+        for it in 0..(WARMUP + ITERS) {
+            let t0 = Instant::now();
+            let (page, _) = black_box(super::walk_card_page_via_popcount_skip(&ctx, &params, &pbits, order));
+            let dt = t0.elapsed().as_nanos();
+            if it >= WARMUP {
+                best = best.min(dt);
+            }
+            black_box(&page);
+        }
+
+        println!("{density:>10}  {matches:>10}  {set_printings:>12}  {best:>12}");
+        rows.push((matches as f64, set_printings as f64, best as f64));
+    }
+
+    // Single-variable OLS WITH intercept (`ns = a*x + b`): unlike `compose_walk_kernel_costs`'s
+    // no-intercept two-term fit, there is exactly one real fixed cost here (the scatter/scan's
+    // structural overhead at zero matches), so forcing the intercept to zero would misattribute it
+    // into the per-unit rate instead of reporting it honestly. Returns (a, b, r_squared).
+    let fit = |xs: &[f64], ys: &[f64]| -> (f64, f64, f64) {
+        let n = xs.len() as f64;
+        let (mut sx, mut sy, mut sxx, mut sxy) = (0.0, 0.0, 0.0, 0.0);
+        for (&x, &y) in xs.iter().zip(ys) {
+            sx += x;
+            sy += y;
+            sxx += x * x;
+            sxy += x * y;
+        }
+        let det = n * sxx - sx * sx;
+        assert!(det.abs() > 1e-6, "inputs too collinear to fit a slope — widen the DENSITIES spread");
+        let a = (n * sxy - sx * sy) / det;
+        let b = (sy - a * sx) / n;
+        let mean_y = sy / n;
+        let (mut sum_sq_err, mut sum_sq_tot) = (0.0, 0.0);
+        for (&x, &y) in xs.iter().zip(ys) {
+            sum_sq_err += (y - (a * x + b)).powi(2);
+            sum_sq_tot += (y - mean_y).powi(2);
+        }
+        (a, b, 1.0 - sum_sq_err / sum_sq_tot.max(1e-9))
+    };
+
+    let matches_xs: Vec<f64> = rows.iter().map(|&(m, _, _)| m).collect();
+    let printings_xs: Vec<f64> = rows.iter().map(|&(_, p, _)| p).collect();
+    let ys: Vec<f64> = rows.iter().map(|&(_, _, ns)| ns).collect();
+
+    // `matches` (distinct cards) is what the sigma-decision-rule doc's own inputs are named in terms
+    // of, so it is the natural variable to WANT this fit against -- but `random_pbits` sets bits
+    // independently per PRINTING, and cards average ~3 printings apiece, so at high density most
+    // matching cards have several printings set while `matches` itself saturates at `n_cards`. If the
+    // scatter step's real cost tracks total SET PRINTING BITS instead (each is a separate scatter/skip
+    // unit of work), `matches` alone will systematically undershoot at high density -- exactly the
+    // shape a plain look at the printed table above should already suggest. Fit both and let R² settle
+    // which one this implementation's real cost actually follows, rather than assuming.
+    let (a_m, b_m, r2_m) = fit(&matches_xs, &ys);
+    let (a_p, b_p, r2_p) = fit(&printings_xs, &ys);
+    println!("\nthree-phase walk rate fit: two candidate variables, same real (ns) column");
+    println!("  ns = {a_m:.4}*matches + {b_m:.4}         R² = {r2_m:.4}");
+    println!("  ns = {a_p:.4}*set_printings + {b_p:.4}    R² = {r2_p:.4}");
+
+    let (label, a, b, xs) =
+        if r2_p > r2_m { ("set_printings", a_p, b_p, &printings_xs) } else { ("matches", a_m, b_m, &matches_xs) };
+    println!("\n  {label} wins (higher R²) -- using it for the reported fit and self-check below.");
+
+    let floor_ns = ys.iter().copied().fold(f64::INFINITY, f64::min);
+    println!("  a (ns/{label}) = {a:.4}");
+    println!("  b (fixed_ns)      = {b:.4}");
+    println!("  floor_ns          = {floor_ns:.4}  (minimum observed, for ThreePhaseModel's max(rate*x+fixed, floor))");
+    println!("\n  --three-phase-rate-ns-per-match {a:.4} --three-phase-fixed-ns {b:.4} --three-phase-floor-ns {floor_ns:.0}");
+    if label == "set_printings" {
+        println!(
+            "  NOTE: fit against set_printings, not matches -- the Python harness's ThreePhaseModel.estimate(matches)\n\
+             \x20 signature would need to change to estimate(set_printings) too, or this needs re-deriving in terms of\n\
+             \x20 a quantity the runtime dispatch decision (step 5) actually has cheaply in hand at that point."
+        );
+    }
+
+    println!("\n  predicted vs actual (self-check, {label}):");
+    for (i, &(matches, set_printings, ns)) in rows.iter().enumerate() {
+        let x = xs[i];
+        let predicted = (a * x + b).max(floor_ns);
+        println!(
+            "    matches={matches:<10} set_printings={set_printings:<12} actual={ns:<12} predicted={predicted:<12.1} ratio={:.3}",
+            predicted / ns.max(1.0)
+        );
+    }
+}
+
 /// `walk_printing_page_via_popcount_skip`'s general (not card-invariance-gated) weighted scatter must
 /// produce the IDENTICAL page `walk_grouped_page`'s `Mode::Printing` branch does -- same rationale
 /// and same random-bitmap methodology as the `Mode::Card` differential test above, since one matching
