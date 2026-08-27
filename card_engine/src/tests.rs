@@ -12409,3 +12409,61 @@ fn arith_tuple_key_budget_catches_a_blown_domain() {
 /// Above `ARITH_TUPLE_GUARD_MIN_CARDS`, and large enough that an all-distinct key space
 /// clears `10*sqrt(n)+32` by a wide margin.
 const ARITH_TUPLE_BLOWUP_CARDS: usize = 6_000;
+
+/// `super::sigma_bound`'s Rust port must agree with the Python original
+/// (`scripts/bench_compose_card_visited_safety_bound.py`) it was translated from -- that Python side
+/// is already Monte-Carlo-verified against simulated random placements (`selfcheck_nhg_moments`), so
+/// this test's job is narrower: catch a translation slip (an off-by-one, a wrong operator, a
+/// mishandled edge case), not re-derive the math.
+///
+/// Fixture generated once from the Python functions directly (not hand-computed) over a spread of
+/// cases chosen to hit every edge branch: `k > matches` (page never fills), `matches == 0`, `k == 0`,
+/// `matches == n_cards` (zero variance), `matches == n_cards == k`, tiny scale (`n_cards` a handful),
+/// and realistic corpus scale (`n_cards` ~1e5). Regenerate with:
+///
+/// ```python
+/// from scripts.bench_compose_card_visited_safety_bound import worst_case_bound, uniform_mean, nhg_variance, sigma_bound
+/// # ... build the (n_cards, matches, k) list, dump worst_case_bound/uniform_mean/nhg_variance/sigma
+/// # per knob in card_engine/testdata/sigma_bound_fixture.json
+/// ```
+#[test]
+fn sigma_bound_matches_python_fixture() {
+    use super::sigma_bound::{nhg_variance, sigma_bound, uniform_mean, worst_case_bound};
+
+    // Relative tolerance: the two sides do the same floating-point arithmetic in a different
+    // language, not a different derivation, so agreement should be tight -- this only needs to be
+    // loose enough to absorb f64 rounding-order differences, not a translation bug.
+    const REL_TOL: f64 = 1e-9;
+    fn agrees(got: f64, want: f64, case: &str) {
+        let diff = (got - want).abs();
+        let scale = want.abs().max(1.0);
+        assert!(
+            diff / scale <= REL_TOL,
+            "{case}: got {got}, want {want} (relative diff {})",
+            diff / scale,
+        );
+    }
+
+    let fixture_str = include_str!("../testdata/sigma_bound_fixture.json");
+    let fixture: serde_json::Value = serde_json::from_str(fixture_str).expect("fixture is valid JSON");
+    let rows = fixture.as_array().expect("fixture is a JSON array");
+    assert!(rows.len() >= 10, "fixture should cover a real spread of cases, got {}", rows.len());
+
+    for row in rows {
+        let n_cards = row["n_cards"].as_u64().expect("n_cards") as usize;
+        let matches = row["matches"].as_u64().expect("matches") as usize;
+        let k = row["k"].as_u64().expect("k") as usize;
+        let case = format!("n_cards={n_cards} matches={matches} k={k}");
+
+        agrees(worst_case_bound(n_cards, matches, k), row["worst_case_bound"].as_f64().unwrap(), &format!("worst_case_bound({case})"));
+        agrees(uniform_mean(n_cards, matches, k), row["uniform_mean"].as_f64().unwrap(), &format!("uniform_mean({case})"));
+        agrees(nhg_variance(n_cards, matches, k), row["nhg_variance"].as_f64().unwrap(), &format!("nhg_variance({case})"));
+
+        let sigmas = row["sigma"].as_object().expect("sigma is a JSON object keyed by knob");
+        assert!(!sigmas.is_empty(), "sigma table should carry at least one knob for {case}");
+        for (knob_str, want) in sigmas {
+            let knob: f64 = knob_str.parse().expect("knob key parses as f64");
+            agrees(sigma_bound(n_cards, matches, k, knob), want.as_f64().unwrap(), &format!("sigma_bound({case}, knob={knob})"));
+        }
+    }
+}

@@ -798,6 +798,7 @@ mod planes;
 use planes::*;
 mod estimator;
 mod cost;
+mod sigma_bound;
 
 // ─── Trigram index ────────────────────────────────────────────────────────────
 
