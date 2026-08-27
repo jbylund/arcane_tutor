@@ -2893,19 +2893,19 @@ fn arith_tuple_narrowing_matches_reference() {
 fn build_gather_matches(n: usize, ordering: u32) -> Vec<Match> {
     (0..n)
         .map(|i| {
-            let key: u128 = match ordering {
+            let key: u64 = match ordering {
                 // splitmix-style scramble: deterministic, no ordering structure
                 0 => {
-                    let mut x = (i as u128).wrapping_add(0x9E37_79B9_7F4A_7C15);
+                    let mut x = (i as u64).wrapping_add(0x9E37_79B9_7F4A_7C15);
                     x ^= x >> 30;
                     x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
                     x ^= x >> 27;
                     x
                 }
-                1 => i as u128,           // ascending: after the 1st prune every later match is rejected
-                2 => (n - 1 - i) as u128, // descending: every later match beats the cutoff → prune repeatedly
-                3 => 0,                   // all ties: page_cmp must break by pid
-                _ => (i % 8) as u128,     // clustered / heavy ties
+                1 => i as u64,           // ascending: after the 1st prune every later match is rejected
+                2 => (n - 1 - i) as u64, // descending: every later match beats the cutoff → prune repeatedly
+                3 => 0,                  // all ties: page_cmp must break by pid
+                _ => (i % 8) as u64,     // clustered / heavy ties
             };
             (key, i as u32, i as u32) // (sort_key, cid, pid)
         })
@@ -3006,15 +3006,16 @@ fn fuzz_corpus_has_both_divergent_and_invariant_formats() {
 /// - `total` equality,
 /// - `scryfall_id` multiset equality — same *rows*,
 /// - **2-key ordering** equality — the `(primary, edhrec_rank)` value
-///   sequence (top 64 bits of `sort_key_bits`).
+///   sequence (`sort_key_bits`' whole output).
 ///
 /// The 2-key value sequence is the ordering-parity contract (#702): plans agree
-/// on the two SQL-defined keys they're guaranteed to, and diverge only past
-/// them (key 3, prefer_score, and below — see the `PREFERS` comment below and
-/// docs/issues/00702). Comparing the 2-key *value* sequence, not the row
-/// sequence, is what tolerates that key-3 slop while still catching any real
-/// mis-ordering: tied rows share their (key1, key2) value, so the sequence is
-/// identical even when they interleave.
+/// on the two SQL-defined keys they're guaranteed to. They used to diverge past
+/// them, on a third key (prefer_score) `sort_key_bits` no longer computes at all — see its doc
+/// for why that key was dead everywhere a real comparator read it — but the value-sequence
+/// comparison predates that removal and is kept: it is still what tolerates ties within a
+/// (key1, key2) value interleaving in either row order, whatever produces them. Comparing the
+/// 2-key *value* sequence, not the row sequence, is what does that: tied rows share their
+/// (key1, key2) value, so the sequence is identical even when they interleave.
 ///
 /// Hand-built specs guarantee P1 (`PrintingRangeScan`) and P2
 /// (`PlanePopcountOrder`) coverage — the random generator rarely emits a bare
@@ -3191,16 +3192,18 @@ fn force_plan_differential_agreement() {
     };
 
     // Ordering-parity contract (#702): plans agree on the SQL-defined keys 1-2
-    // (primary sort column, then edhrec_rank) — the top 64 bits of
-    // sort_key_bits. Key 3 (prefer_score) and beyond are unspecified across
-    // plans: the permutation bakes in the *default* representative's
-    // prefer_score, so under a non-default prefer the perm-based plans can order
-    // a key-3 tie differently from the gathered path (a known, pre-existing
-    // divergence — see docs/issues/00702-engine-plan-selection-layer.md).
+    // (primary sort column, then edhrec_rank) — sort_key_bits' whole u64 output. A tie on those
+    // is unspecified across plans: the permutation bakes in the *default* representative's
+    // prefer_score, so under a non-default prefer the perm-based plans can order a tie
+    // differently from the gathered path (a known, pre-existing divergence — see
+    // docs/issues/00702-engine-plan-selection-layer.md). This is independent of prefer_score
+    // ever having been a THIRD sort_key_bits component (it was, and dead everywhere it was
+    // read; see sort_key_bits' doc) -- the divergence lives in build_sort_permutations' own
+    // tiebreak, not in a key page_cmp ever consulted.
     // Comparing the 2-key VALUE sequence is stable across that: tied rows share
     // their (key1, key2) value, so the sequence is identical even when they
     // interleave. Exercised under a default AND a non-default prefer — 2-key
-    // parity holds at both (3-key would not, at non-default prefer).
+    // parity holds at both.
     const PREFERS: [&str; 2] = ["default", "usd_low"];
 
     for (spec, orderby, direction) in &cases {
@@ -3214,9 +3217,11 @@ fn force_plan_differential_agreement() {
         // a bound that changed any plan's answer is equally wrong.
         let sort_bound = sort_col_bound(&fuzz_bound_filter(spec, archived), sort_col);
         bounded_cases[usize::from(descending)] += usize::from(!sort_bound.is_unbounded());
-        // (key1, key2) = the top 64 bits of sort_key_bits; drop the low 32 (key 3).
-        let key2_seq = |page: &[(&Archived<OracleCard>, &Archived<Printing>)]| -> Vec<u128> {
-            page.iter().map(|&(c, p)| sort_key_bits(c, p, sort_col, descending) >> 32).collect()
+        // (key1, key2) = sort_key_bits' whole u64 output. It used to carry a third key
+        // (prefer_score) that this comparison dropped with a `>> 32`; that key was dead in every
+        // real comparator too (see sort_key_bits' doc) and has since been removed at the source.
+        let key2_seq = |page: &[(&Archived<OracleCard>, &Archived<Printing>)]| -> Vec<u64> {
+            page.iter().map(|&(c, p)| sort_key_bits(c, p, sort_col, descending)).collect()
         };
         for &prefer in &PREFERS {
             for &mode in &modes {
@@ -10892,7 +10897,7 @@ fn printing_range_fixture(seed: u64, n_cards: usize) -> CardData {
 fn naive_printing_page(
     archived: &Archived<CardData>, leaf: &FilterExpr, sc: SortCol, desc: bool, offset: usize, limit: usize,
 ) -> Vec<u128> {
-    let mut all: Vec<(u128, u32, u32)> = Vec::new();
+    let mut all: Vec<(u64, u32, u32)> = Vec::new();
     for cid in 0..archived.cards.len() as u32 {
         let card = &archived.cards[cid as usize];
         let start = u32::from(archived.offsets[cid as usize]) as usize;
@@ -11253,7 +11258,7 @@ fn gather_artwork_kernel_costs() {
     let bench_mode = |mode: Mode| -> u128 {
         let mut group_best: Vec<Option<(u32, f64)>> = vec![None; max_groups];
         let mut touched: Vec<u16> = Vec::new();
-        let mut out: Vec<(u128, u32, u32)> = Vec::with_capacity(4096);
+        let mut out: Vec<(u64, u32, u32)> = Vec::with_capacity(4096);
         let mut best = u128::MAX;
         for it in 0..(WARMUP + ITERS) {
             out.clear();

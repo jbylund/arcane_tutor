@@ -5519,12 +5519,20 @@ fn f32_sort_bits(v: f32) -> u32 {
 
 /// Order-preserving integer sort key, computed once per match instead of inside the
 /// comparator: primary column (direction folded in by negation, missing sorts last),
-/// then edhrec rank ascending (missing last), then prefer score descending (missing
-/// last). Card-level columns read the OracleCard; printing-level columns (rarity,
-/// usd) read the chosen printing, matching the pre-split semantics where the
-/// group's representative printing supplied them. Full ties fall back to printing
-/// store order in `select_page`.
-fn sort_key_bits(card: &AOracleCard, p: &APrinting, sort_col: SortCol, descending: bool) -> u128 {
+/// then edhrec rank ascending (missing last). Card-level columns read the OracleCard;
+/// printing-level columns (rarity, usd) read the chosen printing, matching the
+/// pre-split semantics where the group's representative printing supplied them.
+/// Full ties fall back to printing store order in `select_page`.
+///
+/// Used to pack a THIRD key here too (prefer score descending), but `page_cmp` -- the only
+/// comparator any `Match` consumer uses -- never read it: it must not decide across cards,
+/// because the two sides comparing a match cannot agree on it (see `page_cmp`'s own doc, kept
+/// below). Confirmed dead by zeroing it and running the full fuzz suite (`force_plan_differential
+/// _agreement`, `fuzz_row_identity_matches_reference`, the naive-reference printing-range tests)
+/// before removing it -- all 160 tests passed unchanged. Returning `u64` instead of `u128` halves
+/// `Match`'s size (`(u64, u32, u32)` is 16 bytes with no padding, against `(u128, u32, u32)`'s 32
+/// -- `u128` forces 16-byte alignment) for every executor that builds a `Vec<Match>`.
+fn sort_key_bits(card: &AOracleCard, p: &APrinting, sort_col: SortCol, descending: bool) -> u64 {
     let primary: Option<f32> = match sort_col {
         SortCol::Cmc        => card.cmc.as_ref().map(|v| f32::from(*v)),
         SortCol::Power      => card.creature_power.as_ref().map(|v| f32::from(*v)),
@@ -5540,19 +5548,21 @@ fn sort_key_bits(card: &AOracleCard, p: &APrinting, sort_col: SortCol, descendin
     };
     let pk = primary.map_or(u32::MAX, |v| f32_sort_bits(if descending { -v } else { v }));
     let e = card.edhrec_rank.as_ref().map(|v| u32::from(*v)).unwrap_or(u32::MAX);
-    let sc = p.prefer_score.as_ref().map_or(u32::MAX, |v| f32_sort_bits(-f32::from(*v)));
-    ((pk as u128) << 64) | ((e as u128) << 32) | (sc as u128)
+    ((pk as u64) << 32) | (e as u64)
 }
 
 /// One query match: (sort key, card index, printing index). Ties on the sort key
 /// break by printing index — printing store order, the same tie order the
 /// pre-split pointer comparison produced.
-type Match = (u128, u32, u32);
+type Match = (u64, u32, u32);
 
-/// The page comparator (`select_page`'s order): sort key, then pid. pid is unique,
+/// The page comparator (`select_page`'s order): sort key, then card, then pid. pid is unique,
 /// so this is a total order over `Match`.
 fn page_cmp(a: &Match, b: &Match) -> std::cmp::Ordering {
-    // Keys 1-2 only (`>> 32` drops key 3, prefer_score), then CARD, then printing.
+    // `sort_key_bits` no longer packs a third key (prefer_score) -- see its doc for why keeping
+    // it around a comparator that dropped it was pure waste. What follows is the reasoning that
+    // conclusion rests on, preserved because it is what makes this the RIGHT order rather than
+    // just AN order:
     //
     // Key 3 must not decide across cards, because the two sides cannot agree on it. The prebuilt
     // permutation bakes in `printings[offsets[i]]`'s prefer_score -- the first STORED printing, chosen
@@ -5563,14 +5573,14 @@ fn page_cmp(a: &Match, b: &Match) -> std::cmp::Ordering {
     //
     // `cid` is filter-independent and total, so both sides can reach it. Within a card this changes
     // nothing: printings are stored prefer-desc, so ascending pid already IS descending prefer_score.
-    (a.0 >> 32).cmp(&(b.0 >> 32)).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.cmp(&b.2))
+    a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.cmp(&b.2))
 }
 
 /// Number of matches the gather buffer may grow *past* the page (`offset+limit`)
 /// before it is pruned back down (see `exec_gathered_scan`). Bounds the buffer at
-/// ~`page + CHUNK` ≈ 128KB of `Match` (32 B each — `u128`'s 16-byte alignment pads
-/// the trailing two `u32`s) — L2-resident — on whole-corpus results, while leaving
-/// any gather that never reaches this size byte-for-byte the un-pruned path.
+/// ~`page + CHUNK` ≈ 64KB of `Match` (16 B each, no padding) — L2-resident — on
+/// whole-corpus results, while leaving any gather that never reaches this size
+/// byte-for-byte the un-pruned path.
 /// Amortized O(1)/match (a prune every CHUNK matches costs O(page+CHUNK)).
 const GATHER_PRUNE_CHUNK: usize = 4096;
 
@@ -12968,3 +12978,5 @@ mod bench_membership_check;
 mod bench_expand_materialize;
 #[cfg(test)]
 mod bench_card_ids_dispatch;
+#[cfg(test)]
+mod bench_match_layout;
