@@ -11659,6 +11659,152 @@ fn perm_walk_vs_three_phase_same_process_rates() {
     }
 }
 
+/// Step 6 of docs/issues/local-engine-compose-perm-sigma-decision-rule.md: quick sanity check on
+/// whether `sigma_bound`'s knob sensitivity (the original offline analysis's "2.0-4.0 barely matters"
+/// finding) still holds now that both sides of the decision are the ACTUAL validated pieces --
+/// `three_phase_cost_ns`'s 17-point interpolation, not the old hand-fit placeholder that finding was
+/// measured against -- rather than assuming a finding measured under different components survives.
+///
+/// Reuses `perm_walk_vs_three_phase_same_process_rates`'s exact density x offset grid (real walk_ns
+/// AND real three_phase_ns already measured there), so this needs no new measurement infrastructure.
+/// For each knob, `should_use_three_phase` decides per cell using the SAME inputs
+/// `compose_perm_three_phase_order` would at runtime; the reported latency is the REAL measured cost
+/// of whichever side got picked, not a re-predicted one, so this doesn't just re-check the decision
+/// function's own confidence in itself.
+///
+/// Cheap and coarse on purpose: 40 grid cells on a deliberately stress-heavy offset sweep (real Perm
+/// traffic is offset~0-heavy, per the sibling test's own doc), not the ~2,700 real sampled queries the
+/// original offline analysis used. A quick "did anything obviously break" check before deciding
+/// whether the full real-query re-analysis (the Python harness, updated to use the validated model) is
+/// worth building.
+///
+/// `cargo test --release sigma_knob_sensitivity_sweep -- --ignored --nocapture`
+#[test]
+#[ignore = "needs real.store; cargo test --release sigma_knob_sensitivity_sweep -- --ignored --nocapture"]
+fn sigma_knob_sensitivity_sweep() {
+    use rand::SeedableRng;
+    use std::hint::black_box;
+    use std::time::Instant;
+    const STORE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../benchmarks/verify-order/real.store");
+    let Ok(file) = std::fs::File::open(STORE_PATH) else {
+        eprintln!("SKIP: {STORE_PATH} not found");
+        return;
+    };
+    let mmap = unsafe { Mmap::map(&file) }.expect("mmap real.store");
+    if mmap.len() < ARCHIVE_HEADER_LEN || mmap[..ARCHIVE_HEADER_LEN] != archive_header() {
+        eprintln!("SKIP: {STORE_PATH} header mismatch — rebuild");
+        return;
+    }
+    let archived = unsafe { rkyv::access_unchecked::<Archived<CardData>>(archive_payload(&mmap)) };
+    let ctx = QueryCtx::from(archived);
+    let n_cards = archived.cards.len();
+    let n_printings = archived.printings.len();
+    let words = n_printings.div_ceil(64);
+
+    // 200/5000, not this file's usual 20/200 -- three_phase_walk_rate_fit's own history is the
+    // reason: at 20/200 a single point showed 20.7% run-to-run CV that looked like a real anomaly
+    // and wasn't, just under-sampling. The knob decision this sweep informs deserves the same rigor.
+    const WARMUP: usize = 200;
+    const ITERS: usize = 5000;
+    const LIMIT: usize = 20;
+    const OFFSETS: [usize; 10] = [0, 50, 200, 500, 1_000, 2_000, 4_000, 8_000, 15_000, 25_000];
+    const DENSITIES: [f64; 4] = [0.0005, 0.01, 0.2, 0.6];
+    const KNOBS: [f64; 11] = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 8.0];
+
+    let order = archived.indexes.sort_perms.order(SortCol::EdhrecRank, false, n_cards).expect("edhrec permutation exists");
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(4); // same seed as perm_walk_vs_three_phase_same_process_rates: identical grid
+
+    struct Cell {
+        matches: usize,
+        k: usize,
+        set_printings: usize,
+        walk_ns: f64,
+        three_phase_ns: f64,
+    }
+    let mut cells = Vec::with_capacity(DENSITIES.len() * OFFSETS.len());
+
+    println!("\nsigma knob sensitivity sweep: measuring real (walk_ns, three_phase_ns) per cell (real.store: {n_cards} cards, {n_printings} printings)");
+    for &density in &DENSITIES {
+        let pbits = random_pbits(&mut rng, words, n_printings, density);
+        let set_printings = pbits.iter().map(|w| w.count_ones() as usize).sum::<usize>();
+        let matches = {
+            let mut card_seen = vec![false; n_cards];
+            let mut count = 0usize;
+            for (i, &word) in pbits.iter().enumerate() {
+                let mut w = word;
+                while w != 0 {
+                    let pid = ((i as u32) << 6 | w.trailing_zeros()) as usize;
+                    w &= w - 1;
+                    let cid = u32::from(archived.indexes.printing_to_card[pid]) as usize;
+                    if !card_seen[cid] {
+                        card_seen[cid] = true;
+                        count += 1;
+                    }
+                }
+            }
+            count
+        };
+        for &offset in &OFFSETS {
+            let params = kernel_params(Mode::Card, SortCol::EdhrecRank, false, LIMIT, offset);
+
+            let mut walk_best = u128::MAX;
+            for it in 0..(WARMUP + ITERS) {
+                let t0 = Instant::now();
+                let (page, _) = black_box(super::walk_grouped_page(&ctx, &params, &pbits, order.perm));
+                let dt = t0.elapsed().as_nanos();
+                if it >= WARMUP {
+                    walk_best = walk_best.min(dt);
+                }
+                black_box(&page);
+            }
+
+            let mut three_phase_best = u128::MAX;
+            for it in 0..(WARMUP + ITERS) {
+                let t0 = Instant::now();
+                let (page, _) = black_box(super::walk_card_page_via_popcount_skip(&ctx, &params, &pbits, order));
+                let dt = t0.elapsed().as_nanos();
+                if it >= WARMUP {
+                    three_phase_best = three_phase_best.min(dt);
+                }
+                black_box(&page);
+            }
+
+            cells.push(Cell {
+                matches,
+                k: offset.saturating_add(LIMIT),
+                set_printings,
+                walk_ns: walk_best as f64,
+                three_phase_ns: three_phase_best as f64,
+            });
+        }
+    }
+    println!("  measured {} cells ({} densities x {} offsets)", cells.len(), DENSITIES.len(), OFFSETS.len());
+
+    println!("\n{:>6}  {:>9}  {:>10}  {:>10}  {:>10}  {:>10}", "knob", "%diverted", "min_ns", "median_ns", "p90_ns", "max_ns");
+    for &knob in &KNOBS {
+        let mut diverted = 0usize;
+        let mut realized: Vec<f64> = Vec::with_capacity(cells.len());
+        for cell in &cells {
+            let divert = super::sigma_bound::should_use_three_phase(n_cards, n_printings, cell.matches, cell.k, cell.set_printings, knob);
+            if divert {
+                diverted += 1;
+            }
+            realized.push(if divert { cell.three_phase_ns } else { cell.walk_ns });
+        }
+        realized.sort_by(f64::total_cmp);
+        let n = realized.len();
+        let pctile = |p: f64| -> f64 { realized[((p / 100.0) * (n - 1) as f64).round() as usize] };
+        println!(
+            "{knob:>6.1}  {:>8.1}%  {:>10.0}  {:>10.0}  {:>10.0}  {:>10.0}",
+            100.0 * diverted as f64 / n as f64,
+            realized[0],
+            pctile(50.0),
+            pctile(90.0),
+            realized[n - 1],
+        );
+    }
+}
+
 /// Bridge between step 4 and step 5 of `docs/issues/local-engine-compose-perm-sigma-decision-rule.md`:
 /// fit a closed-form `ns ~= a*matches + b` cost model for `walk_card_page_via_popcount_skip` (#1030)
 /// from real, same-process measurements, replacing the Python harness's hand-supplied
