@@ -6332,6 +6332,18 @@ static EXACT_VALUE_TOTALS: LazyLock<bool> = LazyLock::new(|| guard_env("CARD_ENG
 
 static STREAM_MIN_MATCHES: LazyLock<usize> = LazyLock::new(|| guard_env("CARD_ENGINE_STREAM_MIN_MATCHES", 1_024));
 
+/// Step 5 of docs/issues/local-engine-compose-perm-sigma-decision-rule.md, gated off in production.
+/// 0 (default): `Perm`'s `Mode::Card` paging always runs `walk_grouped_page`, byte-identical to
+/// before this guard existed. 1: `sigma_bound::should_use_three_phase` gets to decide per query.
+/// Unset until step 7's real-traffic validation clears it to flip on somewhere.
+static COMPOSE_SIGMA_ENABLED: LazyLock<bool> = LazyLock::new(|| guard_env("CARD_ENGINE_COMPOSE_SIGMA_ENABLED", 0u8) != 0);
+
+/// How many std devs of `sigma_bound`'s no-clumping margin to add above the mean -- step 6 of the
+/// same doc names 2.0-4.0 as the range the offline analysis found (diverts ~half as much traffic as
+/// the alternatives while matching or beating them through p99). 3.0 is the midpoint, not yet chosen
+/// by anything sharper; revisit once step 7 has real-traffic evidence to pick from within that range.
+static COMPOSE_SIGMA_KNOB: LazyLock<f64> = LazyLock::new(|| guard_env("CARD_ENGINE_COMPOSE_SIGMA_KNOB", 3.0));
+
 /// Kill-switch for narrowing the streamed walk to the filter's bound on the sort column
 /// (`walk_bounds`). Default on; 0 walks the whole permutation as the executor did before the bound
 /// existed. A binary switch, not a calibrated threshold — the bound costs O(log n_cards) probes once
@@ -8681,8 +8693,28 @@ fn printing_compose_fastpath<'a>(
                 note_paging_taken(PagingTaken::DeclineSparseExact);
                 return None;
             }
-            note_paging_taken(PagingTaken::Perm);
-            walk_grouped_page(ctx, params, &pbits, perm)
+            // Step 5 of docs/issues/local-engine-compose-perm-sigma-decision-rule.md: an internal
+            // choice of HOW to serve `Perm`, not a different top-level strategy -- `compose_paging`
+            // still predicts bare `Perm` either way (`PagingTaken::PermThreePhase`'s own doc). Gated
+            // off by default (`COMPOSE_SIGMA_ENABLED`), so this whole block is a no-op today: the
+            // `then` closure never runs, `three_phase_order` is always `None`, and the classic walk
+            // below is byte-identical to before this existed.
+            let three_phase_order = (*COMPOSE_SIGMA_ENABLED && matches!(mode, Mode::Card))
+                .then(|| {
+                    let k = page_offset.saturating_add(params.limit);
+                    let set_printings = pbits.iter().map(|w| w.count_ones() as usize).sum::<usize>();
+                    sigma_bound::should_use_three_phase(cards.len(), printings.len(), total, k, set_printings, *COMPOSE_SIGMA_KNOB)
+                        .then(|| indexes.sort_perms.order(sort_col, descending, cards.len()))
+                        .flatten()
+                })
+                .flatten();
+            if let Some(order) = three_phase_order {
+                note_paging_taken(PagingTaken::PermThreePhase);
+                walk_card_page_via_popcount_skip(ctx, params, &pbits, order)
+            } else {
+                note_paging_taken(PagingTaken::Perm);
+                walk_grouped_page(ctx, params, &pbits, perm)
+            }
         }
         // No permutation. #744: if the orderby has a printing-space value structure (usd/rarity,
         // printing mode), walk it directly — terminating at page_offset+limit rather than visiting
@@ -10289,11 +10321,23 @@ pub(crate) enum PagingTaken {
     /// `take_phase_stats` leaves behind and what an uninstrumented plan reports.
     #[default]
     NotEntered,
-    /// A strategy ran, and it must be the predicted one. These three are the only variants
-    /// comparable against `compose_paging` as an equality.
+    /// A strategy ran, and it must be the predicted one. These three, plus `PermThreePhase` below,
+    /// are the only variants comparable against `compose_paging` as an equality.
     Perm,
     OrderbyWalk,
     Gather,
+    /// `Perm` diverted to the promoted three-phase walk (`walk_card_page_via_popcount_skip`) instead
+    /// of the classic `walk_grouped_page`, per step 5 of
+    /// docs/issues/local-engine-compose-perm-sigma-decision-rule.md's decision rule
+    /// (`sigma_bound::should_use_three_phase`). `Mode::Card` only for now — the promoted `Printing`/
+    /// `Artwork` walks exist but aren't wired into this decision yet. Legal under a predicted `Perm`,
+    /// same as bare `Perm` itself: the decision is an internal choice of HOW to serve `Perm`, not a
+    /// different top-level strategy the acquire-side predictor distinguishes.
+    ///
+    /// Gated off by default (`CARD_ENGINE_COMPOSE_SIGMA_ENABLED`, unset in production) — this variant
+    /// cannot fire until that guard is on, so `compose_paging_prediction_matches_the_branch_taken`'s
+    /// coverage sweep does not require it to appear.
+    PermThreePhase,
     /// A walk WAS available and was attempted, declined, and fell back to the gather. Legal under a
     /// predicted `OrderbyWalk` and only under one; a bare `Gather` in that cell would mean the
     /// availability tests really had drifted.
@@ -10419,6 +10463,7 @@ impl PagingTaken {
         match self {
             PagingTaken::NotEntered => "",
             PagingTaken::Perm => "Perm",
+            PagingTaken::PermThreePhase => "PermThreePhase",
             PagingTaken::OrderbyWalk => "OrderbyWalk",
             PagingTaken::Gather => "Gather",
             PagingTaken::GatherWalkDeclined => "GatherWalkDeclined",
