@@ -11567,7 +11567,7 @@ fn compose_walk_kernel_costs() {
                 scratch.clear();
                 for pid in s..e {
                     if is_set(pid) {
-                        scratch.push((0u128, cid, pid as u32)); // unreachable: pbits is all-zero
+                        scratch.push((0u64, cid, pid as u32)); // unreachable: pbits is all-zero
                     }
                 }
                 if scratch.is_empty() {
