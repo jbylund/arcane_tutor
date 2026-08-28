@@ -7774,6 +7774,62 @@ fn card_invariant_broadcast_compose_leaves() {
     assert!(!super::is_broadcast_leaf_shape(&border), "border must not be treated as a card-invariant broadcast leaf");
 }
 
+// Regression for the `domain_hint` unit bug found investigating `GatheredScan[printing_compose]`'s
+// worst-in-survey spread: `domain_hint` is a CARD count (its one consumer, `acquire_plan_features`'s
+// `domain_cards`, feeds it straight into `eval_domain`), but its "2+ card-invariant planes intersect"
+// arm used to scale the exact card popcount by `n_printings / n_cards` before storing it -- the same
+// conversion `result`'s own (correctly PRINTING-space) tightening needs, reused unconverted for a
+// card-space consumer. Confirmed live: `devotion:w c:u usd>5` predicted `eval_domain: 1705` against a
+// realized `cards_visited` of 108 (15.8x over); fixed, `eval_domain: 553` (the true, unscaled 2-leaf
+// intersection -- still not exact, since `usd>5` isn't folded into this tightening, but 3.08x tighter,
+// matching `n_printings / n_cards` on that corpus exactly).
+#[test]
+fn domain_hint_is_card_space_not_printing_scaled() {
+    let mut vocab = VocabInterner::new();
+    // card0: green colors + identity (matches `c:g id:g`). card1: red colors + identity (matches
+    // neither). card2: green+red colors + identity (matches `c:g id:g`) -- exact card intersection
+    // of the two plane-compilable leaves is {0, 2}, i.e. 2 cards.
+    let mut cards = vec![
+        stub_card(1, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &[], &mut vocab),
+    ];
+    cards[0].card_colors = super::color_to_bit("G");
+    cards[0].card_color_identity = super::color_to_bit("G");
+    cards[1].card_colors = super::color_to_bit("R");
+    cards[1].card_color_identity = super::color_to_bit("R");
+    cards[2].card_colors = super::color_to_bit("G") | super::color_to_bit("R");
+    cards[2].card_color_identity = super::color_to_bit("G") | super::color_to_bit("R");
+    let mut data = store_of(cards, &[2, 2, 2], vocab); // 3 cards, 2 printings each -- n_printings=6, n_cards=3
+    let set_codes_by_pid = ["dmu", "lea", "dmu", "dmu", "lea", "neo"];
+    for (p, code) in data.printings.iter_mut().zip(set_codes_by_pid) {
+        p.card_set_code = InlineStr::from_str(code);
+    }
+    let mut set_codes: TagIndex = HashMap::new();
+    for (i, p) in data.printings.iter().enumerate() {
+        set_codes.entry(p.card_set_code.as_str().to_string()).or_default().push(i as u32);
+    }
+    data.indexes.set_codes = set_codes;
+    data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(|v| v as i16));
+    let p2c = build_printing_to_card(&data.offsets);
+    data.indexes.value_totals =
+        build_all_value_totals(&data.cards, &data.printings, &p2c, &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let green = FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: super::color_to_bit("G") };
+    let green_identity = FilterExpr::ColorCmp { field: ColorField::ColorIdentity, op: CmpOp::Ge, mask: super::color_to_bit("G") };
+    let set_dmu = FilterExpr::TextExact { field: super::TextField::SetCode, op: CmpOp::Eq, value: "dmu".to_string() };
+    // `set:dmu` isn't plane-compilable (no `compile_plane` arm), so it keeps this a genuine 3-child
+    // `And` reaching `compose_printing_estimate`'s own arm rather than getting split off into a bare
+    // plane residual -- exactly the shape `domain_hint`'s 2+-card-invariant-planes branch targets.
+    let filter = FilterExpr::And(vec![green, green_identity, set_dmu]);
+    let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings);
+    assert_eq!(est.domain_hint, Some(2), "domain_hint must be the exact 2-card intersection, not scaled by n_printings/n_cards");
+}
+
 // #746: `set:`/`watermark:` postings leaves join the PrintingCompose leaf table. This is the
 // differential test the design doc calls for: for every filter shape (both `set:` polarities,
 // `watermark:` positive, and mixes with a year range) the exact `compose_printing_bits` bitmap must
