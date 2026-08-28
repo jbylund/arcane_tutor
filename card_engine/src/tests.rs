@@ -7594,6 +7594,108 @@ fn watermark_narrowing() {
     }
 }
 
+// #731 step 2: card-invariant broadcast leaves (`color:`/`id:`/`produces:`, `cmc`/`power`/
+// `toughness`, `devotion`) join the PrintingCompose leaf table via `broadcast_card_bits_to_printings`
+// — the same mechanism #753 already ships for `type:`/`kw:`/`otag:`. Same differential shape as
+// `set_watermark_compose_leaves`: `compose_printing_bits` must agree, printing for printing, with the
+// general residual path, for the bare leaf, its negation, and mixes with an already-composable leaf
+// (`set:`). Also asserts rarity/legality/border — which also compile via `compile_plane` but are
+// EXISTENTIAL, not card-invariant — are NOT accepted by this path (the #667/#680 shared-witness guard).
+#[test]
+fn card_invariant_broadcast_compose_leaves() {
+    let mut vocab = VocabInterner::new();
+    // card0: green, cmc=2. card1: red, cmc=5. card2: green+red, cmc=2.
+    let mut cards = vec![
+        stub_card(1, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &[], &mut vocab),
+    ];
+    cards[0].card_colors = super::color_to_bit("G");
+    cards[0].cmc = Some(2u8);
+    cards[1].card_colors = super::color_to_bit("R");
+    cards[1].cmc = Some(5u8);
+    cards[2].card_colors = super::color_to_bit("G") | super::color_to_bit("R");
+    cards[2].cmc = Some(2u8);
+    let mut data = store_of(cards, &[2, 2, 2], vocab); // pids 0,1 | 2,3 | 4,5
+    let set_codes_by_pid = ["dmu", "lea", "dmu", "dmu", "lea", "neo"];
+    for (p, code) in data.printings.iter_mut().zip(set_codes_by_pid) {
+        p.card_set_code = InlineStr::from_str(code);
+    }
+    let mut set_codes: TagIndex = HashMap::new();
+    for (i, p) in data.printings.iter().enumerate() {
+        set_codes.entry(p.card_set_code.as_str().to_string()).or_default().push(i as u32);
+    }
+    data.indexes.set_codes = set_codes;
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let green = FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: super::color_to_bit("G") };
+    let cmc2 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Eq, rhs: NumExpr::Const(2.0) };
+    let set = |code: &str| FilterExpr::TextExact { field: super::TextField::SetCode, op: CmpOp::Eq, value: code.to_string() };
+
+    let brute = |f: &FilterExpr| -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut residual: Vec<&FilterExpr> = Vec::new();
+        let mut is_or = false;
+        for c in 0..archived.cards.len() {
+            let card = &archived.cards[c];
+            let tri = f.card_pass(card, &archived.strings, &mut residual, &mut is_or, 0);
+            let (lo, hi) = (u32::from(archived.offsets[c]), u32::from(archived.offsets[c + 1]));
+            for pid in lo..hi {
+                let matched = match tri {
+                    Tri::True => true,
+                    Tri::False => false,
+                    Tri::PrintingDep => FilterExpr::residual_matches(card, &archived.printings[pid as usize], &archived.strings, &residual, is_or),
+                    Tri::Null => false,
+                };
+                if matched {
+                    out.push(pid);
+                }
+            }
+        }
+        out
+    };
+    let composed = |f: &FilterExpr| -> Vec<u32> {
+        let bits = super::compose_printing_bits(f, &archived.indexes, &archived.offsets, &archived.printings, n_printings);
+        (0..n_printings as u32).filter(|&p| bits[p as usize >> 6] & (1u64 << (p & 63)) != 0).collect()
+    };
+
+    let cases: Vec<(&str, FilterExpr)> = vec![
+        ("c:g", green.clone()),
+        ("-c:g", FilterExpr::Not(Box::new(green.clone()))),
+        ("cmc=2", cmc2.clone()),
+        ("c:g cmc=2", FilterExpr::And(vec![green.clone(), cmc2.clone()])),
+        ("c:g set:dmu", FilterExpr::And(vec![green.clone(), set("dmu")])),
+        ("c:g or cmc=2", FilterExpr::Or(vec![green.clone(), cmc2.clone()])),
+    ];
+    for (label, f) in &cases {
+        assert!(super::is_printing_composable(f, &archived.indexes), "{label} must be printing-composable");
+        let mut got = composed(f);
+        got.sort_unstable();
+        let mut want = brute(f);
+        want.sort_unstable();
+        assert_eq!(got, want, "compose_printing_bits disagrees with the residual path for {label}");
+        let est_matches = super::compose_printing_estimate(f, &archived.indexes, &archived.offsets, n_printings).result;
+        assert!(est_matches >= want.len(), "compose_printing_estimate undercounts for {label}: {est_matches} < {}", want.len());
+    }
+
+    // `-cmc=2` must NOT compose: `cmc`/`power`/`toughness` are nullable, and a bit-complement would
+    // wrongly include null-valued cards the same way `-watermark:` would (three-valued logic: Not(Null)
+    // is still Null, not True) — `compile_plane_neg`'s `contains_unnegatable_numeric` guard already
+    // declines this for exactly that reason, and this path inherits it for free via `compile_plane`.
+    let not_cmc2 = FilterExpr::Not(Box::new(cmc2.clone()));
+    assert!(!super::is_printing_composable(&not_cmc2, &archived.indexes), "-cmc=2 must stay off the compose path (nullable field)");
+
+    // Rarity/legality/border also compile via `compile_plane` but are EXISTENTIAL, not card-invariant
+    // — `is_broadcast_leaf_shape` must reject them, so they stay on their own native-printing-index
+    // arms (already `true` in `is_printing_composable` via those dedicated arms, not this one).
+    let rarity = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op: CmpOp::Eq, rhs: NumExpr::Const(0.0) };
+    assert!(!super::is_broadcast_leaf_shape(&rarity), "rarity must not be treated as a card-invariant broadcast leaf");
+    let border = FilterExpr::TextExact { field: super::TextField::Border, op: CmpOp::Eq, value: "black".to_string() };
+    assert!(!super::is_broadcast_leaf_shape(&border), "border must not be treated as a card-invariant broadcast leaf");
+}
+
 // #746: `set:`/`watermark:` postings leaves join the PrintingCompose leaf table. This is the
 // differential test the design doc calls for: for every filter shape (both `set:` polarities,
 // `watermark:` positive, and mixes with a year range) the exact `compose_printing_bits` bitmap must
