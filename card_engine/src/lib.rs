@@ -7388,6 +7388,31 @@ fn numeric_range_count(idx: &Archived<NumericIndex>, op: CmpOp, val: f64) -> Opt
     Some(end - start)
 }
 
+/// The same range `numeric_range_count` bounds, but returning the actual card ids in it rather than
+/// just its length -- for the smaller-side merge in `compose_printing_estimate`'s `And` arm, which
+/// needs to probe each one against another leaf's bitmap rather than just know how many there are.
+/// Deliberately kept separate from `numeric_range_count` rather than folded into one function that
+/// always returns ids: the plain count is used far more often (every bare single-field estimate) and
+/// materializing a `Vec<u32>` there would be pure waste on the common path that only needs a number.
+fn numeric_range_ids(idx: &Archived<NumericIndex>, op: CmpOp, val: f64) -> Option<Vec<u32>> {
+    let (start, end) = match op {
+        CmpOp::Ne => return None,
+        CmpOp::Eq => {
+            if val.fract() != 0.0 {
+                return Some(Vec::new());
+            }
+            let s = idx.partition_point(|p| (i16::from(p.0) as f64) < val);
+            let e = idx.partition_point(|p| (i16::from(p.0) as f64) <= val);
+            (s, e)
+        }
+        CmpOp::Lt => (0, idx.partition_point(|p| (i16::from(p.0) as f64) < val)),
+        CmpOp::Le => (0, idx.partition_point(|p| (i16::from(p.0) as f64) <= val)),
+        CmpOp::Gt => (idx.partition_point(|p| (i16::from(p.0) as f64) <= val), idx.len()),
+        CmpOp::Ge => (idx.partition_point(|p| (i16::from(p.0) as f64) < val), idx.len()),
+    };
+    Some(idx[start..end].iter().map(|p| u32::from(p.1)).collect())
+}
+
 /// Exact CARD count for a bare cmc/power/toughness `NumericCmp` leaf, trying the dedicated index
 /// first (cheap, O(log n)) — `arith_tuple_count` is reserved for the 2+-bound joint case, where no
 /// dedicated single-field index can answer at all.
@@ -7399,6 +7424,18 @@ fn bare_numeric_field_count(filter: &FilterExpr, indexes: &Archived<CardIndexes>
     };
     let idx = card_numeric_index(field, indexes)?;
     numeric_range_count(idx, op, val)
+}
+
+/// `bare_numeric_field_count`'s ids, for the same reason `numeric_range_ids` exists next to
+/// `numeric_range_count`.
+fn bare_numeric_field_ids(filter: &FilterExpr, indexes: &Archived<CardIndexes>) -> Option<Vec<u32>> {
+    let (field, op, val) = match filter {
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(f), op, rhs: NumExpr::Const(v) } => (*f, *op, *v),
+        FilterExpr::NumericCmp { lhs: NumExpr::Const(v), op, rhs: NumExpr::Field(f) } => (*f, flip_op(*op), *v),
+        _ => return None,
+    };
+    let idx = card_numeric_index(field, indexes)?;
+    numeric_range_ids(idx, op, val)
 }
 
 /// Whether `filter` is a bare single-field cmc/power/toughness comparison against a constant — the
@@ -7444,6 +7481,32 @@ fn arith_tuple_count(bounds: &[&FilterExpr], indexes: &Archived<CardIndexes>) ->
         }
     }
     Some(total)
+}
+
+/// `arith_tuple_count`'s ids, for the same reason `numeric_range_ids` exists next to
+/// `numeric_range_count` — the smaller-side merge needs the actual card ids to probe, not just how
+/// many there are. Still bounded by the ~564-key scan `arith_tuple_count` already does, not by
+/// corpus size: collecting matching keys' postings is the same walk plus a `Vec` extend.
+fn arith_tuple_ids(bounds: &[&FilterExpr], indexes: &Archived<CardIndexes>) -> Option<Vec<u32>> {
+    let idx = &indexes.arith_tuple;
+    if bounds.is_empty() || u32::from(idx.n_cards) == 0 {
+        return None;
+    }
+    let mut ids = Vec::new();
+    for (key, postings) in idx.keys.iter().zip(idx.postings.iter()) {
+        let cmc = key.cmc.as_ref().map(|v| f64::from(*v));
+        let power = key.power.as_ref().map(|v| f64::from(*v));
+        let toughness = key.toughness.as_ref().map(|v| f64::from(*v));
+        let loyalty = key.loyalty.as_ref().map(|v| f64::from(*v));
+        let all_match = bounds.iter().all(|b| {
+            let FilterExpr::NumericCmp { lhs, op, rhs } = b else { return false };
+            matches!(eval_arith_tuple_tri(lhs, *op, rhs, cmc, power, toughness, loyalty), Tri::True)
+        });
+        if all_match {
+            ids.extend(postings.iter().map(|p| u32::from(*p)));
+        }
+    }
+    Some(ids)
 }
 
 fn compose_printing_estimate(
@@ -7564,12 +7627,14 @@ fn compose_printing_estimate(
             // leaf)` combination is independently exact and safe (still only one existential fact, no
             // shared-witness risk), and each is a valid tightening on its own (a subset intersection is a
             // valid upper bound), so `min`-ing across all of them is strictly at least as tight as
-            // picking just one arbitrarily -- e.g. `r<=uncommon tou>=2 tou<=2 devotion:w AND border:black`
-            // would try `(devotion, rarity)` and `(devotion, border)` separately and keep the tighter.
-            // A card-invariant-only trial (no existential leaf at all) is skipped whenever ANY existential
-            // leaf is present: adding a constraint can only shrink or match the count, so every `+existential`
-            // trial is already at least as tight as the card-invariant-only count would be.
-            let popcount_scaled = |extra: Option<&PlaneExpr>| -> usize {
+            // picking just one arbitrarily -- e.g. `r<=uncommon devotion:w AND border:black` would try
+            // `(devotion, rarity)` and `(devotion, border)` separately and keep the tighter. A
+            // card-invariant-only trial (no existential leaf at all) is skipped whenever ANY existential
+            // leaf is present: adding a constraint can only shrink or match the count, so every
+            // `+existential` trial is already at least as tight as the card-invariant-only count would be.
+            // Bits are kept alongside the count (not just the scaled number) for the smaller-side merge
+            // below, which needs to probe individual card ids against the winning combination's bitmap.
+            let popcount_with_bits = |extra: Option<&PlaneExpr>| -> (usize, Vec<u64>) {
                 let mut children = card_invariant.clone();
                 if let Some(e) = extra {
                     children.push(e.clone());
@@ -7577,18 +7642,63 @@ fn compose_printing_estimate(
                 let mut bits: Vec<u64> = Vec::new();
                 eval_planes(&PlaneExpr::And(children), &indexes.planes, &mut bits);
                 let card_count = popcount(&bits);
-                (card_count * n_printings).checked_div(n_cards).unwrap_or(0)
+                (card_count, bits)
             };
             let mut exact_domain: Option<usize> = None;
+            let mut best_other: Option<(usize, Vec<u64>)> = None;
             if existential.is_empty() {
                 if card_invariant.len() >= 2 {
-                    let scaled = popcount_scaled(None);
-                    result = result.min(scaled);
-                    exact_domain = Some(scaled);
+                    best_other = Some(popcount_with_bits(None));
                 }
             } else if !card_invariant.is_empty() {
                 for e in &existential {
-                    let scaled = popcount_scaled(Some(e));
+                    let candidate = popcount_with_bits(Some(e));
+                    if best_other.as_ref().is_none_or(|(c, _)| candidate.0 < *c) {
+                        best_other = Some(candidate);
+                    }
+                }
+            }
+            if let Some((card_count, _)) = &best_other {
+                let scaled = (card_count * n_printings).checked_div(n_cards).unwrap_or(0);
+                result = result.min(scaled);
+                exact_domain = Some(scaled);
+            }
+            // Merge with the arith-tuple family (cmc/power/toughness) by ID probe, instead of compiling
+            // their numeric-range planes into the SAME joint above: that was tried first and reverted
+            // (see the `EXPERIMENT` commit history on this branch) -- it closed the gap below but cost a
+            // real, measured 2.33x increase in pure acquire time on every And combining rarity/border/
+            // legality with cmc/power/toughness, EVEN on queries where the tightening never changed the
+            // winning plan, because a numeric range's plane can union up to 13 interior buckets
+            // (`NumericLayout`) at a FIXED cost paid regardless of selectivity. This version instead
+            // reuses the exact card ids `bare_numeric_field_ids`/`arith_tuple_ids` already have cheaply
+            // in hand (`O(log n)` or `O(564 keys)`, no plane involved) and probes each one against
+            // `best_other`'s bitmap directly -- cost `O(arith_count)`, adaptive to the actual data rather
+            // than a fixed worst case. Gated only on `best_other` existing at all: a query with rarity/
+            // border/legality alongside arith leaves but nothing ELSE plane-compilable (`r<=rare
+            // tou>=4 tou<=5`, one of the regressed queries under the plane-based version) never reaches
+            // here at all, since `best_other` stays `None` for it (the existential branch above requires
+            // a card-invariant partner) -- measured back to the exact pre-this-commit acquire cost for
+            // that shape specifically, not just cheaper. Only handles "arith side probes into other's
+            // bitmap", not the reverse (iterating `other`'s bits and checking the arith bound directly):
+            // that direction would need a raw per-card cmc/power/toughness lookup this function has no
+            // access to. Not a correctness gap -- probing arith into `best_other` is enough on its own to
+            // fix `r<=uncommon tou>=2 tou<=2 devotion:w` (#1066's worst regression).
+            if let Some((_, other_bits)) = &best_other {
+                let arith_children: Vec<&FilterExpr> = v.iter().filter(|c| is_arith_tuple_eligible(c)).collect();
+                let arith_ids = match arith_children.len() {
+                    0 => None,
+                    1 => bare_numeric_field_ids(arith_children[0], indexes),
+                    _ => arith_tuple_ids(&arith_children, indexes),
+                };
+                if let Some(ids) = arith_ids {
+                    let joint_count = ids
+                        .iter()
+                        .filter(|&&id| {
+                            let (word, bit) = (id as usize / 64, id as usize % 64);
+                            word < other_bits.len() && (other_bits[word] >> bit) & 1 == 1
+                        })
+                        .count();
+                    let scaled = (joint_count * n_printings).checked_div(n_cards).unwrap_or(0);
                     result = result.min(scaled);
                     exact_domain = Some(exact_domain.map_or(scaled, |d| d.min(scaled)));
                 }
