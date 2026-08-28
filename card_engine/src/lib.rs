@@ -7501,6 +7501,59 @@ fn compose_printing_estimate(
                 let scaled = (card_count * n_printings).checked_div(n_cards).unwrap_or(0);
                 result = result.min(scaled);
             }
+            // Third tightening: if the WHOLE `And` compiles to one non-existential card-space plane —
+            // the exact mechanism `narrow_rec` already runs in production (see its early check, lib.rs)
+            // — that popcount IS the true joint card count, catching anti-correlated combinations no
+            // per-field table covers. `id:br devotion:w` contradict (a white pip in the cost always puts
+            // White in the identity), but `min`-of-independents can't see that: each leaf's own count is
+            // individually large, so `result` stayed at ~10,758 instead of the true 0 (#1066's worst
+            // regression, `id:br year<=2017 devotion:w` at 0.12x). `compile_plane`/`eval_planes` cost
+            // `O(leaves × n_cards/64)` — a few hundred words, independent of selectivity, the same fixed
+            // cost `narrow_rec` already pays unconditionally every query — so this is not a speed/
+            // accuracy trade-off to gate on, just cheap correctness whenever it applies.
+            // `!plane_expr_is_existential` mirrors `narrow_rec`'s own `Narrowed::tight` gate exactly, so
+            // legality/rarity/border stay excluded precisely as `is_broadcast_leaf_shape` already
+            // excludes them — nothing changes for existential facts, and `and_of_checked_for_shared_
+            // witness` inside `compile_plane` itself already declines an `And` of two distinct
+            // existential facts, so this can't reintroduce the #667/#680 shared-witness bug.
+            // Card-space only (`indexes.planes`, ~496 words here) — this does not touch `broadcast`/
+            // `scatter`, which still price the real per-leaf PRINTING-space build `compose_printing_bits`
+            // will actually pay if this plan wins; that build still processes each leaf separately and
+            // ANDs printing-space bitmaps (unchanged), so this estimate-only shortcut changes nothing
+            // about when or how the expensive work happens.
+            // Compiled per CHILD, not as one `compile_plane(filter, ...)` call over the whole `And`:
+            // `year<=2017` parses to `YearCmp`, which `compile_plane` has no arm for at all (only
+            // `NumericCmp`/`ColorCmp`/`Devotion`/border/rarity/legality), so compiling the whole node in
+            // one shot always declines the moment ANY sibling isn't itself plane-expressible — even
+            // though `id:br`/`devotion:w` individually compile fine and are exactly the two that
+            // contradict. ANDing just the subset that DOES compile (dropping `year<=2017`) is still a
+            // sound tightening: intersecting fewer constraints can only widen or match the true full
+            // intersection, never shrink below it, so this subset's exact count remains a valid upper
+            // bound on the true joint result even with a non-compiling sibling in play.
+            // `is_arith_tuple_eligible` children excluded: cmc/power/toughness already have a cheaper
+            // exact source above (a single #743 index scan for 2+ of them, the dedicated per-field index
+            // for 1), and compiling their numeric-range plane again here to fold into the SAME kind of
+            // exact answer is pure duplicated work for no additional tightening — measured as a real
+            // ~15% regression on bare range-pair queries (`pow>=1 pow<=2`, `tou>=2 tou<=5`) before this
+            // exclusion, since each accrued a second, redundant `eval_planes` pass (a numeric range's
+            // plane can union up to 13 interior buckets, not a single-bit lookup like color/devotion)
+            // on top of the `arith_tuple_count` scan that already answered them exactly.
+            let divergent_formats = u64::from(indexes.planes.divergent_formats);
+            let plane_children: Vec<PlaneExpr> = v
+                .iter()
+                .filter(|c| !is_arith_tuple_eligible(c))
+                .filter_map(|c| compile_plane(c, &indexes.planes, &indexes.oracle_trigram.words))
+                .filter(|pe| !plane_expr_is_existential(pe, divergent_formats))
+                .collect();
+            let mut exact_domain: Option<usize> = None;
+            if plane_children.len() >= 2 {
+                let mut bits: Vec<u64> = Vec::new();
+                eval_planes(&PlaneExpr::And(plane_children), &indexes.planes, &mut bits);
+                let card_count = popcount(&bits);
+                let scaled = (card_count * n_printings).checked_div(n_cards).unwrap_or(0);
+                result = result.min(scaled);
+                exact_domain = Some(scaled);
+            }
             // `domain_hint`: what GatheredScan/StreamedSelect really see once narrow_rec intersects.
             // Every leaf type in this match now already answers its OWN `.result` cheaply and exactly
             // (border/rarity/legality/range/collection/color/cmc/power/toughness), so the breadth-
@@ -7510,9 +7563,18 @@ fn compose_printing_estimate(
             // own breadth gate on its `And` arm, rather than left to dominate a `min` it would never
             // survive to contribute to for real. (`Devotion`'s own `.result`, the one leaf type still
             // priced via `eval_planes`, participates the same way as everything else here — nothing
-            // special-cased for it.)
-            let domain_hint =
-                children_estimates.iter().filter(|c| !exceeds_own_domain_breadth(c.result, n_printings)).map(|c| c.result).min();
+            // special-cased for it.) `exact_domain`, when present, is folded in too — it is the true
+            // value rather than an upper bound, so `min`-ing it in can only tighten, never regress: this
+            // is what actually reaches `acquire_plan_features`'s `domain_cards` (the `result`-only
+            // tightening above helps `PrintingCompose`'s own pricing, but `GatheredScan`/`StreamedSelect`
+            // are priced from `domain_hint`, not `result`, whenever `est.candidate != est.result`).
+            let domain_hint = [
+                children_estimates.iter().filter(|c| !exceeds_own_domain_breadth(c.result, n_printings)).map(|c| c.result).min(),
+                exact_domain,
+            ]
+            .into_iter()
+            .flatten()
+            .min();
             ComposeEstimate { result, domain_hint, ..folded }
         }
         FilterExpr::Or(v) => {
