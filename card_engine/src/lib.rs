@@ -13330,6 +13330,7 @@ fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<B
         ("offset", g.offset),
         ("broadcast_printings", g.broadcast_printings),
         ("scatter_printings", g.scatter_printings),
+        ("collection_broadcast_printings", g.collection_broadcast_printings),
         ("project_printings", g.project_printings),
         ("popcount_words", g.popcount_words),
         ("artwork_seen_cards", g.artwork_seen_cards),
