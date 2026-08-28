@@ -7350,9 +7350,61 @@ fn color_cmp_value_total(field: ColorField, op: CmpOp, mask: u8, negate: bool, i
     table.iter().filter(|(bits, _)| color_cmp_matches(op, mask, **bits) != negate).map(|(_, t)| t.get(mode)).sum()
 }
 
+/// `field`'s dedicated card-space sorted index (`indexes.cmc`/`.power`/`.toughness`) — the same one
+/// `narrow_rec`'s `numeric_candidates` builds a real candidate list from — or `None` for anything else
+/// (`loyalty` has no dedicated index; only `ArithTupleIndex` covers it).
+fn card_numeric_index(field: NumField, indexes: &Archived<CardIndexes>) -> Option<&Archived<NumericIndex>> {
+    match field {
+        NumField::Cmc => Some(&indexes.cmc),
+        NumField::Power => Some(&indexes.power),
+        NumField::Toughness => Some(&indexes.toughness),
+        _ => None,
+    }
+}
+
+/// Exact CARD count for ONE bare cmc/power/toughness comparison, via the same two `partition_point`
+/// calls `numeric_candidates` makes to build a real candidate list — without paying for the list
+/// itself (no `sorted_ids` allocation/materialization). O(log n), cheaper than `arith_tuple_count`'s
+/// O(distinct tuples) scan, and the right choice whenever there's only one bound: `arith_tuple_count`
+/// exists for when 2+ of these need a true JOINT count in one scan, not for the single-bound case.
+/// `None` for `Ne` (not a range — same as `numeric_candidates`); a non-integer `Eq` is an exact `Some(0)`
+/// (never present in an integer-valued index), not `None`.
+fn numeric_range_count(idx: &Archived<NumericIndex>, op: CmpOp, val: f64) -> Option<usize> {
+    let (start, end) = match op {
+        CmpOp::Ne => return None,
+        CmpOp::Eq => {
+            if val.fract() != 0.0 {
+                return Some(0);
+            }
+            let s = idx.partition_point(|p| (i16::from(p.0) as f64) < val);
+            let e = idx.partition_point(|p| (i16::from(p.0) as f64) <= val);
+            (s, e)
+        }
+        CmpOp::Lt => (0, idx.partition_point(|p| (i16::from(p.0) as f64) < val)),
+        CmpOp::Le => (0, idx.partition_point(|p| (i16::from(p.0) as f64) <= val)),
+        CmpOp::Gt => (idx.partition_point(|p| (i16::from(p.0) as f64) <= val), idx.len()),
+        CmpOp::Ge => (idx.partition_point(|p| (i16::from(p.0) as f64) < val), idx.len()),
+    };
+    Some(end - start)
+}
+
+/// Exact CARD count for a bare cmc/power/toughness `NumericCmp` leaf, trying the dedicated index
+/// first (cheap, O(log n)) — `arith_tuple_count` is reserved for the 2+-bound joint case, where no
+/// dedicated single-field index can answer at all.
+fn bare_numeric_field_count(filter: &FilterExpr, indexes: &Archived<CardIndexes>) -> Option<usize> {
+    let (field, op, val) = match filter {
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(f), op, rhs: NumExpr::Const(v) } => (*f, *op, *v),
+        FilterExpr::NumericCmp { lhs: NumExpr::Const(v), op, rhs: NumExpr::Field(f) } => (*f, flip_op(*op), *v),
+        _ => return None,
+    };
+    let idx = card_numeric_index(field, indexes)?;
+    numeric_range_count(idx, op, val)
+}
+
 /// Whether `filter` is a bare single-field cmc/power/toughness comparison against a constant — the
-/// shape `arith_tuple_count` can answer, and the shape a joint `And` of several of them should be
-/// combined via one scan rather than a `min` of independents (see the `And` arm's own doc).
+/// shape `bare_numeric_field_count`/`arith_tuple_count` can answer, and the shape a joint `And` of
+/// several of them should be combined via one `arith_tuple_count` scan rather than a `min` of
+/// independents (see the `And` arm's own doc).
 fn is_arith_tuple_eligible(filter: &FilterExpr) -> bool {
     matches!(
         filter,
@@ -7560,12 +7612,17 @@ fn compose_printing_estimate(
             let k = color_cmp_value_total(*field, *op, *mask, true, indexes, Mode::Printing);
             ComposeEstimate::leaf(k, k, 0)
         }
-        // cmc/power/toughness: exact via the #743 joint-tuple index — no `eval_planes` either. Single-
-        // bound call (`arith_tuple_count`'s doc covers the multi-bound `And`-level case above).
+        // cmc/power/toughness: exact via the dedicated per-field sorted index (O(log n)) — no
+        // `eval_planes`, and cheaper than the joint #743 index's O(distinct tuples) scan, which this
+        // single-bound case doesn't need (`arith_tuple_count`'s doc covers the multi-bound `And`-level
+        // case above). Falls back to `arith_tuple_count` only if the dedicated lookup somehow declines
+        // (defensive — `is_printing_composable` already restricts this arm to shapes both accept).
         FilterExpr::NumericCmp { lhs: NumExpr::Field(f), .. } | FilterExpr::NumericCmp { rhs: NumExpr::Field(f), .. }
             if matches!(f, NumField::Cmc | NumField::Power | NumField::Toughness) =>
         {
-            let card_count = arith_tuple_count(&[filter], indexes).expect("gated by is_printing_composable");
+            let card_count = bare_numeric_field_count(filter, indexes)
+                .or_else(|| arith_tuple_count(&[filter], indexes))
+                .expect("gated by is_printing_composable");
             let n_cards = offsets.len() - 1;
             let scaled = (card_count * n_printings).checked_div(n_cards).unwrap_or(0);
             ComposeEstimate::leaf(scaled, scaled, 0)
@@ -8105,6 +8162,20 @@ fn exact_result_total(composed: &FilterExpr, indexes: &Archived<CardIndexes>, mo
             return Some(
                 table.iter().filter(|(bits, _)| color_cmp_matches(*op, *mask, **bits)).map(|(_, t)| t.get(mode)).sum(),
             );
+        }
+        // cmc/power/toughness: exact CARD count via the dedicated sorted index, O(log n), no
+        // `eval_planes`. Card-space only (the index has no printing/artwork aggregate) -- but that's
+        // the only space this needs: `acquire_plan_features`'s `exact_cards` always asks for
+        // `Mode::Card` regardless of the query's own distinct-on (domain_cards/eval_domain price a
+        // per-CARD walk either way), and that's the call this fixes -- GatheredScan/StreamedSelect
+        // were still pricing these fields off `calibrated_balls_into_bins` before this arm existed,
+        // even though `PrintingCompose`'s own estimate already had the exact number. `Mode::Printing`/
+        // `Mode::Artwork` decline here and fall through to `None` -- no cheap exact conversion from a
+        // card-space index to those spaces.
+        FilterExpr::NumericCmp { .. } if matches!(mode, Mode::Card) => {
+            if let Some(count) = bare_numeric_field_count(composed, indexes) {
+                return Some(count);
+            }
         }
         _ => {}
     }
