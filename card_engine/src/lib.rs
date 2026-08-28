@@ -7501,58 +7501,97 @@ fn compose_printing_estimate(
                 let scaled = (card_count * n_printings).checked_div(n_cards).unwrap_or(0);
                 result = result.min(scaled);
             }
-            // Third tightening: if the WHOLE `And` compiles to one non-existential card-space plane —
-            // the exact mechanism `narrow_rec` already runs in production (see its early check, lib.rs)
-            // — that popcount IS the true joint card count, catching anti-correlated combinations no
-            // per-field table covers. `id:br devotion:w` contradict (a white pip in the cost always puts
-            // White in the identity), but `min`-of-independents can't see that: each leaf's own count is
-            // individually large, so `result` stayed at ~10,758 instead of the true 0 (#1066's worst
-            // regression, `id:br year<=2017 devotion:w` at 0.12x). `compile_plane`/`eval_planes` cost
-            // `O(leaves × n_cards/64)` — a few hundred words, independent of selectivity, the same fixed
-            // cost `narrow_rec` already pays unconditionally every query — so this is not a speed/
-            // accuracy trade-off to gate on, just cheap correctness whenever it applies.
-            // `!plane_expr_is_existential` mirrors `narrow_rec`'s own `Narrowed::tight` gate exactly, so
-            // legality/rarity/border stay excluded precisely as `is_broadcast_leaf_shape` already
-            // excludes them — nothing changes for existential facts, and `and_of_checked_for_shared_
-            // witness` inside `compile_plane` itself already declines an `And` of two distinct
-            // existential facts, so this can't reintroduce the #667/#680 shared-witness bug.
-            // Card-space only (`indexes.planes`, ~496 words here) — this does not touch `broadcast`/
-            // `scatter`, which still price the real per-leaf PRINTING-space build `compose_printing_bits`
-            // will actually pay if this plan wins; that build still processes each leaf separately and
-            // ANDs printing-space bitmaps (unchanged), so this estimate-only shortcut changes nothing
-            // about when or how the expensive work happens.
-            // Compiled per CHILD, not as one `compile_plane(filter, ...)` call over the whole `And`:
-            // `year<=2017` parses to `YearCmp`, which `compile_plane` has no arm for at all (only
-            // `NumericCmp`/`ColorCmp`/`Devotion`/border/rarity/legality), so compiling the whole node in
-            // one shot always declines the moment ANY sibling isn't itself plane-expressible — even
-            // though `id:br`/`devotion:w` individually compile fine and are exactly the two that
-            // contradict. ANDing just the subset that DOES compile (dropping `year<=2017`) is still a
-            // sound tightening: intersecting fewer constraints can only widen or match the true full
-            // intersection, never shrink below it, so this subset's exact count remains a valid upper
-            // bound on the true joint result even with a non-compiling sibling in play.
-            // `is_arith_tuple_eligible` children excluded: cmc/power/toughness already have a cheaper
-            // exact source above (a single #743 index scan for 2+ of them, the dedicated per-field index
-            // for 1), and compiling their numeric-range plane again here to fold into the SAME kind of
-            // exact answer is pure duplicated work for no additional tightening — measured as a real
-            // ~15% regression on bare range-pair queries (`pow>=1 pow<=2`, `tou>=2 tou<=5`) before this
-            // exclusion, since each accrued a second, redundant `eval_planes` pass (a numeric range's
-            // plane can union up to 13 interior buckets, not a single-bit lookup like color/devotion)
-            // on top of the `arith_tuple_count` scan that already answered them exactly.
+            // Third tightening: compile each child to a card-space `PlaneExpr` individually and AND the
+            // results — the exact mechanism `narrow_rec` already runs in production for a whole
+            // plane-compilable filter (see its early check, lib.rs), applied per-child here since
+            // `compile_plane` on the WHOLE `And` declines the moment any sibling isn't itself
+            // plane-expressible at all (`year<=2017` parses to `YearCmp`, which has no `compile_plane` arm
+            // whatsoever). That popcount IS the true joint card count for whichever subset of children
+            // compiled, catching anti-correlated combinations no per-field table covers: `id:br`
+            // (identity ⊆ black/red) and `devotion:w` (a white pip in the cost, which always puts White
+            // in the identity) contradict, but `min`-of-independents can't see that — each leaf's own
+            // count is individually large, so `result` stayed at ~10,758 instead of the true 0 (#1066's
+            // worst regression, `id:br year<=2017 devotion:w` at 0.12x). Dropping a non-compiling sibling
+            // (`year<=2017`) is still a sound tightening: intersecting fewer constraints can only widen or
+            // match the true full intersection, never shrink below it, so the compiled subset's exact
+            // count remains a valid upper bound on the true joint result regardless of what got dropped.
+            // `compile_plane`/`eval_planes` cost `O(leaves × n_cards/64)` — a few hundred words,
+            // independent of selectivity, the same fixed cost `narrow_rec` already pays unconditionally
+            // every query — so this is not a speed/accuracy trade-off to gate on, just cheap correctness
+            // whenever 2+ children compile.
+            //
+            // `is_arith_tuple_eligible` children (cmc/power/toughness) are dropped from this set the same
+            // way a non-compiling sibling is: they already have a cheaper exact source above (a single
+            // #743 index scan for 2+ of them, the dedicated per-field index for 1), and compiling their
+            // numeric-range plane again here to fold into the SAME kind of exact answer is pure duplicated
+            // work for no additional tightening — measured as a real ~15% regression on bare range-pair
+            // queries (`pow>=1 pow<=2`, `tou>=2 tou<=5`) before this exclusion, since each accrued a
+            // second, redundant `eval_planes` pass (a numeric range's plane can union up to 13 interior
+            // buckets, not a single-bit lookup like color/devotion) on top of the `arith_tuple_count` scan
+            // that already answered them exactly.
+            //
+            // Existential leaves (rarity/border always, legality only for a divergent format) are NOT
+            // excluded outright — only a SECOND distinct one is unsafe to AND in. The shared-witness risk
+            // (#667/#680) is specifically two-or-more existential facts sharing one candidate: a divergent
+            // card could satisfy each via a DIFFERENT printing, so `∃p: A(p) ∧ B(p)` is not the same claim
+            // as `(∃p: A(p)) ∧ (∃p: B(p))`. One existential fact ANDed with any number of card-invariant
+            // facts has no such ambiguity, because the card-invariant bits do not depend on which printing
+            // witnesses the existential one — the popcount is then exactly "every card-invariant fact
+            // holds for every printing, AND some printing satisfies the existential one", which IS
+            // `Mode::Card`'s own semantics for an existential leaf (`r<=uncommon` already means "some
+            // printing is uncommon-or-below" in card mode). This is the same reasoning
+            // `and_of_checked_for_shared_witness` already applies at the whole-tree `compile_plane` level
+            // (0 or 1 distinct existential index succeeds, 2+ declines) — reused here per-child instead,
+            // for the same reason the whole-tree call above declines on `year<=2017` alone. With 2+
+            // existential leaves present, each is tried in its OWN `(card-invariant leaves + this one
+            // existential leaf)` combination rather than picking just one and dropping the rest — every
+            // such combination is independently exact and safe (still only one existential fact each), so
+            // `min`-ing across all of them is strictly at least as tight as an arbitrary single choice.
+            //
+            // Card-space only (`indexes.planes`, ~496 words here) in all of the above — this does not
+            // touch `broadcast`/`scatter`, which still price the real per-leaf PRINTING-space build
+            // `compose_printing_bits` will actually pay if this plan wins; that build still processes each
+            // leaf separately and ANDs printing-space bitmaps (unchanged), so this estimate-only shortcut
+            // changes nothing about when or how the expensive work happens.
             let divergent_formats = u64::from(indexes.planes.divergent_formats);
-            let plane_children: Vec<PlaneExpr> = v
+            let (card_invariant, existential): (Vec<PlaneExpr>, Vec<PlaneExpr>) = v
                 .iter()
                 .filter(|c| !is_arith_tuple_eligible(c))
                 .filter_map(|c| compile_plane(c, &indexes.planes, &indexes.oracle_trigram.words))
-                .filter(|pe| !plane_expr_is_existential(pe, divergent_formats))
-                .collect();
-            let mut exact_domain: Option<usize> = None;
-            if plane_children.len() >= 2 {
+                .partition(|pe| !plane_expr_is_existential(pe, divergent_formats));
+            // One trial per existential leaf present (each paired with ALL card-invariant leaves), not
+            // "the first one, dropping the rest": every `(card-invariant leaves + this one existential
+            // leaf)` combination is independently exact and safe (still only one existential fact, no
+            // shared-witness risk), and each is a valid tightening on its own (a subset intersection is a
+            // valid upper bound), so `min`-ing across all of them is strictly at least as tight as
+            // picking just one arbitrarily -- e.g. `r<=uncommon tou>=2 tou<=2 devotion:w AND border:black`
+            // would try `(devotion, rarity)` and `(devotion, border)` separately and keep the tighter.
+            // A card-invariant-only trial (no existential leaf at all) is skipped whenever ANY existential
+            // leaf is present: adding a constraint can only shrink or match the count, so every `+existential`
+            // trial is already at least as tight as the card-invariant-only count would be.
+            let popcount_scaled = |extra: Option<&PlaneExpr>| -> usize {
+                let mut children = card_invariant.clone();
+                if let Some(e) = extra {
+                    children.push(e.clone());
+                }
                 let mut bits: Vec<u64> = Vec::new();
-                eval_planes(&PlaneExpr::And(plane_children), &indexes.planes, &mut bits);
+                eval_planes(&PlaneExpr::And(children), &indexes.planes, &mut bits);
                 let card_count = popcount(&bits);
-                let scaled = (card_count * n_printings).checked_div(n_cards).unwrap_or(0);
-                result = result.min(scaled);
-                exact_domain = Some(scaled);
+                (card_count * n_printings).checked_div(n_cards).unwrap_or(0)
+            };
+            let mut exact_domain: Option<usize> = None;
+            if existential.is_empty() {
+                if card_invariant.len() >= 2 {
+                    let scaled = popcount_scaled(None);
+                    result = result.min(scaled);
+                    exact_domain = Some(scaled);
+                }
+            } else if !card_invariant.is_empty() {
+                for e in &existential {
+                    let scaled = popcount_scaled(Some(e));
+                    result = result.min(scaled);
+                    exact_domain = Some(exact_domain.map_or(scaled, |d| d.min(scaled)));
+                }
             }
             // `domain_hint`: what GatheredScan/StreamedSelect really see once narrow_rec intersects.
             // Every leaf type in this match now already answers its OWN `.result` cheaply and exactly
