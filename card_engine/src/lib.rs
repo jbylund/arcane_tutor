@@ -10862,12 +10862,34 @@ fn acquire_plan_features(
         // `compose_leaf_nothing_to_verify` closes for the tier, applied to this feature instead (#1005).
         // Scoped to that check alone, not the wider `nothing_to_verify` OR: legality's own broadness
         // behavior here is untouched, and unverified by this fix.
-        let (eval_domain, scan_units) =
-            if !compose_leaf_nothing_to_verify(filter) && range_too_broad_to_narrow(printing_matches, n_printings as usize) {
-                (n_cards as usize, n_printings as usize)
-            } else {
-                (eval_domain, scan_units)
-            };
+        //
+        // Now also exempted by `plane_leaves_nothing_to_verify`, which the `nothing_to_verify` variable
+        // just below already ORs in — this override used to check `compose_leaf_nothing_to_verify` alone.
+        // A card-invariant broadcast leaf (`color`/`cmc`/`power`/`toughness`/`devotion`) that is the WHOLE
+        // query (`pow<=2`, ~29% of cards) is fully consumed by `bind_and_split_filter` into `plane`,
+        // leaving `filter` as `True`; `plane_leaves_nothing_to_verify` already judges that correctly — it
+        // reads `plane_expr_is_existential`, which is about LEGALITY divergence, not breadth, and these
+        // fields compile to `PlaneExpr::Bits`/`Const`, never `Plane(p)`, so it is never existential for
+        // them — but this override never consulted it, so a broad one of these still discarded its exact,
+        // already-cheap `domain_cards` (9,279 for `pow<=2`, from `bare_numeric_field_count`) in favor of
+        // the full corpus, mispricing `GatheredScan`/`StreamedSelect` for a leaf shape that never actually
+        // degrades to a full scan (confirmed against plain `main`, where this same query has no compose
+        // path at all and reaches `prepare_candidates` directly: identical exact `eval_domain`, no
+        // reversion). Tried first checking `compose_leaf_nothing_to_verify(composed)` instead — using
+        // `composed` (the un-split predicate) rather than `filter` to see through the same plane capture
+        // — but that broke the mixed case (`keyword:enchant cmc=4`): there, `filter` alone (the bare
+        // collection-leaf residual once `cmc=4` is captured into `plane`) already IS the whole story
+        // (the plane side is always card-invariant when non-existential), while `composed` is the whole
+        // `And` and matches no bare-leaf shape at all, silently undoing the #1005 collection-leaf
+        // exemption for every query combining it with one of these fields. `plane_leaves_nothing_to_verify`
+        // reaches the `pow<=2` case through `filter == True` instead, without disturbing that one.
+        let (eval_domain, scan_units) = if !(compose_leaf_nothing_to_verify(filter) || plane_leaves_nothing_to_verify(filter, mode, plane, indexes))
+            && range_too_broad_to_narrow(printing_matches, n_printings as usize)
+        {
+            (n_cards as usize, n_printings as usize)
+        } else {
+            (eval_domain, scan_units)
+        };
         // The tier is what the MATERIALIZING alternatives pay per candidate, so it must be asked about
         // the predicate THEY see (`filter` + `plane`), not about `composed` — and gated exactly as
         // `prepare_candidates` gates it, or the router charges a `card_pass` the kernels will skip. On a
