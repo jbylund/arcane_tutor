@@ -590,6 +590,12 @@ pub(crate) fn build_divergent_ids(cards: &[OracleCard]) -> Vec<u16> {
 /// A filter subtree compiled to mask algebra over planes. Evaluation is
 /// word-at-a-time (eval_word), one pass over the words with no per-node
 /// temporaries.
+///
+/// `Clone` so a caller that needs the same compiled children in two different combinations (e.g.
+/// `compose_printing_estimate`'s `And` arm building both an ALL-of-them AND and a breadth-filtered
+/// SUBSET AND from one `compile_plane` pass) can do it without re-compiling — a `Bits` clone is a
+/// few KB, paid at most once per query, never per row.
+#[derive(Clone)]
 pub(crate) enum PlaneExpr {
     Plane(u16),
     /// An externally-precomputed card bitmap, cloned in whole at compile

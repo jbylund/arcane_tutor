@@ -6697,6 +6697,17 @@ fn is_broadcast_leaf_shape(filter: &FilterExpr) -> bool {
     }
 }
 
+/// Cheap yes/no companion to `broadcast_composable_card_bits`, for callers (like
+/// `is_printing_composable`) that only need to know WHETHER this leaf broadcasts, not the bits
+/// themselves. `compile_plane` is a tree compile — no per-word work — so this skips the `eval_planes`
+/// pass entirely rather than materializing bits it would immediately throw away. Cheap to keep exactly
+/// in sync with the real materializer since both start from the same `compile_plane` call and the same
+/// existential check.
+fn is_broadcast_composable(filter: &FilterExpr, indexes: &Archived<CardIndexes>) -> bool {
+    compile_plane(filter, &indexes.planes, &indexes.oracle_trigram.words)
+        .is_some_and(|pe| !plane_expr_is_existential(&pe, u64::from(indexes.planes.divergent_formats)))
+}
+
 /// Compile and materialize `filter` into a card bitmap for the broadcast compose path — `None`
 /// unless `compile_plane` succeeds AND the result is non-existential (see `is_broadcast_leaf_shape`'s
 /// doc for why existential leaves must never reach this). Callers only reach this for filter shapes
@@ -6761,7 +6772,7 @@ fn is_printing_composable(filter: &FilterExpr, indexes: &Archived<CardIndexes>) 
         // already reads, broadcast down via `broadcast_card_bits_to_printings` (#753's mechanism, already
         // shipped for the collection fields). See `is_broadcast_leaf_shape`'s doc for why this is scoped
         // to card-invariant fields only, never rarity/legality/border.
-        _ if is_broadcast_leaf_shape(filter) => broadcast_composable_card_bits(filter, indexes).is_some(),
+        _ if is_broadcast_leaf_shape(filter) => is_broadcast_composable(filter, indexes),
         // #731: usd/cn/date range leaves — the in-range index slice scatters into an exact printing
         // bitmap (`range_leaf_bits`). `bare_range_bounds` recognizes the printing-range-indexed shape
         // and returns its `[lo,hi)` bounds: the ordered ops, and `Eq` too (a narrow `[v, v+1)`). Only
@@ -7285,52 +7296,114 @@ fn compose_printing_bits(
 /// prices `GatheredScan` on `border:white border:black` at 0.2 us against a measured 199.3 us, because a
 /// plan still has to scan to DISCOVER a set is empty. A result total is not a scan domain — the same
 /// distinction `exact_cards` vs `exact_total` draws one level down.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ComposeEstimate {
     result: usize,
     candidate: usize,
     broadcast: usize,
     scatter: usize,
+    /// Best-effort CARD count `narrow_rec` really leaves for `GatheredScan`/`StreamedSelect` to walk,
+    /// when this estimate came from an `And` with plane-compilable children — `None` everywhere else
+    /// (leaves, `Or`, no plane-compilable children at all). Computed once alongside `result`'s own
+    /// plane-AND tightening (`compile_children_once`'s doc has the two-case mechanism) specifically so
+    /// `acquire_plan_features` never has to re-run `compile_plane`/`eval_planes` over the same children
+    /// a second time just to answer a different question about them — measured to matter: computing it
+    /// via a second independent pass over the same children was a real ~4x `acquire_ns` regression on
+    /// cheap queries, not just redundant-looking code.
+    domain_hint: Option<usize>,
 }
 
 impl ComposeEstimate {
-    /// A leaf: nothing to tighten, so both figures are the same count.
+    /// A leaf: nothing to tighten, so both figures are the same count, and there is no `And` of
+    /// plane-compilable children to hint a domain from.
     fn leaf(k: usize, broadcast: usize, scatter: usize) -> Self {
-        Self { result: k, candidate: k, broadcast, scatter }
+        Self { result: k, candidate: k, broadcast, scatter, domain_hint: None }
     }
 }
 
-/// Exact CARD count for the AND of whichever `children` compile via `compile_plane`, or `None` if
-/// fewer than two do, or two-or-more of the ones that do are EXISTENTIAL (rarity/legality/border) —
-/// the same shared-witness hazard `and_of_checked_for_shared_witness` already guards inside
-/// `compile_plane` itself, checked here per-child instead of over one committed subtree so a range/
-/// postings/text sibling that doesn't compile at all doesn't block tightening the ones that do.
+/// The breadth gate `narrow_rec`'s own `And` arm applies to each child before intersecting: a child
+/// covering more than this fraction of its own domain gets dropped from the intersection entirely
+/// (see the `len > domain - domain / 4` check in `narrow_rec`'s `And` arm) — kept as the identical
+/// integer-division shape, not a `f64` fraction, so this can never round differently from the real
+/// gate as domain sizes vary.
+fn exceeds_own_domain_breadth(len: usize, domain: usize) -> bool {
+    len > domain - domain / 4
+}
+
+/// Compiles each of `children` via `compile_plane` ONCE — every other tightening this file does with
+/// the result (compose's own `.result`, and `domain_hint` for `GatheredScan`/`StreamedSelect`'s
+/// `eval_domain`) is derived from this single pass rather than each re-running `compile_plane`/
+/// `eval_planes` over the same children, which measurably inflated acquire cost before this existed
+/// (a real ~4x `acquire_ns` regression on cheap queries, caught in a paired A/B, not a style nit).
 ///
-/// Any number of CARD-INVARIANT leaves (color/cmc/power/toughness/devotion) AND at most one
-/// existential leaf compile and AND together exactly: a card-invariant fact holds uniformly across
-/// every one of a card's printings, so it can never introduce the ambiguity two independently-∃'d
-/// facts would (a card could satisfy each via a DIFFERENT witness printing) — that hazard only exists
-/// between existential facts, never between one of those and any number of card-invariant ones. This
-/// is a pure ADDITIONAL tightening for `compose_printing_estimate`'s `And` arm, on top of (not instead
-/// of) `pair_bounded_min`'s persisted pair table, which still owns the 2-existential-leaf case (e.g.
-/// `r:rare border:white`) this function deliberately declines.
-fn joint_plane_card_count(children: &[FilterExpr], indexes: &Archived<CardIndexes>) -> Option<usize> {
-    let mut compiled: Vec<PlaneExpr> = Vec::new();
+/// Returns `(joint_all, domain_hint)`:
+/// - `joint_all`: exact CARD count of the AND of every plane-compilable child, ignoring breadth —
+///   what compose's own `.result` wants, because the real BUILD processes every leaf regardless of how
+///   broad one of them is. `None` if fewer than 2 children compile, or 2+ of the ones that do are
+///   EXISTENTIAL (rarity/legality/border) — the same shared-witness hazard `compile_plane`'s own `And`
+///   arm guards against, checked per-child here instead of over one committed subtree so a non-
+///   compiling sibling (a range/text/collection leaf) doesn't block tightening the ones that do. Any
+///   number of CARD-INVARIANT leaves (color/cmc/power/toughness/devotion) plus at most one existential
+///   leaf AND together exactly: a card-invariant fact holds uniformly across every one of a card's
+///   printings, so it can never introduce the ambiguity two independently-∃'d facts would.
+/// - `domain_hint`: best-effort CARD count `narrow_rec` really leaves for the MATERIALIZING
+///   alternatives to walk — what `domain_cards` in `acquire_plan_features` otherwise approximates via
+///   `calibrated_balls_into_bins(est.candidate, ...)`, built on the assumption that `narrow_rec` only
+///   ever narrows to a single leaf's count. That assumption is false for these fields: `narrow_rec`
+///   genuinely intersects them via this same `compile_plane`/`eval_planes` machinery. Two cases,
+///   matching `narrow_rec`'s own two paths exactly: if EVERY child compiles (at most one existential),
+///   `narrow_rec`'s own top-of-function fast path fires on the whole node and this IS the real
+///   candidate count, not an estimate (same value as `joint_all` in that case). If some children don't
+///   compile, `narrow_rec` falls to its per-child `And` arm, which drops any child whose OWN candidate
+///   set exceeds `exceeds_own_domain_breadth` of `n_cards` before intersecting the rest — mirrored
+///   here by popcounting each compiled child alone, dropping the ones that would be dropped, and
+///   ANDing whatever survives. This ignores what non-compiling children would ADDITIONALLY narrow
+///   (only ever shrinks the true domain further, so `domain_hint` can only over-estimate relative to
+///   `narrow_rec`'s real result in the mixed case, not under-estimate) — safe to `min` against the
+///   existing `calibrated_balls_into_bins` estimate, same as every other tightening here.
+fn compile_children_once(children: &[FilterExpr], indexes: &Archived<CardIndexes>, n_cards: usize) -> (Option<usize>, Option<usize>) {
+    let popcount = |bits: &[u64]| bits.iter().map(|w| w.count_ones() as usize).sum::<usize>();
+    let mut compiled: Vec<(PlaneExpr, usize)> = Vec::new(); // (compiled leaf, its own card popcount)
     let mut existential_count = 0usize;
     for child in children {
         if let Some(pe) = compile_plane(child, &indexes.planes, &indexes.oracle_trigram.words) {
             if plane_expr_is_existential(&pe, u64::from(indexes.planes.divergent_formats)) {
                 existential_count += 1;
             }
-            compiled.push(pe);
+            let mut bits = Vec::new();
+            eval_planes(&pe, &indexes.planes, &mut bits);
+            let own_count = popcount(&bits);
+            compiled.push((pe, own_count));
         }
     }
-    if compiled.len() < 2 || existential_count > 1 {
-        return None;
+    if compiled.is_empty() || existential_count > 1 {
+        return (None, None);
     }
-    let mut bits = Vec::new();
-    eval_planes(&PlaneExpr::And(compiled), &indexes.planes, &mut bits);
-    Some(bits.iter().map(|w| w.count_ones() as usize).sum())
+    let joint_all = if compiled.len() >= 2 {
+        let mut bits = Vec::new();
+        eval_planes(&PlaneExpr::And(compiled.iter().map(|(pe, _)| pe.clone()).collect()), &indexes.planes, &mut bits);
+        Some(popcount(&bits))
+    } else {
+        None
+    };
+    let domain_hint = if compiled.len() == children.len() {
+        // Whole node compiles: narrow_rec's own fast path fires here too. Exact, not an estimate --
+        // and identical to joint_all whenever that was also computed (both are the AND of everything).
+        joint_all.or_else(|| Some(compiled[0].1))
+    } else {
+        let survivors: Vec<PlaneExpr> = compiled
+            .into_iter()
+            .filter_map(|(pe, own_count)| (!exceeds_own_domain_breadth(own_count, n_cards)).then_some(pe))
+            .collect();
+        if survivors.is_empty() {
+            None
+        } else {
+            let mut bits = Vec::new();
+            eval_planes(&PlaneExpr::And(survivors), &indexes.planes, &mut bits);
+            Some(popcount(&bits))
+        }
+    };
+    (joint_all, domain_hint)
 }
 
 fn compose_printing_estimate(
@@ -7359,6 +7432,7 @@ fn compose_printing_estimate(
                     candidate: a.candidate.min(c.candidate),
                     broadcast: a.broadcast + c.broadcast,
                     scatter: a.scatter + c.scatter,
+                    domain_hint: None,
                 });
             // Tighten the `min` bound with every PAIR of children the table stores. `min` over singles
             // lets the most selective leaf decide alone, which is why `f:modern r:rare border:white`
@@ -7374,13 +7448,15 @@ fn compose_printing_estimate(
             // Second, more general tightening: any number of plane-compilable children (not just a
             // registered pair) with at most one existential among them get their EXACT joint card
             // count, scaled to printings the same way a single card-invariant leaf's own estimate
-            // already does (see `joint_plane_card_count`'s doc for why this is exact, not a bound).
-            if let Some(card_count) = joint_plane_card_count(v, indexes) {
-                let n_cards = offsets.len() - 1;
+            // already does. One pass over `v` also answers `domain_hint` for the materializing
+            // alternatives -- see `compile_children_once`'s doc for both.
+            let n_cards = offsets.len() - 1;
+            let (joint_all, domain_hint) = compile_children_once(v, indexes, n_cards);
+            if let Some(card_count) = joint_all {
                 let scaled = (card_count * n_printings).checked_div(n_cards).unwrap_or(0);
                 result = result.min(scaled);
             }
-            ComposeEstimate { result, ..folded }
+            ComposeEstimate { result, domain_hint, ..folded }
         }
         FilterExpr::Or(v) => {
             let summed = v
@@ -7391,6 +7467,7 @@ fn compose_printing_estimate(
                     candidate: a.candidate + c.candidate,
                     broadcast: a.broadcast + c.broadcast,
                     scatter: a.scatter + c.scatter,
+                    domain_hint: None,
                 });
             ComposeEstimate {
                 result: summed.result.min(n_printings),
@@ -10581,10 +10658,18 @@ fn acquire_plan_features(
         //
         // Identical to `est_cards` whenever nothing was tightened, which is every query that reached here
         // before the pair table existed, so no already-calibrated cell moves.
+        //
+        // For an `And`, that "declines broad children" premise is false specifically for
+        // `ColorCmp`/`NumericCmp(Cmc|Power|Toughness)`/`Devotion`: `narrow_rec` genuinely intersects
+        // them (see `compile_children_once`'s doc). `est.domain_hint`, computed alongside `est.result`
+        // in the SAME pass over the And's children (not re-derived here), can only be >= the real
+        // domain (it ignores what non-plane siblings would additionally narrow), so `min`-ing it with
+        // the existing estimate is a strict tightening, never a regression.
         let domain_cards = if est.candidate == est.result {
             est_cards
         } else {
-            calibrated_balls_into_bins(est.candidate, n_cards as usize)
+            let calibrated = calibrated_balls_into_bins(est.candidate, n_cards as usize);
+            est.domain_hint.map_or(calibrated, |dc| dc.min(calibrated))
         };
         // What the MATERIALIZING alternatives scan if compose loses. Every mode narrows -- a
         // composable filter has an index for every leaf -- so all three are the NARROWED counts.
