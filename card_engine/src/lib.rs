@@ -6805,6 +6805,11 @@ fn printing_compose_indexes_built(indexes: &Archived<CardIndexes>) -> bool {
         // unbuilt fixture store reports 0 cards there, same "decline cleanly" contract as the two
         // checks above.
         && u32::from(indexes.planes.n_cards) > 0
+        // cmc/power/toughness's estimate arm reads `indexes.arith_tuple` (`arith_tuple_count`) instead
+        // of `eval_planes` now — an unbuilt fixture store reports 0 cards there too, and without this
+        // check `arith_tuple_count` returning `None` would hit compose_printing_estimate's
+        // `.expect("gated by is_printing_composable")` and panic instead of declining cleanly.
+        && u32::from(indexes.arith_tuple.n_cards) > 0
 }
 
 /// All-ones printing-space bitmap over the `n_printings` domain (tail bits masked to 0). Built by
@@ -7330,80 +7335,63 @@ fn exceeds_own_domain_breadth(len: usize, domain: usize) -> bool {
     len > domain - domain / 4
 }
 
-/// Compiles each of `children` via `compile_plane` ONCE — every other tightening this file does with
-/// the result (compose's own `.result`, and `domain_hint` for `GatheredScan`/`StreamedSelect`'s
-/// `eval_domain`) is derived from this single pass rather than each re-running `compile_plane`/
-/// `eval_planes` over the same children, which measurably inflated acquire cost before this existed
-/// (a real ~4x `acquire_ns` regression on cheap queries, caught in a paired A/B, not a style nit).
-///
-/// Returns `(joint_all, domain_hint)`:
-/// - `joint_all`: exact CARD count of the AND of every plane-compilable child, ignoring breadth —
-///   what compose's own `.result` wants, because the real BUILD processes every leaf regardless of how
-///   broad one of them is. `None` if fewer than 2 children compile, or 2+ of the ones that do are
-///   EXISTENTIAL (rarity/legality/border) — the same shared-witness hazard `compile_plane`'s own `And`
-///   arm guards against, checked per-child here instead of over one committed subtree so a non-
-///   compiling sibling (a range/text/collection leaf) doesn't block tightening the ones that do. Any
-///   number of CARD-INVARIANT leaves (color/cmc/power/toughness/devotion) plus at most one existential
-///   leaf AND together exactly: a card-invariant fact holds uniformly across every one of a card's
-///   printings, so it can never introduce the ambiguity two independently-∃'d facts would.
-/// - `domain_hint`: best-effort CARD count `narrow_rec` really leaves for the MATERIALIZING
-///   alternatives to walk — what `domain_cards` in `acquire_plan_features` otherwise approximates via
-///   `calibrated_balls_into_bins(est.candidate, ...)`, built on the assumption that `narrow_rec` only
-///   ever narrows to a single leaf's count. That assumption is false for these fields: `narrow_rec`
-///   genuinely intersects them via this same `compile_plane`/`eval_planes` machinery. Two cases,
-///   matching `narrow_rec`'s own two paths exactly: if EVERY child compiles (at most one existential),
-///   `narrow_rec`'s own top-of-function fast path fires on the whole node and this IS the real
-///   candidate count, not an estimate (same value as `joint_all` in that case). If some children don't
-///   compile, `narrow_rec` falls to its per-child `And` arm, which drops any child whose OWN candidate
-///   set exceeds `exceeds_own_domain_breadth` of `n_cards` before intersecting the rest — mirrored
-///   here by popcounting each compiled child alone, dropping the ones that would be dropped, and
-///   ANDing whatever survives. This ignores what non-compiling children would ADDITIONALLY narrow
-///   (only ever shrinks the true domain further, so `domain_hint` can only over-estimate relative to
-///   `narrow_rec`'s real result in the mixed case, not under-estimate) — safe to `min` against the
-///   existing `calibrated_balls_into_bins` estimate, same as every other tightening here.
-fn compile_children_once(children: &[FilterExpr], indexes: &Archived<CardIndexes>, n_cards: usize) -> (Option<usize>, Option<usize>) {
-    let popcount = |bits: &[u64]| bits.iter().map(|w| w.count_ones() as usize).sum::<usize>();
-    let mut compiled: Vec<(PlaneExpr, usize)> = Vec::new(); // (compiled leaf, its own card popcount)
-    let mut existential_count = 0usize;
-    for child in children {
-        if let Some(pe) = compile_plane(child, &indexes.planes, &indexes.oracle_trigram.words) {
-            if plane_expr_is_existential(&pe, u64::from(indexes.planes.divergent_formats)) {
-                existential_count += 1;
-            }
-            let mut bits = Vec::new();
-            eval_planes(&pe, &indexes.planes, &mut bits);
-            let own_count = popcount(&bits);
-            compiled.push((pe, own_count));
+/// Exact count for a `ColorCmp` leaf (either polarity) via `ValueTotals`'s per-raw-combo table —
+/// summing `SpaceTotals` over the at-most-a-few-dozen distinct combinations the corpus actually
+/// produced, filtered by the same predicate `FilterExpr::matches` uses (`color_cmp_matches`), so this
+/// can never disagree with real per-card evaluation. No `eval_planes`, no bitmap at all. `negate`
+/// inverts the predicate directly rather than subtracting from a total — colors are never NULL
+/// (unlike cmc/power/toughness), so this is exact with no trivalent caveat.
+fn color_cmp_value_total(field: ColorField, op: CmpOp, mask: u8, negate: bool, indexes: &Archived<CardIndexes>, mode: Mode) -> usize {
+    let table = match field {
+        ColorField::Colors => &indexes.value_totals.colors,
+        ColorField::ColorIdentity => &indexes.value_totals.color_identity,
+        ColorField::ProducedMana => &indexes.value_totals.produced_mana,
+    };
+    table.iter().filter(|(bits, _)| color_cmp_matches(op, mask, **bits) != negate).map(|(_, t)| t.get(mode)).sum()
+}
+
+/// Whether `filter` is a bare single-field cmc/power/toughness comparison against a constant — the
+/// shape `arith_tuple_count` can answer, and the shape a joint `And` of several of them should be
+/// combined via one scan rather than a `min` of independents (see the `And` arm's own doc).
+fn is_arith_tuple_eligible(filter: &FilterExpr) -> bool {
+    matches!(
+        filter,
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc | NumField::Power | NumField::Toughness), rhs: NumExpr::Const(_), .. }
+            | FilterExpr::NumericCmp { lhs: NumExpr::Const(_), rhs: NumExpr::Field(NumField::Cmc | NumField::Power | NumField::Toughness), .. }
+    )
+}
+
+/// Exact CARD count of cards satisfying every one of `bounds` simultaneously, via the existing #743
+/// `ArithTupleIndex` (~564 distinct `(cmc,power,toughness,loyalty)` combinations on the real corpus) —
+/// O(distinct tuples), not O(n_cards) and not `eval_planes`, and always exact: each stored tuple's
+/// real field values are re-tested against every bound with `eval_arith_tuple_tri` (the SAME evaluator
+/// the real per-card path uses, so this can't disagree with it), and its whole postings length is
+/// summed only when every bound reads `Tri::True` on that tuple — a NULL field (non-creature power/
+/// toughness, non-planeswalker loyalty) correctly fails any comparison, same as the real per-card
+/// path. `None` if the index isn't built for this store (a test fixture, typically) or `bounds` is
+/// empty. This is the joint-AND version: calling it with 2+ bounds gets their TRUE intersection in one
+/// scan, not `min` of each bound's own count — e.g. `cmc<=5 power>=3`'s real joint count, not
+/// `min(cmc<=5's own count, power>=3's own count)`.
+fn arith_tuple_count(bounds: &[&FilterExpr], indexes: &Archived<CardIndexes>) -> Option<usize> {
+    let idx = &indexes.arith_tuple;
+    if bounds.is_empty() || u32::from(idx.n_cards) == 0 {
+        return None;
+    }
+    let mut total = 0usize;
+    for (key, postings) in idx.keys.iter().zip(idx.postings.iter()) {
+        let cmc = key.cmc.as_ref().map(|v| f64::from(*v));
+        let power = key.power.as_ref().map(|v| f64::from(*v));
+        let toughness = key.toughness.as_ref().map(|v| f64::from(*v));
+        let loyalty = key.loyalty.as_ref().map(|v| f64::from(*v));
+        let all_match = bounds.iter().all(|b| {
+            let FilterExpr::NumericCmp { lhs, op, rhs } = b else { return false };
+            matches!(eval_arith_tuple_tri(lhs, *op, rhs, cmc, power, toughness, loyalty), Tri::True)
+        });
+        if all_match {
+            total += postings.len();
         }
     }
-    if compiled.is_empty() || existential_count > 1 {
-        return (None, None);
-    }
-    let joint_all = if compiled.len() >= 2 {
-        let mut bits = Vec::new();
-        eval_planes(&PlaneExpr::And(compiled.iter().map(|(pe, _)| pe.clone()).collect()), &indexes.planes, &mut bits);
-        Some(popcount(&bits))
-    } else {
-        None
-    };
-    let domain_hint = if compiled.len() == children.len() {
-        // Whole node compiles: narrow_rec's own fast path fires here too. Exact, not an estimate --
-        // and identical to joint_all whenever that was also computed (both are the AND of everything).
-        joint_all.or_else(|| Some(compiled[0].1))
-    } else {
-        let survivors: Vec<PlaneExpr> = compiled
-            .into_iter()
-            .filter_map(|(pe, own_count)| (!exceeds_own_domain_breadth(own_count, n_cards)).then_some(pe))
-            .collect();
-        if survivors.is_empty() {
-            None
-        } else {
-            let mut bits = Vec::new();
-            eval_planes(&PlaneExpr::And(survivors), &indexes.planes, &mut bits);
-            Some(popcount(&bits))
-        }
-    };
-    (joint_all, domain_hint)
+    Some(total)
 }
 
 fn compose_printing_estimate(
@@ -7421,19 +7409,24 @@ fn compose_printing_estimate(
         // the interval's exact `k` — the same two `partition_point` calls the one-sided arm below
         // already makes, which is why a one-sided range estimates at 1.0x and this did not.
         FilterExpr::And(v) => {
-            let folded = fuse_and_range_children(v, indexes, false)
+            // Collected (not folded straight through) so `domain_hint` below can look at each child's
+            // OWN result afterward, without re-deriving anything: every leaf arm in this match already
+            // answers cheaply and exactly now except `Devotion` (see that arm's own doc), so there is
+            // nothing left to recompute a second time the way `compile_children_once` used to.
+            let children_estimates: Vec<ComposeEstimate> = fuse_and_range_children(v, indexes, false)
                 .into_iter()
                 .map(|src| match src {
                     AndSource::Child(c) => compose_printing_estimate(c, indexes, offsets, n_printings),
                     AndSource::FusedRange { k, .. } => ComposeEstimate::leaf(k, 0, k),
                 })
-                .fold(ComposeEstimate::leaf(n_printings, 0, 0), |a, c| ComposeEstimate {
-                    result: a.result.min(c.result),
-                    candidate: a.candidate.min(c.candidate),
-                    broadcast: a.broadcast + c.broadcast,
-                    scatter: a.scatter + c.scatter,
-                    domain_hint: None,
-                });
+                .collect();
+            let folded = children_estimates.iter().cloned().fold(ComposeEstimate::leaf(n_printings, 0, 0), |a, c| ComposeEstimate {
+                result: a.result.min(c.result),
+                candidate: a.candidate.min(c.candidate),
+                broadcast: a.broadcast + c.broadcast,
+                scatter: a.scatter + c.scatter,
+                domain_hint: None,
+            });
             // Tighten the `min` bound with every PAIR of children the table stores. `min` over singles
             // lets the most selective leaf decide alone, which is why `f:modern r:rare border:white`
             // estimated 5,131 -- `border:white`'s own count -- against a true 658. The pair
@@ -7445,17 +7438,29 @@ fn compose_printing_estimate(
             // Only `result` is tightened. `candidate` keeps the untightened `min`, because that is what
             // narrowing leaves the alternatives to walk once its broad children decline.
             let mut result = pair_bounded_min(v, indexes, folded.result);
-            // Second, more general tightening: any number of plane-compilable children (not just a
-            // registered pair) with at most one existential among them get their EXACT joint card
-            // count, scaled to printings the same way a single card-invariant leaf's own estimate
-            // already does. One pass over `v` also answers `domain_hint` for the materializing
-            // alternatives -- see `compile_children_once`'s doc for both.
+            // Second tightening: 2+ cmc/power/toughness children get their TRUE joint card count from
+            // one #743 scan (`arith_tuple_count`), not `min` of each one's own count — e.g.
+            // `cmc<=5 power>=3` gets the real intersection, not `min(cmc<=5, power>=3)`.
+            let arith_children: Vec<&FilterExpr> = v.iter().filter(|c| is_arith_tuple_eligible(c)).collect();
             let n_cards = offsets.len() - 1;
-            let (joint_all, domain_hint) = compile_children_once(v, indexes, n_cards);
-            if let Some(card_count) = joint_all {
+            if arith_children.len() >= 2
+                && let Some(card_count) = arith_tuple_count(&arith_children, indexes)
+            {
                 let scaled = (card_count * n_printings).checked_div(n_cards).unwrap_or(0);
                 result = result.min(scaled);
             }
+            // `domain_hint`: what GatheredScan/StreamedSelect really see once narrow_rec intersects.
+            // Every leaf type in this match now already answers its OWN `.result` cheaply and exactly
+            // (border/rarity/legality/range/collection/color/cmc/power/toughness), so the breadth-
+            // filtered min over the children already collected above is real information, not a
+            // separate re-derivation — a child whose own result exceeds
+            // `exceeds_own_domain_breadth` of `n_printings` is dropped first, mirroring `narrow_rec`'s
+            // own breadth gate on its `And` arm, rather than left to dominate a `min` it would never
+            // survive to contribute to for real. (`Devotion`'s own `.result`, the one leaf type still
+            // priced via `eval_planes`, participates the same way as everything else here — nothing
+            // special-cased for it.)
+            let domain_hint =
+                children_estimates.iter().filter(|c| !exceeds_own_domain_breadth(c.result, n_printings)).map(|c| c.result).min();
             ComposeEstimate { result, domain_hint, ..folded }
         }
         FilterExpr::Or(v) => {
@@ -7542,12 +7547,34 @@ fn compose_printing_estimate(
             let scale = |c: usize| (c * n_printings).checked_div(n_cards).unwrap_or(0);
             ComposeEstimate::leaf(scale(legal), scale(legal.min(illegal)), 0)
         }
-        // Card-invariant broadcast (#731 step 2): card matches from a real (cheap — O(n_cards/64))
-        // `eval_planes` pass, same "recompute the real leaf bits and popcount them" shape rarity's own
-        // estimate arm above already uses. No divergent-card fuzziness here (unlike legality) — the
-        // card popcount is exact, only the printing-space scaling is an average-case approximation
-        // (same `legal * n_printings / n_cards` trick legality's estimate uses). Rides `broadcast`,
-        // the same bucket legality's broadcast-down uses — it's the identical operation.
+        // Color family: exact via `ValueTotals`'s per-combo table — no `eval_planes`, no bitmap.
+        // `.result`/`.broadcast` both ride the printing count: the REAL build (`compose_printing_bits`)
+        // still broadcasts this leaf down if compose wins, so pricing that broadcast is still correct
+        // even though this estimate no longer computes it that way.
+        FilterExpr::ColorCmp { field, op, mask } => {
+            let k = color_cmp_value_total(*field, *op, *mask, false, indexes, Mode::Printing);
+            ComposeEstimate::leaf(k, k, 0)
+        }
+        FilterExpr::Not(inner) if matches!(inner.as_ref(), FilterExpr::ColorCmp { .. }) => {
+            let FilterExpr::ColorCmp { field, op, mask } = inner.as_ref() else { unreachable!("guarded above") };
+            let k = color_cmp_value_total(*field, *op, *mask, true, indexes, Mode::Printing);
+            ComposeEstimate::leaf(k, k, 0)
+        }
+        // cmc/power/toughness: exact via the #743 joint-tuple index — no `eval_planes` either. Single-
+        // bound call (`arith_tuple_count`'s doc covers the multi-bound `And`-level case above).
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(f), .. } | FilterExpr::NumericCmp { rhs: NumExpr::Field(f), .. }
+            if matches!(f, NumField::Cmc | NumField::Power | NumField::Toughness) =>
+        {
+            let card_count = arith_tuple_count(&[filter], indexes).expect("gated by is_printing_composable");
+            let n_cards = offsets.len() - 1;
+            let scaled = (card_count * n_printings).checked_div(n_cards).unwrap_or(0);
+            ComposeEstimate::leaf(scaled, scaled, 0)
+        }
+        // Devotion: the one card-invariant broadcast leaf left with no cheaper exact source than a
+        // real (cheap — O(n_cards/64)) `eval_planes` pass. No divergent-card fuzziness here (unlike
+        // legality) — the card popcount is exact, only the printing-space scaling is an average-case
+        // approximation (same `legal * n_printings / n_cards` trick legality's estimate uses). Rides
+        // `broadcast`, the same bucket legality's broadcast-down uses — it's the identical operation.
         _ if is_broadcast_leaf_shape(filter) => {
             let card_bits = broadcast_composable_card_bits(filter, indexes).expect("gated by is_printing_composable");
             let n_cards = offsets.len() - 1;

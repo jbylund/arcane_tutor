@@ -7626,6 +7626,14 @@ fn card_invariant_broadcast_compose_leaves() {
         set_codes.entry(p.card_set_code.as_str().to_string()).or_default().push(i as u32);
     }
     data.indexes.set_codes = set_codes;
+    // `store_of` doesn't build these two (a lightweight fixture, not the full reload_commit path) --
+    // `color_cmp_value_total`/`arith_tuple_count` need them built to answer anything but zero, and
+    // `printing_compose_indexes_built` now requires `arith_tuple` specifically before PrintingCompose
+    // is even applicable, for exactly this reason.
+    let p2c = build_printing_to_card(&data.offsets);
+    data.indexes.value_totals =
+        build_all_value_totals(&data.cards, &data.printings, &p2c, &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     let n_printings = archived.printings.len();
