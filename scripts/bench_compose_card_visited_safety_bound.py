@@ -39,6 +39,7 @@ supply the tail this bound exists for).
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import math
 import pathlib
@@ -55,6 +56,25 @@ from scripts import costbench  # noqa: E402
 from scripts.costbench import load_engine  # noqa: E402
 
 percentile = costbench.percentile
+
+
+def finite_float(value: str) -> float:
+    """Parse a finite float for an argparse option."""
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        msg = f"expected a finite number, got {value!r}"
+        raise argparse.ArgumentTypeError(msg)
+    return parsed
+
+
+def non_negative_float(value: str) -> float:
+    """Parse a finite, non-negative float for an argparse option."""
+    parsed = finite_float(value)
+    if parsed < 0:
+        msg = f"expected a non-negative number, got {value!r}"
+        raise argparse.ArgumentTypeError(msg)
+    return parsed
+
 
 @dataclass(frozen=True)
 class ThreePhaseModel:
@@ -351,24 +371,27 @@ def _dump_worst_case_violations(rows: list[dict]) -> None:
 
 
 def _report_method_knob_table(rows: list[dict]) -> None:
-    """Per-(method, knob) violation rate and slack percentiles -- the table a knob gets picked from."""
+    """Per-(method, knob) violation rate and slack, weighting represented offsets equally."""
     print(f"{'method':<8} {'knob':>6} {'violations':>11} {'viol%':>8} {'p50 slack':>10} {'p90 slack':>10} {'p99 slack':>10}")
+    weighted_rows = _offset_weighted_rows(rows)
+    total_weight = sum(weight for _, weight in weighted_rows)
     for name, (fn, knobs) in METHODS.items():
         for knob in knobs:
             slacks = []
             violations = 0
-            for r in rows:
+            violation_weight = 0.0
+            for r, weight in weighted_rows:
                 bound = fn(r["n_cards"], r["matches"], r["k"], knob)
+                slacks.append((bound / r["realized"], weight))
                 if bound < r["realized"]:
                     violations += 1
-                else:
-                    slacks.append(bound / r["realized"])
+                    violation_weight += weight
             slacks.sort()
-            p50 = percentile(slacks, 50) if slacks else float("nan")
-            p90 = percentile(slacks, 90) if slacks else float("nan")
-            p99 = percentile(slacks, 99) if slacks else float("nan")
+            p50 = _weighted_percentile(slacks, 50)
+            p90 = _weighted_percentile(slacks, 90)
+            p99 = _weighted_percentile(slacks, 99)
             print(
-                f"{name:<8} {knob:>6.2f} {violations:>11} {100 * violations / len(rows):>7.2f}% "
+                f"{name:<8} {knob:>6.2f} {violations:>11} {100 * violation_weight / total_weight:>7.2f}% "
                 f"{p50:>10.2f} {p90:>10.2f} {p99:>10.2f}"
             )
 
@@ -382,19 +405,22 @@ def _report_overshoot_among_violations(rows: list[dict]) -> None:
     print("\novershoot (realized/bound) AMONG VIOLATIONS ONLY, EVERY knob -- if this stays near 1.0, a")
     print("violation is a near-miss; if it's large/growing, relaxing the violation-rate target doesn't cap")
     print("the pathological case, it just makes it rarer:")
+    weighted_rows = _offset_weighted_rows(rows)
     for name, (fn, knobs) in METHODS.items():
         for knob in knobs:
-            overshoots = sorted(
-                r["realized"] / fn(r["n_cards"], r["matches"], r["k"], knob)
-                for r in rows
-                if fn(r["n_cards"], r["matches"], r["k"], knob) < r["realized"]
-            )
+            overshoots = []
+            for r, weight in weighted_rows:
+                bound = fn(r["n_cards"], r["matches"], r["k"], knob)
+                if bound < r["realized"]:
+                    overshoots.append((r["realized"] / bound, weight))
+            overshoots.sort()
             if not overshoots:
                 print(f"  {name} knob={knob:<5.2f}: 0 violations")
                 continue
             print(
                 f"  {name} knob={knob:<5.2f} n_violations={len(overshoots):<5} "
-                f"p50={percentile(overshoots, 50):.2f}  p90={percentile(overshoots, 90):.2f}  max={overshoots[-1]:.2f}"
+                f"p50={_weighted_percentile(overshoots, 50):.2f}  "
+                f"p90={_weighted_percentile(overshoots, 90):.2f}  max={overshoots[-1][0]:.2f}"
             )
 
 
@@ -474,12 +500,13 @@ class WalkCostModel:
 
 
 def _fit_walk_cost_model(rows: list[dict]) -> WalkCostModel:
-    """Fit non-negative least squares for cards visited plus printings examined."""
-    cc = sum(r["realized"] ** 2 for r in rows)
-    cp = sum(r["realized"] * r["printings_examined"] for r in rows)
-    pp = sum(r["printings_examined"] ** 2 for r in rows)
-    cy = sum(r["realized"] * r["walk_ns"] for r in rows)
-    py = sum(r["printings_examined"] * r["walk_ns"] for r in rows)
+    """Fit non-negative least squares with the same equal-offset weighting as policy evaluation."""
+    weighted_rows = _offset_weighted_rows(rows)
+    cc = sum(weight * r["realized"] ** 2 for r, weight in weighted_rows)
+    cp = sum(weight * r["realized"] * r["printings_examined"] for r, weight in weighted_rows)
+    pp = sum(weight * r["printings_examined"] ** 2 for r, weight in weighted_rows)
+    cy = sum(weight * r["realized"] * r["walk_ns"] for r, weight in weighted_rows)
+    py = sum(weight * r["printings_examined"] * r["walk_ns"] for r, weight in weighted_rows)
     candidates = [
         WalkCostModel(cy / cc if cc else 0.0, 0.0),
         WalkCostModel(0.0, py / pp if pp else 0.0),
@@ -491,7 +518,10 @@ def _fit_walk_cost_model(rows: list[dict]) -> WalkCostModel:
             candidates.append(both)
 
     def squared_error(model: WalkCostModel) -> float:
-        return sum((model.estimate(r["realized"], r["printings_examined"]) - r["walk_ns"]) ** 2 for r in rows)
+        return sum(
+            weight * (model.estimate(r["realized"], r["printings_examined"]) - r["walk_ns"]) ** 2
+            for r, weight in weighted_rows
+        )
 
     return min(candidates, key=squared_error)
 
@@ -509,15 +539,26 @@ def _split_policy_rows(rows: list[dict]) -> tuple[list[dict], list[dict]]:
     return calibration, evaluation
 
 
-def _predicted_printings_for_bound(r: dict, bound_cards: float) -> float:
-    """Convert a card-visit bound to printing probes at the corpus's exact average span.
+def _predicted_printings_for_bound(
+    engine: object,
+    orderby: str,
+    direction: str,
+    bound_cards_ceil: int,
+) -> float:
+    """Convert a card-visit bound to a sound printing-probe bound with one archived-prefix lookup.
 
-    Do not reuse acquire's `printings_walked_pred`: it was computed from estimated matches and
-    already carries production's clumping bias. The candidate bound uses exact matches and supplies
-    its own clumping margin, so scaling that acquire estimate would mix populations and count the
-    margin twice.
+    `walk_grouped_page` starts at permutation entry zero and examines every printing span it visits.
+    The engine archives the cumulative printing span for each sort permutation, so looking up
+    `ceil(bound_cards)` preserves the card bound's conservatism without an O(bound_cards) hot-path
+    scan. Production's eventual decision rule can call the same Rust helper directly.
     """
-    return bound_cards * r["n_printings"] / r["n_cards"]
+    return float(
+        engine.perm_printings_examined_upper(
+            bound_cards_ceil,
+            orderby=orderby,
+            direction=direction,
+        )
+    )
 
 
 # The two rejected offset-gate thresholds (see the module's `Dead ends` doc elsewhere in this repo:
@@ -528,15 +569,28 @@ GATE_OFFSET_LOW = 2_000
 GATE_OFFSET_HIGH = 4_000
 
 
-def _build_policies(walk_model: WalkCostModel, three_phase: ThreePhaseModel) -> dict[str, object]:
+def _build_policies(engine: object, walk_model: WalkCostModel, three_phase: ThreePhaseModel) -> dict[str, object]:
     """The named decision policies `simulate_policies` grades against each other, keyed by display name."""
+
+    @functools.cache
+    def predicted_printings(orderby: str, direction: str, bound_cards_ceil: int) -> float:
+        # The prefix depends only on corpus, permutation, and prefix length, not on the filter that
+        # produced the bound. Cache the PyO3 lookup while the output tables call each policy repeatedly.
+        return _predicted_printings_for_bound(engine, orderby, direction, bound_cards_ceil)
 
     def gated(gate: int, bound_fn) -> object:  # noqa: ANN001 - bound_fn is one of the module's *_bound callables
         def cost(r: dict) -> tuple[float, bool]:
             if r["offset"] < gate:
                 return r["walk_ns"], False
             bound_cards = bound_fn(r["n_cards"], r["matches"], r["k"])
-            predicted_walk_ns = walk_model.estimate(bound_cards, _predicted_printings_for_bound(r, bound_cards))
+            predicted_walk_ns = walk_model.estimate(
+                bound_cards,
+                predicted_printings(
+                    r["orderby"],
+                    r["direction"],
+                    math.ceil(bound_cards),
+                ),
+            )
             if predicted_walk_ns <= three_phase.estimate(r["matches"]):
                 return r["walk_ns"], False
             return three_phase.estimate(r["matches"]), True
@@ -712,7 +766,13 @@ def _print_by_offset_tables(rows: list[dict], policies: dict) -> None:
         print(line)
 
 
-def simulate_policies(rows: list[dict], chart_path: pathlib.Path | None, three_phase: ThreePhaseModel) -> None:
+def simulate_policies(
+    engine: object,
+    calibration_rows: list[dict],
+    evaluation_rows: list[dict],
+    chart_path: pathlib.Path | None,
+    three_phase: ThreePhaseModel,
+) -> None:
     """For each policy, what fraction of traffic is diverted, and what happens to paging latency?
 
     The walk side uses each row's REAL `walk_ns` (see `evaluate()`) whenever a policy picks it,
@@ -720,18 +780,18 @@ def simulate_policies(rows: list[dict], chart_path: pathlib.Path | None, three_p
     `walk_ns` directly -- unknowable in advance, but it bounds how much more there is to gain over a
     real decision rule, which only ever gets `matches`/`n_cards`/`k`, never the outcome). The
     bound-based policies still have to PREDICT a hypothetical walk cost before running anything, so
-    they convert bound cards and the corpus's exact average printing span through a two-term model
-    fit on a disjoint calibration half. The three-phase side has no per-row real
+    they convert bound cards to a sound printing-work bound through the engine's archived
+    per-permutation prefix, then price both through a two-term model fit on a disjoint calibration
+    half. The three-phase side has no per-row real
     measurement at all (not wired into dispatch -- see the module docstring), so it stays modeled by
     the explicit `ThreePhaseModel` calibration supplied for this run.
     """
-    calibration_rows, evaluation_rows = _split_policy_rows(rows)
     walk_model = _fit_walk_cost_model(calibration_rows)
     print(
         f"\npolicy split: calibration={len(calibration_rows)} rows, evaluation={len(evaluation_rows)} rows; "
         f"walk fit={walk_model.ns_per_card:.3f} ns/card + {walk_model.ns_per_printing:.3f} ns/printing\n"
     )
-    policies = _build_policies(walk_model, three_phase)
+    policies = _build_policies(engine, walk_model, three_phase)
     latencies_by_policy = _print_pooled_latency_table(evaluation_rows, policies)
     _print_worst_surviving_rows(evaluation_rows, policies, three_phase)
     headline = [
@@ -757,9 +817,9 @@ def main() -> None:
     parser.add_argument("--corpus", type=pathlib.Path, default=REPO_ROOT / "benchmarks/bitplanes/corpus.jsonl")
     parser.add_argument("--shm-path", type=pathlib.Path, default=None)
     parser.add_argument("--chart-path", type=pathlib.Path, default=None, help="write chart series JSON here")
-    parser.add_argument("--three-phase-rate-ns-per-match", type=float, required=True)
-    parser.add_argument("--three-phase-fixed-ns", type=float, required=True)
-    parser.add_argument("--three-phase-floor-ns", type=float, required=True)
+    parser.add_argument("--three-phase-rate-ns-per-match", type=non_negative_float, required=True)
+    parser.add_argument("--three-phase-fixed-ns", type=finite_float, required=True)
+    parser.add_argument("--three-phase-floor-ns", type=non_negative_float, required=True)
     args = parser.parse_args()
     if args.n_queries <= 0:
         parser.error("--n-queries must be greater than zero")
@@ -796,10 +856,26 @@ def main() -> None:
                 rows.append(row)
 
     print(f"\n{considered} (query, orderby, direction, offset) points considered, {len(rows)} landed on Card-mode Perm both ways.")
-    report(rows)
     if not rows:
+        report(rows)
         return
-    simulate_policies(rows, args.chart_path, three_phase)
+    try:
+        calibration_rows, evaluation_rows = _split_policy_rows(rows)
+    except ValueError as exc:
+        # A small requested sample can legitimately leave only one eligible query shape after the
+        # Perm filters above. The descriptive report is still useful; only the held-out policy
+        # comparison is impossible.
+        report(rows)
+        print(f"\npolicy simulation skipped: {exc}")
+        return
+
+    # Every diagnostic that can inform the choice of method/knob sees calibration rows only. The
+    # evaluation half remains untouched until the policy table below. Reporting several predeclared
+    # sigma knobs there is a sensitivity analysis; choosing a new knob from those rows would make
+    # that choice exploratory and require another held-out run.
+    print(f"\nBOUND CALIBRATION ONLY ({len(calibration_rows)} rows; evaluation remains held out)")
+    report(calibration_rows)
+    simulate_policies(engine, calibration_rows, evaluation_rows, args.chart_path, three_phase)
 
 
 if __name__ == "__main__":
