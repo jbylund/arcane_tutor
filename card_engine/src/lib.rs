@@ -6677,6 +6677,41 @@ fn filter_touches_legality(filter: &FilterExpr) -> bool {
     }
 }
 
+/// Whether `filter` is a leaf shape `compile_plane` (`planes.rs`) can compile AND that is safe to
+/// broadcast card→printing: card-invariant fields only (color/color-identity/produced-mana, `cmc`/
+/// `power`/`toughness`, devotion). Recurses through `Not` since negating any of these is exact
+/// (`compile_plane_neg`'s own doc: colors/numerics are safe to bit-complement, unlike legality/
+/// rarity). Deliberately narrower than "anything `compile_plane` handles": rarity/legality/border
+/// also compile via `compile_plane`, but they are EXISTENTIAL card-space facts (∃p: ...), and mixing
+/// them into a card-invariant broadcast here would reintroduce the #667/#680 shared-witness bug —
+/// two independently-∃'d facts can share no real witness printing. Those three stay on their own
+/// native-printing-index compose arms (border/rarity/legality below), never this path.
+fn is_broadcast_leaf_shape(filter: &FilterExpr) -> bool {
+    match filter {
+        FilterExpr::ColorCmp { .. } | FilterExpr::Devotion { .. } => true,
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(f), .. } | FilterExpr::NumericCmp { rhs: NumExpr::Field(f), .. } => {
+            matches!(f, NumField::Cmc | NumField::Power | NumField::Toughness)
+        }
+        FilterExpr::Not(inner) => is_broadcast_leaf_shape(inner),
+        _ => false,
+    }
+}
+
+/// Compile and materialize `filter` into a card bitmap for the broadcast compose path — `None`
+/// unless `compile_plane` succeeds AND the result is non-existential (see `is_broadcast_leaf_shape`'s
+/// doc for why existential leaves must never reach this). Callers only reach this for filter shapes
+/// `is_broadcast_leaf_shape` already accepted, so the existential check here is belt-and-suspenders,
+/// not the primary gate.
+fn broadcast_composable_card_bits(filter: &FilterExpr, indexes: &Archived<CardIndexes>) -> Option<Vec<u64>> {
+    let pe = compile_plane(filter, &indexes.planes, &indexes.oracle_trigram.words)?;
+    if plane_expr_is_existential(&pe, u64::from(indexes.planes.divergent_formats)) {
+        return None;
+    }
+    let mut bits = Vec::new();
+    eval_planes(&pe, &indexes.planes, &mut bits);
+    Some(bits)
+}
+
 fn is_printing_composable(filter: &FilterExpr, indexes: &Archived<CardIndexes>) -> bool {
     match filter {
         FilterExpr::True => true,
@@ -6721,6 +6756,12 @@ fn is_printing_composable(filter: &FilterExpr, indexes: &Archived<CardIndexes>) 
         // Only a plane-backed status (legal/banned/restricted) with a present format; an absent format
         // (`shift: None`) matches nothing and stays on the general path.
         FilterExpr::Legality { shift: Some(_), expected } => status_plane_bases(*expected).is_some(),
+        // Card-invariant broadcast (#731 step 2): color/color-identity/produced-mana and the
+        // card-space numerics cmc/power/toughness, and devotion — the same `BitPlanes` PlanePopcountOrder
+        // already reads, broadcast down via `broadcast_card_bits_to_printings` (#753's mechanism, already
+        // shipped for the collection fields). See `is_broadcast_leaf_shape`'s doc for why this is scoped
+        // to card-invariant fields only, never rarity/legality/border.
+        _ if is_broadcast_leaf_shape(filter) => broadcast_composable_card_bits(filter, indexes).is_some(),
         // #731: usd/cn/date range leaves — the in-range index slice scatters into an exact printing
         // bitmap (`range_leaf_bits`). `bare_range_bounds` recognizes the printing-range-indexed shape
         // and returns its `[lo,hi)` bounds: the ordered ops, and `Eq` too (a narrow `[v, v+1)`). Only
@@ -6747,7 +6788,12 @@ fn is_printing_composable(filter: &FilterExpr, indexes: &Archived<CardIndexes>) 
 /// in `n_printings`; a `Default` (unbuilt) index reports 0. Gating applicability on this lets the plan
 /// decline cleanly (→ general path) rather than index into an empty word array.
 fn printing_compose_indexes_built(indexes: &Archived<CardIndexes>) -> bool {
-    u32::from(indexes.border_printing.n_printings) > 0 && u32::from(indexes.rarity_printing.n_printings) > 0
+    u32::from(indexes.border_printing.n_printings) > 0
+        && u32::from(indexes.rarity_printing.n_printings) > 0
+        // #731 step 2's card-invariant broadcast leaves read `indexes.planes` (`BitPlanes`) — an
+        // unbuilt fixture store reports 0 cards there, same "decline cleanly" contract as the two
+        // checks above.
+        && u32::from(indexes.planes.n_cards) > 0
 }
 
 /// All-ones printing-space bitmap over the `n_printings` domain (tail bits masked to 0). Built by
@@ -7202,6 +7248,13 @@ fn compose_printing_bits(
         FilterExpr::Legality { shift: Some(shift), expected } => {
             legality_leaf_bits(*shift, *expected, indexes, offsets, printings, n_printings)
         }
+        // Card-invariant broadcast (#731 step 2) — see `is_broadcast_leaf_shape`'s doc. Never reached
+        // for rarity/legality/border: those are matched above, and `is_broadcast_leaf_shape` excludes
+        // them explicitly.
+        _ if is_broadcast_leaf_shape(filter) => {
+            let card_bits = broadcast_composable_card_bits(filter, indexes).expect("gated by is_printing_composable");
+            broadcast_card_bits_to_printings(&card_bits, offsets, n_printings)
+        }
         FilterExpr::NumericCmp { .. } | FilterExpr::DateCmp { .. } | FilterExpr::YearCmp { .. } | FilterExpr::Not(_)
             if bare_range_bounds(filter, indexes).is_some() =>
         {
@@ -7368,6 +7421,18 @@ fn compose_printing_estimate(
             let illegal = legality_candidate_bits(indexes, n_cards, *shift, *expected, true).map_or(0, |b| popcount(&b));
             let scale = |c: usize| (c * n_printings).checked_div(n_cards).unwrap_or(0);
             ComposeEstimate::leaf(scale(legal), scale(legal.min(illegal)), 0)
+        }
+        // Card-invariant broadcast (#731 step 2): card matches from a real (cheap — O(n_cards/64))
+        // `eval_planes` pass, same "recompute the real leaf bits and popcount them" shape rarity's own
+        // estimate arm above already uses. No divergent-card fuzziness here (unlike legality) — the
+        // card popcount is exact, only the printing-space scaling is an average-case approximation
+        // (same `legal * n_printings / n_cards` trick legality's estimate uses). Rides `broadcast`,
+        // the same bucket legality's broadcast-down uses — it's the identical operation.
+        _ if is_broadcast_leaf_shape(filter) => {
+            let card_bits = broadcast_composable_card_bits(filter, indexes).expect("gated by is_printing_composable");
+            let n_cards = offsets.len() - 1;
+            let scaled = (popcount(&card_bits) * n_printings).checked_div(n_cards).unwrap_or(0);
+            ComposeEstimate::leaf(scaled, scaled, 0)
         }
         // Range (bare or negated — `-usd<50` etc., see `bare_range_bounds`'s doc): `k` in-range
         // printings from the index partition points (O(log n), no scatter here); matches ≈ k, and k
