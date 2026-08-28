@@ -7035,6 +7035,25 @@ fn range_leaf_bits(idx: &Archived<PrintingValueIndex>, lo: u32, hi: u32, n_print
     bits
 }
 
+/// Exact total width across every set card in `card_bits`, against any per-card offsets array shaped
+/// like `offsets`/`artwork_base` (`[card_offsets[c], card_offsets[c+1])` per card) -- the printing OR
+/// artwork total of an exact card-space set, by direct summation instead of the corpus-average
+/// `card_count * n_printings / n_cards` ratio. Same iteration `broadcast_card_bits_to_printings` (just
+/// below) uses, summing span widths instead of setting bits, since only the total is needed here.
+/// O(set cards), not O(n_cards).
+fn card_bits_span_total(card_bits: &[u64], card_offsets: &AOffsets) -> usize {
+    let mut total = 0usize;
+    for (i, &word) in card_bits.iter().enumerate() {
+        let mut w = word;
+        while w != 0 {
+            let c = (((i as u32) << 6) | w.trailing_zeros()) as usize;
+            w &= w - 1;
+            total += u32::from(card_offsets[c + 1]) as usize - u32::from(card_offsets[c]) as usize;
+        }
+    }
+    total
+}
+
 /// Broadcast a card-space bitmap **down** to printing space: set every printing of each set card. The
 /// inverse of `printing_bits_to_card_bits`, used to lift a card-settled fact (a legality that doesn't
 /// diverge across the card's printings) into the printing domain for composition. Iterates set cards
@@ -7399,15 +7418,6 @@ struct ComposeEstimate {
     candidate: usize,
     broadcast: usize,
     scatter: usize,
-    /// Best-effort CARD count `narrow_rec` really leaves for `GatheredScan`/`StreamedSelect` to walk,
-    /// when this estimate came from an `And` with plane-compilable children — `None` everywhere else
-    /// (leaves, `Or`, no plane-compilable children at all). Computed once alongside `result`'s own
-    /// plane-AND tightening (`compile_children_once`'s doc has the two-case mechanism) specifically so
-    /// `acquire_plan_features` never has to re-run `compile_plane`/`eval_planes` over the same children
-    /// a second time just to answer a different question about them — measured to matter: computing it
-    /// via a second independent pass over the same children was a real ~4x `acquire_ns` regression on
-    /// cheap queries, not just redundant-looking code.
-    domain_hint: Option<usize>,
     /// Printings a CARD-SPACE collection leaf's build broadcasts (`ids_of` +
     /// `broadcast_card_ids_to_printings`) -- kept apart from `scatter` because it is a different,
     /// pricier operation (a card-cursor lookup per id, then a variable-width printing-range fill) than
@@ -7417,19 +7427,37 @@ struct ComposeEstimate {
     /// is_tags) still ride `scatter`: their build IS a contiguous `bits()` copy, the same shape a
     /// range's is, and measured fine.
     collection_broadcast: usize,
+    /// Exact CARD count for this same leaf/join, when one is available for free -- kept apart from
+    /// `result` (this function's own PRINTING-space quantity throughout every leaf arm) rather than
+    /// derived from it by an average-ratio scale. That conflation was the root of the `domain_hint`
+    /// bug this field replaces (`domain_hint_is_card_space_not_printing_scaled`): a printing count
+    /// wearing a card-shaped variable name. `acquire_plan_features`'s `domain_cards` is the one
+    /// consumer today. `None` wherever no leaf/join here has a cheap exact card source (bare `set:`/
+    /// `watermark:` postings, an `Or` where any child lacks one).
+    card: Option<usize>,
+    /// Exact ARTWORK count, same shape as `card`. Populated wherever free (the same `ValueTotals`/
+    /// `RangeCardCounts` lookups that give `card` give this too) so a future consumer has it without
+    /// re-deriving it, even though nothing reads it back yet.
+    artwork: Option<usize>,
 }
 
 impl ComposeEstimate {
-    /// A leaf: nothing to tighten, so both figures are the same count, and there is no `And` of
-    /// plane-compilable children to hint a domain from.
+    /// A leaf with no cheap exact card/artwork source: nothing to tighten, so `result`/`candidate` are
+    /// the same count, and there is no space beyond `result`'s own (printing) to report.
     fn leaf(k: usize, broadcast: usize, scatter: usize) -> Self {
-        Self { result: k, candidate: k, broadcast, scatter, domain_hint: None, collection_broadcast: 0 }
+        Self { result: k, candidate: k, broadcast, scatter, collection_broadcast: 0, card: None, artwork: None }
+    }
+
+    /// `leaf`, plus whichever of the card/artwork spaces the caller already has in hand for free --
+    /// every call site that has one is expected to pass it, not re-derive it via `result`'s own scale.
+    fn leaf_spaces(k: usize, broadcast: usize, scatter: usize, card: Option<usize>, artwork: Option<usize>) -> Self {
+        Self { card, artwork, ..Self::leaf(k, broadcast, scatter) }
     }
 
     /// A card-space collection leaf specifically -- see `collection_broadcast`'s doc for why this
     /// isn't just `leaf(k, 0, k)`.
-    fn collection_leaf(k: usize) -> Self {
-        Self { result: k, candidate: k, broadcast: 0, scatter: 0, domain_hint: None, collection_broadcast: k }
+    fn collection_leaf(k: usize, card: Option<usize>, artwork: Option<usize>) -> Self {
+        Self { result: k, candidate: k, broadcast: 0, scatter: 0, collection_broadcast: k, card, artwork }
     }
 }
 
@@ -7615,21 +7643,29 @@ fn compose_printing_estimate(
 ) -> ComposeEstimate {
     let popcount = |bits: &[u64]| bits.iter().map(|w| w.count_ones() as usize).sum::<usize>();
     match filter {
-        FilterExpr::True => ComposeEstimate::leaf(n_printings, 0, 0),
+        FilterExpr::True => {
+            let n_cards = offsets.len() - 1;
+            let n_artworks = u32::from(*indexes.artwork_base.last().expect("artwork_base has n_cards+1 entries")) as usize;
+            ComposeEstimate::leaf_spaces(n_printings, 0, 0, Some(n_cards), Some(n_artworks))
+        }
         // The min-of-children fold is an intersection UPPER BOUND, and on a two-sided range it is a bad
         // one: `usd>=0.42 usd<=0.43` folded to min(33,862, 48,559) against a true 879, and the summed
         // scatter to 82,421 for an 879-row answer. Fusing same-index children first replaces both with
         // the interval's exact `k` — the same two `partition_point` calls the one-sided arm below
         // already makes, which is why a one-sided range estimates at 1.0x and this did not.
         FilterExpr::And(v) => {
-            // Collected (not folded straight through) so `domain_hint` below can look at each child's
-            // OWN result afterward, without re-deriving anything: every leaf arm in this match already
-            // answers cheaply and exactly now except `Devotion` (see that arm's own doc), so there is
-            // nothing left to recompute a second time the way `compile_children_once` used to.
+            // Collected (not folded straight through) so the arith-tuple merge below can look at each
+            // child's OWN shape afterward (which ones are arith-eligible), without re-deriving anything:
+            // every leaf arm in this match already answers cheaply and exactly now except `Devotion`
+            // (see that arm's own doc), so there is nothing left to recompute a second time the way
+            // `compile_children_once` used to.
             let children_estimates: Vec<ComposeEstimate> = fuse_and_range_children(v, indexes, false)
                 .into_iter()
                 .map(|src| match src {
                     AndSource::Child(c) => compose_printing_estimate(c, indexes, offsets, n_printings),
+                    // `.card`/`.artwork` left `None`: `range_card_counts_for`'s `distinct_cards`/
+                    // `distinct_artworks` is the same structure the bare-range leaf arm below found
+                    // unreliable for broad ranges -- see that arm's own doc.
                     AndSource::FusedRange { k, .. } => ComposeEstimate::leaf(k, 0, k),
                 })
                 .collect();
@@ -7638,8 +7674,12 @@ fn compose_printing_estimate(
                 candidate: a.candidate.min(c.candidate),
                 broadcast: a.broadcast + c.broadcast,
                 scatter: a.scatter + c.scatter,
-                domain_hint: None,
                 collection_broadcast: a.collection_broadcast + c.collection_broadcast,
+                // Intersecting can only shrink or match a space either side already has exact --
+                // `min` whenever both know it, keep whichever one side knows when the other doesn't
+                // (a partial-information upper bound is still a valid tightening, not a guess).
+                card: [a.card, c.card].into_iter().flatten().min(),
+                artwork: [a.artwork, c.artwork].into_iter().flatten().min(),
             });
             // Tighten the `min` bound with every PAIR of children the table stores. `min` over singles
             // lets the most selective leaf decide alone, which is why `f:modern r:rare border:white`
@@ -7745,15 +7785,15 @@ fn compose_printing_estimate(
             };
             // Two DIFFERENT spaces come out of this intersection, and conflating them was a real bug
             // (found while investigating `GatheredScan[printing_compose]`'s worst-in-the-survey spread,
-            // p90/p10 up to 40x): `exact_domain_cards` is the raw card-space popcount, used ONLY for
-            // `domain_hint` (a CARD count, per its consumer in `acquire_plan_features`'s `domain_cards`
-            // -- confirmed by tracing a live query, `devotion:w c:u usd>5`: predicted `eval_domain` 1705
-            // against a realized `cards_visited` of 108, a 15.8x over-estimate). `result` (this
-            // function's own, PRINTING-space quantity) needs the printing-space equivalent instead, and
-            // scaling the exact card count by the corpus's average printings-per-card
-            // (`card_count * n_printings / n_cards`) was ALSO being reused, unconverted, as `exact_domain`
-            // -- handing a printing-scaled number to a card-space consumer, inflating it by ~3x on this
-            // corpus before it ever reached `domain_cards`.
+            // p90/p10 up to 40x): `exact_domain_cards` is the raw card-space popcount -- the CARD count
+            // this whole `And` finally exposes on `.card` (a real live query, `devotion:w c:u usd>5`,
+            // traced a 15.8x over-estimate to exactly this value being printing-scaled before reaching
+            // a card-space consumer). `result` (this function's own, PRINTING-space quantity) needs the
+            // printing-space total of the SAME exact card set, and that no longer means guessing it from
+            // the corpus's average printings-per-card (`card_count * n_printings / n_cards`) either --
+            // `card_bits_span_total` sums each set card's OWN printing count directly from `offsets`,
+            // exact rather than average-case, since the exact bits are already in hand from the popcount
+            // above. Ditto `artwork` from `indexes.artwork_base`, the same shape one space over.
             let mut exact_domain_cards: Option<usize> = None;
             let mut best_other: Option<(usize, Vec<u64>)> = None;
             if existential.is_empty() {
@@ -7768,10 +7808,11 @@ fn compose_printing_estimate(
                     }
                 }
             }
-            if let Some((card_count, _)) = &best_other {
-                let scaled = (card_count * n_printings).checked_div(n_cards).unwrap_or(0);
-                result = result.min(scaled);
+            let mut exact_domain_artworks: Option<usize> = None;
+            if let Some((card_count, bits)) = &best_other {
+                result = result.min(card_bits_span_total(bits, offsets));
                 exact_domain_cards = Some(*card_count);
+                exact_domain_artworks = Some(card_bits_span_total(bits, &indexes.artwork_base));
             }
             // Merge with the arith-tuple family (cmc/power/toughness) by ID probe, instead of compiling
             // their numeric-range planes into the SAME joint above: that was tried first and reverted
@@ -7801,40 +7842,59 @@ fn compose_printing_estimate(
                     _ => arith_tuple_ids(&arith_children, indexes),
                 };
                 if let Some(ids) = arith_ids {
-                    let joint_count = ids
+                    let joint_ids: Vec<u32> = ids
                         .iter()
-                        .filter(|&&id| {
+                        .copied()
+                        .filter(|&id| {
                             let (word, bit) = (id as usize / 64, id as usize % 64);
                             word < other_bits.len() && (other_bits[word] >> bit) & 1 == 1
                         })
-                        .count();
-                    let scaled = (joint_count * n_printings).checked_div(n_cards).unwrap_or(0);
-                    result = result.min(scaled);
+                        .collect();
+                    // Same exact-sum shape as `card_bits_span_total`, over an id LIST instead of a
+                    // bitmap -- the joint set only exists as `joint_ids` here, never materialized as
+                    // its own bitmap, so summing directly over the list avoids building one just to
+                    // re-iterate it.
+                    let span_of = |card_offsets: &AOffsets| -> usize {
+                        joint_ids.iter().map(|&id| u32::from(card_offsets[id as usize + 1]) as usize - u32::from(card_offsets[id as usize]) as usize).sum()
+                    };
+                    let joint_count = joint_ids.len();
+                    result = result.min(span_of(offsets));
                     exact_domain_cards = Some(exact_domain_cards.map_or(joint_count, |d| d.min(joint_count)));
+                    exact_domain_artworks = Some(exact_domain_artworks.map_or_else(|| span_of(&indexes.artwork_base), |d| d.min(span_of(&indexes.artwork_base))));
                 }
             }
-            // `domain_hint`: what GatheredScan/StreamedSelect really see once narrow_rec intersects --
-            // a CARD count, per its one consumer (`acquire_plan_features`'s `domain_cards`). This used
-            // to also fold in `children_estimates.iter()....map(|c| c.result).min()`, each child's OWN
-            // `.result` -- but `.result` is this function's PRINTING-space quantity for every leaf type
-            // (confirmed directly: `ColorCmp`'s arm calls `color_cmp_value_total(..., Mode::Printing)`
-            // explicitly), so that fold was handing a printing count to a card-space consumer. Because
+            // `domain_hint` used to be its own field, folded from `children_estimates`'s own `.result`
+            // -- but `.result` is this function's PRINTING-space quantity for every leaf type (confirmed
+            // directly: `ColorCmp`'s arm calls `color_cmp_value_total(..., Mode::Printing)` explicitly),
+            // so that fold was handing a printing count to `domain_cards`, a card-space consumer. Because
             // the corpus's average reprint rate inflates a card count into its printing equivalent
             // (~3.08x here), the bug was largely self-masking -- an inflated `domain_hint` usually lost
             // the outer `.min(calibrated)` at the call site to the correctly-scaled `calibrated`, so it
             // only bit when the true intersection was selective enough that even the inflated number
             // still undercut `calibrated`, which is exactly the long-tail-not-median shape this cell
-            // measured (median 1.00, p99 14-24x, p100 up to 382x). Dropped rather than converted: none
-            // of these leaves currently expose a matching CARD count on `ComposeEstimate` to fold in
-            // its place (the underlying per-leaf values exist internally -- `color_cmp_value_total`,
-            // `bare_numeric_field_count`, the legality/devotion popcounts before their own printing-space
-            // scaling -- but adding a real `card: Option<usize>` slot per leaf is its own change).
-            // `exact_domain_cards` alone remains: true CARD-space (fixed above, no longer scaled), so
-            // `min`-ing it in can only tighten `calibrated` at the call site, never regress past it.
-            let domain_hint = exact_domain_cards;
-            ComposeEstimate { result, domain_hint, ..folded }
+            // measured (median 1.00, p99 14-24x, p100 up to 382x).
+            //
+            // `domain_hint` is retired in favor of `.card` directly, but fed ONLY by
+            // `exact_domain_cards` (this intersection's own exact popcount from `best_other`/the
+            // arith-tuple merge) -- deliberately NOT `folded.card` (each child's OWN, individual card
+            // count, folded via `min`). That fold was tried and checked directly against real data: a
+            // single BROAD leaf's own card count (`border:black`, `f:duel`'s own legal-card count --
+            // both individually correct numbers) is not a safe upper bound on the whole `And` unless
+            // `narrow_rec` would actually USE that leaf to narrow, and it does not for a broad one
+            // (`border:black` declining at 87% under `broad_ok: false` is the exact, already-documented
+            // precedent -- see `exceeds_own_domain_breadth`'s old callers). The retired `domain_hint`
+            // guarded against exactly this with a breadth filter before folding; dropping that filter
+            // along with the space-mismatch fix silently lost the guard too. `exact_domain_cards` has
+            // no such risk: it is a real INTERSECTION (`eval_planes` over the combined `PlaneExpr`), not
+            // a per-leaf bound, so it can only ever be <= the true joint count, never an overcount from
+            // a leaf `narrow_rec` would have declined to use alone.
+            let card = exact_domain_cards;
+            let artwork = exact_domain_artworks;
+            ComposeEstimate { result, card, artwork, ..folded }
         }
         FilterExpr::Or(v) => {
+            let n_cards = offsets.len() - 1;
+            let n_artworks = u32::from(*indexes.artwork_base.last().expect("artwork_base has n_cards+1 entries")) as usize;
             let summed = v
                 .iter()
                 .map(|c| compose_printing_estimate(c, indexes, offsets, n_printings))
@@ -7843,18 +7903,28 @@ fn compose_printing_estimate(
                     candidate: a.candidate + c.candidate,
                     broadcast: a.broadcast + c.broadcast,
                     scatter: a.scatter + c.scatter,
-                    domain_hint: None,
                     collection_broadcast: a.collection_broadcast + c.collection_broadcast,
+                    // Summed rather than `min`-ed (an `Or` widens, an `And` narrows) -- a valid upper
+                    // bound whether or not the children overlap, same reasoning `result`/`candidate`
+                    // already apply to their own sum-then-clamp just below. `Some(0) + None` would
+                    // silently understate the true union by dropping the unknown side's contribution
+                    // entirely, so a child with no exact count for a space poisons the whole sum for
+                    // that space rather than being treated as a card-free/artwork-free child.
+                    card: a.card.zip(c.card).map(|(x, y)| x + y),
+                    artwork: a.artwork.zip(c.artwork).map(|(x, y)| x + y),
                 });
             ComposeEstimate {
                 result: summed.result.min(n_printings),
                 candidate: summed.candidate.min(n_printings),
+                card: summed.card.map(|c| c.min(n_cards)),
+                artwork: summed.artwork.map(|a| a.min(n_artworks)),
                 ..summed
             }
         }
         // Precomputed planes: exact cheap popcount, nothing synthesized.
         FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value } => {
-            ComposeEstimate::leaf(popcount(&border_leaf_bits(value.as_str(), &indexes.border_printing, n_printings)), 0, 0)
+            let k = popcount(&border_leaf_bits(value.as_str(), &indexes.border_printing, n_printings));
+            ComposeEstimate::leaf_spaces(k, 0, 0, exact_result_total(filter, indexes, Mode::Card), exact_result_total(filter, indexes, Mode::Artwork))
         }
         // #746: `set:`/`watermark:` postings — matches = the value's postings length `k` (each
         // posting is one distinct printing), synthesized by scattering `k` ids → rides `scatter`
@@ -7889,7 +7959,14 @@ fn compose_printing_estimate(
         {
             let src = collection_compose_index(indexes, *field).expect("guarded by the if");
             let k = collection_leaf_printing_count(&src, value.as_str(), offsets);
-            if src.card_space { ComposeEstimate::collection_leaf(k) } else { ComposeEstimate::leaf(k, 0, k) }
+            // Every field reaching this arm is one of `exact_result_total`'s per-value `ValueTotals`
+            // dimensions (subtypes/keywords/oracle_tags/art_tags/is_tags/frame_data), which store all
+            // three spaces per value regardless of whether the field's own postings are card- or
+            // printing-space -- reusing it here for card/artwork is the exact same table lookup
+            // `collection_leaf_printing_count` uses for printing, not a second derivation.
+            let card = exact_result_total(filter, indexes, Mode::Card);
+            let artwork = exact_result_total(filter, indexes, Mode::Artwork);
+            if src.card_space { ComposeEstimate::collection_leaf(k, card, artwork) } else { ComposeEstimate::leaf_spaces(k, 0, k, card, artwork) }
         }
         // Negated collection leaf: all printings minus the positive `k`; the build cost rides the
         // (small) positive `k` cleared, not the (large) complement it produces — same shape as `-set:`,
@@ -7903,12 +7980,27 @@ fn compose_printing_estimate(
             let src = collection_compose_index(indexes, *field).expect("guarded by the matches!");
             let k = collection_leaf_printing_count(&src, value.as_str(), offsets);
             let complement = n_printings.saturating_sub(k);
+            let n_cards = offsets.len() - 1;
+            let n_artworks = u32::from(*indexes.artwork_base.last().expect("artwork_base has n_cards+1 entries")) as usize;
+            // Safe to complement in card/artwork space too: every one of `exact_result_total`'s
+            // per-value tables is COMPLETE (holds every value present in the corpus, so absence is an
+            // exact zero, not an unknown), matching the same guarantee the printing-space complement
+            // above already relies on.
+            let card = exact_result_total(inner, indexes, Mode::Card).map(|c| n_cards.saturating_sub(c));
+            let artwork = exact_result_total(inner, indexes, Mode::Artwork).map(|a| n_artworks.saturating_sub(a));
             if src.card_space {
-                ComposeEstimate { result: complement, candidate: complement, broadcast: 0, scatter: 0, domain_hint: None, collection_broadcast: k }
+                ComposeEstimate { result: complement, candidate: complement, broadcast: 0, scatter: 0, collection_broadcast: k, card, artwork }
             } else {
-                ComposeEstimate::leaf(complement, 0, k)
+                ComposeEstimate::leaf_spaces(complement, 0, k, card, artwork)
             }
         }
+        // `.card`/`.artwork` deliberately left `None` here, not `exact_result_total(..., Mode::Card)`:
+        // checked directly against real data, `RangeCardCounts::distinct_cards` (the structure rarity's
+        // Mode::Card/Artwork arms in `exact_result_total` read, shared with the bare-range arm below)
+        // gave wrong-by-a-wide-margin answers for broad ranges (`r<=mythic` real 31,724 cards, this
+        // path 31,722; part of a broader pattern -- see the bare-range arm's own doc, and the `is_and`
+        // doc in `acquire_plan_features`, for the 250-query regression this traced to). A real,
+        // pre-existing bug in that structure's card/artwork counting, not something this pass fixes.
         FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op, rhs: NumExpr::Const(c) } => {
             ComposeEstimate::leaf(popcount(&rarity_cmp_leaf_bits(*op, *c, &indexes.rarity_printing, n_printings)), 0, 0)
         }
@@ -7925,7 +8017,10 @@ fn compose_printing_estimate(
             let legal = legality_candidate_bits(indexes, n_cards, *shift, *expected, false).map_or(0, |b| popcount(&b));
             let illegal = legality_candidate_bits(indexes, n_cards, *shift, *expected, true).map_or(0, |b| popcount(&b));
             let scale = |c: usize| (c * n_printings).checked_div(n_cards).unwrap_or(0);
-            ComposeEstimate::leaf(scale(legal), scale(legal.min(illegal)), 0)
+            // `legal` is already the exact CARD count this leaf matches -- reused directly rather than
+            // re-deriving it a second way through `exact_result_total`. Artwork has no equivalent
+            // cheap-popcount source here, so it comes from the `ValueTotals` lookup instead.
+            ComposeEstimate::leaf_spaces(scale(legal), scale(legal.min(illegal)), 0, Some(legal), exact_result_total(filter, indexes, Mode::Artwork))
         }
         // Color family: exact via `ValueTotals`'s per-combo table — no `eval_planes`, no bitmap.
         // `.result`/`.broadcast` both ride the printing count: the REAL build (`compose_printing_bits`)
@@ -7933,12 +8028,16 @@ fn compose_printing_estimate(
         // even though this estimate no longer computes it that way.
         FilterExpr::ColorCmp { field, op, mask } => {
             let k = color_cmp_value_total(*field, *op, *mask, false, indexes, Mode::Printing);
-            ComposeEstimate::leaf(k, k, 0)
+            let card = color_cmp_value_total(*field, *op, *mask, false, indexes, Mode::Card);
+            let artwork = color_cmp_value_total(*field, *op, *mask, false, indexes, Mode::Artwork);
+            ComposeEstimate::leaf_spaces(k, k, 0, Some(card), Some(artwork))
         }
         FilterExpr::Not(inner) if matches!(inner.as_ref(), FilterExpr::ColorCmp { .. }) => {
             let FilterExpr::ColorCmp { field, op, mask } = inner.as_ref() else { unreachable!("guarded above") };
             let k = color_cmp_value_total(*field, *op, *mask, true, indexes, Mode::Printing);
-            ComposeEstimate::leaf(k, k, 0)
+            let card = color_cmp_value_total(*field, *op, *mask, true, indexes, Mode::Card);
+            let artwork = color_cmp_value_total(*field, *op, *mask, true, indexes, Mode::Artwork);
+            ComposeEstimate::leaf_spaces(k, k, 0, Some(card), Some(artwork))
         }
         // cmc/power/toughness: exact via the dedicated per-field sorted index (O(log n)) — no
         // `eval_planes`, and cheaper than the joint #743 index's O(distinct tuples) scan, which this
@@ -7953,7 +8052,9 @@ fn compose_printing_estimate(
                 .expect("gated by is_printing_composable");
             let n_cards = offsets.len() - 1;
             let scaled = (card_count * n_printings).checked_div(n_cards).unwrap_or(0);
-            ComposeEstimate::leaf(scaled, scaled, 0)
+            // `card_count` is already exact and in hand -- no re-derivation needed. No artwork source
+            // for cmc/power/toughness (per `exact_result_total`'s own doc: card-space index only).
+            ComposeEstimate::leaf_spaces(scaled, scaled, 0, Some(card_count), None)
         }
         // Devotion: the one card-invariant broadcast leaf left with no cheaper exact source than a
         // real (cheap — O(n_cards/64)) `eval_planes` pass. No divergent-card fuzziness here (unlike
@@ -7963,12 +8064,24 @@ fn compose_printing_estimate(
         _ if is_broadcast_leaf_shape(filter) => {
             let card_bits = broadcast_composable_card_bits(filter, indexes).expect("gated by is_printing_composable");
             let n_cards = offsets.len() - 1;
-            let scaled = (popcount(&card_bits) * n_printings).checked_div(n_cards).unwrap_or(0);
-            ComposeEstimate::leaf(scaled, scaled, 0)
+            let card_count = popcount(&card_bits);
+            let scaled = (card_count * n_printings).checked_div(n_cards).unwrap_or(0);
+            // No artwork source here either -- devotion is synthesized from mana cost, not a raw
+            // corpus dimension `ValueTotals` has an artwork column for.
+            ComposeEstimate::leaf_spaces(scaled, scaled, 0, Some(card_count), None)
         }
         // Range (bare or negated — `-usd<50` etc., see `bare_range_bounds`'s doc): `k` in-range
         // printings from the index partition points (O(log n), no scatter here); matches ≈ k, and k
         // rides `scatter` — the cheap range-slice scatter into the printing bitmap.
+        //
+        // `.card`/`.artwork` deliberately left `None`, not `exact_result_total(..., Mode::Card/Artwork)`
+        // (which reads `RangeCardCounts::distinct_cards`/`distinct_artworks` for this same shape):
+        // checked directly against real data, that path gave wrong-by-a-wide-margin answers for broad
+        // ranges (`eur>0.16`, real 31,724 cards out of 31,724, this path 19,992 -- part of a 250-query
+        // regression pattern this traced to, all broad range/rarity queries; full detail on the `is_and`
+        // gate in `acquire_plan_features`). A real, pre-existing bug in that structure's card/artwork
+        // counting, not something this pass fixes -- `ValueTotals`-backed leaves (`ColorCmp`/`Legality`/
+        // `CollectionCmp`/border), a different, simpler per-value lookup, show no sign of the same issue.
         FilterExpr::NumericCmp { .. } | FilterExpr::DateCmp { .. } | FilterExpr::YearCmp { .. } | FilterExpr::Not(_)
             if bare_range_bounds(filter, indexes).is_some() =>
         {
@@ -11619,16 +11732,38 @@ fn acquire_plan_features(
         //
         // For an `And`, that "declines broad children" premise is false specifically for
         // `ColorCmp`/`NumericCmp(Cmc|Power|Toughness)`/`Devotion`: `narrow_rec` genuinely intersects
-        // them (see `compile_children_once`'s doc). `est.domain_hint`, computed alongside `est.result`
-        // in the SAME pass over the And's children (not re-derived here), can only be >= the real
-        // domain (it ignores what non-plane siblings would additionally narrow), so `min`-ing it with
-        // the existing estimate is a strict tightening, never a regression.
-        let domain_cards = if est.candidate == est.result {
+        // them (see `compile_children_once`'s doc). `est.card`, computed alongside `est.result` in the
+        // SAME pass over the And's children (not re-derived here) -- a real CARD count now, not a
+        // printing-scaled one wearing a card-shaped name (`domain_hint_is_card_space_not_printing_scaled`)
+        // -- can only be >= the real domain (it ignores what non-plane siblings would additionally
+        // narrow), so `min`-ing it with the existing estimate is a strict tightening, never a regression.
+        let domain_cards_before_card = if est.candidate == est.result {
             est_cards
         } else {
-            let calibrated = calibrated_balls_into_bins(est.candidate, n_cards as usize);
-            est.domain_hint.map_or(calibrated, |dc| dc.min(calibrated))
+            calibrated_balls_into_bins(est.candidate, n_cards as usize)
         };
+        // `est.card` additionally tightens `domain_cards`, beyond the `else` branch above, but ONLY for
+        // a genuine `And` -- found live (`id:g border:white`, artwork mode): `est.candidate == est.result`
+        // (both 5131, border:white's own printing count) took the `est_cards` branch, and `est_cards`
+        // falls back to `exact_result_total`'s OWN, narrower 2-child-pair-table check, which doesn't
+        // cover a `ColorCmp`+`TextExact(Border)` combination and returned `None` -- landing on
+        // `calibrated_balls_into_bins`'s 2,756 guess despite `compose_printing_estimate`'s own And arm
+        // (a DIFFERENT, newer mechanism, `best_other`'s existential+card-invariant plane intersection)
+        // already knowing the exact answer, 576, on `est.card`.
+        //
+        // Scoped to `And` specifically, NOT applied to bare leaves too, after that broader version was
+        // checked directly against real data and found to regress 809 queries -- every one a genuinely
+        // broad bare leaf (`eur>0.16`, `tix<0.04`, `border:black` alone, ~100% of the corpus) where
+        // `est.card` (from `exact_result_total`'s OWN bare-leaf Mode::Card arms, the SAME function
+        // `est_cards` already calls) came back wrong by a wide margin -- e.g. `eur>0.16` real 31,724,
+        // `est.card` 19,992. That mismatch predates this session (it is `exact_result_total`'s own
+        // Mode::Card answer, not `compose_printing_estimate`'s), and was invisible before only because
+        // `range_too_broad_to_narrow`'s full-corpus fallback happened to override it every time a bare
+        // leaf was this broad -- a real, separate bug, worth its own investigation, but out of scope
+        // for this pass. Restricting the extra tightening to `And` keeps today's fix to the case it was
+        // actually verified against, without newly trusting a leaf-level answer nothing here checked.
+        let is_and = matches!(composed, FilterExpr::And(_));
+        let domain_cards = if is_and { est.card.map_or(domain_cards_before_card, |dc| dc.min(domain_cards_before_card)) } else { domain_cards_before_card };
         // What the MATERIALIZING alternatives scan if compose loses. Every mode narrows -- a
         // composable filter has an index for every leaf -- so all three are the NARROWED counts.
         // Printing mode took the unnarrowed universe while card/artwork took a narrowed count; only
@@ -11753,7 +11888,20 @@ fn acquire_plan_features(
         // `And` and matches no bare-leaf shape at all, silently undoing the #1005 collection-leaf
         // exemption for every query combining it with one of these fields. `plane_leaves_nothing_to_verify`
         // reaches the `pow<=2` case through `filter == True` instead, without disturbing that one.
-        let (eval_domain, scan_units) = if !(compose_leaf_nothing_to_verify(filter) || plane_leaves_nothing_to_verify(filter, mode, plane, indexes))
+        //
+        // A third exemption, `is_and && est.card.is_some()`: the same failure mode again, this time for
+        // an `And` whose EXACT card intersection this session's `compose_printing_estimate` work now
+        // knows (`f:timeless r>=rare`, card mode: `domain_cards` a correct, verified 5,854 against
+        // `est.result`/`printing_matches` of 36,623 -- 37% of the corpus, over `MAX_NARROW_FRACTION`, so
+        // this guard fired and threw the exact card count away for the full 31,724-card corpus).
+        // `domain_cards` is `.min()`-ed against `est.card` for exactly this `is_and` case (see just
+        // above), so an exact card count in hand there can only make `domain_cards` tighter than a
+        // fabricated one, the same non-regression argument the other two exemptions already rely on.
+        // NOT extended to bare leaves -- see `is_and`'s own doc for the 809-query regression that
+        // surfaced when this was tried unscoped.
+        let (eval_domain, scan_units) = if !(compose_leaf_nothing_to_verify(filter)
+            || plane_leaves_nothing_to_verify(filter, mode, plane, indexes)
+            || (is_and && est.card.is_some()))
             && range_too_broad_to_narrow(printing_matches, n_printings as usize)
         {
             (n_cards as usize, n_printings as usize)

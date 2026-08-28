@@ -7827,7 +7827,14 @@ fn domain_hint_is_card_space_not_printing_scaled() {
     // plane residual -- exactly the shape `domain_hint`'s 2+-card-invariant-planes branch targets.
     let filter = FilterExpr::And(vec![green, green_identity, set_dmu]);
     let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings);
-    assert_eq!(est.domain_hint, Some(2), "domain_hint must be the exact 2-card intersection, not scaled by n_printings/n_cards");
+    assert_eq!(est.card, Some(2), "est.card must be the exact 2-card intersection, not scaled by n_printings/n_cards");
+    // The `c:g id:g` intersection's exact ARTWORK span: cards 0 and 2 each have 2 printings with
+    // `store_of`'s default all-distinct artwork groups, so 2 + 2 = 4 -- `n_printings/n_cards * 2`
+    // (the same average-ratio bug `card` guards against) would give 4 here too by coincidence (this
+    // fixture's ratio is exactly 2), so this alone wouldn't distinguish exact-sum from average-scaled;
+    // it exists to confirm the plumbing (`card_bits_span_total` over `indexes.artwork_base`) runs at
+    // all and produces a real, present value rather than silently staying `None`.
+    assert_eq!(est.artwork, Some(4), "est.artwork must be the exact artwork span of the same 2-card intersection");
 }
 
 // #746: `set:`/`watermark:` postings leaves join the PrintingCompose leaf table. This is the
