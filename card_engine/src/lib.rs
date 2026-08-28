@@ -7554,11 +7554,28 @@ fn compose_printing_estimate(
             // leaf separately and ANDs printing-space bitmaps (unchanged), so this estimate-only shortcut
             // changes nothing about when or how the expensive work happens.
             let divergent_formats = u64::from(indexes.planes.divergent_formats);
-            let (card_invariant, existential): (Vec<PlaneExpr>, Vec<PlaneExpr>) = v
+            let (mut card_invariant, existential): (Vec<PlaneExpr>, Vec<PlaneExpr>) = v
                 .iter()
                 .filter(|c| !is_arith_tuple_eligible(c))
                 .filter_map(|c| compile_plane(c, &indexes.planes, &indexes.oracle_trigram.words))
                 .partition(|pe| !plane_expr_is_existential(pe, divergent_formats));
+            // `is_arith_tuple_eligible` children (cmc/power/toughness) ARE plane-compilable
+            // (`compile_numeric_cmp`, card-invariant) and were excluded above -- but only conditionally
+            // folded back in here, not dropped outright: excluding them avoids exactly duplicating
+            // `arith_tuple_count`'s own answer when they are the ONLY plane-compilable family present
+            // (the measured ~15% regression on bare `pow>=1 pow<=2`), but when another family IS present
+            // (`r<=uncommon`/`devotion:w` here), combining the numeric-range planes into the SAME joint
+            // computes the true CROSS-family intersection -- something neither `arith_tuple_count` (only
+            // ever sees cmc/power/toughness against each other) nor any per-field table can answer, and
+            // exactly the gap `r<=uncommon tou>=2 tou<=2 devotion:w` (0.22x) was left with. Paying the
+            // extra `eval_planes` cost is worth it precisely because it is the ONLY source of this number;
+            // gating on "something else compiled" keeps it from firing on the bare-arith-pair shape that
+            // already has a cheaper exact answer.
+            if !card_invariant.is_empty() || !existential.is_empty() {
+                card_invariant.extend(
+                    v.iter().filter(|c| is_arith_tuple_eligible(c)).filter_map(|c| compile_plane(c, &indexes.planes, &indexes.oracle_trigram.words)),
+                );
+            }
             // One trial per existential leaf present (each paired with ALL card-invariant leaves), not
             // "the first one, dropping the rest": every `(card-invariant leaves + this one existential
             // leaf)` combination is independently exact and safe (still only one existential fact, no
