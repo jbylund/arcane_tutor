@@ -7300,6 +7300,39 @@ impl ComposeEstimate {
     }
 }
 
+/// Exact CARD count for the AND of whichever `children` compile via `compile_plane`, or `None` if
+/// fewer than two do, or two-or-more of the ones that do are EXISTENTIAL (rarity/legality/border) —
+/// the same shared-witness hazard `and_of_checked_for_shared_witness` already guards inside
+/// `compile_plane` itself, checked here per-child instead of over one committed subtree so a range/
+/// postings/text sibling that doesn't compile at all doesn't block tightening the ones that do.
+///
+/// Any number of CARD-INVARIANT leaves (color/cmc/power/toughness/devotion) AND at most one
+/// existential leaf compile and AND together exactly: a card-invariant fact holds uniformly across
+/// every one of a card's printings, so it can never introduce the ambiguity two independently-∃'d
+/// facts would (a card could satisfy each via a DIFFERENT witness printing) — that hazard only exists
+/// between existential facts, never between one of those and any number of card-invariant ones. This
+/// is a pure ADDITIONAL tightening for `compose_printing_estimate`'s `And` arm, on top of (not instead
+/// of) `pair_bounded_min`'s persisted pair table, which still owns the 2-existential-leaf case (e.g.
+/// `r:rare border:white`) this function deliberately declines.
+fn joint_plane_card_count(children: &[FilterExpr], indexes: &Archived<CardIndexes>) -> Option<usize> {
+    let mut compiled: Vec<PlaneExpr> = Vec::new();
+    let mut existential_count = 0usize;
+    for child in children {
+        if let Some(pe) = compile_plane(child, &indexes.planes, &indexes.oracle_trigram.words) {
+            if plane_expr_is_existential(&pe, u64::from(indexes.planes.divergent_formats)) {
+                existential_count += 1;
+            }
+            compiled.push(pe);
+        }
+    }
+    if compiled.len() < 2 || existential_count > 1 {
+        return None;
+    }
+    let mut bits = Vec::new();
+    eval_planes(&PlaneExpr::And(compiled), &indexes.planes, &mut bits);
+    Some(bits.iter().map(|w| w.count_ones() as usize).sum())
+}
+
 fn compose_printing_estimate(
     filter: &FilterExpr,
     indexes: &Archived<CardIndexes>,
@@ -7337,7 +7370,17 @@ fn compose_printing_estimate(
             // needs this.
             // Only `result` is tightened. `candidate` keeps the untightened `min`, because that is what
             // narrowing leaves the alternatives to walk once its broad children decline.
-            ComposeEstimate { result: pair_bounded_min(v, indexes, folded.result), ..folded }
+            let mut result = pair_bounded_min(v, indexes, folded.result);
+            // Second, more general tightening: any number of plane-compilable children (not just a
+            // registered pair) with at most one existential among them get their EXACT joint card
+            // count, scaled to printings the same way a single card-invariant leaf's own estimate
+            // already does (see `joint_plane_card_count`'s doc for why this is exact, not a bound).
+            if let Some(card_count) = joint_plane_card_count(v, indexes) {
+                let n_cards = offsets.len() - 1;
+                let scaled = (card_count * n_printings).checked_div(n_cards).unwrap_or(0);
+                result = result.min(scaled);
+            }
+            ComposeEstimate { result, ..folded }
         }
         FilterExpr::Or(v) => {
             let summed = v
