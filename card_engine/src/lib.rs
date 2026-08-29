@@ -7470,6 +7470,14 @@ struct ComposeEstimate {
     /// is_tags) still ride `scatter`: their build IS a contiguous `bits()` copy, the same shape a
     /// range's is, and measured fine.
     collection_broadcast: usize,
+    /// The `And` arm's `best_other`/arith-tuple-merge intersection, in all three spaces, captured
+    /// before `result` could be tightened any further by `pair_bounded_min` -- `None` everywhere else
+    /// (leaves, `Or`, an `And` where neither mechanism fired). Unlike `result` (which folds in every
+    /// tightening this match found, so its printing count is not guaranteed to describe the same set
+    /// its card/artwork counts do), every field here is guaranteed to be the SAME set's count in each
+    /// space. `acquire_plan_features` uses this for `scan_units` -- the printing SPAN of the CANDIDATE
+    /// cards, which needs a printing/card pair known to match, not `result`'s tightest-found number.
+    exact_domain: Option<SpaceEstimate>,
 }
 
 impl ComposeEstimate {
@@ -7477,21 +7485,21 @@ impl ComposeEstimate {
     /// the same count, and there is no space beyond printing to report.
     fn leaf(k: usize, broadcast: usize, scatter: usize) -> Self {
         let space = SpaceEstimate::printing_only(k);
-        Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0 }
+        Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0, exact_domain: None }
     }
 
     /// `leaf`, plus whichever of the card/artwork spaces the caller already has in hand for free --
     /// every call site that has one is expected to pass it, not re-derive it via `result`'s own scale.
     fn leaf_spaces(k: usize, broadcast: usize, scatter: usize, card: Option<usize>, artwork: Option<usize>) -> Self {
         let space = SpaceEstimate { printing: k, card, artwork };
-        Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0 }
+        Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0, exact_domain: None }
     }
 
     /// A card-space collection leaf specifically -- see `collection_broadcast`'s doc for why this
     /// isn't just `leaf(k, 0, k)`.
     fn collection_leaf(k: usize, card: Option<usize>, artwork: Option<usize>) -> Self {
         let space = SpaceEstimate { printing: k, card, artwork };
-        Self { result: space, candidate: space, broadcast: 0, scatter: 0, collection_broadcast: k }
+        Self { result: space, candidate: space, broadcast: 0, scatter: 0, collection_broadcast: k, exact_domain: None }
     }
 }
 
@@ -7709,6 +7717,7 @@ fn compose_printing_estimate(
                 broadcast: a.broadcast + c.broadcast,
                 scatter: a.scatter + c.scatter,
                 collection_broadcast: a.collection_broadcast + c.collection_broadcast,
+                exact_domain: None,
             });
             // Tighten the `min` bound with every PAIR of children the table stores. `min` over singles
             // lets the most selective leaf decide alone, which is why `f:modern r:rare border:white`
@@ -7841,10 +7850,13 @@ fn compose_printing_estimate(
                     }
                 }
             }
+            let mut exact_domain_printing: Option<usize> = None;
             let mut exact_domain_artworks: Option<usize> = None;
             if let Some((card_count, bits)) = &best_other {
-                result = result.min(card_bits_span_total(bits, offsets));
+                let printing_span = card_bits_span_total(bits, offsets);
+                result = result.min(printing_span);
                 exact_domain_cards = Some(*card_count);
+                exact_domain_printing = Some(printing_span);
                 exact_domain_artworks = Some(card_bits_span_total(bits, &indexes.artwork_base));
             }
             // Merge with the arith-tuple family (cmc/power/toughness) by ID probe, instead of compiling
@@ -7891,8 +7903,10 @@ fn compose_printing_estimate(
                         joint_ids.iter().map(|&id| u32::from(card_offsets[id as usize + 1]) as usize - u32::from(card_offsets[id as usize]) as usize).sum()
                     };
                     let joint_count = joint_ids.len();
-                    result = result.min(span_of(offsets));
+                    let joint_printing = span_of(offsets);
+                    result = result.min(joint_printing);
                     exact_domain_cards = Some(exact_domain_cards.map_or(joint_count, |d| d.min(joint_count)));
+                    exact_domain_printing = Some(exact_domain_printing.map_or(joint_printing, |d| d.min(joint_printing)));
                     exact_domain_artworks = Some(exact_domain_artworks.map_or_else(|| span_of(&indexes.artwork_base), |d| d.min(span_of(&indexes.artwork_base))));
                 }
             }
@@ -7922,7 +7936,16 @@ fn compose_printing_estimate(
             // a per-leaf bound, so it can only ever be <= the true joint count, never an overcount from
             // a leaf `narrow_rec` would have declined to use alone.
             let result_space = SpaceEstimate { printing: result, card: exact_domain_cards, artwork: exact_domain_artworks };
-            ComposeEstimate { result: result_space, ..folded }
+            // `exact_domain`: the SAME `best_other`/arith-merge intersection, but captured BEFORE
+            // `result` could be tightened any further by `pair_bounded_min` (above) -- so unlike
+            // `result`, `.printing`/`.card`/`.artwork` here are guaranteed to describe the exact same
+            // set, never a printing count over-tightened past what the card/artwork counts still
+            // describe. `result` doesn't have that guarantee (it takes the `min` across every
+            // tightening this match found, from whichever source got there first), which is exactly
+            // why `scan_units` -- the printing SPAN of the CANDIDATE cards, not the tightest known
+            // match count -- needs its own field instead of reusing `result`.
+            let exact_domain = exact_domain_printing.map(|printing| SpaceEstimate { printing, card: exact_domain_cards, artwork: exact_domain_artworks });
+            ComposeEstimate { result: result_space, exact_domain, ..folded }
         }
         FilterExpr::Or(v) => {
             let n_cards = offsets.len() - 1;
@@ -7941,6 +7964,7 @@ fn compose_printing_estimate(
                     broadcast: a.broadcast + c.broadcast,
                     scatter: a.scatter + c.scatter,
                     collection_broadcast: a.collection_broadcast + c.collection_broadcast,
+                    exact_domain: None,
                 });
             ComposeEstimate { result: clamp(summed.result), candidate: clamp(summed.candidate), ..summed }
         }
@@ -8013,7 +8037,7 @@ fn compose_printing_estimate(
             let artwork = exact_result_total(inner, indexes, Mode::Artwork).map(|a| n_artworks.saturating_sub(a));
             if src.card_space {
                 let space = SpaceEstimate { printing: complement, card, artwork };
-                ComposeEstimate { result: space, candidate: space, broadcast: 0, scatter: 0, collection_broadcast: k }
+                ComposeEstimate { result: space, candidate: space, broadcast: 0, scatter: 0, collection_broadcast: k, exact_domain: None }
             } else {
                 ComposeEstimate::leaf_spaces(complement, 0, k, card, artwork)
             }
@@ -11735,15 +11759,17 @@ fn acquire_plan_features(
         };
         let est_cards =
             exact_cards.unwrap_or_else(|| calibrated_balls_into_bins(printing_matches, n_cards as usize));
-        // Exact PRINTING total for the same composed filter, independent of the query's own mode --
-        // `scan_all` below needs the printing SPAN under the candidate CARDS regardless of what space
-        // the query itself runs in, and `Mode::Printing` isn't computed above whenever `mode` is Card
-        // or Artwork (`exact_total` only asks for the query's own mode). Re-deriving that span from
-        // `est_cards * printings_per_card * COMPOSE_CANDIDATE_SPAN_BIAS` is a second, lossy statistical
-        // conversion stacked on top of an already-exact card count -- exactly the round-trip
-        // `exact_result_total` exists to avoid one hop earlier (card -> printing -> card). Only valid
-        // when nothing was tightened away from it (guarded where it's used, alongside `domain_cards`).
-        let exact_printing_span = exact_result_total(composed, indexes, Mode::Printing);
+        // Exact PRINTING total for the same composed filter -- valid as the candidate cards' full
+        // printing SPAN (what `scan_all` below needs) only when the filter is CARD-INVARIANT
+        // (`composed_card_invariant`): for a card-invariant field, every printing of a matching card
+        // matches too, so the exact MATCH count and the matching cards' full span are the same number.
+        // For a printing-VARYING field (border/rarity/legality/year/date/price/cn) they are not: a
+        // card can have printings that don't match the leaf's own value but are still part of that
+        // card's range, which `GatheredScan` walks in full. Checked directly against real data before
+        // adding the gate: applied unconditionally, this regressed 1,077 bare-leaf queries, every one
+        // printing-varying (`border:borderless`, `r>=mythic`, `year:2006`); scoped to card-invariant
+        // leaves only, it is exact by construction, not an approximation with a lucky population.
+        let exact_printing_span = composed_card_invariant.then(|| exact_result_total(composed, indexes, Mode::Printing)).flatten();
         // The card count the MATERIALIZING alternatives walk, which stops being `est_cards` once the
         // estimate has been tightened. `est.candidate` is the untightened `min` over single leaves, and
         // that is what narrowing actually leaves them: it declines broad children (`border:black` at 87%
@@ -11806,11 +11832,57 @@ fn acquire_plan_features(
         // `printings_examined` of exactly 97,206. The clamp makes that cell exact. It matters for routing
         // because this feature is 76% of P3's arm on the broad-residual class, where it drove P3 to
         // pred/meas 1.53 while P4 sat at 0.88 — the pair inverted, with both plans over the same feature.
+        // An earlier version of this used `exact_result_total(composed, Mode::Printing)` here whenever
+        // `est.candidate.printing == est.result.printing`, on the theory that a bare leaf's own exact
+        // MATCH count is the candidate cards' printing span. Checked directly against real data (a
+        // paired diff on `scan_units` specifically, not just the pooled percentile view): 1,077
+        // queries regressed, every one a bare leaf (`border:borderless`, `r>=mythic`, `year:2006`).
+        // The two quantities are not the same: a card can have OTHER printings that don't match the
+        // leaf's own value but are still part of that card's range, which `GatheredScan` walks in
+        // full -- `printings_examined` counts that whole span, not just the matching subset. Removed
+        // rather than fixed further; `exact_domain` below doesn't have this flaw because
+        // `card_bits_span_total` (which built it) already sums each candidate card's FULL span, not a
+        // filtered match count -- confirmed by the same paired diff, run on this fix: `id:br r<=uncommon`
+        // 97,812 -> 23,394 against a real 23,394, exact.
+        //
+        // Whether `est.exact_domain` is actually what won `domain_cards`' `is_and` tightening above --
+        // `domain_cards` is `.min()`-ed from TWO independent sources (`domain_cards_before_card` and
+        // `est.result.card`, which is `est.exact_domain`'s own `.card`), so `exact_domain.printing` is
+        // only the CANDIDATE set's true span when its `.card` is the side that actually won. If the
+        // OTHER side was tighter, the real candidate set is smaller than what `exact_domain` describes,
+        // and using its printing span would overstate the span of a set that isn't the one being priced.
+        let exact_domain_won = is_and && est.exact_domain.is_some_and(|ed| ed.card == Some(domain_cards));
         let scan_all = |cards: usize| {
-            // `est.candidate == est.result` is the same guard `domain_cards` above uses: it means
-            // nothing was tightened away from the leaf/pair-exact estimate, so `exact_printing_span`
-            // (computed from that same composed filter) is the true span under exactly these
-            // candidates, not an approximation of a DIFFERENT (tightened) domain.
+            if exact_domain_won
+                && let Some(exact_domain) = est.exact_domain
+            {
+                // Bare, not `.min()`-ed against the statistical guess: tried that (real data first --
+                // it always is), and it made things worse both by row count (732/119 improved/regressed
+                // vs 772/79 bare) and by total magnitude. Unlike `domain_cards` (where `est.card` is a
+                // mathematically guaranteed upper bound on the true joint count, so `.min()` can only
+                // tighten), there's no such guarantee here -- `exact_domain` only covers the children
+                // `best_other`/the arith-merge actually captured (a sibling those mechanisms skip, a
+                // residual range or an uncaptured second existential, narrows the REAL candidate set
+                // further without `exact_domain` knowing it), and the true value is SOMETIMES bigger
+                // than both candidates, not just smaller. "Take the smaller number" isn't a safety net
+                // for a quantity that can be wrong in either direction -- it just doubles down on
+                // whichever candidate under-shoots.
+                //
+                // The 79 residual regressions (`f:penny produces:u`, `border:black id:r`, ...) are
+                // accepted as a known, documented gap: summed by MAGNITUDE, not row count, they add
+                // 134,494 units of error against 6,805,680 shed by the 772 improved rows (total absolute
+                // error across the whole affected population: 8,008,106 -> 1,336,920, an 83% cut) --
+                // the worst single regression is 6,235, the best single improvement 74,418
+                // (`id:br r<=uncommon`: 97,812 predicted -> 23,394, an exact match). A raw
+                // improved/regressed row COUNT alone overstates how mixed this is: several of the
+                // "regressed" rows are swings like 3 -> 4 against a true 1, noise on a query this
+                // narrow already costs nothing to get wrong.
+                return exact_domain.printing.min(n_printings as usize);
+            }
+            // `est.candidate == est.result` mirrors `domain_cards`' own guard: nothing was tightened
+            // away from the leaf/pair-exact estimate, so `exact_printing_span` (already gated to
+            // card-invariant filters above, where match count IS the matching cards' full span) is the
+            // true span under exactly these candidates.
             if est.candidate.printing == est.result.printing
                 && let Some(printings) = exact_printing_span
             {
