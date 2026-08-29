@@ -96,6 +96,16 @@ regressed / 192 tied, total absolute `scan_units` error 8.60M → 8.02M on the h
 `GatheredScan`/`card` FAIL as before on the single-run agreement gate — see Round 3 below for why that
 is expected and not a sign the fix did nothing.
 
+As of Round 4 (`COMPOSE_RANGE_AND_BROAD_SCAN_SCALE`, `costcell/04-broad-guard`), the LATER
+`range_too_broad_to_narrow` guard's full-corpus reset (see Round 3's mid-investigation finding above)
+scales `scan_units` alone down to `0.7 * n_printings` whenever `is_cross_index_range_and` holds --
+`eval_domain` is left at the full `n_cards`, confirmed exact (0 total absolute error against the real
+`cards_visited` counter) for this population, not merely assumed. Held-out paired-diff (372/1,500
+guard-fired rows, hash-of-query split): 166 improved / 15 regressed / 0 tied, total absolute
+`scan_units` error 5.40M → 1.90M on the held-out half. Same `GatheredScan`/`card` agreement-gate FAIL
+as before (16%, unchanged) — this guard-fired subset is a small slice of that pooled cell, same
+reasoning as Round 3.
+
 ## Iteration ledger
 
 | # | Idea | Outcome | GS/card within-25% | Other cells | Notes |
@@ -104,6 +114,7 @@ is expected and not a sign the fix did nothing.
 | 1 | match-density depth proxy | kept | 16% → 17% (noisy, uncontrolled) | none, within run-to-run noise | paired-diff (controlled): 946 impr / 544 regr, 29.6M → 9.86M abs `scan_units` error; `BIAS` refit 2.1 → 0.7 |
 | 2 | independence-product `domain_cards` for 2+ different-index range leaves | rejected at self-check | n/a (no code shipped) | n/a | printing-space variant: 38 impr / 496 regr, 17.3M → 18.1M abs error (worse); card-space variant: 0/1500 changed (mathematically incapable of firing) — see Round 2 below |
 | 3 | second clustering-bias constant (`COMPOSE_RANGE_AND_CLUSTER_BIAS`) for the same shape | kept | n/a (see Round 3 below — noisy at this cell's grain) | none, within run-to-run noise | held-out paired-diff (controlled): 433 impr / 117 regr, 8.60M → 8.02M abs `scan_units` error; new bias 1.1 against `COMPOSE_CARD_ESTIMATE_BIAS`'s 1.78 |
+| 4 | downward `scan_units` scale (`COMPOSE_RANGE_AND_BROAD_SCAN_SCALE`) for the `range_too_broad_to_narrow`-fired subset of the same shape | kept | n/a (see Round 4 below — noisy at this cell's grain) | none, within run-to-run noise | held-out paired-diff (controlled): 166 impr / 15 regr / 0 tied, 5.40M → 1.90M abs `scan_units` error; new scale 0.7; `eval_domain` left untouched (measured exact, 0 error) |
 
 ### Round 1
 
@@ -293,6 +304,92 @@ same noisy sanity check Round 1 already established is uninformative at this gra
   A2, zero code difference): `-0.6µs, CI [-0.9, -0.4]`, also "B is FASTER" — a swing of comparable (here
   larger) magnitude with nothing changed, matching Round 1's own non-interleaved-run drift finding. Read
   as no detectable latency effect either way, not as a confirmed speedup.
+
+### Round 4
+
+Target: the "broad" ~24-25% of the same `is_cross_index_range_and` population Round 3 flagged out of
+scope -- the subset where `range_too_broad_to_narrow` (a LATER, independent guard, found mid-
+investigation by Round 3) resets `eval_domain`/`scan_units` to the full corpus regardless of any
+bias, because the And's min-folded `printing_matches` alone is too broad a fraction of `n_printings`
+to trust `domain_cards`. Round 3's own report called the ~69% "real usage" figure for this subset a
+mid-investigation finding, not validated -- this round re-derives it from scratch on a fresh sample
+before building anything on it.
+
+**Re-derivation.** Sampled 1,500 and2/and3 RANGE_FAMILIES queries (`unique=card`, fresh seed) via
+`query()` with `Shape(families=RANGE_FAMILIES, predicates=2 or 3)` -- family draws are distinct-
+without-replacement and each of the 5 `RANGE_FAMILIES` maps 1:1 to its own printing-value index, so
+every sampled query is `is_cross_index_range_and` by construction, same reasoning Round 3 used.
+Detected the guard firing by its signature (`eval_domain == n_cards` and `scan_units == n_printings`,
+which for this printing-varying population -- never card-invariant, never a bare collection leaf,
+and Round 2 already proved `est.result.card` is never `Some` here -- means the guard fired with none
+of its four exemptions applying): **372/1,500 (24.8%)**, matching the ~24-25% cited going in.
+
+Read the real GatheredScan counters via `explain_analyze` (`num_warmups=0, num_trials=1`; counters
+are round-invariant -- checked directly by rerunning 20 queries at `(0, 1)` against `(2, 5)` with
+identical `cards_visited`/`printings_examined` both times). Result, on the 372 guard-fired rows:
+
+    real cards_visited      / n_cards       mean 1.000   median 1.000   (0 rows below 1.0)
+    real printings_examined / n_printings   mean 0.697   median 0.713
+
+`eval_domain` (`n_cards`) is EXACT for every one of the 372 rows, not just close -- real card-space
+narrowing gives up at the same `range_too_broad_to_narrow` threshold this guard checks (the function
+is shared with the real narrowing path, not just this pricing site), so a GatheredScan the router
+actually runs after this fires really does visit every card. `scan_units` is the opposite: the guard's
+`n_printings` ceiling is real (never measured over 1.0) but loose, at a stable ~0.70 of it -- this
+re-derives the ~69% figure cleanly, and settles the "did the guard also give up on the printing side"
+question the eval_domain number could not answer.
+
+**Fix.** Left `eval_domain` untouched (scaling an already-exact number down would reintroduce the
+under-charge this guard exists to prevent -- the exact failure mode the four existing exemptions were
+each added to fix, so this round does not risk it even via a downstream scale). Added
+`COMPOSE_RANGE_AND_BROAD_SCAN_SCALE` (0.7), applied to `scan_units` alone, gated on
+`is_cross_index_range_and(composed, indexes)` -- reused unchanged from Round 3, not reimplemented.
+This is a scale on the ALREADY-DECIDED reset, not a 5th exemption: the guard's unconditional reset
+still fires exactly as before; only what `scan_units` (never `eval_domain`) resets TO changes, and
+only for this one shape.
+
+**Fit.** Split the 372 guard-fired rows by `hash(query) % 2`: 191 calibration / 181 held-out. Swept
+0.60-0.84 in steps of 0.01 on the calibration half only; both halves' error-vs-scale curves are
+smooth, convex, and minimize at the SAME 0.71 (closer agreement than Round 3's two minima 0.04 apart).
+Picked 0.7, inside the flat bottom of both and matching the sample's own mean/median realized fraction
+almost exactly.
+
+```
+                          calibration (n=191)              held-out (n=181)
+scan_units total abs      5.64M (1.0) -> 1.92M (0.7)        5.40M (1.0) -> 1.90M (0.7)
+improved / regressed                172 / 19                        166 / 15
+price-triple subset (n)                  79                              71
+price-triple total abs   1.91M (1.0) -> 0.79M (0.7)        1.82M (1.0) -> 0.75M (0.7)
+```
+
+**Price-triple check.** The held-out price-triple subset (`usd`/`eur`/`tix`, 2+ of them) improves
+proportionally in line with the whole population (62 improved / 9 regressed) -- same reasoning as
+Round 3's own price-triple check: a flat scale on an already-computed ceiling has no per-leaf
+independence assumption for the near-identical price columns to violate.
+
+**Verified against the real build, not just simulation.** Rebuilt the modified engine and re-ran the
+identical 1,500-query, same-seed sample through it directly -- `eval_domain` matched `n_cards` on all
+372 guard-fired rows (0 mismatches) and `scan_units` matched `round(0.7 * n_printings)` exactly (0
+mismatches), and the real paired diff landed on the exact same numbers as the Python-side
+re-derivation (5.64M/5.40M -> 1.92M/1.90M, 172/19 and 166/15).
+
+**Why the single-run agreement gate doesn't move.** `bench_cost_model_agreement.py`'s `GatheredScan`/
+`card` cell stayed at 16% within [0.8, 1.25] on both builds (33,966 vs 33,806 rows) -- expected: this
+cell pools every card-mode `PrintingCompose` acquire, and the guard-fired subset of
+`is_cross_index_range_and` is a small slice of it, same reasoning as Round 3.
+
+### Round 4 confirmation runs
+
+- `cargo test --manifest-path card_engine/Cargo.toml`: 167 passed, 0 failed, 56 ignored.
+- `cargo clippy --manifest-path card_engine/Cargo.toml --all-targets -- -D warnings`: clean.
+- `bench_regret_matrix.py --seconds 120 --mode uniform`: same shape as Rounds 1 and 3 -- regret still
+  96% `printing_compose` share, `StreamedSelect -> GatheredScan` / `GatheredScan -> PrintingCompose`
+  still the largest picked/best mismatches, nothing resembling the 23.6x acquire-time precedent.
+- `bench_query_latency_ab.py --mode realistic --sample 800 --seed 1`, baseline vs modified, interleaved
+  A1/B1/A2: real diff `B - A = +0.4µs, 95% CI [+0.3, +0.6]`, "B is SLOWER". Same-build canary (A1 vs
+  A2, zero code difference): `-0.4µs, CI [-0.5, -0.2]`, "B is FASTER" -- a swing of comparable
+  magnitude with nothing changed, matching Rounds 1 and 3's own non-interleaved-run drift finding. Read
+  as no detectable latency effect either way, not as a confirmed regression.
 
 ## Confirmation runs
 

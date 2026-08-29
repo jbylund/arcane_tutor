@@ -11241,6 +11241,59 @@ const COMPOSE_CARD_ESTIMATE_BIAS: f64 = 1.78;
 /// raising, not the single-leaf population's saturating overcount that 1.78 corrects.
 const COMPOSE_RANGE_AND_CLUSTER_BIAS: f64 = 1.1;
 
+/// Downscale for `scan_units` alone, on the ~25% of the SAME `is_cross_index_range_and` population
+/// (see `COMPOSE_RANGE_AND_CLUSTER_BIAS`, just above) where `range_too_broad_to_narrow` -- a LATER,
+/// independent guard just below in `acquire_plan_features` -- resets `eval_domain`/`scan_units` to
+/// the full corpus (`n_cards`/`n_printings`) because the And's min-folded `printing_matches` alone
+/// is too broad a fraction of `n_printings` to trust `domain_cards`. That reset is deliberately
+/// conservative for `eval_domain`: real card-space narrowing gives up at the SAME threshold this
+/// guard checks (`range_too_broad_to_narrow` is called from the real narrowing path too, not just
+/// here), so a GatheredScan the router actually runs after this fires really does visit every card
+/// -- confirmed directly against the real `cards_visited` counter, 0 total absolute error over 372
+/// sampled rows (see below), not merely assumed. `eval_domain` is therefore left untouched: it is
+/// already exact for this population, and scaling it down would reintroduce the under-charge this
+/// guard exists to prevent.
+///
+/// `scan_units` is a different story. Every printing under every candidate card is NOT what
+/// `exec_gathered_scan` actually bit-tests once card-space narrowing has given up -- the real
+/// `printings_examined` counter (round-invariant; checked directly by rerunning 20 queries at
+/// `num_warmups=0/trials=1` against `num_warmups=2/trials=5` with identical counters both times)
+/// reads a stable ~70% of `n_printings`, not 100%, on this population specifically. `n_printings`
+/// is still a sound UPPER bound (never measured over 1.0 on the sample below), so this is the same
+/// "calibrated multiplicative correction on an already-conservative estimate" pattern as
+/// `COMPOSE_RANGE_AND_CLUSTER_BIAS` and `COMPOSE_CANDIDATE_SPAN_BIAS` -- not a new exactness claim,
+/// and not a 5th exemption added to the guard's own disjunction (the guard's reset still happens
+/// unconditionally; only what it resets `scan_units` TO changes for this one shape).
+///
+/// Fit as a plain scale sweep on 1,500 and2/and3 RANGE_FAMILIES queries (`unique=card`, same
+/// population and precedent size as Rounds 1-3 of
+/// `docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md`), captured via
+/// `explain_analyze`'s real `printings_examined` GatheredScan counter. Every sampled query is
+/// `is_cross_index_range_and` by construction (`query()`'s family draws are distinct-without-
+/// replacement over the 5 `RANGE_FAMILIES`, each its own index), so no separate shape filter was
+/// needed on top of the guard-fired subset. 372/1,500 (24.8%) rows had the guard fire -- matching
+/// the ~24-25% this constant's population was flagged at when `COMPOSE_RANGE_AND_CLUSTER_BIAS` was
+/// fit. Split by `hash(query) % 2`: 191 calibration / 181 held-out. Swept 0.60-0.84 in steps of 0.01
+/// on the calibration half only; both halves' error-vs-scale curves are smooth, convex, and minimize
+/// at the SAME 0.71 (closer agreement than `COMPOSE_RANGE_AND_CLUSTER_BIAS`'s two minima 0.04 apart).
+/// Picked 0.7, inside the flat bottom of both curves and matching the sample's own mean/median
+/// realized fraction (0.697 / 0.713) almost exactly.
+///
+/// ```text
+///                           calibration (n=191)              held-out (n=181)
+/// scan_units total abs      5.64M (1.0) -> 1.92M (0.7)        5.40M (1.0) -> 1.90M (0.7)
+/// improved / regressed                172 / 19                        166 / 15
+/// price-triple subset (n)                  79                              71
+/// price-triple total abs   1.91M (1.0) -> 0.79M (0.7)        1.82M (1.0) -> 0.75M (0.7)
+/// ```
+///
+/// The held-out price-triple subset (`usd`/`eur`/`tix`, 2+ of them) improves proportionally in line
+/// with the whole population (62 improved / 9 regressed) -- same reasoning as
+/// `COMPOSE_RANGE_AND_CLUSTER_BIAS`'s own price-triple check: this is a flat scale on an already-
+/// computed ceiling, not a per-leaf independence combination, so the near-identical price columns'
+/// correlation has nothing to break.
+const COMPOSE_RANGE_AND_BROAD_SCAN_SCALE: f64 = 0.7;
+
 /// Printings the gather BIT-TESTS per matching printing.
 ///
 /// `compose_scan_printings` was the composed bitmap's popcount, on the stated grounds that compose
@@ -12189,7 +12242,18 @@ fn acquire_plan_features(
             || card_invariant_domain_exact)
             && range_too_broad_to_narrow(printing_matches, n_printings as usize)
         {
-            (n_cards as usize, n_printings as usize)
+            // `eval_domain` stays the full `n_cards` unconditionally -- see
+            // `COMPOSE_RANGE_AND_BROAD_SCAN_SCALE`'s doc for why that half of the reset is already
+            // exact for the one shape this narrows further. `scan_units` alone gets the downward
+            // scale, and only for `is_cross_index_range_and`: every other query reaching this branch
+            // (a single broad range, a broadcast legality, ...) never had this scale's calibration
+            // sample in it, so it keeps today's unscaled `n_printings` ceiling.
+            let scan_units = if is_cross_index_range_and(composed, indexes) {
+                ((n_printings as f64) * COMPOSE_RANGE_AND_BROAD_SCAN_SCALE).round() as usize
+            } else {
+                n_printings as usize
+            };
+            (n_cards as usize, scan_units)
         } else {
             (eval_domain, scan_units)
         };
