@@ -87,6 +87,23 @@ GatheredScan   card   n=33,944   median 0.72   p10 0.25   p90 3.20   17% within 
 Still FAIL by the [0.8, 1.25] median bar — see Round 1 below for why the whole-cell number barely
 moves despite a real, controlled improvement in the feature itself.
 
+**As of Round 9 (`costcell/trunk` @ `58eebfdc`), the cell has crossed from FAIL to PASS** — the first
+time since this doc opened. Independently re-measured (fresh isolated build, same protocol, not just
+the shipping round's own self-reported numbers):
+
+```
+GatheredScan   card   n=35,132   median 0.81   p10 0.44   p90 2.99   26% within 25%   PASS
+```
+
+Nine rounds landed six kept, held-out-validated fixes (Rounds 1, 3, 4, 6, 7, 9) and one clean
+mathematical rejection (Round 2), spanning two previously-separate root causes: the printing-varying
+range-leaf family (`compose_printing_estimate`/`scan_all`'s feature estimation, `lib.rs`) and, as of
+Round 9, `GatheredScan`'s own cost FORMULA (`cost.rs`) under-charging zero-match `candidates`-acquire
+queries by ~4x. The 26%-within-25% figure is still well short of the 90%-within-10% aspiration this
+doc opened with — Round 8's diagnostic identified two more concrete, unaddressed mechanisms
+(card-mode's unconditional `matches = count` ignoring residual selectivity, and an `Or`/negation
+population invisible to this benchmark's flat-conjunction sampling) as the next candidates.
+
 As of Round 3 (`COMPOSE_RANGE_AND_CLUSTER_BIAS`, `costcell/03-cluster-bias`), the `est_cards` fallback
 for an `And` of 2+ different-index printing-varying range leaves (the ~37% subset Round 1 identified
 as ceiling-capped, and Round 2 proved no independence-product combination can fix) uses its own
