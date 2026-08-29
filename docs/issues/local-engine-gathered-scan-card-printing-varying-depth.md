@@ -143,6 +143,7 @@ headline number, same grain argument as Rounds 3/4/6.
 | 5 | diagnostic: re-bucket remaining error by AST shape | diagnostic | n/a (no code shipped) | n/a | see Round 5 below — fresh magnitude-weighted bucketing (n=30,892) finds 74.9% of all pooled `scan_units` error sits in the `range_too_broad_to_narrow` broad-guard reset FIRING OUTSIDE `is_cross_index_range_and` (a population Round 3/4's own comment already flagged as unscaled on purpose); Rounds 1-4's target shape drops to 2.3% of pooled error, median ratio 1.00 — confirming the shipped fixes worked, just on a small slice of the cell |
 | 6 | downward `scan_units` scale (`COMPOSE_BARE_RANGE_BROAD_SCALE`) for the `CardRangePopcount` arm's own `range_too_broad_to_narrow` reset (single bare range leaf, `unique=card`) | kept | 15-17% both builds, unchanged (noisy at this cell's grain, same as Rounds 3/4); the finer `GatheredScan/card_range_popcount` sub-row moved 47%→52% within [0.8,1.25], median 0.94→1.05 | none, within run-to-run noise; regret matrix unchanged (96% `printing_compose` share both builds) | held-out paired-diff (controlled): 1,704 impr / 31 regr, 93.3M → 16.0M abs `scan_units` error; new scale 0.43; `eval_domain` left untouched (96.6% of rows exactly 1.0, mean 0.975 — a real but small tail from price-field null-exclusion, not chased); flags the sibling `else` branch's `scan_units = card_est` as itself badly under-calibrated (median ratio ~0.25-0.37 by field) — not fixed this round, out of scope, noted for a future round |
 | 7 | downward `scan_units` scale (`COMPOSE_SAME_RANGE_BROAD_SCAN_SCALE`) for `PrintingCompose`'s OWN `range_too_broad_to_narrow` reset, gated on a NEW `is_same_index_range_only` (bare single range leaf, or a fused same-field two-sided bound) — the rest of Round 5/6's "single:range" bucket that `CardRangePopcount` never reaches | kept | 17-18% both builds, unchanged (noisy at this cell's grain, same as every prior round); the pooled `GatheredScan/printing_compose` row (all `unique` modes) unchanged at 24% both builds — expected, small slice of a much larger diverse pool | none, within run-to-run noise; regret matrix unchanged (95% `printing_compose` share both builds) | held-out paired-diff (controlled): 6,422 impr / 33 regr, 304.8M → 57.6M abs `scan_units` error; new scale 0.52; `eval_domain` left untouched (measured exact, median/mean 1.000); population confirmed to be a SEPARATE, independently-broken slice of "single:range" from Round 6's, reached via a different acquire branch (`printing_compose`, not `card_range_popcount`) for two independent reasons — see Round 7 below |
+| 8 | diagnostic: bucket candidates-acquire `GatheredScan`/`card` error by shape | diagnostic | 13% (n=22,190, median 0.60), unchanged from checkpoint — expected, no code shipped | n/a | see Round 8 below — pivots off the printing-range-index family entirely (Rounds 1-7's whole target) onto `Prep::Candidates`, the OTHER acquire branch feeding this same pooled cell. Finds `eval_domain` exact (median 1.00 against `cards_visited`) and `scan_units` also near-exact-to-UNDER-predicting (median 1.00, several high-magnitude buckets 1.2-1.8x, i.e. real work exceeds the estimate) — the OPPOSITE direction from the pooled ns-space over-cost (median 0.49-0.60), so neither size feature is the culprit; the bug is in how `GATHER_*` rate/fixed constants convert those (correct) features into ns for the `candidates` (and sibling `plane`) acquire branch specifically. Two concrete mechanisms found: (a) `GATHER_FIXED_COST_NS` (169.6ns) is ~4x too high for the 32% of the sample with zero matches (median measured 42ns); (b) card-mode's `feats.matches = count` (unconditional, `candidate_feats`, lib.rs~11776) ignores real residual selectivity — `is:vanilla`-shaped high-selectivity residuals push 2-3% of the predicted match count, and the whole per-candidate verify-tier charge (`GATHER_CARD_PASS_NS + max(tier_ns, GATHER_RESIDUAL_FLOOR_NS)` × `eval_domain`) doesn't discount for short-circuit-driven cheap-average-case cost the way real `card_pass` behaves at low match rates. A THIRD population invisible to `bench_cost_model_agreement.py`'s own flat-conjunction sampler — Or/negation/nested-paren structures via `structured_query()` — shows the opposite tail shape (median near 1.0, p90 1.25-3.48x UNDER-cost) and needs its own round. |
 
 ### Round 1
 
@@ -820,6 +821,217 @@ n=9,986 in this round's sample) is real, separately broken, and out of this roun
 structurally the same "card-count-shaped estimate undershooting a printing count" bug Round 6 flagged
 in `CardRangePopcount`'s sibling `else` branch, now confirmed to have a `PrintingCompose`-side
 counterpart too.
+
+### Round 8
+
+Diagnostic only, no code changes. Rounds 1-7 exhausted the printing-range-index family
+(`compose_printing_estimate`/`CardRangePopcount`/`PrintingCompose`, all reached via `Prep::Range`) and
+the pooled `GatheredScan`/`card` cell still reads 13-16% within [0.8, 1.25], essentially unchanged from
+Round 0's baseline. This round asks where the rest of the error lives, and finds it in a completely
+different acquire branch: `Prep::Candidates` (`count_source == "candidates"`), reached whenever
+`prepare_candidates`/`narrow_rec` cannot resolve the query to a bare range or a fully plane-compilable
+expression -- text search (`name`/`o`/`ft`/`a`), the extended arithmetic syntax (`power+toughness<6`,
+`cmc>=power`), `is:`-rewrite predicates, `loyalty`, and any `Or`/negated/nested-paren structure, none of
+which `is_printing_composable`/`is_broadcast_leaf_shape` accept.
+
+**Checkpoint** (`bench_cost_model_agreement.py --seconds 180 --seed 0`, isolated release wheel, same
+protocol as every prior round): `GatheredScan`/`candidates` reads `n=22,190 median 0.60 p10 0.25 p90
+0.92 13% within 25% FAIL` -- the single largest acquire-branch row in the whole per-plan table by row
+count, well below the `[0.8, 1.25]` bar, and **over-costed** (`median < 1`), the opposite direction
+from every range-leaf fix Rounds 1-7 shipped.
+
+**Method.** Two throwaway samplers (not checked in), both pinning `unique=card` and varying
+`orderby`/`direction`/`limit`/`offset` the way `bench_cost_model_agreement.py` does, against an
+isolated release wheel:
+
+- **Flat-conjunction sample** (`QuerySampler.query()`'s own body, reimplemented inline per Round 5's
+  trick so each row keeps which families were drawn): 300s, uniform mode, seed 0 -- 125,680 queries
+  sampled, **45,451 kept** after filtering to `count_source == "candidates"` and a non-declined
+  `GatheredScan` trial. This is the same population `bench_cost_model_agreement.py` itself samples
+  (same generator), just larger and carrying per-row family/shape metadata the harness doesn't keep.
+- **Structured-connective sample** (`QuerySampler.structured_query()`, which draws `Or`/negated/
+  parenthesized/regex shapes `query()` can never produce): 240s, uniform mode, seed 1 -- 47,058
+  sampled, **29,192 kept**. `bench_cost_model_agreement.py` cannot see this population at all --
+  `sampler.query()` only ever emits a flat conjunction -- so it is invisible to the checkpoint number
+  above regardless of how large its error turns out to be.
+
+Per row: `predicted_ns` = `costbench.predicted_ns` (the `GatheredScan` trial's `predicted_ns`),
+`measured_ns` = `costbench.plan_self_ns` (the same netting rule the checkpoint gate uses -- `candidates`
+is in neither `RANGE_ACQUIRES` nor exempt, so `plan_self_ns` is the executor alone, no `ns_prepare`
+added back). Feature-level: `explain`'s own `acquire.scan_units`/`acquire.eval_domain` against the
+`GatheredScan` trial's real `printings_examined`/`cards_visited` counters -- the same pairing Rounds
+3-7 used for the range family, applied here to `Prep::Candidates` for the first time.
+
+**Which feature is actually mismatched -- checked, not assumed.** Over the flat-conjunction sample:
+
+```
+eval_domain / cards_visited     n=30,794   median 1.00   p10 1.00   p90 1.00   (essentially exact)
+scan_units  / printings_examined n=30,586   median 1.00   p10 0.52   p90 3.00   (noisier, but not
+                                                                                  systematically over)
+overall measured_ns / predicted_ns  n=45,451  median 0.49  p10 0.24  p90 0.86   within25% 8%
+```
+
+`eval_domain` is exact everywhere sampled. `scan_units` is close to exact at the pooled median and, in
+several of the highest-magnitude buckets below, **under**-predicts (real `printings_examined` bigger
+than the estimate) -- the opposite direction from the pooled ns-space over-cost. Neither size feature
+is the mismatched one; the bug is downstream, in how `GatheredScan`'s rate/fixed constants
+(`cost.rs`'s `PhysicalPlan::GatheredScan` arm) convert these already-correct features into nanoseconds
+for this acquire branch specifically.
+
+**Ranked bucket table** (flat-conjunction sample, `structure:sorted-category-tuple`, same taxonomy
+style as Round 5 but rebuilt for this population -- `arith`/`text`/`collection`/`broadcast`/`range`/
+`rarity`/`legality`/`loyalty` categories, since Round 5's range-family taxonomy under-describes a
+population dominated by families no printing-range machinery ever sees):
+
+```
+bucket                                 n   share(abs ns err)  med_ns  med_scan_units  med_eval_domain  within25%
+single:arith                        2188              25.3%    0.66            1.00             1.00        0%
+and2:arith+range                     681              16.6%    0.71            1.74             1.00       30%
+single:collection                    724              13.9%    0.66            1.00             1.00        4%
+single:text                         8420               6.6%    0.58            1.00             1.00       14%
+and2:collection+range                289               5.8%    0.61            1.70             1.00       12%
+and2:range+text                     2799               4.4%    0.63            1.16             1.00       19%
+and2:arith+rarity                    142               4.2%    0.59            1.72             1.00       27%
+and2:arith+broadcast                 662               2.7%    0.66            1.00             1.00        1%
+and2:broadcast+collection            269               2.6%    0.49            1.00             1.00        1%
+and2:arith+collection                1291              2.6%    0.52            1.00             1.00        8%
+```
+
+(`arith` = extended syntax over `power`/`toughness`/`cmc` compounds, never `is_broadcast_leaf_shape`-
+eligible since that gate requires a bare `NumField`, not a `NumExpr::Add`, so every arith predicate
+lands in `candidates` unconditionally; `collection` = `type`/`keyword`/`tag`/`produces`/`set`/`border`/
+`frame`/`watermark`/`devotion`; `broadcast` = `color`/`identity`/`cmc`/`pow`/`tou` singleton leaves that
+usually escape to `Prep::Plane` but land here when paired with a non-composable partner.)
+
+**Not shape-concentrated -- broad-based instead.** Every top-10 bucket reads `median_ns` in a tight
+0.49-0.71 band regardless of which families are involved -- text-only, collection-only, and every
+arith combination all cluster together. This is the opposite of Rounds 3-7's range-leaf findings,
+where the fix was scoped to one precise shape; here the shape taxonomy is not the axis that
+separates fixed from broken. `scan_units`'s per-bucket median tells the same story from a different
+angle: it reads exactly 1.00 (agreeing with the real count) for every bucket where the query's
+predicates carry high selectivity relative to the corpus, and 1.16-1.74 (UNDER-predicting) for the
+`range`/`rarity`-paired buckets -- i.e. the one feature that DOES vary across buckets moves in the
+wrong direction to explain a uniform over-cost.
+
+**What actually separates fast-and-cheap from over-costed: `eval_domain` SIZE and match rate, not
+shape.** Cutting the same sample by predicted `eval_domain` decile:
+
+```
+eval_domain range        n      median ns_ratio
+0                     13,635          0.25   (deciles 0-2, exactly zero candidates)
+(0, 2]                 4,545          0.39
+(2, 9]                 4,545          0.46
+(9, 23]                4,545          0.53
+(23, 57]               4,545          0.60
+(57, 161]              4,545          0.62
+(161, 937]             4,545          0.68
+(937, 31724]           4,546          0.68
+```
+
+and by verify-cost tier (`residual_tier_ns100`, from `filter.rs`'s `verify_cost_tier`):
+
+```
+tier                          n   share(abs ns err)   median ns_ratio
+MASK_COMPARE (400)         7,102              49.0%              0.49
+0 / all_match_known       15,590              39.3%              0.57
+SET_LOOKUP (900)          16,490               9.6%              0.47
+TEXT_SCAN (2,300)          5,578               1.4%              0.38
+REGEX_MACHINERY (5,000)     691               0.7%              1.59
+```
+
+The two biggest tiers by magnitude (MASK_COMPARE, all_match_known) are not the two most *miscalibrated*
+by ratio -- they dominate by ROW COUNT (88% of rows between them), same "volume, not tier-specific
+miscalibration" pattern the doc has seen before. The real signal is the monotonic decay above: ratio
+degrades steadily as `eval_domain` shrinks toward zero, which points at **two separate, compounding
+mechanisms** rather than one shape-specific bug:
+
+1. **`GATHER_FIXED_COST_NS` (169.6ns) is ~4x too high for zero-match rounds.** 14,657 of the 45,451
+   sampled rows (32%) have `matches == 0` -- every multiplicative term in `PhysicalPlan::GatheredScan`'s
+   `cost.rs` formula vanishes, so `predicted_ns` collapses to exactly `GATHER_FIXED_COST_NS` (median
+   predicted 169.6ns, matching the constant to the decimal). Real measured cost for these rounds: median
+   42.0ns -- a clean, isolated, shape-independent 4x over-charge with no other term involved. Cheap in
+   absolute ns per query, but 32% of the whole `candidates` population by row count, so it alone would
+   move a meaningful share of the within-25% pass rate.
+
+2. **Card-mode's `feats.matches = count` (unconditional, `candidate_feats`, `lib.rs` ~11776) ignores real
+   residual selectivity, and the per-candidate verify-tier charge doesn't discount for it either.**
+   Printing/artwork mode already has a residual-pass-rate discount here (`RESIDUAL_PASS_RATE_PRINTING`/
+   `_ARTWORK`); card mode has none -- `matches` is the full candidate count regardless of whether
+   `all_match_known` holds. Concrete example, resampled 41 times in this run (`is:vanilla`, a static
+   `tag`-family value): `eval_domain = pred_matches = 17,437` (`residual_card_invariant = true`, tier
+   `MASK_COMPARE`), but `real_matches_pushed = 343` -- **2.0%** of predicted. `predicted_ns ≈ 601,657`,
+   `measured_ns ≈ 95,000`, ratio **0.16** -- worse than the zero-match mechanism above, and at a LARGE
+   `eval_domain`, contradicting a naive "small eval_domain only" read of the decile table. Not an
+   `is:`-specific artifact: the same `eval_domain >= 2,000` + `MASK_COMPARE` slice (n=756, 684 distinct
+   queries) reads median ratio 0.67, and the non-`is:` members alone (`t:creature year>2001` ratio 0.39,
+   `cmc>=power year>=1997` ratio 0.34, `name:s eur<=5.06` ratio 0.48, ...) show the same direction and
+   comparable magnitude. Over the whole residual-present population (`tier > 0`, n=29,861):
+   `real_matches_pushed / pred_matches` reads median 1.000 (most queries genuinely do have most
+   candidates match) but **p10 0.033** -- a real, fat left tail of 30x-overestimated match counts, not
+   a single outlier. `GATHER_PUSH_PER_MATCH_NS` (2.24 ns/match) explains only part of the gap in the
+   `is:vanilla` example (~39K ns of the ~507K ns predicted-minus-measured gap); the dominant term is
+   `eval_domain * (GATHER_LOOP_PER_CARD_NS + GATHER_CARD_PASS_NS + max(tier_ns, GATHER_RESIDUAL_FLOOR_NS))`
+   (~449K ns of that gap) -- i.e. the flat per-candidate verify-tier charge itself is too high whenever
+   the residual is this selective, plausibly because a real `card_pass` short-circuits cheaply on most
+   candidates at low match rates in a way `verify_cost_tier`'s single-node "worst child wins" model
+   cannot see, and `GATHER_RESIDUAL_FLOOR_NS` (18.89, calibrated -- per its own doc comment -- against
+   `bench_streamed_loop`'s always-true `DateCmp` design, a HIGH-match-rate population) may not transfer
+   to a low-match-rate residual the way that comment's own precedent ("the third time this file has
+   caught the same artifact") would predict. Both `residual_card_invariant = 0` (n=25,677, median ratio
+   0.47) and `= 1` (n=4,184, median ratio 0.38) show the same direction, so this is not exclusive to
+   card-invariant residuals either.
+
+**Pooling check (the task's explicit ask): does the over-cost direction hold uniformly, or does it
+mask an opposite error?** Within the flat-conjunction sample, YES it holds uniformly at the AST-shape
+level (every top-10 bucket's median sits in 0.49-0.71, no bucket flips sign) -- but the
+`scan_units`-feature check above already found the masked opposite: several buckets' `scan_units`
+*feature* under-predicts (1.16-1.74x) inside the SAME rows whose *time* prediction over-costs, meaning
+a naive "fix scan_units" reading of this cell would move the wrong lever. The real masking is
+structural rather than per-bucket: `bench_cost_model_agreement.py`'s flat-conjunction sampler cannot
+produce the population below at all, so its 13% headline is blind to it entirely, not merely diluting it.
+
+**A third, structurally invisible population: `Or`/negation/nested-paren connectives.** Sampled via
+`structured_query()` (`STRUCTURES`, never reachable through `sampler.query()`), 29,192 candidates rows:
+
+```
+structure         n   share(abs ns err)  median ns  p10   p90   within25%
+regex          3,812              33.4%       0.54  0.23  1.28        7%
+neg-or         3,895              18.8%       0.96  0.36  2.27       23%
+or3            2,203              16.3%       0.72  0.36  1.41       27%
+and-of-ors     2,650               9.7%       1.05  0.40  3.48       22%
+or2            1,668               8.0%       0.68  0.34  1.28       21%
+neg-and        2,519               5.9%       0.58  0.29  1.25       17%
+paren-or       2,637               4.9%       1.07  0.40  2.62       21%
+and-or         2,238               2.4%       0.68  0.25  1.96       19%
+and2/and3/and4/single (this run)  7,570        0.5%  0.25-0.63  0.24-0.41  0.69-0.93   4-10%
+```
+
+This population's median ratios (0.54-1.07) look far closer to the `[0.8, 1.25]` bar than the flat-
+conjunction population's do -- but the p90 column tells the opposite story: 1.25-3.48x, a severe
+UNDER-cost tail, the OPPOSITE direction from the flat-conjunction over-cost. Pooling this in with the
+flat population (which the real `bench_cost_model_agreement.py` never does, since it cannot sample
+`Or`/negation at all) would report something close to "fine," masking a tail that is large enough by
+row-count share (regex alone is 33.4% of THIS sample's pooled error) to plausibly drive real routing
+regret -- a query whose true cost is 2-3x its prediction can lose an argmin to a plan that looks
+cheaper on paper but isn't. This population needs its own round; it cannot be fixed by the same lever
+as the flat-conjunction findings above (median direction is opposite), and no existing harness tracks
+it at all.
+
+**What Round 9 should target, in order:**
+
+1. **`GATHER_FIXED_COST_NS` for zero-match `candidates`-acquired `GatheredScan` rounds** (mechanism 1
+   above) -- cleanest, most isolated, no shape dependency, same "precomputed floor constant" pattern as
+   every prior round's fix; likely the highest-confidence, lowest-risk first move given how cleanly it
+   isolates (predicted collapses to exactly one constant, real measured is a flat ~42ns).
+2. **Card-mode's `feats.matches` / the per-candidate verify-tier charge at low real match rates**
+   (mechanism 2) -- larger in magnitude (dominates the top-10 bucket table) but needs a genuine
+   calibration/held-out split against the real `card_pass` short-circuit behavior before trusting a
+   constant, not just a flat scale reused from mechanism 1; the price-triple-style correlation check
+   from Rounds 2-3 has no equivalent risk here (no independence-product combination proposed), but the
+   held-out split discipline from every prior round still applies.
+3. **The `Or`/negation/nested-paren population**, once 1-2 are shipped and re-measured -- needs its own
+   sampler wired into whatever harness tracks it going forward, since `bench_cost_model_agreement.py`'s
+   own generator structurally cannot see it.
 
 ## Confirmation runs
 
