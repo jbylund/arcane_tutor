@@ -93,6 +93,7 @@ moves despite a real, controlled improvement in the feature itself.
 |---|------|---------|--------------------|-------------|-------|
 | 0 | (baseline, `engine-cost-model-cleanup` @ `97dc30c8`) | — | 16% | — | n=35,074, median 0.67, p10 0.25, p90 2.75 |
 | 1 | match-density depth proxy | kept | 16% → 17% (noisy, uncontrolled) | none, within run-to-run noise | paired-diff (controlled): 946 impr / 544 regr, 29.6M → 9.86M abs `scan_units` error; `BIAS` refit 2.1 → 0.7 |
+| 2 | independence-product `domain_cards` for 2+ different-index range leaves | rejected at self-check | n/a (no code shipped) | n/a | printing-space variant: 38 impr / 496 regr, 17.3M → 18.1M abs error (worse); card-space variant: 0/1500 changed (mathematically incapable of firing) — see Round 2 below |
 
 ### Round 1
 
@@ -123,6 +124,81 @@ by comparable or larger amounts between the same two runs, purely from the two 3
 sampling a different number and mix of queries. The paired, same-query-set diff (1,500 shared queries,
 identical rng seed against both builds) is the only one of the two that actually isolates this
 change's effect, and it shows the real number.
+
+### Round 2
+
+Target: fix `domain_cards` itself for the ~37% subset Round 1 identified as ceiling-capped — an
+And of 2+ DIFFERENT-INDEX printing-varying range leaves (`price_usd`/`price_eur`/`price_tix`/
+`collector_number_int`/`released_at`, each its own separate index), where `exact_result_total`
+returns `None` (no pair-table/arith-tuple/plane-compile coverage exists for this combination) and
+`est_cards` falls back to `calibrated_balls_into_bins(printing_matches, n_cards)` on the min-folded
+(loosest) printing match count.
+
+**Self-check (constraint 3):** the only new per-query work in either variant tried is one extra
+`PrintingValueIndex::range` partition-point probe per distinct range field the And names (`O(log
+n)`, bounded by query length, never by match/printing/candidate count), reusing the exact same
+lookup `bare_range_bounds`'s other callers already pay per leaf — paid only after `exact_cards` has
+already declined. Every number traces to an existing precomputed structure (`PrintingValueIndex`,
+`calibrated_balls_into_bins`/`COMPOSE_CARD_ESTIMATE_BIAS`), no new per-query scan. This cleared the
+self-check; the idea failed on the empirical paired-diff instead, described below.
+
+**Attempt 1 — printing-space independence product.** Combined each leaf's own exact printing-match
+selectivity (`k_i / n_printings`) via `Π(k_i / n_printings) * n_printings`, excluding any
+combination touching 2+ of the price triple (checked directly: `price_usd<5 price_eur<4`-shaped
+queries are a real correlation risk, confirmed on a 500-query price-only paired diff below, though
+moot once the whole approach failed). Wired in as a `.min()` against the existing min-fold, feeding
+both `est_cards`'s fallback and (to keep the pair internally consistent) the Round-1 depth term's
+`density` numerator.
+
+Paired diff (1,500 shared and2/and3 RANGE_FAMILIES queries, unique=card, identical seed against
+baseline `costcell/trunk`@`f3f4a017`): **38 improved / 496 regressed / 966 tied, total abs
+`scan_units` error 17.3M → 18.1M (worse), within-25% 11.8% → 8.3% (worse)**. Price-triple-only
+subset (500 queries, `usd`/`eur`/`tix` and2/and3): 0 improved / 0 regressed — the correlation guard
+worked exactly as designed (no combination in that subset reached the independence branch), but
+this is moot given the whole-population result.
+
+**Why it failed, and why no independence variant can work here:** a probability-product
+combination is mathematically bounded above by its smallest single factor whenever every factor is
+`<= 1` (`Π p_i <= min(p_i)`) — so ANY such combination can only ever SHRINK an estimate relative to
+the tightest single-field bound, never raise it. Checking the baseline's own error DIRECTION on the
+1,500-query sample confirms this is the wrong direction for the dominant failure mode here: 866/1500
+rows (58%) already UNDER-estimate `scan_units`, only 450/1500 (30%) over-estimate, and Round 1's own
+investigation established that `domain_cards` for this population is a FLOOR that undershoots the
+true candidate span, not a ceiling that overshoots it (`printings_examined` exceeding even `domain_cards
+* printings_per_card`). A transform that can only shrink an already-too-small number cannot fix it;
+it just pushes the under-estimating majority further from the truth while incidentally helping the
+smaller over-estimating minority, netting negative overall — exactly the 38/496 split measured.
+
+**Attempt 2 — card-space independence product**, tried as "the closest variant" once attempt 1's
+mechanism was understood to be structurally wrong-directioned: instead of combining printing-space
+selectivities, combine each leaf's own CARD-space estimate (`calibrated_balls_into_bins(k_i,
+n_cards)`), on the theory that "this card has SOME printing satisfying leaf i" is a weaker,
+superset condition of the filter's real "one printing satisfies every leaf" semantics, so the
+combination should be able to raise the estimate instead of shrinking it. Wired in as `.max()`
+against today's fallback. Empirically: **0/1500 changed** — the `.max()` branch never won even
+once. This confirms the same math from the opposite direction: each leaf's own card-space estimate
+is itself `<= n_cards`, so the product-of-fractions form is bounded by the smallest such factor
+regardless of which space it is computed in — moving to card space changes what each factor MEANS,
+not the shape of the ceiling the combination is stuck under.
+
+**Conclusion:** rejected at self-check-plus-paired-diff. Both variants respected the
+pre-computation constraint (no new per-query scan class) but neither can fix a floor-too-low bug by
+construction — this rules out the whole "independence product" family for this specific target, not
+just a tuning miss. No code committed; both attempts were reverted (`git checkout --
+card_engine/src/lib.rs` against `costcell/trunk`, confirmed clean via `git diff --stat`).
+
+**Next steps for a future round:** the diagnosed bug (domain_cards undershoots the true candidate
+span for this shape) needs a mechanism that can RAISE the estimate, which independence-style
+combination cannot do. Two candidates worth checking before another attempt: (a) a flat,
+shape-specific multiplicative correction on top of `calibrated_balls_into_bins`'s output — same
+precedent as `COMPOSE_CANDIDATE_SPAN_BIAS`/`COMPOSE_CARD_ESTIMATE_BIAS` — but fit with a proper
+calibration/held-out split (not the same 1,500-query sample used to diagnose the bug, per this
+repo's benchmark-methodology rule); (b) investigating whether the undercount's true source is
+within-card printing clustering (reprints of the SAME card may jointly satisfy multiple range
+conditions at a materially higher rate than corpus-wide field marginals imply, since a card's own
+printings are not independent draws — the same clustering `COMPOSE_CARD_ESTIMATE_BIAS`'s 1.78
+divisor already corrects for at the SINGLE-field level), which would need a different precomputed
+source than the ones checked here, not just a different combination formula.
 
 ## Confirmation runs
 
