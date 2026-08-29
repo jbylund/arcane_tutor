@@ -64,7 +64,17 @@ but never crosses 1.0:
 | 1,000,000 | 108 | **1.43** | 12.70 | 330.44 |
 
 The closest `PrintingCompose` ever got, across every row in every regime, was 1.43x slower, at the
-largest limit tested (the #829 doc's own `GET /?q=...` no-cap shape). It was never faster.
+largest limit tested. It was never faster.
+
+**`limit=1,000,000` is not an arbitrary large probe — it's the real ceiling, and the sweep already covers
+it exactly.** `api/api_resource.py`'s `limit=None` path substitutes this exact literal
+(`limit=limit if limit is not None else 1_000_000`) for an uncapped `GET /?q=...`, and the engine clamps
+any limit to the true cardinality regardless (`offset.saturating_add(limit).min(v.len())`,
+`card_engine/src/lib.rs:5690` at investigation time) — printings top out at 97,206 in this corpus, cards
+at 31,508. So every limit above ~100k, including the one tested, degenerates to the identical "return
+everything" case; there is no larger, more extreme regime to test, because the API's own no-cap
+sentinel already sits ~10x past the true ceiling. The sweep's largest data point isn't a sample of the
+realistic range, it's the realistic range's actual maximum, reached exactly.
 
 **Why the margin is structural, not incidental.** Reaching `Prep::Plane` at all requires `filter ==
 FilterExpr::True` after `bind_and_split_filter` — the whole predicate folded into the plane — and
@@ -243,10 +253,13 @@ roll it out. Recorded for whoever revisits this:
   disagree.** Not chased down — see "Spike" above. Doesn't affect the conclusion, since a fastpath that
   declines contributes zero wins either way.
 - **Whether some predicate shape entirely outside this sweep's sampler (both `QuerySampler` modes, plus a
-  manual limit/offset sweep) could flip the result.** Nothing in 3,209 rows across four regimes did, and
-  the margin's own trend (narrowing but never crossing 1.0 as limit grows) suggests there isn't a
-  qualitatively different regime hiding past `limit=1,000,000`, but this is an inductive argument, not a
-  proof.
+  manual limit/offset sweep) could flip the result.** Nothing in 3,209 rows across four regimes did. The
+  limit dimension specifically is closed, not just inductively suggestive: `limit=1,000,000` is the API's
+  own uncapped-query sentinel and already exceeds the corpus's true printing/card cardinality, so there is
+  no larger limit a real query could ever issue — the margin's narrowing-but-never-crossing trend was
+  chased to its actual ceiling, not just a large sample point. What remains open is predicate SHAPE
+  (leaf types, `And`/`Or` combinations) outside what the two `QuerySampler` modes generate, which is a
+  real, separate axis this sweep didn't fully control for.
 - **Non-default `prefer` was tested (regime 2) and didn't change the qualitative result**, but only one
   sample was run varying it; if this doc is ever revisited, that's already covered rather than a gap.
 - **Whether `PrintingCompose`'s own acquire path (`Prep::Range(CountSource::PrintingCompose)`) — where it
