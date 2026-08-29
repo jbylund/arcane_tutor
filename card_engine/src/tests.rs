@@ -5140,6 +5140,62 @@ fn generate_calibration_corpus(n: usize, seed: u64) -> Vec<(String, FuzzSpec)> {
 /// on a quiesced machine (benchmark-artifacts protocol) — otherwise directional.
 /// The `est` column is the estimator's card-space point estimate (meaningful vs
 /// `total` in card mode; printing-mode totals count printings).
+/// Round 9 of the `GatheredScan`/`card` printing-varying-depth doc
+/// (`docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md`): a
+/// `Prep::Candidates`-acquired zero-match round collapses every multiplicative term in
+/// `PhysicalPlan::GatheredScan`'s cost arm to zero (`eval_domain`, `scan_units`, `page_span`/
+/// `page_rows`, `artwork_seen_printings` all derive from an empty candidate list), so the whole
+/// prediction used to read as `GATHER_FIXED_COST_NS` (169.6) alone — a real, isolated ~4x
+/// over-charge against the calibrated `GATHER_FIXED_COST_ZERO_MATCH_NS` (42.0; see that constant's
+/// doc comment for the held-out numbers). This asserts the gate fires on `matches == 0` alone and
+/// leaves every other case, including `matches > 0` with every OTHER term also zeroed (an edge a
+/// naive `eval_domain == 0` gate would need to special-case), on `GATHER_FIXED_COST_NS` unchanged.
+#[test]
+fn gathered_scan_zero_match_uses_the_lower_fixed_cost() {
+    use super::cost::{plan_cost, PlanFeatures};
+
+    // limit/offset both 0 so page_span/page_rows (which derive from `matches` too, not just
+    // eval_domain) stay zero regardless of `matches` — isolates the fixed-cost gate from the
+    // page-collect terms instead of re-deriving the whole formula here.
+    let base = PlanFeatures {
+        n_cards: 30_000, n_printings: 90_000,
+        matches: 0, eval_domain: 0, scan_units: 0, stream_scan_units: 0,
+        residual_card_invariant: false, residual_tier_ns100: 0,
+        artwork_seen_cards: 0, artwork_seen_printings: 0, compose_scan_printings: 0,
+        limit: 0, offset: 0,
+        broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0,
+        compose_paging: ComposePaging::Gather, collection_broadcast_printings: 0,
+        gather_group_printings: 0,
+    };
+
+    // matches == 0: every other term is already zero by construction above, so the whole
+    // prediction IS the fixed-cost term — must read the lower, zero-match constant.
+    let zero_match = plan_cost(PhysicalPlan::GatheredScan, &base);
+    assert!(
+        (zero_match - 42.0).abs() < 1e-9,
+        "zero-match GatheredScan should cost exactly GATHER_FIXED_COST_ZERO_MATCH_NS, got {zero_match}"
+    );
+
+    // matches == 1, eval_domain/scan_units still 0 — the gate reads `matches` itself, not a
+    // derived "is everything else zero" check, so this must NOT take the zero-match branch even
+    // though eval_domain/scan_units look identical to the zero-match case above. The one match
+    // still pays GATHER_PUSH_PER_MATCH_NS (2.24) on top of the higher fixed cost (169.6).
+    let one_match = plan_cost(PhysicalPlan::GatheredScan, &PlanFeatures { matches: 1, ..base });
+    assert!(
+        (one_match - 171.84).abs() < 1e-9,
+        "a single-match round must still use GATHER_FIXED_COST_NS (169.6) plus its own push cost, got {one_match}"
+    );
+
+    // A non-trivial, real-shaped `candidates` round (nonzero eval_domain/scan_units/matches) also
+    // reads the higher constant — the gate must not leak into ordinary rows via some interaction
+    // with the other terms.
+    let real = plan_cost(
+        PhysicalPlan::GatheredScan,
+        &PlanFeatures { matches: 500, eval_domain: 500, scan_units: 500, stream_scan_units: 500, ..base },
+    );
+    assert!(real > one_match, "a populated round must cost more than the bare fixed cost, got {real}");
+}
+
 #[test]
 #[ignore = "plan-cost calibration bench; needs real.store; cargo test --release plan_cost_calibration -- --ignored --nocapture"]
 fn plan_cost_calibration() {

@@ -131,6 +131,24 @@ improved / 33 regressed, total absolute `scan_units` error 304.8M → 57.6M on t
 this population turned out to be even larger by row count than Round 6's, and still barely moves the
 headline number, same grain argument as Rounds 3/4/6.
 
+As of Round 9 (`GATHER_FIXED_COST_ZERO_MATCH_NS`, `costcell/09-zero-match`), `PhysicalPlan::GatheredScan`'s
+cost arm (`cost.rs`, not `lib.rs` — the first fix in this doc that lives in the cost FORMULA rather
+than feature estimation) charges `42.0` instead of `GATHER_FIXED_COST_NS` (`169.6`) whenever `matches
+== 0`, gated the same way the arm's own `tier_ns > 0.0` neighbor already is. Targets Round 8's
+mechanism 1: a `Prep::Candidates`-acquired zero-match round collapses every OTHER term in the arm to
+zero, so the whole prediction used to read as `GATHER_FIXED_COST_NS` alone — confirmed independently
+(fresh 31,030-row sample, 9,890 zero-match, every non-fixed term exactly 0). Held-out paired-diff
+(hash-of-query split, 9,890 zero-match rows): calibration half (n=4,944) sets the constant to its
+median measured `plan_self_ns`, 42.0; held-out half (n=4,946) reads 4,577 improved / 369 regressed / 0
+tied, total absolute ns error 530,256 → 103,110 (5.1x), median ratio 0.248 → 1.000, within-25% 0.1% →
+57.7%. `GatheredScan`/`card` agreement-gate cell moves from 11% to 30% within [0.8, 1.25] (median 0.57
+→ 0.77) — still FAIL by the median bar (0.77 < 0.8) but the largest single-round movement of this
+number since Round 0, unlike every range-family round's "same 15-18%, unchanged" result; the by-unique
+`GatheredScan`/`card` cell flips FAIL → PASS (0.69 → 0.80). See Round 9 below for the residual-risk
+caveat this round found and verified as immaterial (a shared-`PlanFeatures` edge case in the
+RANGE_ACQUIRES-forced-competitor population, checked against `bench_regret_matrix.py` and found to move
+total regret by 0.0 ms).
+
 ## Iteration ledger
 
 | # | Idea | Outcome | GS/card within-25% | Other cells | Notes |
@@ -144,6 +162,7 @@ headline number, same grain argument as Rounds 3/4/6.
 | 6 | downward `scan_units` scale (`COMPOSE_BARE_RANGE_BROAD_SCALE`) for the `CardRangePopcount` arm's own `range_too_broad_to_narrow` reset (single bare range leaf, `unique=card`) | kept | 15-17% both builds, unchanged (noisy at this cell's grain, same as Rounds 3/4); the finer `GatheredScan/card_range_popcount` sub-row moved 47%→52% within [0.8,1.25], median 0.94→1.05 | none, within run-to-run noise; regret matrix unchanged (96% `printing_compose` share both builds) | held-out paired-diff (controlled): 1,704 impr / 31 regr, 93.3M → 16.0M abs `scan_units` error; new scale 0.43; `eval_domain` left untouched (96.6% of rows exactly 1.0, mean 0.975 — a real but small tail from price-field null-exclusion, not chased); flags the sibling `else` branch's `scan_units = card_est` as itself badly under-calibrated (median ratio ~0.25-0.37 by field) — not fixed this round, out of scope, noted for a future round |
 | 7 | downward `scan_units` scale (`COMPOSE_SAME_RANGE_BROAD_SCAN_SCALE`) for `PrintingCompose`'s OWN `range_too_broad_to_narrow` reset, gated on a NEW `is_same_index_range_only` (bare single range leaf, or a fused same-field two-sided bound) — the rest of Round 5/6's "single:range" bucket that `CardRangePopcount` never reaches | kept | 17-18% both builds, unchanged (noisy at this cell's grain, same as every prior round); the pooled `GatheredScan/printing_compose` row (all `unique` modes) unchanged at 24% both builds — expected, small slice of a much larger diverse pool | none, within run-to-run noise; regret matrix unchanged (95% `printing_compose` share both builds) | held-out paired-diff (controlled): 6,422 impr / 33 regr, 304.8M → 57.6M abs `scan_units` error; new scale 0.52; `eval_domain` left untouched (measured exact, median/mean 1.000); population confirmed to be a SEPARATE, independently-broken slice of "single:range" from Round 6's, reached via a different acquire branch (`printing_compose`, not `card_range_popcount`) for two independent reasons — see Round 7 below |
 | 8 | diagnostic: bucket candidates-acquire `GatheredScan`/`card` error by shape | diagnostic | 13% (n=22,190, median 0.60), unchanged from checkpoint — expected, no code shipped | n/a | see Round 8 below — pivots off the printing-range-index family entirely (Rounds 1-7's whole target) onto `Prep::Candidates`, the OTHER acquire branch feeding this same pooled cell. Finds `eval_domain` exact (median 1.00 against `cards_visited`) and `scan_units` also near-exact-to-UNDER-predicting (median 1.00, several high-magnitude buckets 1.2-1.8x, i.e. real work exceeds the estimate) — the OPPOSITE direction from the pooled ns-space over-cost (median 0.49-0.60), so neither size feature is the culprit; the bug is in how `GATHER_*` rate/fixed constants convert those (correct) features into ns for the `candidates` (and sibling `plane`) acquire branch specifically. Two concrete mechanisms found: (a) `GATHER_FIXED_COST_NS` (169.6ns) is ~4x too high for the 32% of the sample with zero matches (median measured 42ns); (b) card-mode's `feats.matches = count` (unconditional, `candidate_feats`, lib.rs~11776) ignores real residual selectivity — `is:vanilla`-shaped high-selectivity residuals push 2-3% of the predicted match count, and the whole per-candidate verify-tier charge (`GATHER_CARD_PASS_NS + max(tier_ns, GATHER_RESIDUAL_FLOOR_NS)` × `eval_domain`) doesn't discount for short-circuit-driven cheap-average-case cost the way real `card_pass` behaves at low match rates. A THIRD population invisible to `bench_cost_model_agreement.py`'s own flat-conjunction sampler — Or/negation/nested-paren structures via `structured_query()` — shows the opposite tail shape (median near 1.0, p90 1.25-3.48x UNDER-cost) and needs its own round. |
+| 9 | lower fixed cost (`GATHER_FIXED_COST_ZERO_MATCH_NS`) for `PhysicalPlan::GatheredScan`'s zero-match rounds, gated on `matches == 0` the same way the arm's `tier_ns > 0.0` neighbor is gated — the first fix in this doc inside `cost.rs`'s cost FORMULA rather than `lib.rs` feature estimation | kept | 11% → 30% (n=38,435→38,889, median 0.57→0.77) — largest single-round movement since Round 0; by-unique `GatheredScan`/`card` cell flips FAIL (0.69) → PASS (0.80) | `GatheredScan/printing_compose` unchanged (median 1.15→1.14, 24%→24%); `GatheredScan/printing_range_scan` and `/card_range_popcount` unchanged; `bench_regret_matrix.py` total regret unchanged (27.6ms both builds); `bench_query_latency_ab.py` same-build canary swings by a comparable magnitude to the real A/B diff (-0.2µs vs -0.3µs) — no real latency effect claimed | held-out paired-diff (hash-of-query split, 9,890 zero-match rows): calibration half (n=4,944) median measured `plan_self_ns` sets constant to 42.0; held-out half (n=4,946) 4,577 impr / 369 regr / 0 tied, 530,256 → 103,110 abs ns error (5.1x), median ratio 0.248 → 1.000, within-25% 0.1% → 57.7%. Confirmed a real risk this round could not fully close within its `cost.rs`-only blast radius: `plan_cost` costs EVERY candidate plan from ONE shared `PlanFeatures` per acquire (`lib.rs:12917`), so `matches == 0` also fires for `GatheredScan` costed as a competitor/picked plan under `printing_compose`/`card_range_popcount`/`printing_range_scan` (RANGE_ACQUIRES) acquire, where `eval_domain == 0` is an unset accounting default rather than a real empty candidate list, and dispatch pays a real (sometimes large, e.g. 4,959ns median for one `printing_compose` slice) `prepare_candidates` rebuild this arm has no term for at all — pre-existing (already 29x under-predicted before this round) and NOT introduced by this fix, but made numerically worse in isolation (29x → 118x under on that slice). Checked for real routing impact directly (a same-build wheel diff on two flip cases, `date<1993-08-05`/`tix<0.01` under `printing_range_scan`) and via `bench_regret_matrix.py` (total regret 27.6ms unchanged) and `bench_cost_model_agreement.py` (no other cell moved) — no measurable regression found, but the gate is a correlated proxy, not the exact phenomenon, for this sliver of RANGE_ACQUIRES rows; flagged for a future round that can touch `lib.rs` to add an acquire-branch-aware feature |
 
 ### Round 1
 
@@ -1033,6 +1052,95 @@ it at all.
    sampler wired into whatever harness tracks it going forward, since `bench_cost_model_agreement.py`'s
    own generator structurally cannot see it.
 
+### Round 9
+
+Took Round 8's item 1 (`GATHER_FIXED_COST_NS` for zero-match `candidates`-acquired `GatheredScan`
+rounds). First fix in this doc that lives in `cost.rs`'s cost FORMULA rather than `lib.rs` feature
+estimation -- Rounds 1-8 all fixed a feature (`scan_units`/`eval_domain`) feeding an otherwise-correct
+formula; here the features are already exact and the RATE/FIXED constant converting them to ns is
+wrong.
+
+**Independent re-confirmation of Round 8's diagnosis.** Fresh sample (not Round 8's own, a new
+throwaway sampler, uniform mode, seed 0, 240s, isolated release wheel): 31,030 `GatheredScan`/
+`candidates` rows, 9,890 (31.9%) with `matches == 0` -- matching Round 8's reported 32% closely.
+Checked every non-fixed term individually rather than trusting the "collapses to one constant" claim:
+
+```
+field                     nonzero_count / n     max
+eval_domain                      0 / 9,890        0
+scan_units                       0 / 9,890        0
+artwork_seen_printings           0 / 9,890        0
+cards_visited                    0 / 9,890        0
+printings_examined                0 / 9,890        0
+matches_pushed                    0 / 9,890        0
+```
+
+Every term this arm multiplies by really is zero (not just small) for this population, so
+`predicted_ns` reads EXACTLY `169.6` (min == max == median across all 9,890 rows) -- confirmed, not
+assumed. Real measured `plan_self_ns`: median 42.0, p10 41.0, p90 84.0 (bimodal: card/printing modes
+cluster at ~42, artwork at ~84 -- see below). Ratio (measured/predicted): median 0.248, 0/9,890 (0.0%)
+within [0.8, 1.25] -- confirms the ~4x over-charge exactly as Round 8 reported.
+
+**Calibration.** Hash-of-query split (`sha256(q) % 2`), same rule as every prior round. Calibration
+half (n=4,944): the L1-optimal single constant is the median measured `plan_self_ns`, `42.0` -- chosen
+without looking at the held-out half. Held-out half (n=4,946):
+
+```
+                         before (169.6)     after (42.0)
+median ratio                   0.248             1.000
+within-25%                      0.1%            57.7%
+total abs ns error           530,256           103,110   (5.1x reduction)
+paired diff: 4,577 improved / 369 regressed / 0 tied
+```
+
+**Per-mode split, not chased.** `PlanFeatures` carries no `unique`/mode field this arm can read, so
+one pooled constant is what `cost.rs` alone can express. Held-out breakdown by mode: card (n=1,657)
+83.6% within-25%, printing (n=1,625) 90.0%, artwork (n=1,664) 0.3% -- artwork's real zero-match cost
+reads a flat ~2x higher (~84ns vs. card/printing's ~42ns, plausibly `exec_gathered_scan`'s
+unconditional per-printing dedupe check setup), so a single pooled constant necessarily leaves
+artwork's ratio at ~2.0 (previously ~0.495 -- same log-magnitude, flipped sign, and still a net win on
+absolute ns error: |84-169.6|=85.6 -> |84-42|=42.0). Splitting this by mode needs a new `PlanFeatures`
+field, which needs a `lib.rs` change -- out of scope for a `cost.rs`-only round, noted for later.
+
+**A gate-precision risk found and checked, not assumed safe.** `matches == 0` is not exclusive to the
+`candidates`/`plane` acquire branches Round 8 scoped its diagnosis to. `explain_analyze` costs every
+CANDIDATE plan from one shared `PlanFeatures` per acquire (`plan_cost(plan, &facts.feats)`, called
+once per plan in a loop at `lib.rs:12917`), so `GatheredScan`'s own `matches == 0` also fires when it
+is costed under a `printing_compose`/`card_range_popcount`/`printing_range_scan` (RANGE_ACQUIRES)
+acquire branch -- and there, `eval_domain == 0` is not a real empty candidate list, it is this
+branch's shared `feats` never having computed one for `GatheredScan` specifically (the acquire chose a
+different plan and never ran `prepare_candidates`). If `GatheredScan` is later picked or forced as a
+competitor, dispatch pays a REAL `prepare_candidates` rebuild (`plan_self_ns` adds `ns_prepare` back in
+for RANGE_ACQUIRES, per `costbench`'s netting rule) that no term in this arm prices at all -- sampled
+directly: 375 `printing_compose`-acquired `GatheredScan`/`matches==0` rows, 358 with `eval_domain==0`,
+median measured 4,959ns against a predicted 169.6ns (29x under, PRE-EXISTING, not caused by this
+round). Lowering the fixed cost to 42.0 makes this already-broken slice numerically worse in isolation
+(29x -> 118x under) — same direction, no new sign flip.
+
+Checked for a REAL regression, not just reasoned about: this population is not purely diagnostic —
+`GatheredScan` is the actually-`picked` plan in 93/96 (97%) of sampled zero-match `printing_compose`-
+acquire rows. Directly diffed a same-build wheel and found 2 genuine routing flips in a 107-row sample
+of RANGE_ACQUIRES zero-match rows where a competing plan's predicted cost sat between the old (169.6)
+and new (42.0) constant (`date<1993-08-05` and `tix<0.01` under `printing_range_scan`: `PrintingRangeScan`
+predicted 150.0 picked at baseline, `GatheredScan` predicted 42.0 picked after this round's change).
+Ran the two tools built to catch exactly this:
+
+- `bench_regret_matrix.py --seconds 60 --seed 0`: total regret 27.6ms baseline, 27.6ms modified (18,181
+  vs 18,349 multi-plan queries — wall-clock-budget variance, not a code effect); no new row in the
+  `picked -> best` mismatch table.
+- `bench_cost_model_agreement.py --seconds 300 --seed 0`: `GatheredScan/printing_compose` unchanged
+  (n=58,444→59,178, median 1.15→1.14, within-25% 24%→24%); `GatheredScan/printing_range_scan` unchanged
+  (median 1.09→1.08, 61%→62%); `GatheredScan/card_range_popcount` unchanged (median 0.96→0.97, 51%→51%).
+  12/17 acquire-branch cells inside [0.8, 1.25] both builds (unchanged); by-unique table improves 9/12
+  -> 10/12 (`GatheredScan/card` flips FAIL -> PASS).
+
+So the affected RANGE_ACQUIRES slice is real, pre-existing, and made worse in isolated ratio terms, but
+too small (2 flips in 107 sampled rows; the whole slice is ~2% of its own already-passing pooled cell)
+to move any reported cell or the regret total. `matches == 0` is therefore a correlated proxy, not the
+exact phenomenon Round 8 scoped ("`Prep::Candidates` zero-match"), and a future round that can touch
+`lib.rs` should add an acquire-branch-aware feature (or a `real_candidates_built: bool`) to gate this
+cleanly rather than relying on this round's empirical "checked, found immaterial" result indefinitely.
+
 ## Confirmation runs
 
 Round 1 (match-density depth proxy, kept):
@@ -1047,3 +1155,22 @@ Round 1 (match-density depth proxy, kept):
   same sign and magnitude with zero code difference, matching this script's own documented
   non-interleaved-run drift artifact. The real diff is not distinguishable from that noise floor, so
   read as no detectable latency regression, not confirmed-safe by a wide margin.
+
+Round 9 (`GATHER_FIXED_COST_ZERO_MATCH_NS`, kept):
+
+- `bench_regret_matrix.py --seconds 60 --seed 0`, baseline vs modified: total regret 27.6ms both
+  builds (18,181 vs 18,349 multi-plan queries, wall-clock-budget variance); no new `picked -> best`
+  mismatch row — including for the RANGE_ACQUIRES gate-precision risk this round found and checked
+  directly (see Round 9 above).
+- `bench_query_latency_ab.py --mode realistic --sample 800 --seed 1`, interleaved A1/B1/A2, baseline
+  vs modified: `-0.3us` mean, 95% CI `[-0.5, -0.1]`, "B is FASTER". Same-build canary (A1 vs A2):
+  `-0.2us`, CI `[-0.4, -0.1]`, also "B is FASTER" — a swing of the same sign and comparable magnitude
+  with zero code difference. The real diff is not distinguishable from the canary's noise floor, so
+  read as no detectable latency effect either way — expected, since this is a routing-accuracy fix
+  for a rare zero-match slice, not a hot-path rate change.
+- `bench_cost_model_agreement.py --seconds 300 --seed 0`, baseline vs modified: `GatheredScan/candidates`
+  n=38,435→38,889, median 0.57→0.77, p10 0.25→0.47, p90 0.89→1.98, within-25% 11%→30% (still FAIL by
+  the median bar, 0.77 < 0.8, but the largest single-round movement of this cell since Round 0).
+  `GatheredScan/printing_compose`, `/printing_range_scan`, `/card_range_popcount` all unchanged within
+  noise (see Round 9 above for the exact before/after). 12/17 acquire-branch cells inside [0.8, 1.25]
+  both builds; by-unique table improves 9/12 → 10/12 (`GatheredScan/card` flips FAIL 0.69 → PASS 0.80).

@@ -615,6 +615,34 @@ const GATHER_COLLECT_PER_PAGE_ROW_NS: f64 = 9.79;
 /// and drift as either query sizes or the corpus change. The fix is a term for the curvature -- see the
 /// corpus-size note in `bench_gather_loop` -- not a smaller constant.
 const GATHER_FIXED_COST_NS: f64 = 169.6;
+/// `GATHER_FIXED_COST_NS`'s own value when `matches == 0` -- a `Prep::Candidates`-acquired zero-match
+/// round, where every other term in this arm is already provably zero (`eval_domain`, `scan_units`,
+/// `page_span`/`page_rows`, `artwork_seen_printings` all vanish with the candidate list itself), so
+/// the whole prediction collapses to this one constant alone. `GATHER_FIXED_COST_NS` was fit against
+/// the general population and reads 169.6 there; a zero-candidate round pays none of the loop/verify
+/// work that constant was priced to cover, so charging it here is a straight ~4x over-charge, not a
+/// rounding difference.
+///
+/// Fit as the calibration half's median measured `plan_self_ns` (not a mean, and not per-mode --
+/// `PlanFeatures` carries no `unique`/mode field this arm can read, so one pooled constant is what
+/// this branch can express; see the doc issue's Round 9 section for the residual mode split this
+/// leaves on the table for card/printing vs. artwork). 9,890 sampled `GatheredScan`/`candidates`
+/// zero-match rows (31.9% of the sampled `candidates` population), hash-of-query split:
+///
+///     calibration (n=4,944): median measured_ns = 42.0 -> this constant
+///     held-out    (n=4,946): 4,577 improved / 369 regressed / 0 tied
+///                            total abs ns error 530,256 -> 103,110 (5.1x)
+///                            median ratio (measured/predicted) 0.248 -> 1.000
+///                            within-25% 0.1% -> 57.7%
+///
+/// The held-out gain is not uniform across mode: card/printing land almost exactly on 1.00 (83-90%
+/// within 25%), while artwork's real zero-match cost reads a flat ~2x higher (84ns vs. card/printing's
+/// ~42ns -- plausibly `exec_gathered_scan`'s unconditional per-printing dedupe check setup, per its own
+/// comment on `artwork_seen_printings` above), so artwork's ratio moves from 0.495 (over-cost) to 2.0
+/// (under-cost) -- roughly the same LOG-ratio magnitude, just flipped sign, and still a net win on
+/// absolute ns error (|84-169.6| = 85.6 -> |84-42| = 42.0). Splitting this properly by mode needs a
+/// `PlanFeatures` field this arm does not have; out of scope for a `cost.rs`-only round.
+const GATHER_FIXED_COST_ZERO_MATCH_NS: f64 = 42.0;
 
 // --- PrintingCompose's own rates -------------------------------------------------------------
 //
@@ -920,7 +948,7 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
                 + page_span * GATHER_SELECT_PER_PAGE_SLOT_NS
                 + page_rows * GATHER_COLLECT_PER_PAGE_ROW_NS
                 + f64::from(f.artwork_seen_printings) * GATHER_ARTWORK_PER_PRINTING_NS
-                + GATHER_FIXED_COST_NS
+                + if matches > 0.0 { GATHER_FIXED_COST_NS } else { GATHER_FIXED_COST_ZERO_MATCH_NS }
         }
     }
 }
