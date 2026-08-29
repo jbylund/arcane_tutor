@@ -106,6 +106,18 @@ guard-fired rows, hash-of-query split): 166 improved / 15 regressed / 0 tied, to
 as before (16%, unchanged) — this guard-fired subset is a small slice of that pooled cell, same
 reasoning as Round 3.
 
+As of Round 6 (`COMPOSE_BARE_RANGE_BROAD_SCALE`, `costcell/06-bare-range`), the `CardRangePopcount`
+arm's OWN `range_too_broad_to_narrow` reset -- a bare single range leaf under `unique=card`, a
+completely separate acquire branch from Rounds 3/4's `PrintingCompose` target, and Round 5's
+diagnostic finding of the single largest bucket in the whole pooled cell (53.7% of error) -- scales
+`scan_units` alone down to `0.43 * n_printings`. `eval_domain` is left untouched: 96.6% of rows read
+exactly 1.0 (mean 0.975; the small tail is real, driven by price-field null-exclusion, not chased).
+Held-out paired-diff (3,500 guard-fired rows, hash-of-query split): 1,704 improved / 31 regressed,
+total absolute `scan_units` error 93.3M → 16.0M on the held-out half. Same `GatheredScan`/`card`
+agreement-gate result as Rounds 3/4 (15-17%, essentially unchanged) -- this is the largest single
+lever fixed so far by pooled-error share, and it still barely moves the headline number, confirming
+that gate's grain is simply too coarse to see any single arm's fix, not that this fix is inert.
+
 ## Iteration ledger
 
 | # | Idea | Outcome | GS/card within-25% | Other cells | Notes |
@@ -116,6 +128,7 @@ reasoning as Round 3.
 | 3 | second clustering-bias constant (`COMPOSE_RANGE_AND_CLUSTER_BIAS`) for the same shape | kept | n/a (see Round 3 below — noisy at this cell's grain) | none, within run-to-run noise | held-out paired-diff (controlled): 433 impr / 117 regr, 8.60M → 8.02M abs `scan_units` error; new bias 1.1 against `COMPOSE_CARD_ESTIMATE_BIAS`'s 1.78 |
 | 4 | downward `scan_units` scale (`COMPOSE_RANGE_AND_BROAD_SCAN_SCALE`) for the `range_too_broad_to_narrow`-fired subset of the same shape | kept | n/a (see Round 4 below — noisy at this cell's grain) | none, within run-to-run noise | held-out paired-diff (controlled): 166 impr / 15 regr / 0 tied, 5.40M → 1.90M abs `scan_units` error; new scale 0.7; `eval_domain` left untouched (measured exact, 0 error) |
 | 5 | diagnostic: re-bucket remaining error by AST shape | diagnostic | n/a (no code shipped) | n/a | see Round 5 below — fresh magnitude-weighted bucketing (n=30,892) finds 74.9% of all pooled `scan_units` error sits in the `range_too_broad_to_narrow` broad-guard reset FIRING OUTSIDE `is_cross_index_range_and` (a population Round 3/4's own comment already flagged as unscaled on purpose); Rounds 1-4's target shape drops to 2.3% of pooled error, median ratio 1.00 — confirming the shipped fixes worked, just on a small slice of the cell |
+| 6 | downward `scan_units` scale (`COMPOSE_BARE_RANGE_BROAD_SCALE`) for the `CardRangePopcount` arm's own `range_too_broad_to_narrow` reset (single bare range leaf, `unique=card`) | kept | 15-17% both builds, unchanged (noisy at this cell's grain, same as Rounds 3/4); the finer `GatheredScan/card_range_popcount` sub-row moved 47%→52% within [0.8,1.25], median 0.94→1.05 | none, within run-to-run noise; regret matrix unchanged (96% `printing_compose` share both builds) | held-out paired-diff (controlled): 1,704 impr / 31 regr, 93.3M → 16.0M abs `scan_units` error; new scale 0.43; `eval_domain` left untouched (96.6% of rows exactly 1.0, mean 0.975 — a real but small tail from price-field null-exclusion, not chased); flags the sibling `else` branch's `scan_units = card_est` as itself badly under-calibrated (median ratio ~0.25-0.37 by field) — not fixed this round, out of scope, noted for a future round |
 
 ### Round 1
 
@@ -553,6 +566,134 @@ beyond `is_cross_index_range_and`, at two sites:
   round used, not a re-use of the narrower RANGE_FAMILIES-only sample Rounds 1-4 built their splits
   from, since that sample structurally cannot contain the `single:range` or mixed-category rows that
   now turn out to matter most.
+
+### Round 6
+
+Target: Round 5's own top recommendation -- the `CardRangePopcount` arm's own
+`range_too_broad_to_narrow` broad-guard reset (`lib.rs:11831` as of Round 5's tip), the single
+largest bucket in the whole pooled `GatheredScan`/`card` error table (`single:range`, 53.7% of pooled
+error, n=3,041 in Round 5's sample, median ratio 0.64). A bare single range leaf under `unique=card`
+(e.g. `usd>=0.24` alone) -- confirmed live via `count_source: card_range_popcount`, a completely
+separate acquire branch from `PrintingCompose`'s `is_cross_index_range_and` guard Rounds 3/4 fixed.
+
+**Population re-derivation.** Sampled with `Shape(families=RANGE_FAMILIES, predicates=1,
+unique={"card"})` (same shape `bench_card_range_estimate.py` already uses for this exact acquire
+branch), filtered to `count_source == "card_range_popcount"`, varying `limit`/`offset`/`orderby`/
+`direction` per query (matching `bench_cost_model_agreement.py`'s own protocol rather than pinning
+them, so the population is not an artifact of one page shape). Of all `card_range_popcount` rows,
+**52-54% have the guard fire** (two independent 3,500-row samples: 54.1% and 52.1%) -- the "broad"
+population this round targets. Real `GatheredScan` counters (GatheredScan is always tried as a
+forced trial in `explain_analyze` regardless of which plan the router actually picks, same trick
+Rounds 3/4 used) over 3,500 guard-fired rows:
+
+```
+eval_domain realized fraction (cards_visited / n_cards):     mean 0.975  median 1.000  min 0.233
+scan_units realized fraction (printings_examined / n_printings): mean 0.447  median 0.434  min 0.159  max 0.798
+```
+
+Per-field `scan_units` median: `cn` 0.41, `usd` 0.43, `eur` 0.43, `released` 0.42, `tix` 0.48 --
+stable within a ~20% relative band across all five `RANGE_FAMILIES`, not one field dominating or
+diverging.
+
+**Self-check (pre-computation constraint).** The only change is a multiply-and-round on two numbers
+already computed before this branch's `unwrap_or_else`-equivalent `if`/`else` runs (`n_printings` is
+a corpus-wide constant read from `ctx`, `k`/`idx.len()` already drive the `range_too_broad_to_narrow`
+call the branch makes regardless). No new per-query scan, no new index probe -- confirmed by
+`cargo test` and the latency A/B below showing nothing distinguishable from noise once run-order
+confounds are controlled for (see below).
+
+**A structural surprise, not in the target arm itself: the sibling `else` branch is also
+miscalibrated, for a different reason.** The arm's own comment claims "the sibling `PrintingRangeScan`
+branch below assumes the opposite (always unnarrowed) and its cells agree to within 1% -- this makes
+both exact," which reads as a claim that the NARROW-subset `(card_est, card_est)` branch is exact.
+Measured directly, on the guard-NOT-fired rows from the same sample: `card_est / cards_visited`
+(eval_domain check) is indeed exact at the median (1.00), but `card_est / printings_examined` (scan_units
+check) reads median 0.25-0.37 depending on field -- `card_est` (a DISTINCT-CARD estimate) badly
+undershoots `printings_examined` (a printing count) whenever a card has multiple reprints inside the
+narrowed range, which is common for `cn`/`released`/`usd`. This is the assignment's own "verify what
+that comment refers to" check: it refers to the two branches' feature vectors being internally
+CONSISTENT with each other (not to either being numerically accurate), and the `else` branch's
+`scan_units` side is a real, separate miscalibration -- **not fixed this round** (out of the assigned
+blast radius; scoped as a follow-up in the ledger table above, not silently folded into this
+constant).
+
+**Why `eval_domain` is left untouched despite not being perfectly exact here (unlike Round 4's
+population).** 96.6% of guard-fired rows read exactly 1.0; the remaining 3.4% are concentrated
+entirely in `usd`/`eur`/`tix` queries at extreme thresholds (`eur>=1.05`, `tix>0.04`, ...), where most
+cards have no printing with that currency at all, so the real materializing scan still narrows out
+the null-complement even though the guard correctly judged the VALUE range too broad to narrow on.
+Scaling the dominant 96.6%-exact regime down to chase a rare, structurally different tail would
+reintroduce the under-charge the guard exists to prevent -- same call Round 4 made, but this time
+independently verified rather than assumed to transfer, per the assignment's instruction.
+
+**Fit.** Split 3,500 guard-fired rows by `hash(query) % 2`: 1,765 calibration / 1,735 held-out. Swept
+0.30-0.60 in steps of 0.01 on the calibration half only; both halves' error-vs-scale curves are
+smooth and convex, minimizing one step apart (0.43 calibration, 0.44 held-out).
+
+```
+                          calibration (n=1,765)            held-out (n=1,735)
+scan_units total abs      96.0M (1.0) -> 15.4M (0.43)       93.3M (1.0) -> 16.0M (0.43)
+improved / regressed              1,742 / 23                        1,704 / 31
+```
+
+Picked 0.43, inside the flat bottom of both curves.
+
+**Per-field constant considered and rejected as not worth it.** A per-field scale (each field's own
+median as an oracle upper bound) reaches 30.3M total abs error against the flat scale's 31.4M -- only
+~3.5% further reduction, except for `tix` (275 rows, smallest subgroup) where the per-field oracle
+does meaningfully better (0.80M vs 1.71M). Given the modest aggregate gain and this round's mandate to
+prefer a flat constant unless the fit clearly does not hold, one flat `COMPOSE_BARE_RANGE_BROAD_SCALE`
+was kept; a future round revisiting `tix` specifically could reconsider.
+
+**Price-triple sanity (per-field, not cross-field correlation -- that check does not apply to a bare
+single leaf).** `usd` (0.43), `eur` (0.43), `tix` (0.48) all sit close to the chosen 0.43; no
+individual price field is a pricing outlier.
+
+**Verified against the real build, not just the Python-side sweep.** Rebuilt with the constant and
+re-ran the identical 3,500-query sample directly against it: `scan_units` matched
+`round(0.43 * n_printings)` exactly on all 3,500 rows (0 mismatches), and the real paired diff landed
+on the exact same total (31,400,955 combined) as the simulation.
+
+**Routing-decision check (why this round is different from Rounds 3/4's structural risk).** Lowering
+a feature this branch's shared `PlanFeatures` also prices COMPETING plans (`GatheredScan`/
+`StreamedSelect`) against could in principle flip the router away from `CardRangePopcount` toward a
+now-artificially-cheap competitor. Checked directly: the router picked `CardRangePopcount` on
+500/500 sampled bare-range queries under BOTH the baseline and modified build (same kw), and
+`bench_regret_matrix.py`'s `acquire` table shows `card_range_popcount` at 0.00 mean / 0% miss in both
+builds (n=659 baseline, n=658 modified) -- no misrouting introduced.
+
+**Why the single-run agreement gate barely moves, and why that's not evidence against the fix.**
+`bench_cost_model_agreement.py`'s `GatheredScan`/`card` cell read 17% within [0.8, 1.25] on both
+builds (n=33,019 baseline, n=33,251 modified) -- same story as Rounds 3/4: `card_range_popcount` is
+only ~1,563-1,572 of that ~33,000-row pooled cell (~4.7%), so even fixing its single largest error
+bucket cannot move a pooled median by much. The finer `GatheredScan`/`card_range_popcount` sub-row
+(grouped by acquire branch, not pooled across all of `unique=card`) DID move: median 0.94 -> 1.05,
+within-25% 47% -> 52% (n=1,563 / 1,572, single uncontrolled runs -- read as corroborating, not proof,
+same noise caveat as every other single-run number in this doc).
+
+### Round 6 confirmation runs
+
+- `cargo test --manifest-path card_engine/Cargo.toml`: 167 passed, 0 failed, 56 ignored.
+- `cargo clippy --manifest-path card_engine/Cargo.toml --all-targets -- -D warnings`: clean.
+- `bench_regret_matrix.py --seconds 120 --mode uniform`: same shape as every prior round -- regret
+  still 96% `printing_compose` share, `StreamedSelect -> GatheredScan` / `GatheredScan ->
+  PrintingCompose` still the largest picked/best mismatches, `card_range_popcount`'s own regret
+  unchanged (0.00 mean / 0% miss, both builds) -- nothing resembling the 23.6x acquire-time precedent.
+- `bench_query_latency_ab.py --mode realistic --sample 800 --seed 1`: the FIRST paired run (baseline
+  measured first, modified second) read `+4.1µs, 95% CI [+3.6, +4.5]`, "B is SLOWER" -- a magnitude
+  that, unlike every prior round's canary-comparable noise, looked like a real signal at first glance.
+  Investigated directly rather than accepted: (1) the specific queries showing the largest slowdowns
+  were `t:legendary`, `c:g`, `set:usg` and similar -- filters that never reach `CardRangePopcount` at
+  all, ruling out a routing-side effect from this change; (2) re-running with the build ORDER swapped
+  (modified first, baseline second) produced `-0.1µs`, "NO DETECTABLE DIFFERENCE"; (3) two further
+  same-build canaries (baseline-vs-baseline, modified-vs-modified, each a fresh pair) read `+0.8µs`
+  ("B is SLOWER") and `-0.4µs` ("B is FASTER") respectively -- swings of comparable or larger magnitude
+  than two of the three real A-vs-B diffs measured, with nothing changed. Read as run-order-dependent
+  machine drift (exactly the failure mode the harness's own module docstring warns about), not a
+  real latency effect in either direction -- consistent with the routing-decision check above finding
+  zero picked-plan changes on the target population.
+- `cargo build`/wheel blast radius: `git diff --stat costcell/trunk` shows only `card_engine/src/lib.rs`
+  touched (58 lines: one new constant + its doc, five lines in the `CardRangePopcount` arm).
 
 ## Confirmation runs
 

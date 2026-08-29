@@ -11294,6 +11294,56 @@ const COMPOSE_RANGE_AND_CLUSTER_BIAS: f64 = 1.1;
 /// correlation has nothing to break.
 const COMPOSE_RANGE_AND_BROAD_SCAN_SCALE: f64 = 0.7;
 
+/// Downscale for `scan_units` alone, in the `CardRangePopcount` arm's own
+/// `range_too_broad_to_narrow` broad-guard reset (see the arm below) -- a bare single range leaf
+/// under `unique=card` (e.g. `usd>=0.24` alone, no `And` at all), a completely separate acquire
+/// branch from `PrintingCompose`'s `is_cross_index_range_and` guard
+/// (`COMPOSE_RANGE_AND_BROAD_SCAN_SCALE`, just above): confirmed live, `usd>=0.24` alone routes via
+/// `count_source: card_range_popcount`, never `printing_compose`.
+///
+/// Re-derived fresh rather than assumed to share `COMPOSE_RANGE_AND_BROAD_SCAN_SCALE`'s 0.7: Round
+/// 5's diagnostic (`docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md`) found
+/// this arm's own broad-guard reset is the single largest bucket of pooled `GatheredScan`/`card`
+/// error by magnitude (53.7% of the pooled total, median ratio 0.64) -- a materially different
+/// realized fraction from the `PrintingCompose` sibling's 0.7, confirming the two arms should not
+/// share one constant.
+///
+/// Sampled 3,500 bare single-range `unique=card` queries where the guard fires
+/// (`Shape(families=RANGE_FAMILIES, predicates=1, unique={"card"})`, filtered to `count_source ==
+/// "card_range_popcount"` and `eval_domain == n_cards && scan_units == n_printings`), captured
+/// against the real `printings_examined` GatheredScan counter (GatheredScan is always tried as a
+/// forced trial regardless of which plan wins, same trick Rounds 3/4 used).
+///
+/// `eval_domain` (`n_cards`) is left untouched, same call as `COMPOSE_RANGE_AND_BROAD_SCAN_SCALE`,
+/// but independently checked rather than assumed to transfer: 96.6% of rows read exactly 1.0 (mean
+/// 0.975, not a clean 1.000 like the `PrintingCompose` sibling's 0 mismatches). The tail is real,
+/// not sampling noise -- every row below 1.0 is a price field (`usd`/`eur`/`tix`) at an extreme
+/// threshold, where most cards have no printing with that currency at all, so the real scan still
+/// narrows out the null-complement even though the guard (correctly) judged the VALUE range itself
+/// too broad to narrow on. Scaling the dominant 96.6%-exact regime down to chase that rare tail
+/// would reintroduce the under-charge the guard exists to prevent, so this constant touches
+/// `scan_units` only.
+///
+/// `scan_units`'s realized fraction of `n_printings` is stable across all five `RANGE_FAMILIES`
+/// (median 0.41-0.48 per field; overall median 0.43-0.45, mean ~0.45) -- close enough that a
+/// per-field constant would only buy ~3.5% more total-error reduction than one flat scale (checked
+/// directly: 31.4M vs an oracle 30.3M using each field's own median as its own best case), not worth
+/// the extra parameterization. Split by `hash(query) % 2`: 1,765 calibration / 1,735 held-out. Swept
+/// 0.30-0.60 in steps of 0.01 on the calibration half only; both halves' error-vs-scale curves are
+/// smooth and convex, minimizing one step apart (0.43 calibration, 0.44 held-out).
+///
+/// ```text
+///                           calibration (n=1,765)            held-out (n=1,735)
+/// scan_units total abs      96.0M (1.0) -> 15.4M (0.43)       93.3M (1.0) -> 16.0M (0.43)
+/// improved / regressed              1,742 / 23                        1,704 / 31
+/// ```
+///
+/// Verified against the real build, not just the Python-side sweep above: rebuilt with this
+/// constant and re-ran the identical 3,500-query sample directly against it -- `scan_units` matched
+/// `round(0.43 * n_printings)` exactly on every guard-fired row, and the real paired diff landed on
+/// the exact same totals as the simulation above.
+const COMPOSE_BARE_RANGE_BROAD_SCALE: f64 = 0.43;
+
 /// Printings the gather BIT-TESTS per matching printing.
 ///
 /// `compose_scan_printings` was the composed bitmap's popcount, on the stated grounds that compose
@@ -11828,8 +11878,14 @@ fn acquire_plan_features(
         // two: measured 31,508 cards / 97,206 printings visited against a `card_est` of 12,450, a
         // 3.2x gap no rate constant can absorb. The sibling `PrintingRangeScan` branch below assumes
         // the opposite (always unnarrowed) and its cells agree to within 1% -- this makes both exact.
+        //
+        // `n_printings` is still a sound upper bound here (never measured over 1.0), but loose: the
+        // real `printings_examined` GatheredScan counter reads a stable ~43% of it on this bare
+        // single-range population -- see `COMPOSE_BARE_RANGE_BROAD_SCALE`'s doc for the calibration.
+        // `eval_domain` is left at the full `n_cards`, same reasoning as that constant's doc: the
+        // dominant regime already reads exact there.
         let (eval_domain, scan_units) = if range_too_broad_to_narrow(k as usize, idx.len()) {
-            (n_cards, n_printings)
+            (n_cards, (f64::from(n_printings) * COMPOSE_BARE_RANGE_BROAD_SCALE).round() as u32)
         } else {
             (card_est, card_est)
         };
