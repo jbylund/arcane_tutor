@@ -252,6 +252,17 @@ roll it out. Recorded for whoever revisits this:
 - **Why Round 12's 71% "applicable" figure and this round's 18.3% "applicable and didn't decline" figure
   disagree.** Not chased down — see "Spike" above. Doesn't affect the conclusion, since a fastpath that
   declines contributes zero wins either way.
+- **Resolved: whether `PlanePopcountOrder` is ever unavailable under `Plane` acquire, leaving
+  `PrintingCompose` to compete against only `GatheredScan`/`StreamedSelect` — the one scenario where
+  Round 12's real 10.7%/6.7% win-rate margins (149µs/142µs) could represent a genuine, capturable
+  routing gap this round's `PlanePopcountOrder`-relative measurement wouldn't see.** Checked directly:
+  sampled 14,291 real `plane`-acquire queries (realistic traffic, fresh run) — `PlanePopcountOrder` was
+  applicable in **100%**, 0/14,291 missing. Combined with the "Re-verified" pairwise data on `#852`
+  (`GatheredScan vs PlanePopcountOrder` and `PlanePopcountOrder vs StreamedSelect`, both 100% ordered
+  right, 0.00µs mean regret), there is no real subset where this degrades to a two-plan comparison —
+  `PlanePopcountOrder` is essentially always present and already correctly chosen. Round 12's real
+  margins were genuine but measured against plans that were never the actual incumbent; there is no
+  ~100µs+ improvement on the table via routing here.
 - **Whether some predicate shape entirely outside this sweep's sampler (both `QuerySampler` modes, plus a
   manual limit/offset sweep) could flip the result.** Nothing in 3,209 rows across four regimes did. The
   limit dimension specifically is closed, not just inductively suggestive: `limit=1,000,000` is the API's
