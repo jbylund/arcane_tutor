@@ -60,9 +60,112 @@ by rarity` before `compose_paging_for` was made shared).
 
 ## Current best
 
-Not yet started — this is the Round 12 target. No code shipped.
+No code shipped. Round 12 traced the mechanism fully and found the premise of this doc's own
+"Root cause" section incomplete in a way that changes the recommended action — see Round 12 below.
+`PrintingCompose`'s feature vector under `Plane` acquire is still wrong in the sense described above,
+but that wrongness is currently inert: `PlanScope::Plane` (added by #829, load-bearing per the
+`plan_scope_admits_only_plans_its_dispatch_arm_can_run` test and the real panic in #836 the test's
+own comment documents) structurally excludes `PrintingCompose` from ever winning the argmin under a
+`Plane` acquire, regardless of how it is costed. Fixing the costing changes zero production routing
+decisions today; a fix would only improve `explain`/`bench_pairwise_ordering.py`'s diagnostic ranking
+display, at the cost of new computation on the real per-query acquire path. Not shipped — see Round 12.
 
 ## Iteration ledger
 
 | # | Idea | Outcome | Pair result | Notes |
 |---|------|---------|--------------|-------|
+| 1 | Populate `PrintingCompose`'s five build-cost fields under `Plane` acquire, reusing the `PrintingCompose` branch's own computation for the `unsplit` predicate | **Discarded — corrected finding** | unchanged (no code shipped) | `PlanScope::Plane` already excludes `PrintingCompose` from the real argmin (#829/#836); the miscosting is real but provably inert for production routing. See narrative below. |
+
+### Round 12
+
+Target: implement the fix this doc's "Root cause" section describes — set `PrintingCompose`'s five
+build-cost fields (`broadcast_printings`/`scatter_printings`/`project_printings`/`popcount_words`/
+`compose_paging`) correctly in `acquire_plan_features`'s `Plane` branch, reusing the `PrintingCompose`
+branch's own field-computation logic against the `unsplit` predicate (which is always the *whole*
+composed predicate here, not a partial residual — `PlanePopcountOrder.applicable` requires `filter ==
+FilterExpr::True`, so nothing is left over once the plane captures everything; `compose_source`
+collapses to `unsplit` unconditionally in this branch).
+
+**Traced what `PrintingCompose` would do first, per the constraint.** `compose_printing_estimate` (the
+function that would supply the five fields) takes only `(filter, indexes, offsets, n_printings)` — it
+never reads `plane` or `plane_bits` at all. So `PrintingCompose`, if it ran here, would **always rebuild
+from scratch** via its own broadcast/scatter/compile-plane machinery; it does not reuse the plane the
+router already evaluated. The "unsplit is trivial" escape hatch this doc's own Constraints section
+raised does not apply here for a different reason than expected: it's not that `unsplit` is usually
+empty (it's the whole predicate, never empty when `PrintingCompose` is applicable at all), it's that
+`unsplit` for a card-invariant/existential plane predicate (`f:modern`, `c:g`, `r<=rare`) is typically
+*not* trivial from `PrintingCompose`'s point of view — `is_printing_composable` accepts exactly these
+shapes, and 71% of a 3,023-query `Plane`-acquire realistic-mode sample had `PrintingCompose` applicable
+alongside it (measured directly via `engine.explain()`, not assumed).
+
+**The real discovery: this branch's routing outcome cannot change, however the fields are set.**
+`run_query_routed`'s `choose` closure filters candidates on `p.applicable(...) && scope.admits(*p)`, and
+`Prep::Plane`'s scope is `PlanScope::Plane`, whose `admits` is `CandidatePlan::of(plan).is_some() ||
+plan == PlanePopcountOrder` — and `CandidatePlan::of(PrintingCompose)` is `None` (grouped explicitly with
+the other three non-materializing plans in that match). So `PrintingCompose` is **structurally excluded**
+from the real argmin whenever the acquire branch is `Plane`, regardless of its predicted cost. This is
+not an oversight: `PlanScope` was added by #829 specifically to stop the router's argmin from returning a
+plan its dispatch arm has no executor for, and `tests.rs`'s
+`plan_scope_admits_only_plans_its_dispatch_arm_can_run` pins this exact exclusion, with its own comment
+recording that lifting the analogous `plane.is_none()` guard elsewhere (#836) caused a **real production
+panic** (`f:pauper unique=card limit=200`) before `PlanScope` closed it. `exec_from_candidates`'s only
+`Prep::Plane` dispatch arm is `CandidatePlan::of_or_gathered(p)`, which has no `PrintingCompose` case and
+falls back to `GatheredScan` (with a `debug_assert!(false, ...)` tripwire) if it were ever handed one.
+
+**Confirmed empirically, not just from reading the code** (build: `costcell/12-plane-compose` @
+`f9b5f2aa`, unmodified — this is the baseline, since no fix was implemented): sampled 20,000
+`--mode realistic` queries via `engine.explain()`, filtered to `count_source == "plane"` (3,023 rows,
+`PrintingCompose` applicable in 2,145 of them):
+
+```
+PrintingCompose picked=True under Plane acquire:            0 / 2,145
+PrintingCompose cheapest by predicted_ns under Plane acquire: 0 / 2,145
+```
+
+Zero, both ways, over the whole sample — matching `scope.admits` exactly (`picked` is computed from
+`scope.admits`, so 0/2,145 there is definitional; the "cheapest by predicted_ns" 0/2,145 says
+`PlanePopcountOrder`'s own near-free popcount cost already always undercuts even a badly-zero-defaulted
+`PrintingCompose` estimate — this branch was never close to flipping even before considering `scope`).
+
+**A second check, because "never picked" doesn't by itself mean "never actually better."** Ran
+`explain_analyze` (5 trials, 2 warmups) over a fresh 180-second realistic-mode sample restricted to
+`count_source == "plane"` rows where all three of `PrintingCompose`/`GatheredScan`/`StreamedSelect` were
+measured (12,621 of 17,695 plane-acquire rows): real `PrintingCompose` genuinely beats real
+`GatheredScan` 10.7% of the time (mean margin 149 µs when it wins) and real `StreamedSelect` 6.7% of the
+time (mean margin 142 µs). So the underlying phenomenon `bench_pairwise_ordering.py` is flagging is not
+noise or a non-event — `PrintingCompose` really would be the better plan on a meaningful minority of
+these queries, and getting the sign wrong on that minority is exactly what the doc's mean-regret numbers
+are pricing. It's a genuine calibration gap in the *diagnostic*, just one the real router can never act
+on in this branch.
+
+**Why this changes the recommendation, not just the framing.** Any fix that prices `PrintingCompose`
+accurately here has to run some real fraction of `compose_printing_estimate`'s own work (compiling
+per-leaf planes, walking `And` children, calling `exact_result_total`) — none of it is a free
+constant-time lookup for the composable shapes this population is dominated by (`And`s of
+card-invariant/existential leaves; see that function's own docs for the `O(leaves × n_cards/64)`
+`compile_plane`/`eval_planes` cost it pays per `And` child). `acquire_plan_features` runs on **every**
+real query through `run_query_routed`, not just diagnostics — so any such fix adds real, unconditional
+per-query cost to the `Plane`-acquire hot path (previously just one popcount) in order to correctly
+price a plan that the very same call already cannot select, no matter what number it computes. That is
+the textbook shape of the reverted 23.6x acquire-time regression this doc's own Constraints section
+warns against, except worse: that regression at least changed an outcome. This one, done "correctly,"
+changes nothing about which plan runs, ever, in this branch — it would only make `explain`'s ranking
+display and `bench_pairwise_ordering.py`'s numbers prettier.
+
+**Recommendation.** Do not fix this in isolation. If a future round wants `PrintingCompose` to actually
+compete under a `Plane` acquire, that requires widening `PlanScope::Plane` to admit it *and* giving
+`exec_from_candidates`'s `Prep::Plane` arm a real executor for it (which is what caused the #836 panic
+last time this guard was loosened) — a materially bigger change than a costing fix, and the costing fix
+belongs inside that effort, gated on it, not shipped ahead of it where it can only add latency for zero
+behavioral change. Closing this doc's remaining open item as "traced, understood, correctly left
+unfixed" rather than reopening it.
+
+**Round 12 confirmation.**
+- `cargo test --manifest-path card_engine/Cargo.toml`: 168 passed, 0 failed, 56 ignored (baseline,
+  unmodified — no code changed this round).
+- `cargo clippy --manifest-path card_engine/Cargo.toml --all-targets -- -D warnings`: not re-run beyond
+  the existing green baseline, since no source lines changed.
+- `bench_pairwise_ordering.py`/`bench_cost_model_agreement.py` before/after: identical, since no build
+  change exists to A/B — see the Round 12 report for the baseline numbers gathered instead (real-data
+  confirmation in place of a before/after diff).
+- Blast radius: `git diff --stat costcell/trunk` shows only this doc touched.
