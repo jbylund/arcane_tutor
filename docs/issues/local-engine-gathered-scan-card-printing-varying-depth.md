@@ -115,6 +115,7 @@ reasoning as Round 3.
 | 2 | independence-product `domain_cards` for 2+ different-index range leaves | rejected at self-check | n/a (no code shipped) | n/a | printing-space variant: 38 impr / 496 regr, 17.3M → 18.1M abs error (worse); card-space variant: 0/1500 changed (mathematically incapable of firing) — see Round 2 below |
 | 3 | second clustering-bias constant (`COMPOSE_RANGE_AND_CLUSTER_BIAS`) for the same shape | kept | n/a (see Round 3 below — noisy at this cell's grain) | none, within run-to-run noise | held-out paired-diff (controlled): 433 impr / 117 regr, 8.60M → 8.02M abs `scan_units` error; new bias 1.1 against `COMPOSE_CARD_ESTIMATE_BIAS`'s 1.78 |
 | 4 | downward `scan_units` scale (`COMPOSE_RANGE_AND_BROAD_SCAN_SCALE`) for the `range_too_broad_to_narrow`-fired subset of the same shape | kept | n/a (see Round 4 below — noisy at this cell's grain) | none, within run-to-run noise | held-out paired-diff (controlled): 166 impr / 15 regr / 0 tied, 5.40M → 1.90M abs `scan_units` error; new scale 0.7; `eval_domain` left untouched (measured exact, 0 error) |
+| 5 | diagnostic: re-bucket remaining error by AST shape | diagnostic | n/a (no code shipped) | n/a | see Round 5 below — fresh magnitude-weighted bucketing (n=30,892) finds 74.9% of all pooled `scan_units` error sits in the `range_too_broad_to_narrow` broad-guard reset FIRING OUTSIDE `is_cross_index_range_and` (a population Round 3/4's own comment already flagged as unscaled on purpose); Rounds 1-4's target shape drops to 2.3% of pooled error, median ratio 1.00 — confirming the shipped fixes worked, just on a small slice of the cell |
 
 ### Round 1
 
@@ -390,6 +391,168 @@ cell pools every card-mode `PrintingCompose` acquire, and the guard-fired subset
   A2, zero code difference): `-0.4µs, CI [-0.5, -0.2]`, "B is FASTER" -- a swing of comparable
   magnitude with nothing changed, matching Rounds 1 and 3's own non-interleaved-run drift finding. Read
   as no detectable latency effect either way, not as a confirmed regression.
+
+### Round 5
+
+Diagnostic only, no code changes -- re-run the magnitude-weighted AST-shape breakdown from scratch
+against the current `costcell/trunk` tip (`8ab0b4cc`), since a full-corpus checkpoint
+(`bench_cost_model_agreement.py`) still shows `GatheredScan`/`card` at 15% within 25%, essentially
+unchanged from Round 0's 16%, despite three landed, held-out-validated fixes (Rounds 1, 3, 4).
+
+**Method.** Isolated release wheel (`maturin build --release`, extracted, `PYTHONPATH`-pinned).
+Sampled with `QuerySampler(corpus, "uniform")`, reimplementing `query()`'s body inline (predicate
+count → `_draw_families` → `predicate` per family) so each row keeps which FAMILIES were drawn --
+`query()` itself doesn't return them, and every other part of the sampling loop (limits, offsets,
+warmups/trials, `unique`/`orderby`/`direction` drawn independently) matches
+`bench_cost_model_agreement.py` exactly. Every family maps to one of six categories: `range`
+(`usd`/`eur`/`tix`/`cn`/`released` -- the printing-varying, range-indexed fields this whole doc is
+about), `numeric_other` (`pow`/`tou`/`cmc`/`loyalty`), `rarity`, `text` (`name`/`oracle`/`flavor`/
+`artist`), `arith` (the extended syntax), and `collection` (everything else -- type/legality/
+identity/color/set/keyword/produces/tag/border/frame/watermark/devotion). `sampler.query()` only
+ever emits a flat conjunction (no Or/Not/regex), so the whole GatheredScan/card population this cell
+measures is single leaves and `and2`/`and3` -- there is no Or-composed or Not-wrapped subpopulation
+to bucket here; that's a property of what `bench_cost_model_agreement.py` samples, not something
+this round chose.
+
+Per row: `predicted = acquire["scan_units"]`, `measured = plan["printings_examined"]` (`GatheredScan`
+only, non-declined) -- the same pairing Rounds 3/4 used, per `scan_units`'s own doc comment at
+`lib.rs:11213` ("the real `printings_examined` GatheredScan counter"). Bucket key = `structure`
+(`single`/`and2`/`and3`) + sorted category tuple. Ranked by total absolute `scan_units` error per
+bucket (magnitude-weighted), with each bucket's row count and median ratio reported alongside so a
+high-count-but-tied bucket and a rare-but-catastrophic one are both visible.
+
+300s budget (same protocol/seconds as Round 0's baseline run) → **30,892 GatheredScan/card rows**,
+same order of magnitude as Round 0's 35,074 and Rounds 1-4's 1,500-query calibration samples for
+their narrower held-out slices. Total pooled absolute `scan_units` error: 175,122,864. (Note: this
+is a `scan_units`-space ratio, same quantity Rounds 1-4 worked in, not the ns-space
+measured/predicted ratio `bench_cost_model_agreement.py`'s headline 15%/16% number reports --
+the two measure different things and are not expected to match numerically.)
+
+**Ranked bucket table** (all buckets with n ≥ 1; buckets below 0.1% share are real but tiny):
+
+```
+bucket                                 n       sum |err|   share  median ratio  within25%
+single:range                        3041      93,991,483   53.7%          0.64        1%
+and2:collection+range                2301      17,699,351   10.1%          1.21       15%
+and2:numeric_other+range              801      14,662,649    8.4%          0.74       25%
+single:collection                    6993      11,248,207    6.4%          1.00       68%
+single:rarity                         614       8,168,926    4.7%          1.08       41%
+and2:range+rarity                     199       5,631,260    3.2%          1.50        5%
+and2:numeric_other+rarity             169       3,714,009    2.1%          0.41       21%
+and2:collection+numeric_other        1628       2,553,659    1.5%          1.00       42%
+and2:range+range                      398       2,442,018    1.4%          1.15       35%
+single:numeric_other                 2355       2,405,375    1.4%          1.00       95%
+and2:collection+rarity                466       2,234,802    1.3%          0.54       14%
+and2:arith+range                      215       1,708,742    1.0%          0.58       15%
+and2:collection+collection           2442       1,497,390    0.9%          0.20       20%
+and3:collection+numeric_other+range   355       1,303,555    0.7%          0.44       12%
+and3:collection+range+range           232         855,513    0.5%          0.80       21%
+and3:numeric_other+range+rarity        30         725,010    0.4%          0.31       17%
+and3:collection+collection+range      522         526,766    0.3%          0.18       10%
+and2:range+text                       814         449,305    0.3%          0.86       20%
+and3:numeric_other+range+range         62         434,311    0.2%          0.44       15%
+and3:numeric_other+numeric_other+range 39         398,600    0.2%          0.27       10%
+and3:collection+range+rarity           99         261,534    0.1%          0.77       12%
+and2:arith+rarity                      35         247,425    0.1%          0.43       29%
+single:text                          2454         239,195    0.1%          1.00       46%
+and2:numeric_other+numeric_other      144         168,614    0.1%          1.00       82%
+and3:range+range+range                 24         154,252    0.1%          1.02       17%
+[remaining 38 buckets each < 0.1% share, ~0.4% combined, mostly text/arith-involving rows with n<100]
+```
+
+**Confirmation: Rounds 1-4's target shape did drop, as expected.** The `is_cross_index_range_and`-
+equivalent population (an `and2`/`and3` with 2+ `range`-category families -- exactly what
+`is_cross_index_range_and` requires) is **807 rows (2.6% of the sample), 4,069,972 abs error (2.3%
+of the pooled total), median ratio 1.00, 28% within 25%**. Before Rounds 3/4 this shape was
+"tens of millions of units each" and the single dominant contributor by every account in this doc;
+now it sits at a median ratio of exactly 1.00 (as good as any bucket in the table) and would not
+make a top-10 list by magnitude. The three shipped fixes worked exactly as designed on their target
+population -- they just never had a chance to move the pooled cell, because that population turns
+out to be a small slice of it (2.6% by row count, 2.3% by error), not the ~37%+ this doc's earlier
+rounds estimated from the narrower and2/and3-RANGE_FAMILIES-only calibration sample. That estimate
+was never wrong on its own terms (it was scoped to the RANGE_FAMILIES-only shape from the start);
+it just wasn't representative of the whole `GatheredScan`/card population once measured against it
+directly.
+
+**What actually dominates: the SAME broad-guard reset, everywhere Round 4 didn't scale it.** Flagging
+every row where `predicted == n_printings` exactly (the `range_too_broad_to_narrow` guard's
+telltale signature -- both `PrintingCompose`'s and the sibling `CardRangePopcount`/
+`PrintingRangeScan` arms' resets set `scan_units` to the literal, unscaled `n_printings` when they
+fire) finds **2,412 rows (7.8% of the sample) carrying 131,170,530 abs error -- 74.9% of the ENTIRE
+pooled total -- at median ratio 0.45** (predicted ~2.2x too high). Zero of these 2,412 rows are
+`is_cross_index_range_and` -- Round 4's scale never had a chance to touch any of them, by
+construction. Split by structure: `single` (n=1,851, 91.6M), `and2` (n=534, 37.3M), `and3` (n=27,
+2.2M).
+
+Reading `lib.rs` confirms this is not a new bug -- it is Round 3/4's own noted, deliberate scope
+limit, finally showing up as the dominant term now that the target shape it excluded is fixed. Two
+separate sites:
+
+1. **`PrintingCompose`'s own broad-guard reset** (`lib.rs:12239-12259`) scales `scan_units` by
+   `COMPOSE_RANGE_AND_BROAD_SCAN_SCALE` *only* `if is_cross_index_range_and(composed, indexes)`; the
+   inline comment at `:12248-12250` says outright: "every other query reaching this branch (a single
+   broad range, a broadcast legality, ...) never had this scale's calibration sample in it, so it
+   keeps today's unscaled `n_printings` ceiling." That "everything else" population is exactly what
+   this round measured. Per-bucket broad/narrow split confirms the broad slice is a small-count,
+   huge-magnitude minority within each mixed bucket:
+   ```
+   and2:collection+range      broad n=210  (9% of bucket rows, 78% of bucket's error) median ratio 0.30
+                               narrow n=2091 (91% of rows, 22% of error)               median ratio 1.39
+   and2:numeric_other+range   broad n=188  (23% of rows, 94% of error)                 median ratio 0.21
+                               narrow n=613  (77% of rows, 6% of error)                 median ratio 0.93
+   and2:range+rarity          broad n=81   (41% of rows, 91% of error)                 median ratio 0.36
+                               narrow n=118  (59% of rows, 9% of error)                 median ratio 3.37
+   ```
+   Example rows (all `predicted == n_printings == 97,812`, the full corpus):
+   `tou<=5 tix>=0.02 tix<=0.04` → measured 26,834 (ratio 0.27); `tou>=2 tou<=4 year<2025` → measured
+   12,491 (ratio 0.13); `r>=uncommon tix>0.02` → measured 46,256 (ratio 0.47); `r>=uncommon eur<0.49`
+   → measured 49,726 (ratio 0.51).
+
+2. **The sibling `CardRangePopcount` (`lib.rs:11801-11845`) and `PrintingRangeScan`
+   (`lib.rs:11846-11872`) acquire arms** -- which serve a single BARE range leaf under `unique=card`
+   (e.g. `usd>=0.24` alone, no `And` at all) -- have their own structurally identical
+   `range_too_broad_to_narrow`-gated reset to `(n_cards, n_printings)`. This is a completely separate
+   code path from `PrintingCompose` (confirmed live: `usd>=0.24` alone acquires via
+   `count_source: card_range_popcount`, not `printing_compose`), never in scope for any of Rounds
+   1-4 (whose investigation was explicitly `compose_printing_estimate`/`PrintingCompose`). This is
+   the `single:range` bucket -- the single largest bucket in the whole table, 53.7% of pooled error
+   on its own, median ratio 0.64. Example rows (all `predicted == 97,812`): `usd>=0.24` → measured
+   40,782 (ratio 0.42); `cn>=127` → measured 45,904 (ratio 0.47); `tix<0.12` → measured 53,260
+   (ratio 0.54); `year>=2023` → measured 61,411 (ratio 0.63).
+
+**Secondary, smaller finding, opposite direction.** `and2:range+rarity`'s NARROW (non-broad) subset
+reads median ratio 3.37 -- badly UNDER-costed, the opposite direction from everything else in this
+round. Small in absolute terms (118 rows, ~9% of that bucket's 5.6M error, so well under 1M total)
+-- not worth its own round yet, but worth a one-line flag for whoever next touches range+rarity
+combinations, since it's a direction-flip rather than more of the same over-cost pattern.
+
+**What Round 6 should target.** The `range_too_broad_to_narrow` broad-guard reset, generalized
+beyond `is_cross_index_range_and`, at two sites:
+
+- Extend (or add a sibling to) `COMPOSE_RANGE_AND_BROAD_SCAN_SCALE` inside `PrintingCompose`'s own
+  reset so it also scales `scan_units` when the guard fires but `is_cross_index_range_and` is false
+  (a lone broad range leaf mixed with a collection/numeric_other/rarity leaf, or a bare broadcast
+  legality/range predicate). This is exactly the pre-computation-safe pattern Round 4 already used --
+  a flat multiplicative scale on an already-computed ceiling, no new per-query scan -- just widened
+  in scope. Needs its OWN calibration/held-out split before trusting a number: this round's median
+  ratio here (0.45) reads meaningfully lower than Round 4's fitted realized fraction (~0.70-0.71) for
+  the `is_cross_index_range_and` population, so reusing 0.7 unchanged is not obviously right --
+  and the two mixed-leaf buckets above disagree with each other too (0.21-0.36 median), so a single
+  universal constant may not fit either; check whether the guard's realized fraction varies
+  systematically with the NON-range leaf's own selectivity before picking one or several constants.
+- Add the analogous scale to the `CardRangePopcount`/`PrintingRangeScan` arms' own broad-guard reset
+  (`lib.rs:11831`, `:11862`) for a single bare range leaf -- a different acquire branch than
+  `PrintingCompose`, so it needs its own gate check and likely its own constant (median ratio here,
+  0.64, differs again from both of the above), even though the underlying guard function
+  (`range_too_broad_to_narrow`) is the same shared code. This is `single:range`, the single largest
+  bucket by magnitude in the whole table -- the highest-leverage place to start.
+- Population parity note for whoever fits this: unlike Rounds 3/4's RANGE_FAMILIES-only calibration
+  sample, this population spans every family category (collection/numeric_other/rarity/text mixed
+  with a range leaf, plus bare single range leaves with no other predicate at all) -- a proper
+  calibration/held-out split here should draw from the SAME uniform-mode, all-category sampling this
+  round used, not a re-use of the narrower RANGE_FAMILIES-only sample Rounds 1-4 built their splits
+  from, since that sample structurally cannot contain the `single:range` or mixed-category rows that
+  now turn out to matter most.
 
 ## Confirmation runs
 
