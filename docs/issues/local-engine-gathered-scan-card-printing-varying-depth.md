@@ -118,6 +118,19 @@ agreement-gate result as Rounds 3/4 (15-17%, essentially unchanged) -- this is t
 lever fixed so far by pooled-error share, and it still barely moves the headline number, confirming
 that gate's grain is simply too coarse to see any single arm's fix, not that this fix is inert.
 
+As of Round 7 (`COMPOSE_SAME_RANGE_BROAD_SCAN_SCALE`, `costcell/07-candidates-range`), `PrintingCompose`'s
+OWN `range_too_broad_to_narrow` reset -- the rest of Round 5/6's "single:range" bucket that Round 6's
+`CardRangePopcount` fix never reaches, because a bare range fails `card_range_popcount_applicable`
+whenever no sort permutation exists for the query's orderby/direction, and a fused two-sided bound
+(`eur>=0.23 eur<=0.45`) never reaches `CardRangePopcount` at all -- scales `scan_units` alone down to
+`0.52 * n_printings`, gated on a new `is_same_index_range_only` (bare leaf or same-field `And`, as
+opposed to `is_cross_index_range_and`'s different-index `And`). `eval_domain` is left untouched:
+exact at 1.000 mean/median. Held-out paired-diff (13,053 guard-fired rows, hash-of-query split): 6,422
+improved / 33 regressed, total absolute `scan_units` error 304.8M → 57.6M on the held-out half. Same
+`GatheredScan`/`card` agreement-gate result as every prior round (17-18%, essentially unchanged) --
+this population turned out to be even larger by row count than Round 6's, and still barely moves the
+headline number, same grain argument as Rounds 3/4/6.
+
 ## Iteration ledger
 
 | # | Idea | Outcome | GS/card within-25% | Other cells | Notes |
@@ -129,6 +142,7 @@ that gate's grain is simply too coarse to see any single arm's fix, not that thi
 | 4 | downward `scan_units` scale (`COMPOSE_RANGE_AND_BROAD_SCAN_SCALE`) for the `range_too_broad_to_narrow`-fired subset of the same shape | kept | n/a (see Round 4 below — noisy at this cell's grain) | none, within run-to-run noise | held-out paired-diff (controlled): 166 impr / 15 regr / 0 tied, 5.40M → 1.90M abs `scan_units` error; new scale 0.7; `eval_domain` left untouched (measured exact, 0 error) |
 | 5 | diagnostic: re-bucket remaining error by AST shape | diagnostic | n/a (no code shipped) | n/a | see Round 5 below — fresh magnitude-weighted bucketing (n=30,892) finds 74.9% of all pooled `scan_units` error sits in the `range_too_broad_to_narrow` broad-guard reset FIRING OUTSIDE `is_cross_index_range_and` (a population Round 3/4's own comment already flagged as unscaled on purpose); Rounds 1-4's target shape drops to 2.3% of pooled error, median ratio 1.00 — confirming the shipped fixes worked, just on a small slice of the cell |
 | 6 | downward `scan_units` scale (`COMPOSE_BARE_RANGE_BROAD_SCALE`) for the `CardRangePopcount` arm's own `range_too_broad_to_narrow` reset (single bare range leaf, `unique=card`) | kept | 15-17% both builds, unchanged (noisy at this cell's grain, same as Rounds 3/4); the finer `GatheredScan/card_range_popcount` sub-row moved 47%→52% within [0.8,1.25], median 0.94→1.05 | none, within run-to-run noise; regret matrix unchanged (96% `printing_compose` share both builds) | held-out paired-diff (controlled): 1,704 impr / 31 regr, 93.3M → 16.0M abs `scan_units` error; new scale 0.43; `eval_domain` left untouched (96.6% of rows exactly 1.0, mean 0.975 — a real but small tail from price-field null-exclusion, not chased); flags the sibling `else` branch's `scan_units = card_est` as itself badly under-calibrated (median ratio ~0.25-0.37 by field) — not fixed this round, out of scope, noted for a future round |
+| 7 | downward `scan_units` scale (`COMPOSE_SAME_RANGE_BROAD_SCAN_SCALE`) for `PrintingCompose`'s OWN `range_too_broad_to_narrow` reset, gated on a NEW `is_same_index_range_only` (bare single range leaf, or a fused same-field two-sided bound) — the rest of Round 5/6's "single:range" bucket that `CardRangePopcount` never reaches | kept | 17-18% both builds, unchanged (noisy at this cell's grain, same as every prior round); the pooled `GatheredScan/printing_compose` row (all `unique` modes) unchanged at 24% both builds — expected, small slice of a much larger diverse pool | none, within run-to-run noise; regret matrix unchanged (95% `printing_compose` share both builds) | held-out paired-diff (controlled): 6,422 impr / 33 regr, 304.8M → 57.6M abs `scan_units` error; new scale 0.52; `eval_domain` left untouched (measured exact, median/mean 1.000); population confirmed to be a SEPARATE, independently-broken slice of "single:range" from Round 6's, reached via a different acquire branch (`printing_compose`, not `card_range_popcount`) for two independent reasons — see Round 7 below |
 
 ### Round 1
 
@@ -694,6 +708,118 @@ same noise caveat as every other single-run number in this doc).
   zero picked-plan changes on the target population.
 - `cargo build`/wheel blast radius: `git diff --stat costcell/trunk` shows only `card_engine/src/lib.rs`
   touched (58 lines: one new constant + its doc, five lines in the `CardRangePopcount` arm).
+
+### Round 7
+
+Target: resolve the population-size discrepancy the assignment opened with -- Round 5's "single:range"
+bucket (a single family/predicate drawn from `RANGE_FAMILIES`, `unique=card`) was 3,041 rows, 53.7% of
+pooled error, but Round 6's fix only touches the `CardRangePopcount` arm, which Round 6 itself measured
+at ~1,660 rows (~4.7% of the pooled cell) -- smaller than the bucket. Where does the rest go?
+
+**The `Prep::Candidates` hypothesis was checked first and refuted.** Reading `card_range_popcount_
+applicable` (lib.rs:9485) confirms it requires `plane.is_none()`, a bare range (`bare_range_bounds`),
+AND `indexes.sort_perms.order(sort_col, descending, cards.len()).is_some()` -- both sort-permutation
+directions for the query's exact orderby/direction/card-count combination. But the NEXT branch acquire
+tries when that fails is not `Prep::Candidates` -- it is `PrintingCompose`, which is mode-agnostic and
+requires no sort permutation at all (`printing_compose_applicable`, lib.rs:9437, and `is_printing_
+composable`'s range arm, lib.rs:6866, both gate only on `bare_range_bounds(...).is_some()`). A direct
+sample confirms this empirically: of 1,184,753 bare single-range `unique=card` queries generated
+(varying orderby/direction/limit/offset the way `bench_cost_model_agreement.py` does), 56.3% acquired
+via `card_range_popcount` and the remaining 43.7% via `printing_compose` -- **zero** via `candidates`.
+
+**A second mechanism, found while building that sample, matters just as much: two-sided bounds.**
+`Shape(families=RANGE_FAMILIES, predicates=1, unique={"card"})` -- Round 6's own generator for this
+population -- can render its one drawn predicate as a fused two-sided bound (e.g. `eur>=0.23
+eur<=0.45`), because `QuerySampler`'s `bounded` parameter defaults to `None` (either shape, drawn at
+random) rather than `False` (one-sided only). `bare_range_bounds`, `CardRangePopcount`'s own gate,
+matches a single comparison and never an `And` (confirmed directly in `fuse_and_range_children`'s own
+doc: "a FUSED two-sided range never arrives here at all"), so a two-sided bound reaches
+`PrintingCompose` regardless of sort permutation. Round 5's AST-shape bucketer keyed "single" on the
+SAMPLER's predicate count (one family drawn), not on `FilterExpr` structure -- so "single:range"
+always included these two-sided `And`-shaped rows, they were just never told apart from true bare
+leaves until this round asked.
+
+**Conclusion: the missing population is real, independently broken, and reaches `PrintingCompose`'s
+OWN broad-guard reset -- exactly Round 5's "what Round 6 should target" recommendation item 1, which
+Round 6 explicitly deferred** ("Extend ... `PrintingCompose`'s own reset so it also scales `scan_units`
+when the guard fires but `is_cross_index_range_and` is false ... a bare broadcast legality/range
+predicate"). Sampled 23,039 `printing_compose`-acquired rows from the same shape (240s budget, fresh
+seed): 13,053 (56.6%) have the guard fire (`scan_units == n_printings`), split 5,300 true bare-single /
+7,753 fused two-sided. Measured against the real `printings_examined` GatheredScan counter:
+
+```
+                                  eval_domain/cards_visited   scan_units/printings_examined   printings_examined/n_printings
+broad (guard fired, n=13,053)             mean 1.000                  mean 2.023 (median 1.917)        mean 0.518 (median 0.522)
+narrow (guard not fired, n=9,986)         mean 0.905 (median 0.963)   mean 0.381 (median 0.382)        mean 0.122 (median 0.131)
+```
+
+`eval_domain` is exact on the broad subset (matches every prior broad-guard round). `scan_units` is
+badly over-costed there (predicted ~1.9-2.0x too high), confirming Round 5's bucket-level median ratio
+of 0.64 for "single:range" was a blend of this over-costed `printing_compose` slice and Round 6's
+now-fixed `card_range_popcount` slice, not evidence Round 6 left its own target undone. The narrow
+subset is badly UNDER-costed (median 0.38) -- a second, separate bug in `PrintingCompose`'s non-broad
+branch for this same shape, structurally the same phenomenon Round 6 flagged in `CardRangePopcount`'s
+sibling `else` branch (a card-count-shaped estimate undershooting a printing count) -- **not fixed this
+round**, out of the assigned scope, noted below for a future round.
+
+**Self-check (pre-computation constraint).** The new gate, `is_same_index_range_only` (lib.rs, next to
+`is_cross_index_range_and`), is O(children): it calls `bare_range_bounds` per child (a pure match plus
+float comparison, no index probe) and compares index pointers, the identical technique and complexity
+class `is_cross_index_range_and` already uses, only run inside the same `unwrap_or_else`-adjacent
+branch after `exact_cards` has already declined. No new per-query scan, no new index probe -- confirmed
+by `cargo test`/`cargo clippy` and the latency A/B below.
+
+**Fit.** Split the 13,053 broad rows by `hash(query|orderby|direction) % 2`: 6,598 calibration / 6,455
+held-out. Swept 0.20-0.80 in steps of 0.02 on the calibration half only; both halves' error-vs-scale
+curves are smooth and convex, minimizing at the SAME 0.52 (each sub-shape's own argmin -- 0.48 bare-
+single, 0.55 fused two-sided -- brackets it tightly, so one flat constant was kept rather than two).
+
+```
+                          calibration (n=6,598)            held-out (n=6,455)
+scan_units total abs     310.8M (1.0) -> 60.2M (0.52)      304.8M (1.0) -> 57.6M (0.52)
+improved / regressed              6,560 / 38                       6,422 / 33
+```
+
+**Price-triple sanity (per-field, not cross-field correlation -- a flat scale on an already-computed
+ceiling has no per-leaf independence assumption to violate, same reasoning as every prior broad-guard
+constant).** `usd` (0.534), `eur` (0.546), `tix` (0.574) all sit in the same band as `cn`/`date`/`year`
+(0.46-0.49); `tix` reads highest but not an outlier.
+
+**Verified against the real build, not just the Python-side sweep.** Rebuilt with the constant and
+replayed the identical 13,053 rows directly against it: `scan_units` matched `round(0.52 *
+n_printings)` exactly on all 13,053 rows (0 mismatches, i.e. `is_same_index_range_only` correctly
+recognized every one of them), and the real paired total (117,812,900) landed on the exact same number
+as the calibration+held-out simulation combined (60,175,506 + 57,637,394).
+
+### Round 7 confirmation runs
+
+- `cargo test --manifest-path card_engine/Cargo.toml`: 167 passed, 0 failed, 56 ignored.
+- `cargo clippy --manifest-path card_engine/Cargo.toml --all-targets -- -D warnings`: clean.
+- `bench_regret_matrix.py --seconds 120 --mode uniform`: same shape as every prior round -- `printing_
+  compose` still 95% share both builds, `StreamedSelect -> GatheredScan` / `GatheredScan ->
+  PrintingCompose` still the largest picked/best mismatches, total regret comparable (49.9ms baseline
+  vs 50.7ms modified) -- nothing resembling the 23.6x acquire-time precedent.
+- `bench_query_latency_ab.py --mode realistic --sample 800 --seed 1`: real diff (baseline vs modified)
+  `+0.7µs, 95% CI [+0.5, +0.9]`, "B is SLOWER". A same-build canary (baseline vs a second baseline run,
+  identical protocol, nothing changed) read `+0.5µs, CI [+0.3, +0.7]`, also "B is SLOWER" -- same sign
+  and comparable magnitude with zero code difference, matching every prior round's non-interleaved-run
+  drift finding. Read as no detectable latency effect, not a confirmed regression.
+- `git diff --stat costcell/trunk` shows only `card_engine/src/lib.rs` touched (101 lines: two new
+  constants + their docs, one new helper function, four lines wiring it into the broad-guard branch).
+- Full-table checkpoint (`bench_cost_model_agreement.py --seconds 300 --seed 0`): `GatheredScan`/`card`
+  17% -> 18% within [0.8, 1.25], both within noise of each other (n=33,218 baseline, n=33,121
+  modified) -- expected, same reasoning as every prior round: this cell pools every card-mode
+  `PrintingCompose`/`CardRangePopcount`/`candidates`/`plane` acquire, and this round's target (a single
+  range family reaching `printing_compose`'s broad guard) is a small slice of it. The pooled
+  `GatheredScan`/`printing_compose` row (every `unique` mode, n=54,827/54,658) also held steady at 24%
+  both builds -- same story, an even larger and more diverse pool this fix touches only a slice of.
+
+**Next steps for a future round.** The narrow-subset (`range_too_broad_to_narrow` NOT fired)
+`printing_compose` bare-range population found mid-investigation above (median `scan_units` ratio 0.38,
+n=9,986 in this round's sample) is real, separately broken, and out of this round's assigned scope --
+structurally the same "card-count-shaped estimate undershooting a printing count" bug Round 6 flagged
+in `CardRangePopcount`'s sibling `else` branch, now confirmed to have a `PrintingCompose`-side
+counterpart too.
 
 ## Confirmation runs
 

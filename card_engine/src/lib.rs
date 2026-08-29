@@ -11344,6 +11344,54 @@ const COMPOSE_RANGE_AND_BROAD_SCAN_SCALE: f64 = 0.7;
 /// the exact same totals as the simulation above.
 const COMPOSE_BARE_RANGE_BROAD_SCALE: f64 = 0.43;
 
+/// Downscale for `scan_units` alone, in `PrintingCompose`'s OWN `range_too_broad_to_narrow`
+/// broad-guard reset (the arm below), for the shape `is_cross_index_range_and` was never meant to
+/// cover: a bare single range leaf, or an `And` of range leaves that all share the SAME printing-
+/// value index (a fused two-sided bound like `eur>=0.23 eur<=0.45`) -- see `is_same_index_range_only`.
+///
+/// Round 5's diagnostic (`docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md`)
+/// found `GatheredScan`/`card`'s "single:range" bucket (a single family/predicate drawn from
+/// `RANGE_FAMILIES`) at 3,041 rows, 53.7% of pooled error -- Round 6 fixed the slice of it that
+/// reaches `CardRangePopcount` (`COMPOSE_BARE_RANGE_BROAD_SCALE`), but that arm is only ~4.7% of the
+/// pooled `GatheredScan`/`card` cell by row count, smaller than the 3,041-row bucket. Round 7 traced
+/// the rest: `card_range_popcount_applicable` requires BOTH sort-permutation directions for
+/// `(sort_col, descending, cards.len())`, and a fused two-sided bound never satisfies
+/// `bare_range_bounds` at all (it matches one comparison, not an `And` of two -- confirmed live,
+/// `eur>=0.23 eur<=0.45` and a `cn>=8`-shaped query with an orderby lacking a permutation both route
+/// via `count_source: printing_compose`) -- so both land here instead, in the ONE broad-guard branch
+/// `is_cross_index_range_and`'s own doc already flagged as unscaled on purpose ("every other query
+/// reaching this branch ... keeps today's unscaled `n_printings` ceiling").
+///
+/// Sampled 13,053 guard-fired rows from `Shape(families=RANGE_FAMILIES, predicates=1,
+/// unique={"card"})` (varying orderby/direction/limit/offset the way `bench_cost_model_agreement.py`
+/// does, not pinned, so the population is not an artifact of one page shape), filtered to
+/// `count_source == "printing_compose"` and the guard signature (`scan_units == n_printings`),
+/// against the real `printings_examined` GatheredScan counter. 5,300 of the 13,053 are a true bare
+/// single leaf (no sort permutation for the drawn orderby/direction); 7,753 are a fused same-field
+/// two-sided bound. `eval_domain` (`n_cards`) reads exactly 1.0 on every row (mean/median both
+/// 1.000, cleaner than the `CardRangePopcount` sibling's 96.6%/0.975) -- left untouched, same call as
+/// both existing broad-guard constants.
+///
+/// `scan_units`'s realized fraction of `n_printings` is stable across the two sub-shapes (bare-single
+/// median 0.473, fused-two-sided median 0.548 -- 0.075 apart, not worth two constants) and across all
+/// five `RANGE_FAMILIES` (per-field median 0.46-0.58). Split by `hash(query|orderby|direction) % 2`:
+/// 6,598 calibration / 6,455 held-out. Swept 0.20-0.80 in steps of 0.02 on the calibration half only;
+/// both halves' error-vs-scale curves are smooth and convex, minimizing at the SAME 0.52 (each
+/// sub-shape's own argmin, 0.48 and 0.55, brackets it tightly).
+///
+/// ```text
+///                           calibration (n=6,598)            held-out (n=6,455)
+/// scan_units total abs     310.8M (1.0) -> 60.2M (0.52)      304.8M (1.0) -> 57.6M (0.52)
+/// improved / regressed              6,560 / 38                       6,422 / 33
+/// ```
+///
+/// Price-triple sanity (per-field, not cross-field correlation -- this is a flat scale on an
+/// already-computed ceiling, not a per-leaf independence combination, so the near-identical price
+/// columns' correlation has nothing to break, same reasoning as both sibling constants): `usd`
+/// (0.534), `eur` (0.546), `tix` (0.574) all sit within the same band as `cn`/`date`/`year`
+/// (0.46-0.49); `tix` reads highest but not an outlier.
+const COMPOSE_SAME_RANGE_BROAD_SCAN_SCALE: f64 = 0.52;
+
 /// Printings the gather BIT-TESTS per matching printing.
 ///
 /// `compose_scan_printings` was the composed bitmap's popcount, on the stated grounds that compose
@@ -11465,6 +11513,45 @@ fn is_cross_index_range_and(composed: &FilterExpr, indexes: &Archived<CardIndexe
         }
     }
     seen.len() >= 2
+}
+
+/// A bare range leaf, or an `And` of 2+ range leaves that all share the SAME printing-value index --
+/// the same-index counterpart `is_cross_index_range_and` deliberately excludes (see its own doc: "a
+/// single-field bound never counts as 2+ different indexes"). Neither shape ever reaches
+/// `CardRangePopcount`: a bare leaf can still land there when a sort permutation exists for the
+/// query's orderby/direction (`card_range_popcount_applicable`), but a fused two-sided bound like
+/// `usd>=a usd<=b` never does regardless of permutation (`bare_range_bounds`, `CardRangePopcount`'s
+/// own gate, matches one comparison, not an `And` of two) -- both fall through to `PrintingCompose`
+/// instead, where this identifies them for `COMPOSE_SAME_RANGE_BROAD_SCAN_SCALE`'s own broad-guard
+/// scale.
+///
+/// A mixed `And` (one range leaf plus a collection/rarity/numeric_other leaf) returns `false` here --
+/// every child must independently satisfy `bare_range_bounds`, which a non-range leaf never does --
+/// deliberately, since Round 5's diagnostic found that population's own broad-guard realized
+/// fractions (0.21-0.36) read nothing like this shape's (0.46-0.58), so it needs its own future
+/// investigation rather than silently sharing this constant.
+///
+/// Same complexity bound as `is_cross_index_range_and`: O(children), no index probe, only runs after
+/// `exact_cards` has already declined.
+fn is_same_index_range_only(composed: &FilterExpr, indexes: &Archived<CardIndexes>) -> bool {
+    if bare_range_bounds(composed, indexes).is_some() {
+        return true;
+    }
+    let FilterExpr::And(children) = composed else { return false };
+    if children.is_empty() {
+        return false;
+    }
+    let mut shared: Option<*const Archived<PrintingValueIndex>> = None;
+    for child in children {
+        let Some((idx, ..)) = bare_range_bounds(child, indexes) else { return false };
+        let ptr: *const Archived<PrintingValueIndex> = idx;
+        match shared {
+            None => shared = Some(ptr),
+            Some(seen) if seen == ptr => {}
+            Some(_) => return false,
+        }
+    }
+    true
 }
 
 fn balls_into_bins(k: usize, domain: usize) -> usize {
@@ -12300,12 +12387,18 @@ fn acquire_plan_features(
         {
             // `eval_domain` stays the full `n_cards` unconditionally -- see
             // `COMPOSE_RANGE_AND_BROAD_SCAN_SCALE`'s doc for why that half of the reset is already
-            // exact for the one shape this narrows further. `scan_units` alone gets the downward
-            // scale, and only for `is_cross_index_range_and`: every other query reaching this branch
-            // (a single broad range, a broadcast legality, ...) never had this scale's calibration
-            // sample in it, so it keeps today's unscaled `n_printings` ceiling.
+            // exact for the one shape this narrows further. `scan_units` alone gets a downward scale,
+            // keyed on which range shape reached this branch: `is_cross_index_range_and` (2+
+            // different-index range leaves) and `is_same_index_range_only` (a bare single range leaf,
+            // or a fused same-field two-sided bound -- see its own doc for why neither reaches
+            // `CardRangePopcount`) each have their own fitted constant. Anything else reaching this
+            // branch (a broadcast legality, a range mixed with a collection/rarity/numeric_other leaf,
+            // ...) never had either scale's calibration sample in it, so it keeps today's unscaled
+            // `n_printings` ceiling.
             let scan_units = if is_cross_index_range_and(composed, indexes) {
                 ((n_printings as f64) * COMPOSE_RANGE_AND_BROAD_SCAN_SCALE).round() as usize
+            } else if is_same_index_range_only(composed, indexes) {
+                ((n_printings as f64) * COMPOSE_SAME_RANGE_BROAD_SCAN_SCALE).round() as usize
             } else {
                 n_printings as usize
             };
