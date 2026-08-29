@@ -87,6 +87,15 @@ GatheredScan   card   n=33,944   median 0.72   p10 0.25   p90 3.20   17% within 
 Still FAIL by the [0.8, 1.25] median bar — see Round 1 below for why the whole-cell number barely
 moves despite a real, controlled improvement in the feature itself.
 
+As of Round 3 (`COMPOSE_RANGE_AND_CLUSTER_BIAS`, `costcell/03-cluster-bias`), the `est_cards` fallback
+for an `And` of 2+ different-index printing-varying range leaves (the ~37% subset Round 1 identified
+as ceiling-capped, and Round 2 proved no independence-product combination can fix) uses its own
+clustering-bias constant, `1.1`, instead of `COMPOSE_CARD_ESTIMATE_BIAS`'s `1.78`. Held-out paired-diff
+(1,500 and2/and3 RANGE_FAMILIES queries, `unique=card`, hash-of-query split): 433 improved / 117
+regressed / 192 tied, total absolute `scan_units` error 8.60M → 8.02M on the held-out half. Same
+`GatheredScan`/`card` FAIL as before on the single-run agreement gate — see Round 3 below for why that
+is expected and not a sign the fix did nothing.
+
 ## Iteration ledger
 
 | # | Idea | Outcome | GS/card within-25% | Other cells | Notes |
@@ -94,6 +103,7 @@ moves despite a real, controlled improvement in the feature itself.
 | 0 | (baseline, `engine-cost-model-cleanup` @ `97dc30c8`) | — | 16% | — | n=35,074, median 0.67, p10 0.25, p90 2.75 |
 | 1 | match-density depth proxy | kept | 16% → 17% (noisy, uncontrolled) | none, within run-to-run noise | paired-diff (controlled): 946 impr / 544 regr, 29.6M → 9.86M abs `scan_units` error; `BIAS` refit 2.1 → 0.7 |
 | 2 | independence-product `domain_cards` for 2+ different-index range leaves | rejected at self-check | n/a (no code shipped) | n/a | printing-space variant: 38 impr / 496 regr, 17.3M → 18.1M abs error (worse); card-space variant: 0/1500 changed (mathematically incapable of firing) — see Round 2 below |
+| 3 | second clustering-bias constant (`COMPOSE_RANGE_AND_CLUSTER_BIAS`) for the same shape | kept | n/a (see Round 3 below — noisy at this cell's grain) | none, within run-to-run noise | held-out paired-diff (controlled): 433 impr / 117 regr, 8.60M → 8.02M abs `scan_units` error; new bias 1.1 against `COMPOSE_CARD_ESTIMATE_BIAS`'s 1.78 |
 
 ### Round 1
 
@@ -199,6 +209,90 @@ conditions at a materially higher rate than corpus-wide field marginals imply, s
 printings are not independent draws — the same clustering `COMPOSE_CARD_ESTIMATE_BIAS`'s 1.78
 divisor already corrects for at the SINGLE-field level), which would need a different precomputed
 source than the ones checked here, not just a different combination formula.
+
+### Round 3
+
+Target: Round 2's own "next steps" item (b) — a flat, shape-specific multiplicative correction on
+top of `calibrated_balls_into_bins`'s output, fit with a genuine calibration/held-out split, for the
+same And-of-cross-index-range-leaves population. A second constant, `COMPOSE_RANGE_AND_CLUSTER_BIAS`,
+routes `est_cards`'s fallback (`acquire_plan_features`, the `PrintingCompose` arm) to
+`calibrated_balls_into_bins_with_bias(printing_matches, n_cards, COMPOSE_RANGE_AND_CLUSTER_BIAS)`
+instead of `COMPOSE_CARD_ESTIMATE_BIAS`'s 1.78, whenever the new `is_cross_index_range_and` detects
+an `And` with 2+ children whose `bare_range_bounds` indexes are pairwise distinct (same-index
+children, e.g. a two-sided `usd>=a usd<=b`, still fuse to one index and don't count — that population
+already gets an exact `k` from `fuse_and_range_children` upstream and never reaches this fallback).
+
+**Self-check (constraint 3):** trivially clears. `is_cross_index_range_and` is O(children) —
+`bare_range_bounds` per child is a pure match + float comparison, no index probe, bounded by query
+length never match count — and only runs inside the `unwrap_or_else` closure, i.e. only after
+`exact_cards` has already declined. No new per-query scan class; confirmed by `cargo test` and the
+same-build latency canary below showing nothing distinguishable from noise.
+
+**A structural surprise mid-investigation, not in the fix itself:** the first Python re-derivation of
+`scan_units` (needed to sweep the bias without a Rust rebuild, same trick Round 1 used for
+`COMPOSE_CANDIDATE_SPAN_BIAS`) matched the live build's own `scan_units` on only 1,138/1,500 rows.
+The other 362 are `range_too_broad_to_narrow` — a LATER, separate guard in `acquire_plan_features`
+(after `domain_cards`/`scan_units` are computed) that resets both to the full corpus whenever the
+And's min-folded `printing_matches` alone exceeds `MAX_NARROW_FRACTION` (0.25) of `n_printings`,
+**independently of any bias**. This is not a bug this round touches — it is a separate, deliberate
+"narrowing degrades to a full scan" model, verified elsewhere — but it means a clustering-bias
+constant here can only ever move the NARROW subset (562/742 of the held-out half): the broad subset's
+`scan_units` is bias-invariant by construction. Modeling the guard in the Python re-derivation brought
+the self-check to 1,500/1,500 exact matches before any sweep was trusted, and the real Rust build's
+paired diff (below) matches the Python-simulated numbers exactly, confirming the model was right.
+
+**Fit.** Captured, per sampled query, each leaf's own exact printing-match count (`k_i`, via an
+isolated `unique=printing` sub-query per predicate — exact, no estimate) and the real
+`printings_examined` GatheredScan counter, over 1,500 and2/and3 RANGE_FAMILIES queries (`unique=card`,
+same population and precedent size as Rounds 1-2). Split by `hash(query) % 2` — 758 calibration / 742
+held-out. Swept the bias 0.20–1.78 in steps of 0.02 on the calibration half only; the error-vs-bias
+curve is smooth and convex on BOTH halves with minima 0.04 apart (1.14 calibration, ~1.06 held-out),
+which is what a genuine signal looks like rather than noise fit to one split. Picked `1.1`, inside
+both minima, rather than either half's precise argmin.
+
+```
+                          calibration (n=758)              held-out (n=742)
+scan_units total abs      8.70M (1.78) -> 8.31M (1.1)       8.60M (1.78) -> 8.02M (1.1)
+improved / regressed                 417 / 148                      433 / 117
+narrow-only subset (n)                    576                            562
+narrow-only total abs     3.15M (1.78) -> 2.76M (1.1)       3.19M (1.78) -> 2.61M (1.1)
+price-triple subset (n)                   382                            363
+price-triple total abs    3.87M (1.78) -> 3.74M (1.1)       3.73M (1.78) -> 3.47M (1.1)
+```
+
+Direction matches the assignment's hypothesis: smaller than 1.78 (less division of `k`, so a HIGHER
+effective ball count and a higher resulting estimate), correcting Round 2's diagnosed floor-undercount
+rather than repeating `COMPOSE_CARD_ESTIMATE_BIAS`'s saturating-overcount correction.
+
+**Price-triple check.** The held-out price-triple subset (`usd`/`eur`/`tix`, 2+ of them) improves
+proportionally in line with the whole population (213/68/82) — no sign of the correlation risk Round 2
+flagged, because this is a flat multiplicative rescaling of `calibrated_balls_into_bins`'s existing
+math, not a combination formula across per-leaf estimates; there is no per-leaf independence
+assumption for near-identical fields to violate.
+
+**Verified against the real build, not just simulation:** rebuilt the modified engine and re-ran the
+same 1,500-query, same-seed sample through it directly (not the Python re-derivation) — the real
+paired diff (baseline `costcell/trunk`@`ef78a984` vs modified) landed on the exact same numbers as the
+simulation (758/742 split, 8.70M→8.31M and 8.60M→8.02M), confirming the Python model used to pick the
+constant was not itself a source of error.
+
+**Why the single-run agreement gate doesn't move.** `bench_cost_model_agreement.py`'s `GatheredScan`/
+`card` cell stayed at 15% within [0.8, 1.25] on both builds (35,918 vs 35,946 rows) — expected, not a
+sign the fix is inert: this cell pools every card-mode `PrintingCompose` acquire, and the affected
+shape (And of 2+ different-index range leaves, narrow enough to escape `range_too_broad_to_narrow`) is
+a small slice of it. The held-out paired-diff above is the controlled measurement; this cell is the
+same noisy sanity check Round 1 already established is uninformative at this grain.
+
+### Round 3 confirmation runs
+
+- `bench_regret_matrix.py --seconds 120 --mode uniform`: same shape as Round 1's — regret still 96%
+  `printing_compose` share, `StreamedSelect -> GatheredScan` / `GatheredScan -> PrintingCompose` still
+  the largest picked/best mismatches, nothing resembling the 23.6x acquire-time precedent.
+- `bench_query_latency_ab.py --mode realistic --sample 800 --seed 1`, baseline vs modified, interleaved
+  A1/B1/A2: real diff `B - A = -0.3µs, 95% CI [-0.6, -0.1]`, "B is FASTER". Same-build canary (A1 vs
+  A2, zero code difference): `-0.6µs, CI [-0.9, -0.4]`, also "B is FASTER" — a swing of comparable (here
+  larger) magnitude with nothing changed, matching Round 1's own non-interleaved-run drift finding. Read
+  as no detectable latency effect either way, not as a confirmed speedup.
 
 ## Confirmation runs
 

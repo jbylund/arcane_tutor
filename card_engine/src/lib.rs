@@ -11194,6 +11194,53 @@ fn declined_sibling_fastpath<'a>(
 /// like 1.35 before the two populations were separated.
 const COMPOSE_CARD_ESTIMATE_BIAS: f64 = 1.78;
 
+/// A SECOND clustering-bias divisor for `calibrated_balls_into_bins`, for a population
+/// `COMPOSE_CARD_ESTIMATE_BIAS` was never fit against: an `And` of 2+ printing-varying range leaves
+/// on DIFFERENT indexes (`price_usd`/`price_eur`/`price_tix`/`collector_number_int`/`released_at`
+/// combinations, e.g. `usd<5 cn>100`, `eur<=0.3 tix>=0.03 tix<=0.97`) where `exact_cards` declines
+/// because no pair-table / arith-tuple / plane-compile mechanism covers this combination (see
+/// `is_cross_index_range_and`'s call site). `COMPOSE_CARD_ESTIMATE_BIAS`'s 1.78 was fit on a
+/// single-leaf broadcast population (a card-invariant leaf setting a whole card's printings at
+/// once) -- this population's `k` is instead the MIN-FOLD of 2-3 independently-indexed leaves'
+/// own exact printing counts, and Round 2 of
+/// `docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md` proved directly that this
+/// min-fold under-counts the true candidate span (866/1,500 sampled rows under-estimate
+/// `scan_units` against only 450 over-estimate) -- the opposite direction from the single-leaf
+/// broadcast population, where dividing `k` further (as 1.78 does) was the right correction.
+///
+/// Fit as a plain bias sweep (same shape as `COMPOSE_CANDIDATE_SPAN_BIAS`'s Round 1 method): capture
+/// each sampled query's per-leaf exact printing counts (one `unique=printing` sub-query per leaf) and
+/// the real `printings_examined` GatheredScan counter, then re-derive `scan_units` in Python for any
+/// candidate bias with no rebuild (`calibrated_balls_into_bins_with_bias` is a closed-form function
+/// of `k`/`domain`/`bias`). Swept 0.20-1.78 in steps of 0.02 on a HELD-OUT split (hash of the query
+/// string mod 2, fit on one half, graded on the other -- the two halves' error-vs-bias curves have
+/// minima 0.04 apart, confirming the fit is not chasing split-specific noise) over 1,500 and2/and3
+/// RANGE_FAMILIES queries (`unique=card`), the same population and precedent size as Rounds 1-2:
+///
+///     total abs scan_units error, calibration half (n=758): 8.70M (bias 1.78) -> 8.31M (bias 1.1)
+///     total abs scan_units error, held-out half    (n=742): 8.60M (bias 1.78) -> 8.02M (bias 1.1)
+///     held-out improved/regressed/tied: 433 / 117 / 192
+///
+/// Restricted to the rows a bias can actually move -- `range_too_broad_to_narrow` resets
+/// `eval_domain`/`scan_units` to the full corpus independently of any bias whenever the And's
+/// min-folded `printing_matches` alone is already too broad a fraction of `n_printings` to trust
+/// narrowing (found mid-investigation: a naive Python re-derivation missed this and only matched
+/// 1,138/1,500 of the live build's own `scan_units`; modeling the guard brought that to 1,500/1,500)
+/// -- the held-out NARROW subset alone (562/742 rows) moves 3.19M -> 2.61M, 433 improved / 117
+/// regressed / 12 tied.
+///
+/// The held-out price-triple subset (`usd`/`eur`/`tix`, 2+ of them, 363/742 rows) moves 3.73M ->
+/// 3.47M, 213 improved / 68 regressed / 82 tied -- proportionally in line with the whole population,
+/// so the near-identical price columns' correlation (flagged as a risk for any independence-style
+/// combination by Round 2) does not appear here: this is a flat multiplicative correction on
+/// `calibrated_balls_into_bins`'s existing ball-count math, not a combination formula across the
+/// leaves, so there is no per-leaf independence assumption for correlated fields to break.
+///
+/// Smaller than 1.78 (less division, so a HIGHER effective ball count and a higher resulting
+/// estimate) as the ledger's Round 3 assignment hypothesized: this population's undercount needed
+/// raising, not the single-leaf population's saturating overcount that 1.78 corrects.
+const COMPOSE_RANGE_AND_CLUSTER_BIAS: f64 = 1.1;
+
 /// Printings the gather BIT-TESTS per matching printing.
 ///
 /// `compose_scan_printings` was the composed bitmap's popcount, on the stated grounds that compose
@@ -11278,7 +11325,43 @@ const COMPOSE_CANDIDATE_SPAN_BIAS: f64 = 0.7;
 /// 2.2× as much. On the broad-residual class that inverted the pair — P3 measured 819.7 µs against P4's
 /// 1,308.4 with the model pricing them within 5 µs of each other.
 fn calibrated_balls_into_bins(k: usize, domain: usize) -> usize {
-    balls_into_bins_effective(k as f64 / COMPOSE_CARD_ESTIMATE_BIAS, domain).max(usize::from(k > 0))
+    calibrated_balls_into_bins_with_bias(k, domain, COMPOSE_CARD_ESTIMATE_BIAS)
+}
+
+/// `calibrated_balls_into_bins`, parameterized on which clustering bias divides `k` -- see
+/// `COMPOSE_RANGE_AND_CLUSTER_BIAS`'s doc for the second population this exists for.
+fn calibrated_balls_into_bins_with_bias(k: usize, domain: usize, bias: f64) -> usize {
+    balls_into_bins_effective(k as f64 / bias, domain).max(usize::from(k > 0))
+}
+
+/// Whether `composed` is an `And` of 2+ printing-varying range leaves spanning 2+ DIFFERENT printing
+/// value indexes (`price_usd`/`price_eur`/`price_tix`/`collector_number_int`/`released_at`) -- the
+/// shape `COMPOSE_RANGE_AND_CLUSTER_BIAS` is fit against, see that constant's doc.
+///
+/// Reuses `bare_range_bounds` per child rather than re-deriving anything: it is the same leaf
+/// dispatch `fuse_and_range_children` already runs over this And's children one call up, just
+/// counting distinct index POINTERS instead of building intervals. Same-index children (a two-sided
+/// `usd>=a usd<=b`) collapse to one entry here exactly as they fuse to one exact `k` there, so a
+/// single-field bound never counts as "2+ different indexes" -- this is deliberately narrower than
+/// "2+ range leaves", matching the population `est.result.card` never covers for (no pair-table /
+/// arith-tuple / plane-compile tightening reaches a price/cn/date combination, so `exact_cards`
+/// declines and `calibrated_balls_into_bins` is what actually answers it).
+///
+/// O(children), pure `FilterExpr` matches and float comparisons (`bare_range_bounds` computes bounds
+/// from the op/threshold, no index probe) -- cost is bounded by query length, never by match count,
+/// and this only runs after `exact_cards` has already declined.
+fn is_cross_index_range_and(composed: &FilterExpr, indexes: &Archived<CardIndexes>) -> bool {
+    let FilterExpr::And(children) = composed else { return false };
+    let mut seen: Vec<*const Archived<PrintingValueIndex>> = Vec::new();
+    for child in children {
+        if let Some((idx, ..)) = bare_range_bounds(child, indexes) {
+            let ptr: *const Archived<PrintingValueIndex> = idx;
+            if !seen.contains(&ptr) {
+                seen.push(ptr);
+            }
+        }
+    }
+    seen.len() >= 2
 }
 
 fn balls_into_bins(k: usize, domain: usize) -> usize {
@@ -11778,8 +11861,19 @@ fn acquire_plan_features(
         } else {
             exact_result_total(composed, indexes, mode)
         };
-        let est_cards =
-            exact_cards.unwrap_or_else(|| calibrated_balls_into_bins(printing_matches, n_cards as usize));
+        // `is_cross_index_range_and` routes an And of 2+ different-index printing-varying range
+        // leaves to its OWN clustering-bias constant -- see `COMPOSE_RANGE_AND_CLUSTER_BIAS`'s doc
+        // for why `COMPOSE_CARD_ESTIMATE_BIAS` (fit on a single-leaf broadcast population) undershoots
+        // here instead. Checked only once `exact_cards` has already declined, so a query this
+        // mechanism never reaches (a single leaf, or a shape the pair table/arith-tuple/plane-compile
+        // paths already answer exactly) pays nothing extra.
+        let est_cards = exact_cards.unwrap_or_else(|| {
+            if is_cross_index_range_and(composed, indexes) {
+                calibrated_balls_into_bins_with_bias(printing_matches, n_cards as usize, COMPOSE_RANGE_AND_CLUSTER_BIAS)
+            } else {
+                calibrated_balls_into_bins(printing_matches, n_cards as usize)
+            }
+        });
         // Exact PRINTING total for the same composed filter -- valid as the candidate cards' full
         // printing SPAN (what `scan_all` below needs) only when the filter is CARD-INVARIANT
         // (`composed_card_invariant`): for a card-invariant field, every printing of a matching card
