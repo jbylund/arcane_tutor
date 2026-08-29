@@ -11224,7 +11224,28 @@ const COMPOSE_GATHER_SPAN_PER_MATCH: f64 = 1.47;
 /// lose, so it is a routing input even though compose never reads it. Calibrating the card estimate
 /// exposed it: `scan_units [printing_compose]` had been reading 0.75 with the two errors partly
 /// cancelling, and dividing `est_cards` by 1.78 moved it to 0.47.
-const COMPOSE_CANDIDATE_SPAN_BIAS: f64 = 2.1;
+///
+/// Round 1 of the printing-varying-leaf depth ledger
+/// (`docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md`) put a match-density
+/// depth term (`(printings_per_card + 1) / (density + 1)`, see `scan_all`'s fallback arm) UNDER this
+/// multiplier instead of the bare `printings_per_card` it used to scale — that term already prices
+/// most of the "how deep does this query's own candidates get walked" question, so this constant's
+/// remaining job is only the size bias described above (heavily-reprinted cards over-represented
+/// among candidates), not the depth question too.
+///
+/// Refit by a manual sweep (not `fit_cost_model.py`, which fits `cost.rs`'s per-unit NANOSECOND
+/// rates against measured plan time -- a different regression than calibrating this dimensionless
+/// FEATURE constant against the realized `printings_examined` counter): captured one build's raw
+/// `domain_cards * expected_depth` (this constant pinned to 1.0) against measured
+/// `printings_examined` over 1,500 and2/and3 queries on the RANGE_FAMILIES fields (unique=card), then
+/// swept the multiplier in Python (no rebuild per candidate -- the cap at `n_printings` never binds
+/// at 1.0 since `domain_cards <= n_cards` makes the uncapped product already `<= n_printings`, so
+/// multiplying the raw capture by a candidate bias and re-applying the cap is equivalent to having
+/// built with that bias). 0.7 minimized total absolute `scan_units` error on that sample (9.86M
+/// against the old formula's 29.6M on the same rows, 946 improved / 544 regressed) -- lower than the
+/// ~1.0 the ledger doc guessed going in, because the depth term alone still runs a bit hot relative
+/// to the realized span, not because the size-bias premise above reversed sign.
+const COMPOSE_CANDIDATE_SPAN_BIAS: f64 = 0.7;
 
 /// `balls_into_bins` with its measured clustering bias divided out of the BALL COUNT. See
 /// `COMPOSE_CARD_ESTIMATE_BIAS` for the 1.78 and why clustering causes it.
@@ -11915,7 +11936,37 @@ fn acquire_plan_features(
             {
                 return printings.min(n_printings as usize);
             }
-            (((cards as f64) * printings_per_card * COMPOSE_CANDIDATE_SPAN_BIAS) as usize).min(n_printings as usize)
+            // Printing-varying leaf (price/collector_number/released_at, or an And of them): no
+            // "first printing settles it" guarantee, so this candidate's card DOES get walked past
+            // its first printing when that printing doesn't happen to satisfy the residual. The old
+            // formula priced every candidate at the CORPUS-WIDE average reprint depth
+            // (`printings_per_card`) regardless of how selective the predicate is at the printing
+            // level -- as wrong for `price_usd<0.05` (near-universal, few candidates settle deep) as
+            // for `price_usd=99.99` (rare, most candidates that have ANY match burn their whole span
+            // finding it).
+            //
+            // `printing_matches / cards` is the query's own match DENSITY: how many of each
+            // candidate's printings match, on average, among cards known to have at least one. Model
+            // each candidate's matching printings as landing at uniformly random positions among its
+            // `printings_per_card` slots (order-statistics on the position of the FIRST match, not a
+            // per-card exact position this has no data for) -- expected position of the first hit
+            // among `printings_per_card` slots with `density` of them set is
+            // `(printings_per_card + 1) / (density + 1)`. `density -> printings_per_card` (every slot
+            // set, i.e. card-invariant) collapses this to 1 (first printing always hits, the case the
+            // sibling `card_invariant_domain_exact` fast path already prices exactly); `density -> 0`
+            // (barely any matching printings) pushes it toward the corpus-average span, never past it
+            // -- `.min(printings_per_card)` is a belt-and-suspenders cap for float edge cases, not a
+            // load-bearing clamp (the order-statistics formula is already bounded by construction).
+            //
+            // Both inputs are already-computed scalars (`printing_matches` = `est.result.printing`,
+            // `cards` = `domain_cards` at every call site, `printings_per_card` = a corpus-wide ratio
+            // computed once per acquire) -- no new index probe, no per-query scan, cost independent of
+            // match/printing/candidate count. `COMPOSE_CANDIDATE_SPAN_BIAS` still corrects the
+            // remaining "candidates are more reprinted than an average card" size bias (see its own
+            // doc) on top of the depth term, refit for this shape (see the constant's own doc).
+            let density = (printing_matches as f64) / (cards as f64).max(1.0);
+            let expected_depth = ((printings_per_card + 1.0) / (density + 1.0)).min(printings_per_card);
+            (((cards as f64) * expected_depth * COMPOSE_CANDIDATE_SPAN_BIAS) as usize).min(n_printings as usize)
         };
         let (result_total, project, popcount_words, eval_domain, scan_units) = match mode {
             Mode::Printing => {
