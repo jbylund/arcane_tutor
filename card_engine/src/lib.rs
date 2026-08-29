@@ -7392,6 +7392,49 @@ fn compose_printing_bits(
     }
 }
 
+/// One count, in all three spaces at once -- `printing` is always known (every leaf/join here builds
+/// or bounds a printing-space set, one way or another), `card`/`artwork` are `Some` exactly when this
+/// same leaf/join has one for free. Replaces a design where `card`/`artwork` were bolted on next to a
+/// bare `result: usize`/`candidate: usize` (each already implicitly printing-space, but nothing in the
+/// TYPE said so): that shape made it possible -- and it happened, twice, checked against real data
+/// before being caught -- to fold or consume the wrong field's value where a printing-space number was
+/// expected, or vice versa. A `SpaceEstimate` can't be misread that way: the field name IS the space.
+#[derive(Clone, Copy)]
+struct SpaceEstimate {
+    printing: usize,
+    card: Option<usize>,
+    artwork: Option<usize>,
+}
+
+impl SpaceEstimate {
+    fn printing_only(printing: usize) -> Self {
+        Self { printing, card: None, artwork: None }
+    }
+
+    /// `And`'s fold: printing always narrows (min); card/artwork narrow too whenever EITHER side has
+    /// an answer for that space -- a one-sided answer is still a valid tightening (the other side is
+    /// unconstrained information, not a competing value), so this is not the same as requiring both.
+    fn min(self, other: Self) -> Self {
+        Self {
+            printing: self.printing.min(other.printing),
+            card: [self.card, other.card].into_iter().flatten().min(),
+            artwork: [self.artwork, other.artwork].into_iter().flatten().min(),
+        }
+    }
+
+    /// `Or`'s fold: a valid (if loose, on overlap) upper bound per space, mirroring how printing's own
+    /// sum-then-clamp already worked. Unlike `min`, a card/artwork total here needs BOTH sides known --
+    /// `Some(0) + None` must not silently drop the unknown side's real contribution and under-report
+    /// the union.
+    fn add(self, other: Self) -> Self {
+        Self {
+            printing: self.printing + other.printing,
+            card: self.card.zip(other.card).map(|(a, b)| a + b),
+            artwork: self.artwork.zip(other.artwork).map(|(a, b)| a + b),
+        }
+    }
+}
+
 /// Cheap cost-model estimate for a composable filter: `(matches, broadcast_printings, scatter_printings)`
 /// **without** paying legality's broadcast. The two synthesis kinds are returned separately because they
 /// cost different rates (`LINEAR_PASS_PER_PRINTING_NS` vs `RANGE_SCATTER_PER_PRINTING_NS`): a legality
@@ -7414,8 +7457,8 @@ fn compose_printing_bits(
 /// distinction `exact_cards` vs `exact_total` draws one level down.
 #[derive(Clone)]
 struct ComposeEstimate {
-    result: usize,
-    candidate: usize,
+    result: SpaceEstimate,
+    candidate: SpaceEstimate,
     broadcast: usize,
     scatter: usize,
     /// Printings a CARD-SPACE collection leaf's build broadcasts (`ids_of` +
@@ -7427,37 +7470,28 @@ struct ComposeEstimate {
     /// is_tags) still ride `scatter`: their build IS a contiguous `bits()` copy, the same shape a
     /// range's is, and measured fine.
     collection_broadcast: usize,
-    /// Exact CARD count for this same leaf/join, when one is available for free -- kept apart from
-    /// `result` (this function's own PRINTING-space quantity throughout every leaf arm) rather than
-    /// derived from it by an average-ratio scale. That conflation was the root of the `domain_hint`
-    /// bug this field replaces (`domain_hint_is_card_space_not_printing_scaled`): a printing count
-    /// wearing a card-shaped variable name. `acquire_plan_features`'s `domain_cards` is the one
-    /// consumer today. `None` wherever no leaf/join here has a cheap exact card source (bare `set:`/
-    /// `watermark:` postings, an `Or` where any child lacks one).
-    card: Option<usize>,
-    /// Exact ARTWORK count, same shape as `card`. Populated wherever free (the same `ValueTotals`/
-    /// `RangeCardCounts` lookups that give `card` give this too) so a future consumer has it without
-    /// re-deriving it, even though nothing reads it back yet.
-    artwork: Option<usize>,
 }
 
 impl ComposeEstimate {
     /// A leaf with no cheap exact card/artwork source: nothing to tighten, so `result`/`candidate` are
-    /// the same count, and there is no space beyond `result`'s own (printing) to report.
+    /// the same count, and there is no space beyond printing to report.
     fn leaf(k: usize, broadcast: usize, scatter: usize) -> Self {
-        Self { result: k, candidate: k, broadcast, scatter, collection_broadcast: 0, card: None, artwork: None }
+        let space = SpaceEstimate::printing_only(k);
+        Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0 }
     }
 
     /// `leaf`, plus whichever of the card/artwork spaces the caller already has in hand for free --
     /// every call site that has one is expected to pass it, not re-derive it via `result`'s own scale.
     fn leaf_spaces(k: usize, broadcast: usize, scatter: usize, card: Option<usize>, artwork: Option<usize>) -> Self {
-        Self { card, artwork, ..Self::leaf(k, broadcast, scatter) }
+        let space = SpaceEstimate { printing: k, card, artwork };
+        Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0 }
     }
 
     /// A card-space collection leaf specifically -- see `collection_broadcast`'s doc for why this
     /// isn't just `leaf(k, 0, k)`.
     fn collection_leaf(k: usize, card: Option<usize>, artwork: Option<usize>) -> Self {
-        Self { result: k, candidate: k, broadcast: 0, scatter: 0, collection_broadcast: k, card, artwork }
+        let space = SpaceEstimate { printing: k, card, artwork };
+        Self { result: space, candidate: space, broadcast: 0, scatter: 0, collection_broadcast: k }
     }
 }
 
@@ -7675,11 +7709,6 @@ fn compose_printing_estimate(
                 broadcast: a.broadcast + c.broadcast,
                 scatter: a.scatter + c.scatter,
                 collection_broadcast: a.collection_broadcast + c.collection_broadcast,
-                // Intersecting can only shrink or match a space either side already has exact --
-                // `min` whenever both know it, keep whichever one side knows when the other doesn't
-                // (a partial-information upper bound is still a valid tightening, not a guess).
-                card: [a.card, c.card].into_iter().flatten().min(),
-                artwork: [a.artwork, c.artwork].into_iter().flatten().min(),
             });
             // Tighten the `min` bound with every PAIR of children the table stores. `min` over singles
             // lets the most selective leaf decide alone, which is why `f:modern r:rare border:white`
@@ -7690,8 +7719,12 @@ fn compose_printing_estimate(
             // types; the two-leaf case is answered exactly one level up in `exact_result_total` and never
             // needs this.
             // Only `result` is tightened. `candidate` keeps the untightened `min`, because that is what
-            // narrowing leaves the alternatives to walk once its broad children decline.
-            let mut result = pair_bounded_min(v, indexes, folded.result);
+            // narrowing leaves the alternatives to walk once its broad children decline. Printing-space
+            // only from here down to the final `SpaceEstimate` construction: `result`/`exact_domain_*`
+            // stay bare `usize` locals through every tightening step below (unchanged from before this
+            // struct held three spaces), and get wrapped back into a `SpaceEstimate` only once, at the
+            // very end -- narrower diff, same values, against logic already checked with a paired diff.
+            let mut result = pair_bounded_min(v, indexes, folded.result.printing);
             // Second tightening: 2+ cmc/power/toughness children get their TRUE joint card count from
             // one #743 scan (`arith_tuple_count`), not `min` of each one's own count — e.g.
             // `cmc<=5 power>=3` gets the real intersection, not `min(cmc<=5, power>=3)`.
@@ -7888,38 +7921,28 @@ fn compose_printing_estimate(
             // no such risk: it is a real INTERSECTION (`eval_planes` over the combined `PlaneExpr`), not
             // a per-leaf bound, so it can only ever be <= the true joint count, never an overcount from
             // a leaf `narrow_rec` would have declined to use alone.
-            let card = exact_domain_cards;
-            let artwork = exact_domain_artworks;
-            ComposeEstimate { result, card, artwork, ..folded }
+            let result_space = SpaceEstimate { printing: result, card: exact_domain_cards, artwork: exact_domain_artworks };
+            ComposeEstimate { result: result_space, ..folded }
         }
         FilterExpr::Or(v) => {
             let n_cards = offsets.len() - 1;
             let n_artworks = u32::from(*indexes.artwork_base.last().expect("artwork_base has n_cards+1 entries")) as usize;
+            let clamp = |space: SpaceEstimate| SpaceEstimate {
+                printing: space.printing.min(n_printings),
+                card: space.card.map(|c| c.min(n_cards)),
+                artwork: space.artwork.map(|a| a.min(n_artworks)),
+            };
             let summed = v
                 .iter()
                 .map(|c| compose_printing_estimate(c, indexes, offsets, n_printings))
                 .fold(ComposeEstimate::leaf(0, 0, 0), |a, c| ComposeEstimate {
-                    result: a.result + c.result,
-                    candidate: a.candidate + c.candidate,
+                    result: a.result.add(c.result),
+                    candidate: a.candidate.add(c.candidate),
                     broadcast: a.broadcast + c.broadcast,
                     scatter: a.scatter + c.scatter,
                     collection_broadcast: a.collection_broadcast + c.collection_broadcast,
-                    // Summed rather than `min`-ed (an `Or` widens, an `And` narrows) -- a valid upper
-                    // bound whether or not the children overlap, same reasoning `result`/`candidate`
-                    // already apply to their own sum-then-clamp just below. `Some(0) + None` would
-                    // silently understate the true union by dropping the unknown side's contribution
-                    // entirely, so a child with no exact count for a space poisons the whole sum for
-                    // that space rather than being treated as a card-free/artwork-free child.
-                    card: a.card.zip(c.card).map(|(x, y)| x + y),
-                    artwork: a.artwork.zip(c.artwork).map(|(x, y)| x + y),
                 });
-            ComposeEstimate {
-                result: summed.result.min(n_printings),
-                candidate: summed.candidate.min(n_printings),
-                card: summed.card.map(|c| c.min(n_cards)),
-                artwork: summed.artwork.map(|a| a.min(n_artworks)),
-                ..summed
-            }
+            ComposeEstimate { result: clamp(summed.result), candidate: clamp(summed.candidate), ..summed }
         }
         // Precomputed planes: exact cheap popcount, nothing synthesized.
         FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value } => {
@@ -7989,7 +8012,8 @@ fn compose_printing_estimate(
             let card = exact_result_total(inner, indexes, Mode::Card).map(|c| n_cards.saturating_sub(c));
             let artwork = exact_result_total(inner, indexes, Mode::Artwork).map(|a| n_artworks.saturating_sub(a));
             if src.card_space {
-                ComposeEstimate { result: complement, candidate: complement, broadcast: 0, scatter: 0, collection_broadcast: k, card, artwork }
+                let space = SpaceEstimate { printing: complement, card, artwork };
+                ComposeEstimate { result: space, candidate: space, broadcast: 0, scatter: 0, collection_broadcast: k }
             } else {
                 ComposeEstimate::leaf_spaces(complement, 0, k, card, artwork)
             }
@@ -11252,7 +11276,7 @@ fn compose_gather_declines(
     mode: Mode,
 ) -> Option<PagingTaken> {
     // The gather's own decline is about the composed set it would page over, so it reads `result`.
-    let printing_matches = compose_printing_estimate(filter, indexes, offsets, printings.len()).result;
+    let printing_matches = compose_printing_estimate(filter, indexes, offsets, printings.len()).result.printing;
     // Artwork's domain is n_artworks, not n_cards. That used to be approximated by `cards.len()`
     // because the exact figure meant prefix-summing `artwork_groups` here -- real O(n_cards) work
     // paid just to maybe decline. It is a stored index now, so read the truth: the stand-in is
@@ -11684,7 +11708,7 @@ fn acquire_plan_features(
         // `plan_cost`.
         let composed_card_invariant = !touches_printing_field(composed);
         let est = compose_printing_estimate(composed, indexes, offsets, n_printings as usize);
-        let (printing_matches, broadcast, scatter, collection_broadcast) = (est.result, est.broadcast, est.scatter, est.collection_broadcast);
+        let (printing_matches, broadcast, scatter, collection_broadcast) = (est.result.printing, est.broadcast, est.scatter, est.collection_broadcast);
         // Two build kinds, charged at different rates: `broadcast` = legality broadcast-down (linear
         // pass), `scatter` = range-slice scatter (cheap). `project` = the second pass (printing→
         // card/artwork), 0 for printing mode. Keeping all three separate is what lets a bare range's
@@ -11737,10 +11761,10 @@ fn acquire_plan_features(
         // printing-scaled one wearing a card-shaped name (`domain_hint_is_card_space_not_printing_scaled`)
         // -- can only be >= the real domain (it ignores what non-plane siblings would additionally
         // narrow), so `min`-ing it with the existing estimate is a strict tightening, never a regression.
-        let domain_cards_before_card = if est.candidate == est.result {
+        let domain_cards_before_card = if est.candidate.printing == est.result.printing {
             est_cards
         } else {
-            calibrated_balls_into_bins(est.candidate, n_cards as usize)
+            calibrated_balls_into_bins(est.candidate.printing, n_cards as usize)
         };
         // `est.card` additionally tightens `domain_cards`, beyond the `else` branch above, but ONLY for
         // a genuine `And` -- found live (`id:g border:white`, artwork mode): `est.candidate == est.result`
@@ -11763,7 +11787,7 @@ fn acquire_plan_features(
         // for this pass. Restricting the extra tightening to `And` keeps today's fix to the case it was
         // actually verified against, without newly trusting a leaf-level answer nothing here checked.
         let is_and = matches!(composed, FilterExpr::And(_));
-        let domain_cards = if is_and { est.card.map_or(domain_cards_before_card, |dc| dc.min(domain_cards_before_card)) } else { domain_cards_before_card };
+        let domain_cards = if is_and { est.result.card.map_or(domain_cards_before_card, |dc| dc.min(domain_cards_before_card)) } else { domain_cards_before_card };
         // What the MATERIALIZING alternatives scan if compose loses. Every mode narrows -- a
         // composable filter has an index for every leaf -- so all three are the NARROWED counts.
         // Printing mode took the unnarrowed universe while card/artwork took a narrowed count; only
@@ -11787,7 +11811,7 @@ fn acquire_plan_features(
             // nothing was tightened away from the leaf/pair-exact estimate, so `exact_printing_span`
             // (computed from that same composed filter) is the true span under exactly these
             // candidates, not an approximation of a DIFFERENT (tightened) domain.
-            if est.candidate == est.result
+            if est.candidate.printing == est.result.printing
                 && let Some(printings) = exact_printing_span
             {
                 return printings.min(n_printings as usize);
@@ -11901,7 +11925,7 @@ fn acquire_plan_features(
         // surfaced when this was tried unscoped.
         let (eval_domain, scan_units) = if !(compose_leaf_nothing_to_verify(filter)
             || plane_leaves_nothing_to_verify(filter, mode, plane, indexes)
-            || (is_and && est.card.is_some()))
+            || (is_and && est.result.card.is_some()))
             && range_too_broad_to_narrow(printing_matches, n_printings as usize)
         {
             (n_cards as usize, n_printings as usize)

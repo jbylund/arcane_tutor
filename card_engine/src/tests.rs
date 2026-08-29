@@ -7754,7 +7754,7 @@ fn card_invariant_broadcast_compose_leaves() {
         let mut want = brute(f);
         want.sort_unstable();
         assert_eq!(got, want, "compose_printing_bits disagrees with the residual path for {label}");
-        let est_matches = super::compose_printing_estimate(f, &archived.indexes, &archived.offsets, n_printings).result;
+        let est_matches = super::compose_printing_estimate(f, &archived.indexes, &archived.offsets, n_printings).result.printing;
         assert!(est_matches >= want.len(), "compose_printing_estimate undercounts for {label}: {est_matches} < {}", want.len());
     }
 
@@ -7827,14 +7827,14 @@ fn domain_hint_is_card_space_not_printing_scaled() {
     // plane residual -- exactly the shape `domain_hint`'s 2+-card-invariant-planes branch targets.
     let filter = FilterExpr::And(vec![green, green_identity, set_dmu]);
     let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings);
-    assert_eq!(est.card, Some(2), "est.card must be the exact 2-card intersection, not scaled by n_printings/n_cards");
+    assert_eq!(est.result.card, Some(2), "est.result.card must be the exact 2-card intersection, not scaled by n_printings/n_cards");
     // The `c:g id:g` intersection's exact ARTWORK span: cards 0 and 2 each have 2 printings with
     // `store_of`'s default all-distinct artwork groups, so 2 + 2 = 4 -- `n_printings/n_cards * 2`
     // (the same average-ratio bug `card` guards against) would give 4 here too by coincidence (this
     // fixture's ratio is exactly 2), so this alone wouldn't distinguish exact-sum from average-scaled;
     // it exists to confirm the plumbing (`card_bits_span_total` over `indexes.artwork_base`) runs at
     // all and produces a real, present value rather than silently staying `None`.
-    assert_eq!(est.artwork, Some(4), "est.artwork must be the exact artwork span of the same 2-card intersection");
+    assert_eq!(est.result.artwork, Some(4), "est.result.artwork must be the exact artwork span of the same 2-card intersection");
 }
 
 // #746: `set:`/`watermark:` postings leaves join the PrintingCompose leaf table. This is the
@@ -7950,7 +7950,7 @@ fn set_watermark_compose_leaves() {
         // The estimate feeds plan choice and must be a valid upper bound on the true match count
         // (AND takes the min-of-children intersection bound, OR the capped sum — never an
         // undercount, which would misprice the plan). For a bare leaf it's exact (postings length).
-        let est_matches = super::compose_printing_estimate(f, &archived.indexes, &archived.offsets, n_printings).result;
+        let est_matches = super::compose_printing_estimate(f, &archived.indexes, &archived.offsets, n_printings).result.printing;
         assert!(est_matches >= want.len(), "compose_printing_estimate undercounts for {label}: {est_matches} < {}", want.len());
         if matches!(f, FilterExpr::TextExact { .. } | FilterExpr::Not(_)) {
             assert_eq!(est_matches, want.len(), "bare-leaf estimate must be exact for {label}");
@@ -8090,7 +8090,7 @@ fn collection_compose_leaves() {
         want.sort_unstable();
         assert_eq!(got, want, "compose_printing_bits disagrees with the residual path for {label}");
         // The estimate feeds plan choice: a valid upper bound at minimum, and exact for a bare leaf.
-        let est_matches = super::compose_printing_estimate(f, &archived.indexes, &archived.offsets, n_printings).result;
+        let est_matches = super::compose_printing_estimate(f, &archived.indexes, &archived.offsets, n_printings).result.printing;
         assert!(est_matches >= want.len(), "compose_printing_estimate undercounts for {label}: {est_matches} < {}", want.len());
         if matches!(f, FilterExpr::CollectionCmp { .. } | FilterExpr::Not(_)) {
             assert_eq!(est_matches, want.len(), "bare collection-leaf estimate must be exact for {label}");
