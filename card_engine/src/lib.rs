@@ -11814,6 +11814,33 @@ fn acquire_plan_features(
         // actually verified against, without newly trusting a leaf-level answer nothing here checked.
         let is_and = matches!(composed, FilterExpr::And(_));
         let domain_cards = if is_and { est.result.card.map_or(domain_cards_before_card, |dc| dc.min(domain_cards_before_card)) } else { domain_cards_before_card };
+        // Card mode's `push_card_matches`/`Prefer::Default` loop settles a card in exactly ONE printing
+        // when the composed field is card-invariant: either the first printing checked satisfies the
+        // residual (found, done) or it does not -- and since every OTHER printing of that card carries
+        // the identical value, none of them would satisfy it either, so the loop has nothing left to
+        // gain by continuing (confirmed directly against the executor: `found` is set or the loop simply
+        // runs out at `end`, one check per printing, never a rescan). Declared here, not inside the
+        // `Mode::Card` arm below, because the LATER `range_too_broad_to_narrow` guard (see its own doc)
+        // also needs it -- a query this exact and this broad (`cmc>=0`, `id:bgruw`) is exactly the shape
+        // that guard exists to catch, and without this exemption it clobbers the correct answer computed
+        // below back to the full corpus.
+        //
+        // Gated on `est.result.card == Some(domain_cards)`, not `composed_card_invariant` alone: the
+        // "one printing settles it" argument only holds when `domain_cards` carries ZERO false
+        // positives, since a false-positive candidate's residual is false on every printing and the
+        // `Prefer::Default` loop has no way to know that in advance -- it still walks every printing
+        // before giving up, `examined = span`. `est.result.card` is populated only for the leaf types
+        // already verified this session to be a real, exact card-space count (ColorCmp/Legality/
+        // CollectionCmp/Border/Devotion/NumericCmp), and deliberately left `None` for bare ranges/
+        // rarity precisely because their own card counts are NOT reliably exact
+        // (`RangeCardCounts::distinct_cards`'s broad-range undercount, `eur>0.16` real 31,724 vs
+        // computed 19,992) -- reusing that field instead of a fresh `exact_cards.is_some()` check keeps
+        // this scoped to the population already trusted, not the wider one `exact_result_total` alone
+        // would admit. Measured: bare `cmc`/`power`/`toughness`/`color_identity` read a median 3.08x
+        // over (== `printings_per_card` exactly) across their WHOLE bucket, not just the near-universal
+        // queries -- the gap is structural, not a selectivity artifact, because card-invariance makes
+        // depth-1 true regardless of how selective the predicate is.
+        let card_invariant_domain_exact = composed_card_invariant && est.result.card == Some(domain_cards);
         // What the MATERIALIZING alternatives scan if compose loses. Every mode narrows -- a
         // composable filter has an index for every leaf -- so all three are the NARROWED counts.
         // Printing mode took the unnarrowed universe while card/artwork took a narrowed count; only
@@ -11908,7 +11935,14 @@ fn acquire_plan_features(
                 // `printing_matches.min(n_cards)`, which reads a median 1.99x the deduped
                 // `matches_pushed` counter -- p10 1.01, so it is over on nearly every query. Two
                 // names for one quantity, one of them wrong.
-                (est_cards, printing_matches, (n_cards as usize).div_ceil(64), domain_cards, scan_all(domain_cards))
+                //
+                // `card_invariant_domain_exact` (computed above, alongside `domain_cards` -- see its own
+                // doc) replaces the generic `printings_per_card * BIAS` fallback with `domain_cards`
+                // directly whenever the composed field is card-invariant and exact: the executor settles
+                // each such card in exactly one printing, so the average-reprint-rate multiplier is not
+                // an approximation here, it is pricing a rescan that never happens.
+                let scan_units = if card_invariant_domain_exact { domain_cards } else { scan_all(domain_cards) };
+                (est_cards, printing_matches, (n_cards as usize).div_ceil(64), domain_cards, scan_units)
             }
             Mode::Artwork => {
                 // `result_total` is consumed as a per-RESULT count (GatheredScan's push term,
@@ -11995,9 +12029,19 @@ fn acquire_plan_features(
         // fabricated one, the same non-regression argument the other two exemptions already rely on.
         // NOT extended to bare leaves -- see `is_and`'s own doc for the 809-query regression that
         // surfaced when this was tried unscoped.
+        // A fourth exemption, `card_invariant_domain_exact` (computed alongside `domain_cards` above --
+        // see its own doc): the same failure mode again, this time for a BARE card-invariant leaf whose
+        // exact card count this session's `compose_printing_estimate` work now knows (`cmc>=0`, card
+        // mode: `domain_cards` a correct, verified 31,724, discarded back to the full corpus by this
+        // guard because a bare leaf never reaches the `is_and` exemption above it). Safe across every
+        // mode, not just `Mode::Card`: whatever `scan_units`/`eval_domain` the arm above already computed
+        // for a card-invariant, false-positive-free domain is either that same exact card count (Card
+        // mode) or `exact_printing_span`'s exact span of it (Printing/Artwork, gated identically on
+        // card-invariance) -- never a value this guard would improve on by falling back to `n_printings`.
         let (eval_domain, scan_units) = if !(compose_leaf_nothing_to_verify(filter)
             || plane_leaves_nothing_to_verify(filter, mode, plane, indexes)
-            || (is_and && est.result.card.is_some()))
+            || (is_and && est.result.card.is_some())
+            || card_invariant_domain_exact)
             && range_too_broad_to_narrow(printing_matches, n_printings as usize)
         {
             (n_cards as usize, n_printings as usize)
@@ -12037,9 +12081,39 @@ fn acquire_plan_features(
         // the same boolean as the tier because the grading inverts on the other population — with a real
         // residual `scan_units` is right at p50 0.97 and `printing_matches` badly under at 0.39.
         //
-        // Fixes the BIAS, not the spread: both rows read p90/p10 4.5, so what remains is the candidate
-        // count's own variance (`eval_domain` grades p90/p10 3.1 here) and is not a scan-feature problem.
-        let scan_units = if nothing_to_verify { printing_matches } else { scan_units };
+        // That comparison pooled every `prefer` together, and the two are not actually competing for the
+        // same rows: `push_card_matches`'s `Mode::Card`/`Prefer::Default` loop settles a card-invariant
+        // match in exactly ONE printing (the plane pass already proved `all_match`, so the very first
+        // printing checked is the pick, no rescan), while any OTHER `prefer` must score every printing to
+        // find the best one and genuinely does walk the full span -- the identical distinction the sibling
+        // `PlanePopcountOrder` branch above already makes explicit for the same reason. `printing_matches`
+        // was the better SINGLE number for a population blending both regimes (median 0.93 against 1.76),
+        // but it is the wrong one for the ~85% `Prefer::Default` share (`REALISTIC_PREFER_WEIGHTS`) once
+        // the two are told apart: `eval_domain` is what that regime's executor actually walks.
+        // `PlanFeatures` has no `prefer` field, but the NUMBER this call computes can still condition on
+        // the `prefer` this call was actually made with -- it is not predicting for an unknown future
+        // prefer, it already knows this one, same as the plane branch above.
+        //
+        // Gated on `card_invariant_domain_exact`, not `matches!(mode, Mode::Card) &&
+        // matches!(prefer, Prefer::Default)` alone: `nothing_to_verify` can be true from
+        // `compose_leaf_nothing_to_verify` too, and neither flag says `eval_domain`/`domain_cards` is
+        // actually EXACT there -- checked directly against real data first (paired diff on `scan_units`):
+        // the looser condition regressed `cmc>=2 cmc<=3 pow>2` 5,463 -> 11,405 against a real 1,772,
+        // because an all-arith-tuple-eligible `And` is exactly the shape `best_other`'s intersection
+        // (the thing that makes `est.result.card` trustworthy) does not cover -- `is_arith_tuple_eligible`
+        // children are filtered OUT of `best_other`'s `card_invariant`/`existential` partition, and the
+        // arith-merge that would otherwise pick them up is itself gated on `best_other` already being
+        // `Some` (see the `And` arm's own doc) -- so `domain_cards` there falls back to
+        // `calibrated_balls_into_bins`, an ESTIMATE, not the exact answer this branch needs.
+        // `card_invariant_domain_exact` is the same proof already required for the bare-leaf `scan_all`
+        // shortcut and the `range_too_broad_to_narrow` exemption above -- reusing it here instead of a
+        // fresh, looser condition keeps all three tied to one verified population rather than three
+        // separately-trusted ones.
+        let scan_units = if nothing_to_verify {
+            if card_invariant_domain_exact { eval_domain } else { printing_matches }
+        } else {
+            scan_units
+        };
         let mut feats = mk_plan_feats(ctx, params, result_total as u32, eval_domain as u32, scan_units as u32, tier);
         feats.residual_card_invariant = composed_card_invariant;
         // What `StreamedSelect` actually examines here, which is NOT `scan_units`. P4 walks a card's whole
