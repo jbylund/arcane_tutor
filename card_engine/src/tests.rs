@@ -9861,6 +9861,16 @@ fn cmc_border_existential_fixture_store() -> CardData {
     data.indexes.border_printing = build_border_printing_planes(&data.printings, &data.strings);
     data.indexes.rarity_printing = build_rarity_printing_planes(&data.printings);
     data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    // Round 22 addition: `card_numeric_index` always returns `Some(&indexes.cmc)` regardless of
+    // whether it was actually built, so a bare `cmc` leaf's OWN single-child `compose_printing_
+    // estimate` arm (`bare_numeric_field_count`) silently reads a wrong `Some(0)` from the empty
+    // default index instead of falling back to `arith_tuple_count` -- harmless for this fixture's
+    // ORIGINAL test (`compose_tier_charges_border_existential_and_arith_range`, which drives
+    // `acquire_plan_features`/`split_planes` and never reaches that per-child arm), but load-bearing
+    // for `compose_and_arm_tightens_lone_existential_leaf_with_no_card_invariant_partner` below, which
+    // calls `compose_printing_estimate` directly on the raw `And` and DOES fold in each child's own
+    // (correctly answered) estimate.
+    data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(|v| v as i16));
     data
 }
 
@@ -9914,6 +9924,52 @@ fn compose_tier_charges_border_existential_and_arith_range() {
     let (feats2, prep2, _bits2) = acquire_plan_features(&ctx, &params, &mut acq_filter2, Some(&bare_unsplit), pe2.as_ref());
     assert_eq!(prep2.count_source(), CountSource::PrintingCompose);
     assert_eq!(feats2.residual_tier_ns100, 0, "a bare card-invariant arith range has nothing to verify -- must stay free");
+}
+
+/// Round 22 regression, for the SPECIFIC `best_other` gate bug Round 21 root-caused (a different bug
+/// from Round 15/16's tier-charge fix above, though it lives in the same `And` arm and shares this
+/// fixture): `compose_printing_estimate`'s `best_other` computation used to require a card-invariant
+/// PARTNER (`else if !card_invariant.is_empty()`) before running an existential leaf's own exact
+/// popcount -- so `cmc>=1 cmc<=5 AND border:black` (an arith-tuple range ANDed with exactly ONE
+/// existential leaf and nothing ELSE card-invariant) left `best_other`/`exact_domain_cards`/the
+/// printing-space `result` tightening at their untightened defaults for the whole function, even
+/// though `popcount_with_bits(Some(border_black))` (an empty `card_invariant` vec plus the one pushed
+/// leaf) answers the true joint exactly. Root-caused with real `eval_domain`/`cards_visited` numbers in
+/// docs/issues/local-engine-domain-cards-existential-arith-and.md.
+///
+/// True card-space intersection of `cmc>=1 cmc<=5 AND border:black` on `cmc_border_existential_
+/// fixture_store`: card0 (cmc=0) is outside the range; card1 (cmc=3, white only) has no black
+/// printing; card3 (cmc=6, black) is outside the range -- all three excluded. card2 (cmc=3, black) and
+/// card4 (cmc=2, white+black) are both in range AND have a black printing -- exactly {card2, card4},
+/// printing span 1 (card2's one printing) + 2 (card4's two printings) = 3.
+#[test]
+fn compose_and_arm_tightens_lone_existential_leaf_with_no_card_invariant_partner() {
+    let data = cmc_border_existential_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let cmc_ge = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(1.0) };
+    let cmc_le = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(5.0) };
+    let border_black = FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value: "black".to_string() };
+    // No other card-invariant leaf at all -- `card_invariant` is empty, `existential` has exactly one
+    // element (`border_black`), which is precisely the shape the old `!card_invariant.is_empty()`
+    // guard refused to tighten.
+    let filter = FilterExpr::And(vec![cmc_ge, cmc_le, border_black]);
+
+    let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings);
+    assert_eq!(
+        est.result.card,
+        Some(2),
+        "the AND's exact card-space intersection is {{card2, card4}} (2 cards) -- a lone existential \
+         leaf with no OTHER card-invariant leaf must still get an exact joint via best_other, not fall \
+         back to an untightened min/None"
+    );
+    assert_eq!(
+        est.result.printing, 3,
+        "printing-space result must tighten to the same 2 cards' exact printing span (1 + 2), not a \
+         looser per-child min"
+    );
 }
 
 /// Round 16's companion to `cmc_border_existential_fixture_store`: the same shape (a card-invariant

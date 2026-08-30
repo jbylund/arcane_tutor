@@ -1,5 +1,214 @@
 # `domain_cards`/`eval_domain` Is Wrong for Arith-Range AND Existential-Leaf, and Now Has a Root Cause
 
+## Round 22: the gate fix, shipped and validated
+
+Round 21's sketch (below) turned into a fix. `compose_printing_estimate`'s `And` arm (`card_engine/src/lib.rs`,
+~line 7845): the `else if !card_invariant.is_empty()` guard on `best_other`'s existential-leaf loop is now a
+plain `else` — a lone existential leaf (no card-invariant partner at all) runs the SAME
+`popcount_with_bits(Some(e))` loop a card-invariant-paired existential leaf already used, unmodified.
+`popcount_with_bits` already handled an empty `card_invariant` vec correctly (it was never incapable of
+answering this shape, just never *called* for it) — see Round 21's own diagnosis above, confirmed unchanged
+on `costcell/trunk`@`cc17e031` before this round touched anything.
+
+### Ingredients 2 and 3 from Round 21's sketch: investigated, not shipped
+
+**Ingredient 2** (prefer a precomputed exact count over a fresh `eval_planes`+`popcount` for the scalar):
+does not cleanly apply to the population this bug actually affects. The BITS from `popcount_with_bits` are
+still needed regardless, for the arith-ID-probe merge a few lines below `best_other` — and for the exact
+flagship shape (an arith-tuple leaf ANDed with the existential leaf), that merge is what produces the TRUE
+joint intersection; the scalar from `popcount_with_bits` alone (before the merge) is only the existential
+leaf's own bare count, not yet the answer this round needs. So the eval_planes call itself cannot be
+skipped for the population that matters, and substituting the scalar alone (leaving bits untouched) would
+only help a narrower, already-rare shape (zero arith children, `card_invariant` empty, one existential
+leaf) that ingredient 3 would have covered for free anyway. Not shipped.
+
+**Ingredient 3** (fold `folded.result.card` in as a `.min()` floor at the final struct construction):
+investigated and explicitly NOT shipped, because the SAME idea was already tried once before, for the
+retired `domain_hint` field, and reverted — see the existing code comment directly above the final struct
+construction (`card_engine/src/lib.rs`, ~line 7941 as of this round): *"a single BROAD leaf's own card
+count... is not a safe upper bound on the whole `And` unless `narrow_rec` would actually USE that leaf to
+narrow."* The concern is not mathematical (a single leaf's own count IS always ≥ the true joint) — it is
+that `.card`/`domain_cards` is consumed downstream as an estimate of what the real EXECUTION PLAN will
+visit, and `narrow_rec` may decline a broad leaf entirely (the documented `broad_ok: false` precedent,
+`border:black` at 87%). Folding in a broad leaf's own count without the breadth guard the retired
+`domain_hint` used to carry risks resurrecting that exact, already-fixed bug. Given the primary fix
+(the gate) is independently sufficient and validated (below), this round left ingredient 3 out rather than
+risk it — a future round could revisit it WITH an equivalent breadth guard, but that is new scope, not a
+"free" addition.
+
+### Reproducers: before / after (real corpus, isolated release wheels, `costcell/trunk`@`cc17e031` vs this round)
+
+`unique=card`, `orderby=rarity`, `direction=desc`, `limit=175`, `offset=0`, `prefer=default`:
+
+| query | before `eval_domain` | before `cards_visited`/`eval_domain` | after `eval_domain` | after ratio |
+|---|--:|--:|--:|--:|
+| `cmc=1 border:black` | 4,893 | 0.624 | 3,052 | **1.000** |
+| `cmc=1 border:white` | 2,756 | 0.113 | 311 | **1.000** |
+| `cmc=1 r=mythic` | 4,710 | 0.021 | 101 | **1.000** |
+| `cmc>=1 cmc<=5 border:white` | 2,756 | 0.641 | 1,766 | **1.000** |
+| `cmc>=1 cmc<=5 r=mythic` | 4,710 | 0.391 | 1,842 | **1.000** |
+| `cmc>=1 cmc<=5 border:black` | 24,734 | 1.088 | 24,734 | 1.088 (unchanged — already tightened via `arith_tuple_count`, a separate mechanism; the gate fix additionally now runs the arith-ID-probe merge here too, but border:black's near-100% selectivity means it doesn't move the number) |
+
+Every reproducer Round 21 named — `cmc=1 border:black`, `cmc=1 border:white`, and a rarity case
+(`cmc=1 r=mythic` / `cmc>=1 cmc<=5 r=mythic`) — moves to an EXACT `eval_domain` (ratio 1.000). The
+two-sided flagship shape (`cmc>=1 cmc<=5 border:black`) was already in a defensible band via a different,
+unaffected mechanism and stays there.
+
+### Broader sweep: is the confound Round 20 hit now cleared, broadly?
+
+Round 20's own blocker was precise: of 223 systematically-varied population-A rows (3 arith fields × 7
+widths × 11 existential leaf values), only 13 (5.8%) landed within 15% of real `cards_visited` —
+`border:black` was "the only leaf value tested where `eval_domain` is trustworthy." Re-ran the identical
+sweep (3 fields × 13 widths × 11 leaf values, 393 successful rows) against this round's fixed wheel:
+
+```
+total rows: 393, within 15% of cards_visited: 351 (89.3%)   -- was 13/223 (5.8%) before this round
+
+border:black        n=39  median 1.000  100% within 15% except width-13 outlier (82.1% — border:black's
+                                                                                own near-universal count)
+border:white/borderless/gold, r=common/uncommon/rare/mythic, f:oldschool:
+                     n=39 each, median 1.000, 100% within 15%  -- every one of these was badly wrong
+                                                                   (0.02-0.85) before this round
+r=special            n=39  median 0.699  10.3% within 15%  -- STILL broken, but a DIFFERENT, already-known
+                                                               bug (see below), not this round's gate
+```
+
+The gate fix clears the confound for every leaf value tested except `r=special` (0.012 bare selectivity,
+325 of 31,724 cards). Traced directly: `r=special`'s `eval_domain` reads a FLAT 219 across `cmc<=1` through
+`cmc<=9` (only changing once the range widens enough to include ALL 325 matching cards) — this is the
+SAME, separately-documented gap Round 17/19/20 already flagged in passing ("`eval_domain` reads identical
+across every range width for several minority existential leaf values... a gap in the
+`card_invariant_domain_exact`/estimated-domain fallback"), not a symptom of the `best_other` gate this
+round fixed. Out of this round's blast radius (a different mechanism, `acquire_plan_features`'s domain
+fallback, not `compose_printing_estimate`'s `And` arm) — flagged here as still open, not chased.
+
+### Pre-computation check: acquire-time cost, measured directly
+
+The gate fix makes the SAME already-existing `popcount_with_bits`/arith-ID-probe-merge machinery run for
+MORE query shapes than before (previously gated off whenever `card_invariant` was empty) — this is real,
+measurable added cost for the newly-covered population specifically, not a new mechanism. Measured
+directly (20 warmups, 200 trials, isolated release wheels, `explain_analyze`'s own `acquire_ns`):
+
+| query | before (median) | after (median) | delta |
+|---|--:|--:|--:|
+| `cmc=1 border:black` | 709 ns | 42,083 ns | +41,374 ns |
+| `cmc=1 border:white` | 709 ns | 6,125 ns | +5,416 ns |
+| `cmc=1 r=mythic` | 1,000 ns | 6,583 ns | +5,583 ns |
+| `cmc>=1 cmc<=5 border:white` | 4,833 ns | 26,500 ns | +21,667 ns |
+| `cmc>=1 cmc<=5 r=mythic` | 5,125 ns | 28,166 ns | +23,041 ns |
+| `cmc>=1 cmc<=5 border:black` | 4,959 ns | 92,791 ns | +87,832 ns |
+
+This is NOT from `popcount_with_bits`'s `eval_planes` call itself (a fixed ~496-word bitmap AND, the same
+small cost the mechanism has always paid when it ran) — traced to the arith-ID-probe merge a few lines
+below `best_other`, now reached for this population for the first time. That merge's cost scales with the
+arith-tuple leaf's own selectivity (`bare_numeric_field_ids`/`arith_tuple_ids` materializes one `Vec<u32>`
+of matching card ids, then filters/sums over it) — `cmc>=1 cmc<=5` (77% of all cards) costs far more than
+`cmc=1` alone (10% of all cards), matching the table above. This merge is NOT optional: it is what produces
+the TRUE joint intersection (e.g. `cmc=1 ∩ border:white` = 311 cards, not border:white's own 2,059-card
+bare count) — without it, the fix would only partially tighten `eval_domain`, not close it to exact.
+
+Confirmed the added cost is SCOPED to the newly-covered population, not a general regression: four
+unrelated queries that already had a card-invariant partner (so `best_other` already fired before this
+round) show no measurable acquire-time change: `c:w cmc<=3` 667ns→666ns, `f:modern c:u` 7,250ns→6,833ns,
+`t:elf` 500ns→542ns, `devotion:w c:u usd>5` 7,500ns→7,833ns (15 warmups/100 trials each; all within noise).
+
+This is a real, bounded-but-non-trivial trade for a narrow, previously-mis-costed population — accepted
+because (a) it reuses existing, already-designed-for-this-purpose machinery rather than adding anything
+new, (b) it is invisible in whole-corpus aggregates (below), and (c) the population it fixes was previously
+driving `eval_domain` off by up to 47x (`cmc=1 r=mythic`, 0.021 ratio), which is the more consequential
+error for routing.
+
+### Correctness gate
+
+`cargo test --manifest-path card_engine/Cargo.toml --release`: **173/173 passed** (172 pre-existing + 1 new
+regression test, `compose_and_arm_tightens_lone_existential_leaf_with_no_card_invariant_partner` in
+`tests.rs`, reusing the existing `cmc_border_existential_fixture_store` fixture — asserts the AND's exact
+card intersection (`Some(2)`) and printing span (`3`) directly via `compose_printing_estimate`, for the
+specific "arith range AND one existential leaf, no other card-invariant leaf" shape. Confirmed the test
+actually catches the regression by temporarily reverting the gate: fails with `left: None, right: Some(2)`
+against the old `!card_invariant.is_empty()` guard, as expected). Every existing assertion unchanged.
+`cargo test --manifest-path card_engine/Cargo.toml` (debug, with debug-assert tripwires): 173/173 passed.
+`cargo clippy --manifest-path card_engine/Cargo.toml --all-targets -- -D warnings`: clean.
+
+### Broader regression check (mandatory — this touches the same `And` arm Rounds 1-9 validated for a
+### different population)
+
+`bench_cost_model_agreement.py --seconds 300 --seed 0`, full table, baseline vs fix:
+
+```
+overall: 11/17 cells inside [0.8, 1.25]  ->  12/17 cells inside [0.8, 1.25]   (improved, not regressed)
+GatheredScan/card:     0.84 (26% within 25%)  ->  0.86 (27% within 25%)       (moved toward 1.0)
+GatheredScan/printing_compose: 1.18 (24%)     ->  1.22 (24%)                  (flat, within noise)
+```
+
+No cell flips from PASS to FAIL. One cell (`PrintingCompose`/`plane`) moves from 17% to 30% within-25%,
+both still below the 80% pass bar — not a regression, a small improvement. Total sampled queries in the
+same 300s window: 101,108 → 97,253 (−3.8%), consistent with the measured acquire-time cost above diluted
+across the WHOLE uniform sample (most queries in the sample never touch this population at all).
+
+`bench_pairwise_ordering.py --seconds 300`, `GatheredScan` vs `PrintingCompose`/`StreamedSelect`, both
+modes, baseline vs fix:
+
+```
+realistic:  GatheredScan vs PrintingCompose      88% ordered right both, regret 11.90µs->11.89µs (flat),
+                                                  gap meas/pred 0.91 -> 1.01  (moved to near-exact)
+            GatheredScan vs StreamedSelect        97% both, 0.86µs->0.87µs (flat), 1.04->1.04 (unchanged)
+uniform:    GatheredScan vs PrintingCompose        88% both, 7.27µs->7.03µs (flat), 1.03->1.06 (flat)
+            GatheredScan vs StreamedSelect        95% both, 1.88µs->1.73µs (flat), 1.07->1.07 (unchanged)
+```
+
+`bench_regret_matrix.py --seconds 120 --mode realistic --seed 0`: baseline total regret 38.8ms over 50,549
+queries (mean 0.77µs) -> fix 42.9ms over 52,944 queries (mean 0.81µs), +5.2% mean, comparable to prior
+rounds' own sample-to-sample noise band (Round 15/16 reported similar ±0.5-4% swings from re-sampling
+alone). One new single-query outlier (max regret 1,927.6µs in a `StreamedSelect -> PrintingCompose`
+misroute category that existed in baseline too, just with a smaller max there, 95.3µs) — likely a
+different rare query landed in the differently-sized random walk (same seed, but per-query timing
+differences shift how many queries QuerySampler draws in the same wall-clock budget); no NEW misroute
+category appeared, and the "picked -> best" breakdown's set of categories is identical before/after.
+
+`bench_query_latency_ab.py --sample 400 --mode realistic --seed 7`, baseline vs fix, plus a same-build
+canary at the same seed (sequential runs, not literally interleaved sub-second — see caveat below):
+
+```
+canary (base run 1 vs base run 2):  B - A = +0.4µs  95% CI [+0.2, +0.5]
+baseline vs fix:                    B - A = +1.0µs  95% CI [+0.6, +1.7]
+```
+
+The fix's interval does not fully overlap the canary's, but the two are close (0.6µs apart) at a sample
+size the script's own docs flag as noisy for cross-process comparisons at these defaults (n=400). Given
+the affected population's rarity (Round 21: ~0.85-1.23% of `Mode::Card` queries by a rough regex proxy,
+an over-count relative to the exact AST shape), a small, real, borderline-detectable aggregate effect this
+size is consistent with the acquire-time cost measured directly above, not a red flag on its own.
+
+### Step 5 (joint rate refit): blocker demonstrably cleared, refit itself deferred
+
+Round 20's own recommended next step was explicit: fix `eval_domain` first, then the `GATHER_CARD_PASS_NS`/
+`GATHER_RESIDUAL_FLOOR_NS`/leaf-count-rate joint refit becomes testable for real. The broad sweep above
+confirms the blocker IS cleared for essentially the whole population Round 20 swept (89.3% of rows within
+15% of `cards_visited`, up from 5.8%) — a real, load-bearing precondition for that future refit, not a
+minor caveat.
+
+The refit itself was NOT attempted in this round. Building it properly means reintroducing Round 19/20's
+`count_plane_leaves`/`plane_extra_eval_leaves` plumbing as a clearly-separate addition, a standalone fit
+script mirroring `fit_round20.py`'s design, and the SAME three-population (compound/bare/residual)
+held-out validation discipline Round 20 used — each of those was itself a full round's worth of work in
+Rounds 19/20, and both of THOSE rounds' negative results (the additive term overshoots the flagship
+reproducer even with a correct mechanism, Round 19; the floor's original calibration already unevenly
+absorbs part of the compound-leaf effect, Round 20) were about the RATE FIT itself, not about `eval_domain`
+— clearing the `eval_domain` blocker does not by itself imply the rate refit will now succeed. Rebuilding
+that machinery and re-running the fit deserves its own dedicated round rather than being compressed into
+this one's remaining scope. Per this round's own brief: "if the correctness fix (1-4) works but the refit
+(5) doesn't [get attempted], ship the correctness fix alone" — done, with the next round now unblocked to
+attempt the refit directly against trustworthy `eval_domain` data.
+
+### Commit
+
+One commit on `costcell/22-existential-and-fix` (gate fix + regression test + fixture addition; no
+`cost.rs` changes, since step 5 was not attempted). `git diff --stat costcell/trunk`: `card_engine/src/lib.rs`,
+`card_engine/src/tests.rs`, this doc.
+
+
+
 Round 20 of the `GatheredScan`-compound-plane effort
 ([done/local-engine-gathered-scan-undercosted-arith-existential-and.md](done/local-engine-gathered-scan-undercosted-arith-existential-and.md))
 found that three rounds of rate-fitting against `cmc>=1 cmc<=5 border:black`-shaped queries all failed

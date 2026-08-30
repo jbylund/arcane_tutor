@@ -7842,7 +7842,21 @@ fn compose_printing_estimate(
                 if card_invariant.len() >= 2 {
                     best_other = Some(popcount_with_bits(None));
                 }
-            } else if !card_invariant.is_empty() {
+            } else {
+                // A LONE existential leaf (no card-invariant partner at all -- `card_invariant` may be
+                // empty here) still gets its own exact joint via `popcount_with_bits(Some(e))`: the
+                // closure already handles an empty `card_invariant` correctly (`card_invariant.clone()`
+                // plus one pushed `e` is just `PlaneExpr::And(vec![e.clone()])`, a valid single-child
+                // AND, and `eval_planes` answers it exactly). This branch used to require
+                // `!card_invariant.is_empty()`, which meant a shape like `cmc=1 border:white` (an
+                // arith-tuple leaf ANDed with exactly one existential leaf and nothing else
+                // card-invariant) never ran this loop at all -- `best_other` stayed `None` for the rest
+                // of the function, so `exact_domain_cards`/`result`'s printing-space tightening below,
+                // and everything downstream that reads them (`domain_cards`'s `is_and` tightening,
+                // `card_invariant_domain_exact`, `est.result.card`), silently fell back to the
+                // untightened per-child `min` instead of an exact popcount. Root-caused and verified in
+                // docs/issues/local-engine-domain-cards-existential-arith-and.md (`eval_domain` off by up
+                // to ~9x for this shape); this loop is the fix.
                 for e in &existential {
                     let candidate = popcount_with_bits(Some(e));
                     if best_other.as_ref().is_none_or(|(c, _)| candidate.0 < *c) {
@@ -7869,12 +7883,15 @@ fn compose_printing_estimate(
             // reuses the exact card ids `bare_numeric_field_ids`/`arith_tuple_ids` already have cheaply
             // in hand (`O(log n)` or `O(564 keys)`, no plane involved) and probes each one against
             // `best_other`'s bitmap directly -- cost `O(arith_count)`, adaptive to the actual data rather
-            // than a fixed worst case. Gated only on `best_other` existing at all: a query with rarity/
-            // border/legality alongside arith leaves but nothing ELSE plane-compilable (`r<=rare
-            // tou>=4 tou<=5`, one of the regressed queries under the plane-based version) never reaches
-            // here at all, since `best_other` stays `None` for it (the existential branch above requires
-            // a card-invariant partner) -- measured back to the exact pre-this-commit acquire cost for
-            // that shape specifically, not just cheaper. Only handles "arith side probes into other's
+            // than a fixed worst case. Gated only on `best_other` existing at all: a query with NEITHER a
+            // card-invariant NOR an existential leaf compiling (an all-arith `And`, or one with a
+            // non-plane-compilable sibling like `year<=2017` and no rarity/border/legality anywhere)
+            // never reaches here, since `best_other` stays `None` for it -- measured back to the exact
+            // pre-this-commit acquire cost for that shape specifically, not just cheaper. A LONE
+            // existential leaf with no card-invariant partner (`r<=rare tou>=4 tou<=5`) now DOES reach
+            // here (the existential branch above no longer requires a card-invariant partner -- see its
+            // own comment) and gets the same arith-ID-probe tightening a card-invariant-paired
+            // existential leaf already got. Only handles "arith side probes into other's
             // bitmap", not the reverse (iterating `other`'s bits and checking the arith bound directly):
             // that direction would need a raw per-card cmc/power/toughness lookup this function has no
             // access to. Not a correctness gap -- probing arith into `best_other` is enough on its own to
