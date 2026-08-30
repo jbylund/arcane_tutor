@@ -9816,6 +9816,106 @@ fn border_other_bucket_closes_domain_for_tracked_negation() {
     assert!(!bitmap_contains(&bits2, yellow_card), "the same card must not satisfy border:black");
 }
 
+/// Regression fixture for the `residual_tier_ns100` under-charge found this session: an `And` of a
+/// card-invariant arith range (`cmc`) with a printing-varying existential leaf (`border`), both
+/// compiled into ONE plane under `unique=card` -- see
+/// docs/issues/local-engine-gathered-scan-undercosted-arith-existential-and.md. Card 4 carries two
+/// printings with DIFFERENT borders specifically so a card-level "some printing is black" fact is not
+/// the same as "the first-checked printing is black" -- the shape `existential_plane_for`'s per-printing
+/// walk exists for.
+fn cmc_border_existential_fixture_store() -> CardData {
+    let mut vocab = VocabInterner::new();
+    let mut interner = Interner::new();
+    // (cmc, borders per printing)
+    let specs: &[(u8, &[&str])] = &[
+        (0, &["white"]),          // 0: outside the cmc range
+        (3, &["white"]),          // 1: in range, wrong border
+        (3, &["black"]),          // 2: in range AND black -- must match
+        (6, &["black"]),          // 3: black but outside the cmc range
+        (2, &["white", "black"]), // 4: in range; only its SECOND printing is black
+    ];
+    let cards: Vec<OracleCard> = specs
+        .iter()
+        .enumerate()
+        .map(|(i, &(cmc, _))| {
+            let mut c = stub_card(i as u128 + 1, TYPE_CREATURE, &[], &mut vocab);
+            c.cmc = Some(cmc);
+            c
+        })
+        .collect();
+    let printing_counts: Vec<usize> = specs.iter().map(|(_, borders)| borders.len()).collect();
+    let mut data = store_of(cards, &printing_counts, vocab);
+    let mut idx = 0;
+    for (_, borders) in specs {
+        for border in borders.iter() {
+            data.printings[idx].card_border_id = interner.intern((*border).to_string());
+            idx += 1;
+        }
+    }
+    data.strings = interner.strings;
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    // `PrintingCompose`'s applicability (`printing_compose_indexes_built`) declines cleanly unless all
+    // three of these are actually built -- an ordinary fixture store leaves them at their empty
+    // `Default`, which reports 0 and would otherwise silently reroute this fixture to the general
+    // `Candidates` path instead of the `PrintingCompose`-acquire branch this test exists to exercise.
+    data.indexes.border_printing = build_border_printing_planes(&data.printings, &data.strings);
+    data.indexes.rarity_printing = build_rarity_printing_planes(&data.printings);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    data
+}
+
+/// The bug: `cmc>=1 cmc<=5 border:black`/`unique=card` compiles BOTH children into one plane
+/// (`split_planes`'s whole-filter shortcut), leaving `filter == True`. The `PrintingCompose`-acquire
+/// branch of `acquire_plan_features` priced `residual_tier_ns100 == 0` ("nothing to verify") for EVERY
+/// plane under `Mode::Card`, not just legality's — but `border` is printing-varying
+/// (`needs_printing_verification` in planes.rs: "for rarity and border that is every leaf"), so the
+/// executor's `existential_plane_for` still walks printings one by one
+/// (`eval_plane_expr_for_printing`), real work the tier charge must not be zero for. Found live:
+/// `GatheredScan` predicted 326,263ns against a measured 1.0-1.3ms on the real corpus
+/// (docs/issues/local-engine-gathered-scan-undercosted-arith-existential-and.md).
+#[test]
+fn compose_tier_charges_border_existential_and_arith_range() {
+    let data = cmc_border_existential_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let ctx = QueryCtx::from(archived);
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+    // `SortCol::Rarity`/descending, matching the real query that found this (`orderby=rarity,
+    // direction=desc`) -- no permutation for that pair, so `PlanePopcountOrder` declines and this
+    // reaches the `PrintingCompose`-acquire branch the bug lives in, exactly like the real corpus.
+    let params = kernel_params(Mode::Card, SortCol::Rarity, true, 100, 0);
+
+    let cmc_ge = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(1.0) };
+    let cmc_le = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(5.0) };
+    let border_black = FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value: "black".to_string() };
+
+    // AND(cmc range, border:black): both children compile into one plane, filter -> True.
+    let unsplit = FilterExpr::And(vec![cmc_ge.clone(), cmc_le.clone(), border_black]);
+    let (pe, residual) = split_planes(unsplit.clone(), bounds, words, true);
+    assert!(pe.is_some(), "cmc range + border:black must compile into a plane");
+    assert!(matches!(residual, FilterExpr::True), "both children must be fully consumed, leaving no residual");
+    let mut acq_filter = residual;
+    let (feats, prep, _bits) = acquire_plan_features(&ctx, &params, &mut acq_filter, Some(&unsplit), pe.as_ref());
+    assert_eq!(prep.count_source(), CountSource::PrintingCompose, "this fixture must reach the compose-acquire branch to exercise the fix");
+    assert!(
+        feats.residual_tier_ns100 > 0,
+        "border is printing-varying (existential) even under Mode::Card -- the tier must not be zero \
+         just because the OTHER conjunct (cmc) is card-invariant"
+    );
+
+    // Control: the bare cmc range alone genuinely has nothing to verify under Mode::Card and must stay
+    // at tier 0 -- this population is NOT the bug (see the tracking doc's Phase A Q1: a bare range
+    // alone routes correctly).
+    let bare_unsplit = FilterExpr::And(vec![cmc_ge, cmc_le]);
+    let (pe2, residual2) = split_planes(bare_unsplit.clone(), bounds, words, true);
+    assert!(matches!(residual2, FilterExpr::True));
+    let mut acq_filter2 = residual2;
+    let (feats2, prep2, _bits2) = acquire_plan_features(&ctx, &params, &mut acq_filter2, Some(&bare_unsplit), pe2.as_ref());
+    assert_eq!(prep2.count_source(), CountSource::PrintingCompose);
+    assert_eq!(feats2.residual_tier_ns100, 0, "a bare card-invariant arith range has nothing to verify -- must stay free");
+}
+
 /// 7 of 8 cards have a black printing (87.5%, past narrow_candidates_exact's
 /// keep-if-<=75%-of-domain broadness guard, `domain - domain/4` with integer
 /// division); the 8th has a borderless printing (12.5%).

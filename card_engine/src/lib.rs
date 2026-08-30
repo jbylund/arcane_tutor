@@ -9559,6 +9559,59 @@ fn compose_leaf_nothing_to_verify(filter: &FilterExpr) -> bool {
     )
 }
 
+/// Whether any leaf of a compiled plane belongs to the rarity or border families -- the two existential
+/// families whose `existential`-ness does NOT depend on `divergent_formats` the way legality's does (see
+/// `needs_printing_verification` in planes.rs: "for rarity and border that is every leaf"). They occupy
+/// the top of the plane index space contiguously (`PLANE_RARITY..PLANE_COUNT`, planes.rs's block
+/// layout), with nothing else defined past `PLANE_RARITY`, so a plain index compare identifies them
+/// exactly without a new table to keep in sync with planes.rs's private `PLANE_BLOCKS`.
+///
+/// Existing solely for `cost_plane_nothing_to_verify` below -- see its doc for why this distinction
+/// matters only for the router's cost estimate, not for `plane_leaves_nothing_to_verify`'s own
+/// (unrelated) executor use.
+fn plane_touches_rarity_or_border(expr: &PlaneExpr) -> bool {
+    match expr {
+        PlaneExpr::Plane(p) => (*p as usize) >= PLANE_RARITY,
+        PlaneExpr::Bits(_) | PlaneExpr::Const(_) => false,
+        PlaneExpr::And(cs) | PlaneExpr::Or(cs) => cs.iter().any(plane_touches_rarity_or_border),
+        PlaneExpr::Not(inner) => plane_touches_rarity_or_border(inner),
+    }
+}
+
+/// The PLANE half of the router's `tier`/`residual_tier_ns100` charge in the `PrintingCompose`-acquire
+/// branch of `acquire_plan_features` -- the counterpart to `plane_leaves_nothing_to_verify`'s combined
+/// (filter-must-be-True-too) check, factored out so it can be ANDed with the FILTER half
+/// (`compose_leaf_nothing_to_verify`) independently instead of ORed as two whole-query claims. See
+/// the call site for why the OR shape was unsound.
+///
+/// Identical to `plane_leaves_nothing_to_verify`'s own plane test except that the `Mode::Card` bypass no
+/// longer covers a plane that touches rarity or border.
+///
+/// `plane_leaves_nothing_to_verify` itself is deliberately left as-is (still used by the EXECUTOR's own
+/// `all_match_known` in `prepare_candidates`): granting Mode::Card's bypass to rarity/border there is
+/// harmless because the real per-printing correctness work for those fields runs through a wholly
+/// separate mechanism, `existential_plane_for` (see `push_card_matches`'s `existential_plane` branch,
+/// which re-checks `eval_plane_expr_for_printing` per candidate printing regardless of what
+/// `all_match_known` says). The router's `tier` charge has no such second mechanism: if `tier` is 0
+/// ("nothing to verify"), `GatheredScan`/`StreamedSelect` are priced as though that per-printing walk
+/// never happens, when for rarity/border it always does.
+///
+/// Measured: `cmc>=1 cmc<=5 border:black`, `unique=card` -- `GatheredScan` predicted 326,263ns
+/// (`residual_tier_ns100 == 0`) against a real 1,015,209-1,290,166ns, a 3.1-4.0x under-charge
+/// (docs/issues/local-engine-gathered-scan-undercosted-arith-existential-and.md). Root cause: `border`
+/// (and `rarity`) are existential exactly like a divergent legality format, but the un-scoped Mode::Card
+/// bypass this narrows doesn't distinguish them from the truly card-invariant fields
+/// (`cmc`/`power`/`toughness`/color/type/devotion) its own doc assumes are the only other kind of plane
+/// -- so a bare `cmc` range alone routes correctly (that population really has nothing to verify), but
+/// ANDing it with `border`/`rarity` silently inherited the same "free" verdict for a plane that no
+/// longer is.
+fn cost_plane_nothing_to_verify(mode: Mode, plane: Option<&PlaneExpr>, indexes: &Archived<CardIndexes>) -> bool {
+    plane.is_none_or(|expr| {
+        (matches!(mode, Mode::Card) && !plane_touches_rarity_or_border(expr))
+            || !plane_expr_is_existential(expr, u64::from(indexes.planes.divergent_formats))
+    })
+}
+
 /// The candidate materialization + filter rewriting shared by `StreamedSelect`
 /// and `GatheredScan`, extracted verbatim from `run_query`. Mutates `filter` via
 /// `memoize_text_predicates` + `order_children_by_verify_cost` under the same
@@ -12408,12 +12461,13 @@ fn acquire_plan_features(
         };
         // The tier is what the MATERIALIZING alternatives pay per candidate, so it must be asked about
         // the predicate THEY see (`filter` + `plane`), not about `composed` — and gated exactly as
-        // `prepare_candidates` gates it, or the router charges a `card_pass` the kernels will skip. On a
-        // card-invariant legality format `card_pass` resolves at card level for every card, so
-        // `printings_examined` reads 0 and both the per-card residual and the per-row scan are dead
-        // terms; charging them anyway was 92-94% of P3's predicted cost on `f:modern`, `f:gladiator`,
-        // `f:commander` and `f:predh`. `residual_exact` is unavailable here (this branch never narrows),
-        // so this is the conservative half of the executor's disjunction: it can over-charge, never under.
+        // `prepare_candidates` gates `all_match_known` (skipping `card_pass`), or the router charges a
+        // `card_pass` the kernels will skip. On a card-invariant legality format `card_pass` resolves at
+        // card level for every card, so `printings_examined` reads 0 and both the per-card residual and
+        // the per-row scan are dead terms; charging them anyway was 92-94% of P3's predicted cost on
+        // `f:modern`, `f:gladiator`, `f:commander` and `f:predh`. `residual_exact` is unavailable here
+        // (this branch never narrows), so this is the conservative half of the executor's disjunction: it
+        // can over-charge, never under.
         //
         // `compose_leaf_nothing_to_verify` closes the analogous gap for a bare compose-exact collection
         // leaf: `otag:triggered-ability` (47% dense) measured StreamedSelect predicted at 1026us against
@@ -12421,8 +12475,31 @@ fn acquire_plan_features(
         // query to `PrintingCompose` (176.5us) despite it being ~4x slower (#1005). `plane_leaves_
         // nothing_to_verify` cannot see this — it only recognizes the legality plane's rewrite to `True`,
         // and a compose-exact leaf is never rewritten that way.
-        let nothing_to_verify =
-            plane_leaves_nothing_to_verify(filter, mode, plane, indexes) || compose_leaf_nothing_to_verify(filter);
+        //
+        // ANDed, not ORed like `plane_leaves_nothing_to_verify`'s own combined (filter-must-be-True-too)
+        // test: `compose_leaf_nothing_to_verify` and `cost_plane_nothing_to_verify` each answer for their
+        // OWN half of the query (the residual `filter` and the compiled `plane` respectively), and each
+        // can be satisfied while the OTHER half still needs a per-printing check. Originally this OR'd
+        // `plane_leaves_nothing_to_verify(filter, mode, plane, indexes)` (which itself requires filter ==
+        // `True`, so it only ever fired when there was no separate residual) with
+        // `compose_leaf_nothing_to_verify(filter)` alone — but the latter says nothing about `plane`, so
+        // whenever `plane` ALSO existed and touched rarity/border, a residual that happened to be a bare
+        // safe collection leaf (`t:swamp`, `otag:X`, `keyword:Y`) still forced `nothing_to_verify = true`
+        // for the WHOLE query, silently discarding the plane side's real per-printing existential work.
+        // Found live: `t:swamp tou=5 border:black`/card kept `residual_tier_ns100 == 0` even after
+        // `cost_plane_nothing_to_verify` alone was scoped to reject it, because the OR's other arm
+        // (`compose_leaf_nothing_to_verify(t:swamp)`) still fired on its own.
+        //
+        // The `all_match_known` claim in the comment above (matching `prepare_candidates`'s `card_pass`
+        // skip) is true for `card_pass` — both use the same shaped test on each half — but incomplete for
+        // `Mode::Card`: the executor's `existential_plane_for` runs a SEPARATE per-candidate-printing walk
+        // whenever the plane touches rarity or border (see `cost_plane_nothing_to_verify`'s doc), and that
+        // walk is real work neither half's own "I have nothing to verify" claim accounts for on its own.
+        // Found live: `cmc>=1 cmc<=5 border:black`/card — `residual_tier_ns100 == 0` priced `GatheredScan`
+        // at 326,263ns against a measured 1,015,209-1,290,166ns
+        // (docs/issues/local-engine-gathered-scan-undercosted-arith-existential-and.md).
+        let filter_nothing_to_verify = matches!(filter, FilterExpr::True) || compose_leaf_nothing_to_verify(filter);
+        let nothing_to_verify = filter_nothing_to_verify && cost_plane_nothing_to_verify(mode, plane, indexes);
         let tier = if nothing_to_verify { 0 } else { verify_cost_tier(composed) };
         // `GatheredScan` walks every printing of every candidate card, so its scan feature is the candidate
         // SPAN. `scan_all` estimates that span as `est_cards x` the corpus-average printings-per-card `x 2.1`,
