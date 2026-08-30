@@ -682,3 +682,165 @@ What this round DID establish, worth keeping for whoever picks this up next:
   estimate, not just a suboptimal ordering. Not fixed here (out of this round's narrow scope), but worth
   its own line item if `local-engine-cost-model-cleanup-remaining.md` or a similar tracking doc gets
   revisited.
+
+## Round 19: the compound-plane mechanism confirmed twice over, an additive fix built, and discarded --
+## it regresses the metric that actually matters
+
+Round 17 flagged, but did not chase, the real driver of the flagship reproducer's remaining gap:
+`eval_plane_expr_for_printing` costs more per call for a COMPOUND plane (a `cmc`/`power`/`toughness`
+range ANDed with an existential leaf) than the flat `GATHER_CARD_PASS_NS`/`GATHER_RESIDUAL_FLOOR_NS`
+constants assume, because they were fit against a single-bare-leaf-check shape. This round quantified
+that mechanism precisely with two independent measurements, built a feature and a fix, and discarded it
+after a held-out check on the metric that actually drives routing said no -- a second negative result in
+this doc, and a useful one: the mechanism is real, but a simple additive linear term makes absolute
+routing accuracy worse, not better.
+
+### The compiled tree shape is not what this doc's own brief assumed
+
+Before measuring anything, checked the ACTUAL compiled `PlaneExpr` for `cmc>=1 cmc<=5 border:black`
+(`planes.rs::compile_plane`/`compile_numeric_cmp`) rather than trusting this doc's own prior paraphrase
+("compiles to `Or([Plane(p1)...Plane(p5)])`, up to 5 lookups"). It does not: `cmc>=1` and `cmc<=5` are
+two SEPARATE `NumericCmp` leaves, each compiling to its OWN `Or` over `numeric_layout`'s 13 one-hot
+interior planes (plus the shared "hi" bucket), and nothing in `compile_plane`/`compile_plane_children`
+intersects the two `Or`s into one narrower one. The real shape is:
+
+```
+And([Or(≤14 planes, from cmc>=1's own bound),  Or(≤14 planes, from cmc<=5's own bound),  Plane(border)])
+```
+
+20 total `Plane` leaves for the exact flagship reproducer (verified by a node-counting walk over the
+real compiled tree, `tests.rs::plane_expr_shape`), 16-28 depending on range width (verified across four
+widths: `cmc=3` alone → 16, `cmc∈[2,4]` → 18, `cmc∈[1,5]` → 20, `cmc∈[0,12]` (the full interior range) →
+28). This matters for anyone reusing this doc's mechanism description later: the leaf count scales with
+BOTH bounds' own `Or` width, not with the intersected range's width.
+
+### Measurement 1: a confound-free kernel micro-benchmark confirms the mechanism directly
+
+Added `tests.rs::plane_eval_compound_leaf_cost` (`#[ignore]`d, real corpus via a `benchmarks` symlink
+into the primary checkout -- read-only, nothing under `benchmarks/` touched): compiles a handful of real
+`PlaneExpr` trees against the real corpus's `BitPlanes`/`OracleWordIndex`, finds one real witnessing
+`(cid, printing)` pair for each, then calls `eval_plane_expr_for_printing` on that SAME fixed pair
+directly in a tight best-of-80 loop (200,000 calls/round) -- no candidate walk, no page selection, no
+`explain_analyze` overhead, so the number is purely the function's own per-call cost:
+
+```
+border alone:            4.12 ns/call        rarity alone:            2.17 ns/call
+cmc[1,5] AND border:    30.30 ns/call        cmc[1,5] AND rarity:    33.26 ns/call
+
+width sweep (cmc range AND border:black, fresh witness per width):
+  cmc[3,3]   (16 leaves, 15 extra):  22.30 ns/call   delta +18.18 ns   (1.21 ns/extra-leaf)
+  cmc[2,4]   (18 leaves, 17 extra):  30.31 ns/call   delta +26.19 ns   (1.54 ns/extra-leaf)
+  cmc[1,5]   (20 leaves, 19 extra):  32.70 ns/call   delta +28.58 ns   (1.50 ns/extra-leaf)
+  cmc[0,12]  (28 leaves, 27 extra):  33.10 ns/call   delta +28.98 ns   (1.07 ns/extra-leaf)
+```
+
+Confirms, directly and mechanistically: a bare existential leaf costs 2-4ns/call; ANDing a card-invariant
+range partner costs 7-8x more (30-33ns/call), scaling with the range's own leaf count at roughly
+1.0-1.5ns per extra `Plane` leaf (not perfectly linear -- `Or`'s `.any()` short-circuits at the first
+`true` child, so the REAL evaluated count for a specific witness depends on where its bit falls, which a
+static per-query feature can't know -- but clearly monotonic and the right order of magnitude).
+
+### Measurement 2: a matched-eval_domain paired-diff on the real corpus, independently, agrees
+
+Sampled 77 real queries (`border`/`rarity` bare and ANDed with `cmc`/`power`/`toughness` ranges of width
+1, 3, 5, and 13, plus `f:oldschool`) via `explain_analyze` against a freshly-built store (the checked-in
+`real.store` predates this round's `PlanFeatures` field and reads header-mismatch; rebuilt via
+`costbench.load_engine` against `benchmarks/bitplanes/corpus.jsonl` instead). Found a real, genuine
+confound while doing this, unrelated to this round's own mechanism: `eval_domain` reads IDENTICAL across
+every range width for several MINORITY existential leaf values (`border:white/gold/borderless`, any bare
+`rarity` value paired with a `power`/`toughness` range) -- an already-existing gap in the
+`card_invariant_domain_exact`/estimated-domain fallback, not something this round introduced or fixes.
+
+Controlling for it directly: comparing two rows for the SAME base leaf with the IDENTICAL `eval_domain`
+isolates the leaf-count effect with zero contribution from that confound. Restricted to `eval_domain >=
+4,000` (excluding the smallest populations, where single-query/single-trial-median noise swings the
+per-pair rate by 10-60 ns/leaf) leaves 79 matched pairs across `border:black`/`r:common`/`r:uncommon`/
+`r:rare`/`r:mythic`/`f:oldschool`. Split by a hash of `"{leaf}|{plan}|{lo_leaves}|{hi_leaves}"`:
+
+```
+calibration half (n=42): median rate 2.92 ns/leaf
+held-out half    (n=37): median rate 2.64 ns/leaf   -- within 10% of the calibration half
+held-out mean abs error on the DELTA prediction: rate=0 baseline 178,670 ns  ->  fitted rate 101,370 ns
+                                                  (43% lower)
+```
+
+Two independent measurements (a confound-free kernel micro-benchmark and a confound-controlled real-
+corpus paired-diff) agree the mechanism is real and land in the same order of magnitude (1.0-1.5 vs
+2.6-2.9 ns/leaf -- the real numbers read higher, plausibly because the whole-query walk touches a
+DIFFERENT `printing` struct and different bitmap words per distinct candidate card, unlike the
+micro-benchmark's artificially-hot repeated-same-leaf loop).
+
+### The fix built, and why it fails the metric that actually matters
+
+Built the fix per the brief's design: `planes.rs::count_plane_leaves` (a new, small, structural tree
+walk), `PlanFeatures::plane_extra_eval_leaves` (`count_plane_leaves(plane) - 1`, computed once per query
+in the `PrintingCompose`-acquire branch exactly when `cost_plane_nothing_to_verify` says the plane is
+existential -- `0` otherwise, so the already-calibrated bare-existential-leaf population is untouched),
+and `GATHER_PLANE_LEAF_NS`/wiring into both `GatheredScan` and `StreamedSelect`'s arms (the same
+`eval_plane_expr_for_printing` call backs both kernels). Regression tests added and passing (172 existing
++ `compose_prices_compound_plane_leaf_count_above_bare_existential`, asserting the compound reproducer
+gets a nonzero charge and both bare-existential-leaf and bare-card-invariant-range controls stay at
+exactly `0`). `cargo test --release`: 173/173. `cargo clippy --all-targets -- -D warnings`: clean.
+
+Then ran the MANDATORY held-out check on this doc's own stated primary metric -- held-out
+predicted-vs-measured, not the paired-delta above -- and it fails:
+
+```
+GatheredScan, eval_domain >= 4,000, plane_extra_eval_leaves > 0, hash-split by query string:
+  rate=0.00 (baseline):  held-out median |log(predicted/measured)| = 0.417
+  rate=2.80 (the calibrated mechanistic rate): held-out median |log ratio| = 1.145   -- WORSE, not better
+```
+
+The flagship reproducer itself shows why: BEFORE this round, `cmc>=1 cmc<=5 border:black`/card predicted
+728,028ns against measured ~1.10-1.54M ns (under-charged, ratio ~0.5-0.65x, the gap this doc opened
+with). Adding the calibrated 2.8ns/leaf term moves it to 2,043,877ns against the SAME measured range --
+now OVER-charged by ~1.5x. The additive fix does not close the gap, it overshoots past it.
+
+Root cause, isolated by computing the "rate `pred0` would need" per absolute row rather than per matched
+pair, within the SAME leaf family (`border:black`, widths 15/17/19/27 extra leaves, at their own native
+`eval_domain`): the implied rate is **negative** (-1.17, i.e. already OVER-predicted) at 15 extra leaves,
+crosses to positive around 17-19, and only reaches +1.2 at 27. The existing `GATHER_CARD_PASS_NS`/
+`GATHER_RESIDUAL_FLOOR_NS` floor (18.89ns, fit against a "one bare check" shape per its own doc) is
+measurably NOT a clean bare-leaf baseline in practice -- it already reads as generous at low compound-leaf
+counts and stingy at high ones, most likely because whatever traffic sample calibrated it in an earlier
+round already contained a mix of compound-AND shapes, baking an uneven, population-dependent AVERAGE
+leaf-count contribution into one flat constant. Layering a mechanistically-correct marginal rate on top
+of that uneven baseline overshoots exactly where the baseline was already over-generous, and only
+partly helps where it was under-generous -- a single linear additive term cannot fix a floor that is
+itself already leaf-count-dependent in an uncontrolled way. A real fix would need to jointly recalibrate
+the floor and the new term together over a much larger, controlled sample -- a bigger blast radius than
+this round's scope (Round 15-17's `GATHER_RESIDUAL_FLOOR_NS`/`GATHER_CARD_PASS_NS` are validated,
+shipped constants; re-deriving them here risks a regression across the WHOLE existing residual-tier
+population, not just the compound-plane slice this round targets).
+
+### Outcome: discarded, reverted
+
+**Negative result, code reverted.** `cost.rs`/`lib.rs`/`planes.rs`/`tests.rs` are back to `costcell/trunk`
+(Round 17's state) -- `git diff --stat costcell/trunk` reads empty. `cargo test --release`: 172/172
+passed (unchanged). `cargo clippy --all-targets -- -D warnings`: clean (unchanged, no code to lint). No
+bench re-runs against a reverted build -- there is nothing to confirm.
+
+What this round DID establish, worth keeping for whoever picks this up next:
+
+- The compound-plane mechanism is real, confirmed by two independent measurements (a confound-free
+  kernel micro-benchmark and a confound-controlled real-corpus matched-domain paired-diff), landing in
+  the same 1-3 ns/extra-leaf order of magnitude. This is no longer a hypothesis.
+- The compiled tree shape for a two-sided numeric range ANDed with an existential leaf is
+  `And([Or(≤14), Or(≤14), existential leaf])` -- NOT the narrower `Or(width)` this doc's own earlier
+  round paraphrased. Anyone reusing this mechanism description should use THIS round's section above as
+  the reference shape (traced directly against `planes.rs::compile_numeric_cmp`/`compile_plane_children`,
+  and confirmed by a real node-count over the compiled tree), not the earlier paraphrase.
+- A simple additive `rate * eval_domain * plane_extra_eval_leaves` term, layered on top of the existing
+  `GATHER_RESIDUAL_FLOOR_NS`/`GATHER_CARD_PASS_NS` floor, does NOT survive held-out validation on
+  predicted-vs-measured (the metric routing actually uses) even though the SAME rate is well-supported by
+  a held-out check on the marginal/paired-delta metric. The floor itself appears to already absorb an
+  uneven, population-dependent share of the compound-leaf effect. A future attempt should jointly refit
+  the floor and a leaf-count term together (a proper weighted regression over a much larger real-traffic
+  sample of existential-plane `Mode::Card` queries, not an additive patch on the existing constant), or
+  investigate whether the floor's ORIGINAL calibration sample already contained enough compound-AND
+  queries to explain the unevenness directly.
+- A separate, small, already out-of-scope confound was found (not fixed): `eval_domain` reads identical
+  across every range width for several minority existential leaf values (rare `border`/`rarity` values
+  paired with a `power`/`toughness` range) -- a gap in the `card_invariant_domain_exact`/estimated-domain
+  fallback, distinct from (and a further complication on top of) the `filter.rs::touches_printing_field`
+  gap Round 17 already flagged. Worth its own line item in a future domain-estimation cleanup pass.
