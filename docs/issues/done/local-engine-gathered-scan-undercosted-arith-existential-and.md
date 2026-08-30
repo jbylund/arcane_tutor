@@ -496,3 +496,189 @@ also removes a `mode` parameter that turned out to be redundant by construction.
 test). No hot-path cost added (net cheaper than Round 15's shape). No regression on any confirmation
 metric. The three other card/printing classifiers found while checking for duplication (`estimator.rs`,
 `filter.rs`) are flagged as a candidate for a future unification doc, not attempted here.
+
+## Round 17: the flat per-candidate charge is real, but a depth term doesn't fix it -- negative result
+
+Round 16 fixed the classification bug (`tier` correctly reads nonzero for an existential plane) but left
+a note that the reproducer's `GatheredScan` prediction (728,028ns) still undershot the measured range
+(1,015,209-1,290,166ns), and hypothesized the mechanism: `push_card_matches`'s `Mode::Card`/
+`Prefer::Default` arm early-exits (`(start..end).find(|&pid| satisfies(pid))`), so the number of
+printings actually visited per candidate depends on the existential leaf's own selectivity, not a flat
+per-candidate constant -- an "expected walk depth" problem, the same SHAPE Round 1 of the sibling
+`local-engine-gathered-scan-card-printing-varying-depth.md` effort solved for printing-varying RANGE
+leaves (price/date/collector_number). This round picked that up, built a real fix, and then discarded it
+after the calibration data itself said no. Recorded here in full because the diagnosis along the way is
+the useful part.
+
+### Re-confirming the reproducer, fresh
+
+Rebuilt an isolated release wheel from `costcell/trunk` (Round 16's state) and re-ran the exact
+reproducer:
+
+```
+cmc>=1 cmc<=5 border:black, unique=card, orderby=rarity desc, limit=175, offset=0:
+GatheredScan predicted 728,028ns   measured 1,031,292-1,163,417ns (median 1,136,250)   ratio ~1.4-1.6x
+real counters: cards_visited=26,905  printings_examined=27,142  matches_pushed=26,905
+real depth (printings_examined / cards_visited) = 1.0088
+```
+
+**The early-exit walk essentially never proceeds past the first printing for this exact query** --
+average depth 1.009, i.e. almost every candidate's very first checked printing already satisfies
+`border:black`. This on its own already says a depth-scaled correction cannot explain this specific
+query's gap: at depth ≈ 1 any sound depth model can only multiply the existing charge by ≈1, and the
+gap is 1.4-1.6x.
+
+### Quantifying across a broader population: depth is real, but it's not what's wrong here
+
+Sampled 19 hand-picked existential-plane/`Mode::Card`/`Prefer::Default` queries first (varying which
+border/rarity value, with and without an ANDed `cmc`/`pow`/`tou` range), then a much larger, non-cherry-
+picked sample via `client.query_sampler.QuerySampler` (2,564 rows, `uniform` mode, seed 0; 4,431 rows,
+`realistic` mode, seed 1; both filtered client-side to `unique=card` queries whose text touches
+`border:`/`r[<>]=?`/`f:oldschool`), recording `GatheredScan`'s `predicted_ns`/`plan_self_ns` (measured)
+and the real depth from `printings_examined`/`cards_visited`.
+
+Two clean, well-supported findings came out of the broad sample:
+
+**1. Real depth genuinely predicts under/over-costing, in aggregate:**
+
+```
+uniform (n=2,564):                          realistic (n=4,431):
+  depth [1.00,1.05)  n=657   median ratio 0.95    depth [1.00,1.05)  n=2,220  median ratio 0.53
+  depth [1.05,1.50)  n=201   median ratio 0.75    depth [1.05,1.50)  n=816    median ratio 0.54
+  depth [1.50,2.50)  n=188   median ratio 1.01    depth [1.50,2.50)  n=448    median ratio 0.70
+  depth [2.50,4.00)  n=181   median ratio 1.38    depth [2.50,4.00)  n=289    median ratio 1.07
+  depth [4.00, ∞)    n=1,327 median ratio 2.81    depth [4.00, ∞)    n=583    median ratio 2.17
+corr(log depth, log ratio) = 0.50 (uniform), 0.39 (realistic)
+```
+
+Not noise: monotonic in both modes, over thousands of rows, and the direction matches the hypothesis
+(higher real depth ⇒ more under-costed).
+
+**2. But depth is a property of the LEAF VALUE, not of what's ANDed alongside it -- and for the flagship
+reproducer's shape (a common existential value), that intrinsic depth is ≈1, so the "AND" isn't where
+the gap comes from.** Confirmed directly: `cmc>=1 cmc<=5 r:mythic` and bare `r:mythic` (no `cmc` at all)
+measure the SAME real depth (2.538 vs 2.528) -- the arith range restricts WHICH cards are candidates,
+but does not change WHERE in a candidate's own print history the existential value tends to sit. Same
+for `cmc>=1 cmc<=5 border:black` (depth 1.009) vs bare `border:black` (depth 1.009). So whatever is
+wrong with the flagship reproducer's costing is NOT "the AND makes the walk deeper" -- it is something
+else, present regardless of depth.
+
+Isolating the executor's own per-candidate loop cost (`ns_loop / cards_visited`, from `explain_analyze`'s
+per-plan phase breakdown) against the model's flat per-candidate charge (`GATHER_LOOP_PER_CARD_NS +
+GATHER_CARD_PASS_NS + tier.max(GATHER_RESIDUAL_FLOOR_NS)` = 25.77ns, constant for every row below since
+`residual_tier_ns100` reads the same 400 for all of them) shows what that "something else" is:
+
+```
+query                              real depth   real ns_loop/candidate   model's flat charge
+border:black (bare)                   1.01              9.46                  25.77   (over-charged)
+cmc>=1..5 border:black                1.01             36.07                  25.77   (under-charged)
+cmc>=2..3 border:black                1.01             28.65                  25.77   (~even)
+pow>=1..3 border:black                1.01             30.66                  25.77   (~even)
+r:mythic (bare)                       2.53             15.24                  25.77   (over-charged)
+cmc>=1..5 r:mythic                    2.54             73.22                  25.77   (under-charged)
+```
+
+At the SAME real depth (~1.0-1.01), evaluating the COMPOUND existential plane (the `cmc` bound AND the
+`border`/`rarity` equality, both tested per printing by `eval_plane_expr_for_printing`) costs 3-4x more
+per candidate than evaluating the BARE existential leaf alone. That is a real, distinct gap -- the
+`GATHER_CARD_PASS_NS`/`GATHER_RESIDUAL_FLOOR_NS` constants were fitted against a "one `filter.card_pass`
+call" cost shape (see their own docs in `cost.rs`), not against "evaluate a multi-leaf `PlaneExpr`
+conjunction per printing" -- but it is a plane-EVALUATION-cost gap, not a depth gap, and it is out of
+scope for "design an expected-depth estimate" (this round's brief item 2). Flagging it here rather than
+chasing it, since the brief's escape hatch is specifically for exactly this outcome.
+
+### A depth fix was still built and tested, for the population where depth genuinely is the mechanism
+
+Even though depth doesn't explain the flagship reproducer, the broad sample's bucketed table above says
+depth-driven under-costing is real SOMEWHERE in this population (the `depth ≥ 4` bucket reads median
+ratio 2.2-2.8x). So a real attempt was made: added `PlanFeatures::existential_extra_units` (`cost.rs`),
+set only in the `PrintingCompose`-acquire branch's tier decision (`lib.rs`) exactly when `tier != 0`
+comes ENTIRELY from the plane (`filter_nothing_to_verify && !nothing_to_verify`, `Mode::Card`,
+`Prefer::Default`) -- the precise condition under which `push_card_matches`/`card_match_count` run the
+early-exit walk with no separate residual call. Charged in `cost.rs`'s `GatheredScan`/`StreamedSelect`
+arms as `existential_extra_units * GATHER_EXISTENTIAL_DEPTH_NS`, additive on top of the existing flat
+charge (which already assumes depth 1; `existential_extra_units` is only the printings EXPECTED beyond
+that one).
+
+**Deliberately NOT read off the existing `scan_units` feature**, after finding it already carries an
+unrelated, pre-existing gap for exactly this population: `scan_units` floors to `domain_cards` (depth 1
+assumed) whenever `card_invariant_domain_exact` holds, which reads `composed_card_invariant` from
+`filter.rs::touches_printing_field` -- and that function's `Legality { .. } => false` arm (documented,
+and already flagged as an accepted one-directional gap in Round 16's own "three other classifiers"
+section above) treats EVERY legality leaf as card-invariant, including a DIVERGENT format. Confirmed
+live: bare `f:oldschool` measured `scan_units == eval_domain` (961 == 961, depth 1 assumed) against a
+REAL depth of 6.28 (`printings_examined`/`cards_visited` = 6,037/961). So `existential_extra_units` was
+computed fresh, from the same already-in-scope scalars `scan_all` itself uses (`printing_matches`,
+`domain_cards`, `printings_per_card`), independent of `card_invariant_domain_exact` -- no new per-query
+scan, same pre-computation shape as Round 1's own feature.
+
+### Why it doesn't hold up: Round 1's order-statistics model itself underestimates depth for this leaf family
+
+Even computed fresh and confound-free, the numbers don't support shipping this. Two problems, found by
+looking directly at which rows the fresh feature actually produces a nonzero value for:
+
+**The order-statistics model (uniform-random position among a card's printings) is itself wrong for
+existential categorical leaves whose position correlates with print era.** `border:borderless` (bare,
+sampled 24 times): `existential_extra_units` = 192 (implying `expected_depth` ≈ 1.51) against a REAL
+depth of 6.09 (`printings_examined`/`cards_visited` = 21,185/3,478) -- a 4x underestimate, even with the
+`card_invariant_domain_exact` confound removed. The likely reason: `border:borderless`-style values
+correlate with a specific print era, and printings are stored in a fixed prefer-desc order, so a card's
+few matching printings cluster at one END of its print history rather than landing at a uniformly random
+position -- exactly the assumption Round 1's model makes and exactly where a continuous, less era-
+correlated field like `price_usd` would not violate it as badly. This is a wrong SHAPE, not a wrong rate:
+no single multiplicative constant on top of `expected_depth` can fix an estimate whose underlying
+distributional assumption is violated in a data-dependent way.
+
+**The sample has almost no distinct queries to calibrate against.** Of 6,318 broadly-sampled rows (fresh
+build, same two-mode sampling as above), only 148 read `existential_extra_units > 0` at all, and of
+those, one query (`border:borderless`, repeated by the sampler) accounts for 24 rows and a second
+(`r>=special`) for another 6 -- there are not enough DISTINCT queries in reasonable sampling time to fit
+or validate a new constant responsibly, even setting the shape problem aside.
+
+**Held-out calibration, run anyway, confirms both problems combined into a fit that shouldn't ship.**
+Split by a hash of the query string (even/odd), calibration half n=77, held-out half n=71:
+
+```
+calibration half:  fitted rate = 0.036  (statistically indistinguishable from 0, n=77 dominated by ~2
+                                          distinct repeated queries)
+held-out half:      total abs error, NO fix:        1,597,558
+                    total abs error, fitted rate:    1,620,196   (WORSE, not better)
+                    median ratio, NO fix:  0.593   median ratio, fitted rate: 0.595  (no change)
+```
+
+Applying the fitted correction to the held-out half made total absolute error slightly WORSE, not
+better -- a clean, unambiguous "this doesn't hold up" signal, not a marginal call.
+
+### Outcome: discarded, reverted
+
+**Negative result, code reverted.** `cost.rs`/`lib.rs`/`tests.rs` are back to `costcell/trunk` (Round
+16's state) -- `git diff --stat costcell/trunk` reads empty. `cargo test --release`: 172/172 passed
+(unchanged from Round 16). `cargo clippy --all-targets -- -D warnings`: clean (unchanged, no code to
+lint). No bench re-runs against a reverted build -- there is nothing to confirm.
+
+What this round DID establish, worth keeping for whoever picks this up next:
+
+- The flagship reproducer's gap is NOT a depth problem (real depth ≈1.009) -- ruling out this round's
+  hypothesized mechanism for that SPECIFIC query, correcting the framing this doc opened with. Its actual
+  driver is `eval_plane_expr_for_printing` costing more per call for a COMPOUND plane (arith range AND
+  existential leaf) than the `GATHER_CARD_PASS_NS`/`GATHER_RESIDUAL_FLOOR_NS` constants (fitted on a
+  single-`card_pass`-call shape) assume -- a plane-evaluation-cost gap, unfixed, a candidate for a future
+  round scoped to THAT mechanism specifically (not depth).
+- Depth genuinely does drive under/over-costing elsewhere in the existential-plane population (broad
+  sample, thousands of rows, monotonic, corr ~0.4-0.5) -- real, but Round 1's uniform-random-position
+  `expected_depth` formula underestimates it badly for existential leaves whose matching position
+  correlates with print era (`border:borderless` real depth 6.09 against the model's 1.51). A real fix
+  needs a different distributional assumption for this leaf family, not a coefficient on the existing
+  one -- plausibly a per-(field, value) "typical position within a card's print history" statistic
+  computed once at store-build time (alongside `BorderPrintingPlanes`/`RarityPrintingPlanes`), not
+  per-query. Not attempted here; flagged as the concrete next step.
+- A separate, smaller, already-partially-known gap resurfaced concretely: `filter.rs::touches_printing_
+  field`'s documented `Legality { .. } => false` (card-invariant, unconditionally) silently zeroes the
+  `card_invariant_domain_exact` depth-1 shortcut's honesty for a DIVERGENT format specifically (bare
+  `f:oldschool` reads `scan_units == eval_domain` against a real depth of 6.28). Round 16's doc already
+  flagged `filter.rs`'s classifier as a documented, accepted one-directional approximation for VERIFY
+  ORDERING; this round found a second, concrete consumer (`card_invariant_domain_exact`'s "no depth-1
+  fast path is needed" test) where the same approximation leaks into a materially wrong SCAN_UNITS
+  estimate, not just a suboptimal ordering. Not fixed here (out of this round's narrow scope), but worth
+  its own line item if `local-engine-cost-model-cleanup-remaining.md` or a similar tracking doc gets
+  revisited.
