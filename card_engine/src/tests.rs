@@ -9916,6 +9916,111 @@ fn compose_tier_charges_border_existential_and_arith_range() {
     assert_eq!(feats2.residual_tier_ns100, 0, "a bare card-invariant arith range has nothing to verify -- must stay free");
 }
 
+/// Round 16's companion to `cmc_border_existential_fixture_store`: the same shape (a card-invariant
+/// `cmc` range ANDed with an existential leaf, both folding into one plane under `unique=card`), but
+/// the existential leaf is LEGALITY, not border -- and carries TWO formats so the fixture can assert
+/// both directions at once. Format A (shift 0) genuinely diverges: card 4 carries one printing legal in
+/// A and one not, so `divergent_formats_of` marks A's bits set. Format B (shift 2) is legal on every
+/// printing of every card -- never diverges, the ordinary case every OTHER format is in production
+/// (docs/issues/local-engine-gathered-scan-undercosted-arith-existential-and.md: 31 of the corpus's 32
+/// formats are this shape, only `oldschool` is format A's shape).
+fn cmc_legality_existential_fixture_store() -> CardData {
+    let mut vocab = VocabInterner::new();
+    const LEGAL: u64 = 0b01; // LEGALITY_LEGAL
+    const NOT_LEGAL: u64 = 0b00;
+    // (cmc, per-printing format-A legality) -- format B is always LEGAL, set uniformly below.
+    let specs: &[(u8, &[u64])] = &[
+        (0, &[LEGAL]),            // 0: outside the cmc range
+        (3, &[NOT_LEGAL]),        // 1: in range, wrong legality (A)
+        (3, &[LEGAL]),            // 2: in range AND legal in A -- must match
+        (6, &[LEGAL]),            // 3: legal in A but outside the cmc range
+        (2, &[NOT_LEGAL, LEGAL]), // 4: in range; only its SECOND printing is legal in A -- divergent
+    ];
+    let cards: Vec<OracleCard> = specs
+        .iter()
+        .enumerate()
+        .map(|(i, &(cmc, _))| {
+            let mut c = stub_card(i as u128 + 1, TYPE_CREATURE, &[], &mut vocab);
+            c.cmc = Some(cmc);
+            c
+        })
+        .collect();
+    let printing_counts: Vec<usize> = specs.iter().map(|(_, fa)| fa.len()).collect();
+    let mut data = store_of(cards, &printing_counts, vocab);
+    let mut idx = 0;
+    for (_, fa_per_printing) in specs {
+        for &fa in fa_per_printing.iter() {
+            data.printings[idx].card_legalities = fa | (LEGAL << 2);
+            idx += 1;
+        }
+    }
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    // Same three indexes `cmc_border_existential_fixture_store` builds, for the same reason: without
+    // them `printing_compose_indexes_built` declines and this fixture silently reroutes off the
+    // `PrintingCompose`-acquire branch the test exists to exercise.
+    data.indexes.border_printing = build_border_printing_planes(&data.printings, &data.strings);
+    data.indexes.rarity_printing = build_rarity_printing_planes(&data.printings);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    data
+}
+
+/// Round 16's finding: Round 15's fix scoped the `Mode::Card` bypass off `border`/`rarity` via a
+/// plane-INDEX-RANGE check (`plane_touches_rarity_or_border`), not off the general
+/// `plane_expr_is_existential` this now uses instead -- so a plane that is existential ONLY via a
+/// DIVERGENT legality leaf (no rarity, no border) still hit the unscoped first disjunct
+/// (`Mode::Card && !touches_rarity_or_border`, true whenever the plane has no rarity/border leaf at
+/// all) and read `residual_tier_ns100 == 0`, reproducing the exact same under-costing bug for a
+/// different field. Found live on the real corpus: `f:oldschool` alone, `unique=card` -- `GatheredScan`
+/// predicted 10,358ns against a measured 29,083ns (2.8x under-charge); `f:oldschool cmc>=1 cmc<=5` --
+/// predicted 18,519ns against a measured 58,625ns (3.16x under-charge). Both closed to 31,394ns/51,276ns
+/// respectively after the fix (ratios 1.21/0.90).
+#[test]
+fn compose_tier_charges_divergent_legality_existential_and_arith_range() {
+    let data = cmc_legality_existential_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let ctx = QueryCtx::from(archived);
+    let bounds = &archived.indexes.planes;
+    let words = &archived.indexes.oracle_trigram.words;
+    let params = kernel_params(Mode::Card, SortCol::Rarity, true, 100, 0);
+
+    let cmc_ge = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(1.0) };
+    let cmc_le = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(5.0) };
+    let legal_in_a = FilterExpr::Legality { shift: Some(0), expected: 0b01 };
+    let legal_in_b = FilterExpr::Legality { shift: Some(2), expected: 0b01 };
+
+    // AND(cmc range, legal-in-DIVERGENT-format-A): must charge a nonzero tier, same bug shape as
+    // Round 15's border finding, just via legality instead.
+    let divergent = FilterExpr::And(vec![cmc_ge.clone(), cmc_le.clone(), legal_in_a]);
+    let (pe, residual) = split_planes(divergent.clone(), bounds, words, true);
+    assert!(pe.is_some(), "cmc range + legal-in-A must compile into a plane");
+    assert!(matches!(residual, FilterExpr::True), "both children must be fully consumed, leaving no residual");
+    let mut acq_filter = residual;
+    let (feats, prep, _bits) = acquire_plan_features(&ctx, &params, &mut acq_filter, Some(&divergent), pe.as_ref());
+    assert_eq!(prep.count_source(), CountSource::PrintingCompose, "this fixture must reach the compose-acquire branch to exercise the fix");
+    assert!(
+        feats.residual_tier_ns100 > 0,
+        "format A genuinely diverges in this fixture (card 4's two printings disagree) -- the tier must \
+         not be zero just because the plane never touches rarity/border, nor just because mode is Card"
+    );
+
+    // Control: AND(cmc range, legal-in-NON-divergent-format-B) has genuinely nothing to verify --
+    // format B never diverges, so the executor's per-printing walk never actually runs for it, and the
+    // legitimate #667 Mode::Card bypass must still apply. This is NOT the bug: it must stay free.
+    let non_divergent = FilterExpr::And(vec![cmc_ge, cmc_le, legal_in_b]);
+    let (pe2, residual2) = split_planes(non_divergent.clone(), bounds, words, true);
+    assert!(pe2.is_some(), "cmc range + legal-in-B must compile into a plane");
+    assert!(matches!(residual2, FilterExpr::True));
+    let mut acq_filter2 = residual2;
+    let (feats2, prep2, _bits2) = acquire_plan_features(&ctx, &params, &mut acq_filter2, Some(&non_divergent), pe2.as_ref());
+    assert_eq!(prep2.count_source(), CountSource::PrintingCompose);
+    assert_eq!(
+        feats2.residual_tier_ns100, 0,
+        "format B never diverges in this fixture -- a card-invariant legality format ANDed with a \
+         card-invariant arith range must stay free, exactly like the bare-cmc-range control"
+    );
+}
+
 /// 7 of 8 cards have a black printing (87.5%, past narrow_candidates_exact's
 /// keep-if-<=75%-of-domain broadness guard, `domain - domain/4` with integer
 /// division); the 8th has a borderless printing (12.5%).

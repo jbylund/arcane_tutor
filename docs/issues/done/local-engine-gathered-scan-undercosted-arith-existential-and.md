@@ -297,3 +297,202 @@ confirmation metric. The Phase A Q4 population size (rarity/border combined with
 common query shape) argues this was worth fixing on principle even though it's invisible in whole-corpus
 aggregates; the specific large-regret sub-case (broad card-invariant range AND rarity/border) is real and
 now routes correctly.
+
+## Round 16: the fix above was field-specific, and reproduced its own bug for a different field
+
+The round before this one shipped `plane_touches_rarity_or_border` -- a plane-INDEX-RANGE check
+(`(*p as usize) >= PLANE_RARITY`) -- to scope the `Mode::Card` bypass off rarity/border. A review of that
+fix raised the architectural objection this round exists to answer: the conditional should key off
+BEHAVIOR (does a plane's existential semantics force per-printing re-verification even under
+`Mode::Card`?), not off which specific FIELD is touched. The number of behavioral categories grows far
+slower than the number of query attributes, and hardcoding a field-identity check (a plane-index range)
+where a behavioral one already existed in `planes.rs` was the same shape of mistake the original bug was
+built from, just one level up.
+
+### Is the gap real? Yes -- confirmed by reproduction, not just by reading the code
+
+`cost_plane_nothing_to_verify`'s shipped shape was `(Mode::Card && !plane_touches_rarity_or_border(expr))
+|| !plane_expr_is_existential(expr, divergent_formats)`. For a plane that is existential ONLY via a
+DIVERGENT legality leaf (no rarity, no border anywhere in it), `plane_touches_rarity_or_border` returns
+`false` -- so the first disjunct is `Mode::Card && true`, which is `true` under `Mode::Card` regardless of
+what the second disjunct would say, short-circuiting the OR. This reproduces the exact bug shape Round 15
+fixed, scoped to legality instead of rarity/border.
+
+Reproduced on the real corpus (`oldschool` is the production corpus's one divergent format):
+
+```
+f:oldschool, unique=card, orderby=rarity desc, limit=175:
+  residual_tier_ns100 == 0 (bug fires)
+  GatheredScan predicted 10,358ns   measured median 29,083ns   ratio 0.36  (2.8x under-charge)
+  printings_examined=6,037 vs cards_visited=961 (6.3 printings/card -- the per-printing walk is real)
+
+f:oldschool cmc>=1 cmc<=5, unique=card, orderby=rarity desc, limit=175 (same AND shape as the original
+cmc+border finding, legality instead of border):
+  residual_tier_ns100 == 0 (bug fires)
+  GatheredScan predicted 18,519ns   measured median 58,625ns   ratio 0.32  (3.16x under-charge)
+```
+
+Control (`otag:triggered-ability` alone, no plane at all): predicted 124,633ns vs measured 101,667ns,
+`cards_visited == printings_examined` (no existential walk) -- confirms the gap is specific to the
+existential-plane case, not a general costing artifact.
+
+### Mechanism: why legality's card-mode bypass is sound for a NON-divergent format, and why it was never sound for a divergent one
+
+Traced `existential_plane_for` (lib.rs) and `push_card_matches`'s `existential_plane` branch directly,
+rather than trusting the doc comments that motivated Round 15's carveout. The answer turned out simpler
+than "legality is special": **`existential_plane_for` grants NO per-family carveout at all.** It is:
+
+```rust
+fn existential_plane_for(mode, plane, indexes) -> Option<...> {
+    match (mode, plane) {
+        (Mode::Card, Some(pe)) if plane_expr_is_existential(pe, divergent_formats) => Some((pe, planes)),
+        _ => None,
+    }
+}
+```
+
+Whenever this returns `Some`, `push_card_matches` walks printings one by one
+(`eval_plane_expr_for_printing`) to find an ACTUAL witnessing printing for row selection (#667: "the card
+has some legal printing" is enough for the COUNT, but `unique=card` still must return a printing that
+really satisfies the query) -- for rarity, border, OR a divergent legality format, identically. There is
+no separate, cheaper mechanism for legality. Confirmed empirically: `f:oldschool` alone shows
+`printings_examined` (6,037) far exceeding `cards_visited` (961) -- the walk is real, not a costing
+artifact, for legality just as it was for border in Round 15.
+
+So "needs per-printing re-verification under Mode::Card" and "is this a printing-level property" are NOT
+two concepts to reconcile -- they are the same fact, traced end to end. A property is printing-level
+exactly when two printings of one card can disagree on it, and that is exactly when
+`existential_plane_for` forces the row-selection walk. Rarity and border are STATICALLY printing-level
+(the field structurally allows disagreement, unconditionally). Legality is the one property that is
+DYNAMICALLY either bucket, resolved per format by `divergent_formats` (data-derived per store): card-level
+for a format every printing happens to agree on (31 of 32 formats in the production corpus), printing-level
+for one where they don't (`oldschool`). `needs_printing_verification`/`plane_expr_is_existential`
+(`planes.rs`) already compute exactly this, per plane index, via the family-keyed `PLANE_BLOCKS` table --
+this was never a fact `cost_plane_nothing_to_verify` needed a NEW field-specific check to derive; it needed
+to stop re-deriving a narrower, wrong version of a fact `planes.rs` already had exactly right.
+
+One more invariant closes the loop: `split_planes` (planes.rs) only ever folds an existential leaf into
+`plane` under `unique_is_card` (its whole-filter and `And`-child guards are both `unique_is_card ||
+!plane_expr_is_existential`) -- so `plane_expr_is_existential(plane)` being true already implies `mode ==
+Mode::Card`. There is no live case where `mode` needs to appear in `cost_plane_nothing_to_verify` at all;
+the `Mode::Card` term in both the buggy Round 15 shape and a naive "just drop the field check" fix would
+be vestigial, not a correctness need.
+
+### The fix: delete the field-specific check, use the general one directly
+
+`card_engine/src/lib.rs`: deleted `plane_touches_rarity_or_border` entirely. `cost_plane_nothing_to_verify`
+is now:
+
+```rust
+fn cost_plane_nothing_to_verify(plane: Option<&PlaneExpr>, indexes: &Archived<CardIndexes>) -> bool {
+    plane.is_none_or(|expr| !plane_expr_is_existential(expr, u64::from(indexes.planes.divergent_formats)))
+}
+```
+
+No `mode` parameter, no per-family branch, no new table: `plane_expr_is_existential` (planes.rs) already
+is the general, field-agnostic predicate, keyed by family through `PLANE_BLOCKS`/`ExistentialLeaf`/
+`needs_printing_verification`, not by ad hoc field identity. A future printing-varying field is handled
+correctly automatically by which `PLANE_BLOCKS` entry it lands in -- no new arm needed in this file at all.
+`card_engine/src/planes.rs` gained doc-comment-only clarifications on `ExistentialLeaf` and
+`needs_printing_verification` making this "same fact, not two concepts" framing explicit (no logic
+changes there).
+
+### Checking for a duplicate, table-driven property classifier already existing elsewhere: not needed, but three OTHER card/printing classifiers already exist for different purposes
+
+Before extending `planes.rs`'s table, checked whether the crate already had a canonical card-vs-printing
+classifier being duplicated. It does not need a NEW one -- `plane_expr_is_existential` already was one --
+but three OTHER classifiers exist, each scoped to a different purpose, each already documenting its own
+deliberate disagreement with the canonical table on legality specifically:
+
+- **`estimator.rs::has_printing_varying_leaf`** (ANY-composition, for cardinality estimation): treats
+  `FilterExpr::Legality` as ALWAYS printing-varying, ignoring `divergent_formats` entirely. Its own doc
+  comment already flags this: "conservative... even though `printing_dependent` ranks it invariant for
+  its own (common-case) reason." Conservative in the estimator's own safe direction (overestimates
+  variance), not a silent-zero-cost bug.
+- **`filter.rs::printing_dependent`/`leaf_compares_printing_field`** (verify-ORDER heuristic, ALL-
+  composition): treats `FilterExpr::Legality` as ALWAYS card-level, the OPPOSITE bias, also already
+  documented: "Divergent-legality cards defer to the printing, but they are a rare exception... rank by
+  the common card-level case." This only affects which child a verifier checks first, never correctness
+  -- a suboptimal order, not a wrong answer.
+- **`lib.rs::is_broadcast_leaf_shape`/`is_broadcast_composable`**: NOT a duplicate -- `is_broadcast_composable`
+  and `broadcast_composable_card_bits` call `plane_expr_is_existential` directly as their own gate. Already
+  unified with the canonical table by construction.
+
+Neither of the first two is the same shape of bug as this round's finding: both are DOCUMENTED, ONE-
+DIRECTION approximations for a heuristic or an estimate, not a place where real per-printing work gets
+silently priced as free. Flagging as a candidate for a future doc (a single canonical property table the
+first two could read from instead of carrying their own copy of the leaf list) -- not attempted here;
+out of scope for this round, which is the router's cost-tier fix only.
+
+### Combinations verified (real corpus, `unique=card`, `orderby=rarity desc`, `limit=175`)
+
+| combination | predicted (before → after) | measured median | ratio (after) |
+|---|---|---|---|
+| rarity alone (`r:mythic`) | 24,087 (unchanged) | 20,834–21,083 | 1.14–1.16 (unaffected, already correct) |
+| border alone (`border:black`) | 166,380 (unchanged) | 137,375–146,000 | 1.14–1.21 (unaffected, already correct) |
+| non-divergent legality alone (`f:modern`) | tier stays 0 (unchanged) | n/a | correct both before/after |
+| **divergent legality alone (`f:oldschool`)** | 10,358 → 31,394 | 25,917–29,083 | **1.08–1.21 (fixed, was 0.36)** |
+| rarity + divergent legality (`f:oldschool r:mythic`) | 49,021 (unchanged) | 6,375–6,875 | unaffected (Round 15 already covered this: the plane touches rarity) |
+| border + divergent legality (`f:oldschool border:black`) | 50,121 (unchanged) | 48,291–51,041 | 0.98–1.04 (unaffected, Round 15 already covered this) |
+| **divergent legality + card-invariant range (`f:oldschool cmc>=1 cmc<=5`)** | 18,519 → 51,276 | 56,959–58,625 | **0.90–0.91 (fixed, was 0.32)** |
+
+The two combinations Round 15 already handled correctly (anything touching rarity/border, alone or
+combined with legality) are unchanged by this round's fix -- `plane_expr_is_existential` agrees with
+`plane_touches_rarity_or_border` whenever rarity/border is present; it only disagrees (correctly) when
+the ONLY existential leaf is a divergent legality format.
+
+### Correctness gate
+
+`cargo test --manifest-path card_engine/Cargo.toml --release`: **172/172 passed** (168 pre-existing +
+3 new property tests in `planes.rs` asserting the `PLANE_BLOCKS` family invariant holds for every plane
+index -- rarity/border unconditionally existential, legality existential iff its own format's bits are
+set in `divergent_formats`, everything else never existential -- for a matrix of representative
+`divergent_formats` masks (0, `u64::MAX`, one arbitrary bit), plus 1 new concrete regression test,
+`compose_tier_charges_divergent_legality_existential_and_arith_range`, mirroring Round 15's
+`compose_tier_charges_border_existential_and_arith_range` fixture shape with legality instead of border
+and asserting both directions: `cmc` range + DIVERGENT-format legality must charge a nonzero tier, `cmc`
+range + NON-divergent-format legality must stay free). Round 15's own regression test still passes
+unchanged. `cargo clippy --all-targets -- -D warnings`: clean.
+
+Pre-computation check: the fix is a net REDUCTION in per-acquire work versus Round 15's shape -- one
+`PlaneExpr` tree walk (`plane_expr_is_existential`) instead of two (`plane_touches_rarity_or_border` plus
+the `plane_expr_is_existential` fallback the OR could still reach). No new per-candidate, per-match, or
+per-printing work; cost is still independent of corpus size, match count, or candidate count.
+
+### Confirmation pass
+
+`bench_pairwise_ordering.py --seconds 300`, baseline vs fix, both modes (printing_compose acquire slice,
+the one this fix touches):
+
+```
+realistic:  baseline 90% ordered right, 3.06µs mean regret  ->  fix 90%, 3.01µs   (flat, within noise)
+uniform:    baseline 86% ordered right, 4.94µs mean regret  ->  fix 86%, 5.06µs   (flat, within noise)
+```
+
+`bench_cost_model_agreement.py --seconds 300 --seed 0`, `GatheredScan`/`card`: baseline median 0.79 (25%
+within 25%) -> fix median 0.79 (25% within 25%) -- unchanged.
+
+`bench_regret_matrix.py --seconds 120 --mode realistic --seed 0`: baseline total regret 41.4ms over
+55,944 queries -> fix 41.6ms over 55,963 queries -- flat (+0.5%), within sample-to-sample noise.
+
+`bench_query_latency_ab.py --sample 800 --mode realistic --seed 7`, interleaved A/B/A, plus a same-build
+canary at the same seed:
+
+```
+canary (baseline vs baseline):  B - A = -0.8µs  95% CI [-0.9, -0.6]
+baseline vs fix:                B - A = -0.7µs  95% CI [-0.9, -0.5]   INDISTINGUISHABLE FROM CANARY
+```
+
+No detectable difference from the fix on general realistic-mode latency, as expected given the affected
+shape's rarity in the overall query mix (one divergent format in the production corpus).
+
+### Outcome
+
+**Fixed, and generalized.** The divergent-legality gap was real (2.8–3.2x under-charge, confirmed by
+reproduction before touching code) and is now closed by deleting the field-specific check Round 15 added
+and routing through the general, already-existing `plane_expr_is_existential` predicate instead -- which
+also removes a `mode` parameter that turned out to be redundant by construction. Blast radius: `lib.rs`
+(the fix), `planes.rs` (doc clarifications + 3 new property tests), `tests.rs` (+1 concrete regression
+test). No hot-path cost added (net cheaper than Round 15's shape). No regression on any confirmation
+metric. The three other card/printing classifiers found while checking for duplication (`estimator.rs`,
+`filter.rs`) are flagged as a candidate for a future unification doc, not attempted here.
