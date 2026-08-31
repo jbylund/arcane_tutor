@@ -2709,6 +2709,24 @@ struct PairTotals {
     frame: HashMap<String, u16>,
     /// Keyed as `ValueTotals::legality` is, `(shift << 2) | status`.
     legality: HashMap<u16, u16>,
+    /// `cmc`/`power`/`toughness` — single-valued per card (a card has exactly one of each), so a
+    /// per-value entry here can be SUMMED over a range exactly (`pair_range_sum`, Round 24), unlike
+    /// border/rarity/frame/legality above which only ever answer a single `Eq` value. Keyed by the
+    /// field's own raw integer value (not a bucket scheme): `NumericLayout` (planes.rs) buckets by PLANE
+    /// layout for bitmap compilation, a different job, and this table only ever needs the same
+    /// dense-but-small value→id shape the other three dimensions above already use.
+    cmc: HashMap<u8, u16>,
+    power: HashMap<i8, u16>,
+    toughness: HashMap<i8, u16>,
+    /// Every DISTINCT `cmc`/`power`/`toughness` value observed in the corpus at all, regardless of
+    /// whether it cleared `PAIR_MIN_PRINTINGS` above — lets `pair_range_sum` tell "no card has this
+    /// value" (safe: contributes nothing to a range sum) apart from "some card has this value, but it
+    /// was pruned from the id map above" (unsafe: silently treating a pruned value as zero would
+    /// undercount any range that spans it). The id maps alone cannot make that distinction on their
+    /// own. Sorted, and small in practice (~14-21 entries per field on the production corpus).
+    cmc_seen: Vec<u8>,
+    power_seen: Vec<i8>,
+    toughness_seen: Vec<i8>,
     /// `min(a,b) * n_ids + max(a,b)` → the pair's exact totals. Complete over the stored ids: a present
     /// key is exact (possibly zero), a missing one means at least one value was pruned by the floor.
     pairs: HashMap<u32, SpaceTotals>,
@@ -2725,6 +2743,14 @@ impl ArchivedPairTotals {
     /// not covered.
     fn get(&self, a: u16, b: u16, mode: Mode) -> Option<usize> {
         self.pairs.get(&self.key(a, b).into()).map(|t| t.get(mode))
+    }
+
+    /// All three spaces at once, for `pair_range_sum` — which needs card/printing/artwork totals
+    /// together for every value in a range, and would otherwise hash the same key three times.
+    fn get_all(&self, a: u16, b: u16) -> Option<(usize, usize, usize)> {
+        self.pairs.get(&self.key(a, b).into()).map(|t| {
+            (u32::from(t.printings) as usize, u32::from(t.cards) as usize, u32::from(t.artworks) as usize)
+        })
     }
 }
 
@@ -2793,6 +2819,8 @@ fn build_pair_totals(
     // Pass 1: per-value printing counts, to apply the selectivity floor.
     let (mut border_n, mut rarity_n, mut frame_n, mut legality_n) =
         (HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new());
+    let (mut cmc_n, mut power_n, mut toughness_n): (HashMap<u8, usize>, HashMap<i8, usize>, HashMap<i8, usize>) =
+        (HashMap::new(), HashMap::new(), HashMap::new());
     let shifts: Vec<u8> = (0..MAX_FORMATS as u8).map(|i| i * 2).collect();
     for (pid, p) in printings.iter().enumerate() {
         let card = &cards[printing_to_card[pid] as usize];
@@ -2813,6 +2841,15 @@ fn build_pair_totals(
             if status == LEGALITY_LEGAL || status == 0 {
                 *legality_n.entry(legality_totals_key(shift, status)).or_insert(0usize) += 1;
             }
+        }
+        if let Some(v) = card.cmc {
+            *cmc_n.entry(v).or_insert(0usize) += 1;
+        }
+        if let Some(v) = card.creature_power {
+            *power_n.entry(v).or_insert(0usize) += 1;
+        }
+        if let Some(v) = card.creature_toughness {
+            *toughness_n.entry(v).or_insert(0usize) += 1;
         }
     }
 
@@ -2852,6 +2889,32 @@ fn build_pair_totals(
     for (v, n) in legality_sorted {
         if let Some(id) = assign(n, &mut next) {
             out.legality.insert(v, id);
+        }
+    }
+    // `_seen` records EVERY distinct value observed, before the floor prunes the id map -- see its own
+    // doc on `PairTotals` for why `pair_range_sum` needs that distinction.
+    let mut cmc_sorted: Vec<_> = cmc_n.into_iter().collect();
+    cmc_sorted.sort_unstable();
+    out.cmc_seen = cmc_sorted.iter().map(|(v, _)| *v).collect();
+    for (v, n) in cmc_sorted {
+        if let Some(id) = assign(n, &mut next) {
+            out.cmc.insert(v, id);
+        }
+    }
+    let mut power_sorted: Vec<_> = power_n.into_iter().collect();
+    power_sorted.sort_unstable();
+    out.power_seen = power_sorted.iter().map(|(v, _)| *v).collect();
+    for (v, n) in power_sorted {
+        if let Some(id) = assign(n, &mut next) {
+            out.power.insert(v, id);
+        }
+    }
+    let mut toughness_sorted: Vec<_> = toughness_n.into_iter().collect();
+    toughness_sorted.sort_unstable();
+    out.toughness_seen = toughness_sorted.iter().map(|(v, _)| *v).collect();
+    for (v, n) in toughness_sorted {
+        if let Some(id) = assign(n, &mut next) {
+            out.toughness.insert(v, id);
         }
     }
     out.n_ids = next;
@@ -2896,6 +2959,21 @@ fn build_pair_totals(
             {
                 ids.push(id);
             }
+        }
+        if let Some(v) = card.cmc
+            && let Some(&id) = out.cmc.get(&v)
+        {
+            ids.push(id);
+        }
+        if let Some(v) = card.creature_power
+            && let Some(&id) = out.power.get(&v)
+        {
+            ids.push(id);
+        }
+        if let Some(v) = card.creature_toughness
+            && let Some(&id) = out.toughness.get(&v)
+        {
+            ids.push(id);
         }
         for (i, &a) in ids.iter().enumerate() {
             for &b in &ids[i + 1..] {
@@ -7677,6 +7755,11 @@ fn arith_tuple_ids(bounds: &[&FilterExpr], indexes: &Archived<CardIndexes>) -> O
     Some(ids)
 }
 
+/// One `And` child's compiled plane, paired with the original `FilterExpr` it came from -- the `And`
+/// arm's `card_invariant`/`existential` partition keeps both so `pair_range_sum`'s preferred path can
+/// ask `pair_leaf_id` about the lone existential leaf's own value without re-deriving it from the plane.
+type CompiledLeaf<'a> = (&'a FilterExpr, PlaneExpr);
+
 fn compose_printing_estimate(
     filter: &FilterExpr,
     indexes: &Archived<CardIndexes>,
@@ -7798,11 +7881,14 @@ fn compose_printing_estimate(
             // leaf separately and ANDs printing-space bitmaps (unchanged), so this estimate-only shortcut
             // changes nothing about when or how the expensive work happens.
             let divergent_formats = u64::from(indexes.planes.divergent_formats);
-            let (card_invariant, existential): (Vec<PlaneExpr>, Vec<PlaneExpr>) = v
+            // Carries the original `FilterExpr` alongside each compiled `PlaneExpr` (not just the
+            // compiled form) so `pair_range_sum`'s preferred path below can ask `pair_leaf_id` about the
+            // lone existential leaf's own value directly, without re-deriving it from the plane.
+            let (card_invariant, existential): (Vec<CompiledLeaf>, Vec<CompiledLeaf>) = v
                 .iter()
                 .filter(|c| !is_arith_tuple_eligible(c))
-                .filter_map(|c| compile_plane(c, &indexes.planes, &indexes.oracle_trigram.words))
-                .partition(|pe| !plane_expr_is_existential(pe, divergent_formats));
+                .filter_map(|c| compile_plane(c, &indexes.planes, &indexes.oracle_trigram.words).map(|pe| (c, pe)))
+                .partition(|(_, pe)| !plane_expr_is_existential(pe, divergent_formats));
             // One trial per existential leaf present (each paired with ALL card-invariant leaves), not
             // "the first one, dropping the rest": every `(card-invariant leaves + this one existential
             // leaf)` combination is independently exact and safe (still only one existential fact, no
@@ -7816,7 +7902,7 @@ fn compose_printing_estimate(
             // Bits are kept alongside the count (not just the scaled number) for the smaller-side merge
             // below, which needs to probe individual card ids against the winning combination's bitmap.
             let popcount_with_bits = |extra: Option<&PlaneExpr>| -> (usize, Vec<u64>) {
-                let mut children = card_invariant.clone();
+                let mut children: Vec<PlaneExpr> = card_invariant.iter().map(|(_, pe)| pe.clone()).collect();
                 if let Some(e) = extra {
                     children.push(e.clone());
                 }
@@ -7838,35 +7924,65 @@ fn compose_printing_estimate(
             // above. Ditto `artwork` from `indexes.artwork_base`, the same shape one space over.
             let mut exact_domain_cards: Option<usize> = None;
             let mut best_other: Option<(usize, Vec<u64>)> = None;
-            if existential.is_empty() {
-                if card_invariant.len() >= 2 {
-                    best_other = Some(popcount_with_bits(None));
-                }
+            // Preferred path (Round 24) for a LONE existential leaf ANDed with a range over exactly one
+            // arith-tuple field (`cmc=1 border:white`, `cmc>=1 cmc<=5 r=mythic`, ...): sum the exact
+            // per-value pair-total over every value the arith bound(s) admit (`pair_range_sum`), rather
+            // than materializing a card-space bitmap and probing `arith_children`'s ids into it (Round
+            // 22's fix, kept below as the fallback). Exact whenever it answers, and strictly cheaper:
+            // bounded by the field's own distinct value count (~14-21), not `O(matching_ids)`. Declines
+            // to `None` (falling through to the existing logic unchanged) whenever a card-invariant leaf
+            // is ALSO present, whenever more than one existential leaf is present, whenever the arith
+            // children span more than one field, or whenever any admitted value was pruned from the pair
+            // table by its own selectivity floor -- see `pair_range_sum`'s own doc.
+            let pair_range_answer = if card_invariant.is_empty()
+                && let [(e_filter, _)] = existential.as_slice()
+                && !arith_children.is_empty()
+                && let Some(field) = single_arith_field(&arith_children)
+                && let Some(existential_id) = pair_leaf_id(e_filter, &indexes.pair_totals)
+            {
+                pair_range_sum(&arith_children, field, existential_id, &indexes.pair_totals)
             } else {
-                // A LONE existential leaf (no card-invariant partner at all -- `card_invariant` may be
-                // empty here) still gets its own exact joint via `popcount_with_bits(Some(e))`: the
-                // closure already handles an empty `card_invariant` correctly (`card_invariant.clone()`
-                // plus one pushed `e` is just `PlaneExpr::And(vec![e.clone()])`, a valid single-child
-                // AND, and `eval_planes` answers it exactly). This branch used to require
-                // `!card_invariant.is_empty()`, which meant a shape like `cmc=1 border:white` (an
-                // arith-tuple leaf ANDed with exactly one existential leaf and nothing else
-                // card-invariant) never ran this loop at all -- `best_other` stayed `None` for the rest
-                // of the function, so `exact_domain_cards`/`result`'s printing-space tightening below,
-                // and everything downstream that reads them (`domain_cards`'s `is_and` tightening,
-                // `card_invariant_domain_exact`, `est.result.card`), silently fell back to the
-                // untightened per-child `min` instead of an exact popcount. Root-caused and verified in
-                // docs/issues/local-engine-domain-cards-existential-arith-and.md (`eval_domain` off by up
-                // to ~9x for this shape); this loop is the fix.
-                for e in &existential {
-                    let candidate = popcount_with_bits(Some(e));
-                    if best_other.as_ref().is_none_or(|(c, _)| candidate.0 < *c) {
-                        best_other = Some(candidate);
+                None
+            };
+            if pair_range_answer.is_none() {
+                if existential.is_empty() {
+                    if card_invariant.len() >= 2 {
+                        best_other = Some(popcount_with_bits(None));
+                    }
+                } else {
+                    // A LONE existential leaf (no card-invariant partner at all -- `card_invariant` may be
+                    // empty here) still gets its own exact joint via `popcount_with_bits(Some(e))`: the
+                    // closure already handles an empty `card_invariant` correctly (`card_invariant.clone()`
+                    // plus one pushed `e` is just `PlaneExpr::And(vec![e.clone()])`, a valid single-child
+                    // AND, and `eval_planes` answers it exactly). This branch used to require
+                    // `!card_invariant.is_empty()`, which meant a shape like `cmc=1 border:white` (an
+                    // arith-tuple leaf ANDed with exactly one existential leaf and nothing else
+                    // card-invariant) never ran this loop at all -- `best_other` stayed `None` for the rest
+                    // of the function, so `exact_domain_cards`/`result`'s printing-space tightening below,
+                    // and everything downstream that reads them (`domain_cards`'s `is_and` tightening,
+                    // `card_invariant_domain_exact`, `est.result.card`), silently fell back to the
+                    // untightened per-child `min` instead of an exact popcount. Root-caused and verified in
+                    // docs/issues/local-engine-domain-cards-existential-arith-and.md (`eval_domain` off by up
+                    // to ~9x for this shape); this loop is the fix. `pair_range_answer` above now answers
+                    // most of this same population more cheaply; this loop is the fallback for the rest
+                    // (multiple existential leaves, a card-invariant partner also present, or a pruned
+                    // pair-table entry).
+                    for (_, e) in &existential {
+                        let candidate = popcount_with_bits(Some(e));
+                        if best_other.as_ref().is_none_or(|(c, _)| candidate.0 < *c) {
+                            best_other = Some(candidate);
+                        }
                     }
                 }
             }
             let mut exact_domain_printing: Option<usize> = None;
             let mut exact_domain_artworks: Option<usize> = None;
-            if let Some((card_count, bits)) = &best_other {
+            if let Some((printings, cards, artworks)) = pair_range_answer {
+                result = result.min(printings);
+                exact_domain_cards = Some(cards);
+                exact_domain_printing = Some(printings);
+                exact_domain_artworks = Some(artworks);
+            } else if let Some((card_count, bits)) = &best_other {
                 let printing_span = card_bits_span_total(bits, offsets);
                 result = result.min(printing_span);
                 exact_domain_cards = Some(*card_count);
@@ -8552,10 +8668,11 @@ fn pair_bounded_min(children: &[FilterExpr], indexes: &Archived<CardIndexes>, si
 /// The pair-table id for a leaf, or `None` when the leaf's dimension is not covered or its value was
 /// pruned by the selectivity floor.
 ///
-/// Deliberately the same four shapes `exact_result_total`'s singleton arms accept, and for the same
+/// Deliberately the same shapes `exact_result_total`'s singleton arms accept, and for the same
 /// reasons: `Eq` only on the interned strings (the ordering ops are not a per-value question), `Ge` only
-/// on the collection (`Eq`/`Gt` add a length condition containment does not prove), and rarity only at
-/// `Eq` (any other op is a range over several values, which no per-value entry answers).
+/// on the collection (`Eq`/`Gt` add a length condition containment does not prove), and rarity/cmc/
+/// power/toughness only at `Eq` (any other op is a range over several values, which no per-value entry
+/// answers on its own — `pair_range_sum` is the range-capable counterpart for the arith-tuple three).
 fn pair_leaf_id(filter: &FilterExpr, pt: &ArchivedPairTotals) -> Option<u16> {
     let id = match filter {
         FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value } => pt.border.get(value.as_str()),
@@ -8568,9 +8685,112 @@ fn pair_leaf_id(filter: &FilterExpr, pt: &ArchivedPairTotals) -> Option<u16> {
             }
             pt.rarity.get(&(*v as u8))
         }
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Eq, rhs: NumExpr::Const(v) }
+        | FilterExpr::NumericCmp { lhs: NumExpr::Const(v), op: CmpOp::Eq, rhs: NumExpr::Field(NumField::Cmc) } => {
+            if v.fract() != 0.0 || *v < 0.0 || *v > f64::from(u8::MAX) {
+                return None;
+            }
+            pt.cmc.get(&(*v as u8))
+        }
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Power), op: CmpOp::Eq, rhs: NumExpr::Const(v) }
+        | FilterExpr::NumericCmp { lhs: NumExpr::Const(v), op: CmpOp::Eq, rhs: NumExpr::Field(NumField::Power) } => {
+            if v.fract() != 0.0 || *v < f64::from(i8::MIN) || *v > f64::from(i8::MAX) {
+                return None;
+            }
+            pt.power.get(&(*v as i8))
+        }
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Toughness), op: CmpOp::Eq, rhs: NumExpr::Const(v) }
+        | FilterExpr::NumericCmp { lhs: NumExpr::Const(v), op: CmpOp::Eq, rhs: NumExpr::Field(NumField::Toughness) } => {
+            if v.fract() != 0.0 || *v < f64::from(i8::MIN) || *v > f64::from(i8::MAX) {
+                return None;
+            }
+            pt.toughness.get(&(*v as i8))
+        }
         _ => None,
     }?;
     Some(u16::from(*id))
+}
+
+/// The single `NumField` every one of `children` constrains, or `None` when they don't all agree (a
+/// mixed `cmc>=1 power<=2`-shaped `And` — `pair_range_sum` sums over ONE field's own value axis per
+/// call, not several at once) or `children` is empty. `children` is expected to already be
+/// `is_arith_tuple_eligible`-filtered.
+fn single_arith_field(children: &[&FilterExpr]) -> Option<NumField> {
+    let mut field = None;
+    for c in children {
+        let f = match c {
+            FilterExpr::NumericCmp { lhs: NumExpr::Field(f), rhs: NumExpr::Const(_), .. }
+            | FilterExpr::NumericCmp { lhs: NumExpr::Const(_), rhs: NumExpr::Field(f), .. } => *f,
+            _ => return None,
+        };
+        match field {
+            None => field = Some(f),
+            Some(existing) if existing == f => {}
+            Some(_) => return None,
+        }
+    }
+    field
+}
+
+/// Exact (printing, card, artwork) totals for a RANGE over one arith-tuple field's values (`cmc`/
+/// `power`/`toughness`) ANDed with one existential leaf's own pair-table id (`pair_leaf_id`).
+///
+/// `cmc`/`power`/`toughness` are single-valued per card — exactly one value per card, never several —
+/// so partitioning the card space by that one value is genuinely exhaustive and non-overlapping.
+/// Summing the per-value exact pair-total (`pt.get_all`) over every value `bounds` admits therefore
+/// reproduces the TRUE joint total exactly: a sum over disjoint cells, not a product or a `min`, so
+/// there is no independence assumption and no anti-correlation risk. Validated 429/429 against real
+/// corpus data in Round 23's investigation before this was wired in — see
+/// docs/issues/local-engine-domain-cards-existential-arith-and.md.
+///
+/// Declines (`None`) the instant ANY value `bounds` admits was pruned from the field's own id map by
+/// the selectivity floor — `*_seen` (on `PairTotals`) is what tells that apart from "this value never
+/// occurs at all" (safe either way: contributes nothing), so a missing id here means "give up", never
+/// "count it as zero".
+///
+/// Bounded by the field's own distinct observed value count (~14-21 on the production corpus), not by
+/// how wide `bounds` phrases the range: `cmc<=250` costs exactly what `cmc<=5` does.
+fn pair_range_sum(bounds: &[&FilterExpr], field: NumField, existential_id: u16, pt: &ArchivedPairTotals) -> Option<(usize, usize, usize)> {
+    let admits = |v: f64| -> bool {
+        let cmc = matches!(field, NumField::Cmc).then_some(v);
+        let power = matches!(field, NumField::Power).then_some(v);
+        let toughness = matches!(field, NumField::Toughness).then_some(v);
+        bounds.iter().all(|b| {
+            let FilterExpr::NumericCmp { lhs, op, rhs } = b else { return false };
+            matches!(eval_arith_tuple_tri(lhs, *op, rhs, cmc, power, toughness, None), Tri::True)
+        })
+    };
+    let mut total = (0usize, 0usize, 0usize);
+    let mut add = |field_id: u16| -> Option<()> {
+        let (p, c, a) = pt.get_all(field_id, existential_id)?;
+        total = (total.0 + p, total.1 + c, total.2 + a);
+        Some(())
+    };
+    match field {
+        NumField::Cmc => {
+            for &v in pt.cmc_seen.iter() {
+                if admits(f64::from(v)) {
+                    add(u16::from(*pt.cmc.get(&v)?))?;
+                }
+            }
+        }
+        NumField::Power => {
+            for &v in pt.power_seen.iter() {
+                if admits(f64::from(v)) {
+                    add(u16::from(*pt.power.get(&v)?))?;
+                }
+            }
+        }
+        NumField::Toughness => {
+            for &v in pt.toughness_seen.iter() {
+                if admits(f64::from(v)) {
+                    add(u16::from(*pt.toughness.get(&v)?))?;
+                }
+            }
+        }
+        _ => return None,
+    }
+    Some(total)
 }
 
 /// Whether two leaves are provably disjoint: distinct values of a dimension that holds exactly ONE value

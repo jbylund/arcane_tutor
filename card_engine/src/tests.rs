@@ -7,7 +7,8 @@ use super::{
     build_artist_index, build_printing_value_index, build_arith_tuple_index, is_arith_tuple_route, range_candidates, narrow_candidates, narrow_candidates_exact, rarity_candidates,
     range_too_broad_to_narrow, run_query, run_query_routed, run_query_with_plan, explain, explain_analyze, AcquireFacts, PlanEstimate, PlanTrial,
     acquire_plan_features, take_phase_stats, PagingTaken, CountSource, NarrowedRepr,
-    EXACT_VALUE_TOTALS, RangeCardCounts, narrow_rec, ValueTotals, PairTotals, build_all_value_totals, build_pair_totals, build_range_card_counts, exact_result_total,
+    EXACT_VALUE_TOTALS, RangeCardCounts, narrow_rec, ValueTotals, PairTotals, SpaceTotals, build_all_value_totals, build_pair_totals, build_range_card_counts, exact_result_total,
+    pair_range_sum, pair_leaf_id, single_arith_field,
     PhysicalPlan, PlanScope, CandidatePlan, ComposePaging, trigram_candidates, finalize_trigram_index, PrintingValueIndex, NARROW_FLOOR,
     gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
     walk_printing_page, aligned_page, bare_range_bounds, probe_range_k, printing_compose_fastpath, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
@@ -9970,6 +9971,89 @@ fn compose_and_arm_tightens_lone_existential_leaf_with_no_card_invariant_partner
         "printing-space result must tighten to the same 2 cards' exact printing span (1 + 2), not a \
          looser per-child min"
     );
+    // This fixture has only 6 printings total -- nowhere near `PAIR_MIN_PRINTINGS` (1,024), so Round
+    // 24's `pair_range_sum` preferred path declines for every value here and the assertions above are
+    // exercising Round 22's ORIGINAL fallback, unchanged. See the two tests below for Round 24's own
+    // logic, exercised directly against a hand-built `PairTotals` at a scale a real fixture would need
+    // 1,024+ printings per value to reach.
+}
+
+/// Round 24: `pair_range_sum`'s own summation and pruning-safety logic, against a hand-built
+/// `PairTotals` (bypassing `build_pair_totals`/`PAIR_MIN_PRINTINGS` entirely -- a real fixture would
+/// need 1,024+ printings per value to clear the floor, which a fast unit test cannot afford). Two
+/// `cmc` values (1, 2) hold ids that cleared the floor; a third (3) was OBSERVED (`cmc_seen`) but
+/// pruned from the id map, exactly the shape `pair_range_sum`'s own doc says must decline rather than
+/// silently under-count.
+#[test]
+fn pair_range_sum_sums_disjoint_values_and_declines_on_a_pruned_one() {
+    let mut pt = PairTotals { n_ids: 3, ..Default::default() };
+    pt.cmc.insert(1, 0);
+    pt.cmc.insert(2, 1);
+    pt.rarity.insert(5, 2); // one existential id (a rarity value) to pair against
+    pt.cmc_seen = vec![1, 2, 3];
+    pt.pairs.insert(2, SpaceTotals { printings: 10, cards: 4, artworks: 6 }); // key(cmc_id=0, rarity_id=2) = 0*3+2
+    pt.pairs.insert(5, SpaceTotals { printings: 20, cards: 8, artworks: 12 }); // key(cmc_id=1, rarity_id=2) = 1*3+2
+
+    let bytes = rkyv::to_bytes::<Error>(&pt).expect("serialize");
+    let archived = rkyv::access::<Archived<PairTotals>, Error>(&bytes).expect("access");
+
+    let cmc_ge1 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(1.0) };
+    let cmc_le2 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(2.0) };
+    let bounds_1_2 = [&cmc_ge1, &cmc_le2];
+    assert_eq!(
+        pair_range_sum(&bounds_1_2, NumField::Cmc, 2, archived),
+        Some((30, 12, 18)),
+        "both cmc=1 and cmc=2 cleared the floor -- the exact disjoint sum is (10+20, 4+8, 6+12)"
+    );
+
+    let cmc_le3 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(3.0) };
+    let bounds_1_3 = [&cmc_ge1, &cmc_le3];
+    assert_eq!(
+        pair_range_sum(&bounds_1_3, NumField::Cmc, 2, archived),
+        None,
+        "cmc=3 was observed (cmc_seen) but pruned from the id map -- must decline, not silently treat it as zero"
+    );
+}
+
+/// Round 24: `pair_leaf_id`'s new `Cmc`/`Power`/`Toughness` `Eq` arms, against the same kind of
+/// hand-built `PairTotals` -- resolves a bare-value leaf's id in either operand order, and declines
+/// (falls back to the existing single-value `min` bound) for any op other than `Eq`, mirroring
+/// rarity's own pre-existing restriction.
+#[test]
+fn pair_leaf_id_resolves_cmc_power_toughness_eq_and_declines_ranges() {
+    let mut pt = PairTotals { n_ids: 3, ..Default::default() };
+    pt.cmc.insert(4, 7);
+    pt.power.insert(-1, 9); // negative power (e.g. Char-Rumbler) is a real value in this domain
+    pt.toughness.insert(2, 11);
+
+    let bytes = rkyv::to_bytes::<Error>(&pt).expect("serialize");
+    let archived = rkyv::access::<Archived<PairTotals>, Error>(&bytes).expect("access");
+
+    let cmc_eq4 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Eq, rhs: NumExpr::Const(4.0) };
+    assert_eq!(pair_leaf_id(&cmc_eq4, archived), Some(7));
+
+    let power_eq_neg1_flipped = FilterExpr::NumericCmp { lhs: NumExpr::Const(-1.0), op: CmpOp::Eq, rhs: NumExpr::Field(NumField::Power) };
+    assert_eq!(pair_leaf_id(&power_eq_neg1_flipped, archived), Some(9), "the flipped Const-lhs/Field-rhs form must resolve identically");
+
+    let toughness_eq2 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Toughness), op: CmpOp::Eq, rhs: NumExpr::Const(2.0) };
+    assert_eq!(pair_leaf_id(&toughness_eq2, archived), Some(11));
+
+    let cmc_ge4 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(4.0) };
+    assert_eq!(pair_leaf_id(&cmc_ge4, archived), None, "a RANGE (not Eq) must decline -- pair_range_sum is the range-capable counterpart");
+}
+
+/// Round 24: `single_arith_field` agrees only when every child constrains the SAME field -- the guard
+/// that keeps `pair_range_sum` from being asked to sum over two different value axes at once (e.g. a
+/// mixed `cmc>=1 power<=2`, which has no single per-value partition to answer from).
+#[test]
+fn single_arith_field_agrees_only_when_every_child_is_the_same_field() {
+    let cmc_ge = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(1.0) };
+    let cmc_le = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(5.0) };
+    let power_ge = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Power), op: CmpOp::Ge, rhs: NumExpr::Const(1.0) };
+
+    assert!(matches!(single_arith_field(&[&cmc_ge, &cmc_le]), Some(NumField::Cmc)), "both children agree on cmc");
+    assert!(single_arith_field(&[&cmc_ge, &power_ge]).is_none(), "a mixed cmc+power And has no single value axis to sum over");
+    assert!(single_arith_field(&[]).is_none(), "no arith children means no field to report");
 }
 
 /// Round 16's companion to `cmc_border_existential_fixture_store`: the same shape (a card-invariant

@@ -1,5 +1,251 @@
 # `domain_cards`/`eval_domain` Is Wrong for Arith-Range AND Existential-Leaf, and Now Has a Root Cause
 
+## Round 24: `PairTotals` Extended to `cmc`/`power`/`toughness` — Round 22's Tax Closed for the Common
+## Widths, Shipped
+
+Round 23 found the right shape but didn't build it: `indexes.pair_totals` (`card_engine/src/lib.rs`)
+already stores an EXACT per-value-pair total for `border`/`rarity`/`frame`/`legality`, and the same
+disjoint-partition argument (a card has exactly one `cmc`/`power`/`toughness`) applies to those three
+fields too — summing the per-value pair-total over every value a RANGE admits reproduces the true joint
+exactly, no independence assumption. This round built that extension and shipped it.
+
+### What changed
+
+`card_engine/src/lib.rs`:
+- **`PairTotals`**: three new dimension maps (`cmc: HashMap<u8,u16>`, `power`/`toughness:
+  HashMap<i8,u16>`, mirroring `rarity`'s existing shape) plus three `_seen: Vec<u8>`/`Vec<i8>` lists —
+  every DISTINCT value observed at all, before `PAIR_MIN_PRINTINGS` prunes the id maps. The `_seen`
+  lists exist for one reason: without them, a range sum cannot tell "no card has this value" (safe,
+  contributes zero) apart from "some card has this value but it was pruned" (unsafe — silently
+  treating it as zero would undercount). A new `get_all` on `ArchivedPairTotals` returns all three
+  spaces (printing/card/artwork) for one pair in one hash lookup, instead of `get`'s one-space-at-a-time.
+- **`build_pair_totals`**: the three new dimensions ride the SAME single accumulation pass every other
+  dimension already uses — one more per-value count in pass 1, one more `ids.push` in pass 2. `cmc`/
+  `power`/`toughness` are read from the CARD (`OracleCard`), not the printing — confirmed directly from
+  the struct layout that these fields are stored once per card, not per printing (unlike `border`/
+  `rarity`, which vary by printing).
+- **`pair_leaf_id`**: three new match arms (`Cmc`/`Power`/`Toughness`, `Eq` only, either operand order),
+  mirroring rarity's existing `Eq`-only restriction. Feeds the EXISTING `pair_bounded_min` call site for
+  free — a bare `cmc=1`-shaped leaf paired with any other pairable leaf (existential or not) is now
+  answered there without any new call site.
+- **`single_arith_field`** (new): the single `NumField` every one of a set of arith children agrees on,
+  or `None` if they don't (a mixed `cmc>=1 power<=2`) or the set is empty.
+- **`pair_range_sum`** (new): given bound leaves on ONE arith field and one existential leaf's own
+  `pair_leaf_id`, sums `pt.get_all` over every value in that field's `_seen` list that the bounds admit,
+  declining (`None`) the instant any admitted value lacks an id (pruned). Bounded by the field's own
+  distinct-value count (~14-21 in this corpus), not by how the query phrases the range.
+- **`compose_printing_estimate`'s `And` arm**: `card_invariant`/`existential` now carry the original
+  `FilterExpr` alongside each compiled `PlaneExpr` (a new `CompiledLeaf` type alias), so `pair_range_sum`
+  can ask `pair_leaf_id` about the lone existential leaf's own value without re-deriving it. A new
+  `pair_range_answer` is computed FIRST, before Round 22's `best_other` loop, for exactly the shape Round
+  22 fixed (`card_invariant.is_empty()`, exactly one existential leaf, arith children on one field); when
+  it answers, Round 22's `popcount_with_bits`/arith-ID-probe-merge machinery is skipped entirely for that
+  query. When it doesn't (a card-invariant leaf present, 2+ existential leaves, 2+ distinct arith fields,
+  or a pruned value), Round 22's fallback runs completely unmodified.
+
+### Exactness: 429/429 agreement where both paths apply
+
+Re-ran Round 22/23's own 3-field × 13-width × 11-leaf-value sweep (429 rows) against two isolated
+release wheels — `costcell/trunk`@`68f2cd7f` (Round 22's fix, pre-this-round) and this branch — reading
+`engine.query()`'s own total (ground truth) and `explain()`'s `eval_domain` on both:
+
+```
+true_intersection: 0/429 mismatches between the two wheels (query correctness unaffected, as expected —
+                    this round only touches cost ESTIMATION, never the executed result set)
+eval_domain:        0/429 rows differ between before/after (both wheels answer exactly wherever either
+                    can — no case where the new path disagreed with Round 22's exact fallback)
+```
+
+### Coverage: how much of the taxed population gets the new cheap path
+
+Instrumented directly (temporary `eprintln!`, reverted before commit) to distinguish, per sweep row,
+whether `pair_range_answer` fired, declined due to pruning, or the shape didn't match at all:
+
+```
+429 rows total
+ 33 (width=13 only): the And arm's existential logic isn't reached AT ALL for this width — a separate,
+                      pre-existing fusion mechanism takes over once the range covers essentially the
+                      whole corpus (same "collapses at width 13" behavior Round 22/23 already documented)
+ 72 (border:silver, r=special — the two ALREADY-DOCUMENTED degenerate leaves): the existential leaf
+    itself never reaches `existential.len()==1` (a separate, pre-existing quirk in how these two
+    specific values get classified upstream, unrelated to this round and out of its blast radius)
+324 (the 9 "clean" leaf values × 3 fields × 12 widths): shape matches every time
+  180 (55.6% of the 324): pair_range_answer fires — exact, cheap
+  144 (44.4% of the 324): declines due to pruning, falls back to Round 22's exact (more expensive) path
+```
+
+By width (9 clean leaves × 3 fields = 27 rows/width): **widths 1-6: 100% hit (162/162). Width 7-8: 33%
+hit (18/54) — only `cmc`, whose survivor set (below) extends one value further than `power`/
+`toughness`'s. Widths 9-12: 0% hit (0/108), all correctly decline and fall back.** This traces exactly
+to `PAIR_MIN_PRINTINGS` (1,024) pruning individual values, confirmed directly against the real corpus:
+
+```
+cmc survivors (>=1,024 printings):        0,1,2,3,4,5,6,7,8   (9 values)
+power survivors:                          0,1,2,3,4,5,6        (7 values)
+toughness survivors:                      1,2,3,4,5,6          (6 values)
+```
+
+A range up to width 6 stays within every field's survivor set; width 7-8 only `cmc` still clears (its
+survivor set reaches 8); width 9+ exceeds all three. **This is a real, honest coverage boundary, not a
+bug** — the population Round 22's fix taxed most heavily (wide ranges, per that round's own finding that
+"the tax grows from +10,250ns at width 1 to +22,875ns at width 12") is exactly where this round's cheap
+path covers LEAST — but the narrow-to-moderate ranges most plausible in real queries (`cmc<=3`,
+`power>=1 power<=4`, ...) are exactly where it covers MOST, and that's the population this round
+prioritized finishing over chasing the last few widths for diminishing returns.
+
+### Acquire-time improvement: measured directly, same reproducers
+
+Same sweep, `explain_analyze` acquire-time medians (20 warmups, 100 trials), before = Round 22's fix,
+after = this round:
+
+```
+n=429, median delta (after-before): -771ns    mean: -11,907ns
+p10/p50/p90/max: -35,208ns / -771ns / +583ns / +2,396ns   (min: -99,188ns)
+
+by width:  1: -9,793ns   2: -12,958ns   3: -15,751ns   4: -18,584ns   5: -20,854ns   6: -21,333ns
+           7:    -167ns   8:    -313ns   9:     +21ns  10:     +83ns  11:     +42ns  12:     +83ns
+           (widths 7-12's near-zero median is the pruning cutoff above — most rows there fall back to
+           the unchanged Round 22 path, correctly paying the SAME cost as before, not a regression)
+
+by leaf (median): border:black -45,438ns  r=common -22,500ns  r=uncommon -20,980ns  r=rare -20,959ns
+                   border:borderless -10,208ns  border:white -9,124ns  r=mythic -9,250ns
+                   f:oldschool -8,896ns  border:gold -8,709ns   (border:silver/r=special: ~0, unaffected)
+```
+
+Named reproducers (before → after, `explain_analyze` median):
+
+```
+cmc=1 border:black:        50,146ns → 4,708ns   (10.6x faster)
+cmc=1 border:white:        13,917ns → 4,666ns   (3.0x faster)
+cmc=1 r=mythic:             14,500ns → 5,000ns   (2.9x faster)
+cmc>=1 cmc<=5 border:black: 92,875ns → 5,333ns  (17.4x faster)
+cmc>=1 cmc<=5 border:white: 28,146ns → 5,333ns   (5.3x faster)
+cmc>=1 cmc<=5 r=mythic:     29,292ns → 5,625ns   (5.2x faster)
+```
+
+Every one of Round 22's own named reproducers is now answered by the new cheap path (width ≤5, well
+inside every field's survivor set) — this closes essentially all of Round 22's OWN acquire-time tax on
+its own flagship population, not just a marginal slice of it.
+
+### Store-build-time cost: measured directly, negligible
+
+5 reps each, full corpus reload (`benchmarks/bitplanes/corpus.jsonl`, 97,812 printings), same two wheels:
+
+```
+before median: 2.470s   after median: 2.511s   delta: +40ms (+1.6%) — inside this measurement's own
+                                                 run-to-run spread (before ranged 2.380-2.540s across
+                                                 its own 5 reps, a ~160ms band bigger than the delta)
+archived store size:  before 72,402,040 bytes   after 72,435,480 bytes   delta: +33,440 bytes (+0.046%)
+```
+
+The transient build-time `n×n` co-occurrence array DOES grow more than the aggregate number suggests in
+isolation — 22 new ids (9 cmc + 7 power + 6 toughness survivors) added to a pre-existing ~42, growing
+`n_ids` to ~64 (a ~1.5x increase, ~2.3x for the `n²` array specifically) — but that transient array is a
+small fraction of total reload time (JSON parsing + 22 other indices dominate), so the aggregate cost
+lands at +1.6%, within noise. Accepted: real, measured, and small.
+
+### Correctness gate
+
+`cargo test --manifest-path card_engine/Cargo.toml`: **177/177 passed** (174 pre-existing + 3 new:
+`pair_range_sum_sums_disjoint_values_and_declines_on_a_pruned_one`, `pair_leaf_id_resolves_cmc_power_
+toughness_eq_and_declines_ranges`, `single_arith_field_agrees_only_when_every_child_is_the_same_field` —
+all three exercise the new logic directly against a hand-built `PairTotals`, bypassing `PAIR_MIN_
+PRINTINGS` entirely since a real fixture would need 1,024+ printings per value to clear it). `cargo test
+--release`: **176/176 passed** (173 pre-existing + the same 3 new). Rounds 15/16/22's own regression
+tests (`compose_tier_charges_border_existential_and_arith_range`, `compose_and_arm_tightens_lone_
+existential_leaf_with_no_card_invariant_partner`) pass unchanged — that fixture is too small to clear
+the floor, so it exercises Round 22's fallback path exactly as it did before this round, confirming the
+new path declines cleanly rather than silently taking over. `cargo clippy --all-targets -- -D warnings`:
+clean.
+
+### Confirmation pass
+
+`bench_pairwise_ordering.py --seconds 300`, both modes, before vs after — no material change:
+
+```
+realistic:  GatheredScan vs PrintingCompose   89%→89% ordered right, regret 9.29µs→9.77µs (flat)
+            GatheredScan vs StreamedSelect    97%→97%, 0.80µs→0.81µs (flat)
+            PrintingCompose vs StreamedSelect 94%→94%, 6.40µs→6.56µs (flat)
+uniform:    GatheredScan vs PrintingCompose   87%→87%, 7.16µs→7.62µs (flat)
+            GatheredScan vs StreamedSelect    95%→95%, 1.62µs→1.59µs (flat)
+            PrintingCompose vs StreamedSelect 95%→95%, 4.13µs→4.41µs (flat)
+```
+
+`bench_cost_model_agreement.py --seconds 300 --seed 0`, full table:
+
+```
+by acquire:  12/17 cells inside [0.8, 1.25] → 12/17 (unchanged, no cell flips)
+by unique:   10/12 cells inside [0.8, 1.25] → 10/12 (unchanged, no cell flips)
+```
+
+`bench_regret_matrix.py --seconds 120 --mode realistic --seed 0`:
+
+```
+before: 53,497 queries, total regret 42.9ms (mean 0.80µs)
+after:  53,437 queries, total regret 41.1ms (mean 0.77µs)   -- improved 4.2%, same misroute categories,
+                                                                no new outlier category
+```
+
+`bench_query_latency_ab.py --sample 400 --mode realistic --seed 7`, before vs after, plus a same-build
+canary (before run 1 vs before run 2, interleaved: before1 → after1 → before2):
+
+```
+canary (before1 vs before2):  B - A = +1.3µs   95% CI [+0.9, +1.8]
+before1 vs after1 (real):     B - A = +0.5µs   95% CI [+0.0, +1.0]
+```
+
+The real diff is SMALLER than the canary's own same-build noise — no detectable aggregate regression.
+Consistent with the taxed population being a narrow slice (~0.85-1.23% of `Mode::Card` queries per
+Round 21's proxy) of the realistic-mode sample this benchmark draws from.
+
+### Scope decision: the multi-arith-field generalization (power×toughness, etc.) — not folded in
+
+A real generalization exists and was checked against real data before deciding: `cmc`/`power`/
+`toughness` are each single-valued per card, but so is their JOINT tuple — a card has exactly one
+`(power, toughness)` pair, not a range of possible pairs — so the same disjoint-partition argument
+extends to an `And` spanning TWO (or three) arith fields together, with or without an existential leaf.
+Measured the actual cross-product size directly against `benchmarks/bitplanes/corpus.jsonl` (grouped by
+printing, matching `PAIR_MIN_PRINTINGS`'s own counting unit):
+
+```
+(power, toughness):            122 distinct pairs, 13 clear the 1,024-printing floor
+(cmc, power):                  141 distinct pairs, 11 clear the floor
+(cmc, toughness):               144 distinct pairs, 14 clear the floor
+(cmc, power, toughness):        497 distinct triples, 10 clear the floor
+```
+
+Small in every case — technically cheap, confirming the idea is sound and not a combinatorial trap.
+**Not folded into this round anyway**, because it needs genuinely new plumbing beyond an extension of
+what's already built: a compacted joint-value key (its own map, analogous to `legality`'s `(shift<<2)|
+status` compaction, but for however many field combinations are worth covering), that key's OWN
+pruning-safety `_seen` list, and a cross-product-aware version of `pair_range_sum` that enumerates BOTH
+ranges' surviving values together — comparable in size to everything this round already built, for a
+population narrower still than the single-field shape (a real query ranging power AND toughness
+together, with exactly one existential leaf and nothing else card-invariant, is less common than the
+already-narrow single-field case this round covers). **Correctness is unaffected either way**: Round
+22's existing `arith_tuple_ids`-based probe-merge already answers the 2+-arith-field case EXACTLY today,
+completely unchanged by this round (confirmed by reading the code path directly — `single_arith_field`
+returns `None` for a mixed-field `arith_children`, so `pair_range_answer` stays `None` and the query
+falls through to Round 22's unmodified fallback). This is a real, well-scoped follow-up for a future
+round — a speed opportunity left on the table, not a correctness gap — and the measurements above are
+that round's head start.
+
+### What this means for the queued joint-rate refit
+
+Round 20's blocked joint refit (`GATHER_CARD_PASS_NS`/`GATHER_RESIDUAL_FLOOR_NS`/leaf-count rate) needs
+`eval_domain` to be trustworthy ground truth. Round 22 already cleared that for 89.3% of the broad sweep
+(up from 5.8%). This round doesn't change that coverage number (it was already exact via Round 22's
+fallback everywhere this round's new path doesn't reach) — what it changes is the ACQUIRE-TIME COST of
+getting there for width ≤6-8 (the common case), not which rows are exact. **The refit's ground truth is
+exactly as clean as it was after Round 22; this round makes reaching that ground truth cheaper for the
+population it covers, and leaves the rest on Round 22's already-exact (just pricier) fallback.** No new
+correctness caveat for whoever runs that refit next.
+
+### Commit
+
+One commit on `costcell/24-pair-totals-arith`. `git diff --stat costcell/trunk`: `card_engine/src/
+lib.rs`, `card_engine/src/tests.rs`, this doc.
+
 ## Round 23: Is Round 22's Tax Avoidable? A Cheap Bound Investigated and Rejected, a Better Exact
 ## Alternative Found Instead — Not Shipped
 
