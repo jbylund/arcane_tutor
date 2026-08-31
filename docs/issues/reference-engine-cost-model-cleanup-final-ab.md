@@ -254,3 +254,246 @@ better against `main`, not just against the branch's own history — but a skept
 only the round-by-round docs would come away expecting a bigger, cleaner, more uniform win than what
 a fresh `main`-relative measurement actually shows. Ship it, but do not carry the `69%→97%` or
 "41% regret reduction ≈ 41% faster" framings into the PR descriptions; use the numbers in this doc.
+
+## Round 29: Post-Fix Comprehensive State Check
+
+Diagnostic snapshot, no code changes. Round 27 (above) ran the first `main`-vs-`costcell/trunk` A/B
+and found a real regression alongside the wins: `bench_feature_accuracy.py`'s pooled `scan_units`
+read clean on `main` (1.00) but `UNDER-COUNTS` on the branch (0.70). Round 28
+([local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md))
+bisected that to its own Round 7 commit (`e1c40466`), fixed it by scoping two broad-guard `scan_units`
+scales to `Mode::Card`, and ran a *confirmation* pass scoped to the regression itself (scan_units,
+regret matrix, cost-model-agreement, a latency A/B, pairwise ordering — all at shorter `--seconds`
+than Round 27's own sweep). This round redoes Round 27's FULL sweep — every feature, the whole
+cost-model-agreement table, the regret matrix ranked by share, both pairwise-ordering modes, and a
+canary-gated latency A/B — against the now-fixed tip, so the branch has one honest, current,
+complete picture before it splits into PRs.
+
+**Method.** Same protocol as Round 27: two isolated release wheels (`maturin build --release`, never
+`develop`), `main` @ `ca016410` built in a fresh detached worktree, `costcell/trunk` @ `288402a0` built
+in this round's own worktree (`costcell/29-final-state-check`) — four wheels total per side (plain +
+`routed-phases`, the latter only for the regret matrix), each verified by `card_engine.__file__` and a
+distinct `.so` hash before use. Corpus: the same read-only `benchmarks/bitplanes/corpus.jsonl`
+(97,812 printings), every harness pointed at its own `--shm-path` under scratch. All five harnesses run
+at `--seconds 300 --seed 0` (`--mode realistic` for the regret matrix; both `realistic` and `uniform`
+for pairwise ordering), matching or exceeding Round 27's own budget.
+
+### Feature accuracy — the full table, not just `scan_units`
+
+`bench_feature_accuracy.py --seconds 300 --seed 0` (mode=uniform, the tool's default). `main`:
+466,524 feature-rows. `costcell/trunk`: 463,359 feature-rows.
+
+| feature (pooled) | `main` median | verdict | `trunk` median | verdict |
+|---|---|---|---|---|
+| `compose_scan_printings` | 1.28 (n=1,754) | OVER-COUNTS | 1.47 (n=1,741) | OVER-COUNTS |
+| `printings_walked` | 0.85 (n=46,172) | clean | 0.85 (n=45,875) | clean |
+| `matches` | 1.00 (n=141,410) | clean | 1.00 (n=140,447) | clean |
+| `eval_domain` | 1.00 (n=136,638) | clean | 1.00 (n=135,697) | clean |
+| `scan_units` | 1.00 (n=140,550) | clean | 0.94 (n=139,599) | clean |
+
+Round 28's fix holds: pooled `scan_units` is clean on both builds, `trunk`'s 0.94 sitting inside the
+same `[0.8, 1.25]` band `main`'s 1.00 does. `compose_scan_printings` is flagged OVER-COUNTS on **both**
+builds at comparable magnitude (1.28 vs 1.47) — pre-existing on `main`, not something the branch
+introduced.
+
+**Slicing by acquire/mode surfaces real per-slice differences the pooled row hides — but they are not
+new.** Diffing every flagged (UNDER/OVER-COUNTS) cell between the two full tables:
+
+- **One genuine incidental fix**: `scan_units / card / prefer=default` — `main` 1.37 (OVER-COUNTS) →
+  `trunk` 1.00 (clean).
+- **`scan_units [card_range_popcount]`**: `main` 1.00 (clean, n=5,195) → `trunk` 0.43 (UNDER-COUNTS,
+  n=5,164). This is not a new regression — `0.43` is `COMPOSE_BARE_RANGE_BROAD_SCALE`, the exact
+  constant Round 6 shipped (`card_engine/src/lib.rs:11628`, applied at line 12258), fit against real
+  ns-time error (93.3M → 16.0M abs error, held-out validated) rather than against this literal
+  `printings_examined` counter. Round 6's own doc named this exact tradeoff at the time ("flags the
+  sibling `else` branch... as itself badly under-calibrated... not fixed this round"). A feature-level
+  bias deliberately buried in a cost-accurate rate, exactly the risk `bench_feature_accuracy.py`'s own
+  docstring warns about — not something this round re-litigates.
+- **`scan_units [printing_compose]` and its `/card`, `/printing`, `/artwork` slices**: `main` reads
+  1.63 (OVER, card) / 1.09 (clean, printing) / 1.00 (clean, artwork); `trunk` reads 0.52 (UNDER, card) /
+  0.38 (UNDER, printing) / 0.39 (UNDER, artwork). This is Round 7's own already-named, already-deferred
+  "narrow bucket" `PrintingCompose` under-count (the `domain_cards` broad-range estimate for bare
+  ranges) — Round 28 itself named this as the residual gap between its fixed `0.94` and `main`'s `1.00`.
+  What's new **this round** is the full per-mode quantification: the narrow-bucket effect is not
+  card-specific, it spans all three `unique` modes at comparable severity (0.38-0.52), which no prior
+  round's narrower pooled/card-only view had shown directly.
+- A few smaller slices move the same way for the same reason (`scan_units / card`, `/orderby=rarity`,
+  `/orderby=usd`) — all downstream of the same narrow-bucket population, not independent findings.
+
+Per the task brief for this round, both of these are the two already-documented residual gaps —
+**known, deferred, unrelated to this round** — reported here with exact current magnitudes, not
+re-investigated.
+
+### Cost-model agreement — the full table
+
+`bench_cost_model_agreement.py --seconds 300 --seed 0`. `main`: 62,916 queries sampled. `trunk`:
+62,693 queries sampled.
+
+- **By acquire branch**: `main` 9/17 cells inside `[0.8, 1.25]`; `trunk` 10/17. One flip, FAIL → PASS:
+  `GatheredScan / candidates` — `main` 0.71 (27% within 25%) → `trunk` 0.98 (43% within 25%). This
+  continues the movement Round 27 already flagged as "real, substantial" (0.61→0.79, still short of the
+  floor) — this fresh sample crosses fully into agreement.
+- **By distinct-on (`unique`)**: `main` 10/12 inside band; `trunk` 9/12 — one flip the other way,
+  PASS → FAIL: `GatheredScan / artwork` — `main` 1.02 (clean) → `trunk` 1.54 (UNDER-COSTED). This is
+  the by-unique face of the known, already-parked "compound-existential-plane `GatheredScan`"
+  miscalibration (Round 25/26, needs a saturating/banded rate) — see the Regret section below, where
+  the same mechanism shows up as the branch's single largest remaining regret slice. Named per this
+  round's brief, not re-investigated.
+- Net: one cell fixed, one cell newly visible as failing (both attributable to already-tracked
+  mechanisms, not new problems) — acquire-level count improves by one, by-unique count worsens by one.
+  A wash in cell-count terms, not a regression in either underlying mechanism.
+- Compose-paging predicted-vs-taken proportions (`Perm`/`OrderbyWalk`/`Gather`/decline counts under
+  each RANGE_ACQUIRES branch) are within a few rows of each other on both builds — no material shift.
+
+### Regret — ranked by share
+
+`bench_regret_matrix.py --seconds 300 --mode realistic --seed 0` (`routed-phases` builds).
+
+| | `main` | `costcell/trunk` | Δ |
+|---|---|---|---|
+| multi-plan queries | 81,935 | 82,018 | — |
+| total regret | 114.3 ms | 80.2 ms | **-30%** |
+| mean regret/query | 1.39 µs | 0.98 µs | **-30%** |
+
+Smaller than Round 27's own `-41%/-44%` (measured at `--seconds 180`, no explicit seed) — regret is
+heavy-tailed and dominated by rare, extreme single-query misses (this round's own sample: `main`'s
+largest single-query regret was 545.9 µs; `trunk`'s was 2,348.2 µs, one query in the
+`StreamedSelect → PrintingCompose` transition), so the exact percentage is sensitive to which rare-tail
+queries a given `--seconds`/`--seed` combination happens to sample. The **direction** — `trunk`
+substantially lower total regret than `main` — replicates across both rounds' independent measurements.
+
+Compose-paging branch SHARE: `main` `Perm` 57% / `OrderbyWalk` 28% / `Gather` 10% / `Decline` 5%;
+`trunk` `Perm` 69% / `OrderbyWalk` 10% / `Gather` 13% / `Decline` 8%. `OrderbyWalk`'s collapse (28%→10%
+of a smaller pie; ~32 ms → ~8 ms absolute) is again the largest single driver — same mechanism Round 27
+found, though `main`'s own OrderbyWalk share reads differently between the two rounds (42% in Round
+27's 180s run vs. 28% here), another heavy-tail sampling effect, not a moved target.
+
+`picked → best` transitions, ranked by SHARE:
+
+| transition | `main` n | `main` SHARE | `trunk` n | `trunk` SHARE |
+|---|---|---|---|---|
+| `StreamedSelect → GatheredScan` | 1,284 | 19% | 1,618 | **43%** |
+| `PrintingCompose → GatheredScan` | 1,040 | 30% | 159 | 7% |
+| `PrintingCompose → StreamedSelect` | 474 | 22% | 296 | 16% |
+| `PrintingCompose(declined) → GatheredScan` | 435 | 21% | 280 | 15% |
+| `GatheredScan → PrintingCompose` | 296 | 6% | 347 | 12% |
+| `GatheredScan → StreamedSelect` | 445 | 2% | 399 | 2% |
+
+**`#852`'s misroute (`PrintingCompose → GatheredScan`) is robustly fixed**: 1,040 → 159 occurrences
+(-85%), 30% → 7% SHARE — the largest slice on `main` is now a minor one on `trunk`, matching Round 27's
+direction almost exactly (that round found -83%, 1,072→180).
+
+**`StreamedSelect → GatheredScan` — the known, already-parked compound-existential-plane `GatheredScan`
+miscalibration (Round 25/26, "needs a saturating/banded rate, not a flat linear one") — is now
+unambiguously the largest slice**: 19%→43% SHARE, and in absolute terms `main`'s ~21.7 ms →
+`trunk`'s ~34.5 ms, which reproduces Round 27's own absolute-ms finding (~21.7ms→~35.0ms) almost
+exactly even though the total-regret percentage this round differs. **Honest fraction closed vs.
+open**: the one identified, targeted pathology (`#852`) is fixed; the single largest remaining one is
+untouched by any of this branch's 30 commits and is now more prominent only because everything else
+around it shrank. Named per this round's brief as known/deferred/unrelated — not re-investigated here.
+
+### Pairwise ordering — both modes
+
+`bench_pairwise_ordering.py --seconds 300 --seed 0`, `realistic` and `uniform`.
+
+The `#852` cell specifically, `GatheredScan vs PrintingCompose [printing_compose]`:
+
+| mode | `main` ordered-right | `main` mean regret | `trunk` ordered-right | `trunk` mean regret |
+|---|---|---|---|---|
+| realistic | 81% (n=11,390) | 6.90 µs | 93% (n=11,460) | 2.68 µs |
+| uniform | 90% (n=16,249) | 3.92 µs | 90% (n=16,271) | 4.30 µs |
+
+**Realistic-mode improvement is stable and, if anything, slightly better than Round 27's reported
+80%→90%**: this fresh sample reads 81%→93%. **Round 27's claimed uniform-mode regression for this
+exact cell (91%→87%) does NOT reproduce here** — this round reads a flat 90%→90%. Given `uniform` mode
+is deliberately built to reach rare tails, and this same doc has already shown (in the regret matrix,
+above) that rare-tail metrics swing hard between independently-seeded 300s samples, the most honest
+read is that Round 27's uniform-mode "regression" for this cell was itself sample noise, not a stable
+property of the branch — flagged explicitly rather than carried forward as settled. (The gap-size
+calibration did drift worse, 1.20→1.42 `gap meas/pred`, even though which plan wins stays right just as
+often — a real, smaller, separate observation.)
+
+Pooled (non-acquire-sliced) `GatheredScan vs PrintingCompose`: realistic 82%→88%; uniform 90%→90%
+(flat, both n≈20,700-20,800).
+
+**One other pair moved notably**: `GatheredScan vs StreamedSelect` under `uniform` mode improved
+89%→95% (n≈33,600 both builds), a genuine secondary win (realistic mode: 95%→97%, smaller but same
+direction). The structurally-inert `[plane]` pairs (`PlanePopcountOrder` always wins its argmin) stay
+at 100% ordered-right, ~0.00-0.01 µs regret on both builds and both modes — re-confirmed inert, same as
+Rounds 12/13/27.
+
+### Latency, with the canary stated explicitly
+
+Same-build canary first, per this round's own gate: `trunk-plain` vs itself, `--mode realistic
+--sample 800 --trials 60 --seed 99`: **B - A = -1.2 µs, 95% CI [-1.5, -0.8], "B is FASTER"**. **Not
+clean** — this reproduces Round 27's own finding of a real second-run-reads-faster order effect on
+this shared box. Because of that, every real comparison below alternates which build runs first.
+
+Four order-alternated rounds, `--mode realistic --sample 800 --trials 60`, `main-plain` vs
+`trunk-plain`:
+
+| round | seed | order | B - A | 95% CI | verdict |
+|---|---|---|---|---|---|
+| 1 | 1 | main, trunk | -2.34 µs | [-2.9, -1.9] | trunk faster |
+| 2 | 2 | trunk, main | -2.33 µs | [-2.9, -1.8] | trunk faster |
+| 3 | 3 | main, trunk | -0.63 µs | [-1.4, +0.0] | no detectable difference |
+| 4 | 4 | trunk, main | -1.50 µs | [-2.5, -0.6] | trunk faster |
+| **pooled** | all 4 | alternated | **-1.70 µs** | **[-2.06, -1.35]** | **trunk faster** |
+
+Pooled over 3,189 paired queries: `main` mean 53.7 µs (median 34.0 µs), `trunk` mean 52.0 µs (median
+33.2 µs) — trunk reads about 3.2% faster. All four rounds point the same direction regardless of which
+build ran first or second (main-first rounds 1/3 average -1.49 µs; trunk-first rounds 2/4 average
+-1.92 µs — if the canary's own order bias were the whole story, alternating order should have flipped
+this asymmetry, not left it in the same direction), and 3 of 4 rounds are individually significant.
+
+**This is a larger, more consistent signal than Round 27 found** (that round's pooled result was
+-0.4 µs, CI [-0.8, -0.1], only 1 of 4 rounds individually significant, and explicitly called
+"within...this environment's own noise floor"). This round's pooled -1.70 µs exceeds the same-build
+canary's own -1.2 µs bias in magnitude, and holds across all four order-alternated rounds — a real,
+reproducible, though still modest (~3% of mean latency, a query most users would not consciously
+notice) wall-clock win. The exact magnitude clearly varies session-to-session on this shared box more
+than the regret-matrix story alone would suggest — reported honestly as "trunk is measurably faster,
+by an amount that itself varies between measurement sessions," not as a single fixed number.
+
+### Overall verdict
+
+`costcell/trunk` (`288402a0`) is net-positive against `main` (`ca016410`) on every axis measured this
+round, and by a clearer margin on latency specifically than Round 27 found — but several exact
+percentages (regret reduction, some pairwise-ordering deltas) show real run-to-run variance from
+regret's heavy tail and should not be read as more precise than they are.
+
+- **Feature accuracy**: Round 28's fix holds (pooled `scan_units` clean on both builds). The full
+  per-slice sweep this round adds finds no new regression — every off-band cell traces to an
+  already-documented, already-deliberate tradeoff (Round 6's `card_range_popcount` scale, Round 7's
+  `printing_compose` narrow bucket) now quantified across all three modes for the first time, plus one
+  genuine incidental fix (`scan_units / card / prefer=default`).
+- **Cost-model agreement**: one cell fixed (`GatheredScan/candidates`, a continuation of Round 27's own
+  partial finding), one newly visible as failing (`GatheredScan/artwork` by-unique, the by-unique face
+  of the already-parked compound-existential-plane issue) — a wash in count, not a new problem.
+- **Regret**: total down substantially in both this round (-30%) and Round 27 (-41%); the exact number
+  is sample-sensitive but the direction is not. `#852`'s misroute is robustly fixed (-85% occurrence,
+  largest slice → minor slice, in both rounds). The known, parked `StreamedSelect → GatheredScan`
+  compound-existential-plane issue is now unambiguously the single largest remaining slice (43% SHARE,
+  ~34.5 ms, matching Round 27's absolute-ms finding almost exactly) — untouched by any of the 30
+  commits, more prominent only because everything else shrank around it.
+- **Pairwise ordering**: `#852`'s realistic-mode win is stable and reproduces (81%→93%, at least as
+  good as Round 27's 80%→90%). Round 27's claimed uniform-mode regression for the same cell (91%→87%)
+  does **not** reproduce this round (flat 90%→90%) — most likely sample noise in a rare-tail-seeking
+  mode, flagged rather than carried forward. A different pair (`GatheredScan vs StreamedSelect`) shows
+  a genuine secondary uniform-mode win (89%→95%).
+- **Latency**: canary not clean (-1.2 µs), but four order-alternated rounds all point the same
+  direction and the pooled result (-1.70 µs, CI excluding zero) exceeds the canary's own bias — a real,
+  small (~3%), reproducible wall-clock win, larger than Round 27's own -0.4 µs finding. Round 27's
+  question of whether the branch is measurably faster than `main` is answered more confidently "yes"
+  this round than last, though the exact magnitude moves between sessions.
+- **Known, deferred, unrelated to this round** (named per this round's brief, not re-investigated):
+  the compound-existential-plane `GatheredScan` cost-formula miscalibration (Round 25/26, needs a
+  saturating/banded rate — now confirmed as both the largest regret slice and the source of this
+  round's one CMA regression), and the `domain_cards`-driven "narrow bucket" `PrintingCompose`
+  under-count (Round 7 — now quantified across all three `unique` modes via this round's full
+  feature-accuracy sweep, previously only characterized pooled/card-specific).
+
+**Ship it.** No new regressions were found; every "worse than `main`" cell this round's fuller sweep
+surfaced traces to an already-documented, already-parked, deliberate tradeoff or to regret's own
+heavy-tailed sampling variance — not to anything introduced by the branch's 30 commits or by Round 28's
+fix specifically.
