@@ -182,6 +182,7 @@ total regret by 0.0 ms).
 | 9 | lower fixed cost (`GATHER_FIXED_COST_ZERO_MATCH_NS`) for `PhysicalPlan::GatheredScan`'s zero-match rounds, gated on `matches == 0` the same way the arm's `tier_ns > 0.0` neighbor is gated — the first fix in this doc inside `cost.rs`'s cost FORMULA rather than `lib.rs` feature estimation | kept | 11% → 30% (n=38,435→38,889, median 0.57→0.77) — largest single-round movement since Round 0; by-unique `GatheredScan`/`card` cell flips FAIL (0.69) → PASS (0.80) | `GatheredScan/printing_compose` unchanged (median 1.15→1.14, 24%→24%); `GatheredScan/printing_range_scan` and `/card_range_popcount` unchanged; `bench_regret_matrix.py` total regret unchanged (27.6ms both builds); `bench_query_latency_ab.py` same-build canary swings by a comparable magnitude to the real A/B diff (-0.2µs vs -0.3µs) — no real latency effect claimed | held-out paired-diff (hash-of-query split, 9,890 zero-match rows): calibration half (n=4,944) median measured `plan_self_ns` sets constant to 42.0; held-out half (n=4,946) 4,577 impr / 369 regr / 0 tied, 530,256 → 103,110 abs ns error (5.1x), median ratio 0.248 → 1.000, within-25% 0.1% → 57.7%. Confirmed a real risk this round could not fully close within its `cost.rs`-only blast radius: `plan_cost` costs EVERY candidate plan from ONE shared `PlanFeatures` per acquire (`lib.rs:12917`), so `matches == 0` also fires for `GatheredScan` costed as a competitor/picked plan under `printing_compose`/`card_range_popcount`/`printing_range_scan` (RANGE_ACQUIRES) acquire, where `eval_domain == 0` is an unset accounting default rather than a real empty candidate list, and dispatch pays a real (sometimes large, e.g. 4,959ns median for one `printing_compose` slice) `prepare_candidates` rebuild this arm has no term for at all — pre-existing (already 29x under-predicted before this round) and NOT introduced by this fix, but made numerically worse in isolation (29x → 118x under on that slice). Checked for real routing impact directly (a same-build wheel diff on two flip cases, `date<1993-08-05`/`tix<0.01` under `printing_range_scan`) and via `bench_regret_matrix.py` (total regret 27.6ms unchanged) and `bench_cost_model_agreement.py` (no other cell moved) — no measurable regression found, but the gate is a correlated proxy, not the exact phenomenon, for this sliver of RANGE_ACQUIRES rows; flagged for a future round that can touch `lib.rs` to add an acquire-branch-aware feature |
 | 28 | scope `COMPOSE_RANGE_AND_BROAD_SCAN_SCALE` (Round 4) and `COMPOSE_SAME_RANGE_BROAD_SCAN_SCALE` (Round 7) to `Mode::Card` only, leaving `Mode::Printing`/`Mode::Artwork` at the pre-existing unscaled `n_printings` ceiling | kept | not this doc's own metric (see below) | pooled `scan_units` feature accuracy (`bench_feature_accuracy.py`), the metric a fresh `main`-vs-`costcell/trunk` A/B (Round 27) found regressed: median 0.70 (UNDER-COUNTS) → 0.94 (clean), against `main`'s own 1.00 | see "Round 28" narrative below — both scales were fit exclusively on `unique=card` samples (each round's own doc says so) but applied unconditionally to all three modes; `Mode::Printing`/`Mode::Artwork`'s real `printings_examined / n_printings` reads EXACTLY 1.000 (zero spread) for this guard-fired population, so the card-only-derived scale was silently manufacturing an under-count for two modes it was never calibrated against |
 | 30 | `STREAM_SMALL_TOTAL_REDO_BIAS`, a `stream_scan_units` correction for `printing_compose`'s bare `else` arm (`Mode::Card`, no legality partner) — Round 1's `scan_units` revision was inherited verbatim by `StreamedSelect`'s own feature, which structurally under-prices a SECOND, unmodeled `push_card_matches` pass `run_query_streamed`'s small-total branch pays and `GatheredScan` never does | kept, partial | n/a (this doc's own agreement-gate metric untouched; see the flip/regret numbers below instead) | `#852` ordering 88%→88% clean; Round 28's pooled `scan_units` median 1.00→1.00 clean | see "Round 30" narrative below — of 114 reproduced f3f4a017 flip queries, 50 (44%) now correctly re-route to `GatheredScan`; `StreamedSelect -> GatheredScan` regret matrix slice -7% share of traffic / -12% regret-ms; residual traced to the acquire-time `result_total` ESTIMATE itself being unreliable near `STREAM_MIN_MATCHES` for cross-index-range Ands (this doc's own Round 1 "separate, uninvestigated `domain_cards` bug" flag) — not a `cost.rs` rate problem, so chunk 2 (rate refit) is unlikely to close the rest on its own |
+| 32 | new `PlanFeatures::perm_walk_span` feature (`cost.rs`/`lib.rs`) for `StreamedSelect`'s OTHER branch (`walks_permutation`, `total > STREAM_MIN_MATCHES` — different from Rounds 30/31's small-total gather): `perm_steps`'s estimate multiplied by `n_cards` unconditionally, when the real executor already bounds its walk to the filter's own interval on the sort column | kept | n/a (not this doc's metric; see below) | `#852` 88%→89% clean; Round 30/31 territory (`StreamedSelect -> GatheredScan` regret slice) flat; Round 28's `scan_units` unreachable by this change | see "Round 32" narrative below — held-out mean \|log ratio\| 1.033→1.001 pooled (both halves improve independently); `StreamedSelect/candidates` cost-model-agreement cell unchanged (median 0.59 both builds) because the targeted correlation (filter bounds the same field the query orders by) is rare under uniform traffic; shipped as a strict-generalization correctness fix (collapses to the old formula when unbounded), not for measured impact on this specific cell |
 
 ### Round 1
 
@@ -1571,6 +1572,148 @@ fix alone -- with no `cost.rs` change at all -- closed 5x more of this regressio
 attempt. A rate refit was never tested directly this round and remains formally open, but the
 evidence so far suggests the acquire-time cardinality estimate (not the per-unit rate) is the more
 promising next target, exactly as Round 30's own verdict already concluded.
+
+### Round 32
+
+**A different term than Rounds 30/31** (`walks_permutation`, the branch taken when `total >
+STREAM_MIN_MATCHES`, as against Rounds 30/31's small-total gather), flagged by `cost.rs`'s own
+`perm_steps` comment: the estimate (`page_span * n_cards / matches`, capped at `n_cards`) assumes
+matches spread uniformly across the WHOLE corpus, but the real executor (`exec_streamed_select`)
+starts and ends the walk at `walk_bounds`'s segment -- the slice the filter's own interval on the SORT
+COLUMN admits, which the comment's own regrade table already showed matters (`unbounded` p90 6.43 vs
+`sort-column bound` p90 5.31) without ever explaining why the bounded variant was never shipped, or
+distinguishing it from the third, explicitly-rejected variant (a realized `inv_perm` span, correctly
+declined for costing 0.51ns/matching card -- a real per-candidate hot-path cost this effort's
+pre-computation constraint forbids).
+
+**Why it was never shipped: not infeasible, just never circled back to.** Read `walk_bounds` and its
+caller (`exec_streamed_select`, `lib.rs:10707`) and the acquire pipeline in full before assuming
+either way. `walk_bounds` is already a cheap, existing function: two binary searches over the sort
+permutation (O(log n_cards), nothing per candidate), early-returning the WHOLE permutation with a
+single branch when the filter's bound is unbounded -- the common case, since most queries do not
+filter on the same field they order by. Its input, `QueryParams::sort_bound`, is derived once per
+query by `sort_col_bound` (a pure `FilterExpr` walk) at the PyO3 boundary (`bind_and_split_filter`,
+`lib.rs:14360`) and attached via `with_sort_bound` BEFORE `run_query_routed` -- and therefore before
+`acquire_plan_features` -- ever runs (confirmed at all three call sites: `run_query`, `explain`,
+`explain_analyze`, `lib.rs:15009/15103/15152`). So the exact inputs `walk_bounds` needs
+(`sort_col`, `descending`, `sort_bound`) were ALREADY sitting on `ctx`/`params` at acquire time, for
+free, the whole time this effort has been running. The gap was purely that no `PlanFeatures` field
+carried the segment length and no acquire branch ever called `walk_bounds` a second time to get it --
+the loop-phase-measurement campaign that shipped the EXECUTOR-side bound (see
+`docs/issues/done/local-engine-loop-phase-measurement.md`) used the regrade only to VALIDATE that
+change, and the natural follow-up (teach the COST MODEL the same bound) was never picked up across 31
+subsequent rounds. No correctness subtlety, no missing precomputed index, no rejected-and-forgotten
+attempt -- just an open thread.
+
+**Fix.** Added `cost::PlanFeatures::perm_walk_span: u32` (`cost.rs`) and a new `perm_walk_span(ctx,
+params)` helper (`lib.rs`, right above `mk_plan_feats`) that calls the SAME `walk_bounds` the executor
+calls, over the SAME `(sort_col, descending, sort_bound)` triple -- not a second path that could
+silently disagree with what dispatch actually walks. Falls back to `n_cards` when this
+`(sort_col, descending)` pair has no permutation at all (`StreamedSelect` is inapplicable there and
+never reads the field, but `mk_plan_feats` sets it uniformly across all five acquire branches, since
+the shared feats have to cost a competing `StreamedSelect` honestly regardless of which branch
+produced them -- the same reasoning `scatter_printings`/`compose_paging` already follow). Wired into
+`perm_steps`'s formula in place of `n_cards`: `(page_span * perm_walk_span / matches).min(perm_walk_span)`.
+Exposed to Python via `acquire_facts_to_pydict` for grading. Self-check: the added work is one
+`Option` lookup plus an early-return branch for the (dominant) unbounded case, and O(log n_cards) two
+probes for the bounded case -- the same style of cheap acquire-time lookup `CardRangePopcount`'s own
+range-index binary search already relies on a few branches up in the same function; no per-candidate
+or per-printing cost, confirmed by the same-build canary below.
+
+**Regression test** (`card_engine/src/tests.rs`,
+`acquire_perm_walk_span_matches_the_sort_column_bound`): a small synthetic corpus (8,500 non-matching
+cards sorting ahead of 1,500 matching ones under `cmc asc`, the same anti-correlated shape as the
+existing dispatch-level `streamed_walk_bounds_itself_by_the_sort_column_predicate` test), asserting
+`acquire_plan_features`'s returned `perm_walk_span` equals the matching segment (1,500) for both
+directions under a `cmc>=5` bound, and equals the whole corpus (10,000) for the unbounded control
+(ordered by `edhrec`, which the filter says nothing about). Verified to actually catch a revert:
+temporarily hard-coding `perm_walk_span` back to `ctx.n_cards()` unconditionally fails the bounded
+assertion with `left: 10000, right: 1500`; restoring the fix passes again.
+
+**Held-out validation against CURRENT traffic**, not the stale comment (whose numbers predate this
+whole 31-round effort). Sampled `uniform`-mode traffic through `explain_analyze` (isolated release
+wheel, 180s, seed 0), keeping every `StreamedSelect` row whose realized `perm_steps` counter is
+nonzero (the walking population the comment's table itself used), hash-of-query calibration/held-out
+split -- nothing here is FIT, both formulas are fixed, so the split is a consistency check rather than
+an overfitting guard:
+
+```
+14,217 walking StreamedSelect rows (calibration 6,657 / held-out 7,560)
+
+                       p10     median   p90     mean |log ratio|
+CALIBRATION  old (n_cards)        0.152   1.003   5.596        1.046
+             new (perm_walk_span) 0.176   1.012   5.675        1.015
+HELD-OUT     old (n_cards)        0.145   0.995   5.786        1.021
+             new (perm_walk_span) 0.172   1.000   5.811        0.988
+POOLED       old (n_cards)        0.148   0.999   5.688        1.033
+             new (perm_walk_span) 0.173   1.000   5.764        1.001
+```
+
+A real, if modest, improvement that holds on BOTH halves independently (mean |log ratio| -- the
+metric that treats over- and under-estimation symmetrically, which is what an argmin comparison
+actually needs -- drops ~3% pooled, ~3% on calibration, ~3% on held-out). The raw percentile shape
+barely moves at the tail on THIS traffic mix (p90 5.69 -> 5.76, essentially flat, not the 6.43 -> 5.31
+the stale comment reported): the correlation this fix targets -- a filter that constrains the SAME
+field the query orders by (`cmc>=6 order=cmc`) -- is a designed-cell phenomenon
+(`scripts/bench_walk_span.py`'s own CLUSTERED-vs-BROAD framing), not a common shape under random
+`uniform` sampling, so most walking rows in this population see `perm_walk_span == n_cards` (the
+fallback) and are unaffected either way. The p10/mean-log movement is exactly the minority of rows
+where the two formulas DO diverge, moving in the right direction.
+
+**`StreamedSelect/candidates` cost-model-agreement, before/after** (`bench_cost_model_agreement.py`,
+isolated release wheels, 180s, seed 0): **unchanged**, median 0.59 both builds (n=16,484 baseline,
+n=15,440 fix -- different sampled counts from independent 180s windows, not a code-speed effect).
+Split further by realized `perm_steps` within just this acquire branch (own script, same protocol,
+150s):
+
+```
+                                    baseline              fix
+walking (perm_steps > 0)      n=1,398  median=0.853  n=1,380  median=0.852
+small-total (perm_steps == 0) n=11,227 median=0.587  n=11,104 median=0.587
+```
+
+Both sub-populations flat. The `candidates` acquire branch's own walking rows are only ~11% of its
+`StreamedSelect` traffic here, and -- per the held-out result above -- most of those still see
+`perm_walk_span == n_cards` under uniform sampling, so this specific pooled cell does not move
+measurably even though the underlying mechanism is real (confirmed by the held-out check, which pools
+across every acquire branch, not just `candidates`). Honest result: a real, validated fix with a
+negligible visible effect on this specific cell under this traffic mix -- not the cell this round
+closes.
+
+**Regression guards**, isolated release wheels, `--mode realistic --seed 0`:
+
+- `#852` (`bench_pairwise_ordering.py`, 180s): `GatheredScan vs PrintingCompose` overall 88% (n=18,431)
+  -> 89% (n=20,781); `GatheredScan vs StreamedSelect` overall 97% -> 97%,
+  `[candidates]` 99% -> 99%. Both within noise of independent-window sampling variance, no shift.
+- Round 30/31's own territory (`bench_regret_matrix.py`, 150s): `StreamedSelect -> GatheredScan`
+  n 1,060 (70% share, 20.62µs median regret, 84.2ms total) -> 1,047 (69% share, 20.83µs median,
+  82.4ms total) -- flat, as expected: this round's term (`walks_permutation`) is a different branch
+  from Rounds 30/31's (the small-total gather), and confirmed rather than assumed unaffected.
+- Round 28's `scan_units` feature accuracy: not re-run this round -- this fix adds a wholly separate
+  `PlanFeatures` field (`perm_walk_span`) consumed only by `StreamedSelect`'s `perm_steps` term, and
+  touches neither `scan_units` nor `stream_scan_units`'s computation, so there is no code path by
+  which it could move that cell.
+
+**Correctness gates.** `cargo test --release` (`card_engine`): 179/179 passed (178 + this round's new
+regression test). `cargo test` (debug): 180/180 passed. `cargo clippy --all-targets -- -D warnings`:
+clean. Blast radius: `card_engine/src/cost.rs` (`PlanFeatures::perm_walk_span`, the `perm_steps`
+formula), `card_engine/src/lib.rs` (the new `perm_walk_span` helper, wired into `mk_plan_feats`, plus
+its `acquire_facts_to_pydict` exposure), `card_engine/src/tests.rs` (the six hand-built `PlanFeatures`
+literals updated to compile, plus one new regression test), this doc. No other `cost.rs` rate
+constants touched.
+
+**Verdict.** Real, validated, narrow. The sort-column bound was never shipped to the cost model
+because nobody had circled back to it, not because it was hard or unsafe -- every input it needs was
+already free at acquire time, and the fix is a strict generalization of the existing formula (it
+collapses to the old behavior whenever the filter says nothing about the sort column or no
+permutation exists). Held out against current traffic, it measurably tightens the estimate on the
+population it targets (mean |log ratio| improves ~3% on both calibration and held-out halves) without
+moving `StreamedSelect/candidates`'s pooled cost-model-agreement cell, because that specific
+correlation (filter bounds the same field the query orders by) is rare under random/uniform traffic --
+a designed-cell phenomenon, not a common production shape. No regression on `#852`, on Rounds 30/31's
+own territory, or on Round 28's `scan_units` cell (unreachable by this change). Shipped as a
+strict-generalization correctness fix rather than for its measured routing impact, which is real but
+small on this traffic mix.
 
 ## Confirmation runs
 

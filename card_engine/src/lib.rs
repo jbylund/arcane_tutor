@@ -11995,6 +11995,29 @@ fn compose_paging_with_total(
     }
 }
 
+/// The segment `StreamedSelect`'s emission walk is bounded to, computed the SAME way
+/// `exec_streamed_select` derives its own walk (`walk_bounds` over the identical
+/// `(sort_col, descending, sort_bound)` triple) rather than by a second path that could silently
+/// disagree with what dispatch actually walks.
+///
+/// Free when the filter bounds nothing: `walk_bounds` returns the whole permutation on the
+/// `bound.is_unbounded()` check before ever probing it, so the common case (most queries do not
+/// filter on their own sort column) pays one branch, not a search. O(log n_cards) -- two binary
+/// searches, nothing per candidate, nothing per printing -- when it does, mirroring
+/// `CardRangePopcount`'s acquire-time range lookup a few branches up in `acquire_plan_features`
+/// ("two binary searches, no scan"), the same style of cheap-exact acquire-time probe this cost
+/// model already relies on elsewhere. `n_cards` when this `(sort_col, descending)` pair has no
+/// permutation at all: `StreamedSelect` is inapplicable there and never reads this field, but
+/// `mk_plan_feats` sets it uniformly for every acquire branch, since the shared feats have to cost
+/// a competing `StreamedSelect` honestly regardless of which branch produced them.
+///
+/// docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md, Round 32.
+fn perm_walk_span(ctx: &QueryCtx, params: &QueryParams) -> u32 {
+    ctx.indexes.sort_perms.get(params.sort_col, params.descending).map_or(ctx.n_cards(), |perm| {
+        walk_bounds(perm, ctx.cards, params.sort_col, params.descending, params.sort_bound).len() as u32
+    })
+}
+
 /// Cost features: the query-invariant fields filled once; the four that vary by
 /// count source passed in. Collapses each acquire branch's 8-field literal to one call.
 fn mk_plan_feats(
@@ -12017,6 +12040,7 @@ fn mk_plan_feats(
         residual_tier_ns100,
         limit: params.limit as u32,
         offset: params.page_offset as u32,
+        perm_walk_span: perm_walk_span(ctx, params),
         broadcast_printings: 0, // PrintingCompose's legality broadcast-down (0 for ranges / precomputed planes)
         scatter_printings: 0,  // range-slice k — set by both range-plan acquire branches (costed per-plan)
         project_printings: 0,  // PrintingCompose's card/artwork projection pass; CardRangePopcount sets it too (for costing compose)
@@ -14461,6 +14485,7 @@ fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<B
         ("residual_card_invariant", u32::from(g.residual_card_invariant)),
         ("limit", g.limit),
         ("offset", g.offset),
+        ("perm_walk_span", g.perm_walk_span),
         ("broadcast_printings", g.broadcast_printings),
         ("scatter_printings", g.scatter_printings),
         ("collection_broadcast_printings", g.collection_broadcast_printings),

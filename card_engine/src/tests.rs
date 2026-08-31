@@ -5163,7 +5163,7 @@ fn gathered_scan_zero_match_uses_the_lower_fixed_cost() {
         matches: 0, eval_domain: 0, scan_units: 0, stream_scan_units: 0,
         residual_card_invariant: false, residual_tier_ns100: 0,
         artwork_seen_cards: 0, artwork_seen_printings: 0, compose_scan_printings: 0,
-        limit: 0, offset: 0,
+        limit: 0, offset: 0, perm_walk_span: 30_000, // unbounded (no sort predicate in this fixture)
         broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0,
         compose_paging: ComposePaging::Gather, collection_broadcast_printings: 0,
         gather_group_printings: 0,
@@ -5420,6 +5420,7 @@ fn plan_cost_model_matches_gold() {
                     residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
                     limit: limit as u32,
                     offset: offset as u32,
+                    perm_walk_span: n_cards, // fixed orderby=edhrec, no query here bounds it
                     broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather, collection_broadcast_printings: 0,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
@@ -5663,6 +5664,7 @@ fn plan_cost_refit() {
                     residual_tier_ns100: if prep.all_match_known { 0 } else { verify_cost_tier(&res) },
                     residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
                     limit: limit as u32, offset: offset as u32,
+                    perm_walk_span: n_cards, // fixed orderby=edhrec, no query here bounds it
                     broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather, collection_broadcast_printings: 0,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
@@ -5869,6 +5871,7 @@ fn printing_range_route_probe() {
                 residual_tier_ns100,
                 residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
                 limit: LIMIT as u32, offset: offset as u32,
+                perm_walk_span: n_cards, // fixed orderby=edhrec, no query here bounds it
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather, collection_broadcast_printings: 0,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
@@ -6233,6 +6236,7 @@ fn plan_regret_report() {
                 residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
                 limit: limit as u32,
                 offset: offset as u32,
+                perm_walk_span: n_cards, // fixed orderby=edhrec, no query here bounds it
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather, collection_broadcast_printings: 0,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
@@ -6364,6 +6368,7 @@ fn plan_regret_fuzz() {
                 residual_tier_ns100: tier,
                 residual_card_invariant: false, // diagnostic only; nothing in plan_cost reads it
                 limit: limit as u32, offset: offset as u32,
+                perm_walk_span: n_cards, // fixed orderby=edhrec, no fuzz filter here bounds it
                 broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0, compose_paging: ComposePaging::Gather, collection_broadcast_printings: 0,
                 artwork_seen_cards: 0, // no artwork per-card dedupe bitmask in this fixture
                 artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
@@ -7515,6 +7520,72 @@ fn streamed_walk_bounds_itself_by_the_sort_column_predicate() {
             stats.perm_steps,
         );
     }
+}
+
+/// Round 32 of the printing-varying-depth ledger
+/// (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md):
+/// `cost::PlanFeatures::perm_walk_span`, the field `perm_steps`'s cost formula now multiplies by
+/// instead of `n_cards` unconditionally. Reuses the same anti-correlated fixture as
+/// `streamed_walk_bounds_itself_by_the_sort_column_predicate` above (8,500 non-matching cards
+/// sorting ahead of 1,500 matching ones under `cmc asc`, so a bound that did nothing would be
+/// caught by an order of magnitude), but checks the ACQUIRE-time feature directly rather than the
+/// dispatch-time walk it now agrees with: before this round, `PlanFeatures` had no such field and
+/// the cost model always priced the walk as if it covered the whole corpus regardless of what the
+/// filter said about the sort column.
+#[test]
+fn acquire_perm_walk_span_matches_the_sort_column_bound() {
+    const PREFIX: usize = 8_500;
+    const MATCHING: usize = 1_500;
+    const N: usize = PREFIX + MATCHING;
+    const MATCH_CMC: u8 = 5;
+
+    let mut vocab = VocabInterner::new();
+    let mut cards = Vec::with_capacity(N);
+    for i in 0..N {
+        let mut c = stub_card((i + 1) as u128, TYPE_CREATURE, &[], &mut vocab);
+        // Same anti-correlation as the dispatch-level test: cmc 0 for the prefix, MATCH_CMC for the
+        // tail, so ascending cmc order puts every match last and descending puts every match first.
+        c.cmc = Some(if i < PREFIX { 0 } else { MATCH_CMC });
+        c.edhrec_rank = Some(((i * 37) % N) as u32 + 1); // distinct, shuffled: no full-key tie blocks
+        cards.push(c);
+    }
+    let data = store_of(cards, &vec![1; N], vocab);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let ctx = QueryCtx::from(archived);
+
+    let filt = || FilterExpr::NumericCmp {
+        lhs: NumExpr::Field(NumField::Cmc),
+        op: CmpOp::Ge,
+        rhs: NumExpr::Const(f64::from(MATCH_CMC)),
+    };
+    // Extracted from the UNSPLIT filter, exactly as `bind_and_split_filter` does.
+    let cmc_bound = sort_col_bound(&filt(), SortCol::Cmc);
+    assert_eq!(
+        cmc_bound,
+        SortBound { lo: Some(f64::from(MATCH_CMC)), hi: None },
+        "a bare `cmc >= k` must bound the cmc column below and leave it unbounded above",
+    );
+
+    for descending in [false, true] {
+        let params = kernel_params(Mode::Card, SortCol::Cmc, descending, 10, 0).with_sort_bound(cmc_bound);
+        let (pe, mut filter) =
+            split_planes(filt(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
+        let (feats, _prep, _plane_bits) = acquire_plan_features(&ctx, &params, &mut filter, None, pe.as_ref());
+        assert_eq!(
+            feats.perm_walk_span, MATCHING as u32,
+            "bounded acquire (descending={descending}) must narrow perm_walk_span to the matching \
+             segment ({MATCHING}), not the whole corpus ({N})",
+        );
+    }
+
+    // Unbounded control: same filter, ordered by a column it says nothing about — must fall back to
+    // the whole corpus rather than accidentally reading zero or a stale value.
+    let params_unbounded = kernel_params(Mode::Card, SortCol::EdhrecRank, false, 10, 0);
+    let (pe, mut filter) =
+        split_planes(filt(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
+    let (feats, _prep, _plane_bits) = acquire_plan_features(&ctx, &params_unbounded, &mut filter, None, pe.as_ref());
+    assert_eq!(feats.perm_walk_span, N as u32, "unbounded acquire must fall back to the whole corpus");
 }
 
 // Group counts collapse duplicate illustrations within a card.

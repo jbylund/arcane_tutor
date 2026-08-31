@@ -160,6 +160,20 @@ pub(crate) struct PlanFeatures {
     pub limit: u32,
     /// Page offset.
     pub offset: u32,
+    /// The permutation segment `StreamedSelect`'s emission walk is actually bounded to —
+    /// `walk_bounds(...).len()` for `(sort_col, descending)`, computed once at acquire from the SAME
+    /// inputs the executor uses (`QueryParams::sort_bound`, the filter's own interval on the sort
+    /// column). `n_cards` when the filter constrains nothing about the sort column, and also when no
+    /// permutation exists for this `(sort_col, descending)` pair — `StreamedSelect` is inapplicable
+    /// there and never reads this field, but `mk_plan_feats` sets it uniformly for every acquire
+    /// branch (the shared feats have to cost a competing `StreamedSelect` honestly regardless of which
+    /// branch produced them), so the fallback must still be a value, not an absent one.
+    ///
+    /// Round 32 of the printing-varying-depth ledger
+    /// (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md): `perm_steps` used to
+    /// multiply by `n_cards` unconditionally, which is right only for the unbounded case. See
+    /// `perm_steps`'s own doc for the regrade this field closes.
+    pub perm_walk_span: u32,
     /// Printings the legality **broadcast-down** synthesizes (card ∃-plane → printing bitmap) in
     /// `PrintingCompose`. `0` for border/rarity (precomputed planes) and for bare ranges (no broadcast).
     /// Costed at `LINEAR_PASS_PER_PRINTING_NS`.
@@ -883,19 +897,25 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
             let walks_permutation = !runs_small_gather && f.matches > 0 && u64::from(f.offset) < u64::from(f.matches);
             let perm_steps = if walks_permutation {
                 // Entries visited to accumulate `page_span` matches, when matches are spread uniformly
-                // through the permutation: one match per `n_cards / matches` entries. Bounded by the
-                // corpus, since the walk cannot step past the end of the permutation.
+                // through the WALKED SEGMENT: one match per `perm_walk_span / matches` entries. Bounded
+                // by that segment, since the walk cannot step past its end.
                 //
-                // The executor now starts and ends the walk at the segment its filter's bound on the
-                // SORT COLUMN admits (`walk_bounds`), which this cannot see -- no `PlanFeatures` field
-                // carries the filter's shape. The uniform-spread assumption absorbs it: the expected gap
-                // before the first match is one `n_cards / matches` stride, negligible against
-                // `page_span` of them. What the regrade showed is that the assumption's remaining error
-                // is a DIFFERENT shape. Realized/estimated over ~12.5k walking rows, same seed and
-                // sample length:
+                // The executor starts and ends the walk at the segment its filter's bound on the SORT
+                // COLUMN admits (`walk_bounds`), and `perm_walk_span` is that same segment's length,
+                // computed once at acquire by `mk_plan_feats` calling the identical `walk_bounds` helper
+                // over the identical `QueryParams::sort_bound` the executor reads -- not re-derived by a
+                // second path that could silently disagree with what dispatch actually walks. Before
+                // Round 32 this multiplied by `n_cards` unconditionally, which is right only when the
+                // filter constrains nothing about the sort column; `perm_walk_span` already collapses to
+                // `n_cards` in exactly that case (and when no permutation exists at all), so this is a
+                // strict generalization, not a second code path with its own edge cases.
                 //
-                //     unbounded walk                 p10 0.13   median 1.00   p90 6.43
-                //     sort-column bound              p10 0.11   median 0.96   p90 5.31
+                // Realized/estimated `perm_steps` over ~12.5k walking rows, same seed and sample length
+                // (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md, Round 32 for
+                // the held-out re-check against current traffic):
+                //
+                //     unbounded walk (pre-Round-32)  p10 0.13   median 1.00   p90 6.43
+                //     sort-column bound (shipped)     p10 0.11   median 0.96   p90 5.31
                 //     realized inv_perm min/max      p10 0.08   median 0.90   p90 4.26
                 //
                 // The third row is not shipped -- it cost 0.51 ns per matching card -- but it bounds how
@@ -904,7 +924,8 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
                 // catches only what the predicate names. What is left in BOTH is non-matching entries
                 // INTERIOR to the walked segment, which no start position reaches by construction. That
                 // is the popcount-skip mechanism's territory.
-                (page_span * n_cards / f64::from(f.matches)).min(n_cards)
+                let perm_walk_span = f64::from(f.perm_walk_span);
+                (page_span * perm_walk_span / f64::from(f.matches)).min(perm_walk_span)
             } else {
                 0.0
             };
