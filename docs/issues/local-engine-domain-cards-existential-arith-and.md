@@ -1,6 +1,265 @@
 # `domain_cards`/`eval_domain` Is Wrong for Arith-Range AND Existential-Leaf, and Now Has a Root Cause
 
-## Round 22: the gate fix, shipped and validated
+## Round 23: Is Round 22's Tax Avoidable? A Cheap Bound Investigated and Rejected, a Better Exact
+## Alternative Found Instead — Not Shipped
+
+Round 22 fixed correctness (`eval_domain` now exact for this population) at a real, measured acquire-time
+cost (`popcount_with_bits` + the arith-ID-probe merge, `O(matching_ids)`, now running where it used to be
+skipped). The question this round investigates: can a much cheaper `O(1)`/`O(log n)` estimate — e.g.
+`min(exact_count(arith_leaf), exact_count(existential_leaf))`, each side's own already-cheap count — get
+"good enough" routing without paying that tax? Investigation only; no code shipped. All numbers below are
+from a real corpus (`benchmarks/bitplanes/corpus.jsonl`), two isolated release wheels (`costcell/trunk`@
+`cc17e031`, pre-Round-22, and this branch's base `188a0ee4`, post-Round-22 — both built via `maturin build
+--release`, no `make engine`/`maturin develop`), and a Python port of `cost.rs`'s `plan_cost` verified to
+reproduce `explain()`'s own `predicted_ns` to 0.0000 relative error across 1,287 plan-rows before being
+trusted for anything.
+
+### 1. The taxed population, characterized broadly (not just the 6 reproducers)
+
+Re-ran Round 22's own 3-field (`cmc`/`power`/`toughness`) x 13-width x 11-leaf-value sweep (429 rows,
+`cmc>=1 cmc<=W` for `W` in 1..13, same 11 existential values), this time capturing real `explain_analyze`
+acquire-time on BOTH wheels for every row, not just the 6 named reproducers:
+
+```
+n=429, median delta (after-before): +17,605ns   mean: +22,921ns
+p10 / p90 / max: -83ns / +52,562ns / +95,230ns
+median ratio (after/before): 4.61x   p90: 10.74x   max: 19.81x
+```
+
+By existential leaf (median delta, median ratio):
+
+| leaf | median delta | median ratio |
+|---|--:|--:|
+| `border:black` | +69,958ns | 15.53x |
+| `r=common` | +36,812ns | 8.22x |
+| `r=rare` | +35,646ns | 8.05x |
+| `r=uncommon` | +33,958ns | 7.68x |
+| `f:oldschool` | +15,584ns | 4.49x |
+| `r=mythic` | +17,500ns | 4.45x |
+| `border:borderless` | +18,625ns | 4.94x |
+| `border:white` | +16,229ns | 4.43x |
+| `border:gold` | +15,334ns | 3.83x |
+| `border:silver`, `r=special` | ~0ns | ~1.0x (degenerate — see below) |
+
+`border:silver` never appears in this corpus at all (the real 5th border value is `yellow`; a labeling
+miss carried over from Round 22's own sweep, not a new finding) and `r=special` is the separate,
+already-documented `eval_domain`-flat-across-widths bug (Question 1's own doc, above) — both are
+degenerate zero/near-zero-signal rows, correctly showing ~no delta. By width, the tax grows from
++10,250ns (width 1) to +22,875ns (width 12), then collapses to +500ns at width 13 (the range covers
+essentially the whole corpus, so both before/after `eval_domain` saturate near `n_cards` and the two
+converge). **`border:black`'s 15.53x/+69,958ns is the worst cell specifically because of its own 98.9%
+selectivity**: the arith-ID-probe merge's cost scales with `O(matching_ids)`, and border:black keeps
+almost every one of the arith leaf's own matching ids in play — the widest possible probe set.
+
+Real-traffic prevalence: Round 21/22's own regex-proxy estimate (0.85-1.23% of `Mode::Card` queries) is
+the best available figure for this specific "lone existential + arith, nothing else card-invariant"
+population; narrowing it further would need an AST-level classifier over `QuerySampler` output, out of
+scope for this round's budget.
+
+### 2. Cheap `min()` vs exact: real gap, and the RATIO alone is misleading
+
+The cheap estimate (`min` of each side's own bare exact count — `bare_numeric_field_count`/
+`numeric_range_ids`, a genuine `O(log n)` two-`partition_point` lookup with no allocation, confirmed by
+reading `numeric_range_count`'s body directly; and `value_totals.border`/`.legality` or
+`rarity_cards.distinct_cards`, both O(1)/O(log n) too — so "cheap" is real, not hand-waved) was computed
+for all 429 sweep rows and compared against the true joint intersection (`engine.query()`'s own `total`
+for the AND filter — unambiguous ground truth, independent of any estimate):
+
+```
+zero-true-match rows excluded (39, degenerate): 390 remain
+exact match (cheap == true): 0/390 (0.0%)
+overestimate ratio (cheap/true): median 2.015x   p90 3.939x   max 27.579x
+rows where cheap < true (would violate the upper-bound guarantee): 0/429
+```
+
+Cheap is *never* an underestimate (expected — it's a `min` of two supersets, a mathematically valid upper
+bound) and *never* exact either. But **the ratio alone overstates which rows matter** — exactly the
+failure mode the user flagged: a 16x error on a true value of 200 is a ~3,000-card absolute miss; a 2x
+error on a true value of 5,500 is a larger, ~5,500-card absolute miss that the cost model actually feels.
+By leaf (median true intersection, median cheap value, median ABSOLUTE delta, median ratio, and how many
+of that leaf's 39 rows flip routing — see §4):
+
+| leaf | med. true | med. cheap | med. abs. Δ | med. ratio | routing flips |
+|---|--:|--:|--:|--:|--:|
+| `r=rare` | 5,321 | 11,059 | **+5,709** | 2.078x | **23/39** |
+| `r=uncommon` | 5,190 | 10,279 | **+4,886** | 1.981x | **23/39** |
+| `r=common` | 5,897 | 10,694 | **+4,636** | 1.792x | **23/39** |
+| `border:black` | 16,417 | 16,664 | +246 | 1.015x | 1/39 |
+| `r=mythic` | 1,410 | 2,620 | +1,210 | 1.858x | 0/39 |
+| `border:white` | 946 | 2,059 | +1,113 | 2.177x | 0/39 |
+| `border:borderless` | 1,684 | 3,478 | +1,794 | 2.065x | 0/39 |
+| `f:oldschool` | 382 | 961 | +579 | 2.516x | 0/39 |
+| `border:gold` | 147 | 551 | +404 | 3.748x | 0/39 |
+| `r=special` | 153 | 370 | +217 | 2.418x | 0/39 |
+
+`border:gold`'s 3.748x median ratio is the WORST ratio among borders, and it flips *nothing* (absolute
+miss ~400 cards). `r=rare/common/uncommon`'s ~2x ratios are unremarkable next to `border:gold`'s or
+`r=mythic`'s, yet they cause every routing flip but one (§4) — because their bare existential-side counts
+are ~10,000-11,000 cards (32-35% corpus selectivity), so even a "modest" 2x ratio is a multi-thousand-card
+absolute error, and the cost model's per-candidate rate (~4-13ns/card across the competing plans) turns
+that into tens of microseconds. **Absolute magnitude, not ratio, is what predicts real damage — confirmed
+directly in §4, not asserted.**
+
+**Anti-correlation check, done directly on this corpus's own fields**: the historical `id:br devotion:w`
+case is a near-ZERO true intersection against two individually-large marginals (a hard contradiction —
+`id:br` requires white in the identity color-wise never mind, the point is the near-zero intersection).
+Nothing that extreme appears here (zero rows had `true_intersection == 0` except the degenerate
+`border:silver` rows, where the leaf itself doesn't exist in the corpus). But a MILDER version of the same
+effect is real and visible: `field=1 r=mythic` (a low arith value ANDed with mythic) is the worst-ratio
+population (up to 27.579x, `toughness=1 r=mythic`, true=95 vs cheap=2,620) precisely because low-cmc/
+power/toughness cards skew away from mythic rarity in this corpus (a plausible real card-design
+correlation, not noise) — so `min()`'s independence assumption is measurably wrong here, just not
+catastrophically so in absolute terms (see the table above: this shows up as a big ratio but a modest
+absolute delta, and correctly causes zero routing flips).
+
+### 3. A better alternative than `min()`: an EXACT disjoint-bucket sum, not a bound
+
+`cmc`/`power`/`toughness` are **single-valued per card** (a card has exactly one cmc) — this corpus has
+only 17/19/21 distinct integer values for the three fields respectively. That means partitioning cards by
+their exact arith value is a genuine, exhaustive, non-overlapping partition of the card space: summing a
+PER-VALUE exact joint count (arith value `v` -> count of cards with that `v` AND satisfying the existential
+value) over every `v` in `[lo, hi]` reproduces the TRUE joint intersection exactly — no independence
+assumption, no anti-correlation risk, because it's a sum over disjoint cells, not a product or a `min`.
+This does NOT generalize to multi-valued fields (card types, formats/legality — a card can have several),
+only to the single-valued arith-tuple family, exactly as scoped.
+
+**Validated directly against the real corpus**, not just argued: built the (arith value -> existential
+value -> distinct card count) table from `benchmarks/bitplanes/corpus.jsonl` (grouping printings by
+`oracle_id`, one row per card) for all three arith fields against border/rarity/`f:oldschool`, then checked
+`sum(table[field][v] for v in [lo,hi])` against every one of the 429 sweep rows' real `true_intersection`:
+
+```
+checked=429  exact_matches=429  (100.0%)
+```
+
+Every single row, exact, including the degenerate `border:silver` (0) and `r=special` rows. Table size:
+138 (cmc) + 145 (power) + 152 (toughness) non-zero (value, existential-value) cells = 435 cells total,
+each a 3-space count — a few KB, not a new large structure.
+
+**An existing, already-shipped precedent for exactly this pattern was found**: `indexes.pair_totals` /
+`pair_leaf_id` / `pair_bounded_min` (`card_engine/src/lib.rs`, ~2705-2900 and 8530-8574) is the SAME
+disjoint-pair-sum idea, already built and already wired into the `And` arm — `pair_bounded_min(v, indexes,
+folded.result.printing)` runs unconditionally at line 7736, *before* any of Round 22's existential-arith
+machinery even starts. It currently recognizes exactly four dense, low-cardinality dimensions — `border`
+(`TextExact` `Eq`), `frame_data` (`CollectionCmp` `Ge`), `legality` (per format/status), and `rarity`
+(`NumericCmp{RarityInt}`, `Eq` only) — and **nothing for `cmc`/`power`/`toughness`**: `pair_leaf_id`'s
+match falls through to `_ => None` for every `NumericCmp` on those three fields, at any operator.
+
+This is the SAME root-cause shape Round 21 found for `value_totals.border` — an existing exact answer,
+unreached for this specific AST shape. Confirmed directly: `parse_scryfall_query('cmc=1 border:white')`
+produces a genuine single `=` binary-operator node for `cmc`, not an implicit two-leaf range — exactly the
+shape `pair_leaf_id` already handles for rarity today. **Extending `pair_leaf_id`'s match (3 new arms:
+`Cmc`/`Power`/`Toughness` `NumericCmp` `Eq`) plus `build_pair_totals`'s per-printing id-collection pass (3
+more lookups per printing, reusing the same `PAIR_MIN_PRINTINGS`-gated selectivity floor already there)
+would make the WIDTH-1 slice of this population (`cmc=1 border:white`-shaped, 33/429 = 7.7% of the sweep,
+the cheapest-to-tax slice at +10,250ns median but still real) exact via the EXISTING `pair_bounded_min`
+call site, with zero new call sites and no new top-level struct** — the smallest possible next step here.
+
+**This does not cover the ranged case.** `pair_leaf_id` is deliberately `Eq`-only (mirroring rarity's own
+restriction — "any other op is a range over several values, which no per-value entry answers"), and the
+`And` arm passes `pair_bounded_min` the ORIGINAL, unfused children (`v`), not `fuse_and_range_children`'s
+output — so `cmc>=1 cmc<=5` (two `Ge`/`Le` leaves) would still not match, even with the extension above.
+The ranged case is the bulk of both the row count (12/13 widths) and essentially all of the absolute
+acquire-time tax (width-1 rows average +10,250ns vs the +19,000-23,000ns width 4-12 average). Closing it
+needs a range-capable mechanism, and there are two honest ways to build one:
+
+- **(a) Extend `pair_totals` itself**, adding cmc/power/toughness as 3 more dense dimensions to the
+  existing `O(n²)` id x id co-occurrence matrix `build_pair_totals` already builds, plus a new helper that
+  sums `pt.get(x, y)` over however many arith values in `[lo, hi]` clear the pruning floor (bounded, ≤21
+  lookups). Reuses the existing struct/build pass/selectivity floor entirely, but grows the co-occurrence
+  matrix by ~45 more candidate ids (17+19+21, before pruning) against today's ~15-30 — a real, if
+  transient (index-build-time only) memory cost, and it stores a lot of PAIR cells (cmc×power, cmc×frame,
+  ...) the router never actually queries for this shape, since only arith×existential pairs matter here.
+- **(b) A new, purpose-built cumulative table**, attached wherever the arith index's own per-value data
+  lives, mirroring `RangeCardCounts`'s existing `below`/`at_or_above`/`at` prefix-sum design (already
+  shipped, for a different set of range dimensions — price/collector-number/release-date) but keyed
+  additionally by existential value. Sized like the validation table above (~57 arith values x ~11
+  existential values, well under 20KB), answers a RANGE in true `O(1)` (two `partition_point` calls plus a
+  prefix difference) rather than `O(bucket count)`, and doesn't touch the unrelated existing `pair_totals`
+  matrix at all — strictly better cost shape, at the price of being new code (new struct, new build pass,
+  new query-time helper) rather than an extension of something that already ships.
+
+Both (a) and (b) are **index-build-time work, not free** — this is squarely the "pre-computation over
+hot-path computation" tradeoff the round's brief named, just located one level earlier (build time) than
+either Round 22's fix or the `min()` idea (both pure query-time mechanisms). Neither was implemented this
+round; both are validated-by-construction (the 429/429 result above already IS what (b) would compute) and
+ready for a dedicated follow-up round to actually wire in.
+
+### 4. Does the cheap estimate change routing? Yes, often, and mostly for the worse
+
+Restricted the comparison to the plans `explain()` itself reports as real candidates for this acquire
+branch — confirmed directly that `StreamedSelect` is NEVER offered here (396/429 rows offer exactly
+`{GatheredScan, PrintingCompose}`, 33/429 offer `{GatheredScan}` alone; scoring a plan the router would
+never actually consider would be a fabricated comparison). For each row, recomputed both plans' predicted
+cost under the exact `eval_domain`/`scan_units` (matches `explain()`'s own numbers, verified to 0.0000
+relative error) and under the cheap `eval_domain` with `scan_units` recomputed via the SAME `scan_all`
+density fallback the pre-Round-22 code path took (this shape's `composed_card_invariant` is always false,
+so the `card_invariant_domain_exact`/`exact_domain_won` fast paths are unavailable either way, before or
+after — confirmed from the code, not assumed):
+
+```
+argmin flips: 70/429 (16.3%)
+69/70 flip GatheredScan (exact) -> PrintingCompose (cheap); 1/70 the reverse
+```
+
+Flips concentrate ENTIRELY on the three leaves with the largest absolute bare counts, not the leaves with
+the worst ratios: `r=rare`/`r=common`/`r=uncommon` account for 69 of the 70 flips (23/39 each), plus one
+`border:black` row. `r=mythic` (comparable ratio, ~6x smaller absolute count) flips zero times.
+
+**Real measured regret**, not just a predicted-cost artifact: ran `explain_analyze` (15 warmups, 60
+trials) on the actual post-Round-22 wheel for all 70 flipped queries, reading REAL per-plan trial medians
+for both `GatheredScan` and `PrintingCompose` (both genuinely execute — this is not a simulation):
+
+```
+n=70
+55/70 (79%): cheap's pick really is slower — median regret when worse: +51,625ns, summed: +3,318,023ns
+15/70 (21%): cheap's pick happens to be faster — median improvement: -25,708ns, summed: -404,456ns
+net summed regret over just these 70 rows: +2,913,566ns (+2.91ms)
+```
+
+The 15/70 "improvements" are not the cheap estimate doing something right — they're the EXACT model's own
+`PrintingCompose` cost formula being mis-calibrated for unrelated reasons on wider `r=rare` ranges (a
+pre-existing cost-model imprecision this round didn't introduce and isn't trying to fix), which the cheap
+estimate's overestimate happens to route around by accident. That is not a case for shipping it: a
+routing choice that's "right for the wrong reason" 21% of the time against "measurably wrong" 79% of the
+time, concentrated on exactly the rarity values (common/uncommon/rare) most likely in real traffic — not
+the corpus's rare border/legality corners — is a net loser.
+
+### 5. Recommendation
+
+**Do not ship the `min()` cheap estimate.** It disagrees with the real candidate set's argmin on 16.3% of
+this sweep, the disagreement is real (not a modeling artifact — measured directly via `explain_analyze` on
+both real candidate plans), 79% of those disagreements cost real wall time (median +51.6us, net +2.9ms
+over just 70 rows), and the disagreements concentrate on the leaf values (common/uncommon/rare) most
+plausible in real traffic, not corpus-specific corners. Round 22's exact fix should stay unconditional.
+
+**But the right next step is not "accept the tax" either — it's the disjoint-bucket-sum family (§3),
+which this round found to be EXACT (validated 429/429) at a cost this round did not fully characterize at
+query time but which is bounded by construction** (≤21 lookups for the general form, `O(1)` for the
+`RangeCardCounts`-style cumulative form) **and is strictly better than `min()` everywhere it applies**: no
+anti-correlation risk, no accuracy/speed trade to make. Two concrete next steps, in order of size:
+
+1. **Smallest, immediate**: extend `pair_leaf_id`/`build_pair_totals` to recognize `cmc`/`power`/
+   `toughness` `Eq` values (3 new match arms, reusing 100% of existing machinery) — closes the width-1
+   slice (`cmc=1 X`-shaped, 7.7% of this sweep) via the ALREADY-WIRED `pair_bounded_min` call site, for
+   free at query time. A good, low-risk follow-up on its own.
+2. **Complete, bigger**: build the `RangeCardCounts`-style cumulative per-(arith field, existential value)
+   table sketched in §3(b) — closes the ranged case too (the bulk of both the row count and the acquire-
+   time tax), at the cost of new index-build-time code, not a query-time trick. This is where a dedicated
+   follow-up round should aim; this round's validation (429/429 exact against real data) is that round's
+   head start, not something it needs to re-derive.
+
+### Artifacts
+
+Exploratory scripts (scratchpad only, not committed): `sweep_r23.py` (429-row sweep, both wheels),
+`analyze_r23.py` (acquire-delta/cheap-vs-exact/routing-impact analysis, includes the verified `cost.rs`
+Python port), `measure_flip_regret.py` (real per-plan trial measurement for the 70 flipped rows),
+`validate_bucket_sum.py` (disjoint-bucket-sum validation against real corpus data). No engine-code edits
+were made or reverted this round — every number above came from the two wheels as they already exist
+(`cc17e031`, `188a0ee4`) plus new Python analysis, so `git diff --stat costcell/trunk` for this round shows
+only this doc.
+
+
 
 Round 21's sketch (below) turned into a fix. `compose_printing_estimate`'s `And` arm (`card_engine/src/lib.rs`,
 ~line 7845): the `else if !card_invariant.is_empty()` guard on `best_other`'s existential-leaf loop is now a
