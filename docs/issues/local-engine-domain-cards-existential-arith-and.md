@@ -1,5 +1,71 @@
 # `domain_cards`/`eval_domain` Is Wrong for Arith-Range AND Existential-Leaf, and Now Has a Root Cause
 
+## Round 25: the Blocker Is Confirmed Cleared, the Joint Refit Was Retested on Clean Data, and It Still
+## Fails — a Third, More Precise Negative Result
+
+Round 20 named the recommended next step explicitly: fix `eval_domain` first, then the
+`GATHER_CARD_PASS_NS`/`GATHER_RESIDUAL_FLOOR_NS`/leaf-count-rate joint refit (Rounds 17/19 built the
+mechanism, both found a naive fit didn't survive held-out validation) becomes testable for real. Rounds
+22/24 did that fix. This round is the first to actually run the refit against the now-clean data — and
+it still fails, for a reason more precise than either prior round could see with a corrupted
+`eval_domain`: **a flat, additive per-extra-leaf rate, multiplied by `eval_domain`, cannot serve both
+ends of this population's `eval_domain` range at once** — `border:black`'s `eval_domain` (24,734, near-
+universal selectivity) is ~50-100x `border:gold`'s or `f:oldschool`'s (a few hundred), and any single
+rate that improves the small-`eval_domain` leaves overshoots the large ones by the same multiple. See
+the parent doc (`docs/issues/done/local-engine-gathered-scan-undercosted-arith-existential-and.md`)'s
+Round 25 section for the full mechanism, held-out numbers, and outcome — this section records only what
+belongs here: confirmation that this doc's own `eval_domain` fix is holding up broadly, cleanly
+separated from that round's (negative) refit attempt.
+
+### `eval_domain` re-verified clean for population A, broadly, not just on the 429-row sweep
+
+Re-ran a fresh, independent check (3 arith fields x 9 widths x 9 "clean" leaf values, 243 rows,
+`explain_analyze` against a freshly-built store) rather than trusting Round 22/24's own reported
+figures unchecked, per this round's brief:
+
+```
+cards_visited / eval_domain, population A (n=243): within 15% = 98.4%, median = 1.000
+```
+
+Matches Round 22's own 89.3%-broad-sweep finding (the gap here is narrower, expected: this sweep drops
+the two already-documented degenerate leaves, `border:silver`/`r:special`, that Round 22 itself
+excluded from its "clean" figure). **Confirms, independently, that Rounds 22/24's `PairTotals`/
+`pair_range_sum` combination did what the parent doc's "What this means for the queued joint-rate
+refit" section claimed**: `eval_domain` is not the reason the refit fails this round. The full negative
+result and its real mechanism are in the parent doc, not duplicated here — see the link above.
+
+### Population B's `scan_units` confound: confirmed real, confirmed severe, and a SEPARATE quantity
+### from `eval_domain`
+
+This doc's own "Open questions" section never covered `scan_units`; the brief for this round asked to
+check it. Measured directly (27 bare-existential-leaf rows, no arith partner, `unique=card`):
+
+```
+printings_examined / scan_units, population B (n=27): within 15% = 0.0%, median = 3.950
+```
+
+Real and severe — `scan_units` (the feature `GATHER_SCAN_PER_ROW_NS` multiplies) under-predicts the
+real printings scanned by a median ~4x for this population, confirming Round 17/20's own smaller-sample
+finding (era-correlated print position violates the uniform-random-depth assumption `scan_all` makes)
+at a larger, fresh sample. This is orthogonal to `eval_domain`/`domain_cards` (a candidate CARD count,
+already fixed) — `scan_units` is a printing-SPAN estimate, a different mechanism, still unfixed, and
+out of this round's `cost.rs`/`lib.rs`-tier-decision blast radius (it lives in `acquire_plan_features`'s
+`scan_all`/`card_invariant_domain_exact` machinery, untouched by Rounds 15-24's `And`-arm work). The
+refit script accounted for it explicitly (substituted the realized `printings_examined` counter for the
+`scan_units` feature when computing calibration TARGETS, so this confound could not leak into the
+CARD_PASS/FLOOR/LEAF fit the way `eval_domain`'s confound did in Round 20) rather than letting it
+silently pollute the fit — see the parent doc for why that substitution still wasn't enough to make the
+fit ship.
+
+### Outcome
+
+No code change in this doc's own blast radius (`lib.rs`'s `PairTotals`/`compose_printing_estimate`,
+untouched this round, exactly as Round 24 left it). The refit attempt and its negative result belong to
+`GATHER_CARD_PASS_NS`/`GATHER_RESIDUAL_FLOOR_NS`/`plane_extra_eval_leaves` (`cost.rs`/`lib.rs`'s tier
+decision) and is written up in full in the parent doc's own Round 25 section — read that for the
+mechanism, the numbers, and the recommended next step (a saturating/bounded leaf term or a per-
+selectivity-band calibration, not a flat linear one).
+
 ## Round 24: `PairTotals` Extended to `cmc`/`power`/`toughness` — Round 22's Tax Closed for the Common
 ## Widths, Shipped
 

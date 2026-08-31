@@ -1059,3 +1059,225 @@ What this round DID establish, worth keeping for whoever picks this up next:
   floor is reasonably close (held-out within-25% 50%, before any refit) and where refitting helps (57%
   after) -- consistent with this being closer to the population the floor's ORIGINAL calibration (see
   `GATHER_RESIDUAL_FLOOR_NS`'s own doc, `MASK_COMPARE`/`SET_LOOKUP`/`TEXT_SCAN` tiers) actually targeted.
+
+## Round 25: the Blocker Is Cleared, the Refit Was Rebuilt and Retested on Clean Data -- a Third,
+## More Precise Negative Result, Discarded
+
+Rounds 22/24 (`docs/issues/local-engine-domain-cards-existential-arith-and.md`) fixed the `eval_domain`
+confound Round 20 found blocking this refit. This round rebuilt Round 19/20's plumbing verbatim
+(`planes.rs::count_plane_leaves`, `PlanFeatures::plane_extra_eval_leaves`, additive
+`GATHER_PLANE_LEAF_NS`/`STREAM_PLANE_LEAF_NS` terms in `cost.rs`), re-ran the joint fit against fresh
+data measured on the now-fixed engine, and the fit still does not survive held-out validation --
+**demonstrated for the first time on genuinely clean `eval_domain` data**, closing the open question
+both Round 20 and Round 22 left explicit ("clearing the `eval_domain` blocker does not by itself imply
+the rate refit will now succeed"). It does not.
+
+### Step 1: plumbing rebuilt, verified as a pure no-op
+
+`count_plane_leaves` (`planes.rs`) is a plain node-counting walk over the compiled `PlaneExpr` tree
+(`Plane`/`Bits` leaves count 1, `Const` counts 0, mirroring `plane_expr_is_existential`'s own
+recursion). `PlanFeatures::plane_extra_eval_leaves` (`count_plane_leaves(plane) - 1`) is set in
+`acquire_plan_features`'s `PrintingCompose`-acquire tier decision exactly when the PLANE half (not the
+filter) is the reason `tier != 0` -- the same condition Round 19/20 used. Both `GatheredScan`'s and
+`StreamedSelect`'s arms in `cost.rs` gained `+ plane_extra_eval_leaves * GATHER_PLANE_LEAF_NS` (resp.
+`STREAM_PLANE_LEAF_NS`) inside the existing `tier_ns > 0.0` bracket, both new constants shipped at
+`0.0` (a pure no-op) pending the fit. A new regression test,
+`compose_prices_compound_plane_leaf_count_above_bare_existential`, asserts the feature is nonzero for
+the compound reproducer, equals `count_plane_leaves(plane) - 1` exactly, and stays `0` for both a bare
+existential leaf alone and a bare card-invariant range alone. `cargo test --release`: 177/177 (176
+pre-existing + 1 new). `cargo test` (debug): 178/178. `cargo clippy --all-targets -- -D warnings`:
+clean. Verified the compiled-shape claim directly too: `cmc>=1 cmc<=5 border:black` reads
+`plane_extra_eval_leaves == 19` (20 total `Plane` leaves, matching Round 19's own node-count exactly).
+
+**Also fixed a real gap the rebuild surfaced**: `acquire_facts_to_pydict` (`lib.rs`, the Python-visible
+feature dump `explain()` returns) never exposed `plane_extra_eval_leaves` at all -- Round 19/20 must
+have added this in their own now-reverted work, since `round20_samples.jsonl` (a leftover artifact in
+the scratchpad) already carried the key, but the field is genuinely absent from `costcell/trunk` today.
+Added one line exposing it, alongside the other `PlanFeatures` fields already dumped there.
+
+### Step 2: `eval_domain` re-verified clean for population A, `scan_units` confirmed a SEPARATE, still-real confound for population B
+
+Measured fresh rather than trusting Round 22/24's own numbers unchecked (243 population-A rows, 3
+arith fields x 9 widths x 9 "clean" leaf values, `explain_analyze` against a freshly-built store):
+
+```
+population A:  cards_visited / eval_domain           within 15% = 98.4%   median = 1.000
+population B:  printings_examined / scan_units       within 15% =  0.0%   median = 3.950
+population C:  printings_examined / scan_units       within 15% = 29.6%   median = 0.766
+```
+
+`eval_domain` is confirmed clean for population A -- Rounds 22/24's fix holds broadly, not just on
+their own 429-row sweep. **`scan_units` (a DIFFERENT feature, the printing-SPAN estimate
+`GATHER_SCAN_PER_ROW_NS` multiplies, computed by `scan_all`/`card_invariant_domain_exact` -- untouched
+by Rounds 15-24's `And`-arm work) is a real, severe, SEPARATE confound**, confirmed at a fresh, larger
+sample: population B (bare existential leaf, no arith partner) under-predicts real printings scanned by
+a median ~4x, exactly the era-correlated-print-position mechanism Round 17 first flagged and Round 20
+measured on a 10-row sample. Population C shows a milder version of the same gap (median 0.766).
+
+**Accounted for explicitly rather than left to pollute the fit**: the refit script
+(`fit_round25.py`, this session's scratchpad) computes each calibration row's fit TARGET using the
+REALIZED `printings_examined` counter in place of the `scan_units` feature -- the same counter-check
+substitution `fit_cost_model.py` itself uses, so `scan_units`'s own (unrelated, unfixed) error cannot
+be silently absorbed by the CARD_PASS/FLOOR/LEAF coefficients this round is fitting. HELD-OUT
+agreement, reported separately below, still uses the REAL deployed formula (raw `scan_units`, exactly
+what `cost.rs::plan_cost` computes) -- the substitution is for fitting honestly, not for reporting an
+artificially rosier accuracy number. No population was excluded from calibration on this basis; the
+substitution made exclusion unnecessary.
+
+### Step 3-5: the joint fit, run against clean data, per-population held-out validation
+
+Sample: 297 rows total (population A 243, B 27, C 27 -- same 9 "clean" leaf values Round 22/24
+validated, same `unique=card orderby=rarity direction=desc limit=175 offset=0 prefer=default` paging
+shape as the flagship reproducer, population B varied over 3 page sizes instead for hash-split
+diversity, population C the same real name:/artist:/flavor:/watermark:/o: shape as Round 20's).
+Calibration/held-out split by a STABLE hash of the query string (`hashlib.sha256`, not Python's
+built-in `hash()` -- Round 20's own script used the un-fixed builtin despite flagging the exact bug
+in its own comment; this round's script fixes it for real, confirmed by re-running the fit twice and
+getting IDENTICAL splits and coefficients both times, unlike the builtin-hash version, which gave
+visibly different fitted coefficients across two runs before the fix).
+
+`StreamedSelect`: **0 distinct design rows from 0 calibration rows** -- confirms Round 20's own
+finding again: `StreamedSelect` never enters contention on this acquire's own paging shape, so
+`STREAM_PLANE_LEAF_NS` cannot be informed by this sample at all, same as before.
+
+`GatheredScan`, fitted coefficients (IRLS on the log ratio, ridge-anchored to shipped values, same
+method as Round 20's script):
+
+```
+CARD_PASS       current=3.000   fitted=2.708
+FLOOR           current=18.890  fitted=7.310
+PLANE_LEAF_NS   current=0.000   fitted=4.346   (order of magnitude agrees with Round 19's own two
+                                                 independent measurements: 1.0-1.5 ns/leaf kernel
+                                                 micro-benchmark, 2.6-2.9 ns/leaf real-corpus paired-diff)
+```
+
+HELD-OUT agreement (real deployed formula, raw `scan_units`), per population:
+
+```
+             median pred/meas   within-25%   median |log ratio|
+A  before         0.333            17%             1.099
+A  after           0.983            15%             0.838
+B  before         1.745            17%             0.606
+B  after           1.081             6%             0.626
+C  before         1.464             9%             0.395
+C  after          1.037            36%             0.391
+pooled before     0.600            16%             0.824
+pooled after      1.006            15%             0.736
+```
+
+The MEDIAN and log-ratio numbers read like a real improvement across the board -- median moves to
+within 2% of 1.0 for both A and pooled. **This is misleading on its own**, and checking why is what
+makes this round's negative result more precise than Round 19's:
+
+### Why it still fails: the fit improves small-`eval_domain` leaves and badly overshoots large ones, and the flagship reproducer is exactly the latter
+
+Breaking population A's held-out rows down by which existential leaf value they use (the same
+breakdown Round 19 used to first spot this shape):
+
+```
+leaf                improved / total (held-out, GatheredScan, by |log ratio| before vs after)
+border:black          0 / 12
+r:common              0 / 14
+r:rare                0 / 17
+r:uncommon            0 / 13
+border:borderless    15 / 17
+border:gold          13 / 15
+border:white          7 / 10
+f:oldschool          11 / 12
+r:mythic             12 / 13
+```
+
+A clean split: the four leaves with the LARGEST bare selectivity in this corpus (`border:black` 98.9%,
+`r:common`/`r:uncommon`/`r:rare` 32-35%) get WORSE on every single held-out row: their `eval_domain` is
+tens of thousands, and the fitted `PLANE_LEAF_NS` rate, multiplied by both `eval_domain` and the
+range's own leaf count, overshoots the true cost by 2-3x for exactly these rows. The five
+minority-selectivity leaves (a few hundred to a few thousand `eval_domain`) improve substantially,
+because the SAME flat rate is proportionally much smaller against their much smaller `eval_domain`.
+Population A's TOTAL absolute ns error is **2.67x WORSE** after the fit (12,676,427ns -> 33,865,296ns
+summed over 123 held-out rows), dominated by the large-`eval_domain` leaves' now-larger absolute
+errors outweighing the small-`eval_domain` leaves' improvement.
+
+**The flagship reproducer is exactly the worst-case leaf** (`border:black`, the corpus's single most
+selective existential value): re-measured directly (`eval_domain=24,734`, `plane_extra_eval_leaves=19`,
+matching Round 19's own node-count exactly for this query's compiled shape):
+
+```
+cmc>=1 cmc<=5 border:black, unique=card, orderby=rarity desc, limit=175, offset=0:
+  measured range:        1,054,584 - 1,096,417 ns
+  before (shipped):        728,547 ns   (under by ~1.4-1.5x -- the gap this whole doc opened with)
+  after (fitted):        2,477,459 ns   (OVER by ~2.3x -- the fit makes the flagship query's own
+                                          prediction WORSE, not better)
+```
+
+This is the same shape of failure Round 19 found ("the additive fix does not close the gap, it
+overshoots past it"), but the mechanism is now precise where Round 19's was not: Round 19 attributed
+it to "the floor already unevenly absorbs part of the compound-leaf effect" from an unknown-shaped
+population-dependent average baked into `GATHER_RESIDUAL_FLOOR_NS`. This round's clean data shows the
+unevenness correlates cleanly and monotonically with `eval_domain`'s own SIZE (a 50-100x range across
+this population's leaf values) -- not a vague "population mix" but a specific, checkable quantity. A
+flat `ns/leaf` rate multiplied by `eval_domain` is structurally the wrong shape for a population whose
+`eval_domain` spans two orders of magnitude: it can be right at one scale or the other, never both.
+
+Population B (bare leaf, `scan_units` confound already accounted for via the counter-check
+substitution) shows a smaller but real absolute improvement (abs error ratio 0.480, roughly halved) --
+consistent with `plane_extra_eval_leaves` being `0` for every population-B row by construction (a
+single leaf), so `PLANE_LEAF_NS` contributes nothing there and the improvement is coming entirely from
+`FLOOR` moving down (18.89 -> 7.31), which happens to fit population B's own residual-tier cost better.
+Population C shows abs error ratio 1.167 (essentially flat, mildly worse) -- smaller sample (11
+held-out rows) and no `plane_extra_eval_leaves` signal either, so this population mostly just absorbs
+whatever `FLOOR`/`CARD_PASS` move does, which is a wash here.
+
+### Why `GATHER_CARD_PASS_NS`/`GATHER_RESIDUAL_FLOOR_NS` themselves cannot be safely moved by this fit alone, either
+
+Even setting `PLANE_LEAF_NS` aside, the fit also moves `FLOOR` from 18.89 to 7.31 and `CARD_PASS` from
+3.00 to 2.71 -- outside this round's sample's own information: these two constants are shared across
+the WHOLE residual-tier population (every `GatheredScan`/`StreamedSelect` query with a nonzero verify
+tier, not just existential-plane queries), and Round 19 already flagged moving them from a narrow
+3-population sample as a risk to the broader population that originally calibrated them. This round's
+sample cannot see that broader population at all, so shipping the fitted `FLOOR`/`CARD_PASS` values
+alongside a `0.0` `PLANE_LEAF_NS` (i.e., taking only "half" the fit) was considered and rejected for
+the same reason -- it is not a smaller, safer version of this round's finding, it is an untested
+change to constants this round has no evidence about outside this narrow slice.
+
+### Outcome: discarded, reverted
+
+**Negative result, code reverted.** `cost.rs`/`lib.rs`/`planes.rs`/`tests.rs` are back to
+`costcell/trunk` -- `git diff --stat costcell/trunk` reads empty. `cargo test --release`: 176/176
+passed (unchanged). `cargo test` (debug): 177/177 (unchanged). `cargo clippy --all-targets -- -D
+warnings`: clean (unchanged, no code to lint). No bench re-runs against a reverted build -- there is
+nothing to confirm; the plumbing was validated as a pure no-op (176/177 before the rebuild, 177/178
+with it, identical predicted_ns everywhere with the new constants at `0.0`) before this round decided
+not to ship the nonzero rate.
+
+What this round DID establish, worth keeping for whoever picks this up next:
+
+- **The `eval_domain` blocker Rounds 22/24 fixed is real and confirmed cleared** (98.4% within 15% on a
+  fresh, independent 243-row check) -- clearing it was necessary but, as Round 22 itself already
+  hedged, not sufficient. This round is the first to actually test that gap and confirm the refit still
+  fails on clean data, closing the open question.
+- **A NEW, more precise characterization of why a flat additive leaf-rate term fails**: it is not (only)
+  "the floor absorbs an uneven population mix" (Round 19's framing) -- it is that `eval_domain` itself
+  spans 50-100x across this population's leaf values, and a rate multiplied by `eval_domain` cannot be
+  right at both ends. The four highest-selectivity leaves (`border:black`, `r:common/uncommon/rare` --
+  not coincidentally, the corpus's most COMMON real-traffic shapes) get WORSE on 100% of held-out rows;
+  the five lower-selectivity leaves improve substantially. The flagship reproducer uses the single
+  worst leaf for this mechanism (`border:black`), which is why its own prediction moves from
+  under-charged (0.65x) to badly over-charged (2.3x) rather than landing closer to 1.0.
+- **A genuinely NEW confound was found and handled cleanly**: `scan_units` (not `eval_domain`) is a
+  real, severe, still-unfixed error source for the bare-existential-leaf population specifically (median
+  4x under-prediction) -- confirmed at a fresh, larger sample than Round 17/20's. This round's fit
+  script accounted for it via a counter-check substitution (fit against realized `printings_examined`,
+  report held-out against the real deployed `scan_units` feature) rather than letting it silently
+  corrupt the CARD_PASS/FLOOR/LEAF fit the way `eval_domain`'s confound corrupted Round 20's attempt --
+  a concrete methodological answer to this round's own brief, reusable by whoever revisits this next.
+- **A real next step, concretely scoped**: a SATURATING or bucketed leaf-rate term (e.g., a rate that
+  caps its total per-candidate contribution, or a small number of `eval_domain`-selectivity BANDS each
+  with their own calibrated rate) rather than a flat linear one, would not have this specific failure
+  mode -- large-`eval_domain` leaves would stop scaling the per-leaf charge past whatever cap or band
+  applies to them. Not attempted here (a materially different, larger mechanism than "rebuild Round
+  19/20's plumbing and refit," and this round's blast radius/brief scoped the attempt to that
+  plumbing specifically) -- flagged as the concrete next step for whoever picks this arc up again.
+- `scripts/fit_cost_model.py` was read again as reference only, not used, for the same reason Round 20
+  gave (it refits every coefficient in an arm at once, too wide a blast radius for a 3-constant scoped
+  fit). `fit_round25.py` (this session's scratchpad, not checked in) rebuilds Round 20's design with the
+  `hashlib` split fix and the `scan_units` counter-check substitution described above.
