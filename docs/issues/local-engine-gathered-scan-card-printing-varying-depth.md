@@ -180,6 +180,7 @@ total regret by 0.0 ms).
 | 7 | downward `scan_units` scale (`COMPOSE_SAME_RANGE_BROAD_SCAN_SCALE`) for `PrintingCompose`'s OWN `range_too_broad_to_narrow` reset, gated on a NEW `is_same_index_range_only` (bare single range leaf, or a fused same-field two-sided bound) — the rest of Round 5/6's "single:range" bucket that `CardRangePopcount` never reaches | kept | 17-18% both builds, unchanged (noisy at this cell's grain, same as every prior round); the pooled `GatheredScan/printing_compose` row (all `unique` modes) unchanged at 24% both builds — expected, small slice of a much larger diverse pool | none, within run-to-run noise; regret matrix unchanged (95% `printing_compose` share both builds) | held-out paired-diff (controlled): 6,422 impr / 33 regr, 304.8M → 57.6M abs `scan_units` error; new scale 0.52; `eval_domain` left untouched (measured exact, median/mean 1.000); population confirmed to be a SEPARATE, independently-broken slice of "single:range" from Round 6's, reached via a different acquire branch (`printing_compose`, not `card_range_popcount`) for two independent reasons — see Round 7 below |
 | 8 | diagnostic: bucket candidates-acquire `GatheredScan`/`card` error by shape | diagnostic | 13% (n=22,190, median 0.60), unchanged from checkpoint — expected, no code shipped | n/a | see Round 8 below — pivots off the printing-range-index family entirely (Rounds 1-7's whole target) onto `Prep::Candidates`, the OTHER acquire branch feeding this same pooled cell. Finds `eval_domain` exact (median 1.00 against `cards_visited`) and `scan_units` also near-exact-to-UNDER-predicting (median 1.00, several high-magnitude buckets 1.2-1.8x, i.e. real work exceeds the estimate) — the OPPOSITE direction from the pooled ns-space over-cost (median 0.49-0.60), so neither size feature is the culprit; the bug is in how `GATHER_*` rate/fixed constants convert those (correct) features into ns for the `candidates` (and sibling `plane`) acquire branch specifically. Two concrete mechanisms found: (a) `GATHER_FIXED_COST_NS` (169.6ns) is ~4x too high for the 32% of the sample with zero matches (median measured 42ns); (b) card-mode's `feats.matches = count` (unconditional, `candidate_feats`, lib.rs~11776) ignores real residual selectivity — `is:vanilla`-shaped high-selectivity residuals push 2-3% of the predicted match count, and the whole per-candidate verify-tier charge (`GATHER_CARD_PASS_NS + max(tier_ns, GATHER_RESIDUAL_FLOOR_NS)` × `eval_domain`) doesn't discount for short-circuit-driven cheap-average-case cost the way real `card_pass` behaves at low match rates. A THIRD population invisible to `bench_cost_model_agreement.py`'s own flat-conjunction sampler — Or/negation/nested-paren structures via `structured_query()` — shows the opposite tail shape (median near 1.0, p90 1.25-3.48x UNDER-cost) and needs its own round. |
 | 9 | lower fixed cost (`GATHER_FIXED_COST_ZERO_MATCH_NS`) for `PhysicalPlan::GatheredScan`'s zero-match rounds, gated on `matches == 0` the same way the arm's `tier_ns > 0.0` neighbor is gated — the first fix in this doc inside `cost.rs`'s cost FORMULA rather than `lib.rs` feature estimation | kept | 11% → 30% (n=38,435→38,889, median 0.57→0.77) — largest single-round movement since Round 0; by-unique `GatheredScan`/`card` cell flips FAIL (0.69) → PASS (0.80) | `GatheredScan/printing_compose` unchanged (median 1.15→1.14, 24%→24%); `GatheredScan/printing_range_scan` and `/card_range_popcount` unchanged; `bench_regret_matrix.py` total regret unchanged (27.6ms both builds); `bench_query_latency_ab.py` same-build canary swings by a comparable magnitude to the real A/B diff (-0.2µs vs -0.3µs) — no real latency effect claimed | held-out paired-diff (hash-of-query split, 9,890 zero-match rows): calibration half (n=4,944) median measured `plan_self_ns` sets constant to 42.0; held-out half (n=4,946) 4,577 impr / 369 regr / 0 tied, 530,256 → 103,110 abs ns error (5.1x), median ratio 0.248 → 1.000, within-25% 0.1% → 57.7%. Confirmed a real risk this round could not fully close within its `cost.rs`-only blast radius: `plan_cost` costs EVERY candidate plan from ONE shared `PlanFeatures` per acquire (`lib.rs:12917`), so `matches == 0` also fires for `GatheredScan` costed as a competitor/picked plan under `printing_compose`/`card_range_popcount`/`printing_range_scan` (RANGE_ACQUIRES) acquire, where `eval_domain == 0` is an unset accounting default rather than a real empty candidate list, and dispatch pays a real (sometimes large, e.g. 4,959ns median for one `printing_compose` slice) `prepare_candidates` rebuild this arm has no term for at all — pre-existing (already 29x under-predicted before this round) and NOT introduced by this fix, but made numerically worse in isolation (29x → 118x under on that slice). Checked for real routing impact directly (a same-build wheel diff on two flip cases, `date<1993-08-05`/`tix<0.01` under `printing_range_scan`) and via `bench_regret_matrix.py` (total regret 27.6ms unchanged) and `bench_cost_model_agreement.py` (no other cell moved) — no measurable regression found, but the gate is a correlated proxy, not the exact phenomenon, for this sliver of RANGE_ACQUIRES rows; flagged for a future round that can touch `lib.rs` to add an acquire-branch-aware feature |
+| 28 | scope `COMPOSE_RANGE_AND_BROAD_SCAN_SCALE` (Round 4) and `COMPOSE_SAME_RANGE_BROAD_SCAN_SCALE` (Round 7) to `Mode::Card` only, leaving `Mode::Printing`/`Mode::Artwork` at the pre-existing unscaled `n_printings` ceiling | kept | not this doc's own metric (see below) | pooled `scan_units` feature accuracy (`bench_feature_accuracy.py`), the metric a fresh `main`-vs-`costcell/trunk` A/B (Round 27) found regressed: median 0.70 (UNDER-COUNTS) → 0.94 (clean), against `main`'s own 1.00 | see "Round 28" narrative below — both scales were fit exclusively on `unique=card` samples (each round's own doc says so) but applied unconditionally to all three modes; `Mode::Printing`/`Mode::Artwork`'s real `printings_examined / n_printings` reads EXACTLY 1.000 (zero spread) for this guard-fired population, so the card-only-derived scale was silently manufacturing an under-count for two modes it was never calibrated against |
 
 ### Round 1
 
@@ -1158,6 +1159,119 @@ exact phenomenon Round 8 scoped ("`Prep::Candidates` zero-match"), and a future 
 `lib.rs` should add an acquire-branch-aware feature (or a `real_candidates_built: bool`) to gate this
 cleanly rather than relying on this round's empirical "checked, found immaterial" result indefinitely.
 
+### Round 28
+
+Round 27 ([reference-engine-cost-model-cleanup-final-ab.md](reference-engine-cost-model-cleanup-final-ab.md))
+ran the first fresh, paired `main`-vs-`costcell/trunk` A/B this whole 27-round effort had done and
+found a real, previously-invisible regression: `bench_feature_accuracy.py`'s pooled `scan_units`
+feature (graded against the real `printings_examined` counter, not against a rate-fit like
+`bench_cost_model_agreement.py`) reads clean on `main` (median 1.00) but `UNDER-COUNTS` on
+`costcell/trunk` (median 0.70). This section is the follow-up round tasked with finding and fixing it.
+
+**Bisection.** Built an isolated release wheel at every `Engine:` commit between `main` and
+`costcell/trunk`'s tip (17 candidates) and ran `bench_feature_accuracy.py`'s pooled `scan_units`
+reading at each. Clean through Round 6 (`ce860337`, pooled median 0.94). The very next commit,
+`e1c40466` ("A Broad-Guard Scale for PrintingCompose's Own Bare/Fused Range Reset", this doc's own
+Round 7 above), drops it to 0.69 — the exact commit that tips the pooled metric from PASS to FAIL.
+Every commit after that (Rounds 9, 14/15's verify-bypass work, Round 22's `best_other` gate, Round
+24's `PairTotals` extension) holds steady at 0.68-0.70, confirming Round 7 is the trigger, not a later
+round compounding an already-broken number.
+
+**Mechanism.** `e1c40466`'s own fit — and Round 4's `COMPOSE_RANGE_AND_BROAD_SCAN_SCALE` fit above it
+— were each calibrated exclusively against `unique=card` samples (Round 4: "Sampled 1,500 and2/and3
+RANGE_FAMILIES queries (`unique=card`..."; Round 7: "the same shape" as Round 6's own
+`unique={"card"}` generator). But the guard both scales live in (`acquire_plan_features`, the branch
+starting `let (eval_domain, scan_units) = if ... range_too_broad_to_narrow(...)`) runs *after* the
+`match mode { Mode::Printing => ..., Mode::Card => ..., Mode::Artwork => ... }` block, unconditional on
+`mode` — so both scales were applied to `Mode::Printing`/`Mode::Artwork` too, shapes neither
+calibration sample ever contained.
+
+Checked directly rather than assumed: a fresh sample of this exact guard-fired population, split by
+`unique`, reading `printings_examined / n_printings` (the real, unscaled ground truth):
+
+```
+('broad', 'card'):     n=303  p10=0.520  p50=0.520  p90=1.127
+('broad', 'printing'): n=230  p10=0.520  p50=0.520  p90=0.520
+('broad', 'artwork'):  n=956  p10=0.520  p50=0.520  p90=0.520
+```
+
+`Mode::Printing`/`Mode::Artwork` read **exactly** 0.520 at every percentile — zero spread, because
+`printings_examined == n_printings` on every single row: those two modes' materializing kernels never
+short-circuit, so a query broad enough to fire this guard really does walk the *entire* candidate
+printing span, always. `Mode::Card`'s own kernels do short-circuit per candidate (the property both
+scales were fit to exploit), which is why its own ratio has real spread (p90 1.127, not pinned to
+0.520). Applying `COMPOSE_SAME_RANGE_BROAD_SCAN_SCALE`/`COMPOSE_RANGE_AND_BROAD_SCAN_SCALE` to
+Printing/Artwork mode was therefore manufacturing a clean, deterministic ~0.52x/0.7x under-count out
+of a population whose true ratio is 1.0 — not a mixed population, not noise, a mode-scoping bug with a
+single, uniform failure mode.
+
+This is *also* why the pooled metric moved as much as it did despite `scan_units [printing_compose]`'s
+own per-acquire median barely changing (0.39 → 0.39 across the fix): the guard-fired subset is only
+~4-12% of `printing_compose`'s rows per mode (dwarfed by the pre-existing, separately-tracked "narrow"
+bucket — the `range_too_broad_to_narrow`-NOT-fired population Round 7 above already named and
+deferred: "a card-count-shaped estimate undershooting a printing count... not fixed this round"). But
+before this fix, those rows sat *above* 1.0 (the OLD unscaled `n_printings` ceiling, ~1.9-2.0x
+over-counted per Round 7's own measurement) — moving them down to 0.52 didn't change the sub-bucket's
+own median, but it did remove ~1,500-2,200 rows from *above* the global rank used to compute the
+POOLED median, letting that rank fall into the dense, already-under-counted "narrow" bucket below it.
+Round 7's fix was a real, validated improvement for the `unique=card` population it targeted — the
+mode-scoping bug is what let a genuine fix for one mode quietly worsen the pooled number by removing a
+compensating error for two others.
+
+**Fix.** Gated both `is_cross_index_range_and`'s and `is_same_index_range_only`'s scale branches on
+`matches!(mode, Mode::Card)`; `Mode::Printing`/`Mode::Artwork` now fall to the existing `else` branch
+(the unscaled `n_printings` ceiling, already correct for every other shape reaching this guard). Zero
+new computation — `mode` is already a bound local, the added check is a single enum-tag comparison —
+so this carries no acquire-time cost, per this doc's own pre-computation constraint.
+
+**Results** (isolated release wheels, `bench_feature_accuracy.py --seconds 300 --seed 0`, `main` @
+`ca016410`, branch tip @ `865fb03e`):
+
+```
+                          pooled scan_units median   verdict
+main                              1.00                (clean)
+costcell/trunk (unfixed)         0.70                UNDER-COUNTS
+costcell/trunk (fixed)           0.94                (clean)
+```
+
+The regression is closed: 0.94 sits inside the same `[0.8, 1.25]` agreement band `main`'s own 1.00
+does, with no verdict flag. The residual gap between 0.94 and `main`'s 1.00 is the two *other*,
+already-documented, separately-tracked contributors this round did not touch: the "narrow"-bucket
+`PrintingCompose` under-count Round 7 itself named and deferred above, and the era-correlated
+print-position confound for bare existential leaves
+([local-engine-domain-cards-existential-arith-and.md](local-engine-domain-cards-existential-arith-and.md)'s
+Round 25 section, "confirmed real, confirmed severe... out of \[that round's\] blast radius"). Both are
+real, both pre-date this fix, and neither is a regression introduced by any commit on this branch —
+fixing either would need touching `domain_cards`'s own broad-range estimate for bare ranges (the
+`RangeCardCounts::distinct_cards` undercount this doc's own `scan_all` comments already name), which
+nine prior rounds of this same effort found hard and did not attempt; left open, matching this doc's
+own "Next steps for a future round" note under Round 7.
+
+**Correctness gates.** `cargo test --manifest-path card_engine/Cargo.toml`: 177 passed, 0 failed
+(debug); `--release`: 176 passed, 0 failed. `cargo clippy --manifest-path card_engine/Cargo.toml
+--all-targets -- -D warnings`: clean. `git diff --stat costcell/trunk`: `card_engine/src/lib.rs` only
+(19 lines).
+
+**Confirmation pass**, before (unfixed tip) vs after (fixed), plus `main` where noted:
+
+- `bench_regret_matrix.py --seconds 120 --mode realistic` (routed-phases builds): mean regret/query
+  0.94µs (tip) → 0.95µs (fixed) → 0.95µs (`main`) — unchanged within noise; `picked -> best` SHARE
+  table proportionally identical (`Perm` 69%→69%, `Gather` 15%→14%, `StreamedSelect -> GatheredScan`
+  50%→47% of a shrinking pie), no anomalous transition.
+- `bench_cost_model_agreement.py --seconds 300 --seed 0`: 12/17 (tip) → 13/17 (fixed) cells inside
+  `[0.8, 1.25]`; every reported cell moved by less than 0.05 in ratio, one boundary flip
+  (`GatheredScan/candidates` 0.78→0.81) consistent with sampling noise, not a real shift — matches
+  this tool's own documented insensitivity to a feature-only fix (a rate elsewhere absorbs it).
+- `bench_query_latency_ab.py --mode realistic --sample 800 --seed 1`, two order-alternated rounds plus
+  a same-build canary: round 1 (tip, fixed) `+0.9µs` "B is SLOWER"; round 2 (tip, fixed) `-0.3µs` "B is
+  FASTER"; canary (fixed vs fixed) `0.0µs`, CI `[-0.2, +0.3]`, no detectable difference. Opposite signs
+  of comparable magnitude across the two real rounds, both inside the canary's own noise band — no
+  detectable latency effect, expected for a zero-new-computation accuracy fix.
+- `bench_pairwise_ordering.py --seconds 60`, realistic and uniform, `GatheredScan` vs `PrintingCompose`:
+  realistic overall 89%→89% (`[printing_compose]` 91%→90%, `[plane]` 84%→86%); uniform overall 87%→87%
+  (`[printing_compose]` 86%→86%). Essentially unchanged in both modes — unlike Round 7's own change,
+  this fix does not touch the ordering that mattered to `#852`.
+
 ## Confirmation runs
 
 Round 1 (match-density depth proxy, kept):
@@ -1191,3 +1305,8 @@ Round 9 (`GATHER_FIXED_COST_ZERO_MATCH_NS`, kept):
   `GatheredScan/printing_compose`, `/printing_range_scan`, `/card_range_popcount` all unchanged within
   noise (see Round 9 above for the exact before/after). 12/17 acquire-branch cells inside [0.8, 1.25]
   both builds; by-unique table improves 9/12 → 10/12 (`GatheredScan/card` flips FAIL 0.69 → PASS 0.80).
+
+Round 28 (`Mode::Card`-scope both broad-guard scan-units scales, kept): see the full "Round 28"
+narrative above for the bisection, mechanism, before/after numbers (`main` 1.00, unfixed tip 0.70,
+fixed 0.94), and confirmation-pass results (regret matrix, cost-model agreement, latency A/B with
+canary, pairwise ordering) — all inline there rather than duplicated here.

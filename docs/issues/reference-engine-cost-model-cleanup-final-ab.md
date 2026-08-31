@@ -81,25 +81,36 @@ One FAIL flip, both directions checked:
 
 ### `bench_feature_accuracy.py --seconds 300 --seed 0` (mode=uniform, default)
 
-The one place this survey found a real, aggregate regression:
+**Fixed in Round 28** ([local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md)'s
+own Round 28 section has the full bisection, mechanism, and confirmation pass) — recorded here as this
+survey originally found it, plus the resolution:
 
-| feature (pooled) | `main` median | `costcell/trunk` median | verdict |
-|---|---|---|---|
-| `scan_units` | 1.00 (no flag) | 0.70 | **UNDER-COUNTS** (new) |
+| feature (pooled) | `main` median | `costcell/trunk` median (as surveyed here) | `costcell/trunk` median (post Round 28 fix) | verdict |
+|---|---|---|---|---|
+| `scan_units` | 1.00 (no flag) | 0.70 | 0.94 | UNDER-COUNTS → clean |
 
-`main`: 697,375 feature-rows, `scan_units` reads clean (median 1.00, no verdict flag). `costcell/trunk`:
-705,768 rows, `scan_units` reads `0.70` and is flagged `UNDER-COUNTS` pooled and across nearly every
-`unique`/`prefer` slice. This is not a new discovery — it reproduces Round 26's own number for this
-exact cell (`reference-engine-cost-model-state-2026-08.md`, "Feature accuracy" section: median 0.70,
+`main`: 697,375 feature-rows, `scan_units` reads clean (median 1.00, no verdict flag). `costcell/trunk`
+as surveyed by this round: 705,768 rows, `scan_units` reads `0.70` and is flagged `UNDER-COUNTS` pooled
+and across nearly every `unique`/`prefer` slice. This reproduced Round 26's own number for this exact
+cell (`reference-engine-cost-model-state-2026-08.md`, "Feature accuracy" section: median 0.70,
 "already covered, the era-correlated print-position confound... plus the printing-varying range depth
-work") to two decimal places. What this A/B adds is the piece Round 26 didn't have: **`main` does not
-have this problem.** The confound is a byproduct of this branch's own fixes (the printing-varying
-range-depth work and the existential-AND leaf-rate work, Rounds 1-9 and 17-25) changing how depth is
-estimated for populations where `main`'s simpler, less-targeted estimate happened to land near 1.0 on
-this corpus. Round 26 cross-checked a related over-count (`compose_scan_printings`) against the regret
-matrix and found it low-severity; this survey's own regret matrix (below) shows the same holds for
-`scan_units`'s degradation — total regret still fell 41% despite it, so it is real and worth naming
-plainly, but it is not currently costing routing decisions.
+work") to two decimal places, and this A/B added the piece Round 26 didn't have: `main` does not have
+this problem. **Round 28 bisected it precisely**, rather than accepting the "byproduct of this
+branch's own fixes" framing as the final word: the actual trigger was a single commit
+(`e1c40466`, this branch's own Round 7) whose broad-guard `scan_units` scale — fit exclusively against
+`unique=card` samples, exactly like its sibling `COMPOSE_RANGE_AND_BROAD_SCAN_SCALE` from Round 4 —
+was applied unconditionally to `Mode::Printing`/`Mode::Artwork` too, where the real
+`printings_examined / n_printings` ratio for that guard-fired population reads an exact, zero-spread
+1.0 (those modes' kernels never short-circuit). Scoping both scales to `Mode::Card` only closed the
+gap: pooled `scan_units` median `0.70` (UNDER-COUNTS) → `0.94` (clean, inside `main`'s own `[0.8,
+1.25]` band), confirmed via a fresh isolated-wheel `main`-vs-fixed-tip A/B at this same `--seconds 300
+--seed 0` protocol. The residual `0.94` vs. `main`'s `1.00` is the two other, already-documented,
+un-touched-by-this-fix contributors (`PrintingCompose`'s "narrow"-bucket under-count, named and
+deferred by Round 7 itself, and the era-correlated existential-leaf confound Rounds 17/20/25 already
+characterized as out of their own blast radius) — real, pre-existing, not introduced by any commit on
+this branch, and not attempted this round; see Round 28's own section for why (the root cause is
+`domain_cards`'s documented broad-range undercount for bare ranges, which nine prior rounds already
+found hard to fix directly).
 
 No other feature changed materially in the pooled table.
 
@@ -222,8 +233,11 @@ suggest, and it is not uniformly positive.
 - `#852`'s own internal "69%→97%" figure does not survive a head-to-head against `main` — the true
   number is 80%→90%, because the internal baseline had already absorbed some of Round 0-10's fixes.
 - `scan_units` pooled feature accuracy got measurably worse (`main` 1.00 clean → `costcell/trunk` 0.70,
-  UNDER-COUNTS) — a real, `main`-relative regression, though a documented and (per this round's own
-  regret-matrix cross-check) currently low-severity one.
+  UNDER-COUNTS) — a real, `main`-relative regression, low-severity per this round's own regret-matrix
+  cross-check, and **fixed by Round 28**: a mode-scoping bug (a `unique=card`-only-calibrated scale
+  applied to Printing/Artwork mode too) traced to Round 7's own `e1c40466`, closed by scoping it to
+  `Mode::Card`. Pooled median now `0.94`, inside the same band `main`'s `1.00` sits in — see
+  `local-engine-gathered-scan-card-printing-varying-depth.md`'s Round 28 section.
 - Pairwise ordering for `GatheredScan` vs `PrintingCompose` under `printing_compose` acquire got worse
   under `uniform` sampling (91%→87%) even as it improved under `realistic` sampling (80%→90%) — the
   branch traded rare-tail accuracy for common-case accuracy on this one cell, which is a defensible

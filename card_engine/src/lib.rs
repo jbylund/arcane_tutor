@@ -12678,9 +12678,24 @@ fn acquire_plan_features(
             // branch (a broadcast legality, a range mixed with a collection/rarity/numeric_other leaf,
             // ...) never had either scale's calibration sample in it, so it keeps today's unscaled
             // `n_printings` ceiling.
-            let scan_units = if is_cross_index_range_and(composed, indexes) {
+            //
+            // BOTH scales are `Mode::Card`-only, and deliberately so (Round 28 fix, #costcell-28):
+            // both were fit exclusively against `unique=card` samples (Round 4's re-derivation and
+            // Round 7's fit are each explicit about this), because card mode's kernels short-circuit
+            // per candidate and printing/artwork mode's do not -- confirmed directly against a fresh
+            // `bench_feature_accuracy.py`-style sample of this exact guard-fired population: `scan_units
+            // == n_printings` held EXACTLY on every `Mode::Printing`/`Mode::Artwork` row (p10/p50/p90 of
+            // `printings_examined / n_printings` all landing on 1.000, zero spread -- those loops really
+            // do walk the full candidate-card printing span with no early exit), while `Mode::Card`'s
+            // same population reads the ~0.52/0.7 fraction that motivated the fit. Applying either scale
+            // to `Mode::Printing`/`Mode::Artwork` was silently manufacturing a `Mode::Card`-shaped
+            // under-count out of a population that had no such property, and is what tipped
+            // `bench_feature_accuracy.py`'s pooled `scan_units` cell from clean (main) to UNDER-COUNTS
+            // (this branch) -- see `docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md`'s
+            // Round 28 entry.
+            let scan_units = if matches!(mode, Mode::Card) && is_cross_index_range_and(composed, indexes) {
                 ((n_printings as f64) * COMPOSE_RANGE_AND_BROAD_SCAN_SCALE).round() as usize
-            } else if is_same_index_range_only(composed, indexes) {
+            } else if matches!(mode, Mode::Card) && is_same_index_range_only(composed, indexes) {
                 ((n_printings as f64) * COMPOSE_SAME_RANGE_BROAD_SCAN_SCALE).round() as usize
             } else {
                 n_printings as usize
