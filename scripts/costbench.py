@@ -144,6 +144,11 @@ PLAN_KEYS = frozenset(
     # `page_span * n_cards / matches`, which assumes matches are spread uniformly through the
     # permutation -- an assumption worth grading rather than trusting.
     "perm_steps",
+        # StreamedSelect's small-total branch only (0 for every other plan/exit): printings
+        # `push_card_matches` re-examined in the second, page-selecting pass over every matching
+        # card -- the redo `printings_examined` (captured only from the first, counting-only pass)
+        # structurally cannot see. Round 31 of the printing-varying-leaf depth ledger.
+        "redo_examined",
         "ns_setup",
         "ns_loop",
         "ns_finish",

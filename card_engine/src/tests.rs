@@ -13869,3 +13869,120 @@ fn stream_scan_units_prices_the_small_total_redo_for_a_printing_varying_leaf() {
         );
     }
 }
+
+/// Round 31 of the printing-varying-leaf depth ledger
+/// (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md): `PhaseStats::redo_examined`
+/// must actually be populated from `push_card_matches`'s return value in `run_query_streamed`'s
+/// `total <= STREAM_MIN_MATCHES` branch, not discarded as a bare statement the way it was before this
+/// round (Round 30 had to fit `STREAM_SMALL_TOTAL_REDO_BIAS` against a wall-clock residual precisely
+/// because no structural counter existed). Reverting the capture back to a bare statement would leave
+/// this field at its `PhaseStats::default()` zero forever, which is exactly what the first assertion
+/// below rules out.
+///
+/// One corpus, two disjoint match groups, so both P3 exits are covered in one fixture:
+/// - `cmc == SMALL_CMC` selects `SMALL_GROUP` cards -- under `STREAM_MIN_MATCHES`, so P3 takes the
+///   small-total gather-and-quickselect branch this round's counter targets.
+/// - `cmc == LARGE_CMC` selects `LARGE_GROUP` cards -- over `STREAM_MIN_MATCHES`, so P3 takes the
+///   permutation walk instead, and `redo_examined` must read 0 there (that branch's own
+///   `push_card_matches` call is deliberately left uninstrumented -- its cost already flows into
+///   `ns_loop`/`ns_finish` via the walk's wall-clock timing, unlike the small-total branch's second
+///   pass, which no existing counter could see at all).
+#[test]
+fn redo_examined_counts_only_the_small_total_redo_pass() {
+    const SMALL_GROUP: usize = 500; // well under STREAM_MIN_MATCHES (1,024)
+    const LARGE_GROUP: usize = 2_000; // well over STREAM_MIN_MATCHES
+    const N: usize = SMALL_GROUP + LARGE_GROUP;
+    const SMALL_CMC: u8 = 1;
+    const LARGE_CMC: u8 = 2;
+    const LIMIT: usize = 10;
+
+    let mut vocab = VocabInterner::new();
+    let mut cards = Vec::with_capacity(N);
+    for i in 0..N {
+        let mut c = stub_card((i + 1) as u128, TYPE_CREATURE, &[], &mut vocab);
+        c.cmc = Some(if i < SMALL_GROUP { SMALL_CMC } else { LARGE_CMC });
+        cards.push(c);
+    }
+    // One printing per card: the redo pass's `examined` count is then bounded to exactly 1 per
+    // visited card under the default prefer's early-break arm, which is what the lower-bound
+    // assertion below rests on.
+    let data = store_of(cards, &vec![1; N], vocab);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let ctx = QueryCtx::from(archived);
+
+    let eq_filter = |cmc: u8| FilterExpr::NumericCmp {
+        lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Eq, rhs: NumExpr::Const(f64::from(cmc)),
+    };
+
+    // Small-total branch: matches must actually land at/under STREAM_MIN_MATCHES and the small-total
+    // exit (not the walk) must be the one that ran, checked directly via `perm_steps == 0` rather than
+    // assumed from the group size alone.
+    {
+        let params = kernel_params(Mode::Card, SortCol::Cmc, false, LIMIT, 0);
+        let (pe, filter) =
+            split_planes(eq_filter(SMALL_CMC), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
+        let mut streamed_filter = filter.clone();
+        take_phase_stats();
+        let streamed = run_query_with_plan(PhysicalPlan::StreamedSelect, &ctx, &params, &mut streamed_filter, None, pe.as_ref())
+            .expect("store_of builds the cmc permutation, so StreamedSelect is applicable");
+        let stats = take_phase_stats();
+        assert_eq!(streamed.0, SMALL_GROUP, "the small group's total must match its own group size exactly");
+        assert!(
+            streamed.0 <= *STREAM_MIN_MATCHES,
+            "fixture must land in the small-total population this round's counter targets"
+        );
+        assert_eq!(stats.perm_steps, 0, "small-total exit must not have taken the permutation walk");
+        assert!(
+            stats.redo_examined > 0,
+            "the small-total branch's redo pass ran (matches_pushed={}) but redo_examined read 0 -- \
+             push_card_matches's return value is being discarded again, exactly the Round 30 gap this \
+             round closed",
+            stats.matches_pushed,
+        );
+        // Every visited card contributes exactly one push and examines at least the one printing it
+        // chose (one printing per card here, so exactly one) -- so the sum can never fall short of the
+        // total matched, only meet or exceed it on a fixture with more printings per card.
+        assert!(
+            stats.redo_examined >= stats.matches_pushed,
+            "redo_examined ({}) must be at least matches_pushed ({}) -- each pushed match examined at \
+             least the one printing it chose",
+            stats.redo_examined, stats.matches_pushed,
+        );
+
+        // GatheredScan never redoes anything -- confirms the field stays at its zero default on the
+        // OTHER materializing plan for the identical query, not just "some plan somewhere".
+        let mut gathered_filter = filter.clone();
+        take_phase_stats();
+        let gathered = run_query_with_plan(PhysicalPlan::GatheredScan, &ctx, &params, &mut gathered_filter, None, pe.as_ref())
+            .expect("GatheredScan is always applicable");
+        let gathered_stats = take_phase_stats();
+        assert_eq!(gathered.0, SMALL_GROUP, "GatheredScan must agree with StreamedSelect on the total");
+        assert_eq!(gathered_stats.redo_examined, 0, "GatheredScan must never report a redo -- it pays one pass only");
+    }
+
+    // Walk branch: matches must land OVER STREAM_MIN_MATCHES and the walk (not the small-total exit)
+    // must be the one that ran, checked directly via `perm_steps > 0`.
+    {
+        let params = kernel_params(Mode::Card, SortCol::Cmc, false, LIMIT, 0);
+        let (pe, filter) =
+            split_planes(eq_filter(LARGE_CMC), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
+        let mut streamed_filter = filter.clone();
+        take_phase_stats();
+        let streamed = run_query_with_plan(PhysicalPlan::StreamedSelect, &ctx, &params, &mut streamed_filter, None, pe.as_ref())
+            .expect("store_of builds the cmc permutation, so StreamedSelect is applicable");
+        let stats = take_phase_stats();
+        assert_eq!(streamed.0, LARGE_GROUP, "the large group's total must match its own group size exactly");
+        assert!(
+            streamed.0 > *STREAM_MIN_MATCHES,
+            "fixture must land OVER STREAM_MIN_MATCHES so the walk, not the small-total gather, runs"
+        );
+        assert!(stats.perm_steps > 0, "walk branch must have actually stepped the permutation");
+        assert_eq!(
+            stats.redo_examined, 0,
+            "the walk branch's own push_card_matches call is deliberately uninstrumented -- its cost \
+             already flows into ns_loop/ns_finish via the walk's wall-clock timing, so this field must \
+             stay at its zero default there",
+        );
+    }
+}

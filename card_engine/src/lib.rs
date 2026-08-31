@@ -10764,6 +10764,21 @@ pub(crate) struct PhaseStats {
     /// `matches x EMIT + FIXED` ~ 397 ns throughout: under by 3.4x at the production corpus and 26x at
     /// 410k. Published so the estimate can be GRADED rather than assumed, like the other three counters.
     pub(crate) perm_steps: u64,
+    /// Printings `push_card_matches` re-examined in `run_query_streamed`'s `total <= STREAM_MIN_MATCHES`
+    /// branch's SECOND pass over every matching card -- the redo Round 30 of the printing-varying-leaf
+    /// depth ledger (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md) found
+    /// `printings_examined` structurally cannot see, because that counter is captured only from the
+    /// first, counting-only pass (`card_match_count`), which this second pass never touches.
+    ///
+    /// `push_card_matches` already computes and returns this per call (mirroring `card_match_count`'s
+    /// own `(c, examined)` pattern) -- capturing it here is free, not a new pass or a new computation,
+    /// just no longer discarding a value the redo loop already produces.
+    ///
+    /// Zero for every other executor and for P3's other two exits (the empty/past-the-end return and
+    /// the permutation walk, whose own per-step `push_card_matches` cost already flows into `ns_loop`
+    /// there and is not double-counted here -- see `perm_steps`'s own calibration). Nonzero only on the
+    /// exit this field exists to price: the small-total gather-and-quickselect branch, any mode.
+    pub(crate) redo_examined: u64,
     /// Per-query scratch setup, before the match loop starts. Split out because it is neither
     /// prepare nor match and it is NOT negligible: `run_query_streamed` zeroes an `n_cards`-long
     /// counts buffer here (~126 kB on the real corpus) no matter how few candidates it is about to
@@ -11027,7 +11042,8 @@ thread_local! {
     /// owned elsewhere: `paging_taken` by `PAGING_TAKEN` below, `ns_round_total`/`result_total` by
     /// `explain_analyze`, which fills them after the take.
     static PHASE_STATS: std::cell::Cell<PhaseStats> = const { std::cell::Cell::new(PhaseStats {
-        cards_visited: 0, printing_span: 0, printings_examined: 0, matches_pushed: 0, set_printings: 0, perm_steps: 0, ns_setup: 0,
+        cards_visited: 0, printing_span: 0, printings_examined: 0, matches_pushed: 0, set_printings: 0, perm_steps: 0,
+        redo_examined: 0, ns_setup: 0,
         ns_loop: 0, ns_finish: 0, ns_round_total: 0, ns_prepare: 0, result_total: 0, paging_taken: PagingTaken::NotEntered,
     }) };
 
@@ -11263,6 +11279,7 @@ fn exec_gathered_scan<'a>(
             matches_pushed: n_matches_pushed,
             set_printings: 0, // PrintingCompose-only; GatheredScan never composes pbits
             perm_steps: 0, // GatheredScan never walks the permutation
+            redo_examined: 0, // StreamedSelect-only; GatheredScan pays one pass, never a redo
             ns_setup: (t_loop - t_start).as_nanos() as u64,
             ns_loop: (t_finish - t_loop).as_nanos() as u64,
             ns_finish: (t_end - t_finish).as_nanos() as u64,
@@ -12858,17 +12875,47 @@ fn acquire_plan_features(
             // 32.4us floor (`n_cards=31,724 * 1.02`), the remainder being exactly the redo this note
             // describes.
             //
-            // Calibrated directly against that remainder (`ns_finish` minus the floor's own
-            // contribution, converted to `stream_scan_units`' units via the existing, untouched
-            // `STREAM_SCAN_PER_ROW_NS`), over 1,875 held-in / 1,949 held-out `unique=card`
-            // `printing_compose` rows sampled from `bench_regret_matrix.py --mode realistic`'s own
-            // corpus, gated on the acquire-time `matches` estimate the way `compose_paging_with_total`
-            // already gates its own decline prediction on this same threshold a few hundred lines up:
-            // median fitted bias 1.32 "printing units" per redone candidate (heavy-tailed: p10 -38.7,
-            // p90 12.7 -- this population's real redo cost is dominated by per-query residual
-            // complexity this feature vector has no term for, not by candidate count alone; the median
-            // fit cuts held-out total absolute error on the unpriced remainder from 2.18e7 to 2.06e7,
-            // a real but partial reduction -- see the round's own doc entry for the honest residual).
+            // Round 30 calibrated this against `ns_finish` minus the floor's own contribution (a
+            // wall-clock RESIDUAL, converted to `stream_scan_units` units via the existing, untouched
+            // `STREAM_SCAN_PER_ROW_NS`), because no structural counter existed for the redo pass's real
+            // work -- `push_card_matches`'s return value was discarded in that loop. Fit: median 1.32,
+            // p10 -38.7, p90 12.7.
+            //
+            // Round 31 of the same ledger entry closed that gap: `PhaseStats::redo_examined` now
+            // captures the exact printing count the redo pass re-examines (see its own doc -- free,
+            // `push_card_matches` already computed and returned it). Refitting DIRECTLY against that
+            // real counter instead of the noisy wall-clock/rate-conversion chain, over 2,926 held-in /
+            // 3,019 held-out `unique=card` `printing_compose` rows (same `bench_regret_matrix.py
+            // --mode realistic` corpus, same real-dispatch gate: small-total branch confirmed to have
+            // actually run via `perm_steps == 0` AND `matches_pushed > 0`, PLUS a guard Round 30's own
+            // gate missed -- `page_offset < matches_pushed`, ruling out the OTHER `perm_steps == 0` exit
+            // where `page_offset >= total` returns before the redo loop ever runs but still reports the
+            // counting pass's `matches_pushed`) surfaced TWO real numbers, not one, and they disagree:
+            //
+            // - The per-row ratio's MEDIAN is 1.0, and it minimizes held-out total absolute error on the
+            //   `redo_examined` counter itself (2.476e6 at the old 1.32 -> 2.388e6 at 1.0) -- the best
+            //   POINTWISE fit.
+            // - The candidate-WEIGHTED mean (`sum(redo_examined) / sum(redo_candidates)` over the same
+            //   calib half) is 2.237 -- a worse pointwise fit (held-out error 2.752e6) because the
+            //   distribution is heavily right-skewed (p10 0.15, p90 10.2): most rows sit near/under 1.0,
+            //   but the flip-query population this bias exists to fix draws disproportionately from the
+            //   heavy tail (a query only flips to the wrong plan when its real redo cost was
+            //   under-priced, which the tail-heavy rows are), so a pointwise-optimal median systematically
+            //   UNDER-corrects exactly the rows that matter for routing.
+            //
+            // Checked directly, not assumed: replaying the SAME reproduced 118-query f3f4a017 flip set
+            // (see the round's own doc entry) against both candidates confirms the divergence is real --
+            // 1.0 fixes 43/118 and actively REGRESSES 9 of the 52 Round 30's own 1.32 already fixed (0
+            // newly fixed); 2.237 fixes 64/118, regresses ZERO of Round 30's 52, and gains 12 more. Same
+            // asymmetry Round 30's own bias sweep found (a false-positive/false-negative trade-off, not a
+            // free lunch), just resolved this time against a real ground-truth counter instead of a
+            // guessed multiplier: 2.237 is kept because it is the real, structurally-grounded statistic
+            // that does not regress the live routing outcome, not because it minimizes the ns-error metric
+            // in isolation -- the same "live outcome over pointwise ns-error" precedent Round 30 itself
+            // set. Ratio by candidate-count bucket reads flat at ~1.0-1.3 across the whole small-total
+            // range (0-50, 50-150, 150-400, 400-1024 candidates) -- no saturation or other non-linearity
+            // to chase, so a flat linear bias remains the right shape; the skew is in the PER-QUERY
+            // residual (as Round 30 itself already flagged), not in candidate count.
             //
             // Above the threshold the small-total branch never runs (the permutation walk does
             // instead, bounded by `limit`), so the redo candidate count is capped at `limit` rather
@@ -12881,7 +12928,7 @@ fn acquire_plan_features(
             // `Printing`/`Artwork` never take `push_card_matches`'s early-break arm (see its own doc),
             // so `scan_units` already prices the full span there -- a population this round did not
             // check.
-            const STREAM_SMALL_TOTAL_REDO_BIAS: f64 = 1.32;
+            const STREAM_SMALL_TOTAL_REDO_BIAS: f64 = 2.237;
             let redo = if matches!(mode, Mode::Card) {
                 let redo_candidates = if result_total > 0 && result_total <= *STREAM_MIN_MATCHES {
                     result_total
@@ -13888,7 +13935,7 @@ fn run_query_streamed<'a>(
     // Publishing helper: the walk below has several early returns, and every one of them must leave
     // the stats behind or the accounting silently attributes this plan's work to nothing. Each takes
     // the closing instant itself, so the emit phase is bounded without a second start marker.
-    let publish = |end: std::time::Instant, perm_steps: u64| {
+    let publish = |end: std::time::Instant, perm_steps: u64, redo_examined: u64| {
         let prep_ns = PENDING_PREPARE_NS.with(|c| c.replace(0));
         PHASE_STATS.with(|c| {
             c.set(PhaseStats {
@@ -13898,6 +13945,7 @@ fn run_query_streamed<'a>(
                 matches_pushed: n_matches_pushed,
                 set_printings: 0, // PrintingCompose-only; StreamedSelect never composes pbits
                 perm_steps,
+                redo_examined,
                 ns_setup: (t_loop - t_start).as_nanos() as u64,
                 ns_loop: (t_finish - t_loop).as_nanos() as u64,
                 ns_finish: (end - t_finish).as_nanos() as u64,
@@ -13909,7 +13957,7 @@ fn run_query_streamed<'a>(
         });
     };
     if total == 0 || page_offset >= total {
-        publish(std::time::Instant::now(), 0);
+        publish(std::time::Instant::now(), 0, 0);
         return (total, Vec::new());
     }
 
@@ -13922,6 +13970,14 @@ fn run_query_streamed<'a>(
     // Small totals: gather and quickselect — same result as the gathered path.
     if total <= *STREAM_MIN_MATCHES {
         let mut best: Vec<Match> = Vec::with_capacity(total);
+        // Round 31 of the printing-varying-leaf depth ledger
+        // (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md): this loop IS the
+        // redo Round 30 priced from a wall-clock residual because `printings_examined` (captured only
+        // from the FIRST, counting-only pass above) structurally cannot see it. `push_card_matches`
+        // already returns the printings it examined per call -- the same value the counting pass's
+        // `card_match_count` call captures into `n_printings_examined` -- so summing it here is free:
+        // no new computation, just no longer discarding a return value this loop already produces.
+        let mut n_redo_examined = 0u64;
         for cid in 0..cards.len() as u32 {
             if counts[cid as usize] == 0 {
                 continue;
@@ -13935,16 +13991,16 @@ fn run_query_streamed<'a>(
                 };
             let start = u32::from(offsets[cid as usize]) as usize;
             let end   = u32::from(offsets[cid as usize + 1]) as usize;
-            push_card_matches(
+            n_redo_examined += u64::from(push_card_matches(
                 card, cid, printings, artwork_group_col, start, end, all_match, &residual, residual_is_or, mode, prefer,
                 sort_col, descending, strings, existential_plane, &mut best, &mut group_best, &mut touched,
-            );
+            ));
         }
         let page = select_page(best, page_offset, limit)
             .into_iter()
             .map(|(cid, pid)| (&cards[cid as usize], &printings[pid as usize]))
             .collect();
-        publish(std::time::Instant::now(), 0);
+        publish(std::time::Instant::now(), 0, n_redo_examined);
         return (total, page);
     }
 
@@ -13999,7 +14055,7 @@ fn run_query_streamed<'a>(
         }
         skip = 0;
     }
-    publish(std::time::Instant::now(), n_perm_steps);
+    publish(std::time::Instant::now(), n_perm_steps, 0);
     (total, page)
     }) // COUNTS.with
 }
@@ -14365,6 +14421,9 @@ fn plan_trial_to_pydict<'py>(py: Python<'py>, t: &PlanTrial) -> PyResult<Bound<'
     // `sigma_bound::three_phase_cost_ns` against real per-query values from Python.
     d.set_item("set_printings", t.phases.set_printings)?;
     d.set_item("perm_steps", t.phases.perm_steps)?;
+    // StreamedSelect's small-total branch only (0 for every other plan/exit) -- see
+    // `PhaseStats::redo_examined`'s own doc for what this counts and why it's free.
+    d.set_item("redo_examined", t.phases.redo_examined)?;
     d.set_item("ns_setup", t.phases.ns_setup)?;
     d.set_item("ns_loop", t.phases.ns_loop)?;
     d.set_item("ns_finish", t.phases.ns_finish)?;

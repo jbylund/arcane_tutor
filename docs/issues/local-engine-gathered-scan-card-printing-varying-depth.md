@@ -1394,6 +1394,184 @@ round fixing that upstream cardinality estimate would likely close more of this 
 `cost.rs` rate refit; chunk 2 (the rate refit) still looks worth doing on its own merits but should not
 be expected to finish closing this specific misroute on its own.
 
+### Round 31
+
+**The gap Round 30 flagged but couldn't close.** Round 30 fit `STREAM_SMALL_TOTAL_REDO_BIAS` against
+`ns_finish` minus the existing floor's own contribution -- a wall-clock RESIDUAL, converted to
+`stream_scan_units` units via the untouched `STREAM_SCAN_PER_ROW_NS` rate -- because no structural
+counter existed for the redo pass's real work. `push_card_matches` (`lib.rs:6186`) already computes
+and returns a `u32` "examined" count per call, mirroring `card_match_count`'s own `(c, examined)`
+pattern -- both calls inside `run_query_streamed`'s `total <= *STREAM_MIN_MATCHES` branch's second
+loop (~line 13940) simply discarded it as a bare statement.
+
+**Step 1: the counter.** Added `PhaseStats::redo_examined: u64`, a new field zero everywhere except
+this one branch (following the `set_printings`/`perm_steps` precedent: doc-declared scope, zeroed
+explicitly at the other two exits of `run_query_streamed` -- the empty/past-the-end return and the
+permutation walk). The small-total loop now accumulates `push_card_matches`'s return value into a
+local (`n_redo_examined`) and passes it to the `publish` closure, which now takes a fourth parameter
+alongside `perm_steps`. The permutation walk's OWN `push_card_matches` call (after `'walk: for cid in
+walk.iter()...`) is deliberately left uninstrumented: that branch runs above `STREAM_MIN_MATCHES`,
+already prices to `limit`, and its own per-step cost already flows into `ns_loop`/`ns_finish` via the
+walk's wall-clock timing, the same population `perm_steps` was already calibrated against -- this
+round's scope is specifically the small-total branch's previously-unpriced second pass. Surfaced to
+Python exactly like `printings_examined`/`perm_steps`: a new `d.set_item("redo_examined", ...)` line in
+`plan_trial_to_pydict`, and a matching entry in `scripts/costbench.py`'s `PLAN_KEYS` schema assertion.
+
+**Free, confirmed directly, not assumed.** `push_card_matches` already computed this value on every
+call in this loop; capturing it is a return-value read, not a new pass or a new computation -- no
+counter, no extra field write, nothing added to what the loop already does. Confirmed both ways: (a)
+by inspection -- the diff is exactly "capture the return instead of discarding it" -- and (b) directly:
+temporarily reverting the capture to a bare statement (matching pre-round code) makes the new
+regression test fail on its very first assertion (`redo_examined > 0`), and restoring it passes again,
+with `cargo test --release` timing unaffected in either direction (the change is a single local
+accumulate plus one extra `u64` in an already-stack-allocated struct).
+
+**Regression test** (`card_engine/src/tests.rs`,
+`redo_examined_counts_only_the_small_total_redo_pass`): one synthetic corpus, two disjoint match groups
+(500 cards under `STREAM_MIN_MATCHES`, 2,000 over it), asserting `redo_examined > 0` and
+`>= matches_pushed` on the small-total exit (`perm_steps == 0`), `== 0` on `GatheredScan` for the
+identical query, and `== 0` on the walk exit (`perm_steps > 0`) for the large group. Verified to
+actually catch a revert: reverting the capture to a bare statement fails the test's first assertion
+with `redo_examined read 0`, exactly the Round 30 gap this round closes.
+
+**Step 2: the refit.** Sampled `unique=card` `printing_compose` rows from `bench_regret_matrix.py
+--mode realistic`'s own corpus (isolated release wheel, `--seed 13`, hash-of-query
+held-in/held-out split: 2,916/3,006), gated on the same real-dispatch confirmation Round 30 used
+(`perm_steps == 0`, `matches_pushed > 0`) PLUS a guard Round 30's own gate missed: `page_offset <
+matches_pushed`, ruling out the OTHER `perm_steps == 0` exit (`page_offset >= total` returns before the
+redo loop ever runs but still reports the counting pass's `matches_pushed`) -- without it, 816/6,747
+rows silently poisoned the fit with a real redo pass that never happened.
+
+`redo_candidates` mirrors the acquire branch's own logic exactly: the acquire-time `matches` estimate
+when it's at/under `STREAM_MIN_MATCHES`, else capped at the page `limit`. Two real summary statistics
+of `real_redo_examined / redo_candidates` over the calib half, and they disagree:
+
+```
+median (per-row ratio)                         1.0    p10=0.15  p90=10.2
+candidate-weighted mean (sum/sum)               2.237
+```
+
+Held-out total absolute error on the real `redo_examined` counter itself (the POINTWISE metric):
+
+```
+old (1.32, Round 30's wall-clock fit)          2.467e6
+median (1.0)                                   2.380e6   <- best pointwise fit
+weighted mean (2.237)                          2.752e6
+p75 (3.831)                                    3.336e6
+```
+
+By pointwise error alone, the median (1.0) wins -- a real, ground-truth-validated improvement over
+1.32. But this population's ratio is heavily right-skewed (p10 0.15, p90 10.2: most rows sit near or
+under 1.0, but a long tail runs into double digits), and the flip-query population this bias exists to
+fix draws disproportionately from that tail -- a query only flips to the wrong plan when its real redo
+cost was under-priced, which is exactly what the tail rows are. Checked directly rather than assumed:
+replaying the same reproduced f3f4a017 flip set (below) against both candidates, the median
+ACTIVELY REGRESSES queries Round 30's own 1.32 already fixed correctly, gaining nothing back. This is
+the same false-positive/false-negative asymmetry Round 30's own 4x/8x/30x bias sweep found against its
+noisier wall-clock-derived distribution -- resolved here against a real ground-truth counter instead of
+a guessed multiplier. The ratio is flat (~1.0-1.3) across every candidate-count bucket (0-50, 50-150,
+150-400, 400-1024), so the skew is in per-query residual complexity, not candidate count -- a flat
+linear bias remains the right shape, matching Round 30's own conclusion.
+
+**Fix.** `STREAM_SMALL_TOTAL_REDO_BIAS` set to **2.237** (the candidate-weighted mean), not the
+pointwise-optimal 1.0 -- kept because it is the real, structurally-grounded statistic that does not
+regress the live routing outcome, following the same "live outcome over pointwise ns-error" precedent
+Round 30 itself set with its own bias sweep.
+
+**Flip-query validation.** Reproduced the ORIGINAL flip population exactly as `flip_finder_f3f4a017.py`
+does (BEFORE=`97dc30c8`, AFTER=`f3f4a017`, same seed/sample window), then replayed the SAME reproduced
+list against three FIX builds in one script (removing the sampling-window noise a separately-run
+validation would carry): Round 30's own tip (`9668dfa4`, bias 1.32), this round's pointwise-optimal
+median (1.0), and this round's shipped weighted-mean (2.237).
+
+```
+of 118 reproduced f3f4a017 flip queries:
+  round30 (bias=1.32):            fixed 52   still wrong 66
+  round31 median (bias=1.0):      fixed 43   still wrong 75   (regresses 9 of round30's 52, gains 0)
+  round31 weighted-mean (2.237):  fixed 64   still wrong 54   (regresses 0 of round30's 52, gains 12)
+```
+
+The shipped bias (2.237) regresses none of Round 30's 52 correct fixes and closes 12 more -- 64/118
+(54%) now route correctly, up from Round 30's own 52/118 (44%) on this exact reproduced population (the
+114/50 figure in Round 30's own doc entry came from a separate sampling run; both are the same
+population modulo the classification-timing noise this whole method carries, already flagged in Round
+30's own verdict).
+
+**Regret matrix** (`bench_regret_matrix.py --seconds 300 --mode realistic --seed 0`, isolated release
+wheels with `routed-phases`, before = `costcell/trunk` tip `9668dfa4` i.e. Round 30's own shipped fix,
+after = this round's patch):
+
+```
+StreamedSelect -> GatheredScan      n            share of traffic   mean regret   SHARE   -> ~ms
+before (Round 30's fix)           2,363   1.87% of 126,203 sampled     23.01us      49%    ~54.8ms
+after (Round 31's refit)          2,129   1.73% of 123,143 sampled      9.80us      25%    ~20.7ms
+```
+
+Mean regret on this transition drops by 57% (23.01us -> 9.80us) and its SHARE of all lost time nearly
+halves (49% -> 25%) -- ~54.8ms -> ~20.7ms attributed, a **62% reduction**, dwarfing Round 30's own
+55.4ms -> 48.5ms (~12%). Total POOL regret (every transition) also drops, 111.9ms -> 82.7ms (mean/query
+0.89us -> 0.67us) -- consistent in direction with the targeted slice, not an isolated artifact.
+
+One nearby transition moved the other way and is worth naming rather than burying: `PrintingCompose ->
+StreamedSelect` (compose picked, but StreamedSelect was really best) grew from 12% to 24% share (mean
+34.28us -> 40.61us, n 396 -> 483, ~13.4ms -> ~19.8ms, +6.4ms) -- a real, expected side effect of raising
+`stream_scan_units`: making StreamedSelect look pricier tips a few close compose-vs-stream calls the
+other way when StreamedSelect actually was faster. Every other transition moved by less than 2 points of
+SHARE in either direction. The target slice's ~34ms improvement outweighs this ~6ms give-back by 5:1,
+and the total-pool number (111.9ms -> 82.7ms, -29.2ms net) confirms the net effect across the whole
+matrix is a real improvement, not a wash.
+
+**Regression guards.**
+
+- `#852` (`GatheredScan` vs `PrintingCompose` ordering, `bench_pairwise_ordering.py --seconds 300
+  --mode realistic --seed 0`): overall 88% -> 88%, unchanged. By acquire: `[plane]` 83% -> 83%,
+  `[printing_compose]` 91% -> 91% -- identical in both builds, no shift at all. This round's own
+  target pair, `GatheredScan` vs `StreamedSelect`, also held steady (97% -> 97% overall, 92% -> 92%
+  `[printing_compose]`, 99% -> 99% `[candidates]`) -- the ordering `stream_scan_units` exists to get
+  right did not regress even though its predicted GAP shrank (gap meas/pred 1.08 -> 0.55 overall):
+  the model now predicts a LARGER gap than measured on this pair (conservative, not wrong-signed),
+  and argmin correctness -- which side of the gap wins -- is what this guard actually checks. Clean.
+- Round 28's `scan_units` feature-accuracy fix (`bench_feature_accuracy.py --seconds 120 --mode
+  realistic --seed 0`): pooled `scan_units` median 1.00 -> 1.00, identical distribution in both
+  builds -- expected, since this round's patch touches only `stream_scan_units`, never `scan_units`
+  itself. Clean.
+- Round 30's own fix: the flip-query check above IS this guard -- 0 of the 52 queries Round 30 fixed
+  regressed under this round's refit.
+
+**Correctness gates.** `cargo test --release` (`card_engine`): 178/178 passed (177 + this round's new
+regression test). `cargo test` (debug): 179/179 passed. `cargo clippy --all-targets -- -D warnings`:
+clean. Blast radius: `card_engine/src/lib.rs` (the new counter, its plumbing, and the
+`printing_compose` acquire branch's redo-bias constant), `card_engine/src/tests.rs` (one new
+regression test), `scripts/costbench.py` (the `PLAN_KEYS` schema entry for the new field), this doc.
+`cost.rs` untouched, per this round's own scope.
+
+**Verdict.** Real, significantly larger, and better-grounded than Round 30's own fix. Cumulatively
+(Round 30 + Round 31 together), the `StreamedSelect -> GatheredScan` transition's attributed regret
+goes 55.4ms (Round 30's own "before") -> 48.5ms (Round 30's fix, ~12% closed) -> ~20.7ms (this round,
+~62% closed relative to Round 30's own before-state) -- five times the closure Round 30's wall-clock-fit
+bias achieved, using the SAME feature-level lever, just fit against real structural ground truth instead
+of a noisy residual. On the reproduced flip-query population this ledger entry has tracked since Round
+30: 44% (52/118) -> 54% (64/118) correctly routed, with zero regression of Round 30's own fixes.
+
+It is not fully closed. 46% of the reproduced flip population (54/118) still wrongly picks
+`StreamedSelect`, one nearby transition (`PrintingCompose -> StreamedSelect`) grew by ~6.4ms as a real
+side effect of raising `stream_scan_units` (a 5:1 trade against the ~34ms gained, not free), and Round
+30's own diagnosed DEEPER root cause -- the acquire-time `result_total` cardinality estimate itself
+being unreliable for cross-index-range-leaf `And`s near the `STREAM_MIN_MATCHES` threshold (a
+`domain_cards` estimation bug, the same "natural next target" this doc's own Round 1 section flagged
+and no round has yet chased) -- is completely untouched by this round. This round improved WHAT the
+bias is fit against (real counter vs. wall-clock residual) and refit the constant accordingly; it did
+not touch `redo_candidates`' own input (the acquire-time estimate that feeds it), which is where the
+residual almost certainly still lives.
+
+On the parent punch-list's chunk 2 (`cost.rs` rate refit, `STREAM_SCAN_PER_ROW_NS` itself): this
+round's own data argues against urgency there, not for it. The real ratio read flat across every
+candidate-count bucket (no saturation, no shape mismatch a rate change would fix), and a feature-level
+fix alone -- with no `cost.rs` change at all -- closed 5x more of this regression than Round 30's own
+attempt. A rate refit was never tested directly this round and remains formally open, but the
+evidence so far suggests the acquire-time cardinality estimate (not the per-unit rate) is the more
+promising next target, exactly as Round 30's own verdict already concluded.
+
 ## Confirmation runs
 
 Round 1 (match-density depth proxy, kept):
