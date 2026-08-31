@@ -12837,7 +12837,62 @@ fn acquire_plan_features(
             // argued for -- the `tier == 0` arm above is where it used to be wrong.
             ((scan_units as f64) * share).max(eval_domain as f64) as u32
         } else {
-            scan_units as u32
+            // Round 30 of the printing-varying-leaf depth ledger
+            // (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md): the bare
+            // `scan_units` inheritance here was fine BEFORE Round 1 revised `scan_all`'s fallback
+            // downward for a printing-varying leaf (price/collector_number/released_at, or an And of
+            // them) -- not because it was pricing the right thing, but because the old, cruder
+            // `domain_cards * printings_per_card * 2.1` term happened to be large enough to also mask
+            // a SEPARATE cost this feature has never priced: `run_query_streamed` runs a counting pass
+            // over every candidate (the SAME per-card cost `scan_units` already estimates -- confirmed
+            // directly, `f:pioneer cn>=30 cn<=39` reports IDENTICAL `printings_examined` for both
+            // plans, 2,449), then a SECOND pass that re-derives `card_pass` and re-walks the printing
+            // span for every MATCHING card to select the page. `cost.rs`'s `StreamedSelect` arm already
+            // has a `runs_small_gather` term for this second pass's OWN `total <= *STREAM_MIN_MATCHES`
+            // branch (`STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS * n_cards`) -- but that floor is a per-CORPUS
+            // constant, fit on a population where the branch's `matches` count was small enough that the
+            // redo itself was negligible next to the O(n_cards) "scan every stored count" overhead the
+            // floor was measured against. It cannot vary with a DIFFERENT query's `matches`, so on a
+            // query sitting near the `STREAM_MIN_MATCHES` ceiling (853 matches on `f:pioneer
+            // cn>=30 cn<=39`) the floor alone materially undershoots: real `ns_finish` 65.3us against a
+            // 32.4us floor (`n_cards=31,724 * 1.02`), the remainder being exactly the redo this note
+            // describes.
+            //
+            // Calibrated directly against that remainder (`ns_finish` minus the floor's own
+            // contribution, converted to `stream_scan_units`' units via the existing, untouched
+            // `STREAM_SCAN_PER_ROW_NS`), over 1,875 held-in / 1,949 held-out `unique=card`
+            // `printing_compose` rows sampled from `bench_regret_matrix.py --mode realistic`'s own
+            // corpus, gated on the acquire-time `matches` estimate the way `compose_paging_with_total`
+            // already gates its own decline prediction on this same threshold a few hundred lines up:
+            // median fitted bias 1.32 "printing units" per redone candidate (heavy-tailed: p10 -38.7,
+            // p90 12.7 -- this population's real redo cost is dominated by per-query residual
+            // complexity this feature vector has no term for, not by candidate count alone; the median
+            // fit cuts held-out total absolute error on the unpriced remainder from 2.18e7 to 2.06e7,
+            // a real but partial reduction -- see the round's own doc entry for the honest residual).
+            //
+            // Above the threshold the small-total branch never runs (the permutation walk does
+            // instead, bounded by `limit`), so the redo candidate count is capped at `limit` rather
+            // than dropped to zero outright -- a discontinuity at the threshold would make the acquire
+            // estimate's own noise (this exact query's OWN estimate, 1,983, sits just above the 1,024
+            // threshold despite really landing in the small-total branch) an all-or-nothing coin flip
+            // instead of a graceful degradation.
+            //
+            // `Mode::Card` only: the calibration sample above is `unique=card` exclusively, and
+            // `Printing`/`Artwork` never take `push_card_matches`'s early-break arm (see its own doc),
+            // so `scan_units` already prices the full span there -- a population this round did not
+            // check.
+            const STREAM_SMALL_TOTAL_REDO_BIAS: f64 = 1.32;
+            let redo = if matches!(mode, Mode::Card) {
+                let redo_candidates = if result_total > 0 && result_total <= *STREAM_MIN_MATCHES {
+                    result_total
+                } else {
+                    (feats.limit as usize).min(result_total)
+                };
+                (STREAM_SMALL_TOTAL_REDO_BIAS * redo_candidates as f64) as u32
+            } else {
+                0
+            };
+            scan_units as u32 + redo
         };
         feats.broadcast_printings = broadcast as u32;
         feats.scatter_printings = scatter as u32;

@@ -13791,3 +13791,81 @@ fn compose_perm_three_phase_order_only_fires_when_enabled_and_sparse() {
         );
     }
 }
+
+/// Round 30 of the printing-varying-leaf depth ledger
+/// (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md): `stream_scan_units`
+/// must NOT simply inherit `scan_units` for a printing-varying leaf (no legality partner) once the
+/// query's own `matches` sits at or below `STREAM_MIN_MATCHES` -- `run_query_streamed`'s small-total
+/// branch pays a second, `push_card_matches`-driven redo pass over every matching card that
+/// `GatheredScan`'s single pass never does, and `scan_units` (calibrated only against the single-pass
+/// counter, `printings_examined`) has no way to see it. Before this round's fix, the bare `else` arm
+/// of `printing_compose`'s `feats.stream_scan_units` assignment read `scan_units as u32` verbatim --
+/// reverting `STREAM_SMALL_TOTAL_REDO_BIAS`'s branch back to that would make this test fail on the
+/// first assertion (`stream_scan_units > scan_units`), which is the point: this is the population
+/// Round 1's own depth-proxy revision quietly broke for `StreamedSelect` (see the doc's "Round 30"
+/// section for the mechanism and the real-corpus numbers this fixture only approximates).
+#[test]
+fn stream_scan_units_prices_the_small_total_redo_for_a_printing_varying_leaf() {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(20_260_830);
+    // Large enough that a narrow collector_number window still clears `MIN_ROWS`-style noise floors
+    // and reliably narrows via the index rather than declining to a full scan; narrow enough that the
+    // window's matches land comfortably under the default `STREAM_MIN_MATCHES` (1,024) so the
+    // small-total branch this round targets is the one that fires.
+    let data = fuzz_store_n(&mut rng, 4_000);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let ctx = QueryCtx::from(archived);
+    let params = kernel_params(Mode::Card, SortCol::Name, false, 100, 0);
+
+    // A fused two-sided bound on a printing-varying, non-legality field -- the exact shape
+    // (`f:pioneer cn>=30 cn<=39`) the diagnostic round that opened this ledger entry chased, minus
+    // the legality partner (out of scope for this fix; see the `filter_touches_legality` arm above).
+    let cn_range = FilterExpr::And(vec![
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::CollectorNumberInt), op: CmpOp::Ge, rhs: NumExpr::Const(100.0) },
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::CollectorNumberInt), op: CmpOp::Le, rhs: NumExpr::Const(110.0) },
+    ]);
+    let (pe, filter) = split_planes(cn_range, &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
+    let mut acq_filter = filter;
+    let (feats, prep, _bits) = acquire_plan_features(&ctx, &params, &mut acq_filter, None, pe.as_ref());
+
+    assert_eq!(
+        prep.count_source(),
+        CountSource::PrintingCompose,
+        "this fixture must reach the compose acquire branch to exercise the fix -- a fused two-sided \
+         range bound never qualifies for CardRangePopcount (see its own applicability doc)"
+    );
+    assert!(
+        feats.matches > 0 && feats.matches <= *STREAM_MIN_MATCHES as u32,
+        "the window must land in the small-total population this fix targets, got matches={}",
+        feats.matches
+    );
+    assert!(
+        feats.stream_scan_units > feats.scan_units,
+        "a printing-varying leaf whose matches sit at/under STREAM_MIN_MATCHES must charge P3 MORE \
+         than the shared scan_units for the redo pass GatheredScan never pays: scan_units={} \
+         stream_scan_units={}",
+        feats.scan_units, feats.stream_scan_units
+    );
+
+    // Control: the same field, but the WHOLE printing-varying-leaf else-arm's premise is `Mode::Card`
+    // only -- `Printing`/`Artwork` must fall back to the bare inheritance, unmodified by this round.
+    for (label, mode) in [("printing", Mode::Printing), ("artwork", Mode::Artwork)] {
+        let params2 = kernel_params(mode, SortCol::Name, false, 100, 0);
+        let cn_range2 = FilterExpr::And(vec![
+            FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::CollectorNumberInt), op: CmpOp::Ge, rhs: NumExpr::Const(100.0) },
+            FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::CollectorNumberInt), op: CmpOp::Le, rhs: NumExpr::Const(110.0) },
+        ]);
+        let (pe2, filter2) = split_planes(cn_range2, &archived.indexes.planes, &archived.indexes.oracle_trigram.words, false);
+        let mut acq_filter2 = filter2;
+        let (feats2, prep2, _bits2) = acquire_plan_features(&ctx, &params2, &mut acq_filter2, None, pe2.as_ref());
+        if prep2.count_source() != CountSource::PrintingCompose {
+            continue; // this mode/shape didn't reach the branch under test; nothing to assert
+        }
+        assert_eq!(
+            feats2.stream_scan_units, feats2.scan_units,
+            "{label}: this round's redo correction is Mode::Card-only -- {label} must keep the bare \
+             inheritance unchanged"
+        );
+    }
+}

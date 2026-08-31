@@ -181,6 +181,7 @@ total regret by 0.0 ms).
 | 8 | diagnostic: bucket candidates-acquire `GatheredScan`/`card` error by shape | diagnostic | 13% (n=22,190, median 0.60), unchanged from checkpoint — expected, no code shipped | n/a | see Round 8 below — pivots off the printing-range-index family entirely (Rounds 1-7's whole target) onto `Prep::Candidates`, the OTHER acquire branch feeding this same pooled cell. Finds `eval_domain` exact (median 1.00 against `cards_visited`) and `scan_units` also near-exact-to-UNDER-predicting (median 1.00, several high-magnitude buckets 1.2-1.8x, i.e. real work exceeds the estimate) — the OPPOSITE direction from the pooled ns-space over-cost (median 0.49-0.60), so neither size feature is the culprit; the bug is in how `GATHER_*` rate/fixed constants convert those (correct) features into ns for the `candidates` (and sibling `plane`) acquire branch specifically. Two concrete mechanisms found: (a) `GATHER_FIXED_COST_NS` (169.6ns) is ~4x too high for the 32% of the sample with zero matches (median measured 42ns); (b) card-mode's `feats.matches = count` (unconditional, `candidate_feats`, lib.rs~11776) ignores real residual selectivity — `is:vanilla`-shaped high-selectivity residuals push 2-3% of the predicted match count, and the whole per-candidate verify-tier charge (`GATHER_CARD_PASS_NS + max(tier_ns, GATHER_RESIDUAL_FLOOR_NS)` × `eval_domain`) doesn't discount for short-circuit-driven cheap-average-case cost the way real `card_pass` behaves at low match rates. A THIRD population invisible to `bench_cost_model_agreement.py`'s own flat-conjunction sampler — Or/negation/nested-paren structures via `structured_query()` — shows the opposite tail shape (median near 1.0, p90 1.25-3.48x UNDER-cost) and needs its own round. |
 | 9 | lower fixed cost (`GATHER_FIXED_COST_ZERO_MATCH_NS`) for `PhysicalPlan::GatheredScan`'s zero-match rounds, gated on `matches == 0` the same way the arm's `tier_ns > 0.0` neighbor is gated — the first fix in this doc inside `cost.rs`'s cost FORMULA rather than `lib.rs` feature estimation | kept | 11% → 30% (n=38,435→38,889, median 0.57→0.77) — largest single-round movement since Round 0; by-unique `GatheredScan`/`card` cell flips FAIL (0.69) → PASS (0.80) | `GatheredScan/printing_compose` unchanged (median 1.15→1.14, 24%→24%); `GatheredScan/printing_range_scan` and `/card_range_popcount` unchanged; `bench_regret_matrix.py` total regret unchanged (27.6ms both builds); `bench_query_latency_ab.py` same-build canary swings by a comparable magnitude to the real A/B diff (-0.2µs vs -0.3µs) — no real latency effect claimed | held-out paired-diff (hash-of-query split, 9,890 zero-match rows): calibration half (n=4,944) median measured `plan_self_ns` sets constant to 42.0; held-out half (n=4,946) 4,577 impr / 369 regr / 0 tied, 530,256 → 103,110 abs ns error (5.1x), median ratio 0.248 → 1.000, within-25% 0.1% → 57.7%. Confirmed a real risk this round could not fully close within its `cost.rs`-only blast radius: `plan_cost` costs EVERY candidate plan from ONE shared `PlanFeatures` per acquire (`lib.rs:12917`), so `matches == 0` also fires for `GatheredScan` costed as a competitor/picked plan under `printing_compose`/`card_range_popcount`/`printing_range_scan` (RANGE_ACQUIRES) acquire, where `eval_domain == 0` is an unset accounting default rather than a real empty candidate list, and dispatch pays a real (sometimes large, e.g. 4,959ns median for one `printing_compose` slice) `prepare_candidates` rebuild this arm has no term for at all — pre-existing (already 29x under-predicted before this round) and NOT introduced by this fix, but made numerically worse in isolation (29x → 118x under on that slice). Checked for real routing impact directly (a same-build wheel diff on two flip cases, `date<1993-08-05`/`tix<0.01` under `printing_range_scan`) and via `bench_regret_matrix.py` (total regret 27.6ms unchanged) and `bench_cost_model_agreement.py` (no other cell moved) — no measurable regression found, but the gate is a correlated proxy, not the exact phenomenon, for this sliver of RANGE_ACQUIRES rows; flagged for a future round that can touch `lib.rs` to add an acquire-branch-aware feature |
 | 28 | scope `COMPOSE_RANGE_AND_BROAD_SCAN_SCALE` (Round 4) and `COMPOSE_SAME_RANGE_BROAD_SCAN_SCALE` (Round 7) to `Mode::Card` only, leaving `Mode::Printing`/`Mode::Artwork` at the pre-existing unscaled `n_printings` ceiling | kept | not this doc's own metric (see below) | pooled `scan_units` feature accuracy (`bench_feature_accuracy.py`), the metric a fresh `main`-vs-`costcell/trunk` A/B (Round 27) found regressed: median 0.70 (UNDER-COUNTS) → 0.94 (clean), against `main`'s own 1.00 | see "Round 28" narrative below — both scales were fit exclusively on `unique=card` samples (each round's own doc says so) but applied unconditionally to all three modes; `Mode::Printing`/`Mode::Artwork`'s real `printings_examined / n_printings` reads EXACTLY 1.000 (zero spread) for this guard-fired population, so the card-only-derived scale was silently manufacturing an under-count for two modes it was never calibrated against |
+| 30 | `STREAM_SMALL_TOTAL_REDO_BIAS`, a `stream_scan_units` correction for `printing_compose`'s bare `else` arm (`Mode::Card`, no legality partner) — Round 1's `scan_units` revision was inherited verbatim by `StreamedSelect`'s own feature, which structurally under-prices a SECOND, unmodeled `push_card_matches` pass `run_query_streamed`'s small-total branch pays and `GatheredScan` never does | kept, partial | n/a (this doc's own agreement-gate metric untouched; see the flip/regret numbers below instead) | `#852` ordering 88%→88% clean; Round 28's pooled `scan_units` median 1.00→1.00 clean | see "Round 30" narrative below — of 114 reproduced f3f4a017 flip queries, 50 (44%) now correctly re-route to `GatheredScan`; `StreamedSelect -> GatheredScan` regret matrix slice -7% share of traffic / -12% regret-ms; residual traced to the acquire-time `result_total` ESTIMATE itself being unreliable near `STREAM_MIN_MATCHES` for cross-index-range Ands (this doc's own Round 1 "separate, uninvestigated `domain_cards` bug" flag) — not a `cost.rs` rate problem, so chunk 2 (rate refit) is unlikely to close the rest on its own |
 
 ### Round 1
 
@@ -1271,6 +1272,127 @@ own "Next steps for a future round" note under Round 7.
   realistic overall 89%→89% (`[printing_compose]` 91%→90%, `[plane]` 84%→86%); uniform overall 87%→87%
   (`[printing_compose]` 86%→86%). Essentially unchanged in both modes — unlike Round 7's own change,
   this fix does not touch the ordering that mattered to `#852`.
+
+### Round 30
+
+**Regression found by a prior diagnostic round, confirmed by bisection + literal replay (not just
+correlation):** Round 1's own `scan_all` fix above (the match-density depth proxy) was legitimate and
+already validated for `GatheredScan`'s `scan_units` -- but `StreamedSelect`'s own feature,
+`stream_scan_units`, defaults to inheriting `scan_units` verbatim (`mk_plan_feats`'s doc: "only an
+acquire that knows P3 examines fewer printings overrides it") unless the `printing_compose` acquire's
+own override logic (`lib.rs`, the `feats.stream_scan_units = if tier == 0 {...} else if
+filter_touches_legality(...) {...} else {...}` block) says otherwise. For a printing-varying leaf with
+no legality partner (`price_usd`/`cn`/`released_at`, or an And of them), that block falls to its bare
+`else { scan_units as u32 }` arm -- so Round 1's legitimate downward revision to `scan_units` rode
+straight through into `stream_scan_units` too, with no acquire branch ever taught the difference. This
+grew the `StreamedSelect -> GatheredScan` misroute (router picks P3 when P4 is actually faster) from
+1,284 to 1,618 occurrences (mean regret 17.0us -> 21.4us) on matched-size `bench_regret_matrix.py
+--mode realistic` runs -- the single largest remaining regret slice on the branch (43% share) going
+into this round.
+
+**Mechanism, confirmed directly against real dispatch counters** (not assumed from reading the code
+alone): `run_query_streamed` (P3's executor) runs a first pass (`card_match_count`, over every
+candidate) that is structurally identical to `GatheredScan`'s own single pass in `Mode::Card` -- both
+break at the first printing satisfying the residual under `Prefer::Default`, confirmed by matching
+`printings_examined` counters exactly (2,449 on both plans, `f:pioneer cn>=30 cn<=39`). What differs is
+a SECOND pass this first pass's counter never sees: `run_query_streamed`'s `total <= *STREAM_MIN_MATCHES`
+branch re-derives `card_pass` and re-walks the printing span for every MATCHING card a second time to
+select the page (`push_card_matches`, called again, its return value discarded -- so
+`printings_examined`, and therefore any `scan_units`-shaped feature, structurally cannot see this
+second pass no matter how it's computed). `cost.rs`'s `StreamedSelect` arm already has a term for this
+branch's OWN O(n_cards) "scan every stored count" overhead (`STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS *
+n_cards`), but that floor is a per-CORPUS constant that cannot vary with a query's own `matches` count --
+it was fit on a population where `matches` was small enough that the actual per-card REDO was
+negligible next to the floor. On `f:pioneer cn>=30 cn<=39` (853 real matches, close to the
+`STREAM_MIN_MATCHES` ceiling of 1,024) the floor alone (32.4us, `n_cards=31,724 * 1.02`) materially
+undershoots the real `ns_finish` (65.3us) -- the remainder is exactly this unpriced redo, and it is why
+`StreamedSelect`'s real dispatch (108.9us) is 2.3x `GatheredScan`'s (46.6us) despite identical
+`printings_examined`.
+
+**Fix** (`card_engine/src/lib.rs`, the `printing_compose` acquire's `feats.stream_scan_units` bare
+`else` arm): adds a `STREAM_SMALL_TOTAL_REDO_BIAS` (`1.32`, a new lib.rs constant, NOT a `cost.rs` rate)
+scaled term on top of the inherited `scan_units`, `Mode::Card` only. The redo-candidate count is the
+acquire-time `result_total` estimate when it sits at or below `STREAM_MIN_MATCHES` (mirroring the same
+threshold `compose_paging_with_total` already gates its own decline prediction on, a few hundred lines
+up in the same function), else capped at `feats.limit` (the permutation-walk branch's own bound) rather
+than dropped to zero outright -- a hard cliff at the threshold would turn the acquire estimate's own
+noise into an all-or-nothing coin flip, which matters here specifically: this round's own concrete
+example's acquire-time estimate (1,983) sits ABOVE the 1,024 threshold despite its REAL total (853)
+landing inside the small-total branch.
+
+**Calibration.** Bias fit against `ns_finish` minus the existing floor's own contribution (isolating
+the previously-unpriced redo specifically, not re-deriving the floor), converted to `stream_scan_units`
+units via the existing, untouched `STREAM_SCAN_PER_ROW_NS` (5.97), over a held-in/held-out split
+(hash-of-query, 1,875/1,949 rows) of `unique=card` `printing_compose` rows where the acquire-time
+estimate gates the correction AND real dispatch confirms the small-total branch actually ran
+(`perm_steps == 0`, `matches_pushed > 0`). Median fitted bias 1.32 "printing units" per redone
+candidate; held-out total absolute error on the unpriced remainder: 2.18e7 -> 2.06e7 (a real but
+partial reduction -- this population's per-query redo cost is heavy-tailed (implied bias p10 -38.7, p90
+12.7), dominated by per-query residual complexity this feature vector has no term for, not by candidate
+count alone). A 4x/8x/30x sweep of the bias against the live routing-outcome metric below (not just the
+ns-error metric) showed diminishing returns fast -- 5.9%->7.3% of a broader current-trunk
+misroute sample fixed for a doubling of the false-positive rate on already-correct `StreamedSelect`
+picks -- so the median (lowest false-positive rate, still measurably useful) was kept rather than
+chasing the sweep.
+
+**Flip-query validation.** Reproduced the ORIGINAL flip population exactly as the diagnostic round's
+own `flip_finder_f3f4a017.py` does (BEFORE=`97dc30c8`, AFTER=`f3f4a017`, same seed/sample window): 114
+queries found this run (consistent with the diagnostic round's own ~120, sampling noise). Replayed
+against this round's FIX build (current `costcell/trunk` tip + the patch above):
+
+```
+of 114 reproduced f3f4a017 flip queries:
+  now correctly pick GatheredScan (fixed):        50  (44%)
+  still (wrongly) pick StreamedSelect (unchanged): 64  (56%)
+  pick something else:                              0
+```
+
+**Regret matrix** (`bench_regret_matrix.py --seconds 300 --mode realistic --seed 0`, isolated release
+wheels, baseline = unfixed `costcell/trunk` tip `4e101d7f` vs fix = this round's patch on top). The two
+300s windows sampled different absolute query counts (121,724 vs 108,533 multi-plan queries -- system
+load from other concurrent work on this box, not a code-speed effect; rates/shares below are the fair
+comparison, not raw `n`):
+
+```
+StreamedSelect -> GatheredScan      n            share of traffic   mean regret   SHARE   -> ~ms
+baseline (unfixed)                2,407   1.98% of 121,724 sampled    23.00us      53%    ~55.4ms
+fix                                1,995   1.84% of 108,533 sampled    24.33us      56%    ~48.5ms
+```
+
+~7% fewer misroutes as a share of traffic, ~12% less absolute regret-ms attributed to this specific
+transition. Total pool regret (all transitions) 104.3ms -> 86.2ms (mean/query 0.86us -> 0.79us), roughly
+consistent in direction with the targeted slice, not dramatically larger -- no sign the fix disturbed
+other transitions. (No dedicated same-build latency canary was run this round on top of this -- the
+regret figures come from forced per-plan trial minimums, not wall-clock query timing, which is less
+exposed to the sampling-count variance noted above, but a canary would still be the stronger claim; flag
+this as the one gap in this round's own validation rigor.)
+
+**Regression guards.**
+
+- `#852` (`GatheredScan` vs `PrintingCompose` ordering, `bench_pairwise_ordering.py --seconds 300
+  --mode realistic --seed 0`): overall 88% -> 88%, unchanged. By acquire: `[plane]` 83% -> 82%,
+  `[printing_compose]` 91% -> 92% -- both within noise, no real shift. Clean.
+- Round 28's `scan_units` feature-accuracy fix (`bench_feature_accuracy.py --seconds 120 --mode
+  realistic --seed 0`): pooled `scan_units` median 1.00 -> 1.00, identical distribution shape in both
+  builds -- expected, since this round's patch touches only `stream_scan_units`, never `scan_units`
+  itself. Clean.
+
+**Correctness gates.** `cargo test --release` (`card_engine`): 176/176 passed. `cargo test` (debug):
+177/177 passed. `cargo clippy --all-targets -- -D warnings`: clean. Blast radius: `card_engine/src/lib.rs`
+(the `printing_compose` acquire branch only) plus this doc; `cost.rs`, `estimator.rs`, `filter.rs`
+untouched.
+
+**Verdict.** Real, positive, but partial. On the population this round diagnosed and targeted directly
+(the reproduced f3f4a017 flip set), 44% now route correctly again. On the broader regret matrix, the
+`StreamedSelect -> GatheredScan` transition's regret is down ~7-12%, not back to `main`'s pre-regression
+baseline. The residual is NOT well-explained by `cost.rs`'s rates (chunk 2's stated scope) -- it traces
+to the acquire-time `result_total` estimate itself being unreliable near the `STREAM_MIN_MATCHES`
+threshold for cross-index-range-leaf Ands (this round's own concrete example: real total 853, estimate
+1,983, off by 2.3x), which is the SAME "separate, uninvestigated `domain_cards` bug for multi-range-index
+Ands" this doc's own Round 1 section flagged as "the natural next target" and never chased. A future
+round fixing that upstream cardinality estimate would likely close more of this residual than any
+`cost.rs` rate refit; chunk 2 (the rate refit) still looks worth doing on its own merits but should not
+be expected to finish closing this specific misroute on its own.
 
 ## Confirmation runs
 
