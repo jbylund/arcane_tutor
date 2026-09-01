@@ -492,6 +492,26 @@ def zero_hit_rate_diff(a: list[dict], b: list[dict]) -> None:
     print(f"  A: {hit_a:.1%}   B: {hit_b:.1%}")
 
 
+def _worst_median_first(vals: list[float]) -> float:
+    """Rank key: highest MEDIAN first, for a metric that is already a non-negative distance.
+
+    `costbench.BY_MISCALIBRATION` computes `abs(log(median))`, which is the right rule for a RATIO
+    centered at 1.0 (median exactly 1 -> log 0 -> best). `abs_log_ratio` is not that kind of value --
+    it is already `abs(log(ratio))`, a distance centered at 0 where 0 is perfect and bigger is worse.
+    Feeding it through `BY_MISCALIBRATION`'s extra `log()` inverts the ordering: a median of exactly
+    0.00 produces `log(max(0, 1e-9)) ~= -20.7`, ranking a PERFECT cell as the single worst one --
+    confirmed directly against this survey's own first full run, where `unsafe:color+type` (median
+    0.00) sorted ahead of `same_family:type+type_realistic` (median 1.12, a real ~3x typical
+    overestimate). Don't reuse `BY_MISCALIBRATION` for a value shaped like this one.
+    """
+    from scripts import costbench  # noqa: PLC0415
+
+    return -costbench.percentile(sorted(vals), 50)
+
+
+RANK_WORST_ABS_LOG_RATIO = ("worst abs_log_ratio median", _worst_median_first)
+
+
 def worst_cell_tables(rows: list[dict], label_suffix: str) -> None:
     """Percentile tables of abs_log_ratio by shape/family/structure/mechanism/unique, root=and only.
 
@@ -511,7 +531,7 @@ def worst_cell_tables(rows: list[dict], label_suffix: str) -> None:
         (lambda r: r["unique"], f"unique ({label_suffix})"),
     ):
         costbench.percentile_table(
-            and_rows, key, label, value="abs_log_ratio", rank=costbench.BY_MISCALIBRATION, min_rows=costbench.MIN_ROWS
+            and_rows, key, label, value="abs_log_ratio", rank=RANK_WORST_ABS_LOG_RATIO, min_rows=costbench.MIN_ROWS
         )
 
 
