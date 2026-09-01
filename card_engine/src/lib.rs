@@ -8522,17 +8522,26 @@ impl Default for AndTraceNode {
     }
 }
 
-/// The `AndTrace` for `filter`'s top-level `And`, or `None` when `filter` is not an `And` at all --
-/// the scope this round's own harness needs (flat conjunctions only, never recursing into a nested
-/// `And`-within-`And`). A second, diagnostic-only call into `compose_printing_estimate` with
-/// `want_trace: true`: cheap to call twice here (this fn is reached only from `explain`/
-/// `explain_analyze`, never a production acquire), and guaranteed to reproduce the exact same numbers
-/// as whichever call `acquire_plan_features` itself made (same pure fn, same inputs) -- so this never
-/// drifts from what the real acquire step computed, without threading a trace sink through
-/// `acquire_plan_features`'s own call site and risking it being built (and discarded) on every
-/// production query that takes the `PrintingCompose` branch.
+/// The `AndTrace` for `filter`'s top-level `And`, or `None` when `filter` is not an `And` at all, or
+/// not `is_printing_composable` -- the scope this round's own harness needs (flat conjunctions only,
+/// never recursing into a nested `And`-within-`And`). A second, diagnostic-only call into
+/// `compose_printing_estimate` with `want_trace: true`: cheap to call twice here (this fn is reached
+/// only from `explain`/`explain_analyze`, never a production acquire), and guaranteed to reproduce
+/// the exact same numbers as whichever call `acquire_plan_features` itself made (same pure fn, same
+/// inputs) -- so this never drifts from what the real acquire step computed, without threading a
+/// trace sink through `acquire_plan_features`'s own call site and risking it being built (and
+/// discarded) on every production query that takes the `PrintingCompose` branch.
+///
+/// The `is_printing_composable` check is load-bearing, not defensive redundancy: every other caller
+/// of `compose_printing_estimate` reaches it only after that gate (`lib.rs:10332`, `lib.rs:10985`),
+/// and the function itself panics (`unreachable!`) on a non-composable filter -- confirmed directly,
+/// `is:bear` (a single-leaf `And([tag_leaf])`, an `is:`/`keyword:` tag lookup that has no printing-
+/// compose representation at all) crashed `explain()` before this check was added. `explain` is
+/// documented "safe to call constantly"; without this guard `and_trace_for` broke that contract for
+/// any tag-only query, not just a contrived one -- `is:`/`keyword:` predicates are common real traffic
+/// (`client/query_sampler.py`'s own `tag` family).
 fn and_trace_for(filter: &FilterExpr, indexes: &Archived<CardIndexes>, offsets: &AOffsets, n_printings: usize) -> Option<AndTrace> {
-    if !matches!(filter, FilterExpr::And(_)) {
+    if !matches!(filter, FilterExpr::And(_)) || !is_printing_composable(filter, indexes) {
         return None;
     }
     compose_printing_estimate(filter, indexes, offsets, n_printings, true).and_trace.map(|b| *b)

@@ -14866,6 +14866,35 @@ fn and_trace_is_plain_min_fold_when_no_mechanism_hits() {
     assert_min_fold_invariant(&and_trace.tree);
 }
 
+/// Round 37c: `and_trace_for` must return `None`, not panic, for an `And` whose child is NOT
+/// `is_printing_composable` -- found by running the new N-way survey harness
+/// (`scripts/nway_estimate_truth_survey.py`) against a real build: `is:bear` parses to a single-child
+/// `And([CollectionCmp { field: IsTags, op: Eq, .. }])` (`Eq`, not `Ge` -- `is_printing_composable`'s
+/// own `CollectionCmp` arm is `Ge`-only), and `and_trace_for`'s original check
+/// (`matches!(filter, FilterExpr::And(_))` alone) let it through into
+/// `compose_printing_estimate(..., want_trace: true)`, which panics (`unreachable!`) on exactly this
+/// input -- confirmed real: `explain("is:bear")` crashed the process before this fix, breaking
+/// `explain`'s own "safe to call constantly" contract for any tag-only query, not a contrived one.
+#[test]
+fn and_trace_for_returns_none_rather_than_panic_on_a_non_composable_child() {
+    let mut vocab = VocabInterner::new();
+    let cards = vec![stub_card(1, TYPE_CREATURE, &["Bear"], &mut vocab)];
+    let n_cards = cards.len();
+    let printing_counts = vec![1usize; n_cards];
+    let data = store_of(cards, &printing_counts, vocab);
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let is_bear = FilterExpr::CollectionCmp { field: CollField::IsTags, op: CmpOp::Eq, value: "bear".to_string(), value_id: None };
+    let f = FilterExpr::And(vec![is_bear]);
+    assert!(!super::is_printing_composable(&f, &archived.indexes), "fixture assumption: this shape must be the non-composable one that used to panic");
+
+    // The bug: this call used to panic. The fix: it must return None instead.
+    assert!(super::and_trace_for(&f, &archived.indexes, &archived.offsets, n_printings).is_none());
+}
+
 /// `exact_result_total`'s Round 36 arm: `PrintingCompose`'s acquire branch reads THIS function for its
 /// card/artwork-mode match count (`exact_cards = exact_result_total(composed, indexes, Mode::Card)`),
 /// not `compose_printing_estimate`'s own `exact_domain` -- the exact gap Round 34's own arm exists to
