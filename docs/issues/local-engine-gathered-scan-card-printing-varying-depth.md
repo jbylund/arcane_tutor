@@ -184,6 +184,7 @@ total regret by 0.0 ms).
 | 30 | `STREAM_SMALL_TOTAL_REDO_BIAS`, a `stream_scan_units` correction for `printing_compose`'s bare `else` arm (`Mode::Card`, no legality partner) — Round 1's `scan_units` revision was inherited verbatim by `StreamedSelect`'s own feature, which structurally under-prices a SECOND, unmodeled `push_card_matches` pass `run_query_streamed`'s small-total branch pays and `GatheredScan` never does | kept, partial | n/a (this doc's own agreement-gate metric untouched; see the flip/regret numbers below instead) | `#852` ordering 88%→88% clean; Round 28's pooled `scan_units` median 1.00→1.00 clean | see "Round 30" narrative below — of 114 reproduced f3f4a017 flip queries, 50 (44%) now correctly re-route to `GatheredScan`; `StreamedSelect -> GatheredScan` regret matrix slice -7% share of traffic / -12% regret-ms; residual traced to the acquire-time `result_total` ESTIMATE itself being unreliable near `STREAM_MIN_MATCHES` for cross-index-range Ands (this doc's own Round 1 "separate, uninvestigated `domain_cards` bug" flag) — not a `cost.rs` rate problem, so chunk 2 (rate refit) is unlikely to close the rest on its own |
 | 32 | new `PlanFeatures::perm_walk_span` feature (`cost.rs`/`lib.rs`) for `StreamedSelect`'s OTHER branch (`walks_permutation`, `total > STREAM_MIN_MATCHES` — different from Rounds 30/31's small-total gather): `perm_steps`'s estimate multiplied by `n_cards` unconditionally, when the real executor already bounds its walk to the filter's own interval on the sort column | kept | n/a (not this doc's metric; see below) | `#852` 88%→89% clean; Round 30/31 territory (`StreamedSelect -> GatheredScan` regret slice) flat; Round 28's `scan_units` unreachable by this change | see "Round 32" narrative below — held-out mean \|log ratio\| 1.033→1.001 pooled (both halves improve independently); `StreamedSelect/candidates` cost-model-agreement cell unchanged (median 0.59 both builds) because the targeted correlation (filter bounds the same field the query orders by) is rare under uniform traffic; shipped as a strict-generalization correctness fix (collapses to the old formula when unbounded), not for measured impact on this specific cell |
 | 33 | `set_collector_ranges` (`lib.rs`, load-time precomputed per-set `collector_number_int` min/max/count), a new `compose_printing_estimate` `And`-arm tightening for the 2-source `set:X` + `cn`-range shape: `density = count / (max-min+1)` scaled by the query's own overlap, replacing the plain min-fold this shape had no other tightening for | kept | n/a (not this doc's own metric; see Round 33 narrative) | pooled cost-model-agreement cells move within noise (an untouched acquire branch, `PrintingCompose/plane`, shows the largest swing, 0.88→0.76, confirming it's sampling noise not this fix); `#852` 89%→89% clean; Round 28's `scan_units` 1.00→1.00 clean; Rounds 30/31/32's flip-query population 51/95 fixed on BOTH builds, 0 regressed | see "Round 33" narrative below — held-out validation across 550 real sets / 3,300 queries / both shapes: density estimator pooled median \|log ratio\| 0.000 (88.8% within 25%) against the fold's 0.788 (18.0% within 25%); regret matrix moved 37.4ms→33.4ms (-11%, improving); one honest documented exception -- a non-contiguous set (SLD) can now undershoot where the fold used to overshoot, still a net improvement (2.5x under vs 24x over) but a new failure direction |
+| 34 | `SubtypePairIndexes` (`lib.rs`, load-time top-256-per-dimension `set`/`c`/`id` x subtype `SpaceTotals` tables plus `rest_max`), a new `exact_result_total` arm (exact in any `unique=` mode on a table hit) and `compose_printing_estimate` `And`-arm tightening (exact on a hit, capped independence-product on a miss) for `set:X`/`c:X`/`id:X` And'd with a subtype leaf (`t:elf`), a shape with no tightening at all before this round (`t:` has no `compile_plane` arm and isn't in any pair table) | kept | n/a (not this doc's own metric; see Round 34 narrative) | `#852` 89%→89%/97%→97% clean; Round 28's `scan_units` 1.00→1.00 clean; Round 33's own `set:sld cn<=100` unchanged (25/25); Rounds 30/31/32's `StreamedSelect->GatheredScan` regret slice flat within noise | see "Round 34" narrative below — held-out validation (550 sets + 28 colors/28 identity raw masks, ~3,635 queries): pooled median \|log ratio\| printing 3.369→0.693, card 3.091→0.693; `set`/`colors` improve cleanly in both modes, `identity` improves in card mode but has a small, explained printing-mode within-25% trade-off (30.0%→22.1%); two mid-round corrections both caught by checking real behavior rather than trusting the design as briefed -- a flat card-space table (invisible to `unique=card`/`artwork`) rebuilt as `SpaceTotals` cells mirroring `PairTotals`, and `id:`'s real bare-colon default discovered to be `Le` (subset) not `Ge` like `c:`; identity's `rest_max` (377) verified higher than the ~100-150 routing-fragile zone the brief expected, still below the confirmed 900-2000 reversal zone, reported honestly rather than assumed safe |
 
 ### Round 1
 
@@ -1861,6 +1862,193 @@ moved in the IMPROVING direction (37.4ms -> 33.4ms, -11%) rather than staying fl
 tightening `compose_printing_estimate`'s `result` for this shape also improves nearby
 `PrintingCompose`-adjacent transitions that read the same estimate — not chased further this round
 since it was not the target metric.
+
+### Round 34
+
+Target: the same `compose_printing_estimate` `And`-arm gap Round 33 closed for `set:X`+`cn`-range,
+but for `set:X`/`c:X`/`id:X` And'd with a subtype leaf (`t:elf`, `t:human`, ...). `CollectionCmp
+{Subtypes}` has no `compile_plane` arm (unlike the main card TYPES — `t:creature`, `TypeCmp` — which
+already have their own whole-tree `compile_plane` fast path, untouched here) and isn't in any pair
+table, so the fold picks whichever leaf's own corpus-wide count is smaller. Real example, `set:plst
+t:human`: fold picks `min(set:plst's own 5,043 printings, t:human's own 10,607 printings)` = 5,043
+against a true 503 — 10.0x over.
+
+**Two corrections made mid-round, both caught by verifying against real data rather than trusting the
+design as briefed — reported here because the corrected version is materially different from a
+straight reading of the brief:**
+
+1. **Card-space-only cells were the wrong shape.** A first pass built the top-256 table with a flat
+   `u32` card count per cell and fed it into `compose_printing_estimate`'s `result` (printing space)
+   via a `* n_printings / n_cards` conversion. That makes the estimate invisible to `unique=card`/
+   `artwork`: those modes read `acquire_plan_features`'s own `est_cards`/`exact_total`, fed by
+   `exact_result_total`, a function `compose_printing_estimate` never calls — so a card-mode query
+   would still fall through to `calibrated_balls_into_bins`'s lossy estimate one layer down, never
+   seeing the exact card count this round computed. The fix: cells are `SpaceTotals` (card/printing/
+   artwork together), mirroring `PairTotals`'s own pattern for exactly this shape, and
+   `exact_result_total` gets its own new 2-leaf arm reading `indexes.subtype_pairs` directly (right
+   next to its existing `pair_totals` 2-leaf check) — so every `unique=` mode gets the exact answer in
+   one lookup, no space conversion. `compose_printing_estimate`'s `And` arm was restructured to match:
+   a table HIT now feeds `exact_domain_cards`/`_printing`/`_artworks` (mirroring `best_other`/
+   `pair_range_sum`'s own pattern — `min`-ing across independently-exact intersections stays exact), and
+   only a table MISS (the capped independence-product estimate, genuinely not exact) narrows `result`
+   alone, the same exact/estimate line Round 33's own density model draws.
+2. **`id:` is not `c:` with a different field.** The brief (and `op_to_color_cmp`, read in isolation)
+   suggested every bare-colon color field defaults to `Ge` (superset). Live-query instrumentation
+   during this round found otherwise: `id:g t:elf` reached the `And` arm with `op: CmpOp::Le`
+   (subset), not `Ge` — confirmed by printing the actual `FilterExpr` the query produced, not by
+   re-reading the parser. `c:` really is `Ge` (`c:g t:elf` reached `op: CmpOp::Ge` in the same check).
+   This is a real, previously-undocumented asymmetry in this codebase's bare-colon color semantics, not
+   a bug this round introduces — commander/deck-building's own "at most these colors" reading of
+   `id:`, apparently implemented at the FilterExpr level though not the SQL path's own explicit
+   subset-vs-superset branch this investigation also found (`card_query_nodes.py::_handle_jsonb_object`,
+   a separate, legacy SQL-generation path this effort's Rust engine does not go through). `colors`
+   cumulates GE (matches `color_cmp_matches(Ge, ...)`); `color_identity` cumulates LE
+   (`color_cmp_matches(Le, ...)`) — two different tables, not one mirrored twice.
+
+**Fix.** `SubtypePairIndexes` (new field on `CardIndexes`, next to `pair_totals`): `set`
+(`SetSubtypeTable`), `colors`/`identity` (`ColorSubtypeTable`, one instance each). Built once at load
+time (`build_subtype_pair_tables`) by reusing `build_value_totals` — the same exact card/printing/
+artwork dedup logic `ValueTotals`/`PairTotals` are already built with, not a hand-rolled accumulator:
+one pass crossing each printing's set against its card's subtypes (`set_subtype_totals`), one crossing
+each card's raw colors/identity mask against its subtypes (`colors_raw`/`identity_raw`), plus a third
+trivial pass for `set_cards` (the one marginal `set:X` needs that nothing else derives per-card;
+`c:`/`id:` get theirs for free from `ComposeEstimate.result.card`). `colors_raw`/`identity_raw` are
+then summed cumulatively (32 possible raw WUBRG masks, `color_cmp_matches` decides which raw cells
+contribute to which query mask — GE for colors, LE for identity) into `colors_pair`/`identity_pair`.
+Each of the three resulting tables keeps only the top 256 pairs by CARD count plus `rest_max` (the
+largest excluded CARD count) — nested `HashMap<K, HashMap<String, SpaceTotals>>` rather than a
+tuple-keyed map, so a query-time lookup is O(1) `Borrow<str>`/`u8` `.get()`s with no allocation.
+
+Two consumers, one shared detection (`subtype_pair_dim`/`subtype_pair_leaf`/`subtype_pair_exact`):
+
+- `exact_result_total` gets a new arm, right after its existing `pair_totals` 2-leaf check: on a table
+  hit, `Some(totals.get(mode))` — exact in whichever mode the caller asked for.
+- `compose_printing_estimate`'s `And` arm: on a table hit, `result = result.min(printings)` plus
+  `exact_domain_cards`/`_printing`/`_artworks` all get the same triple (mirroring how `best_other`/
+  `pair_range_sum` already populate those fields). On a miss, `independence_product = dim_card *
+  subtype_card / n_cards` (both already in hand: `subtype_card` from the fold's own `.result.card`;
+  `dim_card` the same way for `c:`/`id:`, or `subtype_pairs.set.set_cards` for `set:`), capped at
+  `rest_max`, scaled `* n_printings / n_cards` (Round 33's own arith-tuple-merge/legality-arm
+  conversion) — and this branch touches `result` ONLY, never `exact_domain_*`, since it is not exact.
+
+**Verified real numbers (re-derived from `benchmarks/bitplanes/corpus.jsonl`, independent of the
+engine, and cross-checked against the actual Rust build's own numbers, not just the brief's).**
+`rest_max` at N=256: **set 27, colors 38, identity 377.** The first two land where the brief expected
+(comfortably below the ~100-150 routing-fragile zone this investigation's diagnostic rounds
+established). Identity does not: LE-cumulative has a structurally heavier tail than GE-cumulative,
+because a query mask with MANY colors admits nearly every raw mask as a subset — the top ~250+
+identity entries are almost entirely `(some multi-color mask, "Human")`, cards that would show up for
+nearly any broad `id:` query. 377 is still well below the confirmed reversal zone (900-2000, where
+over-estimating flips from risky to safe), so this is not the failure mode the brief was checking for,
+but it IS a real, larger-than-expected cap for identity's independence-product fallback specifically —
+reported honestly rather than silently treated as satisfying the brief's "verified safety margin"
+framing. Mitigated in practice by two things this round's design already has for free: (1) the
+highest-value identity pairs are exactly the ones most likely to already be table HITS (bypassing the
+cap entirely), and (2) `result.min(...)` means this fallback can only narrow `result`, never widen it
+past what the pre-existing fold already gave — so a large `rest_max` bounds how MUCH improvement is
+possible on a miss, not a new way to regress below the fold.
+
+**Worked examples**, `unique=printing`/`card` via `explain()`, isolated release wheel:
+
+```
+                             printing         card
+set:plst t:human   true         503          486
+                    fold       5,043        2,710   (10.0x / 5.6x over)
+                    fix          503          486   (EXACT -- table hit)
+c:g t:elf          true       1,917  (assumed exact from table hit itself)
+                    fold      10,607        6,450   (5.5x / 11.5x over)
+                    fix        1,917          560   (EXACT -- table hit)
+id:g t:elf         true         N/A          398   (LE-cumulative, verified against raw corpus)
+                    fold       2,138        7,288   (fold picks t:elf's/id:g's own count)
+                    fix        1,388          398   (card EXACT -- table hit; printing not
+                                                       independently re-verified beyond the engine's
+                                                       own SpaceTotals internal consistency)
+```
+
+**Held-out validation** (`prepare_r34_queries.py`/`run_r34_queries.py`/`analyze_r34_results.py`, not
+committed — ephemeral, matching this doc's own convention for validation scripts): every real
+set with >= 5 cards (550 sets) and every real colors/identity raw mask with >= 5 cards (28 each),
+crossed with up to 6 sampled subtypes each (present + absent, mirroring Round 33's "6 sampled queries
+per set"), hash-of-query calibration/held-out split, ground truth computed directly from the corpus
+JSONL using the SAME cumulative (GE for colors, LE for identity) relation the engine now uses — 3,635
+queries total. Pooled median |log ratio| (nonzero-true rows), fold -> fix:
+
+```
+                    printing mode                    card mode
+            fold        fix       within25%     fold        fix       within25%
+set        3.486 -> 0.693     0.5% -> 4.6%    3.135 -> 0.693     0.4% -> 7.5%
+colors     3.061 -> 1.525    11.4% -> 8.6%    3.617 -> 0.693     4.3% -> 10.0%
+identity   0.658 -> 0.693    30.0% -> 22.1%   0.984 -> 0.607    13.6% -> 26.4%
+pooled     3.369 -> 0.693     2.4% -> 5.7%    3.091 -> 0.693     1.2% -> 8.5%
+```
+
+`set` and `colors` improve cleanly and substantially in both modes. `identity` is the honest
+exception this round's own rest_max finding predicts: its fold was already much better-calibrated
+than `set`/`colors` (0.658-0.984 median vs 3.0+), so there is less room to gain, and `identity`'s
+PRINTING-mode within25% actually drops (30.0% -> 22.1%) even though its median barely moves — some
+small-true-count rows flip from a mild fold OVERSHOOT to a fix UNDERSHOOT of comparable or larger
+|log ratio| (the same direction-flip risk Round 33's own SLD residual documents, not a new failure
+mode). Identity's CARD-mode numbers improve regardless (0.984 -> 0.607 median, 13.6% -> 26.4% within
+25%), and every mode stays strictly `result <= fold` by construction, so this is a real, bounded,
+honestly-reported trade-off, not a silent regression.
+
+**Regression guards.**
+
+- `#852` (`bench_pairwise_ordering.py --seconds 90 --seed 0 --mode realistic`): `GatheredScan` vs
+  `PrintingCompose` 89% -> 89% (n=10,197 -> 8,950), `GatheredScan` vs `StreamedSelect` 97% -> 97%
+  (n=28,565 -> 25,177). Clean.
+- Round 28's `scan_units` feature accuracy (`bench_feature_accuracy.py --seconds 90 --seed 0 --mode
+  realistic`): pooled p50 1.00 -> 1.00 (n=69,908 -> 69,182), matching distribution shape (p10 0.26 ->
+  0.26, p90 1.78 -> 1.76) — expected, this round touches `compose_printing_estimate`'s `result`/
+  `exact_domain`, never `scan_units` itself. Clean.
+- Round 33's own `set:X`+`cn`-range density check (`set:sld cn<=100`, printing mode): 25 on both
+  builds, unchanged — confirmed directly, not just assumed, since both rounds are new `And`-arm
+  tightenings that could in principle compose on a query hitting both shapes (rare: this round needs a
+  subtype leaf, Round 33 needs a `collector_number_int` leaf, and the `And` arm's shape guards are
+  each strict 2-source, so a 3-leaf query combining both falls through both unchanged, same as any
+  other shape neither recognizes).
+- Rounds 30/31/32's `StreamedSelect -> GatheredScan` territory (`bench_regret_matrix.py --seconds 90
+  --seed 0 --mode realistic`): n 692->660, mean regret 10.26us->9.80us, share 37%->32% — flat within
+  run-to-run sampling variance (n differs ~5% between the two 90s windows), not a regression; total
+  regret across all transitions 19.4ms (baseline) vs 20.1ms (fix), also within this effort's own
+  documented ~9% noise floor for a single non-interleaved pair of runs.
+- Same-build latency canary (`bench_query_latency_ab.py --sample 800 --seed 1 --mode realistic`,
+  isolated release wheels, interleaved A1/B1/A2): real diff (fix vs baseline) `B - A = 0.0us`, 95% CI
+  `[-0.3, +0.3]`, "NO DETECTABLE DIFFERENCE". Same-build canary (fix vs fix, zero code difference):
+  `+1.6us`, CI `[+1.3, +1.9]`, "B is SLOWER" — a LARGER swing with nothing changed, so the real diff is
+  not distinguishable from noise, consistent with the only new per-query work being one or two `HashMap`
+  lookups gated behind a rare, strict 2-leaf shape.
+
+**Correctness gates.** `cargo test --release` (`card_engine`): 184/184 passed (180 + 4 new). `cargo
+test` (debug): 185/185 passed. `cargo clippy --all-targets -- -D warnings` (debug, not `--release`,
+per this effort's established gate): clean. Four new regression tests
+(`card_engine/src/tests.rs`): `build_subtype_pair_tables_ge_le_cumulative_and_set_marginals` (the
+builder's GE/LE cumulative correctness and `set_cards` marginal, hand-verified against a 4-card
+fixture), `exact_result_total_answers_subtype_pairs_in_every_space` (a table hit answers exactly in
+all three `Mode`s from one archived store), `subtype_pair_and_arm_tightening` (fallback beats the
+fold, a hand-set exact entry is preferred over the fallback formula and populates `exact_domain_*`,
+and the fallback branch does NOT populate `exact_domain_*`), `subtype_pair_and_arm_rest_max_caps_
+fallback` (the cap actually binds). All four verified to actually catch a revert: temporarily gating
+both new call sites off (`if false && ...`) reproduces the pre-fix fold/`None` values on the first
+assertion of three of the four tests (the builder test is unaffected by construction, since it never
+touches either consumer); restoring passes again. Blast radius: `card_engine/src/lib.rs`
+(`SetSubtypeTable`, `ColorSubtypeTable`, `SubtypePairIndexes`, `build_subtype_pair_tables`,
+`subtype_pair_dim`/`_leaf`/`_exact`, the new `CardIndexes` field, the `exact_result_total` arm, the
+`And` arm's new tightening step), `card_engine/src/tests.rs` (the four new tests plus one
+`CardIndexes` literal — `fuzz_store_n` — fixed up to build the real table rather than defaulting it),
+this doc. `cost.rs`/`estimator.rs` untouched.
+
+**Verdict.** Real, validated, with one honestly-reported residual: `set` and `colors` improve
+cleanly and substantially (median |log ratio| from 3.0-3.6 down to 0.69-1.5, within-25% roughly
+doubling to 10x-ing depending on mode); `identity` improves in card mode and is a small, bounded,
+explained trade-off in printing mode, with a real rest_max (377) that this round's own
+verification-over-trust discipline caught rather than assumed safe. The mid-round architecture
+correction (flat card-space numbers -> `SpaceTotals` cells, mirroring `PairTotals`) and the `id:`
+default-operator discovery (`Le`, not `Ge`) were both found by checking real behavior against the
+brief rather than implementing the brief as given — consistent with, and validating, this whole
+effort's standing "verify, don't just trust" discipline. No regression on `#852`, Round 28's
+`scan_units` cell, Round 33's own density check, or Rounds 30/31/32's flip-query territory; no
+detectable latency effect distinguishable from the same-build noise floor.
 
 ## Confirmation runs
 

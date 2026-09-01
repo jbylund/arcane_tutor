@@ -6679,6 +6679,7 @@ fn bench_checked_vs_unchecked_access() {
     let strings = interner.strings;
     let artwork_groups = assign_artwork_groups(&mut printings, &offsets);
     let artwork_base = build_artwork_base_from(&artwork_groups);
+    let printing_to_card = build_printing_to_card(&offsets);
 
     let indexes = CardIndexes {
         artwork_base,
@@ -6715,11 +6716,14 @@ fn bench_checked_vs_unchecked_access() {
         rarity_cards:   RangeCardCounts::default(),
         value_totals:   ValueTotals::default(),
         pair_totals:    PairTotals::default(),
+        // Real builder, not `::default()`, so the Round 34 tightening is exercised (not silently
+        // no-op'd) by whatever fuzz/property tests build a store through this helper.
+        subtype_pairs:  super::build_subtype_pair_tables(&cards, &printings, &printing_to_card, &vocab.strings, usize::from(artwork_groups.iter().copied().max().unwrap_or(0))),
         sort_perms:     build_sort_permutations(&cards, &offsets),
         max_artwork_groups: artwork_groups.iter().copied().max().unwrap_or(0),
         artwork_groups,
         artwork_group_col: printings.iter().map(|p| p.artwork_group_id).collect(),
-        printing_to_card: build_printing_to_card(&offsets),
+        printing_to_card,
         planes:         build_bit_planes(&cards, &printings, &offsets, &strings),
         border_printing: build_border_printing_planes(&printings, &strings),
         rarity_printing: build_rarity_printing_planes(&printings),
@@ -8169,6 +8173,241 @@ fn set_and_collector_number_range_density_tightening() {
     // -- the documented, accepted residual for a non-contiguous set (SLD-shaped), not a bug.
     let gap_query = FilterExpr::And(vec![set("gap"), cn(CmpOp::Le, 100.0)]);
     assert_eq!(est(&gap_query), 2, "set:gap cn<=100: density estimate for a non-contiguous set must match the documented (partial) improvement");
+}
+
+/// `build_subtype_pair_tables` (Round 34): exact `SpaceTotals` (card/printing/artwork together, not a
+/// flat number -- see `SetSubtypeTable`'s own doc) per (set_code, subtype) and per (raw colors/
+/// color_identity mask, subtype), plus the `set_cards` marginal. Colors cumulate GE, color_identity
+/// cumulates LE -- a real, verified-against-a-live-query asymmetry (see `ColorSubtypeTable`'s own
+/// doc), not a copy-paste mirror of the colors case.
+///
+/// 4 cards, fewer than the 256-pair cutoff, so nothing should be excluded (`rest_max == 0` for every
+/// dimension) -- this test is about `top`'s CONTENTS and the GE/LE summation, not the cutoff itself.
+/// One printing per card (no reprints, no shared illustrations), so every `SpaceTotals` cell here is
+/// `printings == cards == artworks`.
+#[test]
+fn build_subtype_pair_tables_ge_le_cumulative_and_set_marginals() {
+    let mut vocab = VocabInterner::new();
+    let mut cards = vec![
+        stub_card(1, TYPE_CREATURE, &["Elf"], &mut vocab),           // G
+        stub_card(2, TYPE_CREATURE, &["Elf"], &mut vocab),           // G+R
+        stub_card(3, TYPE_CREATURE, &["Elf", "Warrior"], &mut vocab), // R
+        stub_card(4, TYPE_CREATURE, &["Warrior"], &mut vocab),       // colorless
+    ];
+    cards[0].card_colors = super::color_to_bit("G");
+    cards[1].card_colors = super::color_to_bit("G") | super::color_to_bit("R");
+    cards[2].card_colors = super::color_to_bit("R");
+    cards[3].card_colors = 0;
+    for c in &mut cards {
+        c.card_color_identity = c.card_colors; // mirrors colors in this fixture
+    }
+    // pids: 0,1 -> card0 (aaa, bbb); 2 -> card1 (aaa); 3 -> card2 (bbb); 4 -> card3 (aaa).
+    let mut data = store_of(cards, &[2, 1, 1, 1], vocab);
+    for (p, code) in data.printings.iter_mut().zip(["aaa", "bbb", "aaa", "bbb", "aaa"]) {
+        p.card_set_code = InlineStr::from_str(code);
+    }
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    let t = super::build_subtype_pair_tables(&data.cards, &data.printings, &ptc, &data.coll_vocab, max_ag);
+
+    // set x subtype: card-space distinct-card counts (NOT printing counts -- card0 has 2 printings,
+    // one in each set, and must count once per set, not twice).
+    let cards_of = |cell: Option<&SpaceTotals>| cell.map(|c| c.cards);
+    assert_eq!(cards_of(t.set.top.get("aaa").and_then(|m| m.get("Elf"))), Some(2), "aaa: card0 + card1 have Elf");
+    assert_eq!(cards_of(t.set.top.get("aaa").and_then(|m| m.get("Warrior"))), Some(1), "aaa: only card3 has Warrior");
+    assert_eq!(cards_of(t.set.top.get("bbb").and_then(|m| m.get("Elf"))), Some(2), "bbb: card0 + card2 have Elf");
+    assert_eq!(cards_of(t.set.top.get("bbb").and_then(|m| m.get("Warrior"))), Some(1), "bbb: only card2 has Warrior");
+    assert_eq!(t.set.set_cards.get("aaa"), Some(&3), "aaa: card0, card1, card3");
+    assert_eq!(t.set.set_cards.get("bbb"), Some(&2), "bbb: card0, card2");
+    assert_eq!(t.set.rest_max, 0);
+
+    // colors x subtype, GE-CUMULATIVE: `c>=g` must sum every raw combo that CONTAINS green.
+    let g = super::color_to_bit("G");
+    let r = super::color_to_bit("R");
+    assert_eq!(cards_of(t.colors.top.get(&g).and_then(|m| m.get("Elf"))), Some(2), "c>=g t:elf: card0 (G) and card1 (GR) both contain green");
+    assert_eq!(t.colors.top.get(&g).and_then(|m| m.get("Warrior")), None, "no green card has Warrior in this fixture");
+    assert_eq!(cards_of(t.colors.top.get(&r).and_then(|m| m.get("Elf"))), Some(2), "c>=r t:elf: card1 (GR) and card2 (R) both contain red");
+    assert_eq!(cards_of(t.colors.top.get(&r).and_then(|m| m.get("Warrior"))), Some(1), "c>=r t:warrior: only card2 (R)");
+    assert_eq!(t.colors.rest_max, 0);
+
+    // identity x subtype, LE-CUMULATIVE (the real bare-colon `id:` default -- NOT a mirror of colors):
+    // `id<=g` sums every raw combo that is a SUBSET of green -- {G} and {} (colorless) only, NOT {G,R}.
+    assert_eq!(cards_of(t.identity.top.get(&g).and_then(|m| m.get("Elf"))), Some(1), "id<=g t:elf: only card0 (G) -- card1 (GR) is NOT a subset of {{G}}");
+    assert_eq!(cards_of(t.identity.top.get(&g).and_then(|m| m.get("Warrior"))), Some(1), "id<=g t:warrior: card3 (colorless, subset of everything)");
+    // `id<=r` sums {R} and {} -- card2 (R, Elf+Warrior) and card3 (colorless, Warrior).
+    assert_eq!(cards_of(t.identity.top.get(&r).and_then(|m| m.get("Warrior"))), Some(2), "id<=r t:warrior: card2 (R) + card3 (colorless)");
+    assert_eq!(t.identity.rest_max, 0);
+}
+
+/// `exact_result_total` (Round 34): a strict 2-leaf `And` of `set:X`/`c:X`/`id:X` + a subtype leaf,
+/// when the pair is in the top-256 table, answers EXACTLY in whichever `Mode` is asked -- the fix for
+/// the architectural gap an earlier draft of this round had (a flat card-space number could not reach
+/// `unique=printing`/`artwork` without a lossy space conversion; see `SetSubtypeTable`'s own doc).
+#[test]
+fn exact_result_total_answers_subtype_pairs_in_every_space() {
+    let mut vocab = VocabInterner::new();
+    let cards = vec![
+        stub_card(1, TYPE_CREATURE, &["Elf"], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &["Elf"], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &[], &mut vocab),
+    ];
+    // card0: 2 printings in "aaa" (a real reprint -- printings != cards for this pair);
+    // card1: 1 printing in "aaa"; card2 (no Elf): 1 printing in "aaa".
+    let mut data = store_of(cards, &[2, 1, 1], vocab);
+    for p in &mut data.printings {
+        p.card_set_code = InlineStr::from_str("aaa");
+    }
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.subtype_pairs = super::build_subtype_pair_tables(&data.cards, &data.printings, &ptc, &data.coll_vocab, max_ag);
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let f = FilterExpr::And(vec![
+        FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value: "aaa".to_string() },
+        FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None },
+    ]);
+    assert_eq!(super::exact_result_total(&f, &archived.indexes, Mode::Card), Some(2), "2 distinct cards (card0, card1)");
+    assert_eq!(super::exact_result_total(&f, &archived.indexes, Mode::Printing), Some(3), "3 printings (card0 x2, card1 x1)");
+    assert_eq!(super::exact_result_total(&f, &archived.indexes, Mode::Artwork), Some(3), "3 distinct illustrations (store_of gives each printing its own)");
+}
+
+/// `compose_printing_estimate`'s `And` arm has no tightening at all for `set:X`/`c:X`/`id:X` And'd
+/// with a subtype leaf today: `t:` has no `compile_plane` arm and isn't in any pair table, so the
+/// plain min-fold picks whichever leaf's own (corpus-wide, not dimension-scoped) count is smaller.
+/// This is the Round 34 fix (`docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md`).
+///
+/// One store, two sub-scenarios sharing it (`rest_max` is one scalar per DIMENSION, not per value, so
+/// a cap-binding case needs its own store below rather than a third scenario sharing this `rest_max`):
+/// - `set:aaa t:elf` -- no table entry, exercises the independence-product FALLBACK (only narrows
+///   `result`, never `exact_domain_*` -- it is not exact). `rest_max` set generously so it does not
+///   bind here.
+/// - `set:bbb t:elf` -- a hand-set EXACT table entry, proving the exact path is preferred over the
+///   fallback formula (the two would disagree if the fallback ran instead) and that it also populates
+///   `exact_domain_cards`/`exact_domain_printing`/`exact_domain_artworks`, not just `result`.
+///
+/// 8 cards, 3 with subtype Elf (cards 0-2, 3 printings each: one in each of aaa/bbb/ccc) and 5 without
+/// (cards 3-7, 2 printings each: one in aaa, one in bbb) -- so `aaa`/`bbb` each hold all 8 cards and
+/// `ccc` holds only the 3 Elf cards (unused by this test; `ccc` printings just make `k_elf` -- the
+/// subtype leaf's OWN corpus-wide printing count -- bigger than either set, matching the real
+/// motivating shape). n_cards=8, n_printings=19.
+#[test]
+fn subtype_pair_and_arm_tightening() {
+    let mut vocab = VocabInterner::new();
+    let mut cards = vec![
+        stub_card(1, TYPE_CREATURE, &["Elf"], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &["Elf"], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &["Elf"], &mut vocab),
+    ];
+    for i in 0..5 {
+        cards.push(stub_card(10 + i as u128, TYPE_CREATURE, &[], &mut vocab));
+    }
+    // pids: 0-2 card0 (aaa,bbb,ccc); 3-5 card1 (aaa,bbb,ccc); 6-8 card2 (aaa,bbb,ccc);
+    // 9-10 card3 (aaa,bbb); 11-12 card4 (aaa,bbb); 13-14 card5 (aaa,bbb); 15-16 card6 (aaa,bbb);
+    // 17-18 card7 (aaa,bbb).
+    let mut data = store_of(cards, &[3, 3, 3, 2, 2, 2, 2, 2], vocab);
+    let set_by_pid = ["aaa", "bbb", "ccc", "aaa", "bbb", "ccc", "aaa", "bbb", "ccc", "aaa", "bbb", "aaa", "bbb", "aaa", "bbb", "aaa", "bbb", "aaa", "bbb"];
+    assert_eq!(set_by_pid.len(), 19);
+    for (p, code) in data.printings.iter_mut().zip(set_by_pid) {
+        p.card_set_code = InlineStr::from_str(code);
+    }
+    data.indexes.set_codes = {
+        let mut idx: TagIndex = HashMap::new();
+        for (i, p) in data.printings.iter().enumerate() {
+            idx.entry(p.card_set_code.as_str().to_string()).or_default().push(i as u32);
+        }
+        idx
+    };
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &build_printing_to_card(&data.offsets), &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
+    // Hand-set (not the real builder -- see the test's own doc for why each branch is isolated this
+    // way): `aaa` gets no table entry at all (fallback), `bbb` gets an exact-looking entry that
+    // deliberately disagrees with what the fallback formula would compute (proving the exact path is
+    // consulted first). `rest_max` is generous (100) so it does not bind for `aaa` -- see the
+    // dedicated cap-binding test below for that branch, which needs its own `rest_max` value.
+    data.indexes.subtype_pairs.set.set_cards.insert("aaa".to_string(), 8);
+    data.indexes.subtype_pairs.set.set_cards.insert("bbb".to_string(), 8);
+    data.indexes.subtype_pairs.set.top.entry("bbb".to_string()).or_default().insert("Elf".to_string(), SpaceTotals { printings: 4, cards: 2, artworks: 4 });
+    data.indexes.subtype_pairs.set.rest_max = 100;
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+    assert_eq!(n_printings, 19);
+
+    let set = |code: &str| FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value: code.to_string() };
+    let elf = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None };
+    let est = |code: &str| {
+        let f = FilterExpr::And(vec![set(code), elf.clone()]);
+        super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings)
+    };
+
+    // `set:aaa t:elf`: no table entry. Fold = min(k_aaa=8, k_elf=9) = 8. Fallback independence:
+    // dim_card(8) * subtype_card(3) / n_cards(8) = 3; scaled to printing space, 3 * 19 / 8 = 7
+    // (floor). 7 < 8, so the tightened value wins. True joint count is 3 (each Elf card has exactly
+    // one printing in aaa) -- 7 is a real improvement over the fold's 8, though not exact (the
+    // card->printing conversion is itself an average-reprint-rate approximation, same honest
+    // limitation Round 33 documents for its own density model) -- so `exact_domain` must stay `None`.
+    let aaa = est("aaa");
+    assert_eq!(aaa.result.printing, 7, "set:aaa t:elf: capped independence-product fallback must win over the fold");
+    assert!(aaa.exact_domain.is_none(), "the fallback is an ESTIMATE, not exact -- it must not populate exact_domain");
+
+    // `set:bbb t:elf`: exact table entry (printings=4, cards=2, artworks=4) -- deliberately NOT what
+    // the fallback formula would give (fallback would be dim_card(8)*subtype_card(3)/8 = 3, scaled to
+    // 3*19/8 = 7, same as `aaa`). Getting `result.printing == 4` (not 7) proves the exact path fired
+    // instead of the fallback formula, and `exact_domain` must carry the SAME triple, not just `result`.
+    let bbb = est("bbb");
+    assert_eq!(bbb.result.printing, 4, "set:bbb t:elf: exact table entry must be preferred over the independence fallback");
+    assert_eq!(bbb.result.card, Some(2), "exact table entry's card count must also reach result.card");
+    let bbb_domain = bbb.exact_domain.expect("a table hit is exact -- exact_domain must be populated");
+    assert_eq!((bbb_domain.printing, bbb_domain.card, bbb_domain.artwork), (4, Some(2), Some(4)));
+}
+
+/// `rest_max` actually binds the independence-product fallback, not just exists unused. Its own
+/// dedicated (minimal) store: `rest_max` is one scalar per DIMENSION, shared by every set value, so
+/// this needs to be isolated from `subtype_pair_and_arm_tightening`'s `aaa`/`bbb` (which need a
+/// GENEROUS `rest_max` to demonstrate the fallback formula itself, not the cap).
+///
+/// 4 cards, all printed once, all in set `ddd`: card0 has subtype Elf, cards 1-3 don't. n_cards=4,
+/// n_printings=4, k_ddd=4, k_elf=1, dim_card=4, subtype_card=1. Uncapped fallback:
+/// `dim_card(4) * subtype_card(1) / n_cards(4) = 1`, scaled `1 * 4 / 4 = 1`. `rest_max = 0`
+/// (deliberately adversarial, not realistic -- see the test's own doc on the sibling test) forces
+/// `card_est = min(1, 0) = 0`, scaled `0 * 4 / 4 = 0`. Getting 0 (not 1) proves the cap binds.
+#[test]
+fn subtype_pair_and_arm_rest_max_caps_fallback() {
+    let mut vocab = VocabInterner::new();
+    let mut cards = vec![stub_card(1, TYPE_CREATURE, &["Elf"], &mut vocab)];
+    for i in 0..3 {
+        cards.push(stub_card(10 + i as u128, TYPE_CREATURE, &[], &mut vocab));
+    }
+    let mut data = store_of(cards, &[1, 1, 1, 1], vocab);
+    for p in &mut data.printings {
+        p.card_set_code = InlineStr::from_str("ddd");
+    }
+    data.indexes.set_codes = {
+        let mut idx: TagIndex = HashMap::new();
+        for (i, p) in data.printings.iter().enumerate() {
+            idx.entry(p.card_set_code.as_str().to_string()).or_default().push(i as u32);
+        }
+        idx
+    };
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &build_printing_to_card(&data.offsets), &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
+    data.indexes.subtype_pairs.set.set_cards.insert("ddd".to_string(), 4);
+    data.indexes.subtype_pairs.set.rest_max = 0;
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let f = FilterExpr::And(vec![
+        FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value: "ddd".to_string() },
+        FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None },
+    ]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings).result.printing;
+    assert_eq!(est, 0, "set:ddd t:elf: rest_max=0 must cap the fallback to 0, not the uncapped 1");
 }
 
 /// Card-space collection containment fields (`type:`/`kw:`/`otag:`) and their printing-space siblings

@@ -1749,6 +1749,229 @@ fn build_set_collector_ranges<T>(printings: &[T], set_code: impl Fn(&T) -> &str,
     ranges
 }
 
+/// Round 34 (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md): `set:X`/`c:X`/
+/// `id:X` And'd with a subtype leaf (`t:Y`, `CollectionCmp{Subtypes, Ge}`) has the SAME gap Round 33
+/// closed for `set:X`+`cn`-range — `t:` has no `compile_plane` arm (unlike the main card TYPES,
+/// `TypeCmp`, which already has a whole-tree `compile_plane` fast path) and isn't in any pair table,
+/// so `compose_printing_estimate`'s `And` arm's plain min-fold picks whichever leaf's own CORPUS-WIDE
+/// count is smaller, real ratios of 6-60x median and up to 1,500x+ worst case.
+///
+/// **Cells are `SpaceTotals` (card/printing/artwork together), not a flat card-space number** —
+/// mirroring `PairTotals`'s own pattern for exactly this kind of dense-pair-value table, and
+/// deliberately NOT the flat-number design an earlier draft of this round shipped with. A flat
+/// card-space count would have to be converted into printing space to reach
+/// `compose_printing_estimate`'s `result` — and a query running under `unique=card`/`artwork` reads a
+/// DIFFERENT, separately-computed feature (`acquire_plan_features`'s `est_cards`/`exact_total`, fed by
+/// `exact_result_total`), which does not consult `result` at all. A flat card number would therefore
+/// have been silently invisible to card/artwork mode entirely (the exact card/printing/artwork total
+/// this round can cheaply have in hand would still fall back to `calibrated_balls_into_bins`'s lossy
+/// estimate one layer down) — precisely the card-mode-calibrated-value-used-in-printing/artwork-mode
+/// class of bug this doc's Round 28 already found once. Storing the exact triple and reading `.get
+/// (mode)` (see `exact_result_total`'s own new arm) answers every mode directly, with no
+/// space-conversion step at all.
+///
+/// One exact top-256 table per dimension is not affordable the way `ValueTotals`/`PairTotals` are:
+/// unlike border/rarity/frame/legality (a handful of values each), a dimension crossed with ~300
+/// subtypes is thousands of pairs, almost all near zero. `top` stores only the 256 most extreme real
+/// pairs (ranked by CARD count, the `.cards` field — matching the population `rest_max` is defined
+/// over); `rest_max` is the largest real CARD count among every pair EXCLUDED from `top`, a guaranteed
+/// cap for the compose And arm's independence-product ESTIMATE (not exact, so it stays card-space and
+/// gets scaled into `result`'s printing space the same way Round 33's arith-tuple merge/the legality
+/// arm already do — see the And arm's own tightening-step doc). See `build_subtype_pair_tables` for
+/// how `top`/`rest_max` are built.
+#[derive(Archive, Serialize, Deserialize, Default)]
+struct SetSubtypeTable {
+    /// Top 256 (set_code, subtype) exact `SpaceTotals`. Nested (`HashMap<String, HashMap<String, _>>`)
+    /// rather than `HashMap<(String, String), _>` so a query-time lookup is two `Borrow<str>` `.get()`s
+    /// and no tuple allocation.
+    top: HashMap<String, HashMap<String, SpaceTotals>>,
+    /// The largest real (set_code, subtype) CARD count among every pair EXCLUDED from `top`.
+    rest_max: u32,
+    /// Distinct-card count per set — the one marginal `set:X` needs that nothing else already derives
+    /// per-card (`set_codes`/`set_collector_ranges` are both PRINTING-indexed the other way; `c:X`/
+    /// `id:X` get theirs for free from `ComposeEstimate.result.card` instead, so they need no
+    /// equivalent map here).
+    set_cards: HashMap<String, u32>,
+}
+
+/// `SetSubtypeTable`'s sibling for `c:X`/`id:X` (one instance each, in `SubtypePairIndexes`) — see
+/// `SetSubtypeTable`'s own doc for the shared reasoning. Keyed by the raw `colors`/`color_identity`
+/// bitmask (<=32 distinct real values, WUBRG) rather than a string, and CUMULATIVE over the real
+/// bare-colon default op for that field: `colors` cumulates GE (superset, matching `color_cmp_matches
+/// (Ge, ...)`, the same semantics `op_to_color_cmp` gives a bare `c:` — see `build_subtype_pair_tables`
+/// for the verified real-data check). **`color_identity` cumulates LE (subset), not Ge** — a bare
+/// `id:` resolves to `CmpOp::Le` at the FilterExpr level despite `op_to_color_cmp` mapping every other
+/// bare-colon color field to `Ge`; confirmed directly against a live query (`id:g t:elf` produced
+/// `op=Le` reaching this match, not `Ge`) while investigating why this round's colors branch measurably
+/// changed real query estimates and its identity branch silently did not — a real, previously-unnoticed
+/// asymmetry between the two color fields' default operator, not a bug this round introduces. Each
+/// entry is already summed over every raw mask a query naming this mask would actually match (real
+/// `color_cmp_matches` semantics, baked in once at build time), so the And arm's lookup is one `.get()`
+/// with no runtime re-summation. Scoped to that one default op per field: any OTHER explicit operator
+/// (`c=`, `c<=`, `id>=`, `id=`, ...) doesn't match the And arm's shape guard at all and falls through to
+/// the pre-existing fold unchanged, the same as any other shape this tightening declines.
+#[derive(Archive, Serialize, Deserialize, Default)]
+struct ColorSubtypeTable {
+    top: HashMap<u8, HashMap<String, SpaceTotals>>,
+    /// The largest real (mask, subtype) CARD count among every pair EXCLUDED from `top`.
+    rest_max: u32,
+}
+
+/// The three Round 34 tables `compose_printing_estimate`'s `And` arm (and `exact_result_total`) read.
+/// One field on `CardIndexes` rather than three, purely for call-site brevity
+/// (`indexes.subtype_pairs.set`/`.colors`/`.identity`).
+#[derive(Archive, Serialize, Deserialize, Default)]
+struct SubtypePairIndexes {
+    set: SetSubtypeTable,
+    colors: ColorSubtypeTable,
+    identity: ColorSubtypeTable,
+}
+
+/// Builds the three Round 34 tables (`SubtypePairIndexes`) -- see `SetSubtypeTable`/`ColorSubtypeTable`'s
+/// own docs for what they hold and why. Reuses `build_value_totals` (the SAME exact card/printing/
+/// artwork dedup logic `ValueTotals`/`PairTotals` are already built with) for the raw per-pair totals,
+/// rather than a hand-rolled accumulator that would have to re-derive that dedup itself.
+fn build_subtype_pair_tables(
+    cards: &[OracleCard],
+    printings: &[Printing],
+    printing_to_card: &[u32],
+    coll_vocab: &[String],
+    max_artwork_groups: usize,
+) -> SubtypePairIndexes {
+    // The top-256 cutoff, uniform across all three dimensions (verified against the real corpus,
+    // docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md, Round 34): each
+    // dimension's `rest_max` at this N lands far below the count where a wrong estimate starts
+    // actually flipping a routing decision, so the fallback's whole operating range stays nowhere
+    // near that risk zone.
+    const TOP_N: usize = 256;
+
+    // Per-(set_code, subtype) exact totals, one `build_value_totals` pass: `keys_of` returns, for a
+    // printing in a non-empty set, one key per subtype the printing's CARD has (subtypes are card-
+    // level, sets are printing-level, so distinct pairs come from crossing this one printing's set
+    // against every one of its card's subtypes).
+    let set_subtype_totals: HashMap<(String, String), SpaceTotals> = build_value_totals(cards, printings, printing_to_card, max_artwork_groups, |card, p| {
+        if p.card_set_code.as_str().is_empty() {
+            return Vec::new();
+        }
+        card.card_subtypes.iter().map(|id| (p.card_set_code.as_str().to_string(), coll_vocab[usize::from(*id)].clone())).collect()
+    });
+    // Distinct-card (etc.) totals per set alone -- the one marginal `set:X` needs that nothing else
+    // already derives per-card. Same pass shape, one key (the set itself) instead of a cross with
+    // subtypes.
+    let set_totals: HashMap<String, SpaceTotals> = build_value_totals(cards, printings, printing_to_card, max_artwork_groups, |_card, p| {
+        if p.card_set_code.as_str().is_empty() { Vec::new() } else { vec![p.card_set_code.as_str().to_string()] }
+    });
+    let set_cards: HashMap<String, u32> = set_totals.into_iter().map(|(k, t)| (k, t.cards)).collect();
+
+    // Per-(raw colors/color_identity mask, subtype) exact totals -- colors/identity are single-valued
+    // per card, so this is a plain cross of the card's one mask against every one of its subtypes, no
+    // set-style "only if non-empty" guard needed.
+    let colors_raw: HashMap<(u8, String), SpaceTotals> = build_value_totals(cards, printings, printing_to_card, max_artwork_groups, |card, _p| {
+        card.card_subtypes.iter().map(|id| (card.card_colors, coll_vocab[usize::from(*id)].clone())).collect()
+    });
+    let identity_raw: HashMap<(u8, String), SpaceTotals> = build_value_totals(cards, printings, printing_to_card, max_artwork_groups, |card, _p| {
+        card.card_subtypes.iter().map(|id| (card.card_color_identity, coll_vocab[usize::from(*id)].clone())).collect()
+    });
+
+    // Cumulative sum over every raw mask a query naming `query_mask` would actually match, via the
+    // SAME real matcher `ColorCmp` itself uses (`color_cmp_matches`) -- so this can't drift from what a
+    // query would actually match. A card has exactly one raw mask, so summing disjoint raw cells'
+    // `SpaceTotals` together double-counts nothing. O(32 * distinct raw masks), trivial at load time.
+    fn cumulative_sum(raw: &HashMap<(u8, String), SpaceTotals>, op: CmpOp) -> HashMap<(u8, String), SpaceTotals> {
+        let mut out: HashMap<(u8, String), SpaceTotals> = HashMap::new();
+        for query_mask in 0u8..32 {
+            for ((raw_mask, subtype), totals) in raw {
+                if color_cmp_matches(op, query_mask, *raw_mask) {
+                    let entry = out.entry((query_mask, subtype.clone())).or_default();
+                    entry.printings += totals.printings;
+                    entry.cards += totals.cards;
+                    entry.artworks += totals.artworks;
+                }
+            }
+        }
+        out
+    }
+    // `colors` cumulates GE (a bare `c:` is `CmpOp::Ge`); `color_identity` cumulates LE (a bare `id:`
+    // is `CmpOp::Le`, verified directly -- see `ColorSubtypeTable`'s own doc).
+    let colors_pair = cumulative_sum(&colors_raw, CmpOp::Ge);
+    let identity_pair = cumulative_sum(&identity_raw, CmpOp::Le);
+
+    // Top-N by CARD count (globally, not per outer key) + `rest_max` = the (N+1)-th largest excluded
+    // CARD count.
+    fn top_n_and_rest_max<K: Eq + std::hash::Hash>(pairs: HashMap<K, SpaceTotals>, n: usize) -> (Vec<(K, SpaceTotals)>, u32) {
+        let mut items: Vec<(K, SpaceTotals)> = pairs.into_iter().collect();
+        items.sort_unstable_by_key(|item| std::cmp::Reverse(item.1.cards));
+        let rest_max = items.get(n).map_or(0, |(_, t)| t.cards);
+        items.truncate(n);
+        (items, rest_max)
+    }
+    fn nest_set(items: Vec<((String, String), SpaceTotals)>) -> HashMap<String, HashMap<String, SpaceTotals>> {
+        let mut out: HashMap<String, HashMap<String, SpaceTotals>> = HashMap::new();
+        for ((set_code, subtype), totals) in items {
+            out.entry(set_code).or_default().insert(subtype, totals);
+        }
+        out
+    }
+    fn nest_color(items: Vec<((u8, String), SpaceTotals)>) -> HashMap<u8, HashMap<String, SpaceTotals>> {
+        let mut out: HashMap<u8, HashMap<String, SpaceTotals>> = HashMap::new();
+        for ((mask, subtype), totals) in items {
+            out.entry(mask).or_default().insert(subtype, totals);
+        }
+        out
+    }
+
+    let (set_top, set_rest_max) = top_n_and_rest_max(set_subtype_totals, TOP_N);
+    let (colors_top, colors_rest_max) = top_n_and_rest_max(colors_pair, TOP_N);
+    let (identity_top, identity_rest_max) = top_n_and_rest_max(identity_pair, TOP_N);
+    SubtypePairIndexes {
+        set: SetSubtypeTable { top: nest_set(set_top), rest_max: set_rest_max, set_cards },
+        colors: ColorSubtypeTable { top: nest_color(colors_top), rest_max: colors_rest_max },
+        identity: ColorSubtypeTable { top: nest_color(identity_top), rest_max: identity_rest_max },
+    }
+}
+
+/// Round 34: whichever of `set:X`/`c:X`/`id:X` a strict 2-leaf `And`'s OTHER child is (its real
+/// bare-colon default op only -- `Ge` for `set:`/`c:`, `Le` for `id:`, see `ColorSubtypeTable`'s own
+/// doc for why `id:` differs), paired with a subtype leaf (`t:Y`). Shared by `compose_printing_estimate`
+/// (which additionally needs the fallback below on a table MISS) and `exact_result_total` (which does
+/// not -- a miss there just means "no answer", the same convention every other arm in that function
+/// already follows).
+enum SubtypePairDim<'f> {
+    Set(&'f str),
+    Colors(u8),
+    Identity(u8),
+}
+fn subtype_pair_dim(f: &FilterExpr) -> Option<SubtypePairDim<'_>> {
+    match f {
+        FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value } => Some(SubtypePairDim::Set(value.as_str())),
+        FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask } => Some(SubtypePairDim::Colors(*mask)),
+        FilterExpr::ColorCmp { field: ColorField::ColorIdentity, op: CmpOp::Le, mask } => Some(SubtypePairDim::Identity(*mask)),
+        _ => None,
+    }
+}
+fn subtype_pair_leaf(f: &FilterExpr) -> Option<&str> {
+    match f {
+        FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value, .. } => Some(value.as_str()),
+        _ => None,
+    }
+}
+
+/// The EXACT `SpaceTotals` for a strict 2-leaf `And` of `subtype_pair_dim` + `subtype_pair_leaf`, when
+/// the pair is one of the top 256 most extreme real ones `build_subtype_pair_tables` kept. `None` on a
+/// miss or when the shape doesn't match at all -- the caller's own fallback (if it has one) applies.
+fn subtype_pair_exact<'i>(children: &[FilterExpr], indexes: &'i Archived<CardIndexes>) -> Option<&'i Archived<SpaceTotals>> {
+    let [a, b] = children else { return None };
+    fn try_pair<'i>(dim: &FilterExpr, sub: &FilterExpr, indexes: &'i Archived<CardIndexes>) -> Option<&'i Archived<SpaceTotals>> {
+        let subtype = subtype_pair_leaf(sub)?;
+        match subtype_pair_dim(dim)? {
+            SubtypePairDim::Set(set_name) => indexes.subtype_pairs.set.top.get(set_name)?.get(subtype),
+            SubtypePairDim::Colors(mask) => indexes.subtype_pairs.colors.top.get(&mask)?.get(subtype),
+            SubtypePairDim::Identity(mask) => indexes.subtype_pairs.identity.top.get(&mask)?.get(subtype),
+        }
+    }
+    try_pair(a, b, indexes).or_else(|| try_pair(b, a, indexes))
+}
+
 /// Per-set `collector_number_int` span, derived once from `set_codes`'s own postings at load time
 /// (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md, Round 33). Lets an `And`
 /// of `set:X` + a `collector_number_int` range answer with a density estimate
@@ -3903,6 +4126,9 @@ struct CardIndexes {
     /// Exact 3-space totals for PAIRS of dense low-cardinality values (~14 KB), so a two-leaf `And` over
     /// them is answered rather than bounded by `min`.
     pair_totals:    PairTotals,
+    /// Round 34: `set:X`/`c:X`/`id:X` x subtype co-occurrence, for `compose_printing_estimate`'s
+    /// `And` arm and `exact_result_total`. See `SubtypePairIndexes`'s own doc.
+    subtype_pairs:  SubtypePairIndexes,
     sort_perms:     SortPermutations,          // card space (streamed selection)
     artwork_groups: Vec<u16>,                  // card space: distinct illustration groups
     // card space, n_cards+1 entries: prefix sum of artwork_groups, so card c's artworks are the
@@ -8179,6 +8405,63 @@ fn compose_printing_estimate(
                     exact_domain_artworks = Some(exact_domain_artworks.map_or_else(|| span_of(&indexes.artwork_base), |d| d.min(span_of(&indexes.artwork_base))));
                 }
             }
+            // Round 34 tightening: a bare `set:X`/`c:X`/`id:X` And'd with exactly one subtype leaf
+            // (`t:Y`, `CollectionCmp{Subtypes, Ge}`) -- nothing else in the `And` -- gets an exact
+            // triple from `indexes.subtype_pairs` (top 256 most extreme real pairs per dimension) or,
+            // on a miss, a capped independence-product ESTIMATE, instead of the plain min-fold above.
+            // `t:` has no `compile_plane` arm (unlike the main card TYPES -- `creature`/`instant`/etc,
+            // `TypeCmp`, which already has its own whole-tree `compile_plane` fast path and is
+            // untouched by this round) and isn't in any pair table, so this pair gets NO tightening
+            // from any existing mechanism otherwise: the fold picks whichever leaf's own CORPUS-WIDE
+            // count is smaller.
+            //
+            // A table HIT is genuinely exact in all three spaces (`SpaceTotals`, not a flat number --
+            // see `SetSubtypeTable`'s own doc for why), so it feeds `exact_domain_*` exactly like
+            // `best_other`/the arith-tuple merge above -- `min`-ing across multiple independently-exact
+            // intersections is still exact, same reasoning those two already establish. A MISS is not
+            // exact (`independence_product = dim_card * subtype_card / n_cards`, capped at `rest_max`),
+            // so it only narrows `result` (printing space), never `exact_domain_*` -- the same
+            // exact/estimate line Round 33's own density tightening draws for the identical reason.
+            if v.len() == 2 {
+                if let Some(totals) = subtype_pair_exact(v, indexes) {
+                    let printings = totals.get(Mode::Printing);
+                    let cards = totals.get(Mode::Card);
+                    let artworks = totals.get(Mode::Artwork);
+                    result = result.min(printings);
+                    exact_domain_cards = Some(exact_domain_cards.map_or(cards, |d| d.min(cards)));
+                    exact_domain_printing = Some(exact_domain_printing.map_or(printings, |d| d.min(printings)));
+                    exact_domain_artworks = Some(exact_domain_artworks.map_or(artworks, |d| d.min(artworks)));
+                } else {
+                    let combo = subtype_pair_dim(&v[0])
+                        .map(|d| (d, &children_estimates[0], &children_estimates[1], &v[1]))
+                        .or_else(|| subtype_pair_dim(&v[1]).map(|d| (d, &children_estimates[1], &children_estimates[0], &v[0])));
+                    if let Some((dim, dim_est, sub_est, sub_f)) = combo
+                        && subtype_pair_leaf(sub_f).is_some()
+                    {
+                        let subtype_card = sub_est.result.card.unwrap_or(0);
+                        // `dim_card`/`subtype_card` (both already in hand -- `subtype_card` from this
+                        // fold's own `.result.card`, exact for any Ge subtype leaf; `dim_card` the same
+                        // way for `c:`/`id:`, or from `subtype_pairs.set.set_cards` for `set:`, the one
+                        // marginal nothing else already derives per-card) give a CARD-space
+                        // independence product, capped at `rest_max`, then scaled into PRINTING space
+                        // the same way this function already does elsewhere (Round 33's arith-tuple
+                        // merge, the legality arm): `* n_printings / n_cards`.
+                        let (rest_max, dim_card): (usize, usize) = match dim {
+                            SubtypePairDim::Set(set_name) => (
+                                u32::from(indexes.subtype_pairs.set.rest_max) as usize,
+                                indexes.subtype_pairs.set.set_cards.get(set_name).map_or(0, |c| u32::from(*c) as usize),
+                            ),
+                            SubtypePairDim::Colors(_) => (u32::from(indexes.subtype_pairs.colors.rest_max) as usize, dim_est.result.card.unwrap_or(0)),
+                            SubtypePairDim::Identity(_) => (u32::from(indexes.subtype_pairs.identity.rest_max) as usize, dim_est.result.card.unwrap_or(0)),
+                        };
+                        let n_cards = offsets.len() - 1;
+                        let indep = dim_card.checked_mul(subtype_card).and_then(|p| p.checked_div(n_cards)).unwrap_or(0);
+                        let card_est = indep.min(rest_max);
+                        let printing_est = card_est.checked_mul(n_printings).and_then(|p| p.checked_div(n_cards)).unwrap_or(0);
+                        result = result.min(printing_est);
+                    }
+                }
+            }
             // `domain_hint` used to be its own field, folded from `children_estimates`'s own `.result`
             // -- but `.result` is this function's PRINTING-space quantity for every leaf type (confirmed
             // directly: `ColorCmp`'s arm calls `color_cmp_value_total(..., Mode::Printing)` explicitly),
@@ -8995,6 +9278,17 @@ fn exact_result_total(composed: &FilterExpr, indexes: &Archived<CardIndexes>, mo
         {
             return Some(total);
         }
+    }
+    // Round 34: `set:X`/`c:X`/`id:X` x subtype -- the same 2-leaf shape as the PAIR table above, but a
+    // dimension `pair_leaf_id` doesn't cover (subtype has ~300 distinct values, too many for a dense
+    // pair table; `subtype_pairs` is the top-256-per-dimension answer to that instead). Declines to
+    // `None` (not "no answer" — that's what happens when the pair is outside the top 256; the caller's
+    // OWN fallback, if it has one, applies) via `subtype_pair_exact`'s own miss case.
+    if let FilterExpr::And(children) = composed
+        && children.len() == 2
+        && let Some(totals) = subtype_pair_exact(children, indexes)
+    {
+        return Some(totals.get(mode));
     }
     // The per-value table, which covers the dimensions whose predicate tests ONE value, in all three
     // spaces. Absence from a COMPLETE table is an exact zero, not a declined shape -- every one of
@@ -14959,6 +15253,15 @@ impl QueryEngine {
             &coll_vocab,
             usize::from(artwork_group_counts.iter().copied().max().unwrap_or(0)),
         );
+        // Out here for the same reason as `pair_totals`/`value_totals`: reads `printing_to_card`,
+        // which the struct literal below moves.
+        let subtype_pairs = build_subtype_pair_tables(
+            &cards,
+            &printings,
+            &printing_to_card,
+            &coll_vocab,
+            usize::from(artwork_group_counts.iter().copied().max().unwrap_or(0)),
+        );
         let indexes = CardIndexes {
             name_trigram:   build_trigram_index(&cards, |c| c.card_name_folded.as_str()),
             oracle_trigram: build_oracle_text_index(&cards, &strings),
@@ -15024,6 +15327,7 @@ impl QueryEngine {
             rarity_cards,
             value_totals,
             pair_totals,
+            subtype_pairs,
             name_bigrams:   build_name_bigram_index(&cards),
             name_unigrams:  build_name_unigram_index(&cards),
             legal_divergent: build_divergent_ids(&cards),
