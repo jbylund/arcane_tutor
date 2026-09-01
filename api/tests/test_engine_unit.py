@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from api.parsing import parse_scryfall_query
-from card_engine import QueryEngine, UnknownFieldError
+from card_engine import ENGINE_COLUMNS, QueryEngine, UnknownFieldError
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -1236,6 +1236,49 @@ class TestFieldSelection:
             "set_name",
             "type_line",
         }
+
+    def test_loyalty_is_the_printed_string_from_the_engine(self, engine: QueryEngine) -> None:
+        """`loyalty` comes from planeswalker_loyalty_text, not the u8 the planner filters on.
+
+        The numeric column is an `Option<u8>` -- "always 1-12" -- so it cannot carry "X" (Nissa,
+        Steward of Elements) or "1+*". Before this field existed the key was served by nothing, and
+        every planeswalker's card object came back without it.
+        """
+        _, cards = _run(engine, "t:planeswalker", unique="card", fields=["name", "loyalty"])
+        assert cards, "the fixture corpus has planeswalkers"
+        assert all(c["loyalty"] for c in cards), f"every planeswalker reports a loyalty: {cards}"
+        assert {c["name"]: c["loyalty"] for c in cards} == {
+            "Jace, the Mind Sculptor": "3",
+            "Nicol Bolas, Planeswalker": "5",
+        }
+
+        # A card with no loyalty reports none, rather than a zero the u8 would have implied.
+        _, bolt = _run(engine, 'name="Lightning Bolt"', unique="card", limit=1, fields=["name", "loyalty"])
+        assert bolt[0]["loyalty"] is None
+
+    def test_engine_columns_feed_every_key_the_loader_reads(self, fresh_engine: Callable[[], QueryEngine]) -> None:
+        """A reload from rows projected to exactly ENGINE_COLUMNS still answers `loyalty`.
+
+        The production reload SELECTs ENGINE_COLUMNS and nothing else, so a key card_from_pydict()
+        reads that is missing from the list is silently None on every card -- the archive builds,
+        every query answers, and the field is just absent. The test above cannot see that: it
+        reloads from the raw fixture dicts, which carry every key regardless of the list.
+
+        This one simulates the SQL row shape -- each fixture card cut down to ENGINE_COLUMNS, with
+        None where the fixture has no value, exactly as psycopg returns a row -- and asserts the
+        printed loyalty survives. It failed before planeswalker_loyalty_text joined the list: the
+        column existed, the import filled it, and the SELECT never fetched it.
+        """
+        cards = json.loads(_FIXTURE.read_text())
+        projected = [{col: card.get(col) for col in ENGINE_COLUMNS} for card in cards]
+        e = fresh_engine()
+        e.reload(projected)
+
+        _, walkers = _run(e, "t:planeswalker", unique="card", fields=["name", "loyalty"])
+        assert {c["name"]: c["loyalty"] for c in walkers} == {
+            "Jace, the Mind Sculptor": "3",
+            "Nicol Bolas, Planeswalker": "5",
+        }, "a field the SELECT list does not fetch is silently absent from every card object"
 
     def test_requested_fields_returned_exactly(self, engine: QueryEngine) -> None:
         _, cards = _run(

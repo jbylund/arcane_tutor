@@ -443,7 +443,7 @@ fn text_search_field_value<'a>(
     match field {
         // Accent-folded (#649): the query word is folded the same way in Python
         // before it reaches TextContains/NameMatch, so this must match.
-        TextSearchField::NameLower       => StrVal::Known(card.card_name_folded.as_str()),
+        TextSearchField::NameLower       => StrVal::Known(crate::folded_name(card, strings)),
         TextSearchField::OracleTextLower => opt_sv(str_at(strings, u32::from(card.oracle_text_lower_id))),
         TextSearchField::FlavorTextLower => printing.map_or(StrVal::PDep, |p| opt_sv(str_at(strings, u32::from(p.flavor_text_lower_id)))),
         // Rewritten to ArtistMatch by bind(); printings carry no artist strings.
@@ -1205,7 +1205,7 @@ impl FilterExpr {
                 let finder = memmem::Finder::new(word.as_bytes()); // built once, reused across the verify scan
                 let mut ids: Vec<u32> = cand
                     .into_iter()
-                    .filter(|&cid| finder.find(cards[cid as usize].card_name_folded.as_str().as_bytes()).is_some())
+                    .filter(|&cid| finder.find(crate::folded_name(&cards[cid as usize], strings).as_bytes()).is_some())
                     .map(|cid| u32::from(cards[cid as usize].card_name_id))
                     .collect();
                 ids.sort_unstable();
