@@ -324,6 +324,22 @@ def generate_queries(sampler: object, vocab: CorpusVocab, seed: int, n_per_shape
 # ── measurement ─────────────────────────────────────────────────────────────────────────────────
 
 
+def tree_mechanisms(node: dict | None) -> list[str]:
+    """Every `joint_lookup` mechanism used anywhere in an `and_trace.tree`, root-to-leaf order.
+
+    Used to derive a cheap, bucketable summary (`and_mechanism`) from the tree without the harness
+    needing to understand every `op` value Round 38+ might add later -- it only ever looks for the
+    one thing that's stable across the whole arc: which mechanism(s), if any, actually tightened
+    something. A bare `min_fold` over plain leaves (nothing tightened) yields an empty list.
+    """
+    if node is None or node["kind"] == "leaf":
+        return []
+    out = [node["mechanism"]] if node.get("op") == "joint_lookup" else []
+    for child in node.get("children", []):
+        out += tree_mechanisms(child)
+    return out
+
+
 def measure_one(engine: object, gq: GeneratedQuery, unique: str, parse_scryfall_query: object) -> dict | None:
     """One (query, unique) row: estimate + ground truth + plan-choice, or None on a parser reject."""
     try:
@@ -359,10 +375,9 @@ def measure_one(engine: object, gq: GeneratedQuery, unique: str, parse_scryfall_
         "predicted_matches": predicted,
         "count_source": acquire.get("count_source"),
         "and_trace": acquire.get("and_trace"),  # None until Round 37a ships
-        # Bucket by WHICH MECHANISM answered the query ("winning_mechanism"), not by "combine" (a
-        # stable but coarser enum tag -- "min_fold" vs "tightened_min_fold" -- that doesn't say which
-        # mechanism tightened it). "" until Round 37a ships or when nothing tightened at all.
-        "and_mechanism": (acquire.get("and_trace") or {}).get("winning_mechanism") or "",
+        # Every mechanism that actually tightened something in the tree, "+"-joined -- "" until
+        # Round 37a ships, or when nothing tightened at all (a bare min_fold over plain leaves).
+        "and_mechanism": "+".join(tree_mechanisms((acquire.get("and_trace") or {}).get("tree"))),
         "picked_plan": picked,
         "true_total": true_total,
         "n_plans_ran": len(ran),
