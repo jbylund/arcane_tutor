@@ -13680,7 +13680,7 @@ fn acquire_plan_features(
     filter: &mut FilterExpr,
     unsplit: Option<&FilterExpr>,
     plane: Option<&PlaneExpr>,
-) -> (cost::PlanFeatures, Prep, Vec<u64>) {
+) -> (cost::PlanFeatures, Prep, Vec<u64>, Option<u64>) {
     let QueryCtx { cards, offsets, indexes, .. } = *ctx;
     let QueryParams { mode, prefer, sort_col, descending, .. } = *params;
     let n_cards = ctx.n_cards();
@@ -13695,7 +13695,7 @@ fn acquire_plan_features(
     // empty (no alloc).
     let mut plane_bits: Vec<u64> = Vec::new();
 
-    let (feats, prep) = if PhysicalPlan::PlanePopcountOrder.applicable(ctx, params, filter, unsplit, plane) {
+    let (feats, prep, and_estimate_ns) = if PhysicalPlan::PlanePopcountOrder.applicable(ctx, params, filter, unsplit, plane) {
         // The ONE plane eval; its popcount IS the exact count. True residual ⇒ tier 0.
         eval_planes(plane.expect("PlanePopcountOrder ⇒ plane"), &indexes.planes, &mut plane_bits);
         let count: u32 = plane_bits.iter().map(|w| w.count_ones()).sum();
@@ -13733,7 +13733,7 @@ fn acquire_plan_features(
             }
             span.min(u64::from(n_printings)) as u32
         };
-        (mk_plan_feats(ctx, params, count, count, scan_units, 0), Prep::Plane)
+        (mk_plan_feats(ctx, params, count, count, scan_units, 0), Prep::Plane, None)
     } else if PhysicalPlan::CardRangePopcount.applicable(ctx, params, filter, unsplit, plane) {
         // Exact in-range printing count `k` from the index partition points (two binary searches, no
         // scan, no scatter). The O(k) card-bitmap build is deferred to dispatch and paid only if this
@@ -13784,7 +13784,7 @@ fn acquire_plan_features(
         feats.project_printings = k;
         feats.compose_scan_printings = k;
         feats.compose_paging = compose_paging_for(indexes, cards.len(), filter, mode, sort_col, descending);
-        (feats, Prep::Range(CountSource::CardRangePopcount))
+        (feats, Prep::Range(CountSource::CardRangePopcount), None)
     } else if PhysicalPlan::PrintingRangeScan.applicable(ctx, params, filter, unsplit, plane) {
         // Bare range: exact k from the index (no scan).
         let (idx, lo, hi) = bare_range_bounds(filter, indexes).expect("applicable ⇒ bare range");
@@ -13811,7 +13811,7 @@ fn acquire_plan_features(
         // `compose_paging` at its `Gather` default charged compose a full-corpus gather it would
         // never run. Compose's page term only reads `eval_domain` in the Gather branch.
         feats.compose_paging = compose_paging_for(indexes, cards.len(), filter, mode, sort_col, descending);
-        (feats, Prep::Range(CountSource::PrintingRangeScan))
+        (feats, Prep::Range(CountSource::PrintingRangeScan), None)
     } else if PhysicalPlan::PrintingCompose.applicable(ctx, params, filter, unsplit, plane) {
         // Composable printing-space expr, any distinct-on. Estimate the counts cheaply — the fast path
         // composes once, only if this plan wins (never in acquire; a legality broadcast paid here and
@@ -13830,7 +13830,18 @@ fn acquire_plan_features(
         // not the pre-split residual). Assigned to `feats` below, once it exists. Not read by
         // `plan_cost`.
         let composed_card_invariant = !touches_printing_field(composed);
+        // Round 39: single-shot wall time of THIS call -- the real, production, acquire-time
+        // estimation cost every `printing_compose`-routed query pays, as a permanent baseline for
+        // grading the general partition-search estimator's own "tax" once it exists (see
+        // docs/issues/local-engine-nway-compose-independence-search.md). Deliberately not
+        // multi-trial: the target is an aggregate distribution across thousands of queries (the
+        // existing `nway_estimate_truth_survey.py` harness already runs at that scale), where
+        // `Instant::now()`'s own ~10-40ns overhead and per-call jitter wash out in the percentile
+        // view the same way `costbench.py`'s `percentile`/`spread` machinery already tolerates
+        // per-observation noise elsewhere. Threaded to `AcquireFacts::and_estimate_ns`.
+        let t_est = std::time::Instant::now();
         let est = compose_printing_estimate(composed, indexes, offsets, n_printings as usize, false);
+        let and_estimate_ns = t_est.elapsed().as_nanos() as u64;
         let (printing_matches, broadcast, scatter, collection_broadcast) = (est.result.printing, est.broadcast, est.scatter, est.collection_broadcast);
         // Two build kinds, charged at different rates: `broadcast` = legality broadcast-down (linear
         // pass), `scatter` = range-slice scatter (cheap). `project` = the second pass (printing→
@@ -14471,14 +14482,14 @@ fn acquire_plan_features(
             .flatten();
         feats.compose_paging =
             compose_paging_with_total(indexes, cards.len(), composed, mode, sort_col, descending, Some(result_total), gather_declines);
-        (feats, Prep::Range(CountSource::PrintingCompose))
+        (feats, Prep::Range(CountSource::PrintingCompose), Some(and_estimate_ns))
     } else {
         let prep = prepare_candidates(ctx, params, filter, plane);
         let feats = candidate_feats(ctx, params, &prep, filter);
-        (feats, Prep::Candidates(prep))
+        (feats, Prep::Candidates(prep), None)
     };
 
-    (feats, prep, plane_bits)
+    (feats, prep, plane_bits, and_estimate_ns)
 }
 
 /// #702: the single cost-based plan-selection layer for ALL unique modes — the
@@ -14529,7 +14540,9 @@ fn run_query_routed<'a>(
     let mut phases = RoutedPhaseTimer::start();
 
     // ── acquire: pick the count source, build features, materialize its artifact ──
-    let (feats, prep, plane_bits) = acquire_plan_features(ctx, params, filter, unsplit, plane);
+    // `and_estimate_ns` is `explain`/`explain_analyze`'s diagnostic (`AcquireFacts::and_estimate_ns`)
+    // -- the real routing path spends its own clock on dispatch, not on reporting this.
+    let (feats, prep, plane_bits, _and_estimate_ns) = acquire_plan_features(ctx, params, filter, unsplit, plane);
     phases.acquired();
 
     // ── choose: cheapest applicable plan this acquire's dispatch arm can run ──
@@ -14789,6 +14802,19 @@ pub(crate) struct AcquireFacts {
     /// took (`and_trace_for`'s own doc) — always populated for a top-level `And`, regardless of
     /// routing, not only on the `PrintingCompose` acquire path.
     pub(crate) and_trace: Option<AndTrace>,
+    /// Round 39: single-shot wall time (ns) of the REAL, production, acquire-time
+    /// `compose_printing_estimate` call -- the one inside `acquire_plan_features`'s own
+    /// `PrintingCompose` branch that this query's routing decision actually depends on. `None`
+    /// whenever this query's acquire took a different branch (`Plane`/`CardRangePopcount`/
+    /// `PrintingRangeScan`/`Candidates`), which never reaches that call at all -- NOT to be
+    /// confused with "ran in 0ns". Deliberately distinct from `and_trace`'s own diagnostic-only
+    /// duplicate call (`and_trace_for`, always made regardless of which branch this query took):
+    /// this field times only the call every `printing_compose`-routed query already pays for
+    /// itself, not `explain`'s extra diagnostic overhead.
+    ///
+    /// A permanent baseline for the general partition-search estimator's own future "tax" --
+    /// see docs/issues/local-engine-nway-compose-independence-search.md.
+    pub(crate) and_estimate_ns: Option<u64>,
 }
 
 impl Prep {
@@ -14830,7 +14856,7 @@ fn explain(
     plane: Option<&PlaneExpr>,
 ) -> (AcquireFacts, Vec<PlanEstimate>) {
     let t0 = std::time::Instant::now();
-    let (feats, prep, _plane_bits) = acquire_plan_features(ctx, params, filter, unsplit, plane);
+    let (feats, prep, _plane_bits, and_estimate_ns) = acquire_plan_features(ctx, params, filter, unsplit, plane);
     let acquire_ns = t0.elapsed().as_nanos() as u64;
     // Round 37a: the SAME "which filter is really the top-level one" precedence `compose_source`
     // already uses (a plane split some predicate off into `unsplit`'s side, so `unsplit` -- not the
@@ -14850,6 +14876,7 @@ fn explain(
         routed_choose_ns: Vec::new(),
         routed_dispatch_ns: Vec::new(),
         and_trace,
+        and_estimate_ns,
     };
     let mut estimates: Vec<PlanEstimate> = PhysicalPlan::ALL
         .into_iter()
@@ -16017,6 +16044,12 @@ fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<B
     match &f.and_trace {
         Some(t) => d.set_item("and_trace", and_trace_to_pydict(py, t)?)?,
         None => d.set_item("and_trace", py.None())?,
+    }
+    // Round 39: sibling to `and_trace` -- `None` means this query's acquire never reached the
+    // `PrintingCompose` branch at all (see `AcquireFacts::and_estimate_ns`'s own doc), not "0ns".
+    match f.and_estimate_ns {
+        Some(ns) => d.set_item("and_estimate_ns", ns)?,
+        None => d.set_item("and_estimate_ns", py.None())?,
     }
     // The model's own inputs, so a calibration fit regresses on the same vector `plan_cost` reads.
     let g = &f.feats;

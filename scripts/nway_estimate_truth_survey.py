@@ -389,6 +389,11 @@ def measure_one(engine: object, gq: GeneratedQuery, unique: str, parse_scryfall_
         # Every mechanism that actually tightened something in the tree, "+"-joined -- "" until
         # Round 37a ships, or when nothing tightened at all (a bare min_fold over plain leaves).
         "and_mechanism": "+".join(tree_mechanisms((acquire.get("and_trace") or {}).get("tree"))),
+        # Round 39: single-shot wall time (ns) of the real, production, acquire-time
+        # `compose_printing_estimate` call -- None whenever this query's acquire took a branch
+        # other than `PrintingCompose` (not "ran in 0ns"). The baseline a future round grades the
+        # general partition-search estimator's own "tax" against.
+        "and_estimate_ns": acquire.get("and_estimate_ns"),
         "picked_plan": picked,
         "true_total": true_total,
         "n_plans_ran": len(ran),

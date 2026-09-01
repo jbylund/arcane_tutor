@@ -4250,7 +4250,7 @@ fn compose_paging_prediction_matches_the_branch_taken() {
 
                             // The prediction, on its own clone -- acquire mutates the filter it reads.
                             let mut acq_filter = filter.clone();
-                            let (feats, prep, _bits) = acquire_plan_features(&ctx, &params, &mut acq_filter, None, pe.as_ref());
+                            let (feats, prep, _bits, _and_ns) = acquire_plan_features(&ctx, &params, &mut acq_filter, None, pe.as_ref());
                             if prep.count_source() != CountSource::PrintingCompose {
                                 continue; // not a compose acquire; compose_paging has no referent
                             }
@@ -7580,7 +7580,7 @@ fn acquire_perm_walk_span_matches_the_sort_column_bound() {
         let params = kernel_params(Mode::Card, SortCol::Cmc, descending, 10, 0).with_sort_bound(cmc_bound);
         let (pe, mut filter) =
             split_planes(filt(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
-        let (feats, _prep, _plane_bits) = acquire_plan_features(&ctx, &params, &mut filter, None, pe.as_ref());
+        let (feats, _prep, _plane_bits, _and_ns) = acquire_plan_features(&ctx, &params, &mut filter, None, pe.as_ref());
         assert_eq!(
             feats.perm_walk_span, MATCHING as u32,
             "bounded acquire (descending={descending}) must narrow perm_walk_span to the matching \
@@ -7593,7 +7593,7 @@ fn acquire_perm_walk_span_matches_the_sort_column_bound() {
     let params_unbounded = kernel_params(Mode::Card, SortCol::EdhrecRank, false, 10, 0);
     let (pe, mut filter) =
         split_planes(filt(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
-    let (feats, _prep, _plane_bits) = acquire_plan_features(&ctx, &params_unbounded, &mut filter, None, pe.as_ref());
+    let (feats, _prep, _plane_bits, _and_ns) = acquire_plan_features(&ctx, &params_unbounded, &mut filter, None, pe.as_ref());
     assert_eq!(feats.perm_walk_span, N as u32, "unbounded acquire must fall back to the whole corpus");
 }
 
@@ -10354,7 +10354,7 @@ fn compose_tier_charges_border_existential_and_arith_range() {
     assert!(pe.is_some(), "cmc range + border:black must compile into a plane");
     assert!(matches!(residual, FilterExpr::True), "both children must be fully consumed, leaving no residual");
     let mut acq_filter = residual;
-    let (feats, prep, _bits) = acquire_plan_features(&ctx, &params, &mut acq_filter, Some(&unsplit), pe.as_ref());
+    let (feats, prep, _bits, _and_ns) = acquire_plan_features(&ctx, &params, &mut acq_filter, Some(&unsplit), pe.as_ref());
     assert_eq!(prep.count_source(), CountSource::PrintingCompose, "this fixture must reach the compose-acquire branch to exercise the fix");
     assert!(
         feats.residual_tier_ns100 > 0,
@@ -10369,7 +10369,7 @@ fn compose_tier_charges_border_existential_and_arith_range() {
     let (pe2, residual2) = split_planes(bare_unsplit.clone(), bounds, words, true);
     assert!(matches!(residual2, FilterExpr::True));
     let mut acq_filter2 = residual2;
-    let (feats2, prep2, _bits2) = acquire_plan_features(&ctx, &params, &mut acq_filter2, Some(&bare_unsplit), pe2.as_ref());
+    let (feats2, prep2, _bits2, _and_ns2) = acquire_plan_features(&ctx, &params, &mut acq_filter2, Some(&bare_unsplit), pe2.as_ref());
     assert_eq!(prep2.count_source(), CountSource::PrintingCompose);
     assert_eq!(feats2.residual_tier_ns100, 0, "a bare card-invariant arith range has nothing to verify -- must stay free");
 }
@@ -10583,7 +10583,7 @@ fn compose_tier_charges_divergent_legality_existential_and_arith_range() {
     assert!(pe.is_some(), "cmc range + legal-in-A must compile into a plane");
     assert!(matches!(residual, FilterExpr::True), "both children must be fully consumed, leaving no residual");
     let mut acq_filter = residual;
-    let (feats, prep, _bits) = acquire_plan_features(&ctx, &params, &mut acq_filter, Some(&divergent), pe.as_ref());
+    let (feats, prep, _bits, _and_ns) = acquire_plan_features(&ctx, &params, &mut acq_filter, Some(&divergent), pe.as_ref());
     assert_eq!(prep.count_source(), CountSource::PrintingCompose, "this fixture must reach the compose-acquire branch to exercise the fix");
     assert!(
         feats.residual_tier_ns100 > 0,
@@ -10599,7 +10599,7 @@ fn compose_tier_charges_divergent_legality_existential_and_arith_range() {
     assert!(pe2.is_some(), "cmc range + legal-in-B must compile into a plane");
     assert!(matches!(residual2, FilterExpr::True));
     let mut acq_filter2 = residual2;
-    let (feats2, prep2, _bits2) = acquire_plan_features(&ctx, &params, &mut acq_filter2, Some(&non_divergent), pe2.as_ref());
+    let (feats2, prep2, _bits2, _and_ns2) = acquire_plan_features(&ctx, &params, &mut acq_filter2, Some(&non_divergent), pe2.as_ref());
     assert_eq!(prep2.count_source(), CountSource::PrintingCompose);
     assert_eq!(
         feats2.residual_tier_ns100, 0,
@@ -14274,13 +14274,17 @@ fn stream_scan_units_prices_the_small_total_redo_for_a_printing_varying_leaf() {
     ]);
     let (pe, filter) = split_planes(cn_range, &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
     let mut acq_filter = filter;
-    let (feats, prep, _bits) = acquire_plan_features(&ctx, &params, &mut acq_filter, None, pe.as_ref());
+    let (feats, prep, _bits, and_estimate_ns) = acquire_plan_features(&ctx, &params, &mut acq_filter, None, pe.as_ref());
 
     assert_eq!(
         prep.count_source(),
         CountSource::PrintingCompose,
         "this fixture must reach the compose acquire branch to exercise the fix -- a fused two-sided \
          range bound never qualifies for CardRangePopcount (see its own applicability doc)"
+    );
+    assert!(
+        and_estimate_ns.is_some(),
+        "the PrintingCompose acquire branch must always populate and_estimate_ns (Round 39)"
     );
     assert!(
         feats.matches > 0 && feats.matches <= *STREAM_MIN_MATCHES as u32,
@@ -14305,7 +14309,7 @@ fn stream_scan_units_prices_the_small_total_redo_for_a_printing_varying_leaf() {
         ]);
         let (pe2, filter2) = split_planes(cn_range2, &archived.indexes.planes, &archived.indexes.oracle_trigram.words, false);
         let mut acq_filter2 = filter2;
-        let (feats2, prep2, _bits2) = acquire_plan_features(&ctx, &params2, &mut acq_filter2, None, pe2.as_ref());
+        let (feats2, prep2, _bits2, _and_ns2) = acquire_plan_features(&ctx, &params2, &mut acq_filter2, None, pe2.as_ref());
         if prep2.count_source() != CountSource::PrintingCompose {
             continue; // this mode/shape didn't reach the branch under test; nothing to assert
         }
@@ -14315,6 +14319,44 @@ fn stream_scan_units_prices_the_small_total_redo_for_a_printing_varying_leaf() {
              inheritance unchanged"
         );
     }
+}
+
+/// Round 39 (docs/issues/local-engine-nway-compose-independence-search.md): `AcquireFacts::and_estimate_ns`
+/// must be `Some(_)` exactly when this query's acquire reaches the `PrintingCompose` branch inside
+/// `acquire_plan_features` -- the real, production, acquire-time `compose_printing_estimate` call --
+/// and `None` for every other acquire branch. Reuses the SAME fused two-sided `collector_number`
+/// range fixture the immediately-preceding `stream_scan_units_prices_the_small_total_redo...` test
+/// already established reaches `CountSource::PrintingCompose`, rather than inventing a new one.
+#[test]
+fn and_estimate_ns_is_populated_only_for_the_printing_compose_acquire_branch() {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(20_260_901);
+    let data = fuzz_store_n(&mut rng, 4_000);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let ctx = QueryCtx::from(archived);
+    let params = kernel_params(Mode::Card, SortCol::Name, false, 100, 0);
+
+    // Same shape as the preceding test's fixture: a fused two-sided `cn` range never qualifies for
+    // `CardRangePopcount` (bare-leaf only), so it lands on the `PrintingCompose` acquire branch.
+    let cn_range = FilterExpr::And(vec![
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::CollectorNumberInt), op: CmpOp::Ge, rhs: NumExpr::Const(100.0) },
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::CollectorNumberInt), op: CmpOp::Le, rhs: NumExpr::Const(110.0) },
+    ]);
+    let (pe, filter) = split_planes(cn_range, &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
+    let mut acq_filter = filter;
+    let (_feats, prep, _bits, and_estimate_ns) = acquire_plan_features(&ctx, &params, &mut acq_filter, None, pe.as_ref());
+    assert_eq!(prep.count_source(), CountSource::PrintingCompose, "fixture must reach the compose acquire branch");
+    assert!(and_estimate_ns.is_some(), "the PrintingCompose acquire branch must always populate and_estimate_ns");
+
+    // Control: a text-search leaf has no arm in `is_printing_composable` at all (its `_ => false`
+    // catch-all), and satisfies none of PlanePopcountOrder/CardRangePopcount/PrintingRangeScan's
+    // gates either (no plane, not a bare numeric/date/year range) -- so it falls through to the
+    // `Prep::Candidates` branch, which must never populate and_estimate_ns.
+    let mut text_filter = FilterExpr::TextContains { field: TextSearchField::OracleTextLower, word: "dragon".to_string() };
+    let (_feats2, prep2, _bits2, and_estimate_ns2) = acquire_plan_features(&ctx, &params, &mut text_filter, None, None);
+    assert_eq!(prep2.count_source(), CountSource::Candidates, "control query must take the candidates acquire branch, not compose");
+    assert!(and_estimate_ns2.is_none(), "a non-PrintingCompose acquire branch must never populate and_estimate_ns");
 }
 
 /// Round 31 of the printing-varying-leaf depth ledger
