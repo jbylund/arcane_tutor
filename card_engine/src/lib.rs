@@ -1725,6 +1725,53 @@ fn arith_tuple_narrow(filter: &FilterExpr, idx: &Archived<ArithTupleIndex>, n_ca
 
 type TagIndex = HashMap<String, Vec<u32>>;
 
+/// One O(n_printings) pass at load time, the same cost class as `set_codes`'s own build just above
+/// it (not a second full-corpus scan on top of an existing one — this and `set_codes` are built from
+/// two independent loops over `printings` today, each already O(n_printings) on its own). See
+/// `SetCollectorRange`'s own doc for what this feeds and why.
+fn build_set_collector_ranges<T>(printings: &[T], set_code: impl Fn(&T) -> &str, collector_number_int: impl Fn(&T) -> Option<u32>) -> HashMap<String, SetCollectorRange> {
+    let mut ranges: HashMap<String, SetCollectorRange> = HashMap::new();
+    for p in printings {
+        let code = set_code(p);
+        if code.is_empty() {
+            continue;
+        }
+        let Some(cn) = collector_number_int(p) else { continue };
+        ranges
+            .entry(code.to_string())
+            .and_modify(|r| {
+                r.min = r.min.min(cn);
+                r.max = r.max.max(cn);
+                r.count += 1;
+            })
+            .or_insert(SetCollectorRange { min: cn, max: cn, count: 1 });
+    }
+    ranges
+}
+
+/// Per-set `collector_number_int` span, derived once from `set_codes`'s own postings at load time
+/// (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md, Round 33). Lets an `And`
+/// of `set:X` + a `collector_number_int` range answer with a density estimate
+/// (`count / (max - min + 1)` scaled by the query's own overlap with `[min, max]`) instead of the
+/// `compose_printing_estimate` `And` arm's plain min-fold, which has no tightening at all for this
+/// pair today — `set` has no `compile_plane` arm and isn't in `ValueTotals`, and
+/// `collector_number_int` isn't arith-tuple-eligible and has no `compile_plane` arm either, so the
+/// fold picks whichever leaf's own (corpus-wide, not set-scoped) count happens to be smaller.
+///
+/// Exact for a contiguously-numbered set (`density == 1.0`) and near-exact for one with a handful of
+/// internal gaps; only a genuinely non-contiguous set (Secret Lair Drop, whose numbering resets per
+/// drop rather than running sequentially) sees real residual error — still far smaller than either
+/// alternative the fold could otherwise pick, per Round 33's held-out validation.
+#[derive(Archive, Serialize, Deserialize, Default, Clone, Copy)]
+struct SetCollectorRange {
+    min: u32,
+    max: u32,
+    /// Printings in the set with a `collector_number_int` value — almost always the set's own full
+    /// postings length, but tracked separately rather than assumed, since a handful of promo prints
+    /// omit it.
+    count: u32,
+}
+
 /// Build a tag/list index from interned collection ids. Accumulates postings by
 /// vocab id in the hot loop (integer keys, no per-element string hashing), then
 /// resolves each id to its owned String key once at the end.
@@ -3823,6 +3870,10 @@ struct CardIndexes {
     artists:        ArtistIndex,     // printing space (CSR by artist vocab id)
     flavor:         FlavorIndex,     // printing space (CSR by dense flavor text id)
     set_codes:      TagIndex,        // printing space
+    // printing space, keyed the same as `set_codes`: per-set collector_number_int min/max/count, for
+    // `compose_printing_estimate`'s `set:X` + `cn`-range density tightening (Round 33). Derived from
+    // `set_codes`'s own build pass, not a second corpus scan.
+    set_collector_ranges: HashMap<String, SetCollectorRange>,
     watermarks:     TagIndex,        // printing space
     released_at:    PrintingValueIndex,       // printing space
     price_usd:      PrintingValueIndex,       // printing space (integer cents, already order-preserving)
@@ -4569,6 +4620,11 @@ fn probe_collection_k(filter: &FilterExpr, indexes: &Archived<CardIndexes>) -> O
 /// interval is never discovered — measured at 1,146.8 µs, against 26.7 µs for the one-sided
 /// `usd>=200`, which returns *more* rows. Fusing before ranking puts the two-sided form on the same
 /// sparse-vec path the one-sided form already takes.
+// `Clone, Copy`: every field is itself a reference or a `Copy` scalar, so a caller that wants to
+// inspect the fused list a second time (Round 33's `set:X` + `cn`-range density check, which reads it
+// after `compose_printing_estimate`'s own fold already consumed one copy) can hold the `Vec` and
+// iterate it by value instead of fighting reference-of-reference match ergonomics.
+#[derive(Clone, Copy)]
 enum AndSource<'f, 'i> {
     Child(&'f FilterExpr),
     /// `[lo, hi)` on `idx`, the intersection of two or more children's intervals, holding `k`
@@ -7784,8 +7840,14 @@ fn compose_printing_estimate(
             // every leaf arm in this match already answers cheaply and exactly now except `Devotion`
             // (see that arm's own doc), so there is nothing left to recompute a second time the way
             // `compile_children_once` used to.
-            let children_estimates: Vec<ComposeEstimate> = fuse_and_range_children(v, indexes, false)
-                .into_iter()
+            // Bound to a variable (not consumed straight into the fold below) so Round 33's
+            // `set:X` + `cn`-range check further down can inspect the same fused sources a second
+            // time — `AndSource` is `Copy`, so this costs nothing beyond holding the `Vec` a little
+            // longer, not a second call into `fuse_and_range_children`.
+            let and_sources = fuse_and_range_children(v, indexes, false);
+            let children_estimates: Vec<ComposeEstimate> = and_sources
+                .iter()
+                .copied()
                 .map(|src| match src {
                     AndSource::Child(c) => compose_printing_estimate(c, indexes, offsets, n_printings),
                     // `.card`/`.artwork` left `None`: `range_card_counts_for`'s `distinct_cards`/
@@ -7817,6 +7879,80 @@ fn compose_printing_estimate(
             // struct held three spaces), and get wrapped back into a `SpaceEstimate` only once, at the
             // very end -- narrower diff, same values, against logic already checked with a paired diff.
             let mut result = pair_bounded_min(v, indexes, folded.result.printing);
+            // Round 33 tightening: a bare `set:X` And'd with exactly one `collector_number_int`
+            // range (fused two-sided, e.g. `cn>=30 cn<=39`, or a bare one-sided child, e.g. `cn<=100`)
+            // gets a density estimate instead of the plain min-fold above. `set` has no `compile_plane`
+            // arm and isn't in `ValueTotals`, and `collector_number_int` isn't arith-tuple-eligible and
+            // has no `compile_plane` arm either -- so this pair gets NO tightening from any existing
+            // mechanism, and the fold picks whichever leaf's own (corpus-wide, not set-scoped) count
+            // happens to be smaller, frequently `set:X`'s own full postings length (`set:sld cn<=100`
+            // folds to 2,535 against a true 104).
+            //
+            // `set_collector_ranges` (built once per set at load time from `set_codes`'s own postings,
+            // O(1) to look up here) gives that set's own `[min, max]` collector-number span and how
+            // many of its printings carry a value -- `density = count / (max - min + 1)`. Scaling
+            // density by the query's own overlap with `[min, max]` is exact for a contiguously-numbered
+            // set (density == 1.0) and near-exact for one with a handful of internal gaps; only a
+            // genuinely non-contiguous set (Secret Lair Drop, numbered per-drop rather than
+            // sequentially) sees real residual error, and even there the estimate is a strict
+            // improvement over either marginal the fold could otherwise pick (Round 33's own
+            // `set:sld cn<=100`: density estimate 25.3 against a true 104, versus the fold's 2,535).
+            //
+            // Scoped to the strict 2-source shape only (after fusion): a `set:X` leaf and a lone
+            // `collector_number_int` source, nothing else in the `And`. `fuse_and_range_children`
+            // already reduces a two-sided cn bound to one `FusedRange` source, so this also covers
+            // `set:X cn>=30 cn<=39` despite it being 3 literal filter children. A third leaf
+            // (`set:sld id:g cn<=100`) is out of scope for this round -- `and_sources.len() != 2`
+            // simply skips it, same as any other shape this tightening doesn't recognize; the
+            // pre-existing fold still applies to it unchanged.
+            // Plain `fn`s, not closures: a closure returning a borrow tied to its argument's own
+            // lifetime needs an explicit HRTB Rust won't infer for a closure (unlike a `fn` item,
+            // which gets ordinary lifetime elision), so these are written the same way
+            // `bare_range_bounds` itself is.
+            fn set_code_eq_value<'f>(src: AndSource<'f, '_>) -> Option<&'f str> {
+                match src {
+                    AndSource::Child(FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value }) => Some(value.as_str()),
+                    _ => None,
+                }
+            }
+            fn collector_number_bounds(src: AndSource<'_, '_>, indexes: &Archived<CardIndexes>) -> Option<(u32, u32)> {
+                match src {
+                    AndSource::FusedRange { idx, lo, hi, .. } if std::ptr::eq(idx, &indexes.collector_number) => Some((lo, hi)),
+                    AndSource::Child(c) => bare_range_bounds(c, indexes).and_then(|(idx, lo, hi)| std::ptr::eq(idx, &indexes.collector_number).then_some((lo, hi))),
+                    _ => None,
+                }
+            }
+            if let [a, b] = and_sources.as_slice() {
+                let (a, b) = (*a, *b);
+                let shape = set_code_eq_value(a)
+                    .zip(collector_number_bounds(b, indexes))
+                    .or_else(|| set_code_eq_value(b).zip(collector_number_bounds(a, indexes)));
+                if let Some((set_name, (q_lo, q_hi))) = shape
+                    && let Some(range) = indexes.set_collector_ranges.get(set_name)
+                {
+                    // Archived fields, not plain `u32` -- `range` is a reference into the persisted
+                    // store, unlike `lo`/`hi`/`k` above, which are computed fresh from the query.
+                    let (set_min, set_max, set_count) = (u32::from(range.min), u32::from(range.max), u32::from(range.count));
+                    if set_count > 0 && set_max >= set_min {
+                        let span = f64::from(set_max - set_min + 1);
+                        let density = f64::from(set_count) / span;
+                        // Half-open `[q_lo, q_hi)` against the set's inclusive `[min, max]`: overlap
+                        // is `min(q_hi - 1, max) - max(q_lo, min) + 1`, clamped to 0 when the
+                        // intervals don't touch. `q_hi == 0` (an unsatisfiable fused range, see
+                        // `fuse_and_range_children`'s own doc) is handled by the same clamp: `q_hi - 1`
+                        // would underflow, so it's checked first.
+                        let overlap = if q_hi == 0 {
+                            0
+                        } else {
+                            let hi_incl = (q_hi - 1).min(set_max);
+                            let lo_incl = q_lo.max(set_min);
+                            if hi_incl >= lo_incl { hi_incl - lo_incl + 1 } else { 0 }
+                        };
+                        let estimate = (density * f64::from(overlap)).round() as usize;
+                        result = result.min(estimate);
+                    }
+                }
+            }
             // Second tightening: 2+ cmc/power/toughness children get their TRUE joint card count from
             // one #743 scan (`arith_tuple_count`), not `min` of each one's own count — e.g.
             // `cmc<=5 power>=3` gets the real intersection, not `min(cmc<=5, power>=3)`.
@@ -14849,6 +14985,7 @@ impl QueryEngine {
                 }
                 idx
             },
+            set_collector_ranges: build_set_collector_ranges(&printings, |p| p.card_set_code.as_str(), |p| p.collector_number_int.map(u32::from)),
             watermarks:     {
                 let mut idx: TagIndex = HashMap::new();
                 for (i, p) in printings.iter().enumerate() {

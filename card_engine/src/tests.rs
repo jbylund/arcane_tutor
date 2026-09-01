@@ -6699,6 +6699,7 @@ fn bench_checked_vs_unchecked_access() {
         artists:        ArtistIndex::default(),
         flavor:         build_flavor_index(&printings, &strings),
         set_codes:      HashMap::new(),
+        set_collector_ranges: HashMap::new(),
         watermarks:     HashMap::new(),
         released_at:    PrintingValueIndex::default(),
         price_usd:      PrintingValueIndex::default(),
@@ -8092,6 +8093,82 @@ fn set_watermark_compose_leaves() {
     // And a positive watermark mixed with an unsupported leaf still declines as a whole.
     let unsupported = FilterExpr::And(vec![wm("wotc"), FilterExpr::Not(Box::new(wm("set")))]);
     assert!(!super::is_printing_composable(&unsupported, &archived.indexes), "-watermark inside an And keeps the whole And off the compose path");
+}
+
+/// `compose_printing_estimate`'s `And` arm has no tightening at all for `set:X` And'd with a
+/// `collector_number_int` range today: `set` has no `compile_plane` arm and isn't in `ValueTotals`,
+/// and `collector_number_int` isn't arith-tuple-eligible and has no `compile_plane` arm either, so
+/// the plain min-fold picks whichever leaf's own (corpus-wide, not set-scoped) count happens to be
+/// smaller. This is the Round 33 fix (`docs/issues/local-engine-gathered-scan-card-printing-varying-
+/// depth.md`): a per-set `[min, max]` collector-number span, precomputed once at load time
+/// (`build_set_collector_ranges`/`indexes.set_collector_ranges`), lets the estimate scale a density
+/// (`count / (max - min + 1)`) by the query's own overlap with that span instead.
+///
+/// Three sets share one corpus so the fold's OWN wrong number is reproduced deliberately, not just
+/// the fix's right one: `con` (50 printings, `cn` 1..=50, contiguous) and `big` (100 printings, `cn`
+/// 1..=100, contiguous) both contribute to `collector_number`'s CORPUS-WIDE range count, and `gap`
+/// (20 printings, `cn` clustered 1..=5 then scattered 200..=999, i.e. non-contiguous) is the SLD-
+/// shaped case Round 33's own doc flags as a real, un-closed residual.
+#[test]
+fn set_and_collector_number_range_density_tightening() {
+    let mut vocab = VocabInterner::new();
+    let cards = vec![
+        stub_card(1, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &[], &mut vocab),
+    ];
+    // pids 0..50 = con, 50..150 = big, 150..170 = gap.
+    let mut data = store_of(cards, &[50, 100, 20], vocab);
+    let gap_cns: [u32; 20] = [1, 2, 3, 4, 5, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 900, 999];
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        let (code, cn) = if i < 50 {
+            ("con", (i + 1) as u32)
+        } else if i < 150 {
+            ("big", (i - 50 + 1) as u32)
+        } else {
+            ("gap", gap_cns[i - 150])
+        };
+        p.card_set_code = InlineStr::from_str(code);
+        p.collector_number_int = Some(cn as u16);
+    }
+    data.indexes.set_codes = {
+        let mut idx: TagIndex = HashMap::new();
+        for (i, p) in data.printings.iter().enumerate() {
+            idx.entry(p.card_set_code.as_str().to_string()).or_default().push(i as u32);
+        }
+        idx
+    };
+    data.indexes.set_collector_ranges = super::build_set_collector_ranges(&data.printings, |p| p.card_set_code.as_str(), |p| p.collector_number_int.map(u32::from));
+    data.indexes.collector_number = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.collector_number_int.map(u32::from));
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let set = |code: &str| FilterExpr::TextExact { field: super::TextField::SetCode, op: CmpOp::Eq, value: code.to_string() };
+    let cn = |op: CmpOp, v: f64| FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::CollectorNumberInt), op, rhs: NumExpr::Const(v) };
+    let est = |f: &FilterExpr| super::compose_printing_estimate(f, &archived.indexes, &archived.offsets, n_printings).result.printing;
+
+    // Fused two-sided range (`cn>=10 cn<=19`, 3 literal children -> 2 `AndSource`s after fusion).
+    // `con` is contiguous (density 1.0), so the estimate is EXACT: 10 of con's own printings have
+    // cn in [10, 19]. Pre-fix, the min-fold picked `min(con's own 50, the corpus-wide 20 printings
+    // -- 10 from con, 10 from big -- with cn in [10,19])` = 20, 2x over the true 10.
+    let fused = FilterExpr::And(vec![set("con"), cn(CmpOp::Ge, 10.0), cn(CmpOp::Le, 19.0)]);
+    assert_eq!(est(&fused), 10, "set:con cn>=10 cn<=19 (fused): density estimate must be exact for a contiguous set");
+
+    // Bare one-sided range (`cn<=15`, no fusion needed -- a single `AndSource::Child`). Same
+    // contiguous set, same exactness. Pre-fix: min(con's own 50, corpus-wide cn<=15 -- 15 from con,
+    // 15 from big -- = 30) = 30, 2x over the true 15.
+    let bare = FilterExpr::And(vec![set("con"), cn(CmpOp::Le, 15.0)]);
+    assert_eq!(est(&bare), 15, "set:con cn<=15 (bare): density estimate must be exact for a contiguous set");
+
+    // Non-contiguous set (`gap`): true count for `cn<=100` is 5 (gap's own low cluster). Pre-fix,
+    // the min-fold picks `min(gap's own 20, corpus-wide cn<=100 -- 5 from gap, 100 from big -- =
+    // 105)` = 20, a 4x OVER-estimate. The density model (count=20, span=999, density~=0.02003)
+    // scales to `round(0.02003 * 100) = 2`, a 2.5x UNDER-estimate -- worse in the opposite
+    // direction, but a smaller |log-ratio| than the fold's 20 (|ln(2/5)|=0.916 vs |ln(20/5)|=1.386)
+    // -- the documented, accepted residual for a non-contiguous set (SLD-shaped), not a bug.
+    let gap_query = FilterExpr::And(vec![set("gap"), cn(CmpOp::Le, 100.0)]);
+    assert_eq!(est(&gap_query), 2, "set:gap cn<=100: density estimate for a non-contiguous set must match the documented (partial) improvement");
 }
 
 /// Card-space collection containment fields (`type:`/`kw:`/`otag:`) and their printing-space siblings

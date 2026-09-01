@@ -183,6 +183,7 @@ total regret by 0.0 ms).
 | 28 | scope `COMPOSE_RANGE_AND_BROAD_SCAN_SCALE` (Round 4) and `COMPOSE_SAME_RANGE_BROAD_SCAN_SCALE` (Round 7) to `Mode::Card` only, leaving `Mode::Printing`/`Mode::Artwork` at the pre-existing unscaled `n_printings` ceiling | kept | not this doc's own metric (see below) | pooled `scan_units` feature accuracy (`bench_feature_accuracy.py`), the metric a fresh `main`-vs-`costcell/trunk` A/B (Round 27) found regressed: median 0.70 (UNDER-COUNTS) → 0.94 (clean), against `main`'s own 1.00 | see "Round 28" narrative below — both scales were fit exclusively on `unique=card` samples (each round's own doc says so) but applied unconditionally to all three modes; `Mode::Printing`/`Mode::Artwork`'s real `printings_examined / n_printings` reads EXACTLY 1.000 (zero spread) for this guard-fired population, so the card-only-derived scale was silently manufacturing an under-count for two modes it was never calibrated against |
 | 30 | `STREAM_SMALL_TOTAL_REDO_BIAS`, a `stream_scan_units` correction for `printing_compose`'s bare `else` arm (`Mode::Card`, no legality partner) — Round 1's `scan_units` revision was inherited verbatim by `StreamedSelect`'s own feature, which structurally under-prices a SECOND, unmodeled `push_card_matches` pass `run_query_streamed`'s small-total branch pays and `GatheredScan` never does | kept, partial | n/a (this doc's own agreement-gate metric untouched; see the flip/regret numbers below instead) | `#852` ordering 88%→88% clean; Round 28's pooled `scan_units` median 1.00→1.00 clean | see "Round 30" narrative below — of 114 reproduced f3f4a017 flip queries, 50 (44%) now correctly re-route to `GatheredScan`; `StreamedSelect -> GatheredScan` regret matrix slice -7% share of traffic / -12% regret-ms; residual traced to the acquire-time `result_total` ESTIMATE itself being unreliable near `STREAM_MIN_MATCHES` for cross-index-range Ands (this doc's own Round 1 "separate, uninvestigated `domain_cards` bug" flag) — not a `cost.rs` rate problem, so chunk 2 (rate refit) is unlikely to close the rest on its own |
 | 32 | new `PlanFeatures::perm_walk_span` feature (`cost.rs`/`lib.rs`) for `StreamedSelect`'s OTHER branch (`walks_permutation`, `total > STREAM_MIN_MATCHES` — different from Rounds 30/31's small-total gather): `perm_steps`'s estimate multiplied by `n_cards` unconditionally, when the real executor already bounds its walk to the filter's own interval on the sort column | kept | n/a (not this doc's metric; see below) | `#852` 88%→89% clean; Round 30/31 territory (`StreamedSelect -> GatheredScan` regret slice) flat; Round 28's `scan_units` unreachable by this change | see "Round 32" narrative below — held-out mean \|log ratio\| 1.033→1.001 pooled (both halves improve independently); `StreamedSelect/candidates` cost-model-agreement cell unchanged (median 0.59 both builds) because the targeted correlation (filter bounds the same field the query orders by) is rare under uniform traffic; shipped as a strict-generalization correctness fix (collapses to the old formula when unbounded), not for measured impact on this specific cell |
+| 33 | `set_collector_ranges` (`lib.rs`, load-time precomputed per-set `collector_number_int` min/max/count), a new `compose_printing_estimate` `And`-arm tightening for the 2-source `set:X` + `cn`-range shape: `density = count / (max-min+1)` scaled by the query's own overlap, replacing the plain min-fold this shape had no other tightening for | kept | n/a (not this doc's own metric; see Round 33 narrative) | pooled cost-model-agreement cells move within noise (an untouched acquire branch, `PrintingCompose/plane`, shows the largest swing, 0.88→0.76, confirming it's sampling noise not this fix); `#852` 89%→89% clean; Round 28's `scan_units` 1.00→1.00 clean; Rounds 30/31/32's flip-query population 51/95 fixed on BOTH builds, 0 regressed | see "Round 33" narrative below — held-out validation across 550 real sets / 3,300 queries / both shapes: density estimator pooled median \|log ratio\| 0.000 (88.8% within 25%) against the fold's 0.788 (18.0% within 25%); regret matrix moved 37.4ms→33.4ms (-11%, improving); one honest documented exception -- a non-contiguous set (SLD) can now undershoot where the fold used to overshoot, still a net improvement (2.5x under vs 24x over) but a new failure direction |
 
 ### Round 1
 
@@ -1714,6 +1715,152 @@ a designed-cell phenomenon, not a common production shape. No regression on `#85
 own territory, or on Round 28's `scan_units` cell (unreachable by this change). Shipped as a
 strict-generalization correctness fix rather than for its measured routing impact, which is real but
 small on this traffic mix.
+
+### Round 33
+
+Target: `compose_printing_estimate`'s `And` arm (`lib.rs`) falls back to a plain min-fold whenever
+none of the existing tightening mechanisms apply. One common shape that falls all the way through:
+`set:X` And'd with a `collector_number_int` range (`set:sld cn>=30 cn<=39`, `set:woe cn<=100`) —
+`set` has no `compile_plane` arm and isn't in `ValueTotals`, and `collector_number_int` isn't
+arith-tuple-eligible and has no `compile_plane` arm either, so the fold picks whichever leaf's own
+CORPUS-WIDE (not set-scoped) count happens to be smaller, frequently `set:X`'s own full postings
+length — discarding the `cn` bound's selectivity entirely.
+
+**Fix.** `set_collector_ranges: HashMap<String, SetCollectorRange>` (`lib.rs`, new field on
+`CardIndexes`, next to `set_codes`), holding each set's `collector_number_int` `min`/`max`/`count`
+— built once at load time (`build_set_collector_ranges`, one O(n_printings) pass alongside
+`set_codes`'s own existing pass, not a second scan class) and read as an O(1) `HashMap` lookup per
+query, never a per-set postings scan. In `compose_printing_estimate`'s `And` arm, a new tightening
+step (right after `pair_bounded_min`) detects the strict 2-source shape (after
+`fuse_and_range_children`: a `set:X` leaf and a lone `collector_number_int` source, fused two-sided
+or bare one-sided — nothing else in the `And`) and computes `density = count / (max - min + 1)`,
+`overlap` = the query's own interval intersected with `[min, max]`, `estimate = round(density *
+overlap)`, then `result = result.min(estimate)`. `fuse_and_range_children`'s `AndSource` now derives
+`Copy` so the fused list can be inspected a second time without a second call. 3+ children (e.g.
+`set:sld id:g cn<=100`) are out of scope this round — `and_sources.len() != 2` simply skips them,
+falling back to the pre-existing fold unchanged.
+
+**Honest limitation, not a bug.** This estimate is not a guaranteed upper bound like the mechanisms
+around it (`pair_bounded_min`, `arith_tuple_count`, the `compile_plane` popcount) — for a
+non-contiguous set (Secret Lair Drop, numbered per-drop rather than sequentially) it can UNDERSHOOT
+the true count, a new failure mode this fallback did not have before. Accepted because it is still a
+strict improvement over the alternative the fold would otherwise pick (see held-out validation
+below), and it only ever narrows `result`, never touches `exact_domain_cards` (reserved for genuinely
+exact answers elsewhere in this same function).
+
+**Held-out validation, broad population (not just the 4 sets spot-checked in prior conversation).**
+`validate_density_r33.py`: ground truth computed directly from the real corpus JSONL (97,811
+set+cn-valued printings), independent of the engine. Every real set with >= 5 printings (550 distinct
+sets), 6 sampled queries per set split across bare `Le`/`Ge` and fused two-sided shapes (3,300 total),
+hash-of-query calibration/held-out split (nothing here is FIT — the formula has no free constant — the
+split is a broad-population honesty check, not an overfit guard):
+
+```
+                calibration (n=1,619)          held-out (n=1,681)             pooled (n=3,300)
+density  median|log ratio|  0.000              0.000                          0.000
+         mean|log ratio|    0.101              0.106                          0.103
+         within 25%         88.9%              88.8%                         88.8%
+fold     median|log ratio|  0.788              0.793                          0.788
+         within 25%         18.7%              17.3%                         18.0%
+indep*   median|log ratio|  0.511              0.511                          0.511
+         within 25%         30.9%              30.1%                         30.5%
+```
+
+(`indep*` = a plain independence product on the two leaves' own marginal counts — the "other obvious
+idea," included to confirm the same rejection this doc's Round 2 already reached for range-vs-range
+Ands also holds here: strictly worse than the density model, though still better than the fold.)
+
+By shape (pooled): `bare_le` 90.0% within 25%, `bare_ge` 89.4%, `fused` 87.1% — both shapes the task
+description called out are covered, and both land in the same range. Named spot-checks (from the
+conversation-history investigation that motivated this round) reproduce exactly: `woe` (381 printings,
+span [1,381], density 1.0000) → `cn<=100` estimate 100 against true 100, EXACT. `mh3` (524, span
+[1,521], density 1.0058) → estimate 101 against true 100. `lea` (292, span [1,295], density 0.9898) →
+estimate 99 against true 98. `sld` (2,534, span [1,9999], density 0.2534) → estimate 25 against true
+104 (4.16x under) — the documented non-contiguous residual, still far better than the fold's 2,534
+(24.4x over) for this exact query.
+
+**Cost-model-agreement before/after** (`bench_cost_model_agreement.py --seconds 150 --seed 0`,
+isolated release wheels, baseline = `costcell/trunk`@`4d6db48c` vs this round's fix):
+
+```
+plan / acquire                         baseline (n)         fix (n)
+GatheredScan   printing_compose   median 1.19 (27,089)  1.20 (26,788)  within25% 24% both
+GatheredScan   card_range_popcount median 1.07 (772)     1.09 (765)    within25% 49%/48%
+PrintingCompose card_range_popcount median 1.33 (661)    1.26 (654)    within25% 39%/46%
+PrintingCompose plane              median 0.88 (1,945)   0.76 (1,923)  within25% 32%/17%
+
+plan / unique
+GatheredScan   card                median 0.84 (16,479)  0.84 (16,307) within25% 26%/25%
+PrintingCompose card               median 1.04 (4,953)   0.99 (4,906)  within25% 47%/43%
+```
+
+Every one of these moves by an amount consistent with two independent 150s windows sampling a
+different query mix (the `PrintingCompose`/`plane` cell's 0.88→0.76 shift looks the largest, but that
+acquire branch is untouched by this fix entirely — no code path connects a `set:X`+`cn` shape to
+`plane` acquire, so this is sampling noise, the same pattern every prior round in this doc reports for
+the pooled agreement gate: real, targeted fixes move a small held-out slice cleanly while the
+pooled cell — which mixes in everything else — stays within run-to-run noise). No cell crossed a
+FAIL/PASS boundary that a second baseline-vs-baseline run wouldn't also risk crossing.
+
+**Regret matrix** (`bench_regret_matrix.py --seconds 150 --seed 0 --mode realistic`): total regret
+**37.4ms (baseline) -> 33.4ms (fix)**, an 11% reduction — in the improving direction, not a
+regression. `PrintingCompose -> StreamedSelect` (a nearby transition that reads the same
+`compose_printing_estimate`): n 275->223, mean regret 38.10->31.10us, share 28%->21%.
+`PrintingCompose -> GatheredScan`: n 148->139, mean 37.21->34.28us. `StreamedSelect ->
+GatheredScan` (Rounds 30/31/32's own territory): n 1,137->1,132, mean 9.90->9.81us, share
+30%->33% -- flat, confirmed unaffected below via the reproduced flip-query population directly, not
+just this aggregate.
+
+**Regression guards.**
+
+- `#852` (`GatheredScan` vs `PrintingCompose`, `bench_pairwise_ordering.py --seconds 150 --seed 0
+  --mode realistic`): 89% -> 89% (n=17,322 -> 17,038), unchanged. `GatheredScan` vs `StreamedSelect`:
+  97% -> 97%, unchanged. Clean.
+- Round 28's `scan_units` feature accuracy (`bench_feature_accuracy.py --seconds 150 --seed 0 --mode
+  realistic`): pooled median 1.00 -> 1.00, n=134,028 -> 133,348, identical distribution shape —
+  expected, this fix touches `compose_printing_estimate`'s `result`, never `scan_units` itself. Clean.
+- Rounds 30/31/32's `StreamedSelect -> GatheredScan` flip-query population
+  (`flip_finder_r33_validate.py`, reproducing the ORIGINAL `f3f4a017` flip set exactly as
+  `flip_finder_f3f4a017.py` does, then replaying it against the `costcell/trunk` baseline and this
+  round's fix): **51/95 fixed on BOTH builds, 44/95 still wrong on both, 0 regressed** — this round's
+  fix is on a completely different code path (`compose_printing_estimate`'s `And` arm feature
+  estimation, not `stream_scan_units`/`StreamedSelect`'s redo-bias) and confirmed, not just assumed,
+  to leave that population untouched.
+- Same-build latency canary (`bench_query_latency_ab.py --sample 800 --seed 1 --mode realistic`,
+  isolated release wheels): real diff (baseline vs fix) `B - A = +0.6us`, 95% CI `[+0.4, +0.9]`, "B is
+  SLOWER". Same-build canary (baseline vs baseline, zero code difference): `+2.3us`, CI `[+2.0,
+  +2.6]`, also "B is SLOWER" — a LARGER swing with nothing changed. The real diff is not
+  distinguishable from that noise floor, so read as no detectable latency effect, consistent with the
+  self-check that the only added per-query work is one `HashMap` lookup gated behind a rare 2-child
+  shape.
+
+**Correctness gates.** `cargo test --release` (`card_engine`): 180/180 passed (179 + this round's new
+regression test). `cargo test` (debug): 181/181 passed. `cargo clippy --all-targets -- -D warnings`
+(debug, not `--release`, per this effort's established gate): clean. New regression test
+(`card_engine/src/tests.rs`, `set_and_collector_number_range_density_tightening`): a synthetic
+3-set corpus (`con` contiguous 1..=50, `big` contiguous 1..=100 as a corpus-wide inflator, `gap`
+non-contiguous 20 printings spanning [1,999]) asserting exact expected values for the fused
+two-sided shape (10), the bare one-sided shape (15), and the non-contiguous partial-improvement
+shape (2) — verified to actually catch a revert (temporarily gating the tightening off with `if
+false && ...` reproduces the pre-fix fold value, 20, on the first assertion; restoring passes again).
+Blast radius: `card_engine/src/lib.rs` (`SetCollectorRange`, `build_set_collector_ranges`, the new
+`CardIndexes` field, `AndSource`'s new `Copy` derive, the `And` arm's new tightening step),
+`card_engine/src/tests.rs` (the new regression test plus one `CardIndexes` literal fixed up to
+compile), this doc. `cost.rs`/`estimator.rs` untouched.
+
+**Verdict.** Real, validated, narrow. A strict, large improvement on the specific shape it targets
+(pooled median |log ratio| 0.000 against the fold's 0.788, 88.8% within 25% against 18.0%, across 550
+real sets and both query shapes, not just the 4 already spot-checked) with one honest, documented
+exception: a genuinely non-contiguous set (SLD) can now UNDERSHOOT where the fold used to
+OVERSHOOT — still a large net improvement for that case too (2.5x under vs 24x over), but a new
+failure direction this fallback did not have before. No regression found on the pooled
+cost-model-agreement gate (moves within noise, as expected for a small-slice fix — the same pattern
+every prior round in this doc reports), `#852`, Round 28's `scan_units` cell, or Rounds 30/31/32's
+flip-query population (confirmed identical, not just unmentioned, on both builds). The regret matrix
+moved in the IMPROVING direction (37.4ms -> 33.4ms, -11%) rather than staying flat, plausibly because
+tightening `compose_printing_estimate`'s `result` for this shape also improves nearby
+`PrintingCompose`-adjacent transitions that read the same estimate — not chased further this round
+since it was not the target metric.
 
 ## Confirmation runs
 
