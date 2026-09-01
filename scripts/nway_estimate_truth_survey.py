@@ -325,16 +325,27 @@ def generate_queries(sampler: object, vocab: CorpusVocab, seed: int, n_per_shape
 
 
 def tree_mechanisms(node: dict | None) -> list[str]:
-    """Every `joint_lookup` mechanism used anywhere in an `and_trace.tree`, root-to-leaf order.
+    """Every `joint_lookup`/`independence` mechanism used anywhere in an `and_trace.tree`, root-to-leaf order.
 
     Used to derive a cheap, bucketable summary (`and_mechanism`) from the tree without the harness
     needing to understand every `op` value Round 38+ might add later -- it only ever looks for the
     one thing that's stable across the whole arc: which mechanism(s), if any, actually tightened
     something. A bare `min_fold` over plain leaves (nothing tightened) yields an empty list.
+
+    Round 38's `"independence"` op carries no `mechanism` string of its own (the op name already says
+    what happened -- there's exactly one independence formula, unlike `joint_lookup`'s several named
+    table/scan mechanisms), so this records the literal string `"Independence"` in its place -- the
+    same bucketable-summary role `joint_lookup`'s own `mechanism` field plays.
     """
     if node is None or node["kind"] == "leaf":
         return []
-    out = [node["mechanism"]] if node.get("op") == "joint_lookup" else []
+    op = node.get("op")
+    if op == "joint_lookup":
+        out = [node["mechanism"]]
+    elif op == "independence":
+        out = ["Independence"]
+    else:
+        out = []
     for child in node.get("children", []):
         out += tree_mechanisms(child)
     return out

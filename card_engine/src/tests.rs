@@ -14939,3 +14939,179 @@ fn exact_result_total_answers_subtype_arith_in_every_space() {
     assert_eq!(super::exact_result_total(&f, &archived.indexes, Mode::Card), Some(3));
     assert_eq!(super::exact_result_total(&f, &archived.indexes, Mode::Artwork), Some(3));
 }
+
+// ─── Round 38: color/identity/cmc x price independence tightening ──────────────
+
+/// Round 38: `color:X` And'd with exactly one price comparison gets `min(fold, independence)` --
+/// the shape the round's own calibration (`scripts/nway_estimate_truth_survey.py`) found at 0%
+/// mechanism coverage before this round, with the plain fold picking whichever leaf's own broader
+/// count happened to be smaller instead of the true joint.
+///
+/// Fixture: 100 single-printing cards, prices 1..=100 cents (so `usd<=0.25`, Le 25 cents, selects
+/// exactly the 25 cheapest: cents 1..=25). Green is cards {0..=9} ∪ {40..=69} (40 total), overlapping
+/// the 25 cheapest ONLY in {0..=9} -- a true joint of 10, distinct from both leaves' own solo counts
+/// (green=40, cheap=25) and from their plain min-fold (25), and exactly `round(40 * 25 / 100)`.
+#[test]
+fn and_arm_independence_tightens_color_and_price() {
+    let mut vocab = VocabInterner::new();
+    let mut cards: Vec<OracleCard> = (0..100).map(|i| stub_card(1 + i as u128, TYPE_CREATURE, &[], &mut vocab)).collect();
+    let green = super::color_to_bit("G");
+    for c in cards.iter_mut().take(10) {
+        c.card_colors = green;
+    }
+    for c in cards.iter_mut().take(70).skip(40) {
+        c.card_colors = green;
+    }
+    let mut data = store_of(cards, &[1; 100], vocab);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.price_usd = Some(i as u32 + 1); // 1..=100 cents
+    }
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    let p2c = build_printing_to_card(&data.offsets);
+    data.indexes.value_totals =
+        build_all_value_totals(&data.cards, &data.printings, &p2c, &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let green_leaf = || FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: green };
+    let cheap = || usd_cmp(CmpOp::Le, 0.25);
+
+    // Sanity: both leaves individually exact and as expected, before any And-level tightening.
+    let green_solo = super::compose_printing_estimate(&green_leaf(), &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(green_solo.result.printing, 40, "fixture assumption: 40 Green printings");
+    let cheap_solo = super::compose_printing_estimate(&cheap(), &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(cheap_solo.result.printing, 25, "fixture assumption: 25 printings at or under 25 cents");
+
+    let filter = FilterExpr::And(vec![green_leaf(), cheap()]);
+    let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, true);
+    assert_eq!(est.result.printing, 10, "independence must tighten below the plain min-fold (25) to the true joint (10)");
+
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace for a top-level And");
+    let hit = and_trace.considered.iter().find(|g| g.mechanism == "Independence").expect("Independence must have been attempted for this eligible color+price pair");
+    assert!(hit.hit, "independence is a formula, always hit once the shape gate matches -- there is no lookup-miss case");
+    assert_eq!(hit.printing, Some(10), "round(40 * 25 / 100) == 10");
+    assert_eq!(hit.card, None, "the price leaf's own card count is always None (the bare-range leaf arm's own doc), so no card independence can compute");
+    assert_eq!(hit.artwork, None);
+
+    let AndTraceNode::Op { op: "min_fold", children, .. } = &and_trace.tree else { panic!("root must be a min_fold op node") };
+    let winner = children
+        .iter()
+        .find(|c| matches!(c, AndTraceNode::Op { op: "independence", .. }))
+        .expect("independence must win the tree -- it produced the tightest (and final) number");
+    let AndTraceNode::Op { mechanism, printing, children: winner_children, .. } = winner else { unreachable!() };
+    assert_eq!(*mechanism, None, "independence's own op name already says what happened -- no redundant mechanism string");
+    assert_eq!(*printing, 10);
+    assert_eq!(winner_children.len(), 2, "independence's own leaves are just the color leaf and the price leaf");
+
+    assert_min_fold_invariant(&and_trace.tree);
+}
+
+/// Round 38: a two-sided SAME-field price range reaches `compose_printing_estimate`'s `And` arm as
+/// TWO literal `NumericCmp` children -- `fuse_and_range_children` doesn't collapse the AST, only
+/// which SOURCE the arm's own tightenings read -- but it fuses them into one exact `FusedRange`
+/// unconditionally (`sparse_only: false` at this call site) BEFORE the independence check below ever
+/// runs. So the guard against "silently using only one side of a two-sided range" is satisfied by
+/// construction (reading `and_sources`, not `v`, for the price-family count), not by a special case
+/// in the new code -- this test proves it empirically rather than by inspection.
+///
+/// Fixture: prices 1..=100 cents again, `usd>=0.20 usd<=0.50` -- the TRUE fused count is the 31
+/// printings in `[20,50]` (cents 20 through 50 inclusive). Paired with a 50-card Green leaf
+/// (cards 0..=49). If either side alone were used instead of the fused intersection, the resulting
+/// independence value would be `round(50 * 81 / 100) == 41` (`usd>=0.20` alone, k=81) or
+/// `round(50 * 50 / 100) == 25` (`usd<=0.50` alone, k=50) -- both distinct from the correct
+/// `round(50 * 31 / 100) == 16`, so a wrong-side regression here cannot pass silently.
+#[test]
+fn and_arm_independence_uses_the_fused_two_sided_price_range_not_one_side() {
+    let mut vocab = VocabInterner::new();
+    let mut cards: Vec<OracleCard> = (0..100).map(|i| stub_card(1 + i as u128, TYPE_CREATURE, &[], &mut vocab)).collect();
+    let green = super::color_to_bit("G");
+    for c in cards.iter_mut().take(50) {
+        c.card_colors = green;
+    }
+    let mut data = store_of(cards, &[1; 100], vocab);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.price_usd = Some(i as u32 + 1); // 1..=100 cents
+    }
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    let p2c = build_printing_to_card(&data.offsets);
+    data.indexes.value_totals =
+        build_all_value_totals(&data.cards, &data.printings, &p2c, &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let green_leaf = FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: green };
+    let lo = usd_cmp(CmpOp::Ge, 0.20);
+    let hi = usd_cmp(CmpOp::Le, 0.50);
+    // Sanity: confirm the one-sided counts really are the broader 81/50 this test needs to rule out.
+    let lo_solo = super::compose_printing_estimate(&usd_cmp(CmpOp::Ge, 0.20), &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(lo_solo.result.printing, 81);
+    let hi_solo = super::compose_printing_estimate(&usd_cmp(CmpOp::Le, 0.50), &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(hi_solo.result.printing, 50);
+
+    let filter = FilterExpr::And(vec![green_leaf, lo, hi]);
+    let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+
+    let hit = and_trace.considered.iter().find(|g| g.mechanism == "Independence").expect("Independence must fire: color + a fused two-sided price range is still exactly one price source");
+    assert_eq!(hit.leaves.len(), 3, "must list the color leaf AND both literal price children -- never just one side");
+    assert!(hit.leaves.iter().any(|l| l.contains("PriceUsd") && l.contains("Ge")), "the lower bound must be listed: {:?}", hit.leaves);
+    assert!(hit.leaves.iter().any(|l| l.contains("PriceUsd") && l.contains("Le")), "the upper bound must be listed: {:?}", hit.leaves);
+    assert_eq!(hit.printing, Some(16), "round(50 * 31 / 100) == 16 -- the TRUE fused [20,50] count, never one side alone (41 or 25)");
+
+    assert_min_fold_invariant(&and_trace.tree);
+}
+
+/// Round 38: the independence tightening's shape gate must NOT fire outside {color/identity/cmc} x
+/// {exactly one price field}. Two ineligible shapes: (1) a color leaf paired with a NON-price
+/// numeric (`pow>=3`) never has any price-family source to pair with at all, and (2) a color leaf
+/// paired with TWO DIFFERENT price fields (`usd>=1 eur>=1`) has two effective price sources --
+/// different fields never fuse together -- so the mechanism declines rather than guessing which one
+/// to pair with the color leaf.
+#[test]
+fn and_arm_independence_declines_outside_its_shape_gate() {
+    let mut vocab = VocabInterner::new();
+    let mut cards: Vec<OracleCard> = (0..20).map(|i| stub_card(1 + i as u128, TYPE_CREATURE, &[], &mut vocab)).collect();
+    let green = super::color_to_bit("G");
+    for c in cards.iter_mut().take(10) {
+        c.card_colors = green;
+        c.creature_power = Some(3);
+    }
+    let mut data = store_of(cards, &[1; 20], vocab);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.price_usd = Some(i as u32 + 1);
+        p.price_eur = Some(i as u32 + 1);
+    }
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    data.indexes.price_eur = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_eur);
+    data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power.map(|v| v as i16));
+    let p2c = build_printing_to_card(&data.offsets);
+    data.indexes.value_totals =
+        build_all_value_totals(&data.cards, &data.printings, &p2c, &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let green_leaf = || FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: green };
+
+    let pow_ge3 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Power), op: CmpOp::Ge, rhs: NumExpr::Const(3.0) };
+    let f1 = FilterExpr::And(vec![green_leaf(), pow_ge3]);
+    let est1 = super::compose_printing_estimate(&f1, &archived.indexes, &archived.offsets, n_printings, true);
+    let trace1 = *est1.and_trace.expect("want_trace");
+    assert!(!trace1.considered.iter().any(|g| g.mechanism == "Independence"), "no price-family leaf present at all -- must never fire");
+    assert_min_fold_invariant(&trace1.tree);
+
+    let eur_ge1 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::PriceEur), op: CmpOp::Ge, rhs: NumExpr::Const(1.0) };
+    let f2 = FilterExpr::And(vec![green_leaf(), usd_cmp(CmpOp::Ge, 1.00), eur_ge1]);
+    let est2 = super::compose_printing_estimate(&f2, &archived.indexes, &archived.offsets, n_printings, true);
+    let trace2 = *est2.and_trace.expect("want_trace");
+    assert!(!trace2.considered.iter().any(|g| g.mechanism == "Independence"), "two DIFFERENT price fields present together -- must decline rather than pick one arbitrarily");
+    assert_min_fold_invariant(&trace2.tree);
+}

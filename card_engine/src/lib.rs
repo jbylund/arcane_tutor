@@ -8352,6 +8352,28 @@ fn is_arith_tuple_eligible(filter: &FilterExpr) -> bool {
     )
 }
 
+/// The single `NumField` a bare `field op const` `NumericCmp` targets (either operand order), or
+/// `None` for anything else (`Ne` is still a `NumericCmp` so it's included here — the caller decides
+/// whether the op matters; only the shape `field op const`/`const op field` is recognized at all, so
+/// arithmetic like `cmc+1<power` or a non-`NumericCmp` filter both yield `None`). Shared by the Round
+/// 38 independence tightening's price/cmc shape gates below -- unlike `single_arith_field` (which
+/// requires every child in a whole slice to agree on ONE field before answering), this classifies one
+/// filter at a time, for any `NumField`, not just the arith-tuple-eligible three.
+fn numeric_cmp_field(filter: &FilterExpr) -> Option<NumField> {
+    match filter {
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(f), rhs: NumExpr::Const(_), .. }
+        | FilterExpr::NumericCmp { lhs: NumExpr::Const(_), rhs: NumExpr::Field(f), .. } => Some(*f),
+        _ => None,
+    }
+}
+
+/// Whether `f` is one of the three price fields -- the "price family" side of the Round 38
+/// independence tightening below, any comparison op (`:`/`=`/`>=`/`<=`/`>`/`<` all compile to
+/// `NumericCmp` with a different `CmpOp`, none of which this cares about).
+fn is_price_num_field(f: NumField) -> bool {
+    matches!(f, NumField::PriceUsd | NumField::PriceEur | NumField::PriceTix)
+}
+
 /// Exact CARD count of cards satisfying every one of `bounds` simultaneously, via the existing #743
 /// `ArithTupleIndex` (~564 distinct `(cmc,power,toughness,loyalty)` combinations on the real corpus) —
 /// O(distinct tuples), not O(n_cards) and not `eval_planes`, and always exact: each stored tuple's
@@ -8457,13 +8479,17 @@ struct AndTraceGroup {
 /// arm's final answer (the same triple otherwise surfacing as `.result`/`matches`) -- there is no
 /// separate top-level "final" field to keep in sync with it.
 ///
-/// `op` is a small, stable, low-cardinality tag (today: `"min_fold"` or `"joint_lookup"`), never a
-/// sentence built from leaf reprs -- literal leaf detail belongs only on `Leaf::expr`. A `"min_fold"`
-/// node's own numbers equal `min()` of its children's numbers in each space (see
-/// `and_trace_build_tree`'s doc for why this holds by construction here); a `"joint_lookup"` node's
-/// `mechanism` names which of the arm's existing tightening mechanisms produced it (the same
-/// vocabulary `AndTraceGroup::mechanism` uses), and its `children` are the leaves that one specific
-/// lookup covers.
+/// `op` is a small, stable, low-cardinality tag (today: `"min_fold"`, `"joint_lookup"`, or
+/// `"independence"`), never a sentence built from leaf reprs -- literal leaf detail belongs only on
+/// `Leaf::expr`. A `"min_fold"` node's own numbers equal `min()` of its children's numbers in each
+/// space (see `and_trace_build_tree`'s doc for why this holds by construction here); a
+/// `"joint_lookup"` node's `mechanism` names which of the arm's existing EXACT tightening mechanisms
+/// produced it (the same vocabulary `AndTraceGroup::mechanism` uses), and its `children` are the
+/// leaves that one specific lookup covers. `"independence"` (Round 38) is the one INEXACT tightening:
+/// `count(a) * count(b) / domain` for a pair with no exact source at all (today: color/color-identity/
+/// cmc paired with exactly one price comparison) -- `mechanism: None` on this variant, since the op
+/// name alone already says what happened (there is exactly one independence formula, unlike
+/// `joint_lookup`'s several named table/scan mechanisms).
 #[derive(Clone)]
 enum AndTraceNode {
     Leaf {
@@ -8586,9 +8612,13 @@ fn and_trace_build_tree(leaves: &[AndTraceLeaf], considered: &[AndTraceGroup], f
     if let Some(w) = winner {
         let covered_children: Vec<AndTraceNode> =
             w.leaves.iter().filter_map(|expr| leaves.iter().find(|l| &l.expr == expr)).map(leaf_node).collect();
+        // Round 38: an "Independence" winner gets its own `op` rather than `"joint_lookup"` --
+        // `mechanism: None` because the op name itself already says what happened (there is exactly
+        // one independence formula, unlike `joint_lookup`'s several named table/scan mechanisms).
+        let (op, mechanism) = if w.mechanism == "Independence" { ("independence", None) } else { ("joint_lookup", Some(w.mechanism)) };
         children.push(AndTraceNode::Op {
-            op: "joint_lookup",
-            mechanism: Some(w.mechanism),
+            op,
+            mechanism,
             card: w.card,
             printing: w.printing.unwrap_or(final_est.printing),
             artwork: w.artwork,
@@ -9276,6 +9306,151 @@ fn compose_printing_estimate(
                             printing: hit.map(|(p, _, _)| p),
                             card: hit.map(|(_, c, _)| c),
                             artwork: hit.map(|(_, _, a)| a),
+                        });
+                    }
+                }
+            }
+            // Round 38 tightening: `color:X`/`id:X`/`cmc<op>N` And'd with exactly one price
+            // comparison (`usd`/`eur`/`tix`, any op) gets `min(fold, independence)` instead of the
+            // plain fold above. This was the worst-accuracy shape in `scripts/nway_estimate_truth_
+            // survey.py`'s calibration (docs/issues/local-engine-gathered-scan-card-printing-varying-
+            // depth.md), at 0% mechanism coverage before this round: `c:ruw usd:0.17` folds to 454
+            // (the color leaf's own count) against a true 1, even though BOTH leaves are individually
+            // exact on their own (`c:ruw` alone: 454 == 454; `usd:0.17` alone: 1541 == 1541) — the
+            // error is 100% in the fold combinator taking the broader leaf's count, not either leaf's
+            // own estimate. Neither leaf has a `compile_plane` arm covering the other (color has one,
+            // but none of the three price fields do) and neither is in any pair/subtype table, so this
+            // shape gets no tightening otherwise.
+            //
+            // `independence = round(count(a) * count(b) / domain)` is a real, if inexact, estimator
+            // here: calibrated directly against 610 real (query, unique) rows across the three shapes,
+            // replacing the plain fold with `min(fold, independence)` dropped the median
+            // `abs(log(estimate/true))` from 0.88 (~2.4x typical error) to 0.07 (~7%) across the
+            // combined population — an improvement on 578/610 rows (94.8%), with the regressions
+            // concentrated almost entirely in `cmc+usd`'s own undershoot-prone tail. A grid search over
+            // a multiplicative bias (`fudge * independence`, 1.0..=2.0 in 0.05 steps) found `fudge =
+            // 1.0` — no bias at all — minimizes both median AND mean error for every shape individually
+            // and combined; every increase makes it strictly worse, even on `cmc+usd`'s own tail. Not
+            // exact (unlike `arith_tuple_count`/`PlanePopcount`/a table hit above), so this narrows only
+            // `result`, never `exact_domain_*` — the same exact/estimate line `SetCollectorRange`'s
+            // density estimate and `SubtypePairEstimate`'s miss branch already draw.
+            //
+            // Scope is deliberately narrow: independence is a real assumption, not a law, and only
+            // holds where real correlation is negligible — color/identity/cmc against price, NOT e.g.
+            // color against type (known-correlated, out of scope for this round).
+            //
+            // Both sides must resolve to exactly ONE effective source, or this declines outright rather
+            // than guessing which side of a compound constraint to use:
+            //  - price: counted POST-FUSION (`and_sources`, computed above), so a two-sided SAME-field
+            //    range (`usd>=1 usd<=5`) — already fused into one exact `FusedRange` by
+            //    `fuse_and_range_children` (unconditionally here: that call passes `sparse_only:
+            //    false`, so every same-index group of 2+ fuses regardless of breadth) — counts as ONE
+            //    source with its exact fused `k`, never one side's own broader count alone. Two
+            //    DIFFERENT price fields present together (`usd>=1 eur>=1`) count as two sources and
+            //    this declines rather than arbitrarily picking one.
+            //  - cmc: `fuse_and_range_children` does NOT fuse `Cmc` (only price/collector-number/
+            //    date/year are printing-range-indexed — see `resolve_numeric_range_leaf`'s own doc), so
+            //    a two-sided cmc bound (`cmc>=2 cmc<=5`) reaches here as two literal children, still
+            //    unfused. Combined via the existing #743 `arith_tuple_count` scan (its exact JOINT card
+            //    count, scaled to printing the same average-case way the arith-tuple tightening above
+            //    already does) rather than paired on one side alone. Two-or-more literal `color:`/`id:`
+            //    leaves of the SAME field have no equivalent combining table, so that field is dropped
+            //    from consideration entirely (no unit pushed) rather than guessing which one to use.
+            let mut independence_price_positions: Vec<usize> = Vec::new();
+            for (i, src) in and_sources.iter().enumerate() {
+                let is_price = match *src {
+                    AndSource::Child(c) => numeric_cmp_field(c).is_some_and(is_price_num_field),
+                    AndSource::FusedRange { idx, .. } => {
+                        std::ptr::eq(idx, &indexes.price_usd) || std::ptr::eq(idx, &indexes.price_eur) || std::ptr::eq(idx, &indexes.price_tix)
+                    }
+                };
+                if is_price {
+                    independence_price_positions.push(i);
+                }
+            }
+            if let [price_pos] = independence_price_positions.as_slice() {
+                let price_pos = *price_pos;
+                let price_est = children_estimates[price_pos].result;
+                let price_src = and_sources[price_pos];
+                let price_leaves: Vec<&FilterExpr> = match price_src {
+                    AndSource::Child(c) => vec![c],
+                    AndSource::FusedRange { idx, .. } => {
+                        v.iter().filter(|c| bare_range_bounds(c, indexes).is_some_and(|(i2, ..)| std::ptr::eq(i2, idx))).collect()
+                    }
+                };
+                let mut colors_pos: Vec<usize> = Vec::new();
+                let mut identity_pos: Vec<usize> = Vec::new();
+                let mut cmc_pos: Vec<usize> = Vec::new();
+                for (i, c) in v.iter().enumerate() {
+                    match c {
+                        FilterExpr::ColorCmp { field: ColorField::Colors, .. } => colors_pos.push(i),
+                        FilterExpr::ColorCmp { field: ColorField::ColorIdentity, .. } => identity_pos.push(i),
+                        _ if numeric_cmp_field(c) == Some(NumField::Cmc) => cmc_pos.push(i),
+                        _ => {}
+                    }
+                }
+                let and_source_pos_of = |target: &FilterExpr| -> Option<usize> {
+                    and_sources.iter().position(|src| match *src {
+                        AndSource::Child(c) => std::ptr::eq(c, target),
+                        AndSource::FusedRange { .. } => false,
+                    })
+                };
+                let mut safe_units: Vec<(Vec<&FilterExpr>, SpaceEstimate)> = Vec::new();
+                if let [p] = colors_pos.as_slice()
+                    && let Some(pos) = and_source_pos_of(&v[*p])
+                {
+                    safe_units.push((vec![&v[*p]], children_estimates[pos].result));
+                }
+                if let [p] = identity_pos.as_slice()
+                    && let Some(pos) = and_source_pos_of(&v[*p])
+                {
+                    safe_units.push((vec![&v[*p]], children_estimates[pos].result));
+                }
+                match cmc_pos.as_slice() {
+                    [] => {}
+                    [p] => {
+                        if let Some(pos) = and_source_pos_of(&v[*p]) {
+                            safe_units.push((vec![&v[*p]], children_estimates[pos].result));
+                        }
+                    }
+                    _ => {
+                        let cmc_children: Vec<&FilterExpr> = cmc_pos.iter().map(|&p| &v[p]).collect();
+                        if let Some(card_count) = arith_tuple_count(&cmc_children, indexes) {
+                            let scaled = (card_count * n_printings).checked_div(n_cards).unwrap_or(0);
+                            safe_units.push((cmc_children, SpaceEstimate { printing: scaled, card: Some(card_count), artwork: None }));
+                        }
+                    }
+                }
+                let n_artworks = u32::from(*indexes.artwork_base.last().expect("artwork_base has n_cards+1 entries")) as usize;
+                for (safe_leaves, safe_est) in &safe_units {
+                    let printing_indep = if n_printings == 0 {
+                        0
+                    } else {
+                        ((safe_est.printing as f64) * (price_est.printing as f64) / (n_printings as f64)).round() as usize
+                    };
+                    let card_indep = safe_est
+                        .card
+                        .zip(price_est.card)
+                        .map(|(a, b)| if n_cards == 0 { 0 } else { ((a as f64) * (b as f64) / (n_cards as f64)).round() as usize });
+                    let artwork_indep = safe_est
+                        .artwork
+                        .zip(price_est.artwork)
+                        .map(|(a, b)| if n_artworks == 0 { 0 } else { ((a as f64) * (b as f64) / (n_artworks as f64)).round() as usize });
+                    result = result.min(printing_indep);
+                    // Round 38 trace: `hit: true` always -- unlike a table lookup, independence is a
+                    // formula that always produces a value once the shape gate above matched, so
+                    // `hit` here just means "eligible and computed", not a lookup-miss emulation that
+                    // doesn't exist for this mechanism.
+                    if let Some(t) = and_trace.as_mut() {
+                        let mut leaves: Vec<String> = safe_leaves.iter().map(|c| format!("{c:?}")).collect();
+                        leaves.extend(price_leaves.iter().map(|c| format!("{c:?}")));
+                        t.considered.push(AndTraceGroup {
+                            leaves,
+                            mechanism: "Independence",
+                            hit: true,
+                            printing: Some(printing_indep),
+                            card: card_indep,
+                            artwork: artwork_indep,
                         });
                     }
                 }
