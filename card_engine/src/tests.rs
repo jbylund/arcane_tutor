@@ -8274,6 +8274,62 @@ fn exact_result_total_answers_subtype_pairs_in_every_space() {
     assert_eq!(super::exact_result_total(&f, &archived.indexes, Mode::Artwork), Some(3), "3 distinct illustrations (store_of gives each printing its own)");
 }
 
+/// Round 35: `leaves_are_disjoint`'s new `set:X`/`set:Y` (x != y) arm. A printing has exactly one
+/// `card_set_code`, so no printing can ever satisfy both -- the same "exactly one value per printing"
+/// argument `border`/`rarity` already rest on, extended to a field that is structurally identical
+/// (`TextField::SetCode` is `printing.map_or(StrVal::PDep, ...)` in `filter.rs`, same shape as
+/// `TextField::Border`) but LOOKS riskier at first glance, because cards commonly reprint across sets
+/// in a way border/rarity rarely do.
+///
+/// The regression this guards: card0 has one printing in "aaa" and a SEPARATE printing (distinct
+/// `illustration_id`, since `store_of` gives every printing its own by default -- see that helper's
+/// doc) in "bbb". A per-leaf-independent existential ("card0 has a printing in aaa" AND "card0 has a
+/// printing in bbb", each checked separately) would wrongly count card0 in EVERY mode, including
+/// artwork, since its two printings are two different artwork groups. The real per-printing residual
+/// walk (`card_match_count`'s `Mode::Card`/`Mode::Artwork` arms, both via `residual_matches` against
+/// ONE printing at a time) already gets this right without any help from `leaves_are_disjoint` --
+/// confirmed directly below by also checking the un-narrowed `run_query` path, not just the acquire
+/// shortcut this test's main assertions exercise. `exact_result_total` returning `None` before this
+/// round's fix (the pre-fix behavior: `leaves_are_disjoint` false, and `SetCode` is absent from
+/// `pair_leaf_id`'s dimensions, so the whole 2-child `And` arm declines) is the failure this test
+/// catches on a revert.
+#[test]
+fn set_set_disjoint_pair_exact_in_every_space() {
+    let mut vocab = VocabInterner::new();
+    let cards = vec![
+        stub_card(1, TYPE_CREATURE, &["Elf"], &mut vocab), // 2 printings: aaa, bbb
+        stub_card(2, TYPE_CREATURE, &["Elf"], &mut vocab), // 1 printing: aaa only
+        stub_card(3, TYPE_CREATURE, &["Elf"], &mut vocab), // 1 printing: bbb only
+    ];
+    let mut data = store_of(cards, &[2, 1, 1], vocab);
+    for (p, code) in data.printings.iter_mut().zip(["aaa", "bbb", "aaa", "bbb"]) {
+        p.card_set_code = InlineStr::from_str(code);
+    }
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let set = |v: &str| FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value: v.to_string() };
+    let f = FilterExpr::And(vec![set("aaa"), set("bbb")]);
+
+    for (mode_label, mode) in [("card", Mode::Card), ("printing", Mode::Printing), ("artwork", Mode::Artwork)] {
+        assert_eq!(
+            super::exact_result_total(&f, &archived.indexes, mode),
+            Some(0),
+            "set:aaa AND set:bbb must be exactly 0 in {mode_label} -- no printing has two set codes at once, \
+             even though card0 individually has a printing in each set"
+        );
+    }
+
+    // Same answer through the real dispatch path (no acquire-time shortcut involved), so this test
+    // does not just check that the estimate AGREES WITH ITSELF -- it checks the estimate agrees with
+    // the ground truth a per-printing residual walk actually computes.
+    for (mode_label, unique_is_card) in [("card", true), ("printing", false), ("artwork", false)] {
+        let mut residual = f.clone();
+        let (total, _) = run_query(&QueryCtx::from(archived), &mut residual, None, mode_label, "default", "edhrec", "asc", 100, 0);
+        assert_eq!(total, 0, "real dispatch ({mode_label}, unique_is_card={unique_is_card}): set:aaa AND set:bbb must return no rows");
+    }
+}
+
 /// `compose_printing_estimate`'s `And` arm has no tightening at all for `set:X`/`c:X`/`id:X` And'd
 /// with a subtype leaf today: `t:` has no `compile_plane` arm and isn't in any pair table, so the
 /// plain min-fold picks whichever leaf's own (corpus-wide, not dimension-scoped) count is smaller.

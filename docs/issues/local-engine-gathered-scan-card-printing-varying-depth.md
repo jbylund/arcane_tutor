@@ -185,6 +185,7 @@ total regret by 0.0 ms).
 | 32 | new `PlanFeatures::perm_walk_span` feature (`cost.rs`/`lib.rs`) for `StreamedSelect`'s OTHER branch (`walks_permutation`, `total > STREAM_MIN_MATCHES` — different from Rounds 30/31's small-total gather): `perm_steps`'s estimate multiplied by `n_cards` unconditionally, when the real executor already bounds its walk to the filter's own interval on the sort column | kept | n/a (not this doc's metric; see below) | `#852` 88%→89% clean; Round 30/31 territory (`StreamedSelect -> GatheredScan` regret slice) flat; Round 28's `scan_units` unreachable by this change | see "Round 32" narrative below — held-out mean \|log ratio\| 1.033→1.001 pooled (both halves improve independently); `StreamedSelect/candidates` cost-model-agreement cell unchanged (median 0.59 both builds) because the targeted correlation (filter bounds the same field the query orders by) is rare under uniform traffic; shipped as a strict-generalization correctness fix (collapses to the old formula when unbounded), not for measured impact on this specific cell |
 | 33 | `set_collector_ranges` (`lib.rs`, load-time precomputed per-set `collector_number_int` min/max/count), a new `compose_printing_estimate` `And`-arm tightening for the 2-source `set:X` + `cn`-range shape: `density = count / (max-min+1)` scaled by the query's own overlap, replacing the plain min-fold this shape had no other tightening for | kept | n/a (not this doc's own metric; see Round 33 narrative) | pooled cost-model-agreement cells move within noise (an untouched acquire branch, `PrintingCompose/plane`, shows the largest swing, 0.88→0.76, confirming it's sampling noise not this fix); `#852` 89%→89% clean; Round 28's `scan_units` 1.00→1.00 clean; Rounds 30/31/32's flip-query population 51/95 fixed on BOTH builds, 0 regressed | see "Round 33" narrative below — held-out validation across 550 real sets / 3,300 queries / both shapes: density estimator pooled median \|log ratio\| 0.000 (88.8% within 25%) against the fold's 0.788 (18.0% within 25%); regret matrix moved 37.4ms→33.4ms (-11%, improving); one honest documented exception -- a non-contiguous set (SLD) can now undershoot where the fold used to overshoot, still a net improvement (2.5x under vs 24x over) but a new failure direction |
 | 34 | `SubtypePairIndexes` (`lib.rs`, load-time top-256-per-dimension `set`/`c`/`id` x subtype `SpaceTotals` tables plus `rest_max`), a new `exact_result_total` arm (exact in any `unique=` mode on a table hit) and `compose_printing_estimate` `And`-arm tightening (exact on a hit, capped independence-product on a miss) for `set:X`/`c:X`/`id:X` And'd with a subtype leaf (`t:elf`), a shape with no tightening at all before this round (`t:` has no `compile_plane` arm and isn't in any pair table) | kept | n/a (not this doc's own metric; see Round 34 narrative) | `#852` 89%→89%/97%→97% clean; Round 28's `scan_units` 1.00→1.00 clean; Round 33's own `set:sld cn<=100` unchanged (25/25); Rounds 30/31/32's `StreamedSelect->GatheredScan` regret slice flat within noise | see "Round 34" narrative below — held-out validation (550 sets + 28 colors/28 identity raw masks, ~3,635 queries): pooled median \|log ratio\| printing 3.369→0.693, card 3.091→0.693; `set`/`colors` improve cleanly in both modes, `identity` improves in card mode but has a small, explained printing-mode within-25% trade-off (30.0%→22.1%); two mid-round corrections both caught by checking real behavior rather than trusting the design as briefed -- a flat card-space table (invisible to `unique=card`/`artwork`) rebuilt as `SpaceTotals` cells mirroring `PairTotals`, and `id:`'s real bare-colon default discovered to be `Le` (subset) not `Ge` like `c:`; identity's `rest_max` (377) verified higher than the ~100-150 routing-fragile zone the brief expected, still below the confirmed 900-2000 reversal zone, reported honestly rather than assumed safe |
+| 35 | `leaves_are_disjoint` (`lib.rs`), one new arm: `set:X`/`set:Y` (x != y) added alongside the existing border/legality/rarity "exactly one value per printing" arms, feeding both `pair_bounded_min` and `exact_result_total`'s 2-child `And` shortcut | kept | n/a (not this doc's own metric) | `#852` 89%→89% clean (same-seed A/B, within noise); Round 28's `scan_units` unreachable by this change; Rounds 30-34's own populations untouched (disjoint blast radius: one new match arm) | see "Round 35" narrative below — real per-printing residual walk (`card_match_count`) verified to require the SAME printing to satisfy an And's whole residual in BOTH `Mode::Card` and `Mode::Artwork`, so the fix is exact in all three spaces despite `set` (unlike border/rarity) commonly varying across a card's own reprints and even across one illustration's own printings (16,838/46,523 real `illustration_id`s span >1 set); 40 random real set pairs x 3 modes (120 checks): baseline 0/120 agree (real always 0, estimate always nonzero, up to 135) -> fixed 120/120 exact |
 
 ### Round 1
 
@@ -2049,6 +2050,62 @@ brief rather than implementing the brief as given — consistent with, and valid
 effort's standing "verify, don't just trust" discipline. No regression on `#852`, Round 28's
 `scan_units` cell, Round 33's own density check, or Rounds 30/31/32's flip-query territory; no
 detectable latency effect distinguishable from the same-build noise floor.
+
+### Round 35
+
+Small, targeted fix bundled with a diagnostic pass on two real user query shapes (not part of this
+round's own change).
+
+**Diagnostic: `format:modern id:g t:creature` and its `power+toughness>cmc+cmc` extension.** Real
+`explain`-vs-`query` ratios on the bitplanes corpus, all three modes: both queries read exactly 1.00
+in every mode -- no gap. The first is the expected case (three plane-compilable, non-existential-past-
+`format:` leaves; `and_of_checked_for_shared_witness` allows it since `format:` is the only existential
+leaf). The second was expected by this round's own brief to degrade -- `compile_plane`'s `NumericCmp`
+arm only matches `(Field, Const)`, and the AND-tightening `is_arith_tuple_eligible` also declines a
+compound `Arith` vs `Arith` comparison -- but it does NOT degrade, because `narrow_rec`'s single-leaf
+NumericCmp arm dispatches through a DIFFERENT, more general gate, `is_arith_tuple_route` (`filter.rs`),
+which accepts ANY `NumExpr` combination whose fields are all in `{cmc, power, toughness, loyalty}`,
+compound arithmetic included. It routes to `arith_tuple_narrow`, an exact O(564)-distinct-tuple scan
+via the #743 `ArithTupleIndex` (the same one `arith_tuple_count` reads), so the whole 4-leaf And
+narrows to a TIGHT card set before acquire ever estimates anything. The two gates are easy to conflate
+by name; they are not the same function and do not share a scope. The real caveat: `AND_SKIP_THRESHOLD`
+(2,048) can skip this leaf during narrowing if an earlier child already drove the driver below that
+floor, in which case the acquire-time ESTIMATE (not the final dispatched result, which the executor's
+real per-printing residual always gets right regardless) would fall back to whatever the skipped
+leaf's absence implies -- not exercised by either of the two real queries checked (their narrowed
+domain, 2,560 cards, sits above the floor).
+
+**Fix: `leaves_are_disjoint` gets a `set:X`/`set:Y` (x != y) arm** (`lib.rs`, alongside the existing
+border/legality/rarity arms) -- a printing has exactly one `card_set_code`, so the conjunction is
+unconditionally empty. The mode-scoping question this round set out to check (and a mid-task
+"correction" raised again, specifically for artwork-space) turned out to have a clean answer once
+checked against the actual dispatch code rather than reasoned about by analogy: `card_match_count`'s
+`Mode::Card` AND `Mode::Artwork` arms (`lib.rs`) both test every child of an And residual against
+ONE printing at a time (`residual_matches`/`FilterExpr::tri`) -- there is no code path where two
+different printings independently satisfy two different leaves of the same And. That single-printing-
+existential-over-the-whole-conjunction model is exactly what the existing `border_shared_witness_
+correctness` test already exercises for `border`; `set` is structurally identical (`TextField::SetCode`
+is `printing.map_or(StrVal::PDep, ...)`, the same shape as `TextField::Border`, and has no
+`compile_plane` arm at all, so it always reaches this same residual path). The surface-level worry
+-- illustration reuse across sets, real in this corpus (16,838 of 46,523 distinct `illustration_id`s
+in `benchmarks/bitplanes/corpus.jsonl` span more than one `card_set_code`, e.g. Immaculate Magistrate's
+own art across `dpa`/`lrw`/`gn3`/`cma`/`c14`/`cmr`/`ps11`) -- doesn't change the answer: the AND is
+still evaluated against a single printing, so no artwork group can satisfy `set:X` via one printing and
+`set:Y` via another. Confirmed directly, not just argued: `set:dpa set:lrw` (a real pair sharing that
+exact illustration) reads 0 in all three modes on both builds, since the residual walk was already
+correct without this function's help -- the fix only lets the acquire-time ESTIMATE say so exactly
+too, instead of min-folding two individually-broad `set:` counts.
+
+**Validation.** Regression test (`set_set_disjoint_pair_exact_in_every_space`, `tests.rs`) checks a
+fixture where a card genuinely has printings in both sets (the shape a per-leaf-independent
+existential would get wrong), confirmed to fail on a revert (`None` vs `Some(0)`). Held-out: 40 random
+real set pairs x 3 modes (120 checks) on the bitplanes corpus -- baseline 0/120 agree (real always 0,
+estimate always nonzero, up to 135x over); fixed 120/120 exact. `#852` (`bench_pairwise_ordering.py`,
+30s, seed 1, `--mode realistic`): 89%/94%/97%/100%-tier ordering rates and regret magnitudes unchanged
+between builds within run-to-run noise (this fix's blast radius is one new match arm gated behind the
+same `PAIR_TOTALS` check the border/rarity arms already use, so it cannot touch any shape other than
+two disjoint same-dimension leaves). Gates: `cargo test --release` (185/185), `cargo test` (186/186),
+`cargo clippy --all-targets -- -D warnings` (clean) all pass.
 
 ## Confirmation runs
 

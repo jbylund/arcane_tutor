@@ -9218,11 +9218,30 @@ fn pair_range_sum(bounds: &[&FilterExpr], field: NumField, existential_id: u16, 
 /// `frame_data` is excluded because it is multi-valued -- `frame:2015 frame:legendary` matches 10,321
 /// printings. A rule rather than stored data, which is why the pair table need not carry same-dimension
 /// entries for the partitions.
+///
+/// Every arm here is exact in all three `unique=` modes, not just `printing`/`artwork` -- verified
+/// against the real per-printing residual walk (`card_match_count`'s `Mode::Card`/`Mode::Artwork` arms,
+/// both of which test every child of an `And` residual against the SAME single printing via
+/// `residual_matches`/`FilterExpr::tri`, never two different printings independently) rather than
+/// assumed by analogy. `set` looks like it could be an exception -- a card's printings commonly span
+/// several sets (unlike `border`/`rarity`, which rarely vary meaningfully across a card's own
+/// reprints), and a single ILLUSTRATION can too (real corpus check: 16,838 of 46,523 distinct
+/// `illustration_id`s in benchmarks/bitplanes/corpus.jsonl appear under more than one `card_set_code`,
+/// e.g. Immaculate Magistrate's art spans `dpa`/`lrw`/`gn3`/`cma`/`c14`/`cmr`/`ps11`) -- but that reuse
+/// is irrelevant here: `set:X AND set:Y` (x != y) still requires ONE printing to have two set codes at
+/// once, which is impossible regardless of how its card or artwork group is assembled from OTHER
+/// printings. `set:dpa set:lrw` against that real fixture reads 0 in every mode already (the residual
+/// walk gets it right without this function's help); this arm only lets the acquire-time estimate say
+/// so exactly instead of min-folding two individually-broad `set:` counts.
 fn leaves_are_disjoint(a: &FilterExpr, b: &FilterExpr) -> bool {
     match (a, b) {
         (
             FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value: x },
             FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value: y },
+        ) => x != y,
+        (
+            FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value: x },
+            FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value: y },
         ) => x != y,
         (FilterExpr::Legality { shift: Some(sa), expected: ea }, FilterExpr::Legality { shift: Some(sb), expected: eb }) => {
             sa == sb && ea != eb
