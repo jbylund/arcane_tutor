@@ -170,6 +170,10 @@ ACQUIRE_KEYS = frozenset(
         "routed_choose_ns",
         "routed_dispatch_ns",
         "compose_paging",
+        # Round 37a: per-query provenance for the top-level `And` node's own `compose_printing_estimate`
+        # evaluation (`None` when the top-level filter isn't an `And` at all) -- see
+        # `docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md`.
+        "and_trace",
     }
 )
 

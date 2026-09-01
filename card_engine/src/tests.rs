@@ -21,6 +21,7 @@ use super::{
     CollField, CmpOp, FilterExpr, InlineStr, Interner, ManaCost, OracleCard, Printing, TagIndex,
     TextField, TextSearchField, Tri, SortedTrigramIndex, VocabInterner, ARTIST_NONE, NONE_STR, TYPE_ARTIFACT, TYPE_CREATURE,
     TYPE_ENCHANTMENT, TYPE_INSTANT, TYPE_LAND, TYPE_LEGENDARY, TYPE_PLANESWALKER, TYPE_SNOW, TYPE_SORCERY,
+    AndTraceNode,
 };
 use rkyv::{rancor::Error, Archived};
 use std::collections::HashMap;
@@ -7890,7 +7891,7 @@ fn card_invariant_broadcast_compose_leaves() {
         let mut want = brute(f);
         want.sort_unstable();
         assert_eq!(got, want, "compose_printing_bits disagrees with the residual path for {label}");
-        let est_matches = super::compose_printing_estimate(f, &archived.indexes, &archived.offsets, n_printings).result.printing;
+        let est_matches = super::compose_printing_estimate(f, &archived.indexes, &archived.offsets, n_printings, false).result.printing;
         assert!(est_matches >= want.len(), "compose_printing_estimate undercounts for {label}: {est_matches} < {}", want.len());
     }
 
@@ -7962,7 +7963,7 @@ fn domain_hint_is_card_space_not_printing_scaled() {
     // `And` reaching `compose_printing_estimate`'s own arm rather than getting split off into a bare
     // plane residual -- exactly the shape `domain_hint`'s 2+-card-invariant-planes branch targets.
     let filter = FilterExpr::And(vec![green, green_identity, set_dmu]);
-    let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings);
+    let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, false);
     assert_eq!(est.result.card, Some(2), "est.result.card must be the exact 2-card intersection, not scaled by n_printings/n_cards");
     // The `c:g id:g` intersection's exact ARTWORK span: cards 0 and 2 each have 2 printings with
     // `store_of`'s default all-distinct artwork groups, so 2 + 2 = 4 -- `n_printings/n_cards * 2`
@@ -8086,7 +8087,7 @@ fn set_watermark_compose_leaves() {
         // The estimate feeds plan choice and must be a valid upper bound on the true match count
         // (AND takes the min-of-children intersection bound, OR the capped sum — never an
         // undercount, which would misprice the plan). For a bare leaf it's exact (postings length).
-        let est_matches = super::compose_printing_estimate(f, &archived.indexes, &archived.offsets, n_printings).result.printing;
+        let est_matches = super::compose_printing_estimate(f, &archived.indexes, &archived.offsets, n_printings, false).result.printing;
         assert!(est_matches >= want.len(), "compose_printing_estimate undercounts for {label}: {est_matches} < {}", want.len());
         if matches!(f, FilterExpr::TextExact { .. } | FilterExpr::Not(_)) {
             assert_eq!(est_matches, want.len(), "bare-leaf estimate must be exact for {label}");
@@ -8153,7 +8154,7 @@ fn set_and_collector_number_range_density_tightening() {
 
     let set = |code: &str| FilterExpr::TextExact { field: super::TextField::SetCode, op: CmpOp::Eq, value: code.to_string() };
     let cn = |op: CmpOp, v: f64| FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::CollectorNumberInt), op, rhs: NumExpr::Const(v) };
-    let est = |f: &FilterExpr| super::compose_printing_estimate(f, &archived.indexes, &archived.offsets, n_printings).result.printing;
+    let est = |f: &FilterExpr| super::compose_printing_estimate(f, &archived.indexes, &archived.offsets, n_printings, false).result.printing;
 
     // Fused two-sided range (`cn>=10 cn<=19`, 3 literal children -> 2 `AndSource`s after fusion).
     // `con` is contiguous (density 1.0), so the estimate is EXACT: 10 of con's own printings have
@@ -8400,7 +8401,7 @@ fn subtype_pair_and_arm_tightening() {
     let elf = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None };
     let est = |code: &str| {
         let f = FilterExpr::And(vec![set(code), elf.clone()]);
-        super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings)
+        super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, false)
     };
 
     // `set:aaa t:elf`: no table entry. Fold = min(k_aaa=8, k_elf=9) = 8. Fallback independence:
@@ -8465,7 +8466,7 @@ fn subtype_pair_and_arm_rest_max_caps_fallback() {
         FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value: "ddd".to_string() },
         FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None },
     ]);
-    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings).result.printing;
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, false).result.printing;
     assert_eq!(est, 0, "set:ddd t:elf: rest_max=0 must cap the fallback to 0, not the uncapped 1");
 }
 
@@ -8593,7 +8594,7 @@ fn collection_compose_leaves() {
         want.sort_unstable();
         assert_eq!(got, want, "compose_printing_bits disagrees with the residual path for {label}");
         // The estimate feeds plan choice: a valid upper bound at minimum, and exact for a bare leaf.
-        let est_matches = super::compose_printing_estimate(f, &archived.indexes, &archived.offsets, n_printings).result.printing;
+        let est_matches = super::compose_printing_estimate(f, &archived.indexes, &archived.offsets, n_printings, false).result.printing;
         assert!(est_matches >= want.len(), "compose_printing_estimate undercounts for {label}: {est_matches} < {}", want.len());
         if matches!(f, FilterExpr::CollectionCmp { .. } | FilterExpr::Not(_)) {
             assert_eq!(est_matches, want.len(), "bare collection-leaf estimate must be exact for {label}");
@@ -10404,7 +10405,7 @@ fn compose_and_arm_tightens_lone_existential_leaf_with_no_card_invariant_partner
     // guard refused to tighten.
     let filter = FilterExpr::And(vec![cmc_ge, cmc_le, border_black]);
 
-    let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings);
+    let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, false);
     assert_eq!(
         est.result.card,
         Some(2),
@@ -14568,7 +14569,7 @@ fn subtype_arith_and_arm_tightening() {
     // fold >> true, which a tiny hand-fixture can't reproduce at fold-time, but the EXACTNESS of the
     // table hit is the same mechanism regardless of corpus size.
     let f1 = FilterExpr::And(vec![dragon.clone(), power_ge(6.0)]);
-    let est1 = super::compose_printing_estimate(&f1, &archived.indexes, &archived.offsets, n_printings);
+    let est1 = super::compose_printing_estimate(&f1, &archived.indexes, &archived.offsets, n_printings, false);
     assert_eq!(est1.result.printing, 3, "t:dragon power>=6: the power=6 Dragon plus both power=7 Dragons");
     let dom1 = est1.exact_domain.expect("a table hit is exact -- exact_domain must be populated");
     assert_eq!((dom1.printing, dom1.card, dom1.artwork), (3, Some(3), Some(3)));
@@ -14577,7 +14578,7 @@ fn subtype_arith_and_arm_tightening() {
     // range -- the reserved "no value" slot must count it for a bare cmc bound with no power/
     // toughness constraint in the query at all.
     let f2 = FilterExpr::And(vec![dragon.clone(), cmc_ge(9.0)]);
-    let est2 = super::compose_printing_estimate(&f2, &archived.indexes, &archived.offsets, n_printings);
+    let est2 = super::compose_printing_estimate(&f2, &archived.indexes, &archived.offsets, n_printings, false);
     assert_eq!(est2.result.printing, 1, "t:dragon cmc>=9: only the Tribal-style cmc=9 card, no power/toughness needed");
 
     // `t:dragon cmc>=5 power>=5`: a 3-CHILD And (t:dragon, cmc>=5, power>=5) -- confirms the shape
@@ -14585,13 +14586,13 @@ fn subtype_arith_and_arm_tightening() {
     // in {5,6,7,8,8} with power>=5 -- power at cmc=5 is 4 (excluded), so cmc in {6,7,8,8} all qualify
     // (power 5,6,7,7) = 4 cards.
     let f3 = FilterExpr::And(vec![dragon.clone(), cmc_ge(5.0), power_ge(5.0)]);
-    let est3 = super::compose_printing_estimate(&f3, &archived.indexes, &archived.offsets, n_printings);
+    let est3 = super::compose_printing_estimate(&f3, &archived.indexes, &archived.offsets, n_printings, false);
     assert_eq!(est3.result.printing, 4, "t:dragon cmc>=5 power>=5: 3-child And, cmc in {{6,7,8,8}}");
 
     // `t:dragon power>=99`: query bound entirely outside Dragon's real power range -- an exact zero
     // via the min/max short-circuit, not a declined shape.
     let f4 = FilterExpr::And(vec![dragon.clone(), power_ge(99.0)]);
-    let est4 = super::compose_printing_estimate(&f4, &archived.indexes, &archived.offsets, n_printings);
+    let est4 = super::compose_printing_estimate(&f4, &archived.indexes, &archived.offsets, n_printings, false);
     assert_eq!(est4.result.printing, 0, "t:dragon power>=99: exact zero, out of Dragon's real range");
     let dom4 = est4.exact_domain.expect("an exact zero from the short-circuit is still exact");
     assert_eq!((dom4.printing, dom4.card, dom4.artwork), (0, Some(0), Some(0)));
@@ -14641,13 +14642,228 @@ fn subtype_arith_and_arm_miss_leaves_fold_unchanged() {
     let forest = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Forest".to_string(), value_id: None };
     let power_ge = |v: f64| FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Power), op: CmpOp::Ge, rhs: NumExpr::Const(v) };
     let f = FilterExpr::And(vec![forest, power_ge(2.0)]);
-    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, false);
     // No table for Forest: the plain fold applies unchanged -- min(forest's own count=1,
     // power>=2's own count=6) = 1. `exact_domain` may still be populated by an EARLIER tightening in
     // this same And arm (the arith-tuple-count merge, since `power>=2` alone is a single arith
     // child and does not by itself trigger that merge either -- confirmed by the exact numbers, not
     // just "some tightening fired"), but Round 36's OWN tightening must not have touched anything.
     assert_eq!(est.result.printing, 1, "t:forest power>=2: unaffected by Round 36 -- the pre-existing fold's answer");
+}
+
+/// Recursively checks Round 37a's own documented invariant on every `"min_fold"` op node in a tree.
+///
+/// PRINTING: a `min_fold` node's own printing MUST equal `min()` of its children's printings, exactly
+/// -- proven in general in `and_trace_build_tree`'s own doc (the winning group's printing is, by
+/// construction, `<=` every leaf's own solo printing, so folding over the uncovered leaves alone
+/// cannot go below it). Asserted as a strict equality here.
+///
+/// CARD/ARTWORK: NOT the same guarantee, and deliberately not asserted as one -- see
+/// `and_trace_build_tree`'s own doc for why (`.card`/`.artwork` are `None` unless a mechanism
+/// produced a genuine joint intersection, and different mechanisms can win different spaces for the
+/// SAME query, e.g. `arith_tuple_count` -- printing/card only, no artwork -- winning the printing tie
+/// while Round 36's `SubtypeArithBox` still separately tightens `exact_domain_artworks` beneath the
+/// tree's own attribution of the printing win). The one general claim that DOES hold in every space,
+/// and is checked here instead: a real `Some` value at the node is never LOOSER than folding over the
+/// present children would give -- `exact_domain_*` is a genuine intersection, so it can only be `<=`
+/// any subset-fold, never higher.
+fn assert_min_fold_invariant(node: &AndTraceNode) {
+    if let AndTraceNode::Op { op: "min_fold", printing, card, artwork, children, .. } = node {
+        assert!(!children.is_empty(), "a min_fold node with no children should not be constructible");
+        let child_printing = |n: &AndTraceNode| match n {
+            AndTraceNode::Leaf { printing, .. } | AndTraceNode::Op { printing, .. } => *printing,
+        };
+        let child_card = |n: &AndTraceNode| match n {
+            AndTraceNode::Leaf { card, .. } | AndTraceNode::Op { card, .. } => *card,
+        };
+        let child_artwork = |n: &AndTraceNode| match n {
+            AndTraceNode::Leaf { artwork, .. } | AndTraceNode::Op { artwork, .. } => *artwork,
+        };
+        assert_eq!(*printing, children.iter().map(child_printing).min().expect("non-empty"), "min_fold printing must equal min() of its children's printings");
+        if let Some(rc) = card
+            && let Some(cm) = children.iter().filter_map(child_card).min()
+        {
+            assert!(*rc <= cm, "min_fold card ({rc}) must never be LOOSER than folding over its children ({cm})");
+        }
+        if let Some(ra) = artwork
+            && let Some(am) = children.iter().filter_map(child_artwork).min()
+        {
+            assert!(*ra <= am, "min_fold artwork ({ra}) must never be LOOSER than folding over its children ({am})");
+        }
+    }
+    if let AndTraceNode::Op { children, .. } = node {
+        for c in children {
+            assert_min_fold_invariant(c);
+        }
+    }
+}
+
+/// Round 37a: `and_trace`'s `tree`/`considered` shape against a real mechanism HIT -- reuses
+/// `subtype_arith_and_arm_tightening`'s own 3-child fixture (`t:dragon cmc>=5 power>=5`) verbatim, so
+/// the ground truth (true joint = 4 cards, `{cmc=6/pow=5, cmc=7/pow=6, cmc=8/pow=7, cmc=8/pow=7}`) is
+/// exactly what that test already established, not re-derived here.
+///
+/// Interesting wrinkle this test exists to pin down: TWO mechanisms hit this exact query at the
+/// SAME number (4) -- `arith_tuple_count` (the whole corpus's cmc>=5+power>=5 joint, which happens
+/// to equal the Dragon-scoped answer here because no non-Dragon card in this fixture clears
+/// cmc>=5 at all) and Round 36's `SubtypeArithBox` (the Dragon-scoped exact answer, by design).
+/// `and_trace_build_tree` picks the FIRST hit in evaluation order, which is `arith_tuple_count` (it
+/// runs before Round 36 in the arm's fixed sequence) -- so the tree's own `joint_lookup` node names
+/// `arith_tuple_count`, covering only the two arith leaves, while Round 36's `SubtypeArithBox` hit
+/// still shows up in `considered` (both entries `hit: true`) without ever reaching the tree. This is
+/// exactly the scenario `AndTrace`'s own doc calls out: `considered` surfaces every hit, `tree`
+/// surfaces only the one that actually determined the arm's answer.
+#[test]
+fn and_trace_reports_the_winning_mechanism_and_every_considered_one() {
+    let mut vocab = VocabInterner::new();
+    let mut cards = Vec::new();
+    for (i, (cmc, pt)) in [(4u8, 3i8), (5, 4), (6, 5), (7, 6), (8, 7), (8, 7)].into_iter().enumerate() {
+        let mut c = stub_card(1 + i as u128, TYPE_CREATURE, &["Dragon"], &mut vocab);
+        c.cmc = Some(cmc);
+        c.creature_power = Some(pt);
+        c.creature_toughness = Some(pt - 1);
+        cards.push(c);
+    }
+    let mut tribal_lo = stub_card(100, TYPE_SORCERY, &["Dragon"], &mut vocab);
+    tribal_lo.cmc = Some(2);
+    let mut tribal_hi = stub_card(101, TYPE_SORCERY, &["Dragon"], &mut vocab);
+    tribal_hi.cmc = Some(9);
+    cards.push(tribal_lo);
+    cards.push(tribal_hi);
+    for i in 0..40 {
+        let mut c = stub_card(200 + i as u128, TYPE_CREATURE, &["Human"], &mut vocab);
+        c.cmc = Some(1);
+        c.creature_power = Some(1);
+        c.creature_toughness = Some(1);
+        cards.push(c);
+    }
+    let n_cards = cards.len();
+    let printing_counts = vec![1usize; n_cards];
+    let mut data = store_of(cards, &printing_counts, vocab);
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(|v| v as i16));
+    data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power.map(|v| v as i16));
+    data.indexes.toughness = build_numeric_index(&data.cards, |c| c.creature_toughness.map(|v| v as i16));
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.subtype_arith = super::build_subtype_arith_tables(&data.cards, &data.printings, &ptc, &data.coll_vocab, max_ag);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    // Round 37a's own `leaves` recompute reads a BARE leaf's solo card/artwork estimate, which for a
+    // `CollectionCmp{Subtypes,...}` leaf comes from `exact_result_total`'s `value_totals` lookup -- a
+    // fully separate table from anything Round 36's own `subtype_arith` mechanism reads. Left at
+    // `store_of`'s stale default (built before this fixture's later field overrides), every such
+    // lookup silently reads back 0 regardless of the real corpus, which is exactly the kind of
+    // fixture incompleteness `and_trace`'s own min-fold invariant test is designed to catch --
+    // rebuilding it here is what makes that check meaningful rather than vacuous.
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, max_ag);
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let dragon = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Dragon".to_string(), value_id: None };
+    let cmc_ge5 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(5.0) };
+    let power_ge5 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Power), op: CmpOp::Ge, rhs: NumExpr::Const(5.0) };
+    let f = FilterExpr::And(vec![dragon, cmc_ge5, power_ge5]);
+
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    assert_eq!(est.result.printing, 4, "ground truth from subtype_arith_and_arm_tightening's own f3 case");
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace for a top-level And");
+
+    // `considered` must show BOTH mechanisms hitting -- the whole point of this field.
+    let arith_hit = and_trace.considered.iter().find(|g| g.mechanism == "arith_tuple_count").expect("arith_tuple_count must have been attempted (2 arith-eligible children)");
+    assert!(arith_hit.hit, "arith_tuple_count must hit: the corpus's own cmc>=5+power>=5 joint is exactly 4 here too");
+    assert_eq!(arith_hit.printing, Some(4));
+    let subtype_hit = and_trace.considered.iter().find(|g| g.mechanism == "SubtypeArithBox").expect("SubtypeArithBox must have been attempted (Dragon + 2 arith bounds, nothing else)");
+    assert!(subtype_hit.hit, "Round 36's table hit is real and exact here (subtype_arith_and_arm_tightening's own f3 assertion)");
+    assert_eq!(subtype_hit.printing, Some(4));
+
+    // `tree` must show exactly ONE joint_lookup node -- `arith_tuple_count`, since it runs first --
+    // covering only the two arith leaves, with the Dragon leaf left over as a sibling.
+    let AndTraceNode::Op { op: "min_fold", children, printing: root_printing, card: root_card, artwork: root_artwork, .. } = &and_trace.tree else {
+        panic!("root must be a min_fold op node, got {:?}", match &and_trace.tree { AndTraceNode::Leaf { .. } => "leaf", AndTraceNode::Op { op, .. } => op });
+    };
+    assert_eq!(*root_printing, 4);
+    assert_eq!((*root_card, *root_artwork), (est.result.card, est.result.artwork), "root's own numbers must equal the arm's real final answer");
+    assert_eq!(children.len(), 2, "one joint_lookup (the winner) plus the one uncovered Dragon leaf");
+    let winner = children
+        .iter()
+        .find(|c| matches!(c, AndTraceNode::Op { op: "joint_lookup", .. }))
+        .expect("exactly one joint_lookup child");
+    let AndTraceNode::Op { mechanism, printing, children: winner_children, .. } = winner else { unreachable!() };
+    assert_eq!(*mechanism, Some("arith_tuple_count"), "the earlier-evaluated mechanism wins the tie, not the more specific one");
+    assert_eq!(*printing, 4);
+    assert_eq!(winner_children.len(), 2, "arith_tuple_count's own leaves are just the two arith children, never the Dragon leaf");
+    for c in winner_children {
+        let AndTraceNode::Leaf { expr, .. } = c else { panic!("joint_lookup's children must be leaves") };
+        assert!(expr.contains("Cmc") || expr.contains("Power"), "covered leaves must be the cmc/power bounds, got {expr}");
+    }
+    let leftover = children.iter().find(|c| matches!(c, AndTraceNode::Leaf { .. })).expect("the uncovered Dragon leaf must be a direct child of root");
+    let AndTraceNode::Leaf { expr, .. } = leftover else { unreachable!() };
+    assert!(expr.contains("Subtypes"), "the leftover leaf must be the Dragon subtype leaf, got {expr}");
+
+    assert_min_fold_invariant(&and_trace.tree);
+}
+
+/// Round 37a: `and_trace`'s `tree`/`considered` shape when NO mechanism tightens the query at all --
+/// reuses `subtype_arith_and_arm_miss_leaves_fold_unchanged`'s own fixture verbatim (Forest is outside
+/// `subtype_arith`'s top-N, simulated here via an empty `SubtypeArithIndexes::default()`). `tree` must
+/// be a bare `min_fold` over the two direct children's own solo leaves, with no `joint_lookup`
+/// anywhere in it -- the "no mechanism, min_fold" case the round's own follow-through list calls for.
+#[test]
+fn and_trace_is_plain_min_fold_when_no_mechanism_hits() {
+    let mut vocab = VocabInterner::new();
+    let mut cards = vec![stub_card(1, TYPE_CREATURE, &["Forest"], &mut vocab)];
+    cards[0].cmc = Some(3);
+    cards[0].creature_power = Some(2);
+    cards[0].creature_toughness = Some(2);
+    for i in 0..5 {
+        let mut c = stub_card(10 + i as u128, TYPE_CREATURE, &["Human"], &mut vocab);
+        c.cmc = Some(3);
+        c.creature_power = Some(2);
+        c.creature_toughness = Some(2);
+        cards.push(c);
+    }
+    let n_cards = cards.len();
+    let printing_counts = vec![1usize; n_cards];
+    let mut data = store_of(cards, &printing_counts, vocab);
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(|v| v as i16));
+    data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power.map(|v| v as i16));
+    data.indexes.toughness = build_numeric_index(&data.cards, |c| c.creature_toughness.map(|v| v as i16));
+    let ptc = build_printing_to_card(&data.offsets);
+    data.indexes.subtype_arith = super::SubtypeArithIndexes::default();
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    // See the sibling hit-case test's identical line for why this rebuild is load-bearing here too.
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, max_ag);
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let forest = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Forest".to_string(), value_id: None };
+    let power_ge2 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Power), op: CmpOp::Ge, rhs: NumExpr::Const(2.0) };
+    let f = FilterExpr::And(vec![forest, power_ge2]);
+
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    assert_eq!(est.result.printing, 1, "ground truth from subtype_arith_and_arm_miss_leaves_fold_unchanged's own assertion");
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace for a top-level And");
+
+    // `considered` still shows the mechanism was TRIED, just declined -- the point of `hit: false`.
+    let subtype_considered = and_trace.considered.iter().find(|g| g.mechanism == "SubtypeArithBox").expect("SubtypeArithBox's shape gate matches (Forest + one arith bound)");
+    assert!(!subtype_considered.hit, "Forest has no subtype_arith table entry in this fixture -- a real miss, not an inapplicable shape");
+    assert_eq!(subtype_considered.printing, None);
+    assert!(!and_trace.considered.iter().any(|g| g.hit), "nothing should have hit at all in this fixture");
+
+    let AndTraceNode::Op { op: "min_fold", children, printing, .. } = &and_trace.tree else {
+        panic!("root must be a min_fold op node");
+    };
+    assert_eq!(*printing, 1);
+    assert_eq!(children.len(), 2, "both direct children, neither covered by any winning mechanism");
+    assert!(children.iter().all(|c| matches!(c, AndTraceNode::Leaf { .. })), "no joint_lookup anywhere -- nothing tightened this query");
+
+    assert_min_fold_invariant(&and_trace.tree);
 }
 
 /// `exact_result_total`'s Round 36 arm: `PrintingCompose`'s acquire branch reads THIS function for its
