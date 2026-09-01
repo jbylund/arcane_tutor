@@ -186,6 +186,8 @@ total regret by 0.0 ms).
 | 33 | `set_collector_ranges` (`lib.rs`, load-time precomputed per-set `collector_number_int` min/max/count), a new `compose_printing_estimate` `And`-arm tightening for the 2-source `set:X` + `cn`-range shape: `density = count / (max-min+1)` scaled by the query's own overlap, replacing the plain min-fold this shape had no other tightening for | kept | n/a (not this doc's own metric; see Round 33 narrative) | pooled cost-model-agreement cells move within noise (an untouched acquire branch, `PrintingCompose/plane`, shows the largest swing, 0.88→0.76, confirming it's sampling noise not this fix); `#852` 89%→89% clean; Round 28's `scan_units` 1.00→1.00 clean; Rounds 30/31/32's flip-query population 51/95 fixed on BOTH builds, 0 regressed | see "Round 33" narrative below — held-out validation across 550 real sets / 3,300 queries / both shapes: density estimator pooled median \|log ratio\| 0.000 (88.8% within 25%) against the fold's 0.788 (18.0% within 25%); regret matrix moved 37.4ms→33.4ms (-11%, improving); one honest documented exception -- a non-contiguous set (SLD) can now undershoot where the fold used to overshoot, still a net improvement (2.5x under vs 24x over) but a new failure direction |
 | 34 | `SubtypePairIndexes` (`lib.rs`, load-time top-256-per-dimension `set`/`c`/`id` x subtype `SpaceTotals` tables plus `rest_max`), a new `exact_result_total` arm (exact in any `unique=` mode on a table hit) and `compose_printing_estimate` `And`-arm tightening (exact on a hit, capped independence-product on a miss) for `set:X`/`c:X`/`id:X` And'd with a subtype leaf (`t:elf`), a shape with no tightening at all before this round (`t:` has no `compile_plane` arm and isn't in any pair table) | kept | n/a (not this doc's own metric; see Round 34 narrative) | `#852` 89%→89%/97%→97% clean; Round 28's `scan_units` 1.00→1.00 clean; Round 33's own `set:sld cn<=100` unchanged (25/25); Rounds 30/31/32's `StreamedSelect->GatheredScan` regret slice flat within noise | see "Round 34" narrative below — held-out validation (550 sets + 28 colors/28 identity raw masks, ~3,635 queries): pooled median \|log ratio\| printing 3.369→0.693, card 3.091→0.693; `set`/`colors` improve cleanly in both modes, `identity` improves in card mode but has a small, explained printing-mode within-25% trade-off (30.0%→22.1%); two mid-round corrections both caught by checking real behavior rather than trusting the design as briefed -- a flat card-space table (invisible to `unique=card`/`artwork`) rebuilt as `SpaceTotals` cells mirroring `PairTotals`, and `id:`'s real bare-colon default discovered to be `Le` (subset) not `Ge` like `c:`; identity's `rest_max` (377) verified higher than the ~100-150 routing-fragile zone the brief expected, still below the confirmed 900-2000 reversal zone, reported honestly rather than assumed safe |
 | 35 | `leaves_are_disjoint` (`lib.rs`), one new arm: `set:X`/`set:Y` (x != y) added alongside the existing border/legality/rarity "exactly one value per printing" arms, feeding both `pair_bounded_min` and `exact_result_total`'s 2-child `And` shortcut | kept | n/a (not this doc's own metric) | `#852` 89%→89% clean (same-seed A/B, within noise); Round 28's `scan_units` unreachable by this change; Rounds 30-34's own populations untouched (disjoint blast radius: one new match arm) | see "Round 35" narrative below — real per-printing residual walk (`card_match_count`) verified to require the SAME printing to satisfy an And's whole residual in BOTH `Mode::Card` and `Mode::Artwork`, so the fix is exact in all three spaces despite `set` (unlike border/rarity) commonly varying across a card's own reprints and even across one illustration's own printings (16,838/46,523 real `illustration_id`s span >1 set); 40 random real set pairs x 3 modes (120 checks): baseline 0/120 agree (real always 0, estimate always nonzero, up to 135) -> fixed 120/120 exact |
+| 37 | `and_trace` (`lib.rs`): structured per-query provenance for the `And` arm's own evaluation, as a tree of `leaf`/`joint_lookup`/`independence` nodes plus a `considered` list of every 2-or-3-child combination the arm's fixed sequence attempted (hit or miss) — replaces the throwaway env-gated `eprintln!` instrumentation Rounds 33-36 each rebuilt from scratch. `scripts/nway_estimate_truth_survey.py`: a checked-in, deterministic, curated-leaf-shape estimate-vs-truth survey harness (replaces one-off scratchpad diagnostics), primary metric plan-choice agreement (not raw ratio) | kept | n/a (tooling; no estimator value changed) | n/a | see "Round 37" narrative below — two real bugs found and fixed before trusting any output: `and_trace_for` missing an `is_printing_composable` guard (crashed `explain()` on any `is:`/`keyword:` tag query, breaking its "safe to call constantly" contract) and an inverted worst-first ranking in the harness's own report tables (reused a ratio-shaped rank formula on an already-distance-shaped metric, sorting a perfect median to the top of "worst"). First full sweep (53,778 rows, 88 curated shapes, all 3 spaces) found `color:X`/`id:X`/`cmc<op>N` paired with a price comparison at 0% mechanism coverage and the worst median error in the whole survey — the input Round 38 acted on |
+| 38 | `min(fold, independence)` for `compose_printing_estimate`'s `And` arm: `color:X`/`id:X`/`cmc<op>N` paired with exactly one price comparison (`usd`/`eur`/`tix`, any op) — the first real use of the `"independence"` op Round 37's `and_trace` tree schema reserved for it | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 53,766 shared rows: 454 plan-choice flips total, 452 inside the three target shapes (all toward `GatheredScan`), 2 incidental elsewhere (an eligible pair embedded inside a larger conjunction); `root=leaf`/`root=or`: 0 changes, confirming the fix stayed scoped to the `And` arm | see "Round 38" narrative below — calibrated against 610 real rows: median `\|log ratio\|` 0.88→0.07 (94.8% improved, 4.4% regressed, concentrated in `cmc+usd`'s own undershoot tail); a grid search over a multiplicative bias (`fudge × independence`, 1.0–2.0) found `fudge = 1.0` (no bias at all) strictly optimal on both median AND mean error for every shape — contradicting the initial "bias it slightly high to be safe" intuition. Independently re-verified end to end with a fresh before/after sweep (not just the implementing agent's own report): all three `unique=` modes improve (printing most tightly — it's the only space `result` directly tightens; card/artwork improve via the same downstream scaling every other estimate-only shape already goes through, since `exact_domain_cards`/`exact_domain_artworks` are populated only by genuinely exact mechanisms, never by this one) |
 
 ### Round 1
 
@@ -2356,3 +2358,168 @@ Round 28 (`Mode::Card`-scope both broad-guard scan-units scales, kept): see the 
 narrative above for the bisection, mechanism, before/after numbers (`main` 1.00, unfixed tip 0.70,
 fixed 0.94), and confirmation-pass results (regret matrix, cost-model agreement, latency A/B with
 canary, pairwise ordering) — all inline there rather than duplicated here.
+
+### Round 37
+
+Target: not another leaf-pair-shape fix — durable measurement infrastructure for the N-way `And`
+composition arc, per
+[local-engine-nway-compose-independence-search.md](local-engine-nway-compose-independence-search.md).
+Every round from 33 through 36 had needed to answer "which mechanism actually produced this query's
+estimate, and what were its inputs" and answered it with throwaway, env-gated `eprintln!`
+instrumentation (`CARD_ENGINE_ROUND35_DEBUG`-style, OS-level stderr-fd capture from Python) built
+fresh per round and discarded after. This round replaces that pattern with two permanent pieces:
+
+**`and_trace`** (`lib.rs`): a new field on `explain()`/`explain_analyze()`'s acquire dict, populated
+only for a top-level `And` node. Shape: `{"tree": <node>, "considered": [...]}`. `tree` is recursive —
+`{"kind": "leaf", "expr": ..., "card"/"printing"/"artwork": ...}` for a direct child's own solo
+estimate, or `{"kind": "op", "op": "min_fold"|"joint_lookup"|"independence", "mechanism": ..., 
+"children": [...], ...}` for a combining step, with every node carrying its own three-space numbers
+(the root's own numbers ARE the arm's final answer — no separate top-level "final" field to keep in
+sync). `considered` lists every 2-or-3-child combination the arm's EXISTING fixed sequence of checks
+actually attempted, hit or miss — a `hit: false` entry is itself the finding ("this combination was
+considered and no mechanism covered it"), and a `hit: true` entry that never reaches `tree` is also
+informative (today's fixed-sequence logic takes whichever check fires first, not necessarily the
+tightest one available — confirmed directly: a fixture where both `arith_tuple_count` and
+`SubtypeArithBox` hit the identical value shows both in `considered`, with only the first-evaluated
+one winning the tree). Deliberately built as a tree, not a flat "winning mechanism" tag: a flat tag
+can only describe one level, and cannot say "this pair tightened via table A, that pair via table B,
+the rest min-folded" — the shape a real partition-search build needs room for. Scoped to the
+OUTERMOST `And` only (no nested `And`-within-`And` recursion) — the population every curated shape
+this harness generates actually needs.
+
+**`scripts/nway_estimate_truth_survey.py`**: a checked-in, deterministic, curated-leaf-shape query
+generator (every known-safe/unsafe pair and verified triple from the design doc, a same-family-twice
+supplement for `set:X set:Y`/`t:X t:Y` that `QuerySampler` cannot draw on its own since one predicate
+per family per query is a hard rule, an OR-rooted baseline slice, and a broad/pathological N=1..8
+catch-all), measuring both `engine.explain()`'s cheap estimate and `engine.explain_analyze()`'s real
+`result_total` in all three spaces per query, with a `--compare` mode for diffing two isolated builds
+and a `--report` mode for a single run. **Primary metric is plan-choice agreement** (`explain()`'s own
+`picked` bool, free — no extra engine call), not raw ratio: a ratio of predicted=1 against true=0
+reads as "infinitely wrong" yet is completely benign, and predicted=29,000 against true=31,000 reads
+as "6.9% off" and is ALSO completely benign, for the same reason — neither is near a threshold that
+would change the router's pick. Ratio is graded second, floored at `true_total >= 100`
+(`bench_feature_accuracy.py`'s own precedent), as a diagnostic for locating where the estimator is
+loose, not the success bar.
+
+**Two real bugs found and fixed before trusting any output, both by actually running the harness at
+scale rather than trusting a hand-picked smoke test:**
+1. `and_trace_for`'s only check was `matches!(filter, FilterExpr::And(_))` — any `And` wrapping a
+   non-`is_printing_composable` child reached `compose_printing_estimate(..., want_trace: true)` and
+   hit its `unreachable!()` guard. Found running the harness at `--n-per-shape 30`: `is:bear` parses
+   to a single-child `And([CollectionCmp { field: IsTags, op: Eq, .. }])` — `Eq`, not `Ge`, so
+   `is_printing_composable`'s own `CollectionCmp` arm excludes it — and crashed `explain()` outright,
+   breaking its documented "safe to call constantly" contract for any tag-only query (`is:`/`keyword:`
+   predicates are common real traffic, `client/query_sampler.py`'s own `tag` family). Fixed by adding
+   the same `is_printing_composable` gate every other caller of `compose_printing_estimate` already
+   respects; regression test constructs the exact non-composable shape directly and asserts `None`
+   rather than a panic.
+2. `worst_cell_tables` (the harness's own report renderer) reused `costbench.BY_MISCALIBRATION`,
+   which ranks by `abs(log(median))` — correct for a RATIO centered at 1.0, wrong for `abs_log_ratio`,
+   which is already a non-negative distance centered at 0. A median of exactly 0.00 (perfect) produced
+   `log(~1e-9)`, a large negative number, sorting a PERFECT cell as the single worst one. Confirmed
+   directly against this survey's own first full run: `unsafe:color+type` (median 0.00) sorted ahead
+   of `same_family:type+type_realistic` (median 1.12, a real ~3x typical overestimate). Fixed with a
+   local rank function (raw negative median, no extra log).
+
+**First full sweep** (53,778 rows, `--n-per-shape 300 --seed 0`, all 88 curated shapes × 3 spaces):
+overall zero-true-count hit rate 76.6% (the estimator correctly recognizes ~3/4 of genuinely-empty
+compositions as zero), but re-sliced by the MAGNITUDE of the false positives — the metric that
+actually matters, since a false positive predicting 1-30 is routing-irrelevant — a real subset
+predicts hundreds to low thousands for a truly-zero answer, concentrated in `subtype_cube:*` (Round
+36's own domain, median 635-654, an expected top-128 boundary effect, not a regression), the two
+verified-unsafe triples (`color+legality+type`/`color+type+cmc`, median 237-347), and
+`unsafe:keyword+type` (median 134). Separately, `color:X`/`id:X`/`cmc<op>N` paired with a price
+comparison came back with 0% mechanism coverage across the board AND the worst median `abs_log_ratio`
+of any shape in the survey (`same_family:type+type_realistic`, i.e. `t:X t:Y`, was nominally worse on
+raw median, but checked against real wild-traffic frequency — see Round 38 below — and found to be
+~0.02% of real queries, not worth a dedicated mechanism). This is the population Round 38 acted on.
+
+Wild-traffic check (a real, if secondary, finding worth recording): genuinely AND'd two-subtype
+queries (`t:X t:Y`, no `or`) are 3 of 14,473 real queries in `benchmarks/wild-queries/wild-corpus.jsonl`
+(0.02%), confirming the shape is real but not worth a dedicated `n²/2` pairwise table — if it's ever
+worth fixing, `indexes.subtypes` (already a `HybridTagIndex`: a stored bitmap per common value, a
+posting list per rare one) supports an exact live AND+popcount of any two subtypes' own existing
+bitmaps at zero new storage cost, cheaper than precomputing for a case that's essentially not real
+traffic.
+
+Blast radius: `card_engine/src/lib.rs` (`AndTrace`/`AndTraceLeaf`/`AndTraceGroup`/`AndTraceNode`,
+`and_trace_for`, `and_trace_build_tree`, the `And` arm's existing checks each annotated to push a
+`considered` entry, `compose_printing_estimate`'s new `want_trace: bool` parameter — `false` at
+every production/recursive call site, `true` only from `and_trace_for`), `card_engine/src/filter.rs`
+(`Debug` derives on `FilterExpr` and everything it nests, for the trace's `expr` strings — no
+hand-written pretty-printer), `card_engine/src/tests.rs` (three new tests), `scripts/costbench.py`
+(`ACQUIRE_KEYS` schema update), `scripts/nway_estimate_truth_survey.py` (new file). `cargo test`: 193
+passed (192 + 1, across the crash-fix commit). `cargo clippy --all-targets -- -D warnings`: clean.
+
+### Round 38
+
+Target: the worst-accuracy shape Round 37's first sweep found — `color:X`/`id:X`/`cmc<op>N` paired
+with a price comparison (`usd`/`eur`/`tix`), 0% mechanism coverage. Directly verified (not assumed):
+in the example that motivated this round, `c:ruw usd:0.17` folds to 454 (the color leaf's own count)
+against a true 1 — but BOTH leaves are individually EXACT on their own (`c:ruw` alone: predicted 454,
+true 454; `usd:0.17` alone: predicted 1541, true 1541). A textbook "both marginals right, naive
+min-fold wrong" case: the error is 100% in the fold combinator taking whichever leaf's count happens
+to be smaller, not either leaf's own estimate.
+
+**The fix**: `min(fold, independence)`, `independence = round(count(a) * count(b) / domain)`,
+computed per space (`n_printings`/`n_cards`/`n_artworks`), for exactly one pair shape: one of
+`color:`/`id:`/`cmc<op>N` against exactly one price-field comparison. Calibrated directly against 610
+real (query, unique) rows across the three shapes (`safe:color+usd`/`safe:identity+usd`/
+`safe:cmc+usd`, drawn from Round 37's own harness): replacing the fold with `min(fold, independence)`
+drops the combined median `\|log(estimate/true)\|` from 0.88 (~2.4x typical error) to 0.07 (~7%), an
+improvement on 578/610 rows (94.8%), a regression on 27/610 (4.4%, concentrated almost entirely in
+`cmc+usd`'s own undershoot-prone tail).
+
+**The fudge-factor question, settled with data, not intuition**: before implementing, a grid search
+over a multiplicative bias (`fudge × independence`, `fudge` from 1.0 to 2.0 in steps of 0.05) was run
+against the same calibration data, per-shape and combined, to test the intuition that biasing the
+estimate upward would be a safe hedge against the known undershoot tail. Result: `fudge = 1.0` (no
+bias at all) minimizes BOTH median and mean error for every shape individually and combined — every
+increase in fudge monotonically makes things worse, even for `cmc+usd`'s own tail (the signed
+distribution of `log(independence/true)` is roughly symmetric around 0 for `identity+usd`/`cmc+usd`,
+and already slightly biased toward OVER-estimating for `color+usd` — a uniform upward nudge would
+have made the already-good majority worse to fix a minority tail). Shipped as plain `min(fold,
+independence)`, no bias term.
+
+**Two real correctness traps checked directly, not assumed:**
+- A two-sided SAME-field price range (`usd>=1 usd<=5`) reaches this check already fused into one
+  exact `FusedRange` by `fuse_and_range_children` (called unconditionally, `sparse_only: false`) —
+  confirmed by reading that function, not assumed; the price-family count is read post-fusion
+  (`and_sources`), so this case was never at risk of silently using only one side's bound.
+- `Cmc` is NOT one of the fields `fuse_and_range_children` fuses (only price/collector-number/date/
+  year are printing-range-indexed) — a two-sided cmc bound (`cmc>=2 cmc<=5`) reaches this check as two
+  literal, unfused children. Handled by combining them via the existing `arith_tuple_count` scan (its
+  exact JOINT card count, scaled to printing the same average-case way the pre-existing arith-tuple
+  tightening already does) rather than pairing on one side alone. Two-or-more literal `color:`/`id:`
+  leaves of the same field have no equivalent combining table and are dropped from consideration
+  entirely (no unit pushed) rather than guessed at.
+
+**and_trace**: the first real use of the `"independence"` op value Round 37's tree schema reserved
+for it (`mechanism: None` on this variant — the op name alone already says what happened, unlike
+`joint_lookup`'s several named table/scan mechanisms). `scripts/nway_estimate_truth_survey.py`'s
+`tree_mechanisms()` updated to bucket an `"independence"` node under the literal string
+`"Independence"`, so the harness's own `and_mechanism` bucketing field picks it up.
+
+**Verification, independently re-run end to end (not just the implementing agent's own report)**: a
+fresh isolated-wheel `--n-per-shape 300 --seed 0` sweep, before vs. after, `--compare`d directly.
+Plan-choice agreement: 454 flips of 53,766 shared observations, 452 inside the three target shapes
+(all toward `GatheredScan` — expected, once cardinality is predicted correctly instead of wildly over),
+2 incidental elsewhere (an eligible pair embedded inside a larger random conjunction); `root=leaf`/
+`root=or`: 0 changes, confirming the fix stayed scoped to the `And` arm. Per-shape-per-space median
+`abs_log_ratio` (before → after): `color+usd` printing 1.105→0.025, card 0.990→0.195, artwork
+1.112→0.171; `identity+usd` printing 0.925→0.053, card 0.948→0.247, artwork 0.947→0.177; `cmc+usd`
+printing 0.524→0.114, card 0.518→0.213, artwork 0.537→0.164 — every mode improves substantially,
+though less tightly for card/artwork than printing. This was worth checking directly rather than
+assuming: `result` (what this mechanism tightens) is a printing-space-only local in this part of the
+function, and `exact_domain_cards`/`exact_domain_artworks` — the fields that would need to change for
+card/artwork mode's OWN `matches` feature to improve — are populated only by genuinely exact
+mechanisms elsewhere in the arm, never touched by this one. Card/artwork mode's real improvement
+therefore comes entirely from whatever downstream scaling already converts a tightened printing
+estimate into a card/artwork one for shapes with no dedicated card/artwork mechanism — the same path
+every other estimate-only (non-exact) tightening in this arm already relies on, not something new
+this round added.
+
+Blast radius: `card_engine/src/lib.rs` (`numeric_cmp_field`, `is_price_num_field`, the `And` arm's new
+tightening block, `AndTraceNode`'s `"independence"` op), `card_engine/src/tests.rs` (three new tests),
+`scripts/nway_estimate_truth_survey.py` (`tree_mechanisms()` update). `cargo test`: 196 passed (193 +
+3). `cargo clippy --all-targets -- -D warnings`: clean.
