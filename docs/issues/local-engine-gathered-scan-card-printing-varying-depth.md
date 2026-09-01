@@ -2107,6 +2107,217 @@ same `PAIR_TOTALS` check the border/rarity arms already use, so it cannot touch 
 two disjoint same-dimension leaves). Gates: `cargo test --release` (185/185), `cargo test` (186/186),
 `cargo clippy --all-targets -- -D warnings` (clean) all pass.
 
+### Round 36
+
+Target: the same `compose_printing_estimate` `And`-arm gap Rounds 33-35 closed for other shapes, but
+for a `t:X` CREATURE SUBTYPE leaf (`CollectionCmp{Subtypes}`) And'd with a `cmc`/`power`/`toughness`
+range bound (`t:dragon power>=6`, `t:human cmc>=5 power>=5`). `t:` has no `compile_plane` arm and isn't
+in any pair table (Round 34's own reasoning), and cmc/power/toughness are RANGE predicates, not the
+single-value shape `SubtypePairIndexes` answers -- so this pair gets no tightening from any existing
+mechanism, and the fold picks whichever leaf's own corpus-wide count is smaller. Real ratios verified
+directly against the bitplanes corpus (isolated baseline build, `costcell/trunk`@`784ae9ad`): `t:dragon
+power>=6` folds to 9.0x over in card mode (true 93, fold 839); `t:human cmc>=5 power>=5` folds to
+28.9x over (true 106, fold 3,068) -- both larger than this round's own brief anticipated, because
+common subtypes span nearly the whole stat range while flavor-coded ones (Dragon/Wurm/Giant) are
+naturally concentrated.
+
+**Correction found and fixed mid-round, before any validation was trusted:** the brief's own
+population for "which cards populate a subtype's stat histogram" was `card_types` containing
+`Creature` -- checked directly against `benchmarks/bitplanes/corpus.jsonl` rather than assumed, and
+found wrong. 217 real cards (192 Vehicle, 25 Spacecraft, 1 Equipment -- Vehicle/Spacecraft-style
+permanents that carry `creature_power`/`creature_toughness` on a plain `Artifact` type line, not a
+`Creature` bit) have real stats with no `Creature` type bit at all; conversely some `Creature`-typed
+cards (35 of Human's 4,265) have neither value set (likely double-faced backs or data gaps). Gating on
+`card_types & TYPE_CREATURE` would have silently misranked which subtypes make the top 128 (confirmed:
+the top-128 boundary shifts by exactly one subtype between the two criteria -- `Rabbit` out, `Vehicle`
+in, both at 34 cards) and miscounted the occupied range for the ones it touched. Fixed before
+implementation: both the ranking pass and every min/max bound use `creature_power.is_some() &&
+creature_toughness.is_some()` directly, never a type-line bit.
+
+**Design.** A dense 3-D inclusive prefix-sum cube per subtype, LOCAL to that subtype's own real
+occupied `(cmc, power, toughness)` box -- not one global cube sized to the corpus's full extremes
+(cmc up to 16, power up to 18, toughness up to 30, all driven by rare outlier subtypes). Verified
+per-subtype: Human's own box is 9x9x10 = 810 cells (cmc/power observed 0..=8, toughness 0..=9),
+Spirit's is 13x19x11 = 2,717 -- both comfortably inside the "~2,744" scale this round's brief
+anticipated for the widest covered subtype (Elemental is the actual widest at ~3,300, a modest
+overshoot from the brief's own estimate, reported rather than silently rounded away).
+
+- **Table size and real-data justification.** Top 128 subtypes by real distinct-card count among
+  cards with BOTH `creature_power`/`creature_toughness` present (`SUBTYPE_ARITH_TOP_N`, `lib.rs`).
+  Human is largest at 4,230 real stat-bearing cards; rank 128 (`Shade`) has 34. A prior diagnostic
+  pass in this session (real engine instrumentation, 720 query/mode pairs across 45 tail subtypes)
+  found routing never differs between the min-fold and a hypothetical better estimate for 44/45 tail
+  subtypes -- so no "tier 2" fallback was built; a miss just leaves the pre-existing fold in place,
+  the same as every other shape this `And` arm doesn't recognize. The one exception, `t:forest`
+  (a name collision between the rare Dryad Arbor creature and the ubiquitous basic-land subtype
+  string), has only 1 real stat-bearing card in this corpus -- nowhere near the top-128 cutoff, so it
+  is unaffected by this round either way. Confirmed directly on the real corpus below, not just
+  argued from the ranking number.
+- **Cell storage.** Each cell is a `SpaceTotals` (card/printing/artwork exact counts), mirroring
+  Round 34's `SetSubtypeTable`/`ColorSubtypeTable` correction exactly: cmc/power/toughness are
+  card-invariant per-card facts, but printing/artwork counts still differ from card counts due to
+  reprints, so a flat card-space number would again be invisible to `unique=card`/`artwork` one layer
+  down (the same class of bug Round 34's own mid-round correction caught). Built via
+  `build_value_totals`, the SAME dedup logic `ValueTotals`/`PairTotals`/`SubtypePairIndexes` already
+  use, crossing each top-128 subtype against its card's own `(cmc, power, toughness)` (`lib.rs`,
+  `build_subtype_arith_tables`/`build_subtype_arith_box`).
+- **Reserved "no value" slot.** Power/toughness axes reserve ONE extra slot at local index 0 (real
+  values start at 1) for a card that carries the subtype but has no stats at all -- mostly Tribal-typed
+  spells (~180 real cards across the whole top-128 population, e.g. 29 Eldrazi, 22 Elf, 18 Faerie). A
+  bare `cmc` bound alone (no power/toughness constraint in the query) must still count these cards;
+  excluding them from the table would make a table HIT silently WRONG (an undercount), not just
+  incomplete. `cmc` gets no such slot -- verified directly that 0 of 97,812 real corpus rows have a
+  null `cmc`.
+- **Query-time O(1) lookup.** For each dimension: BOUND (present in the query) converts to a LOCAL
+  index range; UNBOUND (absent from the query) uses the FULL local range (which, for power/toughness,
+  includes the reserved slot -- an unconstrained axis places no requirement on a card's stats at all).
+  The bound-to-range conversion (`arith_group_real_range`) tests every real integer in the subtype's
+  own small span (at most ~30 wide) directly with `matches_op` (planes.rs's own float-comparison
+  primitive, the SAME one `compile_numeric_cmp`/`numeric_candidates` use) -- deliberately NOT
+  `NumericLayout`'s bucket layout, read before writing this: those buckets are sized to keep a GLOBAL,
+  whole-corpus existential plane small and decline (`BucketVerdict::Ambiguous`) at their own edges by
+  design, a lossy compromise a window this narrow doesn't need. The box-sum itself
+  (`subtype_arith_box_sum`) is the standard 8-corner 3-D inclusion-exclusion formula over the
+  prefix cube, with a `prefix_at` sentinel returning `(0,0,0)` for any negative coordinate so no edge
+  needs its own special case -- genuinely O(1) at query time (8 lookups plus the bound conversion's
+  bounded ~30-value scan), independent of the query's actual selectivity. Min/max short-circuit: a
+  query bound with no overlap in the subtype's real range makes `arith_group_real_range` return `None`,
+  which the caller (`subtype_arith_exact`) turns into an immediate exact `(0, 0, 0)` without ever
+  reading `prefix`.
+- **Shape guard.** Not the strict 2-source shape Round 33/34 use (`and_sources.len() == 2`): the real
+  motivating example, `t:human cmc>=5 power>=5`, is a literal 3-child `And` (`t:human`, `cmc>=5`,
+  `power>=5`), since nothing merges separate arith-field bounds into one `AndSource` the way
+  `fuse_and_range_children` merges same-index printing-range bounds. Instead: reuses `arith_children`
+  (already computed above for the pre-existing arith-tuple-count tightening) and requires EXACTLY one
+  other child, which must be a subtype leaf (`arith_children.len() + 1 == v.len()`) -- covers 1-6 bound
+  children across up to three fields, handling both a bare one-sided bound and a same-field fused
+  two-sided bound uniformly (no `fuse_and_range_children` involvement at all, since cmc/power/toughness
+  never reach that function). A genuine 2-subtype-leaf query or one mixing a subtype leaf with a Round
+  34-recognized dimension (`set:plst t:human cmc>=5`) has 2+ non-arith children and correctly declines
+  this shape, falling through unchanged.
+- **Exact/estimate line.** A table HIT feeds `exact_domain_cards`/`_printing`/`_artworks` exactly like
+  `best_other`/the arith-tuple merge/Round 34's own hit (`min`-ing across independently-exact
+  intersections stays exact). There is no separate miss/estimate branch this round, per the tier-2
+  finding above -- a miss leaves `result`/`exact_domain_*` exactly as every prior tightening already
+  left them.
+- **A second consumer, found and fixed the same way Round 34 found its own:** `compose_printing_estimate`'s
+  own `exact_domain_cards` alone was NOT enough to fix card/artwork mode. Checked directly against a real
+  query (`t:dragon power>=6`, `unique=card`, isolated release wheel): printing mode read exact (385/385)
+  immediately, but `explain()`'s own card-mode `matches` feature still read 216 (a
+  `calibrated_balls_into_bins` guess), because `PrintingCompose`'s acquire branch gets its card/artwork
+  match count from `exact_result_total(composed, indexes, Mode::Card)`, a SEPARATE function
+  `compose_printing_estimate` never calls -- exactly the architectural gap Round 34's own doc reports
+  finding for its own shape. Fixed the same way: `exact_result_total` gets its own Round 36 arm, same
+  shape guard, right after Round 34's own arm.
+
+**Held-out validation** (isolated release wheel, real corpus, `real.store` freshly reloaded from
+`benchmarks/bitplanes/corpus.jsonl`). Ground truth = `engine.query()`'s real total; the estimate =
+`engine.explain()`'s `acquire.matches` feature (what `PrintingCompose`'s acquire branch, and therefore
+the cost model, actually see). Independently re-derived the top-128 ranking in Python from the corpus
+JSONL (same stats-presence criterion) to sample from, rather than trusting the Rust build's own
+ranking: 512 random queries across all 128 covered subtypes (calibration/held-out split by
+`hash(subtype) % 2`, 1-3 dimensions, mixed `>=`/`<=`/`=` operators, all three `unique=` modes):
+
+```
+                    n     exact (ratio == 1.00)
+calibration       280     280 (100.0%)
+held-out          232     232 (100.0%)
+pooled            512     512 (100.0%)
+tail (rank 100-128) 87     87 (100.0%)
+```
+
+100% exact everywhere, as expected for a genuinely exact mechanism inside a covered subtype's occupied
+range (this is not an approximation being graded for closeness -- a miss would show up as a clean
+disagreement, and none did). Worked examples, `unique=card`, isolated release wheel, baseline
+(`costcell/trunk`@`784ae9ad`) vs this round's fix:
+
+```
+                                          printing          card          artwork
+                              true    fold   fix     fold   fix     fold   fix
+t:dragon power>=6             385    1513   385  9.02x  93   1.00x  6.26x 174  1.00x
+                                     3.93x  1.00x
+t:human cmc>=5 power>=5        244  5744   244  28.94x 106  1.00x  28.51x 142  1.00x
+                                     23.54x 1.00x
+t:wurm power>=7                 86   293    86  5.29x   31  1.00x  5.73x  37  1.00x
+                                     3.41x  1.00x
+t:giant toughness>=6            201   632   201  6.19x   57  1.00x  5.13x  89  1.00x
+                                     3.14x  1.00x
+t:elf power<=1                  725  2138   725  6.02x  196  1.00x  5.00x 307  1.00x
+                                     2.95x  1.00x
+t:human cmc=3                  3352 10607  3352  4.11x 1323  1.00x  4.23x 1724 1.00x
+                                     3.16x  1.00x
+t:zombie cmc>=4 power>=3 toughness>=3  448 1649  448  5.50x  166  1.00x  5.79x 205 1.00x
+                                     3.68x  1.00x
+t:forest power>=1                 7  1196  1196 665.00x 665 665.00x 287.33x 862 287.33x
+                                     170.86x 170.86x
+```
+
+(Read each cell as fold-ratio above, fix-ratio below.) Every covered subtype goes from a real 3-29x
+over-estimate to EXACT in every mode. `t:forest` is confirmed genuinely unaffected: byte-identical
+fold/fix values in every mode (1,196/665/862), since it is absent from both builds' tables the same
+way.
+
+**Real routing/regret confirmation, not just isolated ratios.**
+
+- `bench_pairwise_ordering.py --seconds 60 --seed 0 --mode realistic`: `GatheredScan` vs
+  `PrintingCompose` 89% -> 89% (n=7,121 -> 6,776), `GatheredScan` vs `StreamedSelect` 97% -> 97%
+  (n=20,040 -> 18,939). Unchanged within run-to-run noise, matching the pattern every prior round in
+  this doc reports for a narrow, gated fix.
+- `bench_regret_matrix.py --seconds 60 --seed 0 --mode realistic`: `StreamedSelect -> GatheredScan`
+  (Rounds 30-32's own territory): n 438->435, mean regret 10.33us->9.58us, share 34%->33% -- flat
+  within noise. `printing_compose / card` (the acquire this round's own fix touches): mean regret
+  1.95us->1.84us -- moves in the improving direction, consistent with `t:dragon power>=6`/`t:human
+  cmc>=5 power>=5`-style queries now costing `PrintingCompose` correctly instead of overcosting it via
+  an inflated match estimate.
+- Confirmed no conflict/double-counting with Round 34's own tables directly: a 3-leaf query combining
+  both rounds' target shapes (`set:plst t:human cmc>=5`) matches NEITHER tightening (still folds at
+  38-70x over in both modes) -- a real, verified gap for a possible future round, not silently
+  mis-handled by either round's own shape guard colliding.
+
+**Same-build latency canary** (`bench_query_latency_ab.py --sample 800 --seed 1 --mode realistic`,
+isolated release wheels, interleaved A1(baseline)/B1(fix)/A2(baseline)): the first pairing read `B -
+A = +1.8us`, CI `[+1.4, +2.1]`, "B is SLOWER" -- looked real at first glance. Checked rather than
+trusted: a SECOND same-build canary (B1 vs a freshly rebuilt B2, the FIX build against itself, zero
+code difference) read `-2.8us`, CI `[-3.1, -2.5]`, "B is FASTER" -- a LARGER swing with nothing
+changed, and in the opposite direction from the first pairing. A third pairing (A2 vs B2) read `-0.9us`,
+"B is FASTER", also disagreeing in sign with the first. Three pairings of the same two builds giving
+three different verdicts is the noise floor this doc's own established caveat describes, not a real
+per-query cost: the only code added on a non-matching query's path is a few O(1) branches and an O(children)
+scan already paid for by the pre-existing arith-tuple-count tightening's own `arith_children` vector
+(reused, not recomputed), and `subtype_arith_exact`'s one `HashMap<String, _>` lookup is gated behind a
+shape check that most queries never satisfy. Read as no detectable latency effect, not a regression.
+
+**Correctness gates.** `cargo test --release` (`card_engine`): 189/189 passed (185 + 4 new). `cargo
+test` (debug): 190/190 passed. `cargo clippy --all-targets -- -D warnings` (clean). Four new regression
+tests (`card_engine/src/tests.rs`): `subtype_arith_prefix_sum_matches_brute_force` (the 8-corner
+inclusion-exclusion formula against an independent brute-force sum over hand-built cells, across 7
+ranges chosen to exercise every corner term including a non-boundary asymmetric box), `subtype_arith_and_arm_tightening`
+(a real `t:dragon`-shaped fixture: a 2-child hit, a bare-cmc query landing only on the reserved
+"no value" slot, a 3-child `cmc>=5 power>=5` hit, and an out-of-range exact zero via the short-circuit),
+`subtype_arith_and_arm_miss_leaves_fold_unchanged` (a subtype absent from the table -- the same
+mechanism that keeps the real `t:forest` case safe -- leaves the pre-existing fold untouched),
+`exact_result_total_answers_subtype_arith_in_every_space` (the second consumer found above, all three
+`Mode`s from one archived store). All four verified to actually catch a revert: gating the new call
+site off (`if false && ...`) reproduces the pre-fix value on the first assertion; restoring passes
+again. Blast radius: `card_engine/src/lib.rs` (`SubtypeArithBox`, `SubtypeArithIndexes`,
+`build_subtype_arith_tables`/`build_subtype_arith_box`, `subtype_arith_box_sum`,
+`arith_group_real_range`, `subtype_arith_exact`, the new `CardIndexes` field, the `And` arm's new
+tightening step, `exact_result_total`'s new arm), `card_engine/src/tests.rs` (the four new tests plus
+two `CardIndexes` literals fixed up to build the real table), this doc. `cost.rs`/`estimator.rs`
+untouched.
+
+**Verdict.** Real, validated, exact where it applies. 100% exact (512/512, calibration and held-out
+both clean) across every one of the top-128 covered subtypes, turning a real 3-29x over-estimate into
+the true answer in every `unique=` mode for the "big creature" shapes this whole investigation started
+from. `t:forest` confirmed genuinely unaffected (byte-identical fold/fix). Two things caught by
+verifying against real data rather than trusting the design as given, both before any validation
+number was produced: the ranking population (`card_types & TYPE_CREATURE` vs. real stats presence --
+217 Vehicle/Spacecraft cards would have been silently mis-scoped) and the second consumer
+(`exact_result_total`, the same gap Round 34 found for its own shape). No regression on `#852`,
+Rounds 30-32's `StreamedSelect -> GatheredScan` territory, or Round 34's own subtype-pair tables
+(confirmed no conflict on a query combining both rounds' shapes); no detectable latency effect
+distinguishable from the same-build noise floor, itself checked rather than assumed clean.
+
 ## Confirmation runs
 
 Round 1 (match-density depth proxy, kept):

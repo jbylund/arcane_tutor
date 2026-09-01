@@ -1972,6 +1972,368 @@ fn subtype_pair_exact<'i>(children: &[FilterExpr], indexes: &'i Archived<CardInd
     try_pair(a, b, indexes).or_else(|| try_pair(b, a, indexes))
 }
 
+// ─── Round 36: subtype x (cmc, power, toughness) dense prefix-sum cube ────────
+// docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md. `t:X` And'd with a
+// cmc/power/toughness range bound has the SAME gap Rounds 33/34 closed for set/cn and set/c/id/
+// subtype pairs: `t:` has no `compile_plane` arm and isn't in any pair table (a dimension crossed
+// with ~300 subtypes is thousands of pairs, not the handful `PairTotals` covers), and cmc/power/
+// toughness are RANGE predicates, not the single-value `Eq` shape `SubtypePairIndexes` answers -- so
+// this pair gets no tightening from any existing mechanism, and the fold picks whichever leaf's own
+// (corpus-wide, not subtype-scoped) count is smaller. Real ratios of 5-14x for "big creature"
+// subtypes concentrated in a narrow stat range (Dragon/Wurm/Giant), and worse at extreme thresholds
+// for a common subtype that spans nearly the WHOLE stat range (Human: knowing the subtype alone
+// barely narrows the joint distribution at all).
+
+/// One subtype's exact 3-D (cmc, power, toughness) box, LOCAL to that subtype's own real occupied
+/// range in each dimension -- NOT one global cube sized to the corpus's full extremes (cmc up to 16,
+/// power up to 18, toughness up to 30 on the real corpus, driven by rare outlier subtypes, not the
+/// common ones this table targets). Verified per-subtype rather than assumed uniform: Human's own box
+/// is only 9x9x10 = 810 cells (cmc/power observed 0..=8, toughness 0..=9), Spirit's is 13x19x11 =
+/// 2,717 -- both comfortably inside the "~2,744" scale this round's brief anticipated for the widest
+/// covered subtype.
+///
+/// `min_power`/`max_power`/`min_toughness`/`max_toughness` are computed over cards that HAVE a value
+/// in that field -- checked directly against the real corpus, NOT gated on any `card_types` bit.
+/// Power/toughness presence and the `Creature` type bit are NOT the same population here: 217 real
+/// cards (192 Vehicle, 25 Spacecraft, 1 Equipment -- Vehicles/Spacecraft-style permanents that carry
+/// stats on a plain `Artifact` type line) have real power/toughness with no `Creature` bit at all, and
+/// conversely some `Creature`-typed cards (e.g. 35 of Human's 4,265) have NEITHER value set. Gating
+/// on `card_types` would have silently misranked which 128 subtypes get a table AND miscounted the
+/// occupied range for any subtype the mis-scoping touched -- caught and fixed before this round shipped,
+/// not a hypothetical.
+///
+/// `min_cmc`/`max_cmc` and the reserved "no value" slot below assume `cmc` is never null on a real
+/// card, verified directly (0 of 97,812 real corpus rows have a null `cmc`) -- unlike power/toughness,
+/// cmc gets no reserved slot at all, since one is never needed.
+///
+/// Reserves ONE extra "no value" slot at LOCAL INDEX 0 of the power/toughness axes (real values start
+/// at local index 1) for cards that carry the subtype but have no power/toughness at all -- mostly
+/// Tribal-typed spells (e.g. 22 real Elf cards, 29 Eldrazi, ~180 total across the whole top-128
+/// population). A bare `cmc` bound alone (no power/toughness bound in the query) must still count
+/// these cards -- excluding them from the table entirely would make a table HIT silently WRONG (an
+/// undercount), not just incomplete, for exactly that shape. See the And arm's own doc for how the
+/// reserved slot is included or excluded per query depending on whether that axis is bound at all.
+#[derive(Archive, Serialize, Deserialize, Default, Clone)]
+struct SubtypeArithBox {
+    min_cmc: i16,
+    max_cmc: i16,
+    min_power: i16,
+    max_power: i16,
+    min_toughness: i16,
+    max_toughness: i16,
+    /// `max_cmc - min_cmc + 1` -- stored explicitly (not re-derived at query time) so the build pass
+    /// and the query-time lookup can never disagree about this table's own layout.
+    cmc_span: u16,
+    /// `(max_power - min_power + 1) + 1`, the `+1` for the reserved "no value" slot at local index 0.
+    pow_slots: u16,
+    tou_slots: u16,
+    /// Row-major `[cmc_span][pow_slots][tou_slots]` INCLUSIVE 3-D prefix sums: `prefix[i][j][k]` is
+    /// the sum of every real cell with index <= `(i, j, k)` in all three dimensions, in one fixed
+    /// direction chosen at BUILD time -- independent of which comparison operators a query later uses
+    /// (that conversion happens entirely at query time; see `subtype_arith_exact`'s own doc).
+    prefix: Vec<SpaceTotals>,
+}
+
+impl ArchivedSubtypeArithBox {
+    fn dims(&self) -> (i64, i64, i64) {
+        (i64::from(u16::from(self.cmc_span)), i64::from(u16::from(self.pow_slots)), i64::from(u16::from(self.tou_slots)))
+    }
+
+    /// One prefix cell as a signed triple, or `(0, 0, 0)` for any out-of-range (negative) coordinate --
+    /// the "sentinel row of zeros" `subtype_arith_box_sum`'s inclusion-exclusion formula needs at each
+    /// dimension's low boundary, so the 8-corner formula never special-cases an edge itself. `i64`, not
+    /// `usize`/`u32`: `subtype_arith_box_sum` accumulates alternating +/- terms, and only the FINAL sum
+    /// is guaranteed non-negative -- an intermediate partial sum is not, so unsigned arithmetic anywhere
+    /// in that chain would risk a panic-on-underflow that never reflects a real error.
+    fn prefix_at(&self, i: i64, j: i64, k: i64) -> (i64, i64, i64) {
+        if i < 0 || j < 0 || k < 0 {
+            return (0, 0, 0);
+        }
+        let (_, pow_slots, tou_slots) = self.dims();
+        let t = &self.prefix[(i * pow_slots * tou_slots + j * tou_slots + k) as usize];
+        (i64::from(u32::from(t.printings)), i64::from(u32::from(t.cards)), i64::from(u32::from(t.artworks)))
+    }
+}
+
+/// The `SubtypeArithBox` per subtype covered -- the top 128 most common subtypes, ranked by real
+/// distinct-card count among cards that HAVE both `creature_power`/`creature_toughness` set (see
+/// `SubtypeArithBox`'s own doc for why this is not the same population as `card_types & TYPE_CREATURE`).
+#[derive(Archive, Serialize, Deserialize, Default)]
+struct SubtypeArithIndexes {
+    tables: HashMap<String, SubtypeArithBox>,
+}
+
+/// Distinct-subtype table budget: verified against the real corpus (Round 36) rather than assumed --
+/// the largest subtype, Human, has 4,230 real stat-bearing cards; rank 128 has 34. No "tier 2" is
+/// needed below this cutoff: a full diagnostic pass (real engine instrumentation, 720 query/mode pairs
+/// across 45 tail subtypes) found routing never differs between today's min-fold and a hypothetical
+/// better estimate for 44/45 tail subtypes -- the one exception (`t:forest`, a name collision between
+/// the rare Dryad Arbor creature and the ubiquitous basic-land subtype string) has only 1 real
+/// stat-bearing card, nowhere near this cutoff, so it is unaffected by this table either way.
+const SUBTYPE_ARITH_TOP_N: usize = 128;
+
+/// Build the Round 36 `SubtypeArithIndexes`: the top `SUBTYPE_ARITH_TOP_N` subtypes' own dense 3-D
+/// (cmc, power, toughness) prefix-sum cube. Reuses `build_value_totals` for the raw per-cell totals
+/// (the SAME exact card/printing/artwork dedup `ValueTotals`/`PairTotals`/`SubtypePairIndexes` already
+/// use), not a hand-rolled accumulator.
+///
+/// Ranking population and table population are DELIBERATELY DIFFERENT, both verified against the real
+/// corpus: RANKING counts only cards with `creature_power`/`creature_toughness` both present (the
+/// "real stat-bearing card" population this round's whole motivation is about), but each ranked
+/// subtype's table is built from EVERY card carrying that subtype -- stat-bearing or not. A card
+/// without stats (mostly Tribal-typed spells) still has a real `cmc`, and a bare `t:elf cmc>=5` (no
+/// power/toughness bound at all) must still count it; excluding it from the table would silently
+/// undercount that shape. See `SubtypeArithBox`'s own doc for how the reserved "no value" slot makes
+/// this exact rather than approximated away.
+fn build_subtype_arith_tables(
+    cards: &[OracleCard],
+    printings: &[Printing],
+    printing_to_card: &[u32],
+    coll_vocab: &[String],
+    max_artwork_groups: usize,
+) -> SubtypeArithIndexes {
+    let mut stat_card_counts: HashMap<String, u32> = HashMap::new();
+    for card in cards {
+        // Presence of the DATA, not `card_types & TYPE_CREATURE` -- see this fn's and
+        // `SubtypeArithBox`'s own docs for the real corpus population this distinction changes (217
+        // Vehicle/Spacecraft/Equipment cards with stats and no Creature bit; ~35 Human cards with the
+        // Creature bit and no stats).
+        if card.creature_power.is_none() || card.creature_toughness.is_none() {
+            continue;
+        }
+        for id in &card.card_subtypes {
+            *stat_card_counts.entry(coll_vocab[usize::from(*id)].clone()).or_insert(0) += 1;
+        }
+    }
+    let mut ranked: Vec<(String, u32)> = stat_card_counts.into_iter().collect();
+    // Ties broken by name for a deterministic table across builds -- otherwise HashMap iteration
+    // order could pick a different 128th subtype from one build to the next.
+    ranked.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    ranked.truncate(SUBTYPE_ARITH_TOP_N);
+    let top: HashSet<String> = ranked.into_iter().map(|(name, _)| name).collect();
+
+    type Key = (String, CmcPowTou);
+    let raw: HashMap<Key, SpaceTotals> = build_value_totals(cards, printings, printing_to_card, max_artwork_groups, |card, _p| {
+        card.card_subtypes
+            .iter()
+            .map(|id| &coll_vocab[usize::from(*id)])
+            .filter(|name| top.contains(name.as_str()))
+            .map(|name| (name.clone(), (card.cmc, card.creature_power, card.creature_toughness)))
+            .collect()
+    });
+
+    let mut by_subtype: HashMap<String, Vec<(CmcPowTou, SpaceTotals)>> = HashMap::new();
+    for ((name, cpt), totals) in raw {
+        by_subtype.entry(name).or_default().push((cpt, totals));
+    }
+    let tables: HashMap<String, SubtypeArithBox> = by_subtype.into_iter().map(|(name, cells)| (name, build_subtype_arith_box(&cells))).collect();
+    SubtypeArithIndexes { tables }
+}
+
+/// One card's `(cmc, power, toughness)` key for the Round 36 cube -- power/toughness are `Option`
+/// because not every card that carries a subtype has stats (see `SubtypeArithBox`'s own doc); `cmc`
+/// is `Option` only because `OracleCard::cmc` itself is (verified never actually `None` on a real
+/// card).
+type CmcPowTou = (Option<u8>, Option<i8>, Option<i8>);
+
+/// Build one subtype's `SubtypeArithBox` from its raw `(cmc, power, toughness) -> SpaceTotals` cells.
+fn build_subtype_arith_box(cells: &[(CmcPowTou, SpaceTotals)]) -> SubtypeArithBox {
+    // cmc is verified never null on a real card (see the struct's own doc); filtered defensively
+    // rather than assumed, so a future data anomaly declines this cell instead of panicking.
+    let cmcs: Vec<i32> = cells.iter().filter_map(|((cmc, _, _), _)| cmc.map(i32::from)).collect();
+    let Some((&min_cmc, &max_cmc)) = cmcs.iter().min().zip(cmcs.iter().max()) else {
+        return SubtypeArithBox::default(); // no usable cell at all -- an empty/unbuilt table, a miss to every caller
+    };
+    let pows: Vec<i32> = cells.iter().filter_map(|((_, p, _), _)| p.map(i32::from)).collect();
+    // `(0, -1)`: an empty (span-0) real range if somehow no member has a power value at all --
+    // shouldn't happen given the ranking above guarantees >=1 stat-bearing member, but this keeps the
+    // rest of the function's arithmetic well-defined (only the reserved slot 0 is ever populated)
+    // rather than panicking, the same "decline rather than guess" posture as the rest of this table.
+    let (min_pow, max_pow) = pows.iter().min().zip(pows.iter().max()).map_or((0, -1), |(&a, &b)| (a, b));
+    let tous: Vec<i32> = cells.iter().filter_map(|((_, _, t), _)| t.map(i32::from)).collect();
+    let (min_tou, max_tou) = tous.iter().min().zip(tous.iter().max()).map_or((0, -1), |(&a, &b)| (a, b));
+
+    let cmc_span = (max_cmc - min_cmc + 1) as usize;
+    let pow_slots = (max_pow - min_pow + 1).max(0) as usize + 1;
+    let tou_slots = (max_tou - min_tou + 1).max(0) as usize + 1;
+
+    let mut grid = vec![SpaceTotals::default(); cmc_span * pow_slots * tou_slots];
+    for ((cmc_opt, pow_opt, tou_opt), totals) in cells {
+        let Some(cmc) = cmc_opt else { continue };
+        let i = (i32::from(*cmc) - min_cmc) as usize;
+        let j = pow_opt.map_or(0, |p| (i32::from(p) - min_pow + 1) as usize);
+        let k = tou_opt.map_or(0, |t| (i32::from(t) - min_tou + 1) as usize);
+        // Each `(cmc, power, toughness)` combination is a distinct key upstream (`build_value_totals`
+        // dedups by the full tuple), so this index is visited exactly once -- a plain assign, not `+=`.
+        grid[(i * pow_slots + j) * tou_slots + k] = *totals;
+    }
+
+    // Build the INCLUSIVE prefix sum via three sequential single-axis cumulative passes -- pure
+    // addition only, so unlike the query-time inclusion-exclusion formula (which needs signed
+    // arithmetic for its alternating +/- terms), this can never have a negative intermediate value:
+    // `prefix[i][j][k] = raw[i][j][k]` after pass 0 (the initial copy), then each pass folds in the
+    // previous index along exactly one axis, in increasing index order.
+    let mut prefix = grid;
+    let add_totals = |a: &mut SpaceTotals, b: SpaceTotals| {
+        a.printings += b.printings;
+        a.cards += b.cards;
+        a.artworks += b.artworks;
+    };
+    for i in 1..cmc_span {
+        for j in 0..pow_slots {
+            for k in 0..tou_slots {
+                let prev = prefix[((i - 1) * pow_slots + j) * tou_slots + k];
+                add_totals(&mut prefix[(i * pow_slots + j) * tou_slots + k], prev);
+            }
+        }
+    }
+    for j in 1..pow_slots {
+        for i in 0..cmc_span {
+            for k in 0..tou_slots {
+                let prev = prefix[(i * pow_slots + (j - 1)) * tou_slots + k];
+                add_totals(&mut prefix[(i * pow_slots + j) * tou_slots + k], prev);
+            }
+        }
+    }
+    for k in 1..tou_slots {
+        for i in 0..cmc_span {
+            for j in 0..pow_slots {
+                let prev = prefix[(i * pow_slots + j) * tou_slots + (k - 1)];
+                add_totals(&mut prefix[(i * pow_slots + j) * tou_slots + k], prev);
+            }
+        }
+    }
+
+    SubtypeArithBox {
+        min_cmc: min_cmc as i16,
+        max_cmc: max_cmc as i16,
+        min_power: min_pow as i16,
+        max_power: max_pow as i16,
+        min_toughness: min_tou as i16,
+        max_toughness: max_tou as i16,
+        cmc_span: cmc_span as u16,
+        pow_slots: pow_slots as u16,
+        tou_slots: tou_slots as u16,
+        prefix,
+    }
+}
+
+/// The 3-D box-sum inclusion-exclusion formula over `b`'s prefix cube, given INCLUSIVE local index
+/// ranges on all three axes (already converted from the query's real operator/threshold by the
+/// caller). The standard 8-corner formula, using `prefix_at`'s sentinel-zero row at each dimension's
+/// `lo - 1` so no edge needs its own special case.
+fn subtype_arith_box_sum(b: &ArchivedSubtypeArithBox, lo_i: i64, hi_i: i64, lo_j: i64, hi_j: i64, lo_k: i64, hi_k: i64) -> (usize, usize, usize) {
+    let add = |a: (i64, i64, i64), c: (i64, i64, i64)| (a.0 + c.0, a.1 + c.1, a.2 + c.2);
+    let sub = |a: (i64, i64, i64), c: (i64, i64, i64)| (a.0 - c.0, a.1 - c.1, a.2 - c.2);
+    let mut total = b.prefix_at(hi_i, hi_j, hi_k);
+    total = sub(total, b.prefix_at(lo_i - 1, hi_j, hi_k));
+    total = sub(total, b.prefix_at(hi_i, lo_j - 1, hi_k));
+    total = sub(total, b.prefix_at(hi_i, hi_j, lo_k - 1));
+    total = add(total, b.prefix_at(lo_i - 1, lo_j - 1, hi_k));
+    total = add(total, b.prefix_at(lo_i - 1, hi_j, lo_k - 1));
+    total = add(total, b.prefix_at(hi_i, lo_j - 1, lo_k - 1));
+    total = sub(total, b.prefix_at(lo_i - 1, lo_j - 1, lo_k - 1));
+    // Guaranteed non-negative in the end (a real box sum of non-negative cells) even though
+    // intermediate terms are not -- `.max(0)` is defensive, not load-bearing.
+    (total.0.max(0) as usize, total.1.max(0) as usize, total.2.max(0) as usize)
+}
+
+/// Convert one field's arith-eligible bound children (already known to all reference the SAME field,
+/// by construction of the caller's grouping) into the inclusive REAL integer value range they jointly
+/// admit, by testing each candidate integer directly with `matches_op` (planes.rs's own
+/// float-comparison primitive -- the SAME one `compile_numeric_cmp`/`numeric_candidates` use, so this
+/// cannot disagree with the real per-card evaluator on a fractional-threshold edge case like
+/// `cmc>6.5`). Bounded to the SUBTYPE's own small local span (`min_real..=max_real`, at most ~30 wide
+/// across every table this round builds), NOT `NumericLayout`'s bucket layout (planes.rs) -- read
+/// before writing this, and deliberately not reused: those buckets are sized to keep a GLOBAL,
+/// whole-corpus existential plane small, and answer an AMBIGUOUS verdict at their own edges by design
+/// (`bucket_verdict`'s `Ambiguous` case) -- a lossy compromise this table doesn't need, since a window
+/// this narrow can just test every real candidate value directly and get an EXACT answer, not a
+/// superset.
+///
+/// `None` means no real value in the subtype's own range satisfies every bound in `group` -- a
+/// genuine empty intersection (the caller's own min/max short-circuit fires on this: an exact zero),
+/// not a declined shape -- every arith-eligible leaf is already a bare `Field <op> Const` comparison
+/// by construction (`is_arith_tuple_eligible`), so there is no shape this can fail to recognize.
+fn arith_group_real_range(group: &[&FilterExpr], min_real: i32, max_real: i32) -> Option<(i32, i32)> {
+    let mut lo: Option<i32> = None;
+    let mut hi: Option<i32> = None;
+    for v in min_real..=max_real {
+        let ok = group.iter().all(|f| {
+            let (op, threshold) = match **f {
+                FilterExpr::NumericCmp { lhs: NumExpr::Field(_), op, rhs: NumExpr::Const(c) } => (op, c),
+                FilterExpr::NumericCmp { lhs: NumExpr::Const(c), op, rhs: NumExpr::Field(_) } => (flip_op(op), c),
+                _ => return false,
+            };
+            matches_op(op, f64::from(v), threshold)
+        });
+        if ok {
+            lo.get_or_insert(v);
+            hi = Some(v);
+        }
+    }
+    lo.zip(hi)
+}
+
+/// Round 36: exact `(printings, cards, artworks)` for a `t:X` subtype leaf And'd with 1+ cmc/power/
+/// toughness bound children (`is_arith_tuple_eligible`), when `X` is one of the `SUBTYPE_ARITH_TOP_N`
+/// subtypes `build_subtype_arith_tables` covers. `None` means "no table for this subtype" -- the
+/// caller's own fallback (the pre-existing fold) applies unchanged. `Some((0, 0, 0))` is a genuine
+/// EXACT zero (the query's own bound(s) don't overlap this subtype's real occupied range in some
+/// dimension -- the min/max short-circuit this round's design calls for) and is returned WITHOUT ever
+/// reading `prefix`, the same as every other miss/short-circuit path in this function.
+fn subtype_arith_exact(subtype: &str, arith_children: &[&FilterExpr], indexes: &Archived<CardIndexes>) -> Option<(usize, usize, usize)> {
+    let table = indexes.subtype_arith.tables.get(subtype)?;
+    let (mut cmc_group, mut pow_group, mut tou_group): (Vec<&FilterExpr>, Vec<&FilterExpr>, Vec<&FilterExpr>) = (Vec::new(), Vec::new(), Vec::new());
+    for &c in arith_children {
+        let field = match c {
+            FilterExpr::NumericCmp { lhs: NumExpr::Field(f), .. } | FilterExpr::NumericCmp { rhs: NumExpr::Field(f), .. } => *f,
+            _ => return None, // not the bare Field/Const shape `is_arith_tuple_eligible` already guarantees -- unreachable in practice
+        };
+        match field {
+            NumField::Cmc => cmc_group.push(c),
+            NumField::Power => pow_group.push(c),
+            NumField::Toughness => tou_group.push(c),
+            _ => return None, // `is_arith_tuple_eligible` only ever admits these three fields -- unreachable in practice
+        }
+    }
+
+    let (min_cmc, max_cmc) = (i32::from(i16::from(table.min_cmc)), i32::from(i16::from(table.max_cmc)));
+    let (min_pow, max_pow) = (i32::from(i16::from(table.min_power)), i32::from(i16::from(table.max_power)));
+    let (min_tou, max_tou) = (i32::from(i16::from(table.min_toughness)), i32::from(i16::from(table.max_toughness)));
+    let (cmc_span, pow_slots, tou_slots) = table.dims();
+
+    // For each dimension: BOUND (part of the query) -> the real range the bound(s) admit, converted to
+    // a LOCAL index range; UNBOUND (absent from the query entirely) -> the FULL local range, which for
+    // power/toughness includes the reserved "no value" slot at index 0 (a card with no value for an
+    // unconstrained dimension still counts, since the query places no requirement on it at all).
+    let (lo_i, hi_i) = if cmc_group.is_empty() {
+        (0, cmc_span - 1)
+    } else {
+        match arith_group_real_range(&cmc_group, min_cmc, max_cmc) {
+            Some((lo, hi)) => ((lo - min_cmc) as i64, (hi - min_cmc) as i64),
+            None => return Some((0, 0, 0)),
+        }
+    };
+    let (lo_j, hi_j) = if pow_group.is_empty() {
+        (0, pow_slots - 1)
+    } else {
+        match arith_group_real_range(&pow_group, min_pow, max_pow) {
+            Some((lo, hi)) => ((lo - min_pow + 1) as i64, (hi - min_pow + 1) as i64),
+            None => return Some((0, 0, 0)),
+        }
+    };
+    let (lo_k, hi_k) = if tou_group.is_empty() {
+        (0, tou_slots - 1)
+    } else {
+        match arith_group_real_range(&tou_group, min_tou, max_tou) {
+            Some((lo, hi)) => ((lo - min_tou + 1) as i64, (hi - min_tou + 1) as i64),
+            None => return Some((0, 0, 0)),
+        }
+    };
+    Some(subtype_arith_box_sum(table, lo_i, hi_i, lo_j, hi_j, lo_k, hi_k))
+}
+
 /// Per-set `collector_number_int` span, derived once from `set_codes`'s own postings at load time
 /// (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md, Round 33). Lets an `And`
 /// of `set:X` + a `collector_number_int` range answer with a density estimate
@@ -4129,6 +4491,9 @@ struct CardIndexes {
     /// Round 34: `set:X`/`c:X`/`id:X` x subtype co-occurrence, for `compose_printing_estimate`'s
     /// `And` arm and `exact_result_total`. See `SubtypePairIndexes`'s own doc.
     subtype_pairs:  SubtypePairIndexes,
+    /// Round 36: the top `SUBTYPE_ARITH_TOP_N` subtypes' own dense (cmc, power, toughness) prefix-sum
+    /// cube, for `compose_printing_estimate`'s `And` arm. See `SubtypeArithIndexes`'s own doc.
+    subtype_arith:  SubtypeArithIndexes,
     sort_perms:     SortPermutations,          // card space (streamed selection)
     artwork_groups: Vec<u16>,                  // card space: distinct illustration groups
     // card space, n_cards+1 entries: prefix sum of artwork_groups, so card c's artworks are the
@@ -8462,6 +8827,47 @@ fn compose_printing_estimate(
                     }
                 }
             }
+            // Round 36 tightening: a bare `t:X` subtype leaf And'd with 1+ cmc/power/toughness bound
+            // children (nothing else in the `And`) gets an exact triple from `indexes.subtype_arith`
+            // (a dense per-subtype 3-D (cmc, power, toughness) prefix-sum cube over the top
+            // `SUBTYPE_ARITH_TOP_N` subtypes) instead of the plain min-fold above -- the same kind of
+            // gap Rounds 33/34 closed for set/cn-range and set/c/id/subtype: cmc/power/toughness are
+            // RANGE predicates, not the single-value shape `SubtypePairIndexes` answers, so this pair
+            // gets no tightening from any existing mechanism otherwise.
+            //
+            // Reuses `arith_children` (computed above for the arith-tuple-count tightening) rather
+            // than re-deriving it, and shapes the check the same way that tightening's own bound-set
+            // does: EVERY child other than the one subtype leaf must be arith-eligible (so
+            // `arith_children.len() + 1 == v.len()`), which is what lets a 3+-leaf query like
+            // `t:human cmc>=5 power>=5` (a fused two-sided-looking shape that is actually THREE
+            // literal `FilterExpr` children, not two) still match -- unlike Round 33/34's strict
+            // `v.len() == 2`, this shape's "other side" is genuinely 1-6 children (up to two bounds
+            // per field, three fields), not one `AndSource`. A genuine 2-subtype-leaf query
+            // (`t:human t:soldier cmc>=5`) or one mixing a subtype leaf with a Round 34-recognized
+            // dimension (`set:plst t:human cmc>=5`) has 2+ non-arith children and correctly fails this
+            // shape check, falling through to whichever of the two disjoint tightenings above (if
+            // either) already applies, or the plain fold if neither does.
+            //
+            // A table HIT is exact in all three spaces (`SpaceTotals`, the same reasoning
+            // `best_other`/the arith-tuple merge/Round 34's own hit already establish for `min`-ing
+            // across multiple independently-exact intersections), so it feeds `exact_domain_*`
+            // exactly like those. Unlike Round 33/34, there is no separate MISS/estimate branch here:
+            // this round's own diagnostic pass found no tier-2 fallback worth building (see
+            // `SUBTYPE_ARITH_TOP_N`'s own doc) -- a miss (subtype outside the top
+            // `SUBTYPE_ARITH_TOP_N`, or a `Ne`/compound-arith child `is_arith_tuple_eligible` already
+            // declined) just leaves `result`/`exact_domain_*` exactly as every other unrecognized shape
+            // does, at whatever the fold and the tightenings above already gave them.
+            if !arith_children.is_empty()
+                && arith_children.len() + 1 == v.len()
+                && let Some(subtype_child) = v.iter().find(|c| !is_arith_tuple_eligible(c))
+                && let Some(subtype) = subtype_pair_leaf(subtype_child)
+                && let Some((printings, cards, artworks)) = subtype_arith_exact(subtype, &arith_children, indexes)
+            {
+                result = result.min(printings);
+                exact_domain_cards = Some(exact_domain_cards.map_or(cards, |d| d.min(cards)));
+                exact_domain_printing = Some(exact_domain_printing.map_or(printings, |d| d.min(printings)));
+                exact_domain_artworks = Some(exact_domain_artworks.map_or(artworks, |d| d.min(artworks)));
+            }
             // `domain_hint` used to be its own field, folded from `children_estimates`'s own `.result`
             // -- but `.result` is this function's PRINTING-space quantity for every leaf type (confirmed
             // directly: `ColorCmp`'s arm calls `color_cmp_value_total(..., Mode::Printing)` explicitly),
@@ -9308,6 +9714,32 @@ fn exact_result_total(composed: &FilterExpr, indexes: &Archived<CardIndexes>, mo
         && let Some(totals) = subtype_pair_exact(children, indexes)
     {
         return Some(totals.get(mode));
+    }
+    // Round 36: `t:X` And'd with 1+ cmc/power/toughness bound children -- the SAME shape
+    // `compose_printing_estimate`'s own `And` arm recognizes (see that arm's own doc for why this is
+    // not a strict 2-leaf shape like the two arms just above). Needed here for the identical reason
+    // Round 34's own arm is: `PrintingCompose`'s acquire branch gets its card/artwork-mode match count
+    // from THIS function (`exact_cards = exact_result_total(composed, indexes, Mode::Card)`), not from
+    // `compose_printing_estimate`'s own `exact_domain` -- confirmed directly against a real query
+    // during this round (`t:dragon power>=6`, `unique=card`: `compose_printing_estimate` alone made
+    // `result.printing`/`.card` exact, but `explain()`'s own card-mode `matches` feature still read a
+    // `calibrated_balls_into_bins` guess, 216, until this arm was added). Declines to `None` (not "no
+    // answer") on a miss -- outside the top `SUBTYPE_ARITH_TOP_N`, or the shape doesn't match -- the
+    // same convention every other arm in this function follows.
+    if let FilterExpr::And(children) = composed {
+        let arith_children: Vec<&FilterExpr> = children.iter().filter(|c| is_arith_tuple_eligible(c)).collect();
+        if !arith_children.is_empty()
+            && arith_children.len() + 1 == children.len()
+            && let Some(subtype_child) = children.iter().find(|c| !is_arith_tuple_eligible(c))
+            && let Some(subtype) = subtype_pair_leaf(subtype_child)
+            && let Some((printings, cards, artworks)) = subtype_arith_exact(subtype, &arith_children, indexes)
+        {
+            return Some(match mode {
+                Mode::Printing => printings,
+                Mode::Card => cards,
+                Mode::Artwork => artworks,
+            });
+        }
     }
     // The per-value table, which covers the dimensions whose predicate tests ONE value, in all three
     // spaces. Absence from a COMPLETE table is an exact zero, not a declined shape -- every one of
@@ -15281,6 +15713,13 @@ impl QueryEngine {
             &coll_vocab,
             usize::from(artwork_group_counts.iter().copied().max().unwrap_or(0)),
         );
+        let subtype_arith = build_subtype_arith_tables(
+            &cards,
+            &printings,
+            &printing_to_card,
+            &coll_vocab,
+            usize::from(artwork_group_counts.iter().copied().max().unwrap_or(0)),
+        );
         let indexes = CardIndexes {
             name_trigram:   build_trigram_index(&cards, |c| c.card_name_folded.as_str()),
             oracle_trigram: build_oracle_text_index(&cards, &strings),
@@ -15347,6 +15786,7 @@ impl QueryEngine {
             value_totals,
             pair_totals,
             subtype_pairs,
+            subtype_arith,
             name_bigrams:   build_name_bigram_index(&cards),
             name_unigrams:  build_name_unigram_index(&cards),
             legal_divergent: build_divergent_ids(&cards),

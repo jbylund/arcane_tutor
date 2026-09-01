@@ -6719,6 +6719,9 @@ fn bench_checked_vs_unchecked_access() {
         // Real builder, not `::default()`, so the Round 34 tightening is exercised (not silently
         // no-op'd) by whatever fuzz/property tests build a store through this helper.
         subtype_pairs:  super::build_subtype_pair_tables(&cards, &printings, &printing_to_card, &vocab.strings, usize::from(artwork_groups.iter().copied().max().unwrap_or(0))),
+        // Same reasoning as `subtype_pairs` immediately above: the real builder, so Round 36's
+        // tightening is exercised too, not silently no-op'd.
+        subtype_arith:  super::build_subtype_arith_tables(&cards, &printings, &printing_to_card, &vocab.strings, usize::from(artwork_groups.iter().copied().max().unwrap_or(0))),
         sort_perms:     build_sort_permutations(&cards, &offsets),
         max_artwork_groups: artwork_groups.iter().copied().max().unwrap_or(0),
         artwork_groups,
@@ -14428,4 +14431,266 @@ fn redo_examined_counts_only_the_small_total_redo_pass() {
              stay at its zero default there",
         );
     }
+}
+
+// ─── Round 36: subtype x (cmc, power, toughness) dense prefix-sum cube ────────
+// docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md
+
+/// The 3-D box-sum inclusion-exclusion formula (`subtype_arith_box_sum`) against a brute-force sum
+/// over the same hand-built cells, for several local-index ranges chosen so every one of the 8
+/// inclusion-exclusion terms is exercised at least once with a non-degenerate value -- not just ranges
+/// that happen to collapse to a boundary (`lo == 0`) where several terms are trivially zero already.
+/// Cells are deliberately all-distinct `SpaceTotals` (no repeated values across cells) so a bug
+/// swapping or dropping any one of the 8 corner terms cannot cancel out and hide itself, and the
+/// power/toughness axes each include a gap (index 2 unused) and the reserved "no value" (`None`)
+/// slot at index 0, so both the sparse-axis and the Tribal-style "no stats" cell get real coverage.
+#[test]
+fn subtype_arith_prefix_sum_matches_brute_force() {
+    let cells: Vec<(super::CmcPowTou, SpaceTotals)> = vec![
+        ((Some(2), None, None), SpaceTotals { printings: 1, cards: 1, artworks: 1 }),
+        ((Some(2), Some(1), Some(1)), SpaceTotals { printings: 3, cards: 2, artworks: 3 }),
+        ((Some(3), Some(1), Some(3)), SpaceTotals { printings: 5, cards: 3, artworks: 4 }),
+        ((Some(3), Some(2), Some(1)), SpaceTotals { printings: 7, cards: 5, artworks: 6 }),
+        ((Some(4), Some(2), Some(3)), SpaceTotals { printings: 11, cards: 7, artworks: 9 }),
+    ];
+    let b = super::build_subtype_arith_box(&cells);
+    assert_eq!(b.min_cmc, 2);
+    assert_eq!(b.max_cmc, 4);
+    assert_eq!(b.min_power, 1);
+    assert_eq!(b.max_power, 2);
+    assert_eq!(b.min_toughness, 1);
+    assert_eq!(b.max_toughness, 3);
+    assert_eq!(b.cmc_span, 3, "cmc 2..=4");
+    assert_eq!(b.pow_slots, 3, "pow 1..=2 (2 values) + 1 reserved None slot");
+    assert_eq!(b.tou_slots, 4, "tou 1..=3 (3 values) + 1 reserved None slot");
+
+    let bytes = rkyv::to_bytes::<Error>(&b).expect("serialize");
+    let archived = rkyv::access::<Archived<super::SubtypeArithBox>, Error>(&bytes).expect("access");
+
+    // Mirrors `subtype_arith_exact`'s own local-index conversion: cmc_local = v - min_cmc; power/
+    // toughness None -> 0, Some(v) -> v - min + 1.
+    let (min_cmc, min_pow, min_tou) = (2i32, 1i32, 1i32);
+    let cmc_local = |v: i32| i64::from(v - min_cmc);
+    let pow_local = |v: Option<i32>| i64::from(v.map_or(0, |p| p - min_pow + 1));
+    let tou_local = |v: Option<i32>| i64::from(v.map_or(0, |t| t - min_tou + 1));
+
+    let brute = |lo_i: i64, hi_i: i64, lo_j: i64, hi_j: i64, lo_k: i64, hi_k: i64| -> (usize, usize, usize) {
+        let mut acc = SpaceTotals::default();
+        for ((cmc, pow, tou), totals) in &cells {
+            let i = cmc_local(i32::from(cmc.expect("every hand-built cell here has a cmc")));
+            let j = pow_local(pow.map(i32::from));
+            let k = tou_local(tou.map(i32::from));
+            if (lo_i..=hi_i).contains(&i) && (lo_j..=hi_j).contains(&j) && (lo_k..=hi_k).contains(&k) {
+                acc.printings += totals.printings;
+                acc.cards += totals.cards;
+                acc.artworks += totals.artworks;
+            }
+        }
+        (acc.printings as usize, acc.cards as usize, acc.artworks as usize)
+    };
+
+    let cases: &[(i64, i64, i64, i64, i64, i64)] = &[
+        (0, 2, 0, 2, 0, 3), // the full box
+        (1, 2, 1, 2, 1, 3), // interior sub-box: no lo == 0 on any axis
+        (0, 0, 0, 2, 0, 3), // one cmc plane only
+        (0, 2, 0, 0, 0, 3), // pow local index 0 only -- the reserved "no value" slot
+        (0, 0, 1, 1, 1, 1), // single cell, a real hit (cmc=2, pow=1, tou=1)
+        (1, 1, 1, 1, 1, 1), // single cell, a real MISS (cmc=3, pow=1, tou=1 -- no such card)
+        (0, 1, 1, 2, 0, 2), // asymmetric partial box touching neither array edge on every axis
+    ];
+    for &(lo_i, hi_i, lo_j, hi_j, lo_k, hi_k) in cases {
+        let expected = brute(lo_i, hi_i, lo_j, hi_j, lo_k, hi_k);
+        let got = super::subtype_arith_box_sum(archived, lo_i, hi_i, lo_j, hi_j, lo_k, hi_k);
+        assert_eq!(got, expected, "range ({lo_i}..={hi_i}, {lo_j}..={hi_j}, {lo_k}..={hi_k})");
+    }
+}
+
+/// `compose_printing_estimate`'s Round 36 `And`-arm tightening: a `t:X` subtype leaf And'd with 1+
+/// cmc/power/toughness bound children gets an EXACT triple from `indexes.subtype_arith` instead of the
+/// plain min-fold, when `X` has a table (built here via the real `build_subtype_arith_tables`, not a
+/// hand-set entry -- so the whole pipeline, ranking included, is exercised end to end).
+///
+/// 6 "Dragon" creatures spanning cmc 4..=8, power 3..=7 (paired 1:1 with cmc so the joint is
+/// selective, not just each marginal), toughness always 1 less than power -- plus 40 filler
+/// non-Dragon creatures (cmc 1, power 1, toughness 1) so Dragon is comfortably NOT the only subtype in
+/// the corpus, and 2 non-creature "Dragon" cards (no power/toughness, cmc 2 and cmc 9) standing in for
+/// the real corpus's Tribal-typed leak population -- these must still count for a bare cmc bound.
+#[test]
+fn subtype_arith_and_arm_tightening() {
+    let mut vocab = VocabInterner::new();
+    let mut cards = Vec::new();
+    for (i, (cmc, pt)) in [(4u8, 3i8), (5, 4), (6, 5), (7, 6), (8, 7), (8, 7)].into_iter().enumerate() {
+        let mut c = stub_card(1 + i as u128, TYPE_CREATURE, &["Dragon"], &mut vocab);
+        c.cmc = Some(cmc);
+        c.creature_power = Some(pt);
+        c.creature_toughness = Some(pt - 1);
+        cards.push(c);
+    }
+    // Two Tribal-style "Dragon" cards: no creature stats at all, but a real cmc.
+    let mut tribal_lo = stub_card(100, TYPE_SORCERY, &["Dragon"], &mut vocab);
+    tribal_lo.cmc = Some(2);
+    let mut tribal_hi = stub_card(101, TYPE_SORCERY, &["Dragon"], &mut vocab);
+    tribal_hi.cmc = Some(9);
+    cards.push(tribal_lo);
+    cards.push(tribal_hi);
+    for i in 0..40 {
+        let mut c = stub_card(200 + i as u128, TYPE_CREATURE, &["Human"], &mut vocab);
+        c.cmc = Some(1);
+        c.creature_power = Some(1);
+        c.creature_toughness = Some(1);
+        cards.push(c);
+    }
+    let n_cards = cards.len();
+    let printing_counts = vec![1usize; n_cards];
+    let mut data = store_of(cards, &printing_counts, vocab);
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(|v| v as i16));
+    data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power.map(|v| v as i16));
+    data.indexes.toughness = build_numeric_index(&data.cards, |c| c.creature_toughness.map(|v| v as i16));
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.subtype_arith = super::build_subtype_arith_tables(&data.cards, &data.printings, &ptc, &data.coll_vocab, max_ag);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+    assert_eq!(n_printings, n_cards, "one printing per card in this fixture");
+
+    let dragon = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Dragon".to_string(), value_id: None };
+    let power_ge = |v: f64| FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Power), op: CmpOp::Ge, rhs: NumExpr::Const(v) };
+    let cmc_ge = |v: f64| FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(v) };
+
+    // `t:dragon power>=6`: true joint is 3 cards (cmc=7/power=6, and the two cmc=8/power=7 Dragons).
+    // Fold would pick min(dragon's own 8 printings, power>=6's own count) already narrow here (this
+    // fixture is small), so this asserts the table HIT is EXACT and populates exact_domain, not just
+    // that `result` is small -- the real corpus shape this round targets (`Dragon power>=6`) has
+    // fold >> true, which a tiny hand-fixture can't reproduce at fold-time, but the EXACTNESS of the
+    // table hit is the same mechanism regardless of corpus size.
+    let f1 = FilterExpr::And(vec![dragon.clone(), power_ge(6.0)]);
+    let est1 = super::compose_printing_estimate(&f1, &archived.indexes, &archived.offsets, n_printings);
+    assert_eq!(est1.result.printing, 3, "t:dragon power>=6: the power=6 Dragon plus both power=7 Dragons");
+    let dom1 = est1.exact_domain.expect("a table hit is exact -- exact_domain must be populated");
+    assert_eq!((dom1.printing, dom1.card, dom1.artwork), (3, Some(3), Some(3)));
+
+    // `t:dragon cmc>=9`: only the Tribal-style non-creature Dragon (cmc=9, no power/toughness) is in
+    // range -- the reserved "no value" slot must count it for a bare cmc bound with no power/
+    // toughness constraint in the query at all.
+    let f2 = FilterExpr::And(vec![dragon.clone(), cmc_ge(9.0)]);
+    let est2 = super::compose_printing_estimate(&f2, &archived.indexes, &archived.offsets, n_printings);
+    assert_eq!(est2.result.printing, 1, "t:dragon cmc>=9: only the Tribal-style cmc=9 card, no power/toughness needed");
+
+    // `t:dragon cmc>=5 power>=5`: a 3-CHILD And (t:dragon, cmc>=5, power>=5) -- confirms the shape
+    // check fires for more than one arith bound child, not just a strict 2-leaf And. True joint: cmc
+    // in {5,6,7,8,8} with power>=5 -- power at cmc=5 is 4 (excluded), so cmc in {6,7,8,8} all qualify
+    // (power 5,6,7,7) = 4 cards.
+    let f3 = FilterExpr::And(vec![dragon.clone(), cmc_ge(5.0), power_ge(5.0)]);
+    let est3 = super::compose_printing_estimate(&f3, &archived.indexes, &archived.offsets, n_printings);
+    assert_eq!(est3.result.printing, 4, "t:dragon cmc>=5 power>=5: 3-child And, cmc in {{6,7,8,8}}");
+
+    // `t:dragon power>=99`: query bound entirely outside Dragon's real power range -- an exact zero
+    // via the min/max short-circuit, not a declined shape.
+    let f4 = FilterExpr::And(vec![dragon.clone(), power_ge(99.0)]);
+    let est4 = super::compose_printing_estimate(&f4, &archived.indexes, &archived.offsets, n_printings);
+    assert_eq!(est4.result.printing, 0, "t:dragon power>=99: exact zero, out of Dragon's real range");
+    let dom4 = est4.exact_domain.expect("an exact zero from the short-circuit is still exact");
+    assert_eq!((dom4.printing, dom4.card, dom4.artwork), (0, Some(0), Some(0)));
+}
+
+/// A subtype absent from `indexes.subtype_arith` (never built a table -- either because it fell
+/// outside the top `SUBTYPE_ARITH_TOP_N` in ranking, or a fixture simply never populated one) leaves
+/// `result`/`exact_domain` completely unaffected by this round's tightening, the same as any other
+/// shape this `And` arm doesn't recognize. This is the exact mechanism that keeps the real corpus's
+/// `t:forest` case safe (Round 36's own diagnostic pass): Forest has only 1 real stat-bearing card,
+/// nowhere near the top-128 cutoff (34 cards), so its real production table lookup misses here in
+/// EXACTLY the way this test exercises directly -- not a special case, just an ordinary miss.
+#[test]
+fn subtype_arith_and_arm_miss_leaves_fold_unchanged() {
+    let mut vocab = VocabInterner::new();
+    let mut cards = vec![stub_card(1, TYPE_CREATURE, &["Forest"], &mut vocab)];
+    cards[0].cmc = Some(3);
+    cards[0].creature_power = Some(2);
+    cards[0].creature_toughness = Some(2);
+    for i in 0..5 {
+        let mut c = stub_card(10 + i as u128, TYPE_CREATURE, &["Human"], &mut vocab);
+        c.cmc = Some(3);
+        c.creature_power = Some(2);
+        c.creature_toughness = Some(2);
+        cards.push(c);
+    }
+    let n_cards = cards.len();
+    let printing_counts = vec![1usize; n_cards];
+    let mut data = store_of(cards, &printing_counts, vocab);
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(|v| v as i16));
+    data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power.map(|v| v as i16));
+    data.indexes.toughness = build_numeric_index(&data.cards, |c| c.creature_toughness.map(|v| v as i16));
+    let ptc = build_printing_to_card(&data.offsets);
+    // Deliberately empty: `SubtypeArithIndexes::default()` builds NO tables at all, simulating
+    // "Forest ranked outside the top 128" without needing 128 real subtypes in a unit fixture -- the
+    // mechanism a lookup miss exercises (`indexes.subtype_arith.tables.get(subtype)?` returning `None`)
+    // is identical either way.
+    data.indexes.subtype_arith = super::SubtypeArithIndexes::default();
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    let _ = ptc;
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let forest = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Forest".to_string(), value_id: None };
+    let power_ge = |v: f64| FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Power), op: CmpOp::Ge, rhs: NumExpr::Const(v) };
+    let f = FilterExpr::And(vec![forest, power_ge(2.0)]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings);
+    // No table for Forest: the plain fold applies unchanged -- min(forest's own count=1,
+    // power>=2's own count=6) = 1. `exact_domain` may still be populated by an EARLIER tightening in
+    // this same And arm (the arith-tuple-count merge, since `power>=2` alone is a single arith
+    // child and does not by itself trigger that merge either -- confirmed by the exact numbers, not
+    // just "some tightening fired"), but Round 36's OWN tightening must not have touched anything.
+    assert_eq!(est.result.printing, 1, "t:forest power>=2: unaffected by Round 36 -- the pre-existing fold's answer");
+}
+
+/// `exact_result_total`'s Round 36 arm: `PrintingCompose`'s acquire branch reads THIS function for its
+/// card/artwork-mode match count (`exact_cards = exact_result_total(composed, indexes, Mode::Card)`),
+/// not `compose_printing_estimate`'s own `exact_domain` -- the exact gap Round 34's own arm exists to
+/// close, confirmed here for Round 36's shape too (found by checking a real query's `explain()` output
+/// during this round, not assumed from the brief: printing mode was already exact from the `And` arm
+/// alone, but card mode still read a `calibrated_balls_into_bins` guess until this arm was added).
+#[test]
+fn exact_result_total_answers_subtype_arith_in_every_space() {
+    let mut vocab = VocabInterner::new();
+    let mut cards = Vec::new();
+    for (i, (cmc, pt)) in [(4u8, 3i8), (5, 4), (6, 5), (7, 6), (8, 7), (8, 7)].into_iter().enumerate() {
+        let mut c = stub_card(1 + i as u128, TYPE_CREATURE, &["Dragon"], &mut vocab);
+        c.cmc = Some(cmc);
+        c.creature_power = Some(pt);
+        c.creature_toughness = Some(pt - 1);
+        cards.push(c);
+    }
+    for i in 0..40 {
+        let mut c = stub_card(200 + i as u128, TYPE_CREATURE, &["Human"], &mut vocab);
+        c.cmc = Some(1);
+        c.creature_power = Some(1);
+        c.creature_toughness = Some(1);
+        cards.push(c);
+    }
+    let n_cards = cards.len();
+    let printing_counts = vec![1usize; n_cards];
+    let mut data = store_of(cards, &printing_counts, vocab);
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.subtype_arith = super::build_subtype_arith_tables(&data.cards, &data.printings, &ptc, &data.coll_vocab, max_ag);
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    let dragon = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Dragon".to_string(), value_id: None };
+    let power_ge = |v: f64| FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Power), op: CmpOp::Ge, rhs: NumExpr::Const(v) };
+    let f = FilterExpr::And(vec![dragon, power_ge(6.0)]);
+    // True joint: cmc=7/power=6 plus both cmc=8/power=7 Dragons -- 3 cards, 3 printings (one each),
+    // and `store_of` gives each printing its own illustration, so 3 artworks too.
+    assert_eq!(super::exact_result_total(&f, &archived.indexes, Mode::Printing), Some(3));
+    assert_eq!(super::exact_result_total(&f, &archived.indexes, Mode::Card), Some(3));
+    assert_eq!(super::exact_result_total(&f, &archived.indexes, Mode::Artwork), Some(3));
 }
