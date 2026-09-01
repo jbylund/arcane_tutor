@@ -492,27 +492,80 @@ def zero_hit_rate_diff(a: list[dict], b: list[dict]) -> None:
     print(f"  A: {hit_a:.1%}   B: {hit_b:.1%}")
 
 
-def compare(path_a: pathlib.Path, path_b: pathlib.Path) -> None:
-    """Print the plan-agreement, ratio-diagnostic, and worst-cell tables for two runs."""
+def worst_cell_tables(rows: list[dict], label_suffix: str) -> None:
+    """Percentile tables of abs_log_ratio by shape/family/structure/mechanism/unique, root=and only.
+
+    Shared between `--compare` (graded on build B, "where did Round 38+ leave the most headroom
+    relative to the other build") and `--report` (graded on the one available build, "where is the
+    most headroom, full stop") -- the question is the same either way, just against a different
+    denominator of runs on hand.
+    """
     from scripts import costbench  # noqa: PLC0415
 
+    and_rows = [r for r in rows if r["root"] == "and" and r["abs_log_ratio"] is not None and r["true_total"] >= MIN_TRUE_FOR_RATIO]
+    for key, label in (
+        (lambda r: r["shape_label"], f"shape_label ({label_suffix})"),
+        (lambda r: r["families"], f"families ({label_suffix})"),
+        (lambda r: r["structure"], f"structure ({label_suffix})"),
+        (lambda r: r["and_mechanism"] or "(no and_trace)", f"and_mechanism ({label_suffix})"),
+        (lambda r: r["unique"], f"unique ({label_suffix})"),
+    ):
+        costbench.percentile_table(
+            and_rows, key, label, value="abs_log_ratio", rank=costbench.BY_MISCALIBRATION, min_rows=costbench.MIN_ROWS
+        )
+
+
+def zero_hit_rate_single(rows: list[dict], label: str) -> None:
+    """Single-run zero-true-count hit rate -- the one-build form of `zero_hit_rate_diff`."""
+    zero_rows = [r for r in rows if r["predicted_is_also_zero"] is not None]
+    if not zero_rows:
+        print(f"\nzero-true-count hit rate ({label}): no zero-true rows")
+        return
+    hit = sum(1 for r in zero_rows if r["predicted_is_also_zero"]) / len(zero_rows)
+    print(f"\nZERO-TRUE-COUNT HIT RATE ({label}), {len(zero_rows):,} rows: {hit:.1%}")
+
+
+def mechanism_coverage_table(rows: list[dict]) -> None:
+    """Per shape_label: what fraction of root=and rows had ANY existing mechanism tighten them.
+
+    Complements `worst_cell_tables`: a shape can read a modest abs_log_ratio purely because most of
+    its rows are small numbers (where ratio is forgiving) while still having NO real mechanism behind
+    it at all (a pure `min_fold` over bare leaves) -- this answers "does this shape have zero coverage
+    today" directly, which is exactly the population `considered`'s `hit: false` entries describe and
+    the design doc's `groups` field was meant to surface in the first place.
+    """
+    and_rows = [r for r in rows if r["root"] == "and"]
+    buckets: dict[str, list[bool]] = collections.defaultdict(list)
+    for r in and_rows:
+        buckets[r["shape_label"]].append(bool(r["and_mechanism"]))
+    print("\nMECHANISM COVERAGE (fraction of root=and rows where SOME existing mechanism tightened the estimate)")
+    print(f"{'shape_label':<36}{'n':>8}{'covered':>10}{'coverage %':>12}")
+    for label, vals in sorted(buckets.items(), key=lambda kv: sum(kv[1]) / len(kv[1])):
+        n = len(vals)
+        covered = sum(vals)
+        print(f"{label:<36}{n:>8}{covered:>10}{covered / n:>11.1%}")
+
+
+def compare(path_a: pathlib.Path, path_b: pathlib.Path) -> None:
+    """Print the plan-agreement, ratio-diagnostic, and worst-cell tables for two runs."""
     a, b = load_rows(path_a), load_rows(path_b)
     print(f"loaded {len(a):,} rows from {path_a}, {len(b):,} rows from {path_b}")
     plan_agreement_table(a, b)
     ratio_paired_diff(a, b)
     zero_hit_rate_diff(a, b)
+    mechanism_coverage_table(b)
     # Which cells are worst in build B RIGHT NOW -- where Round 38+ should look next.
-    b_and = [r for r in b if r["root"] == "and" and r["abs_log_ratio"] is not None and r["true_total"] >= MIN_TRUE_FOR_RATIO]
-    for key, label in (
-        (lambda r: r["shape_label"], "shape_label (build B, root=and only)"),
-        (lambda r: r["families"], "families (build B, root=and only)"),
-        (lambda r: r["structure"], "structure (build B, root=and only)"),
-        (lambda r: r["and_mechanism"] or "(no and_trace)", "and_mechanism (build B, root=and only)"),
-        (lambda r: r["unique"], "unique (build B, root=and only)"),
-    ):
-        costbench.percentile_table(
-            b_and, key, label, value="abs_log_ratio", rank=costbench.BY_MISCALIBRATION, min_rows=costbench.MIN_ROWS
-        )
+    worst_cell_tables(b, "build B, root=and only")
+
+
+def report(path: pathlib.Path) -> None:
+    """Print a single run's own summary tables -- no second build needed to make use of a run."""
+    rows = load_rows(path)
+    by_root = collections.Counter(r["root"] for r in rows)
+    print(f"loaded {len(rows):,} rows from {path}; by root: {dict(by_root)}")
+    zero_hit_rate_single(rows, "single run")
+    mechanism_coverage_table(rows)
+    worst_cell_tables(rows, "single run")
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────────────────────────
@@ -524,6 +577,7 @@ def main() -> None:
     parser.add_argument("--engine-dir", type=pathlib.Path, default=None, help="isolated maturin build+extract dir")
     parser.add_argument("--out", type=pathlib.Path, default=None)
     parser.add_argument("--compare", nargs=2, type=pathlib.Path, default=None, metavar=("A", "B"))
+    parser.add_argument("--report", type=pathlib.Path, default=None, help="summarize one run with no second build to diff against")
     parser.add_argument("--n-per-shape", type=int, default=50, help="queries per curated shape spec (300 for the full survey)")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--mode", choices=("realistic", "uniform"), default="realistic")
@@ -535,8 +589,11 @@ def main() -> None:
     if args.compare:
         compare(*args.compare)
         return
+    if args.report:
+        report(args.report)
+        return
     if args.out is None:
-        parser.error("--out is required unless --compare is given")
+        parser.error("--out is required unless --compare/--report is given")
 
     if args.engine_dir:
         sys.path.insert(0, str(args.engine_dir.resolve()))
