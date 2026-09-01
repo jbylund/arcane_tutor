@@ -188,6 +188,7 @@ total regret by 0.0 ms).
 | 35 | `leaves_are_disjoint` (`lib.rs`), one new arm: `set:X`/`set:Y` (x != y) added alongside the existing border/legality/rarity "exactly one value per printing" arms, feeding both `pair_bounded_min` and `exact_result_total`'s 2-child `And` shortcut | kept | n/a (not this doc's own metric) | `#852` 89%→89% clean (same-seed A/B, within noise); Round 28's `scan_units` unreachable by this change; Rounds 30-34's own populations untouched (disjoint blast radius: one new match arm) | see "Round 35" narrative below — real per-printing residual walk (`card_match_count`) verified to require the SAME printing to satisfy an And's whole residual in BOTH `Mode::Card` and `Mode::Artwork`, so the fix is exact in all three spaces despite `set` (unlike border/rarity) commonly varying across a card's own reprints and even across one illustration's own printings (16,838/46,523 real `illustration_id`s span >1 set); 40 random real set pairs x 3 modes (120 checks): baseline 0/120 agree (real always 0, estimate always nonzero, up to 135) -> fixed 120/120 exact |
 | 37 | `and_trace` (`lib.rs`): structured per-query provenance for the `And` arm's own evaluation, as a tree of `leaf`/`joint_lookup`/`independence` nodes plus a `considered` list of every 2-or-3-child combination the arm's fixed sequence attempted (hit or miss) — replaces the throwaway env-gated `eprintln!` instrumentation Rounds 33-36 each rebuilt from scratch. `scripts/nway_estimate_truth_survey.py`: a checked-in, deterministic, curated-leaf-shape estimate-vs-truth survey harness (replaces one-off scratchpad diagnostics), primary metric plan-choice agreement (not raw ratio) | kept | n/a (tooling; no estimator value changed) | n/a | see "Round 37" narrative below — two real bugs found and fixed before trusting any output: `and_trace_for` missing an `is_printing_composable` guard (crashed `explain()` on any `is:`/`keyword:` tag query, breaking its "safe to call constantly" contract) and an inverted worst-first ranking in the harness's own report tables (reused a ratio-shaped rank formula on an already-distance-shaped metric, sorting a perfect median to the top of "worst"). First full sweep (53,778 rows, 88 curated shapes, all 3 spaces) found `color:X`/`id:X`/`cmc<op>N` paired with a price comparison at 0% mechanism coverage and the worst median error in the whole survey — the input Round 38 acted on |
 | 38 | `min(fold, independence)` for `compose_printing_estimate`'s `And` arm: `color:X`/`id:X`/`cmc<op>N` paired with exactly one price comparison (`usd`/`eur`/`tix`, any op) — the first real use of the `"independence"` op Round 37's `and_trace` tree schema reserved for it | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 53,766 shared rows: 454 plan-choice flips total, 452 inside the three target shapes (all toward `GatheredScan`), 2 incidental elsewhere (an eligible pair embedded inside a larger conjunction); `root=leaf`/`root=or`: 0 changes, confirming the fix stayed scoped to the `And` arm | see "Round 38" narrative below — calibrated against 610 real rows: median `\|log ratio\|` 0.88→0.07 (94.8% improved, 4.4% regressed, concentrated in `cmc+usd`'s own undershoot tail); a grid search over a multiplicative bias (`fudge × independence`, 1.0–2.0) found `fudge = 1.0` (no bias at all) strictly optimal on both median AND mean error for every shape — contradicting the initial "bias it slightly high to be safe" intuition. Independently re-verified end to end with a fresh before/after sweep (not just the implementing agent's own report): all three `unique=` modes improve (printing most tightly — it's the only space `result` directly tightens; card/artwork improve via the same downstream scaling every other estimate-only shape already goes through, since `exact_domain_cards`/`exact_domain_artworks` are populated only by genuinely exact mechanisms, never by this one) |
+| 39 | `and_estimate_ns` (`AcquireFacts`): single-shot wall time of the real, production, acquire-time `compose_printing_estimate` call inside `acquire_plan_features`'s `PrintingCompose` branch — a permanent per-query cost baseline for grading the general partition-search estimator's own "tax" once it exists, not another accuracy fix | kept | n/a (tooling; no estimate value changed) | n/a | see "Round 39" narrative below — real distribution (53,778-row sweep): median 750ns, p90 4.4µs, p99 11.6µs; populated on exactly the 59.3% of rows whose acquire took the `PrintingCompose` branch (`None` elsewhere, never "0ns"). Paired-wheel latency A/B for this specific addition (required by `.claude/rules/benchmark-methodology-review.md` for any change to a documented hot path): the real effect was not distinguishable from the same-build canary's own run-order drift — reported honestly as "no measurable overhead detected," not claimed as a proven-safe number |
 
 ### Round 1
 
@@ -2523,3 +2524,58 @@ Blast radius: `card_engine/src/lib.rs` (`numeric_cmp_field`, `is_price_num_field
 tightening block, `AndTraceNode`'s `"independence"` op), `card_engine/src/tests.rs` (three new tests),
 `scripts/nway_estimate_truth_survey.py` (`tree_mechanisms()` update). `cargo test`: 196 passed (193 +
 3). `cargo clippy --all-targets -- -D warnings`: clean.
+
+### Round 39
+
+Target: not another accuracy fix — a permanent cost baseline, ahead of building the general
+partition-search estimator the design doc describes (still entirely unbuilt; Rounds 33-38 are all
+one-more-hand-written-branch, not the general machinery). Before that engine exists, we want a real
+per-query nanosecond number for what today's fixed-sequence `And` arm already costs, so a future
+round can answer "is the general engine's tax small" with a real before/after comparison instead of
+an assumption.
+
+**Where the timer goes matters.** `compose_printing_estimate` is called from six places. Only ONE is
+the real, production, acquire-time cost every `printing_compose`-routed query already pays for
+routing: `lib.rs:13833`, inside `acquire_plan_features`'s own `PrintingCompose` branch (confirmed by
+reading the enclosing function, not assumed). The other five are out of scope and deliberately
+untouched: `and_trace_for`'s diagnostic-only duplicate call (timing it would measure `explain()`'s
+own extra overhead — it calls the estimator twice — not what production pays); three recursive
+per-child calls nested inside whichever outer call started the recursion (instrumenting these too
+would double/triple-count the same wall-clock time); and `compose_gather_declines`'s dispatch-time
+decline check (real production cost, but a conditionally-reached narrower population, not the
+acquire-time routing decision every query goes through).
+
+**Deliberately single-shot, not multi-trial.** A lone `Instant::now()`/`elapsed()` pair is noisy for
+a fast operation (`Instant::now()`'s own ~10-40ns overhead can be a real fraction of a plain
+min-fold's true cost), which is normally why this codebase repeats trials and takes a min
+(`explain_analyze`'s whole discipline). Not needed here: the target question is an AGGREGATE
+distribution across thousands of queries (`nway_estimate_truth_survey.py` already runs at that
+scale), where per-call jitter washes out in the percentile view the same way `costbench.py`'s
+`percentile`/`spread` machinery already tolerates per-observation noise elsewhere. Multi-trial
+repetition would answer a different question (one query's precise cost) that isn't the one being
+asked, at a real cost to the "safe to call constantly" property `explain()` is documented to have.
+
+**Real distribution** (53,778-row sweep, `--n-per-shape 300 --seed 0`): median 750ns, p90 4,416ns,
+p99 11,625ns, mean 1,644ns. Populated (`Some`) on exactly 31,864/53,778 rows (59.3%) — verified this
+count matches `count_source == "printing_compose"` exactly, confirming the `None`-means-"branch
+didn't run" contract holds precisely (not "ran in 0ns", a real distinction a caller could otherwise
+get wrong).
+
+**The methodology this repo's own rule requires, applied to itself.**
+`.claude/rules/benchmark-methodology-review.md` requires a dedicated paired A/B for any addition to
+a path this doc documents as hot, not an assumption that "it's just an `Instant::now()` pair,
+obviously cheap." Two isolated release wheels (`costcell/trunk` before vs. this branch after),
+`bench_query_latency_ab.py --mode realistic --sample 400`, interleaved, WITH same-build canaries on
+both sides. Result: the real A/B read `+1.3µs`/`+2.5µs` across two replicates, but the same-build
+canaries (before-vs-itself, after-vs-itself) independently showed `+0.8µs`/`+2.0µs` of pure
+run-position drift with zero code difference, and a swapped-order replicate flipped the "effect"'s
+sign entirely. Honest conclusion: **not distinguishable from the canary's own noise floor** — no
+measurable overhead is claimed for this addition, which is the correct thing to report when that's
+what the data actually shows, not a forced "safe" verdict.
+
+Blast radius: `card_engine/src/lib.rs` (`acquire_plan_features`'s return tuple gains a fourth
+element, `AcquireFacts::and_estimate_ns`, the one new call-site timer), `card_engine/src/tests.rs`
+(one new test asserting `Some` on the `PrintingCompose` branch and `None` on a control query with no
+`is_printing_composable` arm at all), `scripts/costbench.py` (`ACQUIRE_KEYS` schema update),
+`scripts/nway_estimate_truth_survey.py` (row schema gains `and_estimate_ns`). `cargo test`: 197
+passed (196 + 1). `cargo clippy --all-targets -- -D warnings`: clean.
