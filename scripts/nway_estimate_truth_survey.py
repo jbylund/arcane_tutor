@@ -112,6 +112,15 @@ SAFE_PAIRS: tuple[tuple[str, str], ...] = (
 TRIPLES: tuple[tuple[str, str, str], ...] = (
     ("color", "legality", "type"),  # the verified color:G format:pioneer t:elf shape
     ("color", "type", "cmc"),
+    # Round 42: `set:X` + a subtype leaf + a residual usd/cn bound. `set:` (unlike `color:`/`id:`) has
+    # no `compile_plane` arm at all, so it can never get swept into a `compile_plane` joint alongside
+    # another plane-compilable leaf the way `color`+`legality` above can (confirmed directly: on the
+    # real corpus, `color:G format:pioneer t:elf`'s dim leaf gets covered by compile_plane's own
+    # color+legality joint before SubtypePairIndexes's residual scan ever runs, so that curated triple
+    # does not exercise this round's fix at all -- see the round's own PR notes). This shape is the one
+    # that actually reaches the new residual-scan code path uncontested.
+    ("set", "type", "usd"),
+    ("set", "type", "cn"),
 )
 ARITH_SHAPES: tuple[tuple[str, ...], ...] = (
     ("arith",),

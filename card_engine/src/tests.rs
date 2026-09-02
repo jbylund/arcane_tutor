@@ -8470,6 +8470,436 @@ fn subtype_pair_and_arm_rest_max_caps_fallback() {
     assert_eq!(est, 0, "set:ddd t:elf: rest_max=0 must cap the fallback to 0, not the uncapped 1");
 }
 
+/// Round 42: `SubtypePairIndexes`'s table lookup used to require the WHOLE `And` be exactly the
+/// `(dim, subtype)` pair (`v.len() == 2`) -- generalized into a residual scan so a 3+-leaf `And`
+/// combining a dim leaf with a subtype leaf and anything else still gets the exact table's benefit.
+/// This is the basic case: a genuine table HIT fires with a third, wholly unrelated leaf present
+/// (`kw:Flying` -- not plane-compilable, not arith-eligible, not itself a `subtype_pair_dim`/
+/// `subtype_pair_leaf` match, so it neither interferes with nor gets swept into this mechanism).
+#[test]
+fn subtype_pair_hit_fires_in_three_leaf_and() {
+    let mut vocab = VocabInterner::new();
+    let flying = vocab.intern("Flying".to_string()).unwrap();
+    let cards = vec![
+        stub_card(1, TYPE_CREATURE, &["Elf"], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &["Elf"], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &[], &mut vocab),
+    ];
+    let mut data = store_of(cards, &[1, 1, 1], vocab);
+    for p in &mut data.printings {
+        p.card_set_code = InlineStr::from_str("aaa");
+    }
+    data.cards[0].card_keywords.push(flying);
+    data.indexes.keywords = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_keywords);
+    data.indexes.set_codes = {
+        let mut idx: TagIndex = HashMap::new();
+        for (i, p) in data.printings.iter().enumerate() {
+            idx.entry(p.card_set_code.as_str().to_string()).or_default().push(i as u32);
+        }
+        idx
+    };
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, max_ag);
+    // Hand-set exact table entry -- deliberately smaller than the real per-leaf counts (set:aaa=3,
+    // t:elf=2), so a hit is unambiguous and not an artifact of the plain fold.
+    data.indexes.subtype_pairs.set.set_cards.insert("aaa".to_string(), 3);
+    data.indexes.subtype_pairs.set.top.entry("aaa".to_string()).or_default().insert("Elf".to_string(), SpaceTotals { printings: 1, cards: 1, artworks: 1 });
+    data.indexes.subtype_pairs.set.rest_max = 100;
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let f = FilterExpr::And(vec![
+        FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value: "aaa".to_string() },
+        FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None },
+        FilterExpr::CollectionCmp { field: CollField::Keywords, op: CmpOp::Ge, value: "Flying".to_string(), value_id: None },
+    ]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    assert_eq!(est.result.printing, 1, "the 3-leaf And must still get the exact table hit, not the fold's fallback");
+    let domain = est.exact_domain.expect("a table hit is exact -- exact_domain must be populated even with a third leaf present");
+    assert_eq!((domain.printing, domain.card, domain.artwork), (1, Some(1), Some(1)));
+
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    let hit = and_trace.considered.iter().find(|g| g.mechanism == "SubtypePairIndexes").expect("SubtypePairIndexes must have been attempted for set:aaa + t:elf despite the third leaf");
+    assert!(hit.hit, "the hand-set table entry must be found");
+    assert_eq!(hit.card, Some(1));
+}
+
+/// Round 42: the hit's `exact_domain_cards` must `.min()`-CHAIN with a value a DIFFERENT mechanism
+/// already set, not overwrite it -- the direct test of this round's own "no placement rule needed"
+/// claim (`compose_printing_estimate`'s `And` arm doc). `type:creature AND format:A` (both
+/// plane-compilable, neither touching `set:`/subtype at all) gives `compile_plane`'s own `best_other`
+/// joint a real, independent `exact_domain_cards = 3` BEFORE this mechanism ever runs; `set:aaa AND
+/// t:elf` then gets its own hand-set table hit of `cards: 1` -- strictly tighter. Getting `1` (not `3`,
+/// and not the fold's own looser number) proves the SECOND mechanism's tighter answer survived being
+/// chained onto the FIRST mechanism's already-populated `exact_domain_cards`.
+#[test]
+fn subtype_pair_hit_min_chains_with_a_different_exact_mechanism() {
+    let mut vocab = VocabInterner::new();
+    let mut cards = vec![
+        stub_card(1, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(4, TYPE_SORCERY, &["Elf"], &mut vocab),
+        stub_card(5, TYPE_SORCERY, &["Elf"], &mut vocab),
+    ];
+    // cards 0-2: green, legal in format A (shift 0) -- the `color:G format:A` joint (both individually
+    // printing-composable AND plane-compilable, unlike `type:`, which has no arm in
+    // `compose_printing_estimate` at all and can never reach here as a bare And child).
+    // cards 3-4: not green, not legal in A, but carry the Elf subtype -- `t:elf`'s own real solo
+    // count (2), kept deliberately larger than the hand-set table entry below (1) so the exact hit,
+    // not the real per-leaf data, is what the assertion actually proves.
+    let g = super::color_to_bit("G");
+    let r = super::color_to_bit("R");
+    for c in cards.iter_mut().take(3) {
+        c.card_legalities = 0b01;
+        c.card_colors = g;
+    }
+    for c in cards.iter_mut().skip(3) {
+        c.card_colors = r;
+    }
+    let mut data = store_of(cards, &[1, 1, 1, 1, 1], vocab);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.card_set_code = InlineStr::from_str("aaa");
+        if i < 3 {
+            p.card_legalities = 0b01;
+        }
+    }
+    data.indexes.set_codes = {
+        let mut idx: TagIndex = HashMap::new();
+        for (i, p) in data.printings.iter().enumerate() {
+            idx.entry(p.card_set_code.as_str().to_string()).or_default().push(i as u32);
+        }
+        idx
+    };
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, max_ag);
+    // `card_legalities` above is read at CARD level here (no divergent card in this fixture, so
+    // whether `format:A` lands in `compile_plane`'s `card_invariant` or `existential` bucket, it still
+    // combines into the SAME joint as `color:G` -- see this round's own doc for why that
+    // combination is what's under test, not a placement subtlety).
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    data.indexes.subtype_pairs.set.set_cards.insert("aaa".to_string(), 5);
+    data.indexes.subtype_pairs.set.top.entry("aaa".to_string()).or_default().insert("Elf".to_string(), SpaceTotals { printings: 1, cards: 1, artworks: 1 });
+    data.indexes.subtype_pairs.set.rest_max = 100;
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let f = FilterExpr::And(vec![
+        FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: g },
+        FilterExpr::Legality { shift: Some(0), expected: 0b01 },
+        FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value: "aaa".to_string() },
+        FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None },
+    ]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    let plane_hit = and_trace.considered.iter().find(|g| g.mechanism == "PlanePopcount").expect("color:G + format:A must combine into one PlanePopcount joint");
+    assert_eq!(plane_hit.card, Some(3), "3 green cards legal in format A");
+    let pair_hit = and_trace.considered.iter().find(|g| g.mechanism == "SubtypePairIndexes").expect("set:aaa + t:elf must still be attempted independently");
+    assert_eq!(pair_hit.card, Some(1));
+
+    let domain = est.exact_domain.expect("both contributing mechanisms are exact -- exact_domain must be populated");
+    assert_eq!(domain.card, Some(1), "the tighter of the two independently-exact candidates (1, not 3) must win via min-chaining");
+    assert_eq!(est.result.card, Some(1), "the final result.card must agree with exact_domain, not fall back to the looser PlanePopcount number");
+}
+
+/// Round 42: EVERY `(dim, subtype)` pair found in the residual gets its own independent lookup, and
+/// they fold together via `.min()` -- not just the first one found. Two DIFFERENT dim families
+/// (`set:aaa`, `color:G`) both paired against the same `t:elf`, each with its own hand-set table entry
+/// of a different size, so the smaller one winning proves both were actually computed (a shared-family
+/// two-`set:` pair can't be used here -- two different `set:X`/`set:Y` values are mutually disjoint,
+/// see `set_set_disjoint_pair_exact_in_every_space`, and would short-circuit the whole `And` to 0 via
+/// `pair_bounded_min` before this mechanism even runs). `color:G` alone (no OTHER plane-compilable
+/// leaf alongside it) never reaches `compile_plane`'s `best_other` threshold (`card_invariant.len() >=
+/// 2` needs a second plane-compilable leaf, and there isn't one here), so it stays uncovered for this
+/// mechanism's own residual scan -- unlike the dedicated covered-exclusion test below.
+#[test]
+fn subtype_pair_multiple_dim_subtype_pairs_all_fold_via_min() {
+    let mut vocab = VocabInterner::new();
+    let mut cards = vec![
+        stub_card(1, TYPE_CREATURE, &["Elf"], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &["Elf"], &mut vocab),
+        stub_card(4, TYPE_CREATURE, &[], &mut vocab),
+    ];
+    let g = super::color_to_bit("G");
+    let r = super::color_to_bit("R");
+    cards[0].card_colors = g;
+    cards[1].card_colors = g;
+    cards[2].card_colors = r;
+    cards[3].card_colors = r;
+    let mut data = store_of(cards, &[1, 1, 1, 1], vocab);
+    for p in &mut data.printings {
+        p.card_set_code = InlineStr::from_str("aaa");
+    }
+    data.indexes.set_codes = {
+        let mut idx: TagIndex = HashMap::new();
+        for (i, p) in data.printings.iter().enumerate() {
+            idx.entry(p.card_set_code.as_str().to_string()).or_default().push(i as u32);
+        }
+        idx
+    };
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, max_ag);
+    data.indexes.subtype_pairs.set.set_cards.insert("aaa".to_string(), 4);
+    data.indexes.subtype_pairs.set.top.entry("aaa".to_string()).or_default().insert("Elf".to_string(), SpaceTotals { printings: 3, cards: 3, artworks: 3 });
+    data.indexes.subtype_pairs.set.rest_max = 100;
+    data.indexes.subtype_pairs.colors.top.entry(g).or_default().insert("Elf".to_string(), SpaceTotals { printings: 2, cards: 2, artworks: 2 });
+    data.indexes.subtype_pairs.colors.rest_max = 100;
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let f = FilterExpr::And(vec![
+        FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value: "aaa".to_string() },
+        FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: g },
+        FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None },
+    ]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    let hits: Vec<_> = and_trace.considered.iter().filter(|g| g.mechanism == "SubtypePairIndexes").collect();
+    assert_eq!(hits.len(), 2, "both (set:aaa, t:elf) and (color:G, t:elf) must each get their own trace group");
+    assert!(hits.iter().any(|g| g.card == Some(3)), "the set:aaa hit must appear");
+    assert!(hits.iter().any(|g| g.card == Some(2)), "the color:G hit must appear, tighter than set:aaa's");
+
+    let domain = est.exact_domain.expect("both hits are exact");
+    assert_eq!(domain.card, Some(2), "the tighter of the two hits (color:G's 2, not set:aaa's 3) must win");
+    assert_eq!(domain.printing, 2);
+}
+
+/// Round 42: with 2+ uncovered dim leaves (`set:aaa`, `color:G`) and NO table hit for either pairing
+/// against `t:elf`, the capped independence-product fallback must decline entirely -- not compute an
+/// estimate for one of them arbitrarily and take a min. Mirrors the independence registry's own
+/// existing "2+ occurrences of a class with no combining table: dropped" precedent for the identical
+/// ambiguity.
+#[test]
+fn subtype_pair_estimate_declines_with_two_uncovered_dims() {
+    let mut vocab = VocabInterner::new();
+    let mut cards = vec![stub_card(1, TYPE_CREATURE, &["Elf"], &mut vocab), stub_card(2, TYPE_CREATURE, &[], &mut vocab)];
+    cards[0].card_colors = super::color_to_bit("G");
+    cards[1].card_colors = super::color_to_bit("G");
+    let mut data = store_of(cards, &[1, 1], vocab);
+    for p in &mut data.printings {
+        p.card_set_code = InlineStr::from_str("aaa");
+    }
+    data.indexes.set_codes = {
+        let mut idx: TagIndex = HashMap::new();
+        for (i, p) in data.printings.iter().enumerate() {
+            idx.entry(p.card_set_code.as_str().to_string()).or_default().push(i as u32);
+        }
+        idx
+    };
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, max_ag);
+    // Deliberately no `subtype_pairs` entries at all -- both (set:aaa, t:elf) and (color:G, t:elf) miss.
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let f = FilterExpr::And(vec![
+        FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value: "aaa".to_string() },
+        FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: super::color_to_bit("G") },
+        FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None },
+    ]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert!(
+        !and_trace.considered.iter().any(|g| g.mechanism == "SubtypePairIndexes" && g.hit),
+        "no table entry exists for either pair -- there must be no hit"
+    );
+    assert!(
+        !and_trace.considered.iter().any(|g| g.mechanism == "SubtypePairEstimate"),
+        "2+ uncovered dim leaves with no table hit for any combination must decline the estimate fallback entirely, not guess one"
+    );
+    assert!(est.exact_domain.is_none(), "nothing exact fired for this fixture");
+}
+
+/// Round 42: the symmetric ambiguity -- 2+ uncovered SUBTYPE leaves (`t:elf`, `t:goblin`) paired
+/// against one dim leaf (`set:aaa`), no table hit for either pairing. Same decline as the two-dims
+/// case above, the other axis of the Cartesian product.
+#[test]
+fn subtype_pair_estimate_declines_with_two_uncovered_subtypes() {
+    let mut vocab = VocabInterner::new();
+    let cards = vec![stub_card(1, TYPE_CREATURE, &["Elf"], &mut vocab), stub_card(2, TYPE_CREATURE, &["Goblin"], &mut vocab)];
+    let mut data = store_of(cards, &[1, 1], vocab);
+    for p in &mut data.printings {
+        p.card_set_code = InlineStr::from_str("aaa");
+    }
+    data.indexes.set_codes = {
+        let mut idx: TagIndex = HashMap::new();
+        for (i, p) in data.printings.iter().enumerate() {
+            idx.entry(p.card_set_code.as_str().to_string()).or_default().push(i as u32);
+        }
+        idx
+    };
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, max_ag);
+    // Deliberately no `subtype_pairs` entries -- both (set:aaa, t:elf) and (set:aaa, t:goblin) miss.
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let f = FilterExpr::And(vec![
+        FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value: "aaa".to_string() },
+        FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None },
+        FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Goblin".to_string(), value_id: None },
+    ]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert!(!and_trace.considered.iter().any(|g| g.mechanism == "SubtypePairIndexes" && g.hit), "neither pair has a table entry");
+    assert!(
+        !and_trace.considered.iter().any(|g| g.mechanism == "SubtypePairEstimate"),
+        "2+ uncovered subtype leaves with no table hit for any combination must decline the estimate fallback entirely"
+    );
+}
+
+/// Round 42: the capped independence-product fallback still fires correctly when reached via the
+/// residual scan (exactly one uncovered dim + one uncovered subtype leaf) inside a 3-leaf `And`, not
+/// just the old strict 2-leaf shape -- `subtype_pair_and_arm_tightening`'s own "aaa" case, extended
+/// with a third, harmless leaf (`kw:Flying`) present alongside.
+#[test]
+fn subtype_pair_estimate_fallback_still_fires_in_three_leaf_and() {
+    let mut vocab = VocabInterner::new();
+    let flying = vocab.intern("Flying".to_string()).unwrap();
+    let mut cards = vec![stub_card(1, TYPE_CREATURE, &["Elf"], &mut vocab), stub_card(2, TYPE_CREATURE, &["Elf"], &mut vocab), stub_card(3, TYPE_CREATURE, &["Elf"], &mut vocab)];
+    for i in 0..5 {
+        cards.push(stub_card(10 + i as u128, TYPE_CREATURE, &[], &mut vocab));
+    }
+    let mut data = store_of(cards, &[1; 8], vocab);
+    for p in &mut data.printings {
+        p.card_set_code = InlineStr::from_str("aaa");
+    }
+    // Given to 4 of the 8 cards (not just 1) so `kw:Flying`'s own solo count (4) doesn't itself become
+    // the tightest leaf in the plain min-fold and mask whatever this mechanism computes (3) -- the
+    // point of this fixture is the ESTIMATE actually winning, not an unrelated leaf accidentally being
+    // tighter still.
+    for c in data.cards.iter_mut().take(4) {
+        c.card_keywords.push(flying);
+    }
+    data.indexes.keywords = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_keywords);
+    data.indexes.set_codes = {
+        let mut idx: TagIndex = HashMap::new();
+        for (i, p) in data.printings.iter().enumerate() {
+            idx.entry(p.card_set_code.as_str().to_string()).or_default().push(i as u32);
+        }
+        idx
+    };
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, max_ag);
+    // No `subtype_pairs` entry for "aaa" at all -- the fallback formula must run: dim_card(8) *
+    // subtype_card(3) / n_cards(8) = 3, scaled to printing space 3 * 8 / 8 = 3.
+    data.indexes.subtype_pairs.set.set_cards.insert("aaa".to_string(), 8);
+    data.indexes.subtype_pairs.set.rest_max = 100;
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let f = FilterExpr::And(vec![
+        FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value: "aaa".to_string() },
+        FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None },
+        FilterExpr::CollectionCmp { field: CollField::Keywords, op: CmpOp::Ge, value: "Flying".to_string(), value_id: None },
+    ]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    assert_eq!(est.result.printing, 3, "the independence fallback must still fire with a third leaf present");
+    assert!(est.exact_domain.is_none(), "the fallback is an ESTIMATE, not exact");
+
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    let hit = and_trace.considered.iter().find(|g| g.mechanism == "SubtypePairEstimate").expect("the fallback must have been attempted");
+    assert!(hit.hit);
+    assert_eq!(hit.printing, Some(3));
+}
+
+/// Round 42: a dim leaf already `covered` by an EARLIER mechanism (`compile_plane`'s own `best_other`
+/// joint, here `color:G AND format:A`) must be excluded from this mechanism's residual scan entirely
+/// -- no double computation, no panic, and no incorrect SECOND contribution for a leaf whose
+/// correlation is already captured exactly by whatever covered it first. A hand-set `(color:G,
+/// t:elf)` table entry is deliberately present (and deliberately SMALLER than `best_other`'s real
+/// count) so that if the covered-exclusion regressed, the wrongly-computed hit would visibly change
+/// `exact_domain_cards` rather than being masked by `.min()` picking the same number either way.
+#[test]
+fn subtype_pair_covered_dim_leaf_excluded_from_residual_scan() {
+    let mut vocab = VocabInterner::new();
+    let mut cards = vec![
+        stub_card(1, TYPE_CREATURE, &["Elf"], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(4, TYPE_CREATURE, &["Elf"], &mut vocab),
+    ];
+    let g = super::color_to_bit("G");
+    let r = super::color_to_bit("R");
+    cards[0].card_colors = g;
+    cards[1].card_colors = g;
+    cards[2].card_colors = g;
+    cards[3].card_colors = r;
+    // cards 0,1,2 are legal in format A; card 3 (the other Elf) is not -- so the true `color:G AND
+    // format:A` joint is exactly {card0, card1} = 2 cards, and the real `t:elf` population {card0,
+    // card3} is disjoint from it in card2's case, matching the real motivating shape (`color:G`,
+    // `format:pioneer`, `t:elf`) where none of the three predicates lines up with the others exactly.
+    for c in cards.iter_mut().take(2) {
+        c.card_legalities = 0b01;
+    }
+    let mut data = store_of(cards, &[1, 1, 1, 1], vocab);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.card_set_code = InlineStr::from_str("aaa");
+        if i < 2 {
+            p.card_legalities = 0b01;
+        }
+    }
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, max_ag);
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    // Deliberately SMALLER than the real `color:G AND format:A` count (2) -- see this test's own doc.
+    data.indexes.subtype_pairs.colors.top.entry(g).or_default().insert("Elf".to_string(), SpaceTotals { printings: 1, cards: 1, artworks: 1 });
+    data.indexes.subtype_pairs.colors.rest_max = 100;
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let f = FilterExpr::And(vec![
+        FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: g },
+        FilterExpr::Legality { shift: Some(0), expected: 0b01 },
+        FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None },
+    ]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    let plane_hit = and_trace.considered.iter().find(|g| g.mechanism == "PlanePopcount").expect("color:G + format:A must combine into one PlanePopcount joint");
+    assert_eq!(plane_hit.card, Some(2), "cards 0 and 1: green and legal in format A");
+    assert!(
+        !and_trace.considered.iter().any(|g| g.mechanism == "SubtypePairIndexes"),
+        "color:G was already covered by PlanePopcount -- this mechanism must find zero uncovered dim leaves and never even attempt a lookup"
+    );
+
+    let domain = est.exact_domain.expect("PlanePopcount alone is exact");
+    assert_eq!(domain.card, Some(2), "must equal PlanePopcount's own count, unchanged -- a regression would wrongly pull this down to 1 via the covered color leaf");
+}
+
 /// Card-space collection containment fields (`type:`/`kw:`/`otag:`) and their printing-space siblings
 /// (`art:`/`is:`) as PrintingCompose leaves: `compose_printing_bits` must be bit-for-bit the residual
 /// path's truth for the positive `Ge` leaf, its negation, mixes with a range, and absent values —

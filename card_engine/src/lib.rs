@@ -1956,11 +1956,15 @@ fn subtype_pair_leaf(f: &FilterExpr) -> Option<&str> {
     }
 }
 
-/// The EXACT `SpaceTotals` for a strict 2-leaf `And` of `subtype_pair_dim` + `subtype_pair_leaf`, when
-/// the pair is one of the top 256 most extreme real ones `build_subtype_pair_tables` kept. `None` on a
-/// miss or when the shape doesn't match at all -- the caller's own fallback (if it has one) applies.
-fn subtype_pair_exact<'i>(children: &[FilterExpr], indexes: &'i Archived<CardIndexes>) -> Option<&'i Archived<SpaceTotals>> {
-    let [a, b] = children else { return None };
+/// The EXACT `SpaceTotals` for one `(a, b)` pair of `FilterExpr`s where one is a `subtype_pair_dim`
+/// leaf and the other a `subtype_pair_leaf` leaf (either order), when the pair is one of the top 256
+/// most extreme real ones `build_subtype_pair_tables` kept. `None` on a miss or when the shape doesn't
+/// match at all -- the caller's own fallback (if it has one) applies. Round 42: takes the two leaves
+/// directly rather than a 2-element slice -- callers used to be required to hand this a strict 2-leaf
+/// `And`'s full child list; now `compose_printing_estimate`'s `And` arm calls this once per (dim,
+/// subtype) pair found anywhere in a residual of arbitrary size, not just when the whole `And` has
+/// exactly two children.
+fn subtype_pair_exact<'i>(a: &FilterExpr, b: &FilterExpr, indexes: &'i Archived<CardIndexes>) -> Option<&'i Archived<SpaceTotals>> {
     fn try_pair<'i>(dim: &FilterExpr, sub: &FilterExpr, indexes: &'i Archived<CardIndexes>) -> Option<&'i Archived<SpaceTotals>> {
         let subtype = subtype_pair_leaf(sub)?;
         match subtype_pair_dim(dim)? {
@@ -9420,101 +9424,120 @@ fn compose_printing_estimate(
                     });
                 }
             }
-            // Round 34 tightening: a bare `set:X`/`c:X`/`id:X` And'd with exactly one subtype leaf
-            // (`t:Y`, `CollectionCmp{Subtypes, Ge}`) -- nothing else in the `And` -- gets an exact
-            // triple from `indexes.subtype_pairs` (top 256 most extreme real pairs per dimension) or,
-            // on a miss, a capped independence-product ESTIMATE, instead of the plain min-fold above.
-            // `t:` has no `compile_plane` arm (unlike the main card TYPES -- `creature`/`instant`/etc,
-            // `TypeCmp`, which already has its own whole-tree `compile_plane` fast path and is
-            // untouched by this round) and isn't in any pair table, so this pair gets NO tightening
-            // from any existing mechanism otherwise: the fold picks whichever leaf's own CORPUS-WIDE
-            // count is smaller.
+            // Round 34 tightening, generalized in Round 42: a `set:X`/`c:X`/`id:X` leaf paired with a
+            // subtype leaf (`t:Y`, `CollectionCmp{Subtypes, Ge}`) gets an exact triple from
+            // `indexes.subtype_pairs` (top 256 most extreme real pairs per dimension) or, on a miss, a
+            // capped independence-product ESTIMATE, instead of the plain min-fold above. `t:` has no
+            // `compile_plane` arm (unlike the main card TYPES -- `creature`/`instant`/etc, `TypeCmp`,
+            // which already has its own whole-tree `compile_plane` fast path and is untouched by this
+            // round) and isn't in any pair table, so this pair gets NO tightening from any existing
+            // mechanism otherwise: the fold picks whichever leaf's own CORPUS-WIDE count is smaller.
+            //
+            // This USED to require the WHOLE `And` be exactly these two children (`v.len() == 2`), so a
+            // 3+-leaf query combining a dim leaf with a subtype leaf and anything else (`color:G
+            // format:pioneer t:elf`) got zero benefit here, even though `color:G t:elf` alone would hit
+            // the table. There is no placement/ordering issue to fix -- `exact_domain_*`'s `.map_or(x,
+            // |d| d.min(x))` chaining (see the arith-ID-probe merge above, and this mechanism's own hit
+            // branch below) already composes correctly across mechanisms regardless of what else ran
+            // first or what other leaves are present; the actual gap was that this mechanism never
+            // computed a candidate at all past two total leaves. Fixed by scanning the residual
+            // (leaves `covered` doesn't already claim -- the same shape the independence registry scan
+            // below and Round 41's card/artwork narrow-leaf floor both already use) for EVERY (dim,
+            // subtype) pair, not just when the whole `And` happens to have exactly two children.
             //
             // A table HIT is genuinely exact in all three spaces (`SpaceTotals`, not a flat number --
             // see `SetSubtypeTable`'s own doc for why), so it feeds `exact_domain_*` exactly like
             // `best_other`/the arith-tuple merge above -- `min`-ing across multiple independently-exact
-            // intersections is still exact, same reasoning those two already establish. A MISS is not
-            // exact (`independence_product = dim_card * subtype_card / n_cards`, capped at `rest_max`),
-            // so it only narrows `result` (printing space), never `exact_domain_*` -- the same
-            // exact/estimate line Round 33's own density tightening draws for the identical reason.
-            if v.len() == 2 {
-                if let Some(totals) = subtype_pair_exact(v, indexes) {
-                    let printings = totals.get(Mode::Printing);
-                    let cards = totals.get(Mode::Card);
-                    let artworks = totals.get(Mode::Artwork);
-                    result = result.min(printings);
-                    exact_domain_cards = Some(exact_domain_cards.map_or(cards, |d| d.min(cards)));
-                    exact_domain_printing = Some(exact_domain_printing.map_or(printings, |d| d.min(printings)));
-                    exact_domain_artworks = Some(exact_domain_artworks.map_or(artworks, |d| d.min(artworks)));
-                    // Round 40: exact table hit over both of `v`'s two leaves.
-                    let all_v: Vec<&FilterExpr> = v.iter().collect();
-                    mark_covered(v, &all_v, &mut covered);
-                    if let Some(t) = and_trace.as_mut() {
-                        t.considered.push(AndTraceGroup {
-                            leaves: v.iter().map(|c| format!("{c:?}")).collect(),
-                            mechanism: "SubtypePairIndexes",
-                            hit: true,
-                            printing: Some(printings),
-                            card: Some(cards),
-                            artwork: Some(artworks),
-                        });
-                    }
-                } else {
-                    let combo = subtype_pair_dim(&v[0])
-                        .map(|d| (d, &children_estimates[0], &children_estimates[1], &v[1]))
-                        .or_else(|| subtype_pair_dim(&v[1]).map(|d| (d, &children_estimates[1], &children_estimates[0], &v[0])));
-                    // Round 37a trace: `combo.is_some()` is this mechanism's own shape gate (one child
-                    // is a recognized set/color/identity dimension, paired with the other) -- a group
-                    // is logged only then, not for every `v.len() == 2` pair, which would misreport
-                    // this mechanism as "attempted" on a pair it was never going to look at (e.g.
-                    // `usd>0.5 power=3`, neither side any dimension `subtype_pair_dim` recognizes).
-                    // `leaf_ok` is the SAME second condition the real `if let` chain requires before
-                    // computing an estimate at all -- split out here only so a `combo`-matched, `sub_f`
-                    // not itself a subtype leaf case (a genuine attempt that found nothing) still
-                    // produces a `hit: false` group instead of silently no group at all.
-                    if let Some((dim, dim_est, sub_est, sub_f)) = combo {
-                        let leaf_ok = subtype_pair_leaf(sub_f).is_some();
-                        let mut printing_est_hit: Option<usize> = None;
-                        if leaf_ok {
-                            let subtype_card = sub_est.result.card.unwrap_or(0);
-                            // `dim_card`/`subtype_card` (both already in hand -- `subtype_card` from this
-                            // fold's own `.result.card`, exact for any Ge subtype leaf; `dim_card` the same
-                            // way for `c:`/`id:`, or from `subtype_pairs.set.set_cards` for `set:`, the one
-                            // marginal nothing else already derives per-card) give a CARD-space
-                            // independence product, capped at `rest_max`, then scaled into PRINTING space
-                            // the same way this function already does elsewhere (Round 33's arith-tuple
-                            // merge, the legality arm): `* n_printings / n_cards`.
-                            let (rest_max, dim_card): (usize, usize) = match dim {
-                                SubtypePairDim::Set(set_name) => (
-                                    u32::from(indexes.subtype_pairs.set.rest_max) as usize,
-                                    indexes.subtype_pairs.set.set_cards.get(set_name).map_or(0, |c| u32::from(*c) as usize),
-                                ),
-                                SubtypePairDim::Colors(_) => (u32::from(indexes.subtype_pairs.colors.rest_max) as usize, dim_est.result.card.unwrap_or(0)),
-                                SubtypePairDim::Identity(_) => (u32::from(indexes.subtype_pairs.identity.rest_max) as usize, dim_est.result.card.unwrap_or(0)),
-                            };
-                            let n_cards = offsets.len() - 1;
-                            let indep = dim_card.checked_mul(subtype_card).and_then(|p| p.checked_div(n_cards)).unwrap_or(0);
-                            let card_est = indep.min(rest_max);
-                            let printing_est = card_est.checked_mul(n_printings).and_then(|p| p.checked_div(n_cards)).unwrap_or(0);
-                            result = result.min(printing_est);
-                            printing_est_hit = Some(printing_est);
-                            // Round 40: ESTIMATE-class (a capped independence product, not a bound --
-                            // this arm's own doc above), marked defensively so the registry scan below
-                            // never stacks a second inexact estimate on the same two leaves.
-                            let all_v: Vec<&FilterExpr> = v.iter().collect();
-                            mark_covered(v, &all_v, &mut covered);
-                        }
+            // intersections is still exact, same reasoning those two already establish. EVERY (dim,
+            // subtype) pair found gets its own independent lookup and its own trace group (not just the
+            // tightest), mirroring the existential-leaf loop's own "every trial is independently exact"
+            // precedent above.
+            //
+            // A MISS is not exact (`independence_product = dim_card * subtype_card / n_cards`, capped at
+            // `rest_max`), so it only narrows `result` (printing space), never `exact_domain_*` -- the
+            // same exact/estimate line Round 33's own density tightening draws for the identical reason.
+            // Unlike the exact-hit branch, this fallback deliberately stays SINGLE-PAIR-ONLY: computed
+            // only when, after every hit above has been processed, exactly one uncovered dim leaf and
+            // exactly one uncovered subtype leaf remain. With 2+ uncovered leaves of either bucket and no
+            // table hit for any combination, this declines entirely rather than computing an estimate per
+            // combination and taking their min -- an independence-shaped estimate can undershoot, so
+            // combining several risks compounding an undershoot instead of bounding it. This mirrors the
+            // independence registry scan's own existing precedent for the identical ambiguity (see "2+
+            // occurrences of a class with no combining table" a bit further down in this same function).
+            let dim_positions: Vec<usize> = (0..v.len()).filter(|&i| !covered[i] && subtype_pair_dim(&v[i]).is_some()).collect();
+            let sub_positions: Vec<usize> = (0..v.len()).filter(|&i| !covered[i] && subtype_pair_leaf(&v[i]).is_some()).collect();
+            for &di in &dim_positions {
+                for &si in &sub_positions {
+                    if let Some(totals) = subtype_pair_exact(&v[di], &v[si], indexes) {
+                        let printings = totals.get(Mode::Printing);
+                        let cards = totals.get(Mode::Card);
+                        let artworks = totals.get(Mode::Artwork);
+                        result = result.min(printings);
+                        exact_domain_cards = Some(exact_domain_cards.map_or(cards, |d| d.min(cards)));
+                        exact_domain_printing = Some(exact_domain_printing.map_or(printings, |d| d.min(printings)));
+                        exact_domain_artworks = Some(exact_domain_artworks.map_or(artworks, |d| d.min(artworks)));
+                        // Round 40: exact table hit over exactly this pair's two leaves (other residual
+                        // leaves, and any OTHER (dim, subtype) pair sharing one of these two positions,
+                        // are unaffected -- each pair is independently exact and covered on its own).
+                        let pair: [&FilterExpr; 2] = [&v[di], &v[si]];
+                        mark_covered(v, &pair, &mut covered);
                         if let Some(t) = and_trace.as_mut() {
                             t.considered.push(AndTraceGroup {
-                                leaves: v.iter().map(|c| format!("{c:?}")).collect(),
-                                mechanism: "SubtypePairEstimate",
-                                hit: leaf_ok,
-                                printing: printing_est_hit,
-                                card: None,
-                                artwork: None,
+                                leaves: vec![format!("{:?}", &v[di]), format!("{:?}", &v[si])],
+                                mechanism: "SubtypePairIndexes",
+                                hit: true,
+                                printing: Some(printings),
+                                card: Some(cards),
+                                artwork: Some(artworks),
                             });
                         }
                     }
+                }
+            }
+            // The capped independence-product fallback (see this mechanism's own doc above for why it
+            // stays single-pair-only): re-check how many dim/subtype leaves are STILL uncovered after
+            // every exact hit above (a hit may have covered one or both of the two leaves an estimate
+            // would otherwise have used).
+            let remaining_dims: Vec<usize> = dim_positions.iter().copied().filter(|&i| !covered[i]).collect();
+            let remaining_subs: Vec<usize> = sub_positions.iter().copied().filter(|&i| !covered[i]).collect();
+            if let (&[di], &[si]) = (remaining_dims.as_slice(), remaining_subs.as_slice()) {
+                let dim = subtype_pair_dim(&v[di]).expect("dim_positions only holds subtype_pair_dim leaves");
+                // `dim_est`/`subtype_card` (this leaf's own solo estimate, recomputed directly rather
+                // than indexed out of `children_estimates`/`and_sources`: those are keyed to whatever
+                // `fuse_and_range_children` produced, which can hold FEWER entries than `v` once a
+                // two-sided range fuses two literal children into one `FusedRange` -- the same reason
+                // `and_trace`'s own `leaves` field above recomputes per-`v`-child instead of reusing
+                // `children_estimates`) give a CARD-space independence product, capped at `rest_max`,
+                // then scaled into PRINTING space the same way this function already does elsewhere
+                // (Round 33's arith-tuple merge, the legality arm): `* n_printings / n_cards`.
+                let dim_est = compose_printing_estimate(&v[di], indexes, offsets, n_printings, false);
+                let subtype_card = compose_printing_estimate(&v[si], indexes, offsets, n_printings, false).result.card.unwrap_or(0);
+                let (rest_max, dim_card): (usize, usize) = match dim {
+                    SubtypePairDim::Set(set_name) => (
+                        u32::from(indexes.subtype_pairs.set.rest_max) as usize,
+                        indexes.subtype_pairs.set.set_cards.get(set_name).map_or(0, |c| u32::from(*c) as usize),
+                    ),
+                    SubtypePairDim::Colors(_) => (u32::from(indexes.subtype_pairs.colors.rest_max) as usize, dim_est.result.card.unwrap_or(0)),
+                    SubtypePairDim::Identity(_) => (u32::from(indexes.subtype_pairs.identity.rest_max) as usize, dim_est.result.card.unwrap_or(0)),
+                };
+                let indep = dim_card.checked_mul(subtype_card).and_then(|p| p.checked_div(n_cards)).unwrap_or(0);
+                let card_est = indep.min(rest_max);
+                let printing_est = card_est.checked_mul(n_printings).and_then(|p| p.checked_div(n_cards)).unwrap_or(0);
+                result = result.min(printing_est);
+                // Round 40: ESTIMATE-class (a capped independence product, not a bound -- this
+                // mechanism's own doc above), marked defensively so the registry scan below never stacks
+                // a second inexact estimate on the same two leaves.
+                let pair: [&FilterExpr; 2] = [&v[di], &v[si]];
+                mark_covered(v, &pair, &mut covered);
+                if let Some(t) = and_trace.as_mut() {
+                    t.considered.push(AndTraceGroup {
+                        leaves: vec![format!("{:?}", &v[di]), format!("{:?}", &v[si])],
+                        mechanism: "SubtypePairEstimate",
+                        hit: true,
+                        printing: Some(printing_est),
+                        card: None,
+                        artwork: None,
+                    });
                 }
             }
             // Round 36 tightening: a bare `t:X` subtype leaf And'd with 1+ cmc/power/toughness bound
@@ -10592,7 +10615,7 @@ fn exact_result_total(composed: &FilterExpr, indexes: &Archived<CardIndexes>, mo
     // OWN fallback, if it has one, applies) via `subtype_pair_exact`'s own miss case.
     if let FilterExpr::And(children) = composed
         && children.len() == 2
-        && let Some(totals) = subtype_pair_exact(children, indexes)
+        && let Some(totals) = subtype_pair_exact(&children[0], &children[1], indexes)
     {
         return Some(totals.get(mode));
     }
