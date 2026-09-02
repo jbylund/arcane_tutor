@@ -8657,6 +8657,148 @@ fn mark_covered(v: &[FilterExpr], leaves: &[&FilterExpr], covered: &mut [bool]) 
     }
 }
 
+/// Round 46: one mechanism's candidate answer for the outermost `And` arm's cost estimate, handed to
+/// `fold_candidate` -- replaces what used to be an independently hand-copied fold (either the 4-line
+/// `result`/`exact_domain_*` update, or the 1-line `result`-only update) at each of ~10 call sites in
+/// that arm.
+///
+/// `Exact` is for a mechanism that computed a genuinely exact triple across all three spaces (a
+/// pair-table hit, `compile_plane`'s popcount, `SubtypeArithBox`'s box lookup, ...) -- every real
+/// candidate of this kind is expected to satisfy `cards <= artworks <= printings` (every printing
+/// belongs to exactly one card and has exactly one artwork; different cards never share an artwork),
+/// which `fold_candidate` below checks with a `debug_assert!`. `Estimate` is for a mechanism that only
+/// ever produced a printing-space bound/estimate (`SetCollectorRange`'s density, the independence
+/// registry's product, ...) and structurally has no card/artwork triple to fold in at all.
+enum Candidate {
+    Exact { printings: usize, cards: usize, artworks: usize },
+    Estimate { printing: usize },
+}
+
+/// Folds one mechanism's `Candidate` into the outermost `And` arm's running accumulators --
+/// `result` (this function's own printing-space quantity) and `exact_domain_cards`/
+/// `exact_domain_printing`/`exact_domain_artworks` (the tightest EXACT intersection found so far in
+/// each space, `None` until some mechanism produces one). `mechanism` is diagnostic only (folded
+/// into the `debug_assert!` messages below so a failure names which mechanism produced the bad
+/// candidate) and has no effect on `result`/`exact_domain_*`.
+///
+/// A pure structural extraction: every call site below used to write this same fold out by hand (see
+/// this function's own call sites in the `And` arm for the mechanical, behavior-preserving swap).
+///
+/// The `debug_assert!`s are Round 46's own diagnostic addition, not a correction -- see this
+/// function's own `Candidate::Exact` doc for why `cards <= artworks <= printings` is expected to hold
+/// for every individual candidate BY CONSTRUCTION, and note the proof sketch in this round's own
+/// report: if it holds for every candidate independently, folding via independent per-space `min`s
+/// (which is all this function does) provably preserves the ordering in the combined `result`
+/// regardless of which mechanism wins which space. So a debug_assert failure here means one
+/// mechanism produced an internally-inconsistent candidate, never that this fold is wrong.
+/// Deliberately `debug_assert!`, never `assert!`: this must have zero effect on release builds --
+/// a production query must never be able to panic because some mechanism's candidate violates the
+/// invariant, only a debug build (`cargo test`, or a debug wheel run against real traffic) should
+/// ever surface it.
+fn fold_candidate(
+    result: &mut usize,
+    exact_domain_cards: &mut Option<usize>,
+    exact_domain_printing: &mut Option<usize>,
+    exact_domain_artworks: &mut Option<usize>,
+    mechanism: &'static str,
+    candidate: Candidate,
+) {
+    match candidate {
+        Candidate::Exact { printings, cards, artworks } => {
+            debug_assert!(
+                cards <= artworks,
+                "fold_candidate[{mechanism}]: cards ({cards}) > artworks ({artworks}) (printings={printings}) -- \
+                 every card's printings share one card, so cards <= artworks must hold for an exact candidate"
+            );
+            debug_assert!(
+                artworks <= printings,
+                "fold_candidate[{mechanism}]: artworks ({artworks}) > printings ({printings}) (cards={cards}) -- \
+                 every printing has exactly one artwork, so artworks <= printings must hold for an exact candidate"
+            );
+            *result = (*result).min(printings);
+            *exact_domain_cards = Some(exact_domain_cards.map_or(cards, |d| d.min(cards)));
+            *exact_domain_printing = Some(exact_domain_printing.map_or(printings, |d| d.min(printings)));
+            *exact_domain_artworks = Some(exact_domain_artworks.map_or(artworks, |d| d.min(artworks)));
+        }
+        Candidate::Estimate { printing } => {
+            *result = (*result).min(printing);
+        }
+    }
+}
+
+/// Shared two-bucket Cartesian-product exact-lookup scan: for every position in `a_positions` (bucket
+/// A) crossed with every `(positions, value)` entry of `b_candidates` (bucket B), calls `lookup` on
+/// the bucket-A leaf and the bucket-B `value`, and on a hit (`Some((printings, cards, artworks))`)
+/// folds it via `fold_candidate`. Round 46 extraction of the identical scan/lookup/fold/cover/trace
+/// shape three mechanisms in the `And` arm each hand-rolled separately: `SubtypePairIndexes` (bucket A
+/// = a `set`/`c`/`id` leaf, bucket B = one competing subtype leaf each), `ColorCmcTable` (bucket A = a
+/// `color`/`id` leaf, bucket B = every cmc bound fused into ONE range), and `SubtypeArithBox` (bucket A
+/// = the one subtype leaf its shape gate admits, bucket B = every cmc/power/toughness child, fed to a
+/// 6-argument box lookup already encapsulated inside `subtype_arith_exact` -- so `B` is `()` for this
+/// caller, not because the shape differs, but because the box's own ranges are resolved one layer
+/// deeper than this call site).
+///
+/// `order_positions(a_position, b_positions) -> Vec<usize>` controls the ORDER `v`-positions are
+/// turned into trace `leaves`/`mark_covered` input -- the one real behavioral difference among the
+/// three callers that this helper does not paper over: `SubtypePairIndexes`/`ColorCmcTable` both want
+/// a fixed "A leaf, then B leaves" order regardless of each leaf's actual position in `v`; a
+/// `SubtypeArithBox` hit instead reports every position of `v` in `v`'s OWN original order (its shape
+/// gate already guarantees A's position plus every B position covers the whole of `v`, so this is the
+/// same *set*, just reordered to match what that mechanism traced before this refactor).
+///
+/// `trace_on_miss` and `mark_covered_on_hit` capture the other two real differences, each verified
+/// directly against the pre-refactor code rather than assumed: `SubtypePairIndexes` traces hits only
+/// and covers just the two matched positions on a hit; `ColorCmcTable` always traces (hit or miss) and
+/// NEVER marks covered (deliberately -- see that call site's own doc for the measured regression this
+/// avoids); `SubtypeArithBox` always traces and, on a hit, covers every position of `v`.
+#[allow(clippy::too_many_arguments)]
+fn scan_two_bucket_exact<B: Copy>(
+    v: &[FilterExpr],
+    covered: &mut [bool],
+    result: &mut usize,
+    exact_domain_cards: &mut Option<usize>,
+    exact_domain_printing: &mut Option<usize>,
+    exact_domain_artworks: &mut Option<usize>,
+    and_trace: &mut Option<AndTrace>,
+    mechanism: &'static str,
+    trace_on_miss: bool,
+    mark_covered_on_hit: bool,
+    a_positions: &[usize],
+    b_candidates: &[(Vec<usize>, B)],
+    order_positions: impl Fn(usize, &[usize]) -> Vec<usize>,
+    lookup: impl Fn(&FilterExpr, B) -> Option<(usize, usize, usize)>,
+) {
+    for &ai in a_positions {
+        for (b_positions, b_value) in b_candidates {
+            let hit = lookup(&v[ai], *b_value);
+            let positions = order_positions(ai, b_positions);
+            if let Some((printings, cards, artworks)) = hit {
+                fold_candidate(result, exact_domain_cards, exact_domain_printing, exact_domain_artworks, mechanism, Candidate::Exact {
+                    printings,
+                    cards,
+                    artworks,
+                });
+                if mark_covered_on_hit {
+                    let leaves: Vec<&FilterExpr> = positions.iter().map(|&p| &v[p]).collect();
+                    mark_covered(v, &leaves, covered);
+                }
+            }
+            if (hit.is_some() || trace_on_miss)
+                && let Some(t) = and_trace.as_mut()
+            {
+                t.considered.push(AndTraceGroup {
+                    leaves: positions.iter().map(|&p| format!("{:?}", v[p])).collect(),
+                    mechanism,
+                    hit: hit.is_some(),
+                    printing: hit.map(|(p, _, _)| p),
+                    card: hit.map(|(_, c, _)| c),
+                    artwork: hit.map(|(_, _, a)| a),
+                });
+            }
+        }
+    }
+}
+
 /// Round 40: the leaf-class SIDE of a pair the independence registry (`INDEPENDENCE_SAFE_PAIR`,
 /// `independence_safe_pair`) recognizes -- generalizes Round 38's one hard-coded shape (`color:X`/
 /// `id:X`/`cmc<op>N` paired with a price comparison) to a small table, re-validated directly against
@@ -9180,6 +9322,16 @@ fn compose_printing_estimate(
             // stack on the same leaves either -- see each mechanism's own comment below.
             let mut covered = vec![false; v.len()];
             let mut result = pair_bounded_min(v, indexes, folded.result.printing, &mut covered);
+            // Round 46: hoisted here (used to be declared much further down, right before their own
+            // first write) so every `fold_candidate` call site in this arm -- including the two
+            // ESTIMATE-class ones below (`SetCollectorRange`, the `arith_tuple_count` merge) that fire
+            // before the first EXACT candidate does -- has all four accumulators in scope. A pure
+            // scoping change: nothing between here and each variable's original declaration point ever
+            // reads them, so they are still `None` at every one of those original points, same as
+            // before this hoist.
+            let mut exact_domain_cards: Option<usize> = None;
+            let mut exact_domain_printing: Option<usize> = None;
+            let mut exact_domain_artworks: Option<usize> = None;
             // Round 37a trace: mirrors `pair_bounded_min`'s own nested loop (same disjoint check,
             // same table lookup, same short-circuit the instant a disjoint pair is found -- the real
             // function returns 0 immediately at that point and never looks at any later pair, so the
@@ -9296,7 +9448,14 @@ fn compose_printing_estimate(
                             if hi_incl >= lo_incl { hi_incl - lo_incl + 1 } else { 0 }
                         };
                         let estimate = (density * f64::from(overlap)).round() as usize;
-                        result = result.min(estimate);
+                        fold_candidate(
+                            &mut result,
+                            &mut exact_domain_cards,
+                            &mut exact_domain_printing,
+                            &mut exact_domain_artworks,
+                            "SetCollectorRange",
+                            Candidate::Estimate { printing: estimate },
+                        );
                         estimate_hit = Some(estimate);
                         // Round 40: ESTIMATE-class (density, not a bound -- a non-contiguous set, e.g.
                         // Secret Lair Drop, can undershoot; see this mechanism's own doc above), so this
@@ -9332,7 +9491,14 @@ fn compose_printing_estimate(
                 let card_count = arith_tuple_count(&arith_children, indexes);
                 if let Some(cc) = card_count {
                     let scaled = (cc * n_printings).checked_div(n_cards).unwrap_or(0);
-                    result = result.min(scaled);
+                    fold_candidate(
+                        &mut result,
+                        &mut exact_domain_cards,
+                        &mut exact_domain_printing,
+                        &mut exact_domain_artworks,
+                        "arith_tuple_count",
+                        Candidate::Estimate { printing: scaled },
+                    );
                     // Round 40 (fixed after a real regression a coordinator review caught pre-merge:
                     // `usd>6.03 cmc>=1 cmc<=1` lost Round 38's own price x cmc combination entirely,
                     // regressing `safe:cmc+usd` below its Round-38 baseline): only mark `covered` when
@@ -9460,7 +9626,13 @@ fn compose_printing_estimate(
             // `card_bits_span_total` sums each set card's OWN printing count directly from `offsets`,
             // exact rather than average-case, since the exact bits are already in hand from the popcount
             // above. Ditto `artwork` from `indexes.artwork_base`, the same shape one space over.
-            let mut exact_domain_cards: Option<usize> = None;
+            // Round 46: `exact_domain_cards`/`exact_domain_printing`/`exact_domain_artworks` are now
+            // declared earlier, right alongside `result` (see that declaration's own comment) --
+            // `fold_candidate` needs all four accumulators in scope at every call site, including the
+            // two ESTIMATE-class ones (`SetCollectorRange`, the `arith_tuple_count` merge) that fire
+            // before this point. Hoisting the declaration changes nothing: every mechanism between here
+            // and there is ESTIMATE-class and never touches these three, so they are still `None` at
+            // this exact point, same as before this hoist.
             let mut best_other: Option<(usize, Vec<u64>)> = None;
             // Round 40: the specific leaves that fed `best_other`'s winning popcount -- tracked
             // alongside it (not re-derived) so the class-priority `covered` bookkeeping below can tell
@@ -9593,19 +9765,26 @@ fn compose_printing_estimate(
                 leaves.push(e_filter);
                 mark_covered(v, &leaves, &mut covered);
             }
-            let mut exact_domain_printing: Option<usize> = None;
-            let mut exact_domain_artworks: Option<usize> = None;
             if let Some((printings, cards, artworks)) = pair_range_answer {
-                result = result.min(printings);
-                exact_domain_cards = Some(cards);
-                exact_domain_printing = Some(printings);
-                exact_domain_artworks = Some(artworks);
+                fold_candidate(
+                    &mut result,
+                    &mut exact_domain_cards,
+                    &mut exact_domain_printing,
+                    &mut exact_domain_artworks,
+                    "PairRangeSum",
+                    Candidate::Exact { printings, cards, artworks },
+                );
             } else if let Some((card_count, bits)) = &best_other {
                 let printing_span = card_bits_span_total(bits, offsets);
-                result = result.min(printing_span);
-                exact_domain_cards = Some(*card_count);
-                exact_domain_printing = Some(printing_span);
-                exact_domain_artworks = Some(card_bits_span_total(bits, &indexes.artwork_base));
+                let artworks = card_bits_span_total(bits, &indexes.artwork_base);
+                fold_candidate(
+                    &mut result,
+                    &mut exact_domain_cards,
+                    &mut exact_domain_printing,
+                    &mut exact_domain_artworks,
+                    "PlanePopcount",
+                    Candidate::Exact { printings: printing_span, cards: *card_count, artworks },
+                );
             }
             // Merge with the arith-tuple family (cmc/power/toughness) by ID probe, instead of compiling
             // their numeric-range planes into the SAME joint above: that was tried first and reverted
@@ -9660,10 +9839,14 @@ fn compose_printing_estimate(
                     let joint_count = joint_ids.len();
                     let joint_printing = span_of(offsets);
                     let joint_artwork = span_of(&indexes.artwork_base);
-                    result = result.min(joint_printing);
-                    exact_domain_cards = Some(exact_domain_cards.map_or(joint_count, |d| d.min(joint_count)));
-                    exact_domain_printing = Some(exact_domain_printing.map_or(joint_printing, |d| d.min(joint_printing)));
-                    exact_domain_artworks = Some(exact_domain_artworks.map_or(joint_artwork, |d| d.min(joint_artwork)));
+                    fold_candidate(
+                        &mut result,
+                        &mut exact_domain_cards,
+                        &mut exact_domain_printing,
+                        &mut exact_domain_artworks,
+                        "ArithIdProbe",
+                        Candidate::Exact { printings: joint_printing, cards: joint_count, artworks: joint_artwork },
+                    );
                     probe_hit = Some((joint_printing, joint_count, joint_artwork));
                     // Round 40: a genuine exact joint of best_other's own leaves (however many -- even
                     // just the one lone existential leaf `best_other_leaves` held back from `covered`
@@ -9742,34 +9925,35 @@ fn compose_printing_estimate(
             // occurrences of a class with no combining table" a bit further down in this same function).
             let all_dim_positions: Vec<usize> = (0..v.len()).filter(|&i| subtype_pair_dim(&v[i]).is_some()).collect();
             let all_sub_positions: Vec<usize> = (0..v.len()).filter(|&i| subtype_pair_leaf(&v[i]).is_some()).collect();
-            for &di in &all_dim_positions {
-                for &si in &all_sub_positions {
-                    if let Some(totals) = subtype_pair_exact(&v[di], &v[si], indexes) {
-                        let printings = totals.get(Mode::Printing);
-                        let cards = totals.get(Mode::Card);
-                        let artworks = totals.get(Mode::Artwork);
-                        result = result.min(printings);
-                        exact_domain_cards = Some(exact_domain_cards.map_or(cards, |d| d.min(cards)));
-                        exact_domain_printing = Some(exact_domain_printing.map_or(printings, |d| d.min(printings)));
-                        exact_domain_artworks = Some(exact_domain_artworks.map_or(artworks, |d| d.min(artworks)));
-                        // Round 40: exact table hit over exactly this pair's two leaves (other residual
-                        // leaves, and any OTHER (dim, subtype) pair sharing one of these two positions,
-                        // are unaffected -- each pair is independently exact and covered on its own).
-                        let pair: [&FilterExpr; 2] = [&v[di], &v[si]];
-                        mark_covered(v, &pair, &mut covered);
-                        if let Some(t) = and_trace.as_mut() {
-                            t.considered.push(AndTraceGroup {
-                                leaves: vec![format!("{:?}", &v[di]), format!("{:?}", &v[si])],
-                                mechanism: "SubtypePairIndexes",
-                                hit: true,
-                                printing: Some(printings),
-                                card: Some(cards),
-                                artwork: Some(artworks),
-                            });
-                        }
-                    }
-                }
-            }
+            // Round 46: shared `scan_two_bucket_exact` helper (also used by `ColorCmcTable`/
+            // `SubtypeArithBox` below) -- bucket A is every `subtype_pair_dim` position, bucket B is
+            // one candidate per COMPETING `subtype_pair_leaf` position (each its own singleton `Vec`,
+            // unlike `ColorCmcTable`'s one fused range), matching this mechanism's own original
+            // "every (dim, subtype) pair, independently" scan. `trace_on_miss: false` (a miss here is
+            // never logged, unlike the other two callers) and `mark_covered_on_hit: true` (covers just
+            // the two matched positions) are this mechanism's own two behavioral knobs, verified
+            // directly against the pre-refactor loop above.
+            let sub_candidates: Vec<(Vec<usize>, usize)> = all_sub_positions.iter().map(|&si| (vec![si], si)).collect();
+            scan_two_bucket_exact(
+                v,
+                &mut covered,
+                &mut result,
+                &mut exact_domain_cards,
+                &mut exact_domain_printing,
+                &mut exact_domain_artworks,
+                &mut and_trace,
+                "SubtypePairIndexes",
+                false,
+                true,
+                &all_dim_positions,
+                &sub_candidates,
+                |ai, b_positions| {
+                    let mut ps = vec![ai];
+                    ps.extend_from_slice(b_positions);
+                    ps
+                },
+                |dim_leaf, si: usize| subtype_pair_exact(dim_leaf, &v[si], indexes).map(|totals| (totals.get(Mode::Printing), totals.get(Mode::Card), totals.get(Mode::Artwork))),
+            );
             // The capped independence-product fallback (see this mechanism's own doc above for why it
             // stays single-pair-only AND, unlike the exact-hit scan above, must respect `covered`):
             // freshly scan `v` for uncovered dim/subtype leaves -- freshly, not derived from
@@ -9802,7 +9986,14 @@ fn compose_printing_estimate(
                 let indep = dim_card.checked_mul(subtype_card).and_then(|p| p.checked_div(n_cards)).unwrap_or(0);
                 let card_est = indep.min(rest_max);
                 let printing_est = card_est.checked_mul(n_printings).and_then(|p| p.checked_div(n_cards)).unwrap_or(0);
-                result = result.min(printing_est);
+                fold_candidate(
+                    &mut result,
+                    &mut exact_domain_cards,
+                    &mut exact_domain_printing,
+                    &mut exact_domain_artworks,
+                    "SubtypePairEstimate",
+                    Candidate::Estimate { printing: printing_est },
+                );
                 // Round 40: ESTIMATE-class (a capped independence product, not a bound -- this
                 // mechanism's own doc above), marked defensively so the registry scan below never stacks
                 // a second inexact estimate on the same two leaves.
@@ -9855,31 +10046,36 @@ fn compose_printing_estimate(
             // `SUBTYPE_ARITH_TOP_N`) still produces a `hit: false` group -- there is no separate
             // estimate fallback for this round (see this arm's own doc), so `hit: false` here means
             // exactly "the fold's number stands, unimproved by this mechanism".
+            // Round 46: migrated onto the shared `scan_two_bucket_exact` helper, with its shape gate
+            // (`arith_children.len() + 1 == v.len()` -- every OTHER child besides the one subtype leaf
+            // must be arith-eligible) kept EXACTLY as it was -- deliberately not generalized to a
+            // residual scan the way `SubtypePairIndexes` was in Round 42 (that's a real accuracy
+            // change, out of scope for this round). Bucket A is the (at most one) position `shape`
+            // would have picked; bucket B is unused (`()`) since `subtype_arith_exact` already
+            // resolves its own 6-argument box bounds one layer deeper, from `arith_children` directly
+            // -- so this call site doesn't need to hand it pre-resolved ranges the way `ColorCmcTable`
+            // does. `order_positions` ignores its inputs and reports every position of `v` in `v`'s own
+            // order, matching the original trace's `v.iter()` -- sound because this shape gate already
+            // guarantees bucket A's one position plus every arith child covers the whole of `v`.
             if !arith_children.is_empty() && arith_children.len() + 1 == v.len() {
-                let shape = v.iter().find(|c| !is_arith_tuple_eligible(c)).and_then(|c| subtype_pair_leaf(c));
-                if let Some(subtype) = shape {
-                    let hit = subtype_arith_exact(subtype, &arith_children, indexes);
-                    if let Some((printings, cards, artworks)) = hit {
-                        result = result.min(printings);
-                        exact_domain_cards = Some(exact_domain_cards.map_or(cards, |d| d.min(cards)));
-                        exact_domain_printing = Some(exact_domain_printing.map_or(printings, |d| d.min(printings)));
-                        exact_domain_artworks = Some(exact_domain_artworks.map_or(artworks, |d| d.min(artworks)));
-                        // Round 40: exact table hit covering every one of `v`'s leaves (the shape gate
-                        // above requires it: every non-arith child is exactly this one subtype leaf).
-                        let all_v: Vec<&FilterExpr> = v.iter().collect();
-                        mark_covered(v, &all_v, &mut covered);
-                    }
-                    if let Some(t) = and_trace.as_mut() {
-                        t.considered.push(AndTraceGroup {
-                            leaves: v.iter().map(|c| format!("{c:?}")).collect(),
-                            mechanism: "SubtypeArithBox",
-                            hit: hit.is_some(),
-                            printing: hit.map(|(p, _, _)| p),
-                            card: hit.map(|(_, c, _)| c),
-                            artwork: hit.map(|(_, _, a)| a),
-                        });
-                    }
-                }
+                let non_arith_position = (0..v.len()).find(|&i| !is_arith_tuple_eligible(&v[i]));
+                let a_positions: Vec<usize> = non_arith_position.filter(|&i| subtype_pair_leaf(&v[i]).is_some()).into_iter().collect();
+                scan_two_bucket_exact(
+                    v,
+                    &mut covered,
+                    &mut result,
+                    &mut exact_domain_cards,
+                    &mut exact_domain_printing,
+                    &mut exact_domain_artworks,
+                    &mut and_trace,
+                    "SubtypeArithBox",
+                    true,
+                    true,
+                    &a_positions,
+                    &[(Vec::new(), ())],
+                    |_ai, _b_positions| (0..v.len()).collect(),
+                    |leaf, ()| subtype_pair_leaf(leaf).and_then(|subtype| subtype_arith_exact(subtype, &arith_children, indexes)),
+                );
             }
             // Round 44 tightening: a `color:X`/`id:X` leaf And'd with 1+ literal cmc bound children
             // gets an exact triple from `indexes.color_cmc` instead of the plain min-fold above -- see
@@ -9922,33 +10118,39 @@ fn compose_printing_estimate(
             // representable exactly, including a genuine zero.
             let color_cmc_dim_positions: Vec<usize> = (0..v.len()).filter(|&i| color_cmc_dim(&v[i]).is_some()).collect();
             let cmc_leaf_positions: Vec<usize> = (0..v.len()).filter(|&i| numeric_cmp_field(&v[i]) == Some(NumField::Cmc)).collect();
+            // Round 46: shared `scan_two_bucket_exact` helper -- bucket A is every `color_cmc_dim`
+            // position, bucket B is the ONE fused cmc range (unlike `SubtypePairIndexes`'s several
+            // competing subtype candidates). `trace_on_miss: true` (always logs, hit or miss) and
+            // `mark_covered_on_hit: false` (deliberately never covers -- see this call site's own doc
+            // above for the measured regression that requires leaving these leaves free) are this
+            // mechanism's own two behavioral knobs, verified directly against the pre-refactor loop.
             if !color_cmc_dim_positions.is_empty()
                 && !cmc_leaf_positions.is_empty()
                 && let Some((cmc_lo, cmc_hi)) = cmc_bounds_intersect(&cmc_leaf_positions.iter().map(|&i| &v[i]).collect::<Vec<_>>())
             {
-                let cmc_leaves: Vec<&FilterExpr> = cmc_leaf_positions.iter().map(|&i| &v[i]).collect();
-                for &di in &color_cmc_dim_positions {
-                    let (field, op, mask) = color_cmc_dim(&v[di]).expect("color_cmc_dim_positions only holds color_cmc_dim leaves");
-                    let hit = color_cmc_table_for(field, indexes).and_then(|table| color_cmc_exact(op, mask, cmc_lo, cmc_hi, table));
-                    if let Some((printings, cards, artworks)) = hit {
-                        result = result.min(printings);
-                        exact_domain_cards = Some(exact_domain_cards.map_or(cards, |d| d.min(cards)));
-                        exact_domain_printing = Some(exact_domain_printing.map_or(printings, |d| d.min(printings)));
-                        exact_domain_artworks = Some(exact_domain_artworks.map_or(artworks, |d| d.min(artworks)));
-                    }
-                    if let Some(t) = and_trace.as_mut() {
-                        let mut leaves: Vec<String> = vec![format!("{:?}", &v[di])];
-                        leaves.extend(cmc_leaves.iter().map(|c| format!("{c:?}")));
-                        t.considered.push(AndTraceGroup {
-                            leaves,
-                            mechanism: "ColorCmcTable",
-                            hit: hit.is_some(),
-                            printing: hit.map(|(p, _, _)| p),
-                            card: hit.map(|(_, c, _)| c),
-                            artwork: hit.map(|(_, _, a)| a),
-                        });
-                    }
-                }
+                scan_two_bucket_exact(
+                    v,
+                    &mut covered,
+                    &mut result,
+                    &mut exact_domain_cards,
+                    &mut exact_domain_printing,
+                    &mut exact_domain_artworks,
+                    &mut and_trace,
+                    "ColorCmcTable",
+                    true,
+                    false,
+                    &color_cmc_dim_positions,
+                    &[(cmc_leaf_positions.clone(), (cmc_lo, cmc_hi))],
+                    |ai, b_positions| {
+                        let mut ps = vec![ai];
+                        ps.extend_from_slice(b_positions);
+                        ps
+                    },
+                    |dim_leaf, (lo, hi): (u32, u32)| {
+                        let (field, op, mask) = color_cmc_dim(dim_leaf).expect("color_cmc_dim_positions only holds color_cmc_dim leaves");
+                        color_cmc_table_for(field, indexes).and_then(|table| color_cmc_exact(op, mask, lo, hi, table))
+                    },
+                );
             }
             // Round 40 tightening: generalizes Round 38's one hard-coded shape (`color:X`/`id:X`/
             // `cmc<op>N` paired with exactly one price comparison) into a small REGISTRY of confirmed
@@ -10054,7 +10256,14 @@ fn compose_printing_estimate(
                         .artwork
                         .zip(b.est.artwork)
                         .map(|(x, y)| if n_artworks == 0 { 0 } else { ((x as f64) * (y as f64) / (n_artworks as f64)).round() as usize });
-                    result = result.min(printing_indep);
+                    fold_candidate(
+                        &mut result,
+                        &mut exact_domain_cards,
+                        &mut exact_domain_printing,
+                        &mut exact_domain_artworks,
+                        "Independence",
+                        Candidate::Estimate { printing: printing_indep },
+                    );
                     // Round 38 trace, unchanged shape: `hit: true` always -- independence is a formula
                     // that always produces a value once the registry says the pair is safe, so `hit`
                     // here just means "eligible and computed", not a lookup-miss emulation.

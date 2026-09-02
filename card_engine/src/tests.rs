@@ -8,7 +8,7 @@ use super::{
     range_too_broad_to_narrow, run_query, run_query_routed, run_query_with_plan, explain, explain_analyze, AcquireFacts, PlanEstimate, PlanTrial,
     acquire_plan_features, take_phase_stats, PagingTaken, CountSource, NarrowedRepr,
     EXACT_VALUE_TOTALS, RangeCardCounts, narrow_rec, ValueTotals, PairTotals, SpaceTotals, build_all_value_totals, build_pair_totals, build_range_card_counts, exact_result_total,
-    pair_range_sum, pair_leaf_id, single_arith_field,
+    pair_range_sum, pair_leaf_id, single_arith_field, fold_candidate, Candidate, scan_two_bucket_exact,
     PhysicalPlan, PlanScope, CandidatePlan, ComposePaging, trigram_candidates, finalize_trigram_index, PrintingValueIndex, NARROW_FLOOR,
     gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
     walk_printing_page, aligned_page, bare_range_bounds, probe_range_k, printing_compose_fastpath, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
@@ -21,7 +21,7 @@ use super::{
     CollField, CmpOp, FilterExpr, InlineStr, Interner, ManaCost, OracleCard, Printing, TagIndex,
     TextField, TextSearchField, Tri, SortedTrigramIndex, VocabInterner, ARTIST_NONE, NONE_STR, TYPE_ARTIFACT, TYPE_CREATURE,
     TYPE_ENCHANTMENT, TYPE_INSTANT, TYPE_LAND, TYPE_LEGENDARY, TYPE_PLANESWALKER, TYPE_SNOW, TYPE_SORCERY,
-    AndTraceNode,
+    AndTraceNode, AndTrace,
 };
 use rkyv::{rancor::Error, Archived};
 use std::collections::HashMap;
@@ -16423,4 +16423,296 @@ fn and_arm_independence_never_overrides_an_overlapping_exact_pair_total() {
          smaller-but-unsound 2,700 (round(6000 * 4500 / 10000)) for an overlapping subset"
     );
     assert_min_fold_invariant(&and_trace.tree);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Round 46: `fold_candidate`/`Candidate` and the shared `scan_two_bucket_exact` helper.
+// ---------------------------------------------------------------------------------------------
+
+/// `Candidate::Exact` must fold into all four accumulators: `result` via `min`, and each of
+/// `exact_domain_cards`/`exact_domain_printing`/`exact_domain_artworks` from `None` to `Some` of
+/// its own value. Replaces the individual per-mechanism "first hit populates `exact_domain_*`"
+/// assertions several Round 40/42 tests each wrote out by hand at their own call site.
+#[test]
+fn fold_candidate_exact_populates_all_four_accumulators_from_none() {
+    let mut result = 1_000usize;
+    let mut cards = None;
+    let mut printing = None;
+    let mut artworks = None;
+    fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "TestExact", Candidate::Exact { printings: 50, cards: 10, artworks: 20 });
+    assert_eq!(result, 50, "result must take the candidate's printing count via min");
+    assert_eq!(cards, Some(10));
+    assert_eq!(printing, Some(50));
+    assert_eq!(artworks, Some(20));
+}
+
+/// A second `Candidate::Exact` must `min` into whatever the first one already left behind, in
+/// EACH space independently -- not overwrite, and not let one space's winner determine another's.
+/// The second candidate here is tighter on cards/printing/artworks in different, non-aligned ways
+/// (cards: second wins; artworks: first wins; printing: first wins), the same "different mechanism
+/// wins different spaces" property the outermost `And` arm's own per-space accumulators rely on.
+#[test]
+fn fold_candidate_exact_min_folds_independently_per_space_across_calls() {
+    let mut result = 1_000usize;
+    let mut cards = None;
+    let mut printing = None;
+    let mut artworks = None;
+    fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "First", Candidate::Exact { printings: 50, cards: 10, artworks: 20 });
+    fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "Second", Candidate::Exact { printings: 80, cards: 4, artworks: 30 });
+    assert_eq!(result, 50, "printing space keeps the first candidate's tighter 50 (50 < 80)");
+    assert_eq!(cards, Some(4), "card space takes the second candidate's tighter 4 (4 < 10)");
+    assert_eq!(printing, Some(50), "exact_domain_printing mirrors result's own tightening");
+    assert_eq!(artworks, Some(20), "artwork space keeps the first candidate's tighter 20 (20 < 30)");
+}
+
+/// `Candidate::Estimate` must touch `result` only -- never `exact_domain_cards`/
+/// `exact_domain_printing`/`exact_domain_artworks`, even when they already hold a value from an
+/// earlier EXACT candidate. This is the structural distinction every ESTIMATE-class mechanism in
+/// the `And` arm (`SetCollectorRange`, `arith_tuple_count`'s merge, `SubtypePairEstimate`,
+/// `Independence`) relies on to stay safely non-corrupting.
+#[test]
+fn fold_candidate_estimate_never_touches_exact_domain_fields() {
+    let mut result = 1_000usize;
+    let mut cards = Some(7usize);
+    let mut printing = Some(9usize);
+    let mut artworks = Some(11usize);
+    fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "SomeEstimate", Candidate::Estimate { printing: 42 });
+    assert_eq!(result, 42, "an Estimate candidate still folds into result via min");
+    assert_eq!(cards, Some(7), "an Estimate candidate must never touch exact_domain_cards");
+    assert_eq!(printing, Some(9), "an Estimate candidate must never touch exact_domain_printing");
+    assert_eq!(artworks, Some(11), "an Estimate candidate must never touch exact_domain_artworks");
+}
+
+/// Round 46's own diagnostic addition: a `Candidate::Exact` with `cards > artworks` violates the
+/// invariant every real candidate is expected to satisfy (every card's printings share one card,
+/// so `cards <= artworks`) and must trip the first `debug_assert!` in `fold_candidate`.
+/// `debug_assert!` only fires in a debug build, so -- same convention
+/// `arith_tuple_key_budget_catches_a_blown_domain` already uses above -- the panicking half is
+/// gated on `cfg(debug_assertions)` rather than failing a release run.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "cards (10) > artworks (5)")]
+fn fold_candidate_debug_assert_fires_when_cards_exceed_artworks() {
+    let mut result = 1_000usize;
+    let mut cards = None;
+    let mut printing = None;
+    let mut artworks = None;
+    fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "Broken", Candidate::Exact { printings: 20, cards: 10, artworks: 5 });
+}
+
+/// The second `debug_assert!` in `fold_candidate`: `artworks > printings` violates "every printing
+/// has exactly one artwork" and must trip independently of the `cards <= artworks` check above.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "artworks (30) > printings (20)")]
+fn fold_candidate_debug_assert_fires_when_artworks_exceed_printings() {
+    let mut result = 1_000usize;
+    let mut cards = None;
+    let mut printing = None;
+    let mut artworks = None;
+    fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "Broken", Candidate::Exact { printings: 20, cards: 2, artworks: 30 });
+}
+
+/// A genuinely consistent candidate (`cards <= artworks <= printings`) must never panic, in either
+/// build profile -- this is the "and does NOT fire for a real, consistent one" half the round's own
+/// test plan calls for, run unconditionally (not gated on `cfg(debug_assertions)`) since a
+/// consistent candidate must be silent in both profiles, not just checked in debug.
+#[test]
+fn fold_candidate_debug_assert_does_not_fire_for_a_consistent_candidate() {
+    let mut result = 1_000usize;
+    let mut cards = None;
+    let mut printing = None;
+    let mut artworks = None;
+    fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "Fine", Candidate::Exact { printings: 20, cards: 5, artworks: 12 });
+    assert_eq!((result, cards, printing, artworks), (20, Some(5), Some(20), Some(12)));
+}
+
+/// A minimal synthetic leaf set for `scan_two_bucket_exact`'s own mechanical tests below -- not
+/// tied to any real mechanism's leaf shapes, since these tests exercise the helper's scan/fold/
+/// cover/trace plumbing directly, independent of what `SubtypePairIndexes`/`ColorCmcTable`/
+/// `SubtypeArithBox` each use it for (those three keep their own existing tests, run unchanged
+/// against the refactored call sites -- see this round's report for confirmation).
+fn scan_two_bucket_fixture_leaves() -> Vec<FilterExpr> {
+    vec![
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Eq, rhs: NumExpr::Const(0.0) },
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Eq, rhs: NumExpr::Const(1.0) },
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Eq, rhs: NumExpr::Const(2.0) },
+    ]
+}
+
+/// A hit must: fold the triple via `fold_candidate`, cover every position `order_positions`
+/// reports (when `mark_covered_on_hit` is set), and log exactly one trace group whose `leaves`
+/// follow `order_positions`' own order -- fixed "A, then B" here, matching `SubtypePairIndexes`/
+/// `ColorCmcTable`'s own shared convention (see `scan_two_bucket_exact`'s own doc for why
+/// `SubtypeArithBox` alone needs a different order).
+#[test]
+fn scan_two_bucket_exact_hit_folds_covers_and_traces_in_order() {
+    let v = scan_two_bucket_fixture_leaves();
+    let mut covered = vec![false; v.len()];
+    let mut result = 999usize;
+    let mut exact_domain_cards = None;
+    let mut exact_domain_printing = None;
+    let mut exact_domain_artworks = None;
+    let mut and_trace = Some(AndTrace::default());
+
+    scan_two_bucket_exact(
+        &v,
+        &mut covered,
+        &mut result,
+        &mut exact_domain_cards,
+        &mut exact_domain_printing,
+        &mut exact_domain_artworks,
+        &mut and_trace,
+        "TestMechanism",
+        false, // trace_on_miss
+        true,  // mark_covered_on_hit
+        &[0],
+        &[(vec![1, 2], ())],
+        |ai, b_positions| {
+            let mut ps = vec![ai];
+            ps.extend_from_slice(b_positions);
+            ps
+        },
+        |_leaf, ()| Some((5, 3, 4)),
+    );
+
+    assert_eq!(result, 5, "a hit must fold printings into result via min");
+    assert_eq!(exact_domain_cards, Some(3));
+    assert_eq!(exact_domain_printing, Some(5));
+    assert_eq!(exact_domain_artworks, Some(4));
+    assert!(covered[0] && covered[1] && covered[2], "mark_covered_on_hit=true must cover every position order_positions returned");
+
+    let trace = and_trace.expect("trace was Some going in");
+    assert_eq!(trace.considered.len(), 1, "one (a, b) pair scanned, one group logged");
+    let g = &trace.considered[0];
+    assert_eq!(g.mechanism, "TestMechanism");
+    assert!(g.hit);
+    assert_eq!(g.printing, Some(5));
+    assert_eq!(g.card, Some(3));
+    assert_eq!(g.artwork, Some(4));
+    assert_eq!(
+        g.leaves,
+        vec![format!("{:?}", v[0]), format!("{:?}", v[1]), format!("{:?}", v[2])],
+        "leaves must follow order_positions' own order (a, then every b position, in that order)"
+    );
+}
+
+/// `trace_on_miss: false` (`SubtypePairIndexes`'s own convention) must leave `considered` empty on
+/// a miss, and a miss must never cover anything regardless of `mark_covered_on_hit`.
+#[test]
+fn scan_two_bucket_exact_miss_with_trace_on_miss_false_logs_nothing() {
+    let v = scan_two_bucket_fixture_leaves();
+    let mut covered = vec![false; v.len()];
+    let mut result = 999usize;
+    let mut exact_domain_cards = None;
+    let mut exact_domain_printing = None;
+    let mut exact_domain_artworks = None;
+    let mut and_trace = Some(AndTrace::default());
+
+    scan_two_bucket_exact(
+        &v,
+        &mut covered,
+        &mut result,
+        &mut exact_domain_cards,
+        &mut exact_domain_printing,
+        &mut exact_domain_artworks,
+        &mut and_trace,
+        "TestMechanism",
+        false, // trace_on_miss
+        true,  // mark_covered_on_hit
+        &[0],
+        &[(vec![1, 2], ())],
+        |ai, b_positions| {
+            let mut ps = vec![ai];
+            ps.extend_from_slice(b_positions);
+            ps
+        },
+        |_leaf, ()| None,
+    );
+
+    assert_eq!(result, 999, "a miss must never tighten result");
+    assert!(exact_domain_cards.is_none() && exact_domain_printing.is_none() && exact_domain_artworks.is_none());
+    assert!(!covered[0] && !covered[1] && !covered[2], "a miss must never cover anything");
+    let trace = and_trace.expect("trace was Some going in");
+    assert!(trace.considered.is_empty(), "trace_on_miss=false must log nothing for a miss");
+}
+
+/// `trace_on_miss: true` (`ColorCmcTable`/`SubtypeArithBox`'s own convention) must still log a
+/// `hit: false` group for a miss, with every numeric field `None`.
+#[test]
+fn scan_two_bucket_exact_miss_with_trace_on_miss_true_still_logs_a_group() {
+    let v = scan_two_bucket_fixture_leaves();
+    let mut covered = vec![false; v.len()];
+    let mut result = 999usize;
+    let mut exact_domain_cards = None;
+    let mut exact_domain_printing = None;
+    let mut exact_domain_artworks = None;
+    let mut and_trace = Some(AndTrace::default());
+
+    scan_two_bucket_exact(
+        &v,
+        &mut covered,
+        &mut result,
+        &mut exact_domain_cards,
+        &mut exact_domain_printing,
+        &mut exact_domain_artworks,
+        &mut and_trace,
+        "TestMechanism",
+        true, // trace_on_miss
+        true, // mark_covered_on_hit
+        &[0],
+        &[(vec![1, 2], ())],
+        |ai, b_positions| {
+            let mut ps = vec![ai];
+            ps.extend_from_slice(b_positions);
+            ps
+        },
+        |_leaf, ()| None,
+    );
+
+    assert_eq!(result, 999);
+    let trace = and_trace.expect("trace was Some going in");
+    assert_eq!(trace.considered.len(), 1, "trace_on_miss=true must still log the miss");
+    let g = &trace.considered[0];
+    assert!(!g.hit);
+    assert!(g.printing.is_none() && g.card.is_none() && g.artwork.is_none());
+}
+
+/// `mark_covered_on_hit: false` (`ColorCmcTable`'s own deliberate choice -- see that call site's
+/// own doc for the measured regression this avoids) must fold the hit normally but leave every
+/// position uncovered, even though it IS a hit.
+#[test]
+fn scan_two_bucket_exact_mark_covered_on_hit_false_never_covers() {
+    let v = scan_two_bucket_fixture_leaves();
+    let mut covered = vec![false; v.len()];
+    let mut result = 999usize;
+    let mut exact_domain_cards = None;
+    let mut exact_domain_printing = None;
+    let mut exact_domain_artworks = None;
+    let mut and_trace = Some(AndTrace::default());
+
+    scan_two_bucket_exact(
+        &v,
+        &mut covered,
+        &mut result,
+        &mut exact_domain_cards,
+        &mut exact_domain_printing,
+        &mut exact_domain_artworks,
+        &mut and_trace,
+        "TestMechanism",
+        true,  // trace_on_miss
+        false, // mark_covered_on_hit
+        &[0],
+        &[(vec![1, 2], ())],
+        |ai, b_positions| {
+            let mut ps = vec![ai];
+            ps.extend_from_slice(b_positions);
+            ps
+        },
+        |_leaf, ()| Some((5, 3, 4)),
+    );
+
+    assert_eq!(result, 5, "the hit must still fold normally");
+    assert_eq!(exact_domain_cards, Some(3));
+    assert!(!covered[0] && !covered[1] && !covered[2], "mark_covered_on_hit=false must never cover, even on a hit");
 }
