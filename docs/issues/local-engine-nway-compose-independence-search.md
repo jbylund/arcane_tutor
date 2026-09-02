@@ -5,11 +5,12 @@
 `compose_printing_estimate`'s `And` arm has grown a specific tightening for each leaf-pair shape
 that turned out to matter: `PairTotals` (border/rarity/frame/legality/cmc/power/toughness pairs),
 `arith_tuple_count` (2+ of cmc/power/toughness), `compile_plane`+`eval_planes` popcount
-(card-invariant/existential planes), `cn`×`set` density (#local-engine's Round 33), the
-`set`/`color`/`identity`×subtype tables (Round 34), `set`×`set` disjointness (Round 35), and the
-subtype×(cmc,power,toughness) cube (Round 36). Each one was real, each one was hand-verified against
-the real corpus, and the list keeps growing — every round in this arc found another leaf-pair whose
-correlation the existing mechanisms missed.
+(card-invariant/existential planes), `cn`×`set` density (Round 33), the `set`/`color`/`identity`×
+subtype tables (Round 34), `set`×`set` disjointness (Round 35), the subtype×(cmc,power,toughness)
+cube (Round 36), and — since this doc was first written — a generalized, registry-driven independence
+step (Rounds 38/40, see "What's built now" below). Each one was real, each one was hand-verified
+against the real corpus, and the list keeps growing — every round in this arc found another leaf-pair
+whose correlation the existing mechanisms missed.
 
 That's the pattern worth generalizing. For an `And` of `N` leaves (`A ∧ B ∧ C ∧ D ∧ ...`), the
 question isn't "does *this specific pair* have a hand-written mechanism" — it's "what's the tightest
@@ -17,6 +18,50 @@ valid combination of whatever mechanisms *are* available, applied in the right g
 make this tractable rather than combinatorially hopeless: real queries almost never have many leaves,
 and two of the existing mechanisms already solve the "many leaves" case for free within their own
 domain.
+
+**Status as of Round 40**: the registry-driven independence step (below) is a real generalization —
+one mechanism, scanned over every residual leaf against a re-validated safety table, replacing several
+rounds' worth of what would otherwise have been one-hard-coded-pair-at-a-time branches. It is NOT the
+bounded partition search this doc originally set out to describe: no multi-leaf packing, no
+triple-level safety, no cost-aware ordering. Rounds 37-40's real contribution is as much the
+*measurement infrastructure* (below) as the estimator change itself — the actual search this doc
+envisions can now be built and graded against a real baseline, which wasn't true when this doc was
+first written.
+
+## What's built now (Rounds 37-40)
+
+Nothing here existed when this doc was first written. It doesn't replace the design below — it's what
+makes attempting the rest of it tractable to verify rather than a leap of faith.
+
+- **`and_trace`** (`AcquireFacts`, Round 37a): structured, always-on provenance for the outermost
+  `And` node's own evaluation, exposed on `explain()`/`explain_analyze()`. A recursive tree of
+  `{"kind": "leaf", ...}` / `{"kind": "op", "op": "min_fold"|"joint_lookup"|"independence", ...}`
+  nodes (every node self-contained with its own card/printing/artwork numbers — no separate "final"
+  field to keep in sync), plus a `considered` list of every 2-or-3-leaf combination the arm's fixed
+  sequence actually attempted, hit or miss. A `hit: false` entry is as informative as a hit — it says
+  a mechanism looked at this exact combination and found nothing, not that nothing was ever checked.
+  Scoped to the outermost `And` only (no nested `And`-within-`And` recursion) — sufficient for every
+  shape the harness below generates, not yet exercised on deeply nested filters.
+- **`scripts/nway_estimate_truth_survey.py`** (Round 37b): a checked-in, deterministic, curated-shape
+  query generator (every leaf-pair this doc names, a same-family-twice supplement `QuerySampler`
+  itself can't draw, an OR-rooted baseline, a broad/pathological N=1..8 catch-all), measuring both the
+  cheap estimate and the real ground truth in all three spaces. **Primary metric is plan-choice
+  agreement** (`explain()`'s own `picked` bool, free), not raw ratio — a ratio of predicted=1 against
+  true=0 reads as "infinitely wrong" yet is completely benign, and predicted=29,000 against
+  true=31,000 reads as "6.9% off" and is *also* benign, for the same reason: neither is near a
+  threshold that would change the router's pick. Ratio is graded second, floored at `true_total >=
+  100`, as a diagnostic for locating where the estimator is loose. `--compare` diffs two isolated
+  builds; `--report` summarizes one run alone.
+- **`and_estimate_ns`** (`AcquireFacts`, Round 39): a real, single-shot nanosecond timer on the
+  acquire-time `PrintingCompose` estimate — deliberately not multi-trial, since the target question is
+  an aggregate distribution across thousands of queries, not one query's precise cost. Baseline on the
+  real corpus: median 750ns, p90 4.4µs, p99 11.6µs, populated on exactly the fraction of queries whose
+  acquire actually reaches that branch. This is the number any future search's own "tax" gets graded
+  against — Round 40's own registry generalization moved it to ~917ns median, a real, measured,
+  accepted cost for real accuracy gained.
+- **A re-validated leaf-pair safety registry** (`IndepClass`/`independence_safe_pair`, Rounds 38/40):
+  see "The safety bar is empirical, not provable independence" below for the methodology and the
+  concrete confirmed list.
 
 ## What already generalizes for free
 
@@ -34,9 +79,9 @@ So the real algorithmic question is only about the **residual** — leaves that 
 plane and aren't part of an arith combination (subtypes, `set`, price/date ranges, and similar). Real
 `And`s rarely have more than 2-4 such residual leaves; the design below assumes this is checked
 against real traffic (including deliberately pathological many-leaf queries) before being trusted as
-a bound, not asserted.
+a bound, not asserted — still true, still unmeasured (see "What's not yet done").
 
-## Two things naive strategies get wrong
+## Three things naive strategies get wrong
 
 ### 1. Contraction doesn't launder correlation (transitivity)
 
@@ -71,6 +116,78 @@ actually correlated. This isn't a one-off — a systematic check across 6 color�
 `cmc` bound) found the same failure in **all 18 combinations**: wrong grouping 0.20x–0.57x, right
 grouping 0.86x–1.11x.
 
+### 3. Comparing an estimate against an exact value by magnitude is unsound, not just risky (Round 40)
+
+Every EXACT/upper-bound mechanism (`PairTotals`, `arith_tuple_count`, `compile_plane`,
+`SubtypeArithBox`, plain min-fold) guarantees `count(A∧B) ≤ min(count(A), count(B))` — so among that
+class, "pick the smallest available candidate" is always the tightest CORRECT choice. Independence
+(and `SetCollectorRange`'s Round 33 density estimate) has no such guarantee: it's a central estimate
+that lands on either side of the truth (confirmed directly: roughly half of 610 real calibration rows
+had independence undershoot, half overshoot). A selection rule that picks "smallest across everything"
+would let an undershooting estimate silently win over a correct exact answer — a real error dressed up
+as a tighter bound, found live in Round 38's own test (two EXACT mechanisms tied at the same value,
+masking the bug until Round 40's registry generalization made a real conflict possible). The fix is a
+strict class priority, not a magnitude race: an estimate-class candidate may only fill a leaf subset
+no exact/bound mechanism covers at all, never be magnitude-compared against or allowed to override one
+for an overlapping subset. Any future search-selection logic has to preserve this distinction — it is
+not solely a Round 40 implementation detail, it's a property any combinator over a mix of exact and
+estimate mechanisms must have.
+
+## The safety bar is empirical, not provable independence (revised after Rounds 38/40)
+
+The original version of this doc treated "is this pair independence-safe" as answerable from a static
+survey (a 46,184-row pass across 250 leaf-type pairs) and copied its verdicts into prose. Building
+Round 40's real registry against that prose directly surfaced two problems worth stating as standing
+principles, not one-off fixes:
+
+**The prose itself was self-contradictory and wrong in a fixable way.** `legality×{cn,price,set,year}`
+was listed safe, `legality×date/set` unsafe, in the same paragraph — `legality×set` in both lists.
+Resolved by domain semantics: Modern/Pioneer-style format legality is *defined* by a release-date
+cutoff, and `set:X`/a date/a year all pin the same underlying variable legality already depends on —
+not a correlation with exceptions, the same variable observed twice. `legality×year` was a second,
+un-flagged instance of the identical error. **`legality×{set,date,year}` is deliberately excluded from
+the independence registry entirely** — not because independence measures badly there (it does, but
+that's not the reason) — because a materially better answer exists: `card_legalities` is already real
+per-printing ground truth, so an exact per-(set, format) table (which fraction of a set's printings
+are legal in a format — the same shape as Round 34's `SubtypePairIndexes`) should answer this
+precisely. Flagged as a follow-on round, not attempted.
+
+**"No true independence" is the norm in this domain, not the exception, and that's fine.** Every pair
+has *some* real exception if you look hard enough — even `legality×price`, the cleanest-looking safe
+pair, has Alpha (Reserved-List overrepresented, commands an "original printing" premium independent of
+playability). That doesn't make the pair unsafe. The actual bar is empirical and aggregate: does
+`min(fold, independence)` net-improve over plain fold across a real sample that deliberately includes
+the hard cases, not whether a plausible correlation story can be told. Two pairs the original survey
+called UNSAFE reversed on this bar when actually measured: `id×set` (median `|log ratio|` 1.15→0.11,
+118/122 improved) and `pow×set` (1.11→0.15, 72/73 improved) — independently re-confirmed on a fresh
+seed before trusting a reversal this surprising, not just the implementing agent's own sample. A
+follow-up investigation of `safe:legality+usd`'s own regressed tail (real, ~36% of rows, but a net
+median improvement) found the same lesson at smaller scale: `f:pauper`'s worst individual cases (ratio
+down to 0.28) have a real, nameable cause — Pauper legality effectively requires common rarity, and
+rarity drives price directly, a genuine shared variable smaller in scope than `legality×date` but the
+same species of problem — yet isolating pauper+penny barely moves the AGGREGATE regressed count (497 of
+801 vs. 547 of 861 overall), confirming most of that tail is ordinary independence noise, not a hidden
+structural flaw in the pair.
+
+**Confirmed registry, as of Round 40** (printing space, `n≈300` draws per pair unless noted):
+`legality×cn` (0.246→0.041), `legality×usd/eur/tix` (0.188→0.011 / 0.195→0.019 / 0.401→0.077),
+`type×released` (0.478→0.178), `type×usd` (0.479→0.189), `color/identity/cmc×{usd,eur,tix}` (Round 38,
+confirmed uniform across all three currencies), `id×set` (1.151→0.106), `pow×set` (1.114→0.154). A
+grid search over a multiplicative bias (`fudge × independence`, 1.0–2.0) found `fudge = 1.0` — no
+bias at all — strictly optimal on both median and mean error for every pair checked so far, including
+`legality×usd` specifically (re-run after the Pauper investigation, isolated to rows where independence
+actually won: median signed error ≈ 0 at `fudge=1.0`). Declined despite looking plausible: same-currency
+price crosses (mixed signal, `usd×eur` net worse in printing space while `usd×tix`/`eur×tix` net
+better) and `set×type` (similarly mixed across spaces) — don't re-attempt these without new evidence.
+`color×identity` needs no registry entry: confirmed already 100%-covered by the pre-existing
+`PlanePopcount` mechanism, no live gap.
+
+Still unresolved from the original doc: pairwise-safe does not imply joint-safe (`color`×`identity`
+was invisible at the pairwise level and only showed up as a real correlation once tested as a triple).
+The registry above is pair-level only — a residual with 3+ mutually pairwise-safe leaves still falls
+back to min-fold, not an assumption of joint safety by transitivity. Triple-level re-validation of the
+confirmed pairs above hasn't been attempted.
+
 ## The corrected model: partition search, not a fixed pipeline
 
 Rather than "contract, then independence," the right framing is: **find a partition of the `N` leaves
@@ -79,17 +196,13 @@ and (2) every pair of leaves that ends up in *different* groups is independence-
 individual-leaf level** — not "atom vs. atom," since an atom's constituent leaves carry their own
 correlations forward. Where condition (2) can't be satisfied for some cross-group pair, those two
 leaves either need to be forced into the same group, or the whole comparison falls back to the
-existing conservative min-fold for that cross-term.
-
-This makes leaf-level independence-safety a **constraint** on which partitions are valid, not a
-combination step applied after the fact. A large body of leaf-type-pair verdicts already exists to
-answer "is this pair independence-safe" (a 46,184-row survey across 250 leaf-type pairs — safe:
-legality×{cn,price,set,year}, id/color×price, cmc×price, type×{year,usd}; unsafe:
-legality×date/set (format legality is literally date-defined), color×type, keyword×type, set×type,
-id×set, power×set, color×identity (colors ⊆ identity), same-currency price pairs (usd/eur/tix aren't
-independent measurements of each other)) — but it needs re-checking at the 3-way level before
-trusting it generally: pairwise-safe does not imply joint-safe (`color`×`identity` was invisible at
-the pairwise level and only showed up as a real correlation once tested as a triple).
+existing conservative min-fold for that cross-term. This makes leaf-level independence-safety a
+**constraint** on which partitions are valid, not a combination step applied after the fact — still
+the target architecture; what's shipped (Round 40) is one flat pairwise scan over the residual, not
+this general partition framing. It gets the accuracy benefit for the pairs the registry covers without
+yet solving the general placement problem (which pair "wins" a leaf when more than one candidate
+grouping could claim it beyond the class-priority rule above, how a 3+-leaf residual gets partitioned
+at all).
 
 ## Bounding the search
 
@@ -105,9 +218,19 @@ instead of blowing up:
 - Combine whatever's left via independence, respecting the leaf-level safety constraint above; worst
   case, behave exactly like today's min-fold.
 
+Not built. Round 40's scan is pairwise-only over the residual (every registry-confirmed-safe PAIR of
+present leaf classes gets its own independence candidate, each separately narrowing the same `result`
+via `min`) — never a genuine subset search, never a packing decision among competing groupings larger
+than a pair. The residual-size distribution this bound is reasoned from still hasn't been measured
+against real (or deliberately pathological) traffic.
+
 ## Efficiency: don't pay for the search itself
 
-Two principles, one already validated against real (if narrow) evidence:
+Two principles, one already validated against real (if narrow) evidence — both still fully open,
+unchanged since this doc was first written, because no new EXPENSIVE mechanism has been added since
+(Round 40's registry entries are all `O(1)` hashmap-style lookups, same cost class as the leaves'
+own solo estimates, hence why `and_estimate_ns`'s own tax from Round 40 was real but modest — see
+above):
 
 - **Prefer cheap mechanisms over expensive ones, not just tight ones.** The hashmap-based exact
   lookups (`PairTotals`, the subtype tables, `cn`×`set`) are `O(1)`; `compile_plane`+`eval_planes`
@@ -117,7 +240,7 @@ Two principles, one already validated against real (if narrow) evidence:
   when nothing cheaper covers the leaves in question — and even then, a real cost/benefit check found
   it "leans net win, but not decisive" for the one case measured this way (a same-build-canary
   latency check found no clean signal at the whole-query level, though the routing-flip-rate argument
-  favored keeping the exact path).
+  favored keeping the exact path). Moot until a future round adds a mechanism in this cost class.
 - **Never redo the same plane intersection twice.** `popcount_with_bits` (`lib.rs`, the `And` arm's
   existing existential-leaf loop) currently rebuilds and re-`eval_planes`s the *entire* card-invariant
   plane list from scratch, once per existential leaf present — real, measurable waste whenever 2+
@@ -125,31 +248,46 @@ Two principles, one already validated against real (if narrow) evidence:
   section is about avoiding in the *new* machinery). The fix, and the design principle for anything
   new: compute the shared/base intersection once, cache the resulting bit-vector, and treat every
   additional candidate as an incremental extension of that cached base — never recompute a shared
-  prefix from scratch per candidate.
+  prefix from scratch per candidate. Still unmeasured for real-traffic frequency; still not attempted.
 
 ## What's not yet done
 
-- No general machinery has been built. Every fix so far (Rounds 33-36) is still its own hand-written
-  2-leaf-shape detector; this doc describes the target architecture, not shipped code.
-- The residual-size distribution for real (and deliberately pathological) 5+-leaf queries hasn't been
-  measured — the `N choose 3/4` bound is reasoned from everything sampled so far, not confirmed at
-  the tail.
-- The exact scoring function for partition selection (how to weigh "how much tightening" against "how
-  many forced-conservative cross-terms remain") hasn't been designed.
-- The `popcount_with_bits` redundancy fix hasn't been measured for real-traffic frequency (how often
-  2+ existential leaves actually co-occur) before deciding it's worth shipping on its own.
-- `t:enchantment power<10`-shaped queries (a main type that mostly *excludes* having a value at all,
-  combined with a broad arithmetic bound) — real ratio 7.4x over via naive independence, verified
+- **The actual bounded partition search** — subset enumeration up to size 3/4, greedy packing of
+  multiple simultaneous non-overlapping tightenings across arbitrary leaf groupings. Round 40 ships a
+  flat pairwise scan over the residual, not this. This is the single biggest remaining gap between
+  "what's built" and "what this doc describes."
+- **Cost-aware mechanism ordering** — moot so far; no expensive mechanism has entered the registry
+  since this was written.
+- **The `popcount_with_bits` redundancy fix** — still needs a real-traffic frequency measurement
+  before it's worth shipping on its own; still not done.
+- **Triple-level (3+-leaf) independence safety** — pairwise-safe does not imply joint-safe; the
+  confirmed pair-level registry (above) hasn't been re-checked at the triple level the way
+  `color`×`identity` was originally found to fail at.
+- **The residual-size distribution for real (and deliberately pathological) 5+-leaf queries** — the
+  `N choose 3/4` bound is still reasoned from what's been sampled, not confirmed at the tail. The
+  harness's own `broad:n1..n8` catch-all generates this population; it hasn't been specifically
+  analyzed for this question yet.
+- **An exact `legality×{set,date,year}` mechanism** — flagged above as a better answer than
+  independence for this specific family; a genuinely promising, scoped follow-on (Round 34-shaped),
+  not attempted.
+- **`t:enchantment power<10`-shaped queries** (a main type that mostly *excludes* having a value at
+  all, combined with a broad arithmetic bound) — real ratio 7.4x over via naive independence, verified
   against the corpus — haven't been checked against the *existing* `compile_plane`+`arith_tuple_route`
   combination to see whether this shape is already handled correctly or is a live gap; structurally
   similar to the already-verified-exact `format:modern id:g t:creature power+toughness>cmc+cmc`, but
-  the "mostly no value at all" population shape hasn't specifically been tested.
+  the "mostly no value at all" population shape hasn't specifically been tested. Unchanged since this
+  doc was first written — still open.
+- **`safe:legality+usd`'s Pauper/Penny tail** — a real, small, explainable exception (see above); not
+  urgent, but a candidate for a narrow follow-up if it ever matters for real routing regret.
 
 ## Related docs
 
 - [local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md)
-  — the round-by-round ledger this whole arc is tracked in (Rounds 33-36 are the shipped mechanisms
-  this doc generalizes from).
+  — the round-by-round ledger this whole arc is tracked in. Rounds 33-36 are the hand-written
+  mechanisms this doc originally generalized from; Rounds 37-40 are the measurement infrastructure
+  (`and_trace`, the survey harness, `and_estimate_ns`) and the first real generalization (the
+  independence registry, the class-priority fix) — read there for the full round-by-round numbers,
+  not repeated here.
 - [00852-engine-compose-acquire-p3-p4-ranking.md](00852-engine-compose-acquire-p3-p4-ranking.md) —
   the original `StreamedSelect`/`GatheredScan` routing investigation this whole cardinality-estimation
   arc grew out of.
