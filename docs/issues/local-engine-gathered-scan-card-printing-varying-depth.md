@@ -189,6 +189,90 @@ total regret by 0.0 ms).
 | 37 | `and_trace` (`lib.rs`): structured per-query provenance for the `And` arm's own evaluation, as a tree of `leaf`/`joint_lookup`/`independence` nodes plus a `considered` list of every 2-or-3-child combination the arm's fixed sequence attempted (hit or miss) — replaces the throwaway env-gated `eprintln!` instrumentation Rounds 33-36 each rebuilt from scratch. `scripts/nway_estimate_truth_survey.py`: a checked-in, deterministic, curated-leaf-shape estimate-vs-truth survey harness (replaces one-off scratchpad diagnostics), primary metric plan-choice agreement (not raw ratio) | kept | n/a (tooling; no estimator value changed) | n/a | see "Round 37" narrative below — two real bugs found and fixed before trusting any output: `and_trace_for` missing an `is_printing_composable` guard (crashed `explain()` on any `is:`/`keyword:` tag query, breaking its "safe to call constantly" contract) and an inverted worst-first ranking in the harness's own report tables (reused a ratio-shaped rank formula on an already-distance-shaped metric, sorting a perfect median to the top of "worst"). First full sweep (53,778 rows, 88 curated shapes, all 3 spaces) found `color:X`/`id:X`/`cmc<op>N` paired with a price comparison at 0% mechanism coverage and the worst median error in the whole survey — the input Round 38 acted on |
 | 38 | `min(fold, independence)` for `compose_printing_estimate`'s `And` arm: `color:X`/`id:X`/`cmc<op>N` paired with exactly one price comparison (`usd`/`eur`/`tix`, any op) — the first real use of the `"independence"` op Round 37's `and_trace` tree schema reserved for it | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 53,766 shared rows: 454 plan-choice flips total, 452 inside the three target shapes (all toward `GatheredScan`), 2 incidental elsewhere (an eligible pair embedded inside a larger conjunction); `root=leaf`/`root=or`: 0 changes, confirming the fix stayed scoped to the `And` arm | see "Round 38" narrative below — calibrated against 610 real rows: median `\|log ratio\|` 0.88→0.07 (94.8% improved, 4.4% regressed, concentrated in `cmc+usd`'s own undershoot tail); a grid search over a multiplicative bias (`fudge × independence`, 1.0–2.0) found `fudge = 1.0` (no bias at all) strictly optimal on both median AND mean error for every shape — contradicting the initial "bias it slightly high to be safe" intuition. Independently re-verified end to end with a fresh before/after sweep (not just the implementing agent's own report): all three `unique=` modes improve (printing most tightly — it's the only space `result` directly tightens; card/artwork improve via the same downstream scaling every other estimate-only shape already goes through, since `exact_domain_cards`/`exact_domain_artworks` are populated only by genuinely exact mechanisms, never by this one) |
 | 39 | `and_estimate_ns` (`AcquireFacts`): single-shot wall time of the real, production, acquire-time `compose_printing_estimate` call inside `acquire_plan_features`'s `PrintingCompose` branch — a permanent per-query cost baseline for grading the general partition-search estimator's own "tax" once it exists, not another accuracy fix | kept | n/a (tooling; no estimate value changed) | n/a | see "Round 39" narrative below — real distribution (53,778-row sweep): median 750ns, p90 4.4µs, p99 11.6µs; populated on exactly the 59.3% of rows whose acquire took the `PrintingCompose` branch (`None` elsewhere, never "0ns"). Paired-wheel latency A/B for this specific addition (required by `.claude/rules/benchmark-methodology-review.md` for any change to a documented hot path): the real effect was not distinguishable from the same-build canary's own run-order drift — reported honestly as "no measurable overhead detected," not claimed as a proven-safe number |
+| 40 | Generalizes Round 38's one hard-coded independence pair into a small registry (`IndepClass`/`independence_safe_pair`), scanned pairwise over every RESIDUAL `And`-arm leaf (not covered by an existing exact mechanism), plus a class-priority fix for winner attribution | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 53,775 shared rows: 395 plan-choice flips, concentrated in the newly-covered shapes (all toward `GatheredScan`); `root=leaf`/`root=or`: 0 changes; `unsafe:legality+set`/`+released`: 0/900 both builds, confirming the deliberately-excluded pair stayed untouched | see "Round 40" narrative below — registry re-validated against real data, not copied from the design doc's own self-contradictory list: adds `legality×{cn,price}`, `type×{released,usd}`, plus `id×set`/`pow×set`, which empirically REVERSE the doc's "unsafe" claim (independently re-confirmed on a fresh seed, not just the implementing agent's own sample: `id×set` median 1.34→0.14, 273/283 improved; `pow×set` 1.36→0.17, 146/147). `legality×{set,date,year}` deliberately excluded (format legality is date-DEFINED, not merely correlated — reserved for a future exact per-(set,format) mechanism, not independence). Same-currency price crosses spot-checked and found genuinely mixed, not shipped. **A real regression caught by pre-merge independent verification, not the implementing agent's own report**: `safe:cmc+usd` (already covered by Round 38) got WORSE (median 0.158→0.219, 218/246 regressed) — a same-field arith consolidation (`cmc>=1 cmc<=1`) was being marked `covered` unconditionally, silently blocking Round 38's own price×cmc pairing before the new registry scan ever saw it. Fixed (gate `mark_covered` on `single_arith_field(...).is_none()` — only a genuine cross-DIMENSION join covers its leaves); re-verified byte-identical to the pre-Round-40 baseline on the exact repro and every already-covered shape before merging |
+
+### Round 40
+
+Target: not one more hand-written branch — generalize Round 38's single hard-coded independence pair
+(`color`/`id`/`cmc` × `usd`/`eur`/`tix`) into a small, re-validated registry scanned over every
+residual leaf, plus fix a real ordering bug Round 38's own test surfaced. Explicitly a bounded first
+slice of the design doc's full vision (not the N-choose-3/4 packing search, not cost-aware ordering,
+not the `popcount_with_bits` fix) — see the plan discussion for the staging rationale.
+
+**The design doc's own safe/unsafe list needed correcting before any registry could be built from
+it**: `legality×{cn,price,set,year}` was listed safe and `legality×date/set` unsafe in the same
+paragraph. Resolved by domain semantics, not an A/B test: format legality is *defined* by a
+release-date cutoff, and `set:X`/a date/a year all pin the same underlying variable legality already
+depends on — a second latent error beyond the contradiction (`legality×year` is unsafe for the
+identical reason, not just `×set`). But "no true independence" is the norm in this domain, not the
+exception — even `legality×price`, the cleanest safe pair, has a real exception (Alpha: Reserved-List
+overrepresented, commands an "original printing" premium independent of playability) — so the actual
+bar stayed empirical (does `min(fold, independence)` net-improve over plain fold in aggregate,
+including the hard cases), not a veto by finding *a* correlation story, which nearly every pair has
+somewhere. `legality×{set,date,year}` is categorically different — not a correlation-with-exceptions
+but the same variable observed twice, and exactly answerable EXACTLY (`card_legalities` is already
+real per-printing ground truth) — kept out of the independence registry entirely and flagged as a
+separate, likely-better opportunity (a Round 34-style exact per-(set,format) table).
+
+**Registry, re-validated against real data (not copied from the doc), printing space, n=300 draws
+unless noted**: `legality×cn` 0.246→0.041 (255/14 improved+regressed of 285 scored); `legality×usd/
+eur/tix` 0.188→0.011 / 0.195→0.019 / 0.401→0.077 (tix weaker but still net positive); `type×released`
+0.478→0.178 (was 0% coverage, now 41.3%); `type×usd` 0.479→0.189 (now 45.7%); `color/identity/cmc×
+{usd,eur,tix}` already fully covered by Round 38, eur/tix confirmed to behave identically to usd.
+**Two entries reverse the design doc's own "unsafe" classification**: `id×set` 1.151→0.106 (118/3 of
+122) and `pow×set` 1.114→0.154 (72/1 of 73) — independently re-confirmed with a FRESH seed (999, no
+reuse of the implementing agent's own sample) before trusting this surprising a reversal: `id×set`
+median 1.341→0.140 (273/283 improved), `pow×set` 1.358→0.165 (146/147 improved), printing space,
+n=283/147. Declined despite looking plausible: same-currency price crosses (`usd×eur` net WORSE in
+printing space, 0.159→0.394, while `usd×tix`/`eur×tix` net better — mixed, inconsistent signal) and
+`set×type` (similarly mixed across spaces). `color×identity` confirmed already 100%-covered by the
+pre-existing `PlanePopcount` mechanism, unaffected either way — no live gap for independence to fill.
+
+**Class-priority fix** (a real bug Round 38's own test found: `arith_tuple_count` and
+`SubtypeArithBox` both hitting the same query at the same value, attributed to whichever ran first):
+"pick smallest candidate" is only sound among EXACT/upper-bound mechanisms (every one of which
+guarantees `count(A∧B) ≤ min(count(A), count(B))`) — independence and `SetCollectorRange`'s density
+estimate (Round 33, already documented to undershoot on a non-contiguous set) are central estimates
+that can land on either side of the truth, so naively comparing them by magnitude against an exact
+value is unsound, not merely risky (an undershooting estimate could silently "win" over a correct
+exact answer). Fixed with a strict class priority: exact/bound candidates are tie-broken by "most
+leaves covered" among themselves; an estimate-class candidate is only ever considered when no
+exact/bound candidate ties the global min at all. `SetCollectorRange` verified to have no live version
+of this bug today (structural: `set`/`cn` never compile to planes or appear in `PairTotals`).
+
+**A real regression caught by independent pre-merge verification, not the implementing agent's own
+report**: a fresh isolated-wheel before/after sweep found `safe:cmc+usd` — a shape ALREADY fully
+covered by Round 38 — got WORSE (median 0.158→0.219, 218 of 246 comparable rows regressed, up to 13x
+on the worst example: `usd>6.03 cmc>=1 cmc<=1` card mode, true 343, before 482, after 4642). Root
+cause: a pre-existing (pre-Round-38) generic `arith_tuple_count` check — "2+ cmc/power/toughness
+children get their true joint card count" — now marked its leaves `covered` unconditionally on a hit.
+Correct for a genuine cross-dimension join (`cmc<=5 power>=3`); wrong for 2+ bounds on the SAME field
+(`cmc>=1 cmc<=1`, not a cross-dimension intersection at all, just resolving one field's own effective
+value) — marking it covered silently stole those leaves from the registry's own same-field
+consolidation before it ever ran, dropping Round 38's own price×cmc pairing entirely rather than
+merely failing to add new coverage. Fixed by gating that `mark_covered` call on
+`single_arith_field(...).is_none()` (only a genuine multi-field join covers its leaves). Re-verified
+independently after the fix (not just the implementing agent's re-run): the exact repro now predicts
+482/864 (card/printing), matching the pre-Round-40 baseline exactly; `safe:cmc+usd` is a byte-for-byte
+no-op against the pre-Round-40 baseline over all 816 `true_total>=100` rows; `unsafe:legality+set`/
+`+released`/`color×identity`/`safe:color+usd`/`safe:identity+usd` each confirmed byte-identical to the
+pre-Round-40 baseline.
+
+**Final verification** (fresh isolated wheels, independently rebuilt and re-swept, not the
+implementing agent's own artifacts): 395 of 53,775 shared observations flip plan choice (down from
+452 before the fix — the fix also removed some spurious flips the bug had caused), concentrated in
+the newly-covered shapes, all toward `GatheredScan`; `root=leaf`/`root=or`: 0 changes.
+`safe:type+released` 0.400→0.231 (237/3), `safe:type+usd` 0.421→0.211 (200/0), `unsafe:identity+set`
+0.973→0.244 (276/50), `unsafe:pow+set` 0.918→0.209 (208/24), `safe:legality+usd` 0.280→0.140 (547/314),
+`safe:legality+cn` 0.218→0.086 (552/266) — every newly-covered shape net-improves; the regressed tails
+are bounded, known-shape independence undershoots (e.g. `f:pauper usd<0.08`), not another blow-up.
+
+Blast radius: `card_engine/src/lib.rs` (`IndepClass`/`independence_safe_pair`/`indep_class_of`, the
+generalized residual scan replacing Round 38's hard-coded pair, `is_estimate_class_mechanism`, the
+`covered` bookkeeping threaded through every existing mechanism call site, `and_trace_build_tree`'s
+class-priority winner selection), `card_engine/src/tests.rs` (four new tests plus updates to Round
+38's own fixture for the corrected tie-break). `cargo test`: 199 passed release / 200 debug (one
+pre-existing unrelated debug-only test). `cargo clippy --all-targets -- -D warnings`: clean.
 
 ### Round 1
 
