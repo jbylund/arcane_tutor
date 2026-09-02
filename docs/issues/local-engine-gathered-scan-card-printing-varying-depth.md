@@ -203,6 +203,76 @@ total regret by 0.0 ms).
 | 48 | `SubtypeArithBox`'s gate generalized from `arith_children.len() + 1 == v.len()` (whole query must be exactly "one subtype leaf + N arith leaves") to just `!arith_children.is_empty()` — scans the residual for every subtype leaf present, mirroring `SubtypePairIndexes`'s own Round 42 generalization; `mark_covered_on_hit` now scoped to only the leaves a given hit actually explains, not all of `v` | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,378 shared rows (fresh seed, new curated shape `subtype_cube:type+cmc+usd` added): 74 plan-choice flips (0.1%), concentrated in `subtype_cube:type+cmc+usd` (39/900, 4.3%) and `star:cmc+type+usd` (31/900, 3.4%); base "no residual" shapes (`subtype_cube:type+cmc`, `subtype_cube:type+pow+tou+cmc`) show zero rows changed, confirming strict superset behavior for the case that already worked. Ratio diagnostic: mean abs-log-ratio +0.001 overall — **"B is LESS accurate" in aggregate**, not more (`subtype_cube:type+cmc+usd` 0.402→0.456, 45 improved/64 worsened; `star:cmc+type+usd` 0.354→0.361, 38/42) | see "Round 48" narrative below — the motivating case (`t:elf cmc>=5 usd<10`) improves dramatically (printing 1665→241, true 177), but the aggregate sweep regression is real and independently reproduced: root-caused via `and_trace` to `covered`'s pre-existing leaf-occupancy conservatism (queue item #3) blocking `Independence` from trying `(subtype, price)` once the box covers `(subtype, cmc)` — a live, measured instance of the "loosen covered" gap, not a defect in this round's own logic. A related, validated idea surfaced during review (not built this round, logged in the followup queue): the box's own exact joint, combined via independence with the residual price leaf's solo rate, gives 241×0.779≈188 against true 177 — tighter than the box's price-blind 241 alone |
 | 49 | Loosens the independence registry's `covered` gate from leaf-occupancy to subset-identity: `CoveredState { flags, subsets: Vec<u64> }` replaces the bare `covered: Vec<bool>` — `flags` keeps the unchanged Round-40 leaf-level bookkeeping, `subsets` records one bitmask per genuine joint hit (via `mark_covered`/`pair_bounded_min`). The independence registry no longer skips a leaf merely because SOME other mechanism touched it (`is_covered` deleted); it declines a candidate pairing only when that pairing's own combined leaf-mask exactly equals an already-recorded subset | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,366 shared rows (fresh seed): 378 plan-choice flips (0.6%), 100% confined to `root=and`'s `*+usd` star/cube shapes (`star:legality+identity+usd` 13.9%, `star:legality+color+usd` 12.8%, `star:legality+cmc+usd` 4.6%, `star:color+identity+usd` 3.4%, `star:cmc+type+usd` 2.2%, `subtype_cube:type+cmc+usd` 2.2%, `star:identity+type+usd` 1.6%, `star:color+type+usd` 1.3%); `root=leaf`/`root=or` show zero changes. Ratio diagnostic: mean abs-log-ratio **−0.034** (95% CI [−0.036, −0.032], excludes 0) — **"B is MORE accurate"**, reversing Round 48's own "B is LESS accurate" finding | see "Round 49" narrative below — independently reproduced end to end: the regression case (`t:elf usd<0.20 cmc>=2`) recovers exactly to printing=425 (matching the pre-Round-48 answer), Round 48's own motivating case (`t:elf cmc>=5 usd<10`) stays unchanged at 241, both traced via `and_trace` on isolated release wheels built myself, not just the implementing agent's report |
 | 50 | "Anchored independence" for `SubtypeArithBox`: on a box hit, scans for a SINGLE residual leaf classifying as `IndepClass::Price` (declines entirely if 2+, the price-triple guard) and multiplies the box's own exact joint by that leaf's solo rate, folding the product as a new `Estimate`-class candidate (`"SubtypeArithAnchoredIndependence"`) via `.min()`. Deliberately narrow — only `SubtypeArithBox`, only `Price` — mirroring Round 38/42's own "one mechanism, one class, validate, then expand" discipline | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,363 shared rows (fresh seed): 14 plan-choice flips (0.0%), 100% confined to `subtype_cube:type+cmc+usd` (9/900) and `star:cmc+type+usd` (5/900); `root=leaf`/`root=or` zero changes. Ratio diagnostic: mean abs-log-ratio −0.002 (95% CI [−0.002, −0.001], excludes 0) — "B is MORE accurate" | see "Round 50" narrative below — independently reproduced: `t:elf cmc>=5 usd<10` (true 177) tightens 241→188 (1.36x→1.06x); `t:elf usd<0.20 cmc>=2` (true 366), not required by the plan but checked anyway, ALSO improves 425→370 (1.16x→1.01x) — a genuine bonus, not assumed |
+| 51 | `ArithTupleIndex` gains `totals: Vec<SpaceTotals>`, one exact (printing,card,artwork) triple per distinct (cmc,power,toughness,loyalty) combination, summed once at build time from that key's own postings (`offsets`/`artwork_base`, already in scope at the one call site). `arith_tuple_count`→`arith_tuple_totals` now returns the exact triple instead of a card count; all 3 call sites updated — the main And-arm joint now folds `Candidate::Exact` (closing Round 46's census blind spot), the independence registry's Cmc/Pow multi-unit gains real `artwork: Some(...)`, the single-leaf fallback gains real card/artwork. `ARCHIVE_FORMAT_VERSION` bumped | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,372 shared rows (fresh seed): 144 plan-choice flips (0.2%), 100% confined to cmc/pow/tou-involving shapes; `root=leaf`/`root=or` zero changes. Ratio diagnostic: mean abs-log-ratio −0.003 (95% CI excludes 0) — "B is MORE accurate"; a targeted slice on rows this mechanism won (1,383 rows): `unique=printing` median abs-log-ratio 0.168→0.000 | see "Round 51" narrative below — validated against the real corpus BEFORE scoping (a direct `oracle_id`-grouped check of `corpus.jsonl`, no engine build needed) and independently re-reproduced after merging: `cmc>=8 power<=2` printing 30→21 (true 21, exact); `cmc<=1 power>=1 tou>=1` printing 3225→2786 (true 2786, exact). A real, honestly-flagged pre-existing gap found (not fixed, out of scope): `unique=artwork`'s own acquire path routes through a separate `artwork_estimate` function, not this mechanism's `exact_domain_artworks` — artwork FINAL improves but doesn't fully close (15 vs true 13, was 22) |
+
+### Round 51
+
+Target: close the one gap Round 46's own census left standing — queue item #2 in
+[local-engine-nway-followup-queue.md](local-engine-nway-followup-queue.md). `arith_tuple_count` gave an
+exact CARD count for 2+ cmc/power/toughness/loyalty bounds ANDed together (via a scan over the ~564-key
+`ArithTupleIndex`), but every one of its 3 call sites needed a PRINTING number too and got there by
+scaling the exact card count by the corpus-average reprint ratio (`card_count * n_printings / n_cards`)
+— an estimate, not exact, and two of the three call sites gave up on artwork entirely (`None`). This was
+the one mechanism invisible to Round 46's `debug_assert!(cards<=artworks<=printings)` census, since it
+folded as `Candidate::Estimate`.
+
+**Validated against the real corpus BEFORE scoping this round** — a direct `oracle_id`-grouped check of
+`corpus.jsonl` (no engine build needed), confirming this was a real, both-directions accuracy gap, not a
+theoretical one: `cmc>=8 power<=2` (10 cards) — real 21 printings vs the scaling's 31 (48% too high);
+`cmc<=1 power>=1 tou>=1` (1,046 cards, the largest population checked) — real 2,786 vs 3,225 (16% too
+high); `power>=6 tou>=6` (840 cards) — real 2,874 vs 2,590 (11% too LOW, the opposite direction). Cheap
+efficient creatures over-reprint relative to the corpus average; expensive/weak or toughness-light
+expensive creatures under-reprint.
+
+**The fix, worked out in discussion before the plan**: `SpaceTotals { printings, cards, artworks }` is
+the exact pattern this codebase already uses everywhere else for this problem (`SetSubtypeTable`,
+`SubtypePairIndexes`'s tables, `ColorCmcTable`, `SubtypeArithBox`'s own box) — its own doc comment states
+why directly: "printings is not cards times a reprint rate, and artworks sits between them at a ratio
+that varies per value." `ArithTupleIndex` already visits every one of a key's matching cards once at
+BUILD time to collect `postings: Vec<Vec<u32>>` — summing each key's own real printing/artwork spans at
+that SAME visit, once, costs nothing extra query time ever has to pay. Rejected in discussion: an
+alternative that materializes IDs and sums spans at QUERY time (using the already-existing
+`arith_tuple_ids` sibling function) — strictly worse, since it would pay an allocation on every query
+this common 2+-arith-leaf shape reaches, versus this round's approach paying nothing extra at all.
+
+**The implementation**, done by a background agent to a pre-approved plan and independently
+re-verified end to end: `ArithTupleIndex` gained `totals: Vec<SpaceTotals>`, parallel to `keys`/
+`postings`, computed in `build_arith_tuple_index` (now taking `offsets`/`artwork_base`, both already in
+scope at its one call site). `arith_tuple_count` was renamed to `arith_tuple_totals` and now returns
+`Option<(usize, usize, usize)>` (matching `subtype_arith_exact`/`color_cmc_exact`'s own established
+shape) instead of a card count — replaced at all 3 of its call sites, not left alongside a now-redundant
+card-only variant. The main `And`-arm joint (the one flagged by the census) now folds
+`Candidate::Exact`; the independence registry's `Cmc`/`Pow` multi-unit gains real `artwork: Some(...)`
+(previously always `None`, so `artwork_indep` could never be computed for any pairing involving it); the
+single bare-leaf fallback gains real card/artwork instead of scaling/`None`. The Round 40
+`single_arith_field`-gated `mark_covered` conditional — a different concern (single-field consolidation
+vs. genuine cross-dimension joint) — was correctly left untouched. `ARCHIVE_FORMAT_VERSION` bumped
+`2026082501` → `2026090201`, a real archive-layout change (new field on `ArithTupleIndex`), per this
+repo's own established convention.
+
+**Verification, independently reproduced.** `cargo test`: 248 passed debug / 245 passed release (exact
+baseline+4). `cargo clippy --all-targets -- -D warnings`: clean on debug; release shows only the same
+pre-existing `ARITH_TUPLE_BLOWUP_CARDS` dead-code warning confirmed unrelated in every prior round.
+
+Rebuilt both isolated release wheels myself (before = fresh clone at `f56caa1f`, after = the agent's
+commit) and reproduced both corpus-validated populations directly via `and_trace`, all 3 unique modes:
+`cmc>=8 power<=2` printing FINAL 30→21 (true 21 via `explain_analyze`, now exact); `cmc<=1 power>=1
+tou>=1` printing FINAL 3225→2786 (true 2786, now exact). `card` mode was already exact both before and
+after (unaffected, correctly). Re-ran `nway_estimate_truth_survey.py --compare` myself (fresh seed,
+consistent with the agent's own 66,372-row sweep): `root=leaf`/`root=or` both exactly 0.0% changed,
+ratio diagnostic mean abs-log-ratio −0.003 (95% CI excludes 0) — "B is MORE accurate", matching the
+direction and rough magnitude of the agent's own targeted-slice numbers (0.168→0.000 median on the
+1,383 rows this mechanism won). Spot-confirmed `cards<=artworks<=printings` holds in both reproduced
+examples (10≤13≤21, 1046≤1400≤2786) — consistent with the agent's own dedicated debug-build census
+re-run (23,310 measurements, zero `debug_assert!` violations).
+
+**A real, honestly-flagged pre-existing gap found during this round, not fixed (out of scope)**:
+`unique=artwork`'s own top-level acquire path routes through a SEPARATE `artwork_estimate` function, not
+through `compose_printing_estimate`'s `exact_domain_artworks` — so `unique=artwork` FINAL improves
+(`cmc>=8 power<=2`: 22→15 against true 13) but doesn't fully close, even though the mechanism's own
+`and_trace` entry correctly reports the exact artwork total (13) internally. Confirmed present, in a
+worse form, on the unmodified before-wheel too — a pre-existing, unrelated gap, not introduced by this
+round, and a plausible candidate for a future round.
 
 ### Round 50
 

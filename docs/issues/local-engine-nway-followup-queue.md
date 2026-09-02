@@ -1,6 +1,6 @@
 # N-Way Estimator Follow-Up Queue
 
-Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-50), in the order we
+Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-51), in the order we
 intend to tackle it. This doc is the queue, not the depth — the round-by-round numbers live in
 [local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md),
 and the architecture/design rationale lives in
@@ -23,12 +23,13 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
    - **Combining multiple safe residual classes into one product**, not just one — needs the same
      order-statistics-bias care already documented in the design doc (never try residuals separately
      and pick the smallest) once 2+ classes are each independently validated as safe to anchor.
-2. **Fix the estimators Round 46's census flagged.** Zero of the six exact mechanisms produce an
-   inconsistent `cards<=artworks<=printings` triple, but `arith_tuple_count` folds as
-   `Candidate::Estimate` (a scaled, not exact, printing conversion, no artwork at all) and is
-   structurally invisible to the assert. It already has the real matching card IDs via
-   `arith_tuple_ids` (built for the `ArithIdProbe` merge) — an exact printing/artwork derivation from
-   those IDs is buildable, not just a self-consistent scaled one.
+2. **Fix `unique=artwork`'s own acquire path.** Found during Round 51's own verification: `unique=artwork`
+   queries route through a SEPARATE `artwork_estimate` function, not `compose_printing_estimate`'s
+   `exact_domain_artworks` — so even now that `arith_tuple_totals` (and other exact mechanisms) report a
+   real exact artwork total internally, `unique=artwork`'s own top-level `acquire.matches` doesn't fully
+   inherit it (confirmed: `cmc>=8 power<=2` improved 22→15 against true 13, but didn't close all the way
+   to exact). Scope not yet investigated — needs its own look at `artwork_estimate`'s own logic before
+   sizing the fix.
 3. **Fix the harness's own query-generation nondeterminism.** Found during Round 46: the identical
    `--seed 0` run against the identical corpus produced 9 different generated queries across two
    separate engine loads — a related instance of Round 47's own root cause (Rust `HashMap` iteration
@@ -39,8 +40,8 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 4. **Measure the residual-size distribution for real 5+-leaf queries.** Still unmeasured since before
    this session started. This is the actual answer to "is the general bounded partition search worth
    building at all" — if real residuals rarely exceed 2-3 leaves, the "notice one bad case, build one
-   validated mechanism" pattern (6 real gaps closed this way so far: Rounds 34, 40, 42, 44, 45, 48) may
-   just *be* the right architecture, not a placeholder for a general one.
+   validated mechanism" pattern (7 real gaps closed this way so far: Rounds 34, 40, 42, 44, 45, 48, 51)
+   may just *be* the right architecture, not a placeholder for a general one.
 5. **Decide on / scope the actual general bounded partition search**, informed by #4's findings and
    built on Round 49's own subset-tracking primitive (`CoveredState`'s `subsets: Vec<u64>`, already
    shipped). Not attempted until the above are in.
@@ -82,3 +83,6 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   independence registry — recovers Round 48's own regression and improves the sweep overall.
 - Round 50: "anchored independence" for `SubtypeArithBox` — exact joint × single residual `Price` rate,
   narrowly scoped (see item #1 above for what's left to generalize).
+- Round 51: exact `arith_tuple` (printing, card, artwork) triples, precomputed at build time
+  (`ArithTupleIndex.totals`) — closes Round 46's census gap; surfaced the `unique=artwork` acquire-path
+  gap now tracked as item #2 above.

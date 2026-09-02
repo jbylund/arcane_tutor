@@ -375,13 +375,20 @@ above):
   `SubtypePairIndexes`, `ColorCmcTable`, `SubtypeArithBox`) themselves produce an inconsistent triple —
   every individual candidate is already self-consistent; the violation is purely a composition-step
   gap, confirming the "push self-consistency into each estimator" principle already holds for every
-  mechanism that's been checked. `arith_tuple_count` is structurally invisible to the census (folds as
-  `Candidate::Estimate`, so the `debug_assert!` never applies to it) — it has an exact card count but
-  only a scaled, not exact, printing conversion and no artwork at all; whether upgrading it (it has the
-  real card IDs in hand via `arith_tuple_ids`, so an exact printing/artwork derivation is possible, not
-  just a self-consistent scaled one) is worth its own round is still open. Fixing the floor itself, and
-  deciding what (if anything) to do about `arith_tuple_count`, are both explicitly deferred follow-up
-  rounds, not attempted in Round 46.
+  mechanism that's been checked. ~~`arith_tuple_count` is structurally invisible to the census~~ —
+  **closed in Round 51**: `ArithTupleIndex` gained `totals: Vec<SpaceTotals>`, one exact
+  (printing,card,artwork) triple per distinct key, summed once at build time from that key's own
+  postings (the same `offsets`/`artwork_base` spans, computed once instead of scaled per query) —
+  rejected a query-time alternative using the already-existing `arith_tuple_ids` sibling (would pay an
+  allocation on every query this common shape reaches, versus nothing extra at build time). Renamed to
+  `arith_tuple_totals`, now folds `Candidate::Exact` at its primary call site, closing the census gap;
+  independently reproduced against two real, pre-validated corpus populations (`cmc>=8 power<=2`:
+  printing 30→21, now exactly matching the true 21; `cmc<=1 power>=1 tou>=1`: 3225→2786, exact). Fixing
+  Round 41's own unclamped floor (the actual source of the 10,269 violations above) remains a separate,
+  still-open item. A NEW gap surfaced during this round's own verification: `unique=artwork`'s top-level
+  acquire path routes through a separate `artwork_estimate` function, not `exact_domain_artworks`, so it
+  didn't fully inherit this round's new exactness (improved, not closed) — tracked as
+  [local-engine-nway-followup-queue.md](local-engine-nway-followup-queue.md)'s item #2.
 - ~~A real, separate nondeterminism bug (Round 46)~~ — **closed in Round 47.** `top_n_and_rest_max`
   (`build_subtype_pair_tables`'s shared cutoff) now extends past `n` to include every pair tied with
   the boundary card count, rather than a plain `sort_unstable_by_key` + `truncate` with no tiebreak.
