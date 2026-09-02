@@ -10298,7 +10298,7 @@ fn cmc_border_existential_fixture_store() -> CardData {
         (6, &["black"]),          // 3: black but outside the cmc range
         (2, &["white", "black"]), // 4: in range; only its SECOND printing is black
     ];
-    let cards: Vec<OracleCard> = specs
+    let mut cards: Vec<OracleCard> = specs
         .iter()
         .enumerate()
         .map(|(i, &(cmc, _))| {
@@ -10307,6 +10307,14 @@ fn cmc_border_existential_fixture_store() -> CardData {
             c
         })
         .collect();
+    // Round 41 addition: a single card (card0, cmc=0 -- already outside the cmc range and
+    // irrelevant to the true `{card2, card4}` joint) tagged with a `kw:` value no other card shares.
+    // `CollectionCmp` is not `compile_plane`-covered (see `compile_plane`'s catch-all `_ => None` arm
+    // in planes.rs), so an And that includes this leaf alongside `cmc_ge`/`cmc_le`/`border_black`
+    // still gets its `exact_domain_cards`/`_artworks` from the SAME 2-leaf `best_other` joint as
+    // before (untouched by this leaf's presence) while this leaf's own count (1, narrower than the
+    // joint's 2) is exactly the kind of uncovered residual the new floor is for.
+    cards[0].card_keywords = vocab_ids(&mut vocab, &["outlier_kw"]);
     let printing_counts: Vec<usize> = specs.iter().map(|(_, borders)| borders.len()).collect();
     let mut data = store_of(cards, &printing_counts, vocab);
     let mut idx = 0;
@@ -10316,6 +10324,7 @@ fn cmc_border_existential_fixture_store() -> CardData {
             idx += 1;
         }
     }
+    data.indexes.keywords = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_keywords);
     data.strings = interner.strings;
     data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
     // `PrintingCompose`'s applicability (`printing_compose_indexes_built`) declines cleanly unless all
@@ -10335,6 +10344,16 @@ fn cmc_border_existential_fixture_store() -> CardData {
     // calls `compose_printing_estimate` directly on the raw `And` and DOES fold in each child's own
     // (correctly answered) estimate.
     data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(|v| v as i16));
+    // Round 41 addition, same reason as the `cmc` index above: `exact_result_total`'s `border` arm
+    // reads `indexes.value_totals.border`, which an ordinary fixture store leaves at its empty
+    // `Default` -- an ABSENT key there is read as an exact zero (see `build_all_value_totals`'s own
+    // doc), not "not built", so `border:black`'s own per-leaf card/artwork count silently came back
+    // `Some(0)` instead of its real value. Harmless for every OTHER test built on this fixture (none
+    // reads a leaf's own `.card`/`.artwork` outside `exact_domain_cards`/`_artworks`, which never
+    // consulted per-leaf totals), but load-bearing for the new card/artwork narrow-leaf floor in
+    // `compose_printing_estimate`'s `And` arm, which does.
+    data.indexes.value_totals =
+        build_all_value_totals(&data.cards, &data.printings, &build_printing_to_card(&data.offsets), &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
     data
 }
 
@@ -10439,6 +10458,158 @@ fn compose_and_arm_tightens_lone_existential_leaf_with_no_card_invariant_partner
     // exercising Round 22's ORIGINAL fallback, unchanged. See the two tests below for Round 24's own
     // logic, exercised directly against a hand-built `PairTotals` at a scale a real fixture would need
     // 1,024+ printings per value to reach.
+}
+
+/// Round 41: `exact_domain_cards`/`_artworks` (fed only by `best_other`/the arith-tuple merge) is
+/// completely untouched by the new floor -- the two ONLY change `result_space`. Re-runs the round-22
+/// fixture's own flagship shape (`cmc>=1 cmc<=5 border:black`, exact 2-card/2-cmc-and-border joint)
+/// with ONE extra leaf ANDed in: `kw:outlier_kw`, matching exactly card0 (see the fixture's own Round
+/// 41 doc comment) -- narrower (1 card) than the 2-card joint, uncovered by any mechanism
+/// (`CollectionCmp` is not `compile_plane`-covered, so it never reaches `best_other`), and therefore
+/// exactly what the new floor is for.
+#[test]
+fn compose_and_arm_narrow_floor_diverges_result_space_from_exact_domain() {
+    let data = cmc_border_existential_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let cmc_ge = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(1.0) };
+    let cmc_le = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(5.0) };
+    let border_black = FilterExpr::TextExact { field: TextField::Border, op: CmpOp::Eq, value: "black".to_string() };
+    let kw_outlier = FilterExpr::CollectionCmp { field: CollField::Keywords, op: CmpOp::Ge, value: "outlier_kw".to_string(), value_id: None };
+    let filter = FilterExpr::And(vec![cmc_ge, cmc_le, border_black, kw_outlier]);
+
+    let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, false);
+    let exact_domain = est.exact_domain.expect(
+        "cmc range x border:black is still a genuine 2-leaf joint via best_other, unaffected by the extra residual leaf",
+    );
+    assert_eq!(exact_domain.card, Some(2), "exact_domain must stay EXACTLY what it was before this fix -- untouched by the new floor, byte-identical to the round-22 fixture's own 2-card joint");
+    assert_eq!(
+        est.result.card,
+        Some(1),
+        "the new floor must tighten result.card BELOW exact_domain.card: kw:outlier_kw's own count (1 \
+         card) is narrower than the 2-card best_other joint and uncovered by any other mechanism, so it \
+         wins the min"
+    );
+    assert!(
+        est.result.card < exact_domain.card,
+        "result_space and exact_domain must have genuinely DIVERGED here, not accidentally stayed equal -- \
+         that divergence is the whole point of keeping the two fields separate"
+    );
+}
+
+/// Round 41 fixture: large enough (4,100 cards) to clear `NARROW_FLOOR` (1,000) with room to spare, so
+/// a genuinely BROAD leaf (past both `NARROW_FLOOR` and `MAX_NARROW_FRACTION` of the card/artwork
+/// domain) can be constructed and compared directly against a genuinely narrow one --
+/// `cmc_border_existential_fixture_store` above is deliberately tiny (5 cards) and can never produce a
+/// `matched > 1,000` leaf. Every card gets exactly one printing (so its own artwork count equals its
+/// own card count, 1) except the two `kw:rare_kw` cards, which get DIFFERENT printing counts (3 and 2)
+/// so their combined artwork total (5) is distinguishable from their card total (2) in the assertions
+/// below.
+///
+/// `CollectionCmp` (not `compile_plane`-covered -- see `compile_plane`'s catch-all `_ => None` arm in
+/// planes.rs) and a single, always-true `cmc>=1` leaf (arith-eligible, so excluded from
+/// `card_invariant`/`existential` entirely, and alone -- never 2+ arith children -- so it never feeds
+/// `arith_tuple_count` either) together guarantee `exact_domain_cards`/`_artworks` stay `None` for
+/// every `And` built against this fixture: no mechanism above the new floor ever fires here, so every
+/// assertion in the two tests below is purely about the new per-leaf floor in isolation.
+fn broad_and_narrow_keyword_fixture_store() -> CardData {
+    let mut vocab = VocabInterner::new();
+    const N: usize = 4100;
+    const N_COMMON: usize = 3700; // 90.2% of N: matched > NARROW_FLOOR (1,000) AND > MAX_NARROW_FRACTION (25%) of N -- broad.
+    let common_kw = vocab_ids(&mut vocab, &["common_kw"]);
+    let rare_kw = vocab_ids(&mut vocab, &["rare_kw"]);
+    let mut cards: Vec<OracleCard> = (0..N)
+        .map(|i| {
+            let mut c = stub_card(i as u128 + 1, TYPE_CREATURE, &[], &mut vocab);
+            c.cmc = Some(5); // every card qualifies for `cmc>=1`, this fixture's shared "other" leaf.
+            if i < N_COMMON {
+                c.card_keywords = common_kw.clone();
+            }
+            c
+        })
+        .collect();
+    // The two `kw:rare_kw` cards: narrow (2 of 4,100) in card space, and given different printing
+    // counts (3, 2) so their combined artwork total (5) is a distinct, independently-checkable number
+    // rather than a coincidental match to the card count.
+    cards[N - 1].card_keywords = rare_kw.clone();
+    cards[N - 2].card_keywords = rare_kw;
+    let mut printing_counts = vec![1usize; N];
+    printing_counts[N - 1] = 2;
+    printing_counts[N - 2] = 3;
+    let mut data = store_of(cards, &printing_counts, vocab);
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(|v| v as i16));
+    data.indexes.keywords = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_keywords);
+    data.indexes.value_totals =
+        build_all_value_totals(&data.cards, &data.printings, &build_printing_to_card(&data.offsets), &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
+    data
+}
+
+/// Round 41: a narrow, UNCOVERED leaf's own exact card/artwork count DOES tighten `result.card`/
+/// `.artwork` when no other mechanism covers it -- `kw:rare_kw` matches 2 of 4,100 cards (well under
+/// `NARROW_FLOOR`), and this fixture's shared `cmc>=1` leaf guarantees `exact_domain_cards`/
+/// `_artworks` stay `None` (see the fixture's own doc), so before this fix `result.card`/`.artwork`
+/// would have stayed `None` too. After this fix they must read the leaf's own exact counts instead.
+#[test]
+fn compose_and_arm_narrow_residual_leaf_tightens_card_and_artwork_floor() {
+    let data = broad_and_narrow_keyword_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let cmc_ge = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(1.0) };
+    let kw_rare = FilterExpr::CollectionCmp { field: CollField::Keywords, op: CmpOp::Ge, value: "rare_kw".to_string(), value_id: None };
+    let filter = FilterExpr::And(vec![cmc_ge, kw_rare]);
+
+    let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, false);
+    assert!(
+        est.exact_domain.is_none(),
+        "neither leaf is plane-compilable, and there is only one arith-eligible leaf -- no mechanism \
+         should ever populate exact_domain for this And, before or after this fix"
+    );
+    assert_eq!(
+        est.result.card,
+        Some(2),
+        "kw:rare_kw's own exact card count (2 cards) is narrow and uncovered by any other mechanism -- \
+         it must tighten result.card from None (the pre-fix behavior) down to its own count"
+    );
+    assert_eq!(
+        est.result.artwork,
+        Some(5),
+        "the same leaf's own exact artwork count (3 + 2 = 5 artworks across its two matching cards, \
+         each with a different printing count) must tighten result.artwork the same way"
+    );
+}
+
+/// Round 41: a BROAD uncovered leaf's own count does NOT get folded in -- `kw:common_kw` matches
+/// 3,700 of 4,100 cards (90.2%), past both `NARROW_FLOOR` and `MAX_NARROW_FRACTION`, the exact guard
+/// the retired `domain_hint` field needed and lost (see the doc directly above `result_space`'s
+/// construction in `compose_printing_estimate`). Asserts NO CHANGE vs before this fix: `result.card`/
+/// `.artwork` stay `None`, exactly as they were when `exact_domain_cards`/`_artworks` were the only
+/// source and this shape never populated them either.
+#[test]
+fn compose_and_arm_broad_residual_leaf_does_not_tighten_card_or_artwork_floor() {
+    let data = broad_and_narrow_keyword_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let cmc_ge = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(1.0) };
+    let kw_common = FilterExpr::CollectionCmp { field: CollField::Keywords, op: CmpOp::Ge, value: "common_kw".to_string(), value_id: None };
+    let filter = FilterExpr::And(vec![cmc_ge, kw_common]);
+
+    let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, false);
+    assert!(est.exact_domain.is_none(), "same reasoning as the narrow-leaf test -- no mechanism ever populates exact_domain here");
+    assert_eq!(
+        est.result.card,
+        None,
+        "kw:common_kw's own count (3,700 of 4,100 cards) is BROAD -- `range_too_broad_to_narrow` must \
+         exclude it from the floor, so result.card stays None exactly as it did before this fix (cmc>=1's \
+         own count, 4,100 of 4,100, is also broad and excluded the same way)"
+    );
+    assert_eq!(est.result.artwork, None, "same reasoning, artwork space (3,700 of 4,103 artworks is also broad)");
 }
 
 /// Round 24: `pair_range_sum`'s own summation and pruning-safety logic, against a hand-built

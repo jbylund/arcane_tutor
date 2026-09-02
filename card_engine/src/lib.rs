@@ -9726,7 +9726,38 @@ fn compose_printing_estimate(
             // no such risk: it is a real INTERSECTION (`eval_planes` over the combined `PlaneExpr`), not
             // a per-leaf bound, so it can only ever be <= the true joint count, never an overcount from
             // a leaf `narrow_rec` would have declined to use alone.
-            let result_space = SpaceEstimate { printing: result, card: exact_domain_cards, artwork: exact_domain_artworks };
+            //
+            // Round 41: printing space already gets a "tightest single leaf's own count" floor for free
+            // -- `folded.result.printing` above is a plain unconditional min-fold over every leaf's own
+            // printing count, whether or not any multi-leaf mechanism fired. Card/artwork space never
+            // had the equivalent: `exact_domain_cards`/`exact_domain_artworks` are populated ONLY when
+            // some specific joint mechanism (`compile_plane`'s popcount, the arith-tuple merge,
+            // `pair_bounded_min`) actually fires, and were never subsequently folded against the OTHER
+            // leaves' own already-exact card/artwork counts. This reuses the SAME breadth guard the
+            // paragraph above explains `domain_hint` needed and lost (`range_too_broad_to_narrow`, the
+            // exact threshold `narrow_rec` itself uses for `broad_ok`) so a narrow leaf's own count CAN
+            // tighten the bound while a broad one (`border:black` at 87%) still cannot -- unlike the
+            // retired `domain_hint`, this folds only into `result_space`, never into `exact_domain_cards`/
+            // `exact_domain_artworks` themselves (see `exact_domain`'s own doc a few lines down: those
+            // feed `scan_units`'s real execution-cost pricing and must stay byte-identical to before this
+            // fix). `children_estimates` (not `folded`, which discards `exact_domain` per-child and only
+            // ever held printing-shaped `.result.card`/`.artwork` behind the same "populated only when a
+            // mechanism fires" rule anyway) is read here because it is keyed one-to-one with `and_sources`
+            // and holds each child's own solo `SpaceEstimate`, uncombined.
+            let narrow_floor = |get: fn(&SpaceEstimate) -> Option<usize>, domain: usize| -> Option<usize> {
+                children_estimates.iter().filter_map(|ce| get(&ce.result)).filter(|&c| !range_too_broad_to_narrow(c, domain)).min()
+            };
+            let card_floor = narrow_floor(|s| s.card, n_cards);
+            let artwork_floor = narrow_floor(|s| s.artwork, n_artworks);
+            let result_card = match (exact_domain_cards, card_floor) {
+                (Some(d), Some(f)) => Some(d.min(f)),
+                (d, f) => d.or(f),
+            };
+            let result_artwork = match (exact_domain_artworks, artwork_floor) {
+                (Some(d), Some(f)) => Some(d.min(f)),
+                (d, f) => d.or(f),
+            };
+            let result_space = SpaceEstimate { printing: result, card: result_card, artwork: result_artwork };
             // `exact_domain`: the SAME `best_other`/arith-merge intersection, but captured BEFORE
             // `result` could be tightened any further by `pair_bounded_min` (above) -- so unlike
             // `result`, `.printing`/`.card`/`.artwork` here are guaranteed to describe the exact same
