@@ -148,6 +148,13 @@ for an overlapping subset. Any future search-selection logic has to preserve thi
 not solely a Round 40 implementation detail, it's a property any combinator over a mix of exact and
 estimate mechanisms must have.
 
+**This class distinction is now structural, not just documented (Round 46).** Every mechanism folds
+its result through one shared `Candidate` enum (`Exact{printings,cards,artworks}` /
+`Estimate{printing}`) and one `fold_candidate` function — which variant a mechanism constructs IS the
+class, visible at the call site, rather than something to re-derive from surrounding prose. The same
+function also carries a `debug_assert!` enforcing `cards <= artworks <= printings` on every `Exact`
+candidate (see "What's not yet done" for the census this already ran).
+
 ### 4. Min-folding multiple estimate-class candidates for the SAME target is a different, real bias — not just "risky"
 
 Everything shipped so far min-folds candidates that are either (a) EXACT/bound mechanisms — always
@@ -359,13 +366,33 @@ above):
 
 ## What's not yet done
 
-- **The `card <= printing`/`artwork <= printing` invariant is violated elsewhere in the curated
-  catalog, confirmed pre-existing (Round 45)** — `c:w t:plains` predicts card=40/artwork=511 against
-  printing=24 on `costcell/trunk` from before Round 45 touched anything. Root cause traced: Round 41's
-  card/artwork floor takes a leaf's own solo count as a candidate with no final clamp against the
-  query's own `result.printing`. Small, well-understood, not yet fixed — the natural next round, and
-  worth designing into whatever shared fold path a future structural refactor builds (a
-  `debug_assert!`/clamp enforcing this invariant on every candidate, not just this one leaf type).
+- **The `cards <= artworks <= printings` invariant is violated widely — confirmed via a real census,
+  not just the one `c:w t:plains` example (Round 46).** Walking every `and_trace` tree in a full
+  65,478-row sweep found 10,269 root-level violations across 3,421 distinct queries, all `artworks >
+  printings`, all attributable to Round 41's own already-known unclamped floor (a leaf's own solo count
+  folded in with no clamp against `result.printing`). The good news, also confirmed by the same census:
+  ZERO of the six EXACT mechanisms (`PairRangeSum`, `PlanePopcount`, `ArithIdProbe`,
+  `SubtypePairIndexes`, `ColorCmcTable`, `SubtypeArithBox`) themselves produce an inconsistent triple —
+  every individual candidate is already self-consistent; the violation is purely a composition-step
+  gap, confirming the "push self-consistency into each estimator" principle already holds for every
+  mechanism that's been checked. `arith_tuple_count` is structurally invisible to the census (folds as
+  `Candidate::Estimate`, so the `debug_assert!` never applies to it) — it has an exact card count but
+  only a scaled, not exact, printing conversion and no artwork at all; whether upgrading it (it has the
+  real card IDs in hand via `arith_tuple_ids`, so an exact printing/artwork derivation is possible, not
+  just a self-consistent scaled one) is worth its own round is still open. Fixing the floor itself, and
+  deciding what (if anything) to do about `arith_tuple_count`, are both explicitly deferred follow-up
+  rounds, not attempted in Round 46.
+- **A real, separate nondeterminism bug, found independently by two investigations converging on the
+  same root cause (Round 46).** `build_subtype_pair_tables`'s top-256-per-dimension cutoff sorts by
+  card count with `sort_unstable_by_key` and no secondary tie-break key, and Rust's default `HashMap`
+  hasher is randomly seeded per process — so a pair tied at the exact boundary value can land inside or
+  outside the table depending on which process built it. Reproduced directly: the identical release
+  wheel, re-run four times with no code change, gave `t:monk usd>0.19 c:u` a genuine table HIT on one
+  run and the MISS fallback on the other three, with different real predicted numbers each time. Not
+  fixed — flagged high priority, since it can make a future refactor's own byte-identical verification
+  look like it found a regression when it's really this. A related instance also showed up in the
+  harness's own query generation (identical seed, same corpus, two engine loads produced different
+  query sets) — not chased down, same underlying class of bug.
 - **Most leaf types still report `card: None, artwork: None` on their own solo estimate** — `Price`
   confirmed affected (same shape as `SetCode`, fixed for `SetCode` only in Round 45); a full census of
   which `FilterExpr` variants use the card/artwork-less `ComposeEstimate::leaf` path vs. the two that

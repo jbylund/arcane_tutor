@@ -195,6 +195,74 @@ total regret by 0.0 ms).
 | 43 | Triple-level independence safety investigation — measurement only, no engine code changed | diagnostic | n/a (no code shipped) | n/a | see "Round 43" narrative below — the literal "does joint 3-way independence hold" question isn't reachable (no triangle in the registry's adjacency graph); the real, reachable, CONFIRMED-bad scenario is a "star" (two of a hub's registered partners present simultaneously, both independence estimates fired and `.min()`-folded, a composition neither pair's own 2-leaf calibration ever measured): `star:color+cmc+usd`/`star:identity+cmc+usd` substantially worse than either component's baseline across three independent seeds; an unplanned second finding (three star candidates swept by an exact `PlanePopcount` mechanism instead) are ALSO worse than baseline. Not fixed this round — a follow-up is recommended (decline both estimates when a hub + 2 different partners co-occur), scoped but not built |
 | 44 | New exact `(colors\|identity) x cmc` table (`ColorCmcTable`/`ColorCmcIndexes`) — 32 raw per-mask buckets (no `Ge`/`Le` lattice pre-summing, unlike `ColorSubtypeTable`), each mask's cmc dimension prefix-summed (mirroring `RangeCardCounts` exactly); wired into the `And` arm's residual scan and `exact_result_total`'s 2-leaf shortcut | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 65,541 shared rows (independent re-sweep, fresh seed): only 3 shapes show ANY plan-choice change (`star:identity+cmc+usd` 13.4%, `star:color+cmc+usd` 12.4%, `triple:color+type+cmc` 1.3%), zero elsewhere; ratio diagnostic improved (mean 0.287→0.279, "B is MORE accurate") | see "Round 44" narrative below — directly fixes Round 43's own confirmed-bad star: `star:color+cmc+usd` median abs-log-ratio 0.80→0.58, `star:identity+cmc+usd` 0.71→0.57 (fresh-seed independent re-check: 0.52/0.55) — real, substantial, not just moved sideways. The pure 2-leaf case is now EXACT in all three spaces (verified directly via `and_trace`: `color:G cmc<=3` card 3468/3468, printing 10268/10268; `id:UG cmc>=1 cmc<=5`, a two-sided bound, also exact at 10421/30050 against true). **A real regression found and fixed by the implementing agent itself, before I ever saw it** — my own instructions said to `mark_covered` on a hit, matching every other exact mechanism's convention; measuring against the real corpus showed this was actively harmful (median moved 0.80→1.08, WORSE) because it starves BOTH `ColorId`×`Price` and `Cmc`×`Price` (neither has a partner left once both leaves are claimed), and the new table's own bound — which ignores price entirely — is often looser than what those two (price-aware, if only via independence) estimates gave. Removing `mark_covered` let all three compete via `min()` and fixed it (0.80→0.58). Safe to leave uncovered: unlike two ESTIMATE-class mechanisms compounding on the IDENTICAL two leaves (Round 40's own concern), Independence's two candidates here each share only ONE leaf with this mechanism's pair, never both — genuinely different sub-conjunctions, not competing answers to the same question. Confirmed unrelated to the "swept trio" from Round 43 (`legality`/`color`/`identity`×`price`) — untouched by this round, as expected |
 | 45 | A bare `set:X` leaf's own solo `ComposeEstimate` now carries real `Some(card)`/`Some(artwork)` (from `set_totals`'s own `.cards`/`.artworks`, already computed for `SubtypePairEstimate` and previously discarded) instead of `None` — lets Round 41's card/artwork floor use `set:X`'s own true count instead of silently skipping it | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 44,511 shared rows (independent re-sweep, fresh seed): only 2 shapes show ANY plan-choice change, both `set:`-shaped (`same_family:set+set` 2.3%, `unsafe:set+type` 1.0%), zero elsewhere; ratio diagnostic unchanged (expected — floored at `true_total>=100`, excluding the small-count population this fix targets) | see "Round 45" narrative below — fixes a catastrophic case found by direct inspection, not a synthetic benchmark: `set:mh2 usd<10 cmc<5 power>1 color:g` predicted card=4762/artwork=6680 against printing=492, an impossible ordering (`card`/`artwork` can never exceed `printing` for a real population) — root cause: a bare `set:X` leaf's own estimate had `card: None, artwork: None` (confirmed via `ComposeEstimate::leaf`'s own doc: "no cheap exact card/artwork source" is the *default* for most leaf types, not a `SetCode`-specific bug), so Round 41's floor could never use `set:mh2`'s own true 309/391 as a ceiling. Fixed: card 4762→309, artwork 6680→391 (both now correctly ≤ printing's 492) — independently re-verified directly via `and_trace` on both wheels, not just the implementing agent's own report. **A second, separate, still-open bug found in the same investigation**: the `card<=printing`/`artwork<=printing` invariant is violated elsewhere in the curated catalog too (e.g. `c:w t:plains`, card=40/artwork=511 both exceeding printing=24, true_total=0 for all three) — confirmed byte-identical on the pre-Round-45 wheel, so this is NOT introduced by this round. Root cause: Round 41's own floor takes a leaf's solo card/artwork as a candidate without a final `.min()` clamp against the query's own `result.printing` — a real, pre-existing gap in Round 41 itself, not fixed here (out of scope for this round, flagged as the natural next fix) |
+| 46 | Structural refactor: one `Candidate` enum + `fold_candidate` entry point (replaces ~10 hand-copied fold sites), one shared `scan_two_bucket_exact` helper (three callers: `SubtypePairIndexes`, `ColorCmcTable`, `SubtypeArithBox`), plus a `debug_assert!(cards<=artworks<=printings)` census — no mechanism logic changed | kept | n/a (not this doc's own metric) | Byte-identical bar, independently re-verified: isolated-release `nway_estimate_truth_survey.py --compare`, 65,478 shared rows — only 3 rows (one query, `t:warrior set:shm`, all 3 modes) differ, and re-running the UNMODIFIED before-wheel against itself 3 times reproduces the identical flip with zero code change, confirming it's the pre-existing table nondeterminism below, not a regression; every other row byte-identical, `picked_plan` unchanged everywhere. `cargo test`: 226 passed release / 229 debug. `cargo clippy --all-targets -- -D warnings`: clean (a `--release`-only dead-code warning on an unrelated `#[cfg(debug_assertions)]` test constant confirmed pre-existing on `costcell/trunk` too) | see "Round 46" narrative below — the census found ZERO `debug_assert` violations from any of the six EXACT mechanisms (every one already produces internally self-consistent triples); it found **10,269 root-level violations across 3,421 distinct queries** (`artworks > printings`, never `cards > artworks`) — independently reconfirmed at smaller scale (32% of `root=and` rows in a fresh spot sweep) — all attributable to Round 41's own already-known unclamped floor, confirmed far wider in scope than the single `c:w t:plains` example on record. **A real, independently-converged discovery, found separately by both the implementing agent and me during verification, root-caused precisely**: `build_subtype_pair_tables`'s top-256 cutoff (`items.sort_unstable_by_key(Reverse(cards))`, `lib.rs:1917-1922`) has no deterministic tie-break, and Rust's default `HashMap` hasher is randomly seeded per process — so a pair tied at the exact boundary value can land inside or outside the table on one build/run and not another, with real, different predicted numbers each time (reproduced directly: the identical wheel, re-run 4 times, gave `t:monk usd>0.19 c:u` card=58 via a table HIT on one run and card=48 via the MISS estimate on the other three). Confirmed unrelated to this round (reproduces on plain, unmodified `costcell/trunk`) but flagged as high-priority: it can make a FUTURE byte-identical refactor's own verification look like it found a regression when it's really this. A related manifestation also showed up in the harness's own query generation (the identical `--seed 0` run, same corpus, produced 9 different queries between two separate engine loads) — same underlying class of bug, not chased down further, noted for whoever fixes the root cause |
+
+### Round 46
+
+Target: structural cleanup, not accuracy — the `And` arm's ~10 hand-written mechanisms each hand-copied
+the same fold at their own call site (a 4-line `.map_or(x, |d| d.min(x))` chain for exact mechanisms, a
+1-line `result.min()` for estimate ones), and two of them (`SubtypePairIndexes`, `ColorCmcTable`)
+independently hand-rolled an identical "scan for two kinds of leaf, Cartesian-product them, look up an
+exact table, fold, cover, trace" shape. Real duplication, confirmed by direct discussion: Round 42 and
+Round 44 each independently made (and had to separately catch) a variant of the same `mark_covered`
+mistake in their own copy of this pattern.
+
+**The invariant motivating this round**: `cards <= artworks <= printings` always holds for a real
+population (every printing belongs to exactly one card and has exactly one artwork, with different
+cards never sharing one). Pushing self-consistency into each mechanism's own candidate, rather than
+clamping the final folded answer, is mathematically sufficient to guarantee the combined result
+respects the ordering too, regardless of which mechanism wins which space (proof: let `j =
+argmin(artwork)`; since `card_j <= artwork_j` by that candidate's own consistency and `min(card) <=
+card_j` trivially, `min(card) <= card_j <= artwork_j = min(artwork)`; same argument for `min(artwork)
+<= min(printing)`). So the fix belongs at the source, not the fold step — this round adds the
+enforcement (a `debug_assert!`), not a fix to any violation found.
+
+**What shipped**: one `Candidate` enum (`Exact{printings,cards,artworks}` / `Estimate{printing}`) and
+one `fold_candidate` function, now the ONLY way any mechanism records a result; one generic
+`scan_two_bucket_exact` helper with three callers (`SubtypePairIndexes`, `ColorCmcTable`,
+`SubtypeArithBox` — the last confirmed, by direct code reading before this round was scoped, to already
+fit the identical shape with a 3-D box query standing in for `ColorCmcTable`'s single range, migrated
+with its existing `arith_children.len() + 1 == v.len()` whole-query gate deliberately UNCHANGED, not
+generalized to a residual scan). Independence's own N-ary scan stays bespoke (a genuinely different
+shape) but now folds through the same `Candidate::Estimate` entry point.
+
+**The census — this round's actual deliverable, alongside the refactor**: walking every `and_trace`
+tree directly (not just relying on the assert to fire) found ZERO violations from any of the six EXACT
+mechanisms — every one already produces an internally self-consistent triple. It found 10,269
+root-level violations across 3,421 distinct queries in a full 65,478-row sweep, ALL `artworks >
+printings` (never `cards > artworks`), all attributable to Round 41's own already-known unclamped
+floor — confirmed far wider in scope than the single `c:w t:plains` example on record, independently
+reconfirmed at smaller scale (32% of `root=and` rows in a fresh spot sweep on a different seed).
+`arith_tuple_count` was confirmed (not assumed) to be structurally invisible to the assert — it folds
+as `Candidate::Estimate` (exact card count, but only a SCALED, not exact, printing conversion, and no
+artwork at all), so it can never trip an assert scoped to the `Exact` variant. Nothing found here was
+fixed — a follow-up round will use this census to decide what to fix, per Round 45's own deferred
+"decline both estimates when a hub + 2 different partners co-occur"-style discipline.
+
+**A significant independent discovery, found separately by the implementing agent and by me during
+verification, converging on the identical root cause.** The first release A/B sweep showed 9
+discrepant rows. Rather than accept or dismiss them, both investigations traced them to a real,
+pre-existing bug, unrelated to this round: `build_subtype_pair_tables`'s top-256-per-dimension cutoff
+(`items.sort_unstable_by_key(|item| Reverse(item.1.cards))`, `lib.rs:1917-1922`) has no deterministic
+secondary sort key, and Rust's default `HashMap` hasher is randomly seeded per process — so a pair
+tied at the exact boundary value can land inside or outside the top-256 table on one build/run and not
+another. Reproduced directly, with zero code changes: the identical release wheel, re-run four times,
+gave `t:monk usd>0.19 c:u` a genuine `SubtypePairIndexes` table HIT (card=58) on one run and the
+`SubtypePairEstimate` MISS fallback (card=48) on the other three — same code, same corpus, different
+answer. `t:warrior set:shm` (the sweep's own 9-row discrepancy) reproduces the identical flip on the
+SAME unmodified before-wheel run against itself, confirming it's this bug, not a Round 46 regression.
+**Flagged as high priority independent of this round**: it can make any future byte-identical
+refactor's own verification look like it found a regression when it's really this — worth fixing before
+it costs someone real debugging time. A related manifestation showed up in the harness's own query
+generation too (`--seed 0`, same corpus, two separate engine loads produced 9 different queries) — the
+same underlying class of bug propagating into what should be deterministic query sampling, not chased
+down further here.
+
+Blast radius: `card_engine/src/lib.rs` (+397/-96 lines — the enum, the two shared functions, ~10
+mechanism call-site migrations, no computation logic changed), `card_engine/src/tests.rs` (+296
+lines). `cargo test`: 226 passed release / 229 debug. `cargo clippy --all-targets -- -D warnings`:
+clean. `and_estimate_ns`: +108ns mean, same-build canary swings -133ns — not distinguishable from
+noise.
 
 ### Round 45
 
