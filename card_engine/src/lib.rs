@@ -8687,17 +8687,60 @@ fn is_price_num_field(f: NumField) -> bool {
     matches!(f, NumField::PriceUsd | NumField::PriceEur | NumField::PriceTix)
 }
 
-/// Marks `covered[i] = true` for every literal child of `v` that's one of `leaves` (matched by pointer
-/// identity, the same identity `and_source_pos_of`/`AndSource::Child` already rely on) -- Round 40's
-/// class-priority bookkeeping, called at every EXACT/bound (and, defensively, ESTIMATE-class) hit site
-/// in this arm so the independence registry scan (below) never revisits a leaf another mechanism
-/// already used. `O(leaves.len() * v.len())`, both bounded in practice by how many predicates a person
-/// types, same complexity class `pair_bounded_min`'s own nested loop already accepts.
-fn mark_covered(v: &[FilterExpr], leaves: &[&FilterExpr], covered: &mut [bool]) {
+/// Per-`And`-arm bookkeeping for which leaves, and which exact leaf SUBSETS, already have a real
+/// answer.
+///
+/// Round 49 (loosening the independence registry's `covered` gate, see
+/// `docs/issues/local-engine-nway-followup-queue.md` item 1): before this round, `covered: Vec<bool>`
+/// alone made a leaf permanently unavailable to the independence registry the moment ANY mechanism
+/// touched it for ANY partner -- too conservative, since the only real danger is an ESTIMATE-class
+/// candidate re-answering the IDENTICAL leaf subset an exact/bound mechanism (or a prior estimate)
+/// already answered. `flags` keeps that original leaf-occupancy signal exactly as it was (still read
+/// by `SubtypePairEstimate`'s own narrow-leaf fallback, untouched by this round); `subsets` adds the
+/// narrower, subset-identity signal the independence registry now checks instead of `flags`.
+struct CoveredState {
+    /// `flags[i]` true once leaf `v[i]` participates in any genuine joint -- unchanged Round-40
+    /// semantics.
+    flags: Vec<bool>,
+    /// One bitmask per genuinely joint hit recorded via `mark_covered`/`pair_bounded_min`: bit `i` set
+    /// means `v[i]` was part of that answer. Read ONLY by the independence registry's pairing step: a
+    /// candidate pairing whose own combined mask exactly equals one of these is declined (an
+    /// identical-subset re-answer); any other combination, even one sharing a single leaf with a
+    /// covered entry, is fair game. A leaf at position `>= 64` never sets a bit (see `mark_covered`'s
+    /// own doc) -- a defensive no-op for a pathologically long `And`, not tracked, never a panic.
+    subsets: Vec<u64>,
+}
+
+impl CoveredState {
+    fn new(len: usize) -> Self {
+        CoveredState { flags: vec![false; len], subsets: Vec::new() }
+    }
+}
+
+/// Marks `covered.flags[i] = true` for every literal child of `v` that's one of `leaves` (matched by
+/// pointer identity, the same identity `and_source_pos_of`/`AndSource::Child` already rely on) -- Round
+/// 40's class-priority bookkeeping, called at every EXACT/bound (and, defensively, ESTIMATE-class) hit
+/// site in this arm so the independence registry scan (below) never revisits the IDENTICAL leaf subset
+/// another mechanism already answered. `O(leaves.len() * v.len())`, both bounded in practice by how
+/// many predicates a person types, same complexity class `pair_bounded_min`'s own nested loop already
+/// accepts.
+///
+/// Round 49: also ORs the resolved positions into one bitmask, pushed onto `covered.subsets` (skipped
+/// when the mask is 0 -- i.e. every resolved position was `>= 64`, or `leaves` resolved to nothing at
+/// all). Every shift is guarded (`pos < 64`) rather than a bare `1u64 << pos`, which would panic in
+/// debug / wrap in release on an out-of-range shift amount.
+fn mark_covered(v: &[FilterExpr], leaves: &[&FilterExpr], covered: &mut CoveredState) {
+    let mut mask: u64 = 0;
     for leaf in leaves {
         if let Some(pos) = v.iter().position(|c| std::ptr::eq(c, *leaf)) {
-            covered[pos] = true;
+            covered.flags[pos] = true;
+            if pos < 64 {
+                mask |= 1u64 << pos;
+            }
         }
+    }
+    if mask != 0 {
+        covered.subsets.push(mask);
     }
 }
 
@@ -8798,7 +8841,7 @@ fn fold_candidate(
 #[allow(clippy::too_many_arguments)]
 fn scan_two_bucket_exact<B: Copy>(
     v: &[FilterExpr],
-    covered: &mut [bool],
+    covered: &mut CoveredState,
     result: &mut usize,
     exact_domain_cards: &mut Option<usize>,
     exact_domain_printing: &mut Option<usize>,
@@ -9354,17 +9397,23 @@ fn compose_printing_estimate(
             // struct held three spaces), and get wrapped back into a `SpaceEstimate` only once, at the
             // very end -- narrower diff, same values, against logic already checked with a paired diff.
             //
-            // Round 40: `covered[i]` becomes `true` the moment leaf `v[i]` participates in a GENUINE
-            // exact/bound joint tightening somewhere in this arm (2+ leaves actually intersected, not a
-            // leaf's own repackaged marginal) -- the class-priority gate the independence registry scan
-            // (near the end of this arm) reads before ever touching a leaf: an estimate-class candidate
-            // (independence, `SetCollectorRange`'s density, `SubtypePairEstimate`'s miss branch) may only
-            // fill leaves NO exact/bound mechanism already covers, never magnitude-compare against or
-            // override one for an overlapping subset (see that scan's own doc for why "pick the smallest
-            // candidate" is unsound once an inexact estimator is in the mix). Estimate-class mechanisms
-            // also mark `covered` themselves, defensively, so two different inexact estimates can never
-            // stack on the same leaves either -- see each mechanism's own comment below.
-            let mut covered = vec![false; v.len()];
+            // Round 40: `covered.flags[i]` becomes `true` the moment leaf `v[i]` participates in a
+            // GENUINE exact/bound joint tightening somewhere in this arm (2+ leaves actually
+            // intersected, not a leaf's own repackaged marginal) -- read by `SubtypePairEstimate`'s own
+            // narrow-leaf fallback (still leaf-occupancy-based, out of scope for Round 49 below): an
+            // estimate-class candidate there may only fill leaves NO exact/bound mechanism already
+            // covers, never magnitude-compare against or override one for an overlapping subset (see
+            // that scan's own doc for why "pick the smallest candidate" is unsound once an inexact
+            // estimator is in the mix). Estimate-class mechanisms also mark `covered` themselves,
+            // defensively, so two different inexact estimates can never stack on the same leaves either
+            // -- see each mechanism's own comment below.
+            //
+            // Round 49: the independence registry (near the end of this arm) no longer reads `flags` at
+            // all -- it reads `covered.subsets` instead, a narrower subset-identity signal (see
+            // `CoveredState`'s own doc) that only blocks an estimate from re-answering the IDENTICAL
+            // leaf subset an exact/bound mechanism already answered, not any leaf a mechanism merely
+            // touched for some OTHER partner.
+            let mut covered = CoveredState::new(v.len());
             let mut result = pair_bounded_min(v, indexes, folded.result.printing, &mut covered);
             // Round 46: hoisted here (used to be declared much further down, right before their own
             // first write) so every `fold_candidate` call site in this arm -- including the two
@@ -10005,8 +10054,8 @@ fn compose_printing_estimate(
             // positions), and AFTER the exact-hit loop above so a hit's own `mark_covered` calls (which
             // may have covered one or both of the two leaves an estimate would otherwise have used) are
             // reflected here.
-            let remaining_dims: Vec<usize> = (0..v.len()).filter(|&i| !covered[i] && subtype_pair_dim(&v[i]).is_some()).collect();
-            let remaining_subs: Vec<usize> = (0..v.len()).filter(|&i| !covered[i] && subtype_pair_leaf(&v[i]).is_some()).collect();
+            let remaining_dims: Vec<usize> = (0..v.len()).filter(|&i| !covered.flags[i] && subtype_pair_dim(&v[i]).is_some()).collect();
+            let remaining_subs: Vec<usize> = (0..v.len()).filter(|&i| !covered.flags[i] && subtype_pair_leaf(&v[i]).is_some()).collect();
             if let (&[di], &[si]) = (remaining_dims.as_slice(), remaining_subs.as_slice()) {
                 let dim = subtype_pair_dim(&v[di]).expect("dim_positions only holds subtype_pair_dim leaves");
                 // `dim_est`/`subtype_card` (this leaf's own solo estimate, recomputed directly rather
@@ -10230,8 +10279,7 @@ fn compose_printing_estimate(
             // `cmc<op>N` paired with exactly one price comparison) into a small REGISTRY of confirmed
             // leaf-class pairs (`IndepClass`/`independence_safe_pair`, re-validated directly against
             // real data -- see that function's own doc and this round's own doc section for the
-            // numbers), scanning every pair of RESIDUAL `and_sources` (positions `covered` doesn't
-            // already claim, see that variable's own doc) instead of one fixed shape. Pairwise only --
+            // numbers), scanning every pair of `and_sources` instead of one fixed shape. Pairwise only --
             // NOT generalized to triples: pairwise-safe does not imply joint-safe (the design doc's own
             // `color`x`identity`x`type` counterexample), so a query with 3+ mutually pairwise-safe
             // residual classes still gets one independent candidate per PAIR of them, each separately
@@ -10241,16 +10289,22 @@ fn compose_printing_estimate(
             // search already found `fudge = 1.0` strictly optimal; nothing here reopens that). Not
             // exact, so this narrows only `result`, never `exact_domain_*` -- the same exact/estimate
             // line `SetCollectorRange`'s density estimate and `SubtypePairEstimate`'s miss branch draw.
+            //
+            // Round 49: no longer skips a leaf-occupancy-`covered` source up front (see
+            // `CoveredState`'s own doc) -- a leaf touched by some OTHER, unrelated exact mechanism (e.g.
+            // `SubtypeArithBox`'s own `(subtype, cmc)` joint) is now a fully eligible unit here, for any
+            // partner. The narrower, still-real danger -- an estimate re-answering the IDENTICAL subset
+            // an exact mechanism already answered -- is checked at pairing time instead, against
+            // `covered.subsets` (see the pairing loop below).
             let n_artworks = u32::from(*indexes.artwork_base.last().expect("artwork_base has n_cards+1 entries")) as usize;
-            // One unit per `IndepClass` actually present among the residual (uncovered) sources: its
-            // own contributing leaves (for `covered`/trace reporting) and its own solo `SpaceEstimate`
-            // (the independence formula's per-side input). `leaves_for`/`is_covered` unify the
-            // `AndSource::Child`/`FusedRange` cases the same way Round 38's own price handling did --
-            // a `FusedRange` source's constituents are the literal `v` children `bare_range_bounds`
-            // resolves to the same index, and the whole source counts as covered the moment ANY ONE of
-            // them does (conservative: a constituent independently claimed by another exact mechanism
-            // means that mechanism's answer already reflects a real intersection this scan must not
-            // also estimate over).
+            // One unit per `IndepClass` actually present among `and_sources`: its own contributing
+            // leaves (for `covered.subsets`/trace reporting), its own solo `SpaceEstimate` (the
+            // independence formula's per-side input), and its own combined leaf-position bitmask
+            // (`mask`, Round 49 -- computed the same way the old `is_covered` closure resolved
+            // positions, just OR'd together instead of checked against `covered.flags`). `leaves_for`
+            // unifies the `AndSource::Child`/`FusedRange` cases the same way Round 38's own price
+            // handling did -- a `FusedRange` source's constituents are the literal `v` children
+            // `bare_range_bounds` resolves to the same index.
             let leaves_for = |i: usize| -> Vec<&FilterExpr> {
                 match and_sources[i] {
                     AndSource::Child(c) => vec![c],
@@ -10259,13 +10313,22 @@ fn compose_printing_estimate(
                     }
                 }
             };
-            let is_covered = |i: usize| -> bool {
-                leaves_for(i).iter().any(|leaf| v.iter().position(|x| std::ptr::eq(x, *leaf)).is_some_and(|pos| covered[pos]))
+            let mask_for = |leaves: &[&FilterExpr]| -> u64 {
+                let mut mask: u64 = 0;
+                for leaf in leaves {
+                    if let Some(pos) = v.iter().position(|c| std::ptr::eq(c, *leaf))
+                        && pos < 64
+                    {
+                        mask |= 1u64 << pos;
+                    }
+                }
+                mask
             };
             struct IndepUnit<'f> {
                 class: IndepClass,
                 leaves: Vec<&'f FilterExpr>,
                 est: SpaceEstimate,
+                mask: u64,
             }
             let mut units: Vec<IndepUnit<'_>> = Vec::new();
             {
@@ -10274,9 +10337,6 @@ fn compose_printing_estimate(
                 // tax (`and_estimate_ns`) is measured.
                 let mut by_class: [Vec<usize>; INDEP_CLASS_COUNT] = Default::default();
                 for (i, src) in and_sources.iter().enumerate() {
-                    if is_covered(i) {
-                        continue;
-                    }
                     if let Some(class) = indep_class_of(*src, indexes) {
                         by_class[class as usize].push(i);
                     }
@@ -10286,7 +10346,11 @@ fn compose_printing_estimate(
                     let class = INDEP_CLASS_ORDER[class_ord];
                     match positions.as_slice() {
                         [] => {}
-                        [p] => units.push(IndepUnit { class, leaves: leaves_for(*p), est: children_estimates[*p].result }),
+                        [p] => {
+                            let leaves = leaves_for(*p);
+                            let mask = mask_for(&leaves);
+                            units.push(IndepUnit { class, leaves, est: children_estimates[*p].result, mask });
+                        }
                         multi if matches!(class, IndepClass::Cmc | IndepClass::Pow) => {
                             // 2+ literal bounds on the SAME arith field (`cmc>=2 cmc<=5`, unfused --
                             // `fuse_and_range_children` only fuses price/collector-number/date/year):
@@ -10296,10 +10360,12 @@ fn compose_printing_estimate(
                             let field_children: Vec<&FilterExpr> = multi.iter().flat_map(|&p| leaves_for(p)).collect();
                             if let Some(card_count) = arith_tuple_count(&field_children, indexes) {
                                 let scaled = (card_count * n_printings).checked_div(n_cards).unwrap_or(0);
+                                let mask = mask_for(&field_children);
                                 units.push(IndepUnit {
                                     class,
                                     leaves: field_children,
                                     est: SpaceEstimate { printing: scaled, card: Some(card_count), artwork: None },
+                                    mask,
                                 });
                             }
                             // else: the scan itself declined (index not built) -- dropped, no unit
@@ -10316,6 +10382,13 @@ fn compose_printing_estimate(
                 for j in (i + 1)..units.len() {
                     let (a, b) = (&units[i], &units[j]);
                     if !independence_safe_pair(a.class, b.class) {
+                        continue;
+                    }
+                    // Round 49: decline ONLY when the exact combined subset was already answered
+                    // elsewhere (`covered.subsets`, see `CoveredState`'s own doc) -- any other combined
+                    // mask, including one sharing leaves with a covered subset, proceeds unchanged.
+                    let combined = a.mask | b.mask;
+                    if covered.subsets.contains(&combined) {
                         continue;
                     }
                     let printing_indep =
@@ -11017,14 +11090,19 @@ fn walk_value_orderby_page<'a>(
 /// Both are still UPPER BOUNDS for three or more children -- the intersection of three sets is at most
 /// the smallest pairwise intersection -- but a pairwise bound is much tighter than a single-leaf one
 /// whenever the leaves are individually broad, which is exactly when the estimate matters.
-// Round 40: `covered` gains a `true` at position `i` for every child that participated in a genuine
-// `PairTotals`/disjointness hit here -- read by the And arm's independence registry scan (below) so a
-// leaf already given an EXACT joint by this mechanism is never also handed to an inexact independence
-// estimate (the class-priority rule: estimate-class may only fill a subset no exact/bound mechanism
-// covers at all -- see that scan's own doc). Sized to `children.len()` by the caller; a no-op write
-// target (`&mut []`) is valid whenever a caller doesn't need this bookkeeping (there is none today,
-// but keeps the contract from silently becoming load-bearing on a specific caller).
-fn pair_bounded_min(children: &[FilterExpr], indexes: &Archived<CardIndexes>, single_min: usize, covered: &mut [bool]) -> usize {
+// Round 40: `covered.flags` gains a `true` at position `i` for every child that participated in a
+// genuine `PairTotals`/disjointness hit here -- read by the And arm's independence registry scan
+// (below) so a leaf already given an EXACT joint by this mechanism is never also handed to an inexact
+// independence estimate (the class-priority rule: estimate-class may only fill a subset no exact/
+// bound mechanism covers at all -- see that scan's own doc).
+// Round 49: also pushes `(1 << i) | (1 << j)` onto `covered.subsets` on a `PairTotals` hit -- without
+// this, an exact hit here would still block independence from ever using either leaf again (via
+// `flags`), since before this round `covered` had no subset-identity tracking at all. Both `i`/`j` are
+// always `< 64` in practice (bounded by `children.len()`), but guarded anyway for defense-in-depth,
+// matching `mark_covered`'s own guard. The disjoint-fill branch (`covered.flags.fill(true)`) is left
+// as-is -- `result` is already forced to 0 there, which no subsequent `.min()`-fold can undo, so no new
+// subset tracking is needed for it.
+fn pair_bounded_min(children: &[FilterExpr], indexes: &Archived<CardIndexes>, single_min: usize, covered: &mut CoveredState) -> usize {
     if children.len() < 2 || !*PAIR_TOTALS {
         return single_min;
     }
@@ -11034,15 +11112,25 @@ fn pair_bounded_min(children: &[FilterExpr], indexes: &Archived<CardIndexes>, si
     for (i, a) in children.iter().enumerate() {
         for (j, b) in children.iter().enumerate().skip(i + 1) {
             if leaves_are_disjoint(a, b) {
-                covered.fill(true); // the whole And is provably empty; nothing else matters
+                covered.flags.fill(true); // the whole And is provably empty; nothing else matters
                 return 0;
             }
             if let (Some(x), Some(y)) = (ids[i], ids[j])
                 && let Some(k) = pt.get(x, y, Mode::Printing)
             {
                 best = best.min(k);
-                covered[i] = true;
-                covered[j] = true;
+                covered.flags[i] = true;
+                covered.flags[j] = true;
+                let mut mask: u64 = 0;
+                if i < 64 {
+                    mask |= 1u64 << i;
+                }
+                if j < 64 {
+                    mask |= 1u64 << j;
+                }
+                if mask != 0 {
+                    covered.subsets.push(mask);
+                }
             }
         }
     }

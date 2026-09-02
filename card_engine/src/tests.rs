@@ -8,7 +8,7 @@ use super::{
     range_too_broad_to_narrow, run_query, run_query_routed, run_query_with_plan, explain, explain_analyze, AcquireFacts, PlanEstimate, PlanTrial,
     acquire_plan_features, take_phase_stats, PagingTaken, CountSource, NarrowedRepr,
     EXACT_VALUE_TOTALS, RangeCardCounts, narrow_rec, ValueTotals, PairTotals, SpaceTotals, build_all_value_totals, build_pair_totals, build_range_card_counts, exact_result_total,
-    pair_range_sum, pair_leaf_id, single_arith_field, fold_candidate, Candidate, scan_two_bucket_exact,
+    pair_range_sum, pair_leaf_id, single_arith_field, fold_candidate, Candidate, scan_two_bucket_exact, CoveredState, mark_covered,
     PhysicalPlan, PlanScope, CandidatePlan, ComposePaging, trigram_candidates, finalize_trigram_index, PrintingValueIndex, NARROW_FLOOR,
     gathered_scan_applicable, streamed_select_applicable, plane_popcount_order_applicable, printing_range_scan_applicable,
     walk_printing_page, aligned_page, bare_range_bounds, probe_range_k, printing_compose_fastpath, printing_range_fastpath, sort_key_bits, orderby_to_col, SortCol, STREAM_MIN_MATCHES,
@@ -15560,6 +15560,116 @@ fn subtype_arith_box_fires_alongside_unrelated_leaf_that_stays_uncovered() {
     assert_eq!(indep_hit.printing, Some(expected_indep), "round(40 * 25 / 48)");
 }
 
+/// Round 49 (loosening the independence registry's `covered` gate from leaf-occupancy to
+/// subset-identity, see `CoveredState`'s own doc): reproduces the actual regression shape found during
+/// Round 48's own review, `t:elf cmc>=5 usd<X`-shaped -- the direct real-world analog of
+/// `docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md`'s "Round 48" motivating case
+/// (`t:elf usd<0.20 cmc>=2`, printing 425->1865 regression). `SubtypeArithBox` computes an exact
+/// `(Elf, cmc>=5)` joint here and `mark_covered_on_hit` covers BOTH the Elf and cmc leaf positions
+/// (their `positions` -- see that call site's own doc). Before this round, `is_covered` permanently
+/// blocked the independence registry from ever building a `Type`/`Cmc` unit again, so NEITHER
+/// `(Elf, price)` nor `(cmc, price)` (`Type`x`Price` and `Cmc`x`Price` are both registered-safe pairs,
+/// see `independence_safe_pair`) could ever fire, no matter how tight either estimate would have been.
+/// After this round, both fire (their combined masks -- `{Elf, price}` and `{cmc, price}` -- are each a
+/// DIFFERENT subset than the box's own covered `{Elf, cmc}`), and the tighter of the two wins the arm's
+/// final `.min()` fold, exactly mirroring the real case's `min(box's exact, Independence: cmc x price,
+/// Independence: Elf x price)` shape.
+#[test]
+fn independence_now_fires_against_a_different_partner_once_subtype_arith_box_covers_the_pair() {
+    let mut vocab = VocabInterner::new();
+    let mut cards = Vec::new();
+    let mut prices: Vec<u32> = Vec::new();
+    // 10 Elf creatures: 6 at cmc=6 (>=5, matches), 4 at cmc=2 (doesn't) -- Elf's own true (Elf, cmc>=5)
+    // joint is exactly 6, which is also what SubtypeArithBox's box lookup must answer (no other
+    // subtype shares any of these cards). All priced $20.00 (>= the $10 query bound), so the REAL
+    // 3-leaf joint (Elf and cmc>=5 and usd<10) is 0 -- irrelevant here, since independence's
+    // marginal-based estimate is not expected to reproduce the true joint, only to beat the box's own
+    // price-blind bound.
+    for cmc in [6u8, 6, 6, 6, 6, 6, 2, 2, 2, 2] {
+        let mut c = stub_card(1 + cards.len() as u128, TYPE_CREATURE, &["Elf"], &mut vocab);
+        c.cmc = Some(cmc);
+        c.creature_power = Some(1);
+        c.creature_toughness = Some(1);
+        cards.push(c);
+        prices.push(2_000); // $20.00
+    }
+    // 30 Human filler, cmc=1 (never matches cmc>=5) -- 12 priced $5.00 (< the $10 query bound), 18
+    // priced $20.00 (>=). Whole-corpus `usd<10` solo count is therefore 12, and whole-corpus `cmc>=5`
+    // solo count is exactly the Elf group's own 6 (Human never contributes, all cmc=1).
+    for i in 0..30u128 {
+        let mut c = stub_card(100 + i, TYPE_CREATURE, &["Human"], &mut vocab);
+        c.cmc = Some(1);
+        c.creature_power = Some(1);
+        c.creature_toughness = Some(1);
+        cards.push(c);
+        prices.push(if i < 12 { 500 } else { 2_000 });
+    }
+    let n_cards = cards.len();
+    assert_eq!(n_cards, 40, "10 Elf + 30 Human filler");
+    let printing_counts = vec![1usize; n_cards];
+    let mut data = store_of(cards, &printing_counts, vocab);
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(|v| v as i16));
+    data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power.map(|v| v as i16));
+    data.indexes.toughness = build_numeric_index(&data.cards, |c| c.creature_toughness.map(|v| v as i16));
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.subtype_arith = super::build_subtype_arith_tables(&data.cards, &data.printings, &ptc, &data.coll_vocab, max_ag);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    // `store_of`'s within-bucket order is positional here (one printing per card, default
+    // prefer_score), matching every sibling fixture's own established assumption -- `prices[i]` lines
+    // up with `data.printings[i]` in the same order `cards` was pushed.
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.price_usd = Some(prices[i]);
+    }
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+    assert_eq!(n_printings, 40);
+
+    let elf = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None };
+    let cmc_ge5 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(5.0) };
+    let usd_lt10 = usd_cmp(CmpOp::Lt, 10.0);
+
+    // Sanity: the marginals this fixture's own doc claims, independent of anything this round touches.
+    let elf_solo = super::compose_printing_estimate(&elf, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(elf_solo.result.printing, 10, "fixture assumption: 10 Elf printings");
+    let cmc_solo = super::compose_printing_estimate(&cmc_ge5, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(cmc_solo.result.printing, 6, "fixture assumption: 6 printings at cmc>=5, all Elf");
+    let usd_solo = super::compose_printing_estimate(&usd_lt10, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(usd_solo.result.printing, 12, "fixture assumption: 12 printings at usd<10, all Human");
+
+    let f = FilterExpr::And(vec![elf, cmc_ge5, usd_lt10]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+
+    let box_hit = and_trace.considered.iter().find(|g| g.mechanism == "SubtypeArithBox").expect("SubtypeArithBox must fire on (Elf, cmc>=5)");
+    assert!(box_hit.hit);
+    assert_eq!(box_hit.printing, Some(6), "the exact (Elf, cmc>=5) joint, price-blind");
+
+    let indep_groups: Vec<_> = and_trace.considered.iter().filter(|g| g.mechanism == "Independence").collect();
+    assert_eq!(
+        indep_groups.len(),
+        2,
+        "both (Elf, price) and (cmc, price) must now fire -- before Round 49, neither would, since \
+         SubtypeArithBox's hit covered both Elf's and cmc's own leaf positions"
+    );
+    let elf_price = indep_groups.iter().find(|g| g.leaves.iter().any(|l| l.contains("Subtypes"))).expect("(Elf, price) must fire");
+    assert_eq!(elf_price.printing, Some(3), "round(10 * 12 / 40)");
+    let cmc_price = indep_groups.iter().find(|g| g.leaves.iter().any(|l| l.contains("Cmc"))).expect("(cmc, price) must fire");
+    assert_eq!(cmc_price.printing, Some(2), "round(6 * 12 / 40)");
+
+    assert_eq!(
+        est.result.printing, 2,
+        "before Round 49 this would have stayed at SubtypeArithBox's own price-blind 6 -- after, the \
+         tighter (cmc, price) independence estimate (2) correctly wins the arm's final min-fold, exactly \
+         mirroring the real t:elf usd<0.20 cmc>=2 motivating case's min() over three candidates"
+    );
+}
+
 /// Round 48: a query with MULTIPLE subtype leaves alongside the SAME arith bound gets each one tried
 /// independently against the box, folded via `.min()` -- mirroring `SubtypePairIndexes`'s own Round 42
 /// `subtype_pair_multiple_dim_subtype_pairs_all_fold_via_min`. `t:elf` and `t:human` are mutually
@@ -16610,9 +16720,15 @@ fn and_arm_independence_registry_declines_legality_and_set() {
     assert_min_fold_invariant(&and_trace.tree);
 }
 
-/// Round 40's class-priority fix: an ESTIMATE-class candidate (independence) must NEVER override an
-/// EXACT/bound candidate for an overlapping leaf subset, even when the estimate's own number happens
-/// to be SMALLER (the unsafe "pick globally smallest" mistake the round's own doc warns against).
+/// Round 40's class-priority fix (as originally written): an ESTIMATE-class candidate (independence)
+/// must NEVER override an EXACT/bound candidate for an overlapping leaf subset, even when the
+/// estimate's own number happens to be SMALLER (the unsafe "pick globally smallest" mistake the
+/// round's own doc warns against). Round 49 (loosening `covered` to subset-identity tracking, see
+/// `CoveredState`'s own doc) narrows exactly WHICH overlap counts: only the IDENTICAL leaf subset an
+/// exact mechanism already answered is off-limits, not any leaf that mechanism merely touched for some
+/// OTHER partner. This fixture exercises the "different partner" case, not the "identical subset"
+/// one -- see `and_arm_independence_declines_when_combined_mask_exactly_matches_a_covered_subset` for
+/// the identical-subset protection this round preserves.
 ///
 /// Fixture: 10,000 single-printing cards -- large enough to clear `PairTotals`'s own
 /// `PAIR_MIN_PRINTINGS` (1,024) selectivity floor for BOTH the legality and cmc dimensions, which a
@@ -16620,15 +16736,18 @@ fn and_arm_independence_registry_declines_legality_and_set() {
 /// legality's own SOLO count needs no such floor) would silently prune before `pair_leaf_id` ever sees
 /// it. `legal` (format shift 0) on cards {0..=5999} (6,000). `cmc=3` on cards {3000..=6999} (4,000),
 /// overlapping `legal` only in {3000..=5999} -- `PairTotals` answers this EXACT joint at 3,000, tighter
-/// than the naive fold (min(6000, 4000, cn<=4500's 4500) == 4000). Collector numbers 1..=10000,
-/// `cn<=4500` selects 4,500 (cards {0..=4499}). Both `legal` and `cn<=4500` are in the registry
-/// (`legality x cn`), and `cmc=3` doesn't change that gate on its own -- but `legal` is the SAME leaf
-/// PairTotals already used for its exact 3,000, so the class-priority `covered` bookkeeping must
-/// exclude it from the independence scan entirely: `round(6000 * 4500 / 10000) == 2700` is smaller
-/// than PairTotals' exact 3,000, so an ungated "pick smallest" would wrongly report 2,700 as the arm's
-/// final answer, silently regressing behind a real, already-correct exact joint.
+/// than the naive fold (min(6000, 4000, cn<=4500's 4500) == 4000), and marks BOTH `legal` and `cmc=3`
+/// covered (`flags`, plus one `{legal, cmc}` entry in `covered.subsets`). Collector numbers 1..=10000,
+/// `cn<=4500` selects 4,500 (cards {0..=4499}). `legal`/`cn<=4500` form a registered-safe pair
+/// (`legality x cn`) whose combined subset is `{legal, cn}` -- a DIFFERENT subset than the `{legal,
+/// cmc}` `covered.subsets` entry PairTotals pushed, so after Round 49 this pairing is no longer
+/// declined: `round(6000 * 4500 / 10000) == 2,700`, tighter than PairTotals' own 3,000, correctly wins
+/// the arm's final `.min()` fold. `cmc` itself never becomes part of any fired independence pair here
+/// (`Legality x Cmc` and `Cmc x CollectorNumber` are both absent from `independence_safe_pair`'s own
+/// registry, unrelated to `covered` at all), so this fixture cannot accidentally exercise the identical-
+/// subset case by itself.
 #[test]
-fn and_arm_independence_never_overrides_an_overlapping_exact_pair_total() {
+fn and_arm_independence_permitted_against_a_different_partner_once_covered_by_another_exact_pair() {
     const N: usize = 10_000;
     let mut vocab = VocabInterner::new();
     let mut cards: Vec<OracleCard> = (0..N).map(|i| stub_card(1 + i as u128, TYPE_CREATURE, &[], &mut vocab)).collect();
@@ -16680,17 +16799,96 @@ fn and_arm_independence_never_overrides_an_overlapping_exact_pair_total() {
     assert!(pt_hit.hit);
     assert_eq!(pt_hit.printing, Some(3_000), "the real legal ∧ cmc=3 exact joint is {{3000..=5999}}, 3,000 cards");
 
+    let indep_legal_cn = and_trace
+        .considered
+        .iter()
+        .find(|g| g.mechanism == "Independence" && g.leaves.iter().any(|l| l.contains("Legality")) && g.leaves.iter().any(|l| l.contains("CollectorNumberInt")))
+        .expect(
+            "independence must now attempt (legal, cn) -- a DIFFERENT subset than PairTotals' own \
+             (legal, cmc), so Round 49's identical-subset-only block does not apply to it",
+        );
+    assert_eq!(indep_legal_cn.printing, Some(2_700), "round(6000 * 4500 / 10000)");
+
     assert!(
-        !and_trace.considered.iter().any(|g| g.mechanism == "Independence" && g.leaves.iter().any(|l| l.contains("Legality"))),
-        "independence must never be attempted against `legal` once PairTotals already claimed it -- \
-         a covered leaf must not reach the registry scan at all, not just lose a magnitude comparison"
+        !and_trace.considered.iter().any(|g| g.mechanism == "Independence" && g.leaves.iter().any(|l| l.contains("Cmc"))),
+        "independence must still never pair `cmc` against anything here -- `Legality x Cmc`/`Cmc x \
+         CollectorNumber` are both absent from `independence_safe_pair`'s own registry, unrelated to \
+         `covered` entirely"
     );
+
     assert_eq!(
-        est.result.printing, 3_000,
-        "the arm's final answer must stay at PairTotals' exact 3,000, never regress to independence's \
-         smaller-but-unsound 2,700 (round(6000 * 4500 / 10000)) for an overlapping subset"
+        est.result.printing, 2_700,
+        "the arm's final answer now reflects (legal, cn)'s tighter independence estimate (2,700) beating \
+         PairTotals' own (legal, cmc) exact joint (3,000) -- expected under Round 49, since these are \
+         different subsets, not a regression of Round 40's identical-subset protection"
     );
     assert_min_fold_invariant(&and_trace.tree);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Round 49: `CoveredState`'s subset-identity tracking, tested in isolation.
+// ---------------------------------------------------------------------------------------------
+
+/// Round 49's identical-subset protection, tested directly against `CoveredState`/`mark_covered`
+/// rather than through a live registry pairing: checked directly, no pair of classes in
+/// `independence_safe_pair`'s own registry today shares a leaf-pair `PairTotals` (`pair_leaf_id`) ALSO
+/// resolves both sides of -- every registered-safe pair includes `Price`, `SetCode`, or `ReleasedDate`
+/// on at least one side, none of which `pair_leaf_id` supports at all, so no live query can actually
+/// construct a same-subset collision through the real registries as they stand today. This instead
+/// exercises the exact mask-equality check the independence pairing loop applies
+/// (`covered.subsets.contains(&combined)`) against a `CoveredState` built the same way every real
+/// exact-mechanism call site (`mark_covered`, `pair_bounded_min`) builds one.
+#[test]
+fn covered_state_declines_only_the_identical_combined_subset() {
+    let v = scan_two_bucket_fixture_leaves(); // reuse the existing 3-leaf synthetic fixture
+    let mut covered = CoveredState::new(v.len());
+    // Simulates an exact mechanism (e.g. `pair_bounded_min`'s own `PairTotals` hit, or
+    // `SubtypeArithBox`'s box lookup) having already answered leaves {v[0], v[1]} exactly --
+    // `mark_covered` is the real function every exact-mechanism call site in the And arm uses.
+    mark_covered(&v, &[&v[0], &v[1]], &mut covered);
+    assert!(covered.flags[0] && covered.flags[1] && !covered.flags[2]);
+    assert_eq!(covered.subsets, vec![0b011u64], "mark_covered must push exactly one {{v[0], v[1]}} bitmask");
+
+    // The real independence pairing loop's own check: `let combined = a.mask | b.mask; if
+    // covered.subsets.contains(&combined) { continue; }`. A pairing whose own combined mask EXACTLY
+    // equals the covered subset (bit 0 | bit 1) must be declined -- an identical-subset re-answer.
+    let combined_identical: u64 = 0b001 | 0b010;
+    assert!(covered.subsets.contains(&combined_identical), "an identical-subset re-answer must be declined");
+
+    // A different combined mask sharing ONLY leaf 0 with the covered subset (not the whole subset) --
+    // must NOT be declined: v[0] merely being covered elsewhere is not disqualifying, only the exact
+    // combined subset is (Round 49's whole point, see `CoveredState`'s own doc).
+    let combined_partial_overlap: u64 = 0b001 | 0b100;
+    assert!(!covered.subsets.contains(&combined_partial_overlap), "a different subset sharing one leaf must stay permitted");
+
+    // A combined mask sharing NO leaf at all with the covered subset must also stay permitted.
+    let combined_disjoint: u64 = 0b100;
+    assert!(!covered.subsets.contains(&combined_disjoint));
+}
+
+/// Defensive: a leaf position `>= 64` can never set a bit in a `u64` mask -- `mark_covered` guards
+/// every shift (`if pos < 64 { mask |= 1u64 << pos }`) rather than a bare `1u64 << pos`, which would
+/// panic in debug / wrap in release on an out-of-range shift amount. Exercised directly here (a
+/// synthetic 70-leaf `v`, never realistic for a hand-typed query, but the guard must hold regardless)
+/// since no existing fixture constructs an `And` anywhere near 64 children.
+#[test]
+fn mark_covered_guards_positions_at_or_beyond_64() {
+    let v: Vec<FilterExpr> = (0..70).map(|i| FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Eq, rhs: NumExpr::Const(f64::from(i)) }).collect();
+    let mut covered = CoveredState::new(v.len());
+    // Two leaves both at positions >= 64: every resolved position is out of `u64` mask range, so the
+    // combined mask is 0 -- `mark_covered` must skip pushing (no spurious 0 entry), must not panic on
+    // the shift, and must still set `flags` correctly (mask range is a `subsets`-only limitation,
+    // `flags` has no such bound).
+    mark_covered(&v, &[&v[64], &v[65]], &mut covered);
+    assert!(covered.flags[64] && covered.flags[65], "flags has no 64-position limit");
+    assert!(covered.subsets.is_empty(), "every resolved position was >= 64, so no mask bits could be set -- nothing should be pushed");
+
+    // A leaf at position 0 (in range) mixed with one beyond 64 (out of range): the in-range bit must
+    // still be set, and the out-of-range one silently dropped from the mask -- not a panic, and not a
+    // 0-mask no-op this time (bit 0 alone is nonzero).
+    mark_covered(&v, &[&v[0], &v[64]], &mut covered);
+    assert!(covered.flags[0]);
+    assert_eq!(covered.subsets, vec![0b1u64], "only bit 0 gets set; position 64 is silently dropped from the mask, not tracked, never a panic");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -16816,7 +17014,7 @@ fn scan_two_bucket_fixture_leaves() -> Vec<FilterExpr> {
 #[test]
 fn scan_two_bucket_exact_hit_folds_covers_and_traces_in_order() {
     let v = scan_two_bucket_fixture_leaves();
-    let mut covered = vec![false; v.len()];
+    let mut covered = CoveredState::new(v.len());
     let mut result = 999usize;
     let mut exact_domain_cards = None;
     let mut exact_domain_printing = None;
@@ -16848,7 +17046,7 @@ fn scan_two_bucket_exact_hit_folds_covers_and_traces_in_order() {
     assert_eq!(exact_domain_cards, Some(3));
     assert_eq!(exact_domain_printing, Some(5));
     assert_eq!(exact_domain_artworks, Some(4));
-    assert!(covered[0] && covered[1] && covered[2], "mark_covered_on_hit=true must cover every position order_positions returned");
+    assert!(covered.flags[0] && covered.flags[1] && covered.flags[2], "mark_covered_on_hit=true must cover every position order_positions returned");
 
     let trace = and_trace.expect("trace was Some going in");
     assert_eq!(trace.considered.len(), 1, "one (a, b) pair scanned, one group logged");
@@ -16870,7 +17068,7 @@ fn scan_two_bucket_exact_hit_folds_covers_and_traces_in_order() {
 #[test]
 fn scan_two_bucket_exact_miss_with_trace_on_miss_false_logs_nothing() {
     let v = scan_two_bucket_fixture_leaves();
-    let mut covered = vec![false; v.len()];
+    let mut covered = CoveredState::new(v.len());
     let mut result = 999usize;
     let mut exact_domain_cards = None;
     let mut exact_domain_printing = None;
@@ -16900,7 +17098,7 @@ fn scan_two_bucket_exact_miss_with_trace_on_miss_false_logs_nothing() {
 
     assert_eq!(result, 999, "a miss must never tighten result");
     assert!(exact_domain_cards.is_none() && exact_domain_printing.is_none() && exact_domain_artworks.is_none());
-    assert!(!covered[0] && !covered[1] && !covered[2], "a miss must never cover anything");
+    assert!(!covered.flags[0] && !covered.flags[1] && !covered.flags[2], "a miss must never cover anything");
     let trace = and_trace.expect("trace was Some going in");
     assert!(trace.considered.is_empty(), "trace_on_miss=false must log nothing for a miss");
 }
@@ -16910,7 +17108,7 @@ fn scan_two_bucket_exact_miss_with_trace_on_miss_false_logs_nothing() {
 #[test]
 fn scan_two_bucket_exact_miss_with_trace_on_miss_true_still_logs_a_group() {
     let v = scan_two_bucket_fixture_leaves();
-    let mut covered = vec![false; v.len()];
+    let mut covered = CoveredState::new(v.len());
     let mut result = 999usize;
     let mut exact_domain_cards = None;
     let mut exact_domain_printing = None;
@@ -16952,7 +17150,7 @@ fn scan_two_bucket_exact_miss_with_trace_on_miss_true_still_logs_a_group() {
 #[test]
 fn scan_two_bucket_exact_mark_covered_on_hit_false_never_covers() {
     let v = scan_two_bucket_fixture_leaves();
-    let mut covered = vec![false; v.len()];
+    let mut covered = CoveredState::new(v.len());
     let mut result = 999usize;
     let mut exact_domain_cards = None;
     let mut exact_domain_printing = None;
@@ -16982,5 +17180,5 @@ fn scan_two_bucket_exact_mark_covered_on_hit_false_never_covers() {
 
     assert_eq!(result, 5, "the hit must still fold normally");
     assert_eq!(exact_domain_cards, Some(3));
-    assert!(!covered[0] && !covered[1] && !covered[2], "mark_covered_on_hit=false must never cover, even on a hit");
+    assert!(!covered.flags[0] && !covered.flags[1] && !covered.flags[2], "mark_covered_on_hit=false must never cover, even on a hit");
 }
