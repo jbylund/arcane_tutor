@@ -214,10 +214,21 @@ leaves either need to be forced into the same group, or the whole comparison fal
 existing conservative min-fold for that cross-term. This makes leaf-level independence-safety a
 **constraint** on which partitions are valid, not a combination step applied after the fact — still
 the target architecture; what's shipped (Round 40) is one flat pairwise scan over the residual, not
-this general partition framing. It gets the accuracy benefit for the pairs the registry covers without
-yet solving the general placement problem (which pair "wins" a leaf when more than one candidate
-grouping could claim it beyond the class-priority rule above, how a 3+-leaf residual gets partitioned
-at all).
+this general partition framing.
+
+**"Which grouping wins a leaf" is a non-issue for the EXACT/bound class — Round 42 confirmed this
+directly, not just reasoned about it.** Any true sub-conjunction's own exact count is a valid upper
+bound on the full `And` no matter what other leaves are present or what other mechanism also fired
+(intersecting more constraints only shrinks or preserves a matching set) — so `.min()`-folding every
+candidate grouping any registered EXACT mechanism can compute, in any order, over overlapping or
+disjoint leaf subsets, is always sound. No priority/placement rule is needed for this class; a general
+partition search over EXACT mechanisms only needs to enumerate every applicable subset and fold the
+min, same as Round 42 did for one mechanism. The genuinely open version of this question is narrower
+than the doc used to frame it: what happens when an ESTIMATE-class candidate (independence, or a
+future one) could apply to a leaf subset an EXACT mechanism ALSO covers, or when two ESTIMATE
+candidates compete for the same leaves — an estimate is not a guaranteed bound (Round 40's
+class-priority finding), so `.min()` isn't automatically safe there the way it is for EXACT/bound
+mechanisms. That question (not "how a 3+-leaf residual gets partitioned" in general) is what remains.
 
 ## Bounding the search
 
@@ -271,17 +282,17 @@ above):
   multiple simultaneous non-overlapping tightenings across arbitrary leaf groupings. Round 40 ships a
   flat pairwise scan over the residual, not this. This is the single biggest remaining gap between
   "what's built" and "what this doc describes."
-- **The `color:G format:pioneer t:elf`-shaped 3-leaf joint itself — confirmed live and unaddressed**
-  (found scoping the search, not fixed by Round 41's card/artwork floor above, which only tightens the
-  bound). Two compounding reasons, both directly read from source: `SubtypePairIndexes` (Round 34) is
-  gated `if v.len() == 2` (`lib.rs:9440`) and structurally cannot fire once a third leaf is present —
-  not "loses a placement race," genuinely never attempted; and even if generalized to scan the
-  residual, `compile_plane`'s card-invariant absorption (`lib.rs:9247-9317`) claims `color`+`legality`
-  together first in source order today, so a real placement rule (which mechanism gets first claim on
-  a leaf multiple candidates want) would also be needed to let the more-correlated `color`+`elf`
-  pairing win instead. A natural next round — different mechanism, different risk profile (touches
-  `compile_plane`, used everywhere) from anything shipped so far, deliberately not bundled with
-  Round 41's fix.
+- ~~The `color:G format:pioneer t:elf`-shaped 3-leaf joint~~ — **closed in Round 42.** This was
+  originally framed as needing a placement rule (`compile_plane` claims `color`+`legality` together
+  first in source order, so `SubtypePairIndexes` would need to "win" the leaf instead). That framing
+  was wrong: `exact_domain_*`'s existing `.map_or(x, |d| d.min(x))` chaining across mechanisms already
+  composes correctly regardless of order — any true sub-conjunction's exact count is always a valid
+  bound on the full `And`, so there's no race to adjudicate for the EXACT/bound class at all. The real
+  gap was just that `SubtypePairIndexes` never computed a candidate past `v.len() == 2`. Round 42
+  generalized the gate (no reordering of `compile_plane`), and the existing `.min()`-chain automatically
+  picked whichever mechanism was tighter. See the ledger's "Round 42" section, including a real
+  first-pass gap (skipping `covered` leaves for the exact-hit branch, not just the estimate branch)
+  caught before merging.
 - **Cost-aware mechanism ordering** — moot so far; no expensive mechanism has entered the registry
   since this was written.
 - **The `popcount_with_bits` redundancy fix** — still needs a real-traffic frequency measurement

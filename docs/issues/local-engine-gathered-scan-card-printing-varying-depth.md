@@ -191,6 +191,60 @@ total regret by 0.0 ms).
 | 39 | `and_estimate_ns` (`AcquireFacts`): single-shot wall time of the real, production, acquire-time `compose_printing_estimate` call inside `acquire_plan_features`'s `PrintingCompose` branch — a permanent per-query cost baseline for grading the general partition-search estimator's own "tax" once it exists, not another accuracy fix | kept | n/a (tooling; no estimate value changed) | n/a | see "Round 39" narrative below — real distribution (53,778-row sweep): median 750ns, p90 4.4µs, p99 11.6µs; populated on exactly the 59.3% of rows whose acquire took the `PrintingCompose` branch (`None` elsewhere, never "0ns"). Paired-wheel latency A/B for this specific addition (required by `.claude/rules/benchmark-methodology-review.md` for any change to a documented hot path): the real effect was not distinguishable from the same-build canary's own run-order drift — reported honestly as "no measurable overhead detected," not claimed as a proven-safe number |
 | 40 | Generalizes Round 38's one hard-coded independence pair into a small registry (`IndepClass`/`independence_safe_pair`), scanned pairwise over every RESIDUAL `And`-arm leaf (not covered by an existing exact mechanism), plus a class-priority fix for winner attribution | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 53,775 shared rows: 395 plan-choice flips, concentrated in the newly-covered shapes (all toward `GatheredScan`); `root=leaf`/`root=or`: 0 changes; `unsafe:legality+set`/`+released`: 0/900 both builds, confirming the deliberately-excluded pair stayed untouched | see "Round 40" narrative below — registry re-validated against real data, not copied from the design doc's own self-contradictory list: adds `legality×{cn,price}`, `type×{released,usd}`, plus `id×set`/`pow×set`, which empirically REVERSE the doc's "unsafe" claim (independently re-confirmed on a fresh seed, not just the implementing agent's own sample: `id×set` median 1.34→0.14, 273/283 improved; `pow×set` 1.36→0.17, 146/147). `legality×{set,date,year}` deliberately excluded (format legality is date-DEFINED, not merely correlated — reserved for a future exact per-(set,format) mechanism, not independence). Same-currency price crosses spot-checked and found genuinely mixed, not shipped. **A real regression caught by pre-merge independent verification, not the implementing agent's own report**: `safe:cmc+usd` (already covered by Round 38) got WORSE (median 0.158→0.219, 218/246 regressed) — a same-field arith consolidation (`cmc>=1 cmc<=1`) was being marked `covered` unconditionally, silently blocking Round 38's own price×cmc pairing before the new registry scan ever saw it. Fixed (gate `mark_covered` on `single_arith_field(...).is_none()` — only a genuine cross-DIMENSION join covers its leaves); re-verified byte-identical to the pre-Round-40 baseline on the exact repro and every already-covered shape before merging |
 | 41 | Card/artwork space in `compose_printing_estimate`'s `And` arm now floors on each UNCOVERED leaf's own exact card/artwork count (`children_estimates`), gated by the SAME `range_too_broad_to_narrow` breadth guard `narrow_rec` already uses — closing an asymmetry printing space never had (its own baseline, `folded.result.printing`, already floors on every leaf unconditionally) | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 8,097 shared rows (independent re-sweep, fresh seed): 23 plan-choice flips (0.3%), all one-directional (`PrintingCompose → StreamedSelect`/`GatheredScan`, never the reverse); ratio diagnostic unchanged (mean 0.184 both builds, "no detectable difference"); zero-true-count hit rate unchanged (77.6% both); border-leaf reproducers (`cmc=1 border:black`, `cmc>=1 cmc<=5 border:black`, etc.) byte-identical before/after, confirming the breadth guard correctly declines on a genuinely broad leaf | see "Round 41" narrative below — found while scoping the general N-way partition search (`local-engine-nway-compose-independence-search.md`): `color:G format:pioneer t:elf` predicted card=1179/true=246 (`t:elf`'s own exact card count, 660, was never considered — a strict subset of what compile_plane's partial color+legality joint reported, itself looser than a bare min-fold would be). This is a previously-scoped, deliberately-deferred fix — `local-engine-domain-cards-existential-arith-and.md`'s own "Ingredient 3" — shipped now with the breadth guard that round asked for, and scoped so the new floor affects ONLY `result_space` (what `explain()` reports), never `exact_domain` (what `scan_units`'s real execution-cost pricing reads), so the two fields — accidentally identical for card/artwork before this round, unlike printing where they already legitimately diverge — now behave the way printing's split always has. Motivating case: `eval_domain` 1179→660 (still not exact — true is 246 — this tightens a bound, it does not solve the underlying "no true 3-leaf joint mechanism exists yet" problem, tracked as a separate Round 42 candidate). `and_estimate_ns` canary: no consistent, reproducible tax detected, not distinguishable from the same-build canary's own noise floor |
+| 42 | Generalizes `SubtypePairIndexes`/`SubtypePairEstimate` past its `v.len() == 2` gate to scan the residual for every `(dim, subtype)` pair present in an `And` of any size — no reordering relative to `compile_plane`, no new placement/priority rule; the existing `.min()`-chain across mechanisms already composes correctly regardless of order | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 8,346 shared rows (independent re-sweep, fresh seed): 23 plan-choice flips (0.3%), concentrated in the newly-covered `triple:color+type+cmc`/`triple:color+legality+type` shapes; ratio diagnostic improved (mean 0.177→0.173, "B is MORE accurate"); border-leaf reproducers byte-identical before/after; the pre-existing 2-leaf `set:eld t:knight` case unchanged | see "Round 42" narrative below — directly closes the doc's own `color:G format:pioneer t:elf` worked example: `eval_domain` 660→560 (Round 41's own floor), now a genuine `SubtypePairIndexes` table HIT (card 560/printing 1917/artwork 790 — still not exact, true is 246, but a real, confirmed tightening). **A first implementation pass shipped a real gap, caught by independent verification, not the implementing agent's own report**: it correctly generalized the gate, but ALSO skipped `covered` leaves on input for both the exact-hit AND estimate branches (mirroring the independence registry's own precedent) — which meant `color` (already covered by `compile_plane`'s joint with `legality`) never reached the new scan at all, so the motivating example got ZERO benefit on the first pass. Root cause: skipping `covered` leaves is necessary for the ESTIMATE-class fallback (an independence-shaped estimate isn't a guaranteed bound and could undershoot below an already-exact value — Round 40's own class-priority reasoning) but NOT for the EXACT-hit branch, where any true sub-conjunction's count is always a valid bound regardless of what else covered a leaf, exactly like `compile_plane`/`pair_bounded_min`/the arith-tuple merge already behave. Fixed by splitting the two branches: the exact-hit scan ignores `covered` entirely; the estimate fallback still respects it, recomputed fresh after the hit loop runs |
+
+### Round 42
+
+Target: found while re-scoping the general N-way partition search after Round 41 — I had framed the
+remaining gap as needing a "placement rule" (which mechanism gets first claim on a leaf when multiple
+candidates want it), motivated by Round 41's own finding that `SubtypePairIndexes` (Round 34) never
+fires on a 3+-leaf `And` (`v.len() == 2` gate) while `compile_plane` claims `color`+`legality` together
+regardless. That framing was overstated. `exact_domain_cards`/`exact_domain_artworks` already
+accumulate via `.map_or(x, |d| d.min(x))` chaining across every EXACT/bound mechanism that fires,
+regardless of order (the arith-ID-probe merge and `SubtypePairIndexes`'s own hit branch both already do
+this) — and this composition is provably always safe for this class: any true sub-conjunction's own
+exact count is a valid upper bound on the full `N`-leaf `And`, no matter what other leaves are present
+or what else already fired. There is no race to adjudicate. The real gap was narrower: this mechanism
+simply never COMPUTED a candidate past two total leaves — an applicability-gate limitation, not a
+conflict-resolution problem.
+
+**Generalized the gate, not the ordering.** Replaced `if v.len() == 2` with a residual scan bucketing
+uncovered leaves into "dim" (`set:`/`color:`/`id:`) and "subtype" (`t:`) positions, trying
+`subtype_pair_exact` on every pair in the Cartesian product. A HIT `.min()`-chains into `exact_domain_*`
+exactly like every other exact mechanism, and gets its own trace group per pair (mirroring
+`compile_plane`'s own existential-loop precedent of "every trial gets its own group, not just the
+winner"). The capped independence-product fallback (`SubtypePairEstimate`) stays deliberately
+single-pair-only: with 2+ uncovered dim or subtype leaves and no table hit, it declines entirely rather
+than computing an estimate per combination and taking their min — the same "an inexact estimate can
+undershoot, so combining several risks compounding it" reasoning the independence registry's own
+ambiguity precedent already established.
+
+**The first pass shipped, then a real gap was found before merging.** My own instructions to the
+implementing agent said to skip `covered` leaves for the whole residual scan, copying the independence
+registry's pattern uncritically. Verifying the motivating example directly (not just trusting the
+sweep's aggregate numbers) showed `color:G format:pioneer t:elf` got ZERO benefit: `color` is itself
+`compile_plane`-compilable and gets absorbed into its joint with `format:pioneer` (marked `covered`)
+*before* this mechanism's scan ever runs, so with `covered` leaves excluded, `color` never reached the
+new (dim, subtype) scan at all. This is exactly the case Round 41's own worked example was about. The
+fix: only the ESTIMATE fallback needs to respect `covered` (an inexact estimate must never be folded in
+for a leaf subset an exact mechanism could undershoot below — the same class-priority soundness rule
+Round 40 established); the EXACT-hit scan should ignore `covered` entirely, since a real table hit's
+own count is unconditionally safe to `.min()`-fold in regardless of what else covered either leaf.
+Re-verified end to end after the fix (not just the implementing agent's second report): rebuilt both
+wheels myself, re-ran the motivating query and every border-leaf reproducer directly via `and_trace`,
+and ran a fresh independent harness sweep on a different seed — the motivating example is now a
+confirmed table hit (`eval_domain` 660→560), the pre-existing 2-leaf case is unregressed, and two new
+3-leaf shapes (`set:eld t:knight usd<=5`, an exact hit; `set:znr t:elf usd<=5`, the estimate fallback)
+both behave correctly.
+
+Blast radius: `card_engine/src/lib.rs` (`subtype_pair_exact`'s signature loosened from a 2-element slice
+to two individual leaf refs, one extra caller in `exact_result_total` updated to match; the
+`SubtypePairIndexes`/`SubtypePairEstimate` block itself, ~140 lines net), `card_engine/src/tests.rs`
+(7 new tests, all Round 34 tests pass unmodified), `scripts/nway_estimate_truth_survey.py` (two new
+curated 3-leaf shapes). `cargo test`: 211 passed (204 + 7). `cargo clippy --all-targets -- -D
+warnings`: clean. `and_estimate_ns`: no measurable tax detected (paired delta well inside baseline's
+own single-shot noise floor), consistent with every prior round's own finding for this style of
+`O(leaves²)`-but-tiny-in-practice addition.
 
 ### Round 41
 
