@@ -148,6 +148,34 @@ for an overlapping subset. Any future search-selection logic has to preserve thi
 not solely a Round 40 implementation detail, it's a property any combinator over a mix of exact and
 estimate mechanisms must have.
 
+### 4. Min-folding multiple estimate-class candidates for the SAME target is a different, real bias — not just "risky"
+
+Everything shipped so far min-folds candidates that are either (a) EXACT/bound mechanisms — always
+safe, since any true sub-conjunction's own count is a guaranteed ceiling on the full `And`, so folding
+more of them in only tightens toward the truth, never crosses below it — or (b) independence estimates
+that each drop a *different* leaf, so each one estimates a *different, strictly larger* marginal (the
+star investigation's own measured direction confirms this: `color:G cmc<=3 usd<=10` predicted 6450
+against true 3363, an OVERshoot, because both candidates ignore a real constraint the other covers).
+Picking the smaller of several over-approximations of different, looser targets moves toward the
+truth — this is why `.min()` has been safe everywhere it's been used so far.
+
+That reasoning does NOT extend to a case nothing has shipped yet but the partition search below would
+create if built naively: multiple ESTIMATE-class candidates that each estimate the SAME target (e.g.
+two different partitions/groupings of the identical `N` leaves, each producing its own
+independence-flavored estimate of the full joint), with the search reporting whichever number is
+smallest. That is order-statistics selection bias, not looseness: if several independent, individually
+reasonable estimators of one quantity are computed and the smallest is always reported, the expected
+value of that *procedure* is below the true quantity, even if every individual estimator is itself
+unbiased — a real, systematic undercount, structurally different from either safe case above. Nothing
+shipped triggers this today (every registered independence pair is keyed to a unique class-pair, so no
+two formulas ever compete to estimate the identical leaf subset yet) — but the general partition search
+this doc describes, if it ever evaluates multiple full-scope groupings and picks the tightest number,
+would. The fix is the same shape as point 3's, one level up: partition selection among ESTIMATE-heavy
+candidates must never be a magnitude comparison — prefer whichever partition is backed by *more*
+exact/bound coverage structurally, and when forced to choose between two independence-heavy groupings,
+decide on domain grounds (which leaves are *actually* correlated, per point 2's own worked example),
+never by comparing their numbers.
+
 ## The safety bar is empirical, not provable independence (revised after Rounds 38/40)
 
 The original version of this doc treated "is this pair independence-safe" as answerable from a static
@@ -267,11 +295,16 @@ candidate grouping any registered EXACT mechanism can compute, in any order, ove
 disjoint leaf subsets, is always sound. No priority/placement rule is needed for this class; a general
 partition search over EXACT mechanisms only needs to enumerate every applicable subset and fold the
 min, same as Round 42 did for one mechanism. The genuinely open version of this question is narrower
-than the doc used to frame it: what happens when an ESTIMATE-class candidate (independence, or a
-future one) could apply to a leaf subset an EXACT mechanism ALSO covers, or when two ESTIMATE
-candidates compete for the same leaves — an estimate is not a guaranteed bound (Round 40's
-class-priority finding), so `.min()` isn't automatically safe there the way it is for EXACT/bound
-mechanisms. That question (not "how a 3+-leaf residual gets partitioned" in general) is what remains.
+than the doc used to frame it, and resolves into two distinct sub-questions, not one: (a) an
+ESTIMATE-class candidate applying to a leaf subset an EXACT mechanism ALSO covers — resolved by point
+3 above (class priority: the estimate may only fill a gap, never override or be compared against an
+exact candidate for an overlapping subset); (b) two ESTIMATE-class candidates competing to estimate
+the SAME target (not merely touching the same leaves, but the identical full-scope quantity, as two
+different partitions of the whole `And` would each produce) — resolved by point 4 above: this is NOT
+a `.min()`-safe situation the way (a) or the EXACT class are, because picking the smallest of several
+noisy estimates of one quantity is a systematically biased-low selection procedure, not mere
+looseness. Partition selection among estimate-heavy candidates must be structural/domain-driven, never
+a magnitude race, once (or if) more than one such candidate can arise for the same full leaf set.
 
 ## Bounding the search
 
@@ -283,7 +316,12 @@ instead of blowing up:
 - For each subset, check whether any registered mechanism (exact or verified-independent) applies to
   exactly that shape.
 - Greedily pick a set of non-overlapping winning subsets (a small packing problem — real queries
-  rarely have more than one or two candidates active at once).
+  rarely have more than one or two candidates active at once). **The pick, when 2+ candidate packings
+  are both viable, must never be "whichever produces the smaller number" if more than one of the
+  competing packings is estimate-heavy** (point 4 above) — prefer the packing backed by more exact/
+  bound coverage structurally; break a genuine estimate-vs-estimate tie on domain grounds, not
+  magnitude. Magnitude comparison stays fine whenever every candidate in contention is EXACT/bound
+  class (Round 42's own finding) or when only one packing under consideration is estimate-class at all.
 - Combine whatever's left via independence, respecting the leaf-level safety constraint above; worst
   case, behave exactly like today's min-fold.
 
