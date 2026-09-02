@@ -401,6 +401,14 @@ above):
   multiple simultaneous non-overlapping tightenings across arbitrary leaf groupings. Round 40 ships a
   flat pairwise scan over the residual, not this. This is the single biggest remaining gap between
   "what's built" and "what this doc describes."
+- ~~`SubtypeArithBox`'s own whole-query shape gate~~ — **closed in Round 48**, the same generalization
+  Round 42 already did for `SubtypePairIndexes`. But doing so exposed, with real measured numbers, a
+  cost of `covered`'s existing leaf-occupancy semantics that was previously only a soundness concern:
+  once `SubtypeArithBox` covers a subtype leaf via one exact pairing, `Independence` can never try that
+  same leaf against a *different* partner, even when that estimate would have been tighter (`t:elf
+  usd<0.20 cmc>=2`: printing 425→1865 against true 366, a real regression, not a synthetic one). Loosening
+  `covered` to be subset-identity-based rather than leaf-occupancy-based is queued as the next round —
+  see [local-engine-nway-followup-queue.md](local-engine-nway-followup-queue.md)'s item #1.
 - ~~The `color:G format:pioneer t:elf`-shaped 3-leaf joint~~ — **closed in Round 42.** This was
   originally framed as needing a placement rule (`compile_plane` claims `color`+`legality` together
   first in source order, so `SubtypePairIndexes` would need to "win" the leaf instead). That framing

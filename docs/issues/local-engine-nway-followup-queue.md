@@ -10,19 +10,7 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 
 ## Active queue (in order)
 
-1. **Generalize `SubtypeArithBox`'s residual scan.** Its shape gate (`arith_children.len() + 1 ==
-   v.len()`) still requires the WHOLE query to be exactly "one subtype leaf + N arith leaves," the
-   same restriction Round 42 already removed for `SubtypePairIndexes`. Confirmed live: `t:elf cmc>=5
-   usd<10` gets zero benefit from this mechanism today. Round 46 already migrated it onto the shared
-   `scan_two_bucket_exact` helper with the old gate preserved — relaxing the gate to scan the residual
-   is now close to mechanical, with two prior rounds of direct precedent for exactly this move.
-2. **Fix the estimators Round 46's census flagged.** Zero of the six exact mechanisms produce an
-   inconsistent `cards<=artworks<=printings` triple, but `arith_tuple_count` folds as
-   `Candidate::Estimate` (a scaled, not exact, printing conversion, no artwork at all) and is
-   structurally invisible to the assert. It already has the real matching card IDs via
-   `arith_tuple_ids` (built for the `ArithIdProbe` merge) — an exact printing/artwork derivation from
-   those IDs is buildable, not just a self-consistent scaled one.
-3. **Loosen `covered` for the independence registry — subset-identity based, not leaf-occupancy
+1. **Loosen `covered` for the independence registry — subset-identity based, not leaf-occupancy
    based.** Today, once leaf `A` is covered by *any* exact pairing (say `(A,B)`), it's permanently
    unavailable to independence for *any other* partner (e.g. `(A,C)`) — even though that's a
    genuinely different, safe-to-try subset. The only real danger is an estimate competing against an
@@ -31,6 +19,32 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
    "has this exact pair already been exactly answered" — real infrastructure, not just an accuracy
    tweak, since it's the same subset-tracking primitive a general search would need regardless of
    whether that search is ever built as a generic loop or stays a fixed sequence of mechanisms.
+   **Reprioritized to the top after Round 48**: generalizing `SubtypeArithBox` (shipped) exposed a
+   live, measured case where this gap costs real accuracy, not just soundness — `t:elf usd<0.20
+   cmc>=2` regressed (printing 425→1865 against true 366) because `SubtypeArithBox` now covers `Elf`
+   via its `(Elf, cmc>=2)` hit, permanently blocking `Independence` from trying `(Elf, usd<0.2)` even
+   though that estimate was much tighter. Use this exact query as the motivating/verification case.
+2. **Build the "anchored independence" candidate**: once an exact mechanism (e.g. `SubtypeArithBox`)
+   computes a joint count for some leaf subset, and other, residual leaves remain in the same `And`,
+   multiply that exact count by the residual leaves' own combined independent solo-selectivity to get
+   a tighter `Estimate`-class candidate for the FULL query — `.min()`-fold it alongside the exact bound
+   (never replacing it, so correctness can't regress: a solo rate is always ≤1, so the product can only
+   tighten). Validated on real data during Round 48's review: `t:elf cmc>=5` alone gives the identical
+   241 as the full `t:elf cmc>=5 usd<10` query (confirming the box's count is price-blind); combining
+   241 with `usd<10`'s own solo rate (76189/97812 ≈ 0.779) gives ≈188 against true 177 — tighter than
+   the box's own 241 (1.36x → 1.06x). Distinct from #1 above: this doesn't touch `covered`'s semantics
+   at all, it's a new candidate computed inline wherever an exact mechanism resolves its own hit. Needs
+   the same guards as any independence-style estimate: combine ALL residual leaves into one product
+   (never try them separately and pick the smallest — the same order-statistics selection bias flagged
+   in the design doc), and the same price-triple-correlation guard already documented in
+   [local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md)
+   (never independence-combine two of `price_usd`/`price_eur`/`price_tix` together).
+3. **Fix the estimators Round 46's census flagged.** Zero of the six exact mechanisms produce an
+   inconsistent `cards<=artworks<=printings` triple, but `arith_tuple_count` folds as
+   `Candidate::Estimate` (a scaled, not exact, printing conversion, no artwork at all) and is
+   structurally invisible to the assert. It already has the real matching card IDs via
+   `arith_tuple_ids` (built for the `ArithIdProbe` merge) — an exact printing/artwork derivation from
+   those IDs is buildable, not just a self-consistent scaled one.
 4. **Fix the harness's own query-generation nondeterminism.** Found during Round 46: the identical
    `--seed 0` run against the identical corpus produced 9 different generated queries across two
    separate engine loads — a related instance of Round 47's own root cause (Rust `HashMap` iteration
@@ -41,10 +55,10 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 5. **Measure the residual-size distribution for real 5+-leaf queries.** Still unmeasured since before
    this session started. This is the actual answer to "is the general bounded partition search worth
    building at all" — if real residuals rarely exceed 2-3 leaves, the "notice one bad case, build one
-   validated mechanism" pattern (5 real gaps closed this way so far: Rounds 34, 40, 42, 44, 45) may
+   validated mechanism" pattern (6 real gaps closed this way so far: Rounds 34, 40, 42, 44, 45, 48) may
    just *be* the right architecture, not a placeholder for a general one.
 6. **Decide on / scope the actual general bounded partition search**, informed by #5's findings and
-   built on #3's subset-tracking primitive. Not attempted until the above are in.
+   built on #1's subset-tracking primitive. Not attempted until the above are in.
 
 ## Lower priority, no urgency
 
@@ -78,3 +92,4 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 - Round 45: `set:X`'s own card/artwork floor populated.
 - Round 46: `fold_candidate`/`Candidate` structural refactor + the `debug_assert` census.
 - Round 47: deterministic top-N (include-all-ties) for `build_subtype_pair_tables`.
+- Round 48: `SubtypeArithBox` generalized past its whole-query-shape gate to scan the residual.

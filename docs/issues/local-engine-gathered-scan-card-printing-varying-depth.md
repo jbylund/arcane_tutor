@@ -200,6 +200,82 @@ total regret by 0.0 ms).
 | 45 | A bare `set:X` leaf's own solo `ComposeEstimate` now carries real `Some(card)`/`Some(artwork)` (from `set_totals`'s own `.cards`/`.artworks`, already computed for `SubtypePairEstimate` and previously discarded) instead of `None` — lets Round 41's card/artwork floor use `set:X`'s own true count instead of silently skipping it | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 44,511 shared rows (independent re-sweep, fresh seed): only 2 shapes show ANY plan-choice change, both `set:`-shaped (`same_family:set+set` 2.3%, `unsafe:set+type` 1.0%), zero elsewhere; ratio diagnostic unchanged (expected — floored at `true_total>=100`, excluding the small-count population this fix targets) | see "Round 45" narrative below — fixes a catastrophic case found by direct inspection, not a synthetic benchmark: `set:mh2 usd<10 cmc<5 power>1 color:g` predicted card=4762/artwork=6680 against printing=492, an impossible ordering (`card`/`artwork` can never exceed `printing` for a real population) — root cause: a bare `set:X` leaf's own estimate had `card: None, artwork: None` (confirmed via `ComposeEstimate::leaf`'s own doc: "no cheap exact card/artwork source" is the *default* for most leaf types, not a `SetCode`-specific bug), so Round 41's floor could never use `set:mh2`'s own true 309/391 as a ceiling. Fixed: card 4762→309, artwork 6680→391 (both now correctly ≤ printing's 492) — independently re-verified directly via `and_trace` on both wheels, not just the implementing agent's own report. **A second, separate, still-open bug found in the same investigation**: the `card<=printing`/`artwork<=printing` invariant is violated elsewhere in the curated catalog too (e.g. `c:w t:plains`, card=40/artwork=511 both exceeding printing=24, true_total=0 for all three) — confirmed byte-identical on the pre-Round-45 wheel, so this is NOT introduced by this round. Root cause: Round 41's own floor takes a leaf's solo card/artwork as a candidate without a final `.min()` clamp against the query's own `result.printing` — a real, pre-existing gap in Round 41 itself, not fixed here (out of scope for this round, flagged as the natural next fix) |
 | 46 | Structural refactor: one `Candidate` enum + `fold_candidate` entry point (replaces ~10 hand-copied fold sites), one shared `scan_two_bucket_exact` helper (three callers: `SubtypePairIndexes`, `ColorCmcTable`, `SubtypeArithBox`), plus a `debug_assert!(cards<=artworks<=printings)` census — no mechanism logic changed | kept | n/a (not this doc's own metric) | Byte-identical bar, independently re-verified: isolated-release `nway_estimate_truth_survey.py --compare`, 65,478 shared rows — only 3 rows (one query, `t:warrior set:shm`, all 3 modes) differ, and re-running the UNMODIFIED before-wheel against itself 3 times reproduces the identical flip with zero code change, confirming it's the pre-existing table nondeterminism below, not a regression; every other row byte-identical, `picked_plan` unchanged everywhere. `cargo test`: 226 passed release / 229 debug. `cargo clippy --all-targets -- -D warnings`: clean (a `--release`-only dead-code warning on an unrelated `#[cfg(debug_assertions)]` test constant confirmed pre-existing on `costcell/trunk` too) | see "Round 46" narrative below — the census found ZERO `debug_assert` violations from any of the six EXACT mechanisms (every one already produces internally self-consistent triples); it found **10,269 root-level violations across 3,421 distinct queries** (`artworks > printings`, never `cards > artworks`) — independently reconfirmed at smaller scale (32% of `root=and` rows in a fresh spot sweep) — all attributable to Round 41's own already-known unclamped floor, confirmed far wider in scope than the single `c:w t:plains` example on record. **A real, independently-converged discovery, found separately by both the implementing agent and me during verification, root-caused precisely**: `build_subtype_pair_tables`'s top-256 cutoff (`items.sort_unstable_by_key(Reverse(cards))`, `lib.rs:1917-1922`) has no deterministic tie-break, and Rust's default `HashMap` hasher is randomly seeded per process — so a pair tied at the exact boundary value can land inside or outside the table on one build/run and not another, with real, different predicted numbers each time (reproduced directly: the identical wheel, re-run 4 times, gave `t:monk usd>0.19 c:u` card=58 via a table HIT on one run and card=48 via the MISS estimate on the other three). Confirmed unrelated to this round (reproduces on plain, unmodified `costcell/trunk`) but flagged as high-priority: it can make a FUTURE byte-identical refactor's own verification look like it found a regression when it's really this. A related manifestation also showed up in the harness's own query generation (the identical `--seed 0` run, same corpus, produced 9 different queries between two separate engine loads) — same underlying class of bug, not chased down further, noted for whoever fixes the root cause |
 | 47 | `top_n_and_rest_max` (`SubtypePairIndexes`'s shared top-256-per-dimension cutoff) now extends past `n` to include every pair tied with the boundary card count, instead of a plain `truncate(n)` with no tiebreak — fixes Round 46's own discovered nondeterminism at its root | kept | n/a (not this doc's own metric) | Independently re-verified: isolated release wheel, 5 fresh index builds each, byte-identical every time for all 4 previously-flipping queries across both affected dimensions (`t:monk usd>0.19 c:u`, `t:warrior set:shm`, `c:b t:advisor`, `c:bw usd>=0.35 t:cleric`) — zero variance, where before this fix at least 3 of these flipped between builds. The now-stable table hits are also independently confirmed EXACT against ground truth (`c:u t:monk`/`c:b t:advisor`/`c:bw t:cleric` all read exactly 38/38/38 real cards, matching `explain_analyze`'s own true totals in all 3 spaces). Sweep (fresh seed, 43,365 shared rows): 43,239 unchanged, 125 improved-or-equal, 1 single-row sub-unit artifact (`t:angel c:b` printing: error 10→13 against true=127) — reproduces the agent's own identical finding exactly (same query, same true_total), explained as the capped-estimate MISS fallback's non-monotonic response to a tighter `rest_max` input, not a shape-level regression. `cargo test`: 230 passed release / 233 debug. `cargo clippy --all-targets -- -D warnings`: clean (debug; the same pre-existing release-only dead-code warning from Round 46 confirmed unrelated again) | see "Round 47" narrative below — the chosen fix (extend to include every tie) over a plain deterministic tiebreak, and why; real boundary/tie numbers for all three dimensions, with an honest note on a real discrepancy in my own independent verification attempt |
+| 48 | `SubtypeArithBox`'s gate generalized from `arith_children.len() + 1 == v.len()` (whole query must be exactly "one subtype leaf + N arith leaves") to just `!arith_children.is_empty()` — scans the residual for every subtype leaf present, mirroring `SubtypePairIndexes`'s own Round 42 generalization; `mark_covered_on_hit` now scoped to only the leaves a given hit actually explains, not all of `v` | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,378 shared rows (fresh seed, new curated shape `subtype_cube:type+cmc+usd` added): 74 plan-choice flips (0.1%), concentrated in `subtype_cube:type+cmc+usd` (39/900, 4.3%) and `star:cmc+type+usd` (31/900, 3.4%); base "no residual" shapes (`subtype_cube:type+cmc`, `subtype_cube:type+pow+tou+cmc`) show zero rows changed, confirming strict superset behavior for the case that already worked. Ratio diagnostic: mean abs-log-ratio +0.001 overall — **"B is LESS accurate" in aggregate**, not more (`subtype_cube:type+cmc+usd` 0.402→0.456, 45 improved/64 worsened; `star:cmc+type+usd` 0.354→0.361, 38/42) | see "Round 48" narrative below — the motivating case (`t:elf cmc>=5 usd<10`) improves dramatically (printing 1665→241, true 177), but the aggregate sweep regression is real and independently reproduced: root-caused via `and_trace` to `covered`'s pre-existing leaf-occupancy conservatism (queue item #3) blocking `Independence` from trying `(subtype, price)` once the box covers `(subtype, cmc)` — a live, measured instance of the "loosen covered" gap, not a defect in this round's own logic. A related, validated idea surfaced during review (not built this round, logged in the followup queue): the box's own exact joint, combined via independence with the residual price leaf's solo rate, gives 241×0.779≈188 against true 177 — tighter than the box's price-blind 241 alone |
+
+### Round 48
+
+Target: generalize `SubtypeArithBox` past its Round 46-preserved restrictive gate
+(`arith_children.len() + 1 == v.len()` — the WHOLE query must be exactly "one subtype leaf + N arith
+leaves, nothing else"), the same restriction Round 42 already removed for `SubtypePairIndexes`.
+Confirmed live before this round: `t:elf cmc>=5 usd<10` (a subtype leaf, an arith leaf, AND an
+unrelated price leaf) got zero benefit from this mechanism.
+
+**The change**, done by a background agent and independently re-verified end to end (diff, tests, both
+build profiles, real corpus, root cause of every finding): `a_positions` now collects every
+`subtype_pair_leaf` position in the whole query (not one position gated on the rest of `v`'s shape);
+bucket B carries the arith-eligible children's real positions instead of a dummy candidate;
+`order_positions` mirrors `SubtypePairIndexes`'s own `[a_position] ++ b_positions` closure instead of
+"all of `v`", so `mark_covered_on_hit` covers only the leaves a given hit actually explains — critical,
+since other, unrelated leaves (the `usd` above) must stay free for other mechanisms. One assumption
+in the original plan didn't hold: bucket B's positions didn't need threading through the generic `B`
+type at all (which would have needed a `Copy`-bound workaround for a `Vec`) — they fit directly in the
+existing `Vec<usize>` slot the tuple already carries, the same slot `SubtypePairIndexes` uses, so `B`
+stays `()`.
+
+**Verification, independently reproduced.** `cargo test`: 236 passed debug / 233 passed release (exact
+baseline+3, matching the 3 new tests). `cargo clippy --all-targets -- -D warnings`: clean on debug;
+release fails only on the pre-existing `ARITH_TUPLE_BLOWUP_CARDS` dead-code warning, independently
+reconfirmed present on unmodified `costcell/trunk` too (built the before-side wheel from a fresh clone
+at `367c0f62`, ran clippy there directly — identical failure, unrelated to this round). Rebuilt both
+isolated release wheels myself (before at `367c0f62`, after at the agent's commit) and reproduced the
+motivating case directly: printing 1665→241 (true 177 via `explain_analyze`), card 922→135 (true 88),
+artwork 1197→174 (true 107) — an ~9-11x overestimate shrinking to ~1.4-1.6x.
+
+**The aggregate sweep is a real, measured net-worse result on the affected curated population, not an
+artifact.** 66,378 shared rows: 74 plan-choice flips (0.1%), concentrated exactly where expected
+(`subtype_cube:type+cmc+usd` 4.3%, `star:cmc+type+usd` 3.4%, zero elsewhere — confirming strict
+superset behavior for the shapes that already worked). But the ratio diagnostic moved the wrong way:
+mean abs-log-ratio +0.001 overall, "B is LESS accurate." Traced the specific mechanism by which this
+happens, independently, via `and_trace` on both wheels for `t:elf usd<0.20 cmc>=2` (true printing=366):
+before, `Independence` computes an estimate directly for `(Elf, usd<0.2)` = 425 (1.16x, a good estimate
+that happened to land close by chance); after, `SubtypeArithBox` fires first on `(Elf, cmc>=2)` = 1865
+(exact, but blind to the price leaf, 5.1x) and marks `Elf` covered — so `Independence` never even
+*attempts* `(Elf, usd<0.2)` anymore, because `covered` is leaf-occupancy-based ("has this leaf been
+touched by anything"), not subset-identity-based ("has this exact pair already been exactly
+answered"). This is a live, measured instance of the pre-existing "loosen covered" gap already queued
+(item #3 in [local-engine-nway-followup-queue.md](local-engine-nway-followup-queue.md)) — not a defect
+in this round's own logic (`SubtypeArithBox`'s own bound is still a mathematically valid upper bound;
+correctness, i.e. never undershooting truth, is never violated), but direct proof the gap has real
+accuracy cost, not just a theoretical soundness concern. Presented to the user as an explicit tradeoff
+before merging (ship an individually-safe mechanism whose aggregate effect on one curated population is
+measurably worse, with the known fix already next in the queue) — decision: merge now, do the
+covered-loosening fix next, using this exact query as its own motivating/verification case.
+
+**A second, related, validated idea surfaced during this same review, not built this round.** Given
+`SubtypeArithBox` now computes an exact joint for `(Elf, cmc>=2)`, and price is plausibly independent
+of subtype+cmc, combining that exact count with the residual price leaf's own solo selectivity via
+independence should beat the box's price-blind bound alone. Checked directly against the motivating
+case: `t:elf cmc>=5` alone (no price leaf) gives the identical 241 as the 3-leaf query, confirming the
+box's count really is price-blind; total corpus is 97,812 printings, `usd<10` alone matches 76,189 (a
+0.779 solo rate); 241 × 0.779 ≈ 188, against true 177 — tighter than the box's own 241 (1.36x → 1.06x).
+This is a different, more targeted idea than "loosen covered": rather than letting more raw leaf-pairs
+compete, treat an exact mechanism's own joint as an anchor and multiply in the independent residual
+leaf(s) as a new `Estimate`-class candidate, `.min()`-folded alongside the exact bound (so it can only
+ever tighten, never violate correctness, since a solo rate is always ≤1) — and it needs no change to
+`covered`'s semantics at all. Logged as a new item in
+[local-engine-nway-followup-queue.md](local-engine-nway-followup-queue.md), kept in the existing queue
+order rather than jumped ahead of the covered-loosening fix already agreed to be next.
+
+Blast radius: `card_engine/src/lib.rs` (+46/-16 lines, one mechanism's call site, doc comment rewritten
+to describe the generalized behavior), `card_engine/src/tests.rs` (+195 lines, 3 new tests: fires
+alongside an untouched unrelated leaf and doesn't cover it, multiple subtype leaves fold via `.min()`,
+declines with no arith children present), `scripts/nway_estimate_truth_survey.py` (+8 lines, new curated
+shape `subtype_cube:type+cmc+usd`). Timing: single-shot `and_estimate_ns` from the sweep itself showed
+no consistent direction (noise-level); a dedicated 200-rep timing harness (4,200 samples, 15 real
+affected-shape queries × 3 modes) with same-build canaries found canaries agreeing within ~1% and a
+~44% *faster* median after this change — `SubtypeArithBox`'s direct box lookup is apparently cheaper
+than the independence-product fallback this population used to fall through to, a genuine (if
+unexpected) improvement, not a regression.
 
 ### Round 47
 
