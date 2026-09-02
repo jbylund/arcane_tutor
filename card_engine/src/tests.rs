@@ -15837,6 +15837,149 @@ fn color_cmc_table_no_op_without_both_leaves_present() {
     assert!(!trace2.considered.iter().any(|g| g.mechanism == "ColorCmcTable"), "no color/identity leaf present -- must never be attempted");
 }
 
+// ─── Round 45: `set:X`'s own leaf-level card/artwork, and the Round 41 floor picking it up ────────
+
+/// 3 cards: card0 has 2 printings in set "aaa" (a real reprint -- printings != cards for this set);
+/// card1 has 1 printing, also "aaa"; card2 has 1 printing in set "bbb". Every printing above gets a
+/// distinct illustration by default (`store_of`'s own convention), so "aaa"'s true totals are
+/// printings=3 (card0's 2 + card1's 1), cards=2 (card0, card1), artworks=3 (no shared illustrations
+/// in this fixture). `build_subtype_pair_tables` is called for real (not hand-inserted) so this
+/// exercises the actual Round 45 wiring end to end: the new `set_artworks` field built alongside the
+/// pre-existing `set_cards` one, from the SAME `set_totals` pass (see `SetSubtypeTable`'s own doc).
+fn round45_set_leaf_fixture() -> CardData {
+    let mut vocab = VocabInterner::new();
+    let cards = vec![
+        stub_card(1, TYPE_CREATURE, &["Elf"], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &["Elf"], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &[], &mut vocab),
+    ];
+    let mut data = store_of(cards, &[2, 1, 1], vocab);
+    for (p, code) in data.printings.iter_mut().zip(["aaa", "aaa", "aaa", "bbb"]) {
+        p.card_set_code = InlineStr::from_str(code);
+    }
+    data.indexes.set_codes = {
+        let mut idx: TagIndex = HashMap::new();
+        for (i, p) in data.printings.iter().enumerate() {
+            idx.entry(p.card_set_code.as_str().to_string()).or_default().push(i as u32);
+        }
+        idx
+    };
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.subtype_pairs = super::build_subtype_pair_tables(&data.cards, &data.printings, &ptc, &data.coll_vocab, max_ag);
+    data
+}
+
+/// A bare `set:aaa` leaf (no `And` wrapper at all) gets a real `Some(card)`/`Some(artwork)` from its
+/// own solo `ComposeEstimate` -- not `None`, the generic `ComposeEstimate::leaf` fallback every
+/// `TextExact{SetCode}` leaf silently fell back to before this round (see this arm's own updated doc
+/// in `compose_printing_estimate`). Both numbers match the fixture's own exact totals, since
+/// `set_totals`' per-set aggregation (what `set_cards`/`set_artworks` are built from) is exact, not an
+/// approximation.
+#[test]
+fn set_leaf_solo_estimate_has_real_card_and_artwork() {
+    let data = round45_set_leaf_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let f = FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value: "aaa".to_string() };
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(est.result.printing, 3, "aaa: card0's 2 printings + card1's 1");
+    assert_eq!(est.result.card, Some(2), "aaa: card0 + card1 -- must be Some, not None (the bug this round fixes)");
+    assert_eq!(est.result.artwork, Some(3), "aaa: 3 distinct illustrations, no sharing in this fixture -- must be Some, not None");
+}
+
+/// The motivating bug, reproduced at fixture scale: an `And` combining `set:aaa` with an unrelated
+/// exact 2-leaf joint (`ColorCmcTable`'s color x cmc pair, nothing to do with `set` at all -- see the
+/// Round 44 tests just above) whose own card/artwork number is LOOSER than `set:aaa`'s true count,
+/// with `set:aaa` itself uncovered by any mechanism (no subtype leaf present, so
+/// `SubtypePairIndexes`/`SubtypePairEstimate` never even attempt it; `TextField::SetCode` is not
+/// paired with either `ColorId` or `Cmc` in `independence_safe_pair`'s registry, so no independence
+/// candidate touches it either -- only `ColorIdentity`/`Pow` are).
+///
+/// Reuses `color_cmc_fixture()`'s 6-card layout (card0: G, cmc1; card1: G, cmc2; card2: G+R, cmc2;
+/// card3: G, cmc4; card4: R, cmc2; card5: colorless, cmc0 -- see that fixture's own doc) and puts
+/// ONLY card0's single printing in set "aaa" (every other printing keeps the default empty set code,
+/// so they don't pollute "aaa"'s own aggregation). `set:aaa`'s true count is 1 card/1 printing/1
+/// artwork. `color:G(Ge) AND cmc<=3` hits `ColorCmcTable` exactly at 3 (card0, card1, card2 -- the
+/// same joint `color_cmc_table_and_arm_hit_two_leaf` already verifies), strictly LOOSER than `set:
+/// aaa`'s true 1.
+///
+/// Before this round's fix, `set:aaa`'s own solo card/artwork was `None`, so it never entered
+/// `narrow_floor`'s `filter_map` at all, and `result.card`/`.artwork` stood at the looser
+/// `ColorCmcTable` number (3) -- the And arm's card floor had nothing narrower to fold in. After the
+/// fix, `set:aaa`'s own real count (1) joins the floor's candidate pool and wins the final `.min()`.
+#[test]
+fn set_leaf_floor_beats_looser_unrelated_exact_joint() {
+    let (mut data, g, _r) = color_cmc_fixture();
+    data.printings[0].card_set_code = InlineStr::from_str("aaa");
+    data.indexes.set_codes = {
+        let mut idx: TagIndex = HashMap::new();
+        idx.entry("aaa".to_string()).or_default().push(0);
+        idx
+    };
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.subtype_pairs = super::build_subtype_pair_tables(&data.cards, &data.printings, &ptc, &data.coll_vocab, max_ag);
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let set_aaa = FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value: "aaa".to_string() };
+    let green = FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: g };
+    let cmc_le3 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(3.0) };
+    let f = FilterExpr::And(vec![set_aaa, green, cmc_le3]);
+
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = est.and_trace.as_ref().expect("want_trace: true must populate and_trace");
+    let hit = and_trace.considered.iter().find(|c| c.mechanism == "ColorCmcTable").expect("ColorCmcTable must fire for color:G + cmc<=3");
+    assert_eq!((hit.card, hit.artwork), (Some(3), Some(3)), "the unrelated joint's own card/artwork must be the looser 3, not already floored");
+
+    assert_eq!(est.result.card, Some(1), "must floor on set:aaa's own true card count (1), not ColorCmcTable's looser 3");
+    assert_eq!(est.result.artwork, Some(1), "must floor on set:aaa's own true artwork count (1), not ColorCmcTable's looser 3");
+    assert!(est.result.card.unwrap() <= est.result.printing, "card must never exceed printing");
+    assert!(est.result.artwork.unwrap() <= est.result.printing, "artwork must never exceed printing");
+}
+
+/// Same fixture/query as `set_leaf_floor_beats_looser_unrelated_exact_joint`: `exact_domain_cards`/
+/// `exact_domain_artworks` (what `scan_units` reads, per Round 41's own established scoping) are
+/// UNAFFECTED by this round's fix -- this is a `result_space`-only floor, the same discipline Round 41
+/// established for the printing-space floor already. `exact_domain` stays exactly `ColorCmcTable`'s
+/// own captured joint (3/3/3), never folded against `set:aaa`'s narrower count the way `result` is.
+#[test]
+fn set_leaf_floor_does_not_widen_exact_domain() {
+    let (mut data, g, _r) = color_cmc_fixture();
+    data.printings[0].card_set_code = InlineStr::from_str("aaa");
+    data.indexes.set_codes = {
+        let mut idx: TagIndex = HashMap::new();
+        idx.entry("aaa".to_string()).or_default().push(0);
+        idx
+    };
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.subtype_pairs = super::build_subtype_pair_tables(&data.cards, &data.printings, &ptc, &data.coll_vocab, max_ag);
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let set_aaa = FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value: "aaa".to_string() };
+    let green = FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: g };
+    let cmc_le3 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(3.0) };
+    let f = FilterExpr::And(vec![set_aaa, green, cmc_le3]);
+
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(est.result.card, Some(1), "sanity: result is still floored to set:aaa's own count");
+    let domain = est.exact_domain.expect("ColorCmcTable's own hit must still populate exact_domain");
+    assert_eq!(
+        (domain.printing, domain.card, domain.artwork),
+        (3, Some(3), Some(3)),
+        "exact_domain must stay ColorCmcTable's own captured joint, NOT floored to set:aaa's narrower count"
+    );
+}
+
 /// End-to-end regression for the Round 43 star shape (`color:G cmc<=3 usd<=X`): with
 /// `indexes.color_cmc` built, the new exact mechanism fires ALONGSIDE the pre-existing Round 40
 /// independence candidates (`ColorId` x `Price`, `Cmc` x `Price` both still fire -- this mechanism

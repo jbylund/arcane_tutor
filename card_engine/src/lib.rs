@@ -1792,6 +1792,14 @@ struct SetSubtypeTable {
     /// `id:X` get theirs for free from `ComposeEstimate.result.card` instead, so they need no
     /// equivalent map here).
     set_cards: HashMap<String, u32>,
+    /// Round 45: distinct-artwork count per set, the sibling `set_cards` never carried. Built from the
+    /// SAME `set_totals` pass as `set_cards` (see `build_subtype_pair_tables`) — this is not a second
+    /// aggregation, just the `.artworks` field of a `SpaceTotals` `set_cards` was already discarding.
+    /// Lets a bare `set:X` leaf's own solo `ComposeEstimate` report a real `Some(artwork)` instead of
+    /// `None` (see `ComposeEstimate::leaf`'s doc for what that costs downstream — the Round 41 And-arm
+    /// card/artwork floor can only use a leaf's own count when the leaf's estimate actually carries
+    /// one).
+    set_artworks: HashMap<String, u32>,
 }
 
 /// `SetSubtypeTable`'s sibling for `c:X`/`id:X` (one instance each, in `SubtypePairIndexes`) — see
@@ -1861,7 +1869,15 @@ fn build_subtype_pair_tables(
     let set_totals: HashMap<String, SpaceTotals> = build_value_totals(cards, printings, printing_to_card, max_artwork_groups, |_card, p| {
         if p.card_set_code.as_str().is_empty() { Vec::new() } else { vec![p.card_set_code.as_str().to_string()] }
     });
-    let set_cards: HashMap<String, u32> = set_totals.into_iter().map(|(k, t)| (k, t.cards)).collect();
+    // One pass over `set_totals` (not two, and no clone of the map itself) extracting both `.cards`
+    // and `.artworks` -- `.printings` isn't kept here since printing space already has an exact answer
+    // elsewhere (`set_codes`'s own postings length).
+    let mut set_cards: HashMap<String, u32> = HashMap::with_capacity(set_totals.len());
+    let mut set_artworks: HashMap<String, u32> = HashMap::with_capacity(set_totals.len());
+    for (k, t) in set_totals {
+        set_artworks.insert(k.clone(), t.artworks);
+        set_cards.insert(k, t.cards);
+    }
 
     // Per-(raw colors/color_identity mask, subtype) exact totals -- colors/identity are single-valued
     // per card, so this is a plain cross of the card's one mask against every one of its subtypes, no
@@ -1924,7 +1940,7 @@ fn build_subtype_pair_tables(
     let (colors_top, colors_rest_max) = top_n_and_rest_max(colors_pair, TOP_N);
     let (identity_top, identity_rest_max) = top_n_and_rest_max(identity_pair, TOP_N);
     SubtypePairIndexes {
-        set: SetSubtypeTable { top: nest_set(set_top), rest_max: set_rest_max, set_cards },
+        set: SetSubtypeTable { top: nest_set(set_top), rest_max: set_rest_max, set_cards, set_artworks },
         colors: ColorSubtypeTable { top: nest_color(colors_top), rest_max: colors_rest_max },
         identity: ColorSubtypeTable { top: nest_color(identity_top), rest_max: identity_rest_max },
     }
@@ -10160,9 +10176,33 @@ fn compose_printing_estimate(
         // #746: `set:`/`watermark:` postings — matches = the value's postings length `k` (each
         // posting is one distinct printing), synthesized by scattering `k` ids → rides `scatter`
         // (the same cheap range-slice scatter rate). O(1) here: the length, no bitmap built.
+        //
+        // Round 45: card/artwork come from the SAME Round 34 `set_cards`/`set_artworks` maps
+        // `SubtypePairEstimate`'s own independence-product formula already reaches (see
+        // `SetSubtypeTable`'s doc) -- both are exact per-set aggregations, not an approximation, so a
+        // bare `set:X` leaf's own solo estimate is now exact in every space, not just printing. Before
+        // this, this arm's `ComposeEstimate::leaf` left card/artwork at `None`, which is exactly what
+        // let an unrelated, looser exact joint stand unchallenged in the And arm's card/artwork floor
+        // for `set:mh2 usd<10 cmc<5 power>1 color:g` (see docs/issues/local-engine-gathered-scan-card-
+        // printing-varying-depth.md) -- the floor can only use a leaf's own count when the leaf's
+        // `ComposeEstimate` actually carries one.
+        //
+        // `.get(...).map(...)` -- NOT `.map_or(0, ...)` -- on a miss: a real store's `set_totals`
+        // covers every set with 1+ printings, so a miss here only ever means the table itself isn't
+        // built for this store at all (every fixture that populates `set_codes` without also calling
+        // `build_subtype_pair_tables`, confirmed directly by `domain_hint_is_card_space_not_printing_
+        // scaled`'s regression when this arm first tried `map_or(0, ...)`: `subtype_pairs` was left at
+        // its `Default::default()` there, which made `set:dmu`'s solo card count a false exact `Some
+        // (0)` and floored an unrelated 2-card intersection down to 0). Declining to `None` on a miss
+        // matches every other exact mechanism's own "decline rather than guess" convention in this
+        // function (`ColorCmcTable`'s empty-`by_mask` check has the identical shape, for the identical
+        // reason).
         FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value } => {
             let k = indexes.set_codes.get(value.as_str()).map_or(0, |v| v.len());
-            ComposeEstimate::leaf(k, 0, k)
+            let set = &indexes.subtype_pairs.set;
+            let card = set.set_cards.get(value.as_str()).map(|c| u32::from(*c) as usize);
+            let artwork = set.set_artworks.get(value.as_str()).map(|a| u32::from(*a) as usize);
+            ComposeEstimate::leaf_spaces(k, 0, k, card, artwork)
         }
         FilterExpr::TextExact { field: TextField::Watermark, op: CmpOp::Eq, value } => {
             let k = indexes.watermarks.get(value.as_str()).map_or(0, |v| v.len());
