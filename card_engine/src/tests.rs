@@ -8246,6 +8246,79 @@ fn build_subtype_pair_tables_ge_le_cumulative_and_set_marginals() {
     assert_eq!(t.identity.rest_max, 0);
 }
 
+/// `top_n_and_rest_max` (Round 47): a boundary tie must pull EVERY tied pair into the returned set,
+/// not an arbitrary subset of them -- the fix for the confirmed nondeterminism bug where `HashMap`'s
+/// randomly-seeded per-process hasher let a boundary-tied pair land inside or outside a plain top-N
+/// cutoff depending on which process built the table. Counts: a=10, b=9, c=9, d=9, e=5, cutoff n=3 --
+/// the nominal top-3 by count is {a, and two of b/c/d}, but b/c/d are ALL tied at the boundary value
+/// (9), so all three must survive, growing the returned set to 4. `rest_max` must be 5 (the largest
+/// count STRICTLY below the boundary -- e's count -- not 9, which the old plain top-N could have
+/// returned had one of b/c/d landed just outside instead).
+#[test]
+fn top_n_and_rest_max_keeps_every_pair_tied_at_the_boundary() {
+    let mut pairs: HashMap<&'static str, SpaceTotals> = HashMap::new();
+    pairs.insert("a", SpaceTotals { printings: 10, cards: 10, artworks: 10 });
+    pairs.insert("b", SpaceTotals { printings: 9, cards: 9, artworks: 9 });
+    pairs.insert("c", SpaceTotals { printings: 9, cards: 9, artworks: 9 });
+    pairs.insert("d", SpaceTotals { printings: 9, cards: 9, artworks: 9 });
+    pairs.insert("e", SpaceTotals { printings: 5, cards: 5, artworks: 5 });
+
+    let (items, rest_max) = super::top_n_and_rest_max(pairs, 3);
+
+    let mut keys: Vec<&'static str> = items.iter().map(|(k, _)| *k).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, vec!["a", "b", "c", "d"], "all 3 pairs tied at the boundary count (9) must survive, not an arbitrary 2 of 3");
+    assert_eq!(rest_max, 5, "rest_max must be the next STRICTLY LOWER count (e's 5), not the boundary value (9) itself");
+}
+
+/// `top_n_and_rest_max` (Round 47): fewer than `n` total items means nothing is excluded at all --
+/// every item is kept and there is no "rest" to bound, so `rest_max` must be exactly 0 (not, say, the
+/// smallest kept count).
+#[test]
+fn top_n_and_rest_max_keeps_everything_when_fewer_than_n_items() {
+    let mut pairs: HashMap<&'static str, SpaceTotals> = HashMap::new();
+    pairs.insert("a", SpaceTotals { printings: 3, cards: 3, artworks: 3 });
+    pairs.insert("b", SpaceTotals { printings: 1, cards: 1, artworks: 1 });
+
+    let (items, rest_max) = super::top_n_and_rest_max(pairs, 5);
+
+    let mut keys: Vec<&'static str> = items.iter().map(|(k, _)| *k).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, vec!["a", "b"], "both items must be kept -- there are fewer than n=5 total");
+    assert_eq!(rest_max, 0, "nothing was excluded, so rest_max must be 0");
+}
+
+/// `top_n_and_rest_max` (Round 47) regression check: with NO tie at the boundary, the result must be
+/// IDENTICAL to the old plain top-N -- the common case must not change at all. Counts 10/8/6/4/2, n=3:
+/// the boundary value (6, at position n-1=2) is unique, so the cutoff must stay at exactly 3 and
+/// `rest_max` must be the old formula's answer (`items[n]` = 4), the same as before this round.
+#[test]
+fn top_n_and_rest_max_matches_old_plain_top_n_when_no_boundary_tie() {
+    let mut pairs: HashMap<&'static str, SpaceTotals> = HashMap::new();
+    pairs.insert("a", SpaceTotals { printings: 10, cards: 10, artworks: 10 });
+    pairs.insert("b", SpaceTotals { printings: 8, cards: 8, artworks: 8 });
+    pairs.insert("c", SpaceTotals { printings: 6, cards: 6, artworks: 6 });
+    pairs.insert("d", SpaceTotals { printings: 4, cards: 4, artworks: 4 });
+    pairs.insert("e", SpaceTotals { printings: 2, cards: 2, artworks: 2 });
+
+    let (items, rest_max) = super::top_n_and_rest_max(pairs, 3);
+
+    let mut keys: Vec<&'static str> = items.iter().map(|(k, _)| *k).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, vec!["a", "b", "c"], "no tie at the boundary: must be exactly the old plain top-3, unchanged");
+    assert_eq!(rest_max, 4, "no tie at the boundary: rest_max must match the old formula's answer exactly");
+}
+
+/// `top_n_and_rest_max` (Round 47) edge case: an empty input map must not panic, and must return an
+/// empty `Vec` with `rest_max == 0`.
+#[test]
+fn top_n_and_rest_max_handles_empty_input() {
+    let pairs: HashMap<&'static str, SpaceTotals> = HashMap::new();
+    let (items, rest_max) = super::top_n_and_rest_max(pairs, 256);
+    assert!(items.is_empty(), "empty input must produce an empty result");
+    assert_eq!(rest_max, 0);
+}
+
 /// `exact_result_total` (Round 34): a strict 2-leaf `And` of `set:X`/`c:X`/`id:X` + a subtype leaf,
 /// when the pair is in the top-256 table, answers EXACTLY in whichever `Mode` is asked -- the fix for
 /// the architectural gap an earlier draft of this round had (a flat card-space number could not reach

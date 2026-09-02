@@ -1835,6 +1835,49 @@ struct SubtypePairIndexes {
     identity: ColorSubtypeTable,
 }
 
+/// Top-N by CARD count, EXTENDED to keep every pair tied with the boundary (the n-th largest) count,
+/// plus `rest_max` = the largest CARD count strictly excluded from the returned set. Shared by all
+/// three `build_subtype_pair_tables` dimension tables (`set`/`colors`/`identity`).
+///
+/// Round 47: this used to be a plain `sort_unstable_by_key` + `truncate(n)` with no secondary sort
+/// key. `HashMap`'s iteration order (thus `items`' order before the sort) depends on a randomly
+/// seeded per-process hasher, so a pair tied with the boundary value could land inside or outside
+/// the top-`n` depending on which process built the table -- a real, confirmed nondeterminism bug
+/// (the same query hit `SubtypePairIndexes` on some runs and fell back to `SubtypePairEstimate` on
+/// others, with no code change between runs).
+///
+/// The fix is deliberately "include every tie," not "pick a deterministic winner among ties": a
+/// deterministic tiebreak (e.g. sorting on `(Reverse(cards), key)`) would make the outcome
+/// reproducible, but membership would still hinge on an arbitrary property (the tiebreak key) that
+/// has nothing to do with the data. Under "count >= threshold," a pair's membership only ever
+/// changes when THAT PAIR'S OWN count crosses the threshold -- incrementing one unrelated pair's
+/// count (e.g. one new printing) can never flip a different pair's membership, which a fixed-size
+/// "top-N-then-tiebreak" order can (nudging one value can reshuffle the whole order enough to evict
+/// something that never changed). Because every tie is kept, order among tied items never matters,
+/// so the unstable sort (no secondary key, no `Ord`/`Clone` bound on `K`) is correct here, not just
+/// tolerated.
+///
+/// `rest_max` is always <= what the old formula would have produced for the same data: the old
+/// `rest_max` could itself equal the boundary value when there was a tie there (since it just read
+/// off position `n`, which might be one of the tied pairs); the new `rest_max` is always the first
+/// count STRICTLY below the boundary. So this change only ever tightens the safety margin the
+/// fallback estimate's risk analysis relies on -- it never loosens it.
+fn top_n_and_rest_max<K: Eq + std::hash::Hash>(pairs: HashMap<K, SpaceTotals>, n: usize) -> (Vec<(K, SpaceTotals)>, u32) {
+    let mut items: Vec<(K, SpaceTotals)> = pairs.into_iter().collect();
+    items.sort_unstable_by_key(|item| std::cmp::Reverse(item.1.cards));
+    let Some(boundary) = items.get(n.saturating_sub(1)).map(|(_, t)| t.cards) else {
+        // Fewer than `n` items total: nothing is excluded, so there's no "rest" to bound.
+        return (items, 0);
+    };
+    let mut cutoff = n.min(items.len());
+    while items.get(cutoff).is_some_and(|(_, t)| t.cards == boundary) {
+        cutoff += 1;
+    }
+    let rest_max = items.get(cutoff).map_or(0, |(_, t)| t.cards);
+    items.truncate(cutoff);
+    (items, rest_max)
+}
+
 /// Builds the three Round 34 tables (`SubtypePairIndexes`) -- see `SetSubtypeTable`/`ColorSubtypeTable`'s
 /// own docs for what they hold and why. Reuses `build_value_totals` (the SAME exact card/printing/
 /// artwork dedup logic `ValueTotals`/`PairTotals` are already built with) for the raw per-pair totals,
@@ -1851,6 +1894,13 @@ fn build_subtype_pair_tables(
     // dimension's `rest_max` at this N lands far below the count where a wrong estimate starts
     // actually flipping a routing decision, so the fallback's whole operating range stays nowhere
     // near that risk zone.
+    //
+    // Round 47: `TOP_N` is a target size, not a hard cap -- `top_n_and_rest_max` extends the cutoff
+    // to include every pair tied with the boundary (the 256th-largest) CARD count, so membership is
+    // the well-defined predicate "count >= threshold" rather than "first N in some arbitrary order
+    // among ties." See that function's own doc for why (a real, previously-confirmed nondeterminism
+    // bug: `HashMap`'s randomly-seeded per-process hasher meant a boundary tie could land inside or
+    // outside the table depending on which process built it, since the old code had no tiebreak).
     const TOP_N: usize = 256;
 
     // Per-(set_code, subtype) exact totals, one `build_value_totals` pass: `keys_of` returns, for a
@@ -1912,15 +1962,9 @@ fn build_subtype_pair_tables(
     let colors_pair = cumulative_sum(&colors_raw, CmpOp::Ge);
     let identity_pair = cumulative_sum(&identity_raw, CmpOp::Le);
 
-    // Top-N by CARD count (globally, not per outer key) + `rest_max` = the (N+1)-th largest excluded
-    // CARD count.
-    fn top_n_and_rest_max<K: Eq + std::hash::Hash>(pairs: HashMap<K, SpaceTotals>, n: usize) -> (Vec<(K, SpaceTotals)>, u32) {
-        let mut items: Vec<(K, SpaceTotals)> = pairs.into_iter().collect();
-        items.sort_unstable_by_key(|item| std::cmp::Reverse(item.1.cards));
-        let rest_max = items.get(n).map_or(0, |(_, t)| t.cards);
-        items.truncate(n);
-        (items, rest_max)
-    }
+    // Top-N by CARD count (globally, not per outer key), EXTENDED to keep every pair tied with the
+    // boundary (the n-th largest) count -- see `top_n_and_rest_max`'s own doc (module scope, above
+    // this function) for the full nondeterminism story and why "include every tie" was chosen.
     fn nest_set(items: Vec<((String, String), SpaceTotals)>) -> HashMap<String, HashMap<String, SpaceTotals>> {
         let mut out: HashMap<String, HashMap<String, SpaceTotals>> = HashMap::new();
         for ((set_code, subtype), totals) in items {
