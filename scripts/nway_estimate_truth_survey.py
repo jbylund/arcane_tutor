@@ -134,6 +134,14 @@ SUBTYPE_CUBE_SHAPES: tuple[tuple[str, ...], ...] = (
     ("type", "cmc"),
     ("type", "pow", "tou"),
     ("type", "pow", "tou", "cmc"),  # Round 36's own shape
+    # Round 48: `SubtypeArithBox` generalized past its old "subtype + arith leaves, nothing else"
+    # gate to scan the residual, mirroring `SubtypePairIndexes`'s own Round 42 generalization (see
+    # that round's own `("set", "type", "usd")` entry above for the identical shape of fix on a
+    # different mechanism). This is the round's own motivating case (`t:elf cmc>=5 usd<10`): a
+    # subtype leaf, one arith bound, AND an unrelated residual price leaf -- the old gate
+    # (`arith_children.len() + 1 == v.len()`) declined this outright since a 4th, unrelated family is
+    # present.
+    ("type", "cmc", "usd"),
 )
 CN_SET_SHAPES: tuple[tuple[str, ...], ...] = (("cn", "set"),)
 # "Star" 3-leaf shapes: two of a hub class's registered partners plus the hub itself, where the

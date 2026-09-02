@@ -15459,6 +15459,201 @@ fn subtype_arith_and_arm_miss_leaves_fold_unchanged() {
     assert_eq!(est.result.printing, 1, "t:forest power>=2: unaffected by Round 36 -- the pre-existing fold's answer");
 }
 
+/// Round 48: `SubtypeArithBox`'s own gate generalized past Round 46's restrictive
+/// `arith_children.len() + 1 == v.len()` (the WHOLE query must be exactly "one subtype leaf + N arith
+/// leaves, nothing else") to a residual scan, mirroring `SubtypePairIndexes`'s own Round 42
+/// generalization. Reuses `subtype_arith_and_arm_tightening`'s own Dragon-shaped fixture (renamed to
+/// Elf) and its `cmc>=5 power>=5` case verbatim (true joint = 4), so the ground truth is exactly what
+/// that test already established -- the NEW part here is two entirely unrelated leaves (`f:pioneer`,
+/// `cn<=25`) also present in the same `And`, of a class (`Legality`/`CollectorNumber`) this mechanism
+/// neither reads nor should ever touch.
+///
+/// Two things this proves at once: (1) the box hit still fires and still tightens `result` to the
+/// true 4 despite the unrelated leaves being present at all (the Round 46 gate would have declined
+/// this shape outright, 5 children present, only 3 of them the "subtype + arith" shape it required);
+/// (2) the unrelated leaves are NOT swept into `covered` by the hit -- proven by the `Independence`
+/// mechanism (Round 40) firing on the `Legality`x`CollectorNumber` pair afterward, which only happens
+/// if BOTH of those leaves are still uncovered by the time the registry scan runs (it skips any
+/// `covered` source entirely, see `is_covered` in this same arm).
+#[test]
+fn subtype_arith_box_fires_alongside_unrelated_leaf_that_stays_uncovered() {
+    let mut vocab = VocabInterner::new();
+    let mut cards = Vec::new();
+    for (i, (cmc, pt)) in [(4u8, 3i8), (5, 4), (6, 5), (7, 6), (8, 7), (8, 7)].into_iter().enumerate() {
+        let mut c = stub_card(1 + i as u128, TYPE_CREATURE, &["Elf"], &mut vocab);
+        c.cmc = Some(cmc);
+        c.creature_power = Some(pt);
+        c.creature_toughness = Some(pt - 1);
+        cards.push(c);
+    }
+    let mut tribal_lo = stub_card(100, TYPE_SORCERY, &["Elf"], &mut vocab);
+    tribal_lo.cmc = Some(2);
+    let mut tribal_hi = stub_card(101, TYPE_SORCERY, &["Elf"], &mut vocab);
+    tribal_hi.cmc = Some(9);
+    cards.push(tribal_lo);
+    cards.push(tribal_hi);
+    // 40 Human filler, all legal (card_legalities set below at the PRINTING level, which is what the
+    // Legality plane actually reads) -- the Elf/tribal population above stays not-legal, so
+    // `f:pioneer`'s own solo count is exactly 40.
+    for i in 0..40 {
+        let mut c = stub_card(200 + i as u128, TYPE_CREATURE, &["Human"], &mut vocab);
+        c.cmc = Some(1);
+        c.creature_power = Some(1);
+        c.creature_toughness = Some(1);
+        cards.push(c);
+    }
+    let n_cards = cards.len();
+    assert_eq!(n_cards, 48, "6 Elf + 2 tribal Elf + 40 Human");
+    let printing_counts = vec![1usize; n_cards];
+    let mut data = store_of(cards, &printing_counts, vocab);
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(|v| v as i16));
+    data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power.map(|v| v as i16));
+    data.indexes.toughness = build_numeric_index(&data.cards, |c| c.creature_toughness.map(|v| v as i16));
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.subtype_arith = super::build_subtype_arith_tables(&data.cards, &data.printings, &ptc, &data.coll_vocab, max_ag);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    // Positions 0..=7 are Elf/tribal (not legal, low collector numbers); positions 8..=47 are Human
+    // filler (legal, higher collector numbers) -- `store_of`'s within-bucket order is positional here
+    // (one printing per card, default prefer_score for every card), matching every sibling
+    // fixture's own established assumption.
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.collector_number_int = Some(i as u16 + 1); // 1..=48
+        p.card_legalities = if i >= 8 { 0b01 } else { 0 };
+    }
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    data.indexes.collector_number = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.collector_number_int.map(u32::from));
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+    assert_eq!(n_printings, 48);
+
+    let elf = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None };
+    let cmc_ge5 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(5.0) };
+    let power_ge5 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Power), op: CmpOp::Ge, rhs: NumExpr::Const(5.0) };
+    let legal = FilterExpr::Legality { shift: Some(0), expected: 0b01 };
+    let cn_le25 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::CollectorNumberInt), op: CmpOp::Le, rhs: NumExpr::Const(25.0) };
+
+    // Sanity: the unrelated leaves' own solo counts, independent of anything this round touches.
+    let legal_solo = super::compose_printing_estimate(&legal, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(legal_solo.result.printing, 40, "fixture assumption: 40 legal (Human) printings");
+    let cn_solo = super::compose_printing_estimate(&cn_le25, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(cn_solo.result.printing, 25, "fixture assumption: 25 printings at cn<=25");
+
+    let f = FilterExpr::And(vec![elf, cmc_ge5, power_ge5, legal, cn_le25]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    assert_eq!(est.result.printing, 4, "t:elf cmc>=5 power>=5, PLUS two unrelated leaves: SubtypeArithBox's own true joint (4) must still win");
+
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    let subtype_hit = and_trace.considered.iter().find(|g| g.mechanism == "SubtypeArithBox").expect("SubtypeArithBox must be attempted despite the two unrelated leaves");
+    assert!(subtype_hit.hit, "the Elf+cmc+power box hit is real here, same numbers as subtype_arith_and_arm_tightening's own f3 case");
+    assert_eq!(subtype_hit.printing, Some(4));
+    assert_eq!(subtype_hit.leaves.len(), 3, "the hit's own leaves are exactly the Elf leaf plus the two arith bounds, not the unrelated pair");
+
+    // The real point: Legality x CollectorNumber must still be tried by the Independence registry --
+    // impossible unless BOTH leaves are still uncovered after SubtypeArithBox's hit ran.
+    let indep_hit = and_trace.considered.iter().find(|g| g.mechanism == "Independence").expect("Independence must have been attempted for the untouched Legality+CollectorNumber pair");
+    assert!(indep_hit.hit, "independence is a formula, always hit once the shape gate matches");
+    let expected_indep = ((40.0 * 25.0) / 48.0_f64).round() as usize;
+    assert_eq!(indep_hit.printing, Some(expected_indep), "round(40 * 25 / 48)");
+}
+
+/// Round 48: a query with MULTIPLE subtype leaves alongside the SAME arith bound gets each one tried
+/// independently against the box, folded via `.min()` -- mirroring `SubtypePairIndexes`'s own Round 42
+/// `subtype_pair_multiple_dim_subtype_pairs_all_fold_via_min`. `t:elf` and `t:human` are mutually
+/// exclusive subtypes in this fixture (no card carries both), so the literal `And`'s own true count is
+/// 0 -- irrelevant here: each subtype leaf's own box lookup is independently a valid UPPER BOUND on the
+/// whole `And` regardless of what the other reports, and the smaller of the two winning is exactly
+/// what proves BOTH were actually computed (not just the first one found).
+#[test]
+fn subtype_arith_box_multiple_subtype_leaves_fold_via_min() {
+    let mut vocab = VocabInterner::new();
+    let mut cards = Vec::new();
+    // Elf: cmc 3, 5, 7 -- cmc>=5 matches {5, 7} = 2 cards. Real creature stats (unbound by the query)
+    // so `build_subtype_arith_tables`'s own ranking population (cards with BOTH power/toughness
+    // present) actually includes Elf/Human -- a bare-cmc, no-stats fixture (like the Round 36
+    // "Tribal" cards) ranks as zero stat-bearing cards and never gets a table built at all.
+    for cmc in [3u8, 5, 7] {
+        let mut c = stub_card(1 + u128::from(cmc), TYPE_CREATURE, &["Elf"], &mut vocab);
+        c.cmc = Some(cmc);
+        c.creature_power = Some(1);
+        c.creature_toughness = Some(1);
+        cards.push(c);
+    }
+    // Human: cmc 2, 5, 6, 9 -- cmc>=5 matches {5, 6, 9} = 3 cards.
+    for cmc in [2u8, 5, 6, 9] {
+        let mut c = stub_card(100 + u128::from(cmc), TYPE_CREATURE, &["Human"], &mut vocab);
+        c.cmc = Some(cmc);
+        c.creature_power = Some(1);
+        c.creature_toughness = Some(1);
+        cards.push(c);
+    }
+    let n_cards = cards.len();
+    assert_eq!(n_cards, 7);
+    let printing_counts = vec![1usize; n_cards];
+    let mut data = store_of(cards, &printing_counts, vocab);
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(|v| v as i16));
+    data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power.map(|v| v as i16));
+    data.indexes.toughness = build_numeric_index(&data.cards, |c| c.creature_toughness.map(|v| v as i16));
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.subtype_arith = super::build_subtype_arith_tables(&data.cards, &data.printings, &ptc, &data.coll_vocab, max_ag);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let elf = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None };
+    let human = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Human".to_string(), value_id: None };
+    let cmc_ge5 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(5.0) };
+
+    let f = FilterExpr::And(vec![elf, human, cmc_ge5]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    let hits: Vec<_> = and_trace.considered.iter().filter(|g| g.mechanism == "SubtypeArithBox").collect();
+    assert_eq!(hits.len(), 2, "both (Elf, cmc>=5) and (Human, cmc>=5) must each get their own trace group");
+    assert!(hits.iter().any(|g| g.printing == Some(2)), "the Elf box hit (2) must appear");
+    assert!(hits.iter().any(|g| g.printing == Some(3)), "the Human box hit (3) must appear, looser than Elf's");
+
+    assert_eq!(est.result.printing, 2, "the tighter of the two hits (Elf's 2, not Human's 3) must win via min-folding");
+    let domain = est.exact_domain.expect("both hits are independently exact bounds on the same And");
+    assert_eq!(domain.printing, 2);
+}
+
+/// Round 48: the generalized gate is still gated on `!arith_children.is_empty()` -- a query with a
+/// subtype leaf but NO cmc/power/toughness bound anywhere must decline this mechanism entirely (no
+/// trace group pushed at all, not a `hit: false` one -- the `if` block is never entered), the same as
+/// any other shape it doesn't recognize.
+#[test]
+fn subtype_arith_box_declines_with_no_arith_children_present() {
+    let mut vocab = VocabInterner::new();
+    let cards = vec![stub_card(1, TYPE_CREATURE, &["Elf"], &mut vocab), stub_card(2, TYPE_CREATURE, &[], &mut vocab)];
+    let g = super::color_to_bit("G");
+    let mut data = store_of(cards, &[1, 1], vocab);
+    data.cards[0].card_colors = g;
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    for p in &mut data.printings {
+        p.card_legalities = 0;
+    }
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let elf = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None };
+    let green = FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: g };
+    let f = FilterExpr::And(vec![elf, green]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert!(!and_trace.considered.iter().any(|g| g.mechanism == "SubtypeArithBox"), "no arith-eligible child at all -- the mechanism must not even be attempted");
+}
+
 /// Recursively checks Round 37a's own documented invariant on every `"min_fold"` op node in a tree.
 ///
 /// PRINTING: a `min_fold` node's own printing MUST equal `min()` of its children's printings, exactly

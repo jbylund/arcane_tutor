@@ -10090,20 +10090,46 @@ fn compose_printing_estimate(
             // `SUBTYPE_ARITH_TOP_N`) still produces a `hit: false` group -- there is no separate
             // estimate fallback for this round (see this arm's own doc), so `hit: false` here means
             // exactly "the fold's number stands, unimproved by this mechanism".
-            // Round 46: migrated onto the shared `scan_two_bucket_exact` helper, with its shape gate
-            // (`arith_children.len() + 1 == v.len()` -- every OTHER child besides the one subtype leaf
-            // must be arith-eligible) kept EXACTLY as it was -- deliberately not generalized to a
-            // residual scan the way `SubtypePairIndexes` was in Round 42 (that's a real accuracy
-            // change, out of scope for this round). Bucket A is the (at most one) position `shape`
-            // would have picked; bucket B is unused (`()`) since `subtype_arith_exact` already
-            // resolves its own 6-argument box bounds one layer deeper, from `arith_children` directly
-            // -- so this call site doesn't need to hand it pre-resolved ranges the way `ColorCmcTable`
-            // does. `order_positions` ignores its inputs and reports every position of `v` in `v`'s own
-            // order, matching the original trace's `v.iter()` -- sound because this shape gate already
-            // guarantees bucket A's one position plus every arith child covers the whole of `v`.
-            if !arith_children.is_empty() && arith_children.len() + 1 == v.len() {
-                let non_arith_position = (0..v.len()).find(|&i| !is_arith_tuple_eligible(&v[i]));
-                let a_positions: Vec<usize> = non_arith_position.filter(|&i| subtype_pair_leaf(&v[i]).is_some()).into_iter().collect();
+            // Round 48: generalized past the Round 46 gate (`arith_children.len() + 1 == v.len()`,
+            // requiring the WHOLE query to be exactly "one subtype leaf + N arith leaves, nothing
+            // else") to scan the residual, mirroring `SubtypePairIndexes`'s own Round 42 generalization
+            // exactly. The gate is now just "at least one arith-eligible child present" -- this
+            // mechanism's own real precondition, not an artificial whole-query restriction. Confirmed
+            // live gap this closes: `t:elf cmc>=5 usd<10` (a subtype leaf, an arith leaf, AND an
+            // unrelated price leaf) got ZERO benefit from this mechanism before this round, for the
+            // same reason `color:G format:pioneer t:elf` got none from `SubtypePairIndexes` before
+            // Round 42.
+            //
+            // `a_positions` is now EVERY `subtype_pair_leaf` position in the whole query (computed the
+            // same unrestricted way `SubtypePairIndexes` computes `all_dim_positions`/
+            // `all_sub_positions`), not just a single position gated on the rest of `v`'s shape -- a
+            // query with multiple subtype leaves (`t:elf t:human cmc>=5 usd<10`) now tries each one
+            // independently against the same arith box, each its own trace group, folded via `.min()`.
+            // Deliberately NOT filtered by `covered` on input, same reasoning as `SubtypePairIndexes`'s
+            // own exact-hit scan (Round 42's fix): any true sub-conjunction's exact count is a valid
+            // upper bound on the whole `And` regardless of what else already covered a leaf.
+            //
+            // Bucket B changes shape from the old single dummy `(Vec::new(), ())` (relying on
+            // `order_positions` reporting "all of `v`", safe only because the old gate guaranteed
+            // bucket A's one position plus every arith child covered the whole query) to a single
+            // candidate carrying the ACTUAL positions of the arith-eligible children (`arith_positions`,
+            // verified below to correspond 1:1 with `arith_children` -- same filter over the same `v`,
+            // just positions instead of refs). Still one combined candidate (not one per arith leaf),
+            // since all arith children combine into ONE box query via `subtype_arith_exact`, unlike
+            // `SubtypePairIndexes`'s per-subtype-leaf separate candidates. `order_positions` now mirrors
+            // `SubtypePairIndexes`'s own closure (`[a_position] ++ b_positions`) instead of "all of
+            // `v`" -- this is what makes `mark_covered_on_hit` (still `true`) cover ONLY the leaves this
+            // specific hit actually explains, leaving any other, unrelated leaf (the `usd` above) free
+            // for the independence registry or other mechanisms. `lookup` is UNCHANGED from before this
+            // round: it still closes over the outer `arith_children` (`Vec<&FilterExpr>`) directly
+            // rather than threading it through `B`, since `B` only ever holds the one combined
+            // candidate here and `scan_two_bucket_exact`'s `B: Copy` bound can't hold a `Vec` anyway --
+            // `b_positions` (the tuple's `Vec<usize>` slot, not `B` itself) is what carries the arith
+            // positions through to `order_positions`.
+            if !arith_children.is_empty() {
+                let a_positions: Vec<usize> = (0..v.len()).filter(|&i| subtype_pair_leaf(&v[i]).is_some()).collect();
+                let arith_positions: Vec<usize> = (0..v.len()).filter(|&i| is_arith_tuple_eligible(&v[i])).collect();
+                debug_assert_eq!(arith_positions.len(), arith_children.len(), "arith_positions must correspond 1:1 with arith_children");
                 scan_two_bucket_exact(
                     v,
                     &mut covered,
@@ -10116,8 +10142,12 @@ fn compose_printing_estimate(
                     true,
                     true,
                     &a_positions,
-                    &[(Vec::new(), ())],
-                    |_ai, _b_positions| (0..v.len()).collect(),
+                    &[(arith_positions, ())],
+                    |ai, b_positions| {
+                        let mut ps = vec![ai];
+                        ps.extend_from_slice(b_positions);
+                        ps
+                    },
                     |leaf, ()| subtype_pair_leaf(leaf).and_then(|subtype| subtype_arith_exact(subtype, &arith_children, indexes)),
                 );
             }
