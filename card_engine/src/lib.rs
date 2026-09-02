@@ -8374,6 +8374,146 @@ fn is_price_num_field(f: NumField) -> bool {
     matches!(f, NumField::PriceUsd | NumField::PriceEur | NumField::PriceTix)
 }
 
+/// Marks `covered[i] = true` for every literal child of `v` that's one of `leaves` (matched by pointer
+/// identity, the same identity `and_source_pos_of`/`AndSource::Child` already rely on) -- Round 40's
+/// class-priority bookkeeping, called at every EXACT/bound (and, defensively, ESTIMATE-class) hit site
+/// in this arm so the independence registry scan (below) never revisits a leaf another mechanism
+/// already used. `O(leaves.len() * v.len())`, both bounded in practice by how many predicates a person
+/// types, same complexity class `pair_bounded_min`'s own nested loop already accepts.
+fn mark_covered(v: &[FilterExpr], leaves: &[&FilterExpr], covered: &mut [bool]) {
+    for leaf in leaves {
+        if let Some(pos) = v.iter().position(|c| std::ptr::eq(c, *leaf)) {
+            covered[pos] = true;
+        }
+    }
+}
+
+/// Round 40: the leaf-class SIDE of a pair the independence registry (`INDEPENDENCE_SAFE_PAIR`,
+/// `independence_safe_pair`) recognizes -- generalizes Round 38's one hard-coded shape (`color:X`/
+/// `id:X`/`cmc<op>N` paired with a price comparison) to a small table, re-validated directly against
+/// real data before being trusted (`docs/issues/local-engine-gathered-scan-card-printing-varying-
+/// depth.md`'s Round 40 section has the numbers).
+///
+/// `Type` merges `TypeCmp` (the main creature/instant/... types, which DOES have a `compile_plane`
+/// arm) and `CollectionCmp{Subtypes,..}` (which does not) into one class deliberately: `client/
+/// query_sampler.py`'s own `"type"` family draws from both pools under one shared vocabulary (`t:` is
+/// the shared operator for both), so the calibration that validated this pair already measured both
+/// shapes together, and both are individually EXACT on their own regardless (a subtype leaf's own card
+/// count comes from `exact_result_total`'s `value_totals` lookup, same as any other bare containment
+/// leaf) -- there is no reason to split them into two registry entries.
+// Explicit discriminants: the And arm's residual scan indexes a fixed-size array by `as usize`
+// instead of hashing into a `HashMap` (a handful of buckets, no per-lookup allocation, on a path whose
+// own tax is measured -- see `and_estimate_ns`) -- `INDEP_CLASS_COUNT`/`INDEP_CLASS_ORDER` must be kept
+// in sync with this list, which `cargo test`'s `indep_class_order_matches_count` fixture checks.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum IndepClass {
+    Legality = 0,
+    ColorId = 1,
+    ColorIdentity = 2,
+    Cmc = 3,
+    Pow = 4,
+    Type = 5,
+    SetCode = 6,
+    Price = 7,
+    CollectorNumber = 8,
+    ReleasedDate = 9,
+}
+
+/// Number of `IndepClass` variants -- the residual scan's fixed-size bucket array length.
+const INDEP_CLASS_COUNT: usize = 10;
+/// `IndepClass` variants in discriminant order (`INDEP_CLASS_ORDER[c as usize] == c` for every `c`) --
+/// lets the residual scan recover the class from a bucket-array index without an inverse-lookup table.
+const INDEP_CLASS_ORDER: [IndepClass; INDEP_CLASS_COUNT] = [
+    IndepClass::Legality,
+    IndepClass::ColorId,
+    IndepClass::ColorIdentity,
+    IndepClass::Cmc,
+    IndepClass::Pow,
+    IndepClass::Type,
+    IndepClass::SetCode,
+    IndepClass::Price,
+    IndepClass::CollectorNumber,
+    IndepClass::ReleasedDate,
+];
+
+/// Whether independence is CONFIRMED-safe for this leaf class pair (order-independent) -- the registry
+/// itself. NOT the design doc's proposal list verbatim: two entries here (`SetCode`x`ColorIdentity`,
+/// `SetCode`x`Pow`, i.e. `id:X set:Y` / `pow<op>N set:Y`) empirically REVERSE the doc's own "unsafe"
+/// classification (`identity+set`: median abs-log-ratio 1.151->0.106 combined, 118 improved/3
+/// regressed of 122 scored rows, printing space, n=300 draws; `pow+set`: 1.114->0.154, 72/1 of 73 --
+/// both far past the bar Round 38's own 610-row calibration used). Legality x {SetCode, DateCmp,
+/// YearCmp} is DELIBERATELY absent -- format legality is date-DEFINED (a format's cutoff IS a release
+/// date), a categorically different case from a real-world correlation-with-exceptions, reserved for a
+/// future EXACT per-(set,format) mechanism (the SubtypePairIndexes/#743-shaped fix Round 34 already
+/// proved out for a different pair), not independence -- left exactly as it behaves today (plain
+/// fold), not calibrated, not added, regardless of what a quick check might show. Same-currency price
+/// crosses (`usd`x`eur` etc) are also absent: this round's own calibration found a genuinely MIXED
+/// signal (`usd`x`eur` net WORSE in printing space -- median 0.159->0.394 -- while `usd`x`tix`/
+/// `eur`x`tix` net better), inconsistent enough on top of the design doc's own correlation reasoning
+/// that shipping any of the three was judged not warranted this round (see this round's own doc
+/// section for the full numbers and reasoning either way).
+fn independence_safe_pair(a: IndepClass, b: IndepClass) -> bool {
+    use IndepClass::{Cmc, ColorId, ColorIdentity, CollectorNumber, Legality, Pow, Price, ReleasedDate, SetCode, Type};
+    matches!(
+        (a, b),
+        (Legality, CollectorNumber)
+            | (CollectorNumber, Legality)
+            | (Legality, Price)
+            | (Price, Legality)
+            | (ColorId, Price)
+            | (Price, ColorId)
+            | (ColorIdentity, Price)
+            | (Price, ColorIdentity)
+            | (Cmc, Price)
+            | (Price, Cmc)
+            | (Type, ReleasedDate)
+            | (ReleasedDate, Type)
+            | (Type, Price)
+            | (Price, Type)
+            | (ColorIdentity, SetCode)
+            | (SetCode, ColorIdentity)
+            | (Pow, SetCode)
+            | (SetCode, Pow)
+    )
+}
+
+/// Classify one post-fusion `AndSource` into an `IndepClass`, or `None` when it isn't one of the leaf
+/// shapes the registry knows about at all. Mirrors `is_price_num_field`'s own pointer-identity style
+/// for the three printing-range families (a `FusedRange` carries the winning index's address, not the
+/// original `FilterExpr`, so a two-sided `usd>=1 usd<=5`/`released>=2019 released<=2021` classifies the
+/// same way a bare `usd:3`/`year:2020` does).
+fn indep_class_of(src: AndSource<'_, '_>, indexes: &Archived<CardIndexes>) -> Option<IndepClass> {
+    match src {
+        AndSource::Child(c) => match c {
+            FilterExpr::Legality { .. } => Some(IndepClass::Legality),
+            FilterExpr::ColorCmp { field: ColorField::Colors, .. } => Some(IndepClass::ColorId),
+            FilterExpr::ColorCmp { field: ColorField::ColorIdentity, .. } => Some(IndepClass::ColorIdentity),
+            FilterExpr::TypeCmp { .. } => Some(IndepClass::Type),
+            FilterExpr::CollectionCmp { field: CollField::Subtypes, .. } => Some(IndepClass::Type),
+            FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, .. } => Some(IndepClass::SetCode),
+            FilterExpr::DateCmp { .. } | FilterExpr::YearCmp { .. } => Some(IndepClass::ReleasedDate),
+            _ => match numeric_cmp_field(c) {
+                Some(NumField::Cmc) => Some(IndepClass::Cmc),
+                Some(NumField::Power) => Some(IndepClass::Pow),
+                Some(NumField::CollectorNumberInt) => Some(IndepClass::CollectorNumber),
+                Some(f) if is_price_num_field(f) => Some(IndepClass::Price),
+                _ => None,
+            },
+        },
+        AndSource::FusedRange { idx, .. } => {
+            if std::ptr::eq(idx, &indexes.price_usd) || std::ptr::eq(idx, &indexes.price_eur) || std::ptr::eq(idx, &indexes.price_tix) {
+                Some(IndepClass::Price)
+            } else if std::ptr::eq(idx, &indexes.collector_number) {
+                Some(IndepClass::CollectorNumber)
+            } else if std::ptr::eq(idx, &indexes.released_at) {
+                Some(IndepClass::ReleasedDate)
+            } else {
+                None
+            }
+        }
+    }
+}
+
 /// Exact CARD count of cards satisfying every one of `bounds` simultaneously, via the existing #743
 /// `ArithTupleIndex` (~564 distinct `(cmc,power,toughness,loyalty)` combinations on the real corpus) —
 /// O(distinct tuples), not O(n_cards) and not `eval_planes`, and always exact: each stored tuple's
@@ -8603,11 +8743,49 @@ fn and_trace_for(filter: &FilterExpr, indexes: &Archived<CardIndexes>, offsets: 
 /// in tests.rs, which checks printing on every fixture and card/artwork only where it happens to
 /// hold).
 ///
+/// Round 40: whether `mechanism` (an `AndTraceGroup::mechanism`/`AndTraceNode::Op::mechanism` string)
+/// is an ESTIMATE-class candidate -- a central estimate that can land on either side of the truth
+/// (Round 38's own calibration: roughly half of 610 real rows undershot, half overshot) -- rather than
+/// an EXACT value or a mathematically guaranteed upper bound. Used both by the And arm's own `covered`
+/// bookkeeping (an estimate-class hit marks its leaves covered defensively, so two different inexact
+/// estimates can never stack on the same leaves) and by `and_trace_build_tree`'s winner selection (an
+/// estimate-class candidate may only win attribution when no exact/bound candidate ties the global
+/// min). `"Independence"` is Round 38/40's own formula; `"SetCollectorRange"` is Round 33's density
+/// estimate (can undershoot on a non-contiguous set, e.g. Secret Lair Drop); `"SubtypePairEstimate"` is
+/// Round 34's capped independence-product MISS branch (the HIT branch, `"SubtypePairIndexes"`, is a
+/// genuine table lookup and stays in the exact/bound class). Every other mechanism string in this arm
+/// (`"PairTotals"`, `"arith_tuple_count"`, `"PlanePopcount"`, `"PairRangeSum"`, `"ArithIdProbe"`,
+/// `"SubtypePairIndexes"`, `"SubtypeArithBox"`, `"leaves_are_disjoint"`) is exact/bound.
+fn is_estimate_class_mechanism(mechanism: &str) -> bool {
+    matches!(mechanism, "Independence" | "SetCollectorRange" | "SubtypePairEstimate")
+}
+
 /// No winning group at all means nothing tightened this `And` beyond the per-leaf fold: `root =
 /// Op("min_fold", children: one Leaf per direct child)`.
+///
+/// Round 40: winner selection is a class-priority pick, not "first considered group that matches" --
+/// `and_trace_reports_the_winning_mechanism_and_every_considered_one`'s own fixture found the old
+/// `find()` (first-in-evaluation-order) attributed a tie between `arith_tuple_count` and
+/// `SubtypeArithBox` to whichever ran first, not whichever was actually the tighter/more complete
+/// answer. Every mechanism that isn't `is_estimate_class_mechanism` produces either an exact value or a
+/// mathematically guaranteed upper bound, so among THOSE, "pick the tightest" is always sound -- and
+/// since every candidate here already ties `final_est.printing` (the true global min, by construction:
+/// see this fn's own doc), "tightest" only needs a tie-break, which is "most leaves covered" (the more
+/// complete intersection is the more informative report; `SubtypeArithBox`'s 3-leaf answer over
+/// `arith_tuple_count`'s 2-leaf one). An ESTIMATE-class hit (independence, `SetCollectorRange`'s
+/// density, `SubtypePairEstimate`'s miss branch) is a central estimate, not a bound -- it is only ever
+/// considered SECOND, when no exact/bound candidate ties the global min at all. This mirrors, on the
+/// reporting side, the same invariant the arm's own `covered` bookkeeping enforces on the VALUE side:
+/// an estimate may fill a gap no exact/bound mechanism reaches, never be preferred over one for an
+/// overlapping subset.
 fn and_trace_build_tree(leaves: &[AndTraceLeaf], considered: &[AndTraceGroup], final_est: SpaceEstimate) -> AndTraceNode {
     let leaf_node = |l: &AndTraceLeaf| AndTraceNode::Leaf { expr: l.expr.clone(), card: l.card, printing: l.printing.unwrap_or(0), artwork: l.artwork };
-    let winner = considered.iter().find(|g| g.hit && g.printing == Some(final_est.printing));
+    let ties = |g: &&AndTraceGroup| g.hit && g.printing == Some(final_est.printing);
+    let winner = considered
+        .iter()
+        .filter(|g| ties(g) && !is_estimate_class_mechanism(g.mechanism))
+        .max_by_key(|g| g.leaves.len())
+        .or_else(|| considered.iter().filter(|g| ties(g) && is_estimate_class_mechanism(g.mechanism)).max_by_key(|g| g.leaves.len()));
     let mut children: Vec<AndTraceNode> = Vec::new();
     if let Some(w) = winner {
         let covered_children: Vec<AndTraceNode> =
@@ -8720,7 +8898,19 @@ fn compose_printing_estimate(
             // stay bare `usize` locals through every tightening step below (unchanged from before this
             // struct held three spaces), and get wrapped back into a `SpaceEstimate` only once, at the
             // very end -- narrower diff, same values, against logic already checked with a paired diff.
-            let mut result = pair_bounded_min(v, indexes, folded.result.printing);
+            //
+            // Round 40: `covered[i]` becomes `true` the moment leaf `v[i]` participates in a GENUINE
+            // exact/bound joint tightening somewhere in this arm (2+ leaves actually intersected, not a
+            // leaf's own repackaged marginal) -- the class-priority gate the independence registry scan
+            // (near the end of this arm) reads before ever touching a leaf: an estimate-class candidate
+            // (independence, `SetCollectorRange`'s density, `SubtypePairEstimate`'s miss branch) may only
+            // fill leaves NO exact/bound mechanism already covers, never magnitude-compare against or
+            // override one for an overlapping subset (see that scan's own doc for why "pick the smallest
+            // candidate" is unsound once an inexact estimator is in the mix). Estimate-class mechanisms
+            // also mark `covered` themselves, defensively, so two different inexact estimates can never
+            // stack on the same leaves either -- see each mechanism's own comment below.
+            let mut covered = vec![false; v.len()];
+            let mut result = pair_bounded_min(v, indexes, folded.result.printing, &mut covered);
             // Round 37a trace: mirrors `pair_bounded_min`'s own nested loop (same disjoint check,
             // same table lookup, same short-circuit the instant a disjoint pair is found -- the real
             // function returns 0 immediately at that point and never looks at any later pair, so the
@@ -8839,6 +9029,16 @@ fn compose_printing_estimate(
                         let estimate = (density * f64::from(overlap)).round() as usize;
                         result = result.min(estimate);
                         estimate_hit = Some(estimate);
+                        // Round 40: ESTIMATE-class (density, not a bound -- a non-contiguous set, e.g.
+                        // Secret Lair Drop, can undershoot; see this mechanism's own doc above), so this
+                        // marks `covered` defensively rather than because it's exact -- prevents the
+                        // independence registry scan below from ALSO landing an inexact candidate on the
+                        // same leaves (no live case does this today, since `set`/`cn` aren't in the
+                        // registry, but this keeps the invariant true structurally, not by accident).
+                        // All of `v` (not just `a`/`b`): a fused two-sided `cn` range still traces back
+                        // to 2+ literal children, same reasoning the trace group below already uses.
+                        let all_v: Vec<&FilterExpr> = v.iter().collect();
+                        mark_covered(v, &all_v, &mut covered);
                     }
                 }
                 if shape.is_some()
@@ -8864,6 +9064,8 @@ fn compose_printing_estimate(
                 if let Some(cc) = card_count {
                     let scaled = (cc * n_printings).checked_div(n_cards).unwrap_or(0);
                     result = result.min(scaled);
+                    // Round 40: exact joint (2+ arith-eligible leaves), so genuinely covers all of them.
+                    mark_covered(v, &arith_children, &mut covered);
                 }
                 // Round 37a trace: `card_count` is `None` only when the #743 scan itself declines
                 // (see `arith_tuple_count`'s own doc) -- the shape gate here (2+ arith-eligible
@@ -8976,6 +9178,14 @@ fn compose_printing_estimate(
             // above. Ditto `artwork` from `indexes.artwork_base`, the same shape one space over.
             let mut exact_domain_cards: Option<usize> = None;
             let mut best_other: Option<(usize, Vec<u64>)> = None;
+            // Round 40: the specific leaves that fed `best_other`'s winning popcount -- tracked
+            // alongside it (not re-derived) so the class-priority `covered` bookkeeping below can tell
+            // a GENUINE joint (2+ distinct leaves actually intersected) from a lone existential leaf's
+            // own repackaged marginal (`card_invariant` empty, one existential leaf, nothing else --
+            // e.g. a bare `f:modern` with no card-invariant partner): only the former should ever block
+            // the independence registry scan from using that leaf, since the latter tightens nothing
+            // beyond what the plain per-leaf fold already had.
+            let mut best_other_leaves: Option<Vec<&FilterExpr>> = None;
             // Preferred path (Round 24) for a LONE existential leaf ANDed with a range over exactly one
             // arith-tuple field (`cmc=1 border:white`, `cmc>=1 cmc<=5 r=mythic`, ...): sum the exact
             // per-value pair-total over every value the arith bound(s) admit (`pair_range_sum`), rather
@@ -9033,6 +9243,7 @@ fn compose_printing_estimate(
                             });
                         }
                         best_other = Some((card_count, bits));
+                        best_other_leaves = Some(card_invariant.iter().map(|(c, _)| *c).collect());
                     }
                 } else {
                     // A LONE existential leaf (no card-invariant partner at all -- `card_invariant` may be
@@ -9072,10 +9283,31 @@ fn compose_printing_estimate(
                             });
                         }
                         if best_other.as_ref().is_none_or(|(c, _)| candidate.0 < *c) {
+                            best_other_leaves = Some(card_invariant.iter().map(|(c, _)| *c).chain(std::iter::once(*orig)).collect());
                             best_other = Some(candidate);
                         }
                     }
                 }
+            }
+            // Round 40: mark `covered` for `best_other`'s own leaves, but ONLY when it's a genuine 2+
+            // leaf joint -- a lone existential leaf with no card-invariant partner (`best_other_leaves`
+            // of length 1) is just that leaf's own marginal restated, and must stay free for the
+            // independence registry scan below (this is what makes `legality x cn`/`legality x price`
+            // reachable at all: `f:modern` alone would otherwise "cover" itself here on every query and
+            // permanently block its own registry entry).
+            if let Some(leaves) = &best_other_leaves
+                && leaves.len() >= 2
+            {
+                mark_covered(v, leaves, &mut covered);
+            }
+            if let Some((e_filter, _, _)) = pair_range_attempt
+                && pair_range_answer.is_some()
+            {
+                // Round 40: `pair_range_sum`'s own answer is ALWAYS a genuine joint (arith_children is
+                // non-empty by this gate's own condition), unlike `best_other`'s lone-existential case.
+                let mut leaves: Vec<&FilterExpr> = arith_children.clone();
+                leaves.push(e_filter);
+                mark_covered(v, &leaves, &mut covered);
             }
             let mut exact_domain_printing: Option<usize> = None;
             let mut exact_domain_artworks: Option<usize> = None;
@@ -9149,6 +9381,16 @@ fn compose_printing_estimate(
                     exact_domain_printing = Some(exact_domain_printing.map_or(joint_printing, |d| d.min(joint_printing)));
                     exact_domain_artworks = Some(exact_domain_artworks.map_or(joint_artwork, |d| d.min(joint_artwork)));
                     probe_hit = Some((joint_printing, joint_count, joint_artwork));
+                    // Round 40: a genuine exact joint of best_other's own leaves (however many -- even
+                    // just the one lone existential leaf `best_other_leaves` held back from `covered`
+                    // above) PLUS the arith leaves probed in here -- e.g. `f:modern cmc>=5 power>=5`
+                    // becomes a real 3-way exact answer at exactly this point, and `f:modern` must be
+                    // marked covered now even though the earlier best_other step deliberately left it
+                    // free.
+                    if let Some(other_leaves) = &best_other_leaves {
+                        mark_covered(v, other_leaves, &mut covered);
+                    }
+                    mark_covered(v, &arith_children, &mut covered);
                 }
                 if !arith_children.is_empty()
                     && let Some(t) = and_trace.as_mut()
@@ -9189,6 +9431,9 @@ fn compose_printing_estimate(
                     exact_domain_cards = Some(exact_domain_cards.map_or(cards, |d| d.min(cards)));
                     exact_domain_printing = Some(exact_domain_printing.map_or(printings, |d| d.min(printings)));
                     exact_domain_artworks = Some(exact_domain_artworks.map_or(artworks, |d| d.min(artworks)));
+                    // Round 40: exact table hit over both of `v`'s two leaves.
+                    let all_v: Vec<&FilterExpr> = v.iter().collect();
+                    mark_covered(v, &all_v, &mut covered);
                     if let Some(t) = and_trace.as_mut() {
                         t.considered.push(AndTraceGroup {
                             leaves: v.iter().map(|c| format!("{c:?}")).collect(),
@@ -9238,6 +9483,11 @@ fn compose_printing_estimate(
                             let printing_est = card_est.checked_mul(n_printings).and_then(|p| p.checked_div(n_cards)).unwrap_or(0);
                             result = result.min(printing_est);
                             printing_est_hit = Some(printing_est);
+                            // Round 40: ESTIMATE-class (a capped independence product, not a bound --
+                            // this arm's own doc above), marked defensively so the registry scan below
+                            // never stacks a second inexact estimate on the same two leaves.
+                            let all_v: Vec<&FilterExpr> = v.iter().collect();
+                            mark_covered(v, &all_v, &mut covered);
                         }
                         if let Some(t) = and_trace.as_mut() {
                             t.considered.push(AndTraceGroup {
@@ -9297,6 +9547,10 @@ fn compose_printing_estimate(
                         exact_domain_cards = Some(exact_domain_cards.map_or(cards, |d| d.min(cards)));
                         exact_domain_printing = Some(exact_domain_printing.map_or(printings, |d| d.min(printings)));
                         exact_domain_artworks = Some(exact_domain_artworks.map_or(artworks, |d| d.min(artworks)));
+                        // Round 40: exact table hit covering every one of `v`'s leaves (the shape gate
+                        // above requires it: every non-arith child is exactly this one subtype leaf).
+                        let all_v: Vec<&FilterExpr> = v.iter().collect();
+                        mark_covered(v, &all_v, &mut covered);
                     }
                     if let Some(t) = and_trace.as_mut() {
                         t.considered.push(AndTraceGroup {
@@ -9310,140 +9564,117 @@ fn compose_printing_estimate(
                     }
                 }
             }
-            // Round 38 tightening: `color:X`/`id:X`/`cmc<op>N` And'd with exactly one price
-            // comparison (`usd`/`eur`/`tix`, any op) gets `min(fold, independence)` instead of the
-            // plain fold above. This was the worst-accuracy shape in `scripts/nway_estimate_truth_
-            // survey.py`'s calibration (docs/issues/local-engine-gathered-scan-card-printing-varying-
-            // depth.md), at 0% mechanism coverage before this round: `c:ruw usd:0.17` folds to 454
-            // (the color leaf's own count) against a true 1, even though BOTH leaves are individually
-            // exact on their own (`c:ruw` alone: 454 == 454; `usd:0.17` alone: 1541 == 1541) — the
-            // error is 100% in the fold combinator taking the broader leaf's count, not either leaf's
-            // own estimate. Neither leaf has a `compile_plane` arm covering the other (color has one,
-            // but none of the three price fields do) and neither is in any pair/subtype table, so this
-            // shape gets no tightening otherwise.
+            // Round 40 tightening: generalizes Round 38's one hard-coded shape (`color:X`/`id:X`/
+            // `cmc<op>N` paired with exactly one price comparison) into a small REGISTRY of confirmed
+            // leaf-class pairs (`IndepClass`/`independence_safe_pair`, re-validated directly against
+            // real data -- see that function's own doc and this round's own doc section for the
+            // numbers), scanning every pair of RESIDUAL `and_sources` (positions `covered` doesn't
+            // already claim, see that variable's own doc) instead of one fixed shape. Pairwise only --
+            // NOT generalized to triples: pairwise-safe does not imply joint-safe (the design doc's own
+            // `color`x`identity`x`type` counterexample), so a query with 3+ mutually pairwise-safe
+            // residual classes still gets one independent candidate per PAIR of them, each separately
+            // narrowing `result` via `min` -- never a single joint estimate over all of them at once.
             //
-            // `independence = round(count(a) * count(b) / domain)` is a real, if inexact, estimator
-            // here: calibrated directly against 610 real (query, unique) rows across the three shapes,
-            // replacing the plain fold with `min(fold, independence)` dropped the median
-            // `abs(log(estimate/true))` from 0.88 (~2.4x typical error) to 0.07 (~7%) across the
-            // combined population — an improvement on 578/610 rows (94.8%), with the regressions
-            // concentrated almost entirely in `cmc+usd`'s own undershoot-prone tail. A grid search over
-            // a multiplicative bias (`fudge * independence`, 1.0..=2.0 in 0.05 steps) found `fudge =
-            // 1.0` — no bias at all — minimizes both median AND mean error for every shape individually
-            // and combined; every increase makes it strictly worse, even on `cmc+usd`'s own tail. Not
-            // exact (unlike `arith_tuple_count`/`PlanePopcount`/a table hit above), so this narrows only
-            // `result`, never `exact_domain_*` — the same exact/estimate line `SetCollectorRange`'s
-            // density estimate and `SubtypePairEstimate`'s miss branch already draw.
-            //
-            // Scope is deliberately narrow: independence is a real assumption, not a law, and only
-            // holds where real correlation is negligible — color/identity/cmc against price, NOT e.g.
-            // color against type (known-correlated, out of scope for this round).
-            //
-            // Both sides must resolve to exactly ONE effective source, or this declines outright rather
-            // than guessing which side of a compound constraint to use:
-            //  - price: counted POST-FUSION (`and_sources`, computed above), so a two-sided SAME-field
-            //    range (`usd>=1 usd<=5`) — already fused into one exact `FusedRange` by
-            //    `fuse_and_range_children` (unconditionally here: that call passes `sparse_only:
-            //    false`, so every same-index group of 2+ fuses regardless of breadth) — counts as ONE
-            //    source with its exact fused `k`, never one side's own broader count alone. Two
-            //    DIFFERENT price fields present together (`usd>=1 eur>=1`) count as two sources and
-            //    this declines rather than arbitrarily picking one.
-            //  - cmc: `fuse_and_range_children` does NOT fuse `Cmc` (only price/collector-number/
-            //    date/year are printing-range-indexed — see `resolve_numeric_range_leaf`'s own doc), so
-            //    a two-sided cmc bound (`cmc>=2 cmc<=5`) reaches here as two literal children, still
-            //    unfused. Combined via the existing #743 `arith_tuple_count` scan (its exact JOINT card
-            //    count, scaled to printing the same average-case way the arith-tuple tightening above
-            //    already does) rather than paired on one side alone. Two-or-more literal `color:`/`id:`
-            //    leaves of the SAME field have no equivalent combining table, so that field is dropped
-            //    from consideration entirely (no unit pushed) rather than guessing which one to use.
-            let mut independence_price_positions: Vec<usize> = Vec::new();
-            for (i, src) in and_sources.iter().enumerate() {
-                let is_price = match *src {
-                    AndSource::Child(c) => numeric_cmp_field(c).is_some_and(is_price_num_field),
-                    AndSource::FusedRange { idx, .. } => {
-                        std::ptr::eq(idx, &indexes.price_usd) || std::ptr::eq(idx, &indexes.price_eur) || std::ptr::eq(idx, &indexes.price_tix)
-                    }
-                };
-                if is_price {
-                    independence_price_positions.push(i);
-                }
-            }
-            if let [price_pos] = independence_price_positions.as_slice() {
-                let price_pos = *price_pos;
-                let price_est = children_estimates[price_pos].result;
-                let price_src = and_sources[price_pos];
-                let price_leaves: Vec<&FilterExpr> = match price_src {
+            // `independence = round(count(a) * count(b) / domain)`, unbiased (Round 38's own grid
+            // search already found `fudge = 1.0` strictly optimal; nothing here reopens that). Not
+            // exact, so this narrows only `result`, never `exact_domain_*` -- the same exact/estimate
+            // line `SetCollectorRange`'s density estimate and `SubtypePairEstimate`'s miss branch draw.
+            let n_artworks = u32::from(*indexes.artwork_base.last().expect("artwork_base has n_cards+1 entries")) as usize;
+            // One unit per `IndepClass` actually present among the residual (uncovered) sources: its
+            // own contributing leaves (for `covered`/trace reporting) and its own solo `SpaceEstimate`
+            // (the independence formula's per-side input). `leaves_for`/`is_covered` unify the
+            // `AndSource::Child`/`FusedRange` cases the same way Round 38's own price handling did --
+            // a `FusedRange` source's constituents are the literal `v` children `bare_range_bounds`
+            // resolves to the same index, and the whole source counts as covered the moment ANY ONE of
+            // them does (conservative: a constituent independently claimed by another exact mechanism
+            // means that mechanism's answer already reflects a real intersection this scan must not
+            // also estimate over).
+            let leaves_for = |i: usize| -> Vec<&FilterExpr> {
+                match and_sources[i] {
                     AndSource::Child(c) => vec![c],
                     AndSource::FusedRange { idx, .. } => {
                         v.iter().filter(|c| bare_range_bounds(c, indexes).is_some_and(|(i2, ..)| std::ptr::eq(i2, idx))).collect()
                     }
-                };
-                let mut colors_pos: Vec<usize> = Vec::new();
-                let mut identity_pos: Vec<usize> = Vec::new();
-                let mut cmc_pos: Vec<usize> = Vec::new();
-                for (i, c) in v.iter().enumerate() {
-                    match c {
-                        FilterExpr::ColorCmp { field: ColorField::Colors, .. } => colors_pos.push(i),
-                        FilterExpr::ColorCmp { field: ColorField::ColorIdentity, .. } => identity_pos.push(i),
-                        _ if numeric_cmp_field(c) == Some(NumField::Cmc) => cmc_pos.push(i),
+                }
+            };
+            let is_covered = |i: usize| -> bool {
+                leaves_for(i).iter().any(|leaf| v.iter().position(|x| std::ptr::eq(x, *leaf)).is_some_and(|pos| covered[pos]))
+            };
+            struct IndepUnit<'f> {
+                class: IndepClass,
+                leaves: Vec<&'f FilterExpr>,
+                est: SpaceEstimate,
+            }
+            let mut units: Vec<IndepUnit<'_>> = Vec::new();
+            {
+                // Indexed by `IndepClass as usize` rather than a `HashMap` -- at most
+                // `INDEP_CLASS_COUNT` buckets, no hashing/allocation-per-lookup on a path whose own
+                // tax (`and_estimate_ns`) is measured.
+                let mut by_class: [Vec<usize>; INDEP_CLASS_COUNT] = Default::default();
+                for (i, src) in and_sources.iter().enumerate() {
+                    if is_covered(i) {
+                        continue;
+                    }
+                    if let Some(class) = indep_class_of(*src, indexes) {
+                        by_class[class as usize].push(i);
+                    }
+                }
+                for class_ord in 0..INDEP_CLASS_COUNT {
+                    let positions = &by_class[class_ord];
+                    let class = INDEP_CLASS_ORDER[class_ord];
+                    match positions.as_slice() {
+                        [] => {}
+                        [p] => units.push(IndepUnit { class, leaves: leaves_for(*p), est: children_estimates[*p].result }),
+                        multi if matches!(class, IndepClass::Cmc | IndepClass::Pow) => {
+                            // 2+ literal bounds on the SAME arith field (`cmc>=2 cmc<=5`, unfused --
+                            // `fuse_and_range_children` only fuses price/collector-number/date/year):
+                            // combine via the existing #743 `arith_tuple_count` scan (its exact JOINT
+                            // card count, scaled to printing the same average-case way the arith-tuple
+                            // tightening above already does), same as Round 38's own cmc handling.
+                            let field_children: Vec<&FilterExpr> = multi.iter().flat_map(|&p| leaves_for(p)).collect();
+                            if let Some(card_count) = arith_tuple_count(&field_children, indexes) {
+                                let scaled = (card_count * n_printings).checked_div(n_cards).unwrap_or(0);
+                                units.push(IndepUnit {
+                                    class,
+                                    leaves: field_children,
+                                    est: SpaceEstimate { printing: scaled, card: Some(card_count), artwork: None },
+                                });
+                            }
+                            // else: the scan itself declined (index not built) -- dropped, no unit
+                            // pushed, same as any other shape this tightening doesn't recognize.
+                        }
+                        // 2+ occurrences of a class with no combining table (e.g. two literal `f:`
+                        // leaves) -- dropped rather than guessing which one to use, Round 38's own
+                        // precedent for `color:`/`id:`.
                         _ => {}
                     }
                 }
-                let and_source_pos_of = |target: &FilterExpr| -> Option<usize> {
-                    and_sources.iter().position(|src| match *src {
-                        AndSource::Child(c) => std::ptr::eq(c, target),
-                        AndSource::FusedRange { .. } => false,
-                    })
-                };
-                let mut safe_units: Vec<(Vec<&FilterExpr>, SpaceEstimate)> = Vec::new();
-                if let [p] = colors_pos.as_slice()
-                    && let Some(pos) = and_source_pos_of(&v[*p])
-                {
-                    safe_units.push((vec![&v[*p]], children_estimates[pos].result));
-                }
-                if let [p] = identity_pos.as_slice()
-                    && let Some(pos) = and_source_pos_of(&v[*p])
-                {
-                    safe_units.push((vec![&v[*p]], children_estimates[pos].result));
-                }
-                match cmc_pos.as_slice() {
-                    [] => {}
-                    [p] => {
-                        if let Some(pos) = and_source_pos_of(&v[*p]) {
-                            safe_units.push((vec![&v[*p]], children_estimates[pos].result));
-                        }
+            }
+            for i in 0..units.len() {
+                for j in (i + 1)..units.len() {
+                    let (a, b) = (&units[i], &units[j]);
+                    if !independence_safe_pair(a.class, b.class) {
+                        continue;
                     }
-                    _ => {
-                        let cmc_children: Vec<&FilterExpr> = cmc_pos.iter().map(|&p| &v[p]).collect();
-                        if let Some(card_count) = arith_tuple_count(&cmc_children, indexes) {
-                            let scaled = (card_count * n_printings).checked_div(n_cards).unwrap_or(0);
-                            safe_units.push((cmc_children, SpaceEstimate { printing: scaled, card: Some(card_count), artwork: None }));
-                        }
-                    }
-                }
-                let n_artworks = u32::from(*indexes.artwork_base.last().expect("artwork_base has n_cards+1 entries")) as usize;
-                for (safe_leaves, safe_est) in &safe_units {
-                    let printing_indep = if n_printings == 0 {
-                        0
-                    } else {
-                        ((safe_est.printing as f64) * (price_est.printing as f64) / (n_printings as f64)).round() as usize
-                    };
-                    let card_indep = safe_est
+                    let printing_indep =
+                        if n_printings == 0 { 0 } else { ((a.est.printing as f64) * (b.est.printing as f64) / (n_printings as f64)).round() as usize };
+                    let card_indep = a
+                        .est
                         .card
-                        .zip(price_est.card)
-                        .map(|(a, b)| if n_cards == 0 { 0 } else { ((a as f64) * (b as f64) / (n_cards as f64)).round() as usize });
-                    let artwork_indep = safe_est
+                        .zip(b.est.card)
+                        .map(|(x, y)| if n_cards == 0 { 0 } else { ((x as f64) * (y as f64) / (n_cards as f64)).round() as usize });
+                    let artwork_indep = a
+                        .est
                         .artwork
-                        .zip(price_est.artwork)
-                        .map(|(a, b)| if n_artworks == 0 { 0 } else { ((a as f64) * (b as f64) / (n_artworks as f64)).round() as usize });
+                        .zip(b.est.artwork)
+                        .map(|(x, y)| if n_artworks == 0 { 0 } else { ((x as f64) * (y as f64) / (n_artworks as f64)).round() as usize });
                     result = result.min(printing_indep);
-                    // Round 38 trace: `hit: true` always -- unlike a table lookup, independence is a
-                    // formula that always produces a value once the shape gate above matched, so
-                    // `hit` here just means "eligible and computed", not a lookup-miss emulation that
-                    // doesn't exist for this mechanism.
+                    // Round 38 trace, unchanged shape: `hit: true` always -- independence is a formula
+                    // that always produces a value once the registry says the pair is safe, so `hit`
+                    // here just means "eligible and computed", not a lookup-miss emulation.
                     if let Some(t) = and_trace.as_mut() {
-                        let mut leaves: Vec<String> = safe_leaves.iter().map(|c| format!("{c:?}")).collect();
-                        leaves.extend(price_leaves.iter().map(|c| format!("{c:?}")));
+                        let mut leaves: Vec<String> = a.leaves.iter().map(|c| format!("{c:?}")).collect();
+                        leaves.extend(b.leaves.iter().map(|c| format!("{c:?}")));
                         t.considered.push(AndTraceGroup {
                             leaves,
                             mechanism: "Independence",
@@ -10062,7 +10293,14 @@ fn walk_value_orderby_page<'a>(
 /// Both are still UPPER BOUNDS for three or more children -- the intersection of three sets is at most
 /// the smallest pairwise intersection -- but a pairwise bound is much tighter than a single-leaf one
 /// whenever the leaves are individually broad, which is exactly when the estimate matters.
-fn pair_bounded_min(children: &[FilterExpr], indexes: &Archived<CardIndexes>, single_min: usize) -> usize {
+// Round 40: `covered` gains a `true` at position `i` for every child that participated in a genuine
+// `PairTotals`/disjointness hit here -- read by the And arm's independence registry scan (below) so a
+// leaf already given an EXACT joint by this mechanism is never also handed to an inexact independence
+// estimate (the class-priority rule: estimate-class may only fill a subset no exact/bound mechanism
+// covers at all -- see that scan's own doc). Sized to `children.len()` by the caller; a no-op write
+// target (`&mut []`) is valid whenever a caller doesn't need this bookkeeping (there is none today,
+// but keeps the contract from silently becoming load-bearing on a specific caller).
+fn pair_bounded_min(children: &[FilterExpr], indexes: &Archived<CardIndexes>, single_min: usize, covered: &mut [bool]) -> usize {
     if children.len() < 2 || !*PAIR_TOTALS {
         return single_min;
     }
@@ -10072,12 +10310,15 @@ fn pair_bounded_min(children: &[FilterExpr], indexes: &Archived<CardIndexes>, si
     for (i, a) in children.iter().enumerate() {
         for (j, b) in children.iter().enumerate().skip(i + 1) {
             if leaves_are_disjoint(a, b) {
+                covered.fill(true); // the whole And is provably empty; nothing else matters
                 return 0;
             }
             if let (Some(x), Some(y)) = (ids[i], ids[j])
                 && let Some(k) = pt.get(x, y, Mode::Printing)
             {
                 best = best.min(k);
+                covered[i] = true;
+                covered[j] = true;
             }
         }
     }

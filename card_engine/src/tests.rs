@@ -8564,38 +8564,54 @@ fn collection_compose_leaves() {
         (0..n_printings as u32).filter(|&p| bits[p as usize >> 6] & (1u64 << (p & 63)) != 0).collect()
     };
 
-    let cases: Vec<(&str, FilterExpr)> = vec![
+    // Third element: does this case route through an ESTIMATE-class mechanism (Round 33's
+    // `SetCollectorRange` density, Round 34's `SubtypePairEstimate` miss branch, Round 38/40's
+    // `Independence`) that is NOT a guaranteed upper bound (`is_estimate_class_mechanism`'s own doc) --
+    // `true` exempts the case from the "valid upper bound at minimum" assertion below. Only
+    // `type:goblin year:2023` does: Round 40's registry now recognizes `type`x`released` as safe
+    // (re-validated directly against real data), and this fixture's own small population happens to
+    // land on the undershoot side of that estimate (predicted 1 against a true 2) -- a real,
+    // already-accepted property of ANY estimate-class mechanism (Round 38's own calibration: roughly
+    // half of 610 real rows undershot, half overshot), not a correctness bug in `compose_printing_bits`
+    // (asserted exact above, unconditionally, for every case here) or in routing (an underestimate
+    // affects plan-choice regret, never which rows a query returns).
+    let cases: Vec<(&str, FilterExpr, bool)> = vec![
         // Card-space positive containment — every printing of a matching card (exact card property).
-        ("type:goblin", ge(CollField::Subtypes, "goblin")),
-        ("type:elf", ge(CollField::Subtypes, "elf")),
-        ("type:absent", ge(CollField::Subtypes, "sliver")),
-        ("kw:Flying", ge(CollField::Keywords, "Flying")),
-        ("otag:ramp", ge(CollField::OracleTags, "ramp")),
+        ("type:goblin", ge(CollField::Subtypes, "goblin"), false),
+        ("type:elf", ge(CollField::Subtypes, "elf"), false),
+        ("type:absent", ge(CollField::Subtypes, "sliver"), false),
+        ("kw:Flying", ge(CollField::Keywords, "Flying"), false),
+        ("otag:ramp", ge(CollField::OracleTags, "ramp"), false),
         // Card-space negation — exact complement (collection is never NULL).
-        ("-type:goblin", not(ge(CollField::Subtypes, "goblin"))),
-        ("-type:absent (-> all)", not(ge(CollField::Subtypes, "sliver"))),
-        ("-kw:Flying", not(ge(CollField::Keywords, "Flying"))),
+        ("-type:goblin", not(ge(CollField::Subtypes, "goblin")), false),
+        ("-type:absent (-> all)", not(ge(CollField::Subtypes, "sliver")), false),
+        ("-kw:Flying", not(ge(CollField::Keywords, "Flying")), false),
         // Printing-space positive/negation (scatter directly; the divergent is:commander printings).
-        ("is:commander", ge(CollField::IsTags, "commander")),
-        ("-is:commander", not(ge(CollField::IsTags, "commander"))),
-        ("art:showcase", ge(CollField::ArtTags, "showcase")),
+        ("is:commander", ge(CollField::IsTags, "commander"), false),
+        ("-is:commander", not(ge(CollField::IsTags, "commander")), false),
+        ("art:showcase", ge(CollField::ArtTags, "showcase"), false),
         // Mixes with a range, both And and Or, card-space × printing-space × range.
-        ("type:goblin year:2023", FilterExpr::And(vec![ge(CollField::Subtypes, "goblin"), year(2023)])),
-        ("type:goblin or year:2023", FilterExpr::Or(vec![ge(CollField::Subtypes, "goblin"), year(2023)])),
-        ("kw:Flying and is:commander", FilterExpr::And(vec![ge(CollField::Keywords, "Flying"), ge(CollField::IsTags, "commander")])),
-        ("type:goblin or is:commander", FilterExpr::Or(vec![ge(CollField::Subtypes, "goblin"), ge(CollField::IsTags, "commander")])),
-        ("-type:elf and year:2020", FilterExpr::And(vec![not(ge(CollField::Subtypes, "elf")), year(2020)])),
+        ("type:goblin year:2023", FilterExpr::And(vec![ge(CollField::Subtypes, "goblin"), year(2023)]), true),
+        ("type:goblin or year:2023", FilterExpr::Or(vec![ge(CollField::Subtypes, "goblin"), year(2023)]), false),
+        ("kw:Flying and is:commander", FilterExpr::And(vec![ge(CollField::Keywords, "Flying"), ge(CollField::IsTags, "commander")]), false),
+        ("type:goblin or is:commander", FilterExpr::Or(vec![ge(CollField::Subtypes, "goblin"), ge(CollField::IsTags, "commander")]), false),
+        ("-type:elf and year:2020", FilterExpr::And(vec![not(ge(CollField::Subtypes, "elf")), year(2020)]), false),
     ];
-    for (label, f) in &cases {
+    for (label, f, may_undershoot) in &cases {
         assert!(super::is_printing_composable(f, &archived.indexes), "{label} must be printing-composable");
         let mut got = composed(f);
         got.sort_unstable();
         let mut want = brute(f);
         want.sort_unstable();
         assert_eq!(got, want, "compose_printing_bits disagrees with the residual path for {label}");
-        // The estimate feeds plan choice: a valid upper bound at minimum, and exact for a bare leaf.
+        // The estimate feeds plan choice: a valid upper bound at minimum (unless `may_undershoot`),
+        // and exact for a bare leaf.
         let est_matches = super::compose_printing_estimate(f, &archived.indexes, &archived.offsets, n_printings, false).result.printing;
-        assert!(est_matches >= want.len(), "compose_printing_estimate undercounts for {label}: {est_matches} < {}", want.len());
+        assert!(
+            *may_undershoot || est_matches >= want.len(),
+            "compose_printing_estimate undercounts for {label}: {est_matches} < {}",
+            want.len()
+        );
         if matches!(f, FilterExpr::CollectionCmp { .. } | FilterExpr::Not(_)) {
             assert_eq!(est_matches, want.len(), "bare collection-leaf estimate must be exact for {label}");
         }
@@ -14820,29 +14836,34 @@ fn and_trace_reports_the_winning_mechanism_and_every_considered_one() {
     assert!(subtype_hit.hit, "Round 36's table hit is real and exact here (subtype_arith_and_arm_tightening's own f3 assertion)");
     assert_eq!(subtype_hit.printing, Some(4));
 
-    // `tree` must show exactly ONE joint_lookup node -- `arith_tuple_count`, since it runs first --
-    // covering only the two arith leaves, with the Dragon leaf left over as a sibling.
+    // `tree` must show exactly ONE joint_lookup node -- `SubtypeArithBox`, Round 40's class-priority
+    // fix (tightest-among-ties, not first-evaluated): both mechanisms tie at the identical value
+    // (4), and among an EXACT/bound tie, the more complete answer wins attribution -- `SubtypeArithBox`
+    // covers all 3 leaves (Dragon + both arith bounds), `arith_tuple_count` only the 2 arith leaves.
+    // Nothing is left uncovered, so root has exactly one child (the winner itself), not a leftover
+    // Dragon leaf sibling the way the pre-Round-40 (first-evaluated) attribution left one.
     let AndTraceNode::Op { op: "min_fold", children, printing: root_printing, card: root_card, artwork: root_artwork, .. } = &and_trace.tree else {
         panic!("root must be a min_fold op node, got {:?}", match &and_trace.tree { AndTraceNode::Leaf { .. } => "leaf", AndTraceNode::Op { op, .. } => op });
     };
     assert_eq!(*root_printing, 4);
     assert_eq!((*root_card, *root_artwork), (est.result.card, est.result.artwork), "root's own numbers must equal the arm's real final answer");
-    assert_eq!(children.len(), 2, "one joint_lookup (the winner) plus the one uncovered Dragon leaf");
+    assert_eq!(children.len(), 1, "one joint_lookup (the winner) and nothing left uncovered");
     let winner = children
         .iter()
         .find(|c| matches!(c, AndTraceNode::Op { op: "joint_lookup", .. }))
         .expect("exactly one joint_lookup child");
     let AndTraceNode::Op { mechanism, printing, children: winner_children, .. } = winner else { unreachable!() };
-    assert_eq!(*mechanism, Some("arith_tuple_count"), "the earlier-evaluated mechanism wins the tie, not the more specific one");
+    assert_eq!(*mechanism, Some("SubtypeArithBox"), "the more complete (3-leaf) exact/bound candidate wins a tie, not whichever ran first");
     assert_eq!(*printing, 4);
-    assert_eq!(winner_children.len(), 2, "arith_tuple_count's own leaves are just the two arith children, never the Dragon leaf");
+    assert_eq!(winner_children.len(), 3, "SubtypeArithBox's own leaves are the Dragon leaf plus both arith children");
+    assert!(
+        winner_children.iter().any(|c| matches!(c, AndTraceNode::Leaf { expr, .. } if expr.contains("Subtypes"))),
+        "the Dragon subtype leaf must be among the winner's own covered children, not left over"
+    );
     for c in winner_children {
         let AndTraceNode::Leaf { expr, .. } = c else { panic!("joint_lookup's children must be leaves") };
-        assert!(expr.contains("Cmc") || expr.contains("Power"), "covered leaves must be the cmc/power bounds, got {expr}");
+        assert!(expr.contains("Cmc") || expr.contains("Power") || expr.contains("Subtypes"), "covered leaves must be Dragon/cmc/power, got {expr}");
     }
-    let leftover = children.iter().find(|c| matches!(c, AndTraceNode::Leaf { .. })).expect("the uncovered Dragon leaf must be a direct child of root");
-    let AndTraceNode::Leaf { expr, .. } = leftover else { unreachable!() };
-    assert!(expr.contains("Subtypes"), "the leftover leaf must be the Dragon subtype leaf, got {expr}");
 
     assert_min_fold_invariant(&and_trace.tree);
 }
@@ -15156,4 +15177,192 @@ fn and_arm_independence_declines_outside_its_shape_gate() {
     let trace2 = *est2.and_trace.expect("want_trace");
     assert!(!trace2.considered.iter().any(|g| g.mechanism == "Independence"), "two DIFFERENT price fields present together -- must decline rather than pick one arbitrarily");
     assert_min_fold_invariant(&trace2.tree);
+}
+
+/// Round 40: `legality x cn` (a bare collector-number bound) is a NEWLY-confirmed-safe registry pair
+/// -- re-validated directly against real data (this round's own doc section: median abs-log-ratio in
+/// printing space 0.246->0.041 combined across 285 scored rows of 300 draws, 255 improved/14
+/// regressed). Neither leaf has a `compile_plane` arm covering the other (legality compiles to its own
+/// existential plane; collector-number has no plane arm at all) and neither is in any pair/subtype
+/// table for THIS pair, so it gets no other tightening -- the same "both leaves individually exact,
+/// fold picks the broader one" shape Round 38 fixed for color/identity/cmc x price.
+///
+/// Fixture: 100 single-printing cards, `card_legalities = 0b01` (format shift 0) on cards {0..=9} ∪
+/// {40..=69} (40 total, mirroring `and_arm_independence_tightens_color_and_price`'s own Green
+/// pattern), collector numbers 1..=100 -- `cn<=25` selects the 25 lowest. True joint is the overlap in
+/// {0..=9} only: 10 cards, matching `round(40 * 25 / 100) == 10` exactly, distinct from both leaves'
+/// own solo counts (40, 25) and the plain min-fold (25).
+#[test]
+fn and_arm_independence_tightens_legality_and_collector_number() {
+    let mut vocab = VocabInterner::new();
+    let mut cards: Vec<OracleCard> = (0..100).map(|i| stub_card(1 + i as u128, TYPE_CREATURE, &[], &mut vocab)).collect();
+    for c in cards.iter_mut().take(10) {
+        c.card_legalities = 0b01; // legal at shift 0
+    }
+    for c in cards.iter_mut().take(70).skip(40) {
+        c.card_legalities = 0b01;
+    }
+    let mut data = store_of(cards, &[1; 100], vocab);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.collector_number_int = Some(i as u16 + 1); // 1..=100
+        // The card-invariant Legality PLANE (`build_bit_planes`, read by `compose_printing_estimate`'s
+        // Legality leaf via `legality_candidate_bits`) is built from each PRINTING's own
+        // `card_legalities`, not the card-level field `store_of` copied in from `cards` above -- a
+        // single-printing card still needs its one printing's copy set explicitly (`stub_printing`
+        // defaults every printing to `card_legalities: 0`, "not legal in anything").
+        p.card_legalities = data.cards[i].card_legalities;
+    }
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    data.indexes.collector_number = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.collector_number_int.map(u32::from));
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let legal = || FilterExpr::Legality { shift: Some(0), expected: 0b01 };
+    let cn_le25 = || FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::CollectorNumberInt), op: CmpOp::Le, rhs: NumExpr::Const(25.0) };
+
+    // Sanity: both leaves individually exact and as expected, before any And-level tightening.
+    let legal_solo = super::compose_printing_estimate(&legal(), &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(legal_solo.result.printing, 40, "fixture assumption: 40 legal printings");
+    let cn_solo = super::compose_printing_estimate(&cn_le25(), &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(cn_solo.result.printing, 25, "fixture assumption: 25 printings at cn<=25");
+
+    let filter = FilterExpr::And(vec![legal(), cn_le25()]);
+    let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, true);
+    assert_eq!(est.result.printing, 10, "independence must tighten below the plain min-fold (25) to the true joint (10)");
+
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace for a top-level And");
+    let hit = and_trace.considered.iter().find(|g| g.mechanism == "Independence").expect("Independence must have been attempted for this eligible legality+cn pair");
+    assert!(hit.hit);
+    assert_eq!(hit.printing, Some(10), "round(40 * 25 / 100) == 10");
+
+    let AndTraceNode::Op { op: "min_fold", children, .. } = &and_trace.tree else { panic!("root must be a min_fold op node") };
+    let winner = children.iter().find(|c| matches!(c, AndTraceNode::Op { op: "independence", .. })).expect("independence must win the tree");
+    let AndTraceNode::Op { printing, .. } = winner else { unreachable!() };
+    assert_eq!(*printing, 10);
+    assert_min_fold_invariant(&and_trace.tree);
+}
+
+/// Round 40: `legality x set` must NOT be in the registry, regardless of what a quick check on a toy
+/// fixture might suggest -- format legality is date-DEFINED, a categorically different case from a
+/// real-world correlation-with-exceptions (see `independence_safe_pair`'s own doc), left for a future
+/// EXACT per-(set,format) mechanism, not independence. This directly exercises the registry gate's
+/// negative case: a shape structurally identical to the confirmed-safe `legality x cn` pair above
+/// (both leaves individually exact, no other mechanism covers them together) must still decline.
+#[test]
+fn and_arm_independence_registry_declines_legality_and_set() {
+    let mut vocab = VocabInterner::new();
+    let mut cards: Vec<OracleCard> = (0..40).map(|i| stub_card(1 + i as u128, TYPE_CREATURE, &[], &mut vocab)).collect();
+    for c in cards.iter_mut().take(20) {
+        c.card_legalities = 0b01;
+    }
+    let mut data = store_of(cards, &[1; 40], vocab);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.card_set_code = InlineStr::from_str(if i < 15 { "sld" } else { "m21" });
+    }
+    // set_codes built the way reload_commit builds it (see set_code_and_date_narrowing's own precedent).
+    let mut set_codes: TagIndex = HashMap::new();
+    for (i, p) in data.printings.iter().enumerate() {
+        set_codes.entry(p.card_set_code.as_str().to_string()).or_default().push(i as u32);
+    }
+    data.indexes.set_codes = set_codes;
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let legal = FilterExpr::Legality { shift: Some(0), expected: 0b01 };
+    let set_sld = FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value: "sld".to_string() };
+    let filter = FilterExpr::And(vec![legal, set_sld]);
+    let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace");
+    assert!(
+        !and_trace.considered.iter().any(|g| g.mechanism == "Independence"),
+        "legality x set must never reach the registry, even though the shape otherwise looks eligible"
+    );
+    assert_min_fold_invariant(&and_trace.tree);
+}
+
+/// Round 40's class-priority fix: an ESTIMATE-class candidate (independence) must NEVER override an
+/// EXACT/bound candidate for an overlapping leaf subset, even when the estimate's own number happens
+/// to be SMALLER (the unsafe "pick globally smallest" mistake the round's own doc warns against).
+///
+/// Fixture: 10,000 single-printing cards -- large enough to clear `PairTotals`'s own
+/// `PAIR_MIN_PRINTINGS` (1,024) selectivity floor for BOTH the legality and cmc dimensions, which a
+/// smaller fixture (as `and_arm_independence_tightens_legality_and_collector_number` uses, where
+/// legality's own SOLO count needs no such floor) would silently prune before `pair_leaf_id` ever sees
+/// it. `legal` (format shift 0) on cards {0..=5999} (6,000). `cmc=3` on cards {3000..=6999} (4,000),
+/// overlapping `legal` only in {3000..=5999} -- `PairTotals` answers this EXACT joint at 3,000, tighter
+/// than the naive fold (min(6000, 4000, cn<=4500's 4500) == 4000). Collector numbers 1..=10000,
+/// `cn<=4500` selects 4,500 (cards {0..=4499}). Both `legal` and `cn<=4500` are in the registry
+/// (`legality x cn`), and `cmc=3` doesn't change that gate on its own -- but `legal` is the SAME leaf
+/// PairTotals already used for its exact 3,000, so the class-priority `covered` bookkeeping must
+/// exclude it from the independence scan entirely: `round(6000 * 4500 / 10000) == 2700` is smaller
+/// than PairTotals' exact 3,000, so an ungated "pick smallest" would wrongly report 2,700 as the arm's
+/// final answer, silently regressing behind a real, already-correct exact joint.
+#[test]
+fn and_arm_independence_never_overrides_an_overlapping_exact_pair_total() {
+    const N: usize = 10_000;
+    let mut vocab = VocabInterner::new();
+    let mut cards: Vec<OracleCard> = (0..N).map(|i| stub_card(1 + i as u128, TYPE_CREATURE, &[], &mut vocab)).collect();
+    for c in cards.iter_mut().take(6_000) {
+        c.card_legalities = 0b01; // legal at shift 0, cards 0..=5999
+    }
+    for c in cards.iter_mut().take(7_000).skip(3_000) {
+        c.cmc = Some(3); // cards 3000..=6999
+    }
+    let mut data = store_of(cards, &vec![1; N], vocab);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.collector_number_int = Some(i as u16 + 1); // 1..=10000
+        // See `and_arm_independence_tightens_legality_and_collector_number`'s own comment: the
+        // Legality PLANE reads each printing's own `card_legalities`, not the card-level copy.
+        p.card_legalities = data.cards[i].card_legalities;
+    }
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    data.indexes.collector_number = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.collector_number_int.map(u32::from));
+    data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(|v| v as i16));
+    let p2c = build_printing_to_card(&data.offsets);
+    data.indexes.pair_totals =
+        build_pair_totals(&data.cards, &data.printings, &p2c, &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let legal = FilterExpr::Legality { shift: Some(0), expected: 0b01 };
+    let cmc_eq3 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Eq, rhs: NumExpr::Const(3.0) };
+    let cn_le4500 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::CollectorNumberInt), op: CmpOp::Le, rhs: NumExpr::Const(4500.0) };
+
+    // Sanity: confirm the numbers this fixture's own doc claims.
+    let legal_solo = super::compose_printing_estimate(&legal, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(legal_solo.result.printing, 6_000);
+    let cmc_solo = super::compose_printing_estimate(&cmc_eq3, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(cmc_solo.result.card, Some(4_000));
+    let cn_solo = super::compose_printing_estimate(&cn_le4500, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(cn_solo.result.printing, 4_500);
+
+    let filter = FilterExpr::And(vec![legal, cmc_eq3, cn_le4500]);
+    let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace");
+
+    let pt_hit = and_trace
+        .considered
+        .iter()
+        .find(|g| g.mechanism == "PairTotals" && g.leaves.iter().any(|l| l.contains("Legality")) && g.leaves.iter().any(|l| l.contains("Cmc")))
+        .expect("PairTotals must have attempted the legality+cmc pair");
+    assert!(pt_hit.hit);
+    assert_eq!(pt_hit.printing, Some(3_000), "the real legal ∧ cmc=3 exact joint is {{3000..=5999}}, 3,000 cards");
+
+    assert!(
+        !and_trace.considered.iter().any(|g| g.mechanism == "Independence" && g.leaves.iter().any(|l| l.contains("Legality"))),
+        "independence must never be attempted against `legal` once PairTotals already claimed it -- \
+         a covered leaf must not reach the registry scan at all, not just lose a magnitude comparison"
+    );
+    assert_eq!(
+        est.result.printing, 3_000,
+        "the arm's final answer must stay at PairTotals' exact 3,000, never regress to independence's \
+         smaller-but-unsound 2,700 (round(6000 * 4500 / 10000)) for an overlapping subset"
+    );
+    assert_min_fold_invariant(&and_trace.tree);
 }
