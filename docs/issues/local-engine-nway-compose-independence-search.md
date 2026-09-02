@@ -197,11 +197,47 @@ better) and `set×type` (similarly mixed across spaces) — don't re-attempt the
 `color×identity` needs no registry entry: confirmed already 100%-covered by the pre-existing
 `PlanePopcount` mechanism, no live gap.
 
-Still unresolved from the original doc: pairwise-safe does not imply joint-safe (`color`×`identity`
-was invisible at the pairwise level and only showed up as a real correlation once tested as a triple).
-The registry above is pair-level only — a residual with 3+ mutually pairwise-safe leaves still falls
-back to min-fold, not an assumption of joint safety by transitivity. Triple-level re-validation of the
-confirmed pairs above hasn't been attempted.
+**Triple-level safety, investigated and resolved into a narrower, real, CONFIRMED problem — not the
+one this doc used to describe.** The literal question ("does joint 3-way independence hold") turned
+out not to be reachable at all: building `independence_safe_pair`'s adjacency graph found no triangle
+among the 9 confirmed pairs (`Price` is a hub with 5 partners — `Legality`/`ColorId`/`ColorIdentity`/
+`Cmc`/`Type` — none of which are registered against each other; `SetCode`'s 2 partners,
+`ColorIdentity`/`Pow`, aren't registered against each other either) — so no query can ever trigger a
+true 3-way joint-independence assumption today. The doc's own motivating claim (`color`×`identity`
+"invisible pairwise, real correlation as a triple") describes a combination that was never added to
+the registry in the first place (Round 40 found it's 100%-covered by exact `PlanePopcount`, not an
+independence candidate at all) — re-spot-checked directly (`c:r id:ru t:dragon`-shaped queries):
+PRINTING space is fine (abs log ratio 0.001-0.35, two independent exact mechanisms — `PlanePopcount`
+and `SubtypePairIndexes` — happen to cross-cover it), but CARD space is not (0.48-1.18, e.g. predicted
+568 vs. true 174) — a real, narrower-than-claimed gap, in a SEPARATE code path
+(`exact_result_total`'s card-space `matches`, not `compose_printing_estimate`'s own `eval_domain`,
+which is well-behaved here) — not investigated further, flagged as its own (small) open item.
+
+**What IS real, reachable by shipped code today, and CONFIRMED bad**: a "star" — two of a hub class's
+registered partners both present alongside the hub, where the partners themselves aren't a registered
+pair (e.g. `color:G cmc<=3 usd<=10`: `ColorId`×`Price` and `Cmc`×`Price` are both registered safe,
+`ColorId`×`Cmc` isn't) fires BOTH independence estimates simultaneously and `.min()`-folds them — a
+composition NEITHER pair's own 2-leaf calibration (Round 38/40) ever measured. Measured directly
+(curated `star:*` shapes added to `scripts/nway_estimate_truth_survey.py`, three independent seeds):
+`star:color+cmc+usd` and `star:identity+cmc+usd` are substantially worse than either component's own
+baseline (median abs-log-ratio ~3.5-32x worse across three seeds, `and_trace` directly confirmed both
+`Independence` groups fire on real queries like `color:G cmc<=3 usd<=10`); `star:identity+pow+set` and
+`star:cmc+type+usd` show the same direction on smaller samples. `star:legality+cmc+usd` and
+`star:legality+type+usd` are only mildly worse, close to their components' own noise. An UNPLANNED,
+independently-reproduced-on-a-third-seed second finding: the 3 star candidates that get swept by an
+EXACT mechanism before independence ever fires (`legality+color+usd`, `legality+identity+usd`,
+`color+identity+usd` — `PlanePopcount` claims the two card-invariant leaves, leaving the price leaf
+plain-min-folded) are ALSO worse than either component's own baseline (median 0.97-1.05) — a genuine
+3-way `legality`/`color`/`identity`/`price` correlation the current `min(exact-2-leaf-joint,
+solo-price-leaf)` fold misses, unrelated to the double-independence question but found by the same
+investigation. **Neither finding is fixed here** — this was scoped as measurement only. See the
+ledger's own section for the full per-shape numbers and a recommended next round (the simplest
+candidate: decline BOTH independence estimates, falling back to plain min-fold, when a hub class and
+2+ of its DIFFERENT registered partners are simultaneously present in the residual — the same
+"ambiguous → decline" precedent the registry already uses for same-class duplicates and the
+`SubtypePairEstimate` fallback — rather than assuming "pick the tighter one" is safe, since Round 40's
+own class-priority finding is that an estimate isn't a guaranteed bound and "tighter" isn't the same as
+"more accurate").
 
 ## The corrected model: partition search, not a fixed pipeline
 
@@ -297,9 +333,12 @@ above):
   since this was written.
 - **The `popcount_with_bits` redundancy fix** — still needs a real-traffic frequency measurement
   before it's worth shipping on its own; still not done.
-- **Triple-level (3+-leaf) independence safety** — pairwise-safe does not imply joint-safe; the
-  confirmed pair-level registry (above) hasn't been re-checked at the triple level the way
-  `color`×`identity` was originally found to fail at.
+- **A fix for the confirmed "star" degradation** (`color+cmc+usd`, `identity+cmc+usd` substantially
+  worse than either component's own baseline; the swept `legality`/`color`/`identity`×`price` trio
+  also worse) — investigated and confirmed real (see "Triple-level safety" above), not yet fixed. The
+  simplest candidate: decline both independence estimates (fall back to plain min-fold) when a hub
+  class and 2+ of its different registered partners are simultaneously present, mirroring the
+  registry's existing same-class-duplicate ambiguity precedent. A natural next round.
 - **The residual-size distribution for real (and deliberately pathological) 5+-leaf queries** — the
   `N choose 3/4` bound is still reasoned from what's been sampled, not confirmed at the tail. The
   harness's own `broad:n1..n8` catch-all generates this population; it hasn't been specifically

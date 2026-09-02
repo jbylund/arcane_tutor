@@ -192,6 +192,75 @@ total regret by 0.0 ms).
 | 40 | Generalizes Round 38's one hard-coded independence pair into a small registry (`IndepClass`/`independence_safe_pair`), scanned pairwise over every RESIDUAL `And`-arm leaf (not covered by an existing exact mechanism), plus a class-priority fix for winner attribution | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 53,775 shared rows: 395 plan-choice flips, concentrated in the newly-covered shapes (all toward `GatheredScan`); `root=leaf`/`root=or`: 0 changes; `unsafe:legality+set`/`+released`: 0/900 both builds, confirming the deliberately-excluded pair stayed untouched | see "Round 40" narrative below — registry re-validated against real data, not copied from the design doc's own self-contradictory list: adds `legality×{cn,price}`, `type×{released,usd}`, plus `id×set`/`pow×set`, which empirically REVERSE the doc's "unsafe" claim (independently re-confirmed on a fresh seed, not just the implementing agent's own sample: `id×set` median 1.34→0.14, 273/283 improved; `pow×set` 1.36→0.17, 146/147). `legality×{set,date,year}` deliberately excluded (format legality is date-DEFINED, not merely correlated — reserved for a future exact per-(set,format) mechanism, not independence). Same-currency price crosses spot-checked and found genuinely mixed, not shipped. **A real regression caught by pre-merge independent verification, not the implementing agent's own report**: `safe:cmc+usd` (already covered by Round 38) got WORSE (median 0.158→0.219, 218/246 regressed) — a same-field arith consolidation (`cmc>=1 cmc<=1`) was being marked `covered` unconditionally, silently blocking Round 38's own price×cmc pairing before the new registry scan ever saw it. Fixed (gate `mark_covered` on `single_arith_field(...).is_none()` — only a genuine cross-DIMENSION join covers its leaves); re-verified byte-identical to the pre-Round-40 baseline on the exact repro and every already-covered shape before merging |
 | 41 | Card/artwork space in `compose_printing_estimate`'s `And` arm now floors on each UNCOVERED leaf's own exact card/artwork count (`children_estimates`), gated by the SAME `range_too_broad_to_narrow` breadth guard `narrow_rec` already uses — closing an asymmetry printing space never had (its own baseline, `folded.result.printing`, already floors on every leaf unconditionally) | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 8,097 shared rows (independent re-sweep, fresh seed): 23 plan-choice flips (0.3%), all one-directional (`PrintingCompose → StreamedSelect`/`GatheredScan`, never the reverse); ratio diagnostic unchanged (mean 0.184 both builds, "no detectable difference"); zero-true-count hit rate unchanged (77.6% both); border-leaf reproducers (`cmc=1 border:black`, `cmc>=1 cmc<=5 border:black`, etc.) byte-identical before/after, confirming the breadth guard correctly declines on a genuinely broad leaf | see "Round 41" narrative below — found while scoping the general N-way partition search (`local-engine-nway-compose-independence-search.md`): `color:G format:pioneer t:elf` predicted card=1179/true=246 (`t:elf`'s own exact card count, 660, was never considered — a strict subset of what compile_plane's partial color+legality joint reported, itself looser than a bare min-fold would be). This is a previously-scoped, deliberately-deferred fix — `local-engine-domain-cards-existential-arith-and.md`'s own "Ingredient 3" — shipped now with the breadth guard that round asked for, and scoped so the new floor affects ONLY `result_space` (what `explain()` reports), never `exact_domain` (what `scan_units`'s real execution-cost pricing reads), so the two fields — accidentally identical for card/artwork before this round, unlike printing where they already legitimately diverge — now behave the way printing's split always has. Motivating case: `eval_domain` 1179→660 (still not exact — true is 246 — this tightens a bound, it does not solve the underlying "no true 3-leaf joint mechanism exists yet" problem, tracked as a separate Round 42 candidate). `and_estimate_ns` canary: no consistent, reproducible tax detected, not distinguishable from the same-build canary's own noise floor |
 | 42 | Generalizes `SubtypePairIndexes`/`SubtypePairEstimate` past its `v.len() == 2` gate to scan the residual for every `(dim, subtype)` pair present in an `And` of any size — no reordering relative to `compile_plane`, no new placement/priority rule; the existing `.min()`-chain across mechanisms already composes correctly regardless of order | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 8,346 shared rows (independent re-sweep, fresh seed): 23 plan-choice flips (0.3%), concentrated in the newly-covered `triple:color+type+cmc`/`triple:color+legality+type` shapes; ratio diagnostic improved (mean 0.177→0.173, "B is MORE accurate"); border-leaf reproducers byte-identical before/after; the pre-existing 2-leaf `set:eld t:knight` case unchanged | see "Round 42" narrative below — directly closes the doc's own `color:G format:pioneer t:elf` worked example: `eval_domain` 660→560 (Round 41's own floor), now a genuine `SubtypePairIndexes` table HIT (card 560/printing 1917/artwork 790 — still not exact, true is 246, but a real, confirmed tightening). **A first implementation pass shipped a real gap, caught by independent verification, not the implementing agent's own report**: it correctly generalized the gate, but ALSO skipped `covered` leaves on input for both the exact-hit AND estimate branches (mirroring the independence registry's own precedent) — which meant `color` (already covered by `compile_plane`'s joint with `legality`) never reached the new scan at all, so the motivating example got ZERO benefit on the first pass. Root cause: skipping `covered` leaves is necessary for the ESTIMATE-class fallback (an independence-shaped estimate isn't a guaranteed bound and could undershoot below an already-exact value — Round 40's own class-priority reasoning) but NOT for the EXACT-hit branch, where any true sub-conjunction's count is always a valid bound regardless of what else covered a leaf, exactly like `compile_plane`/`pair_bounded_min`/the arith-tuple merge already behave. Fixed by splitting the two branches: the exact-hit scan ignores `covered` entirely; the estimate fallback still respects it, recomputed fresh after the hit loop runs |
+| 43 | Triple-level independence safety investigation — measurement only, no engine code changed | diagnostic | n/a (no code shipped) | n/a | see "Round 43" narrative below — the literal "does joint 3-way independence hold" question isn't reachable (no triangle in the registry's adjacency graph); the real, reachable, CONFIRMED-bad scenario is a "star" (two of a hub's registered partners present simultaneously, both independence estimates fired and `.min()`-folded, a composition neither pair's own 2-leaf calibration ever measured): `star:color+cmc+usd`/`star:identity+cmc+usd` substantially worse than either component's baseline across three independent seeds; an unplanned second finding (three star candidates swept by an exact `PlanePopcount` mechanism instead) are ALSO worse than baseline. Not fixed this round — a follow-up is recommended (decline both estimates when a hub + 2 different partners co-occur), scoped but not built |
+
+### Round 43
+
+Target: re-scoping "hand the general N-way partition search to an agent," the design doc's own
+carried-forward blocker was "triple-level (3+-leaf) independence safety hasn't been re-checked —
+pairwise-safe does not imply joint-safe," resting entirely on one inherited claim (`color`×`identity`
+"invisible pairwise, real correlation as a triple"). Before scoping a fix, or even an investigation,
+I re-read `independence_safe_pair`'s actual match arms (`lib.rs:8455-8477`) and built its adjacency
+graph — the same "verify before building on it" discipline that corrected the "placement rule" framing
+last round. **Finding: there is no triangle.** `Price` is a hub with 5 partners
+(`Legality`/`ColorId`/`ColorIdentity`/`Cmc`/`Type`), none of which are registered against each other;
+`SetCode`'s 2 partners (`ColorIdentity`/`Pow`) aren't registered against each other either. So the
+literal "does a true 3-way joint-independence assumption hold" question can't be triggered by any query
+today — nobody could hit it even trying. The doc's own motivating claim turned out to describe a
+combination that was never added to the registry at all: `color`×`identity` is 100%-covered by exact
+`PlanePopcount` (Round 40's own finding), never an independence candidate.
+
+**What IS real, reachable, and unvalidated: a "star."** The registry's residual scan
+(`lib.rs:9705-9739`) iterates every PAIR of present residual classes and independently `.min()`-folds
+each confirmed-safe pair — so a 3-leaf query like `color:G cmc<=3 usd<=10` (residual `{ColorId, Cmc,
+Price}`) fires BOTH `ColorId`×`Price` and `Cmc`×`Price` simultaneously (their common partner, `Price`,
+is the hub; `ColorId`×`Cmc` itself isn't registered, correctly skipped). Each pair was calibrated on
+its OWN 2-leaf-only sample (Round 38/40); nobody had checked whether folding TWO
+independently-valid-but-never-jointly-tested estimates via `min()` degrades accuracy once a third leaf
+is actually present.
+
+**Measured directly** (curated `star:*` shapes added to `scripts/nway_estimate_truth_survey.py`,
+following the existing `TRIPLES` pattern; three independent seeds, 0/999/7, the last run and verified
+by me independently rather than trusting the investigating agent's own report alone):
+
+- `star:color+cmc+usd` and `star:identity+cmc+usd` are substantially worse than either component's own
+  2-leaf baseline — median abs-log-ratio roughly 3.5-32x worse depending on seed/sample (my own
+  independent seed-7 sweep: `star:color+cmc+usd` median 0.56 vs. `safe:color+usd` 0.13/`safe:cmc+usd`
+  0.16; `star:identity+cmc+usd` median 0.74 vs. `safe:identity+usd` 0.14/`safe:cmc+usd` 0.16).
+  Confirmed via direct `and_trace` inspection on real queries (`color:G cmc<=3 usd<=10`: both
+  `Independence` groups fire, `eval_domain`=6450 against true=3363; `id:U cmc>=5 usd<=5`: eval_domain
+  =7102 against true=1373) that the "two simultaneous Independence estimates" mechanism is exactly what
+  fires here, not assumed from reading the code alone.
+- `star:identity+pow+set` and `star:cmc+type+usd` show the same direction of degradation, on smaller
+  samples (real signal, magnitude less settled).
+- `star:legality+cmc+usd` and `star:legality+type+usd` are only mildly worse, close to their
+  components' own baseline noise.
+- **An unplanned, independently-reproduced-on-a-third-seed second finding**: the 3 star candidates that
+  get swept by an EXACT mechanism before independence ever fires at all
+  (`legality+color+usd`/`legality+identity+usd`/`color+identity+usd` — `PlanePopcount` claims the two
+  card-invariant leaves, leaving the price leaf plain-min-folded against that exact joint) are
+  themselves worse than either component's own baseline too (my own seed-7 sweep: median 0.97-1.05,
+  matching the pattern found on seeds 0/999) — a genuine 3-way `legality`/`color`/`identity`/`price`
+  correlation the current `min(exact-2-leaf-joint, solo-price-leaf)` fold misses. Different mechanism
+  from the double-independence question, found by the same investigation, not chased further.
+- **The `color`×`identity`×subtype spot check** (`c:X id:Y t:Z`-shaped queries, directly, not via the
+  harness's curated catalog): printing space is fine (abs log ratio 0.001-0.35 — two independent exact
+  mechanisms, `PlanePopcount` and `SubtypePairIndexes`, happen to cross-cover it); card space is not
+  (0.48-1.18, e.g. `c:r id:ru t:dragon` predicted 568 vs. true 174) — but this is `exact_result_total`'s
+  own card-space `matches` computation, a SEPARATE code path from `compose_printing_estimate`'s
+  `eval_domain` (which is well-behaved for this query, 244 against true 174) — a real but narrower gap
+  than the doc's inherited claim suggested, not investigated further.
+
+**Deliberately not fixed this round** (measurement only, per the round's own scope). The simplest
+candidate for a follow-up: decline BOTH independence estimates (fall back to plain min-fold) when a
+hub class and 2+ of its DIFFERENT registered partners are simultaneously present in the residual —
+the same "ambiguous → decline" precedent the registry already uses for same-class duplicates and the
+`SubtypePairEstimate` fallback, rather than assuming "pick the tighter one" is safe (Round 40's own
+class-priority finding: an estimate isn't a guaranteed bound, so tighter isn't the same as more
+accurate). Not designed or built here.
+
+Blast radius: `scripts/nway_estimate_truth_survey.py` only (11 new curated `star:*` shapes,
+28 lines) — no `card_engine/src/lib.rs` changes, per this round's own scope.
 
 ### Round 42
 
