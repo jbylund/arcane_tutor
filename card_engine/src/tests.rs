@@ -2490,7 +2490,7 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     // #743 arith-tuple postings — load-bearing like the numeric indexes above: an unbuilt index
     // (n_cards mismatch) makes arith_tuple_narrow decline, so building it here is what actually
     // exercises the new positive/negated narrowing through run_query in fuzz_row_identity_matches_reference.
-    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
     data.indexes.released_at = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.released_at_int);
     data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
     data.indexes.price_eur = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_eur);
@@ -6681,6 +6681,8 @@ fn bench_checked_vs_unchecked_access() {
     let artwork_groups = assign_artwork_groups(&mut printings, &offsets);
     let artwork_base = build_artwork_base_from(&artwork_groups);
     let printing_to_card = build_printing_to_card(&offsets);
+    // Computed here, before `artwork_base`/`offsets` are moved/borrowed into the literal below.
+    let arith_tuple = build_arith_tuple_index(&cards, &offsets, &artwork_base);
 
     let indexes = CardIndexes {
         artwork_base,
@@ -6737,7 +6739,7 @@ fn bench_checked_vs_unchecked_access() {
         rarity_printing_ordered: build_printing_value_index(&printings, &cards, &offsets, |p| p.card_rarity_int.map(u32::from)),
         name_bigrams:   build_name_bigram_index(&cards),
         legal_divergent: build_divergent_ids(&cards),
-        arith_tuple:    build_arith_tuple_index(&cards),
+        arith_tuple,
     };
     let data = CardData {
         cards,
@@ -7834,7 +7836,7 @@ fn card_invariant_broadcast_compose_leaves() {
     }
     data.indexes.set_codes = set_codes;
     // `store_of` doesn't build these (a lightweight fixture, not the full reload_commit path) --
-    // `color_cmp_value_total`/`arith_tuple_count`/`bare_numeric_field_count` need them built to answer
+    // `color_cmp_value_total`/`arith_tuple_totals`/`bare_numeric_field_count` need them built to answer
     // anything but zero, and `printing_compose_indexes_built` now requires `arith_tuple` specifically
     // before PrintingCompose is even applicable, for exactly this reason.
     data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(|v| v as i16));
@@ -7843,7 +7845,7 @@ fn card_invariant_broadcast_compose_leaves() {
     let p2c = build_printing_to_card(&data.offsets);
     data.indexes.value_totals =
         build_all_value_totals(&data.cards, &data.printings, &p2c, &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
-    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     let n_printings = archived.printings.len();
@@ -7954,7 +7956,7 @@ fn domain_hint_is_card_space_not_printing_scaled() {
     let p2c = build_printing_to_card(&data.offsets);
     data.indexes.value_totals =
         build_all_value_totals(&data.cards, &data.printings, &p2c, &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
-    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     let n_printings = archived.printings.len();
@@ -10912,11 +10914,11 @@ fn cmc_border_existential_fixture_store() -> CardData {
     // `Candidates` path instead of the `PrintingCompose`-acquire branch this test exists to exercise.
     data.indexes.border_printing = build_border_printing_planes(&data.printings, &data.strings);
     data.indexes.rarity_printing = build_rarity_printing_planes(&data.printings);
-    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
     // Round 22 addition: `card_numeric_index` always returns `Some(&indexes.cmc)` regardless of
     // whether it was actually built, so a bare `cmc` leaf's OWN single-child `compose_printing_
     // estimate` arm (`bare_numeric_field_count`) silently reads a wrong `Some(0)` from the empty
-    // default index instead of falling back to `arith_tuple_count` -- harmless for this fixture's
+    // default index instead of falling back to `arith_tuple_totals` -- harmless for this fixture's
     // ORIGINAL test (`compose_tier_charges_border_existential_and_arith_range`, which drives
     // `acquire_plan_features`/`split_planes` and never reaches that per-child arm), but load-bearing
     // for `compose_and_arm_tightens_lone_existential_leaf_with_no_card_invariant_partner` below, which
@@ -11090,7 +11092,7 @@ fn compose_and_arm_narrow_floor_diverges_result_space_from_exact_domain() {
 /// `CollectionCmp` (not `compile_plane`-covered -- see `compile_plane`'s catch-all `_ => None` arm in
 /// planes.rs) and a single, always-true `cmc>=1` leaf (arith-eligible, so excluded from
 /// `card_invariant`/`existential` entirely, and alone -- never 2+ arith children -- so it never feeds
-/// `arith_tuple_count` either) together guarantee `exact_domain_cards`/`_artworks` stay `None` for
+/// `arith_tuple_totals` either) together guarantee `exact_domain_cards`/`_artworks` stay `None` for
 /// every `And` built against this fixture: no mechanism above the new floor ever fires here, so every
 /// assertion in the two tests below is purely about the new per-leaf floor in isolation.
 fn broad_and_narrow_keyword_fixture_store() -> CardData {
@@ -11313,7 +11315,7 @@ fn cmc_legality_existential_fixture_store() -> CardData {
     // `PrintingCompose`-acquire branch the test exists to exercise.
     data.indexes.border_printing = build_border_printing_planes(&data.printings, &data.strings);
     data.indexes.rarity_printing = build_rarity_printing_planes(&data.printings);
-    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
     data
 }
 
@@ -14607,6 +14609,190 @@ fn regex_required_factors_extracts_only_guaranteed() {
     assert_eq!(f("(?i)aaa+"), vec!["aaa".to_string()]);
 }
 
+/// Round 51 fixture: two cards share one (cmc=3, power/toughness/loyalty=None) key -- card_a gets
+/// 3 printings collapsed to 2 distinct artworks (two of the three share an illustration), card_b
+/// gets 1 printing/1 artwork. A third card at a DIFFERENT key (cmc=6) with its own 1 printing/1
+/// artwork checks the summation doesn't leak across keys. Hand-computed expected totals for the
+/// (cmc=3) key: 4 printings (3+1), 2 cards, 3 artworks (2+1).
+fn arith_tuple_totals_fixture_store() -> CardData {
+    let mut vocab = VocabInterner::new();
+    let mut card_a = stub_card(1, TYPE_SORCERY, &[], &mut vocab);
+    card_a.cmc = Some(3);
+    let mut card_b = stub_card(2, TYPE_SORCERY, &[], &mut vocab);
+    card_b.cmc = Some(3);
+    let mut card_other = stub_card(3, TYPE_SORCERY, &[], &mut vocab);
+    card_other.cmc = Some(6);
+    let cards = vec![card_a, card_b, card_other];
+    let mut data = store_of(cards, &[3, 1, 1], vocab);
+    // card_a's printings 0 and 1 (of its 3) share an illustration -- one artwork group; printing 2
+    // stays distinct, for 2 artwork groups total on card_a.
+    data.printings[1].illustration_id = data.printings[0].illustration_id;
+    let counts = reassign_artwork_grouping(&mut data);
+    data.indexes.artwork_base = build_artwork_base_from(&counts);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
+    data
+}
+
+/// Round 51: `build_arith_tuple_index`'s new `totals` field must sum each key's own EXACT
+/// printing/artwork spans from its postings (not just count cards), and must not leak totals
+/// across distinct keys.
+#[test]
+fn build_arith_tuple_index_sums_exact_totals_per_key() {
+    let data = arith_tuple_totals_fixture_store();
+    let idx = &data.indexes.arith_tuple;
+    assert_eq!(idx.keys[0].cmc, Some(3), "card_a/card_b are visited first, so their shared key is interned first");
+    assert_eq!(
+        idx.totals[0],
+        SpaceTotals { printings: 4, cards: 2, artworks: 3 },
+        "3 printings (card_a) + 1 (card_b) == 4; 2 cards; 2 artworks (card_a, after two of its three \
+         printings collapse to one illustration) + 1 (card_b) == 3"
+    );
+    assert_eq!(idx.keys[1].cmc, Some(6), "card_other's own distinct key");
+    assert_eq!(
+        idx.totals[1],
+        SpaceTotals { printings: 1, cards: 1, artworks: 1 },
+        "card_other's own key must not pick up any of card_a/card_b's totals"
+    );
+}
+
+/// Round 51: `arith_tuple_totals`'s query-time scan must return the exact triple for a real 2-bound
+/// query, matching a manually-computed expected value -- not just "returns Some", and matching the
+/// same per-key totals `build_arith_tuple_index_sums_exact_totals_per_key` establishes directly.
+#[test]
+fn arith_tuple_totals_matches_manual_recompute_for_a_two_bound_query() {
+    let data = arith_tuple_totals_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+
+    // cmc>=1 cmc<=4 selects only card_a/card_b's key (cmc=3); card_other's key (cmc=6) fails cmc<=4.
+    let cmc_ge = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(1.0) };
+    let cmc_le = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(4.0) };
+    let triple = super::arith_tuple_totals(&[&cmc_ge, &cmc_le], &archived.indexes).expect("index is built for this fixture (n_cards > 0)");
+    assert_eq!(triple, (4, 2, 3), "must match build_arith_tuple_index_sums_exact_totals_per_key's own hand-computed totals for the (cmc=3) key");
+}
+
+/// Round 51: with no OTHER exact mechanism eligible for this shape (no subtype/color/set/legality
+/// leaf -- just 2 arith-eligible leaves), `arith_tuple_totals` is the ONLY thing that can populate
+/// `exact_domain_*` for this And. Before Round 51 it folded as `Candidate::Estimate` (a scaled card
+/// count, no artwork) and `fold_candidate`'s `Estimate` arm only ever narrows `result`, never
+/// `exact_domain_*` -- so this fixture's `exact_domain` would have stayed `None` before this round,
+/// exactly the gap Round 46's census flagged.
+#[test]
+fn and_arm_arith_tuple_totals_folds_exact_and_populates_exact_domain() {
+    let mut vocab = VocabInterner::new();
+    let mut card1 = stub_card(1, TYPE_CREATURE, &[], &mut vocab);
+    card1.cmc = Some(2);
+    card1.creature_power = Some(3);
+    let mut card2 = stub_card(2, TYPE_CREATURE, &[], &mut vocab);
+    card2.cmc = Some(1);
+    card2.creature_power = Some(1);
+    let mut card3 = stub_card(3, TYPE_CREATURE, &[], &mut vocab);
+    card3.cmc = Some(5);
+    card3.creature_power = Some(5);
+    let cards = vec![card1, card2, card3];
+    let mut data = store_of(cards, &[1, 1, 1], vocab);
+    data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(|v| v as i16));
+    data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power.map(|v| v as i16));
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let cmc_ge = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(2.0) };
+    let pow_ge = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Power), op: CmpOp::Ge, rhs: NumExpr::Const(2.0) };
+    let filter = FilterExpr::And(vec![cmc_ge, pow_ge]);
+
+    let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, true);
+    assert_eq!(est.result.printing, 2, "true joint is card1+card3: card2 fails power>=2");
+
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace for a top-level And");
+    let hit = and_trace.considered.iter().find(|g| g.mechanism == "arith_tuple_totals").expect("arith_tuple_totals must have been attempted (2 arith-eligible children)");
+    assert!(hit.hit);
+    assert_eq!(
+        (hit.printing, hit.card, hit.artwork),
+        (Some(2), Some(2), Some(2)),
+        "single-printing-per-card fixture: printing == card == artwork == 2 for the true joint"
+    );
+
+    let exact_domain = est
+        .exact_domain
+        .expect("arith_tuple_totals is the only exact mechanism eligible here -- it alone must now populate exact_domain");
+    assert_eq!((exact_domain.printing, exact_domain.card, exact_domain.artwork), (2, Some(2), Some(2)));
+}
+
+/// Round 51: the `IndepClass::Cmc | IndepClass::Pow` "multi" bucket (2+ literal bounds on the SAME
+/// arith field, unfused -- `fuse_and_range_children` only fuses price/collector-number/date/year)
+/// used to always report `artwork: None` for its own `IndepUnit`, so pairing it against ANY partner
+/// could never produce an `artwork_indep`: the pairing loop's `.zip()` on two `Option<usize>` short-
+/// circuits to `None` the moment either side is `None`. After Round 51's `arith_tuple_totals`
+/// upgrade this unit carries its own real artwork count, so pairing it against `SetCode` (which
+/// already has its own real artwork via `set_artworks`, and is a registered `independence_safe_pair`
+/// partner for `Pow`) now produces a real `artwork_indep` for the first time.
+///
+/// Fixture: 100 single-printing cards, `power = i % 10` (`pow>=2 pow<=5` -- two literal, unfused
+/// bounds on the same field -- selects the 40 cards with power in {2,3,4,5}). 25 of them (printings
+/// 0..24) are in set "abc". Single printing per card, so printing == card == artwork count
+/// everywhere in this fixture: `round(40 * 25 / 100) == 10` in all three spaces.
+#[test]
+fn and_arm_independence_pow_multi_bucket_carries_artwork() {
+    let mut vocab = VocabInterner::new();
+    let cards: Vec<OracleCard> = (0..100)
+        .map(|i| {
+            let mut c = stub_card(1 + i as u128, TYPE_CREATURE, &[], &mut vocab);
+            c.creature_power = Some((i % 10) as i8);
+            c
+        })
+        .collect();
+    let mut data = store_of(cards, &[1; 100], vocab);
+    for p in data.printings.iter_mut().take(25) {
+        p.card_set_code = InlineStr::from_str("abc");
+    }
+    data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power.map(|v| v as i16));
+    let p2c = build_printing_to_card(&data.offsets);
+    data.indexes.subtype_pairs =
+        super::build_subtype_pair_tables(&data.cards, &data.printings, &p2c, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
+    data.indexes.set_codes = {
+        let mut idx: TagIndex = HashMap::new();
+        for (i, p) in data.printings.iter().enumerate() {
+            idx.entry(p.card_set_code.as_str().to_string()).or_default().push(i as u32);
+        }
+        idx
+    };
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let pow_ge = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Power), op: CmpOp::Ge, rhs: NumExpr::Const(2.0) };
+    let pow_le = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Power), op: CmpOp::Le, rhs: NumExpr::Const(5.0) };
+    let set_abc = FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value: "abc".to_string() };
+    let filter = FilterExpr::And(vec![pow_ge, pow_le, set_abc]);
+
+    let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+
+    let hit = and_trace
+        .considered
+        .iter()
+        .find(|g| g.mechanism == "Independence" && g.leaves.iter().any(|l| l.contains("Power")) && g.leaves.iter().any(|l| l.contains("SetCode")))
+        .expect("Independence must pair the Pow-multi unit against the SetCode unit -- (Pow, SetCode) is a registered safe pair");
+    assert_eq!(hit.printing, Some(10), "round(40 * 25 / 100) == 10");
+    assert_eq!(hit.card, Some(10), "card_indep already computed before this round -- both sides already had a card count");
+    assert_eq!(hit.artwork, Some(10), "artwork_indep must compute for the first time: the Pow-multi unit's own artwork used to be unconditionally None");
+
+    // Deliberately NOT assert_min_fold_invariant here: this fixture's own `result.card`/`.artwork`
+    // come from the Round 41 leaf-marginal floor (`pow_ge`/`pow_le` each solo, 80/60 cards -- broader
+    // than their own #743-tightened JOINT of 40 that only the independence bucket sees), not from
+    // this Independence hit's own (tighter, but never folded into `result` -- Estimate-class,
+    // decorative in the trace only) card/artwork numbers. That gap between the per-leaf floor and an
+    // Estimate-class winner's own reported numbers is a pre-existing property of `card_floor`/
+    // `artwork_floor` (blind to any multi-leaf tightening over the same leaves), not something this
+    // round changes or is in scope to fix -- confirmed unrelated by checking `hit.card`/`.artwork`
+    // were already non-`None` before this round for this pairing (only `hit.artwork` itself is new).
+}
+
 /// The arith-tuple key budget is a tripwire for adding a high-cardinality field to
 /// `ArithTupleKey`, which would silently turn the 564-combination scan back into a per-card
 /// scan with extra indirection. Assert both halves: a realistic corpus sits well inside the
@@ -14645,7 +14831,10 @@ fn arith_tuple_key_budget_catches_a_blown_domain() {
             c
         })
         .collect();
-    let _ = super::build_arith_tuple_index(&cards);
+    // One printing per card (values never read: the debug_assert above panics before this builder's
+    // totals-summation pass, which is the only code that reads these).
+    let offsets: Vec<u32> = (0..=ARITH_TUPLE_BLOWUP_CARDS as u32).collect();
+    let _ = super::build_arith_tuple_index(&cards, &offsets, &offsets);
 }
 
 /// Above `ARITH_TUPLE_GUARD_MIN_CARDS`, and large enough that an all-distinct key space
@@ -15359,7 +15548,7 @@ fn subtype_arith_and_arm_tightening() {
     let ptc = build_printing_to_card(&data.offsets);
     let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
     data.indexes.subtype_arith = super::build_subtype_arith_tables(&data.cards, &data.printings, &ptc, &data.coll_vocab, max_ag);
-    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
 
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
@@ -15440,7 +15629,7 @@ fn subtype_arith_and_arm_miss_leaves_fold_unchanged() {
     // mechanism a lookup miss exercises (`indexes.subtype_arith.tables.get(subtype)?` returning `None`)
     // is identical either way.
     data.indexes.subtype_arith = super::SubtypeArithIndexes::default();
-    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
     let _ = ptc;
 
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
@@ -15515,7 +15704,7 @@ fn subtype_arith_box_fires_alongside_unrelated_leaf_that_stays_uncovered() {
     let ptc = build_printing_to_card(&data.offsets);
     let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
     data.indexes.subtype_arith = super::build_subtype_arith_tables(&data.cards, &data.printings, &ptc, &data.coll_vocab, max_ag);
-    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
     // Positions 0..=7 are Elf/tribal (not legal, low collector numbers); positions 8..=47 are Human
     // filler (legal, higher collector numbers) -- `store_of`'s within-bucket order is positional here
     // (one printing per card, default prefer_score for every card), matching every sibling
@@ -15617,7 +15806,7 @@ fn independence_now_fires_against_a_different_partner_once_subtype_arith_box_cov
     let ptc = build_printing_to_card(&data.offsets);
     let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
     data.indexes.subtype_arith = super::build_subtype_arith_tables(&data.cards, &data.printings, &ptc, &data.coll_vocab, max_ag);
-    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
     // `store_of`'s within-bucket order is positional here (one printing per card, default
     // prefer_score), matching every sibling fixture's own established assumption -- `prices[i]` lines
     // up with `data.printings[i]` in the same order `cards` was pushed.
@@ -15713,7 +15902,7 @@ fn subtype_arith_box_multiple_subtype_leaves_fold_via_min() {
     let ptc = build_printing_to_card(&data.offsets);
     let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
     data.indexes.subtype_arith = super::build_subtype_arith_tables(&data.cards, &data.printings, &ptc, &data.coll_vocab, max_ag);
-    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
 
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
@@ -15807,7 +15996,7 @@ fn anchored_independence_data() -> CardData {
     let ptc = build_printing_to_card(&data.offsets);
     let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
     data.indexes.subtype_arith = super::build_subtype_arith_tables(&data.cards, &data.printings, &ptc, &data.coll_vocab, max_ag);
-    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
     // `store_of`'s within-bucket order is positional here (one printing per card, default
     // prefer_score), matching every sibling fixture's own established assumption -- printing i lines
     // up with card i in the same order `cards` was pushed (indices 0..20 = Elf, 20..50 = Human).
@@ -16024,7 +16213,7 @@ fn subtype_arith_anchored_independence_multi_subtype_leaves_use_their_own_box_hi
 /// CARD/ARTWORK: NOT the same guarantee, and deliberately not asserted as one -- see
 /// `and_trace_build_tree`'s own doc for why (`.card`/`.artwork` are `None` unless a mechanism
 /// produced a genuine joint intersection, and different mechanisms can win different spaces for the
-/// SAME query, e.g. `arith_tuple_count` -- printing/card only, no artwork -- winning the printing tie
+/// SAME query, e.g. `arith_tuple_totals` -- printing/card only, no artwork -- winning the printing tie
 /// while Round 36's `SubtypeArithBox` still separately tightens `exact_domain_artworks` beneath the
 /// tree's own attribution of the printing win). The one general claim that DOES hold in every space,
 /// and is checked here instead: a real `Some` value at the node is never LOOSER than folding over the
@@ -16067,12 +16256,12 @@ fn assert_min_fold_invariant(node: &AndTraceNode) {
 /// exactly what that test already established, not re-derived here.
 ///
 /// Interesting wrinkle this test exists to pin down: TWO mechanisms hit this exact query at the
-/// SAME number (4) -- `arith_tuple_count` (the whole corpus's cmc>=5+power>=5 joint, which happens
+/// SAME number (4) -- `arith_tuple_totals` (the whole corpus's cmc>=5+power>=5 joint, which happens
 /// to equal the Dragon-scoped answer here because no non-Dragon card in this fixture clears
 /// cmc>=5 at all) and Round 36's `SubtypeArithBox` (the Dragon-scoped exact answer, by design).
-/// `and_trace_build_tree` picks the FIRST hit in evaluation order, which is `arith_tuple_count` (it
+/// `and_trace_build_tree` picks the FIRST hit in evaluation order, which is `arith_tuple_totals` (it
 /// runs before Round 36 in the arm's fixed sequence) -- so the tree's own `joint_lookup` node names
-/// `arith_tuple_count`, covering only the two arith leaves, while Round 36's `SubtypeArithBox` hit
+/// `arith_tuple_totals`, covering only the two arith leaves, while Round 36's `SubtypeArithBox` hit
 /// still shows up in `considered` (both entries `hit: true`) without ever reaching the tree. This is
 /// exactly the scenario `AndTrace`'s own doc calls out: `considered` surfaces every hit, `tree`
 /// surfaces only the one that actually determined the arm's answer.
@@ -16110,7 +16299,7 @@ fn and_trace_reports_the_winning_mechanism_and_every_considered_one() {
     let ptc = build_printing_to_card(&data.offsets);
     let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
     data.indexes.subtype_arith = super::build_subtype_arith_tables(&data.cards, &data.printings, &ptc, &data.coll_vocab, max_ag);
-    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
     // Round 37a's own `leaves` recompute reads a BARE leaf's solo card/artwork estimate, which for a
     // `CollectionCmp{Subtypes,...}` leaf comes from `exact_result_total`'s `value_totals` lookup -- a
     // fully separate table from anything Round 36's own `subtype_arith` mechanism reads. Left at
@@ -16134,8 +16323,8 @@ fn and_trace_reports_the_winning_mechanism_and_every_considered_one() {
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace for a top-level And");
 
     // `considered` must show BOTH mechanisms hitting -- the whole point of this field.
-    let arith_hit = and_trace.considered.iter().find(|g| g.mechanism == "arith_tuple_count").expect("arith_tuple_count must have been attempted (2 arith-eligible children)");
-    assert!(arith_hit.hit, "arith_tuple_count must hit: the corpus's own cmc>=5+power>=5 joint is exactly 4 here too");
+    let arith_hit = and_trace.considered.iter().find(|g| g.mechanism == "arith_tuple_totals").expect("arith_tuple_totals must have been attempted (2 arith-eligible children)");
+    assert!(arith_hit.hit, "arith_tuple_totals must hit: the corpus's own cmc>=5+power>=5 joint is exactly 4 here too");
     assert_eq!(arith_hit.printing, Some(4));
     let subtype_hit = and_trace.considered.iter().find(|g| g.mechanism == "SubtypeArithBox").expect("SubtypeArithBox must have been attempted (Dragon + 2 arith bounds, nothing else)");
     assert!(subtype_hit.hit, "Round 36's table hit is real and exact here (subtype_arith_and_arm_tightening's own f3 assertion)");
@@ -16144,7 +16333,7 @@ fn and_trace_reports_the_winning_mechanism_and_every_considered_one() {
     // `tree` must show exactly ONE joint_lookup node -- `SubtypeArithBox`, Round 40's class-priority
     // fix (tightest-among-ties, not first-evaluated): both mechanisms tie at the identical value
     // (4), and among an EXACT/bound tie, the more complete answer wins attribution -- `SubtypeArithBox`
-    // covers all 3 leaves (Dragon + both arith bounds), `arith_tuple_count` only the 2 arith leaves.
+    // covers all 3 leaves (Dragon + both arith bounds), `arith_tuple_totals` only the 2 arith leaves.
     // Nothing is left uncovered, so root has exactly one child (the winner itself), not a leftover
     // Dragon leaf sibling the way the pre-Round-40 (first-evaluated) attribution left one.
     let AndTraceNode::Op { op: "min_fold", children, printing: root_printing, card: root_card, artwork: root_artwork, .. } = &and_trace.tree else {
@@ -16201,7 +16390,7 @@ fn and_trace_is_plain_min_fold_when_no_mechanism_hits() {
     data.indexes.toughness = build_numeric_index(&data.cards, |c| c.creature_toughness.map(|v| v as i16));
     let ptc = build_printing_to_card(&data.offsets);
     data.indexes.subtype_arith = super::SubtypeArithIndexes::default();
-    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
     // See the sibling hit-case test's identical line for why this rebuild is load-bearing here too.
     let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
     data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, max_ag);
@@ -16645,7 +16834,7 @@ fn color_cmc_table_star_shape_wins_the_min_against_independence() {
         let ptc = build_printing_to_card(&data.offsets);
         data.indexes.value_totals =
             build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
-        data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+        data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
         if install_color_cmc {
             let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
             data.indexes.color_cmc = super::build_color_cmc_tables(&data.cards, &data.printings, &ptc, max_ag);
@@ -16719,7 +16908,7 @@ fn and_arm_independence_tightens_color_and_price() {
     let p2c = build_printing_to_card(&data.offsets);
     data.indexes.value_totals =
         build_all_value_totals(&data.cards, &data.printings, &p2c, &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
-    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
 
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
@@ -16788,7 +16977,7 @@ fn and_arm_independence_uses_the_fused_two_sided_price_range_not_one_side() {
     let p2c = build_printing_to_card(&data.offsets);
     data.indexes.value_totals =
         build_all_value_totals(&data.cards, &data.printings, &p2c, &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
-    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
 
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
@@ -16842,7 +17031,7 @@ fn and_arm_independence_declines_outside_its_shape_gate() {
     let p2c = build_printing_to_card(&data.offsets);
     data.indexes.value_totals =
         build_all_value_totals(&data.cards, &data.printings, &p2c, &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
-    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
 
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
@@ -17184,7 +17373,7 @@ fn fold_candidate_exact_min_folds_independently_per_space_across_calls() {
 /// `Candidate::Estimate` must touch `result` only -- never `exact_domain_cards`/
 /// `exact_domain_printing`/`exact_domain_artworks`, even when they already hold a value from an
 /// earlier EXACT candidate. This is the structural distinction every ESTIMATE-class mechanism in
-/// the `And` arm (`SetCollectorRange`, `arith_tuple_count`'s merge, `SubtypePairEstimate`,
+/// the `And` arm (`SetCollectorRange`, `arith_tuple_totals`'s merge, `SubtypePairEstimate`,
 /// `Independence`) relies on to stay safely non-corrupting.
 #[test]
 fn fold_candidate_estimate_never_touches_exact_domain_fields() {

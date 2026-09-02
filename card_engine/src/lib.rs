@@ -1595,13 +1595,16 @@ struct ArithTupleKey {
 }
 
 /// Joint (cmc,power,toughness,loyalty) postings. `keys[t]` is combination `t`'s field
-/// values (for query-time re-evaluation) and `postings[t]` its sorted card ids; the two
-/// are parallel. `n_cards` gates applicability (0 = unbuilt, e.g. a test fixture store),
-/// like every other index's domain check.
+/// values (for query-time re-evaluation), `postings[t]` its sorted card ids, and `totals[t]`
+/// (Round 51) that same key's own exact `SpaceTotals` -- printings/cards/artworks summed once at
+/// build time from `postings[t]`, so a query-time scan reads a precomputed triple instead of a
+/// card count that then has to be scaled. All three are parallel. `n_cards` gates applicability
+/// (0 = unbuilt, e.g. a test fixture store), like every other index's domain check.
 #[derive(Archive, Serialize, Deserialize, Default)]
 struct ArithTupleIndex {
     keys: Vec<ArithTupleKey>,
     postings: Vec<Vec<u32>>,
+    totals: Vec<SpaceTotals>,
     n_cards: u32,
 }
 
@@ -1640,7 +1643,14 @@ fn arith_tuple_key_budget(n_cards: usize) -> usize {
 /// precisely because it would blow this up to ~card-count distinct values (#743), and the
 /// `debug_assert` below is what makes that a test failure rather than a silent regression
 /// to a per-card scan with extra indirection.
-fn build_arith_tuple_index(cards: &[OracleCard]) -> ArithTupleIndex {
+///
+/// `offsets`/`artwork_base` (the same CSR boundary tables every other builder in this file
+/// reads, e.g. `build_bit_planes`) let this pass also sum each key's own exact printing/artwork
+/// spans, once, right after that key's `postings` row is fully populated -- Round 51's fix for
+/// `arith_tuple_totals` otherwise having to scale a card count into printing space (and having no
+/// artwork source at all). Cost: one more `u32` add per (key, card) pair already being visited to
+/// build `postings`, i.e. still O(n_cards) total, paid once at load rather than per query.
+fn build_arith_tuple_index(cards: &[OracleCard], offsets: &[u32], artwork_base: &[u32]) -> ArithTupleIndex {
     let mut interner: HashMap<ArithTupleKey, usize> = HashMap::new();
     let mut keys: Vec<ArithTupleKey> = Vec::new();
     let mut postings: Vec<Vec<u32>> = Vec::new();
@@ -1666,7 +1676,22 @@ fn build_arith_tuple_index(cards: &[OracleCard]) -> ArithTupleIndex {
         cards.len(),
         arith_tuple_key_budget(cards.len()),
     );
-    ArithTupleIndex { keys, postings, n_cards: cards.len() as u32 }
+    // Same "sum spans for an explicit id list" shape `ArithIdProbe`'s own local `span_of` closure
+    // uses at query time -- computed once here, over each key's own postings, instead of on every
+    // query that reaches this index.
+    let totals: Vec<SpaceTotals> = postings
+        .iter()
+        .map(|ids| {
+            let (mut printings, mut artworks) = (0u32, 0u32);
+            for &id in ids {
+                let id = id as usize;
+                printings += offsets[id + 1] - offsets[id];
+                artworks += artwork_base[id + 1] - artwork_base[id];
+            }
+            SpaceTotals { printings, cards: ids.len() as u32, artworks }
+        })
+        .collect();
+    ArithTupleIndex { keys, postings, totals, n_cards: cards.len() as u32 }
 }
 
 /// Narrow a tuple-routed `NumericCmp` (`is_arith_tuple_route`) to a card-space candidate
@@ -2132,7 +2157,7 @@ struct ColorCmcTable {
     values: Vec<u16>,
     /// Keyed by the raw `colors`/`color_identity` byte -- <=32 real entries on the production corpus
     /// (all of WUBRG's 2^5 combinations appear), so a full scan of `by_mask` per query (worst case ~32
-    /// entries x a `log2(17)`-ish binary search each) is cheap, and cheaper than `arith_tuple_count`'s
+    /// entries x a `log2(17)`-ish binary search each) is cheap, and cheaper than `arith_tuple_totals`'s
     /// own already-shipped ~564-key linear scan.
     by_mask: HashMap<u8, MaskCmcCounts>,
 }
@@ -2222,7 +2247,7 @@ fn color_cmc_table_for(field: ColorField, indexes: &Archived<CardIndexes>) -> Op
 /// And'd with one resolved `[cmc_lo, cmc_hi)` range, summing every one of the <=32 real stored masks
 /// `table` holds that `color_cmp_matches` (the SAME matcher `ColorCmp`'s own per-card evaluator uses)
 /// says `(op, query_mask)` admits. `None` only when `table` isn't built for this store at all (`by_mask`
-/// empty -- a test fixture, typically, the same convention `arith_tuple_count`'s own `n_cards == 0`
+/// empty -- a test fixture, typically, the same convention `arith_tuple_totals`'s own `n_cards == 0`
 /// check uses for the identical reason): a store with real data always has 1+ real mask, so an empty
 /// `by_mask` cannot be a genuine "zero real cards" answer, and treating it as one is exactly the bug
 /// this distinction exists to prevent. Once `table` IS built, every real mask contributes its own real
@@ -7935,9 +7960,9 @@ fn printing_compose_indexes_built(indexes: &Archived<CardIndexes>) -> bool {
         // unbuilt fixture store reports 0 cards there, same "decline cleanly" contract as the two
         // checks above.
         && u32::from(indexes.planes.n_cards) > 0
-        // cmc/power/toughness's estimate arm reads `indexes.arith_tuple` (`arith_tuple_count`) instead
+        // cmc/power/toughness's estimate arm reads `indexes.arith_tuple` (`arith_tuple_totals`) instead
         // of `eval_planes` now — an unbuilt fixture store reports 0 cards there too, and without this
-        // check `arith_tuple_count` returning `None` would hit compose_printing_estimate's
+        // check `arith_tuple_totals` returning `None` would hit compose_printing_estimate's
         // `.expect("gated by is_printing_composable")` and panic instead of declining cleanly.
         && u32::from(indexes.arith_tuple.n_cards) > 0
 }
@@ -8579,8 +8604,8 @@ fn card_numeric_index(field: NumField, indexes: &Archived<CardIndexes>) -> Optio
 
 /// Exact CARD count for ONE bare cmc/power/toughness comparison, via the same two `partition_point`
 /// calls `numeric_candidates` makes to build a real candidate list — without paying for the list
-/// itself (no `sorted_ids` allocation/materialization). O(log n), cheaper than `arith_tuple_count`'s
-/// O(distinct tuples) scan, and the right choice whenever there's only one bound: `arith_tuple_count`
+/// itself (no `sorted_ids` allocation/materialization). O(log n), cheaper than `arith_tuple_totals`'s
+/// O(distinct tuples) scan, and the right choice whenever there's only one bound: `arith_tuple_totals`
 /// exists for when 2+ of these need a true JOINT count in one scan, not for the single-bound case.
 /// `None` for `Ne` (not a range — same as `numeric_candidates`); a non-integer `Eq` is an exact `Some(0)`
 /// (never present in an integer-valued index), not `None`.
@@ -8629,7 +8654,7 @@ fn numeric_range_ids(idx: &Archived<NumericIndex>, op: CmpOp, val: f64) -> Optio
 }
 
 /// Exact CARD count for a bare cmc/power/toughness `NumericCmp` leaf, trying the dedicated index
-/// first (cheap, O(log n)) — `arith_tuple_count` is reserved for the 2+-bound joint case, where no
+/// first (cheap, O(log n)) — `arith_tuple_totals` is reserved for the 2+-bound joint case, where no
 /// dedicated single-field index can answer at all.
 fn bare_numeric_field_count(filter: &FilterExpr, indexes: &Archived<CardIndexes>) -> Option<usize> {
     let (field, op, val) = match filter {
@@ -8654,8 +8679,8 @@ fn bare_numeric_field_ids(filter: &FilterExpr, indexes: &Archived<CardIndexes>) 
 }
 
 /// Whether `filter` is a bare single-field cmc/power/toughness comparison against a constant — the
-/// shape `bare_numeric_field_count`/`arith_tuple_count` can answer, and the shape a joint `And` of
-/// several of them should be combined via one `arith_tuple_count` scan rather than a `min` of
+/// shape `bare_numeric_field_count`/`arith_tuple_totals` can answer, and the shape a joint `And` of
+/// several of them should be combined via one `arith_tuple_totals` scan rather than a `min` of
 /// independents (see the `And` arm's own doc).
 fn is_arith_tuple_eligible(filter: &FilterExpr) -> bool {
     matches!(
@@ -9012,24 +9037,34 @@ fn indep_class_of(src: AndSource<'_, '_>, indexes: &Archived<CardIndexes>) -> Op
     }
 }
 
-/// Exact CARD count of cards satisfying every one of `bounds` simultaneously, via the existing #743
-/// `ArithTupleIndex` (~564 distinct `(cmc,power,toughness,loyalty)` combinations on the real corpus) —
-/// O(distinct tuples), not O(n_cards) and not `eval_planes`, and always exact: each stored tuple's
-/// real field values are re-tested against every bound with `eval_arith_tuple_tri` (the SAME evaluator
-/// the real per-card path uses, so this can't disagree with it), and its whole postings length is
-/// summed only when every bound reads `Tri::True` on that tuple — a NULL field (non-creature power/
-/// toughness, non-planeswalker loyalty) correctly fails any comparison, same as the real per-card
-/// path. `None` if the index isn't built for this store (a test fixture, typically) or `bounds` is
-/// empty. This is the joint-AND version: calling it with 2+ bounds gets their TRUE intersection in one
-/// scan, not `min` of each bound's own count — e.g. `cmc<=5 power>=3`'s real joint count, not
-/// `min(cmc<=5's own count, power>=3's own count)`.
-fn arith_tuple_count(bounds: &[&FilterExpr], indexes: &Archived<CardIndexes>) -> Option<usize> {
+/// Exact (printings, cards, artworks) triple for cards satisfying every one of `bounds`
+/// simultaneously, via the existing #743 `ArithTupleIndex` (~564 distinct
+/// `(cmc,power,toughness,loyalty)` combinations on the real corpus) — O(distinct tuples), not
+/// O(n_cards) and not `eval_planes`, and exact in all three spaces: each stored tuple's real field
+/// values are re-tested against every bound with `eval_arith_tuple_tri` (the SAME evaluator the
+/// real per-card path uses, so this can't disagree with it), and its precomputed `totals` (Round
+/// 51 -- summed once at build time from that key's own postings, see `build_arith_tuple_index`)
+/// are added only when every bound reads `Tri::True` on that tuple — a NULL field (non-creature
+/// power/toughness, non-planeswalker loyalty) correctly fails any comparison, same as the real
+/// per-card path. `None` if the index isn't built for this store (a test fixture, typically) or
+/// `bounds` is empty. This is the joint-AND version: calling it with 2+ bounds gets their TRUE
+/// intersection's exact triple in one scan, not `min` of each bound's own count — e.g.
+/// `cmc<=5 power>=3`'s real joint triple, not `min(cmc<=5's own triple, power>=3's own triple)`.
+///
+/// Before Round 51 this returned only a card count (`Option<usize>`), leaving every call site to
+/// scale that count into printing space by the corpus-average reprint ratio and give up on artwork
+/// entirely — an estimate, not exact, and the one mechanism invisible to the `debug_assert!`
+/// census in `fold_candidate`'s own doc (scoped to `Candidate::Exact`). Summing the real triple
+/// costs nothing extra over the identical scan this function already ran, so there is no reason to
+/// keep a card-only variant around; replaces `arith_tuple_totals`'s old `usize`-returning form at
+/// all 3 of its call sites.
+fn arith_tuple_totals(bounds: &[&FilterExpr], indexes: &Archived<CardIndexes>) -> Option<(usize, usize, usize)> {
     let idx = &indexes.arith_tuple;
     if bounds.is_empty() || u32::from(idx.n_cards) == 0 {
         return None;
     }
-    let mut total = 0usize;
-    for (key, postings) in idx.keys.iter().zip(idx.postings.iter()) {
+    let (mut printings, mut cards, mut artworks) = (0usize, 0usize, 0usize);
+    for (key, totals) in idx.keys.iter().zip(idx.totals.iter()) {
         let cmc = key.cmc.as_ref().map(|v| f64::from(*v));
         let power = key.power.as_ref().map(|v| f64::from(*v));
         let toughness = key.toughness.as_ref().map(|v| f64::from(*v));
@@ -9039,15 +9074,17 @@ fn arith_tuple_count(bounds: &[&FilterExpr], indexes: &Archived<CardIndexes>) ->
             matches!(eval_arith_tuple_tri(lhs, *op, rhs, cmc, power, toughness, loyalty), Tri::True)
         });
         if all_match {
-            total += postings.len();
+            printings += u32::from(totals.printings) as usize;
+            cards += u32::from(totals.cards) as usize;
+            artworks += u32::from(totals.artworks) as usize;
         }
     }
-    Some(total)
+    Some((printings, cards, artworks))
 }
 
-/// `arith_tuple_count`'s ids, for the same reason `numeric_range_ids` exists next to
+/// `arith_tuple_totals`'s ids, for the same reason `numeric_range_ids` exists next to
 /// `numeric_range_count` — the smaller-side merge needs the actual card ids to probe, not just how
-/// many there are. Still bounded by the ~564-key scan `arith_tuple_count` already does, not by
+/// many there are. Still bounded by the ~564-key scan `arith_tuple_totals` already does, not by
 /// corpus size: collecting matching keys' postings is the same walk plus a `Vec` extend.
 fn arith_tuple_ids(bounds: &[&FilterExpr], indexes: &Archived<CardIndexes>) -> Option<Vec<u32>> {
     let idx = &indexes.arith_tuple;
@@ -9255,7 +9292,7 @@ fn and_trace_for(filter: &FilterExpr, indexes: &Archived<CardIndexes>, offsets: 
 /// (Round 50) is `SubtypeArithBox`'s own exact joint multiplied by a single residual `Price` leaf's own
 /// solo rate -- the product of an exact count and an inexact rate is itself inexact, so this stays
 /// ESTIMATE-class even though it's anchored on an exact box hit (see that call site's own doc). Every
-/// other mechanism string in this arm (`"PairTotals"`, `"arith_tuple_count"`, `"PlanePopcount"`,
+/// other mechanism string in this arm (`"PairTotals"`, `"arith_tuple_totals"`, `"PlanePopcount"`,
 /// `"PairRangeSum"`, `"ArithIdProbe"`, `"SubtypePairIndexes"`, `"SubtypeArithBox"`,
 /// `"leaves_are_disjoint"`) is exact/bound.
 fn is_estimate_class_mechanism(mechanism: &str) -> bool {
@@ -9267,14 +9304,14 @@ fn is_estimate_class_mechanism(mechanism: &str) -> bool {
 ///
 /// Round 40: winner selection is a class-priority pick, not "first considered group that matches" --
 /// `and_trace_reports_the_winning_mechanism_and_every_considered_one`'s own fixture found the old
-/// `find()` (first-in-evaluation-order) attributed a tie between `arith_tuple_count` and
+/// `find()` (first-in-evaluation-order) attributed a tie between `arith_tuple_totals` and
 /// `SubtypeArithBox` to whichever ran first, not whichever was actually the tighter/more complete
 /// answer. Every mechanism that isn't `is_estimate_class_mechanism` produces either an exact value or a
 /// mathematically guaranteed upper bound, so among THOSE, "pick the tightest" is always sound -- and
 /// since every candidate here already ties `final_est.printing` (the true global min, by construction:
 /// see this fn's own doc), "tightest" only needs a tie-break, which is "most leaves covered" (the more
 /// complete intersection is the more informative report; `SubtypeArithBox`'s 3-leaf answer over
-/// `arith_tuple_count`'s 2-leaf one). An ESTIMATE-class hit (independence, `SetCollectorRange`'s
+/// `arith_tuple_totals`'s 2-leaf one). An ESTIMATE-class hit (independence, `SetCollectorRange`'s
 /// density, `SubtypePairEstimate`'s miss branch) is a central estimate, not a bound -- it is only ever
 /// considered SECOND, when no exact/bound candidate ties the global min at all. This mirrors, on the
 /// reporting side, the same invariant the arm's own `covered` bookkeeping enforces on the VALUE side:
@@ -9421,7 +9458,7 @@ fn compose_printing_estimate(
             let mut result = pair_bounded_min(v, indexes, folded.result.printing, &mut covered);
             // Round 46: hoisted here (used to be declared much further down, right before their own
             // first write) so every `fold_candidate` call site in this arm -- including the two
-            // ESTIMATE-class ones below (`SetCollectorRange`, the `arith_tuple_count` merge) that fire
+            // ESTIMATE-class ones below (`SetCollectorRange`, the `arith_tuple_totals` merge) that fire
             // before the first EXACT candidate does -- has all four accumulators in scope. A pure
             // scoping change: nothing between here and each variable's original declaration point ever
             // reads them, so they are still `None` at every one of those original points, same as
@@ -9579,22 +9616,25 @@ fn compose_printing_estimate(
                     });
                 }
             }
-            // Second tightening: 2+ cmc/power/toughness children get their TRUE joint card count from
-            // one #743 scan (`arith_tuple_count`), not `min` of each one's own count — e.g.
-            // `cmc<=5 power>=3` gets the real intersection, not `min(cmc<=5, power>=3)`.
+            // Second tightening: 2+ cmc/power/toughness children get their TRUE joint (printing,
+            // card, artwork) triple from one #743 scan (`arith_tuple_totals`), not `min` of each
+            // one's own count — e.g. `cmc<=5 power>=3` gets the real intersection, not
+            // `min(cmc<=5, power>=3)`. Round 51: the scan's own `totals` are exact in all three
+            // spaces (no more scaling a card count by the corpus reprint ratio, no more giving up on
+            // artwork), so this folds as `Candidate::Exact` and finally participates in
+            // `exact_domain_cards`/`exact_domain_printing`/`exact_domain_artworks`.
             let arith_children: Vec<&FilterExpr> = v.iter().filter(|c| is_arith_tuple_eligible(c)).collect();
             let n_cards = offsets.len() - 1;
             if arith_children.len() >= 2 {
-                let card_count = arith_tuple_count(&arith_children, indexes);
-                if let Some(cc) = card_count {
-                    let scaled = (cc * n_printings).checked_div(n_cards).unwrap_or(0);
+                let triple = arith_tuple_totals(&arith_children, indexes);
+                if let Some((printings, cards, artworks)) = triple {
                     fold_candidate(
                         &mut result,
                         &mut exact_domain_cards,
                         &mut exact_domain_printing,
                         &mut exact_domain_artworks,
-                        "arith_tuple_count",
-                        Candidate::Estimate { printing: scaled },
+                        "arith_tuple_totals",
+                        Candidate::Exact { printings, cards, artworks },
                     );
                     // Round 40 (fixed after a real regression a coordinator review caught pre-merge:
                     // `usd>6.03 cmc>=1 cmc<=1` lost Round 38's own price x cmc combination entirely,
@@ -9610,22 +9650,23 @@ fn compose_printing_estimate(
                     // stole those leaves from the registry's own same-field consolidation (the `Cmc`/
                     // `Pow` arm of the `by_class` grouping below) before it ever got to run, dropping
                     // the price x cmc pairing Round 38 shipped -- not just failing to add new coverage.
+                    // Unrelated to this round's exactness upgrade -- left exactly as-is.
                     if single_arith_field(&arith_children).is_none() {
                         mark_covered(v, &arith_children, &mut covered);
                     }
                 }
-                // Round 37a trace: `card_count` is `None` only when the #743 scan itself declines
-                // (see `arith_tuple_count`'s own doc) -- the shape gate here (2+ arith-eligible
+                // Round 37a trace: `triple` is `None` only when the #743 scan itself declines
+                // (see `arith_tuple_totals`'s own doc) -- the shape gate here (2+ arith-eligible
                 // children) is the same one the real tightening above just checked, so a group is
                 // logged whenever that gate matched, hit or miss.
                 if let Some(t) = and_trace.as_mut() {
                     t.considered.push(AndTraceGroup {
                         leaves: arith_children.iter().map(|c| format!("{c:?}")).collect(),
-                        mechanism: "arith_tuple_count",
-                        hit: card_count.is_some(),
-                        printing: card_count.map(|cc| (cc * n_printings).checked_div(n_cards).unwrap_or(0)),
-                        card: card_count,
-                        artwork: None,
+                        mechanism: "arith_tuple_totals",
+                        hit: triple.is_some(),
+                        printing: triple.map(|(p, _, _)| p),
+                        card: triple.map(|(_, c, _)| c),
+                        artwork: triple.map(|(_, _, a)| a),
                     });
                 }
             }
@@ -9655,7 +9696,7 @@ fn compose_printing_estimate(
             // work for no additional tightening — measured as a real ~15% regression on bare range-pair
             // queries (`pow>=1 pow<=2`, `tou>=2 tou<=5`) before this exclusion, since each accrued a
             // second, redundant `eval_planes` pass (a numeric range's plane can union up to 13 interior
-            // buckets, not a single-bit lookup like color/devotion) on top of the `arith_tuple_count` scan
+            // buckets, not a single-bit lookup like color/devotion) on top of the `arith_tuple_totals` scan
             // that already answered them exactly.
             //
             // Existential leaves (rarity/border always, legality only for a divergent format) are NOT
@@ -9726,7 +9767,7 @@ fn compose_printing_estimate(
             // Round 46: `exact_domain_cards`/`exact_domain_printing`/`exact_domain_artworks` are now
             // declared earlier, right alongside `result` (see that declaration's own comment) --
             // `fold_candidate` needs all four accumulators in scope at every call site, including the
-            // two ESTIMATE-class ones (`SetCollectorRange`, the `arith_tuple_count` merge) that fire
+            // two ESTIMATE-class ones (`SetCollectorRange`, the `arith_tuple_totals` merge) that fire
             // before this point. Hoisting the declaration changes nothing: every mechanism between here
             // and there is ESTIMATE-class and never touches these three, so they are still `None` at
             // this exact point, same as before this hoist.
@@ -10470,17 +10511,23 @@ fn compose_printing_estimate(
                         multi if matches!(class, IndepClass::Cmc | IndepClass::Pow) => {
                             // 2+ literal bounds on the SAME arith field (`cmc>=2 cmc<=5`, unfused --
                             // `fuse_and_range_children` only fuses price/collector-number/date/year):
-                            // combine via the existing #743 `arith_tuple_count` scan (its exact JOINT
-                            // card count, scaled to printing the same average-case way the arith-tuple
-                            // tightening above already does), same as Round 38's own cmc handling.
+                            // combine via the existing #743 `arith_tuple_totals` scan, its exact JOINT
+                            // (printing, card, artwork) triple, same as Round 38's own cmc handling.
+                            // Round 51: `artwork` is now `Some(...)` instead of always `None` -- lets
+                            // the pairing loop below compute `artwork_indep` for any pairing involving
+                            // this unit for the first time (its `.zip()` on two `Option<usize>`
+                            // previously short-circuited to `None` whenever either side was `None`).
+                            // The folded candidate for a PAIRING still stays `Candidate::Estimate`
+                            // regardless -- an independence product of two marginals is never exact, no
+                            // matter how exact its own inputs are -- only this component's own inputs
+                            // got more precise, not its class.
                             let field_children: Vec<&FilterExpr> = multi.iter().flat_map(|&p| leaves_for(p)).collect();
-                            if let Some(card_count) = arith_tuple_count(&field_children, indexes) {
-                                let scaled = (card_count * n_printings).checked_div(n_cards).unwrap_or(0);
+                            if let Some((printings, cards, artworks)) = arith_tuple_totals(&field_children, indexes) {
                                 let mask = mask_for(&field_children);
                                 units.push(IndepUnit {
                                     class,
                                     leaves: field_children,
-                                    est: SpaceEstimate { printing: scaled, card: Some(card_count), artwork: None },
+                                    est: SpaceEstimate { printing: printings, card: Some(cards), artwork: Some(artworks) },
                                     mask,
                                 });
                             }
@@ -10785,20 +10832,26 @@ fn compose_printing_estimate(
         }
         // cmc/power/toughness: exact via the dedicated per-field sorted index (O(log n)) — no
         // `eval_planes`, and cheaper than the joint #743 index's O(distinct tuples) scan, which this
-        // single-bound case doesn't need (`arith_tuple_count`'s doc covers the multi-bound `And`-level
-        // case above). Falls back to `arith_tuple_count` only if the dedicated lookup somehow declines
+        // single-bound case doesn't need (`arith_tuple_totals`'s doc covers the multi-bound `And`-level
+        // case above). Falls back to `arith_tuple_totals` only if the dedicated lookup somehow declines
         // (defensive — `is_printing_composable` already restricts this arm to shapes both accept).
+        // Round 51: the fallback now carries its own exact printing/artwork numbers straight from
+        // `arith_tuple_totals`'s `totals` rather than scaling/`None` -- a free improvement on this
+        // low-frequency defensive path, since the data already exists. The primary
+        // `bare_numeric_field_count` path is unchanged: it only ever had a card count, so it keeps
+        // scaling into printing space and reporting no artwork, exactly as before.
         FilterExpr::NumericCmp { lhs: NumExpr::Field(f), .. } | FilterExpr::NumericCmp { rhs: NumExpr::Field(f), .. }
             if matches!(f, NumField::Cmc | NumField::Power | NumField::Toughness) =>
         {
-            let card_count = bare_numeric_field_count(filter, indexes)
-                .or_else(|| arith_tuple_count(&[filter], indexes))
-                .expect("gated by is_printing_composable");
             let n_cards = offsets.len() - 1;
-            let scaled = (card_count * n_printings).checked_div(n_cards).unwrap_or(0);
-            // `card_count` is already exact and in hand -- no re-derivation needed. No artwork source
-            // for cmc/power/toughness (per `exact_result_total`'s own doc: card-space index only).
-            ComposeEstimate::leaf_spaces(scaled, scaled, 0, Some(card_count), None)
+            let (printing, card_count, artwork) = match bare_numeric_field_count(filter, indexes) {
+                Some(cc) => ((cc * n_printings).checked_div(n_cards).unwrap_or(0), cc, None),
+                None => {
+                    let (printings, cards, artworks) = arith_tuple_totals(&[filter], indexes).expect("gated by is_printing_composable");
+                    (printings, cards, Some(artworks))
+                }
+            };
+            ComposeEstimate::leaf_spaces(printing, printing, 0, Some(card_count), artwork)
         }
         // Devotion: the one card-invariant broadcast leaf left with no cheaper exact source than a
         // real (cheap — O(n_cards/64)) `eval_planes` pass. No divergent-card fuzziness here (unlike
@@ -16948,7 +17001,11 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //
 // 2026082501 — `SortPermutations` gains per-order printing-span prefix sums, used to turn a bound on
 // cards visited into a sound O(1) bound on printings examined. Entirely inside `CardIndexes` again.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026082501;
+//
+// 2026090201 — `ArithTupleIndex` gains `totals: Vec<SpaceTotals>`, one exact (printing, card,
+// artwork) triple per distinct (cmc,power,toughness,loyalty) combination, summed at build time from
+// that key's own postings. Same blind spot again: entirely inside `CardIndexes`.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026090201;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -17616,6 +17673,10 @@ impl QueryEngine {
             &printing_to_card,
             usize::from(artwork_group_counts.iter().copied().max().unwrap_or(0)),
         );
+        // Out here for the same reason as `pair_totals`/`subtype_arith`/`color_cmc` above: reads
+        // `offsets`/`artwork_base`, both of which the struct literal below moves (`artwork_base` via
+        // its own shorthand field, before `arith_tuple`'s field position).
+        let arith_tuple = build_arith_tuple_index(&cards, &offsets, &artwork_base);
         let indexes = CardIndexes {
             name_trigram:   build_trigram_index(&cards, |c| c.card_name_folded.as_str()),
             oracle_trigram: build_oracle_text_index(&cards, &strings),
@@ -17687,7 +17748,7 @@ impl QueryEngine {
             name_bigrams:   build_name_bigram_index(&cards),
             name_unigrams:  build_name_unigram_index(&cards),
             legal_divergent: build_divergent_ids(&cards),
-            arith_tuple:    build_arith_tuple_index(&cards),
+            arith_tuple,
         };
 
         #[cfg(feature = "alloc-counter")]
