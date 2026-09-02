@@ -15472,9 +15472,11 @@ fn subtype_arith_and_arm_miss_leaves_fold_unchanged() {
 /// true 4 despite the unrelated leaves being present at all (the Round 46 gate would have declined
 /// this shape outright, 5 children present, only 3 of them the "subtype + arith" shape it required);
 /// (2) the unrelated leaves are NOT swept into `covered` by the hit -- proven by the `Independence`
-/// mechanism (Round 40) firing on the `Legality`x`CollectorNumber` pair afterward, which only happens
-/// if BOTH of those leaves are still uncovered by the time the registry scan runs (it skips any
-/// `covered` source entirely, see `is_covered` in this same arm).
+/// mechanism (Round 40) firing on the `Legality`x`CollectorNumber` pair afterward. Note this no longer
+/// depends on `flags` at all after Round 49 (the registry builds a unit for every residual source
+/// regardless of `flags`, see `CoveredState`'s own doc) -- it depends on `covered.subsets` NOT
+/// containing this pair's own combined mask, which holds here since `SubtypeArithBox`'s own hit only
+/// ever pushes a mask over the Elf/cmc/power positions it actually explains, never these two.
 #[test]
 fn subtype_arith_box_fires_alongside_unrelated_leaf_that_stays_uncovered() {
     let mut vocab = VocabInterner::new();
