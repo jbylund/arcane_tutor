@@ -607,6 +607,13 @@ visit, and `narrow_rec` may decline a broad leaf entirely (the documented `broad
 risk it — a future round could revisit it WITH an equivalent breadth guard, but that is new scope, not a
 "free" addition.
 
+**Shipped, with the guard, in Round 41** (see
+[local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md)'s
+own "Round 41" section) — reusing `range_too_broad_to_narrow` as-is for the guard this note asked for,
+and additionally scoping the new floor to `result_space` only, never `exact_domain` (the field
+`scan_units` actually reads), so the `domain_hint`-conflation risk this note describes is sidestepped
+by construction rather than by the guard alone.
+
 ### Reproducers: before / after (real corpus, isolated release wheels, `costcell/trunk`@`cc17e031` vs this round)
 
 `unique=card`, `orderby=rarity`, `direction=desc`, `limit=175`, `offset=0`, `prefer=default`:

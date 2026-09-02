@@ -63,6 +63,21 @@ makes attempting the rest of it tractable to verify rather than a leap of faith.
   see "The safety bar is empirical, not provable independence" below for the methodology and the
   concrete confirmed list.
 
+## Card/artwork space's own asymmetry, closed (Round 41)
+
+Scoping this doc's own bounded partition search — "do we have what's needed to hand it to an agent" —
+turned up a live gap unrelated to the partition-search question itself. Checking this doc's own worked
+example (`color:G AND format:pioneer AND t:elf`, below) against the real engine found card/artwork
+space badly under-tightened: `t:elf` already has an exact solo count in all three spaces (the same
+per-leaf lookup every bare containment leaf uses), and printing space already floors on it, but
+card/artwork space never did — `exact_domain_cards`/`exact_domain_artworks` were populated only when a
+genuine multi-leaf mechanism fired, never subsequently folded against the OTHER leaves' own
+already-exact counts. Fixed in Round 41 (see the ledger's own "Round 41" section) by flooring
+`result_space.card`/`.artwork` on each uncovered leaf's own count, gated by the same breadth guard
+`narrow_rec` already uses, scoped so `exact_domain` (what `scan_units`'s real cost pricing reads) is
+untouched. This tightens the bound on queries like the worked example below; it does not make them
+exact — the underlying "no true 3-leaf joint exists yet" problem (below) is still open.
+
 ## What already generalizes for free
 
 `compile_plane`+`eval_planes` and `arith_tuple_route`/`ArithTupleIndex` are not pairwise mechanisms —
@@ -256,6 +271,17 @@ above):
   multiple simultaneous non-overlapping tightenings across arbitrary leaf groupings. Round 40 ships a
   flat pairwise scan over the residual, not this. This is the single biggest remaining gap between
   "what's built" and "what this doc describes."
+- **The `color:G format:pioneer t:elf`-shaped 3-leaf joint itself — confirmed live and unaddressed**
+  (found scoping the search, not fixed by Round 41's card/artwork floor above, which only tightens the
+  bound). Two compounding reasons, both directly read from source: `SubtypePairIndexes` (Round 34) is
+  gated `if v.len() == 2` (`lib.rs:9440`) and structurally cannot fire once a third leaf is present —
+  not "loses a placement race," genuinely never attempted; and even if generalized to scan the
+  residual, `compile_plane`'s card-invariant absorption (`lib.rs:9247-9317`) claims `color`+`legality`
+  together first in source order today, so a real placement rule (which mechanism gets first claim on
+  a leaf multiple candidates want) would also be needed to let the more-correlated `color`+`elf`
+  pairing win instead. A natural next round — different mechanism, different risk profile (touches
+  `compile_plane`, used everywhere) from anything shipped so far, deliberately not bundled with
+  Round 41's fix.
 - **Cost-aware mechanism ordering** — moot so far; no expensive mechanism has entered the registry
   since this was written.
 - **The `popcount_with_bits` redundancy fix** — still needs a real-traffic frequency measurement

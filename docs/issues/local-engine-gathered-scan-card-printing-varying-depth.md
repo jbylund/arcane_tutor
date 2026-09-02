@@ -190,6 +190,65 @@ total regret by 0.0 ms).
 | 38 | `min(fold, independence)` for `compose_printing_estimate`'s `And` arm: `color:X`/`id:X`/`cmc<op>N` paired with exactly one price comparison (`usd`/`eur`/`tix`, any op) — the first real use of the `"independence"` op Round 37's `and_trace` tree schema reserved for it | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 53,766 shared rows: 454 plan-choice flips total, 452 inside the three target shapes (all toward `GatheredScan`), 2 incidental elsewhere (an eligible pair embedded inside a larger conjunction); `root=leaf`/`root=or`: 0 changes, confirming the fix stayed scoped to the `And` arm | see "Round 38" narrative below — calibrated against 610 real rows: median `\|log ratio\|` 0.88→0.07 (94.8% improved, 4.4% regressed, concentrated in `cmc+usd`'s own undershoot tail); a grid search over a multiplicative bias (`fudge × independence`, 1.0–2.0) found `fudge = 1.0` (no bias at all) strictly optimal on both median AND mean error for every shape — contradicting the initial "bias it slightly high to be safe" intuition. Independently re-verified end to end with a fresh before/after sweep (not just the implementing agent's own report): all three `unique=` modes improve (printing most tightly — it's the only space `result` directly tightens; card/artwork improve via the same downstream scaling every other estimate-only shape already goes through, since `exact_domain_cards`/`exact_domain_artworks` are populated only by genuinely exact mechanisms, never by this one) |
 | 39 | `and_estimate_ns` (`AcquireFacts`): single-shot wall time of the real, production, acquire-time `compose_printing_estimate` call inside `acquire_plan_features`'s `PrintingCompose` branch — a permanent per-query cost baseline for grading the general partition-search estimator's own "tax" once it exists, not another accuracy fix | kept | n/a (tooling; no estimate value changed) | n/a | see "Round 39" narrative below — real distribution (53,778-row sweep): median 750ns, p90 4.4µs, p99 11.6µs; populated on exactly the 59.3% of rows whose acquire took the `PrintingCompose` branch (`None` elsewhere, never "0ns"). Paired-wheel latency A/B for this specific addition (required by `.claude/rules/benchmark-methodology-review.md` for any change to a documented hot path): the real effect was not distinguishable from the same-build canary's own run-order drift — reported honestly as "no measurable overhead detected," not claimed as a proven-safe number |
 | 40 | Generalizes Round 38's one hard-coded independence pair into a small registry (`IndepClass`/`independence_safe_pair`), scanned pairwise over every RESIDUAL `And`-arm leaf (not covered by an existing exact mechanism), plus a class-priority fix for winner attribution | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 53,775 shared rows: 395 plan-choice flips, concentrated in the newly-covered shapes (all toward `GatheredScan`); `root=leaf`/`root=or`: 0 changes; `unsafe:legality+set`/`+released`: 0/900 both builds, confirming the deliberately-excluded pair stayed untouched | see "Round 40" narrative below — registry re-validated against real data, not copied from the design doc's own self-contradictory list: adds `legality×{cn,price}`, `type×{released,usd}`, plus `id×set`/`pow×set`, which empirically REVERSE the doc's "unsafe" claim (independently re-confirmed on a fresh seed, not just the implementing agent's own sample: `id×set` median 1.34→0.14, 273/283 improved; `pow×set` 1.36→0.17, 146/147). `legality×{set,date,year}` deliberately excluded (format legality is date-DEFINED, not merely correlated — reserved for a future exact per-(set,format) mechanism, not independence). Same-currency price crosses spot-checked and found genuinely mixed, not shipped. **A real regression caught by pre-merge independent verification, not the implementing agent's own report**: `safe:cmc+usd` (already covered by Round 38) got WORSE (median 0.158→0.219, 218/246 regressed) — a same-field arith consolidation (`cmc>=1 cmc<=1`) was being marked `covered` unconditionally, silently blocking Round 38's own price×cmc pairing before the new registry scan ever saw it. Fixed (gate `mark_covered` on `single_arith_field(...).is_none()` — only a genuine cross-DIMENSION join covers its leaves); re-verified byte-identical to the pre-Round-40 baseline on the exact repro and every already-covered shape before merging |
+| 41 | Card/artwork space in `compose_printing_estimate`'s `And` arm now floors on each UNCOVERED leaf's own exact card/artwork count (`children_estimates`), gated by the SAME `range_too_broad_to_narrow` breadth guard `narrow_rec` already uses — closing an asymmetry printing space never had (its own baseline, `folded.result.printing`, already floors on every leaf unconditionally) | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 8,097 shared rows (independent re-sweep, fresh seed): 23 plan-choice flips (0.3%), all one-directional (`PrintingCompose → StreamedSelect`/`GatheredScan`, never the reverse); ratio diagnostic unchanged (mean 0.184 both builds, "no detectable difference"); zero-true-count hit rate unchanged (77.6% both); border-leaf reproducers (`cmc=1 border:black`, `cmc>=1 cmc<=5 border:black`, etc.) byte-identical before/after, confirming the breadth guard correctly declines on a genuinely broad leaf | see "Round 41" narrative below — found while scoping the general N-way partition search (`local-engine-nway-compose-independence-search.md`): `color:G format:pioneer t:elf` predicted card=1179/true=246 (`t:elf`'s own exact card count, 660, was never considered — a strict subset of what compile_plane's partial color+legality joint reported, itself looser than a bare min-fold would be). This is a previously-scoped, deliberately-deferred fix — `local-engine-domain-cards-existential-arith-and.md`'s own "Ingredient 3" — shipped now with the breadth guard that round asked for, and scoped so the new floor affects ONLY `result_space` (what `explain()` reports), never `exact_domain` (what `scan_units`'s real execution-cost pricing reads), so the two fields — accidentally identical for card/artwork before this round, unlike printing where they already legitimately diverge — now behave the way printing's split always has. Motivating case: `eval_domain` 1179→660 (still not exact — true is 246 — this tightens a bound, it does not solve the underlying "no true 3-leaf joint mechanism exists yet" problem, tracked as a separate Round 42 candidate). `and_estimate_ns` canary: no consistent, reproducible tax detected, not distinguishable from the same-build canary's own noise floor |
+
+### Round 41
+
+Target: found while scoping "hand the general N-way partition search
+([local-engine-nway-compose-independence-search.md](local-engine-nway-compose-independence-search.md))
+to an agent" — not a planned round. Checking the design doc's own worked example
+(`color:G AND format:pioneer AND t:elf`) against the real engine (expecting to confirm a placement-
+ordering story) instead found card/artwork space badly under-tightened for a reason unrelated to
+placement: `t:elf` already has an exact solo count in all three spaces (the same `value_totals`
+lookup every bare containment leaf uses — 660 card / 2138 printing / 913 artwork on the corpus
+snapshot measured), and printing space already floors on it (`result` starts from
+`pair_bounded_min(v, indexes, folded.result.printing, ...)`, where `folded.result.printing` is a
+plain, unconditional min-fold over every leaf's own printing count) — but card/artwork space had no
+equivalent. `exact_domain_cards`/`exact_domain_artworks` are populated ONLY when some specific
+multi-leaf intersection mechanism fires (here, `compile_plane`'s `color`+`legality` joint), and were
+never subsequently folded against the OTHER leaves' own already-exact counts.
+
+**Not a fresh bug — a previously-scoped, deliberately-deferred fix.**
+[local-engine-domain-cards-existential-arith-and.md](local-engine-domain-cards-existential-arith-and.md)'s
+"Ingredient 3" investigated exactly this fold and explicitly did not ship it: unconditionally, it
+risked resurrecting the retired `domain_hint` bug, because a BROAD leaf's own count (`border:black`
+at 87% of the corpus) is a mathematically valid upper bound but a misleading one for a DIFFERENT
+consumer — `acquire_plan_features`'s `scan_units`, which prices how many rows a real execution plan
+will visit, and `narrow_rec` declines to use a broad leaf as its narrowing driver at all. That
+round's own conclusion: "a future round could revisit it WITH an equivalent breadth guard... that is
+new scope." This round builds that guard, reusing `range_too_broad_to_narrow` (`NARROW_FLOOR=1000`,
+`MAX_NARROW_FRACTION=0.25`) as-is — the exact threshold `narrow_rec`'s own `broad_ok` gate already
+uses, not a new one invented for this fix.
+
+**The fold is scoped to `result_space` only, never `exact_domain`.** `result_space` and `exact_domain`
+happened to be IDENTICAL for card/artwork before this round (both read the same
+`exact_domain_cards`/`_artworks` variables) — unlike printing, where they already legitimately
+diverge (`result` gets every tightening; `exact_domain_printing` is captured earlier, before
+`pair_bounded_min`'s own pass). The new floor only ever changes `result_space.card`/`.artwork` — the
+field `explain()`/`explain_analyze()` report and the harness measures against `true_total` — leaving
+`exact_domain_cards`/`_artworks` (and therefore `scan_units`'s real cost-pricing input) completely
+untouched. This sidesteps the `domain_hint`-conflation risk by construction rather than relying on
+the breadth guard alone: even if the guard's threshold were ever wrong, this floor cannot corrupt
+plan-cost pricing, because it no longer shares a variable with it.
+
+**Verification.** New `cargo test` regression tests (`compose_and_arm_narrow_floor_diverges_result_
+space_from_exact_domain`, `..._narrow_residual_leaf_tightens_card_and_artwork_floor`, `..._broad_
+residual_leaf_does_not_tighten_card_or_artwork_floor`) confirm the divergence from `exact_domain`, the
+floor firing on a narrow uncovered leaf, and the floor declining on a broad one. `cargo test`: 202
+passed (199 + 3, one existing round-22 fixture needed a `value_totals` build it had silently been
+missing, a latent gap invisible until this round's floor started reading per-leaf totals it never had
+before). `cargo clippy --all-targets -- -D warnings`: clean. Independently re-verified end to end
+(not just the implementing agent's own report): rebuilt both wheels myself, re-ran the motivating
+query and every border-leaf reproducer directly, and ran a fresh independent harness sweep on a
+different seed — all numbers matched the implementing agent's own report.
+
+**Blast radius**: `card_engine/src/lib.rs` (~32 lines, the `And` arm's final `result_space`
+construction only — `exact_domain`'s own construction is byte-identical to before), `card_engine/src/
+tests.rs` (three new tests plus a fixture fix). No change to `SubtypePairIndexes`, `compile_plane`,
+or the independence registry — those are a separate, still-open follow-on (see
+[local-engine-nway-compose-independence-search.md](local-engine-nway-compose-independence-search.md)'s
+own note on the `color+legality+subtype` 3-leaf joint, confirmed live and unaddressed by this
+investigation but deliberately out of scope for this round).
 
 ### Round 40
 
