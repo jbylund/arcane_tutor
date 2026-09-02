@@ -194,6 +194,64 @@ total regret by 0.0 ms).
 | 42 | Generalizes `SubtypePairIndexes`/`SubtypePairEstimate` past its `v.len() == 2` gate to scan the residual for every `(dim, subtype)` pair present in an `And` of any size — no reordering relative to `compile_plane`, no new placement/priority rule; the existing `.min()`-chain across mechanisms already composes correctly regardless of order | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 8,346 shared rows (independent re-sweep, fresh seed): 23 plan-choice flips (0.3%), concentrated in the newly-covered `triple:color+type+cmc`/`triple:color+legality+type` shapes; ratio diagnostic improved (mean 0.177→0.173, "B is MORE accurate"); border-leaf reproducers byte-identical before/after; the pre-existing 2-leaf `set:eld t:knight` case unchanged | see "Round 42" narrative below — directly closes the doc's own `color:G format:pioneer t:elf` worked example: `eval_domain` 660→560 (Round 41's own floor), now a genuine `SubtypePairIndexes` table HIT (card 560/printing 1917/artwork 790 — still not exact, true is 246, but a real, confirmed tightening). **A first implementation pass shipped a real gap, caught by independent verification, not the implementing agent's own report**: it correctly generalized the gate, but ALSO skipped `covered` leaves on input for both the exact-hit AND estimate branches (mirroring the independence registry's own precedent) — which meant `color` (already covered by `compile_plane`'s joint with `legality`) never reached the new scan at all, so the motivating example got ZERO benefit on the first pass. Root cause: skipping `covered` leaves is necessary for the ESTIMATE-class fallback (an independence-shaped estimate isn't a guaranteed bound and could undershoot below an already-exact value — Round 40's own class-priority reasoning) but NOT for the EXACT-hit branch, where any true sub-conjunction's count is always a valid bound regardless of what else covered a leaf, exactly like `compile_plane`/`pair_bounded_min`/the arith-tuple merge already behave. Fixed by splitting the two branches: the exact-hit scan ignores `covered` entirely; the estimate fallback still respects it, recomputed fresh after the hit loop runs |
 | 43 | Triple-level independence safety investigation — measurement only, no engine code changed | diagnostic | n/a (no code shipped) | n/a | see "Round 43" narrative below — the literal "does joint 3-way independence hold" question isn't reachable (no triangle in the registry's adjacency graph); the real, reachable, CONFIRMED-bad scenario is a "star" (two of a hub's registered partners present simultaneously, both independence estimates fired and `.min()`-folded, a composition neither pair's own 2-leaf calibration ever measured): `star:color+cmc+usd`/`star:identity+cmc+usd` substantially worse than either component's baseline across three independent seeds; an unplanned second finding (three star candidates swept by an exact `PlanePopcount` mechanism instead) are ALSO worse than baseline. Not fixed this round — a follow-up is recommended (decline both estimates when a hub + 2 different partners co-occur), scoped but not built |
 | 44 | New exact `(colors\|identity) x cmc` table (`ColorCmcTable`/`ColorCmcIndexes`) — 32 raw per-mask buckets (no `Ge`/`Le` lattice pre-summing, unlike `ColorSubtypeTable`), each mask's cmc dimension prefix-summed (mirroring `RangeCardCounts` exactly); wired into the `And` arm's residual scan and `exact_result_total`'s 2-leaf shortcut | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 65,541 shared rows (independent re-sweep, fresh seed): only 3 shapes show ANY plan-choice change (`star:identity+cmc+usd` 13.4%, `star:color+cmc+usd` 12.4%, `triple:color+type+cmc` 1.3%), zero elsewhere; ratio diagnostic improved (mean 0.287→0.279, "B is MORE accurate") | see "Round 44" narrative below — directly fixes Round 43's own confirmed-bad star: `star:color+cmc+usd` median abs-log-ratio 0.80→0.58, `star:identity+cmc+usd` 0.71→0.57 (fresh-seed independent re-check: 0.52/0.55) — real, substantial, not just moved sideways. The pure 2-leaf case is now EXACT in all three spaces (verified directly via `and_trace`: `color:G cmc<=3` card 3468/3468, printing 10268/10268; `id:UG cmc>=1 cmc<=5`, a two-sided bound, also exact at 10421/30050 against true). **A real regression found and fixed by the implementing agent itself, before I ever saw it** — my own instructions said to `mark_covered` on a hit, matching every other exact mechanism's convention; measuring against the real corpus showed this was actively harmful (median moved 0.80→1.08, WORSE) because it starves BOTH `ColorId`×`Price` and `Cmc`×`Price` (neither has a partner left once both leaves are claimed), and the new table's own bound — which ignores price entirely — is often looser than what those two (price-aware, if only via independence) estimates gave. Removing `mark_covered` let all three compete via `min()` and fixed it (0.80→0.58). Safe to leave uncovered: unlike two ESTIMATE-class mechanisms compounding on the IDENTICAL two leaves (Round 40's own concern), Independence's two candidates here each share only ONE leaf with this mechanism's pair, never both — genuinely different sub-conjunctions, not competing answers to the same question. Confirmed unrelated to the "swept trio" from Round 43 (`legality`/`color`/`identity`×`price`) — untouched by this round, as expected |
+| 45 | A bare `set:X` leaf's own solo `ComposeEstimate` now carries real `Some(card)`/`Some(artwork)` (from `set_totals`'s own `.cards`/`.artworks`, already computed for `SubtypePairEstimate` and previously discarded) instead of `None` — lets Round 41's card/artwork floor use `set:X`'s own true count instead of silently skipping it | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 44,511 shared rows (independent re-sweep, fresh seed): only 2 shapes show ANY plan-choice change, both `set:`-shaped (`same_family:set+set` 2.3%, `unsafe:set+type` 1.0%), zero elsewhere; ratio diagnostic unchanged (expected — floored at `true_total>=100`, excluding the small-count population this fix targets) | see "Round 45" narrative below — fixes a catastrophic case found by direct inspection, not a synthetic benchmark: `set:mh2 usd<10 cmc<5 power>1 color:g` predicted card=4762/artwork=6680 against printing=492, an impossible ordering (`card`/`artwork` can never exceed `printing` for a real population) — root cause: a bare `set:X` leaf's own estimate had `card: None, artwork: None` (confirmed via `ComposeEstimate::leaf`'s own doc: "no cheap exact card/artwork source" is the *default* for most leaf types, not a `SetCode`-specific bug), so Round 41's floor could never use `set:mh2`'s own true 309/391 as a ceiling. Fixed: card 4762→309, artwork 6680→391 (both now correctly ≤ printing's 492) — independently re-verified directly via `and_trace` on both wheels, not just the implementing agent's own report. **A second, separate, still-open bug found in the same investigation**: the `card<=printing`/`artwork<=printing` invariant is violated elsewhere in the curated catalog too (e.g. `c:w t:plains`, card=40/artwork=511 both exceeding printing=24, true_total=0 for all three) — confirmed byte-identical on the pre-Round-45 wheel, so this is NOT introduced by this round. Root cause: Round 41's own floor takes a leaf's solo card/artwork as a candidate without a final `.min()` clamp against the query's own `result.printing` — a real, pre-existing gap in Round 41 itself, not fixed here (out of scope for this round, flagged as the natural next fix) |
+
+### Round 45
+
+Target: not found by a benchmark sweep — found by hand-tracing a real query
+(`set:mh2 usd<10 cmc<5 power>1 color:g`) after Round 44 shipped, checking whether the estimate was any
+good, and noticing something a ratio metric alone would never flag: `compose_printing_estimate`'s own
+predicted card (4762) and artwork (6680) both *exceeded* its own predicted printing (492) — an
+impossible ordering for any real population (every printing belongs to exactly one card and has
+exactly one artwork, so `distinct_cards <= distinct_printings` and `distinct_artworks <=
+distinct_printings` always hold), not merely a loose estimate.
+
+**Root cause, confirmed via `and_trace` directly.** A bare `TextExact{SetCode}` leaf's own solo
+estimate carried `card: null, artwork: null` — so Round 41's card/artwork floor (a `min()` over every
+uncovered leaf's own solo count) could never use `set:mh2`'s own true size as a ceiling, leaving an
+unrelated exact joint (`ColorCmcTable`'s `color`×`cmc` pair, Round 44) to stand unchallenged at 4762/
+6680. This is a general architectural default, not a `SetCode`-specific oversight:
+`ComposeEstimate::leaf`'s own doc comment says outright *"a leaf with no cheap exact card/artwork
+source... there is no space beyond printing to report"* — most leaf types fall through to it. Checked
+directly against the real trace: `Colors` has both card and artwork; `Cmc`/`Power` have card but not
+artwork; `SetCode` and `Price` have neither.
+
+**The fix turned out smaller than the bug**: the missing data wasn't uncomputed, it was being
+discarded. `set_totals` (built for Round 34's `SubtypePairIndexes`) already aggregates a full
+`SpaceTotals` — printings, cards, AND artworks — per set, but `SetSubtypeTable` only ever kept
+`.cards` into `set_cards`, throwing `.artworks` away. Added a sibling `set_artworks` map from the SAME
+pass (no second aggregation), and wired both into the bare `set:X` leaf's own `ComposeEstimate` via
+`ComposeEstimate::leaf_spaces` instead of the card/artwork-less `ComposeEstimate::leaf`. Round 41's
+floor needed zero changes — it picked up the new `Some(card)`/`Some(artwork)` automatically, exactly as
+designed. One real implementation deviation, caught by the implementing agent's own test run: defaulting
+a miss to `Some(0)` (as first tried) broke an existing test by falsely flooring an unrelated 2-card
+intersection to zero on a fixture whose `subtype_pairs` table isn't built at all — fixed by declining
+to `None` on a miss instead, matching every other exact mechanism's own "decline rather than guess"
+convention (`ColorCmcTable`'s empty-`by_mask` check is the identical shape).
+
+**Independently re-verified end to end** (rebuilt both wheels myself, re-ran the motivating query and
+the pre-existing-bug repro directly via `and_trace`, ran a fresh sweep on a different seed): card
+4762→309, artwork 6680→391, both now correctly `<= printing`'s 492 (still far from the true 5-leaf
+16/25/20 — this fix restores a correct floor, it doesn't add a new join). Sweep (44,511 rows, seed 21):
+only 2 shapes show any plan-choice change at all, both `set:`-shaped (`same_family:set+set` 2.3%,
+`unsafe:set+type` 1.0%), zero elsewhere.
+
+**A second, separate, still-open bug found by the same investigation, NOT fixed here.** The
+`card<=printing`/`artwork<=printing` invariant is violated elsewhere in the curated catalog too —
+`c:w t:plains` (true_total 0 in every space) predicts card=40/artwork=511 against printing=24, and
+this is confirmed **byte-identical on the pre-Round-45 wheel** — genuinely pre-existing, not introduced
+by this round's own fix. Root cause, traced: Round 41's own card/artwork floor takes a leaf's solo
+count as a candidate without a final `.min()` clamp against the query's own `result.printing` — a
+leaf's card/artwork count can itself legitimately exceed some OTHER, tighter mechanism's printing
+answer (e.g. `SubtypePairEstimate`'s own estimate here), and nothing currently stops that from
+surfacing as the final card/artwork answer even though it can never be true. Flagged as the natural
+next fix — small, well-understood, and worth designing into whatever shared fold path a future
+refactor round builds, rather than patched in ad hoc here.
+
+Blast radius: `card_engine/src/lib.rs` (+43 lines — one new field, one extraction loop, one leaf
+dispatch change), `card_engine/src/tests.rs` (+143 lines, 3 new tests). `cargo test`: 218 passed
+release / 219 debug (215+3/216+3). `cargo clippy --all-targets -- -D warnings`: clean.
+`and_estimate_ns`: real delta within the same-build canary's own noise floor, not distinguishable.
 
 ### Round 44
 

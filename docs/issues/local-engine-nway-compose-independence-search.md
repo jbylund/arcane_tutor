@@ -359,6 +359,18 @@ above):
 
 ## What's not yet done
 
+- **The `card <= printing`/`artwork <= printing` invariant is violated elsewhere in the curated
+  catalog, confirmed pre-existing (Round 45)** — `c:w t:plains` predicts card=40/artwork=511 against
+  printing=24 on `costcell/trunk` from before Round 45 touched anything. Root cause traced: Round 41's
+  card/artwork floor takes a leaf's own solo count as a candidate with no final clamp against the
+  query's own `result.printing`. Small, well-understood, not yet fixed — the natural next round, and
+  worth designing into whatever shared fold path a future structural refactor builds (a
+  `debug_assert!`/clamp enforcing this invariant on every candidate, not just this one leaf type).
+- **Most leaf types still report `card: None, artwork: None` on their own solo estimate** — `Price`
+  confirmed affected (same shape as `SetCode`, fixed for `SetCode` only in Round 45); a full census of
+  which `FilterExpr` variants use the card/artwork-less `ComposeEstimate::leaf` path vs. the two that
+  carry real values was not completed as part of Round 45 and would need its own pass before deciding
+  which are worth fixing next.
 - **The actual bounded partition search** — subset enumeration up to size 3/4, greedy packing of
   multiple simultaneous non-overlapping tightenings across arbitrary leaf groupings. Round 40 ships a
   flat pairwise scan over the residual, not this. This is the single biggest remaining gap between
