@@ -417,6 +417,20 @@ above):
   found the ratio diagnostic flip from Round 48's own "B is LESS accurate" (+0.001) to "B is MORE
   accurate" (mean −0.034, 95% CI excludes 0), with all 378 plan-choice flips confined to `root=and`'s
   `*+usd` star/cube shapes and zero elsewhere.
+- **"Anchored independence" — a new candidate shape, partially built (Round 50).** Even with Round 49's
+  fix, `SubtypeArithBox`'s exact joint stays blind to any residual leaf, and raw-marginal `Independence`
+  estimates for the same query are often looser than the box's own bound (a leaf's own MARGINAL is much
+  broader than its ACTUAL joint with the subtype). Round 50 multiplies the box's exact joint by a single
+  residual `Price` leaf's own solo rate instead — `t:elf cmc>=5 usd<10` tightens 241→188 against true 177
+  (1.36x→1.06x), and `t:elf usd<0.20 cmc>=2` (Round 49's own motivating case) improves further, 425→370
+  (1.16x→1.01x). This is conceptually the same "combine an exact prefix with an independent residual"
+  idea this doc's own design describes for the general bounded partition search — Round 50 is a single,
+  narrowly-scoped instance of it (one mechanism, one class), not the general mechanism. Deliberately not
+  generalized yet to other residual classes, other anchor mechanisms (`SubtypePairIndexes`/
+  `ColorCmcTable` have the same shape but no validated example), or combining multiple safe residual
+  classes into one product — see
+  [local-engine-nway-followup-queue.md](local-engine-nway-followup-queue.md)'s item #1 for the three
+  separate directions left.
 - ~~The `color:G format:pioneer t:elf`-shaped 3-leaf joint~~ — **closed in Round 42.** This was
   originally framed as needing a placement rule (`compile_plane` claims `color`+`legality` together
   first in source order, so `SubtypePairIndexes` would need to "win" the leaf instead). That framing

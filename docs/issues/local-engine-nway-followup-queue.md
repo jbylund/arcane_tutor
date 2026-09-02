@@ -1,6 +1,6 @@
 # N-Way Estimator Follow-Up Queue
 
-Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-49), in the order we
+Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-50), in the order we
 intend to tackle it. This doc is the queue, not the depth — the round-by-round numbers live in
 [local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md),
 and the architecture/design rationale lives in
@@ -10,22 +10,19 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 
 ## Active queue (in order)
 
-1. **Build the "anchored independence" candidate**: once an exact mechanism (e.g. `SubtypeArithBox`)
-   computes a joint count for some leaf subset, and other, residual leaves remain in the same `And`,
-   multiply that exact count by the residual leaves' own combined independent solo-selectivity to get
-   a tighter `Estimate`-class candidate for the FULL query — `.min()`-fold it alongside the exact bound
-   (never replacing it, so correctness can't regress: a solo rate is always ≤1, so the product can only
-   tighten). Validated on real data during Round 48's review: `t:elf cmc>=5` alone gives the identical
-   241 as the full `t:elf cmc>=5 usd<10` query (confirming the box's count is price-blind); combining
-   241 with `usd<10`'s own solo rate (76189/97812 ≈ 0.779) gives ≈188 against true 177 — tighter than
-   the box's own 241 (1.36x → 1.06x). Distinct from the now-completed "loosen `covered`" fix (Round 49):
-   this doesn't touch `covered`'s semantics at all, it's a new candidate computed inline wherever an
-   exact mechanism resolves its own hit. Needs the same guards as any independence-style estimate:
-   combine ALL residual leaves into one product (never try them separately and pick the smallest — the
-   same order-statistics selection bias flagged in the design doc), and the same price-triple-correlation
-   guard already documented in
-   [local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md)
-   (never independence-combine two of `price_usd`/`price_eur`/`price_tix` together).
+1. **Generalize "anchored independence" further.** Round 50 shipped this deliberately narrow: only
+   `SubtypeArithBox`'s own hit, only a single residual `IndepClass::Price` leaf. Three separate
+   directions remain, each its own future round (validate independently, don't bundle):
+   - **More residual classes.** Only `Price` has a validated real-data example; other classes
+     (`ColorId`, `Cmc`, `Type`, etc., wherever `SubtypeArithBox`'s own residual isn't itself the arith
+     dimension) need their own before/after check before being added, mirroring how
+     `independence_safe_pair`'s own registry grew one validated class at a time (Round 38 → Round 40).
+   - **More anchor mechanisms.** `SubtypePairIndexes`/`ColorCmcTable`'s own exact hits are the same
+     shape (an exact joint, blind to whatever residual leaves remain) and would plausibly benefit the
+     same way — not attempted, no validated example yet for either.
+   - **Combining multiple safe residual classes into one product**, not just one — needs the same
+     order-statistics-bias care already documented in the design doc (never try residuals separately
+     and pick the smallest) once 2+ classes are each independently validated as safe to anchor.
 2. **Fix the estimators Round 46's census flagged.** Zero of the six exact mechanisms produce an
    inconsistent `cards<=artworks<=printings` triple, but `arith_tuple_count` folds as
    `Candidate::Estimate` (a scaled, not exact, printing conversion, no artwork at all) and is
@@ -83,3 +80,5 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 - Round 48: `SubtypeArithBox` generalized past its whole-query-shape gate to scan the residual.
 - Round 49: `covered` loosened from leaf-occupancy to subset-identity tracking (`CoveredState`) for the
   independence registry — recovers Round 48's own regression and improves the sweep overall.
+- Round 50: "anchored independence" for `SubtypeArithBox` — exact joint × single residual `Price` rate,
+  narrowly scoped (see item #1 above for what's left to generalize).

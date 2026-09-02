@@ -202,6 +202,77 @@ total regret by 0.0 ms).
 | 47 | `top_n_and_rest_max` (`SubtypePairIndexes`'s shared top-256-per-dimension cutoff) now extends past `n` to include every pair tied with the boundary card count, instead of a plain `truncate(n)` with no tiebreak — fixes Round 46's own discovered nondeterminism at its root | kept | n/a (not this doc's own metric) | Independently re-verified: isolated release wheel, 5 fresh index builds each, byte-identical every time for all 4 previously-flipping queries across both affected dimensions (`t:monk usd>0.19 c:u`, `t:warrior set:shm`, `c:b t:advisor`, `c:bw usd>=0.35 t:cleric`) — zero variance, where before this fix at least 3 of these flipped between builds. The now-stable table hits are also independently confirmed EXACT against ground truth (`c:u t:monk`/`c:b t:advisor`/`c:bw t:cleric` all read exactly 38/38/38 real cards, matching `explain_analyze`'s own true totals in all 3 spaces). Sweep (fresh seed, 43,365 shared rows): 43,239 unchanged, 125 improved-or-equal, 1 single-row sub-unit artifact (`t:angel c:b` printing: error 10→13 against true=127) — reproduces the agent's own identical finding exactly (same query, same true_total), explained as the capped-estimate MISS fallback's non-monotonic response to a tighter `rest_max` input, not a shape-level regression. `cargo test`: 230 passed release / 233 debug. `cargo clippy --all-targets -- -D warnings`: clean (debug; the same pre-existing release-only dead-code warning from Round 46 confirmed unrelated again) | see "Round 47" narrative below — the chosen fix (extend to include every tie) over a plain deterministic tiebreak, and why; real boundary/tie numbers for all three dimensions, with an honest note on a real discrepancy in my own independent verification attempt |
 | 48 | `SubtypeArithBox`'s gate generalized from `arith_children.len() + 1 == v.len()` (whole query must be exactly "one subtype leaf + N arith leaves") to just `!arith_children.is_empty()` — scans the residual for every subtype leaf present, mirroring `SubtypePairIndexes`'s own Round 42 generalization; `mark_covered_on_hit` now scoped to only the leaves a given hit actually explains, not all of `v` | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,378 shared rows (fresh seed, new curated shape `subtype_cube:type+cmc+usd` added): 74 plan-choice flips (0.1%), concentrated in `subtype_cube:type+cmc+usd` (39/900, 4.3%) and `star:cmc+type+usd` (31/900, 3.4%); base "no residual" shapes (`subtype_cube:type+cmc`, `subtype_cube:type+pow+tou+cmc`) show zero rows changed, confirming strict superset behavior for the case that already worked. Ratio diagnostic: mean abs-log-ratio +0.001 overall — **"B is LESS accurate" in aggregate**, not more (`subtype_cube:type+cmc+usd` 0.402→0.456, 45 improved/64 worsened; `star:cmc+type+usd` 0.354→0.361, 38/42) | see "Round 48" narrative below — the motivating case (`t:elf cmc>=5 usd<10`) improves dramatically (printing 1665→241, true 177), but the aggregate sweep regression is real and independently reproduced: root-caused via `and_trace` to `covered`'s pre-existing leaf-occupancy conservatism (queue item #3) blocking `Independence` from trying `(subtype, price)` once the box covers `(subtype, cmc)` — a live, measured instance of the "loosen covered" gap, not a defect in this round's own logic. A related, validated idea surfaced during review (not built this round, logged in the followup queue): the box's own exact joint, combined via independence with the residual price leaf's solo rate, gives 241×0.779≈188 against true 177 — tighter than the box's price-blind 241 alone |
 | 49 | Loosens the independence registry's `covered` gate from leaf-occupancy to subset-identity: `CoveredState { flags, subsets: Vec<u64> }` replaces the bare `covered: Vec<bool>` — `flags` keeps the unchanged Round-40 leaf-level bookkeeping, `subsets` records one bitmask per genuine joint hit (via `mark_covered`/`pair_bounded_min`). The independence registry no longer skips a leaf merely because SOME other mechanism touched it (`is_covered` deleted); it declines a candidate pairing only when that pairing's own combined leaf-mask exactly equals an already-recorded subset | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,366 shared rows (fresh seed): 378 plan-choice flips (0.6%), 100% confined to `root=and`'s `*+usd` star/cube shapes (`star:legality+identity+usd` 13.9%, `star:legality+color+usd` 12.8%, `star:legality+cmc+usd` 4.6%, `star:color+identity+usd` 3.4%, `star:cmc+type+usd` 2.2%, `subtype_cube:type+cmc+usd` 2.2%, `star:identity+type+usd` 1.6%, `star:color+type+usd` 1.3%); `root=leaf`/`root=or` show zero changes. Ratio diagnostic: mean abs-log-ratio **−0.034** (95% CI [−0.036, −0.032], excludes 0) — **"B is MORE accurate"**, reversing Round 48's own "B is LESS accurate" finding | see "Round 49" narrative below — independently reproduced end to end: the regression case (`t:elf usd<0.20 cmc>=2`) recovers exactly to printing=425 (matching the pre-Round-48 answer), Round 48's own motivating case (`t:elf cmc>=5 usd<10`) stays unchanged at 241, both traced via `and_trace` on isolated release wheels built myself, not just the implementing agent's report |
+| 50 | "Anchored independence" for `SubtypeArithBox`: on a box hit, scans for a SINGLE residual leaf classifying as `IndepClass::Price` (declines entirely if 2+, the price-triple guard) and multiplies the box's own exact joint by that leaf's solo rate, folding the product as a new `Estimate`-class candidate (`"SubtypeArithAnchoredIndependence"`) via `.min()`. Deliberately narrow — only `SubtypeArithBox`, only `Price` — mirroring Round 38/42's own "one mechanism, one class, validate, then expand" discipline | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,363 shared rows (fresh seed): 14 plan-choice flips (0.0%), 100% confined to `subtype_cube:type+cmc+usd` (9/900) and `star:cmc+type+usd` (5/900); `root=leaf`/`root=or` zero changes. Ratio diagnostic: mean abs-log-ratio −0.002 (95% CI [−0.002, −0.001], excludes 0) — "B is MORE accurate" | see "Round 50" narrative below — independently reproduced: `t:elf cmc>=5 usd<10` (true 177) tightens 241→188 (1.36x→1.06x); `t:elf usd<0.20 cmc>=2` (true 366), not required by the plan but checked anyway, ALSO improves 425→370 (1.16x→1.01x) — a genuine bonus, not assumed |
+
+### Round 50
+
+Target: build the "anchored independence" candidate validated during Round 48's own review — queue
+item #1 in [local-engine-nway-followup-queue.md](local-engine-nway-followup-queue.md). Even after Round
+49's fix, `SubtypeArithBox`'s exact joint for `(subtype, arith-children)` (e.g. `t:elf ∩ cmc>=5` = 241)
+stays price-blind, and the raw-marginal `Independence` estimates for the same query are BOTH looser than
+the box's own bound (`Independence(cmc,price)=17056`, `Independence(Elf,price)=1665`, both worse than
+241) — Elf's and cmc's own MARGINAL solo counts are much broader than their ACTUAL joint, so the box's
+exact joint is a far better anchor than either marginal alone. Multiplying that exact joint by the
+residual `Price` leaf's own solo rate gives a materially tighter estimate: `241 × (76189/97812 ≈ 0.779)
+≈ 188` against true 177 (1.36x → 1.06x).
+
+**Deliberately narrow scope**, mirroring Round 38's and Round 42's own "one mechanism, one class, prove
+it, then expand" discipline: anchors ONLY `SubtypeArithBox`'s own hit (not `SubtypePairIndexes`/
+`ColorCmcTable`, which would plausibly benefit the same way but have no validated example yet), and
+combines the residual rate for ONLY `IndepClass::Price` (the one class with a validated real-data
+example). Any other residual class, or an unclassified residual leaf, is simply ignored — dropped from
+the product, same as the independence registry already does for classes it doesn't recognize; this is
+safe, not a correctness gap, since ignoring a residual constraint only makes the resulting estimate a
+bound on a LARGER population than the true query, and folding it in via `.min()` (the same accepted
+`Estimate`-class convention `Independence` already uses) never introduces new risk, only sometimes
+leaves accuracy on the table for a later round. Also deliberately conservative about the price-triple
+correlation risk already documented in this doc: if 2+ residual leaves classify as `Price` (e.g. `usd`
+and `eur` both bounded, unfused), the candidate declines entirely rather than multiply both rates in —
+implemented as a single Rust slice-pattern match (`by_class[Price].as_slice()` against `[i]`), so any
+count other than exactly one falls through to no candidate at all, mirroring the independence registry's
+own "2+ occurrences of a class with no combining table, dropped" convention.
+
+**The implementation**, done by a background agent to a pre-approved plan and independently re-verified
+end to end: a new block right after `SubtypeArithBox`'s existing `scan_two_bucket_exact` call,
+per-subtype-position, re-derives the box's own exact hit via a second (deliberately not
+helper-threaded, keeping this fully decoupled from a helper shared with two other mechanisms)
+`subtype_arith_exact` call, computes the hit's own explained leaf-position mask, scans `and_sources` for
+every entry FULLY disjoint from that mask (not just non-overlapping at one leaf), buckets the residuals
+by `IndepClass` (mirroring the independence registry's own `by_class` pattern), and — only when exactly
+one residual classifies as `Price` — folds `Candidate::Estimate { printing: round(box_printing ×
+rate) }` under a new mechanism name, `"SubtypeArithAnchoredIndependence"` (added to
+`is_estimate_class_mechanism` for correct trace-tree attribution), and marks its own leaves (box's
+explained set plus the contributing Price leaf) defensively covered, mirroring `SubtypePairEstimate`'s
+own established convention.
+
+**Verification, independently reproduced.** `cargo test`: 244 passed debug / 241 passed release (exact
+baseline+5, matching the 5 new tests: the validated real-shape analog, the two-Price-residual decline
+guard, an ignored non-Price class, a Price-plus-unclassified-residual combo, and a multi-subtype-leaf
+fixture confirming each gets its own independent candidate). `cargo clippy --all-targets -- -D
+warnings`: clean on debug; release shows only the same pre-existing `ARITH_TUPLE_BLOWUP_CARDS`
+dead-code warning confirmed unrelated in every prior round.
+
+Rebuilt both isolated release wheels myself (before = fresh clone at `59d2f5cb`, after = the agent's
+commit) and reproduced the real numbers directly via `and_trace`: `t:elf cmc>=5 usd<10` (true 177)
+tightens exactly from 241 to 188 — `SubtypeArithBox` still fires the bare 241, the new mechanism fires
+at 188 and wins. `t:elf usd<0.20 cmc>=2` (true 366) — checked per the plan's own instruction to report
+the real number either way, not assumed — ALSO improves, from 425 (the post-Round-49 winner) to 370
+(1.16x → 1.01x), a genuine bonus the plan only asked to verify, not one it predicted. Re-ran
+`nway_estimate_truth_survey.py --compare` myself (fresh seed, 66,363 shared rows): 14 plan-choice flips
+(0.0%), 100% confined to `subtype_cube:type+cmc+usd` (9/900) and `star:cmc+type+usd` (5/900) — confirmed
+directly in the raw compare output, `root=leaf`/`root=or` both exactly 0.0% changed. Ratio diagnostic
+mean abs-log-ratio −0.002 (95% CI [−0.002, −0.001], excludes 0) — "B is MORE accurate".
+
+**Timing, checked directly by the agent, not assumed free.** A second `subtype_arith_exact` lookup plus
+an `and_sources` scan is a real, correctly-gated addition: queries where the mechanism actually fires
+(subtype + arith + a single Price residual) showed a genuine, non-noise increase (~1.33µs→~1.63-1.67µs,
++22-25%, same-build canary confirmed this exceeds noise); a query with subtype+arith but no Price
+residual (mechanism attempts the scan, then declines) showed a smaller real increase (~1.21µs→~1.33µs,
++10%); a query with no arith children at all (block never entered) was flat, within noise. The
+price-triple guard itself was never exercised by any real corpus query in this sweep (checked directly:
+zero rows combine a box hit with two distinct price fields — the only same-field-twice cases are
+two-sided ranges, which fuse into one `AndSource` and correctly count as a single Price unit) — only the
+dedicated unit test exercises it.
 
 ### Round 49
 
